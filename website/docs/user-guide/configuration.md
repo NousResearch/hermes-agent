@@ -2178,6 +2178,14 @@ display:
   resume_display: full    # full (show previous messages on resume) | minimal (one-liner only)
   bell_on_complete: false # Play terminal bell when agent finishes (great for long tasks)
   bell_on_prompt: false   # Play terminal bell when a blocking prompt opens (clarify, approval, sudo password, secret capture) — works over SSH
+  prompt_attention:       # CLI: serialize blocking prompts across Hermes processes and focus the owner
+    enabled: false
+    focus: true           # Select the originating tmux pane and focus its Sway terminal when identifiable
+    focus_command: []     # Optional argv override; placeholders include {tmux_session}, {tmux_pane}, {session_id}
+    sound: true           # Play a generated thunder alert through PipeWire (pw-play)
+    sound_command: []     # Optional argv override, for example ["pw-play", "/path/to/alert.wav"]
+    command_timeout: 2.0  # Bounded subprocess timeout in seconds
+    voice_recent_seconds: 300  # Start safe prompt dictation when Voice Mode was enabled this recently
   # Both bell flags also emit an OSC 9 desktop notification (Ghostty, iTerm2, Kitty, WezTerm raise an OS
   # notification; other terminals ignore it) and, inside Warp (TERM_PROGRAM=WarpTerminal with the CLI-agent
   # protocol advertised), a warp://cli-agent OSC 777 event (`stop` on completion, `permission_request` on

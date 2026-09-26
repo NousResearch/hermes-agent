@@ -231,8 +231,11 @@ class CLIVoiceMixin:
                     return
                 self._attached_images.clear()
                 self._voice_invalidate()
-                self._pending_input.put(_VoiceInputMessage(transcript))
-                submitted = True
+                deliver = getattr(self, "_tui_deliver_voice_text_prompt", None)
+                submitted = bool(deliver and deliver(transcript))
+                if not submitted:
+                    getattr(self, "_pending_input").put(_VoiceInputMessage(transcript))
+                    submitted = True
             elif result.get("success"):
                 _cprint(f"{_DIM}No speech detected.{_RST}")
             else:
@@ -506,6 +509,7 @@ class CLIVoiceMixin:
 
         with self._voice_lock:
             self._voice_mode = True
+            self._voice_enabled_at_monotonic = time.monotonic()
         if _config_section("voice").get("auto_tts", False):
             with self._voice_lock:
                 self._voice_tts = True
@@ -565,6 +569,7 @@ class CLIVoiceMixin:
                 self._voice_recording = False
             recorder = self._voice_recorder
             self._voice_mode = False
+            self._voice_enabled_at_monotonic = None
             self._voice_tts = False
             self._voice_continuous = False
 

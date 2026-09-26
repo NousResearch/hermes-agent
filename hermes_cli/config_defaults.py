@@ -828,6 +828,17 @@ DEFAULT_CONFIG = {
         "tui_agents_nudge": True,
         "bell_on_complete": False,
         "bell_on_prompt": False,   # bell when a blocking prompt opens (clarify/approval/sudo)
+        # Cross-process FIFO attention for blocking CLI prompts. The owner is focused and alerted;
+        # other sessions wait their turn instead of fighting over the desktop/tmux client.
+        "prompt_attention": {
+            "enabled": False,
+            "focus": True,
+            "focus_command": [],  # argv override; supports routing placeholders, never a shell string
+            "sound": True,
+            "sound_command": [],  # argv override; empty generates and plays the built-in thunder
+            "command_timeout": 2.0,
+            "voice_recent_seconds": 300,
+        },
         # Stream reasoning live before the response; otherwise thinking models show only a spinner
         # for tens of seconds.
         "show_reasoning": True,

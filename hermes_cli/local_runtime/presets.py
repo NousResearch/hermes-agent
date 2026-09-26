@@ -80,6 +80,7 @@ def preset_for_model(gguf: Path, budget: HardwareBudget,
                      mtp_capable: set[str], *, requested_window: int | None = None) -> PresetEntry | None:
     """The launch decision for one staged model, or None when its header is unreadable."""
     from hermes_cli.local_runtime.catalog import entry_for_model
+    from hermes_cli.local_runtime.growth import load_mtp_overrides
     from hermes_cli.local_runtime.growth import load_window_overrides
 
     model_id = model_id_from_stem(gguf.stem)
@@ -90,7 +91,14 @@ def preset_for_model(gguf: Path, budget: HardwareBudget,
         logger.warning("preset skip %s: %s", gguf.name, exc)
         return None
     entry = entry_for_model(model_id)
-    is_mtp = entry.mtp if entry is not None else model_id in mtp_capable
+    # Explicit user posture beats the catalog; the catalog stays the default; a model the
+    # catalog never heard of runs without spec decode unless asked for it (backend sampling
+    # doubles the logits buffers, so it must never turn on by guessing).
+    forced_mtp = load_mtp_overrides().get(model_id)
+    if forced_mtp is None:
+        is_mtp = entry.mtp if entry is not None else model_id in mtp_capable
+    else:
+        is_mtp = forced_mtp
 
     mmproj_path = _asset_path(entry.mmproj) if entry is not None else None
     fixed_overhead = RUNTIME_OVERHEAD_BYTES + (
@@ -107,7 +115,7 @@ def preset_for_model(gguf: Path, budget: HardwareBudget,
         profile, decision, mtp_capable=is_mtp, uma=budget.uma, mtp_prefill=plan.mtp_prefill,
         mtp_draft_depth=entry.mtp_draft_depth if entry is not None else 3))
     keys["model"] = str(gguf)
-    if entry is not None and is_mtp:
+    if is_mtp:
         # Integrated-MTP targets sample on the backend, and so does the draft (pairing validated
         # against the vendor's published llama.cpp recipes).
         keys["backend-sampling"] = "on"

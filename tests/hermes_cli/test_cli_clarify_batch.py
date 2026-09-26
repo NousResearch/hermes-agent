@@ -414,3 +414,30 @@ class TestClarifyBellOnPrompt:
     def test_bell_on_prompt_rings_and_off_is_silent(self):
         assert "\a" in self._run_clarify(True)
         assert "\a" not in self._run_clarify(False)
+
+
+def test_single_question_multi_select_other_is_json_not_comma_joined():
+    """The single-question "Other" row must ship a JSON array like the batch path:
+    comma-joining the checked labels with the typed text destroys any comma the user
+    typed (tools/clarify_tool.py then reads the fragments as separate answers)."""
+    import queue
+
+    cli = _make_cli_stub()
+    response_queue = queue.Queue()
+    cli._clarify_state = {
+        "question": "Which outputs?",
+        "choices": ["Implementation", "Tests"],
+        "multi_select": True,
+        "response_queue": response_queue,
+    }
+    cli._clarify_freetext = True
+    cli._clarify_multi_base = ["Implementation"]
+
+    event = MagicMock()
+    event.app.current_buffer.text = "Docs, but only the API reference"
+
+    cli._tui_enter_clarify_freetext(event)
+
+    assert json.loads(response_queue.get_nowait()) == [
+        "Implementation", "Docs, but only the API reference",
+    ]

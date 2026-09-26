@@ -75,20 +75,36 @@ def _json_as(raw: str, kind):
     return parsed if isinstance(parsed, kind) else None
 
 
-def _parse_multi_select_response(raw_response) -> List[str]:
-    """Parse a list / JSON array / comma-separated reply into stripped non-empty strings."""
+def _comma_split_choices(raw: str, choices: Optional[List[str]]) -> Optional[List[str]]:
+    """Split ``raw`` on commas only when EVERY part is one of the offered ``choices``.
+    A free-text answer that happens to contain a comma ("Tests, but only the fast ones")
+    is not a selection and must survive whole, so anything else returns None."""
+    if not choices:
+        return None
+    offered = {strip_recommended(c).casefold() for c in choices}
+    parts = [p.strip() for p in raw.split(",")]
+    if len(parts) < 2 or not all(parts):
+        return None
+    return parts if all(strip_recommended(p).casefold() in offered for p in parts) else None
+
+
+def _parse_multi_select_response(raw_response, choices: Optional[List[str]] = None) -> List[str]:
+    """Parse a list / JSON array / comma-separated selection into stripped non-empty strings.
+    Comma splitting applies to selections only (see ``_comma_split_choices``); free text
+    stays a single answer."""
     items = raw_response
     if not isinstance(items, list):
         raw = str(items).strip()
         items = _json_as(raw, list) if raw.startswith("[") else None
         if items is None:
-            items = raw.split(",")
+            items = _comma_split_choices(raw, choices) or [raw]
     return [str(r).strip() for r in items if str(r).strip()]
 
 
-def _clean_answer(raw, multi: bool):
+def _clean_answer(raw, multi: bool, choices: Optional[List[str]] = None):
     """Strip presentation (the label, multi-select JSON) from a locked answer."""
-    return [strip_recommended(r) for r in _parse_multi_select_response(raw)] if multi else strip_recommended(raw)
+    return ([strip_recommended(r) for r in _parse_multi_select_response(raw, choices)]
+            if multi else strip_recommended(raw))
 
 
 def _clean_choices(choices: list) -> Optional[List[str]]:
@@ -147,7 +163,8 @@ def _batch_result(normalized: List[dict], answers: dict, timed_out: bool, notice
         responses.append({
             **({"id": entry["id"]} if entry["id"] else {}),
             "question": entry["question"], "choices_offered": entry["choices_offered"],
-            "user_response": _clean_answer(raw, entry["multi_select"]) if raw else ""})
+            "user_response": _clean_answer(raw, entry["multi_select"], entry["choices_offered"])
+            if raw else ""})
     result: Dict[str, object] = {"responses": responses}
     if timed_out:
         result["timed_out"] = True
@@ -232,7 +249,7 @@ def clarify_tool(question: str, choices: Optional[List[str]] = None, multi_selec
     except Exception as exc:
         return tool_error(f"Failed to get user input: {exc}")
     return json.dumps({"question": question, "choices_offered": choices,
-                       "user_response": _clean_answer(raw_response, multi_select and choices is not None)},
+                       "user_response": _clean_answer(raw_response, multi_select and choices is not None, choices)},
                       ensure_ascii=False)
 
 

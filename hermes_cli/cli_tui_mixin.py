@@ -1713,9 +1713,10 @@ class CLITuiMixin:
             self._clarify_prefill = ""
             self._clarify_batch_lock(state, answer, meta=meta)
         else:
-            # Multi-select: prepend the previously checked real choices.
+            # Multi-select: prepend the previously checked real choices as a JSON array,
+            # like the batch path — comma-joining loses any comma the user typed.
             if base:
-                text = ", ".join(base) + ", " + text
+                text = json.dumps(base + [text], ensure_ascii=False)
                 self._clarify_multi_base = None
             state["response_queue"].put(text)
             self._clarify_state = None

@@ -18,7 +18,8 @@ def generations(tmp_path, monkeypatch):
     for name in ("first", "second"):
         venv = state / "environments" / name / "venv"
         venv.mkdir(parents=True)
-        (venv / "pyvenv.cfg").write_text("version = 3.11", encoding="utf-8")
+        (venv / "pyvenv.cfg").write_text(
+            f"version = {sys.version_info.major}.{sys.version_info.minor}", encoding="utf-8")
         site_packages(venv).mkdir(parents=True)
         (venv.parent / ".lease-managed").touch()
 

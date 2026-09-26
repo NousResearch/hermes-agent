@@ -512,6 +512,39 @@ class SessionMessagesMixin:
         row = self._read_one("SELECT role FROM messages WHERE id = ? AND session_id = ? AND active = 1", (int(row_id), session_id))
         return row[0] if row else None
 
+    def _carry_parent_timestamps(self, conn, parent_session_id: str, messages: List[Dict[str, Any]]) -> None:
+        """Adopt the durable parent row's timestamp onto carried handoff rows so the re-inserted child row keeps
+        the original's display identity (see _display_dedupe_key). Idempotent; never overwrites a timestamp the
+        dict already carries; rows with no match keep their caller-supplied/now_ts value.
+
+        Content identity per _display_dedupe_key minus the timestamp: (role, encoded content, tool_call_id,
+        encoded tool_calls, tool_name). Donors are the parent's ACTIVE rows, consumed first-match-wins in id
+        order so two identical-content turns cannot both grab the same parent row. Best-effort: on any error
+        the insert falls back to today's behavior (publish-time stamp) and never breaks publish.
+        """
+        try:
+            candidates = [i for i, msg in enumerate(messages)
+                if isinstance(msg, dict) and coerce_epoch(msg.get("timestamp"), field="message timestamp") is None]
+            if not candidates:
+                return
+            donors: Dict[Tuple[Any, ...], List[Any]] = {}
+            for row in conn.execute(
+                    "SELECT id, role, content, timestamp, tool_call_id, tool_calls, tool_name FROM messages "
+                    "WHERE session_id = ? AND active = 1 ORDER BY id", (parent_session_id,)).fetchall():
+                donors.setdefault((row["role"], row["content"], row["tool_call_id"], row["tool_calls"],
+                    row["tool_name"]), []).append(row["timestamp"])
+            for i in candidates:
+                msg = messages[i]
+                tool_calls = _parse_tool_calls(msg.get("tool_calls"))
+                key = (msg.get("role", "unknown"), self._encode_content(msg.get("content")),
+                    msg.get("tool_call_id"), json.dumps(tool_calls) if tool_calls else None,
+                    _scrub_surrogates(msg.get("tool_name")))
+                queue = donors.get(key)
+                if queue:
+                    msg["timestamp"] = queue.pop(0)
+        except Exception:
+            return  # Best-effort: a failed carry falls back to the publish-time stamp, never breaks publish.
+
     def _insert_message_rows(self, conn, session_id: str, messages: List[Dict[str, Any]]) -> tuple[int, int]:
         """Insert *messages* as fresh active rows in the caller's txn -> ``(inserted, tool_call_count)``.
         Never touches sessions.* counters (callers reconcile differently); reasoning kept for assistant rows."""
@@ -521,6 +554,10 @@ class SessionMessagesMixin:
             role = msg.get("role", "unknown")
             tool_calls = _parse_tool_calls(msg.get("tool_calls"))
             message_timestamp = _coerce_timestamp(msg.get("timestamp"), now_ts)
+            if "timestamp" not in msg:
+                # Back-stamp the persisted value (mirrors msg["_row_id"] below) so later rotations/copies
+                # of this dict carry the durable timestamp instead of re-stamping a fresh `now` (#59661).
+                msg["timestamp"] = message_timestamp
             cur = conn.execute(_INSERT_MESSAGE_SQL, self._message_row_params(
                 session_id, role, msg, tool_calls, message_timestamp, keep_reasoning=role == "assistant"))
             # Keep the caller's live row aligned with the durable identity. Rows created without an explicit
@@ -881,6 +918,10 @@ class SessionMessagesMixin:
                 conn.execute(f"{_ARCHIVE_ACTIVE_SQL} AND id NOT IN ({placeholders})", [session_id, *rewind_ids])
             else:
                 conn.execute(_ARCHIVE_ACTIVE_SQL, (session_id,))
+            # Same identity carry as publish_compression_child (#59661): carried tail copies keep the
+            # durable row's timestamp so display dedupe still collapses generations. Donors are active-only;
+            # the rewound/archived originals above never donate, so this is a no-op for a clean compaction.
+            self._carry_parent_timestamps(conn, session_id, compacted_messages)
             inserted, tool_calls_total = self._insert_message_rows(conn, session_id, compacted_messages)
             if tail_ids:
                 self._clone_message_rows(conn, tail_ids)
@@ -1160,16 +1201,31 @@ class SessionMessagesMixin:
 
     def get_messages(self, session_id: str, include_inactive: bool = False, include_compacted: bool = False,
                      limit: Optional[int] = None, offset: int = 0, latest: bool = False,
-                     after_id: Optional[int] = None) -> List[Dict[str, Any]]:
+                     after_id: Optional[int] = None, include_ancestors: bool = False) -> List[Dict[str, Any]]:
         """Load messages in insertion order (id, never timestamp: clocks regress). ``include_inactive``:
         rewind rows too; ``include_compacted``: compaction-archived display history (not rewind rows).
-        ``latest`` pages back from the newest but returns chronological order; ``after_id``: keyset paging."""
+        ``latest`` pages back from the newest but returns chronological order; ``after_id``: keyset paging.
+        ``include_ancestors``: also load the compression lineage (root → tip, branch sessions exempt),
+        mirroring ``get_messages_as_conversation(include_ancestors=True)`` — after a compression rotation
+        the full transcript spans parent sessions, not just the child continuation (#51058)."""
         if after_id is not None and (latest or offset):
             raise ValueError("after_id is incompatible with latest/offset paging")
         if after_id is not None and include_compacted:
             raise ValueError("after_id is incompatible with include_compacted (deduped display reads use offset paging)")
+        if after_id is not None and include_ancestors:
+            raise ValueError("after_id is incompatible with include_ancestors (merged-lineage reads use offset paging)")
         active_clause = self._active_clause(include_inactive, include_compacted)
-        if include_compacted and not include_inactive and self._ensure_display_order(session_id):
+        # Ancestor expansion uses the resume lineage (explicit /branch copies stay single-session).
+        session_ids = self._resume_lineage_ids(session_id) if include_ancestors else [session_id]
+        if len(session_ids) > 1:
+            # Multi-segment lineage: dedupe-then-page on the merged display set, matching the
+            # canonical multi-segment projection in get_messages_as_conversation(include_ancestors=True).
+            # (display_order is per-segment and not comparable across segments, so the per-segment
+            # display_order paging below does not apply across a lineage.)
+            rows = self._dedupe_display_generations(self._read_all(
+                f"SELECT * FROM messages WHERE session_id IN ({_placeholders(session_ids)})" + active_clause + " ORDER BY id ASC", session_ids))
+            rows = rows[::-1][offset:][:limit][::-1] if latest else rows[offset:][:limit]
+        elif include_compacted and not include_inactive and self._ensure_display_order(session_id):
             # _read_retrying_ioerr: mode=ro pooled readers see a transient IOERR mid-checkpoint (#100871).
             rows = self._read_retrying_ioerr(
                 lambda conn: self._display_rows_from_conn(
@@ -1396,9 +1452,32 @@ class SessionMessagesMixin:
         return model_history, display_history
 
     def _resume_lineage_ids(self, session_id: str) -> List[str]:
-        """Session ids a display resume materializes: the compression lineage, or the session alone for an
-        explicit ``/branch`` copy. Shared with the resume guard so it counts exactly what a resume loads."""
-        return [session_id] if self._is_explicit_branch_session(session_id) else self._session_lineage_root_to_tip(session_id)
+        """Session ids a display resume materializes: the VERIFIED compression lineage (root → tip; each
+        hop's parent ended ``compression`` and the child is a genuine continuation), or the session alone
+        for anything else — an explicit ``/branch`` copy, an API fork, a reset child, or a plain session.
+        The raw parent walker ``_session_lineage_root_to_tip`` is intentionally NOT used here: it crosses
+        fork/reset boundaries and misclassifies API forks (parent ended ``branched``, no marker) as
+        compression lineages. Shared with the resume guard so it counts exactly what a resume loads."""
+        if not session_id:
+            return [session_id]
+        session = self.get_session(session_id)
+        if not session or self._is_explicit_fork_child_row(session):
+            return [session_id]
+        # _is_compression_child_row is the per-hop gate: the child must not be an explicit
+        # branch/delegate/tool child AND its parent must have ended 'compression'.
+        chain = [session_id]
+        current = session
+        seen = {session_id}
+        while len(chain) < 100:  # defensive bound, same as _session_lineage_root_to_tip
+            if not self._is_compression_child_row(current):
+                break
+            parent = self.get_session(current["parent_session_id"])
+            if not parent or parent["id"] in seen:
+                break
+            seen.add(parent["id"])
+            chain.append(parent["id"])
+            current = parent
+        return list(reversed(chain))
 
     def _resume_count_scope(self, session_id: str, tip_only: bool) -> Tuple[List[str], str]:
         """``tip_only``: the tip's ACTIVE rows (model restore); else the full-lineage DISPLAY set."""

@@ -286,6 +286,10 @@ class SessionCompressionMixin:
                 conn, parent, parent_session_id=parent_session_id, child_session_id=child_session_id,
                 source=source, model=model, model_config=model_config, system_prompt=system_prompt,
                 cwd=cwd, profile_name=profile_name)
+            # Carried handoff tail rows arrive without a timestamp and would otherwise be stamped
+            # `now`, breaking their _display_dedupe_key identity with the parent's durable originals
+            # and duplicating them in the lineage display read (#59661).
+            self._carry_parent_timestamps(conn, parent_session_id, messages)
             total_messages, total_tool_calls = self._insert_message_rows(conn, child_session_id, messages)
             if watermark is not None:
                 # Clone the parent's concurrent tail into the child after the handoff;

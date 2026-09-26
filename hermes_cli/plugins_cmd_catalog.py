@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -285,8 +286,17 @@ def refuse_if_installed_removed(name: str, plugin_dir) -> None:
 
 
 _PRESERVE_SKIP = ("__pycache__", CATALOG_SIDECAR)
-# What Hermes imports from a plugin tree: Python modules and the Desktop half's JavaScript.
+# What Hermes imports, runs or reads as the plugin's declaration: code, manifests, MCP/dependency
+# metadata and the Desktop/skills/sidecar surfaces. Without the installed revision to compare with, an
+# old copy of any of these is the old version's, not the user's.
 _CODE_SUFFIXES = (".py", ".js", ".mjs", ".cjs")
+_REVISION_FILES = frozenset({"plugin.yaml", "plugin.yml", "plugin.json", "mcp.json", "pyproject.toml",
+                             "package.json", "package-lock.json", "uv.lock"})
+_REVISION_DIRS = frozenset({"desktop", "skills", "sidecar", "node_modules"})
+
+
+def _revision_owned(rel: Path) -> bool:
+    return rel.suffix in _CODE_SUFFIXES or rel.as_posix() in _REVISION_FILES or rel.parts[0] in _REVISION_DIRS
 
 
 def _local_changes(target: Path) -> Optional[tuple[list[str], list[str]]]:
@@ -315,15 +325,27 @@ def _local_changes(target: Path) -> Optional[tuple[list[str], list[str]]]:
 
 
 def _user_tree_files(root: Path):
-    """Relative paths of the files and symlinks under *root*, minus what is never the user's (``.git``,
-    bytecode, the installer's catalog record); a symlinked dir is one entry, not a tree to descend."""
-    for dirpath, dirnames, filenames in os.walk(root):
+    """Relative paths of the regular files and symlinks under *root*, minus what is never the user's
+    (``.git``, bytecode, the installer's catalog record); a symlinked dir is one entry, not a tree to
+    descend. Junctions are not descended (they lead outside the tree) and FIFOs/sockets are runtime
+    endpoints, not files to carry. An unreadable directory aborts the update instead of being dropped."""
+    from hermes_cli.plugins_cmd import PluginOperationError
+    from pm.filesystem import is_junction
+
+    def unreadable(exc: OSError) -> None:
+        raise PluginOperationError(f"Could not read the installed plugin's files to keep them: {exc}") from exc
+
+    for dirpath, dirnames, filenames in os.walk(root, onerror=unreadable):
         here = Path(dirpath)
         links = [d for d in dirnames if (here / d).is_symlink()]
-        dirnames[:] = [d for d in dirnames if d not in links and d != ".git" and d not in _PRESERVE_SKIP]
+        dirnames[:] = [d for d in dirnames if d not in links and d != ".git" and d not in _PRESERVE_SKIP
+                       and not is_junction(here / d)]
         for name in (*filenames, *links):
-            if name != ".git" and name not in _PRESERVE_SKIP and not name.endswith(".pyc"):
-                yield (here / name).relative_to(root)
+            path = here / name
+            if name == ".git" or name in _PRESERVE_SKIP or name.endswith(".pyc"):
+                continue
+            if path.is_symlink() or stat.S_ISREG(path.lstat().st_mode):
+                yield path.relative_to(root)
 
 
 def _changes_against_shipped(git_exe: str, target: Path) -> Optional[tuple[list[str], list[str]]]:
@@ -405,9 +427,9 @@ def _carry_user_files(old: Path, new: Path, local: Optional[list[str]], backup: 
     deletes *old*; return the ones copied to *backup* instead. *local* (:func:`_local_changes`) names the
     user's files and they win over the new tree. Where the two trees disagree on file vs directory, the
     new tree's type wins. ``None`` means the user's files cannot be told from the old version's: files
-    the new tree lacks are carried except code (a ``utils/`` package the new version replaced with
-    ``utils.py`` would shadow it), and that, plus files the new tree ships with other content, goes to
-    *backup*."""
+    the new tree lacks are carried except code and plugin declarations (:func:`_revision_owned`; a
+    ``utils/`` package the new version replaced with ``utils.py`` would shadow it), and those, plus files
+    the new tree ships with other content, go to *backup*."""
     keep = {Path(rel) for rel in local or ()}
     set_aside: list[str] = []
     for rel in _user_tree_files(old):
@@ -421,10 +443,14 @@ def _carry_user_files(old: Path, new: Path, local: Optional[list[str]], backup: 
             if src.is_file() and dst.is_file() and not filecmp.cmp(src, dst, shallow=False):
                 set_aside.append(str(rel))
             continue
-        if clash or (local is None and rel.suffix in _CODE_SUFFIXES):
+        if clash or (local is None and _revision_owned(rel)):
             set_aside.append(str(rel))
             continue
-        dst.parent.mkdir(parents=True, exist_ok=True)
+        for up in reversed(list(rel.parents)[:-1]):
+            if not os.path.lexists(new / up):
+                # A directory made only to hold the user's files keeps their mode (a 0700 data dir).
+                (new / up).mkdir()
+                os.chmod(new / up, stat.S_IMODE((old / up).lstat().st_mode))
         if os.path.lexists(dst):
             dst.unlink()
         _copy_entry(src, dst)

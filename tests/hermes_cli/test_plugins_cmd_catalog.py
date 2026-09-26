@@ -219,6 +219,9 @@ def test_update_of_a_subdir_install_keeps_user_files_and_drops_removed_code(worl
     (src / "config.yaml.example").write_text("endpoint: default\n")
     (src / "settings.py").write_text("LIMIT = 1\n")
     (src / "utils" / "__init__.py").write_text("OLD = True\n")
+    (src / "mcp.json").write_text('{"mcpServers": {}}')
+    (src / "skills" / "old").mkdir(parents=True)
+    (src / "skills" / "old" / "SKILL.md").write_text("# old\n")
     sp.run(["git", "init", "-q"], cwd=mono, check=True, env=_GIT_ENV)
     pin = {"sha": _commit(mono, "v1")}
 
@@ -235,6 +238,7 @@ def test_update_of_a_subdir_install_keeps_user_files_and_drops_removed_code(worl
     (target / "config.yaml").write_text("endpoint: mine\n")
     (target / "data").mkdir()
     (target / "data" / "state.json").write_text("{}")
+    (target / "data").chmod(0o700)
     (target / "settings.py").write_text("LIMIT = 99\n")
     (target / "extras").write_text("mine")
     (target / "cache").mkdir()
@@ -242,6 +246,8 @@ def test_update_of_a_subdir_install_keeps_user_files_and_drops_removed_code(worl
 
     # v2: the utils/ package becomes utils.py; extras and cache ship with the type the user did not use.
     shutil.rmtree(src / "utils")
+    shutil.rmtree(src / "skills")
+    (src / "mcp.json").unlink()
     (src / "utils.py").write_text("NEW = True\n")
     (src / "extras").mkdir()
     (src / "extras" / "a.txt").write_text("upstream")
@@ -261,7 +267,10 @@ def test_update_of_a_subdir_install_keeps_user_files_and_drops_removed_code(worl
     assert "version: 2.0.0" in (target / "plugin.yaml").read_text()
     assert (target / "config.yaml").read_text() == "endpoint: mine\n"
     assert (target / "data" / "state.json").read_text() == "{}"
+    if os.name != "nt":
+        assert (target / "data").stat().st_mode & 0o777 == 0o700
     assert not (target / "utils").exists() and (target / "utils.py").read_text() == "NEW = True\n"
+    assert not (target / "mcp.json").exists() and not (target / "skills").exists()
     assert (target / "settings.py").read_text() == "LIMIT = 2\n"
     assert (target / "extras" / "a.txt").read_text() == "upstream"
     assert (target / "cache").read_text() == "upstream"

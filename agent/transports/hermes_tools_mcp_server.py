@@ -64,6 +64,9 @@ EXPOSED_TOOLS: tuple[str, ...] = (
     "kanban_heartbeat", "kanban_show", "kanban_list",
     # Orchestrator-only (the kanban tool gates them on HERMES_KANBAN_TASK unset).
     "kanban_create", "kanban_unblock", "kanban_link",
+    # Filer's verb: a codex-runtime worker that can file a card must be able to
+    # retract its own mis-filed duplicate, or the extra run is unavoidable.
+    "kanban_withdraw",
 )
 
 

@@ -738,6 +738,9 @@ class Task:
     block_kind: Optional[str] = None
     block_recurrences: int = 0               # unblock-loop counter, see BLOCK_RECURRENCE_LIMIT
     completion_contract: Optional[str] = None
+    # Card whose run filed this one (``create_task``'s ``creator_task_id``).
+    # NULL = filed by a surface with no run identity; see SCHEMA_SQL.
+    creator_task_id: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -767,7 +770,7 @@ _TASK_REQUIRED_COLUMNS = (
 _TASK_OPTIONAL_COLUMNS = (
     "branch_name", "project_id", "tenant", "result", "idempotency_key", "worker_pid",
     "max_runtime_seconds", "last_heartbeat_at", "current_run_id", "workflow_template_id",
-    "current_step_key", "max_retries", "session_id", "completion_contract",
+    "current_step_key", "max_retries", "session_id", "completion_contract", "creator_task_id",
 )
 # Text columns where "" is stored/read as "not set".
 _TASK_EMPTY_IS_NULL_COLUMNS = (
@@ -972,7 +975,15 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Card whose worker run filed this task, stamped by ``create_task`` from the
+    -- calling worker's own ``HERMES_KANBAN_TASK`` (never from a tool arg, which
+    -- could be forged). This is the provenance ``kanban_withdraw`` authorises
+    -- against: the card a filer must retract is by definition NOT the card its
+    -- run is scoped to, so the run-scope guard on the lifecycle verbs cannot
+    -- express that case. NULL = filed by a surface with no run identity (CLI,
+    -- dashboard, decompose #67567).
+    creator_task_id      TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1276,7 +1287,8 @@ def create_task(
     SIGTERMs and re-queues. ``model_override``/``provider_override`` pin the
     worker model (provider requires model); ``reasoning_effort`` is independent.
     ``creator_task_id``: inherit durable session/subscriptions independently of
-    dependency edges; an explicit ``session_id`` still wins.
+    dependency edges; an explicit ``session_id`` still wins. Persisted on the row
+    as the card's provenance, which ``withdraw_task`` authorises against.
     ``project_source_task_id``: cross-profile fallback when ``project_id`` is not
     in the active profile's projects.db — see ``_resolve_project_link``.
     ``workspace_kind=None`` (omitted) inherits a project-scoped board's project;
@@ -1365,8 +1377,9 @@ def create_task(
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
                         reasoning_effort,
-                        goal_mode, goal_max_turns, session_id, completion_contract
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        goal_mode, goal_max_turns, session_id, completion_contract,
+                        creator_task_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id, title.strip(), body, assignee, task_status, priority,
@@ -1376,6 +1389,10 @@ def create_task(
                         json.dumps(skills_list) if skills_list is not None else None,
                         _opt_int(max_retries), model_override, provider_override, reasoning_effort,
                         1 if goal_mode else 0, _opt_int(goal_max_turns), session_id, completion_contract,
+                        # Create-time provenance, not an arg: the withdraw verb
+                        # authorises on this and a forged value would let any
+                        # worker retract another run's card.
+                        creator_task_id,
                     ),
                 )
                 for pid in parents:
@@ -3923,6 +3940,70 @@ def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> b
     recompute_ready(conn)
     # Reap the workspace on archive too (never-completed tasks kept it forever).
     _cleanup_workspace(conn, task_id)
+    return True
+
+
+class WithdrawRefused(ValueError):
+    """``withdraw_task`` refused: no such card, already terminal, or filed by
+    another run. A ``ValueError`` so tool error handlers report it as a
+    recoverable refusal rather than a traceback."""
+
+
+def withdraw_task(
+    conn: sqlite3.Connection, task_id: str, *, actor: Optional[str] = None,
+    reason: Optional[str] = None, creator_task_id: Optional[str] = None, signal_fn=None,
+) -> bool:
+    """Retract a card its filer filed by mistake; lands the terminal ``archived`` state.
+
+    The missing piece was authorisation, not the transition. A card is filed by
+    ONE run and, in the reported case, retracted by that same run seconds later —
+    but that run is scoped to the card it is *working* (``HERMES_KANBAN_TASK``),
+    so every lifecycle verb refuses to touch the card it just created (a guard
+    that must stay: a prompt-injected ``task_id`` must not corrupt sibling runs),
+    and the filer can only watch the dispatcher claim its own duplicate.
+    ``archive_task`` already lands the state — terminating a host-local worker
+    mid-run, closing the run, reaping the workspace, and promoting the children
+    an archived parent no longer gates (#76196) — so this adds the proof of
+    authorship, not a second transition.
+
+    ``creator_task_id`` is that proof: the calling run's OWN task id, matched
+    against the provenance ``create_task`` stamped at insert time (never against
+    a caller-supplied value, which would let any worker retract another run's
+    card). ``None`` = no provenance required — the CLI/dashboard operator path,
+    exactly as ``archive`` behaves today.
+
+    Refuses rather than archives when the card is already ``done``/``archived``
+    (a finished duplicate is already out of dispatch, and its record is the
+    evidence of what happened) or when the provenance does not match.
+
+    Returns True on the transition; raises ``WithdrawRefused`` otherwise.
+    """
+    task = get_task(conn, task_id)
+    if task is None:
+        raise WithdrawRefused(f"unknown task: {task_id}")
+    if task.status in ("done", "archived"):
+        raise WithdrawRefused(
+            f"{task_id} is {task.status}: nothing left to withdraw (a finished card is "
+            "already out of dispatch; archive it from the CLI/dashboard if it must leave "
+            "the board)")
+    if creator_task_id is not None and task.creator_task_id != creator_task_id:
+        raise WithdrawRefused(
+            f"{task_id} was not filed by {creator_task_id} "
+            f"(provenance: {task.creator_task_id or 'none recorded'}). Only the run that "
+            "filed a card may withdraw it: ask its filer, or archive it from the "
+            "CLI/dashboard (`hermes kanban archive`)")
+    if not archive_task(conn, task_id, signal_fn=signal_fn):
+        raise WithdrawRefused(
+            f"{task_id} could not be withdrawn (it moved to a terminal state while this "
+            "call was in flight)")
+    # After the transition, so a losing concurrent withdrawer cannot leave a
+    # `withdrawn` event on a card it never moved.
+    with write_txn(conn):
+        _append_event(
+            conn, task_id, "withdrawn",
+            {"actor": actor, "reason": reason,
+             "provenance": creator_task_id or "operator", "status": "archived"},
+        )
     return True
 
 

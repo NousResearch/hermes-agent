@@ -24,7 +24,7 @@ from tools.kanban_tools_schemas import (
     KANBAN_ATTACH_URL_SCHEMA, KANBAN_ATTACHMENTS_SCHEMA, KANBAN_BLOCK_SCHEMA, KANBAN_COMMENT_SCHEMA,
     KANBAN_COMPLETE_SCHEMA, KANBAN_CREATE_SCHEMA, KANBAN_HEARTBEAT_SCHEMA, KANBAN_LINK_SCHEMA,
     KANBAN_LIST_SCHEMA, KANBAN_REQUEST_CHANGES_SCHEMA, KANBAN_REQUEST_REVIEW_SCHEMA,
-    KANBAN_SHOW_SCHEMA, KANBAN_UNBLOCK_SCHEMA)
+    KANBAN_SHOW_SCHEMA, KANBAN_UNBLOCK_SCHEMA, KANBAN_WITHDRAW_SCHEMA)
 
 logger = logging.getLogger(__name__)
 
@@ -1178,6 +1178,40 @@ def _handle_link(args: dict, **kw) -> str:
                    **({"gated_by": parent_id} if gated else {}))
 
 
+@_kanban_handler("kanban_withdraw")
+def _handle_withdraw(args: dict, **kw) -> str:
+    """Retract a card THIS run filed (a duplicate it should not have to watch the
+    dispatcher claim).
+
+    Deliberately does NOT call ``_enforce_worker_task_ownership``: that guard
+    scopes a worker to the card it is *working*, which is exactly the card the
+    filer does not need. The authority here is narrower and kernel-recorded —
+    the card's create-time ``creator_task_id`` must equal this run's own task id
+    — and the caller's own card is refused outright, so a prompt-injected
+    ``task_id`` gains nothing it did not already have.
+    """
+    _reject_delegated_child_mutation("kanban_withdraw")
+    tid = args.get("task_id")
+    _check(tid, "task_id is required — name the card this run filed and now withdraws")
+    tid = str(tid)
+    self_tid = _default_task_id(None)
+    _check(self_tid, (
+        "kanban_withdraw is the filer's verb: it needs the filing run's own "
+        "HERMES_KANBAN_TASK to prove authorship, and this caller has none. "
+        "Retract a card from an operator surface instead (`hermes kanban archive "
+        "<task_id>`, or the dashboard)."))
+    _check(tid != self_tid, (
+        f"kanban_withdraw refused: {tid} is the card you are working. Use "
+        "kanban_complete, kanban_block, or kanban_request_review for your own card."))
+    with _board(args.get("board")) as (kb, conn):
+        kb.withdraw_task(
+            conn, tid, actor=_persisted_identity(), reason=args.get("reason"),
+            creator_task_id=self_tid)
+        task = kb.get_task(conn, tid)
+        return _ok(task_id=tid, withdrawn=True,
+                   **(_fields(task, ("status", "title")) if task else {"status": "archived"}))
+
+
 # --- Registration (order preserved: it is the order tools appear in the schema) ---
 
 # kanban_list / kanban_unblock route the board and are hidden from task workers.
@@ -1196,7 +1230,8 @@ _TOOLS = (
     ("kanban_attachments", KANBAN_ATTACHMENTS_SCHEMA, _handle_attachments, "📎"),
     ("kanban_create", KANBAN_CREATE_SCHEMA, _handle_create, "➕"),
     ("kanban_unblock", KANBAN_UNBLOCK_SCHEMA, _handle_unblock, "▶"),
-    ("kanban_link", KANBAN_LINK_SCHEMA, _handle_link, "🔗"))
+    ("kanban_link", KANBAN_LINK_SCHEMA, _handle_link, "🔗"),
+    ("kanban_withdraw", KANBAN_WITHDRAW_SCHEMA, _handle_withdraw, "🚫"))
 
 for _name, _sch, _handler, _emoji in _TOOLS:
     _gate = _check_kanban_orchestrator_mode if _name in _ORCHESTRATOR_TOOLS else _check_kanban_mode

@@ -17,7 +17,7 @@ import { $terminalInjection } from '../store'
 
 import { observeActiveTerminalResize } from './active-resize'
 import { makeTerminalReader, registerTerminalReader } from './buffer'
-import { mirrorSelection, terminalClipboardIntent } from './clipboard'
+import { installOsc52ClipboardHandler, mirrorSelection, terminalClipboardIntent } from './clipboard'
 import { terminalLinkHandler, terminalWebLinksAddon } from './links'
 import {
   isMacPlatform,
@@ -555,6 +555,11 @@ export function useTerminalSession({
     term.loadAddon(new Unicode11Addon())
     term.loadAddon(terminalWebLinksAddon())
     term.unicode.activeVersion = '11'
+
+    // Full-screen CLIs such as Claude Code copy selections with OSC 52. Accept
+    // writes to the system clipboard, but never clipboard reads from the PTY.
+    const osc52Clipboard = installOsc52ClipboardHandler(term, writeClipboardText)
+    cleanup.push(() => osc52Clipboard.dispose())
 
     // Replay last session's scrollback before the fresh shell boots. The process
     // is NOT revived — a new shell starts one line below the restored history.

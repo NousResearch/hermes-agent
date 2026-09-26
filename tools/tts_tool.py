@@ -42,7 +42,8 @@ from tools.tts_tool_delivery import (
     _resolve_max_text_length, _build_audio_delivery_files, _convert_to_opus, _remove_quietly,
     _repair_ogg_container, _resolve_audio_delivery_profile, _split_text_for_tts)
 from tools.tts_tool_providers import (
-    _generate_edge_tts, _generate_elevenlabs, _generate_gemini_tts, _generate_minimax_tts,
+    _import_edge_tts_with_platform_trust, _generate_edge_tts, _generate_elevenlabs,
+    _generate_gemini_tts, _generate_minimax_tts,
     _generate_mistral_tts, _generate_xai_tts, _resolve_minimax_tts_runtime)
 from tools.tts_tool_local import _generate_kittentts, _generate_neutts, _generate_piper_tts
 from tools.tts_tool_plugins import (
@@ -71,7 +72,13 @@ def _sdk_importer(module: str, attr: Optional[str] = None, feature: Optional[str
     return _import
 
 
-_import_edge_tts = _sdk_importer("edge_tts", feature="tts.edge")
+_edge_tts_importer = _sdk_importer("edge_tts", feature="tts.edge")
+
+
+def _import_edge_tts():
+    return _import_edge_tts_with_platform_trust(_edge_tts_importer)
+
+
 _import_elevenlabs = _sdk_importer("elevenlabs.client", "ElevenLabs", feature="tts.elevenlabs")
 _import_openai_client = _sdk_importer("openai", "OpenAI")
 _import_mistral_client = _sdk_importer("mistralai.client", "Mistral", feature="tts.mistral")

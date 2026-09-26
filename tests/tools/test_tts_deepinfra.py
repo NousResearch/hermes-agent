@@ -9,7 +9,7 @@ infrastructure (catalog fetch + tag filter) is covered in
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -51,7 +51,7 @@ def test_unselected_cloud_credentials_do_not_expose_edge_tool(monkeypatch):
     from tools import tts_tool
 
     monkeypatch.setattr(tts_tool, "_load_tts_config", lambda: {})
-    monkeypatch.setattr(tts_tool, "_import_edge_tts", MagicMock(side_effect=ImportError))
+    monkeypatch.setattr(tts_tool, "_pm_extra_available", lambda extra: False)
     monkeypatch.setenv("OPENAI_API_KEY", "unselected-key")
 
     assert tts_tool.check_tts_requirements() is False

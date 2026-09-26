@@ -305,8 +305,144 @@ class TestRunJobScript:
         )
         assert argv == [sys.executable, str(script)]
 
+    @pytest.mark.platforms("posix")
+    def test_posix_invocation_selects_venv_interpreter(self, tmp_path, monkeypatch):
+        """POSIX managed-store installs: cron ``.py`` scripts run on the selected dependency
+        venv's interpreter — the bare store Python carries the repo/dependencies only
+        in-process (#123044) — with lazy installs disabled and NO ``PYTHONPATH`` overlay: an
+        inherited overlay makes foreign-interpreter children import the store's 3.14 extension
+        modules first (#123440). No committed store → the caller's interpreter passes through
+        untouched (pre-PM venvs, source checkouts), as does a store whose venv python
+        vanished (half-migrated install must not crash the scheduler) or whose committed
+        selection record is broken (``selected_venv`` raises → degrade, not propagate — the
+        call site runs before ``_run_job_script``'s ``try``)."""
+        from cron import scheduler_script
 
+        venv = tmp_path / "selected-venv" / "bin"
+        venv.mkdir(parents=True)
+        venv_python = venv / "python"
+        venv_python.touch()
 
+        monkeypatch.setattr(
+            "hermes_cli._launchers.resolve_store_python", lambda repo: venv_python
+        )
+        monkeypatch.setattr("pm.environments.selected_venv", lambda repo: venv.parent)
+
+        assert scheduler_script._posix_cron_python_invocation(sys.executable) == (
+            str(venv_python),
+            {"HERMES_DISABLE_LAZY_INSTALLS": "1"},
+        )
+
+        venv_python.unlink()
+        assert scheduler_script._posix_cron_python_invocation(sys.executable) == (
+            sys.executable,
+            {},
+        )
+
+        def _broken_selection(repo):
+            raise RuntimeError(
+                "dependency environment is missing or outside this install"
+            )
+
+        monkeypatch.setattr("pm.environments.selected_venv", _broken_selection)
+        assert scheduler_script._posix_cron_python_invocation(sys.executable) == (
+            sys.executable,
+            {},
+        )
+
+        monkeypatch.setattr(
+            "hermes_cli._launchers.resolve_store_python", lambda repo: None
+        )
+        assert scheduler_script._posix_cron_python_invocation(sys.executable) == (
+            sys.executable,
+            {},
+        )
+
+    @pytest.mark.platforms("posix")
+    def test_posix_managed_store_script_argv_stays_plain(
+        self, cron_env, tmp_path, monkeypatch
+    ):
+        """The POSIX venv-interpreter path must not go through the ``addsitedir`` bootstrap:
+        the venv interpreter processes its own ``.pth`` files through ``pyvenv.cfg``, and a
+        plain argv keeps the script's ``__file__``/``sys.path[0]`` semantics untouched."""
+        from cron.scheduler_script import _script_argv
+
+        venv = tmp_path / "selected-venv" / "bin"
+        venv.mkdir(parents=True)
+        venv_python = venv / "python"
+        venv_python.touch()
+
+        monkeypatch.setattr(
+            "hermes_cli._launchers.resolve_store_python", lambda repo: venv_python
+        )
+        monkeypatch.setattr("pm.environments.selected_venv", lambda repo: venv.parent)
+
+        script = cron_env / "scripts" / "probe.py"
+        script.write_text('print("ok")\n', encoding="utf-8")
+
+        argv, overlay, err = _script_argv(script)
+        assert err is None
+        assert argv == [str(venv_python), str(script)]
+        assert overlay == {"HERMES_DISABLE_LAZY_INSTALLS": "1"}
+
+    @pytest.mark.platforms("posix")
+    def test_posix_managed_store_script_imports_via_venv(
+        self, cron_env, tmp_path, monkeypatch
+    ):
+        """End-to-end #123044/#123440 shape: on a POSIX managed-store install a cron ``.py``
+        script must import managed dependencies and Hermes modules by running on the selected
+        venv's interpreter, and the environment it runs in must be clean — no ``PYTHONPATH``
+        pointing at the store's paths, so children the script spawns never import the store's
+        extension modules on a foreign interpreter."""
+        from cron.scheduler_script import _run_job_script
+        from pm.environments import site_packages as dependency_site
+
+        fake_venv = tmp_path / "selected-venv"
+        # Standard venv layout: bin/python symlink + pyvenv.cfg + lib/pythonX.Y/site-packages.
+        venv_bin = fake_venv / "bin"
+        venv_bin.mkdir(parents=True)
+        venv_python = venv_bin / "python"
+        venv_python.symlink_to(sys.executable)
+        (fake_venv / "pyvenv.cfg").write_text(
+            f"home = {Path(sys.base_prefix) / 'bin'}\n"
+            "include-system-site-packages = false\n",
+            encoding="utf-8",
+        )
+        deps = dependency_site(fake_venv)
+        deps.mkdir(parents=True)
+        (deps / "probe_pkg.py").write_text("VALUE = 42\n", encoding="utf-8")
+        # Editable-style repo exposure, as a real PM venv carries for the checkout. Caveat:
+        # a real generation venv gets its repo pointer from uv's editable install of the
+        # generated workspace (not a hand-written .pth), and sealed-payload installs prune
+        # editable .pth files outright because the payload wires the repo snapshot itself
+        # (pm/environment.py prune_site_pth) — do not generalize this .pth shape to payloads.
+        repo = Path(__file__).resolve().parents[2]
+        (deps / "zz_repo.pth").write_text(f"{repo}\n", encoding="utf-8")
+
+        monkeypatch.setattr(
+            "hermes_cli._launchers.resolve_store_python",
+            lambda repo: Path(sys.executable),
+        )
+        monkeypatch.setattr("pm.environments.selected_venv", lambda repo: fake_venv)
+
+        script = cron_env / "scripts" / "probe.py"
+        script.write_text(
+            "import os\n"
+            "import probe_pkg\n"
+            "import hermes_constants\n"
+            "print(probe_pkg.VALUE)\n"
+            "print('PP=' + (os.environ.get('PYTHONPATH') or ''))\n",
+            encoding="utf-8",
+        )
+
+        success, output = _run_job_script("probe.py")
+        assert success is True, output
+        lines = output.strip().splitlines()
+        assert lines[0] == "42"
+        pp_line = next(line for line in lines if line.startswith("PP="))
+        # The #123440 contract: the store's repo/dependency paths never leak onto PYTHONPATH.
+        assert str(deps) not in pp_line
+        assert str(repo) not in pp_line
 
     def test_emoji_stdout_round_trips_through_script_capture(self, cron_env):
         """Emoji in script stdout must reach the caller intact (#42384).

@@ -767,6 +767,16 @@ class SessionMessagesMixin:
         from agent.context_compressor import _DB_PERSISTED_MARKER
 
         proved = [int(row_id) for row_id in covered_ids if isinstance(row_id, int) and row_id > 0]
+        if proved:
+            ids = list(dict.fromkeys(proved))
+            owned = conn.execute(
+                f"SELECT COUNT(*) FROM messages WHERE session_id = ? AND id IN ({_placeholders(ids)})",
+                [session_id, *ids]).fetchone()[0]
+            if owned != len(ids):
+                # An id from another session (a /branch copy still carrying the parent's row ids)
+                # names none of this session's rows: every row it stands for would be cloned back
+                # as unseen. The watermark archives what the compressor saw.
+                return None
         for message in unresolved_held or ():
             if not isinstance(message, dict):
                 continue

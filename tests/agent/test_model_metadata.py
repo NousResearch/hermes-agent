@@ -1962,3 +1962,76 @@ def test_endpoint_pricing_per_token_quotes_pass_through_unchanged():
     assert float(entry.input_cost_per_million) == pytest.approx(0.6)
     assert float(entry.output_cost_per_million) == pytest.approx(1.2)
     assert float(entry.request_cost) == pytest.approx(0.005)
+# ==============================================================================
+# PR #97472 Regression Tests (Added by forumevi)
+# Addresses reviewer feedback: api_content, CJK, images, tool calls, mutation
+# ==============================================================================
+
+class TestTokenEstimationRegression:
+    """Regression tests ensuring token estimation preserves correct semantics."""
+
+    def setup_method(self):
+        # Her testten önce cache'i temizle, böylece testler birbirini etkilemez
+        from agent.model_metadata import _MSG_TOKENS_CACHE
+        _MSG_TOKENS_CACHE.clear()
+
+    def test_cjk_character_density(self):
+        """CJK characters should be ~1 token each, not ASCII ratio."""
+        from agent.model_metadata import estimate_tokens_rough
+        korean_text = "한국어" * 334  # ~1000 chars
+        tokens = estimate_tokens_rough(korean_text)
+        assert tokens >= 900, f"CJK undercounted: expected >= 900, got {tokens}"
+
+    def test_large_api_content_sidecar(self):
+        """40,000-byte api_content should not be estimated as 5 tokens."""
+        from agent.model_metadata import estimate_messages_tokens_rough
+        large_content = "x" * 40000
+        messages = [{"role": "user", "content": "short", "api_content": large_content}]
+        tokens = estimate_messages_tokens_rough(messages)
+        assert tokens >= 9000, f"api_content undercounted: expected >= 9000, got {tokens}"
+
+    def test_image_flat_cost_not_base64_length(self):
+        """Images should use flat cost, not base64 string length."""
+        from agent.model_metadata import estimate_messages_tokens_rough
+        from agent.image_token_cost import current_image_token_cost
+        image_cost = current_image_token_cost()
+        
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "What is this?"},
+                {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + "A" * 10000}}
+            ]
+        }]
+        tokens = estimate_messages_tokens_rough(messages)
+        expected_max = 10 + image_cost + 100  # margin for text estimation
+        assert tokens <= expected_max, f"Image overcounted as text: expected <= {expected_max}, got {tokens}"
+
+    def test_cache_consistency_on_mutation(self):
+        """Cache must update when message content is mutated in-place."""
+        from agent.model_metadata import estimate_messages_tokens_rough
+        msg = {"role": "user", "content": "initial text"}
+        tokens1 = estimate_messages_tokens_rough([msg])
+        
+        msg["content"] = "much longer text that should definitely change the token count significantly"
+        tokens2 = estimate_messages_tokens_rough([msg])
+        
+        assert tokens2 > tokens1, f"Cache failed to update on mutation: {tokens1} vs {tokens2}"
+
+    def test_tool_calls_are_counted(self):
+        """Tool call schemas and arguments should contribute to token count."""
+        from agent.model_metadata import estimate_messages_tokens_rough
+        messages = [{
+            "role": "assistant",
+            "content": "I will use the tool.",
+            "tool_calls": [{
+                "id": "call_123",
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "arguments": '{"location": "Istanbul", "unit": "celsius"}'
+                }
+            }]
+        }]
+        tokens = estimate_messages_tokens_rough(messages)
+        assert tokens > 10, "Tool call content was not estimated correctly"

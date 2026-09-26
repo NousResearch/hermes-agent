@@ -64,6 +64,36 @@ def _has_active_children(conn: sqlite3.Connection, task_id: str) -> bool:
     return conn.execute(_ACTIVE_CHILDREN_SQL, (task_id,)).fetchone() is not None
 
 
+def _workspace_needed_by_children(
+    conn: sqlite3.Connection, task_id: str, kind: str, path: str
+) -> bool:
+    """Whether an active child still needs this task's workspace on disk.
+
+    Scratch handoff artifacts live only in the directory, so any active child
+    defers cleanup. A worktree is only reapable once clean and fully pushed, so
+    its content survives on the remote; children receive handoffs via run
+    summaries and dispatch in their own worktrees. Only a child whose workspace
+    sits inside this tree (decompose children inherit the root's path) needs it
+    kept — deferring on every dependent pinned finished trees for as long as
+    downstream work stayed blocked.
+    """
+    if kind != "worktree":
+        return _has_active_children(conn, task_id)
+    rows = conn.execute(
+        "SELECT t.workspace_path FROM task_links l JOIN tasks t ON t.id = l.child_id "
+        "WHERE l.parent_id = ? AND t.status NOT IN ('done', 'archived', 'failed', 'cancelled')",
+        (task_id,),
+    ).fetchall()
+    root = Path(path).expanduser().resolve(strict=False)
+    for (child_path,) in rows:
+        if not child_path:
+            continue
+        cp = Path(child_path).expanduser().resolve(strict=False)
+        if _path_key(cp) == _path_key(root) or cp.is_relative_to(root):
+            return True
+    return False
+
+
 def _managed_scratch_path_info(p: Path) -> tuple[bool, Optional[str]]:
     """Return whether *p* is managed scratch storage and the matching board."""
     try:
@@ -147,7 +177,7 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
             return
         # Defer while any child is not yet terminal so it can still read
         # handoff artifacts from this workspace.
-        if _has_active_children(conn, task_id):
+        if _workspace_needed_by_children(conn, task_id, kind, path):
             _kb._log.debug(
                 "Deferring %s workspace cleanup for task %s: "
                 "active children still need workspace at %s",
@@ -279,7 +309,9 @@ def _try_cleanup_parent_workspaces(conn: sqlite3.Connection, task_id: str) -> No
                 not row
                 or row["workspace_kind"] not in _REMOVABLE_KINDS
                 or not row["workspace_path"]
-                or _has_active_children(conn, parent_id)
+                or _workspace_needed_by_children(
+                    conn, parent_id, row["workspace_kind"], row["workspace_path"]
+                )
             ):
                 continue
             if row["workspace_kind"] == "worktree":

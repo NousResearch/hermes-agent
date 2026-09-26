@@ -94,18 +94,45 @@ def _existing_profile_homes(profile_homes: list) -> list:
 
 @contextlib.contextmanager
 def _profile_cron_scope(home):
-    """Scope the calling thread to one profile's home + cron store for the block."""
+    """Scope one tick to the owning profile's home, credentials, terminal policy, and store."""
+    from agent.secret_scope import (
+        build_profile_secret_scope,
+        reset_secret_scope,
+        set_secret_scope,
+    )
     from cron.jobs import use_cron_store
-    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+    from hermes_cli.env_loader import hydrate_profile_secret_sources
+    from hermes_constants import (
+        get_process_hermes_home,
+        hermes_home_key,
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
+    from tools.terminal_scope import install_and_reset_profile_terminal_scope
+    from tui_gateway.launch_profile_policy import launch_profile_runtime_scope
 
     # Record per-profile heartbeat after each tick cycle. Distinguish a COMPLETED cycle (``_tick_error``
     # unset) — where each profile's beat reflects its own outcome, so a yielding profile does not darken
     # healthy siblings — from an aborted one (exception), where no profile completed and all beats are
     # unsuccessful (#32612).
+    home = Path(home)
     home_token = set_hermes_home_override(str(home))
     try:
-        with use_cron_store(home):
-            yield
+        if hermes_home_key(home) == hermes_home_key(get_process_hermes_home()):
+            # The launch profile may receive credentials only through the process environment
+            # (systemd, Compose, ``op run``). Its frozen launch scope preserves those values while
+            # still layering profile-local .env and external secret sources over them.
+            with launch_profile_runtime_scope(home), use_cron_store(home):
+                yield
+            return
+
+        hydrate_profile_secret_sources(home)
+        secret_token = set_secret_scope(build_profile_secret_scope(home))
+        try:
+            with install_and_reset_profile_terminal_scope(home), use_cron_store(home):
+                yield
+        finally:
+            reset_secret_scope(secret_token)
     finally:
         reset_hermes_home_override(home_token)
 

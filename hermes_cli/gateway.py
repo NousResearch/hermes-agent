@@ -3051,6 +3051,14 @@ def _build_service_path_dirs(project_root: Path | None = None) -> list[str]:
     for extra in extras:
         if _is_dir(extra):
             candidates.append(str(extra))
+    # Service supervisors omit package-manager locations from their default PATH.
+    for pm_dir in (
+        "/opt/homebrew/bin", "/opt/homebrew/sbin",
+        "/usr/local/bin", "/usr/local/sbin",
+        "/home/linuxbrew/.linuxbrew/bin", "/home/linuxbrew/.linuxbrew/sbin",
+    ):
+        if _is_dir(Path(pm_dir)):
+            candidates.append(pm_dir)
     return candidates
 
 
@@ -3246,7 +3254,7 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
     path_entries.extend(_build_user_local_paths(user_home, path_entries))
     path_entries.extend(_build_wsl_interop_paths(path_entries))
     path_entries.extend(["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"])
-    sane_path = ":".join(path_entries)
+    sane_path = ":".join(dict.fromkeys(path_entries))
     start = installation_command(project_root, [*shlex.split(profile_arg), "gateway", "run"],
                             python=python_path, home=hermes_home)
     cleanup = installation_command(project_root, module="gateway.cgroup_cleanup",
@@ -3306,11 +3314,21 @@ def _strip_optional_systemd_directives(text: str) -> str:
 
 
 def _normalize_launchd_plist_for_comparison(text: str) -> str:
-    """Normalize plist text for staleness checks, ignoring the PATH payload: the generated PATH is
-    captured from the invoking shell and varies across shells."""
+    """Ignore ambient shell PATH drift, but refresh plists missing managed package dirs."""
     import re
+    managed = (
+        "/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin",
+        "/usr/local/sbin", "/home/linuxbrew/.linuxbrew/bin",
+        "/home/linuxbrew/.linuxbrew/sbin",
+    )
+
+    def _path_marker(match: re.Match) -> str:
+        entries = set(match.group(2).split(":"))
+        present = ",".join(path for path in managed if path in entries)
+        return f"{match.group(1)}__HERMES_PATH__[{present}]{match.group(3)}"
+
     return re.sub(
-        r"(<key>PATH</key>\s*<string>)(.*?)(</string>)", r"\1__HERMES_PATH__\3",
+        r"(<key>PATH</key>\s*<string>)(.*?)(</string>)", _path_marker,
         _normalize_service_definition(text), flags=re.S,
     )
 

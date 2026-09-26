@@ -277,7 +277,7 @@ class ProviderProfile:
         return self.default_max_tokens
 
     def supported_reasoning_efforts(
-        self, model: str | None
+        self, model: str | None, base_url: str | None = None
     ) -> tuple[str, ...] | None:
         """Declared reasoning-effort vocabulary for *model* on this provider.
 
@@ -288,6 +288,14 @@ class ProviderProfile:
         falling back to its built-in per-backend vocabularies; it is the
         profile-declared analog of the OpenRouter catalog clamp on the
         chat-completions path (``openrouter_model_reasoning_capabilities``).
+
+        ``base_url`` is the resolving call's endpoint, passed through for
+        profiles shared across multiple ``custom:<name>`` aliases (one
+        profile instance, many endpoints) that need to distinguish which
+        actual host is asking — e.g. a Groq-only model-specific vocabulary
+        must not leak to a same-named model served by an unrelated relay.
+        Most profiles ignore it; declare the parameter anyway so callers can
+        always pass it by keyword.
 
         Tri-state contract:
           - ``None`` — unknown/undeclared: the transport keeps its default

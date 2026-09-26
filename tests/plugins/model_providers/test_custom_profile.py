@@ -188,6 +188,79 @@ class TestCustomReasoningWireShape:
         assert kwargs["reasoning_effort"] == expected
         assert "think" not in kwargs.get("extra_body", {}) and "reasoning" not in kwargs.get("extra_body", {})
 
+    @pytest.mark.parametrize(
+        "model, effort, expected",
+        [
+            ("openai/gpt-oss-120b", "medium", "medium"),
+            ("openai/gpt-oss-20b", "high", "high"),
+            ("gpt-oss-120b", "low", "low"),
+            # Outside gpt-oss's own low/medium/high ladder, clamp_effort finds the
+            # nearest weaker supported level rather than passing the raw value through.
+            ("openai/gpt-oss-120b", "xhigh", "high"),
+        ],
+    )
+    def test_groq_gpt_oss_keeps_graded_effort(self, custom_profile, model, effort, expected):
+        """Groq's GPT-OSS models are the one exception to the blanket none/default clamp
+
+        (#75089's fix was too broad) — they have their own graded low/medium/high knob
+        per Groq's own docs and 400 on 'default' itself.
+        """
+        from agent.transports.chat_completions import ChatCompletionsTransport
+
+        kwargs = ChatCompletionsTransport().build_kwargs(
+            model=model, messages=[{"role": "user", "content": "ping"}], tools=None,
+            provider_profile=custom_profile, reasoning_config={"enabled": True, "effort": effort},
+            base_url="https://api.groq.com/openai/v1", provider_name="custom",
+        )
+        assert kwargs["reasoning_effort"] == expected
+        assert "think" not in kwargs.get("extra_body", {}) and "reasoning" not in kwargs.get("extra_body", {})
+
+    def test_groq_gpt_oss_disabled_still_clamps_to_none(self, custom_profile):
+        """Disabling reasoning takes the same 'none' path as every other endpoint —
+
+        gpt-oss's own vocabulary only governs the graded-effort branch.
+        """
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": False}, model="openai/gpt-oss-120b",
+            base_url="https://api.groq.com/openai/v1",
+        )
+        assert tl == {"reasoning_effort": "none"}
+        assert "think" not in eb
+
+    @pytest.mark.parametrize("base_url", ["https://relay.example/v1", None, ""])
+    def test_gpt_oss_vocabulary_does_not_leak_to_non_groq_custom_route(self, custom_profile, base_url):
+        """A same-named gpt-oss model on a NON-Groq custom endpoint must NOT inherit Groq's
+        narrower low/medium/high vocabulary (review finding on #121995): ``CustomProfile`` is
+        one shared singleton behind every ``custom:<name>`` alias, so the Groq exception must be
+        gated on the endpoint host, not just the model string, in ``supported_reasoning_efforts``
+        exactly as it already is in ``build_api_kwargs_extras``.
+        """
+        from agent.reasoning_effort import OPENAI_COMPAT_WIRE_EFFORTS
+
+        assert custom_profile.supported_reasoning_efforts(
+            "openai/gpt-oss-120b", base_url=base_url
+        ) == OPENAI_COMPAT_WIRE_EFFORTS
+
+    def test_gpt_oss_vocabulary_applies_on_groq_host(self, custom_profile):
+        from agent.reasoning_effort import GROQ_GPT_OSS_EFFORTS
+
+        assert custom_profile.supported_reasoning_efforts(
+            "openai/gpt-oss-120b", base_url="https://api.groq.com/openai/v1"
+        ) == GROQ_GPT_OSS_EFFORTS
+
+    def test_profile_declared_efforts_does_not_leak_across_custom_routes(self, custom_profile):
+        """End-to-end through the actual reported leak site: the Responses transport's
+        ``_profile_declared_efforts`` must resolve the narrow Groq vocabulary only when the
+        request's own ``base_url`` is Groq's, never merely because the model name matches.
+        """
+        from agent.reasoning_effort import GROQ_GPT_OSS_EFFORTS, OPENAI_COMPAT_WIRE_EFFORTS
+        from agent.transports.codex import _profile_declared_efforts
+
+        groq = _profile_declared_efforts("custom", "openai/gpt-oss-120b", "https://api.groq.com/openai/v1")
+        relay = _profile_declared_efforts("custom", "openai/gpt-oss-120b", "https://relay.example/v1")
+        assert groq == GROQ_GPT_OSS_EFFORTS
+        assert relay == OPENAI_COMPAT_WIRE_EFFORTS
+
 
 class TestCustomReasoningWithNumCtx:
     """Ollama num_ctx and reasoning are independent and compose."""

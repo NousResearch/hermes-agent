@@ -4,7 +4,12 @@ provider="custom" (Ollama, vLLM, llama.cpp, GLM-5.2 on ARK, …)."""
 from typing import Any
 from urllib.parse import urlparse
 
-from agent.reasoning_effort import OPENAI_COMPAT_WIRE_EFFORTS, clamp_effort
+from agent.reasoning_effort import (
+    GROQ_GPT_OSS_EFFORTS,
+    OPENAI_COMPAT_WIRE_EFFORTS,
+    clamp_effort,
+    is_groq_gpt_oss_model,
+)
 from providers import register_provider
 from providers.base import ProviderProfile
 from utils import base_url_host_matches
@@ -30,7 +35,9 @@ def _looks_like_ollama_endpoint(base_url: str | None) -> bool:
 class CustomProfile(ProviderProfile):
     """Custom/Ollama local provider — think=false and num_ctx support."""
 
-    def supported_reasoning_efforts(self, model: str | None) -> tuple[str, ...]:
+    def supported_reasoning_efforts(
+        self, model: str | None, base_url: str | None = None
+    ) -> tuple[str, ...]:
         """The OpenAI-compat wire set, mirroring this profile's own chat-completions clamp.
 
         Without this declaration the Responses transport clamps onto the OpenAI
@@ -40,7 +47,17 @@ class CustomProfile(ProviderProfile):
         unchanged (#114249). A custom endpoint's vocabulary is undiscoverable, so
         the widest OpenAI-compat set is the honest ceiling; ``ultra`` still clamps
         to ``max`` via the shared ``clamp_effort`` policy.
+
+        Groq's two GPT-OSS models are the one undiscoverable-endpoint exception with a
+        known, narrower, model-specific vocabulary (low/medium/high) — declare it here
+        too so this path and ``build_api_kwargs_extras`` agree (#121995). Scoped to the
+        Groq host as well as the model name: this profile is the single shared instance
+        behind every ``custom:<name>`` alias, so a same-named model on an unrelated
+        relay (``custom:my-relay``) must not inherit Groq's narrower vocabulary just
+        because the model string matches (#121995 review).
         """
+        if is_groq_gpt_oss_model(model) and base_url_host_matches(str(base_url or ""), "api.groq.com"):
+            return GROQ_GPT_OSS_EFFORTS
         return OPENAI_COMPAT_WIRE_EFFORTS
 
     def default_reasoning_config(self, model: str | None = None) -> dict | None:
@@ -75,9 +92,16 @@ class CustomProfile(ProviderProfile):
                 top_level["reasoning_effort"] = "none"
                 if _looks_like_ollama_endpoint(ctx.get("base_url")):
                     extra_body["think"] = False
+            elif effort and is_groq_gpt_oss_model(ctx.get("model")) and base_url_host_matches(
+                str(ctx.get("base_url") or ""), "api.groq.com"
+            ):
+                # GPT-OSS is Groq's one model family with its own graded reasoning_effort
+                # knob (low/medium/high — console.groq.com/docs/reasoning); it 400s on
+                # "default" itself, so it must be excluded from the blanket clamp below.
+                top_level["reasoning_effort"] = clamp_effort(effort, GROQ_GPT_OSS_EFFORTS)
             elif effort and base_url_host_matches(str(ctx.get("base_url") or ""), "api.groq.com"):
                 # Groq's OpenAI-compatible wire accepts top-level reasoning_effort only as
-                # "none" / "default"; any graded level ("medium", "high") 400s (#75089).
+                # "none" / "default" for every other model; any graded level 400s (#75089).
                 top_level["reasoning_effort"] = "default"
             elif effort:
                 top_level["reasoning_effort"] = clamp_effort(effort, OPENAI_COMPAT_WIRE_EFFORTS)

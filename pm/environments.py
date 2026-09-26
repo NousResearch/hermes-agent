@@ -215,7 +215,7 @@ def project_python(project_root: Path) -> Path:
 
 
 def venv_python_version(venv: Path) -> tuple[int, int] | None:
-    """The interpreter version a POSIX venv actually holds, or ``None``.
+    """The interpreter version a venv actually holds, or ``None``.
 
     ``site_packages`` must not date the tree from the CALLER's ``sys.version_info``:
     an update can rebuild the dependency environment with a different Python than
@@ -223,11 +223,13 @@ def venv_python_version(venv: Path) -> tuple[int, int] | None:
     built the environment with CPython 3.14 while the PATH shim ran 3.11, so the
     shim composed ``lib/python3.11/site-packages`` inside a 3.14 venv, found no
     tree, and failed *after* a successful update.
+
+    Both ``version`` (CPython venv) and ``version_info`` (uv) keys are honored.
     """
     try:
         for line in (venv / "pyvenv.cfg").read_text(encoding="utf-8-sig").splitlines():
             key, _, value = line.partition("=")
-            if key.strip() != "version":
+            if key.strip() not in ("version", "version_info"):
                 continue
             major, _, rest = value.strip().partition(".")
             minor, _, _ = rest.partition(".")
@@ -291,6 +293,23 @@ def _require_own_dependencies(project_root: Path) -> None:
         raise RuntimeError("no dependency environment is committed for this install")
 
 
+def _environment_matches_running_interpreter(environment: Path) -> bool:
+    """ABI guard (#122555): is the committed tree built for this interpreter?
+
+    Activating a foreign tree rewrites ``sys.path`` onto C extensions compiled
+    for another ABI (``ModuleNotFoundError: No module named
+    'pydantic_core._pydantic_core'`` boot-crash loops) while pure-Python
+    packages silently resolve against the wrong tree. An environment with no
+    declared version keeps the old behavior.
+    """
+    import sys
+
+    declared = venv_python_version(environment)
+    if declared is None:
+        return True
+    return (declared[0], declared[1]) == (sys.version_info.major, sys.version_info.minor)
+
+
 def activate_dependencies(project_root: Path) -> None:
     """Select the committed tree at process boot, before third-party imports.
 
@@ -331,6 +350,19 @@ def activate_dependencies(project_root: Path) -> None:
             return  # External/Nix interpreter owns its original sys.path.
     if not selected.is_dir():
         raise RuntimeError(f"dependency environment has no site-packages: {selected}")
+    if not _environment_matches_running_interpreter(environment):
+        import logging
+        import sys
+
+        declared = venv_python_version(environment)
+        logging.getLogger(__name__).error(
+            "dependency environment %s was built for Python %s but this process runs %s; "
+            "keeping launch packages instead of activating it",
+            environment,
+            "%d.%d" % declared if declared else "unknown",
+            "%d.%d" % (sys.version_info.major, sys.version_info.minor),
+        )
+        return
     import site
 
     sys.path[:] = [entry for entry in sys.path

@@ -819,11 +819,13 @@ function FeedTabs({
 
 export function TaskDrawer({
   columns,
+  focusLinks,
   id,
   onClose,
   onOpen
 }: {
   columns: string[]
+  focusLinks?: number
   id: null | string
   onClose: () => void
   onOpen: (id: string) => void
@@ -832,6 +834,7 @@ export function TaskDrawer({
   const qc = useQueryClient()
   const scope = useKanbanScope()
   const slug = useValue($boardSlug)
+  const linksRef = useRef<HTMLDivElement>(null)
 
   // Socket-invalidated (bindApi); the interval is only the socketless heartbeat.
   const { data: detail, error } = useQuery({
@@ -851,6 +854,20 @@ export function TaskDrawer({
     queryKey: logKey(scope, slug, id ?? ''),
     refetchInterval: running ? 3_000 : 15_000
   })
+
+  // The card menu's "add link / add child" bumps `focusLinks`; scroll the
+  // dependencies section into view once per bump (and only after the fetch has
+  // rendered something to scroll to).
+  const [scrolledPing, setScrolledPing] = useState<null | number>(null)
+
+  useEffect(() => {
+    if (!focusLinks || focusLinks === scrolledPing || !detail) {
+      return
+    }
+
+    setScrolledPing(focusLinks)
+    linksRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }, [detail, focusLinks, scrolledPing])
 
   const invalidate = () => {
     void qc.invalidateQueries({ queryKey: taskKey(scope, slug, id!) })
@@ -1107,14 +1124,21 @@ export function TaskDrawer({
                     }}
                   />
                 </MetaRow>
-                {(detail.links.parents.length > 0 || detail.links.children.length > 0) &&
-                  (['parents', 'children'] as const).map(side =>
-                    detail.links[side].length > 0 ? (
-                      <MetaRow key={side} label={side === 'parents' ? k.blockedBy : k.blocks}>
-                        <LinkChips ids={detail.links[side]} linkTitles={linkTitles} onOpen={onOpen} />
-                      </MetaRow>
-                    ) : null
-                  )}
+                {(detail.links.parents.length > 0 || detail.links.children.length > 0 || !!focusLinks) && (
+                  <div className="flex flex-col gap-4" ref={linksRef}>
+                    {(['parents', 'children'] as const).map(side =>
+                      detail.links[side].length > 0 ? (
+                        <MetaRow key={side} label={side === 'parents' ? k.blockedBy : k.blocks}>
+                          <LinkChips ids={detail.links[side]} linkTitles={linkTitles} onOpen={onOpen} />
+                        </MetaRow>
+                      ) : focusLinks ? (
+                        <MetaRow key={side} label={side === 'parents' ? k.blockedBy : k.blocks}>
+                          <span className="text-[0.75rem] text-(--ui-text-quaternary)">—</span>
+                        </MetaRow>
+                      ) : null
+                    )}
+                  </div>
+                )}
                 {task.created_by && <MetaRow label={k.metaCreatedBy}>{task.created_by}</MetaRow>}
                 {ago(task.created_at) && <MetaRow label={k.metaCreated}>{ago(task.created_at)}</MetaRow>}
                 {running && task.worker_pid ? <MetaRow label={k.metaWorkerPid}>{task.worker_pid}</MetaRow> : null}

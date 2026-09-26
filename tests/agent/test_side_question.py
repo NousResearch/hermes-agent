@@ -194,3 +194,44 @@ class TestForkPath:
         assert "which file?" in calls["user_message"]
         assert calls["write_origin"] == "side_question"
         assert calls.get("shutdown") and calls.get("closed")
+
+    def test_fork_keeps_cache_parity_but_surfaces_in_progress_tail(self):
+        """A mid-turn tail (unresolved tool_calls) must be trimmed from
+        conversation_history for cache parity, but still reach the model as
+        text so /btw can answer about the in-progress turn."""
+        from agent.side_question import _answer_via_fork
+
+        calls = {}
+
+        class FakeFork:
+            def run_conversation(self, user_message, conversation_history):
+                calls["user_message"] = user_message
+                calls["history"] = conversation_history
+                return {"final_response": "still running"}
+
+            def shutdown_memory_provider(self):
+                pass
+
+            def close(self):
+                pass
+
+        def fake_build(parent, task_cfg, *, max_iterations, write_origin):
+            return FakeFork(), {"model": "m"}, False
+
+        history = [
+            {"role": "user", "content": "fix foo.py"},
+            {"role": "assistant", "content": "fixed"},
+            {"role": "user", "content": "run a 45s command then report MANGO"},
+            {"role": "assistant", "content": "", "tool_calls": [{"function": {"name": "terminal"}}]},
+        ]
+        with patch("agent.background_review.build_cache_parity_fork", fake_build), \
+             patch("hermes_cli.plugins.set_thread_tool_whitelist"), \
+             patch("hermes_cli.plugins.clear_thread_tool_whitelist"), \
+             patch("agent.background_review._snapshot_review_usage", return_value={}), \
+             patch("agent.background_review._record_review_usage_to_parent"):
+            _answer_via_fork(object(), "what task am I asking right now?", history)
+
+        # cache parity: the in-progress tail is trimmed from the replayed history
+        assert calls["history"] == history[:2]
+        # but its content still reaches the model, as text in the message
+        assert "run a 45s command then report MANGO" in calls["user_message"]

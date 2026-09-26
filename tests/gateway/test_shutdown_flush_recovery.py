@@ -78,6 +78,19 @@ def test_replays_in_drop_order_not_file_name_order(flush_dir):
     assert _contents(mock_db) == ["first", "second", "third"]
 
 
+def test_an_out_of_range_ordering_field_does_not_abort_recovery(flush_dir):
+    """Ordering runs before the per-file error handling, so one file whose ``ts`` is a JSON
+    integer no float can hold must not stop every other file from being recovered."""
+    _write_spool(flush_dir, "pending-bad.json", "sess-1",
+                 {"role": "user", "content": "huge ts"}, ts=10**400, seq=0)
+    _write_spool(flush_dir, "pending-ok.json", "sess-2",
+                 {"role": "user", "content": "valid"}, ts=100, seq=1)
+
+    mock_db = MagicMock()
+    assert recover_pending_to_db(mock_db) == 2
+    assert sorted(_contents(mock_db)) == ["huge ts", "valid"]
+
+
 def test_a_replayed_row_is_the_row_the_live_writer_writes(flush_dir):
     """Every field the live drain persists survives the restart round trip: losing
     tool_call_id orphans a tool result, losing api_content makes the next replay diverge,

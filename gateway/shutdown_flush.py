@@ -15,6 +15,7 @@ import contextlib
 import itertools
 import json
 import logging
+import math
 import os
 import time
 import uuid
@@ -212,11 +213,17 @@ def _sort_number(value: Any) -> float:
     Ordering fields are read back from JSON on disk and may be missing or
     corrupt.  A sort key that mixes ``str`` and ``int`` raises ``TypeError``
     and would abort the entire recovery pass, so anything non-numeric is
-    normalised to ``0.0``.
+    normalised to ``0.0``.  So is a JSON integer too large for a float
+    (``float(10**400)`` raises ``OverflowError``) and a NaN/Infinity literal
+    (NaN compares false both ways and would scramble the sort).
     """
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return 0.0
-    return float(value)
+    try:
+        number = float(value)
+    except OverflowError:
+        return 0.0
+    return number if math.isfinite(number) else 0.0
 
 
 def _order_flush_files(paths) -> list[tuple[Path, Optional[Dict[str, Any]]]]:

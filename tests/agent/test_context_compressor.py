@@ -457,6 +457,18 @@ class TestCompress:
         # floor — it is not capped.
         assert ContextCompressor._compute_threshold_tokens(372_000, 0.90) == 334_800
 
+    def test_explicit_low_threshold_computed_on_input_tokens(self):
+        """User requirement: compression threshold at 0.4 (40%) of input tokens,
+        without deducting output reservation or forcing the small-context 75% floor."""
+        assert ContextCompressor._effective_threshold_percent(65_536, 0.40) == 0.40
+        assert ContextCompressor._effective_threshold_percent(100_000, 0.40) == 0.40
+        # Computes directly on input tokens (65,536 * 0.4 = 26,214)
+        assert ContextCompressor._compute_threshold_tokens(65_536, 0.40) == 26_214
+        # Does not deduct output tokens (e.g. max_tokens=4096)
+        assert ContextCompressor._compute_threshold_tokens(65_536, 0.40, max_tokens=4096) == 26_214
+        # On 1M window (Gemini)
+        assert ContextCompressor._compute_threshold_tokens(1_048_576, 0.40) == 419_430
+
 
 
 

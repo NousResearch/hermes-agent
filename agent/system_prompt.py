@@ -302,6 +302,18 @@ def _skills_prompt(agent: Any) -> str:
     categories to names-only — never hidden, every name stays visible."""
     if not any(name in agent.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage']):
         return ""
+    try:
+        from hermes_cli.config import load_config_readonly
+        cfg = load_config_readonly()
+        skills_cfg = cfg.get("skills", {}) if isinstance(cfg, dict) else {}
+        if skills_cfg.get("prompt_index", True) is False:
+            return (
+                "## Skills\n"
+                "Skills provide specialized procedural knowledge. Discover available skills via `skills_list()` "
+                "and load full instructions with `skill_view(name)`. Load relevant skills before executing tasks.\n\n"
+            )
+    except Exception:
+        pass
     import model_tools
     avail_toolsets = {model_tools.get_toolset_for_tool(tool_name) for tool_name in agent.valid_tool_names} - {None, ""}
     try:

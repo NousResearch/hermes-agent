@@ -67,7 +67,6 @@ class TestResolveThreshold:
         result = cfg.resolve_threshold("my_tool")
         assert result == 42
 
-
     @patch("tools.registry.registry")
     def test_registry_value_capped_at_default(self, mock_registry):
         """A scaled-down budget caps an oversized registry value (#23767).
@@ -78,7 +77,6 @@ class TestResolveThreshold:
         mock_registry.get_max_result_size.return_value = 100_000
         cfg = BudgetConfig(default_result_size=30_000)
         assert cfg.resolve_threshold("web_search") == 30_000
-
 
     @patch("tools.registry.registry")
     def test_default_budget_unchanged_for_100k_tool(self, mock_registry):
@@ -94,6 +92,26 @@ class TestResolveThreshold:
 
 
 class TestBudgetForContextWindow:
+    def test_operator_can_force_early_spillover(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {
+                "tool_budget": {
+                    "result_size_chars": 12_000,
+                    "turn_budget_chars": 24_000,
+                    "preview_size_chars": 800,
+                    "mcp_result_size_chars": 10_000,
+                }
+            },
+        )
+
+        cfg = budget_for_context_window(1_000_000)
+
+        assert cfg.default_result_size == 12_000
+        assert cfg.turn_budget == 24_000
+        assert cfg.preview_size == 800
+        assert cfg.mcp_result_size == 10_000
+
     """Scaling the tool-output budget to the active model's context window."""
 
     def test_none_returns_default(self):
@@ -102,7 +120,6 @@ class TestBudgetForContextWindow:
     def test_zero_or_negative_returns_default(self):
         assert budget_for_context_window(0) is DEFAULT_BUDGET
         assert budget_for_context_window(-5) is DEFAULT_BUDGET
-
 
     def test_scaled_budget_constrains_oversized_result(self):
         """A 279K-char result against a 65K model exceeds the scaled per-result
@@ -128,7 +145,10 @@ class TestMcpPrefixThreshold:
         assert DEFAULT_BUDGET.resolve_threshold("mcp_composio_search_tools") == DEFAULT_MCP_RESULT_SIZE_CHARS
 
     def test_non_mcp_tools_keep_generic_default(self):
-        assert DEFAULT_BUDGET.resolve_threshold("some_random_tool") == DEFAULT_RESULT_SIZE_CHARS
+        assert (
+            DEFAULT_BUDGET.resolve_threshold("some_random_tool")
+            == DEFAULT_RESULT_SIZE_CHARS
+        )
 
     def test_pinned_wins_over_mcp_prefix(self):
         with patch.dict(PINNED_THRESHOLDS, {"mcp_pinned_tool": float("inf")}):

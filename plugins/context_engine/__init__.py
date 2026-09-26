@@ -41,45 +41,56 @@ def _iter_engine_dirs() -> List[Tuple[str, Path]]:
 
 
 def discover_context_engines() -> List[Tuple[str, str, bool]]:
-    """Return ``[(name, description, is_available), ...]`` for every bundled and user engine."""
-    return [(name, _loader.read_plugin_description(child),
-             _loader.probe_availability(lambda c=child: _load_engine_from_dir(c)))
-            for name, child in _iter_engine_dirs()]
-
-
-def find_engine_dir(name: str) -> Optional[Path]:
-    """Resolve an engine name to its directory (bundled first, then user-installed)."""
-    bundled = _CONTEXT_ENGINE_PLUGINS_DIR / name
-    if bundled.is_dir():
-        return bundled
-    user_dir = _loader.user_plugins_dir()
-    user = user_dir / name if user_dir else None
-    return user if user and user.is_dir() and _is_context_engine_dir(user) else None
+    """Return ``[(name, description, is_available), ...]`` for every bundled engine."""
+    return [
+        (
+            child.name,
+            _loader.read_plugin_description(child),
+            _loader.probe_availability(lambda c=child: _load_engine_from_dir(c)),
+        )
+        for child in _loader.iter_plugin_dirs(_CONTEXT_ENGINE_PLUGINS_DIR)
+    ]
 
 
 def load_context_engine(name: str) -> Optional["ContextEngine"]:  # noqa: F821
     """Load a ContextEngine instance by name; None if not found or it fails to load."""
-    engine_dir = find_engine_dir(name)
-    if engine_dir is None:
-        logger.debug("Context engine '%s' not found in bundled or user plugins", name)
+    engine_dir = _CONTEXT_ENGINE_PLUGINS_DIR / name
+    if not engine_dir.is_dir():
+        logger.debug(
+            "Context engine '%s' not found in %s", name, _CONTEXT_ENGINE_PLUGINS_DIR
+        )
         return None
     return _loader.load_named(
-        name, engine_dir, _load_engine_from_dir, kind="Context engine", noun="engine", logger=logger
+        name,
+        engine_dir,
+        _load_engine_from_dir,
+        kind="Context engine",
+        noun="engine",
+        logger=logger,
     )
 
 
 def _load_engine_from_dir(engine_dir: Path) -> Optional["ContextEngine"]:  # noqa: F821
     """Import an engine module and extract its ContextEngine (register(ctx) or subclass)."""
     from agent.context_engine import ContextEngine
+
     name = engine_dir.name
     is_bundled = engine_dir.parent == _CONTEXT_ENGINE_PLUGINS_DIR
     module_name = f"plugins.context_engine.{name}" if is_bundled else f"{_USER_NAMESPACE}.{name}"
     mod = _loader.load_plugin_module(
-        module_name, engine_dir, parents=("plugins", "plugins.context_engine"), logger=logger,
-        synthetic_namespace=None if is_bundled else _USER_NAMESPACE)
+        f"plugins.context_engine.{name}",
+        engine_dir,
+        parents=("plugins", "plugins.context_engine"),
+        logger=logger,
+    )
     return mod and _loader.instance_from_module(
-        mod, collector=_EngineCollector(engine_name=name), collected_attr="engine",
-        base_cls=ContextEngine, name=name, logger=logger)
+        mod,
+        collector=_EngineCollector(engine_name=name),
+        collected_attr="engine",
+        base_cls=ContextEngine,
+        name=name,
+        logger=logger,
+    )
 
 
 class _EngineCollector(_loader.NoopPluginContext):
@@ -93,32 +104,60 @@ class _EngineCollector(_loader.NoopPluginContext):
     def register_context_engine(self, engine):
         self.engine = engine
 
-    def register_command(self, name: str, handler, description: str = "", args_hint: str = "") -> None:
+    def register_command(
+        self, name: str, handler, description: str = "", args_hint: str = ""
+    ) -> None:
         clean = (name or "").lower().strip().lstrip("/").replace(" ", "-")
         if not clean:
-            logger.warning("Context engine '%s' tried to register a command with an empty name.",
-                           self._engine_name)
+            logger.warning(
+                "Context engine '%s' tried to register a command with an empty name.",
+                self._engine_name,
+            )
             return
-        conflict = "Context engine '%s' tried to register command '/%s' which %s Skipping."
+        conflict = (
+            "Context engine '%s' tried to register command '/%s' which %s Skipping."
+        )
         try:
             from hermes_cli.commands import resolve_command
+
             if resolve_command(clean) is not None:
-                logger.warning(conflict, self._engine_name, clean, "conflicts with a built-in command.")
+                logger.warning(
+                    conflict,
+                    self._engine_name,
+                    clean,
+                    "conflicts with a built-in command.",
+                )
                 return
         except Exception:
             pass
         try:
             from hermes_cli.plugins import get_plugin_manager
+
             manager = get_plugin_manager()
             if clean in manager._plugin_commands:
-                logger.warning(conflict, self._engine_name, clean, "is already registered by a plugin.")
+                logger.warning(
+                    conflict,
+                    self._engine_name,
+                    clean,
+                    "is already registered by a plugin.",
+                )
                 return
             manager._plugin_commands[clean] = {
-                "handler": handler, "description": description or "Context engine command",
-                "plugin": f"context-engine:{self._engine_name}", "args_hint": (args_hint or "").strip()}
-            logger.debug("Context engine '%s' registered command: /%s", self._engine_name, clean)
+                "handler": handler,
+                "description": description or "Context engine command",
+                "plugin": f"context-engine:{self._engine_name}",
+                "args_hint": (args_hint or "").strip(),
+            }
+            logger.debug(
+                "Context engine '%s' registered command: /%s", self._engine_name, clean
+            )
         except Exception as exc:
-            logger.debug("Context engine '%s' could not register /%s: %s", self._engine_name, clean, exc)
+            logger.debug(
+                "Context engine '%s' could not register /%s: %s",
+                self._engine_name,
+                clean,
+                exc,
+            )
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

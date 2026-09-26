@@ -1937,8 +1937,6 @@ class TurnRunner:
                 "messages": [], "api_calls": 0, "tools": [],
             }
         pr = runner._provider_routing
-        reasoning_config = runner._resolve_session_reasoning_config(source=ctx.source, session_key=ctx.session_key, model=model)
-        runner._reasoning_config = reasoning_config
         runner._service_tier = runner._resolve_session_service_tier(source=ctx.source, session_key=ctx.session_key)
         stream_consumer, stream_delta_cb, interim_cb, want_interim = self._setup_stream_consumer(platform_key)
         turn_route = runner._resolve_turn_agent_config(
@@ -1946,6 +1944,12 @@ class TurnRunner:
             session_id=ctx.session_id, session_key=ctx.session_key,
             source=ctx.source, conversation_history=ctx.history, internal=ctx.internal,
         )
+        # Reasoning policy follows the realized turn model (session override > per-model > global).
+        # Resolve after turn_route so an automatic route cannot carry the configured model's effort.
+        reasoning_config = runner._resolve_session_reasoning_config(
+            source=ctx.source, session_key=ctx.session_key, model=turn_route["model"],
+        )
+        runner._reasoning_config = reasoning_config
         agent, reused_cached_agent = self._resolve_turn_agent(
             turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr,
         )

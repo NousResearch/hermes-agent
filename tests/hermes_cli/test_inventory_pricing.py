@@ -476,3 +476,79 @@ def test_cached_only_dynamic_pricing_is_profile_scoped(tmp_path, monkeypatch):
     assert in_profile(tmp_path / "b", endpoint_a, cached_only=True) == expected_b
 
 
+def test_custom_provider_slug_prices_from_aggregator_cache(monkeypatch):
+    """A config-defined twin (`custom:openrouter`) reads the bare row's warmed cache."""
+    cache_key = "https://openrouter.ai/api"
+    expected = {"vendor/model": {"prompt": "0.000001", "completion": "0.000002"}}
+    monkeypatch.setattr(models_pricing, "_pricing_cache", {cache_key: expected})
+    monkeypatch.setattr(models_pricing, "_pricing_cache_retry_after", {})
+    monkeypatch.setattr(models_pricing, "_pricing_provider_cache_keys", {})
+    monkeypatch.setattr(models_pricing, "fetch_models_with_pricing",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("network fetch started")),
+    )
+
+    assert models_pricing.get_pricing_for_provider(
+        "custom:openrouter", cached_only=True
+    ) == expected
+    assert models_pricing.get_pricing_for_provider(
+        "openrouter", cached_only=True
+    ) == expected
+
+
+def test_apply_pricing_prices_custom_twin_rows(monkeypatch):
+    """End to end: a picker row for a config-defined provider renders $/Mtok prices."""
+    cache_key = "https://openrouter.ai/api"
+    monkeypatch.setattr(models_pricing, "_pricing_cache", {
+        cache_key: {"vendor/model": {"prompt": "0.000003", "completion": "0.000015"}}
+    })
+    monkeypatch.setattr(models_pricing, "_pricing_cache_retry_after", {})
+    monkeypatch.setattr(models_pricing, "_pricing_provider_cache_keys", {})
+    monkeypatch.setattr(models_pricing, "fetch_models_with_pricing",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("network fetch started")),
+    )
+
+    rows = [{"slug": "custom:openrouter", "models": ["vendor/model"]}]
+    inv._apply_pricing(rows, cached_only=True)
+
+    assert rows[0]["pricing"]["vendor/model"] == {
+        "input": "$3.00", "output": "$15.00", "cache": None, "free": False,
+    }
+
+
+def test_custom_provider_slug_fetch_runs_the_suffix_fetcher(monkeypatch):
+    """The twin's prewarm fetch routes to the aggregator's fetcher, alias spellings included."""
+    calls = []
+
+    def fake_fetcher(*, force_refresh=False):
+        calls.append(force_refresh)
+        return {"vendor/model": {"prompt": "1", "completion": "2"}}
+
+    monkeypatch.setattr(models_pricing, "_PRICING_FETCHERS", {
+        "openrouter": fake_fetcher, "ai-gateway": fake_fetcher,
+    })
+
+    assert models_pricing.get_pricing_for_provider("custom:openrouter") == {
+        "vendor/model": {"prompt": "1", "completion": "2"}
+    }
+    assert models_pricing.get_pricing_for_provider("custom:vercel") == {
+        "vendor/model": {"prompt": "1", "completion": "2"}
+    }
+    assert calls == [False, False]
+
+
+def test_custom_provider_slug_without_fetcher_stays_unpriced(monkeypatch):
+    """Unknown or suffixless `custom:` slugs must not inherit another provider's prices."""
+    def wrong_fetcher(*, force_refresh=False):
+        raise AssertionError("fetcher must not run for unknown custom slugs")
+
+    monkeypatch.setattr(models_pricing, "_PRICING_FETCHERS", {"openrouter": wrong_fetcher})
+    monkeypatch.setattr(models_pricing, "_pricing_cache", {"https://openrouter.ai/api": {"m": {}}})
+    monkeypatch.setattr(models_pricing, "_pricing_cache_retry_after", {})
+    monkeypatch.setattr(models_pricing, "_pricing_provider_cache_keys", {})
+
+    assert models_pricing.get_pricing_for_provider("custom:tokenrouter") == {}
+    assert models_pricing.get_pricing_for_provider("custom:") == {}
+    assert models_pricing.get_pricing_for_provider("custom:ollama") == {}
+    assert models_pricing.get_pricing_for_provider("custom:tokenrouter", cached_only=True) == {}
+
+

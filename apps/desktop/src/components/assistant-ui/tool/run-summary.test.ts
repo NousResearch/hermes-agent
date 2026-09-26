@@ -9,6 +9,10 @@ function tool(toolName: string, args: Record<string, unknown> = {}, result?: unk
 const read = (path: string) => tool('read_file', { path }, { content: '' })
 const searched = (query: string) => tool('search_files', { query }, { hits: [] })
 const ran = (command: string) => tool('terminal', { command }, { exit_code: 0 })
+const webSearched = (query: string) => tool('web_search', { query }, { success: true, data: { web: [] } })
+const fetched = (url: string) => tool('web_extract', { urls: [url] }, { success: true, results: [] })
+const browsed = () => tool('browser_exec', { code: 'goto' }, { success: true })
+const analyzed = (image: string) => tool('vision_analyze', { image_url: image }, { success: true, analysis: '' })
 
 const settled = (tools: ToolCallLike[]) => summarizeToolRun(tools, false)
 const running = (tools: ToolCallLike[]) => summarizeToolRun(tools, true)
@@ -56,5 +60,18 @@ describe('summarizeToolRun', () => {
   // or it narrates work that stopped happening and never offers its toggle.
   it('reads a run the turn left unresolved as finished', () => {
     expect(settled([read('a.ts'), tool('search_files', { query: 'toolRuns' })])).toBe('Explored 2 files')
+  })
+
+  // Web and vision work is not file work: counting two searches as "Explored 2
+  // files" misreports what the run did (#123085).
+  it('counts web searches as queries rather than files', () => {
+    expect(settled([webSearched('release notes'), webSearched('changelog')])).toBe('Searched 2 queries')
+    expect(running([webSearched('release notes'), webSearched('changelog')])).toBe('Searching 2 queries')
+  })
+
+  it('names page reads, browsing and vision after what they were', () => {
+    expect(settled([fetched('https://a.example'), browsed(), analyzed('shot.png')])).toBe(
+      'Read 1 page, browsed 1 page, analyzed 1 image'
+    )
   })
 })

@@ -306,5 +306,76 @@ class TestCodexAppServerAnchor:
         assert agent._usage_anchor is prior
 
 
+class TestStaleThinkingChargeForwarding:
+    """E16: the persisted-anchor delta must charge stale thinking exactly as the active
+    route's wire does. On strip routes (llama.cpp / strict OpenAI-compatible) the
+    sanitizer removes historical reasoning before transmission, so charging it in the
+    delta inflates the hygiene figure by the full volume of reasoning appended since
+    the anchor — the anchor's ``prompt_tokens`` already exclude it."""
+
+    def _base_and_appended(self):
+        base = [_msg("user", "start"), _msg("assistant", "hello")]
+        appended = [
+            _msg("assistant", "the anchored reply itself"),  # covered by completion_tokens
+            {"role": "assistant", "content": "mid turn", "reasoning_content": "z" * 8_000},
+            _msg("user", "follow up please"),
+            _msg("assistant", "ok"),
+        ]
+        return base, appended
+
+    def test_anchored_context_tokens_kwarg_mirrors_estimator(self):
+        base, appended = self._base_and_appended()
+        anchor = capture_usage_anchor(83_000, 0, base)
+        messages = base + appended
+        # The anchored reply (index 2) is skipped; the delta is the rest.
+        delta = messages[3:]
+
+        charged = anchored_context_tokens(messages, anchor, charge_stale_thinking=True)
+        stripped = anchored_context_tokens(messages, anchor, charge_stale_thinking=False)
+
+        assert charged == 83_000 + estimate_messages_tokens_rough(delta, charge_stale_thinking=True)
+        assert stripped == 83_000 + estimate_messages_tokens_rough(delta, charge_stale_thinking=False)
+        assert charged - stripped > 1_500  # the mid-turn reasoning, ~2K tokens
+
+    def test_default_kwarg_keeps_full_charge(self):
+        """Callers that don't pass the kwarg keep the pre-E16 full-charge figure."""
+        base, appended = self._base_and_appended()
+        anchor = capture_usage_anchor(83_000, 0, base)
+        messages = base + appended
+        assert anchored_context_tokens(messages, anchor) == anchored_context_tokens(
+            messages, anchor, charge_stale_thinking=True
+        )
+
+    def test_persisted_anchor_tokens_forwards_charge_and_flips_trigger(self, tmp_path):
+        """Through the real session row (the exact gateway-hygiene consumer): the
+        same 83K session is OVER an 85K threshold when the delta's reasoning is
+        charged and UNDER it when it is not."""
+        from hermes_state import SessionDB
+        from agent.usage_anchor import persisted_anchor_tokens
+
+        base, appended = self._base_and_appended()
+        db = SessionDB(db_path=tmp_path / "state.db")
+        sid = "e16-anchor"
+        db.create_session(sid, source="cli")
+        for m in base:
+            db.append_message(sid, m["role"], m["content"])
+        set_usage_anchor(
+            SimpleNamespace(session_id=sid, _session_db=db, _persist_disabled=False, _usage_anchor=None),
+            capture_usage_anchor(83_000, 0, base),
+        )
+        messages = base + appended
+
+        charged = persisted_anchor_tokens(db, sid, messages, charge_stale_thinking=True)
+        stripped = persisted_anchor_tokens(db, sid, messages, charge_stale_thinking=False)
+        default = persisted_anchor_tokens(db, sid, messages)
+        db.close()
+
+        assert charged is not None and stripped is not None
+        assert default == charged
+        threshold = 85_000  # 100K context @ 85% hygiene threshold
+        assert charged >= threshold, "pre-patch behavior: spurious hygiene trigger"
+        assert stripped < threshold, "post-patch: the wire-accurate figure stays under"
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

@@ -917,6 +917,10 @@ export interface AnalyticsResponse {
 export interface AnalyticsToolEntry {
   count: number
   percentage: number
+  /** Share of tool-using sessions that invoked the tool at least once. Absent on older backends. */
+  reach_pct?: number
+  /** Distinct sessions that invoked the tool. Absent on older backends. */
+  sessions?: number
   tool: string
 }
 

@@ -1775,6 +1775,15 @@ hermes insights [--days N] [--source platform]
 | `--days <n>` | Analyze the last `n` days (default: 30). |
 | `--source <platform>` | Filter by source such as `cli`, `telegram`, or `discord`. |
 
+The **Top Tools** table shows each tool's share of calls and its **reach**: the share
+of tool-using sessions that invoked it at least once. A **Tool Context** section
+follows once at least 20 tool-using sessions are in the window: it prices the
+schemas the platform (`--source`, default `cli`) serves eagerly on every request,
+lists eager tools reached by fewer than 20% of sessions as candidates for
+[`tools.tool_search.defer`](../user-guide/features/tool-search.md#tuning-the-defer-list-from-usage)
+(largest schema first), and flags deferred tools that most sessions call anyway.
+The section is advice only; the served tool list never changes on its own.
+
 ## `hermes claw`
 
 ```bash

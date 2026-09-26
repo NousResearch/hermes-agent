@@ -264,6 +264,13 @@ def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path) -> Path:
         changed = declaration.install_requirements != declaration.requirements
         if changed:
             document["project"]["dependencies"] = list(declaration.install_requirements)
+        # The generated workspace provisions Hermes at runtime. Plugin ``dev`` extras are
+        # test-only and uv resolves every declared extra while locking, so retaining them
+        # lets incompatible test pins block a production gateway update.
+        optional_dependencies = document["project"].get("optional-dependencies")
+        if isinstance(optional_dependencies, dict) and "dev" in optional_dependencies:
+            optional_dependencies.pop("dev")
+            changed = True
         for sources in document.get("tool", {}).get("uv", {}).get("sources", {}).values():
             for spec in sources if isinstance(sources, list) else [sources]:
                 if not isinstance(spec, dict) or "path" not in spec:

@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
-from agent.context_compressor import ContextCompressor
+from agent.context_compressor import (
+    PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY,
+    ContextCompressor,
+)
 from agent.runtime_override import (
     RUNTIME_OVERRIDE_KEYS,
     apply_runtime_override,
@@ -404,3 +409,182 @@ class TestModelOwnedProjection:
         # The pre-override session compressor was never touched.
         assert session_cc.model == _SESSION_MODEL
         assert session_cc.threshold_tokens == 170_000
+
+
+# ---------------------------------------------------------------------------
+# P1 (durable leak): a temporary model override must not permanently clear the
+# session's persisted compression-protection rows.
+#
+# ``_apply_model_owned_state`` -> ``ContextCompressor.update_model`` clears the
+# durable fallback streak, failure cooldown, ineffective-strike count and
+# proactive-prune runway.  For a REAL switch_model that is correct; for the
+# ephemeral runtime_override the scope must roll those clears back exactly.
+# ---------------------------------------------------------------------------
+
+
+class _RecordingSessionDB:
+    """Minimal in-memory session row recording every durable compression call.
+
+    Implements the subset of the SessionDB compression API a real
+    ``ContextCompressor`` reaches, so the production durable-write path is
+    exercised without a sqlite file.  Values are stored raw so the test can
+    assert byte-identical restore.
+    """
+
+    def __init__(self, session_id: str = "S1") -> None:
+        self.session_id = session_id
+        self.calls = []
+        self.fallback_streak = 5
+        self.ineffective_count = 3
+        self.cooldown_until = time.time() + 600.0
+        self.cooldown_error = "summary stall"
+        self.model_config = {PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: 4096}
+
+    def _record(self, name, *args):
+        self.calls.append((name, args))
+
+    def names(self):
+        return [name for name, _ in self.calls]
+
+    # ── fallback streak ────────────────────────────────────────────────
+    def get_compression_fallback_streak(self, session_id):
+        self._record("get_compression_fallback_streak", session_id)
+        return self.fallback_streak
+
+    def set_compression_fallback_streak(self, session_id, streak):
+        self._record("set_compression_fallback_streak", session_id, streak)
+        self.fallback_streak = streak
+
+    # ── ineffective-compaction strike count ────────────────────────────
+    def get_compression_ineffective_count(self, session_id):
+        self._record("get_compression_ineffective_count", session_id)
+        return self.ineffective_count
+
+    def set_compression_ineffective_count(self, session_id, count):
+        self._record("set_compression_ineffective_count", session_id, count)
+        self.ineffective_count = count
+
+    # ── failure cooldown ───────────────────────────────────────────────
+    def get_compression_failure_cooldown(self, session_id):
+        self._record("get_compression_failure_cooldown", session_id)
+        if self.cooldown_until is None:
+            return None
+        remaining = self.cooldown_until - time.time()
+        if remaining <= 0:
+            return None
+        return {
+            "cooldown_until": self.cooldown_until,
+            "remaining_seconds": remaining,
+            "error": self.cooldown_error,
+        }
+
+    def get_compression_failure_cooldown_row(self, session_id):
+        self._record("get_compression_failure_cooldown_row", session_id)
+        return {
+            "session_exists": True,
+            "cooldown_until": self.cooldown_until,
+            "error": self.cooldown_error,
+        }
+
+    def clear_compression_failure_cooldown(self, session_id):
+        self._record("clear_compression_failure_cooldown", session_id)
+        self.cooldown_until = None
+        self.cooldown_error = None
+
+    def restore_compression_failure_cooldown_row(self, session_id, snapshot):
+        self._record("restore_compression_failure_cooldown_row", session_id, dict(snapshot))
+        self.cooldown_until = snapshot.get("cooldown_until")
+        self.cooldown_error = snapshot.get("error")
+
+    # ── model_config (proactive-prune runway) ──────────────────────────
+    def get_session_model_config_value(self, session_id, key, default=None):
+        self._record("get_session_model_config_value", session_id, key, default)
+        return self.model_config.get(key, default)
+
+    def patch_session_model_config(self, session_id, patch):
+        self._record("patch_session_model_config", session_id, dict(patch))
+        for key, value in patch.items():
+            if value is None:
+                self.model_config.pop(key, None)
+            else:
+                self.model_config[key] = value
+
+
+class TestDurableProtectionRestore:
+    """P1: one ephemeral model override must leave every durable
+    compression-protection row byte-identical after the scope exits."""
+
+    def _agent_with_recording_db(self, monkeypatch):
+        _patch_model_owned_resolution(monkeypatch)
+        agent = _build_model_owned_agent()
+        db = _RecordingSessionDB()
+        cc = agent.context_compressor
+        cc.bind_session_state(db, "S1")
+        # bind_session_state hydrates the in-memory values from the durable rows.
+        assert cc._fallback_compression_streak == 5
+        assert cc._ineffective_compression_count == 3
+        assert cc._proactive_prune_rearm_tokens == 4096
+        return agent, db, cc
+
+    @staticmethod
+    def _durable_state(db):
+        return (
+            db.fallback_streak,
+            db.ineffective_count,
+            db.cooldown_until,
+            db.cooldown_error,
+            dict(db.model_config),
+        )
+
+    def test_override_restores_durable_protection_exactly(self, monkeypatch):
+        agent, db, session_cc = self._agent_with_recording_db(monkeypatch)
+        baseline = self._durable_state(db)
+
+        with apply_runtime_override(agent, {"model": _OVERRIDE_MODEL}):
+            # The canonical projection clears the durable protection rows
+            # mid-scope — this is the leak the override must undo.
+            assert db.fallback_streak == 0
+            assert db.ineffective_count == 0
+            assert db.cooldown_until is None
+            assert db.cooldown_error is None
+            assert PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY not in db.model_config
+
+        # Scope exit restored every durable value byte-for-byte.
+        assert self._durable_state(db) == baseline
+        # The pre-override compressor (and its in-memory protection state) is back.
+        assert agent.context_compressor is session_cc
+        assert session_cc._fallback_compression_streak == 5
+        assert session_cc._ineffective_compression_count == 3
+        assert session_cc._proactive_prune_rearm_tokens == 4096
+
+    def test_override_restore_is_exact_on_exception(self, monkeypatch):
+        agent, db, _session_cc = self._agent_with_recording_db(monkeypatch)
+        baseline = self._durable_state(db)
+
+        with pytest.raises(RuntimeError):
+            with apply_runtime_override(agent, {"model": _OVERRIDE_MODEL}):
+                raise RuntimeError("boom")
+
+        assert self._durable_state(db) == baseline
+
+    def test_fallback_supersession_keeps_durable_writes(self, monkeypatch):
+        # A superseded scope must NOT roll back the fallback chain's own durable
+        # ``update_model`` clears — the fallback owns the route now.
+        from agent.runtime_override import consume_runtime_override
+
+        agent, db, _session_cc = self._agent_with_recording_db(monkeypatch)
+        with apply_runtime_override(agent, {"model": _OVERRIDE_MODEL}):
+            agent.model = _FALLBACK_MODEL
+            agent.context_compressor.update_model(
+                model=_FALLBACK_MODEL, context_length=96_000, provider="openai",
+                base_url="https://api.openai.com/v1", api_key="sk-test",
+                api_mode="chat_completions",
+            )
+            consume_runtime_override(agent)
+
+        # The fallback's cleared rows stand (the pre-override values are not
+        # resurrected over the route the fallback now owns).
+        assert db.fallback_streak == 0
+        assert db.ineffective_count == 0
+        assert db.cooldown_until is None
+        assert PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY not in db.model_config

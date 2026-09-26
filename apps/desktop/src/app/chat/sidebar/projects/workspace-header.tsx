@@ -46,23 +46,37 @@ function LaneLabel({ label, title }: { label: string; title?: string }) {
 export function WorkspaceAddButton({
   label,
   onClick,
-  onPointerDown
+  onPointerDown,
+  workspaceMenu
 }: {
   label: string
   onClick: () => void
   onPointerDown?: (event: React.PointerEvent<HTMLButtonElement>) => void
+  /** Right-click menu offering the project folders (date-grouped "+"): plain
+   *  click keeps starting a detached draft. Same shape as the section header's. */
+  workspaceMenu?: { ariaLabel: string; items: (kit: MenuKit) => React.ReactNode }
 }) {
+  const trigger = (
+    <button
+      aria-label={label}
+      className="grid size-4 shrink-0 place-items-center rounded-sm bg-transparent text-(--ui-text-quaternary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground group-hover/workspace:opacity-100"
+      onClick={onClick}
+      onPointerDown={onPointerDown}
+      type="button"
+    >
+      <Codicon name="add" size="0.75rem" />
+    </button>
+  )
+
   return (
     <Tip label={label}>
-      <button
-        aria-label={label}
-        className="grid size-4 shrink-0 place-items-center rounded-sm bg-transparent text-(--ui-text-quaternary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground group-hover/workspace:opacity-100"
-        onClick={onClick}
-        onPointerDown={onPointerDown}
-        type="button"
-      >
-        <Codicon name="add" size="0.75rem" />
-      </button>
+      {workspaceMenu ? (
+        <ActionsContextMenu ariaLabel={workspaceMenu.ariaLabel} items={workspaceMenu.items}>
+          {trigger}
+        </ActionsContextMenu>
+      ) : (
+        trigger
+      )}
     </Tip>
   )
 }

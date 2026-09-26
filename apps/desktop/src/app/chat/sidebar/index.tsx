@@ -153,6 +153,7 @@ import { SidebarCronJobsSection } from './cron-jobs-section'
 import { SidebarFilterMenu } from './filter-menu'
 import { buildGatewaySessionGroups, scopeGatewaySessionGroups, useGatewaySessionGroups } from './gateway-group-model'
 import { SidebarLoadMoreRow } from './load-more-row'
+import { useNewSessionWorkspaceMenuItems } from './new-session-workspace-menu'
 import { orderByIds, reconcileOrderIds, resolveManualSessionOrderIds, sameIds } from './order'
 import { filterSessionsByProfileScope } from './profile-scope'
 import { ProfileRail } from './profile-switcher'
@@ -463,6 +464,9 @@ export function ChatSidebar({
   // dividers; groups apply it to their own lanes.
   const sortOrderIds = useStore($sidebarSessionRankIds)
   const agentsGrouped = grouping === 'project'
+  // Right-click menu for the ungrouped "+": plain click keeps starting a
+  // detached draft (null) while the menu offers the project folders (#122436).
+  const newSessionWorkspaceMenuItems = useNewSessionWorkspaceMenuItems(onNewSessionInWorkspace)
   const showAllSessions = useStore($sidebarShowAllSessions)
   const pinnedSessionIds = useStore($pinnedSessionIds)
   const unconfirmedPinWrites = useStore($unconfirmedPinWrites)
@@ -1934,6 +1938,11 @@ export function ChatSidebar({
                               onNewSessionInWorkspace(null)
                             }
                           }}
+                          workspaceMenu={
+                            agentsGrouped
+                              ? undefined
+                              : { ariaLabel: s.nav['new-session'], items: newSessionWorkspaceMenuItems }
+                          }
                         />
                         <div className="grid size-6 place-items-center">
                           <SidebarFilterMenu className={HEADER_NAV_BTN} />

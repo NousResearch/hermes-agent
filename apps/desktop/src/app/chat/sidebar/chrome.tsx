@@ -3,6 +3,7 @@ import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 
 import { type NewSessionSplitHandler, startNewProjectDrag, startNewSessionDrag } from '@/app/chat/new-session-drag'
+import { ActionsContextMenu, type MenuKit } from '@/components/ui/actions-menu'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
@@ -55,7 +56,8 @@ export function SidebarSectionAddButton({
   ariaLabel,
   onNewProjectDrag,
   onNewSessionSplit,
-  onPlainClick
+  onPlainClick,
+  workspaceMenu
 }: {
   ariaLabel: string
   /** Present when this header "+" creates a PROJECT (the project-overview
@@ -71,34 +73,48 @@ export function SidebarSectionAddButton({
    *  supplied. */
   onNewSessionSplit?: NewSessionSplitHandler
   onPlainClick: () => void
+  /** Right-click menu for the ungrouped "+": plain click keeps starting a
+   *  detached draft while the menu offers the project folders. Omitted in
+   *  grouped mode, where the click itself opens the project dialog. */
+  workspaceMenu?: { ariaLabel: string; items: (kit: MenuKit) => React.ReactNode }
 }) {
+  const trigger = (
+    <Button
+      aria-label={ariaLabel}
+      className={HEADER_ACTION_BTN}
+      onClick={event => {
+        event.stopPropagation()
+        onPlainClick()
+      }}
+      onPointerDown={
+        onNewProjectDrag
+          ? event => {
+              startNewProjectDrag(onNewProjectDrag.onArm, event, { onTap: onPlainClick })
+            }
+          : onNewSessionSplit
+            ? event => {
+                startNewSessionDrag(placement => {
+                  onNewSessionSplit(placement.dir, { anchor: placement.anchor, before: placement.before })
+                }, event)
+              }
+            : undefined
+      }
+      size="icon-xs"
+      variant="ghost"
+    >
+      <Codicon name="add" size="0.75rem" />
+    </Button>
+  )
+
   return (
     <Tip label={ariaLabel}>
-      <Button
-        aria-label={ariaLabel}
-        className={HEADER_ACTION_BTN}
-        onClick={event => {
-          event.stopPropagation()
-          onPlainClick()
-        }}
-        onPointerDown={
-          onNewProjectDrag
-            ? event => {
-                startNewProjectDrag(onNewProjectDrag.onArm, event, { onTap: onPlainClick })
-              }
-            : onNewSessionSplit
-              ? event => {
-                  startNewSessionDrag(placement => {
-                    onNewSessionSplit(placement.dir, { anchor: placement.anchor, before: placement.before })
-                  }, event)
-                }
-              : undefined
-        }
-        size="icon-xs"
-        variant="ghost"
-      >
-        <Codicon name="add" size="0.75rem" />
-      </Button>
+      {workspaceMenu ? (
+        <ActionsContextMenu ariaLabel={workspaceMenu.ariaLabel} items={workspaceMenu.items}>
+          {trigger}
+        </ActionsContextMenu>
+      ) : (
+        trigger
+      )}
     </Tip>
   )
 }

@@ -34,6 +34,8 @@ from pathlib import Path
 # hermes_yaml lives at the repo root; this script is run as a plain file
 # (python website/scripts/fetch-plugin-stars.py) where sys.path[0] is
 # website/scripts, not the checkout root (skills-index.yml has no PYTHONPATH).
+# The ordering is load-bearing: REPO_ROOT must stay ABOVE the import, since
+# it is what puts the checkout root on sys.path.
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 import hermes_yaml as yaml

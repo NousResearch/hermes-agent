@@ -116,6 +116,27 @@ class TestCodexBuildKwargs:
         )
         assert kw["model"] == "gpt-5.6-sol"
 
+    @pytest.mark.parametrize(("model", "effort", "expected"), [
+        ("grok-4.7", "medium", "medium"),
+        ("x-ai/grok-4.7", "low", "low"),
+        ("grok-4.7", "high", "high"),
+        # xhigh is unverified on the xAI endpoint, so it stays clamped to
+        # high (never escalate) rather than going out verbatim.
+        ("grok-4.7", "xhigh", "high"),
+    ])
+    def test_xai_grok47_sends_reasoning_effort(self, transport, model, effort, expected):
+        """Regression for #121796: grok-4.7 silently dropped reasoning.effort
+        (the allowlist stopped at grok-4.6), so the setting looked applied
+        while the model reasoned at its own default."""
+        kw = transport.build_kwargs(
+            model=model,
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            is_xai_responses=True,
+            reasoning_config={"enabled": True, "effort": effort},
+        )
+        assert kw["reasoning"]["effort"] == expected
+
 
 
 

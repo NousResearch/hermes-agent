@@ -365,7 +365,10 @@ DEFAULT_CONTEXT_LENGTHS = {
 # /v1/responses). Unlisted Grok models still reason natively but 400 on the
 # parameter, so callers must send no `reasoning` key rather than a default `medium`.
 # grok-4.5/4.6 accept low/medium/high (default high) but REJECT "none", unlike grok-4.3.
-_GROK_EFFORT_CAPABLE_PREFIXES = ("grok-3-mini", "grok-4.20-multi-agent", "grok-4.3", "grok-4.5", "grok-4.6")
+# grok-4.7 takes low/medium/high per OpenRouter's x-ai/grok-4.7 capability listing
+# (#121796); xhigh stays clamped to high until verified live on the xAI endpoint.
+# ponytail: legacy vocab for 4.7 (never escalate); widen to XAI_GROK46_EFFORTS once live-verified.
+_GROK_EFFORT_CAPABLE_PREFIXES = ("grok-3-mini", "grok-4.20-multi-agent", "grok-4.3", "grok-4.5", "grok-4.6", "grok-4.7")
 
 
 def grok_supports_reasoning_effort(model: str) -> bool:

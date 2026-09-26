@@ -37,6 +37,8 @@ import { api } from "@/lib/api";
 import type { ManagedFileEntry, ManagedFilesResponse } from "@/lib/api";
 import { PluginSlot } from "@/plugins";
 import { errorMessage } from "@/lib/api-error";
+import { useI18n } from "@/i18n";
+import { en } from "@/i18n/en";
 
 const DATE_FORMAT = new Intl.DateTimeFormat(undefined, {
   dateStyle: "medium",
@@ -79,6 +81,8 @@ function transferHasFiles(event: ReactDragEvent<HTMLElement>): boolean {
 export default function FilesPage() {
   const { toast, showToast } = useToast();
   const { setAfterTitle, setEnd } = usePageHeader();
+  const { t } = useI18n();
+  const tf = t.files ?? en.files!;
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const dragDepthRef = useRef(0);
   const [currentPath, setCurrentPath] = useState<string | undefined>(undefined);
@@ -138,7 +142,7 @@ export default function FilesPage() {
           type="button"
           onClick={() => void load()}
           disabled={loading}
-          aria-label="Refresh files"
+          aria-label={tf.refreshFiles}
         >
           {loading ? <Spinner /> : <RefreshCw />}
         </Button>
@@ -148,7 +152,7 @@ export default function FilesPage() {
       setAfterTitle(null);
       setEnd(null);
     };
-  }, [headerPath, load, loading, setAfterTitle, setEnd]);
+  }, [headerPath, load, loading, setAfterTitle, setEnd, tf.refreshFiles]);
 
   const openDirectory = (entry: ManagedFileEntry) => {
     if (entry.is_directory) {
@@ -285,12 +289,12 @@ export default function FilesPage() {
             <Input
               value={pathInput}
               onChange={(event) => setPathInput(event.target.value)}
-              aria-label="Path"
-              placeholder="Path"
+              aria-label={tf.path}
+              placeholder={tf.path}
               className="h-9 min-w-0 flex-1 font-mono"
             />
             <Button type="submit" size="sm" outlined className="uppercase">
-              Go
+              {tf.go}
             </Button>
           </form>
         ) : (
@@ -308,7 +312,7 @@ export default function FilesPage() {
             className="uppercase"
             prefix={uploading ? <Spinner /> : <Upload />}
           >
-            Upload
+            {tf.upload}
           </Button>
           <Button
             type="button"
@@ -319,7 +323,7 @@ export default function FilesPage() {
             className="uppercase"
             prefix={<FolderPlus />}
           >
-            Create
+            {t.common.create}
           </Button>
         </div>
       </div>
@@ -332,7 +336,7 @@ export default function FilesPage() {
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
         disabled={!canUpload}
-        aria-label="Upload files"
+        aria-label={tf.uploadFiles}
         className={`flex min-h-20 w-full min-w-0 items-center justify-between gap-4 border border-dashed px-4 py-3 text-left transition ${
           draggingFiles
             ? "border-primary bg-primary/10 text-foreground"
@@ -345,15 +349,15 @@ export default function FilesPage() {
           </span>
           <span className="min-w-0">
             <span className="block text-sm font-semibold uppercase tracking-[0.08em] text-foreground">
-              {uploading ? "Uploading" : draggingFiles ? "Release to upload" : "Drop files here"}
+              {uploading ? tf.uploading : draggingFiles ? tf.releaseToUpload : tf.dropFilesHere}
             </span>
             <span className="block truncate font-mono text-xs text-text-secondary" title={activePath}>
-              {activePath || "Loading"}
+              {activePath || tf.loading}
             </span>
           </span>
         </span>
         <span className="hidden shrink-0 text-xs font-semibold uppercase tracking-[0.08em] text-text-tertiary sm:block">
-          Choose files
+          {tf.chooseFiles}
         </span>
       </button>
 
@@ -366,10 +370,10 @@ export default function FilesPage() {
           )}
 
           <div className="grid min-w-[42rem] grid-cols-[minmax(12rem,1fr)_7rem_10rem_5.5rem] items-center gap-3 border-b border-border px-4 py-2 text-xs font-semibold uppercase tracking-[0.08em] text-text-tertiary">
-            <span>Name</span>
-            <span>Size</span>
-            <span>Modified</span>
-            <span className="text-right">Actions</span>
+            <span>{t.common.name ?? en.common.name!}</span>
+            <span>{tf.size}</span>
+            <span>{tf.modified}</span>
+            <span className="text-right">{tf.actions}</span>
           </div>
 
           {listing?.parent && (
@@ -391,10 +395,10 @@ export default function FilesPage() {
           {loading && !listing ? (
             <div className="flex items-center justify-center gap-2 py-12 text-sm text-muted-foreground">
               <Spinner />
-              Loading files...
+              {tf.loadingFiles}
             </div>
           ) : listing && listing.entries.length === 0 ? (
-            <div className="py-12 text-center text-sm text-muted-foreground">No files</div>
+            <div className="py-12 text-center text-sm text-muted-foreground">{tf.noFiles}</div>
           ) : (
             listing?.entries.map((entry) => (
               <div
@@ -468,9 +472,9 @@ export default function FilesPage() {
       >
         <DialogContent className="max-w-sm">
           <DialogHeader>
-            <DialogTitle>Create folder</DialogTitle>
+            <DialogTitle>{tf.createFolder}</DialogTitle>
             <DialogDescription>
-              Target: {activePath || "Loading"}
+              {tf.target} {activePath || tf.loading}
             </DialogDescription>
           </DialogHeader>
           <div className="p-4">
@@ -481,7 +485,7 @@ export default function FilesPage() {
               onKeyDown={(event) => {
                 if (event.key === "Enter") void createDirectory();
               }}
-              placeholder="Folder name"
+              placeholder={tf.folderNamePlaceholder}
               disabled={creating}
             />
           </div>
@@ -495,7 +499,7 @@ export default function FilesPage() {
               }}
               disabled={creating}
             >
-              Cancel
+              {t.common.cancel}
             </Button>
             <Button
               type="button"
@@ -503,7 +507,7 @@ export default function FilesPage() {
               disabled={creating}
               prefix={creating ? <Spinner /> : <FolderPlus />}
             >
-              Create
+              {t.common.create}
             </Button>
           </DialogFooter>
         </DialogContent>

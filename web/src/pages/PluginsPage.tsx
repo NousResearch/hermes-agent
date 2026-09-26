@@ -96,11 +96,12 @@ function setupResultClass(status: string) {
 }
 
 function MemoryProviderSetupResults({ results }: { results: MemoryProviderSetupResult[] }) {
+  const { t } = useI18n();
   if (!results.length) return null;
 
   return (
     <div className="grid gap-2 border border-border bg-background/20 p-3">
-      <p className="text-muted-foreground">Setup results</p>
+      <p className="text-muted-foreground">{t.pluginsPage.setupResults ?? en.pluginsPage.setupResults!}</p>
       {results.map((result, index) => {
         const detail = result.stderr || result.stdout;
         return (
@@ -147,6 +148,7 @@ function MemoryProviderSetupHint({
   provider: MemoryProviderInfo;
   results: MemoryProviderSetupResult[] | null;
 }) {
+  const { t } = useI18n();
   const setup = provider.setup;
   const hasDetails = setupHasDetails(setup);
   const hasInstallableSteps = setupHasInstallableSteps(setup);
@@ -191,7 +193,11 @@ function MemoryProviderSetupHint({
         >
           <span className="inline-flex items-center gap-2">
             {installing ? <Spinner /> : null}
-            {installing ? "Installing provider dependencies" : "Install provider dependencies"}
+            {installing
+              ? (t.pluginsPage.installingProviderDependencies ??
+                en.pluginsPage.installingProviderDependencies!)
+              : (t.pluginsPage.installProviderDependencies ??
+                en.pluginsPage.installProviderDependencies!)}
           </span>
         </Button>
       ) : null}
@@ -209,17 +215,26 @@ function MemoryProviderSetupHint({
           {setup.external_dependencies.map((dep, index) => (
             <div key={`${dep.name || "dependency"}-${index}`} className="grid gap-2">
               <p className="text-muted-foreground">
-                External dependency{dep.name ? `: ${dep.name}` : ""}
+                {t.pluginsPage.externalDependency ?? en.pluginsPage.externalDependency!}
+                {dep.name ? `: ${dep.name}` : ""}
               </p>
               {dep.install ? (
                 <SetupCommandBlock
-                  label={dep.name ? `Install ${dep.name}` : "Install dependency"}
+                  label={
+                    dep.name
+                      ? (t.pluginsPage.installNamed ?? en.pluginsPage.installNamed!).replace("{name}", dep.name)
+                      : (t.pluginsPage.installDependency ?? en.pluginsPage.installDependency!)
+                  }
                   code={dep.install}
                 />
               ) : null}
               {dep.check ? (
                 <SetupCommandBlock
-                  label={dep.name ? `Verify ${dep.name}` : "Verify dependency"}
+                  label={
+                    dep.name
+                      ? (t.pluginsPage.verifyNamed ?? en.pluginsPage.verifyNamed!).replace("{name}", dep.name)
+                      : (t.pluginsPage.verifyDependency ?? en.pluginsPage.verifyDependency!)
+                  }
                   code={dep.check}
                 />
               ) : null}
@@ -228,7 +243,7 @@ function MemoryProviderSetupHint({
 
           {setup.pip_dependencies.length ? (
             <div className="grid gap-2">
-              <p className="text-muted-foreground">Python dependencies</p>
+              <p className="text-muted-foreground">{t.pluginsPage.pythonDependencies ?? en.pluginsPage.pythonDependencies!}</p>
               <div className="flex flex-wrap gap-2">
                 {setup.pip_dependencies.map((dep) => (
                   <code
@@ -735,7 +750,11 @@ export default function PluginsPage() {
                                   <Button
                                     ghost
                                     size="icon"
-                                    aria-label={secretIsVisible ? "Hide secret" : "Show secret"}
+                                    aria-label={
+                                      secretIsVisible
+                                        ? (t.pluginsPage.hideSecret ?? en.pluginsPage.hideSecret!)
+                                        : (t.pluginsPage.showSecret ?? en.pluginsPage.showSecret!)
+                                    }
                                     onClick={() =>
                                       setSecretVisible((current) => ({
                                         ...current,
@@ -769,7 +788,7 @@ export default function PluginsPage() {
                     onClick={() => void onSaveMemoryProvider()}
                     prefix={memoryBusy ? <Spinner /> : undefined}
                   >
-                    Save memory provider
+                    {t.pluginsPage.saveMemoryProvider ?? en.pluginsPage.saveMemoryProvider!}
                   </Button>
                 </div>
 
@@ -800,7 +819,7 @@ export default function PluginsPage() {
                     onClick={() => void onSaveContextEngine()}
                     prefix={contextBusy ? <Spinner /> : undefined}
                   >
-                    Save context engine
+                    {t.pluginsPage.saveContextEngine ?? en.pluginsPage.saveContextEngine!}
                   </Button>
                 </div>
               </div>

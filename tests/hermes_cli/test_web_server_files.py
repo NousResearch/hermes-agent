@@ -458,3 +458,74 @@ def test_git_branch_decodes_utf8_under_a_gbk_default_codec(tmp_path, monkeypatch
     monkeypatch.setattr(subprocess, "_text_encoding", lambda: "gbk")
 
     assert _rt_files._fs_git_branch(str(tmp_path)) == branch
+
+
+def test_mutating_a_link_entry_never_touches_its_referent(local_files_client):
+    """Upload and delete act on the listed entry itself: a symlink is replaced or
+    removed AS the link, never chased to the file or directory tree it names."""
+    client, home = local_files_client
+    repo = home / "work" / "repo"
+    (repo / "src").mkdir(parents=True)
+    (repo / "src" / "main.py").write_text("keep")
+    docs = home / "Documents"
+    docs.mkdir()
+    (docs / "notes.md").write_text("keep")
+    (docs / "todo.md").write_text("keep")
+    shortcuts = home / "shortcuts"
+    shortcuts.mkdir()
+    (shortcuts / "repo").symlink_to(repo, target_is_directory=True)
+    (shortcuts / "notes.md").symlink_to(docs / "notes.md")
+    (shortcuts / "todo.md").symlink_to(docs / "todo.md")
+
+    uploaded = client.post(
+        "/api/files/upload-stream",
+        data={"path": str(shortcuts / "todo.md"), "overwrite": "true"},
+        files={"file": ("todo.md", b"new")},
+    )
+    assert uploaded.status_code == 200, uploaded.text
+    assert (shortcuts / "todo.md").read_bytes() == b"new"
+
+    # Exactly what FilesPage.confirmDelete() sends for each listed row.
+    listing = client.get("/api/files", params={"path": str(shortcuts)})
+    assert listing.status_code == 200, listing.text
+    for entry in listing.json()["entries"]:
+        deleted = client.request(
+            "DELETE", "/api/files", json={"path": entry["path"], "recursive": entry["is_directory"]}
+        )
+        assert deleted.status_code == 200, deleted.text
+
+    assert list(shortcuts.iterdir()) == []
+    assert (repo / "src" / "main.py").read_text() == "keep"
+    assert (docs / "notes.md").read_text() == "keep"
+    assert (docs / "todo.md").read_text() == "keep"
+
+
+def test_locked_root_refuses_mutations_through_a_link_that_escapes_it(forced_files_client, tmp_path):
+    """Containment still judges where a link resolves: no delete or upload through
+    a link (a dangling one included) reaches outside the locked root."""
+    client, root = forced_files_client
+    root.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("keep")
+    (root / "escape").symlink_to(outside, target_is_directory=True)
+    (root / "escape.txt").symlink_to(outside / "keep.txt")
+    (root / "dangling.txt").symlink_to(outside / "planted.txt")
+
+    responses = [
+        client.request("DELETE", "/api/files", json={"path": str(root / "escape"), "recursive": True}),
+        client.request("DELETE", "/api/files", json={"path": str(root / "escape.txt")}),
+        client.post(
+            "/api/files/upload",
+            json={"path": str(root / "dangling.txt"), "data_url": "data:text/plain;base64,aGVsbG8="},
+        ),
+        client.post(
+            "/api/files/upload-stream",
+            data={"path": str(root / "escape.txt"), "overwrite": "true"},
+            files={"file": ("escape.txt", b"pwned")},
+        ),
+    ]
+
+    assert [r.status_code for r in responses] == [403] * 4
+    assert sorted(p.name for p in outside.iterdir()) == ["keep.txt"]
+    assert (outside / "keep.txt").read_text() == "keep"

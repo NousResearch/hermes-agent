@@ -448,8 +448,11 @@ def _audit_one(npm_bin: str, npm_dir, label: str, audit_extra: list[str], issues
                       " (the next `hermes update` reinstalls from the committed lockfile)")
             check_warn(f"{label} deps", f"({critical} critical, {high} high, {moderate} moderate — {remedy})")
             if workspace_scoped:
-                check_info("  ^ build-time tooling (not runtime); if manual npm remediation "
-                           "errors with an arborist crash it's a known npm bug — clears via a lockfile bump")
+                check_info("  ^ Only affects the build process, not the app you run "
+                           "— nothing you need to do. (If you try to fix it "
+                           "yourself, `npm audit fix` may fail here with an "
+                           "unrelated npm error; that's a known npm bug, not "
+                           "something wrong with your setup.)")
             else:
                 check_info(f"  ^ {detail}; report/pin the fix in package-lock.json — see #116774")
             issues.append(f"{label} has {total} npm {_plural(total)}")

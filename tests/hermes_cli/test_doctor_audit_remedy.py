@@ -53,3 +53,15 @@ def test_clean_tree_reports_no_known_vulnerabilities(capsys):
     out, issues = _run_audit_one(capsys, ["--workspaces=false"], _audit_json())
     assert "no known vulnerabilities" in out
     assert issues == []
+
+
+def test_workspace_advisory_note_is_plain_language(capsys):
+    """#102555: the workspace-scoped npm audit note used jargon ("arborist
+    crash", "known npm bug") that a non-technical user can't act on. It must
+    instead say plainly that this only affects build tooling and needs no
+    user action."""
+    out, issues = _run_audit_one(capsys, ["--workspace", "web"], _audit_json(high=1))
+    assert "Only affects the build process, not the app you run" in out
+    assert "nothing you need to do" in out
+    assert "arborist" not in out
+    assert issues == ["Browser tools (agent-browser) has 1 npm vulnerability"]

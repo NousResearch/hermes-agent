@@ -3693,10 +3693,29 @@ class BasePlatformAdapter(ABC):
     @staticmethod
     def _is_partial_delivery(result: "SendResult") -> bool:
         """True when a split payload was PARTLY delivered (``raw_response["partial_overflow"]``, the
-        contract Telegram's send/edit-overflow paths set and the stream consumer reads): the visible
+        contract split-sending adapters set via :meth:`_with_partial_send` and the stream consumer reads): the visible
         head must never be sent again."""
         raw = getattr(result, "raw_response", None)
         return isinstance(raw, dict) and bool(raw.get("partial_overflow"))
+
+    @staticmethod
+    def _with_partial_send(
+        result: SendResult, undelivered: List[str], delivered: List[str], *, tail_certain: bool = True) -> SendResult:
+        """Mark a split-send failure that happened after earlier chunks landed with the ``partial_overflow``
+        contract (the same key ``_edit_overflow_split`` sets and the stream consumer reads), so no caller
+        re-sends the already-visible head. ``undelivered`` (the formatted remainder, for
+        :meth:`_resume_partial_send`) is attached only when ``tail_certain``. No-op when nothing landed."""
+        if not delivered:
+            return result
+        raw = dict(result.raw_response) if isinstance(result.raw_response, dict) else {}
+        raw.update({
+            "partial_overflow": True, "delivered_chunks": len(delivered), "total_chunks": len(delivered) + len(undelivered),
+            "last_message_id": delivered[-1], "continuation_message_ids": tuple(delivered[1:])})
+        if tail_certain and undelivered:
+            raw["undelivered_chunks"] = tuple(undelivered)
+            raw["delivered_message_ids"] = tuple(delivered)
+        result.raw_response = raw
+        return result
 
     async def _resume_partial_send(
         self, chat_id: str, result: "SendResult", *, reply_to: Optional[str], metadata: Any) -> "Optional[SendResult]":

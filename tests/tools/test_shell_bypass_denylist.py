@@ -13,6 +13,8 @@ substitution:
   (``eval $(curl ...)``, ``source $(wget ...)``, ``. $(curl ...)``).
 - Class 3 (part of issue #30100) -- decode-and-execute pipes
   (``echo <b64> | base64 -d | bash``, ``tr``, ``xxd``, ``openssl``).
+- Class 4 (issue #71996) -- a wrapper or command-bearing option carries the
+  executable behind option and positional operands.
 
 Positive cases must be flagged; the argument-not-promoted negative cases guard
 against the command-name deobfuscation over-reaching into ordinary data.
@@ -20,7 +22,9 @@ against the command-name deobfuscation over-reaching into ordinary data.
 
 import pytest
 
+from tools import approval_context
 from tools.approval import detect_dangerous_command, detect_hardline_command
+from tools.approval_floors import _match_user_deny_rule
 
 
 # ---------------------------------------------------------------------------
@@ -113,6 +117,31 @@ class TestDecodeAndExecutePipes:
 # ---------------------------------------------------------------------------
 # Benign commands must stay unflagged across all three additions.
 # ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "doas rm -rf /",
+        "xargs rm -rf /",
+        "watch -n1 rm -rf /tmp/x",
+        "flock /tmp/l rm -rf /",
+        "systemd-run --scope rm -rf /",
+        "su -c 'rm -rf /'",
+        "runuser -l root -c 'rm -rf /'",
+        "script -c 'rm -rf /' /dev/null",
+        "flock /tmp/l -c 'rm -rf /'",
+    ],
+)
+def test_wrapper_payload_matches_projected_user_deny_glob(monkeypatch, command):
+    # A leading wildcard would match the unprojected wrapper text and hide the
+    # bypass. Anchoring the glob at rm proves that the executed command surfaced.
+    monkeypatch.setattr(
+        approval_context,
+        "_get_approval_config",
+        lambda: {"deny": ["rm -rf*"]},
+    )
+    assert _match_user_deny_rule(command) == "rm -rf*"
+
 
 class TestBenignNotFlagged:
     @pytest.mark.parametrize(

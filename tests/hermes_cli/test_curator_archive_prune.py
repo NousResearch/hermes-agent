@@ -31,6 +31,34 @@ def test_archive_refuses_pinned(monkeypatch, capsys):
     assert "hermes curator unpin" in out
 
 
+# ─── purge ──────────────────────────────────────────────────────────────────
+
+
+def test_purge_ages_an_archive_from_when_it_was_archived(tmp_path, monkeypatch):
+    """The TTL counts from archival, not from the skill's last edit: a long-idle skill the
+    curator archives today must survive `purge --days 30`."""
+    import os
+    import time
+
+    import hermes_cli.curator as curator_cli
+    from tools import skill_usage
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    skill_dir = tmp_path / "skills" / "old-helper"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: old-helper\ndescription: x\n---\n# body\n", encoding="utf-8")
+    long_ago = time.time() - 100 * 86400
+    for path in (skill_dir / "SKILL.md", skill_dir):
+        os.utime(path, (long_ago, long_ago))
+    skill_usage.record_created("old-helper", agent_created=True)
+    ok, msg = skill_usage.archive_skill("old-helper")
+    assert ok, msg
+
+    assert curator_cli._cmd_purge(_ns(days=30, dry_run=False, yes=True)) == 0
+    assert (tmp_path / "skills" / ".archive" / "old-helper" / "SKILL.md").is_file()
+
+
 # ─── prune ──────────────────────────────────────────────────────────────────
 
 

@@ -413,6 +413,48 @@ def test_honcho_sync_turn_skips_write_when_save_messages_is_disabled():
     assert manager_calls == []
 
 
+def test_is_internal_gateway_turn_matches_real_completion_notification():
+    """Real body from the 2026-09-20 bug report: proc_<hex> id, 'completed normally' verb."""
+    from plugins.memory.honcho import _is_internal_gateway_turn
+
+    real_body = (
+        "[IMPORTANT: Background process proc_76278847b410 completed normally (exit code 0).\n"
+        "Command: sleep 60\nOutput:\n]"
+    )
+    assert _is_internal_gateway_turn(real_body) is True
+
+
+def test_is_internal_gateway_turn_matches_real_formatter_output():
+    """The real emitter (tools/process_registry_notifications.py) output must be caught, not a
+    hand-written approximation of its shape."""
+    from plugins.memory.honcho import _is_internal_gateway_turn
+    from tools.process_registry_notifications import format_process_notification
+
+    completion_evt = {"type": "completion", "session_id": "proc_76278847b410",
+                       "command": "sleep 60", "exit_code": 0, "output": ""}
+    watch_match_evt = {"type": "watch_match", "session_id": "proc_deadbeef",
+                        "command": "tail -f x", "pattern": "ready", "output": "ready\n", "suppressed": 0}
+    watch_disabled_evt = {"type": "watch_disabled", "session_id": "proc_1",
+                           "session_key": "s", "task_id": None, "owner_task_id": None,
+                           "command": "x", "suppressed": 3,
+                           "message": "Watch patterns disabled for process proc_1 — reason. Falling back."}
+
+    assert _is_internal_gateway_turn(format_process_notification(completion_evt)) is True
+    assert _is_internal_gateway_turn(format_process_notification(watch_match_evt)) is True
+    assert _is_internal_gateway_turn(format_process_notification(watch_disabled_evt)) is True
+
+
+def test_is_internal_gateway_turn_does_not_match_genuine_prose():
+    """The regex stays anchored: prose mentioning these strings mid-sentence is real user input."""
+    from plugins.memory.honcho import _is_internal_gateway_turn
+
+    assert _is_internal_gateway_turn(
+        "daniel ran a background process (proc_76278847b410) that executed shell commands "
+        "including 'sleep 60'") is False
+    assert _is_internal_gateway_turn(
+        "I noticed a background process completed normally, is that expected?") is False
+
+
 def test_honcho_sync_turn_skips_anchored_gateway_notifications():
     """Known bracketed gateway wrappers must not become durable messages."""
     wrappers = (
@@ -425,6 +467,17 @@ def test_honcho_sync_turn_skips_anchored_gateway_notifications():
         "[Your active task list was preserved across context compression]",
         "[CONTEXT SUMMARY]: previous context",
         "[IMPORTANT: Background process 12 matched watch pattern \"foo\"\nCommand: x",
+        "[IMPORTANT: Background process proc_76278847b410 completed normally (exit code 0).\n"
+        "Command: sleep 60\nOutput:\n]",
+        "[IMPORTANT: Background process proc_deadbeef exited (exit code 1).\nCommand: x\nOutput:\n]",
+        "[IMPORTANT: Background process 12 terminated by Hermes (exit code -15, SIGTERM).\nCommand: x\nOutput:\n]",
+        "[IMPORTANT: Background process proc_abc marked lost because the process backend disappeared "
+        "(exit code ?).\nCommand: x\nOutput:\n]",
+        "[IMPORTANT: 3 background processes completed. Treat these results as one batch]",
+        "[IMPORTANT: Watch patterns disabled for process proc_1 — 3 consecutive rate-limit windows]",
+        "[IMPORTANT: Watch-pattern overflow: >50 notifications in 60s across all processes.]",
+        "[IMPORTANT: Watch-pattern notifications resumed. 4 match event(s) were suppressed.]",
+        "[ASYNC DELEGATION TASK FAILED — deleg_3, task 1/2]\nOne subagent in a background fan-out",
     )
 
     for wrapper in wrappers:
@@ -485,6 +538,8 @@ def test_honcho_sync_turn_does_not_suppress_genuine_user_messages():
         "I want to know about your task list",
         "IMPORTANT: Background process — can you explain what that means?",
         "[IMPORTANT: Background process — what does that mean?]",
+        "I noticed a background process completed normally and want to know why it started.",
+        "daniel ran a background process that executed shell commands including 'sleep 60'",
     )
 
     for msg in genuine:
@@ -508,6 +563,55 @@ def test_honcho_sync_turn_does_not_suppress_genuine_user_messages():
 
         assert provider._sync_thread is not None, f"genuine message suppressed: {msg[:60]!r}"
         assert manager_calls != [], f"genuine message suppressed: {msg[:60]!r}"
+
+
+def test_strip_steer_wrapper_unwraps_out_of_band_marker():
+    """The OUT-OF-BAND steer wrapper carries genuine user text — unwrap it, don't drop it."""
+    from agent.prompt_builder import format_steer_marker
+    from plugins.memory.honcho import _strip_steer_wrapper
+
+    wrapped = format_steer_marker("i added credits").lstrip()
+    assert _strip_steer_wrapper(wrapped) == "i added credits"
+
+
+def test_strip_steer_wrapper_passthrough_for_unwrapped_text():
+    """Text without the wrapper (the common case) is returned unchanged."""
+    from plugins.memory.honcho import _strip_steer_wrapper
+
+    assert _strip_steer_wrapper("just a normal message") == "just a normal message"
+
+
+def test_honcho_sync_turn_stores_unwrapped_steer_text():
+    """A mid-turn /steer must be ingested as its inner text, not suppressed and not stored
+    with the trust marker still attached."""
+    from agent.prompt_builder import format_steer_marker
+
+    provider = HonchoMemoryProvider()
+    stored = []
+
+    class FakeSession:
+        def add_message(self, role, content, author_peer_id=None):
+            stored.append((role, content))
+
+    class Manager:
+        def get_or_create(self, session_key, **kwargs):
+            return FakeSession()
+
+        def resolve_author_peer_id(self, session_key, author_id, author_name=None):
+            return None
+
+        def save(self, session):
+            pass
+
+    provider._config = _configured_tools_config(init_on_session_start=True)
+    provider._manager = Manager()
+    provider._session_key = "test-session"
+    provider._session_initialized = True
+
+    provider.sync_turn(format_steer_marker("i added credits").lstrip(), "got it")
+    provider._sync_thread.join(timeout=5.0)
+
+    assert stored == [("user", "i added credits"), ("assistant", "got it")]
 
 
 def test_honcho_sync_turn_skips_empty_content():

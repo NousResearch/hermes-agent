@@ -18,7 +18,7 @@ from typing import Iterator, List, Optional, Tuple
 from tools.plugin_guard_context import (
     STEP_DOWN, is_agent_facing, is_base64_media, is_ci_workflow, is_data_decode, is_doc_prose,
     is_inert_fixture_line, is_loopback_only, is_pip_install_in_prose_literal, is_regex_alternation_token,
-    is_self_uninstall_doc, is_test_tree, prose_cap)
+    is_self_uninstall_doc, is_test_tree, js_block_comment_lines, prose_cap)
 from tools.skills_guard import (
     Finding, ScanResult, SUSPICIOUS_BINARY_EXTENSIONS, _determine_verdict, format_scan_report,
     scan_file)
@@ -163,6 +163,7 @@ def _filter_findings(findings: List[Finding], rel_path: str, file_path: Path) ->
     # A CI workflow definition runs on the forge's runner, not the host: same cap as a README.
     doc_prose = is_doc_prose(rel_path) or is_ci_workflow(rel_path)
     lines = _file_lines(file_path) if findings else []
+    block_comment_lines = js_block_comment_lines(lines) if is_js else set()
     out: List[Finding] = []
     for f in findings:
         if is_code and f.pattern_id in CODE_EXEMPT_PATTERN_IDS:
@@ -175,7 +176,7 @@ def _filter_findings(findings: List[Finding], rel_path: str, file_path: Path) ->
             f.severity = DOC_PROSE_DEMOTIONS[f.pattern_id]
         line = lines[f.line - 1] if 0 < f.line <= len(lines) else f.match
         f.severity = _context_severity(f, rel_path, line, doc_prose, is_code)
-        if _is_defensive_documentation(f, rel_path):
+        if _is_defensive_documentation(f, rel_path) or f.line in block_comment_lines:
             f.severity = _comment_severity(f)
         # Last and critical-only: a one-step cap that can never re-raise a finding an
         # earlier remap already lowered.

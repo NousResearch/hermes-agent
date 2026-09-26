@@ -182,4 +182,16 @@ describe('resolveOutsideAsar', () => {
       expect(resolveOutsideAsar(untouched)).toBe(untouched)
     }
   })
+
+  // A complete segment means both sides. With only the trailing guard,
+  // `app.asar` matched inside a longer name and `/opt/my-app.asar/x` became
+  // `/opt/my-app.asar.unpacked/x`, a directory nothing ships.
+  it('requires a separator before app.asar as well', () => {
+    for (const untouched of [
+      'file:///opt/my-app.asar/node_modules/get-windows/index.js',
+      'C:\\Users\\me\\vendor-app.asar\\node_modules\\get-windows\\index.js'
+    ]) {
+      expect(resolveOutsideAsar(untouched)).toBe(untouched)
+    }
+  })
 })

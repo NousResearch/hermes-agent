@@ -82,6 +82,7 @@ import { MinimizeToTraySetting } from './minimize-to-tray-setting'
 import { PetSettings } from './pet-settings'
 import { ListRow, RowFootnoteAction, SectionHeading, SettingsContent, ToggleRow } from './primitives'
 import { SETTING_IDS, settingElementId } from './settings-manifest'
+import { SidebarNavRowsSetting } from './sidebar-nav-rows-setting'
 import { TerminalFontSetting } from './terminal-font-setting'
 import { useSettingDeepLink } from './use-setting-deep-link'
 
@@ -710,6 +711,14 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
               id={settingElementId(ids.interfaceMode)}
               title={t.interfaceMode.title}
             />
+          )}
+
+          {/* Per-row companion to Interface mode: which rows THIS user hides is
+              a choice independent of which rows a mode shows. */}
+          {show('window-layout') && (
+            <div id={settingElementId(ids.sidebarNav)}>
+              <SidebarNavRowsSetting />
+            </div>
           )}
 
           {show('window-layout') && (

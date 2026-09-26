@@ -133,7 +133,12 @@ import { $focusedSessionIsTile, $focusedStoredSessionId, $workingSessionIds } fr
 import { ackAllSessionsRead } from '@/store/session-unread'
 import { markSessionUnread } from '@/store/session-unread-remote'
 import { $archivedSessions, loadArchivedSessions } from '@/store/sidebar-archive'
-import { applySidebarNavPrefs, SIDEBAR_NAV_PREFS_AREA } from '@/store/sidebar-nav'
+import {
+  $sidebarNavHidden,
+  applySidebarNavPrefs,
+  applyUserNavHidden,
+  SIDEBAR_NAV_PREFS_AREA
+} from '@/store/sidebar-nav'
 import { $sidebarSessionRankIds } from '@/store/sidebar-sort'
 
 import {
@@ -432,6 +437,11 @@ export function ChatSidebar({
 
   const interfaceMode = useStore($interfaceMode)
   const showsAdvancedChrome = useStore($showsAdvancedChrome)
+  // The user's own per-row hide (#119965): which rows THIS user never wants,
+  // independent of Interface mode. Renderer state like every other sidebar
+  // preference; the Settings toggle / ⌘K / keybinds reach a hidden view
+  // without the row.
+  const userHidden = useStore($sidebarNavHidden)
 
   // Nav preferences (`sidebarNav.prefs` contributions): a plugin may hide rows
   // or re-order them. Merged here, at render, from the registry — so the
@@ -439,9 +449,17 @@ export function ChatSidebar({
   // disposes its contribution and the rows come straight back.
   const navPrefs = useContributions(SIDEBAR_NAV_PREFS_AREA)
 
+  // Order matters: mode tier, then the USER's hide, then contribution
+  // arbitration. The user's hidden set filters first so a contribution's
+  // `order` can never resurrect a row the user hid — it is not there to
+  // place. Arbitration then governs only what the user left on screen.
   const navItems = useMemo(
-    () => applySidebarNavPrefs([...SIDEBAR_NAV, ...contributedNav].filter(shownInMode(interfaceMode)), navPrefs),
-    [contributedNav, interfaceMode, navPrefs]
+    () =>
+      applySidebarNavPrefs(
+        applyUserNavHidden([...SIDEBAR_NAV, ...contributedNav].filter(shownInMode(interfaceMode)), userHidden),
+        navPrefs
+      ),
+    [contributedNav, interfaceMode, userHidden, navPrefs]
   )
 
   const panesFlipped = useStore($panesFlipped)
@@ -1681,7 +1699,7 @@ export function ChatSidebar({
                 // New session + route-backed pages can open in a split —
                 // right-click for the directional "Open in split" submenu.
                 return (
-                  <SidebarMenuItem key={item.id}>
+                  <SidebarMenuItem data-nav-id={item.id} key={item.id}>
                     {isNewSession || item.route ? (
                       <ContextMenu>
                         <ContextMenuTrigger asChild>{button}</ContextMenuTrigger>

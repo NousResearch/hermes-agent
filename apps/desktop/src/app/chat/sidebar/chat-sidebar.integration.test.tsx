@@ -23,7 +23,7 @@ import {
   $workspaceCwdOwner
 } from '@/store/session'
 import { $removedSessionIds } from '@/store/session-removal'
-import { SIDEBAR_NAV_PREFS_AREA } from '@/store/sidebar-nav'
+import { $sidebarNavHidden, SIDEBAR_NAV_IDS, SIDEBAR_NAV_PREFS_AREA } from '@/store/sidebar-nav'
 import { makeSessionInfo } from '@/test/session-info'
 
 import { type AppView, ROUTES_AREA, SIDEBAR_NAV_AREA } from '../../routes'
@@ -197,6 +197,67 @@ describe('ChatSidebar navigation activity', () => {
 
     act(() => dispose())
     expect(screen.getByRole('button', { name: 'Kanban' })).toBeTruthy()
+  })
+})
+
+// #119965: the user's own per-row hide is renderer state — the hidden row
+// drops out at render, no plugin contribution can resurrect it, and every
+// rendered row carries a stable `data-nav-id` for themes/plugins to target.
+describe('ChatSidebar user-hidden nav rows', () => {
+  afterEach(() => {
+    cleanup()
+    $sidebarNavHidden.set([])
+  })
+
+  it('drops the hidden row while its siblings render, and restores it when unhidden', () => {
+    $sidebarNavHidden.set(['messaging'])
+
+    renderSidebar('/', 'chat')
+
+    expect(screen.queryByRole('button', { name: 'Messaging' })).toBeNull()
+    // Hiding one row is the user's choice about that row, not the group.
+    expect(screen.getByRole('button', { name: 'Capabilities' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Artifacts' })).toBeTruthy()
+
+    act(() => $sidebarNavHidden.set([]))
+    expect(screen.getByRole('button', { name: 'Messaging' })).toBeTruthy()
+  })
+
+  it('tags each rendered row with data-nav-id, and the hidden row is absent', () => {
+    const root = renderSidebar('/', 'chat').container
+
+    const navIds = () => [...root.querySelectorAll<HTMLElement>('[data-nav-id]')].map(node => node.dataset.navId)
+
+    // Exact equality against the store's canonical list: a core row added to
+    // `SIDEBAR_NAV` without joining `SIDEBAR_NAV_IDS` (or vice versa) fails
+    // here, which is what keeps Settings (it consumes the same list) pinned
+    // to what the sidebar actually renders.
+    expect(navIds()).toEqual([...SIDEBAR_NAV_IDS])
+
+    act(() => $sidebarNavHidden.set(['messaging']))
+    expect(navIds()).toEqual(SIDEBAR_NAV_IDS.filter(id => id !== 'messaging'))
+    expect(root.querySelector('[data-nav-id="messaging"]')).toBeNull()
+  })
+
+  // Composition guard: the user's hidden set filters BEFORE contribution
+  // arbitration, so a contribution's `order` naming a user-hidden row is inert
+  // — the row is not there to place — while the arbitration still governs the
+  // rows the user left on screen.
+  it('never lets a contribution order resurrect a row the user hid', () => {
+    $sidebarNavHidden.set(['messaging'])
+
+    const root = renderSidebar('/', 'chat').container
+
+    let dispose = () => {}
+
+    act(() => {
+      dispose = registry.register({ area: SIDEBAR_NAV_PREFS_AREA, id: 'prefs', data: { order: ['messaging'] } })
+    })
+    expect(screen.queryByRole('button', { name: 'Messaging' })).toBeNull()
+    expect(root.querySelector('[data-nav-id="messaging"]')).toBeNull()
+
+    act(() => dispose())
+    expect(screen.queryByRole('button', { name: 'Messaging' })).toBeNull()
   })
 })
 

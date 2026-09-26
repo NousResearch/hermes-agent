@@ -1132,6 +1132,9 @@ export const en: Translations = {
         `Scales text and controls across the whole app. Cmd/Ctrl with +, - and 0 also works. Current: ${percent}%.`,
       sessionDensityTitle: 'Session List Density',
       sessionDensityDesc: 'Choose how much context appears beneath session titles in the sidebar.',
+      sidebarNavTitle: 'Sidebar Navigation',
+      sidebarNavDesc:
+        'Choose which rows show in the sidebar, independent of Interface mode. Hidden rows stay reachable from their keybinds and the command palette.',
       sessionDensityCompact: 'Compact',
       sessionDensityComfortable: 'Comfortable',
       sessionDensityDetailed: 'Detailed',

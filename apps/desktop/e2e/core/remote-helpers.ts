@@ -32,6 +32,16 @@ export interface RemoteBackend {
 }
 
 function python(): string {
+  const selected = process.env.HERMES_E2E_PYTHON
+
+  if (selected) {
+    if (!fs.existsSync(selected)) {
+      throw new Error(`selected E2E Python does not exist: ${selected}`)
+    }
+
+    return selected
+  }
+
   for (const venv of ['.venv', 'venv']) {
     const candidate = path.join(REPO_ROOT, venv, 'bin', 'python')
 
@@ -40,7 +50,7 @@ function python(): string {
     }
   }
 
-  throw new Error(`no Python venv under ${REPO_ROOT} (run uv sync)`)
+  throw new Error(`no selected E2E Python or checkout venv under ${REPO_ROOT} (source ./activate in an isolated HERMES_HOME)`)
 }
 
 function freePort(): Promise<number> {

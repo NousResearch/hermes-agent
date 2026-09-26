@@ -97,7 +97,7 @@ def desktop_surface_hits(plugin_dir: Path) -> List[str]:
         if not is_desktop_surface(rel):
             continue
         try:
-            source = js.read_text(encoding="utf-8", errors="replace")
+            source = js.read_text(encoding="utf-8-sig", errors="replace")
         except OSError:
             continue
         hits.extend(f"{rule} ({rel}:{line})" for rule, line in desktop_surface_findings(source))

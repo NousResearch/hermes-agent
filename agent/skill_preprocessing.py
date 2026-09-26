@@ -6,6 +6,7 @@ import re
 import subprocess
 from pathlib import Path
 
+from agent.compression_marker import elide
 from hermes_cli._subprocess_compat import IS_WINDOWS, windows_hide_flags
 
 logger = logging.getLogger(__name__)
@@ -81,9 +82,7 @@ def run_inline_shell(command: str, cwd: Path | None, timeout: int) -> str:
         # rc!=0 with no output at all is indistinguishable from a legit empty result; it is the
         # "interpreter never ran the command" signature (WSL stub without a distro) — say so.
         return f"[inline-shell exit {completed.returncode} with no output: {command}]"
-    if len(output) > _INLINE_SHELL_MAX_OUTPUT:
-        output = output[:_INLINE_SHELL_MAX_OUTPUT] + "...[truncated]"
-    return output
+    return elide(output, _INLINE_SHELL_MAX_OUTPUT)
 
 
 def expand_inline_shell(content: str, skill_dir: Path | None, timeout: int) -> str:

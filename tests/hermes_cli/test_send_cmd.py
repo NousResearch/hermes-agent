@@ -13,11 +13,9 @@ import pytest
 
 from hermes_cli import send_cmd
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
 
 def _parse(argv):
     """Build the top-level parser and return the parsed args for ``argv``."""
@@ -27,7 +25,6 @@ def _parse(argv):
     subparsers = parser.add_subparsers(dest="command")
     send_cmd.register_send_subparser(subparsers)
     return parser.parse_args(["send", *argv])
-
 
 class _FakeTool:
     """Replacement for ``tools.send_message_tool.send_message_tool``."""
@@ -39,7 +36,6 @@ class _FakeTool:
     def __call__(self, args, **_kw):
         self.calls.append(dict(args))
         return json.dumps(self.payload)
-
 
 @pytest.fixture
 def fake_tool(monkeypatch):
@@ -57,11 +53,9 @@ def fake_tool(monkeypatch):
     monkeypatch.setitem(sys.modules, "tools.send_message_tool", mod)
     return fake
 
-
 # ---------------------------------------------------------------------------
 # Happy path
 # ---------------------------------------------------------------------------
-
 
 @pytest.fixture
 def whatsapp_bridge(monkeypatch):
@@ -125,9 +119,7 @@ def whatsapp_bridge(monkeypatch):
     monkeypatch.setattr(aiohttp, "ClientSession", lambda *_args, **_kwargs: BridgeSession())
     return SimpleNamespace(calls=calls, state=state)
 
-
 _GROUP = "whatsapp:120363000000000000@g.us"
-
 
 @pytest.mark.parametrize("argv", [
     ["--to", "telegram", "--mention", "15550000001", "hello"],
@@ -143,7 +135,6 @@ def test_whatsapp_mention_rejections_never_reach_the_bridge(whatsapp_bridge, cap
     assert exc.value.code == 2
     assert "mention" in capsys.readouterr().err.lower()
     assert whatsapp_bridge.calls == []
-
 
 def test_whatsapp_mentions_ride_the_first_bridge_payload_only(whatsapp_bridge, tmp_path, capsys):
     """Across chunked text and text+media, exactly one bridge payload carries the normalized,
@@ -180,17 +171,9 @@ def test_whatsapp_mentions_ride_the_first_bridge_payload_only(whatsapp_bridge, t
     assert "does not support native mentions" in capsys.readouterr().err
     assert calls == []
 
-
-
-
-
-
-
-
 # ---------------------------------------------------------------------------
 # --list
 # ---------------------------------------------------------------------------
-
 
 def test_list_includes_configured_platform_without_discovered_channels(
     monkeypatch, capsys
@@ -232,7 +215,6 @@ def test_list_includes_configured_platform_without_discovered_channels(
     assert "simplex" in out
     assert "no channels discovered yet" in out
 
-
 def test_list_json_includes_configured_platform(monkeypatch, capsys):
     import types
     import sys
@@ -264,18 +246,13 @@ def test_list_json_includes_configured_platform(monkeypatch, capsys):
     assert "local" not in payload["platforms"]  # infra pseudo-platform skipped
     assert payload["platforms"]["telegram"]  # discovered entries preserved
 
-
 # ---------------------------------------------------------------------------
 # Parser registration contract
 # ---------------------------------------------------------------------------
 
-
-
-
 # ---------------------------------------------------------------------------
 # Env loader
 # ---------------------------------------------------------------------------
-
 
 def test_load_hermes_env_bridges_config_yaml_scalars(tmp_path, monkeypatch):
     """Top-level config.yaml scalars should be bridged into os.environ.
@@ -309,7 +286,6 @@ def test_load_hermes_env_bridges_config_yaml_scalars(tmp_path, monkeypatch):
 
     assert os.environ.get("SOME_TOKEN") == "abc123"
     assert os.environ.get("TELEGRAM_HOME_CHANNEL") == "5550001111"
-
 
 def test_load_hermes_env_utf8_bom_preserves_first_key(tmp_path, monkeypatch):
     """A leading UTF-8 BOM must not mangle the first .env key name.
@@ -454,7 +430,6 @@ def test_load_hermes_env_bom_only_env_is_noop(tmp_path, monkeypatch):
     added = {k: v for k, v in os.environ.items() if k not in before}
     assert "\ufeff" not in "".join(added)
 
-
 def test_help_and_empty_list_hint_name_the_resolved_home(tmp_path, monkeypatch, capsys):
     """``--help`` and the ``--list`` empty-state hint derive their paths from the resolved home instead of a
     hardcoded ``~/.hermes`` (absent on a Windows install or under a profile home)."""
@@ -484,5 +459,3 @@ def test_help_and_empty_list_hint_name_the_resolved_home(tmp_path, monkeypatch, 
     out = capsys.readouterr().out
     assert str(home / "channel_directory.json") in out
     assert "~/.hermes" not in out
-
-

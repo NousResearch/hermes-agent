@@ -51,11 +51,13 @@ def runtime_host_value(prompt: str, label: str) -> str:
 
 
 def identity_line_value(prompt: str, label: str) -> str:
-    """Last ``Label: value`` line in the identity portion (the final runtime block is embedder
-    prose, never identity).  Last match wins — safe only for the volatile-tier trailer fields."""
+    """``Label: value`` from the trailer paragraph that ends the identity portion (the final
+    runtime block is embedder prose, never identity).  Memory, context files and plugin prose
+    come earlier and may hold ``Label:`` lines of their own; they are never read as identity,
+    even when the trailer omits the label because its value is empty."""
     prefix = f"{label}:"
-    matches = [line[len(prefix):].strip() for line in split_runtime_boundary(prompt)[0].splitlines()
-               if line.startswith(prefix)]
+    trailer = split_runtime_boundary(prompt)[0].rsplit("\n\n", 1)[-1]
+    matches = [line[len(prefix):].strip() for line in trailer.splitlines() if line.startswith(prefix)]
     return matches[-1] if matches else ""
 
 

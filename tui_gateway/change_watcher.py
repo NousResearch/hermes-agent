@@ -20,7 +20,9 @@ def resolve_skin() -> dict:
             "light_colors": skin.light_colors, "dark_colors": skin.dark_colors,
             "branding": skin.branding, "banner_logo": skin.banner_logo,
             "banner_hero": skin.banner_hero, "tool_prefix": skin.tool_prefix,
-            "help_header": (skin.branding or {}).get("help_header", "")}
+            "help_header": (skin.branding or {}).get("help_header", ""),
+            # Raw user CSS for the desktop GUI's <style> tag (32 KiB cap in the skin engine).
+            "customCSS": skin.custom_css}
     except Exception:
         return {}
 
@@ -198,6 +200,10 @@ _CHANGE_WATCHES: dict[str, tuple[float, Any, Any]] = {
     "pet.changed": (2.0, _pet_sig, _pet_changed_payload),
     "cron.changed": (1.0, lambda: _home_mtime_ns("cron", "jobs.json"), lambda: {}),
     "sessions.changed": (0.5, _sessions_sig, lambda: {}),
+    # Projects created/switched by CLI or agent tooling write projects.db without any
+    # state.db movement, so sessions.changed never fires and the desktop Projects
+    # sidebar goes stale until a manual refresh (#56757).
+    "projects.changed": (1.0, lambda: _home_mtime_ns("projects.db"), lambda: {}),
     "platforms.changed": (2.0, lambda: _home_mtime_ns("gateway_state.json"), lambda: {}),
     "pairing.changed": (2.0, _pairing_sig, lambda: {}),
     # 1s so a queued DM envelope reaches the Desktop's push-triggered drain fast.

@@ -21,7 +21,7 @@ import sys
 from pathlib import Path
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 
 A2A_CLIENT_TOOLS = {
@@ -70,7 +70,7 @@ def _write_platform_plugin(
     if provides_tools:
         manifest_data["provides_tools"] = provides_tools
     (plugin_dir / "plugin.yaml").write_text(
-        yaml.dump(manifest_data),
+        yaml.safe_dump(manifest_data),
         encoding="utf-8",
     )
 

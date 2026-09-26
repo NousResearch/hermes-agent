@@ -19,7 +19,7 @@ import json
 import zipfile
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 
 @pytest.fixture(autouse=True)
@@ -391,7 +391,8 @@ def test_local_models_quickstart_activates_into_the_named_profile(client, homes,
     monkeypatch.setattr(lm.hardware, "probe_budget", lambda **_kw: None)
     monkeypatch.setattr(lm, "_quickstart_target", lambda _body, _budget: (entry, variant))
     monkeypatch.setattr(lm, "_runtime_target", lambda *_a: ("b1", "cpu"))
-    monkeypatch.setattr(lm.binaries, "installed_tags", lambda: ["b1"])
+    monkeypatch.setattr(lm, "_download_plan", lambda *_a: [])
+    monkeypatch.setattr(lm.binaries, "installed_engine", lambda _backend: "installed")
     monkeypatch.setattr(lm.bootstrap, "staged_model_ids", lambda: {"m1-q4"})
     monkeypatch.setattr(lm, "_set_runtime_enabled", lambda _on: (lambda: None))
     monkeypatch.setattr(lm, "_ensure_server", lambda *_a, **_k: None)
@@ -416,19 +417,26 @@ def test_curator_pause_writes_the_named_profiles_state(client, homes):
     assert not (homes["launch"] / "skills" / ".curator_state").exists()
 
 
-def test_forced_update_check_busts_the_named_profiles_cache(client, homes, monkeypatch):
-    from hermes_cli import banner
+def test_forced_update_check_runs_in_the_named_profiles_scope(client, homes, monkeypatch):
+    from hermes_cli import source_check
+    from hermes_cli.config import get_hermes_home
     from hermes_cli.web_routers import actions
 
-    monkeypatch.setattr(banner, "check_for_updates", lambda: 0)
+    seen = []
+
+    def check(*, force):
+        seen.append((get_hermes_home(), force))
+        return {"behind": 0, "commits": []}
+
+    monkeypatch.setattr(source_check, "check_for_updates", check)
     monkeypatch.setattr(actions, "_dashboard_local_update_managed_externally", lambda: False)
     monkeypatch.setattr(actions, "detect_install_method", lambda _root: "git")
 
     resp = client.get("/api/hermes/update/check?force=true&profile=worker_beta")
 
     assert resp.status_code == 200, resp.text
-    assert not (homes["worker_beta"] / ".update_check").exists()
-    assert (homes["launch"] / ".update_check").exists()
+    assert resp.json()["behind"] == 0
+    assert seen == [(homes["worker_beta"], True)]
 
 
 def test_egress_status_reads_the_named_profiles_config(client, homes, monkeypatch):

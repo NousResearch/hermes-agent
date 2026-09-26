@@ -89,7 +89,15 @@ export function createMinimizeToTray(options: Options) {
         win.restore()
       }
 
-      win.showInactive()
+      if (process.platform === 'win32') {
+        // showInactive() never activates the window. A restored-but-inactive
+        // window can come back painted yet dead to input (AppHangB1, #119252),
+        // so genuinely activate it like focusWindow in main.ts does.
+        win.show()
+        win.focus()
+      } else {
+        win.showInactive()
+      }
     }
   }
 
@@ -182,6 +190,10 @@ export function createMinimizeToTray(options: Options) {
     windows.add(win)
 
     const hide = () => {
+      if (win.isDestroyed()) {
+        return false
+      }
+
       if (!enabled || !status().available || quitting || options.isQuittingForHandoff()) {
         return false
       }
@@ -198,7 +210,23 @@ export function createMinimizeToTray(options: Options) {
       return true
     }
 
-    win.on('minimize', hide)
+    // Hide past the native minimize dispatch, not inside it: hiding
+    // synchronously here re-enters window-state changes mid-flight and on
+    // Windows wedges isMinimized(), so the later restore takes the
+    // restore-on-hidden path back to a painted-but-dead window (#119252).
+    // Guards are re-evaluated at fire time inside hide(); the close handler
+    // below keeps its synchronous hide so preventDefault still works.
+    win.on('minimize', () => {
+      setImmediate(() => {
+        // The user may have restored the window in the meantime (taskbar or
+        // shortcut); a stale hide must not snatch it back.
+        if (!win.isDestroyed() && !win.isMinimized() && win.isVisible()) {
+          return
+        }
+
+        hide()
+      })
+    })
 
     if (closeToTray) {
       win.on('close', event => {

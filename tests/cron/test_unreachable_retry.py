@@ -75,6 +75,37 @@ def test_unreachable_failure_pulls_next_run_earlier_then_ladder_exhausts(
     assert weekly["id"] not in {due["id"] for due in get_due_jobs()}
 
 
+def test_will_retry_mirrors_plan_retry_yield(tmp_cron_home):
+    """``will_retry`` answers True only when ``plan_retry`` would park a re-run. Called after
+    ``mark_job_run`` — valid, the predictor reads only persisted job state."""
+    fast = create_job("fast poll", "every 2m")
+    assert mark_job_run(fast["id"], False, "ConnectError: dns", model_unreachable=True)
+    j = get_job(fast["id"])
+    assert j is not None
+    assert j.get(ur.STATE_KEY) is None, "2m cadence beats the 5m rung: plan_retry yields"
+    assert ur.will_retry(j) is False, "yielded: no re-run is scheduled, notice must go out"
+
+    slow = create_job("nightly report", "every 24h")
+    assert mark_job_run(slow["id"], False, "ConnectError: dns", model_unreachable=True)
+    js = get_job(slow["id"])
+    assert js is not None
+    assert js[ur.STATE_KEY]["attempt"] == 1
+    assert ur.will_retry(js) is True, "5m rung beats the 24h cadence: re-run is scheduled"
+
+    mid = create_job("ten minute sync", "every 10m")
+    assert mark_job_run(mid["id"], False, "ConnectError: dns", model_unreachable=True)
+    jm = get_job(mid["id"])
+    assert jm is not None
+    # 10m cadence beats the 15m and 30m rungs: the ladder can never climb past attempt 1,
+    # so the exhaustion escape is unreachable. At attempt 1 the next (15m) rung loses to the
+    # 10m run, so this failure's notice goes out rather than being held for a retry.
+    assert jm[ur.STATE_KEY]["attempt"] == 1
+    assert ur.will_retry(jm) is False, "10m cadence beats the 15m rung: yielded, notice goes out"
+
+    last = create_job("final run", "every 24h", repeat=1)
+    assert ur.will_retry(get_job(last["id"])) is False, "final finite repeat completes the job"
+
+
 def test_reaching_the_model_resets_ladder_and_oneshots_never_retry(tmp_cron_home):
     """Any run that reached the model clears retry state; one-shots (pre-claimed
     dispatch, at-most-times #38758) never enter the ladder."""

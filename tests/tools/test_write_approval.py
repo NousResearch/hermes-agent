@@ -14,7 +14,6 @@ import shutil
 
 import pytest
 
-
 @pytest.fixture
 def hermes_home(monkeypatch):
     d = tempfile.mkdtemp(prefix="hermes_wa_test_")
@@ -24,21 +23,15 @@ def hermes_home(monkeypatch):
     yield home
     shutil.rmtree(d, ignore_errors=True)
 
-
 def _set_approval(subsystem, enabled):
     import hermes_cli.config as cfg
     c = cfg.load_config()
     c.setdefault(subsystem, {})["write_approval"] = enabled
     cfg.save_config(c)
 
-
 # ---------------------------------------------------------------------------
 # Config resolution
 # ---------------------------------------------------------------------------
-
-
-
-
 
 def test_list_pending_skips_non_dict_record(hermes_home):
     """A parseable-but-non-object pending file must be skipped, not crash the sort."""
@@ -50,7 +43,6 @@ def test_list_pending_skips_non_dict_record(hermes_home):
     records = wa.list_pending("memory")
     assert len(records) == 1 and records[0]["payload"]["content"] == "ok"
     assert wa.get_pending("memory", "bad") is None
-
 
 def test_normalize_enabled_coerces_values():
     from tools import write_approval as wa
@@ -66,7 +58,6 @@ def test_normalize_enabled_coerces_values():
     assert wa._normalize_enabled("garbage") is False
     assert wa._normalize_enabled(None) is False
 
-
 # ---------------------------------------------------------------------------
 # Memory gate
 # ---------------------------------------------------------------------------
@@ -80,7 +71,6 @@ def test_memory_gate_off_allows_write(hermes_home):
     assert r["success"] is True
     assert r["entry_count"] == 1
     assert wa.pending_count("memory") == 0
-
 
 def test_cli_memory_approve_without_live_agent_uses_fresh_store(hermes_home, capsys):
     """#46783: ``/memory approve`` from a context with no live agent (e.g. the
@@ -110,7 +100,6 @@ def test_cli_memory_approve_without_live_agent_uses_fresh_store(hermes_home, cap
     # The approved write landed in a freshly loaded on-disk store (MEMORY.md).
     reloaded = MemoryStore(); reloaded.load_from_disk()
     assert any("remember the launch date" in e for e in reloaded.memory_entries)
-
 
 def test_load_on_disk_store_honors_configured_limits_and_permissions(hermes_home, monkeypatch):
     """Fresh approval stores must match the live agent's limits and target gates."""
@@ -146,11 +135,9 @@ def test_load_on_disk_store_honors_configured_limits_and_permissions(hermes_home
     assert fallback.memory_enabled is True
     assert fallback.user_profile_enabled is True
 
-
 # ---------------------------------------------------------------------------
 # Shared command handler
 # ---------------------------------------------------------------------------
-
 
 def test_handle_approve_all(hermes_home):
     from hermes_cli.write_approval_commands import handle_pending_subcommand
@@ -165,7 +152,6 @@ def test_handle_approve_all(hermes_home):
     assert "Approved 2" in out
     assert wa.pending_count("memory") == 0
     assert len(store.user_entries) == 2
-
 
 def test_handle_approve_surfaces_overwritten_entry(hermes_home):
     """#117952: on the /memory approve surface a partial-entry replace must show the
@@ -261,7 +247,6 @@ def test_approve_refuses_unpinned_legacy_remove(hermes_home):
     assert _REVIEWED in load_on_disk_store().memory_entries
     assert wa.get_pending(wa.MEMORY, pid) is not None
 
-
 def test_handle_approval_on(hermes_home):
     from hermes_cli.write_approval_commands import handle_pending_subcommand
     from tools import write_approval as wa
@@ -272,7 +257,6 @@ def test_handle_approval_on(hermes_home):
     )
     assert captured["enabled"] is True
     assert "on" in out
-
 
 def test_handle_approval_off(hermes_home):
     from hermes_cli.write_approval_commands import handle_pending_subcommand
@@ -285,7 +269,6 @@ def test_handle_approval_off(hermes_home):
     assert captured["enabled"] is False
     assert "off" in out
 
-
 # ---------------------------------------------------------------------------
 # Inline (interactive CLI) approval path — regression for the bug where the
 # per-thread approval callback was never passed to prompt_dangerous_approval,
@@ -297,7 +280,6 @@ def approval_callback_cleanup():
     yield
     from tools.terminal_tool import set_approval_callback
     set_approval_callback(None)
-
 
 def test_memory_inline_approve_writes(hermes_home, approval_callback_cleanup):
     from tools.memory_tool import memory_tool, MemoryStore
@@ -321,7 +303,6 @@ def test_memory_inline_approve_writes(hermes_home, approval_callback_cleanup):
     assert len(calls) == 1
     assert "approved fact" in calls[0][0]
 
-
 def test_memory_inline_deny_blocks(hermes_home, approval_callback_cleanup):
     from tools.memory_tool import memory_tool, MemoryStore
     from tools.terminal_tool import set_approval_callback
@@ -336,7 +317,6 @@ def test_memory_inline_deny_blocks(hermes_home, approval_callback_cleanup):
     assert store.memory_entries == []
     assert wa.pending_count("memory") == 0  # denied, not staged
 
-
 def test_memory_invalid_params_rejected_before_staging(hermes_home):
     # Param validation must run BEFORE the gate so a broken write is rejected
     # immediately instead of staged and failing at approve time.
@@ -347,5 +327,3 @@ def test_memory_invalid_params_rejected_before_staging(hermes_home):
     r = json.loads(memory_tool("add", "memory", None, store=store))
     assert r["success"] is False
     assert wa.pending_count("memory") == 0
-
-

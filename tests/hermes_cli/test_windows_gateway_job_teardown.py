@@ -20,15 +20,11 @@ Two fixes under test:
    updater's Job Object teardown.
 """
 
-
-
 import hermes_cli.gateway as gateway
-
 
 # ---------------------------------------------------------------------------
 # 1. Watcher template contract
 # ---------------------------------------------------------------------------
-
 
 def _captured_watcher_source(monkeypatch) -> str:
     """Spawn the watcher with a mocked Popen and return the inlined -c source."""
@@ -51,9 +47,7 @@ def _captured_watcher_source(monkeypatch) -> str:
     assert argv[1] == "-c"
     return argv[2]
 
-
 class TestWatcherRespawnTemplate:
-
 
     def test_respawn_source_compiles(self, monkeypatch):
         """The inlined -c template is built via str.format over a
@@ -61,9 +55,6 @@ class TestWatcherRespawnTemplate:
         src = _captured_watcher_source(monkeypatch)
         compile(src, "<watcher>", "exec")
 
-
 # ---------------------------------------------------------------------------
 # 2. Post-update resume liveness gate
 # ---------------------------------------------------------------------------
-
-

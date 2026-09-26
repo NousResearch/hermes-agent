@@ -17,7 +17,6 @@ import pytest
 
 from agent import anthropic_credentials as ac
 
-
 def test_dead_grant_is_classified_and_not_replayed_at_other_endpoints(monkeypatch):
     calls: list = []
 
@@ -36,9 +35,6 @@ def test_dead_grant_is_classified_and_not_replayed_at_other_endpoints(monkeypatc
     assert info.value.code == "invalid_grant" and "revoked" in str(info.value)
     assert calls == ["https://a.example/oauth/token"]  # a dead grant is not replayed at the fallback endpoint
     assert not ac.is_terminal_anthropic_refresh_error(TimeoutError("timed out"))
-
-
-
 
 def test_claude_code_refresher_reports_dead_grant_once_per_process(monkeypatch, caplog):
     """Later attempts with the same dead refresh token neither replay it at the endpoint nor re-warn; a rotated
@@ -63,7 +59,6 @@ def test_claude_code_refresher_reports_dead_grant_once_per_process(monkeypatch, 
     assert ac._refresh_oauth_token({"accessToken": "old", "refreshToken": "rt-new"}) is None
     assert posts == ["rt-dead", "rt-new"]
 
-
 def test_claude_code_credentials_path_honours_claude_config_dir(monkeypatch, tmp_path):
     """The documented opt-out: CLAUDE_CONFIG_DIR relocates the borrowed file exactly as the Claude CLI does."""
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "cc"))
@@ -72,7 +67,3 @@ def test_claude_code_credentials_path_honours_claude_config_dir(monkeypatch, tmp
     assert ac.claude_code_credentials_path() == Path.home() / ".claude" / ".credentials.json"
     monkeypatch.delenv("CLAUDE_CONFIG_DIR")
     assert ac.claude_code_credentials_path() == Path.home() / ".claude" / ".credentials.json"
-
-
-
-

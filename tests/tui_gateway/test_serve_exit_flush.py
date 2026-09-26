@@ -23,7 +23,6 @@ import pytest
 
 from tui_gateway import server
 
-
 class _FlushAgent:
     """Minimal agent exposing the real ``_persist_session`` flush contract."""
 
@@ -38,7 +37,6 @@ class _FlushAgent:
 
     def _persist_session(self, messages, conversation_history=None):
         self.flush_calls.append(list(messages))
-
 
 @pytest.fixture
 def registered_session():
@@ -59,14 +57,13 @@ def registered_session():
         for sid in registered:
             server._sessions.pop(sid, None)
 
-
 def _restore_signal_state(prev_handlers):
     for signum, handler in prev_handlers.items():
         signal.signal(signum, handler)
     server._exit_flush_prev_handlers.clear()
     server._exit_flush_handlers_installed = False
 
-
+@pytest.mark.platforms("posix")
 def test_sigterm_flushes_populated_session_into_state_db(
     registered_session, tmp_path, monkeypatch
 ):
@@ -111,7 +108,7 @@ def test_sigterm_flushes_populated_session_into_state_db(
     assert agent.flush_calls, "SIGTERM must flush in-memory sessions"
     rows = db.get_messages(sid)
     assert any("survive the kill" in str(r.get("content", "")) for r in rows)
-
+    db.close()
 
 def test_ignored_sigint_leaves_terminal_commands_runnable():
     """SIGINT inherited as SIG_IGN (a server started as ``cmd &`` from a non-interactive shell) ends
@@ -147,7 +144,6 @@ def test_exit_flush_is_bounded(registered_session):
     server._flush_sessions_before_exit(budget_s=0.3)
     elapsed = time.monotonic() - start
     assert elapsed < 2.0, f"exit flush blocked {elapsed:.1f}s past its budget"
-
 
 def test_shutdown_sessions_flushes_before_teardown(monkeypatch):
     """The atexit path persists transcripts BEFORE slow per-session teardown."""
@@ -219,8 +215,7 @@ def test_shutdown_mid_tool_kills_the_command_and_keeps_its_result(monkeypatch):
     monkeypatch.setattr(server, "_flush_sessions_before_exit", lambda budget_s=None: 0)
     monkeypatch.setattr(server, "_close_session_by_id", lambda sid, **kw: at_teardown.append(list(messages)))
     # The join returns as soon as the turn ends; 0.5s is too tight for the kill + bookkeeping under -n 40.
-    from tui_gateway import session_reaper
-    monkeypatch.setattr(session_reaper, "_EXIT_TURN_SETTLE_S", 10.0)
+    monkeypatch.setattr(server, "_EXIT_TURN_SETTLE_S", 10.0)
     session = {"agent": _Agent(), "session_key": "sess-mid-tool", "running": True,
                "_run_thread": run_thread, "history_lock": threading.RLock()}
     with server._sessions_lock:
@@ -278,7 +273,6 @@ def test_sigterm_grace_hard_exit_kills_a_sigterm_ignoring_command(monkeypatch):
         run_thread.join(5.0)
         env.cleanup()
 
-
 def test_periodic_flush_respects_interval_with_fake_clock(
     registered_session, monkeypatch
 ):
@@ -297,7 +291,6 @@ def test_periodic_flush_respects_interval_with_fake_clock(
     assert server._flush_dirty_sessions(now=1_000.0 + 301.0) == 1
     assert len(agent.flush_calls) == 2
 
-
 def test_periodic_flush_skips_running_sessions(registered_session, monkeypatch):
     """Mid-turn sessions are the turn thread's to persist — never race them."""
     monkeypatch.setattr(server, "_INCREMENTAL_FLUSH_INTERVAL_S", 300.0)
@@ -306,5 +299,3 @@ def test_periodic_flush_skips_running_sessions(registered_session, monkeypatch):
 
     assert server._flush_dirty_sessions(now=1_000.0) == 0
     assert agent.flush_calls == []
-
-

@@ -1,14 +1,14 @@
 name: bot-forge
 repo: https://github.com/BkashJEE/hermes-bot-forge
-sha: 3d729a34cf346d51dfa06ba1188565fe809660b0
-description: Say "make me a <role>" and your agent spawns a complete Bot Mode Bot — name, face, SOUL.md, memory, tools, skills, routines, gateway — tested, with rollback; then edit, share, health-check and template Bots by chatting.
+sha: 302eceb39613d8610513519f5650a026f377a813
+description: Say "make me a <role>" and your agent spawns a complete Bot Mode Bot — name, face, SOUL.md, memory, tools, skills, routines, gateway — tested, with rollback. Then hire a whole crew in one call, ask what is waiting on you, and edit, teach, share and health-check Bots by chatting. Disclosure — spawns the hermes CLI to create and run Bot profiles under HERMES_HOME/profiles/, and installs its own small companion hook plugin (bot-forge-marks, two hooks, no tools) into each Bot profile it manages, enabling it in that profile's config.yaml; never the root profile.
 maintainer: BkashJEE
 tier: community
 category: automation
 requires_hermes: ">=0.21"
 docs_url: https://github.com/BkashJEE/hermes-bot-forge#readme
-version: "0.5.0"
-image: https://raw.githubusercontent.com/BkashJEE/hermes-bot-forge/3d729a34cf346d51dfa06ba1188565fe809660b0/docs/banner.png
+version: "0.12.0"
+image: https://raw.githubusercontent.com/BkashJEE/hermes-bot-forge/302eceb39613d8610513519f5650a026f377a813/docs/social-preview.png
 platforms: []
 capabilities:
   provides_tools:
@@ -20,6 +20,7 @@ capabilities:
     - list_agents
     - check_agents
     - check_install
+    - agent_journal
     - ask_agent
     - share_agent
     - import_agent

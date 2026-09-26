@@ -4,11 +4,13 @@ import type { ClientSessionState } from '@/app/types'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import {
   $activeSessionId,
+  $currentBranch,
   $currentCwd,
   $currentReasoningEffort,
   $selectedStoredSessionId,
   $workspaceCwdOwner,
   releaseWorkspaceCwdOwner,
+  setCurrentBranch,
   setCurrentCwd,
   setCurrentReasoningEffort
 } from '@/store/session'
@@ -21,12 +23,14 @@ import type { GatewayEventContext } from './types'
 // still carries a real cwd.
 function sessionInfoEvent({
   activeSessionId,
+  branch,
   cwd,
   explicitSid = '',
   reasoningEffort,
   storedSessionId = ''
 }: {
   activeSessionId: null | string
+  branch?: string
   cwd: string
   explicitSid?: string
   reasoningEffort?: string
@@ -53,7 +57,12 @@ function sessionInfoEvent({
     fromActiveSource: () => true,
     isActiveEvent: !!sessionId && sessionId === activeSessionId,
     occurredAt: Date.now() / 1000,
-    payload: { cwd, stored_session_id: storedSessionId, ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}) },
+    payload: {
+      branch,
+      cwd,
+      stored_session_id: storedSessionId,
+      ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {})
+    },
     scheduleConfigRefresh: vi.fn(),
     sessionId
   } as unknown as GatewayEventContext
@@ -64,12 +73,14 @@ describe('handleSessionInfoEvent workspace ownership', () => {
     $selectedStoredSessionId.set(null)
     $workspaceCwdOwner.set(null)
     setCurrentCwd('')
+    setCurrentBranch('')
   })
 
   afterEach(() => {
     $selectedStoredSessionId.set(null)
     $workspaceCwdOwner.set(null)
     setCurrentCwd('')
+    setCurrentBranch('')
     setCurrentReasoningEffort('')
   })
 
@@ -114,6 +125,43 @@ describe('handleSessionInfoEvent workspace ownership', () => {
     expect($workspaceCwdOwner.get()).toBe('selected-session')
   })
 
+  // #92888: a background Kanban worker's runtime update reaches the pane's
+  // active-runtime path while the default Bot Chat stays selected. It names the
+  // worker's own stored session and its PR worktree; neither the path nor the
+  // branch may move onto the composer, while the selected chat's own update
+  // still publishes both.
+  it("keeps another session's worktree cwd and branch off the selected chat's composer", () => {
+    $selectedStoredSessionId.set('default-bot-chat')
+    setCurrentCwd('/repo/main-checkout')
+    setCurrentBranch('main')
+
+    handleSessionInfoEvent(
+      sessionInfoEvent({
+        activeSessionId: 'runtime-1',
+        branch: 'kanban/pr-42',
+        cwd: '/repo/.worktrees/pr-42',
+        explicitSid: 'runtime-1',
+        storedSessionId: 'kanban-worker'
+      })
+    )
+
+    expect($currentCwd.get()).toBe('/repo/main-checkout')
+    expect($currentBranch.get()).toBe('main')
+
+    handleSessionInfoEvent(
+      sessionInfoEvent({
+        activeSessionId: 'runtime-1',
+        branch: 'feature/mine',
+        cwd: '/repo/main-checkout',
+        explicitSid: 'runtime-1',
+        storedSessionId: 'default-bot-chat'
+      })
+    )
+
+    expect($currentBranch.get()).toBe('feature/mine')
+    expect($workspaceCwdOwner.get()).toBe('default-bot-chat')
+  })
+
   it('keeps runtime state identity when a heartbeat only restates cached fields', () => {
     const original = {
       ...createClientSessionState('stored-1'),
@@ -156,9 +204,7 @@ describe('handleSessionInfoEvent workspace ownership', () => {
   it('does not copy a session.info reasoning_effort into the global composer draft', () => {
     setCurrentReasoningEffort('')
 
-    handleSessionInfoEvent(
-      sessionInfoEvent({ activeSessionId: null, cwd: '/repo', reasoningEffort: 'high' })
-    )
+    handleSessionInfoEvent(sessionInfoEvent({ activeSessionId: null, cwd: '/repo', reasoningEffort: 'high' }))
 
     // A session's pinned effort is per-session only; it must never seed the
     // persisted composer draft that a fresh chat reads — that would override the

@@ -16,7 +16,6 @@ import pytest
 from hermes_cli.config import DEFAULT_CONFIG, cfg_get
 from tools import browser_tool_lifecycle as bt_lifecycle
 
-
 def _make_runner():
     """Create a minimal GatewayRunner with just the cache infrastructure."""
     from gateway.run import GatewayRunner
@@ -26,10 +25,8 @@ def _make_runner():
     runner._agent_cache_lock = threading.Lock()
     return runner
 
-
 class TestAgentConfigSignature:
     """Config signature produces stable, distinct keys."""
-
 
     def test_model_change_different_signature(self):
         from gateway.run import GatewayRunner
@@ -81,7 +78,6 @@ class TestAgentConfigSignature:
             GatewayRunner._agent_config_signature("gpt-5.6", plain, [], "")
         )
 
-
     def test_default_gateway_runtime_forwards_filtered_capabilities(self, monkeypatch):
         """Configured provider capabilities must reach a newly created gateway agent."""
         from gateway.run import _resolve_runtime_agent_kwargs
@@ -112,7 +108,6 @@ class TestAgentConfigSignature:
     # cache_keys (compression/context config cache-busting)
     # ---------------------------------------------------------------
 
-
     def test_compression_threshold_change_busts_cache(self):
         from gateway.run import GatewayRunner
 
@@ -126,7 +121,6 @@ class TestAgentConfigSignature:
             cache_keys={"compression.threshold": 0.75},
         )
         assert sig1 != sig2
-
 
     def test_cache_keys_key_order_does_not_matter(self):
         """Signature must be stable regardless of dict key insertion order."""
@@ -143,13 +137,9 @@ class TestAgentConfigSignature:
         )
         assert sig_a == sig_b
 
-
 class TestExtractCacheBustingConfig:
     """Verify _extract_cache_busting_config pulls the documented subset of
     config values that must invalidate the cached agent on change."""
-
-
-
 
     def test_missing_keys_yield_the_shipped_default(self):
         """An absent key carries the value in force — DEFAULT_CONFIG's — for every documented key."""
@@ -277,11 +267,8 @@ class TestExtractCacheBustingConfig:
         assert "tools.registry_generation" in out
         assert calls == ([] if provider is None else [("p", False)])
 
-
 class TestAgentCacheLifecycle:
     """End-to-end cache behavior with real AIAgent construction."""
-
-
 
     def test_evict_on_session_reset(self):
         """_evict_cached_agent removes the entry."""
@@ -303,7 +290,6 @@ class TestAgentCacheLifecycle:
 
         with runner._agent_cache_lock:
             assert session_key not in runner._agent_cache
-
 
 class TestAgentCacheBoundedGrowth:
     """LRU cap and idle-TTL eviction prevent unbounded cache growth."""
@@ -327,7 +313,6 @@ class TestAgentCacheBoundedGrowth:
             import time as _t
             m._last_activity_ts = _t.time()
         return m
-
 
     def test_cap_commits_memory_before_soft_release(self, monkeypatch):
         """LRU eviction commits the transcript before releasing clients."""
@@ -361,9 +346,6 @@ class TestAgentCacheBoundedGrowth:
         # Memory committed with the live transcript, THEN client released.
         assert commit_calls == [[{"role": "user", "content": "hi"}]]
         assert old_agent in release_calls
-
-
-
 
 class TestAgentCacheActiveSafety:
     """Safety: eviction must not tear down agents currently mid-turn.
@@ -428,7 +410,6 @@ class TestAgentCacheActiveSafety:
         assert "session-idle-b" in runner._agent_cache
         assert runner._cleanup_agent_resources.call_count == 0
 
-
     def test_idle_sweep_skips_active_agent(self, monkeypatch):
         """Idle-TTL sweep must not tear down an active agent even if 'stale'."""
         from gateway import run as gw_run
@@ -446,7 +427,6 @@ class TestAgentCacheActiveSafety:
         assert evicted == 0
         assert "s1" in runner._agent_cache
         assert runner._cleanup_agent_resources.call_count == 0
-
 
 class TestAgentCacheSpilloverLive:
     """Live E2E: fill cache with real AIAgent instances and stress it."""
@@ -505,7 +485,6 @@ class TestAgentCacheSpilloverLive:
             except Exception:
                 pass
 
-
 class TestAgentCacheIdleResume:
     """End-to-end: idle-TTL-evicted session resumes cleanly with task state.
 
@@ -528,7 +507,6 @@ class TestAgentCacheIdleResume:
         runner._agent_cache_lock = threading.Lock()
         runner._running_agents = {}
         return runner
-
 
     def test_release_clients_does_not_touch_terminal_or_browser(self, monkeypatch):
         """release_clients must not call cleanup_vm or cleanup_browser."""
@@ -567,7 +545,6 @@ class TestAgentCacheIdleResume:
             f"release_clients() tore down browser session — user's open "
             f"tabs and cookies gone on resume. Calls: {browser_calls}"
         )
-
 
     def test_close_vs_release_full_teardown_difference(self, monkeypatch):
         """close() tears down task state; release_clients() does not.
@@ -616,9 +593,7 @@ class TestAgentCacheIdleResume:
         assert "hard-session" in vm_calls
         assert "soft-session" not in vm_calls
 
-
 _FAKE_NOW = 10_000.0  # Fixed epoch for deterministic time assertions
-
 
 class TestCachedAgentInactivityReset:
     """Inactivity-clock reset must be gated on _interrupt_depth == 0.
@@ -659,7 +634,6 @@ class TestCachedAgentInactivityReset:
         assert agent._last_activity_ts > old_ts, (
             "Stale idle time should be cleared so the new turn gets a fresh window"
         )
-
 
     def test_fresh_turn_resets_provenance(self):
         """interrupt_depth=0: provenance resets with ts/desc (#72039)."""
@@ -714,7 +688,6 @@ class TestCachedAgentInactivityReset:
 
         assert agent._last_activity_provenance is ActivityProvenance.AGENT_COMPRESSION
 
-
     def test_fresh_turn_resets_flush_cursor(self):
         """interrupt_depth=0: _last_flushed_db_idx resets so new-turn
         messages are fully persisted to the session DB (#44327)."""
@@ -731,9 +704,6 @@ class TestCachedAgentInactivityReset:
             "_last_flushed_db_idx must be reset on a fresh turn so that "
             "_flush_messages_to_session_db starts from index 0"
         )
-
-
-
 
 class TestAgentCacheMessageCountRebaseline:
     """The cross-process coherence guard (#45966) must NOT invalidate the
@@ -781,7 +751,6 @@ class TestAgentCacheMessageCountRebaseline:
         )
         return not invalidate
 
-
     @pytest.mark.asyncio
     async def test_cross_process_write_still_invalidates(self, tmp_path):
         """After the re-baseline, a DIFFERENT process appending to the same
@@ -812,7 +781,6 @@ class TestAgentCacheMessageCountRebaseline:
 
         # Guard must now reject reuse so the agent rebuilds from fresh disk.
         assert self._guard_would_reuse(runner, "telegram:s1", "s1") is False
-
 
     @pytest.mark.asyncio
     async def test_in_band_followup_reuses_cached_agent(self, tmp_path):
@@ -861,5 +829,3 @@ class TestAgentCacheMessageCountRebaseline:
         assert self._guard_would_reuse(runner, "telegram:s1", "s1") is True
         with runner._agent_cache_lock:
             assert runner._agent_cache["telegram:s1"][0] is agent
-
-

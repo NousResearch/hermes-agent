@@ -13,12 +13,13 @@ import re
 import shutil
 import subprocess
 import sys
-from typing import Mapping, Sequence
+from typing import Mapping, NoReturn, Sequence
 
 __all__ = [
     "IS_WINDOWS",
     "resolve_node_command",
     "split_command_line",
+    "restore_ambient_pythonpath",
     "suppress_platform_ver_console",
     "windows_detach_flags",
     "windows_detach_flags_without_breakaway",
@@ -26,6 +27,7 @@ __all__ = [
     "windows_detach_popen_kwargs",
     "bounded_git_probe",
     "bounded_probe_run",
+    "selected_git_env",
     "noninteractive_git_env",
     "NO_DRIVER_DIFF_FLAGS",
     "NO_LAZY_FETCH_ENV",
@@ -48,6 +50,13 @@ _DIFF_RENDERING_SUBCOMMANDS = frozenset({"diff", "show", "log", "blame"})
 # Options that consume the FOLLOWING token, so that value is never mistaken for the subcommand
 # (``-C diff`` is a path; ``-c diff=x`` is a config pair).
 _GIT_VALUE_OPTS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"}
+
+
+def run(cmd, **kwargs) -> NoReturn:
+    # Shim to suppress old updater work until relaunch. Do not start its installer.
+    from hermes_cli._old_updater import stop_for_relaunch
+
+    stop_for_relaunch()
 
 
 def harden_git_argv(args: Sequence[str]) -> list[str]:
@@ -101,6 +110,34 @@ def split_command_line(line: str) -> list[str]:
             tok = tok[1:-1]
         out.append(tok)
     return out
+
+
+# -----------------------------------------------------------------------------
+# Node ecosystem launcher resolution
+# -----------------------------------------------------------------------------
+
+
+def restore_ambient_pythonpath(env: Mapping[str, str]) -> dict:
+    """Re-add the ambient ``PYTHONPATH`` to a child environment that a
+    ``build_subprocess_env``-style factory already built.
+
+    No-boot-through-venv: the boot interpreter is the pm STORE python, whose
+    imports arrive via ``PYTHONPATH=<repo>;<venv>/site-packages`` (it has no
+    editable install). The subprocess-env factories strip Hermes-owned
+    PYTHONPATH entries so agent-run children on DIFFERENT interpreter
+    versions never load the backend's C extensions — but a child that
+    re-execs THIS interpreter (``sys.executable -m hermes_cli.main``) runs
+    on the same version and needs those entries back. Prepending keeps the
+    launcher's repo-first ordering intact.
+    """
+    merged = dict(env)
+    ambient = os.environ.get("PYTHONPATH")
+    if ambient:
+        existing = merged.get("PYTHONPATH", "")
+        merged["PYTHONPATH"] = (
+            ambient + os.pathsep + existing if existing else ambient
+        )
+    return merged
 
 
 def resolve_node_command(name: str, argv: Sequence[str]) -> list[str]:
@@ -316,6 +353,22 @@ def _user_safe_directories(base_env: "Mapping[str, str]") -> list[str]:
         values.extend(records)
     _safe_directory_cache[cache_key] = list(values)
     return values
+
+
+def selected_git_env(base: Mapping[str, str] | None = None) -> dict[str, str]:
+    """PM's full Git environment, or the original base for system-Git fallback.
+
+    Keep lazy acquisition under PM's policy (not just installed-package lookup).
+    Unsupported targets and failed acquisition must not disable a working system
+    Git. Callers apply their own config/security isolation after selection.
+    """
+    env = dict(base if base is not None else os.environ)
+    try:
+        from pm import ensure
+
+        return ensure("git", base_env=env).env
+    except Exception:
+        return env
 
 
 def noninteractive_git_env(base: "Mapping[str, str] | None" = None) -> dict[str, str]:

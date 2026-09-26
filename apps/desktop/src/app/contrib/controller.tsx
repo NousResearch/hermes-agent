@@ -19,6 +19,7 @@ import {
   bindToolPaneCollapse,
   declareDefaultTree,
   dismissTreePane,
+  hydrateContributedPanes,
   isPaneVisible,
   markCollapsePane,
   paneRootSide,
@@ -31,8 +32,7 @@ import {
   setStripTabHidden,
   targetZoneTabStripVisible,
   togglePaneVisible,
-  toggleTargetZoneTabStrip,
-  watchContributedPanes
+  toggleTargetZoneTabStrip
 } from '@/components/pane-shell/tree/store'
 import { $workspaceOwnerLabels, workspaceOwnerTitle } from '@/components/pane-shell/workspace-scope'
 import { SidebarProvider } from '@/components/ui/sidebar'
@@ -98,6 +98,7 @@ import { startSessionDrag } from '../chat/session-drag'
 import {
   SessionTileCloseConfirm,
   stackSessionTilesIntoMain,
+  startTileBackendIdentityGuard,
   startUnrestoredTileTitleBackfill,
   watchSessionTiles,
   WorkspaceTabMenu
@@ -455,8 +456,10 @@ declareDefaultTree(DEFAULT_TREE, BASIC_TREE)
 discoverBundledPlugins()
 
 // Plugin panes join the tree by their `placement` hint the moment they
-// register — incl. runtime plugins arriving seconds after boot.
-watchContributedPanes()
+// register — incl. runtime plugins arriving seconds after boot. The FIRST
+// pass runs as layout hydration: the reload prune→re-register cycle must not
+// record split shares (#108679).
+hydrateContributedPanes()
 
 // Session + route (page) tiles: persisted splits register panes docked beside
 // main. A popped-out Browser and the HUD have no layout tree — registering
@@ -466,6 +469,7 @@ watchContributedPanes()
 if (!isBrowserWindow() && !isHudWindow()) {
   watchSessionTiles()
   startUnrestoredTileTitleBackfill()
+  startTileBackendIdentityGuard()
   watchRouteTiles()
   watchPreviewTiles()
 }

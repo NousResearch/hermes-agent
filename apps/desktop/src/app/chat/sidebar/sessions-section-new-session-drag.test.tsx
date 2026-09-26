@@ -356,6 +356,43 @@ describe('project-associated new-session drag sources', () => {
     )
   })
 
+  it('does not run a branch switch for a non-git lane before creating the dragged session', async () => {
+    // A plain non-git folder still gets an isMain lane from the backend
+    // heuristic, but `git switch <folder-name>` there dies with "fatal: not a
+    // git repository" (#61362). The lane's isGit=False flag must suppress the
+    // switch while the new session still lands in the folder.
+    const onNewSessionSplit = vi.fn()
+
+    render(
+      <SidebarSessionsSection
+        {...baseProps()}
+        groups={[
+          group({
+            id: '/www/notes::branch::main',
+            isGit: false,
+            isMain: true,
+            label: 'notes',
+            path: '/www/notes',
+            sessions: [{ id: 'notes-session' } as SessionInfo]
+          })
+        ]}
+        onNewSessionSplit={onNewSessionSplit}
+      />
+    )
+
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'New session in notes' }), { button: 0 })
+    commitLatestDrag()
+
+    await waitFor(() => {
+      expect(onNewSessionSplit).toHaveBeenCalledWith('right', {
+        anchor: 'workspace',
+        before: 'session-tile:next',
+        cwd: '/www/notes'
+      })
+    })
+    expect(switchBranchInRepo).not.toHaveBeenCalled()
+  })
+
   it('drags from an entered-project repo + with that repo cwd', () => {
     const onNewSessionSplit = vi.fn()
 

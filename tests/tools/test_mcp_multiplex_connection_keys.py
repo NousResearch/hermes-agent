@@ -18,8 +18,10 @@ def _tool():
 
 
 def _server(name, cfg):
+    from tools.mcp_tool_registration import _adopter_identity_digest
     return SimpleNamespace(name=name, session=object(), _config=cfg, _tools=[_tool()], tool_timeout=30,
-                           initialize_result=None, _registered_tool_names=[], _sampling=None)
+                           initialize_result=None, _registered_tool_names=[], _sampling=None,
+                           _resolved_identity=_adopter_identity_digest(name, cfg))
 
 
 @pytest.fixture
@@ -50,9 +52,10 @@ def two_profiles(tmp_path, monkeypatch):
         return hermes_home_key(homes[which])
 
     yield enter
-    for tool_name in list(registry.get_tool_names_for_toolset("mcp-x")):
-        for home in homes.values():
-            registry.deregister(tool_name, scope=hermes_home_key(home))
+    for toolset in ("mcp-x", "mcp-s"):
+        for tool_name in list(registry.get_tool_names_for_toolset(toolset)):
+            for home in homes.values():
+                registry.deregister(tool_name, scope=hermes_home_key(home))
     for token in reversed(tokens):
         reset_hermes_home_override(token)
     for n in ledgers:
@@ -60,7 +63,8 @@ def two_profiles(tmp_path, monkeypatch):
         getattr(core, n).update(saved[n])
 
 
-def test_same_named_server_with_other_credentials_is_a_separate_connection(two_profiles):
+def test_same_named_server_with_other_credentials_is_a_separate_connection(two_profiles, tmp_path,
+                                                                          monkeypatch):
     import tools.mcp_tool as core
     from tools import mcp_tool_discovery as disc, mcp_tool_handlers as handlers
     from tools import mcp_tool_registration as reg
@@ -88,6 +92,52 @@ def test_same_named_server_with_other_credentials_is_a_separate_connection(two_p
     assert "x" in disc._select_new_servers({"x": cfg_b})
     assert not disc._connect_cooldown_active("y")
     assert handlers._check_circuit_breaker("x") is None
+
+    # One server's identity resolver raising refuses adoption of that server only: discovery for
+    # B's scope survives and A's healthy same-identity connection is still adopted.
+    from tools import mcp_tool_transport as transport
+    scope_a = next(key[0] for key in core._servers if key[1] == "x")
+    same = {"url": "https://mcp.example/same", "headers": {"Authorization": "Bearer same"}}
+    for name in ("ok", "boom"):
+        srv = _server(name, dict(same))
+        srv._tools = []
+        core._servers[(scope_a, name)] = srv
+        core._server_tool_scopes[(scope_a, name)] = {scope_a}
+    real_inputs = transport._connect_inputs
+
+    def resolve(name, config):
+        if name == "boom":
+            raise RuntimeError("secret backend exploded")
+        return real_inputs(name, config)
+
+    scope_b = core._mcp_registry_scope()
+    with patch.object(transport, "_connect_inputs", side_effect=resolve):
+        reg.register_connected_into_current_scope({"ok": dict(same), "boom": dict(same)})
+    assert scope_b in core._server_tool_scopes[(scope_a, "ok")]
+    assert scope_b not in core._server_tool_scopes[(scope_a, "boom")]
+
+    # A routed profile reconciles with NO ambient secret scope (``discover_mcp_tools`` binds the
+    # owner scope only around the config load, #113746): with a source-tagged secret the adopter's
+    # stdio identity still resolves in ITS OWN scope, so an equal value shares the owner's child.
+    import sys
+    import agent.secret_scope as secret_scope
+    import hermes_cli.env_loader as env_loader
+    monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
+    monkeypatch.setattr(env_loader, "_SECRET_SOURCES", {"FIXTURE_TOKEN": "op"})
+    for profile in ("a", "b"):
+        (tmp_path / "profiles" / profile / ".env").write_text("FIXTURE_TOKEN=tok\n", encoding="utf-8")
+    cfg_s = {"command": sys.executable, "args": ["-c", "pass"]}
+    two_profiles("a")
+    with disc._owner_secret_scope():  # the connecting task records its digest in the owner's scope
+        srv_s = _server("s", cfg_s)
+    assert srv_s._resolved_identity is not None
+    disc._adopt_server("s", srv_s)
+    srv_s._registered_tool_names = reg._register_server_tools("s", srv_s, cfg_s)
+    two_profiles("b")
+    assert secret_scope.current_secret_scope() is None
+    assert reg.register_connected_into_current_scope({"s": dict(cfg_s)}) == 1
+    assert registry.get_tool_names_for_toolset("mcp-s") == ["mcp__s__t"]
+    assert "s" not in disc._select_new_servers({"s": dict(cfg_s)})
 
 
 def test_oauth_server_is_not_adopted_across_profiles(two_profiles):

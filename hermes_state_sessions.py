@@ -17,9 +17,10 @@ from agent.session_activity import (
 from hermes_startup_watchdog import report_startup_progress
 from hermes_state_common import (
     _LISTABLE_CHILD_SQL, _PREVIEW_ELIGIBLE_SQL, _PREVIEW_RAW_SELECT, _RECOVERABLE_END_REASONS,
-    _RECOVERABLE_END_REASONS_SQL, _RESET_CHILD_SQL, _RESET_END_REASONS, _legacy_reset_child_sql, _shape_preview,
-    _sql_json_extract, _sql_session_last_active, _sql_session_last_active_by_id, escape_like as _escape_like,
-    _SQL_IN_CHUNK, _id_chunks, _placeholders as _session_ids_placeholders,
+    _RECOVERABLE_END_REASONS_SQL, _RESET_CHILD_SQL, _RESET_END_REASONS, _legacy_reset_child_sql, _non_continuation_child_sql,
+    _shape_preview,
+    _sql_in_window, _sql_json_extract, _sql_session_last_active, _sql_session_last_active_by_id,
+    escape_like as _escape_like, _SQL_IN_CHUNK, _id_chunks, _placeholders as _session_ids_placeholders,
 )
 
 # caplog tests pin the "hermes_state" logger name.
@@ -451,16 +452,9 @@ class SessionSessionsMixin:
     # quiet and its unkeyed successor (incident was ~60s; 15 min without spanning conversations).
     _ORPHAN_ADOPTION_MAX_GAP_S = 900.0
 
-    # Children that are NOT compression continuations (branches, delegates, reset forks, tool
-    # sessions). Markers are bound to the queried parent id: continuations inherit model_config
-    # verbatim, so presence-matching misclassified them as delegates. Callers bind the parent id
-    # three times for this filter.
-    _NON_CONTINUATION_CHILD_FILTER_SQL = (
-        f"  AND COALESCE({_sql_json_extract('{alias}model_config', '$._branched_from')}, '') != ?\n"
-        f"  AND COALESCE({_sql_json_extract('{alias}model_config', '$._delegate_from')}, '') != ?\n"
-        f"  AND COALESCE({_sql_json_extract('{alias}model_config', '$._reset_from')}, '') != ?\n"
-        "  AND COALESCE({alias}source, '') != 'tool'\n"
-    )
+    # Children that are NOT compression continuations (see _non_continuation_child_sql); presence-
+    # matching misclassified inherited markers as delegates. Callers bind the parent id three times.
+    _NON_CONTINUATION_CHILD_FILTER_SQL = _non_continuation_child_sql("{alias}")
 
     def end_session(self, session_id: str, end_reason: str) -> None:
         """Mark a session ended; the first end_reason wins (a compression split must keep
@@ -677,9 +671,10 @@ class SessionSessionsMixin:
         self, session_id: str, model: str, provider: Optional[str] = None, *,
         base_url: Optional[str] = None, api_mode: Optional[str] = None,
     ) -> None:
-        """Set the model after a mid-session /model switch (unconditionally), null system_prompt so
-        stale Model:/Provider: footers rebuild, and drop any Browser runtime lock (lineage markers
-        survive).
+        """Set the model after a mid-session /model switch (unconditionally) and drop any Browser
+        runtime lock (lineage markers survive).
+
+        Route writers never touch the stored prompt; ``_stored_prompt_matches_runtime`` decides staleness.
 
         When *provider* is given the whole route is written, in both shapes resume reads (top-level
         keys for the TUI/Desktop, ``gateway_runtime`` for the CLI), so a later resume recombines the
@@ -698,8 +693,7 @@ class SessionSessionsMixin:
             route = {"provider": provider, "base_url": base_url or None, "api_mode": api_mode or None}
             patch.update(route, gateway_runtime=route)
         self._write_model_config_patch(
-            session_id, patch, "UPDATE sessions SET model = ?, model_config = ?, "
-            "system_prompt = NULL, system_prompt_hash = NULL WHERE id = ?",
+            session_id, patch, "UPDATE sessions SET model = ?, model_config = ? WHERE id = ?",
             lambda merged: (model, merged, session_id),
         )
 
@@ -709,14 +703,12 @@ class SessionSessionsMixin:
         params: Optional[Callable[[Optional[str]], tuple]] = None,
     ) -> None:
         """Merge ``patch`` into model_config then run ``sql`` with ``params(merged)`` in one write
-        transaction; no-op when the row doesn't exist. Custom ``sql`` (prompt-nulling) also GCs prompts."""
+        transaction; no-op when the row doesn't exist."""
         def _do(conn):
             merged = self._merge_model_config_json(conn, session_id, patch)
             if merged is _MODEL_CONFIG_ROW_MISSING:
                 return
             conn.execute(sql, params(merged) if params else (merged, session_id))
-            if params is not None:
-                self._delete_unreferenced_system_prompts(conn)
         self._execute_write(_do)
 
     def _merge_model_config_json(
@@ -755,8 +747,8 @@ class SessionSessionsMixin:
         model_options: Optional[Dict[str, Any]] = None, route_source: Optional[str] = None,
         confirmed: bool = False,
     ) -> None:
-        """Persist a Browser / API-client runtime lock into model_config (lineage markers survive); null
-        system_prompt so cached footers cannot lie."""
+        """Persist a Browser / API-client runtime lock into model_config (lineage markers survive).
+        Route writers never touch the stored prompt; ``_stored_prompt_matches_runtime`` decides staleness."""
         lock = {
             "provider": provider or "", "model": model or "", "model_options": model_options or {},
             "route_source": route_source or "", "confirmed": bool(confirmed), "updated_at": time.time(),
@@ -765,9 +757,7 @@ class SessionSessionsMixin:
             session_id, {"browser_model_lock": lock},
             """UPDATE sessions SET
                    model_config = ?,
-                   model = COALESCE(?, model),
-                   system_prompt = NULL,
-                   system_prompt_hash = NULL
+                   model = COALESCE(?, model)
                    WHERE id = ?""",
             lambda merged: (merged, model, session_id),
         )
@@ -1323,7 +1313,7 @@ class SessionSessionsMixin:
                     GROUP BY root_id
                 )
                 {select_head}{_sql_session_last_active("s")} AS last_active,
-                    COALESCE(cm.effective_last_active, s.started_at) AS _effective_last_active
+                    COALESCE(cm.effective_last_active, {_sql_in_window("s.started_at")}) AS _effective_last_active
                 FROM sessions s
                 LEFT JOIN chain_max cm ON cm.root_id = s.id
                 {prompt_join}
@@ -1402,7 +1392,8 @@ class SessionSessionsMixin:
         return statuses
 
     def assert_export_safe(self, session_id: str, max_messages: Optional[int] = None) -> int:
-        """Active row count of this segment, or raise SessionExportTooLargeError (the LIMITed subquery
+        """Row count of this segment — every row, archived included, as the transfer export materializes
+        it — or raise SessionExportTooLargeError (the LIMITed subquery
         stops once the bound is exceeded). ``None`` resolves ``sessions.max_export_messages``; 0 disables
         the guard."""
         from hermes_state import SessionExportTooLargeError, resolved_max_export_messages
@@ -1413,7 +1404,7 @@ class SessionSessionsMixin:
         if max_messages == 0:
             return 0
         row = self._read_one(
-            "SELECT COUNT(*) FROM (SELECT 1 FROM messages WHERE session_id = ? AND active = 1 LIMIT ?)",
+            "SELECT COUNT(*) FROM (SELECT 1 FROM messages WHERE session_id = ? LIMIT ?)",
             (session_id, max_messages + 1),
         )
         message_count = int(row[0] if row else 0)

@@ -1,6 +1,6 @@
 name: hermes-jailbreak-kernel
 repo: https://github.com/Enchanted0911/hermes-jailbreak-kernel
-sha: 6b305c4892048aff7d30fab60a18294c8f22eca3
+sha: 476233ffb0a17c2da75b4b05a8bbcd51031323f4
 description: >-
   Jailbreak-kernel plugin for Hermes Agent (ported from dsh-infinite-gen-4): dual-layer
   same-source system-prompt injection + llm_request request-layer system rebuild + opencode

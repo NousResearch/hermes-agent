@@ -275,6 +275,19 @@ function dataUrlToBlob(dataUrl: string) {
   return new Blob([bytes], { type: 'application/pdf' })
 }
 
+// Electron wraps every rejected invoke in "Error invoking remote method
+// 'hermes:...': Error: ...", which used to leak internal IPC channel names
+// into the pane next to the real cause (#105750). Strip that wrapper and turn
+// missing-file failures into friendly copy; other causes (too large,
+// unreadable, …) keep their already-readable message.
+export function friendlyPreviewError(error: unknown, fileGoneBody: string): string {
+  const message = (error instanceof Error ? error.message : String(error))
+    .replace(/^Error invoking remote method '[^']+':\s*/, '')
+    .replace(/^Error:\s*/, '')
+
+  return /file does not exist|no such file or directory/i.test(message) ? fileGoneBody : message
+}
+
 async function readTextPreview(filePath: string) {
   try {
     return await readDesktopFileText(filePath)
@@ -857,7 +870,7 @@ export function LocalFilePreview({
       } catch (error) {
         if (active) {
           setState({
-            error: error instanceof Error ? error.message : String(error),
+            error: friendlyPreviewError(error, t.preview.fileGoneBody),
             loading: false
           })
         }
@@ -879,6 +892,7 @@ export function LocalFilePreview({
     isText,
     reloadKey,
     selfReload,
+    t.preview.fileGoneBody,
     target.dataUrl,
     target.language
   ])

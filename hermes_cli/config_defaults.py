@@ -2569,6 +2569,12 @@ DEFAULT_CONFIG = {
         # of the active theme's own sans stack so missing glyphs still fall through. Empty = the
         # theme's face. The terminal pane is terminal.font_family.
         "font_family": "",
+        # The profile's Desktop/Webapp appearance, so a pick follows the profile to every client.
+        # theme: a Desktop theme name (not a CLI skin — that is display.skin); theme_mode:
+        # light | dark | system (system follows each device's OS setting). Empty = never picked:
+        # each client keeps its own local choice.
+        "theme": "",
+        "theme_mode": "",
         # Git repo discovery for the Projects sidebar. Empty roots are a safe
         # no-op; users must explicitly configure roots for filesystem scanning.
         # Session-derived projects remain available.

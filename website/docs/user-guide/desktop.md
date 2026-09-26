@@ -181,6 +181,10 @@ Two independent font settings live in **Settings → Appearance**, both stored p
 - **Chat Font** (`desktop.font_family`) — chat and the rest of the app's UI. Readability faces such as OpenDyslexic or Atkinson Hyperlegible work as soon as they are installed on the system; the active theme's stack stays behind your pick so missing glyphs still render. Blank means the theme's font.
 - **Terminal Font** (`terminal.font_family`) — the embedded terminal pane; Nerd Fonts render shell icons here. Blank means the bundled JetBrains Mono.
 
+#### Theme and light/dark mode
+
+The theme and light/dark mode you pick in **Settings → Appearance** are stored per profile in `config.yaml` too (`desktop.theme`, `desktop.theme_mode`), so the Desktop Webapp and any other Desktop connected to the same profile show the look you picked. **System** mode still follows each device's own OS appearance. A theme you installed on only one device (an imported VS Code theme) falls back to the default theme where it isn't installed.
+
 #### Repository discovery
 
 Hermes Desktop discovers local Git repositories for the Projects sidebar by scanning your home directory to a bounded depth. You can change this per profile in **Settings → Workspace**, or in `config.yaml`:

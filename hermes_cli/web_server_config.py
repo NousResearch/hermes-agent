@@ -85,6 +85,10 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     # sync with _SUPPORTED_VERCEL_RUNTIMES in terminal_tool.py
     "terminal.vercel_runtime": _select("Vercel Sandbox runtime", "node24", "node22", "python3.13"),
     "terminal.modal_mode": _select("Modal sandbox mode", "sandbox", "function"),
+    "desktop.theme_mode": _select(
+        "Desktop / Webapp light-dark mode for this profile. Blank = not set (each client keeps its own).",
+        "", "light", "dark", "system",
+    ),
     "proxy.enabled": {
         "type": "boolean",
         "description": (

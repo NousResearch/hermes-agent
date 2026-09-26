@@ -25,6 +25,7 @@ import {
   applyVoiceStopPhraseFromConfig
 } from '@/store/voice-prefs'
 import { setChatFontFamilyFromConfig } from '@/themes/chat-font'
+import { beginProfileAppearanceRead, publishProfileAppearance } from '@/themes/profile-appearance'
 
 const DEFAULT_VOICE_SECONDS = 120
 const FAST_TIERS = new Set(['fast', 'priority', 'on'])
@@ -67,6 +68,7 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
 
       const profileRefreshEpoch = profileRefreshEpochRef.current
       const selectionGeneration = getComposerSelectionGeneration()
+      const appearanceRead = beginProfileAppearanceRead()
 
       try {
         const [config, defaults] = await Promise.all([getHermesConfig(), getHermesConfigDefaults().catch(() => ({}))])
@@ -145,6 +147,7 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
         setShowReasoningFromConfig(config.display?.show_reasoning)
         setTerminalFontFamilyFromConfig(config.terminal?.font_family)
         setChatFontFamilyFromConfig(config.desktop?.font_family)
+        publishProfileAppearance(appearanceRead, config.desktop)
 
         if (!canPublish()) {
           return

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -108,6 +109,14 @@ class BinaryPackage(Package):
             return f"{binary} {' '.join(self.probe_args)} timed out after 60s"
         if proc.returncode != 0:
             return _probe_reason(binary, proc)
+        return self._post_probe_reason(binary, proc)
+
+    def _post_probe_reason(self, binary: Path, proc: "subprocess.CompletedProcess") -> str:
+        """Extra evidence check after the smoke probe passes: '' when the
+        package is sound, a non-empty reason fails verification. Default is
+        no check. Override for backends whose failure mode is a silent skip
+        inside the probed binary (llama.cpp dlopen'd GPU backends fail
+        --list-devices, not --version)."""
         return ""
 
     def _probe_env(self) -> dict:
@@ -982,6 +991,59 @@ class LlamaCpp(BinaryPackage):
     # backend's shared libraries resolve: a CUDA build with no cudart
     # beside it fails here rather than at first chat.
     probe_cwd = True
+
+    # GPU backends are dlopen'd plugins: when their BLAS runtime is missing
+    # (HIP shipping no hipblas.dll — #123677), ggml's backend loader skips
+    # them SILENTLY and --version still exits 0, so the engine installs as
+    # "hip" and runs on CPU. verify() therefore additionally asks
+    # llama-server for its device list and fails the package when the
+    # backend loaded nothing. One extra llama-server spawn at install /
+    # doctor time only (startup's boot check compares facts, never probes).
+    _DEVICE_PROBE = ("--list-devices",)
+
+    def _device_probe_argv(self) -> Optional[list]:
+        """--list-devices argv for GPU backends; None where no device is
+        required (the CPU build runs wherever it lands)."""
+        return list(self._DEVICE_PROBE) if self.backend != "cpu" else None
+
+    @staticmethod
+    def _has_device(out: str) -> bool:
+        """A usable GPU enumeration is any line that is not the `(none)`
+        placeholder. Empty output counts as none too: an engine too old to
+        answer the flag has no verifiable device either."""
+        return bool(out.strip()) and not re.search(
+            r"^\s*\(none\)\s*$", out, re.MULTILINE
+        )
+
+    def _post_probe_reason(self, binary: Path, proc: "subprocess.CompletedProcess") -> str:
+        argv = self._device_probe_argv()
+        if argv is None:
+            return ""
+        try:
+            devices = subprocess.run(
+                [str(binary), *argv],
+                capture_output=True,
+                timeout=60,
+                cwd=str(binary.parent),
+                env=self._probe_env(),
+            )
+        except OSError as e:
+            return f"{binary} {' '.join(argv)} could not run: {e}"
+        except subprocess.TimeoutExpired:
+            return f"{binary} {' '.join(argv)} timed out after 60s"
+        if devices.returncode != 0:
+            return (
+                f"{binary} {' '.join(argv)} exited {devices.returncode}: "
+                f"the {self.backend} backend did not load"
+            )
+        out = (devices.stdout or b"") + (devices.stderr or b"")
+        if not self._has_device(out.decode(errors="replace")):
+            return (
+                f"{self.backend} backend did not load: "
+                f"{binary} {' '.join(argv)} reports no devices — "
+                f"the backend's runtime libraries are missing or unloadable"
+            )
+        return ""
 
     backend: str = ""
     # Release-asset infix per target, or absent where upstream ships none.

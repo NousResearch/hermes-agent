@@ -1330,7 +1330,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         status = _git_run(git_cmd, ["status", "--porcelain"], _m().PROJECT_ROOT)
         if status.returncode != 0 or status.stdout.strip():
             print("✗ --no-pull refused: the working tree has uncommitted changes.")
-            print(f"  Commit or stash them, then re-run: {CMD} --no-pull")
+            print(f"  Commit or stash them, then re-run: hermes update --no-pull")
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
             sys.exit(1)
         _finish_already_up_to_date(

@@ -684,6 +684,23 @@ DEFAULT_CONFIG = {
     # stronger/pricier coders, 0.65 = mid-tier, "" = let OpenRouter pick the strongest. Docs:
     # openrouter.ai/docs/guides/routing/routers/pareto-router
     "openrouter": {"response_cache": True, "response_cache_ttl": 300, "min_coding_score": 0.65},
+    # OpenRouter provider routing — which upstream providers may serve a request and how they are
+    # ranked (docs: user-guide/features/provider-routing). Read by
+    # chat_completion_helpers._provider_preferences_for_agent on every request. `models.<id>`
+    # overlays every flat key for that ONE model: the model picker's provider step writes there so
+    # a pin for one model cannot leak into the rest. sort: price|throughput|latency;
+    # order = soft preference that keeps fallbacks, only = hard whitelist (breaks tool calls when
+    # no listed provider serves `tools`); require_parameters gates on full parameter support;
+    # data_collection: "allow"|"deny".
+    "provider_routing": {
+        "sort": "",
+        "only": [],
+        "ignore": [],
+        "order": [],
+        "require_parameters": False,
+        "data_collection": "",
+        "models": {},
+    },
     "bedrock": {  # AWS Bedrock; only used when model.provider is "bedrock".
         "region": "",  # empty = AWS_REGION env var → us-east-1
         "discovery": {

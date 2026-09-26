@@ -131,17 +131,19 @@ function parseTabList(parsed: unknown): PreviewTab[] {
 /** The tabs a profile's rail is showing, keyed by profile. */
 type TabsByProfile = Record<string, PreviewTab[]>
 
-/** Read every profile's bucket. A value written by a build that stored ONE
- *  global array is held back and adopted by the first scope to arrive rather
- *  than dropped — tabs the user can see are the tabs that must survive. */
-let pendingLegacyTabs: PreviewTab[] | null = null
-
+/** Read every profile's bucket.
+ *
+ *  A build that predates scoping stored ONE bare array under this key, recording
+ *  nothing about which profile wrote it. That value is deliberately ABANDONED
+ *  rather than migrated: handing it to whichever profile happens to ask first
+ *  puts one agent's tabs into another agent's rail — exactly the cross-agent
+ *  bleed this scoping exists to prevent. Losing a few preview tabs once is
+ *  recoverable by reopening them; misattributing them is a bug the user cannot
+ *  explain. */
 function loadTabsByProfile(): TabsByProfile {
   const stored = readJson<unknown>(TABS_STORAGE_KEY)
 
   if (Array.isArray(stored)) {
-    pendingLegacyTabs = parseTabList(stored)
-
     return {}
   }
 
@@ -223,12 +225,6 @@ export function setPreviewScope(scope: string) {
 
   if (next === viewKey) {
     return
-  }
-
-  if (pendingLegacyTabs) {
-    tabsByProfile[next] = [...(tabsByProfile[next] ?? []), ...pendingLegacyTabs]
-    pendingLegacyTabs = null
-    persistTabs()
   }
 
   viewKey = next

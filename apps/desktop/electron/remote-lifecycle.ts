@@ -30,6 +30,7 @@ import crypto from 'node:crypto'
 import { READY_IN_MERGED_OUTPUT_RE } from './backend-ready'
 import { parseRemoteProfileListing } from './connection-registry'
 import { assertBootstrapNotSuperseded, withRemoteTimeout } from './ssh-connection'
+import { detectRemotePlatform, listWindowsRemoteProfiles } from './windows-remote-lifecycle'
 
 const LOCKFILE_SCHEMA_VERSION = 2
 // Bumped when the desktop<->dashboard reuse contract changes in a way that makes
@@ -387,6 +388,23 @@ async function listRemoteHermesProfiles(ssh) {
   }
 
   return parseRemoteProfileListing(listing)
+}
+
+// Platform-aware roster inventory. SSH connect accepts Linux, macOS, and
+// native Windows remotes, but listRemoteHermesProfiles above is POSIX-only:
+// its home check rejects drive-letter HERMES_HOME values
+// (%LOCALAPPDATA%\hermes), so Windows hosts logged "Unsafe remote Hermes
+// home." and every named profile vanished from the roster. Route by platform —
+// the same detection connect uses — so Windows answers through the canonical
+// remote runtime helper while POSIX path safety is unchanged.
+async function listSshRemoteHermesProfiles(ssh, explicitHermesPath = '') {
+  const platform = await detectRemotePlatform(ssh, explicitHermesPath)
+
+  if (platform.os === 'Windows') {
+    return listWindowsRemoteProfiles(ssh, explicitHermesPath)
+  }
+
+  return listRemoteHermesProfiles(ssh)
 }
 
 async function readRemoteInstallId(ssh) {
@@ -1762,6 +1780,7 @@ export {
   isForwardBindCollision,
   isLockfileSkew,
   listRemoteHermesProfiles,
+  listSshRemoteHermesProfiles,
   locateHermes,
   LOCKFILE_SCHEMA_VERSION,
   lockfilePath,

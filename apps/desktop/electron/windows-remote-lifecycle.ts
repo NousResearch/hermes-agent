@@ -1,5 +1,6 @@
 import crypto from 'node:crypto'
 
+import { parseRemoteProfileListing } from './connection-registry'
 import { assertBootstrapNotSuperseded, redactSecrets, SSH_ERROR } from './ssh-connection'
 
 const LOCKFILE_SCHEMA_VERSION = 2
@@ -748,6 +749,19 @@ async function connectWindowsRemote(deps) {
   }
 }
 
+// Roster inventory for a native Windows host: ask the canonical remote runtime
+// helper which profiles this installation would serve. Pure inventory — never
+// spawns or touches an existing backend.
+async function listWindowsRemoteProfiles(ssh, explicitHermesPath = '') {
+  const runtime = await probeWindowsRemote(ssh, explicitHermesPath)
+  const result = await helper(ssh, runtime, 'list-profiles')
+  const names = Array.isArray(result?.profiles) ? result.profiles.filter(name => typeof name === 'string') : []
+
+  // Reuse the POSIX roster sanitizer so both platforms apply identical name
+  // rules: `default` first, rollback snapshots/junk dropped, sorted.
+  return parseRemoteProfileListing(names.join('\n'))
+}
+
 function buildWindowsInteractiveCommand(remoteCwd = '') {
   const cwd = String(remoteCwd || '').trim()
   const script = ['$ErrorActionPreference="Stop"']
@@ -772,6 +786,7 @@ export {
   encodedPowerShell,
   helper,
   helperCommand,
+  listWindowsRemoteProfiles,
   powerShellCommand,
   probeWindowsRemote,
   psLiteral,

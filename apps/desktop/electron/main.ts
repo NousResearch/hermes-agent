@@ -15837,7 +15837,7 @@ async function probeSshProfileInventory(connection) {
 
   try {
     await ssh.open()
-    const profiles = await remoteLifecycle.listRemoteHermesProfiles(ssh)
+    const profiles = await remoteLifecycle.listSshRemoteHermesProfiles(ssh, sshConfig.remoteHermesPath)
 
     if (profiles.length > 0) {
       sshRosterCache.set(connection.id, profiles)

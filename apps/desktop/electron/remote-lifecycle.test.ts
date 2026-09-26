@@ -20,6 +20,7 @@ import {
   isForwardBindCollision,
   isLockfileSkew,
   listRemoteHermesProfiles,
+  listSshRemoteHermesProfiles,
   locateHermes,
   LOCKFILE_SCHEMA_VERSION,
   lockfilePath,
@@ -311,6 +312,75 @@ test('listRemoteHermesProfiles rejects a hostile HERMES_HOME', async () => {
   )
   assert.equal(
     ssh.calls.some(cmd => cmd.includes('ls -1')),
+    false
+  )
+})
+
+test('listSshRemoteHermesProfiles keeps the POSIX listing on Linux/macOS remotes', async () => {
+  const ssh = fakeSsh([
+    [/uname/, 'Linux\nx86_64\n'],
+    [/HERMES_HOME/, '/Users/z/.hermes\n'],
+    [/ls -1/, 'bob\ndixie\n']
+  ])
+
+  assert.deepEqual(await listSshRemoteHermesProfiles(ssh), ['default', 'bob', 'dixie'])
+  // POSIX path safety is untouched: the shell home check still gates the ls.
+  assert.equal(
+    ssh.calls.some(cmd => cmd.includes('Unsafe')),
+    false
+  )
+})
+
+test('listRemoteHermesProfiles still rejects a hostile POSIX HERMES_HOME through the dispatcher', async () => {
+  const ssh = fakeSsh([
+    [/uname/, 'Darwin\narm64\n'],
+    [/HERMES_HOME/, '/tmp/x; echo pwned\n']
+  ])
+
+  await assert.rejects(
+    () => listSshRemoteHermesProfiles(ssh),
+    (err: any) => err.kind === 'unsafe-path'
+  )
+})
+
+test('listSshRemoteHermesProfiles routes native Windows hosts through the runtime helper', async () => {
+  // A native Windows host answers neither uname probe; its drive-letter
+  // HERMES_HOME used to die in the POSIX safety check ("Unsafe remote Hermes
+  // home.") and every named profile vanished from the roster.
+  const probe = JSON.stringify({
+    os: 'Windows',
+    arch: 'AMD64',
+    hermesHome: 'C:\\Users\\me\\AppData\\Local\\hermes',
+    hermesPath: 'C:\\h\\hermes-agent\\venv\\Scripts\\hermes.exe',
+    python: 'C:\\h\\venv\\Scripts\\python.exe'
+  })
+  let helperCall = 0
+
+  const ssh = fakeSsh([
+    [/uname/, new Error("'uname' is not recognized as an internal or external command")],
+    [
+      /EncodedCommand/,
+      () => {
+        helperCall += 1
+
+        if (helperCall === 1) {
+          return probe
+        }
+
+        return JSON.stringify({ profiles: ['work', 'gaming'] })
+      }
+    ]
+  ])
+
+  assert.deepEqual(await listSshRemoteHermesProfiles(ssh), ['default', 'gaming', 'work'])
+  // The Windows branch never runs the POSIX echo/ls inventory...
+  assert.equal(
+    ssh.calls.some(cmd => cmd.includes('HERMES_HOME') || cmd.includes('ls -1')),
+    false
+  )
+  // ...and never spawns a remote dashboard for inventory.
+  assert.equal(
+    ssh.calls.some(cmd => cmd.includes('serve')),
     false
   )
 })

@@ -11,6 +11,7 @@ import {
   detectRemotePlatform,
   encodedPowerShell,
   helperCommand,
+  listWindowsRemoteProfiles,
   powerShellCommand,
   probeWindowsRemote,
   psLiteral,
@@ -349,16 +350,12 @@ test('managed update drain preserves a Windows owner when creation time does not
     hermesPath: 'C:\\h\\hermes.exe',
     hermesHome: 'C:\\h'
   }
-
   const operations: string[] = []
-
   const ssh = sshWith(async command => {
     const script = Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
     operations.push(script)
-
     return JSON.stringify(lock)
   })
-
   await assert.rejects(
     terminateOwnedWindowsDashboardForUpdate(
       ssh,
@@ -376,7 +373,6 @@ test('managed update drain preserves a Windows owner when creation time does not
     false
   )
 })
-
 test('managed update drain rechecks Windows PID/create-time ownership before exact terminate', async () => {
   const lock = {
     schemaVersion: 2,
@@ -391,26 +387,19 @@ test('managed update drain rechecks Windows PID/create-time ownership before exa
     hermesPath: 'C:\\h\\hermes.exe',
     hermesHome: 'C:\\h'
   }
-
   const operations: string[] = []
-
   const ssh = sshWith(async command => {
     const script = Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
     operations.push(script)
-
     if (script.includes("'read-lock'")) {
       return JSON.stringify(lock)
     }
-
     if (script.includes("'process-state'")) {
       return JSON.stringify({ alive: true, owned: true, indeterminate: false })
     }
-
     return JSON.stringify({ ok: true })
   })
-
   const result = await terminateOwnedWindowsDashboardForUpdate(ssh, { python: 'C:\\h\\python.exe' }, lock)
-
   assert.equal(result.terminated, true)
   assert.equal(operations.filter(operation => operation.includes("'read-lock'")).length, 2)
   assert.equal(operations.filter(operation => operation.includes("'process-state'")).length, 2)
@@ -419,4 +408,73 @@ test('managed update drain rechecks Windows PID/create-time ownership before exa
     operations.some(operation => operation.includes("'remove-lock'")),
     false
   )
+})
+test('listWindowsRemoteProfiles inventories named profiles via the canonical runtime helper', async () => {
+  const probe = JSON.stringify({
+    os: 'Windows',
+    arch: 'AMD64',
+    hermesHome: 'C:\\Users\\me\\AppData\\Local\\hermes',
+    hermesPath: 'C:\\h\\hermes-agent\\venv\\Scripts\\hermes.exe',
+    python: 'C:\\h\\venv\\Scripts\\python.exe'
+  })
+  // The helper answers with the canonical roster; junk that a hand-made
+  // profiles dir could contain is filtered exactly like the POSIX listing.
+  const listing = JSON.stringify({
+    home: 'C:\\Users\\me\\AppData\\Local\\hermes',
+    profiles: ['work', 'default', 'bob.rollback-old', '.junk', 'UPPER', 7, null]
+  })
+  let step = 0
+  const calls: string[] = []
+  const ssh = sshWith(async command => {
+    calls.push(command)
+    step += 1
+    if (step === 1) {
+      return probe
+    }
+    return listing
+  })
+  assert.deepEqual(await listWindowsRemoteProfiles(ssh), ['default', 'UPPER', 'work'])
+  assert.equal(calls.length, 2)
+  // Inventory only: the second hop targets the runtime helper, not a spawn.
+  // (The desktop sanitizer is case-tolerant; the remote registry itself
+  // only ever emits lowercase ids.)
+  const helperScript = Buffer.from(calls[1].split(' ').pop()!, 'base64').toString('utf16le')
+  assert.match(helperScript, /-m' 'hermes_cli\.windows_ssh_runtime' 'list-profiles'/)
+  assert.equal(
+    calls.some(cmd => cmd.includes('--isolated')),
+    false
+  )
+})
+test('listWindowsRemoteProfiles surfaces a malformed helper answer as a failure', async () => {
+  const probe = JSON.stringify({
+    os: 'Windows',
+    arch: 'AMD64',
+    hermesHome: 'C:\\h',
+    hermesPath: 'C:\\h\\hermes.exe',
+    python: 'C:\\h\\python.exe'
+  })
+  let step = 0
+  const ssh = sshWith(async () => {
+    step += 1
+    if (step === 1) {
+      return probe
+    }
+    return 'not json at all'
+  })
+  await assert.rejects(() => listWindowsRemoteProfiles(ssh))
+})
+test('listWindowsRemoteProfiles still reports default when only canonical exists', async () => {
+  const probe = JSON.stringify({
+    os: 'Windows',
+    arch: 'AMD64',
+    hermesHome: 'C:\\h',
+    hermesPath: 'C:\\h\\hermes.exe',
+    python: 'C:\\h\\python.exe'
+  })
+  let step = 0
+  const ssh = sshWith(async () => {
+    step += 1
+    return step === 1 ? probe : JSON.stringify({ profiles: [] })
+  })
+  assert.deepEqual(await listWindowsRemoteProfiles(ssh), ['default'])
 })

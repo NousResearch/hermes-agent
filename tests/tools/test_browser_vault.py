@@ -552,6 +552,17 @@ class TestBrowserVaultTools:
         finally:
             redact.clear_vault_redaction_values()
 
+    def test_numeric_browser_result_redacts_registered_vault_value(self):
+        from agent.redact import clear_vault_redaction_values, register_vault_redaction_value
+        from tools.browser_tool_snapshot import _redact_browser_output
+
+        try:
+            register_vault_redaction_value("1234567890")  # synthetic numeric password
+            result = _redact_browser_output({"result": {"value": 1234567890, "other": 42}})
+            assert result == {"result": {"value": "«redacted-vault-secret»", "other": 42}}
+        finally:
+            clear_vault_redaction_values()
+
     def test_payment_fill_requires_confirmation_then_fills_card_fields(self, store):
         """A card is written only after the user confirms (a prompt injection reaching a checkout must not be
         able to spend); the secret eval then targets the classified card controls and the result carries

@@ -116,6 +116,11 @@ def _redact_browser_output(value: Any) -> Any:
 
     if isinstance(value, str):
         return redact_sensitive_text(value, force=True)
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        from agent.redact import redact_registered_vault_values
+        text = str(value)
+        if redact_registered_vault_values(text) != text:
+            return "«redacted-vault-secret»"
     if isinstance(value, list):
         return [_redact_browser_output(item) for item in value]
     if isinstance(value, tuple):

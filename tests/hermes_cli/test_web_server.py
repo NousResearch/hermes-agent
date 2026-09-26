@@ -5256,6 +5256,55 @@ class TestDashboardComponentHealth:
         assert self.ws.DASHBOARD_HEALTH.selftest_http_status == 500
         assert self.ws.DASHBOARD_HEALTH.snapshot()["status"] == "degraded"
 
+class TestMountSpaGatingIsAppScoped:
+    """`mount_spa(application)` must read gating from the app it is given.
+
+    Every route in `mount_spa` registers on the `application` parameter, but
+    `_serve_index` read `auth_required` from the MODULE-LEVEL `app`. Production
+    passes the global (`mount_spa(app)`), so the two coincide and nothing
+    breaks today - but the SPA's auth scheme is then decided by an object it
+    was not mounted on. Any second mount (an embedded/test/sub-app) silently
+    inherits the global's gating, and picking the wrong branch here decides
+    whether the long-lived session token is injected into the HTML.
+    """
+
+    @staticmethod
+    def _mount(tmp_path, monkeypatch, *, app_gated: bool, global_gated: bool):
+        from fastapi import FastAPI
+        from starlette.testclient import TestClient
+        import hermes_cli.web_server as ws
+
+        dist = tmp_path / "web_dist"
+        (dist / "assets").mkdir(parents=True)
+        (dist / "index.html").write_text(
+            "<html><head><title>t</title></head><body>SPA</body></html>",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(ws, "WEB_DIST", dist)
+        monkeypatch.setattr(ws, "load_config", lambda: {"dashboard": {"theme": "default"}})
+        monkeypatch.setattr(ws, "_SESSION_TOKEN", "scope-probe-token")
+        # The global says one thing, the mounted app says another.
+        monkeypatch.setattr(ws.app.state, "auth_required", global_gated, raising=False)
+
+        spa_app = FastAPI()
+        spa_app.state.auth_required = app_gated
+        ws.mount_spa(spa_app)
+        return TestClient(spa_app).get("/chat")
+
+    def test_gated_app_is_gated_even_when_global_is_not(self, tmp_path, monkeypatch):
+        resp = self._mount(tmp_path, monkeypatch, app_gated=True, global_gated=False)
+
+        assert resp.status_code == 200
+        # Gated: cookie auth, so the long-lived token must NOT be in the HTML.
+        assert "scope-probe-token" not in resp.text
+        assert "window.__HERMES_AUTH_REQUIRED__=true" in resp.text
+
+    def test_ungated_app_is_ungated_even_when_global_is_gated(self, tmp_path, monkeypatch):
+        resp = self._mount(tmp_path, monkeypatch, app_gated=False, global_gated=True)
+
+        assert resp.status_code == 200
+        assert "scope-probe-token" in resp.text
+        assert "window.__HERMES_AUTH_REQUIRED__=false" in resp.text
 
 class TestSessionPatchUnread:
     """PATCH /api/sessions/{id} with {"unread": bool} marks the session

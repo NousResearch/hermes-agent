@@ -10,6 +10,7 @@ The Desktop's Settings → Credential Vault panel. Contracts:
 
 from __future__ import annotations
 
+import contextlib
 import json
 
 import pytest
@@ -175,3 +176,102 @@ def test_launch_profile_vault_rpcs_stay_scoped_once_the_process_multiplexes(home
     monkeypatch.setattr("agent.vault_backends.base.is_installed", lambda name: name == "onepassword")
     set_multiplex_active(True)  # conftest resets the latch per test
     assert _sources_rows(home)["onepassword"]["enabled"] is True
+
+_VAULT_SCOPE_METHOD_PARAMS = {
+    "vault.list": {},
+    "vault.sources": {},
+    "vault.source.set": {"name": "synthetic", "enabled": False},
+    "vault.unlock": {"name": "synthetic", "password": "synthetic-password"},
+    "vault.lock": {"name": "synthetic"},
+    "vault.add": {"kind": "login", "label": "synthetic", "secret": {}},
+    "vault.remove": {"id": ""},
+}
+
+
+def _exercise_vault_scope(params_factory):
+    for index, (method, params) in enumerate(_VAULT_SCOPE_METHOD_PARAMS.items(), start=100):
+        srv._methods[method](index, params_factory(dict(params)))
+
+
+def _stub_vault_side_effects(monkeypatch):
+    monkeypatch.setattr("agent.vault_backends.enabled_backends", lambda: [])
+    monkeypatch.setattr("agent.vault_backends.base.external_backend_classes", lambda: [])
+    monkeypatch.setattr("agent.vault_backends.unlock.lock", lambda _name=None: None)
+
+
+@pytest.mark.parametrize("named_custom_exists", [False, True])
+def test_custom_home_vault_methods_stay_on_launch_scope_without_profile(
+    tmp_path, monkeypatch, named_custom_exists
+):
+    """A synthetic custom route key is not a profile-directory identity.
+
+    Even if a distinct named custom profile exists, omitting params.profile must keep
+    every vault RPC on the backend launch home.
+    """
+    launch_home = tmp_path / "external-hermes-home"
+    named_custom = tmp_path / "profiles" / "custom"
+    launch_home.mkdir()
+    if named_custom_exists:
+        named_custom.mkdir(parents=True)
+
+    monkeypatch.setattr(srv, "_hermes_home", launch_home)
+    monkeypatch.setenv("HERMES_HOME", str(launch_home))
+
+    from hermes_cli import profiles as profiles_mod
+
+    def profile_dir(name):
+        if name == "custom":
+            return named_custom
+        return tmp_path / "profiles" / str(name)
+
+    monkeypatch.setattr(profiles_mod, "get_profile_dir", profile_dir)
+    _stub_vault_side_effects(monkeypatch)
+
+    scopes = []
+
+    @contextlib.contextmanager
+    def record_scope(session):
+        scopes.append(session.get("profile_home"))
+        yield
+
+    monkeypatch.setattr(srv, "_session_profile_runtime_scope", record_scope)
+    _exercise_vault_scope(lambda params: params)
+
+    assert scopes == [None] * len(_VAULT_SCOPE_METHOD_PARAMS)
+
+
+@pytest.mark.parametrize(
+    ("profile", "home_name"),
+    [("default", "default-home"), ("credentials-owner", "credentials-owner-home"), ("custom", "named-custom-home")],
+)
+def test_explicit_vault_profiles_bind_backend_scope_for_every_method(tmp_path, monkeypatch, profile, home_name):
+    """Explicit default or named selectors bind all seven vault handlers to their resolved owner."""
+    launch_home = tmp_path / "launch-home"
+    target_home = tmp_path / home_name
+    launch_home.mkdir()
+    target_home.mkdir()
+
+    monkeypatch.setattr(srv, "_hermes_home", launch_home)
+    monkeypatch.setenv("HERMES_HOME", str(launch_home))
+    monkeypatch.setattr(srv, "_served_profile_homes", {target_home})
+
+    from hermes_cli import profiles as profiles_mod
+
+    monkeypatch.setattr(
+        profiles_mod,
+        "get_profile_dir",
+        lambda name: target_home if name == profile else tmp_path / "missing-profile",
+    )
+    _stub_vault_side_effects(monkeypatch)
+
+    scopes = []
+
+    @contextlib.contextmanager
+    def record_scope(session):
+        scopes.append(session.get("profile_home"))
+        yield
+
+    monkeypatch.setattr(srv, "_session_profile_runtime_scope", record_scope)
+    _exercise_vault_scope(lambda params: {**params, "profile": profile})
+
+    assert scopes == [str(target_home)] * len(_VAULT_SCOPE_METHOD_PARAMS)

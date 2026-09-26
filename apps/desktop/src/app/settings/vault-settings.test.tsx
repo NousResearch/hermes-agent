@@ -62,19 +62,19 @@ afterEach(() => {
 
 describe('VaultSettings', () => {
   // Two connections both serving `default` (this device + a remote gateway): a bare profile
-  // name would resolve onto the PRIMARY socket and the panel would show the other machine's
-  // vault (#94811). The RPC must name the connection the panel claims to show.
+  // name would resolve onto the PRIMARY socket and the panel would show the other machine's vault.
+  // The RPC must name the connection the panel claims to show.
   it('routes every vault RPC through the active connection, not a bare profile name', async () => {
     requestGateway.mockResolvedValue({ items: [] })
     $connection.set({ connectionId: 'this-device', mode: 'local' } as never)
     renderVault()
 
-    await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('vault.list', {}))
+    await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('vault.list', { profile: 'default' }))
     expect(requestGatewayForAgent).toHaveBeenCalledWith(
       'this-device',
       expect.any(String),
       'vault.list',
-      {},
+      { profile: 'default' },
       undefined,
       undefined,
       { spawnPriority: 'foreground' }
@@ -125,6 +125,7 @@ describe('VaultSettings', () => {
         kind: 'login',
         label: 'GitHub work',
         origin: 'https://github.com',
+        profile: 'default',
         secret: {
           identifier_type: 'email',
           identifier: 'me@example.com',
@@ -145,7 +146,9 @@ describe('VaultSettings', () => {
     await waitFor(() => expect(screen.getByText('Delete this item?')).toBeTruthy())
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
 
-    await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('vault.remove', { id: 'vault_abc123' }))
+    await waitFor(() =>
+      expect(requestGateway).toHaveBeenCalledWith('vault.remove', { id: 'vault_abc123', profile: 'default' })
+    )
   })
 
   it('unlocks a password manager from Settings; the master password leaves only via vault.unlock', async () => {
@@ -202,7 +205,11 @@ describe('VaultSettings', () => {
     )
 
     await waitFor(() =>
-      expect(requestGateway).toHaveBeenCalledWith('vault.unlock', { name: 'onepassword', password: 'correct horse' })
+      expect(requestGateway).toHaveBeenCalledWith('vault.unlock', {
+        name: 'onepassword',
+        password: 'correct horse',
+        profile: 'default'
+      })
     )
     await waitFor(() => expect(screen.getByText('Unlocked')).toBeTruthy())
     expect(screen.queryByPlaceholderText('Master password')).toBeNull()

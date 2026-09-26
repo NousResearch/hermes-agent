@@ -11,7 +11,7 @@ const { calls } = vi.hoisted(() => ({
   calls: [] as { method: string; params: Record<string, unknown>; profile: string }[]
 }))
 
-let respond: (profile: string, method: string) => Promise<unknown> = async () => ({})
+let respond: (profile: string, method: string, params: Record<string, unknown>) => Promise<unknown> = async () => ({})
 
 vi.mock('@/store/gateway', async importActual => ({
   ...(await importActual<Record<string, unknown>>()),
@@ -21,9 +21,10 @@ vi.mock('@/store/gateway', async importActual => ({
     method: string,
     params?: Record<string, unknown>
   ) => {
-    calls.push({ method, params: params ?? {}, profile })
+    const requestParams = params ?? {}
+    calls.push({ method, params: requestParams, profile })
 
-    return respond(profile, method)
+    return respond(profile, method, requestParams)
   }
 }))
 vi.mock('@/lib/haptics', () => ({ triggerHaptic: vi.fn() }))
@@ -41,7 +42,7 @@ import { useStore } from '@nanostores/react'
 import { queryClient } from '@/lib/query-client'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $gatewayState } from '@/store/session'
-import { $settingsScopeProfile } from '@/store/settings-scope'
+import { $settingsScopeOverride, $settingsScopeProfile, setSettingsScope } from '@/store/settings-scope'
 
 import { vaultOwnerKey, VaultSettings } from './vault-settings'
 
@@ -73,6 +74,7 @@ beforeEach(() => {
   calls.length = 0
   queryClient.clear()
   $activeGatewayProfile.set('default')
+  $settingsScopeOverride.set(null)
   $gatewayState.set('open')
   respond = async (_profile, method) =>
     method === 'vault.sources' ? { sources } : method === 'vault.list' ? { items: [] } : { ok: true }
@@ -81,6 +83,8 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   queryClient.clear()
+  $activeGatewayProfile.set('default')
+  $settingsScopeOverride.set(null)
 })
 
 it('a master-password draft is wiped on a profile switch and never submitted to the new owner', async () => {
@@ -166,4 +170,133 @@ it('vault.add secrets never enter the mutation cache', async () => {
         .map(m => m.state.variables)
     )
   ).not.toContain('fixture-retained-password')
+})
+
+it('sends the selected settings profile with vault reads and writes', async () => {
+  const selectedProfile = 'credentials-owner'
+  setSettingsScope(selectedProfile)
+  mount()
+
+  await waitFor(() => expect(calls.some(call => call.method === 'vault.list')).toBe(true))
+  fireEvent.click(await screen.findByRole('button', { name: 'Add' }))
+  fireEvent.change(screen.getByLabelText('Label'), { target: { value: 'Synthetic fixture' } })
+  fireEvent.change(screen.getByLabelText('Site origin'), { target: { value: 'https://example.invalid' } })
+  fireEvent.change(screen.getByLabelText('Identifier'), { target: { value: 'fixture@example.invalid' } })
+  fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'synthetic-placeholder' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+  await waitFor(() => expect(calls.some(call => call.method === 'vault.add')).toBe(true))
+  expect.soft(calls.find(call => call.method === 'vault.list')?.params.profile).toBe(selectedProfile)
+  expect.soft(calls.find(call => call.method === 'vault.add')?.params.profile).toBe(selectedProfile)
+})
+
+it('keeps every synthetic custom-home vault RPC ambient while retaining the custom route owner', async () => {
+  let unlocked = false
+  let enabled = true
+  const customItem = {
+    id: 'custom-home-item',
+    kind: 'login',
+    label: 'Custom-home existing item',
+    origin: 'https://custom-home.invalid',
+    identifier: 'existing@custom-home.invalid',
+    created_at: '2026-09-25T00:00:00Z'
+  }
+
+  respond = async (_profile, method, params) => {
+    if (method === 'vault.sources') {
+      return {
+        sources: [
+          {
+            name: 'bitwarden',
+            display_name: 'Bitwarden',
+            enabled,
+            needs_unlock: true,
+            unlocked,
+            installed: true
+          }
+        ]
+      }
+    }
+
+    if (method === 'vault.list') {
+      return { items: [customItem] }
+    }
+
+    if (method === 'vault.unlock') {
+      unlocked = true
+      return { unlocked: true }
+    }
+
+    if (method === 'vault.lock') {
+      unlocked = false
+      return { locked: true }
+    }
+
+    if (method === 'vault.source.set') {
+      enabled = Boolean(params.enabled)
+      return { enabled }
+    }
+
+    if (method === 'vault.add') {
+      return { id: 'custom-home-created' }
+    }
+
+    if (method === 'vault.remove') {
+      return { removed: true }
+    }
+
+    return { ok: true }
+  }
+
+  act(() => $activeGatewayProfile.set('custom'))
+  mount()
+
+  await screen.findByText('Custom-home existing item')
+
+  fireEvent.click(screen.getByRole('button', { name: 'Remove saved item' }))
+  await screen.findByText('Delete this item?')
+  fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+  await waitFor(() => expect(calls.some(call => call.method === 'vault.remove')).toBe(true))
+
+  fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+  fireEvent.change(screen.getByLabelText('Label'), { target: { value: 'Custom-home fixture' } })
+  fireEvent.change(screen.getByLabelText('Site origin'), { target: { value: 'https://custom-home.invalid' } })
+  fireEvent.change(screen.getByLabelText('Identifier'), { target: { value: 'fixture@custom-home.invalid' } })
+  fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'synthetic-placeholder' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+  await waitFor(() => expect(calls.some(call => call.method === 'vault.add')).toBe(true))
+
+  fireEvent.click(await screen.findByRole('button', { name: 'Unlock' }))
+  await screen.findByText('Unlock Bitwarden')
+  fireEvent.change(screen.getByPlaceholderText('Master password'), { target: { value: 'synthetic-master-password' } })
+  fireEvent.click(
+    screen.getByRole('button', { name: 'Unlock' }).closest('form')!.querySelector('button[type=submit]')!
+  )
+  await waitFor(() => expect(calls.some(call => call.method === 'vault.unlock')).toBe(true))
+
+  fireEvent.click(await screen.findByRole('button', { name: 'Lock' }))
+  await waitFor(() => expect(calls.some(call => call.method === 'vault.lock')).toBe(true))
+
+  fireEvent.click(screen.getByRole('switch', { name: 'Bitwarden' }))
+  await waitFor(() => expect(calls.some(call => call.method === 'vault.source.set')).toBe(true))
+
+  const methods = [
+    'vault.list',
+    'vault.sources',
+    'vault.source.set',
+    'vault.unlock',
+    'vault.lock',
+    'vault.add',
+    'vault.remove'
+  ] as const
+
+  for (const method of methods) {
+    const methodCalls = calls.filter(call => call.method === method)
+    expect.soft(methodCalls.length, method).toBeGreaterThan(0)
+
+    for (const call of methodCalls) {
+      expect.soft(call.profile, method + ' route owner').toBe('custom')
+      expect.soft(call.params, method + ' payload').not.toHaveProperty('profile')
+    }
+  }
 })

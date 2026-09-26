@@ -388,6 +388,178 @@ _remove_role = _mutation(
     "Role {role_id} removed from user {user_id}.")
 
 
+# ── channel/role/server management actions ──────────────────────────────────
+# _CHANNEL_TYPES maps human-readable channel type names (used in action parameters)
+# to their integer IDs in the Discord API (channel object channel-types field).
+_CHANNEL_TYPES = {
+    "text": 0, "voice": 2, "category": 4, "announcement": 5, "forum": 15,
+}
+
+# _PERMISSION_FLAGS maps Discord permission name strings (uppercase, e.g. "SEND_MESSAGES")
+# to their bitfield integer values. Used by _parse_permission_flags to convert
+# comma-separated permission strings into the integer the API expects.
+_PERMISSION_FLAGS = {
+    "CREATE_INSTANT_INVITE": 0x1, "KICK_MEMBERS": 0x2, "BAN_MEMBERS": 0x4,
+    "ADMINISTRATOR": 0x8, "MANAGE_CHANNELS": 0x10, "MANAGE_GUILD": 0x20,
+    "ADD_REACTIONS": 0x40, "VIEW_AUDIT_LOG": 0x80, "PRIORITY_SPEAKER": 0x100,
+    "STREAM": 0x200, "VIEW_CHANNEL": 0x400, "SEND_MESSAGES": 0x800,
+    "SEND_TTS_MESSAGES": 0x1000, "MANAGE_MESSAGES": 0x2000, "EMBED_LINKS": 0x4000,
+    "ATTACH_FILES": 0x8000, "READ_MESSAGE_HISTORY": 0x10000,
+    "MENTION_EVERYONE": 0x20000, "USE_EXTERNAL_EMOJIS": 0x40000,
+    "VIEW_GUILD_INSIGHTS": 0x80000, "CONNECT": 0x100000, "SPEAK": 0x200000,
+    "MUTE_MEMBERS": 0x400000, "DEAFEN_MEMBERS": 0x800000,
+    "MOVE_MEMBERS": 0x1000000, "USE_VAD": 0x2000000,
+    "CHANGE_NICKNAME": 0x4000000, "MANAGE_NICKNAMES": 0x8000000,
+    "MANAGE_ROLES": 0x10000000, "MANAGE_WEBHOOKS": 0x20000000,
+    "MANAGE_EMOJIS_AND_STICKERS": 0x40000000, "USE_APPLICATION_COMMANDS": 0x80000000,
+    "REQUEST_TO_SPEAK": 0x100000000, "MANAGE_EVENTS": 0x200000000,
+    "MANAGE_THREADS": 0x400000000, "CREATE_PUBLIC_THREADS": 0x800000000,
+    "CREATE_PRIVATE_THREADS": 0x1000000000, "SEND_MESSAGES_IN_THREADS": 0x2000000000,
+    "USE_EMBEDDED_ACTIVITIES": 0x4000000000, "MODERATE_MEMBERS": 0x100000000000,
+}
+
+
+def _parse_permission_flags(raw: str) -> int:
+    """Parse comma-separated permission names into a bitfield integer."""
+    if raw == "0":
+        return 0
+    value = 0
+    for name in raw.split(","):
+        name = name.strip().upper()
+        if name in _PERMISSION_FLAGS:
+            value |= _PERMISSION_FLAGS[name]
+        else:
+            logger.warning("Unknown permission name: %s", name)
+    return value
+
+
+def _create_channel(
+    token: str, guild_id: str, name: str,
+    channel_type: str = "text", topic: str = "", parent_id: str = "", **_kw: Any) -> str:
+    """Create a channel in a guild.
+
+    Parameters:
+        channel_type: One of "text", "voice", "category", "announcement", "forum" (default: "text").
+        topic: Channel topic string (optional, shown in channel header for text channels).
+        parent_id: Category channel ID to nest this channel under (optional).
+    """
+    type_id = _CHANNEL_TYPES.get(channel_type.lower(), 0)
+    body: Dict[str, Any] = {"name": name, "type": type_id}
+    if topic:
+        body["topic"] = topic
+    if parent_id:
+        body["parent_id"] = parent_id
+    ch = _discord_request("POST", f"/guilds/{guild_id}/channels", token, body=body)
+    return json.dumps({"success": True, "channel_id": ch["id"], "name": ch.get("name"), "type": ch.get("type")})
+
+
+def _edit_channel(
+    token: str, channel_id: str, name: str = "", topic: str = "",
+    parent_id: str = "", **_kw: Any) -> str:
+    """Edit a channel's properties (only non-empty fields are sent).
+
+    Only fields with non-empty values are included in the API request, so existing
+    fields that are not provided remain unchanged. Passing all empty values returns
+    an error with no fields to update.
+    """
+    body: Dict[str, Any] = {}
+    if name:
+        body["name"] = name
+    if topic:
+        body["topic"] = topic
+    if parent_id:
+        body["parent_id"] = parent_id
+    if not body:
+        return json.dumps({"success": False, "error": "No fields to update."})
+    ch = _discord_request("PATCH", f"/channels/{channel_id}", token, body=body)
+    return json.dumps({"success": True, "channel_id": ch["id"], "name": ch.get("name")})
+
+
+def _delete_channel(token: str, channel_id: str, **_kw: Any) -> str:
+    """Delete a channel. This action is irreversible — all messages and data in the
+    channel are permanently removed."""
+    _discord_request("DELETE", f"/channels/{channel_id}", token)
+    return json.dumps({"success": True, "message": f"Channel {channel_id} deleted."})
+
+
+def _create_role(
+    token: str, guild_id: str, name: str, color: str = "",
+    hoist: bool = False, mentionable: bool = False, **_kw: Any) -> str:
+    """Create a role in a guild.
+
+    Parameters:
+        color: Role color as a hex string, e.g. "#FF5733" or "FF5733" (optional).
+        hoist: If True, the role is displayed separately in the member list.
+        mentionable: If True, the role can be @mentioned by anyone.
+    """
+    body: Dict[str, Any] = {"name": name, "hoist": hoist, "mentionable": mentionable}
+    if color:
+        body["color"] = int(color.lstrip("#"), 16)
+    role = _discord_request("POST", f"/guilds/{guild_id}/roles", token, body=body)
+    return json.dumps({"success": True, "role_id": role["id"], "name": role.get("name")})
+
+
+def _edit_role(
+    token: str, guild_id: str, role_id: str, name: str = "",
+    color: str = "", hoist: Optional[bool] = None,
+    mentionable: Optional[bool] = None, **_kw: Any) -> str:
+    """Edit a role's properties (only provided fields are sent).
+
+    Partial update: only fields that are explicitly provided (non-empty for strings,
+    non-None for booleans) are included in the request. Omitted fields are left
+    unchanged. Passing all empty/None values returns an error.
+    """
+    body: Dict[str, Any] = {}
+    if name:
+        body["name"] = name
+    if color:
+        body["color"] = int(color.lstrip("#"), 16)
+    if hoist is not None:
+        body["hoist"] = hoist
+    if mentionable is not None:
+        body["mentionable"] = mentionable
+    if not body:
+        return json.dumps({"success": False, "error": "No fields to update."})
+    role = _discord_request("PATCH", f"/guilds/{guild_id}/roles/{role_id}", token, body=body)
+    return json.dumps({"success": True, "role_id": role["id"], "name": role.get("name")})
+
+
+def _edit_server(
+    token: str, guild_id: str, name: str = "",
+    verification_level: Optional[int] = None, **_kw: Any) -> str:
+    """Edit server properties (only non-empty fields are sent).
+
+    Parameters:
+        verification_level: 0=None, 1=Email, 2=5min, 3=10min, 4=Bot verification.
+    """
+    body: Dict[str, Any] = {}
+    if name:
+        body["name"] = name
+    if verification_level is not None:
+        body["verification_level"] = verification_level
+    if not body:
+        return json.dumps({"success": False, "error": "No fields to update."})
+    g = _discord_request("PATCH", f"/guilds/{guild_id}", token, body=body)
+    return json.dumps({"success": True, "name": g.get("name")})
+
+
+def _edit_channel_permissions(
+    token: str, channel_id: str, overwrite_id: str,
+    overwrite_type: str = "role", allow: str = "0", deny: str = "0",
+    **_kw: Any) -> str:
+    """Edit permission overwrites for a channel.
+
+    Parameters:
+        allow: Comma-separated permission names to allow (e.g. "VIEW_CHANNEL,SEND_MESSAGES").
+        deny: Comma-separated permission names to deny.
+        Use "0" for no permissions in a category (allow/deny).
+    """
+    type_int = 0 if overwrite_type.lower() == "role" else 1
+    body = {"allow": str(_parse_permission_flags(allow)), "deny": str(_parse_permission_flags(deny)), "type": type_int}
+    _discord_request("PUT", f"/channels/{channel_id}/permissions/{overwrite_id}", token, body=body)
+    return json.dumps({"success": True, "message": f"Permissions updated for {overwrite_id}."})
+
+
 # ── action dispatch + metadata ───────────────────────────────────────────────
 # Single source of truth: (action, handler, required-param signature, description). Order is
 # the schema/enum order; the signature drives runtime required-param validation.
@@ -407,6 +579,13 @@ _ACTION_MANIFEST = [
     ("create_thread", _create_thread, "(channel_id, name)", "create a public thread; optional message_id anchor"),
     ("add_role", _add_role, "(guild_id, user_id, role_id)", "assign a role"),
     ("remove_role", _remove_role, "(guild_id, user_id, role_id)", "remove a role"),
+    ("create_channel", _create_channel, "(guild_id, name)", "create a channel; optional channel_type, topic, parent_id"),
+    ("edit_channel", _edit_channel, "(channel_id)", "edit channel; optional name, topic, parent_id"),
+    ("delete_channel", _delete_channel, "(channel_id)", "delete a channel"),
+    ("create_role", _create_role, "(guild_id, name)", "create a role; optional color, hoist, mentionable"),
+    ("edit_role", _edit_role, "(guild_id, role_id)", "edit a role; optional name, color, hoist, mentionable"),
+    ("edit_server", _edit_server, "(guild_id)", "edit server; optional name, verification_level"),
+    ("edit_channel_permissions", _edit_channel_permissions, "(channel_id, overwrite_id)", "edit permission overwrites; optional overwrite_type, allow, deny"),
 ]
 _ACTIONS = {name: fn for name, fn, _sig, _desc in _ACTION_MANIFEST}
 _REQUIRED_PARAMS: Dict[str, List[str]] = {
@@ -493,6 +672,29 @@ _SCHEMA_PROPERTIES: Dict[str, Any] = {
         "enum": [60, 1440, 4320, 10080],
         "description": "Thread archive duration in minutes (create_thread, default 1440).",
     },
+    "topic": {"type": "string", "description": "Channel topic (create_channel, edit_channel)."},
+    "channel_type": {
+        "type": "string",
+        "enum": ["text", "voice", "category", "announcement", "forum"],
+        "description": "Channel type (create_channel, default: text).",
+    },
+    "parent_id": {"type": "string", "description": "Parent category ID (create_channel, edit_channel)."},
+    "color": {"type": "string", "description": "Role color as #RRGGBB hex (create_role, edit_role)."},
+    "hoist": {"type": "boolean", "description": "Display role separately in member list (create_role, edit_role)."},
+    "mentionable": {"type": "boolean", "description": "Allow mentioning this role (create_role, edit_role)."},
+    "verification_level": {
+        "type": "integer",
+        "enum": [0, 1, 2, 3, 4],
+        "description": "Server verification level (edit_server): 0=None, 1=Email, 2=5min, 3=10min, 4=Bot.",
+    },
+    "overwrite_id": {"type": "string", "description": "Target role or member ID for permission overwrite (edit_channel_permissions)."},
+    "overwrite_type": {
+        "type": "string",
+        "enum": ["role", "member"],
+        "description": "Permission overwrite target type (edit_channel_permissions, default: role).",
+    },
+    "allow": {"type": "string", "description": "Comma-separated allowed permissions (edit_channel_permissions)."},
+    "deny": {"type": "string", "description": "Comma-separated denied permissions (edit_channel_permissions)."},
 }
 
 _CONTENT_NOTE = (
@@ -563,7 +765,14 @@ _ACTION_403_HINT = {
     "search_members": (
         "Likely missing the Server Members privileged intent — enable it in the Discord Developer Portal "
         "under your bot's settings."),
-    "member_info": "Bot cannot see this guild member (missing Server Members intent or insufficient permissions)."}
+    "member_info": "Bot cannot see this guild member (missing Server Members intent or insufficient permissions).",
+    "create_channel": "Bot lacks MANAGE_CHANNELS permission in this guild.",
+    "edit_channel": "Bot lacks MANAGE_CHANNELS permission in this channel.",
+    "delete_channel": "Bot lacks MANAGE_CHANNELS permission in this channel.",
+    "create_role": "Bot lacks MANAGE_ROLES permission in this guild.",
+    "edit_role": f"({_ROLE_HIERARCHY}) Bot must have MANAGE_ROLES and the target role must be below the bot's highest role.",
+    "edit_server": "Bot lacks MANAGE_GUILD permission in this guild.",
+    "edit_channel_permissions": "Bot lacks MANAGE_CHANNELS permission in this channel."}
 
 
 def _enrich_403(action: str, body: str) -> str:
@@ -581,7 +790,10 @@ def check_discord_tool_requirements() -> bool:
 # ── handlers ─────────────────────────────────────────────────────────────────
 _HANDLER_DEFAULTS = {
     "guild_id": "", "channel_id": "", "user_id": "", "role_id": "", "message_id": "", "query": "",
-    "name": "", "limit": 50, "before": "", "after": "", "auto_archive_duration": 1440}
+    "name": "", "limit": 50, "before": "", "after": "", "auto_archive_duration": 1440,
+    "topic": "", "channel_type": "text", "parent_id": "", "color": "", "hoist": None,
+    "mentionable": None, "verification_level": None, "overwrite_id": "", "overwrite_type": "role",
+    "allow": "0", "deny": "0"}
 
 
 def _run_discord_action(action: str, valid_actions: Dict[str, Any], tool_label: str, **params: Any) -> str:

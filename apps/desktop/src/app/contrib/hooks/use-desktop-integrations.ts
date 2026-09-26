@@ -45,10 +45,7 @@ import { appViewForPath, isOverlayView, NEW_CHAT_ROUTE, routeSessionId, sessionR
 
 import { resolveRememberedSessionId } from './remembered-session'
 
-type RememberedSession = Pick<
-  SessionInfo,
-  '_lineage_root_id' | 'id' | 'parent_session_id' | 'profile' | 'source'
->
+type RememberedSession = Pick<SessionInfo, '_lineage_root_id' | 'id' | 'parent_session_id' | 'profile' | 'source'>
 
 interface DesktopIntegrationsParams {
   activeProfile: string
@@ -178,8 +175,8 @@ export function useDesktopIntegrations({
         // the discriminator. A listed row carries its source, so the guard is
         // synchronous there; an unlisted id resolves by id below.
         const rowFor = (id: string) => sessions.find(session => sessionMatchesStoredId(session, id))
-        const restorableRouteSession =
-          routeSession && rowFor(routeSession)?.source !== 'subagent' ? routeSession : null
+
+        const restorableRouteSession = routeSession && rowFor(routeSession)?.source !== 'subagent' ? routeSession : null
 
         if (
           route &&
@@ -249,6 +246,7 @@ export function useDesktopIntegrations({
       // `/branch` children also carry parent_session_id but ARE user-facing —
       // source, not parenthood, is the discriminator.
       const routedRow = sessions.find(session => sessionMatchesStoredId(session, routedSessionId))
+
       const rememberedSessionId =
         routedRow?.source === 'subagent' ? routedRow.parent_session_id || null : routedSessionId
 

@@ -344,6 +344,22 @@ export async function replayPendingApproval(gateway: ApprovalGateway | null, ses
  * was restored from `approval.pending` or is being answered from another
  * surface. Returns after the backend has the decision.
  */
+
+// #55433: the backend honors an answer for the whole `approvals.timeout` window
+// (default 300s), but `approval.respond` otherwise rides the generic 30s RPC
+// deadline. During a long LLM stream the gateway's WS writes can stall well past
+// 30s while the turn is still live and the approval is still pending — the
+// client gives up with "request timed out: approval.respond" long before the
+// backend would. Give the RPC a deadline that covers the backend window (300s
+// plus margin for the write to drain), and retry once on a deadline failure:
+// `resolve_gateway_approval` pops the queue entry before committing, so a
+// duplicate resolve is a harmless `resolved: 0`.
+export const APPROVAL_RESPOND_REQUEST_TIMEOUT_MS = 330_000
+
+function isRequestTimeoutError(error: unknown): boolean {
+  return error instanceof Error && /request timed out/i.test(error.message)
+}
+
 export async function answerApproval(
   gateway: ApprovalGateway | null,
   request: Pick<ApprovalRequest, 'requestId' | 'serverRequestId' | 'sessionId'>,
@@ -358,12 +374,36 @@ export async function answerApproval(
     throw new Error('Hermes gateway is not connected')
   }
 
-  await requestForOwnedSession(request.sessionId, ambientRequestFor(gateway), 'approval.respond', {
+  const params = {
     all,
     choice,
     ...(request.requestId ? { request_id: request.requestId } : {}),
     session_id: request.sessionId ?? undefined
-  })
+  }
+
+  try {
+    await requestForOwnedSession(
+      request.sessionId,
+      ambientRequestFor(gateway),
+      'approval.respond',
+      params,
+      APPROVAL_RESPOND_REQUEST_TIMEOUT_MS
+    )
+  } catch (error) {
+    if (!isRequestTimeoutError(error)) {
+      throw error
+    }
+
+    // The deadline fired while the approval may still be pending server-side
+    // (WS stall behind a long LLM stream). Resolve is idempotent: re-send once.
+    await requestForOwnedSession(
+      request.sessionId,
+      ambientRequestFor(gateway),
+      'approval.respond',
+      params,
+      APPROVAL_RESPOND_REQUEST_TIMEOUT_MS
+    )
+  }
 }
 
 /** The prompt request for one specific session — the tile counterpart of the

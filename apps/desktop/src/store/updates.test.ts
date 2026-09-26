@@ -344,11 +344,47 @@ describe('reportBackendContract', () => {
 
   it('clears the snooze once the backend catches up, so a regression warns again', () => {
     reportBackendContract(1)
-    lastToast().onDismiss()
+    lastToast().onDismiss() // user closes it → cooldown starts
     notifySpy.mockClear()
 
     reportBackendContract(REQUIRED_BACKEND_CONTRACT) // backend updated → satisfied, snooze cleared
     reportBackendContract(5) // a later regression must warn immediately
+    expect(notifySpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('warns when the GUI is older than the backend (contract ahead of this build)', () => {
+    reportBackendContract(REQUIRED_BACKEND_CONTRACT + 1)
+    // The backend-older toast must not fire — this is the reverse direction.
+    expect(dismissSpy).toHaveBeenCalledWith('backend-contract-skew')
+    expect(notifySpy).toHaveBeenCalledTimes(1)
+    expect(notifySpy.mock.calls[0]?.[0]).toMatchObject({ id: 'gui-contract-skew', kind: 'warning' })
+  })
+
+  it('gui-skew warning snoozes on close and reminds after the cooldown', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(0)
+
+    reportBackendContract(REQUIRED_BACKEND_CONTRACT + 1)
+    lastToast().onDismiss() // user closes it → cooldown starts
+    notifySpy.mockClear()
+
+    reportBackendContract(REQUIRED_BACKEND_CONTRACT + 1) // another session open within the cooldown
+    expect(notifySpy).not.toHaveBeenCalled()
+
+    vi.setSystemTime(25 * 60 * 60 * 1000) // > 24h cooldown
+    reportBackendContract(REQUIRED_BACKEND_CONTRACT + 1)
+    expect(notifySpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('clears the gui-skew toast + snooze once versions align, so a later skew warns again', () => {
+    reportBackendContract(REQUIRED_BACKEND_CONTRACT + 1)
+    lastToast().onDismiss()
+    notifySpy.mockClear()
+
+    reportBackendContract(REQUIRED_BACKEND_CONTRACT) // GUI updated (or backend rolled back) → aligned
+    expect(dismissSpy).toHaveBeenCalledWith('gui-contract-skew')
+
+    reportBackendContract(REQUIRED_BACKEND_CONTRACT + 1) // a later skew must warn immediately
     expect(notifySpy).toHaveBeenCalledTimes(1)
   })
 })
@@ -396,7 +432,7 @@ describe('checkBackendUpdates', () => {
       behind: -1,
       update_available: true,
       can_apply: false,
-      update_command: 'managed outside dashboard',
+      update_command: '',
       message: 'Update available.'
     })
 
@@ -526,6 +562,34 @@ describe('requestActiveUpdate', () => {
 
     requestActiveUpdate()
     await vi.waitFor(() => expect(updateHermesSpy).toHaveBeenCalled())
+  })
+
+  it('shows the refusal message, not a fake command, when the backend has no command to run', async () => {
+    setRemote(true)
+    updateHermesSpy.mockResolvedValue({
+      ok: false,
+      name: 'hermes-update',
+      error: 'dashboard_update_managed_externally',
+      message: 'Hermes updates are managed outside this dashboard in containerized environments.',
+      update_command: ''
+    })
+
+    const result = await applyBackendUpdate()
+
+    expect(result.manual).toBe(true)
+    expect(result.command).toBeUndefined()
+    expect($backendUpdateApply.get().stage).toBe('manual')
+    expect($backendUpdateApply.get().command).toBeNull()
+    expect($backendUpdateApply.get().message).toContain('managed outside this dashboard')
+  })
+
+  it('falls back to `hermes update` only when an older backend omits update_command', async () => {
+    setRemote(true)
+    updateHermesSpy.mockResolvedValue({ ok: false, name: 'hermes-update', message: 'Run it yourself.' })
+
+    await applyBackendUpdate()
+
+    expect($backendUpdateApply.get().command).toBe('hermes update')
   })
 })
 

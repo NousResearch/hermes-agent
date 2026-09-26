@@ -242,6 +242,16 @@ def _prompt_schema_fields(name: str, schema: list, provider_config: dict, env_wr
     return True
 
 
+def _provider_writes_its_own_config(provider) -> bool:
+    """True only when the plugin genuinely overrides ``save_config``. The ABC declares it with an
+    empty body, so an un-overridden one accepts the values and silently drops them."""
+    try:
+        from agent.memory_provider import MemoryProvider
+    except Exception:
+        return hasattr(provider, "save_config")
+    return getattr(type(provider), "save_config", None) is not MemoryProvider.save_config
+
+
 def cmd_setup(args) -> None:
     """Interactive memory provider setup wizard."""
     from hermes_cli.config import load_config, save_config
@@ -286,9 +296,16 @@ def cmd_setup(args) -> None:
 
     # Write activation key to config.yaml
     config["memory"]["provider"] = name
+    if provider_config and not _provider_writes_its_own_config(provider):
+        # No writer of its own, and the provider_config read above is detached from config
+        # whenever memory.<name> is absent (which it always is — nothing here creates it), so the
+        # answers reached neither store. Such providers read memory.<name> from config.yaml
+        # (plugins/memory/retaindb, plugins/memory/byterover). Mirrors the Dashboard fallback in
+        # hermes_cli/web_routers/memory_providers.py.
+        config["memory"][name] = provider_config
     save_config(config)
 
-    if provider_config and hasattr(provider, "save_config"):
+    if provider_config and _provider_writes_its_own_config(provider):
         try:
             provider.save_config(provider_config, str(get_hermes_home()))
         except Exception as e:

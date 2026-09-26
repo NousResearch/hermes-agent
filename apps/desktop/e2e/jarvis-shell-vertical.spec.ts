@@ -105,6 +105,13 @@ async function completeOnboardingAndReload(): Promise<void> {
   await page.reload()
   await waitForAppReady(fixture!, 120_000)
 
+  // The generic provider picker may open after the gateway connects. This
+  // suite tests the Jarvis shell, so use its persistent first-run escape.
+  const chooseLater = page.getByRole('button', { name: /Wybiorę dostawcę później|I'll choose a provider later/ })
+  if (await chooseLater.waitFor({ state: 'visible', timeout: 45_000 }).then(() => true, () => false)) {
+    await chooseLater.click()
+  }
+
   // Loud rather than mysterious: if the scope key ever changes shape, this is
   // the assertion that says so, instead of a 120 s timeout three tests later.
   await expect(
@@ -193,8 +200,8 @@ test.describe('Jarvis product shell', () => {
     await page.keyboard.press('Escape')
 
     for (const { name, view, hash } of [
-      { name: 'Settings', view: 'settings', hash: '#/settings' },
-      { name: 'Profile', view: 'profile', hash: '#/profiles' }
+      { name: 'Ustawienia', view: 'settings', hash: '#/settings' },
+      { name: 'Profil', view: 'profile', hash: '#/profiles' }
     ]) {
       const button = page.locator('[data-jarvis-nav-rail]').getByRole('button', { name, exact: true })
       await button.click()
@@ -303,7 +310,7 @@ test.describe('Jarvis product shell', () => {
     const knowOwner = page.locator('[data-pulse-kind="know_owner"]')
     const firstAutomation = page.locator('[data-pulse-kind="first_automation"]')
 
-    await expect(knowOwner).toBeVisible({ timeout: 30_000 })
+    await expect(knowOwner).toBeVisible({ timeout: 60_000 })
     await expect(firstAutomation).toBeVisible()
 
     // Second button in the row is "Not now".

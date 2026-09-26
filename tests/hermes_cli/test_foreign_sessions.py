@@ -5,6 +5,7 @@ against a temp path so nothing touches the real HERMES_HOME store.
 """
 
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -262,6 +263,41 @@ def test_import_rejects_bad_input(tmp_path, session_db):
     empty.write_text("not json\n", encoding="utf-8")
     with pytest.raises(ValueError, match="No user/assistant conversation"):
         import_foreign_session("claude", empty, db=session_db)
+
+
+def _store_counts(db_path):
+    with sqlite3.connect(db_path) as conn:
+        return (conn.execute("SELECT COUNT(*) FROM sessions WHERE source = 'claude-code'").fetchone()[0],
+                conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0])
+
+
+def test_import_failing_partway_leaves_no_session(tmp_path, session_db):
+    """A write that fails on the second turn must not leave a resumable prefix transcript."""
+    f = _write_claude_fixture(tmp_path)
+    with sqlite3.connect(tmp_path / "state.db") as conn:
+        conn.execute("""CREATE TRIGGER fail_second_imported_turn BEFORE INSERT ON messages
+                        WHEN (SELECT COUNT(*) FROM messages WHERE session_id = NEW.session_id) >= 1
+                        BEGIN SELECT RAISE(ABORT, 'forced import failure'); END""")
+    with pytest.raises(Exception) as failure:
+        import_foreign_session("claude", f, db=session_db)
+    assert _store_counts(tmp_path / "state.db") == (0, 0)
+    assert failure.type is ValueError and "nothing was imported" in str(failure.value)
+
+
+def test_import_never_writes_into_an_existing_session(tmp_path, session_db, monkeypatch):
+    session_db.create_session("occupied", source="cli")
+    session_db.append_message("occupied", "user", "keep me")
+    before = session_db.get_session("occupied")
+    monkeypatch.setattr("hermes_cli.foreign_sessions.new_session_id", lambda: "occupied")
+    try:
+        failure = import_foreign_session("claude", _write_claude_fixture(tmp_path), db=session_db)
+    except Exception as exc:
+        failure = exc
+    after = session_db.get_session("occupied")
+    assert [m["content"] for m in session_db.get_messages("occupied")] == ["keep me"]
+    assert {k: after[k] for k in ("source", "origin_json", "message_count")} == {
+        k: before[k] for k in ("source", "origin_json", "message_count")}
+    assert isinstance(failure, ValueError) and "nothing was imported" in str(failure)
 
 
 def test_leading_assistant_gets_single_stub(tmp_path):

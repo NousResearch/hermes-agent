@@ -172,6 +172,27 @@ class SessionPortabilityMixin:
 
         return self._execute_write(_do)
 
+    def create_imported_session(self, session_id: str, source: str, messages: List[Dict[str, Any]], *,
+                                cwd: Optional[str] = None, origin_json: Optional[str] = None) -> str:
+        """Mint a CLI foreign import (row, every turn, counters) in ONE write txn.
+
+        A kill or failure mid-import must never leave a session holding a prefix of the
+        transcript that ``--resume`` would then continue. An occupied id raises instead of
+        merging into that session. Unlike :meth:`import_foreign_history`, this never adopts an
+        earlier import: that lookup matches the foreign id alone, so a log that grew since
+        would resume the stale copy.
+        """
+        raw = {"source": source, "cwd": cwd}
+        profile = self._own_profile_name()
+
+        def _do(conn):
+            self._import_session_row(conn, raw, messages, session_id)
+            conn.execute("UPDATE sessions SET origin_json = ?, profile_name = ? WHERE id = ?",
+                         (origin_json, profile, session_id))
+            return session_id
+
+        return self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
+
     @classmethod
     def _compact_session_cols(cls) -> str:
         """``s.``-prefixed SELECT list of every SCHEMA_SQL ``sessions`` column except

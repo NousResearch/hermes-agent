@@ -2348,6 +2348,7 @@ def _dispatch_once_locked(
         failure_limit=failure_limit, spawn_fn=spawn_fn,
         per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
     )
+    no_default_assignee = not (default_assignee or "").strip()
     default_assignee = _resolve_default_assignee(default_assignee)
     spawned = 0
     for row in ready_rows:
@@ -2361,6 +2362,12 @@ def _dispatch_once_locked(
                 conn, row["id"], default_assignee, dry_run=dry_run,
             ):
                 result.skipped_unassigned.append(row["id"])
+                if not dry_run and no_default_assignee:
+                    with _kb.write_txn(conn):
+                        _kb._append_event(
+                            conn, row["id"], "skipped_unassigned",
+                            {"reason": "no_assignee"},
+                        )
                 continue
             row_assignee = default_assignee
             result.auto_assigned_default.append(row["id"])

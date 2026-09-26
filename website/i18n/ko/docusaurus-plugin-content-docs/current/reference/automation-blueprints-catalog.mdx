@@ -1,0 +1,38 @@
+---
+sidebar_position: 7
+title: "자동화 블루프린트 카탈로그"
+description: "바로 실행할 수 있는 자동화 블루프린트 — 대시보드, CLI, TUI, 메신저 또는 데스크톱 앱에서 하나를 설정하세요."
+---
+
+import AutomationBlueprintsCatalog from '@site/src/components/AutomationBlueprintsCatalog';
+
+# 자동화 블루프린트
+
+자동화 블루프린트는 바로 실행할 수 있는 자동화입니다. 하나를 선택하고 몇 가지
+필드를 입력하면 Hermes가 이를 cron 작업으로 예약합니다. cron 구문은 필요하지
+않습니다.
+
+모든 블루프린트는 **모든 인터페이스에서** 작동합니다.
+
+- **대시보드 / 데스크톱 앱** — Cron 페이지를 열고 **블루프린트** 탭으로 전환한
+  다음 양식을 작성하고 *예약하기*를 클릭하세요.
+- **CLI, TUI 및 메신저** — `/blueprint <name>`(예:
+  `/blueprint morning-brief`)을 입력하면 Hermes가 필요한 정보를 한 번에 한
+  가지씩 물어본 뒤 예약합니다. 이름 일치는 유연하게 처리됩니다 — 접두사나
+  비슷한 철자를 입력해도 찾을 수 있습니다. 고급 사용자는 값을 인라인으로
+  전달해 질문을 건너뛸 수 있습니다: `/blueprint morning-brief time=08:00`.
+- **데스크톱 앱** — 블루프린트에서 **앱으로 보내기**를 클릭하면 작성기에
+  명령이 미리 입력된 상태로 앱이 열립니다.
+
+블루프린트는 아무것도 조용히 예약하지 않습니다. 작업이 생성되기 전에 항상
+확인하게 됩니다. 생성된 작업은 언제든지 `/cron`으로 관리할 수 있습니다.
+
+<AutomationBlueprintsCatalog />
+
+## 직접 작성하기
+
+블루프린트는 `SKILL.md` 프런트매터에
+`metadata.hermes.blueprint` 블록을 포함한 스킬일 뿐입니다. 슬롯 스키마와
+게시 방법은
+[스킬 만들기 → 자동화 블루프린트](../developer-guide/creating-skills.md)에서
+확인하세요.

@@ -670,17 +670,36 @@ def test_openrouter_key_takes_priority_over_openai_key(monkeypatch):
 
 
 def test_openai_key_used_when_no_openrouter_key(monkeypatch):
-    """OPENAI_API_KEY is used as fallback when OPENROUTER_API_KEY is not set."""
+    """A legacy OpenRouter key (sk-or-) kept in OPENAI_API_KEY is the fallback when
+    OPENROUTER_API_KEY is not set."""
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
     monkeypatch.setattr(rp, "_get_model_config", lambda: {})
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-fallback")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-or-v1-legacy-fallback")
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
 
     resolved = rp.resolve_runtime_provider(requested="openrouter")
 
-    assert resolved["api_key"] == "sk-openai-fallback"
+    assert resolved["api_key"] == "sk-or-v1-legacy-fallback"
+
+
+def test_real_openai_key_is_never_routed_or_sent_to_openrouter(monkeypatch):
+    """A non-OpenRouter OPENAI_API_KEY with OPENAI_BASE_URL unset neither auto-selects OpenRouter
+    nor becomes the bearer for openrouter.ai; auto-detection lands on openai-api as documented."""
+    from hermes_cli.auth import resolve_provider
+    from hermes_cli.runtime_provider_backends import _resolve_openrouter_runtime
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"model": {}})
+    monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda: False)
+    for var in ("OPENAI_BASE_URL", "OPENROUTER_BASE_URL", "OPENROUTER_API_KEY", "CUSTOM_BASE_URL"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-proj-real-openai-key")
+
+    assert resolve_provider("auto") == "openai-api"
+    resolved = _resolve_openrouter_runtime(requested_provider="openrouter")
+    assert resolved["base_url"] == "https://openrouter.ai/api/v1"
+    assert resolved["api_key"] == ""
 
 
 @pytest.mark.parametrize("openai_base_url, expected_key", [

@@ -211,6 +211,29 @@ describe('useMessageStream interim text sealing', () => {
     expect(texts[0]).toBe('partial answer continued')
   })
 
+  it('settles a long final with a few dropped streamed characters onto its interim', async () => {
+    mountStream()
+    await start()
+
+    const final = 'This long response contains enough context to identify the same streamed reply. '.repeat(12).trimEnd()
+    const streamed = final.replace('streamed', 'stremed').replace('response', 'respose')
+
+    await interim(streamed)
+    await complete(final)
+
+    expect(assistantMessages()).toEqual([final])
+  })
+
+  it('keeps short near-matching assistant segments distinct', async () => {
+    mountStream()
+    await start()
+
+    await interim('Status: B')
+    await complete('Status: A')
+
+    expect(assistantMessages()).toEqual(['Status: B', 'Status: A'])
+  })
+
   it('settles final onto interim even after message.start reset the boundary flag (#74560)', async () => {
     mountStream()
     await start()

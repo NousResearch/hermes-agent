@@ -96,6 +96,52 @@ async def test_marker_survives_until_a_served_profile_is_reachable(multiplex_run
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["success", "failure", "exception", "disconnected", "disabled", "empty-home"])
+async def test_private_home_notices_reach_both_bots(multiplex_runner, outcome):
+    """Regression for #118233: equal user IDs are distinct bot conversations."""
+    runner, marker = multiplex_runner
+    runner.config = _home_config(Platform.TELEGRAM, "8776018003")
+    launch, coder = _adapter(), _adapter()
+    runner.adapters = {Platform.TELEGRAM: launch}
+    cfg = _home_config(Platform.TELEGRAM, "8776018003")
+    runner._profile_configs = {"coder": cfg}
+    runner._profile_adapters = {"coder": {Platform.TELEGRAM: coder}}
+    if outcome == "failure":
+        coder.send.return_value = SendResult(success=False, error="temporary failure")
+    elif outcome == "exception":
+        coder.send.side_effect = RuntimeError("temporary failure")
+    elif outcome == "disconnected":
+        runner._profile_adapters["coder"] = {}
+    elif outcome == "disabled":
+        cfg.platforms[Platform.TELEGRAM].gateway_restart_notification = False
+    elif outcome == "empty-home":
+        cfg.platforms[Platform.TELEGRAM].home_channel = None
+
+    await runner._replay_pending_planned_restart_notification()
+
+    launch.send.assert_awaited_once()
+    if outcome in {"disconnected", "disabled", "empty-home"}:
+        coder.send.assert_not_awaited()
+    else:
+        coder.send.assert_awaited_once()
+    if outcome in {"failure", "exception", "disconnected"}:
+        assert marker.exists(), "the second bot conversation is still owed its notice"
+        recorded = json.loads(marker.read_text(encoding="utf-8"))["delivered_targets"]
+        assert ["telegram", "8776018003", None] in recorded
+        assert ["coder:telegram", "8776018003", None] not in recorded
+        coder.send.reset_mock()
+        coder.send.side_effect = None
+        coder.send.return_value = SendResult(success=True, message_id="recovered")
+        runner._profile_adapters["coder"][Platform.TELEGRAM] = coder
+        await runner._replay_pending_planned_restart_notification()
+        coder.send.assert_awaited_once()
+        launch.send.assert_awaited_once()
+    assert not marker.exists()
+    await runner._replay_pending_planned_restart_notification()
+    launch.send.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_profiles_sharing_one_home_chat_get_one_notice(tmp_path, monkeypatch):
     """One host process restarting once owes a shared chat ONE notice, not one per profile.
 

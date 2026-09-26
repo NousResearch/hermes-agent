@@ -1,7 +1,7 @@
 import { useStore } from '@nanostores/react'
 
 import { SessionPickerDialog } from '@/components/session-picker'
-import { $gatewayState, $selectedStoredSessionId, $sessionPickerOpen, setSessionPickerOpen } from '@/store/session'
+import { $selectedStoredSessionId, $sessionPickerOpen, setSessionPickerOpen } from '@/store/session'
 
 interface SessionPickerOverlayProps {
   onResume: (storedSessionId: string) => void
@@ -14,12 +14,7 @@ interface SessionPickerOverlayProps {
  */
 export function SessionPickerOverlay({ onResume }: SessionPickerOverlayProps) {
   const open = useStore($sessionPickerOpen)
-  const gatewayOpen = useStore($gatewayState) === 'open'
   const activeStoredSessionId = useStore($selectedStoredSessionId)
-
-  if (!gatewayOpen) {
-    return null
-  }
 
   return (
     <SessionPickerDialog

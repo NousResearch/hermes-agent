@@ -73,9 +73,10 @@ interface NavButtonProps {
   label: string
   onClick: () => void
   onKeyDown?: (event: KeyboardEvent<HTMLButtonElement>) => void
+  view?: JarvisMainView
 }
 
-function NavButton({ active, buttonRef, icon: Icon, label, onClick, onKeyDown }: NavButtonProps) {
+function NavButton({ active, buttonRef, icon: Icon, label, onClick, onKeyDown, view }: NavButtonProps) {
   return (
     <button
       aria-current={active ? 'page' : undefined}
@@ -86,6 +87,7 @@ function NavButton({ active, buttonRef, icon: Icon, label, onClick, onKeyDown }:
           ? 'jarvis-nav-active text-(--ui-text-primary)'
           : 'text-(--ui-text-secondary) hover:border-(--glass-border) hover:bg-(--glass-bg) hover:text-(--ui-text-primary)'
       )}
+      data-jarvis-nav-view={view}
       onClick={onClick}
       onKeyDown={onKeyDown}
       ref={buttonRef}
@@ -232,8 +234,9 @@ export function JarvisNavigation({ activeView, copy, onSelect }: JarvisNavigatio
                     icon={VIEW_ICONS[view]}
                     key={view}
                     label={copy.views[view]}
-                    onClick={() => onSelect(view)}
-                    onKeyDown={handleMainKeyDown(index)}
+                  onClick={() => onSelect(view)}
+                  onKeyDown={handleMainKeyDown(index)}
+                  view={view}
                   />
                 )
               })}

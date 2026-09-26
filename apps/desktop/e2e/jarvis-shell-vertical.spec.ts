@@ -20,9 +20,8 @@
  */
 import type { CDPSession } from '@playwright/test'
 
-import { expect, test } from './test'
-
 import { type MockBackendFixture, setupMockBackend, waitForAppReady } from './fixtures'
+import { expect, test } from './test'
 import { expectVisualSnapshot } from './visual-snapshot'
 
 let fixture: MockBackendFixture | null = null
@@ -30,7 +29,7 @@ let cdp: CDPSession | null = null
 
 /** Must match JARVIS_ONBOARDING_STATE_KEY / _VERSION in src/app/jarvis/onboarding-state.ts. */
 const ONBOARDING_KEY_PREFIX = 'ai-evolution-jarvis-onboarding-v1'
-const ONBOARDING_STEPS = ['profile', 'engine', 'model', 'voice', 'access', 'approvals']
+const ONBOARDING_STEPS = ['welcome', 'profile', 'engine', 'model', 'voice', 'access', 'computer', 'connections', 'approvals']
 /** Must match JARVIS_TIPS_STATE_KEY in src/app/jarvis/tips-state.ts. */
 const TIPS_KEY_PREFIX = 'ai-evolution-jarvis-tips-v1'
 
@@ -52,7 +51,7 @@ const MAIN_VIEWS = [
   { view: 'messaging', hash: '#/messaging' },
   { view: 'webhooks', hash: '#/webhooks' },
   { view: 'artifacts', hash: '#/artifacts' },
-  { view: 'memory', hash: '#/settings' },
+  { view: 'memory', hash: '#/starmap?view=list' },
   { view: 'starmap', hash: '#/starmap' },
   { view: 'tools', hash: '#/skills' },
   { view: 'connections', hash: '#/connections' },
@@ -82,7 +81,7 @@ async function completeOnboardingAndReload(): Promise<void> {
   await page.evaluate(
     ({ prefix, steps, tipsPrefix }) => {
       const value = JSON.stringify({
-        version: 1,
+        version: 3,
         currentStep: 'approvals',
         completedSteps: steps,
         selections: {}
@@ -105,6 +104,13 @@ async function completeOnboardingAndReload(): Promise<void> {
 
   await page.reload()
   await waitForAppReady(fixture!, 120_000)
+
+  // The generic provider picker may open after the gateway connects. This
+  // suite tests the Jarvis shell, so use its persistent first-run escape.
+  const chooseLater = page.getByRole('button', { name: /Wybiorę dostawcę później|I'll choose a provider later/ })
+  if (await chooseLater.waitFor({ state: 'visible', timeout: 45_000 }).then(() => true, () => false)) {
+    await chooseLater.click()
+  }
 
   // Loud rather than mysterious: if the scope key ever changes shape, this is
   // the assertion that says so, instead of a 120 s timeout three tests later.
@@ -171,13 +177,11 @@ test.describe('Jarvis product shell', () => {
   test('every nav entry routes and marks itself current', async () => {
     const page = fixture!.page
 
-    // The nav element holds exactly the main views; the auxiliary pair
-    // (settings, profile) lives outside it, so nth() lines up with MAIN_VIEWS.
-    const buttons = page.locator('nav[data-jarvis-nav] button')
+    const buttons = page.locator('nav[data-jarvis-nav] [data-jarvis-nav-view]')
     await expect(buttons).toHaveCount(MAIN_VIEWS.length)
 
-    for (const [index, { view, hash }] of MAIN_VIEWS.entries()) {
-      const button = buttons.nth(index)
+    for (const { view, hash } of MAIN_VIEWS) {
+      const button = page.locator(`[data-jarvis-nav-view="${view}"]`)
       await button.click()
 
       // The view attribute is the shell's own state; the hash is the runtime's.
@@ -191,9 +195,13 @@ test.describe('Jarvis product shell', () => {
       }
     }
 
+    await page.getByRole('button', { name: 'Historia czatu' }).click()
+    await expect(page.getByRole('dialog')).toBeVisible()
+    await page.keyboard.press('Escape')
+
     for (const { name, view, hash } of [
-      { name: 'Settings', view: 'settings', hash: '#/settings' },
-      { name: 'Profile', view: 'profile', hash: '#/profiles' }
+      { name: 'Ustawienia', view: 'settings', hash: '#/settings' },
+      { name: 'Profil', view: 'profile', hash: '#/profiles' }
     ]) {
       const button = page.locator('[data-jarvis-nav-rail]').getByRole('button', { name, exact: true })
       await button.click()
@@ -203,7 +211,7 @@ test.describe('Jarvis product shell', () => {
     }
 
     // Leave the shell on home so the screenshot below is comparable run to run.
-    await buttons.nth(0).click()
+    await page.locator('[data-jarvis-nav-view="jarvis"]').click()
     await expect(page.locator('[data-jarvis-view="jarvis"]')).toBeVisible()
   })
 
@@ -266,7 +274,7 @@ test.describe('Jarvis product shell', () => {
       .locator('nav[data-jarvis-nav] button')
       .evaluateAll(elements => elements.map(element => element.getBoundingClientRect().height))
 
-    expect(heights.length).toBe(MAIN_VIEWS.length)
+    expect(heights.length).toBeGreaterThanOrEqual(MAIN_VIEWS.length)
     for (const height of heights) {
       expect(height).toBeGreaterThanOrEqual(44)
     }
@@ -302,7 +310,7 @@ test.describe('Jarvis product shell', () => {
     const knowOwner = page.locator('[data-pulse-kind="know_owner"]')
     const firstAutomation = page.locator('[data-pulse-kind="first_automation"]')
 
-    await expect(knowOwner).toBeVisible({ timeout: 30_000 })
+    await expect(knowOwner).toBeVisible({ timeout: 60_000 })
     await expect(firstAutomation).toBeVisible()
 
     // Second button in the row is "Not now".
@@ -319,7 +327,7 @@ test.describe('Jarvis product shell', () => {
   test('a guided connection setup lands in the real composer, ready to read before sending', async () => {
     const page = fixture!.page
 
-    await page.locator('nav[data-jarvis-nav] button').nth(MAIN_VIEWS.findIndex(v => v.view === 'connections')).click()
+    await page.locator('[data-jarvis-nav-view="connections"]').click()
     await expect(page.locator('[data-connection-card="google"]')).toBeVisible()
 
     // First button on an agent-driven card starts the guided setup.

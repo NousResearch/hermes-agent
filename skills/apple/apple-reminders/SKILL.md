@@ -127,6 +127,6 @@ Accepted by `--due` and date filters:
 
 1. When "remind me" is genuinely ambiguous between Apple Reminders and an agent-delivered alert, infer from context or clarify only if the destination materially changes the outcome.
 2. A direct user instruction authorizes the specified reminder mutation; do not ask for duplicate confirmation. Ask only for a missing binding field that cannot be safely inferred.
-3. Use `--json` for programmatic parsing. For add/edit, capture the returned reminder ID, then run `remindctl info <id> --json` and compare title, list, `dueDate`, `alarmDate`, recurrence, notes, URL, and priority wherever applicable before reporting success or retrying.
+3. Use `--json` for programmatic parsing. For add/edit, capture the returned full reminder ID (not a positional index), then run `remindctl info <id> --json` and compare title, list, `dueDate`, `alarmDate`, recurrence, notes, URL, and priority wherever applicable before reporting success or retrying.
 4. For complete/delete, capture the prior ID and list, execute once, then re-list the affected reminder or list with JSON and verify the requested state or absence. Reconcile an uncertain first attempt before retrying.
 5. For list create/delete, re-list all lists and verify exact presence or absence. Report partial bulk outcomes explicitly rather than claiming total success.

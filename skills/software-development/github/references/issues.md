@@ -4,7 +4,7 @@ Use authenticated `gh` commands for issue retrieval and mutation. Never interpol
 
 ## Prerequisites
 
-1. Read this skill's `references/auth.md` when authentication is missing or uncertain.
+1. Read this skill's `references/auth.md` when authentication is missing or uncertain. Prefer its `gh auth login` flow when `gh` is installed; the no-token-disclosure rules here also apply during setup.
 2. Require `gh auth status` to pass.
 3. Resolve the exact target with `gh repo view --json nameWithOwner,url` or pass `--repo OWNER/REPO` explicitly.
 4. A current instruction authorizes only the specified issue effect and binding fields. Never infer repository, assignee, milestone, labels, visibility, closure reason, or external communication.
@@ -25,7 +25,7 @@ Use structured JSON for comparisons. An issue endpoint can include pull requests
 
 For every mutation:
 
-1. Read the exact repository and issue first.
+1. Read the exact repository and, for an existing issue, the exact issue first.
 2. Capture the minimum prior fields needed for restoration.
 3. Verify the authorized target and exact payload.
 4. Execute once.
@@ -68,7 +68,7 @@ gh issue edit NUMBER --repo OWNER/REPO --add-assignee USER
 gh issue edit NUMBER --repo OWNER/REPO --milestone "MILESTONE"
 ```
 
-Read the issue back and compare the complete requested field set after each atomic operation or authorized all-or-none batch.
+Read the issue back and compare the complete requested field set after each provider mutation. GitHub issue edits across multiple targets are not an all-or-none transaction.
 
 ### Comment
 
@@ -78,7 +78,7 @@ A comment is external communication. Before sending, verify repository, issue nu
 gh issue comment NUMBER --repo OWNER/REPO --body-file /absolute/path/to/comment.md
 ```
 
-Verify by reading the issue comments and matching the authenticated author plus exact body. Do not use a list position as identity.
+Capture the returned comment URL/ID and read that exact comment with `gh api repos/OWNER/REPO/issues/comments/COMMENT_ID`. Match its authenticated author, exact body, and issue URL. Do not use a list position as identity.
 
 ### Close or reopen
 
@@ -93,7 +93,7 @@ Verify `state` and `stateReason` with structured readback.
 
 ## Bounded bulk operations
 
-Never pipe an unreviewed dynamic list into `xargs`, a shell loop, or parallel mutation. Bulk changes are atomic in authority even when the provider lacks a transaction.
+Never pipe an unreviewed dynamic list into `xargs`, a shell loop, or parallel mutation. Bind authority to the exact target set even when the provider lacks a transaction; partial completion must be reported, not described as atomic success.
 
 1. Produce a deterministic candidate manifest containing repository and exact issue numbers.
 2. Review the count and every target against the authorized selector.

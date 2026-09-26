@@ -395,7 +395,10 @@ def _persist_choice(session_key: str, choice: str, warnings: list[tuple]) -> Non
 # --- Config persistence for permanent allowlist ---------------------------------------------------------------------
 
 def _read_permanent_allowlist() -> set:
-    """``command_allowlist`` of the active profile's config as a set (empty on malformed input)."""
+    """``command_allowlist`` (user-approved, revocable) merged with
+    ``profile_command_allowlist`` (admin-set per profile, immutable) of the active
+    profile's config, as a set (empty command_allowlist on malformed input; a malformed
+    user list must not disable the admin-set one)."""
     from hermes_cli.config import load_config_readonly
     config = load_config_readonly()
     raw = config.get("command_allowlist")
@@ -411,10 +414,14 @@ def _read_permanent_allowlist() -> set:
         raw = []
     if not isinstance(raw, list) or any(not isinstance(item, str) for item in raw):
         logger.warning("Ignoring malformed command_allowlist; configure a list of strings.")
-        return set()
-    if legacy:
+        raw = []
+    elif legacy:
         logger.warning("Recovered legacy string command_allowlist; re-save it as a list of strings.")
-    return set(raw)
+    profile_patterns = config.get("profile_command_allowlist") or []
+    if not isinstance(profile_patterns, list) or any(not isinstance(item, str) for item in profile_patterns):
+        logger.warning("Ignoring malformed profile_command_allowlist; configure a list of strings.")
+        profile_patterns = []
+    return set(raw) | set(profile_patterns)
 
 
 # What ``command_allowlist`` held the last time this process synchronised with the
@@ -460,21 +467,30 @@ def save_permanent_allowlist(patterns: set):
     ``patterns`` may only ADD: an entry left out of it is not removed, because the
     on-disk list wins for anything this process did not approve itself. Remove
     entries by editing ``command_allowlist`` in config.yaml.
+
+    F7: ``profile_command_allowlist`` entries (admin-set, immutable) are excluded from
+    ``merged`` explicitly — never persisted back into ``command_allowlist`` regardless
+    of baseline timing (a profile entry added after this process's baseline was
+    captured would otherwise look like something ``patterns`` newly approved). Writing
+    them there would make them look user-revocable, and would resurrect a pattern an
+    admin later removes from ``profile_command_allowlist``. They stay in the in-memory
+    governing set (``is_approved()`` must still honour them) via a separate union.
     """
     try:
         from hermes_cli.config import load_config, save_config
         config = load_config()
         on_disk = set(config.get("command_allowlist", []) or [])
+        profile_patterns = set(config.get("profile_command_allowlist", []) or [])
         with _lock:
             key = _baseline_key()
             baseline = _permanent_baseline_by_home.get(key, set())
-            merged = on_disk | (set(patterns) - baseline)
+            merged = (on_disk | (set(patterns) - baseline)) - profile_patterns
             config["command_allowlist"] = sorted(merged)
             save_config(config)
-            _permanent_baseline_by_home[key] = set(merged)
+            _permanent_baseline_by_home[key] = set(merged) | profile_patterns
             governing = _permanent_set()
             governing.clear()
-            governing.update(merged)
+            governing.update(merged | profile_patterns)
     except Exception as e:
         logger.warning("Could not save allowlist: %s", e)
 

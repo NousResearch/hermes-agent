@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Callable
 
-from hermes_cli.subcommands._shared import add_accept_hooks_flag
+from hermes_cli.subcommands._shared import add_accept_hooks_flag, add_json_flag
 
 
 def _flag(parser, *names, help, **kw):
@@ -169,6 +169,7 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         "runs", aliases=["history"], help="Show durable execution attempts")
     cron_runs.add_argument("job_id", nargs="?", help="Optional job ID filter")
     cron_runs.add_argument("--limit", type=int, default=20, help="Rows to show (1-500)")
+    add_json_flag(cron_runs, "Print execution history as a JSON array")
 
     # cron incidents — durable failure incidents (list/ack)
     cron_incidents = cron_subparsers.add_parser(

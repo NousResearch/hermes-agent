@@ -108,7 +108,7 @@ def test_stale_record_is_never_attachable(host_dir, pid, create_time):
     assert hr.read_record(hr.ROLE_SERVE, include_stale=True) is not None
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signal disposition")
+@pytest.mark.platforms("posix")  # POSIX signal disposition
 def test_sigterm_removes_the_record_and_its_live_session_token(host_dir):
     """SIGTERM is the NORMAL stop (systemd stop, docker stop, the update relaunch) and it does not
     run ``atexit``: the record outlived its process and the 0600 token kept a LIVE session token

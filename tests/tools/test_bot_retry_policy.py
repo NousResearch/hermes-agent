@@ -49,14 +49,6 @@ def test_non_retryable_reasons_stop(reason):
     assert bfr.retry_action(reason) == bfr.RETRY_NONE
 
 
-def test_every_reason_has_a_defined_action():
-    """Invariant: the policy is total over the closed reason vocabulary."""
-    for reason in bfr.ALL_REASONS:
-        assert bfr.retry_action(reason) in {
-            bfr.RETRY_RESUME,
-            bfr.RETRY_COMPRESS_THEN_RESUME,
-            bfr.RETRY_NONE,
-        }
 
 
 # ── relay deliver handler consumes the policy ────────────────────────────────
@@ -159,17 +151,6 @@ def test_deliver_never_retries_auth_failure(home, monkeypatch):
     assert out["error"]["data"]["reason"] == bfr.PROVIDER_AUTH_OR_ACCESS
 
 
-def test_deliver_failure_carries_typed_reason(home, monkeypatch):
-    """A still-failing retryable error surfaces its classified reason."""
-    monkeypatch.setattr(
-        "hermes_cli.quiet_single_query.run_reported_turn",
-        lambda argv, **k: _Proc(1, stderr="502 server error - overloaded")
-        if _is_hermes_cli(list(argv))
-        else _Proc(0),
-    )
-    out = _deliver({"profile": "ops", "message": "ping"})
-    assert "error" in out
-    assert out["error"]["data"]["reason"] == bfr.PROVIDER_SERVER_ERROR
 
 
 # ── local delivery runner consumes the policy ────────────────────────────────

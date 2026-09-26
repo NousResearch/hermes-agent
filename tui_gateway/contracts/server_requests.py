@@ -178,6 +178,7 @@ class PreviewActRequestParams(ServerRequestParams):
     to: str | None = None
     amount: int | None = None
     max: int | None = None
+    allow_shortcut: bool | None = None
 
 
 server_request("preview.act", params=PreviewActRequestParams, result=ValueResult,

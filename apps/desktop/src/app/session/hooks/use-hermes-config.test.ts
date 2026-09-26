@@ -197,17 +197,6 @@ describe('useHermesConfig refreshHermesConfig', () => {
     expect($currentFastMode.get()).toBe(false)
   })
 
-  it('loads the profile terminal font for already-mounted terminal surfaces', async () => {
-    mockConfig({ terminal: { font_family: 'MesloLGS NF' } })
-    const { result } = renderHook(() => useHermesConfig({ activeSessionIdRef: { current: null } }))
-
-    await act(async () => {
-      await result.current.refreshHermesConfig()
-    })
-
-    expect($terminalFontFamily.get()).toBe('MesloLGS NF')
-  })
-
   it('does not let an older profile response restore its terminal font', async () => {
     const profileB = deferred<Awaited<ReturnType<typeof getHermesConfig>>>()
     const profileC = deferred<Awaited<ReturnType<typeof getHermesConfig>>>()

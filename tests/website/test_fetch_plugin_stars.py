@@ -27,7 +27,7 @@ def mod():
 
 
 def _catalog(tmp_path: Path, *repos: str) -> Path:
-    import yaml
+    import hermes_yaml as yaml
 
     cat = tmp_path / "plugin-catalog"
     cat.mkdir()

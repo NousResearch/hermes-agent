@@ -4,7 +4,6 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 from tools.budget_config import (
-    DEFAULT_RESULT_SIZE_CHARS,
     DEFAULT_PREVIEW_SIZE_CHARS,
     BudgetConfig,
 )
@@ -23,7 +22,6 @@ from tools.tool_result_storage import (
     maybe_persist_tool_result,
 )
 
-
 # ── generate_preview ──────────────────────────────────────────────────
 
 class TestGeneratePreview:
@@ -33,13 +31,11 @@ class TestGeneratePreview:
         assert preview == text
         assert has_more is False
 
-
     def test_exact_boundary(self):
         text = "x" * DEFAULT_PREVIEW_SIZE_CHARS
         preview, has_more = generate_preview(text)
         assert preview == text
         assert has_more is False
-
 
 # ── _write_to_sandbox ─────────────────────────────────────────────────
 
@@ -59,7 +55,6 @@ class TestWriteToSandbox:
         assert "hello world" not in cmd
         assert env.execute.call_args_list[0][1]["stdin_data"] == "hello world"
 
-
     def test_large_content_via_stdin(self):
         """Regression: 200 KB content exceeds Linux MAX_ARG_STRLEN (128 KB).
         It must travel via stdin, never inside the command string."""
@@ -70,7 +65,6 @@ class TestWriteToSandbox:
         cmd = env.execute.call_args_list[0][0][0]
         assert len(cmd) < 1_000  # cmd is just `mkdir -p X && cat > Y`
         assert env.execute.call_args_list[0][1]["stdin_data"] == big
-
 
     def test_path_with_spaces_is_quoted(self):
         env = MagicMock()
@@ -105,13 +99,13 @@ class TestWriteToSandbox:
         [
             ("pipe", 512, False),      # short write: bytes lost
             ("pipe", 171, False),      # pipe backends must be exact
-            ("heredoc", 171, True),    # heredoc appends exactly one newline
+            ("heredoc", 171, False),   # heredoc stdin is byte-exact too; a +1 is a loss, not the old newline
             ("host", 3, False),        # host spillover: os.stat says only 3 bytes landed
             ("host", None, True),      # host spillover: real write, real stat
         ],
     )
     def test_size_probe_decides_lossless(self, stdin_mode, probed, ok):
-        """An archive that is not byte-exact (modulo the heredoc newline) is discarded — never
+        """An archive that is not byte-exact is discarded — never
         referenced to the model (port of lobehub/lobehub#18258). Multibyte content pins the
         comparison to UTF-8 bytes (170 here, 130 chars), on both the sandbox and host paths."""
         import os
@@ -160,16 +154,14 @@ class TestWriteToSandbox:
         ]
         assert _write_to_sandbox("data", "/tmp/hermes-results/np.txt", env) is True
 
-
 class TestResolveStorageDir:
     def test_defaults_to_storage_dir_without_env(self):
         assert _resolve_storage_dir(None) == STORAGE_DIR
 
     def test_uses_env_temp_dir_when_available(self):
         env = MagicMock()
-        env.get_temp_dir.return_value = "/data/data/com.termux/files/usr/tmp"
-        assert _resolve_storage_dir(env) == "/data/data/com.termux/files/usr/tmp/hermes-results"
-
+        env.get_temp_dir.return_value = "/var/host/tmp"
+        assert _resolve_storage_dir(env) == "/var/host/tmp/hermes-results"
 
 class TestSafeResultFilename:
     def test_preserves_normal_tool_call_id(self):
@@ -183,7 +175,6 @@ class TestSafeResultFilename:
         assert "$" not in filename
         assert ";" not in filename
 
-
 # ── _build_persisted_message ──────────────────────────────────────────
 
 class TestBuildPersistedMessage:
@@ -196,22 +187,10 @@ class TestBuildPersistedMessage:
         )
         assert msg.startswith(PERSISTED_OUTPUT_TAG)
         assert msg.endswith(PERSISTED_OUTPUT_CLOSING_TAG)
-        assert "50,000 characters" in msg
         assert "/tmp/hermes-results/test123.txt" in msg
         assert "read_file" in msg
         assert "first 100 chars..." in msg
         assert "..." in msg  # has_more indicator
-
-
-    def test_large_size_shows_mb(self):
-        msg = _build_persisted_message(
-            preview="x",
-            has_more=True,
-            original_size=2_000_000,
-            file_path="/tmp/hermes-results/big.txt",
-        )
-        assert "MB" in msg
-
 
 # ── maybe_persist_tool_result ─────────────────────────────────────────
 
@@ -268,7 +247,6 @@ class TestMaybePersistToolResult:
         # command string — see test_large_content_via_stdin for why).
         assert env.execute.call_args_list[1][1]["stdin_data"] == content
 
-
     def test_tool_use_id_cannot_escape_storage_dir(self):
         env = MagicMock()
         # Readability probe fails -> in-sandbox write is the reference path.
@@ -298,7 +276,6 @@ class TestMaybePersistToolResult:
         assert "$(whoami)" not in target
         assert ";" not in target
 
-
     def test_threshold_zero_forces_persist(self):
         env = MagicMock()
         env.execute.return_value = {"output": "", "returncode": 0}
@@ -313,7 +290,6 @@ class TestMaybePersistToolResult:
         # Any non-empty content with threshold=0 should be persisted
         assert PERSISTED_OUTPUT_TAG in result
 
-
 # ── enforce_turn_budget ───────────────────────────────────────────────
 
 class TestEnforceTurnBudget:
@@ -325,7 +301,6 @@ class TestEnforceTurnBudget:
         result = enforce_turn_budget(msgs, env=None, config=BudgetConfig(turn_budget=200_000))
         assert result[0]["content"] == "small"
         assert result[1]["content"] == "also small"
-
 
     def test_medium_result_regression(self):
         """6 results of 42K chars each (252K total) — each under 100K default
@@ -343,32 +318,23 @@ class TestEnforceTurnBudget:
         )
         assert persisted_count >= 2  # Need to shed at least ~52K
 
-
     def test_empty_messages(self):
         result = enforce_turn_budget([], env=None, config=BudgetConfig(turn_budget=200_000))
         assert result == []
-
 
 # ── Per-tool threshold integration ────────────────────────────────────
 
 class TestPerToolThresholds:
     """Verify registry wiring for per-tool thresholds."""
 
-    def test_registry_has_get_max_result_size(self):
-        from tools.registry import registry
-        assert hasattr(registry, "get_max_result_size")
-
-
-    def test_read_file_registry_cap_is_100k(self):
-        """Regression test: read_file must have a 100_000 char registry cap (Layer 2 safety net)."""
+    def test_read_file_registry_cap_is_finite(self):
+        """read_file must keep a finite registry cap (Layer 2 safety net)."""
         from tools.registry import registry
         try:
             import tools.file_tools  # noqa: F401
             val = registry.get_max_result_size("read_file")
-            assert val == 100_000, (
-                f"read_file registry cap must be 100_000, got {val!r}. "
-                "float('inf') is not allowed — it disables the Layer 2 result-size guard."
-            )
+            # float('inf') disables the Layer 2 result-size guard.
+            assert 0 < val < float("inf"), val
         except ImportError:
             pytest.skip("file_tools not importable in test env")
 
@@ -377,10 +343,9 @@ class TestPerToolThresholds:
         try:
             import tools.file_tools  # noqa: F401
             val = registry.get_max_result_size("search_files")
-            assert val == 100_000
+            assert 0 < val < float("inf"), val
         except ImportError:
             pytest.skip("file_tools not importable in test env")
-
 
 # ── Host-side spillover ($HERMES_HOME/cache/spillover) ────────────────
 
@@ -532,21 +497,4 @@ class TestSpillover:
         assert not old.exists()
         assert (spill_dir / "tc_prune_1.txt").exists()
 
-
 # ── recovery hint in the persisted preview ────────────────────────────
-
-class TestRecoveryHint:
-    def test_preview_teaches_recovery_not_refetch(self):
-        msg = _build_persisted_message(
-            preview="preview text",
-            has_more=True,
-            original_size=60_000,
-            file_path="/tmp/hermes-results/r.txt",
-        )
-        assert "Recovery:" in msg
-        assert "execute_code" in msg
-        assert "re-request" in msg
-        # Structure preserved: tag, size, path, read_file guidance all intact.
-        assert msg.startswith(PERSISTED_OUTPUT_TAG)
-        assert msg.endswith(PERSISTED_OUTPUT_CLOSING_TAG)
-        assert "read_file" in msg

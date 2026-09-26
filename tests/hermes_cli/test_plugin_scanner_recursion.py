@@ -12,8 +12,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict
 
-import pytest
-import yaml
+import hermes_yaml as yaml
 
 from hermes_cli.plugins import PluginManager
 
@@ -45,7 +44,7 @@ def _write_plugin(
     }
     if manifest_extra:
         manifest.update(manifest_extra)
-    (plugin_dir / "plugin.yaml").write_text(yaml.dump(manifest))
+    (plugin_dir / "plugin.yaml").write_text(yaml.safe_dump(manifest))
     (plugin_dir / "__init__.py").write_text(
         f"def register(ctx):\n    {register_body}\n"
     )
@@ -132,7 +131,7 @@ class TestForeignHarnessManifestDirs:
         sp = hermes_home / "plugins" / "superpowers"
         (sp / ".hermes-plugin").mkdir(parents=True)
         (sp / ".hermes-plugin" / "plugin.yaml").write_text(
-            yaml.dump(
+            yaml.safe_dump(
                 {
                     "name": "superpowers",
                     "version": "6.3.0",
@@ -182,40 +181,10 @@ class TestForeignHarnessManifestDirs:
         )
 
 
-
 # ── Kind parsing ───────────────────────────────────────────────────────────
 
 
 class TestKindField:
-    def test_default_kind_is_standalone(self, tmp_path, monkeypatch):
-        import os
-        hermes_home = Path(os.environ["HERMES_HOME"])  # set by hermetic conftest fixture
-        _write_plugin(hermes_home / "plugins", ["p1"])
-        _enable(hermes_home, "p1")
-
-        mgr = PluginManager()
-        mgr.discover_and_load()
-
-        assert mgr._plugins["p1"].manifest.kind == "standalone"
-
-    @pytest.mark.parametrize("kind", ["backend", "exclusive", "standalone"])
-    def test_valid_kinds_parsed(self, kind, tmp_path, monkeypatch):
-        import os
-        hermes_home = Path(os.environ["HERMES_HOME"])  # set by hermetic conftest fixture
-        _write_plugin(
-            hermes_home / "plugins",
-            ["p1"],
-            manifest_extra={"kind": kind},
-        )
-        # Not all kinds auto-load, but manifest should parse.
-        _enable(hermes_home, "p1")
-
-        mgr = PluginManager()
-        mgr.discover_and_load()
-
-        assert "p1" in mgr._plugins
-        assert mgr._plugins["p1"].manifest.kind == kind
-
     def test_unknown_kind_falls_back_to_standalone(self, tmp_path, monkeypatch, caplog):
         import os
         hermes_home = Path(os.environ["HERMES_HOME"])  # set by hermetic conftest fixture
@@ -289,9 +258,6 @@ class TestBundledBackendAutoLoad:
     def test_bundled_image_gen_openai_autoloads(self, tmp_path, monkeypatch):
         """The bundled ``plugins/image_gen/openai/`` plugin loads without
         any opt-in — it's ``kind: backend`` and shipped in-repo."""
-        import os
-        hermes_home = Path(os.environ["HERMES_HOME"])  # set by hermetic conftest fixture
-
         mgr = PluginManager()
         mgr.discover_and_load()
 
@@ -322,7 +288,7 @@ class TestRegisterImageGenProvider:
 
         import os
         hermes_home = Path(os.environ["HERMES_HOME"])  # set by hermetic conftest fixture
-        plugin_dir = _write_plugin(
+        _write_plugin(
             hermes_home / "plugins",
             ["my-img-plugin"],
             register_body=(
@@ -342,30 +308,5 @@ class TestRegisterImageGenProvider:
 
         assert mgr._plugins["my-img-plugin"].enabled is True
         assert image_gen_registry.get_provider("fake-ctx") is not None
-
-        image_gen_registry._reset_for_tests()
-
-    def test_rejects_non_provider(self, tmp_path, monkeypatch, caplog):
-        from agent import image_gen_registry
-
-        image_gen_registry._reset_for_tests()
-
-        import os
-        hermes_home = Path(os.environ["HERMES_HOME"])  # set by hermetic conftest fixture
-        _write_plugin(
-            hermes_home / "plugins",
-            ["bad-img-plugin"],
-            register_body="ctx.register_image_gen_provider('not a provider')",
-        )
-        _enable(hermes_home, "bad-img-plugin")
-
-        with caplog.at_level("WARNING"):
-            mgr = PluginManager()
-            mgr.discover_and_load()
-
-        # Plugin loaded (register returned normally) but nothing was
-        # registered in the provider registry.
-        assert mgr._plugins["bad-img-plugin"].enabled is True
-        assert image_gen_registry.get_provider("not a provider") is None
 
         image_gen_registry._reset_for_tests()

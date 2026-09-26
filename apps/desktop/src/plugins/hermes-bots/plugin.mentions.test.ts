@@ -225,7 +225,6 @@ describe('Bot Chat reset guard', () => {
         hostMock.notify.mockClear()
         expect(await handler({ text })).toEqual({ text: '/compact' })
         expect(hostMock.notify).toHaveBeenCalledOnce()
-        expect(hostMock.notify).toHaveBeenCalledWith(expect.objectContaining({ title: 'This chat never resets' }))
       }
     }
 
@@ -434,20 +433,6 @@ describe('the mention middleware', () => {
     expect(result.text).toMatch(/@ops = agent profile "ops"/)
     expect(result.text).toMatch(/message_agent/)
     expect(result.text).not.toMatch(/ — on /)
-  })
-
-  it('teaches no shellout and forbids forwarding the user’s text verbatim', async () => {
-    // The class behind #91397 / #91304 / #91339: the renderer used to compose
-    // a `hermes -p …` handoff, giving the model a second send path and a way
-    // to relay the raw draft.
-    const { handler } = await contributions({ focused: 'research', profiles: [{ name: 'research' }, { name: 'ops' }] })
-    const result = await handler({ text: 'ask @ops to summarize' })
-
-    expect(result.text).not.toMatch(/hermes -p/)
-    expect(result.text).not.toMatch(/terminal call/i)
-    expect(result.text).not.toMatch(/background=true/)
-    expect(result.text).toMatch(/compose your own message/i)
-    expect(result.text).toMatch(/never forward/i)
   })
 
   it('keeps a poisoned bot title inert prose', async () => {

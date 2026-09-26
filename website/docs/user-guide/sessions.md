@@ -456,7 +456,7 @@ hermes sessions export --format md --model sonnet --min-messages 50 --redact
 hermes sessions export --format md --session-id 20250305_091523_a1b2c3d4 --delete-after-verified --yes
 ```
 
-Markdown/QMD export writes one `.md` or `.qmd` file per exported session plus a `manifest.jsonl` with the file path, message count, lineage ids, and SHA-256. Bulk export requires at least one filter; a bare bulk export is refused. `--delete-after-verified` is intentionally limited to `--session-id` and requires `--yes`. Because deleting a parent session also removes its delegate/subagent sessions, this mode exports and verifies each delegate in a separate file before deleting anything. If the delegate set changes during export, deletion is refused. `--redact` scrubs secrets (API keys, tokens, credentials) from message content and tool output before writing — recommended for any export you plan to share.
+Markdown/QMD export writes one `.md` or `.qmd` file per exported session plus a `manifest.jsonl` with the file path, message count, lineage ids, and SHA-256. Bulk export requires at least one filter; a bare bulk export is refused. `--delete-after-verified` is intentionally limited to `--session-id` and requires `--yes`. Because deleting a parent session also removes its delegate/subagent sessions, this mode exports and verifies each delegate in a separate file before deleting anything. Markdown/QMD files hold the full history shown by the session, including turns archived by in-place compaction. Deletion compares that exact display transcript and the delegate set again inside the same database transaction that performs the delete; any intervening append, rewrite, rewind, compaction, or delegate change refuses deletion. The same display-history rule applies to `--format html`, `--only user-prompts` (with either Markdown or JSONL output), and `/save md|html`. Full-session JSON/JSONL exports and `/save json` remain live-only because importing archived turns would restore them as live model context. `--redact` scrubs secrets (API keys, tokens, credentials) from message content and tool output before writing — recommended for any export you plan to share.
 
 ### Delete a Session
 
@@ -725,11 +725,13 @@ waiting out openers (a holder that appears mid-way makes SQLite refuse instead
 of racing it), and verifies the file header reports the new mode. It reminds
 you to set `database.journal_mode` to the same value when the config disagrees,
 because the next open re-applies the configured mode. The holder scan is local
-and POSIX-only, so it cannot see a process in another container or VM sharing
-the volume, and on Windows there is no scan at all — the command refuses there
-outright unless you pass `--force` after stopping every Hermes process
-yourself. Enabling WAL is also refused when the store sits on a cross-VM
-filesystem (virtiofs/9p), where WAL shared memory corrupts silently.
+(open-file tables on Linux/macOS, the Restart Manager on Windows), so it
+cannot see a process in another container or VM sharing the volume. If the
+scan itself fails the command refuses because it cannot prove the store is
+quiet; `--force` waives only that case after you have stopped every Hermes
+process yourself — a process the scan does find is always refused. Enabling
+WAL is also refused when the store sits on a cross-VM filesystem (virtiofs/9p),
+where WAL shared memory corrupts silently.
 
 
 ## Importing Sessions from Claude Code and Codex CLI

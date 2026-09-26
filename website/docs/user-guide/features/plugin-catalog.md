@@ -17,7 +17,7 @@ hermes plugins install <name>
 Browse it visually at **[/docs/plugins](/plugins)** — entries are shelved by
 category (Memory, Desktop, Platforms, Web & Browser, Tools, Voice, Automation,
 Models), with search, tier filters (Official / Community), capability chips, and
-copyable install commands for every entry.
+**Open in Hermes Desktop** buttons and copyable CLI commands for every entry.
 
 Every entry also has its own page at `/docs/plugins/<name>` (click a card):
 the full description and any disclosure, the pinned commit, tools, hooks and
@@ -27,6 +27,12 @@ author** shelf. Authors have a page at `/docs/plugins/by/<maintainer>` listing
 everything they maintain in the catalog. Both are generated at build time from
 the same catalog files, so a merged PR is the only way a page changes.
 
+In Desktop, open **Capabilities → Plugins → Browse** for the native catalog
+view. It is not an embedded website. **Installed** is a separate tab backed
+by the app's desktop-plugin registry and the selected profile's agent-plugin
+state, rather than catalog metadata. Skills uses the same **Installed / Browse**
+layout; search stays at the top and the tab switch and actions share one row.
+
 The catalog complements — it does not replace — the existing
 [plugin system](plugins.md). Anything you can install from the catalog is a
 normal plugin under the hood; the catalog just adds discovery and a review
@@ -35,6 +41,20 @@ layer on top.
 During desktop onboarding, the setup guide can also offer catalog plugins and skills through an
 approval card. Each row installs into your `default` profile only when you click Install, at the
 same reviewed commit this page describes.
+
+### Published browse data
+
+The website and Desktop read the same generated CDN snapshot:
+[`https://hermes-agent.nousresearch.com/docs/api/plugins.json`](https://hermes-agent.nousresearch.com/docs/api/plugins.json).
+Desktop fetches it through
+`https://nousresearch.github.io/hermes-agent/docs/api/plugins.json`; the public
+docs alias serves the same data. The docs build reads `plugin-catalog/*.yaml`
+and adds cached repository star counts. It also publishes the installer's
+removed-entry list. Neither Browse view crawls source repositories or queries
+the GitHub API live.
+
+This browse snapshot is distinct from the installer's
+[`plugin-catalog.json`](#live-refresh), which resolves catalog names and pins.
 
 ## What's in an entry
 
@@ -88,7 +108,12 @@ The catalog is designed so you know exactly what you're installing:
   the obvious moves outside the plugin SDK (patching built-in prototypes,
   `eval`, importing anything other than `@hermes/plugin-sdk`/`react`,
   including remote scripts), and the app's loader refuses every non-SDK
-  import again at load time. Treat the lint as a review aid, not a
+  import again at load time. The lint reads a `<script` regex — a literal, or
+  the pattern string of a `new RegExp(...)` passed straight to
+  `.replace()`/`.split()`/`.match()` or used as `.test()`/`.exec()` — as the
+  sanitiser it is, not as injection; a `<script` string written into the DOM,
+  including one built from `new RegExp(...).source`, still fails. Treat the
+  lint as a review aid, not a
   guarantee; give Desktop halves the same scrutiny you'd give a Python half.
 - **Capability declarations.** Entries state up front which tools, hooks, and
   middleware the plugin provides and which environment variables (API keys
@@ -113,6 +138,22 @@ repository. Review the code of anything you give credentials to.
 :::
 
 ## Installing from the catalog
+
+On the website, **Open in Hermes Desktop** opens a protocol link of this form:
+
+```text
+hermes://plugin/install?catalog=example-plugin
+```
+
+Desktop resolves the name against the published catalog and asks you to review
+the source, destination and components before confirming. The link does not
+auto-install or supply its own repository or commit. An unknown name or failed
+lookup shows an error; it never falls back to a repository install. For the
+agent-plugin component, the backend resolves the catalog name to its reviewed pin.
+
+Use an updated Desktop build for catalog links and the Skills Hub's
+`hermes://skill/install?identifier=...` route. The cards retain CLI commands,
+so you can install by catalog name without Desktop:
 
 ```bash
 # Install a reviewed catalog entry by name (checks out the pinned SHA)
@@ -151,7 +192,8 @@ hermes plugins enable snyk
 
 `hermes plugins update <name>` never runs `git pull` for catalog installs —
 it compares your installed pin against the current catalog pin and, when the
-catalog moved (via a reviewed PR), force-reinstalls at the new SHA. Your
+catalog moved (via a reviewed PR), prepares and dependency-validates the new SHA
+before publishing it. Your
 enabled/disabled state is preserved, and so are files the plugin's repo does
 not track (the `config.yaml` created from its `.example`, data files, `.env`).
 Edits you made to *tracked* files are not carried onto the new code; copies are
@@ -160,12 +202,17 @@ If the new pin renames the plugin's manifest, the old directory is removed and
 your enabled flag follows the new name. `hermes plugins list` shows catalog
 installs as `catalog:<tier>@<sha>` so you can see provenance at a glance.
 
+PM validates the dependencies of an active plugin before its new code replaces
+the installed version. A version, scan, dependency, or publication failure keeps
+the working code and dependency selection. Disabled plugins stay disabled.
 Provenance is recorded by the installer in `~/.hermes/plugins/.install-metadata.json`,
 outside the plugin's own tree — a repository cannot ship a file that makes it
 look like a reviewed catalog install. (The `.hermes-catalog.json` inside the
 plugin directory is a convenience copy only.) Installing a catalog entry with
 `--ref <sha>` records the SHA you actually checked out, so `list`, the Desktop
 Plugins tab and `update` all report it as off the reviewed pin.
+Custom Git plugins retain their recorded Git/feed update policy but use the same
+PM validation and publication path.
 
 ### Names not in the catalog
 

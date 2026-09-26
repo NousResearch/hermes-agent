@@ -36,8 +36,23 @@ const PILL = 'inline-flex items-center rounded-full px-1.5 py-0.5 text-[0.62rem]
 
 const KIND_GLYPH = { plugin: Plug, skill: Book } as const
 
-const PLATFORM_NAMES: Record<string, string> = { darwin: 'macOS', linux: 'Linux', macos: 'macOS', windows: 'Windows' }
-const platformName = (platform: string) => PLATFORM_NAMES[platform.toLowerCase()] ?? platform
+function platformName(platform: string): string {
+  switch (platform.toLowerCase()) {
+    case 'darwin':
+
+    case 'macos':
+      return 'macOS'
+
+    case 'linux':
+      return 'Linux'
+
+    case 'windows':
+      return 'Windows'
+
+    default:
+      return platform
+  }
+}
 
 const isCatalogTarget = (target: ConnectionTarget): target is CatalogTarget => Boolean(target.catalog)
 

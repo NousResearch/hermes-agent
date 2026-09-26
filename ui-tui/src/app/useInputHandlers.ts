@@ -663,17 +663,25 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return patchOverlayState({ sessions: true })
     }
 
-    // Ctrl+O opens the model picker without disturbing a typed draft — the
-    // same overlay `/model` opens, but reachable without clearing what you've
-    // typed to run the command. Works mid-stream: picking a model writes the
-    // session model (config.set), which the next turn reads while the in-flight
-    // turn keeps streaming.
-    if (event.keypress.name === 'f7' && !key.ctrl && !key.meta && !key.shift && !key.super) {
+    // Ctrl+R / F7 toggle only changes the live-work dock preview; it does not
+    // open the monitor or move composer focus. Ctrl+R is the reliable fallback
+    // on macOS terminals that reserve the function row for hardware controls.
+    if (
+      ((event.keypress.name === 'f7' && !key.ctrl) || isCtrl(key, ch, 'r')) &&
+      !key.meta &&
+      !key.shift &&
+      !key.super
+    ) {
       $agentDockCollapsed.set(!$agentDockCollapsed.get())
 
       return
     }
 
+    // Ctrl+O opens the model picker without disturbing a typed draft — the
+    // same overlay `/model` opens, but reachable without clearing what you've
+    // typed to run the command. Works mid-stream: picking a model writes the
+    // session model (config.set), which the next turn reads while the in-flight
+    // turn keeps streaming.
     if (isCtrl(key, ch, 't')) {
       return patchOverlayState({ agents: true, agentsInitialHistoryIndex: 0 })
     }

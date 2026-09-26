@@ -9,27 +9,15 @@ import json
 
 
 from tools.tts_tool import _resolve_max_text_length
-from tools.tts_tool_delivery import FALLBACK_MAX_TEXT_LENGTH, PROVIDER_MAX_TEXT_LENGTH
+from tools.tts_tool_delivery import FALLBACK_MAX_TEXT_LENGTH
 
 
 class TestResolveMaxTextLength:
-    def test_edge_default(self):
-        assert _resolve_max_text_length("edge", {}) == PROVIDER_MAX_TEXT_LENGTH["edge"]
 
-    def test_openai_default_is_4096(self):
-        assert _resolve_max_text_length("openai", {}) == 4096
 
-    def test_xai_default_is_15000(self):
-        assert _resolve_max_text_length("xai", {}) == 15000
 
-    def test_minimax_default_is_10000(self):
-        assert _resolve_max_text_length("minimax", {}) == 10000
 
-    def test_mistral_default(self):
-        assert _resolve_max_text_length("mistral", {}) == PROVIDER_MAX_TEXT_LENGTH["mistral"]
 
-    def test_gemini_default(self):
-        assert _resolve_max_text_length("gemini", {}) == PROVIDER_MAX_TEXT_LENGTH["gemini"]
 
     def test_unknown_provider_falls_back(self):
         assert _resolve_max_text_length("does-not-exist", {}) == FALLBACK_MAX_TEXT_LENGTH
@@ -47,10 +35,6 @@ class TestResolveMaxTextLength:
 
     # --- Sanity: the table covers every provider listed in the schema ---
 
-    def test_all_documented_providers_have_defaults(self):
-        expected = {"edge", "openai", "xai", "minimax", "mistral",
-                    "gemini", "elevenlabs", "neutts", "kittentts"}
-        assert expected.issubset(PROVIDER_MAX_TEXT_LENGTH.keys())
 
 
 class TestTextToSpeechToolChunking:

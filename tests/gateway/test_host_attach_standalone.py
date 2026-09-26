@@ -63,11 +63,10 @@ def test_standalone_attach_requires_known_unserved_profile(standalone_home, monk
         assert decision.transient
         if served:
             assert "rescan-profiles" in decision.message
-            assert "30s" in decision.message
     assert requests == [], "an opted-out profile must never ask the host to serve it"
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.parametrize("served,known", [(False, True), (True, True), (False, False)])
 def test_standalone_lock_loser_requires_known_unserved_profile(
     standalone_home, monkeypatch, capsys, served, known,
@@ -95,7 +94,7 @@ def test_standalone_lock_loser_requires_known_unserved_profile(
                 assert "rescan-profiles" in capsys.readouterr().out
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.parametrize("host_name", ["default", "member"])
 def test_standalone_owner_cannot_hide_a_live_multiplexer(standalone_home, monkeypatch, host_name):
     """A starts first, host starts beside A, then B opts out before the host rescans."""

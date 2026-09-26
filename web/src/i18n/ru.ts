@@ -165,6 +165,10 @@ export const ru: Translations = {
     failedToDeleteSelected: "Не удалось удалить выбранные сессии",
     resumeInChat: "Продолжить в чате",
     newChat: "Новый чат",
+    workspace: "рабочая папка",
+    workspaceDefault: "По умолчанию",
+    workspaceRescan: "Пересканировать репозитории",
+    workspaceCustom: "Другой путь…",
     previousPage: "Предыдущая страница",
     nextPage: "Следующая страница",
     roles: {

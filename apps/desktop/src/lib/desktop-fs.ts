@@ -108,6 +108,14 @@ export async function writeDesktopFileText(path: string, content: string): Promi
   return { path: result.path || path }
 }
 
+// Create a folder on the connected backend (POST /api/files/mkdir). Remote-only:
+// in local mode the picker is the native dialog, which creates folders itself.
+export async function createRemoteDir(path: string): Promise<string> {
+  const result = await remoteFsApi<{ path?: string }>('/api/files/mkdir', { path })
+
+  return result.path || path
+}
+
 export async function readDesktopFileDataUrl(path: string): Promise<string> {
   if (!isDesktopFsRemoteMode()) {
     return bridge().readFileDataUrl(path)

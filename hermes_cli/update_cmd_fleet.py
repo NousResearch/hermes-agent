@@ -1760,6 +1760,16 @@ def _restart_gateway_fleet_after_update(_pre_update_plan, gateway_mode: bool):
         # and never came back", not "nothing was running"; None fails closed.
         try:
             out.pre_restart_gateway_pids = _scoped_manual_gateway_pids(find_gateway_pids(all_profiles=True), quiet=True)
+            # The cleanup scan omits ancestors of this updater, but a gateway
+            # inventoried before the update is still an outgoing fleet identity.
+            # Supplement only the verification snapshot; never use these PIDs as
+            # manual cleanup targets (a self-restarting ancestor must keep running).
+            for runtime in getattr(_pre_update_plan, "runtimes", ()) or ():
+                pid = getattr(runtime, "pid", None)
+                if (getattr(runtime, "kind", None) == "gateway"
+                        and isinstance(pid, int) and not isinstance(pid, bool) and pid > 0
+                        and pid not in out.pre_restart_gateway_pids):
+                    out.pre_restart_gateway_pids.append(pid)
         except Exception:
             out.pre_restart_gateway_pids = None
 

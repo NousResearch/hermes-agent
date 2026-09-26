@@ -1,4 +1,8 @@
 """A selected named endpoint owns its vendor-prefixed model ID (#123997)."""
+import os
+import subprocess
+import sys
+
 import pytest
 
 from hermes_cli.model_switch import StartupModelRoute, resolve_startup_model_route
@@ -40,6 +44,30 @@ def test_oneshot_keeps_selected_custom_vendor(custom_config, monkeypatch):
     monkeypatch.setenv("HERMES_INFERENCE_MODEL", custom_config["model"]["default"])
     choice = _resolve_model_and_provider(custom_config, None, None)
     assert (choice.provider, choice.model) == ("custom:nvidia", "nvidia/fixture-model")
+
+
+def test_cli_keeps_selected_custom_vendor(custom_config):
+    subprocess.run(
+        [sys.executable, "-c", "from types import SimpleNamespace; import cli; "
+         "from hermes_cli.cli_init_mixin import CLIInitMixin; instance = SimpleNamespace(); "
+         "CLIInitMixin._init_model_and_provider(instance, None, None, None, None); "
+         "assert (instance.requested_provider, instance.model) == "
+         "('custom:nvidia', 'nvidia/fixture-model')"],
+        check=True, capture_output=True, text=True, env=os.environ.copy(),
+    )
+
+
+def test_tui_keeps_selected_custom_vendor(custom_config):
+    env = os.environ.copy()
+    env["HERMES_INFERENCE_MODEL"] = custom_config["model"]["default"]
+    env.pop("HERMES_TUI_PROVIDER", None)
+    env.pop("HERMES_INFERENCE_PROVIDER", None)
+    subprocess.run(
+        [sys.executable, "-c", "from tui_gateway import server; "
+         "assert server._resolve_startup_runtime() == "
+         "('nvidia/fixture-model', 'custom:nvidia')"],
+        check=True, capture_output=True, text=True, env=env,
+    )
 
 
 @pytest.mark.parametrize("raw", ["", "fixture-model", "nvidia/", "/fixture-model"])

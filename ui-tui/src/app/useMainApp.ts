@@ -57,7 +57,7 @@ import { planGatewayRecovery } from './gatewayRecovery.js'
 import { applyGoalSnapshot } from './goalStatus.js'
 import { getInputSelection } from './inputSelectionStore.js'
 import { type GatewayRpc, type StateSetter, type TranscriptRow } from './interfaces.js'
-import { $overlayState, patchOverlayState } from './overlayStore.js'
+import { $overlayState, beginClarifyAnswer, patchOverlayState, updateClarifyForRequest } from './overlayStore.js'
 import { $goodVibesTick } from './petFlashStore.js'
 import { applyProcessSnapshot, type ProcessEntry } from './processRoster.js'
 import { scrollWithSelectionBy } from './scroll.js'
@@ -749,10 +749,19 @@ export function useMainApp(gw: GatewayClient) {
 
       const label = toolTrailLabel('clarify')
 
+      if (answer) {
+        // the backend may finish the tool before this response call returns
+        turnController.reservePersistedToolLabel(label, clarify.requestId)
+      }
+
       turnController.turnTools = turnController.turnTools.filter(line => !sameToolTrailGroup(label, line))
       patchTurnState({ turnTrail: turnController.turnTools })
 
       if (!respondToServerRequest(clarify.requestId, { answer })) {
+        if (answer) {
+          turnController.releasePersistedToolLabel(label, clarify.requestId)
+        }
+
         // The request already expired (request.cancel raced the keystroke): nothing to answer.
         patchOverlayState({ clarify: null })
 
@@ -761,7 +770,6 @@ export function useMainApp(gw: GatewayClient) {
 
       {
         if (answer) {
-          turnController.persistedToolLabels.add(label)
           appendMessage({
             kind: 'trail',
             role: 'system',
@@ -799,36 +807,74 @@ export function useMainApp(gw: GatewayClient) {
         return
       }
 
+      const label = toolTrailLabel('clarify')
+
+      // the final lock wakes the blocked tool before its rpc response arrives
+      // reserve before sending each answer so an early completion is covered
+      if (!beginClarifyAnswer(clarify.requestId)) {
+        return
+      }
+
+      turnController.reservePersistedToolLabel(label, clarify.requestId)
+
       rpc<ClarifyLockResponse>('clarify.lock', {
         answer,
         question_id: qid,
         request_id: clarify.requestId
       }).then(r => {
         if (!r) {
+          updateClarifyForRequest(clarify.requestId, () => null)
+
+          turnController.releasePersistedToolLabel(label, clarify.requestId)
+
+          appendMessage({
+            role: 'system',
+            text: formatAbandonedClarifyBatch(
+              clarify.questions!,
+              clarify.answers ?? {},
+              'answer could not be confirmed'
+            )
+          })
+
           return
         }
 
         const answers = { ...(clarify.answers ?? {}), [qid]: answer }
 
         if (r.status === 'expired') {
-          patchOverlayState({ clarify: null })
+          updateClarifyForRequest(clarify.requestId, () => null)
+
+          turnController.releasePersistedToolLabel(label, clarify.requestId)
+
+          appendMessage({
+            role: 'system',
+            text: formatAbandonedClarifyBatch(clarify.questions!, clarify.answers ?? {}, 'timed out')
+          })
 
           return
         }
 
         if ((r.remaining ?? []).length > 0) {
-          patchOverlayState({ clarify: { ...clarify, answers } })
+          updateClarifyForRequest(clarify.requestId, current => ({
+            ...current,
+            answerPending: false,
+            answers: { ...(current.answers ?? {}), [qid]: answer }
+          }))
+
+          turnController.releasePersistedToolLabel(label, clarify.requestId)
 
           return
         }
 
         // Batch complete: persist the whole Q&A set as one user-visible
         // block (mirrors the single-question trail + answer lines).
-        const label = toolTrailLabel('clarify')
+        const isCurrentRequest = updateClarifyForRequest(clarify.requestId, () => null)
 
-        turnController.turnTools = turnController.turnTools.filter(line => !sameToolTrailGroup(label, line))
-        patchTurnState({ turnTrail: turnController.turnTools })
-        turnController.persistedToolLabels.add(label)
+        if (isCurrentRequest) {
+          turnController.turnTools = turnController.turnTools.filter(line => !sameToolTrailGroup(label, line))
+          patchTurnState({ turnTrail: turnController.turnTools })
+        }
+
         appendMessage({
           kind: 'trail',
           role: 'system',
@@ -841,8 +887,10 @@ export function useMainApp(gw: GatewayClient) {
             .questions!.map(q => `${q.question} → ${answers[q.qid]?.trim() ? answers[q.qid] : '(skipped)'}`)
             .join('\n')
         })
-        patchUiState({ status: 'running…' })
-        patchOverlayState({ clarify: null })
+
+        if (isCurrentRequest) {
+          patchUiState({ status: 'running…' })
+        }
       })
     },
     [appendMessage, overlay.clarify, rpc]

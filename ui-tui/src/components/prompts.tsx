@@ -209,7 +209,7 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, onQuestionAnswer,
   const remainingCount = isBatch ? batch.length - answeredCount : 0
 
   const lockActive = (value: string) => {
-    if (activeQuestion) {
+    if (activeQuestion && !req.answerPending) {
       onQuestionAnswer?.(activeQuestion.qid, value)
       setSel(0)
       setCustom('')
@@ -218,6 +218,10 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, onQuestionAnswer,
   }
 
   useInput((ch, key) => {
+    if (req.answerPending) {
+      return
+    }
+
     if (key.escape) {
       if (typing) {
         setTyping(false)
@@ -305,7 +309,9 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, onQuestionAnswer,
   })
 
   if (isBatch) {
-    const hint = typing
+    const hint = req.answerPending
+      ? 'locking answer…'
+      : typing
       ? `Enter ${remainingCount === 1 ? 'confirm and continue' : 'lock answer'} · Esc back`
       : `↑/↓ select · Enter ${remainingCount === 1 ? 'confirm and continue' : 'lock answer'} · Tab/Shift+Tab switch question · Esc/Ctrl+C cancel`
 

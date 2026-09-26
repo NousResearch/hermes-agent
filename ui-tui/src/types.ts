@@ -131,6 +131,8 @@ export interface ClarifyReq {
   /** Answers already locked server-side (qid → answer): seeded from the
    *  reconnect replay, updated as the user locks each question. */
   answers?: Record<string, string>
+  /** a batch answer is waiting for the server to confirm the lock. */
+  answerPending?: boolean
 }
 
 export interface Msg {

@@ -8,13 +8,19 @@ import {
 } from '../app/connectionOperationStore.js'
 import { createGatewayEventHandler } from '../app/createGatewayEventHandler.js'
 import { createServerRequestHandler } from '../app/createServerRequestHandler.js'
-import { getOverlayState, patchOverlayState, resetOverlayState } from '../app/overlayStore.js'
+import {
+  getOverlayState,
+  beginClarifyAnswer,
+  patchOverlayState,
+  resetOverlayState,
+  updateClarifyForRequest
+} from '../app/overlayStore.js'
 import { resetServerRequestsForTests } from '../app/serverRequestStore.js'
 import { turnController } from '../app/turnController.js'
 import { getTurnState, resetTurnState } from '../app/turnStore.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 import { ZERO } from '../domain/usage.js'
-import { estimateTokensRough } from '../lib/text.js'
+import { estimateTokensRough, toolTrailLabel } from '../lib/text.js'
 import type { Msg } from '../types.js'
 
 // Mock the external-URL opener so the billing.step_up.verification test can
@@ -1720,6 +1726,87 @@ describe('createGatewayEventHandler', () => {
     onEvent({ payload: { duration_s: 4.2, name: 'clarify', tool_id: 'clar-1' }, type: 'tool.complete' } as any)
 
     expect(appended.some(msg => msg.role === 'system' && msg.text.startsWith('ask '))).toBe(false)
+  })
+
+  it('does not mark a batch answer as timed out when tool completion arrives first', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    patchOverlayState({
+      clarify: {
+        answers: { q1: 'red' },
+        answerPending: true,
+        choices: null,
+        question: '',
+        questions: [
+          { qid: 'q1', question: 'Which colour for zeta?' },
+          { qid: 'q2', question: 'Which colour for eta?' }
+        ],
+        requestId: 'req-batch'
+      }
+    })
+
+    turnController.recordToolStart('clar-answered', 'clarify', 'Which colour for zeta?')
+    // the final answer reserves this before the backend can emit tool.complete
+    turnController.persistedToolLabels.add(toolTrailLabel('clarify'))
+
+    onEvent(
+      { payload: { name: 'clarify', summary: 'answered', tool_id: 'clar-answered' }, type: 'tool.complete' } as any
+    )
+
+    expect(getTurnState().streamPendingTools).toEqual([])
+    expect(getTurnState().tools).toEqual([])
+    expect(turnController.persistedToolLabels.has(toolTrailLabel('clarify'))).toBe(false)
+    expect(getOverlayState().clarify?.answerPending).toBe(true)
+    expect(appended.some(msg => msg.role === 'system' && msg.text.startsWith('ask '))).toBe(false)
+
+    onEvent({ payload: { text: 'done' }, type: 'message.complete' } as any)
+
+    expect(appended.some(msg => msg.role === 'system' && msg.text.startsWith('ask '))).toBe(false)
+
+    patchOverlayState({ clarify: null })
+    turnController.recordToolStart('clar-next', 'clarify', 'Which colour for eta?')
+    onEvent({ payload: { name: 'clarify', tool_id: 'clar-next' }, type: 'tool.complete' } as any)
+
+    expect(getTurnState().streamPendingTools).toHaveLength(1)
+    expect(getTurnState().streamPendingTools[0]).toContain('Which colour for eta?')
+  })
+
+  it('does not let a late clarify response change a newer prompt', () => {
+    const newerPrompt = {
+      choices: ['A', 'B'],
+      question: 'Choose for the next step?',
+      requestId: 'req-new'
+    }
+    patchOverlayState({ clarify: newerPrompt })
+
+    expect(updateClarifyForRequest('req-old', () => null)).toBe(false)
+    expect(getOverlayState().clarify).toEqual(newerPrompt)
+
+    expect(
+      updateClarifyForRequest('req-new', current => ({ ...current, answerPending: true }))
+    ).toBe(true)
+    expect(getOverlayState().clarify).toEqual({ ...newerPrompt, answerPending: true })
+  })
+
+  it('allows only one batch answer lock at a time', () => {
+    patchOverlayState({
+      clarify: {
+        choices: null,
+        question: '',
+        questions: [{ choices: ['red', 'blue'], qid: 'q1', question: 'Which colour?' }],
+        requestId: 'req-batch'
+      }
+    })
+
+    expect(beginClarifyAnswer('req-batch')).toBe(true)
+    expect(beginClarifyAnswer('req-batch')).toBe(false)
+    expect(getOverlayState().clarify?.answerPending).toBe(true)
+
+    expect(
+      updateClarifyForRequest('req-batch', current => ({ ...current, answerPending: false }))
+    ).toBe(true)
+    expect(beginClarifyAnswer('req-batch')).toBe(true)
   })
 
   it('clears only the card whose request the gateway withdrew (request.cancel by id)', () => {

@@ -142,6 +142,43 @@ export const getOverlayState = () => $overlayState.get()
 export const patchOverlayState = (next: Partial<OverlayState> | ((state: OverlayState) => OverlayState)) =>
   $overlayState.set(typeof next === 'function' ? next($overlayState.get()) : { ...$overlayState.get(), ...next })
 
+/** Update or clear a clarify card only while it still belongs to this request. */
+export const updateClarifyForRequest = (
+  requestId: string,
+  update: (clarify: NonNullable<OverlayState['clarify']>) => NonNullable<OverlayState['clarify']> | null
+): boolean => {
+  let updated = false
+
+  patchOverlayState(state => {
+    if (state.clarify?.requestId !== requestId) {
+      return state
+    }
+
+    updated = true
+
+    return { ...state, clarify: update(state.clarify) }
+  })
+
+  return updated
+}
+
+/** Start a batch answer only when this request has no answer lock in flight. */
+export const beginClarifyAnswer = (requestId: string): boolean => {
+  let started = false
+
+  patchOverlayState(state => {
+    if (state.clarify?.requestId !== requestId || state.clarify.answerPending) {
+      return state
+    }
+
+    started = true
+
+    return { ...state, clarify: { ...state.clarify, answerPending: true } }
+  })
+
+  return started
+}
+
 /** Full reset — used by session/turn teardown and tests. */
 export const resetOverlayState = () => $overlayState.set(buildOverlayState())
 

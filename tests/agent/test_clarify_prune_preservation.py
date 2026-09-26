@@ -62,3 +62,36 @@ def test_unresolved_results_still_demote(compressor, payload):
     payload["question"] = "May I proceed? " * 100
     result, _ = compressor._prune_old_tool_results(_exchange("c", "clarify", json.dumps(payload)), protect_tail_count=0)
     assert result[1]["content"] == "[clarify] asked user a question"
+
+
+@pytest.mark.parametrize("fail_summary", [False, True])
+def test_public_compaction_passes_complete_decisions_to_summary(monkeypatch, fail_summary):
+    c = ContextCompressor(model="test/model", config_context_length=100000,
+                          protect_first_n=1, protect_last_n=2, quiet_mode=True)
+    # A bounded tail puts the clarify exchange in the actual compressed region.
+    c.tail_token_budget = 50
+    decisions = [f"Scope {i}: " + "Do not publish until I approve. " * 4 for i in range(5)]
+    payload = json.dumps({"responses": [{"question": f"Gate {i}?", "user_response": a}
+                                         for i, a in enumerate(decisions)]})
+    messages = [{"role": "system", "content": "Test fixture"}, {"role": "user", "content": "Implement the task"}]
+    messages += _exchange("consent", "clarify", payload)
+    for i in range(12):
+        messages += [{"role": "assistant", "content": "Finished step " + str(i)},
+                     {"role": "user", "content": "Continue step " + str(i)}]
+    messages.append({"role": "assistant", "content": "Current step finished"})
+    requests = []
+
+    def summarize(**kwargs):
+        requests.append(kwargs)
+        if fail_summary:
+            raise RuntimeError("fixture summary failure")
+        return {"choices": [{"message": {"content": "## Progress\nWork is in progress."}, "finish_reason": "stop"}]}
+
+    monkeypatch.setattr("agent.context_compressor.call_llm", summarize)
+    result = c.compress(messages, force=True)
+    assert requests, "must exercise the real compression dispatch, not a no-op window"
+    prompt = json.dumps(requests[0], ensure_ascii=False)
+    for decision in decisions:
+        assert decision in prompt
+    assert result != messages
+    assert messages[3]["content"] == payload  # no in-place mutation of source transcript

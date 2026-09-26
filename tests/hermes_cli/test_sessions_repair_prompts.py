@@ -73,7 +73,7 @@ def test_unpinned_row_is_unverifiable_and_apply_json_clears_only_verified(db, mo
     assert db.get_session(healthy)["system_prompt"] == HEALTHY
 
 
-def test_reduced_memory_only_and_zero_skills_rows_left_alone(db, monkeypatch, capsys):
+def test_scan_leaves_reduced_memory_only_zero_skills_rows_and_session_id_overrides(db, monkeypatch, capsys):
     reduced = db.create_session("reduced-1", "telegram", system_prompt=DEGRADED)
     db.update_session_tool_names(reduced, _pin("todo", "web_search"))
     memory = db.create_session("memory-only-1", "telegram", system_prompt=DEGRADED)
@@ -92,15 +92,13 @@ def test_reduced_memory_only_and_zero_skills_rows_left_alone(db, monkeypatch, ca
     assert db.get_session(memory)["tool_names"]
     assert db.get_session(readonly)["system_prompt"] == zero_skills
 
-
-def test_explicit_session_id_clears_memory_only_row_and_rejects_unknown_id(db, monkeypatch, capsys):
-    memory = db.create_session("memory-only-1", "telegram", system_prompt=DEGRADED)
-    db.update_session_tool_names(memory, _pin("memory"))
+    # An explicit SESSION_ID is the operator override for the unverifiable memory-only row.
     monkeypatch.setattr(sessions_cmd, "_confirm_prompt", lambda _prompt: True)
-
     assert _cmd_repair_prompts(db, _args(session_id="memory-only", apply=True)) == 0
     assert not (db.get_session(memory)["system_prompt"] or "")
 
     capsys.readouterr()
+    assert _cmd_repair_prompts(db, _args(session_id="memory-only", apply=True)) == 0
+    assert "already has no stored prompt" in capsys.readouterr().out
     assert _cmd_repair_prompts(db, _args(session_id="no-such-session", apply=True)) == 1
     assert "No session matches" in capsys.readouterr().out

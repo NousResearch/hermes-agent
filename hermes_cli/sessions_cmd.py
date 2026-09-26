@@ -1084,6 +1084,8 @@ def _cmd_repair_prompts(db, args):
     if not findings:
         if as_json:
             print(json.dumps(_payload([]), indent=2))
+        elif target:
+            print(f"{session_id} already has no stored prompt; nothing to clear.")
         else:
             print("No degraded stored system prompts found.")
             if unverifiable:

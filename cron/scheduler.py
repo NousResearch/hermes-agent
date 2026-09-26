@@ -3448,8 +3448,16 @@ def _launch_external_cron_worker(job: dict) -> bool:
     ack_path = handoff_dir / f"{execution_id}.ready"
     # Captured so a worker that dies before its acknowledgement can name the cause (#112729).
     stderr_path = handoff_dir / f"{execution_id}.stderr"
+    repo_root = Path(__file__).resolve().parent.parent
+    from cron.scheduler_worker_env import resolved_worker_python
+    # A managed gateway runs on the bare store interpreter with its dependencies
+    # activated in-process only (PM), so ``sys.executable`` does not own them: a
+    # worker inheriting it dies on the first third-party import before its
+    # ownership ack.  Run on the committed venv's interpreter when one exists;
+    # the checkout pin below still guards a moved checkout.
+    worker_python = resolved_worker_python(repo_root)
     command = [
-        sys.executable,
+        str(worker_python) if worker_python is not None else sys.executable,
         "-m",
         "cron.scheduler",
         "--external-worker-file",
@@ -3539,7 +3547,6 @@ def _launch_external_cron_worker(job: dict) -> bool:
     # `-m cron.scheduler` has no hermes_cli.main bootstrap; pin this checkout explicitly
     # (PYTHONSAFEPATH / stale editable mapping, #112729). See cron/scheduler_worker_env.py.
     from cron.scheduler_worker_env import pin_hermes_tree_on_pythonpath
-    repo_root = Path(__file__).resolve().parent.parent
     worker_env = pin_hermes_tree_on_pythonpath(worker_env, repo_root)
     try:
         stderr_fd = os.open(stderr_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)

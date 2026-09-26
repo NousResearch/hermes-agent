@@ -508,6 +508,24 @@ def test_compose_env_dependents_win_non_path_too():
     assert env["X"] == "dependent"
 
 
+def test_compose_env_path_puts_dependent_dirs_before_dependency_dirs():
+    """#123333: PATH composition must keep the dependent's dir first.
+
+    Diffs arrive deps-first (``walk`` order); ``compose_env`` reverses for PATH
+    so npm's pinned shim dir precedes node's — node bundles its own npm, and
+    any ordering regression makes every engine-strict ``npm ci`` die with
+    EBADENGINE on Windows.
+    """
+    import os
+
+    node = {"PATH": ["/store/node-26.7.0-win32-x64"]}
+    npm = {"PATH": ["/store/npm-12.0.2-win32-x64"]}
+    env = compose_env([node, npm], base={"PATH": ""})
+    entries = [e for e in env["PATH"].split(os.pathsep) if e]
+    assert entries[0] == "/store/npm-12.0.2-win32-x64"
+    assert entries[1] == "/store/node-26.7.0-win32-x64"
+
+
 
 # ── bundle payload pieces ─────────────────────────────────────────────
 

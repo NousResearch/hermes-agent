@@ -41,7 +41,7 @@ def _token_status(source: str, source_label: str, creds: Dict[str, Any]) -> Dict
 
 
 def _anthropic_oauth_status() -> Dict[str, Any]:
-    """Status for the "Anthropic API Key" card: Hermes-managed PKCE file first, then the
+    """Status for the "Anthropic Account" card: Hermes-managed PKCE file first, then the
     registry-ordered env vars (process env — where Bitwarden-sourced secrets land — then .env).
 
     Claude Code's ``~/.claude/.credentials.json`` is deliberately NOT read here; it has its own
@@ -167,7 +167,7 @@ _OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = (
     # in-dashboard Connect button would let a scriptable HTTP endpoint mint Claude Pro/Max
     # subscription tokens outside Anthropic's own client, against its OAuth usage policies.
     # Login works via the terminal (`hermes auth add anthropic`) or a plain API key.
-    {"id": "anthropic", "name": "Anthropic API Key", "flow": "external", "cli_command": "hermes auth add anthropic",
+    {"id": "anthropic", "name": "Anthropic Account", "flow": "external", "cli_command": "hermes auth add anthropic",
      "docs_url": "https://docs.claude.com/en/api/getting-started", "status_fn": _anthropic_oauth_status},
     {"id": "claude-code", "name": "Anthropic OAuth: Required Extra Usage Credits to Use Subscription",
      "flow": "external", "cli_command": "claude setup-token",

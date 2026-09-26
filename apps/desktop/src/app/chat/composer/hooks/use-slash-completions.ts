@@ -12,7 +12,7 @@ import {
   type DesktopThemeCommandOption,
   filterDesktopCommandsCatalog,
   isDesktopSlashExtensionCommand,
-  isDesktopSlashSuggestion,
+  isDesktopSlashSuggestionWithOptions,
   rankSkillCommands,
   slashCompletionGroup
 } from '@/lib/desktop-slash-commands'
@@ -221,6 +221,12 @@ export function useSlashCompletions(options: {
         const isArgCompletion = replaceFrom > 1
         const prefix = isArgCompletion ? text.slice(0, replaceFrom) : ''
 
+        // An alias the user typed to completion (`/reset`) must surface even
+        // though aliases are hidden while browsing — otherwise the popover
+        // says "no matches" for a command Enter happily executes (#57641).
+        // Only an EXACT match unlocks it; a partial prefix keeps hiding.
+        const exactAliasQuery = isArgCompletion ? undefined : commandText(query).toLowerCase()
+
         const decorated = (result.items ?? [])
           .map(item => {
             if (!isArgCompletion) {
@@ -231,7 +237,10 @@ export function useSlashCompletions(options: {
 
             return { ...item, text: `${prefix}${argText}` }
           })
-          .filter(item => isArgCompletion || isDesktopSlashSuggestion(item.text))
+          .filter(
+            item =>
+              isArgCompletion || isDesktopSlashSuggestionWithOptions(item.text, { exactAlias: exactAliasQuery })
+          )
           .map(item => ({
             ...item,
             // Arg suggestions (e.g. `/handoff <platform>`) live under one

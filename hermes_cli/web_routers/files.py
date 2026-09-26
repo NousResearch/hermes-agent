@@ -176,11 +176,16 @@ def _fs_regular_file(path: Path) -> tuple[Path, os.stat_result]:
 
 def _fs_read_bytes(target: Path, limit: Optional[int] = None) -> bytes:
     """Read (a prefix of) ``target``; 403/400 on failure."""
+    from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
     try:
-        if limit is None:
-            return target.read_bytes()
-        with target.open("rb") as handle:
-            return handle.read(limit)
+        # Keep admission through close; a raw close cancels this process's SQLite locks.
+        with offline_file_access(target, what="preview file"):
+            if limit is None:
+                return target.read_bytes()
+            with target.open("rb") as handle:
+                return handle.read(limit)
+    except LiveConnectionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except PermissionError:
         raise HTTPException(status_code=403, detail="File is not readable")
     except OSError as exc:

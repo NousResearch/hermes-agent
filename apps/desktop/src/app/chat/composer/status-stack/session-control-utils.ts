@@ -94,3 +94,20 @@ export function formatHeartbeatInterval(seconds: number, t: Translations): strin
 
   return t.statusStack.control.heartbeatEverySeconds(seconds)
 }
+
+/** Use parser-compatible units so editing the message preserves the interval. */
+export function formatHeartbeatIntervalInput(seconds: number): string {
+  if (seconds % 86_400 === 0) {
+    return `${seconds / 86_400}d`
+  }
+
+  if (seconds % 3_600 === 0) {
+    return `${seconds / 3_600}h`
+  }
+
+  if (seconds % 60 === 0) {
+    return `${seconds / 60}m`
+  }
+
+  return `${seconds}s`
+}

@@ -50,7 +50,10 @@ def parse_interval(text: str) -> Optional[int]:
     m = _INTERVAL_RE.match(text) if text else None
     if not m:
         return None
-    seconds = int(float(m.group(1)) * _UNIT_SECONDS[m.group(2).lower()])
+    try:
+        seconds = int(float(m.group(1)) * _UNIT_SECONDS[m.group(2).lower()])
+    except OverflowError:
+        return None
     return -1 if seconds < MIN_INTERVAL_SECONDS else seconds
 
 
@@ -151,6 +154,14 @@ class HeartbeatManager:
 
     Drivers (CLI thread / gateway task) call :meth:`due_prompt` on a poll cadence while the session is
     idle; a non-None return is the user-role message to inject.
+
+    Instances are cached per session per process (the CLI watchdog, the slash worker that parses
+    ``/heartbeat``, the Desktop notification poller, the gateway) while ``session.control`` card edits
+    mutate the row from the backend process — so every decision re-reads the row through
+    :meth:`refresh` first. A stale cached instance can then neither act on superseded values (a due
+    check against an old interval, a ``/heartbeat status`` line) nor write them back (pause/resume),
+    which used to silently undo a card edit. ``set`` is the one exception: replacing the whole
+    heartbeat is exactly what its caller asked for.
     """
 
     def __init__(self, session_id: str):
@@ -162,13 +173,20 @@ class HeartbeatManager:
     def state(self) -> Optional[HeartbeatState]:
         return self._state
 
+    def refresh(self) -> None:
+        """Re-read state from the DB (cross-process safety: card edits land in another process)."""
+        self._state = load_heartbeat(self.session_id)
+
     def has_heartbeat(self) -> bool:
+        self.refresh()
         return self._state is not None and self._state.status in {"active", "paused"}
 
     def is_active(self) -> bool:
+        self.refresh()
         return self._state is not None and self._state.status == "active"
 
     def status_line(self) -> str:
+        self.refresh()
         s = self._state
         if s is None:
             return "No heartbeat. Set one with /heartbeat every <interval> <prompt>."
@@ -193,6 +211,7 @@ class HeartbeatManager:
         return self._state
 
     def _set_status(self, status: str, *, reanchor: bool = False) -> Optional[HeartbeatState]:
+        self.refresh()
         if not self._state:
             return None
         self._state.status = status
@@ -213,6 +232,30 @@ class HeartbeatManager:
         self._state = None
         return cleared
 
+    def update(self, *, prompt: Optional[str] = None, interval_seconds: Optional[int] = None) -> HeartbeatState:
+        """Edit the existing heartbeat's message and/or interval in place.
+
+        Preserve identity, fire count and status. Re-anchor only when the interval changes
+        so shortening it cannot fire a stale tick; message-only edits keep the schedule.
+        """
+        self.refresh()
+        s = self._state
+        if s is None or s.status not in {"active", "paused"}:
+            raise ValueError("no heartbeat to update")
+        if prompt is None and interval_seconds is None:
+            raise ValueError("heartbeat.update needs a prompt or an interval")
+        new_prompt = s.prompt if prompt is None else prompt.strip()
+        if not new_prompt:
+            raise ValueError("heartbeat prompt is empty")
+        new_interval = s.interval_seconds if interval_seconds is None else int(interval_seconds)
+        if new_interval < MIN_INTERVAL_SECONDS:
+            raise ValueError(f"interval must be at least {MIN_INTERVAL_SECONDS}s")
+        if new_interval != s.interval_seconds:
+            s.last_fired_at = time.time()
+        s.prompt, s.interval_seconds = new_prompt, new_interval
+        save_heartbeat(self.session_id, s)
+        return s
+
     def due_prompt(self, now: Optional[float] = None) -> Optional[str]:
         """Return the injection prompt if the heartbeat is due, else None.
 
@@ -220,6 +263,7 @@ class HeartbeatManager:
         double-fire the same tick. Missed ticks coalesce: the anchor resets to NOW, not the theoretical
         schedule.
         """
+        self.refresh()
         s = self._state
         if s is None or not s.is_due(now):
             return None
@@ -240,9 +284,10 @@ class HeartbeatManager:
         if current is None or current.status != "active" or (current.last_fired_at, current.fire_count) != (
                 s.last_fired_at, s.fire_count):
             return False
-        s.last_fired_at, s.fire_count = claim
+        current.last_fired_at, current.fire_count = claim
+        self._state = current
         self._last_claim = None
-        save_heartbeat(self.session_id, s)
+        save_heartbeat(self.session_id, current)
         return True
 
 

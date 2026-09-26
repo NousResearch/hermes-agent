@@ -45,7 +45,7 @@ def test_recycled_pid_is_reclaimed_without_being_signalled(board):
     (dead worker), no signal is sent, and max-runtime enforcement does not SIGTERM the stranger either."""
     conn = board
     killed = []
-    stranger_fingerprint = 1  # no live process started at tick 1
+    stranger_fingerprint = "some-other-boot|1"  # our PID, but the fingerprint says a different boot
     tid = _claimed_running(conn, pid=os.getpid(), started_at=stranger_fingerprint, max_runtime=1)
 
     assert kbd._worker_alive(os.getpid(), stranger_fingerprint) is False
@@ -63,12 +63,11 @@ def test_recycled_pid_is_reclaimed_without_being_signalled(board):
 def test_matching_fingerprint_keeps_the_live_worker(board):
     """The same PID with ITS OWN fingerprint (recorded at spawn) is our worker: the expired claim is
     extended rather than reclaimed, and the timeout path signals it."""
-    from gateway.status import get_process_start_time
-
     conn = board
     killed = []
-    tid = _claimed_running(conn, pid=os.getpid(), started_at=get_process_start_time(os.getpid()))
-    assert kbd._worker_alive(os.getpid(), get_process_start_time(os.getpid())) is True
+    live_fingerprint = kbd._process_fingerprint(os.getpid())
+    tid = _claimed_running(conn, pid=os.getpid(), started_at=live_fingerprint)
+    assert kbd._worker_alive(os.getpid(), live_fingerprint) is True
     assert kb.release_stale_claims(conn) == 0
     assert kb.get_task(conn, tid).status == "running"
     kinds = [e.kind for e in kb.list_events(conn, tid)]
@@ -89,8 +88,11 @@ def test_same_pid_and_start_tick_on_another_boot_is_foreign(board, monkeypatch):
     conn = board
     killed = []
     live_fingerprint = kbd._process_fingerprint(os.getpid())
-    assert live_fingerprint is not None and live_fingerprint.split("|", 1)[1] == str(
-        __import__("gateway.status", fromlist=["x"]).get_process_start_time(os.getpid()))
+    gw = __import__("gateway.status", fromlist=["x"])
+    assert live_fingerprint is not None
+    witness, _, start = live_fingerprint.partition("|")
+    assert witness == gw.host_boot_witness()  # a real boot witness, never an empty field
+    assert int(start) == gw.get_process_uptime_start_time(os.getpid())
     tid = _claimed_running(conn, pid=os.getpid(), started_at=live_fingerprint, max_runtime=1)
     assert kbd._worker_alive(os.getpid(), live_fingerprint) is True
 

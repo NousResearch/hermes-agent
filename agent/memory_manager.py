@@ -231,6 +231,10 @@ class StreamingContextScrubber:
         tail = "" if self._in_span else self._buf
         self._buf = ""
         self._in_span = False
+        # The next stream (the following API call of the same turn) starts a new block: without
+        # this, a boundary judged from the previous stream's last visible text ("...now." with no
+        # newline) lets a memory block at the head of the next stream reach the UI unscrubbed.
+        self._at_block_boundary = True
         return tail
 
     @staticmethod

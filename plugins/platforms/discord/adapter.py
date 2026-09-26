@@ -6123,15 +6123,90 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         _channel_prompt = self._resolve_channel_prompt(_chan_id, _parent_id or None)
         reply_to_id = None
         reply_to_text = None
+        reply_to_author_id = None
+        reply_to_author_name = None
+        reply_to_channel_id = None
+        reply_to_origin_channel_id = None
+        reply_to_attachments_meta: list = []
         if message.reference:
             reply_to_id = str(message.reference.message_id)
-            if message.reference.resolved:
-                reply_to_text = getattr(message.reference.resolved, "content", None) or None
+            reply_to_channel_id = str(
+                getattr(message.reference, "channel_id", None) or ""
+            ) or None
+            resolved_msg = getattr(message.reference, "resolved", None)
+            # When Discord does not auto-resolve the reference (cross-channel forward, deleted
+            # message, or cold cache), attempt a manual fetch so the agent still receives the
+            # referenced content.  A Forbidden / HTTPException means the bot lacks perms; swallow
+            # and fall back to whatever history backfill already gathered.
+            if resolved_msg is None and reply_to_id:
+                try:
+                    target_channel = message.channel
+                    # Cross-channel reference: resolve the target channel when the IDs differ.
+                    if reply_to_channel_id and str(message.channel.id) != reply_to_channel_id:
+                        target_channel = self._client.get_channel(int(reply_to_channel_id))
+                        if target_channel is None:
+                            target_channel = await self._client.fetch_channel(
+                                int(reply_to_channel_id)
+                            )
+                    resolved_msg = await target_channel.fetch_message(int(reply_to_id))
+                except Exception:
+                    logger.debug(
+                        "[%s] Could not fetch referenced message %s: falling back to backfill",
+                        self.name, reply_to_id,
+                    )
+                    resolved_msg = None
+            if resolved_msg is not None:
+                reply_to_text = getattr(resolved_msg, "content", None) or None
+                ref_author = getattr(resolved_msg, "author", None)
+                if ref_author is not None:
+                    reply_to_author_id = str(getattr(ref_author, "id", "") or "") or None
+                    reply_to_author_name = (
+                        getattr(ref_author, "display_name", None)
+                        or getattr(ref_author, "name", None)
+                        or None
+                    )
+                ref_channel = getattr(resolved_msg, "channel", None)
+                if ref_channel is not None:
+                    reply_to_channel_id = str(getattr(ref_channel, "id", "") or "") or None
+                # Capture attachment metadata from the referenced message.  Image / audio URLs
+                # are cached locally so the agent can read them; documents are noted by
+                # filename + type.  Only the *metadata* goes into the event — the actual bytes
+                # are not re-processed through the main media pipeline (that would duplicate
+                # the inbound attachment handling).
+                ref_attachments = getattr(resolved_msg, "attachments", None) or []
+                for _ref_att in ref_attachments:
+                    _att_entry: dict = {
+                        "id": str(getattr(_ref_att, "id", "") or ""),
+                        "filename": getattr(_ref_att, "filename", "") or "",
+                        "content_type": getattr(_ref_att, "content_type", "") or "",
+                        "url": getattr(_ref_att, "url", "") or "",
+                    }
+                    reply_to_attachments_meta.append(_att_entry)
+            # Cross-channel forward: Discord message_snapshots carry the original channel id
+            # implicitly — the snapshot *is* from a different channel.  When message_snapshots
+            # exist alongside a reference, the reference points at the *forward* in the current
+            # channel; the origin channel is the reference's channel_id.
+            if (
+                reply_to_channel_id
+                and str(message.channel.id) != reply_to_channel_id
+                and reply_to_text is not None
+            ):
+                reply_to_origin_channel_id = reply_to_channel_id
         event = MessageEvent(
             text=event_text, message_type=msg_type, source=source, raw_message=message,
             message_id=str(message.id), media_urls=media_urls, media_types=media_types,
             media_text_inlined=media_text_inlined,
             reply_to_message_id=reply_to_id, reply_to_text=reply_to_text,
+            reply_to_author_id=reply_to_author_id,
+            reply_to_author_name=reply_to_author_name,
+            reply_to_channel_id=reply_to_channel_id,
+            reply_to_origin_channel_id=reply_to_origin_channel_id,
+            reply_to_attachments=reply_to_attachments_meta,
+            reply_to_is_own_message=(
+                reply_to_author_id is not None
+                and self._client.user is not None
+                and reply_to_author_id == str(self._client.user.id)
+            ),
             timestamp=message.created_at, auto_skill=_skills, channel_prompt=_channel_prompt,
             channel_context=_channel_context,
         )

@@ -70,6 +70,16 @@ class MessageEvent:
     reply_to_author_id: Optional[str] = None
     reply_to_author_name: Optional[str] = None
     reply_to_is_own_message: bool = False  # True when the user replied to this bot/assistant's message
+    # Channel the referenced message lives in (may differ from the inbound channel for cross-channel
+    # forwards); None when the adapter does not resolve the reference.
+    reply_to_channel_id: Optional[str] = None
+    # Origin channel when the referenced message was forwarded from another channel; None when not
+    # a forward or when the adapter does not expose origin metadata.
+    reply_to_origin_channel_id: Optional[str] = None
+    # Attachment metadata for the referenced message (re-hosted URLs when auth-gated).  Each entry
+    # is a dict with at least ``id``, ``filename``, ``content_type`` and ``url`` keys.  Adapters
+    # populate this; the inbound pipeline renders it as a context note, never as top-level media.
+    reply_to_attachments: List[Dict[str, Any]] = field(default_factory=list)
     # Structured interactive-prompt reply (relay only): {prompt_id, option_id, label?,
     # prompt_message_id?}; routed to the approval/slash-confirm/clarify resolvers BEFORE dispatch.
     prompt_response: Optional[Dict[str, Any]] = None

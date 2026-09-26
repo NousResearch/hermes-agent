@@ -1581,14 +1581,44 @@ class GatewayInboundMixin:
     @staticmethod
     def _prepend_inbound_reply_context(event: MessageEvent, source: SessionSource, message_text: str) -> str:
         """Prepend the reply-to pointer, then the Discord triggering-message note (outermost)."""
-        if getattr(event, "reply_to_text", None) and event.reply_to_message_id:
-            # Always inject the reply-to pointer even when the quoted text is already in history:
-            # it's disambiguation (*which* prior message), not deduplication.
-            # Adapters resolve the original message (or the user's native partial quote).
-            # A preview here silently loses later list items and code; keep that context intact.
-            reply_text = event.reply_to_text
-            _who = " your previous message" if getattr(event, "reply_to_is_own_message", False) else ""
-            message_text = f'[Replying to{_who}: "{reply_text}"]\n\n{message_text}'
+        reply_to_id = getattr(event, "reply_to_message_id", None)
+        reply_text = getattr(event, "reply_to_text", None)
+        if reply_to_id:
+            # Build the attribution fragment: author name and/or channel source.
+            _author_name = getattr(event, "reply_to_author_name", None)
+            _origin_channel = getattr(event, "reply_to_origin_channel_id", None)
+            _who = ""
+            if getattr(event, "reply_to_is_own_message", False):
+                _who = " your previous message"
+            elif _author_name:
+                _who = f" {_author_name}"
+            # Attach a note about the referenced message's attachments so the agent
+            # can decide to inspect them (vision, document analysis, etc.).
+            _att_meta = getattr(event, "reply_to_attachments", None) or []
+            _att_suffix = ""
+            if _att_meta:
+                _names = [a.get("filename", "file") for a in _att_meta[:5]]
+                _att_suffix = f" ({len(_att_meta)} attachment{'s' if len(_att_meta) != 1 else ''}: {', '.join(_names)})"
+                if len(_att_meta) > 5:
+                    _att_suffix = f" ({len(_att_meta)} attachments: {', '.join(_names)}, …)"
+
+            if reply_text:
+                message_text = f'[Replying to{_who}: "{reply_text}"{_att_suffix}]\n\n{message_text}'
+            else:
+                # Reference ID exists but content could not be resolved (deleted message,
+                # permissions, or cold cache).  Still inject the pointer so the agent knows
+                # *which* message was referenced even though the text is absent.
+                _note = f"[Reply to message {_who or ''}".strip()
+                if _origin_channel:
+                    _note += f" (forwarded from channel {_origin_channel}"
+                    if _att_suffix:
+                        _note += f"{_att_suffix}"
+                    _note += ")"
+                elif _att_suffix:
+                    _note += _att_suffix
+                else:
+                    _note += "]"
+                message_text = f"{_note}\n\n{message_text}"
 
         # Discord: the triggering message id goes on the per-turn user message, never the cached
         # system prompt — it changes every turn and would bust the agent-cache signature. It is

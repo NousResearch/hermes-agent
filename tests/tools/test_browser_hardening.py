@@ -54,6 +54,34 @@ class TestSessionInactivityTimeout:
         with patch("hermes_cli.config.read_raw_config", return_value=cfg):
             assert _get_session_inactivity_timeout() == 240
 
+class TestChromiumSandboxArgs:
+    """User launch flags must extend, never replace, the host-required sandbox bypass."""
+
+    @pytest.fixture(autouse=True)
+    def _bypass_needed(self, monkeypatch):
+        from tools import browser_tool_session as session
+        monkeypatch.setattr(session, "_needs_chromium_sandbox_bypass", lambda: True)
+        self.session = session
+
+    def test_appends_required_flags_to_user_args(self):
+        env = {"AGENT_BROWSER_ARGS": "--run-all-compositor-stages-before-draw"}
+        self.session._apply_chromium_sandbox_args(env)
+        assert env["AGENT_BROWSER_ARGS"] == (
+            "--run-all-compositor-stages-before-draw,--no-sandbox,--disable-dev-shm-usage"
+        )
+
+    def test_does_not_duplicate_a_user_supplied_sandbox_flag(self):
+        env = {"AGENT_BROWSER_ARGS": "--foo,--no-sandbox"}
+        self.session._apply_chromium_sandbox_args(env)
+        assert env["AGENT_BROWSER_ARGS"] == "--foo,--no-sandbox,--disable-dev-shm-usage"
+
+    def test_legacy_chrome_flags_count_as_present(self):
+        env = {"AGENT_BROWSER_CHROME_FLAGS": "--no-sandbox"}
+        self.session._apply_chromium_sandbox_args(env)
+        assert env["AGENT_BROWSER_CHROME_FLAGS"] == "--no-sandbox"
+        assert env["AGENT_BROWSER_ARGS"] == "--disable-dev-shm-usage"
+
+
 # ---------------------------------------------------------------------------
 # Caching: _discover_homebrew_node_dirs
 # ---------------------------------------------------------------------------

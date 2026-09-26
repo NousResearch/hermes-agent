@@ -430,15 +430,15 @@ class TaskStore:
         return task
 
 
-def _conv_path(context_id: str) -> Path:
+def _conv_path(context_id: str, home: Optional[Path] = None) -> Path:
     safe = "".join(c for c in (context_id or "default") if c.isalnum() or c in "-_") or "default"
-    return get_hermes_home() / "a2a_conversations" / f"{safe}.jsonl"
+    return (home or get_hermes_home()) / "a2a_conversations" / f"{safe}.jsonl"
 
 
-def persist_message(context_id: str, role: str, text: str, task_id: str = "") -> None:
+def persist_message(context_id: str, role: str, text: str, task_id: str = "", *, home: Optional[Path] = None) -> None:
     """Append one message to the context's on-disk conversation log. Never raises."""
     try:
-        path = _conv_path(context_id)
+        path = _conv_path(context_id, home)
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps({"ts": time.time(), "role": role, "text": text, "task_id": task_id}, ensure_ascii=False) + "\n")

@@ -276,6 +276,10 @@ class A2AAdapter(BasePlatformAdapter):
         configured_toolsets = list(extra.get("advertised_toolsets") or []) or _get_scoped_secret("A2A_ADVERTISED_TOOLSETS", "").split(",")
         self._advertised_toolsets = [t.strip() for t in configured_toolsets if str(t).strip()]
         self._active_profile = _active_profile_name()
+        # HTTP worker threads and completion callbacks do not inherit the profile's
+        # ContextVars. Bind durable writes to the adapter owner, not the launch home.
+        from hermes_constants import get_hermes_home
+        self._profile_home = get_hermes_home()
         # Captured here (construction runs inside _profile_runtime_scope), not read at request time:
         # do_GET/do_POST run on ThreadingHTTPServer's per-connection OS threads, which never inherit
         # the profile scope contextvar (same class as A2A_PORT above).
@@ -543,8 +547,8 @@ class A2AAdapter(BasePlatformAdapter):
         if not text:
             return self._end_task(rec, protocol.STATE_REJECTED, "Empty task — nothing to do.")
         framed = security.wrap_inbound(peer, text)
-        security.audit("inbound", peer, task_id, text)
-        protocol.persist_message(context_id, "user", text, task_id)
+        security.audit("inbound", peer, task_id, text, home=self._profile_home)
+        protocol.persist_message(context_id, "user", text, task_id, home=self._profile_home)
         protocol.metrics.inbound_total += 1
         self._register_inline_push(task_id, params, agent=agent)
         if not agent.get("local", True):
@@ -612,8 +616,8 @@ class A2AAdapter(BasePlatformAdapter):
     def _record_outcome(self, task_id: str, context_id: str, peer: str, state: str, reply: str,
                         started: Optional[float] = None) -> None:
         """Persist + audit + count a finished task, mark it terminal, and fire its push callback."""
-        protocol.persist_message(context_id, "agent", reply, task_id)
-        security.audit("outbound", peer, task_id, reply)
+        protocol.persist_message(context_id, "agent", reply, task_id, home=self._profile_home)
+        security.audit("outbound", peer, task_id, reply, home=self._profile_home)
         m = protocol.metrics
         if state in (protocol.STATE_COMPLETED, protocol.STATE_INPUT_REQUIRED):
             m.outbound_total, m.tasks_completed = m.outbound_total + 1, m.tasks_completed + 1

@@ -974,6 +974,181 @@ def _cmd_repair_routing(db, args):
     print(f"\nRepaired {repaired} of {len(adoptable)} session(s).")
 
 
+_SKILL_TOOL_NAMES = frozenset({"skills_list", "skill_view", "skill_manage"})
+_SKILLS_INDEX_MARKER = "<available_skills>"
+_SKILLS_GUIDANCE_MARKER = "## Skill Safety"
+_HYGIENE_PIN_TOOLS = frozenset({"memory"})
+
+
+def _repair_prompts_pin_names(row) -> list[str] | None:
+    """Resolve legacy name-list and current versioned tools[] pins to tool names.
+
+    Any malformed or unknown shape is unverifiable and therefore never eligible for automatic
+    repair. Current pins store full tool definitions in a versioned object; older rows may contain
+    a JSON list of names directly.
+    """
+    try:
+        pin = json.loads(row.get("tool_names") or "null")
+    except (TypeError, ValueError):
+        return None
+    tools = pin.get("tools") if isinstance(pin, dict) else pin
+    if not isinstance(tools, list):
+        return None
+    names: list[str] = []
+    for item in tools:
+        if isinstance(item, str):
+            name = item
+        elif isinstance(item, dict):
+            function = item.get("function")
+            name = function.get("name") if isinstance(function, dict) else None
+        else:
+            return None
+        if not isinstance(name, str) or not name:
+            return None
+        names.append(name)
+    return names
+
+
+def _repair_prompts_missing_skills_markers(row) -> bool:
+    prompt = (row.get("system_prompt") or "").strip()
+    return bool(
+        prompt
+        and _SKILLS_INDEX_MARKER not in prompt
+        and _SKILLS_GUIDANCE_MARKER not in prompt
+    )
+
+
+def _repair_prompts_degraded_reason(row) -> str:
+    """Why the stored prompt is provably a reduced-toolset build; '' without sufficient evidence."""
+    if not _repair_prompts_missing_skills_markers(row):
+        return ""
+    pin = _repair_prompts_pin_names(row)
+    if pin is None:
+        return ""
+    names = set(pin)
+    if any(name in names for name in _SKILL_TOOL_NAMES):
+        return "skills index missing while the tools[] pin carries skill tools"
+    if names == _HYGIENE_PIN_TOOLS:
+        return "skills index missing and the tools[] pin is the reduced memory-only set"
+    return ""
+
+
+def _cmd_repair_prompts(db, args):
+    """Report (or clear) stored system prompts degraded to a reduced-toolset build (#122822).
+
+    Automatic repair requires positive tools[] evidence. Rows with missing/malformed pins are
+    reported as unverifiable and never changed by a scan. An explicit session_id remains the
+    operator escape hatch and clears that row regardless of detector evidence.
+    """
+    target = getattr(args, "session_id", None)
+    if target:
+        session_id = db.resolve_session_id(target)
+        if not session_id:
+            print(f"No session matches {target!r}.")
+            return 1
+        rows = [db.get_session(session_id)]
+    else:
+        rows = []
+        offset = 0
+        while True:
+            batch = db.list_sessions_rich(
+                limit=200, offset=offset, include_children=True,
+                include_archived=True, include_hidden=True,
+            )
+            if not batch:
+                break
+            rows.extend(db.get_session(s["id"]) for s in batch)
+            offset += len(batch)
+
+    findings = []
+    unverifiable = []
+    for row in rows:
+        if not row:
+            continue
+        pin = _repair_prompts_pin_names(row)
+        if target:
+            prompt_chars = len(row.get("system_prompt") or "")
+            clear_pin = set(pin or ()) == _HYGIENE_PIN_TOOLS
+            if prompt_chars or clear_pin:
+                findings.append({
+                    "id": row["id"],
+                    "reason": "targeted clear",
+                    "prompt_chars": prompt_chars,
+                    "clear_pin": clear_pin,
+                })
+            continue
+
+        reason = _repair_prompts_degraded_reason(row)
+        if reason:
+            findings.append({
+                "id": row["id"],
+                "reason": reason,
+                "prompt_chars": len(row["system_prompt"] or ""),
+                "clear_pin": set(pin or ()) == _HYGIENE_PIN_TOOLS,
+            })
+        elif _repair_prompts_missing_skills_markers(row) and pin is None:
+            unverifiable.append({
+                "id": row["id"],
+                "reason": "skills markers missing but the tools[] pin is unavailable or unreadable",
+                "prompt_chars": len(row["system_prompt"] or ""),
+            })
+
+    apply = bool(getattr(args, "apply", False))
+    as_json = bool(getattr(args, "json", False))
+
+    def _payload(cleared):
+        return {
+            "findings": findings,
+            "unverifiable": unverifiable,
+            "apply": apply,
+            "cleared": cleared,
+        }
+
+    if not findings:
+        if as_json:
+            print(json.dumps(_payload([]), indent=2))
+        else:
+            print("No degraded stored system prompts found.")
+            if unverifiable:
+                print(f"{len(unverifiable)} row(s) lacked enough tools[] evidence and were left unchanged.")
+        return 0
+
+    if not as_json:
+        for finding in findings:
+            suffix = " (tools[] pin cleared too)" if finding["clear_pin"] else ""
+            print(f"  {finding['id']}  ({finding['prompt_chars']} chars) - {finding['reason']}{suffix}")
+        if unverifiable:
+            print(f"\nSkipped {len(unverifiable)} unverifiable row(s) with no readable tools[] pin.")
+
+    if not apply:
+        if as_json:
+            print(json.dumps(_payload([]), indent=2))
+        else:
+            print(f"\n{len(findings)} stored prompt(s) can be repaired. Re-run with --apply to clear them; "
+                  "the next turn rebuilds a healthy prompt (one prefix-cache break per session).")
+        return 0
+
+    # JSON mode is the non-interactive automation surface; --apply is the explicit mutation opt-in.
+    if not as_json and not _confirm_prompt(f"Clear {len(findings)} stored prompt(s)? [y/N] "):
+        print("Aborted - nothing was changed.")
+        return 0
+
+    cleared = []
+    for finding in findings:
+        db.update_system_prompt(finding["id"], None)
+        if finding["clear_pin"]:
+            db.update_session_tool_names(finding["id"], None)
+        cleared.append(finding["id"])
+
+    if as_json:
+        print(json.dumps(_payload(cleared), indent=2))
+    else:
+        print(f"\nCleared {len(cleared)} stored prompt(s); the next turn for each rebuilds and persists "
+              "a healthy prompt.")
+        print("One 'Stored system prompt ... is null' warning per repaired session is expected on that rebuild.")
+    return 0
+
+
 def _cmd_stats(db, args):
     print(f"Total sessions: {db.session_count()}\nTotal messages: {db.message_count()}")
     for src in ("cli", "telegram", "discord", "whatsapp", "slack"):
@@ -1007,7 +1182,7 @@ _DB_HANDLERS = {
     "archive": partial(_cmd_prune_or_archive, action="archive"), "unpin": partial(_cmd_pin, pinning=False),
     "retitle-skills": _cmd_retitle_skills, "browse": _cmd_browse, "optimize": _cmd_optimize,
     "clean-markers": _cmd_clean_markers, "optimize-storage": _cmd_optimize_storage,
-    "repair-routing": _cmd_repair_routing, "stats": _cmd_stats,
+    "repair-routing": _cmd_repair_routing, "repair-prompts": _cmd_repair_prompts, "stats": _cmd_stats,
 }
 
 

@@ -658,6 +658,47 @@ conversation stays readable via `/resume` and session search either way —
 routing is the only thing the repair changes. Back up first
 (`cp ~/.hermes/state.db ~/.hermes/state.db.bak`).
 
+### Repair Degraded Stored Prompts
+
+Older builds affected by #122822 could let gateway hygiene or gateway `/compress`
+persist a detached maintenance agent's reduced-toolset system prompt over the
+live session. After the root fix in PR #122825 is installed, use
+`hermes sessions repair-prompts` to find rows that were already degraded.
+
+The scan is conservative: it only proposes a repair when the stored prompt is
+missing the skills markers **and** the persisted `tools[]` pin proves either
+that skill tools belonged to the session or that the pin is exactly the
+maintenance `memory`-only surface. Older or malformed rows with no readable
+pin are reported as **unverifiable** and are never changed automatically.
+
+```bash
+# Report verified candidates and unverifiable rows; writes nothing
+hermes sessions repair-prompts
+
+# Clear verified degraded prompts after confirmation
+hermes sessions repair-prompts --apply
+
+# Machine-readable report
+hermes sessions repair-prompts --json
+
+# Non-interactive automation: apply and report the ids actually cleared
+hermes sessions repair-prompts --apply --json
+
+# Explicit operator override for one session (id or unique prefix)
+hermes sessions repair-prompts SESSION_ID --apply
+```
+
+A verified memory-only `tools[]` pin is cleared together with the prompt so
+the next live turn can pin the real surface again. Clearing the prompt
+intentionally stores NULL; the next turn rebuilds and persists healthy bytes,
+which causes one expected
+`Stored system prompt ... is null; rebuilding from scratch` warning for each
+repaired session. That warning is the consequence of this explicit repair, not
+evidence of a new corruption.
+
+Run the repair only after the #122822 root fix is present; otherwise a later
+maintenance compaction can degrade the row again.
+
 ### Repair State Crossed Between Profiles
 
 Every profile owns one `state.db`, and every gateway session key names the

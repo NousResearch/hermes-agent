@@ -2138,7 +2138,7 @@ def _scrub_export_secrets(staged: Path) -> None:
     """Force-redact secret-shaped strings in a staged export tree (same pass as ``hermes
     sessions export --redact``). Runs on the staged copy only; symlinks to text files are
     materialized when content changes so redaction never follows a link back into the source."""
-    from agent.redact import redact_sensitive_text
+    from hermes_cli.profile_export_redact import redact_export_text
     for path in staged.rglob("*"):
         try:
             is_link = path.is_symlink()
@@ -2152,7 +2152,7 @@ def _scrub_export_secrets(staged: Path) -> None:
             text = path.read_text(encoding="utf-8-sig")
         except (UnicodeDecodeError, OSError):
             continue
-        redacted = redact_sensitive_text(text, force=True)
+        redacted = redact_export_text(path, text)
         if redacted == text:
             continue
         if is_link:

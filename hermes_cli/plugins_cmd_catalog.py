@@ -357,12 +357,20 @@ def _carry_user_files(old: Path, new: Path, local: Optional[list[str]]) -> None:
     such as ``data/``; descendants of those entries are copied and win over same-path files in
     the new tree. ``None`` means there is no git checkout, so user-state files absent from the new
     tree are carried while executable/declarative plugin surfaces remain revision-owned. If a
-    user-owned path cannot be represented safely in the new tree, fail before publication rather
-    than silently dropping it.
+    user-owned path cannot be represented safely in the new tree (a layout clash, or a symlink in a
+    git checkout's untracked/ignored set), fail before publication rather than silently dropping it.
     """
     from hermes_cli.plugins_cmd import PluginOperationError
 
     keep = {Path(rel) for rel in local or ()}
+    linked: list[str] = []
+
+    def _user_link(rel: Path) -> None:
+        # Git-owned user state that is a symlink is refused, never followed: a link injected after the
+        # installer's scan could point outside the plugin root past the guard (which skips links).
+        # Links under node_modules/ are reproducible install artefacts (.bin shims), not user state.
+        if local is not None and not keep.isdisjoint((rel, *rel.parents)) and "node_modules" not in rel.parts:
+            linked.append(rel.as_posix())
 
     def _walk_error(exc: OSError) -> None:
         raise PluginOperationError(f"Could not preserve user files from '{old}': {exc}") from exc
@@ -374,15 +382,16 @@ def _carry_user_files(old: Path, new: Path, local: Optional[list[str]]) -> None:
 
     for dirpath, dirnames, filenames in os.walk(old, onerror=_walk_error):
         here = Path(dirpath)
-        dirnames[:] = [
-            name
-            for name in dirnames
-            if not _skip_preserve(name)
+        walk = []
+        for name in dirnames:
             # Without git, top-level revision-owned dirs are never carried: do not even walk them.
-            and not (local is None and here == old and name in _NO_GIT_REVISION_DIRS)
-            and not (here / name).is_symlink()
-            and not is_junction(here / name)
-        ]
+            if _skip_preserve(name) or (local is None and here == old and name in _NO_GIT_REVISION_DIRS):
+                continue
+            if (here / name).is_symlink() or is_junction(here / name):
+                _user_link((here / name).relative_to(old))
+                continue
+            walk.append(name)
+        dirnames[:] = walk
         for name in filenames:
             # Skipped directories are pruned above, so only the file name itself needs checking.
             if _skip_preserve(name):
@@ -400,9 +409,11 @@ def _carry_user_files(old: Path, new: Path, local: Optional[list[str]]) -> None:
                 src_mode = src.lstat().st_mode
             except OSError as exc:
                 raise PluginOperationError(f"Could not preserve user file '{rel}': {exc}") from exc
-            # Only regular files are durable state. FIFOs, sockets and devices are runtime objects,
-            # and a symlink injected after the installer's first scan could point outside the plugin
-            # root past the guard (which skips links), so neither branch carries them.
+            # Only regular files are durable state. FIFOs, sockets and devices are runtime objects.
+            # Symlinks are never carried; in a git checkout a user-owned one fails the update below.
+            if stat.S_ISLNK(src_mode):
+                _user_link(rel)
+                continue
             if not stat.S_ISREG(src_mode):
                 continue
 
@@ -441,6 +452,12 @@ def _carry_user_files(old: Path, new: Path, local: Optional[list[str]]) -> None:
             if dst.is_symlink() or dst.is_file():
                 dst.unlink()
             shutil.copy2(src, dst, follow_symlinks=False)
+    if linked:
+        raise PluginOperationError(
+            f"Cannot preserve symlinked user file(s) {', '.join(sorted(linked))}: links are not followed "
+            "into an update. Replace each with a regular file (or remove it) and retry. "
+            "The installed plugin was left unchanged."
+        )
 
 
 class RepinResult(NamedTuple):

@@ -279,6 +279,20 @@ def test_repin_keeps_a_wholly_ignored_data_dir_in_a_git_checkout(world):
     assert _head(target) == world["state"]["pin"]
     assert (target / "data" / "db" / "index.db").read_text() == "user data"
 
+    # A symlink in the ignored set is never followed into the update: it fails closed, naming the path,
+    # and the live plugin stays at its current revision with its user data.
+    published = world["state"]["pin"]
+    outside = repo.parent / "outside.yaml"
+    outside.write_text("secret")
+    (target / "data" / "link.yaml").symlink_to(outside)
+    (repo / "__init__.py").write_text("def register(ctx):\n    pass  # v4\n")
+    world["state"]["pin"] = _commit(repo, "v4")
+    result = pc.dashboard_update_user_plugin("cat-plugin")
+    assert result["ok"] is False and "data/link.yaml" in result["error"]
+    assert _head(target) == published
+    assert (target / "data" / "link.yaml").is_symlink()
+    assert (target / "data" / "db" / "index.db").read_text() == "user data"
+
 
 def test_kill_list_covers_update_enable_and_load_of_an_installed_plugin(world, tmp_path, monkeypatch):
     """A URL install whose name lands on the kill list AFTER install must stop pulling, cannot be enabled

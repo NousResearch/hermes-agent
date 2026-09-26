@@ -196,6 +196,8 @@ catalog moved (via a reviewed PR), prepares and dependency-validates the new SHA
 before publishing it. Your
 enabled/disabled state is preserved, and so are files the plugin's repo does
 not track (the `config.yaml` created from its `.example`, data files, `.env`).
+Symlinks among those untracked files are never followed into the new code: the
+update stops before publishing and names them, so replace each with a regular file.
 For monorepo/subdirectory installs, which do not carry a local Git checkout,
 update preserves user-state files the new revision does not ship. Plugin code and
 control surfaces remain revision-owned and are not resurrected from the old install:

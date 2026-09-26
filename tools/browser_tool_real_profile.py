@@ -45,6 +45,9 @@ def _real_profile_daemon_env() -> dict:
     _bt = _origin()
     socket_dir = _session._prepare_session_socket_dir(_bt._REAL_PROFILE_SESSION)
     env = _session._agent_browser_command_env(socket_dir)
+    # Chrome launch policy (root/Docker/AppArmor-userns -> --no-sandbox) applies to this lane too:
+    # without it the real-profile launch dies with agent-browser's sandbox hint on those hosts.
+    _session._apply_chromium_sandbox_args(env)
     env.pop("AGENT_BROWSER_IDLE_TIMEOUT_MS", None)
     return env
 
@@ -121,6 +124,48 @@ _REAL_PROFILE_CHROME_FLAGS = (
     "--disable-sync", "--disable-features=Translate", "--no-startup-window",
 )
 
+_CHROME_UA_CACHE: dict = {}
+
+
+def _password_store_flags() -> tuple:
+    """``--password-store=basic`` where Chrome's OS-keyring path would hang the launch (Linux).
+
+    Chrome on Linux defaults to ``--password-store=detect``: when a Secret Service
+    (gnome-keyring) answers on the session bus, OSCrypt routes through it. On a headless host
+    with a locked/unreachable keyring that call never returns, so the profile never finishes
+    loading and ``Page.navigate`` times out on EVERY url — bisected on this box: the lane's argv
+    loads example.com with this flag and hangs without it, keyring present or not.
+    agent-browser's own launch already forces the same store, so this lane was the only one that
+    didn't. Linux-only: macOS keeps the OS keychain path this lane exists to preserve.
+    """
+    return ("--password-store=basic",) if sys.platform.startswith("linux") else ()
+
+
+def _headless_ua_override(real_binary: str) -> Optional[str]:
+    """UA a headed run of ``real_binary`` would send, or None when its version can't be read.
+
+    ``--headless=new`` advertises ``HeadlessChrome/<ver>``. Cloudflare's managed challenge never
+    clears for that string (verified on this box: the same binary + profile renders
+    dash.cloudflare.com/login with the plain UA and loops on the challenge page with the
+    headless one), and the lane's whole point is to browse as the user's real browser — so a
+    forced-headless launch stops advertising itself as headless.
+    """
+    version = _CHROME_UA_CACHE.get(real_binary)
+    if version is None:
+        try:
+            proc = subprocess.run([real_binary, "--version"], capture_output=True, text=True,
+                                  encoding="utf-8", errors="replace", timeout=10, env=os.environ,
+                                  stdin=subprocess.DEVNULL)
+            m = re.search(r"(\d+)\.\d+\.\d+\.\d+", proc.stdout or "")
+            version = m.group(1) if m else ""
+        except (subprocess.SubprocessError, OSError):
+            version = ""
+        _CHROME_UA_CACHE[real_binary] = version
+    if not version:
+        return None
+    return ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
+            f"Chrome/{version}.0.0.0 Safari/537.36")
+
 
 def _real_profile_unsupported_reason(browser) -> Optional[str]:
     """Fail-closed message when the default browser can't be used, else None.
@@ -164,12 +209,15 @@ def _launch_real_profile_chrome(real_binary: str, copy_dir: str) -> Tuple[Option
         os.unlink(os.path.join(copy_dir, "DevToolsActivePort"))  # stale port confuses reuse probes
     except OSError:
         pass
-    chrome_argv = [real_binary, f"--user-data-dir={copy_dir}", *_REAL_PROFILE_CHROME_FLAGS]
+    chrome_argv = [real_binary, f"--user-data-dir={copy_dir}", *_REAL_PROFILE_CHROME_FLAGS,
+                   *_password_store_flags()]
     _session._ensure_screen_for_headed_chromium()
     browser_env = _bt._build_browser_env()  # carries the Bot Desktop DISPLAY when one is running
     _has_display = bool(browser_env.get("DISPLAY") or browser_env.get("WAYLAND_DISPLAY"))
     if not (_cloud._is_headed_mode() and (_has_display or not sys.platform.startswith("linux"))):
         chrome_argv.append("--headless=new")
+        if (ua := _headless_ua_override(real_binary)):
+            chrome_argv.append(f"--user-agent={ua}")
     try:
         chrome_proc = subprocess.Popen(chrome_argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                        stdin=subprocess.DEVNULL, start_new_session=True, env=browser_env)

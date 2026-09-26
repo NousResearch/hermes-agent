@@ -76,6 +76,7 @@ import {
 } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import {
+  $activeGatewayProfile,
   $newChatProfile,
   $profileColors,
   $profiles,
@@ -129,6 +130,7 @@ import {
 import { $sessionDotStateById, sessionStatusBucket } from '@/store/session-dot-state'
 import { $unconfirmedPinWrites } from '@/store/session-pin-sync'
 import { $removedSessionIds } from '@/store/session-removal'
+import { loadSessionSections } from '@/store/session-sections'
 import { $focusedSessionIsTile, $focusedStoredSessionId, $workingSessionIds } from '@/store/session-states'
 import { ackAllSessionsRead } from '@/store/session-unread'
 import { markSessionUnread } from '@/store/session-unread-remote'
@@ -185,6 +187,7 @@ import {
   SidebarSessionSkeletons,
   SidebarStorageCorruptNotice
 } from './section-states'
+import { SessionFolderDialog } from './session-folders'
 import { buildSessionByAnyId, resolvePinnedSessions } from './session-index'
 import { SidebarSessionsSection, VIRTUALIZE_THRESHOLD } from './sessions-section'
 import { CONTEXT_SPLIT_KIT, SplitSubmenu } from './split-submenu'
@@ -578,6 +581,15 @@ export function ChatSidebar({
 
   const activeSidebarSessionId = currentView === 'chat' ? selectedSessionId : null
   const profileRailVisible = useStore($profileRailVisible)
+  const sectionsProfile = useStore($activeGatewayProfile)
+
+  // User-made folders are profile-scoped — their session ids only mean anything
+  // to the profile that served them — so read them back when the sidebar mounts
+  // and after a profile switch, the beat store/session-sections documents for
+  // loadSessionSections.
+  useEffect(() => {
+    loadSessionSections()
+  }, [sectionsProfile])
 
   const dndSensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
@@ -1829,6 +1841,12 @@ export function ChatSidebar({
                     </div>
                   )
                 }
+                // User-made folders file rows in the FLAT Sessions list — the
+                // mode the user is in. Grouped/project/archived surfaces answer
+                // "where is this session" with their own structure, and the
+                // all-profiles view fans in rows from profiles the folder map
+                // (which is per profile) cannot speak for.
+                folders={sessionsMode === 'flat' && !showAllProfiles}
                 footer={
                   // Hidden only when workspace-grouped — those groups page
                   // themselves. Profile groups don't: this one footer fetches the
@@ -2068,6 +2086,9 @@ export function ChatSidebar({
         )}
       </SidebarContent>
       <ProjectDialog />
+      {/* One mount for the whole app: the Sessions header's "New folder" "+" and
+          a folder's ⋯ Rename open the same dialog. */}
+      <SessionFolderDialog />
       {/* One mount for the whole app. The header of WorktreeDialog tells why. */}
       <WorktreeDialog />
     </Sidebar>

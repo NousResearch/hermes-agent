@@ -929,5 +929,51 @@ describe('ToolsetConfigPanel', () => {
       // Badge tracks the local write without a refetch.
       await waitFor(() => expect(screen.getByText('Search: firecrawl')).toBeTruthy())
     })
+
+    it('refetches instead of mirroring when a managed pick promotes the shared selection', async () => {
+      const nous = {
+        name: 'Nous Subscription',
+        badge: 'managed',
+        tag: 'Included with Nous subscription',
+        env_vars: [],
+        post_setup: null,
+        requires_nous_auth: false,
+        is_active: false,
+        status: 'ready',
+        web_backend: 'firecrawl',
+        capabilities: ['search', 'extract']
+      }
+
+      // Second load: the server wrote web.backend: nous and cleared the pin —
+      // search now resolves through the managed route (Perplexity Fast).
+      getToolsetConfig
+        .mockResolvedValueOnce(webConfig({ providers: [...webConfig().providers, nous] }))
+        .mockResolvedValue(
+          webConfig({
+            active_provider: 'Nous Subscription',
+            active_search_backend: 'perplexity',
+            providers: [...webConfig().providers, { ...nous, is_active: true }]
+          })
+        )
+      selectToolsetProvider.mockResolvedValue({
+        ok: true,
+        name: 'web',
+        provider: 'Nous Subscription',
+        capability: 'search',
+        managed: true
+      })
+
+      render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="web" />)
+
+      await screen.findByText('Search: searxng')
+      fireEvent.click(screen.getByRole('button', { name: /Nous Subscription/ }))
+      fireEvent.click(await screen.findByRole('button', { name: 'Use for Search' }))
+
+      await waitFor(() => expect(selectToolsetProvider).toHaveBeenCalledWith('web', 'Nous Subscription', 'search'))
+      // The optimistic mirror would paint the row's web_backend ('firecrawl'),
+      // which is exactly the lie this pick exists to avoid — the panel must
+      // take the server's truth instead.
+      await waitFor(() => expect(screen.getByText('Search: perplexity')).toBeTruthy())
+    })
   })
 })

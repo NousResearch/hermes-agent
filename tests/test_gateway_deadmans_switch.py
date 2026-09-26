@@ -282,10 +282,17 @@ def test_switch_notify_failure_never_raises(tmp_path, monkeypatch):
 
 
 def test_main_wires_deadman_into_gateway_run_block():
-    """The startup-liveness block must arm the deadman for gateway runs."""
-    import hermes_cli.main as m
+    """The startup-liveness block must arm the deadman for gateway runs.
 
-    src = Path(m.__file__).read_text(encoding="utf-8")
+    Reads ``main.py`` from disk instead of importing it: the module's import
+    runs ``hermes_bootstrap``/``_startup_fast`` (real-filesystem probes) and
+    the repo layout in a default install puts the checkout inside the Hermes
+    home, which the HomeIOGuard test fixture rightly refuses (LAG-677). The
+    wiring is static source text — a read is the honest check.
+    """
+    src = (Path(__file__).resolve().parents[1] / "hermes_cli" / "main.py").read_text(
+        encoding="utf-8"
+    )
     assert "_argv_is_gateway_run(sys.argv[1:])" in src
     assert "hermes_gateway_deadmans_switch" in src
     assert "run_gateway_deadmans_switch" in src

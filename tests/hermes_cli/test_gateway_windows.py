@@ -419,6 +419,90 @@ def test_uninstall_and_reinstall_sweep_stale_startup_staging_file(monkeypatch, t
     assert not staging.exists()
 
 
+def _startup_with_fallback_and_legacy_entries(monkeypatch, tmp_path):
+    """A Startup folder holding both the .vbs fallback and the pre-#45610 .cmd launcher."""
+    startup = tmp_path / "Startup"
+    startup.mkdir(parents=True)
+    script = tmp_path / "gateway-service" / "Hermes_Gateway_alice.cmd"
+    vbs, cmd = startup / "Hermes_Gateway_alice.vbs", startup / "Hermes_Gateway_alice.cmd"
+    vbs.write_text(gateway_windows._build_startup_launcher(script), encoding="utf-8")
+    cmd.write_text("@echo off", encoding="utf-8")
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Hermes_Gateway_alice")
+    monkeypatch.setattr(gateway_windows, "get_startup_entry_path", lambda: vbs)
+    monkeypatch.setattr(gateway_windows, "_legacy_startup_entry_path", lambda: cmd)
+    monkeypatch.setattr(gateway_windows, "_write_task_script", lambda: script)
+    return startup, script
+
+
+def test_scheduled_task_install_removes_startup_entries_that_would_double_launch(monkeypatch, tmp_path, capsys):
+    """#80569: a Scheduled Task install beside an earlier Startup fallback (or legacy .cmd) left both
+    firing at logon. Installing the task converges to the task alone."""
+    startup, _script = _startup_with_fallback_and_legacy_entries(monkeypatch, tmp_path)
+    monkeypatch.setattr(gateway_windows, "_prompt_install_choices", lambda *a, **k: (False, True))
+    monkeypatch.setattr(gateway_windows, "_is_running_as_admin", lambda: True)
+    monkeypatch.setattr(gateway_windows, "_install_scheduled_task", lambda name, path: (True, "created"))
+    monkeypatch.setattr(gateway_windows, "_print_next_steps", lambda: None)
+
+    gateway_windows.install()
+
+    assert sorted(p.name for p in startup.iterdir()) == []
+    assert "Removed redundant Windows login item" in capsys.readouterr().out
+
+
+def test_reconcile_leaves_one_autostart_mechanism(monkeypatch, tmp_path):
+    """#80569: what `hermes update` and `hermes doctor --fix` run. Beside a registered task every
+    Startup entry is redundant; with no task a legacy .cmd next to the .vbs is. After reconcile
+    nothing is redundant and exactly one mechanism remains."""
+    startup, _script = _startup_with_fallback_and_legacy_entries(monkeypatch, tmp_path)
+    registered = {"task": True}
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: registered["task"])
+
+    assert len(gateway_windows.redundant_autostart_entries()) == 2
+    done, warnings = gateway_windows.reconcile_autostart_launchers()
+    assert (len(done), warnings) == (2, [])
+    assert gateway_windows.redundant_autostart_entries() == []
+    assert list(startup.iterdir()) == []
+
+    # No task: the .vbs fallback is the mechanism, a leftover legacy .cmd beside it is the duplicate.
+    registered["task"] = False
+    _startup_with_fallback_and_legacy_entries(monkeypatch, tmp_path / "no-task")
+    assert [p.suffix for p in gateway_windows.redundant_autostart_entries()] == [".cmd"]
+    gateway_windows.reconcile_autostart_launchers()
+    assert gateway_windows.redundant_autostart_entries() == []
+    assert [p.name for p in (tmp_path / "no-task" / "Startup").iterdir()] == ["Hermes_Gateway_alice.vbs"]
+
+
+def test_reconcile_warns_when_legacy_entry_cannot_be_removed(monkeypatch, tmp_path):
+    """#80569: no task, legacy .cmd locked. The .vbs gets written but the .cmd survives, so both fire
+    at logon; reconcile must warn instead of reporting a migration, and doctor --fix must not count it."""
+    import sys
+    from hermes_cli import doctor_platform
+    from hermes_cli.doctor_report import Finding
+
+    startup, _script = _startup_with_fallback_and_legacy_entries(monkeypatch, tmp_path)
+    (startup / "Hermes_Gateway_alice.vbs").unlink()   # legacy-only install
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: False)
+    real_unlink = Path.unlink
+
+    def locked_unlink(self, *args, **kwargs):
+        if self.suffix == ".cmd":
+            raise PermissionError(13, "Access is denied", str(self))
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", locked_unlink)
+
+    done, warnings = gateway_windows.reconcile_autostart_launchers()
+    assert done == [] and len(warnings) == 1 and "Hermes_Gateway_alice.cmd" in warnings[0]
+    assert sorted(p.name for p in startup.iterdir()) == ["Hermes_Gateway_alice.cmd", "Hermes_Gateway_alice.vbs"]
+    assert [p.suffix for p in gateway_windows.redundant_autostart_entries()] == [".cmd"]
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    f = Finding()
+    doctor_platform._check_windows_gateway_autostart(True, f)
+    assert f.fixed == 0 and len(f.manual_issues) == 1
+
+
 def test_status_names_and_uninstall_removes_pre_suffix_launchers(monkeypatch, tmp_path, capsys):
     """#116157: a Scheduled Task ``Hermes_Gateway`` and a Startup ``Hermes_Gateway.vbs`` left from before
     per-profile suffixes are invisible to every ``get_task_name()``-keyed operation. ``status`` must name

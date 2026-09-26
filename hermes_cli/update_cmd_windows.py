@@ -1088,6 +1088,12 @@ def _refresh_windows_gateway_launchers() -> None:
         if gateway_windows.is_installed():
             gateway_windows._write_task_script()
             print("  ✓ Refreshed Windows gateway launcher scripts")
+            # Installs from before #80569 can carry a Startup entry beside the task: both fire at logon.
+            done, warnings = gateway_windows.reconcile_autostart_launchers()
+            for message in done:
+                print(f"  ✓ {message}")
+            for message in warnings:
+                print(f"  ⚠ {message}")
             if gateway_windows.is_task_registered():
                 # A task registered by an older build never picks up template hardening otherwise (#113670).
                 gateway_windows.reconcile_scheduled_task(gateway_windows.get_task_name())

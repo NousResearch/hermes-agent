@@ -1822,6 +1822,25 @@ export default function SessionsPage() {
               ? actionStatus.lines.join("\n")
               : t.status.waitingForOutput}
           </pre>
+          {actionStatus?.receipt && activeAction === "update" && (
+            <div className="border-t border-border px-3 py-2 text-xs text-muted-foreground space-y-1">
+              <div className="font-medium capitalize">{actionStatus.receipt.outcome}</div>
+              {actionStatus.receipt.post_version && (
+                <div>Version: {actionStatus.receipt.post_version}</div>
+              )}
+              {(actionStatus.receipt.pre_sha || actionStatus.receipt.post_sha) && (
+                <div className="font-mono-ui">
+                  {actionStatus.receipt.pre_sha ?? "?"} → {actionStatus.receipt.post_sha ?? "?"}
+                </div>
+              )}
+              {actionStatus.receipt.fleet_states && actionStatus.receipt.fleet_states.length > 0 && (
+                <div>Fleet: {actionStatus.receipt.fleet_states.join(", ")}</div>
+              )}
+              {actionStatus.receipt.outcome === "failed" && (
+                <div className="text-destructive">See the update log above for the failure reason.</div>
+              )}
+            </div>
+          )}
         </div>
       )}
 

@@ -1492,6 +1492,16 @@ class CLITuiMixin:
             return
         buf = event.app.current_buffer
         raw_text = buf.text
+        # Win32's console input can expose an emoji as two UTF-16 surrogate code units. Repair
+        # valid pairs (and replace malformed loners) before prompt_toolkit's FileHistory encodes
+        # the buffer as UTF-8 in ``reset(append_to_history=True)``.
+        from agent.message_sanitization import _sanitize_surrogates, _surrogate_cursor_position
+        safe_text = _sanitize_surrogates(raw_text)
+        if safe_text != raw_text:
+            old_cursor = buf.cursor_position
+            buf.text = safe_text
+            buf.cursor_position = _surrogate_cursor_position(raw_text, old_cursor)
+            raw_text = safe_text
         # Explicit `\` + Enter continuation runs first so its backslash is consumed identically
         # whether the Enter was typed or arrived inside a paste.
         if (
@@ -1838,7 +1848,20 @@ class CLITuiMixin:
         tick), or the newline count jumped by 4+ (terminals that feed characters individually
         but batch newlines; Alt+Enter adds 1 newline per event so never trips it).
         """
+        if getattr(self, "_tui_surrogate_repair_active", False):
+            return
         self._tui_last_text_change = time.monotonic()
+        from agent.message_sanitization import _combine_surrogate_pairs, _surrogate_cursor_position
+        raw_text = buf.text
+        paired_text = _combine_surrogate_pairs(raw_text)
+        if paired_text != raw_text:
+            old_cursor = buf.cursor_position
+            self._tui_surrogate_repair_active = True
+            try:
+                buf.text = paired_text
+                buf.cursor_position = _surrogate_cursor_position(raw_text, old_cursor)
+            finally:
+                self._tui_surrogate_repair_active = False
         from cli import _strip_leaked_bracketed_paste_wrappers, _strip_leaked_terminal_responses_with_meta
         text = _strip_leaked_bracketed_paste_wrappers(buf.text)
         text, _had_mouse_reports = _strip_leaked_terminal_responses_with_meta(text)

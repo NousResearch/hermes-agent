@@ -1,0 +1,14 @@
+name: monid
+repo: https://github.com/monid-ai/hermes-plugin
+sha: 072dc57abfdbebaf7defea58aeb47ba7e5ca94e5
+description: OpenRouter for agent tools — the agent discovers and runs external data endpoints (web scraping, people/company enrichment, social media, search, media generation) through the monid CLI.
+maintainer: monid-ai
+tier: community
+category: tools
+docs_url: https://github.com/monid-ai/hermes-plugin#readme
+version: "0.1.0"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

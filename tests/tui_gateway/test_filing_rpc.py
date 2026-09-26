@@ -70,6 +70,16 @@ def test_status_unavailable_library_errors_on_reads(no_contract_lib):
     assert resp["error"]["code"] == 5071
 
 
+def test_suggest_returns_typed_error_when_db_unavailable(
+        real_contract_lib, monkeypatch):
+    # _get_db() -> None (state.db unavailable) must answer the typed filing
+    # error, not raise AttributeError inside the suggestion pass.
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    resp = _call("filing.suggest")
+    assert resp["error"]["code"] == 5071
+    assert "Session storage is unavailable" in resp["error"]["message"]
+
+
 def test_status_counts_and_hook_presence(real_contract_lib, tmp_path, monkeypatch):
     lib = real_contract_lib
     data = lib.empty_contract()

@@ -40,6 +40,7 @@ def _contract_or_err(rid):
 
 
 @_registry.method("filing.status")
+@_registry.profile_scoped
 def _(rid, params: dict) -> dict:
     from tui_gateway import filing_bridge
     available = _filing_available()
@@ -55,6 +56,7 @@ def _(rid, params: dict) -> dict:
 
 
 @_registry.method("filing.rules")
+@_registry.profile_scoped
 def _(rid, params: dict) -> dict:
     contract, err = _contract_or_err(rid)
     if err:
@@ -77,6 +79,7 @@ def _suggestion_input(db):
 
 
 @_registry.method("filing.suggest")
+@_registry.profile_scoped
 def _(rid, params: dict) -> dict:
     from tui_gateway import filing_bridge
     contract, err = _contract_or_err(rid)
@@ -88,26 +91,30 @@ def _(rid, params: dict) -> dict:
     except Exception:
         return _err(rid, _E_FILING, "projects database unavailable")
     suggestions = []
-    with pdb.connect_closing() as conn:
-        for row in _suggestion_input(_get_db()):
-            cwd = row["cwd"]
-            if pfc.is_excluded(cwd, data=contract):
-                continue
-            current = pdb.project_for_path(conn, cwd)
-            rule = pfc.rule_for_path(cwd, data=contract)
-            if rule:
-                proj = _project_by_name(pdb, conn, rule["project"])
-                # A rule that agrees with the cwd-derived filing is not a
-                # suggestion — the session is already filed deterministically.
-                if proj is not None and (current is None or proj.id != current.id):
-                    suggestions.append(_suggestion(row, proj, "contract_rule", 1.0))
-                continue
-            if current is not None:
-                suggestions.append(_suggestion(row, current, "cwd_match", 0.95))
+    with _profile_db(params) as db:
+        if db is None:
+            return _db_unavailable_error(rid, code=_E_FILING)
+        with pdb.connect_closing() as conn:
+            for row in _suggestion_input(db):
+                cwd = row["cwd"]
+                if pfc.is_excluded(cwd, data=contract):
+                    continue
+                current = pdb.project_for_path(conn, cwd)
+                rule = pfc.rule_for_path(cwd, data=contract)
+                if rule:
+                    proj = _project_by_name(pdb, conn, rule["project"])
+                    # A rule that agrees with the cwd-derived filing is not a
+                    # suggestion — the session is already filed deterministically.
+                    if proj is not None and (current is None or proj.id != current.id):
+                        suggestions.append(_suggestion(row, proj, "contract_rule", 1.0))
+                    continue
+                if current is not None:
+                    suggestions.append(_suggestion(row, current, "cwd_match", 0.95))
     return _ok(rid, {"suggestions": suggestions})
 
 
 @_registry.method("filing.apply")
+@_registry.profile_scoped
 def _(rid, params: dict) -> dict:
     from tui_gateway import filing_bridge
     pfc = filing_bridge.load_contract_lib()
@@ -127,6 +134,7 @@ def _(rid, params: dict) -> dict:
 
 
 @_registry.method("filing.reject")
+@_registry.profile_scoped
 def _(rid, params: dict) -> dict:
     from tui_gateway import filing_bridge
     pfc = filing_bridge.load_contract_lib()

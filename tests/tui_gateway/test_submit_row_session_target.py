@@ -163,3 +163,54 @@ def test_unrotated_session_keeps_writing_to_session_key(monkeypatch, tmp_path):
     finally:
         server._sessions.pop(sid, None)
         db.close()
+
+
+def _rotated_session(monkeypatch, db):
+    """A live desktop session whose agent already rotated onto a continuation while ``session_key``
+    still names the (reopened) parent — the state every turn after a compression rotation sees."""
+    sid, key = _desktop_session(monkeypatch, db)
+    session = server._sessions[sid]
+    with session["history_lock"]:
+        session["running"] = True
+        server._start_inflight_turn(session, "earlier turn")
+    assert server._ensure_session_db_row(session) is not False
+    agent = _flush_agent(db, key)
+    session["agent"] = agent
+    return sid, key, session, agent, _rotate_to_compression_child(db, key, agent, reopen_parent=True)
+
+
+def test_busy_queue_accept_row_lands_with_the_turn_and_is_addressed_there(monkeypatch, tmp_path):
+    """The queue accept shares ``_write_submit_user_row`` and then addresses that row twice more:
+    the text merge (``set_user_message_content``) and the drain deactivation
+    (``deactivate_message``). Both UPDATEs are qualified by session_id, so addressing them by a
+    rotated-away ``session_key`` silently updates zero rows — the merged text never lands and the
+    accept-time row stays ACTIVE beside its replacement, the [uA, uB, aA] glue that
+    ``_replace_queued_user_row_for_turn`` exists to prevent."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid, key, session, agent, child = _rotated_session(monkeypatch, db)
+    try:
+        with session["history_lock"]:
+            session["running"] = True
+            server._start_inflight_turn(session, "in-flight turn A")
+        db.append_message(agent.session_id, "user", content="in-flight turn A")
+        assert server._handle_busy_submit("r1", sid, session, "first QUEUED-A", "ws-1",
+                                          queued=True, display_kind=None)["result"]["status"] == "queued"
+        # The accept-time row is in the continuation, where the drained turn will write.
+        assert [r for r in _rows(db, child) if "QUEUED-A" in r[1]]
+
+        # A text-only follow-up merges into the envelope: the already-written row must follow.
+        assert server._handle_busy_submit("r2", sid, session, "second", "ws-1",
+                                          queued=True, display_kind=None)["result"]["status"] == "queued"
+        assert session["queued_prompt"]["text"] == "first QUEUED-A\n\nsecond"
+        merged = [r[1] for r in _rows(db, child) if r[0] == "user" and "QUEUED-A" in r[1]]
+        assert merged == ["first QUEUED-A\n\nsecond"], f"merge update missed the row's session: {merged}"
+
+        # Drain: the accept-time row is re-placed at the end and the early one deactivated.
+        server._replace_queued_user_row_for_turn(session, session["queued_prompt"])
+        assert len([r for r in _rows(db, child) if "QUEUED-A" in r[1]]) == 2
+        active = [r for r in db.get_messages_as_conversation(child, include_row_ids=True)
+                  if "QUEUED-A" in str(r["content"])]
+        assert len(active) == 1, f"deactivation missed the row's session: {len(active)} still active"
+    finally:
+        server._sessions.pop(sid, None)
+        db.close()

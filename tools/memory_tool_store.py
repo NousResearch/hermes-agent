@@ -100,7 +100,7 @@ class MemoryStore:
                  memory_enabled: bool = True, user_profile_enabled: bool = True):
         self.memory_entries: List[str] = []
         self.user_entries: List[str] = []
-        self.memory_char_limit, self.user_char_limit = memory_char_limit, user_char_limit
+        self.memory_char_limit, self.user_char_limit = int(memory_char_limit), int(user_char_limit)
         self.memory_enabled, self.user_profile_enabled = memory_enabled, user_profile_enabled
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
         self._consolidation_failures = 0  # per turn; reset by reset_consolidation_failures()

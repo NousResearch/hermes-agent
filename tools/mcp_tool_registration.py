@@ -428,41 +428,38 @@ def _auth_type(config: dict) -> str:
     return (config.get("auth") or "").lower().strip()
 
 
+def _identity_digest(resolved: list) -> str:
+    """Only the hash of a connection's resolved inputs is kept: they carry secrets."""
+    return hashlib.sha256(json.dumps(resolved, sort_keys=True, default=str).encode()).hexdigest()
+
+
 def _resolved_identity(server_name: str, config: dict) -> str:
     """Digest of what a connection is opened with that the config does not show, resolved in the
-    CURRENT profile's scope the way the transport resolves it: a stdio child's executable (bare
+    CURRENT profile's scope by the transport's own resolvers: a stdio child's executable (bare
     ``npx``/``node`` may resolve under the profile's home), env (external secret-source values) and
     default cwd; an HTTP connection's URL and headers after a ``server_json`` live endpoint and
-    ``identity_header`` (``value_from: profile``). The connecting task records it per attempt; an
-    adopter recomputes it. Only the hash is kept."""
-    from agent.runtime_cwd import resolve_context_cwd
+    ``identity_header`` (``value_from: profile``). The transport publishes the digest of the very
+    inputs each attempt connects with; an adopter recomputes it here."""
     from tools.mcp_tool_errors import _apply_identity_header
-    from tools.mcp_tool_transport import LiveEndpointUnavailable, _live_endpoint
+    from tools.mcp_tool_transport import LiveEndpointUnavailable, _http_endpoint, _stdio_launch
 
     if "url" in config:
-        url, headers = config["url"], dict(config.get("headers") or {})
         try:
-            live = _live_endpoint(server_name)
+            url, headers = _http_endpoint(server_name, config)
         except LiveEndpointUnavailable:  # the transport cannot connect either; never equal to a live one
-            live = (None, {})
-        if live is not None:
-            url, live_headers = live
-            headers.update(live_headers)
-        resolved: Any = [url, _apply_identity_header(server_name, config, headers)]
-    else:
-        command, env = config.get("command"), _config._build_safe_env(config.get("env"))
-        if command:  # the transport refuses a command-less stdio config before resolving anything
-            command, env = _config._resolve_stdio_command(command, env)
-        cwd = config.get("cwd")
-        resolved = [command, env, cwd if cwd is not None else resolve_context_cwd() or None]
-    return hashlib.sha256(json.dumps(resolved, sort_keys=True, default=str).encode()).hexdigest()
+            return ""
+        return _identity_digest([url, _apply_identity_header(server_name, config, headers)])
+    if not config.get("command"):  # the transport refuses it before resolving anything
+        return ""
+    return _identity_digest(list(_stdio_launch(config)))
 
 
 def _same_server_route(server: Any, config: dict, *, cross_profile: bool = False) -> bool:
     """Whether *server* matches *config*. Across profiles the static config is not enough: OAuth
     tokens live in the owner's token store (never reusable), and secret-source env, the profile
-    identity header and the session cwd resolve per profile, so the adopter's resolution must hash
-    to what the owner connected with."""
+    identity header and the default cwd resolve per profile, so the adopter's resolution must hash
+    to what the owner connected with. Within one profile the connection is the profile's: its
+    default cwd resolves in the connection task's own context, never per session."""
     if _connection_identity(getattr(server, "_config", {}) or {}) != _connection_identity(config):
         return False
     if not cross_profile:

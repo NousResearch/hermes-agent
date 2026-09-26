@@ -17,7 +17,7 @@ from agent.context_engine import automatic_compaction_status_message
 from agent.conversation_compression import (
     PRE_API_COMPRESSION_STATUS_TEMPLATE, _reset_read_dedup_caches, compression_blocked_transiently,
     compression_skipped_due_to_lock, context_compression_timed_out,
-    conversation_history_after_compression, ensure_compression_feasibility_checked,
+    conversation_history_after_compression, ensure_compression_feasibility_checked, request_exceeds_model_window,
 )
 from agent.turn_context import _review_fork_first_request_pending
 from agent.turn_context_compaction import (
@@ -82,6 +82,14 @@ def run_preflight_compression(
             max_compression_attempts,
         )
 
+    # A review replays its own snapshot; it cannot borrow the parent's compacted
+    # provider thread. Do not submit an oversized first request if compaction fails.
+    if (
+        _review_fork_first_request_pending(agent)
+        and request_exceeds_model_window(agent, request_pressure_tokens) is True
+    ):
+        provider_overflow_preflight = True
+
     _compression_cooldown = getattr(
         compressor, "get_active_compression_failure_cooldown", lambda: None
     )()
@@ -95,7 +103,7 @@ def run_preflight_compression(
         ensure_compression_feasibility_checked(agent, request_pressure_tokens)
     if (
         _eligible
-        and not _review_fork_first_request_pending(agent)
+        and (not _review_fork_first_request_pending(agent) or provider_overflow_preflight)
         and (not v._preflight_compression_blocked or provider_overflow_preflight)
         and (not defer_preflight(request_pressure_tokens) or provider_overflow_preflight)
         and not _compression_cooldown

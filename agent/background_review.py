@@ -149,9 +149,9 @@ def cancel_background_review_for_live_turn(agent: Any) -> None:
 # to a DIFFERENT model the cache is cold anyway, so the fork replays a compact digest instead.
 _REVIEW_MAX_ITERATIONS = 16
 # Aggregate INPUT-token budget for one review fork (checked in conversation_loop's
-# ``_review_input_budget_exhausted``). Request #1 replays the full snapshot as a warm cache read
-# (both compression gates deferred until the first response); compaction then bounds each
-# request, but nothing else caps the SUM across the tool loop. The default leaves 25% of the
+# ``_review_input_budget_exhausted``). Request #1 preserves a warm cache read when
+# the snapshot fits the model window; compaction bounds oversized requests.
+# Nothing else caps the SUM across the tool loop. The default leaves 25% of the
 # review model's context window available and never exceeds the historical cloud-scale ceiling.
 # Override via ``auxiliary.background_review.max_input_tokens``; <= 0 disables.
 _REVIEW_MAX_INPUT_TOKENS_CAP = 600_000
@@ -869,8 +869,8 @@ def _detach_fork_compression(review_agent: Any) -> None:
     bound on the review's snapshot. Persistence is already off, so compaction can only rewrite the
     fork's transcript — but the compressor's own SessionDB/session_id binding must be severed too,
     or cooldown/streak counters land on the parent's row. Force in-place mode and re-enable
-    compression ONLY after the rebind succeeded (fail-closed); gates stay deferred until the first
-    response so request #1 is a warm cache read."""
+    compression ONLY after the rebind succeeded (fail-closed); the first request keeps
+    its warm cache only if it fits the model window."""
     bind = getattr(getattr(review_agent, "context_compressor", None), "bind_session_state", None)
     detached = False
     if callable(bind):
@@ -890,8 +890,7 @@ def _detach_fork_compression(review_agent: Any) -> None:
             )
     review_agent.compression_in_place = True
     review_agent.compression_enabled = detached
-    if detached:
-        review_agent._review_defer_compaction_before_first_response = True
+    review_agent._review_defer_compaction_before_first_response = True
 
 
 def _routed_reasoning_config(task_cfg: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:

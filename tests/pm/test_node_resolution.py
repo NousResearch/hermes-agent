@@ -319,6 +319,41 @@ def test_adapter_availability_never_provisions_missing_node(tmp_path, monkeypatc
     assert not (tmp_path / "missing-tools").exists()
 
 
+def test_whatsapp_requirement_probe_is_cached_per_successful_executable(monkeypatch):
+    """A `node --version` spawn behind every gateway-config load is the dominant cost of the
+    messaging dashboard on Windows (endpoint AV makes one spawn cost 1-2 s), so a successful
+    probe must not respawn; a failing one must always be retried."""
+    from plugins.platforms.whatsapp import adapter as whatsapp
+
+    monkeypatch.setattr(whatsapp, "_NODE_VERIFIED", set())
+    monkeypatch.setattr(
+        whatsapp,
+        "find_node_executable",
+        lambda name: "/opt/node/bin/node" if name == "node" else None,
+    )
+    probes = []
+
+    def fake_run(args, **kwargs):
+        probes.append(args)
+        return subprocess.CompletedProcess(args, 0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert whatsapp.check_whatsapp_requirements() is True
+    assert whatsapp.check_whatsapp_requirements() is True
+    assert len(probes) == 1
+
+    monkeypatch.setattr(whatsapp, "_NODE_VERIFIED", set())
+
+    def failing_run(args, **kwargs):
+        probes.append(args)
+        return subprocess.CompletedProcess(args, 1)
+
+    monkeypatch.setattr(subprocess, "run", failing_run)
+    assert whatsapp.check_whatsapp_requirements() is False
+    assert whatsapp.check_whatsapp_requirements() is False
+    assert len(probes) == 3
+
+
 @pytest.mark.platforms("posix")
 def test_dashboard_pairing_prepares_npm_before_node_lookup(npm_probe, tmp_path, monkeypatch):
     from gateway.platforms import whatsapp_common

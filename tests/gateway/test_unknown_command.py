@@ -116,6 +116,23 @@ async def test_unknown_slash_command_returns_guidance(monkeypatch):
     assert "Unknown command" in result
     assert "/definitely-not-a-command" in result
     assert "/commands" in result
+    assert "Did you mean" not in result  # no plausible target → no misleading hint
+    runner._run_agent.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_unknown_slash_command_typo_suggests_real_command(monkeypatch):
+    """A near-miss of a built-in (/resuem) names the intended command instead of a bare rejection."""
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner._run_agent = AsyncMock(side_effect=AssertionError("typo leaked through to the agent"))
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+
+    result = await runner._handle_message(_make_event("/resuem"))
+
+    assert result is not None and "Unknown command `/resuem`" in result
+    assert "Did you mean `/resume`?" in result
     runner._run_agent.assert_not_called()
 
 

@@ -400,11 +400,31 @@ def _try_resolve_from_custom_pool(
     return None
 
 
+def _provider_output_cap(custom_provider: Dict[str, Any]) -> Optional[int]:
+    """Positive-int output cap configured on the entry, else ``None``.
+
+    ``max_tokens`` wins; ``max_output_tokens`` (the key other config surfaces
+    use) is accepted as an alias. Relays apply their own default output cap when
+    the request carries none, so only a positive int is meaningful.
+    """
+    for key in ("max_tokens", "max_output_tokens"):
+        raw = custom_provider.get(key)
+        if isinstance(raw, bool):
+            continue
+        if isinstance(raw, int) and raw > 0:
+            return raw
+    return None
+
+
 def _custom_provider_request_overrides(custom_provider: Dict[str, Any]) -> Dict[str, Any]:
+    overrides: Dict[str, Any] = {}
+    output_cap = _provider_output_cap(custom_provider)
+    if output_cap is not None:
+        overrides["max_tokens"] = output_cap
     extra_body = custom_provider.get("extra_body")
-    if not isinstance(extra_body, dict) or not extra_body:
-        return {}
-    return {"extra_body": dict(extra_body)}
+    if isinstance(extra_body, dict) and extra_body:
+        overrides["extra_body"] = dict(extra_body)
+    return overrides
 
 
 def _apply_custom_provider_extras(custom_provider: Dict[str, Any], target_model: Optional[str], result: Dict[str, Any]) -> None:

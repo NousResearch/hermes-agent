@@ -571,6 +571,11 @@ export function ProfileRail() {
         // reorder or long-press recolor; right-click rows keeps launch actions
         // available, while Manage covers rename/delete at this scale.
         <div className="flex min-w-0 flex-1 items-center gap-1">
+          {/* The fleet strip swaps the default↔all home pill for an all-profiles
+              action, so `default` must ride in the dropdown list itself —
+              otherwise it is unreachable once the whole fleet crosses the
+              collapse threshold (#106017). Non-fleet keeps its home pill, so
+              its list stays named-only. */}
           <ProfileDropdown
             activeKey={isAll ? null : activeKey}
             colors={colors}
@@ -579,7 +584,7 @@ export function ProfileRail() {
             onImport={() => void runImportProfileFlow()}
             onSelect={selectProfile}
             onSelectRest={switchToRest}
-            profiles={named}
+            profiles={fleet && defaultProfile ? [defaultProfile, ...named] : named}
             restGroups={restGroups}
           />
         </div>
@@ -908,7 +913,7 @@ function ProfileDropdown({
                 <ProfileGlyph
                   aria-hidden="true"
                   color={resolveProfileColor(activeProfile.name, colors)}
-                  isDefault={false}
+                  isDefault={activeProfile.is_default}
                   name={activeProfile.name}
                 />
                 <span className="truncate">{profileLabel(activeProfile)}</span>
@@ -936,6 +941,7 @@ function ProfileDropdown({
               color={resolveProfileColor(profile.name, colors)}
               connectionId={connectionId}
               hideStatus={profile.name === value}
+              isDefault={profile.is_default}
               key={profile.name}
               label={profileLabel(profile)}
               name={profile.name}
@@ -966,11 +972,13 @@ function ProfileDropdown({
 }
 
 // One dropdown row per profile — its own component so each row can own a
-// hover-intent prewarm timer (see useProfilePrewarm).
+// hover-intent prewarm timer (see useProfilePrewarm). Gateway-default rows skip
+// prewarm: it dials by name only, ignoring the row's connection ([P2] #100098).
 function ProfileDropdownItem({
   color,
   connectionId,
   hideStatus,
+  isDefault,
   label,
   name
 }: {
@@ -979,6 +987,7 @@ function ProfileDropdownItem({
   /** The dropdown's own selected row: its sessions are on screen in the
    *  sidebar, so its rollup is suppressed like the active square (#91710). */
   hideStatus?: boolean
+  isDefault: boolean
   label: string
   name: string
 }) {
@@ -992,13 +1001,13 @@ function ProfileDropdownItem({
     <ProfileLaunchContextMenu connectionId={connectionId} label={label} profile={name}>
       <DropdownMenuRadioItem
         className="min-w-0"
-        onPointerEnter={startPrewarm}
-        onPointerLeave={cancelPrewarm}
-        onPointerMove={notePointerMove}
+        onPointerEnter={isDefault ? undefined : startPrewarm}
+        onPointerLeave={isDefault ? undefined : cancelPrewarm}
+        onPointerMove={isDefault ? undefined : notePointerMove}
         value={name}
       >
         <span className="flex min-w-0 items-center gap-1.5">
-          <ProfileGlyph aria-hidden="true" color={color} isDefault={false} name={name} />
+          <ProfileGlyph aria-hidden="true" color={color} isDefault={isDefault} name={name} />
           <span className="truncate">{label}</span>
           {summary && !hideStatus && <ProfileStatusDot summary={summary} />}
         </span>

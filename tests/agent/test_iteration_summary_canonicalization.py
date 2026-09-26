@@ -54,3 +54,32 @@ def test_summary_normalization_is_copy_on_write(make_agent):
     # The persisted transcript keeps its stored bytes; only the send-path copy is rewritten.
     assert history[0]["tool_calls"][0]["function"]["arguments"] == '{"zeta": 1, "alpha": 2}'
     assert history[0]["content"] == "  pad  "
+
+
+def test_summary_messages_strip_lone_surrogates_like_the_send_path(make_agent):
+    agent = make_agent()
+    agent._cached_system_prompt = "SYS"
+    history = [
+        {"role": "user", "content": "clip \ud800 paste"},
+        {"role": "assistant", "content": "ok \ud83d", "tool_calls": [
+            {"id": "t1", "type": "function",
+             "function": {"name": "f", "arguments": '{"k": "v\ud800"}'}},
+        ]},
+        {"role": "tool", "tool_call_id": "t1", "content": "r"},
+    ]
+    out = _iteration_summary_api_messages(agent, history)
+    # The main send path's third pass rewrites lone surrogates to U+FFFD; emitting anything else
+    # either diverges the warmed prefix or, with the transform bypassed, makes the SDK's
+    # ensure_ascii=False utf-8 encode raise and burn the summary call's retries.
+    user = next(m for m in out if m.get("role") == "user")
+    assert user["content"] == "clip \ufffd paste"
+    assistant = next(m for m in out if m.get("role") == "assistant")
+    assert assistant["content"] == "ok \ufffd"
+    # Canonicalization runs before the surrogate pass (same order as the main path), so argument
+    # surrogates already left as \udXXX escape text — ASCII-safe on the wire — and the pass only
+    # has to fix the codepoint-level str fields.
+    assert assistant["tool_calls"][0]["function"]["arguments"] == '{"k":"v\\ud800"}'
+    # The sanitizer is in-place, so this pins the copy-on-write clone ahead of it.
+    assert history[0]["content"] == "clip \ud800 paste"
+    assert history[1]["content"] == "ok \ud83d"
+    assert history[1]["tool_calls"][0]["function"]["arguments"] == '{"k": "v\ud800"}'

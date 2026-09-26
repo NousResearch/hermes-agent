@@ -56,13 +56,23 @@ def run_cell(request, execution_count):
     """Exec one cell; returns (response payload, FULL stdout text)."""
     out, err = io.StringIO(), io.StringIO()
     status, trace = "ok", ""
+    # A cell runs in the caller's current directory; between cells the process sits in its
+    # staging dir, so an idle kernel never holds a directory (a worktree) open.
+    home, cwd = os.getcwd(), request.get("cwd") or ""
     try:
+        if cwd and os.path.isdir(cwd):
+            os.chdir(cwd)
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             exec(compile(request["code"], "<cell>", "exec"), GLOBALS)
     except SystemExit as exc:
         status, trace = "exit", "SystemExit: " + repr(exc.code)
     except BaseException:
         status, trace = "error", traceback.format_exc()
+    finally:
+        try:
+            os.chdir(home)
+        except OSError:
+            pass
     stdout_text, stdout_clipped = _clip(out.getvalue())
     stderr_text, stderr_clipped = _clip(err.getvalue())
     return {
@@ -607,7 +617,7 @@ def _parent_process_handle(child_env: Dict[str, str]):
     return handle, close, startupinfo
 
 
-def _spawn(kernel: SessionKernel, *, child_python: str, child_cwd: str,
+def _spawn(kernel: SessionKernel, *, child_python: str,
            sandbox_tools: frozenset, max_tool_calls: int, task_id: str = "") -> None:
     from tools.code_execution_env import _build_child_env
     from tools.code_execution_tool import generate_hermes_tools_module
@@ -637,8 +647,9 @@ def _spawn(kernel: SessionKernel, *, child_python: str, child_cwd: str,
     try:
         kernel.proc = subprocess.Popen(
             [child_python, os.path.join(kernel.tmpdir, "hermes_kernel_runner.py")],
-            # Strict mode passes an empty cwd: the kernel's staging dir plays the per-call tmpdir's role.
-            cwd=child_cwd or kernel.tmpdir, env=child_env, start_new_session=True,
+            # The staging dir, not the caller's cwd: each cell carries its own cwd (run_cell), and
+            # strict mode passes none, so the staging dir plays the per-call tmpdir's role.
+            cwd=kernel.tmpdir, env=child_env, start_new_session=True,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.PIPE,
             creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
             close_fds=True, pass_fds=pass_fds, startupinfo=startupinfo,
@@ -846,9 +857,11 @@ def execute_in_session_kernel(
     code: str, *, task_id: str, mode: str, child_python: str, child_cwd: str,
     sandbox_tools: frozenset, timeout: int, max_tool_calls: int, reset: bool, is_interrupted,
 ) -> str:
-    """Run one cell in the (owner, mode, python, cwd, tools) session kernel. The owner is the
-    session key (``_resolve_owner``), not the per-turn task id, so state survives across turns."""
-    key = (_resolve_owner(task_id) or "", mode, child_python, child_cwd, tuple(sorted(sandbox_tools)))
+    """Run one cell in the (owner, mode, python, tools) session kernel. The owner is the
+    session key (``_resolve_owner``), not the per-turn task id, so state survives across turns.
+    The cwd is per cell, not part of the key: a terminal ``cd`` between cells must not swap in a
+    fresh kernel (silently dropping the session's state) and leave the old one running."""
+    key = (_resolve_owner(task_id) or "", mode, child_python, tuple(sorted(sandbox_tools)))
     exec_start = time.monotonic()
     from agent.delegation_context import is_delegated_child_context
     kernel, state_reset = _acquire_kernel(key, reset, pinned=is_delegated_child_context())
@@ -877,14 +890,15 @@ def _run_cell(kernel: SessionKernel, key: Tuple, code: str, *, task_id: str, chi
     with kernel.lock:
         try:
             if kernel.proc is None:
-                _spawn(kernel, task_id=task_id, child_python=child_python, child_cwd=child_cwd,
+                _spawn(kernel, task_id=task_id, child_python=child_python,
                        sandbox_tools=sandbox_tools, max_tool_calls=max_tool_calls)
             assert kernel.proc is not None and kernel.proc.stdin is not None
             # Per-cell tool budget: the RPC loop enforces counter < max; reset without restarting.
             kernel.tool_call_counter[0] = 0
             kernel.raw.drain(), kernel.stderr.drain()  # raw output leaked between cells belongs to no cell
             kernel.cell_authority = authority
-            kernel.proc.stdin.write((json.dumps({"id": uuid.uuid4().hex, "code": code}) + "\n").encode("utf-8"))
+            request = {"id": uuid.uuid4().hex, "code": code, "cwd": child_cwd}
+            kernel.proc.stdin.write((json.dumps(request) + "\n").encode("utf-8"))
             kernel.proc.stdin.flush()
             status, payload = _await_cell(kernel, timeout, is_interrupted)
             result = _cell_result(

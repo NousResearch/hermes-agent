@@ -229,7 +229,7 @@ Import the area constants from the SDK; each area has its own `data` payload.
 | Sidebar nav | `SIDEBAR_NAV_AREA` | `data: { path, label, codicon }` |
 | Status bar | `STATUSBAR_AREAS.left` / `.right` | `render` (or `data` as `StatusbarItem`) |
 | Title bar | `TITLEBAR_AREAS.left` / `.center` / `.right` | `data` as `TitlebarTool`, or a mount-scoped `<Contribute>` |
-| Page header | `WORKSPACE_PAGE_HEADER_AREA` | `render` via a mount-scoped `<Contribute>` inside your page |
+| Page header | `WORKSPACE_PAGE_HEADER_AREA` | `<WorkspacePageHeaderControl>` inside your page (inline in a split tile) |
 | ⌘K palette | `PALETTE_AREA` | `data: PaletteContribution` |
 | Keybind | `KEYBINDS_AREA` | `data: KeybindContribution` |
 | Theme | `THEMES_AREA` | `data` as a `DesktopTheme` |
@@ -331,8 +331,12 @@ mid-navigation.
 
 Controls that belong to ONE page (the Kanban board switcher) go in
 `WORKSPACE_PAGE_HEADER_AREA` instead: it renders in the workspace panel's
-tab-header row while that page is on screen and is empty otherwise. Register it
-with a mount-scoped `<Contribute>` (below) so it leaves with the page.
+tab-header row while that page is on screen and is empty otherwise. Wrap the
+control in `<WorkspacePageHeaderControl>` (below) inside your page's own header
+row. In the workspace pane it projects into the page header; when the page is
+opened in a split route tile, which has no page header, it renders inline where
+you placed it. A raw `<Contribute area={WORKSPACE_PAGE_HEADER_AREA}>` only
+shows up in the workspace pane.
 
 ### Palette commands and keybinds
 
@@ -812,6 +816,25 @@ jsx(Contribute, {
 ```
 
 It registers on mount and disposes on unmount automatically.
+
+For a page-header control, use `WorkspacePageHeaderControl` instead. It picks
+the placement from where the page renders: in the workspace pane it
+contributes to `WORKSPACE_PAGE_HEADER_AREA`, and anywhere else (a split route
+tile) it renders its children in place. Put it where the control should sit
+when inline:
+
+```javascript
+import { WorkspacePageHeaderControl } from '@hermes/plugin-sdk'
+
+jsx(WorkspacePageHeaderControl, {
+  id: 'my-page:switcher', // namespace with your slug
+  children: jsx(MySwitcher, {})
+})
+```
+
+`WorkspacePageHeaderControl` is new in this release. A plugin that must also
+run on older desktop builds, where the import is `undefined`, keeps the raw
+`Contribute` form above.
 
 ### Sidebar nav visibility and order (`SIDEBAR_NAV_PREFS_AREA`)
 
@@ -1551,7 +1574,7 @@ pipeline as a trust boundary.
 | Plugin contract | `HermesPlugin`, `PluginContext`, `PluginContribution`, `PluginStorage`, `PluginOs`, `PluginRestOptions`, `PluginNativeNotificationInput`, `PluginNotificationAction`, `HermesOpenTarget`, `Contribution` |
 | Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `WORKSPACE_PAGE_HEADER_AREA`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS`, `SESSION_ROW_AREAS`, `SIDEBAR_NAV_PREFS_AREA`, `APPEARANCE_AREAS` |
 | Area payloads | `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider`, `SessionRowSlotContribution`, `SidebarNavPrefsContribution` |
-| React / state | `useValue`, `atom`, `computed`, `useQuery`, `useMutation`, `useQueryClient`, `queryClient`, `Contribute` |
+| React / state | `useValue`, `atom`, `computed`, `useQuery`, `useMutation`, `useQueryClient`, `queryClient`, `Contribute`, `WorkspacePageHeaderControl` |
 | Theming | `useTheme`, `requestTheme`, `setAccentOverride`, `$accentOverride`, `retintTheme`, `themeHue`, `DesktopTheme`, `DesktopThemeColors`, plus OKLCH math (`hexToOklch`, `oklchToHex`, `oklchToSrgb255`, `mixOklab`, `maxChroma`, `hueDelta`, `normalizeHex`) and sRGB measures (`contrastRatio` — `number | null`, null for unparseable input — `readableOn`) |
 | UI kit | `Button`, `Input`, `Textarea`, `Select*`, `Switch`, `Checkbox`, `SegmentedControl`, `Tabs*`, `Dialog*`, `ConfirmDialog`, `DropdownMenu*`, `ContextMenu*`, `Popover*`, `Tip`/`Tooltip*`, `Badge`, `Kbd`/`KbdGroup`, `SearchField`, `ScrollArea`, `Separator`, `Skeleton`, `GlyphSpinner`, `Loader`, `EmptyState`, `ErrorState`, `CopyButton`, `StatusDot`, `LogView`, `Codicon`, `DecodeText`, `SandboxedFrame` |
 | Helpers | `cn`, `icons`, `haptic`, `useI18n`, `profileColor`, `profileColorSoft`, `relativeTime`, `fmtDateTime`, `fmtDayTime`, `coarseElapsed`, `evaluateRuntimeReadiness` |

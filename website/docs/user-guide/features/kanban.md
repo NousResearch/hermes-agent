@@ -235,7 +235,9 @@ In the Desktop app the board switcher sits in the header row at the top of
 the Kanban page, beside the page title: a **Board** control showing the current board's
 name and task count, with a chevron — hover it for "Switch board". Click
 it to pick another board, or to rename, configure, export, import,
-create, or archive boards. Like the dashboard, the desktop keeps its own
+create, or archive boards. When Kanban is open in a split tile, the same
+**Board** control sits in the board's own header row, after the task count.
+Like the dashboard, the desktop keeps its own
 selection (persisted locally) and does not move the CLI's `current`
 pointer.
 

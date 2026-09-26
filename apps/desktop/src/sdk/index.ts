@@ -1635,6 +1635,12 @@ export { SidebarRowLead } from '@/app/chat/sidebar/chrome'
 export { ConnectionGlyph } from '@/app/chat/sidebar/connection-glyph'
 export { SIDEBAR_ROW_LEAD, SIDEBAR_TRUNCATED_LEADING } from '@/app/chat/sidebar/row-geometry'
 export { PALETTE_AREA, type PaletteContribution } from '@/app/command-palette/contrib'
+/** Page-owned header control (the kanban board switcher): projected into the
+ *  workspace page header when the page renders in the workspace pane, and
+ *  rendered inline, in place, anywhere else (a split route tile). Prefer it
+ *  over a raw `<Contribute area={WORKSPACE_PAGE_HEADER_AREA}>`, which nothing
+ *  paints outside the workspace pane. */
+export { WorkspacePageHeaderControl } from '@/app/contrib/workspace-page-header'
 /** THE overdue test for a cron job's `next_run_at`: non-null once the stored slot
  *  sits past the scheduler grace and the job is expected to fire. Every surface
  *  that prints a next run switches its label on this (`t.cron.next` →

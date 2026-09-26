@@ -147,7 +147,7 @@ _OPERATIONS = {
 
 class TestRemoteExistingBinaryRefused:
     """T1: an existing binary in the EXECUTION target is protected even though
-    the controller's own filesystem says the path is free."""
+    the controller's own filesystem says the path is free; a NEW one is not."""
 
     @pytest.mark.parametrize("ext", [".sqlite", ".pdf"])
     @pytest.mark.parametrize("op", sorted(_OPERATIONS))
@@ -168,6 +168,13 @@ class TestRemoteExistingBinaryRefused:
             assert "Refusing to overwrite existing binary file" in error, error
         assert target_path.read_bytes() == original, "target bytes must be untouched"
         assert not view_path.exists(), "the controller namespace must stay clean"
+
+        # A proven-absent sibling is NOT refused: creating a NEW file with a
+        # binary extension on the remote backend stays allowed.
+        created = _write_file(remote_target.view / f"new{ext}", remote_target.task_id)
+        assert not created.get("error"), f"creating a NEW remote {ext} must be allowed: {created}"
+        assert (remote_target.target / f"new{ext}").read_text() == "plain text replacement"
+        assert not (remote_target.view / f"new{ext}").exists()
 
 
 def test_remote_probe_failure_fails_closed(remote_target):

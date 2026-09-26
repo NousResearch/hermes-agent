@@ -211,6 +211,7 @@ def test_discord_component_interaction_decodes_prompt_token():
         path = "/interactions/bot1"
         body = (
             b'{"type": 3, "id": "i1", "channel_id": "ch1", "guild_id": "g1",'
+            b' "channel": {"id": "ch1", "type": 11, "parent_id": "parent1"},'
             b' "message": {"id": "pm55"},'
             b' "member": {"user": {"id": "u1", "username": "ben"}},'
             b' "data": {"custom_id": "hp1:a1b2c3d4:deny"}}'
@@ -225,6 +226,9 @@ def test_discord_component_interaction_decodes_prompt_token():
     }
     assert event.text == "/deny"
     assert event.message_type == MessageType.COMMAND
+    assert event.source.chat_type == "thread"
+    assert event.source.thread_id == "ch1"
+    assert event.source.parent_chat_id == "parent1"
 
 
 # ── react ack lifecycle ──────────────────────────────────────────────────

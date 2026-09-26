@@ -71,6 +71,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("undo", "Back up N user turns and re-prompt (default 1)", "Session",
                args_hint="[N]"),
     CommandDef("title", "Set a title for the current session", "Session", args_hint="[name]"),
+    CommandDef("retitle", "Generate a new title from the recent conversation", "Session",
+               gateway_only=True),
     CommandDef("handoff", "Hand off this session to a messaging platform (Telegram, Discord, etc.)", "Session",
                args_hint="<platform>", cli_only=True, argument_mode="options"),
     CommandDef("branch", "Branch the current session (new thread on Discord/Telegram/Slack/Matrix; --here stays here)",

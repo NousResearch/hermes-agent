@@ -97,6 +97,16 @@ def _send_result_error(result: Any) -> Optional[str]:
     return None if get("success", True) is not False else str(get("error") or "")
 
 
+def _send_result_delivered(result: Any) -> bool:
+    """False when a result says nothing was sent (``delivered=False``, e.g. a filtered drop) or when
+    there is no result at all. Dict and object results both supported; absent marker counts as
+    delivered."""
+    if result is None:
+        return False
+    get = result.get if isinstance(result, dict) else (lambda name, default=None: getattr(result, name, default))
+    return get("delivered", True) is not False
+
+
 @dataclass
 class DeliveryTarget:
     """One target: "origin", "local", "telegram" (home channel) or "telegram:123456[:thread]"."""
@@ -186,7 +196,10 @@ class DeliveryRouter:
                     result = self._deliver_local(content, job_id, job_name, metadata)
                 else:
                     result = await self._deliver_to_platform(target, content, metadata)
-                    if target.chat_id and _send_result_error(result) is None:
+                    # A filtered drop returns a success-shaped result with delivered=False and sends
+                    # nothing; clearing the flag on it would re-open a target no send reached.
+                    if (target.chat_id and _send_result_error(result) is None
+                            and _send_result_delivered(result)):
                         self.dead_targets.clear(target.platform.value, target.chat_id)
                 results[target.to_string()] = {"success": True, "result": result}
             except Exception as e:

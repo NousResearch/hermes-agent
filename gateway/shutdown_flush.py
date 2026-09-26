@@ -11,13 +11,17 @@ deletes each file on success), ``flush_agent_history_to_file`` (DB flush raised)
 
 from __future__ import annotations
 
+import asyncio
+import atexit
 import contextlib
 import itertools
 import json
 import logging
 import os
+import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -63,6 +67,121 @@ def _write_payload(flush_dir: Path, payload: Dict[str, Any]) -> Path:
             finally:
                 os.close(directory_fd)
     return final_path
+
+
+# ---------------------------------------------------------------------------
+# Off-loop spool lane
+# ---------------------------------------------------------------------------
+#
+# ``spool_dropped_transcript_message`` runs on the LIVE transcript-append path
+# (``SessionStore._append_to_transcript_serialized``), which coroutines such as
+# the Telegram ``_handle_text_message`` / ``_handle_media_message`` /
+# ``_handle_location_message`` handlers and the runner's ``_handle_message*``
+# reach synchronously.  ``_write_payload`` ends in an mkstemp + fsync +
+# ``os.replace`` whose tail is unbounded under filesystem pressure, so on a
+# loop thread it stalls every other task in the process (measured: 0.43 s on
+# the loop for a rename held 0.3 s).
+#
+# The spool is a BEST-EFFORT durability backstop for a message the in-memory
+# cap already evicted, so latency may be traded for loop liveness.  A single
+# FIFO worker preserves drop order (the replay sort is (ts, seq, name), and
+# ``seq`` is assigned at submit time on the caller's thread, so ordering is
+# fixed before the lane ever runs).  The drain fences the lane first, so a
+# queued write can never land after its own replay scanned the directory.
+_SPOOL_LANE: Optional[ThreadPoolExecutor] = None
+_SPOOL_LANE_LOCK = threading.Lock()
+_SPOOL_LANE_STATE = threading.local()
+# Submit/complete sequence counters. ``fence_spool_lane`` captures the submit
+# counter and waits for the completion counter to reach it, so it waits for
+# exactly the work queued BEFORE the call -- not for global quiescence, which
+# a steady arrival rate could delay indefinitely.
+_SPOOL_PROGRESS = threading.Condition(threading.Lock())
+_SPOOL_SUBMITTED = 0
+_SPOOL_COMPLETED = 0
+
+
+def _get_spool_lane() -> ThreadPoolExecutor:
+    """The single FIFO worker that owns every off-loop spool write."""
+    global _SPOOL_LANE
+    with _SPOOL_LANE_LOCK:
+        if _SPOOL_LANE is None:
+            _SPOOL_LANE = ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="transcript-spool"
+            )
+        return _SPOOL_LANE
+
+
+def _loop_is_running() -> bool:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
+
+
+def _on_spool_lane() -> bool:
+    return getattr(_SPOOL_LANE_STATE, "in_lane", False)
+
+
+def _run_on_spool_lane(payload: Dict[str, Any]) -> None:
+    """Lane body: perform the real write, then publish completion."""
+    global _SPOOL_COMPLETED
+    _SPOOL_LANE_STATE.in_lane = True
+    try:
+        _write_payload(_get_flush_dir(), payload)
+    except Exception as exc:
+        logger.debug(
+            "Off-loop spool write failed for %s: %s",
+            payload.get("session_key"), exc,
+        )
+    finally:
+        _SPOOL_LANE_STATE.in_lane = False
+        with _SPOOL_PROGRESS:
+            _SPOOL_COMPLETED += 1
+            _SPOOL_PROGRESS.notify_all()
+
+
+def _submit_spool_write(payload: Dict[str, Any]) -> None:
+    """Queue one payload on the FIFO lane."""
+    global _SPOOL_SUBMITTED
+    with _SPOOL_PROGRESS:
+        _SPOOL_SUBMITTED += 1
+    _get_spool_lane().submit(_run_on_spool_lane, payload)
+
+
+def fence_spool_lane(timeout: float = 30.0) -> bool:
+    """Block until every write queued BEFORE this call has landed.
+
+    Returns ``True`` when that work drained within *timeout*.  A no-op when
+    called from the lane thread itself, so a lane-initiated drain cannot
+    deadlock waiting on its own completion.
+    """
+    if _on_spool_lane():
+        return True
+    with _SPOOL_PROGRESS:
+        target = _SPOOL_SUBMITTED
+        return _SPOOL_PROGRESS.wait_for(
+            lambda: _SPOOL_COMPLETED >= target, timeout=timeout
+        )
+
+
+def _fence_spool_lane_at_exit() -> None:
+    """Drain queued spool writes before the interpreter tears down.
+
+    The lane exists to keep an unbounded rename off the event loop, but the
+    payloads it carries are messages the in-memory cap already evicted -- if
+    the process exits with work still queued, that data is gone for good.
+    Registered at import time so EVERY shutdown path is covered, rather than
+    depending on any particular caller remembering to fence.
+    """
+    if not fence_spool_lane(timeout=10.0):
+        logger.warning(
+            "Transcript spool lane did not drain within 10s at exit; "
+            "queued cap-dropped message(s) may be lost"
+        )
+
+
+atexit.register(_fence_spool_lane_at_exit)
 
 
 def _flush_value(flush_dir: Path, kind: str, session_key: str, value: Any, **extra: Any) -> bool:
@@ -114,19 +233,38 @@ def flush_overflow_to_file(overflow_by_session: Dict[str, Any], *, reason: str =
     return flushed
 
 
+class _QueuedSpool(type(Path())):  # type: ignore[misc]
+    """Marker path meaning 'ordered on the spool lane, not yet written'. A Path subclass so every
+    caller's ``is not None`` / logging / truthiness handling keeps working unchanged."""
+
+    __slots__ = ()
+
+
+SPOOL_QUEUED = _QueuedSpool("<queued on the transcript spool lane>")
+
+
 def spool_dropped_transcript_message(session_id: str, message: Dict[str, Any]) -> Optional[Path]:
     """Spool a cap-evicted transcript message; ``None`` on failure (callers degrade to drop+log).
 
     Uses the same on-disk pending spool as :func:`flush_pending_to_file` (one atomic JSON payload per
     message under ``<hermes_home>/pending_messages/``), so a runtime cap rotation no longer silently
     discards user data while the process stays up (#78182).
+
+    On a thread with a running event loop the write is handed to the FIFO spool lane (this runs on
+    the live transcript-append path that inbound coroutines drive, and the mkstemp+fsync+rename tail
+    is unbounded under filesystem pressure); the return value is then :data:`SPOOL_QUEUED`.
     """
     try:
-        return _write_payload(_get_flush_dir(), {
+        payload = {
             "session_key": session_id, "reason": TRANSCRIPT_CAP_DROP_REASON, "ts": int(time.time()),
+            # Assigned on the caller's thread so drop order is fixed before the lane runs.
             "seq": next(_TRANSCRIPT_SPOOL_SEQ),
             "data": {"session_id": session_id, "message": message},
-        })
+        }
+        if _loop_is_running() and not _on_spool_lane():
+            _submit_spool_write(payload)
+            return SPOOL_QUEUED
+        return _write_payload(_get_flush_dir(), payload)
     except Exception as exc:
         logger.debug("Failed to spool cap-dropped transcript message for %s: %s", session_id, exc)
         return None
@@ -140,6 +278,11 @@ def drain_transcript_spool(session_id: str, replay, *, db_known_failing: bool = 
     already failed and is being logged/escalated) a replay failure is expected and logs at DEBUG,
     so a stalled session does not add one WARNING per append on top of its ERROR (#114266).
     """
+    # A write already queued on the lane must be on disk before the scan, or the lane would publish
+    # it behind the drain and the message would be replayed again on a later drain.
+    if not fence_spool_lane():
+        logger.warning("Transcript spool lane did not drain before replay for %s; queued message(s) "
+                       "will be replayed on a later drain", session_id)
     try:
         candidates = list(_get_flush_dir().glob("pending-*.json"))
     except Exception as exc:

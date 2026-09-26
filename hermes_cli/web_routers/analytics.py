@@ -40,11 +40,15 @@ async def get_config_raw(profile: Optional[str] = None):
     process's own profile, which is wrong under the global profile switcher.
     """
     def _run():
+        from hermes_cli.config_backend import supports_file_tooling
+        if not supports_file_tooling():
+            # The raw editor shows the file's bytes; a non-file backend has no file.
+            raise HTTPException(status_code=409, detail="This config backend has no raw config file")
         with _profile_scope(profile):
             path = get_config_path()
-        if not path.exists():
+        if not path.exists():  # config-reader: ok — file tooling (gated above)
             return {"yaml": "", "path": str(path)}
-        return {"yaml": path.read_text(encoding="utf-8-sig"), "path": str(path)}
+        return {"yaml": path.read_text(encoding="utf-8-sig"), "path": str(path)}  # config-reader: ok — file tooling (gated above)
 
     return await asyncio.to_thread(_run)
 

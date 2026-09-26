@@ -63,9 +63,9 @@ def clone_memory_provider_config(source_dir: Path, profile_dir: Path, provider: 
 
 def cloned_memory_provider(profile_dir: Path) -> Optional[str]:
     """Name of the external provider whose config *profile_dir* now carries, for the CLI notice."""
-    from hermes_cli.profiles import _load_yaml_dict
+    from hermes_cli.profiles import _load_config_dict
 
-    provider = active_memory_provider(_load_yaml_dict(profile_dir / "config.yaml"))
+    provider = active_memory_provider(_load_config_dict(profile_dir))
     if provider and ((profile_dir / provider).is_dir() or (profile_dir / f"{provider}.json").is_file()):
         return provider
     return None

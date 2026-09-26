@@ -11,7 +11,6 @@ import logging
 import os
 from pathlib import Path
 from typing import List, Dict, Any
-from utils import fast_safe_load
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("cli")
@@ -262,8 +261,10 @@ def load_cli_config() -> Dict[str, Any]:
     ``HERMES_IGNORE_USER_CONFIG=1`` skips the user config entirely (``.env`` still loads).
     """
     from cli import _cli_config_defaults, _hermes_home, _merge_file_config, _mirror_config_to_env
+    from hermes_cli.config_backend import config_exists, read_config_doc
     config_path = _hermes_home / 'config.yaml'
-    if not config_path.exists() or os.environ.get("HERMES_IGNORE_USER_CONFIG") == "1":
+    # A backend whose user layer always exists never takes the repo-file fallback.
+    if not config_exists(config_path) or os.environ.get("HERMES_IGNORE_USER_CONFIG") == "1":
         config_path = Path(__file__).parent / 'cli-config.yaml'
 
     defaults = _cli_config_defaults()
@@ -271,12 +272,11 @@ def load_cli_config() -> Dict[str, Any]:
     # Only a file's terminal section may overwrite terminal env vars already set by .env.
     _file_has_terminal_config = False
 
-    if config_path.exists():
+    if config_exists(config_path):
         try:
-            with open(config_path, "r", encoding="utf-8-sig") as f:
-                from hermes_cli.config import _normalize_root_model_keys
+            from hermes_cli.config import _normalize_root_model_keys
 
-                file_config = _normalize_root_model_keys(fast_safe_load(f) or {})
+            file_config = _normalize_root_model_keys(read_config_doc(config_path) or {})
 
             _file_has_terminal_config = "terminal" in file_config
             _merge_file_config(defaults, file_config)

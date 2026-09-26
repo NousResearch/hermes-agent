@@ -119,14 +119,27 @@ class OnePasswordLoginBackend(LoginBackend):
     def get_meta(self, handle: str) -> Optional[VaultItemMeta]:
         return next((m for m in self.list_items() if m.id == handle), None)
 
+    def _get_item(self, item_id: str, *args: str) -> str:
+        """``op item get`` for one listed login. A service account must name the item's vault
+        (``--vault``); ``item list`` works without one and reports it, so look it up there."""
+        cmd = ["item", "get", item_id, *args]
+        if self._service_token:
+            raw = json.loads(self._run("item", "list", "--categories", "Login", "--format", "json") or "[]")
+            items = raw if isinstance(raw, list) else []
+            vault = next((str((i.get("vault") or {}).get("id") or "") for i in items
+                          if isinstance(i, dict) and i.get("id") == item_id), "")
+            if vault:
+                cmd += ["--vault", vault]
+        return self._run(*cmd)
+
     def resolve_password(self, handle: str) -> str:
         item_id = handle[len(self.prefix):]
-        return self._run("item", "get", item_id, "--fields", "label=password", "--reveal").rstrip("\r\n")
+        return self._get_item(item_id, "--fields", "label=password", "--reveal").rstrip("\r\n")
 
     def resolve_otp(self, handle: str) -> Optional[str]:
         # `--otp` mints the current TOTP from the item's one-time-password field; items without one error out.
         try:
-            code = self._run("item", "get", handle[len(self.prefix):], "--otp").strip()
+            code = self._get_item(handle[len(self.prefix):], "--otp").strip()
         except Exception:
             return None
         return code if code.isdigit() else None

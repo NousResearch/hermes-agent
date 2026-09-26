@@ -1034,7 +1034,8 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 file_glob: str = None, limit: int = 50, offset: int = 0,
                 output_mode: str = "content", context: int = 0,
                 order: str = "discovery",
-                task_id: str = "default") -> str:
+                task_id: str = "default",
+                broad_root_opt_in: bool = False) -> str:
     """Search for content or files."""
     try:
         offset, limit = normalize_search_pagination(offset, limit)
@@ -1081,7 +1082,8 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
 
         result = _get_file_ops(task_id).search(
             pattern=pattern, path=path, target=target, file_glob=file_glob,
-            limit=limit, offset=offset, output_mode=output_mode, context=context, order=order)
+            limit=limit, offset=offset, output_mode=output_mode, context=context, order=order,
+            broad_root_opt_in=broad_root_opt_in)
         omitted = _filter_read_blocked_search_results(result, task_id)
         for m in getattr(result, "matches", None) or ():
             if getattr(m, "content", None):
@@ -1280,7 +1282,8 @@ SEARCH_FILES_SCHEMA = {
             "offset": {"type": "integer", "description": "Skip first N results for pagination (default: 0)", "default": 0},
             "order": {"type": "string", "enum": ["discovery", "modified"], "description": "File-search order: 'discovery' is fast bounded traversal order; 'modified' is exact global newest-first and may scan the full tree; ignored for content", "default": "discovery"},
             "output_mode": {"type": "string", "enum": ["content", "files_only", "count"], "description": "Output format for grep mode: 'content' shows matching lines with line numbers, 'files_only' lists file paths, 'count' shows match counts per file", "default": "content"},
-            "context": {"type": "integer", "description": "Number of context lines before and after each match (grep mode only)", "default": 0}
+            "context": {"type": "integer", "description": "Number of context lines before and after each match (grep mode only)", "default": 0},
+            "broad_root_opt_in": {"type": "boolean", "description": "Explicitly admit a filesystem/home root or a cloud-sync folder (OneDrive, Dropbox, ...) as the search root. Refused by default: a recursive search there reads or downloads every file under it.", "default": False}
         },
         "required": ["pattern"]
     }
@@ -1344,7 +1347,8 @@ def _handle_search_files(args, **kw):
         pattern=args.get("pattern", ""), target=target, path=path,
         file_glob=args.get("file_glob"), limit=args.get("limit", 50), offset=args.get("offset", 0),
         output_mode=args.get("output_mode", "content"), context=args.get("context", 0),
-        order=args.get("order", "discovery"), task_id=tid)
+        order=args.get("order", "discovery"), task_id=tid,
+        broad_root_opt_in=bool(args.get("broad_root_opt_in", False)))
 
 
 def _read_file_schema_overrides():

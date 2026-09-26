@@ -70,15 +70,19 @@ def _resolved_hint_target(hint_path: Path, working_dir: Path) -> Optional[Path]:
 
 def _first_hint_file(directory: Path):
     """``(path, stripped content)`` of the first readable non-empty hint file
-    in *directory* (priority order), or None. Unreadable files are skipped."""
+    in *directory* (priority order), or None. Unreadable or timed-out files are skipped."""
     for filename in _HINT_FILENAMES:
         candidate = directory / filename
         try:
             if not candidate.is_file() or (target := _resolved_hint_target(candidate, directory)) is None:
                 continue
             # Read the resolved target (not the link path) so a symlink swapped
-            # between check and read still lands on the vetted file.
-            content = target.read_text(encoding="utf-8-sig").strip()
+            # between check and read still lands on the vetted file. Reuse the
+            # startup context timeout rather than adding a second deadline.
+            content = _read_text_with_timeout(target)
+            if content is None:
+                continue
+            content = content.strip()
         except (OSError, UnicodeDecodeError):
             continue
         return candidate, content

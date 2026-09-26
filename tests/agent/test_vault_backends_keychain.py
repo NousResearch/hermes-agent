@@ -497,7 +497,7 @@ def test_status_shape(fake_security):
 # Real-binary E2E (macOS hosts with /usr/bin/security)
 # ---------------------------------------------------------------------------
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 @pytest.mark.skipif(shutil.which("security") is None or not os.path.exists("/usr/bin/security"),
                     reason="requires the macOS security binary")
 def test_keychain_e2e_real_binary(tmp_path):
@@ -538,7 +538,7 @@ def test_keychain_e2e_real_binary(tmp_path):
     assert backend.list_items() == []
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 @pytest.mark.skipif(shutil.which("security") is None or not os.path.exists("/usr/bin/security"),
                     reason="requires the macOS security binary")
 def test_keychain_prompt_mode_real_binary(tmp_path):

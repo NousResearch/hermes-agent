@@ -413,11 +413,20 @@ async def toggle_skill_category(body: SkillCategoryToggle, profile: Optional[str
             # include_gated + include_plugin: membership mirrors the listing
             # above — independent of the platform/environment/app gates (a
             # Kanban-environment skill stays toggleable when Kanban is inactive)
-            # and inclusive of plugin-registered rows the tab renders.
+            # and inclusive of plugin-registered rows the tab renders. The
+            # General bucket (null) mirrors the client's display rule exactly —
+            # falsy and literal-"general" categories render as one section, so
+            # they toggle as one — else a rendered header under-toggles or
+            # dead-ends in 400.
+            def _in_bucket(skill_category: object) -> bool:
+                if body.category is None:
+                    return not skill_category or skill_category == "general"
+                return skill_category == body.category
+
             names = sorted(
                 s["name"] for s in _find_all_skills(
                     skip_disabled=True, include_gated=True, include_plugin=True)
-                if s.get("category") == body.category)
+                if _in_bucket(s.get("category")))
         if not names:
             raise HTTPException(status_code=400, detail=f"Unknown skill category: {body.category}")
         with config_write_scope(scope_profile):

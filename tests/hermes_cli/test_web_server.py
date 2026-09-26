@@ -3063,6 +3063,45 @@ class TestNewEndpoints:
         assert "kanban-plugin:board-helper" in resp.json()["names"]
         assert "kanban-plugin:board-helper" in load_config()["skills"]["disabled"]
 
+    def test_toggle_skill_category_null_includes_literal_general(self, monkeypatch):
+        """Regression: the desktop folds falsy categories AND the literal
+        'general' into one rendered General section, but the toggle matched
+        only `category == None` — a mixed section under-toggled silently, and
+        an all-literal section answered 400 with a dead header. The General
+        bucket is the exact mirror of the client's display rule."""
+        import tools.skills_tool as skills_tool
+
+        monkeypatch.setattr(
+            skills_tool,
+            "_find_all_skills",
+            lambda *, skip_disabled=False, include_gated=False, include_plugin=False: [
+                {"name": "nocat", "description": "a", "category": None},
+                {"name": "fmgeneral", "description": "b", "category": "general"},
+                {"name": "other", "description": "c", "category": "demo"},
+            ],
+        )
+
+        resp = self.client.put("/api/skills/toggle-category", json={"category": None, "enabled": False})
+        assert resp.status_code == 200
+        assert resp.json()["names"] == ["fmgeneral", "nocat"]
+
+    def test_toggle_skill_category_null_alive_on_pure_general_section(self, monkeypatch):
+        """A section rendering only literal-'general' skills must not 400 —
+        the header is alive because the General bucket includes them."""
+        import tools.skills_tool as skills_tool
+
+        monkeypatch.setattr(
+            skills_tool,
+            "_find_all_skills",
+            lambda *, skip_disabled=False, include_gated=False, include_plugin=False: [
+                {"name": "fmgeneral", "description": "b", "category": "general"},
+            ],
+        )
+
+        resp = self.client.put("/api/skills/toggle-category", json={"category": None, "enabled": False})
+        assert resp.status_code == 200
+        assert resp.json()["names"] == ["fmgeneral"]
+
     def test_toggle_skill_category_null_matches_uncategorized(self, monkeypatch):
         import tools.skills_tool as skills_tool
         from hermes_cli.config import load_config

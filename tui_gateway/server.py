@@ -97,6 +97,11 @@ _cfg_lock = threading.Lock()
 # compare/check/write transaction needs its own lock, not the unrelated config cache lock.
 _profile_ui_meta_lock = threading.Lock()
 _sessions_lock = threading.RLock()  # reentrant: _close_session_by_id may run under callers that already hold it
+
+# Request-time runtime snapshot key for model.options pool workers (#65388). Defined here (not in
+# rpc_dispatch) because method_ctx.bind_module rebinds split-module function bodies onto THIS
+# module's globals, and the pool worker in methods_complete resolves it from the same namespace.
+_MODEL_OPTIONS_RUNTIME_SNAPSHOT = "_model_runtime_snapshot"
 _cfg_cache: dict | None = None
 _cfg_sig: tuple | None = None
 _cfg_path = None

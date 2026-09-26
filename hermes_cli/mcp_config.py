@@ -609,7 +609,11 @@ def _choose_tools(name: str, tools: List[Tuple[str, str]], server_config: Dict[s
 
 
 def cmd_mcp_add(args):
-    """Add a new MCP server with discovery-first tool selection."""
+    """Add a new MCP server with discovery-first tool selection.
+
+    Exit code: 0 only when the server was saved enabled; 1 when it was not saved, or was saved
+    disabled because the connection failed (see ``mcp_command``).
+    """
     name = args.name
     url = getattr(args, "url", None)
     # --command uses dest="mcp_command" (see hermes_cli/main.py for why the dest is renamed).
@@ -628,24 +632,24 @@ def cmd_mcp_add(args):
             cmd_args=list(cmd_args), server_config=server_config)
     except ValueError as exc:
         _error(str(exc))
-        return
+        return 1
 
     if url and explicit_env:
         _error("--env is only supported for stdio MCP servers (--command or stdio presets)")
-        return
+        return 1
     if not url and not command:
         _error("Must specify --url <endpoint>, --command <cmd>, or --preset <name>")
         _info("Examples:")
         _info('  hermes mcp add ink --url "https://mcp.ml.ink/mcp"')
         _info('  hermes mcp add github --command npx --args @modelcontextprotocol/server-github')
         _info('  hermes mcp add myserver --preset mypreset')
-        return
+        return 1
 
     if name in _get_mcp_servers() and not _confirm(
         f"Server '{name}' already exists. Overwrite?", default=False
     ):
         _info("Cancelled.")
-        return
+        return 1
 
     if url:
         server_config["url"] = url
@@ -659,9 +663,9 @@ def cmd_mcp_add(args):
         server_config["connect_timeout"] = raw_connect_timeout
 
     if not _validate_or_warn(name, server_config):
-        return
+        return 1
     if url and not _configure_http_auth(name, url, auth_type, server_config):
-        return
+        return 1
 
     print()
     print(color(f"  Connecting to '{name}'...", Colors.CYAN))
@@ -675,34 +679,37 @@ def cmd_mcp_add(args):
             if _save_mcp_server(name, server_config):
                 _success(f"Saved '{name}' to config (disabled)")
                 _info("Fix the issue, then: hermes mcp test " + name)
-        return
+        return 1
 
     if not tools:
         _warning("Server connected but reported no tools.")
         if _confirm("Save config anyway?", default=True) and _save_mcp_server(name, server_config):
             _success(f"Saved '{name}' to config")
-        return
+            return 0
+        return 1
 
     tool_count = _choose_tools(name, tools, server_config)
     if tool_count is None:
-        return
+        return 1
     server_config["enabled"] = True
-    if _save_mcp_server(name, server_config):
-        print()
-        _success(
-            f"Saved '{name}' to {display_hermes_home()}/config.yaml ({tool_count}/{len(tools)} tools enabled)"
-        )
-        _info("Start a new session to use these tools.")
+    if not _save_mcp_server(name, server_config):
+        return 1
+    print()
+    _success(
+        f"Saved '{name}' to {display_hermes_home()}/config.yaml ({tool_count}/{len(tools)} tools enabled)"
+    )
+    _info("Start a new session to use these tools.")
+    return 0
 
 
 def cmd_mcp_remove(args):
     """Remove an MCP server from config."""
     name = args.name
     if _lookup_server(name, _get_mcp_servers()) is None:
-        return
+        return 3
     if not _confirm(f"Remove server '{name}'?", default=True):
         _info("Cancelled.")
-        return
+        return 1
     _remove_mcp_server(name)
     _success(f"Removed '{name}' from config")
     # Route OAuth cleanup through MCPOAuthManager so any provider cached in this process (e.g. from
@@ -713,6 +720,7 @@ def cmd_mcp_remove(args):
         _success("Cleaned up OAuth tokens")
     except Exception:
         pass
+    return 0
 
 
 def cmd_mcp_list(args=None):
@@ -919,8 +927,9 @@ def _reauth_oauth_server(name: str, server_config: dict, *, flow: str | None = N
 def cmd_mcp_login(args):
     """Run an explicit browser or device authorization for an OAuth-based MCP server."""
     cfg = _lookup_server(args.name, _get_mcp_servers())
-    if cfg is not None:
-        _reauth_oauth_server(args.name, cfg, flow=getattr(args, "flow", None))
+    if cfg is None:
+        return 3
+    return 0 if _reauth_oauth_server(args.name, cfg, flow=getattr(args, "flow", None)) else 1
 
 
 def cmd_mcp_reauth(args):
@@ -937,7 +946,7 @@ def cmd_mcp_reauth(args):
         oauth_servers = [(n, c) for n, c in servers.items() if c.get("auth") == "oauth" and c.get("url")]
         if not oauth_servers:
             _info("No OAuth-based MCP servers found in config.")
-            return
+            return 0
         print()
         _info(f"Re-authenticating {len(oauth_servers)} OAuth server(s) one at a time...")
         succeeded = 0
@@ -947,15 +956,20 @@ def cmd_mcp_reauth(args):
             if _reauth_oauth_server(n, c):
                 succeeded += 1
         print()
-        _success(f"Re-authenticated {succeeded}/{len(oauth_servers)} server(s)")
-        return
+        summary = f"Re-authenticated {succeeded}/{len(oauth_servers)} server(s)"
+        if succeeded == len(oauth_servers):
+            _success(summary)
+            return 0
+        _error(summary)
+        return 1
     if not name:
         _error("Specify a server name, or use --all to re-auth every OAuth server.")
         _info("Usage: hermes mcp reauth <name>   |   hermes mcp reauth --all")
-        return
+        return 1
     cfg = _lookup_server(name, servers)
-    if cfg is not None:
-        _reauth_oauth_server(name, cfg)
+    if cfg is None:
+        return 3
+    return 0 if _reauth_oauth_server(name, cfg) else 1
 
 
 def _rebuild_exclude_list(
@@ -1000,7 +1014,7 @@ def cmd_mcp_configure(args):
     name = args.name
     cfg = _lookup_server(name, _get_mcp_servers(), "Available")
     if cfg is None:
-        return
+        return 3
 
     print()
     print(color(f"  Connecting to '{name}' to discover tools...", Colors.CYAN))
@@ -1008,10 +1022,10 @@ def cmd_mcp_configure(args):
         all_tools = _probe_single_server(name, cfg)
     except Exception as exc:
         _error(f"Failed to connect: {redact_mcp_probe_text(exc)}")
-        return
+        return 1
     if not all_tools:
         _warning("Server reports no tools.")
-        return
+        return 1
 
     include, exclude = _tool_filters(cfg)
     tool_names = [t[0] for t in all_tools]
@@ -1040,7 +1054,7 @@ def cmd_mcp_configure(args):
     chosen = curses_checklist(f"Select tools for '{name}'", labels, pre_selected)
     if chosen == pre_selected:
         _info("No changes made.")
-        return
+        return 0
 
     config = load_config()
     server_entry = cfg_get(config, "mcp_servers", name, default={})
@@ -1065,6 +1079,7 @@ def cmd_mcp_configure(args):
     save_config(config)
     _success(f"Updated config: {len(chosen)}/{total} tools enabled")
     _info("Start a new session for changes to take effect.")
+    return 0
 
 
 _MCP_USAGE = (
@@ -1111,7 +1126,9 @@ def mcp_command(args):
         "config": cmd_mcp_configure, "login": cmd_mcp_login, "reauth": cmd_mcp_reauth,
     }.get(action)
     if handler:
-        # A handler's int return is the process exit code (``main()`` exits non-zero on it).
+        # A handler's int return is the process exit code (``main()`` exits non-zero on it): 0 when
+        # the requested change happened, 1 when it did not, 3 when the named server is not in config
+        # (argparse owns 2). Scripts and agents driving `hermes mcp` branch on `$?`, not on the text.
         return handler(args)
     # No subcommand — drop the user into the catalog picker (same UX as `hermes plugin`).
     from hermes_cli.mcp_picker import run_picker

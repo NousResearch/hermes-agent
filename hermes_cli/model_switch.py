@@ -1456,6 +1456,25 @@ def _creds_for_switched_provider(st: _Switch) -> Optional[ModelSwitchResult]:
                 st.resolve_runtime(requested="custom")
             if st.base_url and not _fell_back_to_openrouter_default(st):
                 key, url = st.api_key, st.base_url
+        elif not (st.current_api_key or "").strip():
+            # Already on custom, but the session has no key yet: the gateway's first /model
+            # switch after boot has never recorded a session override, so read_config() never
+            # had one to read. Re-resolve, but adopt the key only when the resolver lands back on
+            # THIS session's own endpoint through a configured custom endpoint, not the OpenRouter
+            # rung (whose mirror URL can equal the session's); otherwise the key stays empty and
+            # the resolver's headers are dropped, exactly as before this branch existed.
+            prev_headers = st.validation_headers
+            with suppress(Exception):
+                st.resolve_runtime(requested="custom")
+            if (
+                st.api_key
+                and st.base_url
+                and st.base_url.rstrip("/") == url.rstrip("/")
+                and not _fell_back_to_openrouter_default(st)
+            ):
+                key = st.api_key
+            else:
+                st.validation_headers = prev_headers
         st.api_key, st.base_url = key, url
         st.api_mode = determine_api_mode(st.target_provider, st.base_url)
     else:

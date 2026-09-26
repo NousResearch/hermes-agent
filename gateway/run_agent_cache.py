@@ -31,6 +31,63 @@ _OVERRIDE_APPLY_KEYS = (
     "provider", "requested_provider", "api_key", "base_url", "api_mode", "credential_pool", "capabilities", "max_tokens",
 )
 
+# Override fields that may fall through to the already-resolved runtime value when blank; see
+# _blank_override_keeps_runtime for when that is allowed.
+_BLANK_MEANS_ABSENT_KEYS = frozenset({"api_key", "base_url"})
+
+
+def _is_blank(val: Any) -> bool:
+    """``None``, ``""`` or whitespace-only: the override recorded no value for this field."""
+    return val is None or (isinstance(val, str) and not val.strip())
+
+
+def _blank_override_keeps_runtime(override: dict, runtime_kwargs: dict) -> bool:
+    """Whether a blank override api_key/base_url may keep the value already in ``runtime_kwargs``.
+
+    Only when ``runtime_kwargs`` were resolved for the override's own provider AND the override
+    does not name another endpoint (its base_url is blank or equal to the resolved one). A bare-
+    custom session's first /model switch records ``api_key=""`` before any key was ever read;
+    the turn's own resolution for that same endpoint holds the real key. In every other case (a
+    channel override's provider, or an override pointing at a different host) the resolved key
+    belongs to another route and must not travel to the override's endpoint."""
+    o_prov, r_prov = override.get("provider"), runtime_kwargs.get("provider")
+    if not (isinstance(o_prov, str) and isinstance(r_prov, str)):
+        return False
+    if not o_prov.strip() or o_prov.strip().lower() != r_prov.strip().lower():
+        return False
+    o_url, r_url = override.get("base_url"), runtime_kwargs.get("base_url")
+    if _is_blank(o_url):
+        return True
+    return (isinstance(o_url, str) and isinstance(r_url, str)
+            and o_url.strip().rstrip("/") == r_url.strip().rstrip("/"))
+
+
+def _same_endpoint(a: Any, b: Any) -> bool:
+    return isinstance(a, str) and isinstance(b, str) and a.strip().rstrip("/") == b.strip().rstrip("/")
+
+
+def _resolve_override_runtime(provider: str, target_model: Optional[str], base_url: Any) -> dict:
+    """Runtime kwargs for a session override on ``provider`` at ``base_url``.
+
+    Bare ``custom`` (and aliases resolving to it) names no endpoint, so its key belongs to the URL:
+    resolving the name lands on config's custom endpoint, whose key must not travel to the
+    override's own host. On such a mismatch resolve again for the override's endpoint (keys there
+    are host-gated: that URL's custom pool, env keys bound to its host, else the no-auth
+    placeholder) and raise if it still lands elsewhere. Named providers and llama.cpp aliases
+    (whose live port wins over a persisted one) resolve by name exactly as before."""
+    from gateway.run import _resolve_runtime_agent_kwargs_for_provider
+    from hermes_cli.runtime_provider import _resolves_to_custom
+    runtime = _resolve_runtime_agent_kwargs_for_provider(provider, target_model=target_model)
+    name = provider.strip().lower()
+    if (_is_blank(base_url) or name in LLAMACPP_ALIASES or not _resolves_to_custom(name)
+            or _same_endpoint(base_url, runtime.get("base_url"))):
+        return runtime
+    runtime = _resolve_runtime_agent_kwargs_for_provider(
+        provider, target_model=target_model, explicit_base_url=base_url.strip())
+    if not _same_endpoint(base_url, runtime.get("base_url")):
+        raise RuntimeError(f"provider {provider!r} did not resolve for the session endpoint {base_url}")
+    return runtime
+
 
 def _first_agent(entry: Any) -> Any:
     """Unwrap a cache entry (``(agent, sig, ...)`` tuple or bare agent) to its agent."""
@@ -147,7 +204,6 @@ class GatewayAgentCacheMixin:
         """Lazily restore a persisted /model override after a gateway restart: non-secret parts
         (model/provider/base_url) are written through on /model and read back on first use; api_key
         is never persisted and is re-resolved. No-op when an in-memory override or nothing exists."""
-        from gateway.run import _resolve_runtime_agent_kwargs_for_provider
         store = getattr(self, "session_store", None)
         if self._session_model_override(session_key) is not None or store is None:
             return
@@ -168,7 +224,7 @@ class GatewayAgentCacheMixin:
             # since the switch) keep the credential-less override — _resolve_session_agent_runtime
             # retries the resolution for that provider on each turn (default route + notice meanwhile).
             try:
-                runtime = _resolve_runtime_agent_kwargs_for_provider(provider, target_model=persisted.get("model") or None)
+                runtime = _resolve_override_runtime(provider, persisted.get("model") or None, override.get("base_url"))
                 for k in ("api_key", "api_mode", "credential_pool", "requested_provider", "max_tokens"):
                     override[k] = runtime.get(k)
                 override["request_overrides"] = dict(runtime.get("request_overrides") or {})
@@ -201,10 +257,15 @@ class GatewayAgentCacheMixin:
         if not override:
             return model, runtime_kwargs
         model = override.get("model", model)
+        # Decided before the loop: it compares against the runtime as resolved, not as overlaid.
+        keep_blank = _blank_override_keeps_runtime(override, runtime_kwargs)
         for key in _OVERRIDE_APPLY_KEYS:
             val = override.get(key)
-            if val is not None:
-                runtime_kwargs[key] = val
+            if val is None:
+                continue
+            if keep_blank and key in _BLANK_MEANS_ABSENT_KEYS and _is_blank(val):
+                continue
+            runtime_kwargs[key] = val
         # request_overrides reflects the switched-to provider; apply whenever the override recorded
         # it (even as None) so switching to a provider without configured overrides clears a stale
         # value left by the default provider's runtime resolution.

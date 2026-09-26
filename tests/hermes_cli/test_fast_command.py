@@ -124,6 +124,7 @@ class TestFastModeRouting(unittest.TestCase):
             acp_args=[],
             _credential_pool=None,
             service_tier="priority",
+            reasoning_config=None,
         )
 
         route = cli_mod.HermesCLI._resolve_turn_agent_config(stub, "hi")
@@ -151,6 +152,7 @@ class TestFastModeRouting(unittest.TestCase):
             acp_args=[],
             _credential_pool=None,
             service_tier="priority",
+            reasoning_config=None,
         )
 
         route = cli_mod.HermesCLI._resolve_turn_agent_config(stub, "hi")
@@ -164,6 +166,7 @@ class TestFastModeRouting(unittest.TestCase):
             model="primary", api_key="primary-key", base_url="https://api.example/v1",
             provider="custom", requested_provider="custom", api_mode="chat_completions",
             acp_command=None, acp_args=[], _credential_pool=None, service_tier=None,
+            reasoning_config=None,
             session_id="session-1", agent=object(), conversation_history=[],
         )
         seen = []
@@ -282,6 +285,7 @@ class TestAnthropicFastMode(unittest.TestCase):
             acp_args=[],
             _credential_pool=None,
             service_tier="priority",
+            reasoning_config=None,
         )
 
         route = cli_mod.HermesCLI._resolve_turn_agent_config(stub, "hi")

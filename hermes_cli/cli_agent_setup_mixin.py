@@ -577,6 +577,14 @@ class CLIAgentSetupMixin:
             except Exception as exc:
                 from cli import logger
                 logger.warning("Turn-route middleware failed open: %s", exc)
+        # Reasoning policy is model-owned. Keep an explicit CLI --reasoning choice,
+        # otherwise resolve the per-model/global policy for the route selected for this turn.
+        if route["model"] == self.model or getattr(self, "_explicit_reasoning_config", None) is not None:
+            runtime["reasoning_config"] = self.reasoning_config
+        else:
+            from cli import CLI_CONFIG
+            from hermes_constants import resolve_reasoning_config
+            runtime["reasoning_config"] = resolve_reasoning_config(CLI_CONFIG, route["model"])
         overrides = None
         if getattr(self, "service_tier", None) == "priority":
             try:
@@ -727,7 +735,7 @@ class CLIAgentSetupMixin:
                 tool_progress_mode=getattr(self, "tool_progress_mode", "all"),
                 ephemeral_system_prompt=self.system_prompt if self.system_prompt else None,
                 prefill_messages=self.prefill_messages or None,
-                reasoning_config=self.reasoning_config, service_tier=self.service_tier,
+                reasoning_config=runtime.get("reasoning_config", self.reasoning_config), service_tier=self.service_tier,
                 request_overrides=request_overrides, providers_allowed=self._providers_only,
                 providers_ignored=self._providers_ignore, providers_order=self._providers_order,
                 provider_sort=self._provider_sort,

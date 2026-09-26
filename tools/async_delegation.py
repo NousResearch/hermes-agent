@@ -103,10 +103,11 @@ def _connect() -> sqlite3.Connection:
     # Same state.db as hermes_state.SessionDB -- reuse its owner-only (0600)
     # hardening so this writer doesn't create/leave the file (and its WAL
     # sidecars) at the process umask. See hermes_state._secure_state_db_files.
+    from hermes_constants import mkdir_under_hermes_home
     from hermes_state import _secure_state_db_files
 
     path = _db_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
+    mkdir_under_hermes_home(path.parent)
     _secure_state_db_files(path, create_main=True)
     # wal=False: SessionDB owns state.db's journal mode (_initialize_schema applies the barriers).
     conn = open_db(path, db_label="state.db (async_delegation)", busy_timeout_ms=10_000,
@@ -258,6 +259,9 @@ def _owner_liveness() -> Optional[Callable[[Any, Any], bool]]:
 def recover_abandoned_delegations() -> int:
     """Classify records whose owning process disappeared as outcome unknown; children a multi-child unit had already
     recorded (``record_unit_child``) are replayed with their real results."""
+    path = _db_path()
+    if not path.exists():
+        return 0
     alive = _owner_liveness()
     if alive is None:
         return 0
@@ -319,6 +323,31 @@ def restore_undelivered_completions(target_queue) -> int:
     ownership, otherwise a brand-new session adopts a dead session's delegation results seconds after boot
     (#64484).
     """
+    path = _db_path()
+    if not path.exists():
+        return 0
+
+    # Probe read-only first: avoid creating/reconciling state.db when there are no
+    # durable rows to recover or replay (#123265).
+    try:
+        uri = f"{path.resolve().as_uri()}?mode=ro"
+        with sqlite3.connect(uri, uri=True, timeout=5.0) as ro_conn:
+            table_check = ro_conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='async_delegations'"
+            ).fetchone()
+            if not table_check:
+                return 0
+            pending_check = ro_conn.execute(
+                "SELECT 1 FROM async_delegations WHERE state IN ('running', 'finalizing') "
+                "OR (state NOT IN ('running', 'finalizing') AND delivery_state='pending' AND event_json IS NOT NULL) LIMIT 1"
+            ).fetchone()
+            if not pending_check:
+                return 0
+    except (sqlite3.OperationalError, sqlite3.DatabaseError):
+        pass
+    except Exception:
+        return 0
+
     recover_abandoned_delegations()
     now = time.time()
     with _DB_LOCK, _transaction() as conn:

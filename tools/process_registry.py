@@ -640,13 +640,10 @@ class ProcessRegistry(ProcessCheckpointMixin):
         # Unified queue for all background events (distinguished by "type"); the CLI
         # process_loop and the gateway drain it after each agent turn to trigger new turns.
         import queue as _queue_mod
-        self.completion_queue: _queue_mod.Queue = _queue_mod.Queue()
-        # Rehydrate durable delegation completions once, at registry startup.
-        try:
-            from tools.async_delegation import restore_undelivered_completions
-            restore_undelivered_completions(self.completion_queue)
-        except Exception as exc:
-            logger.warning("Could not restore async delegation completions: %s", exc)
+        self._completion_queue: _queue_mod.Queue = _queue_mod.Queue()
+        # Defer durable delegation rehydration until notifications are drained or
+        # explicitly requested, preventing state.db creation during module import (#123265).
+        self._durable_completions_restored_homes: set = set()
         # Completions the agent already consumed via wait()/read_log() (output in
         # hand): drain loops AND gateway/tui watchers skip them.
         self._completion_consumed: set = set()
@@ -1832,6 +1829,32 @@ class ProcessRegistry(ProcessCheckpointMixin):
         # ownership, so leave them for the owner.
         return not (is_async_delegation and evt.get("restored"))
 
+    @property
+    def completion_queue(self):
+        self.ensure_durable_completions_restored()
+        return self._completion_queue
+
+    @completion_queue.setter
+    def completion_queue(self, val) -> None:
+        self._completion_queue = val
+
+    def restore_durable_completions(self, profile_home: Optional[Any] = None) -> int:
+        """Rehydrate durable delegation completions once per profile home."""
+        from hermes_constants import get_hermes_home
+        key = str(profile_home or get_hermes_home())
+        if key in self._durable_completions_restored_homes:
+            return 0
+        self._durable_completions_restored_homes.add(key)
+        try:
+            from tools.async_delegation import restore_undelivered_completions
+            return restore_undelivered_completions(self._completion_queue)
+        except Exception as exc:
+            logger.warning("Could not restore async delegation completions: %s", exc)
+            return 0
+
+    def ensure_durable_completions_restored(self) -> None:
+        self.restore_durable_completions()
+
     def drain_notifications(
         self, session_key: str = "", owns_event=None, *, skip_poll_observed: bool = True,
     ) -> "list[tuple[dict, str]]":
@@ -1843,6 +1866,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
         compression-chain-aware check) consumes ONLY on True, ``session_key`` uses plain
         equality; non-owned events are re-queued for their owner. No filter consumes
         everything (legacy single-session) except restored delegation payloads (fail-closed)."""
+        self.ensure_durable_completions_restored()
         results: "list[tuple[dict, str]]" = []
         requeue: "list[dict]" = []
         # delegation.surface_child_process_notifications, read at most once per drain

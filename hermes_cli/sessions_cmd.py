@@ -1021,9 +1021,13 @@ def _print_empty_store(action: str, args) -> None:
         print("No sessions found.")
 
 
-# VACUUM, the FTS-layout rebuild and bulk deletes rewrite the store; underneath a live gateway/Desktop/cron
-# writer that is the second-writer class behind the retired-WAL refusal (#110054). `--force` is the override.
-_HELD_STORE_ACTIONS = frozenset({"optimize", "optimize-storage", "prune"})
+# VACUUM and the FTS-layout rebuild rewrite the store file; underneath a live gateway/Desktop/cron
+# writer that is the second-writer class behind the retired-WAL refusal (#110054). `--force` is the
+# override. prune is NOT gated: prune_sessions is batched DELETEs over the existing connection in a
+# normal WAL transaction — the concurrent-write case SQLite handles — so gating it made prune-from-cron
+# impossible on any host with a permanently-running gateway (#121324). --force stays accepted on prune
+# for existing scripts, but is no longer needed.
+_HELD_STORE_ACTIONS = frozenset({"optimize", "optimize-storage"})
 
 
 def cmd_sessions(args, sessions_parser=None):

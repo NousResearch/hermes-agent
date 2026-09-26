@@ -1,9 +1,13 @@
-"""`hermes sessions optimize|optimize-storage|prune` refuse while another process holds state.db (#110054).
+"""`hermes sessions optimize|optimize-storage` refuse while another process holds state.db (#110054).
 
 Running the storage rewrite underneath a fleet of live gateways put every agent into the retired-WAL
 refusal; the command now runs the same fail-closed holder scan doctor/repair use, names each holder as
 ``PID N (command)`` and exits non-zero, with ``--force`` as the operator override. Driven through the
 production entry point ``cmd_sessions`` with a REAL second process holding the store.
+
+``prune`` is deliberately NOT gated: it is batched DELETEs in a normal WAL transaction — the
+concurrent-write case SQLite handles — so gating it made prune-from-cron impossible under a
+permanently-running gateway (#121324).
 """
 
 import argparse
@@ -97,8 +101,27 @@ def test_store_rewrites_refuse_and_name_the_holder_until_forced(action, state_db
     assert "Refusing" not in capsys.readouterr().out
 
 
-def test_prune_preview_passes_the_delete_waits_for_a_quiet_store(state_db, foreign_holder, capsys):
-    # A preview never rewrites anything, so it is answered even while the holder lives.
+def test_prune_runs_under_a_live_holder(state_db, foreign_holder, capsys):
+    # prune is batched DELETEs in a normal WAL transaction, not a store rewrite, so unlike
+    # optimize/optimize-storage it must run while a gateway holds state.db (#121324). A preview
+    # never rewrites anything, so it is answered even while the holder lives.
+    import time
+
+    from hermes_state import SessionDB
+
+    old = time.time() - 100 * 86400
+    seed = SessionDB(db_path=state_db)
+    seed.create_session("cron-old", "cron")
+    seed.append_message("cron-old", "user", "old", timestamp=old)
+    seed.end_session("cron-old", "done")
+    assert seed._conn is not None
+    seed._conn.execute(
+        "UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = ?",
+        (old, old, "cron-old"),
+    )
+    seed._conn.commit()
+    seed.close()
+
     prune_preview = _args("prune", force=False)
     prune_preview.dry_run = True
     prune_preview.yes = False
@@ -106,10 +129,12 @@ def test_prune_preview_passes_the_delete_waits_for_a_quiet_store(state_db, forei
     assert "Refusing" not in capsys.readouterr().out
     prune_preview.dry_run = False
     prune_preview.yes = True
-    assert sessions_cmd.cmd_sessions(prune_preview) == 1
-    assert "Refusing `hermes sessions prune`" in capsys.readouterr().out
-    # Control: once the holder exits the same command runs.
-    foreign_holder.stdin.close()
-    foreign_holder.wait(timeout=10)
+    prune_preview.older_than = "14d"
     assert sessions_cmd.cmd_sessions(prune_preview) is None
     assert "Refusing" not in capsys.readouterr().out
+    check = SessionDB(db_path=state_db)
+    try:
+        assert check.get_session("cron-old") is None
+        assert check.get_session("seed") is not None
+    finally:
+        check.close()

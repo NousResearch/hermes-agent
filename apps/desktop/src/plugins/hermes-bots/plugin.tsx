@@ -287,6 +287,8 @@ export default {
                   members: Array.isArray(room.members) ? room.members : [],
                   roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
                   image: typeof room.image === 'string' && room.image ? room.image : null,
+                  shareWithGateways: room.shareWithGateways === true,
+                  sharingRevoked: room.sharingRevoked === true || (!('shareWithGateways' in room) && room.sharingRevoked !== false),
                   rosterOrder: Number.isFinite(room.rosterOrder) ? room.rosterOrder : undefined,
                   pinned: Boolean(room.pinned),
                   sectionId: room.sectionId ?? null,

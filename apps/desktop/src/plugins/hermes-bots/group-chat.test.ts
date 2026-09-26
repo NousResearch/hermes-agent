@@ -523,6 +523,8 @@ describe('gateway mirror', () => {
       'What changed?'
     )
     await drain(() => Boolean(room.chat.$groupChats.get().Research?.running))
+    await room.chat.setGroupChatSharing('Research', true)
+    await drain(() => room.gateway.rpcFor('profiles.configure').length < 1, 50)
 
     const envelope = published(room)
     const rooms = envelope.rooms as Record<string, Record<string, unknown>>
@@ -541,6 +543,7 @@ describe('gateway mirror', () => {
 
     const snapshot = chat.groupChatSyncSnapshot({
       Large: {
+        shareWithGateways: true,
         log: Array.from({ length: 100 }, (_, index) => ({
           at: index,
           from: { kind: index % 2 ? 'member' : 'user', name: index % 2 ? 'research' : 'You' },
@@ -578,6 +581,7 @@ describe('gateway mirror', () => {
 
     const snapshot = chat.groupChatSyncSnapshot({
       Unicode: {
+        shareWithGateways: true,
         log: Array.from({ length: 16 }, (_, index) => ({
           at: index,
           from: { kind: 'member', name: 'research' },
@@ -599,9 +603,9 @@ describe('gateway mirror', () => {
     const entry = (index: number, text: string) => ({ at: index, from: { kind: 'user', name: 'You' }, text })
 
     const snapshot = chat.groupChatSyncSnapshot({
-      Fits: { log: Array.from({ length: 3 }, (_, index) => entry(index, `short ${index}`)) },
-      ByCount: { log: Array.from({ length: 40 }, (_, index) => entry(index, `m${index}`)) },
-      ByBytes: { log: Array.from({ length: 16 }, (_, index) => entry(index, `${index} ${'🧠'.repeat(1200)}`)) }
+      Fits: { shareWithGateways: true, log: Array.from({ length: 3 }, (_, index) => entry(index, `short ${index}`)) },
+      ByCount: { shareWithGateways: true, log: Array.from({ length: 40 }, (_, index) => entry(index, `m${index}`)) },
+      ByBytes: { shareWithGateways: true, log: Array.from({ length: 16 }, (_, index) => entry(index, `${index} ${'🧠'.repeat(1200)}`)) }
     } as unknown as Record<string, GroupChat>)
 
     const byCount = snapshot.rooms['name:ByCount']
@@ -770,6 +774,7 @@ describe('cold hydrate', () => {
       {
         rooms: {
           Shared: {
+            shareWithGateways: true,
             log: [
               { at: 10, from: { kind: 'user', name: 'You' }, text: 'remote question', thread: 'thread-1' },
               { at: 20, from: { kind: 'member', name: 'research' }, text: 'remote answer', thread: 'thread-1' }
@@ -804,8 +809,9 @@ describe('cold hydrate', () => {
     const merged = chat.mergeRemoteGroupChatSnapshotIntoRooms(
       {
         rooms: {
-          Shared: {
-            image: 'data:image/png;base64,old',
+        Shared: {
+          shareWithGateways: true,
+          image: 'data:image/png;base64,old',
             log: [{ at: 1, from: { kind: 'user', name: 'You' }, id: 'remote', text: 'remote message' }],
             members: [{ name: 'old-member' }],
             revision: 5
@@ -815,6 +821,7 @@ describe('cold hydrate', () => {
       },
       {
         Shared: {
+          shareWithGateways: true,
           image: 'data:image/png;base64,new',
           log: [{ at: 2, from: { kind: 'user', name: 'You' }, id: 'local', text: 'local message' }],
           members: [{ name: 'new-member' }],
@@ -878,6 +885,7 @@ describe('room identity', () => {
     const before: SyncSnapshot = {
       rooms: {
         Old: {
+          shareWithGateways: true,
           image: 'data:image/png;base64,room',
           log: [{ at: 10, from: { kind: 'user', name: 'You' }, id: 'turn-1', text: 'history' }],
           members: [{ name: 'research' }],
@@ -891,8 +899,9 @@ describe('room identity', () => {
       before,
       {
         rooms: {
-          New: {
-            image: before.rooms.Old.image,
+        New: {
+          shareWithGateways: true,
+          image: before.rooms.Old.image,
             log: before.rooms.Old.log,
             members: before.rooms.Old.members,
             revision: 4
@@ -993,7 +1002,8 @@ describe('room identity', () => {
     const merged = chat.mergeRemoteGroupChatSnapshotIntoRooms(
       {
         rooms: {
-          'id:room-7': {
+        'id:room-7': {
+            shareWithGateways: true,
             log: [{ at: 1, from: { kind: 'user', name: 'You' }, id: 'm1', text: 'hello' }],
             members: [{ name: 'research' }],
             name: 'Renamed',
@@ -1126,6 +1136,96 @@ describe('room identity', () => {
 })
 
 describe('sync worker', () => {
+  it('reports when shared rooms cannot be fanned out beyond the active gateway', async () => {
+    const room = await loadRoom()
+
+    host.profileRoutes = async () => {
+      throw new Error('route inventory unavailable')
+    }
+
+    room.chat.updateGroupChat(
+      'Shared synthetic room',
+      current => ({
+        ...current,
+        log: [{ at: 1, from: { kind: 'user', name: 'Synthetic member' }, text: 'shared synthetic message' }],
+        roomId: 'shared-room-1'
+      }),
+      { sync: false }
+    )
+
+    await room.chat.setGroupChatSharing('Shared synthetic room', true)
+    await drain(() => room.gateway.rpcFor('profiles.configure').length < 1, 50)
+
+    expect(room.gateway.rpcFor('profiles.configure')).toHaveLength(1)
+    expect(host.notify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'info',
+        message: expect.stringContaining('active gateway')
+      })
+    )
+  })
+
+  it('notifies when a gateway keeps rejecting the shared room update', async () => {
+    const room = await loadRoom()
+    deferTimers()
+    host.profileRoutes = async () => [{ connectionId: 'local', profile: 'default' }]
+
+    host.requestProfile = async () => {
+      throw new Error('gateway unavailable')
+    }
+
+    room.chat.updateGroupChat(
+      'Shared synthetic room',
+      current => ({
+        ...current,
+        log: [{ at: 1, from: { kind: 'user', name: 'Synthetic member' }, text: 'shared synthetic message' }],
+        roomId: 'shared-room-1'
+      }),
+      { sync: false }
+    )
+
+    await room.chat.setGroupChatSharing('Shared synthetic room', true)
+    await drain(() => room.gateway.rpcFor('profiles.configure').length === 0, 100)
+
+    expect(host.notify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'error',
+        message: expect.stringContaining('save the sharing setting again')
+      })
+    )
+  })
+
+  it('does not change sharing when its local preference cannot be persisted', async () => {
+    const room = await loadRoom()
+    room.chat.updateGroupChat(
+      'Private synthetic room',
+      current => ({
+        ...current,
+        log: [{ at: 1, from: { kind: 'user', name: 'Synthetic member' }, text: 'synthetic private message' }],
+        roomId: 'private-room-1'
+      }),
+      { sync: false }
+    )
+    const shared = await import('./shared')
+    const storage = shared.getPluginCtx()?.storage
+
+    if (!storage) {
+      throw new Error('Test storage was not initialized')
+    }
+
+    const originalSet = storage.set
+
+    storage.set = async () => {
+      throw new Error('storage unavailable')
+    }
+
+    await expect(room.chat.setGroupChatSharing('Private synthetic room', true)).rejects.toThrow('storage unavailable')
+    storage.set = originalSet
+
+    expect(room.chat.$groupChats.get()['Private synthetic room'].shareWithGateways).toBeUndefined()
+    expect(room.gateway.rpcFor('profiles.configure')).toHaveLength(0)
+  })
+
   it('retries a gateway CAS conflict and publishes the merged room', async () => {
     deferTimers()
 
@@ -1135,8 +1235,9 @@ describe('sync worker', () => {
       conflictOnce: {
         key: 'hermes-bots-groups',
         value: {
-          rooms: {
-            'name:Shared': {
+        rooms: {
+          'name:Shared': {
+              shareWithGateways: true,
               log: [{ at: 1, from: { kind: 'user', name: 'You' }, id: 'writer-a:1', text: 'alpha' }],
               members: [{ name: 'alpha' }],
               revision: 1
@@ -1149,6 +1250,7 @@ describe('sync worker', () => {
 
     room.chat.$groupChats.set({
       Shared: {
+        shareWithGateways: true,
         log: [{ at: 2, from: { kind: 'member', name: 'beta' }, id: 'writer-b:1', text: 'beta' }],
         members: [{ name: 'beta' }],
         sessions: {},
@@ -1169,48 +1271,134 @@ describe('sync worker', () => {
     expect(room.gateway.rpcFor('profiles.configure')).toHaveLength(2)
   })
 
-  it('fans a room write out to every reachable default-profile gateway', async () => {
+  it('keeps rooms local until sharing is enabled for that room', async () => {
     const room = await loadRoom()
-    const remote: { connectionId: string; method: string }[] = []
+    const remote: { connectionId: string; method: string; params?: Record<string, unknown> }[] = []
+    const remoteProfiles = new Map<string, { revision: number; snapshot: Record<string, unknown> }>()
     host.profileRoutes = async () => [
       { connectionId: 'gw-a', profile: 'default' },
       { connectionId: 'gw-b', profile: 'default' },
       { connectionId: 'gw-b', profile: 'other' }
     ]
 
-    host.requestProfile = async (route: { connectionId: string }, method: string) => {
-      remote.push({ connectionId: route.connectionId, method })
+    host.requestProfile = async (route: { connectionId: string }, method: string, params?: Record<string, unknown>) => {
+      remote.push({ connectionId: route.connectionId, method, params })
+      const profile = remoteProfiles.get(route.connectionId) || { revision: 0, snapshot: {} }
 
       if (method === 'profiles.list') {
-        return { profiles: [{ name: 'default', ui_meta: {}, ui_meta_revisions: {} }] }
+        return {
+          profiles: [
+            {
+              name: 'default',
+              ui_meta: profile.snapshot,
+              ui_meta_revisions: { 'hermes-bots-groups': profile.revision }
+            }
+          ]
+        }
       }
 
       if (method === 'profiles.configure') {
-        return { applied: { ui_meta: true, ui_meta_revisions: { 'hermes-bots-groups': 1 } } }
+        const snapshot = params?.ui_meta as Record<string, unknown>
+        const revision = profile.revision + 1
+        remoteProfiles.set(route.connectionId, { revision, snapshot: { ...profile.snapshot, ...snapshot } })
+
+        return { applied: { ui_meta: true, ui_meta_revisions: { 'hermes-bots-groups': revision } } }
       }
 
       return {}
     }
 
     room.chat.$groupChats.set({
-      Shared: {
-        log: [{ at: 1, from: { kind: 'user', name: 'You' }, id: 'w1', text: 'hi' }],
-        members: [{ name: 'research' }],
+      'Private synthetic room': {
+        log: [{ at: 1, from: { kind: 'user', name: 'Synthetic member' }, id: 'w1', text: 'synthetic private message' }],
+        members: [{ name: 'Synthetic profile' }],
+        roomId: 'private-room-1',
         sessions: {},
         syncRevision: 0,
         watermarks: {}
       }
     } as unknown as Record<string, GroupChat>)
 
-    room.chat.scheduleGroupChatServerSync(room.chat.$groupChats.get(), { changedRooms: ['Shared'] })
+    room.chat.scheduleGroupChatServerSync(room.chat.$groupChats.get(), { changedRooms: ['Private synthetic room'] })
     await drain(() => remote.filter(entry => entry.method === 'profiles.configure').length < 2, 80)
 
-    const configured = new Set(
-      remote.filter(entry => entry.method === 'profiles.configure').map(entry => entry.connectionId)
+    const configureWrites = () => remote.filter(entry => entry.method === 'profiles.configure')
+    const snapshotText = () => JSON.stringify([...remoteProfiles.values()].map(profile => profile.snapshot))
+
+    expect(configureWrites()).toHaveLength(0)
+    expect(snapshotText()).not.toContain('Private synthetic room')
+    expect(snapshotText()).not.toContain('Synthetic profile')
+    expect(snapshotText()).not.toContain('synthetic private message')
+
+    await room.chat.setGroupChatSharing('Private synthetic room', true)
+    await drain(() => configureWrites().length < 2, 80)
+
+    const configured = new Set(configureWrites().map(entry => entry.connectionId))
+
+    const sharedSnapshots = [...remoteProfiles.values()].map(profile =>
+      profile.snapshot['hermes-bots-groups'] as {
+        rooms: Record<string, { log: { text: string }[]; members: { name: string }[]; name: string }>
+      }
     )
 
     expect(configured.has('gw-a')).toBe(true)
     expect(configured.has('gw-b')).toBe(true)
+    expect(sharedSnapshots).toHaveLength(2)
+    expect(sharedSnapshots.every(snapshot => Object.values(snapshot.rooms).some(value => value.name === 'Private synthetic room'))).toBe(true)
+    expect(sharedSnapshots.every(snapshot => Object.values(snapshot.rooms).some(value => value.members[0]?.name === 'Synthetic profile'))).toBe(true)
+    expect(sharedSnapshots.every(snapshot => Object.values(snapshot.rooms).some(value => value.log[0]?.text === 'synthetic private message'))).toBe(true)
+
+    await room.chat.setGroupChatSharing('Private synthetic room', false)
+    await drain(() => configureWrites().length < 4, 80)
+
+    expect(remoteProfiles.size).toBe(2)
+
+    for (const profile of remoteProfiles.values()) {
+      const snapshot = profile.snapshot['hermes-bots-groups'] as {
+        deleted?: Record<string, number>
+        rooms: Record<string, unknown>
+      }
+
+      expect(snapshot.rooms['id:private-room-1']).toBeUndefined()
+      expect(snapshot.deleted?.['id:private-room-1']).toBeDefined()
+    }
+
+    const remoteSnapshot = remoteProfiles.get('gw-a')?.snapshot['hermes-bots-groups'] as SyncSnapshot
+    const pulled = room.chat.mergeRemoteGroupChatSnapshotIntoRooms(remoteSnapshot, {})
+
+    expect(pulled['Private synthetic room']).toBeUndefined()
+  })
+
+  it('clears legacy gateway copies without importing them as shared rooms', async () => {
+    const room = await loadRoom()
+    room.gateway.uiMeta['hermes-bots-groups'] = {
+      rooms: {
+        'id:legacy-room': {
+          log: [{ at: 1, from: { kind: 'user', name: 'Synthetic member' }, id: 'legacy-1', text: 'old private text' }],
+          members: [{ name: 'Legacy profile' }],
+          name: 'Legacy private room',
+          revision: 4,
+          roomId: 'legacy-room'
+        }
+      },
+      version: 3
+    }
+    room.gateway.uiMetaRevisions['hermes-bots-groups'] = 4
+
+    await room.chat.pullGroupChatServerState()
+    expect(room.chat.$groupChats.get()['Legacy private room']).toBeUndefined()
+
+    room.chat.scheduleGroupChatServerSync(room.chat.$groupChats.get())
+    await drain(() => room.gateway.rpcFor('profiles.configure').length < 1, 50)
+
+    const mirror = published(room) as { deleted?: Record<string, number>; rooms: Record<string, unknown> }
+    const serialized = JSON.stringify(mirror)
+
+    expect(mirror.rooms['id:legacy-room']).toBeUndefined()
+    expect(mirror.deleted?.['id:legacy-room']).toBeDefined()
+    expect(serialized).not.toContain('Legacy private room')
+    expect(serialized).not.toContain('Legacy profile')
+    expect(serialized).not.toContain('old private text')
   })
 
   it('a remembered disband re-tombstones a mirror that still projects the room (#105275)', async () => {

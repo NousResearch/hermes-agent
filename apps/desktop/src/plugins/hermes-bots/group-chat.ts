@@ -13,6 +13,7 @@ import { atom, host } from '@hermes/plugin-sdk'
 
 import { $botMeta, $lastRoster, botRosterKey } from './data'
 import { groupMemberReferencesConnection, markOrphanedGroupMemberDescriptor } from './hygiene'
+import { botsText } from './i18n'
 import { displayName } from './labels'
 import { botRosterMeta } from './routing'
 import { getPluginCtx } from './shared'
@@ -55,6 +56,7 @@ const GROUP_CHAT_SYNC_TEXT_CHARS = 1200
 const GROUP_CHAT_SYNC_TRUNCATION_MARK = '… [truncated]'
 const GROUP_CHAT_SYNC_IMAGE_CHARS = 24000
 let groupChatSyncTimer: ReturnType<typeof setTimeout> | null = null
+let groupChatRouteInventoryUnavailable = false
 
 /** One room inside the bounded ui_meta projection: a compacted log plus the
  *  identity fields, without any of `GroupChat`'s runtime/orchestration state. */
@@ -69,6 +71,7 @@ interface GroupChatSyncRoom {
   omitted?: number
   revision?: number
   roomId?: string
+  shareWithGateways?: boolean
 }
 
 /** The v3 envelope stored under the default profile's `hermes-bots-groups`
@@ -282,10 +285,25 @@ export function groupChatSyncSnapshot(
   all: Record<string, GroupChat & { revision?: number }> = $groupChats.get(),
   deleted: Record<string, number> = {}
 ): GroupChatSyncSnapshot {
+  const unshared = Object.fromEntries(
+    Object.entries(all || {})
+      .filter(([, room]) => room?.sharingRevoked === true && room.roomId)
+      .map(([name, room]) => [
+        groupChatRoomKey(name, room),
+        Math.max(0, Number(room.syncRevision ?? room.revision ?? 0)) + 1
+      ])
+  )
+
+  const activeShares = new Set(
+    Object.entries(all || {})
+      .filter(([, room]) => room?.shareWithGateways === true)
+      .map(([name, room]) => groupChatRoomKey(name, room))
+  )
+
   const ranked = Object.entries(all || {})
     // Empty runtime tombstones are used to stop an in-flight room after
     // disband. They are not real rooms and must never reappear on mobile.
-    .filter(([, room]) => room && Array.isArray(room.log) && room.log.length > 0)
+    .filter(([, room]) => room && room.shareWithGateways === true && Array.isArray(room.log) && room.log.length > 0)
     .sort(([, left], [, right]) => {
       const leftAt = Number(left.log[left.log.length - 1]?.at || 0)
       const rightAt = Number(right.log[right.log.length - 1]?.at || 0)
@@ -296,7 +314,10 @@ export function groupChatSyncSnapshot(
   const rooms: Record<string, GroupChatSyncRoom> = {}
 
   const boundedDeleted = Object.fromEntries(
-    Object.entries(deleted)
+    Object.entries({
+      ...Object.fromEntries(Object.entries(deleted).filter(([key]) => !activeShares.has(key))),
+      ...unshared
+    })
       .sort(([, left], [, right]) => Number(right || 0) - Number(left || 0))
       .slice(0, 64)
   )
@@ -356,6 +377,7 @@ export function groupChatSyncSnapshot(
       log,
       holdDetection: room.holdDetection !== false,
       revision: Math.max(0, Number(room?.syncRevision ?? room?.revision ?? 0)),
+      shareWithGateways: true,
       members: (Array.isArray(room.members) ? room.members : []).slice(0, GROUP_CHAT_MAX_MEMBERS).map(member => ({
         name: String(member?.name || '').slice(0, 128),
         ...(member?.handle
@@ -488,7 +510,9 @@ export function mergeGroupChatSyncSnapshots(
 
   for (const label of changedRooms) {
     for (const key of keysFor(label, localNorm)) {
-      changed.add(key)
+      if (localNorm.rooms?.[key]) {
+        changed.add(key)
+      }
     }
   }
 
@@ -512,6 +536,12 @@ export function mergeGroupChatSyncSnapshots(
       }
 
       deleted[key] = Math.max(Number(deleted[key] || 0), Number(writeRevision || 0))
+    }
+  }
+
+  for (const key of changed) {
+    if (localNorm.rooms?.[key]?.shareWithGateways === true) {
+      delete deleted[key]
     }
   }
 
@@ -589,6 +619,7 @@ export function mergeGroupChatSyncSnapshots(
         return byTime || groupChatSyncEntryKey(left).localeCompare(groupChatSyncEntryKey(right))
       }),
       holdDetection,
+      shareWithGateways: identity?.shareWithGateways === true,
       members,
       revision: Math.max(remoteRevision, localRevision),
       ...(omitted > 0
@@ -687,7 +718,15 @@ export function mergeRemoteGroupChatSnapshotIntoRooms(
   // Remote tombstones plus this Desktop's durable disband memory: a mirror
   // that missed the tombstone push still projects the room, and without the
   // local memory it would resurrect here on every pull (#105275).
-  const deleted: Record<string, number> = { ...tombstones }
+  const sharedRoomIds = new Set(
+    Object.values(current || {})
+      .filter(room => room?.shareWithGateways === true && room.roomId)
+      .map(room => String(room.roomId))
+  )
+
+  const deleted: Record<string, number> = Object.fromEntries(
+    Object.entries(tombstones).filter(([key]) => !key.startsWith('id:') || !sharedRoomIds.has(key.slice(3)))
+  )
 
   for (const [key, at] of Object.entries(remoteNorm.deleted || {})) {
     deleted[key] = Math.max(Number(deleted[key] || 0), Math.max(0, Number(at || 0)))
@@ -755,6 +794,11 @@ export function mergeRemoteGroupChatSnapshotIntoRooms(
     }
 
     const existing = (localName ? rooms[localName] : rooms[displayName]) || {}
+
+    if (projected.shareWithGateways !== true && existing.shareWithGateways !== true) {
+      continue
+    }
+
     const remoteRevision = Math.max(0, Number(projected.revision || 0))
     const localRevision = Math.max(0, Number(existing.syncRevision || 0))
 
@@ -823,6 +867,10 @@ export function mergeRemoteGroupChatSnapshotIntoRooms(
         !isPreserved && remoteRevision >= localRevision
           ? projected.holdDetection !== false
           : existing.holdDetection !== false,
+      shareWithGateways:
+        !isPreserved && remoteRevision >= localRevision
+          ? projected.shareWithGateways === true
+          : existing.shareWithGateways === true,
       watermarks: bounded.watermarks,
       sessions: existing.sessions && typeof existing.sessions === 'object' ? existing.sessions : {},
       stranded: existing.stranded && typeof existing.stranded === 'object' ? existing.stranded : {},
@@ -870,10 +918,18 @@ export function mergeRemoteGroupChatSnapshotIntoRooms(
     }
 
     if (deletedRoomId) {
+      if (rooms[targetName]?.shareWithGateways !== true) {
+        continue
+      }
+
       // Id tombstones are final — the id is never reused, so there is no
       // legitimate higher-revision recreation to protect.
       delete rooms[targetName]
     } else {
+      if (rooms[targetName]?.roomId) {
+        continue
+      }
+
       const deletedRevision = Math.max(0, Number(deletedAt || 0))
 
       if (deletedRevision >= Number(rooms[targetName]?.syncRevision || 0)) {
@@ -925,6 +981,8 @@ export function durableGroupChatRooms(all: Record<string, GroupChat> = $groupCha
       pinned: room.pinned,
       // Sidebar filing (user-sections) is room-local; keep it across sync.
       sectionId: room.sectionId ?? null,
+      shareWithGateways: room.shareWithGateways === true,
+      sharingRevoked: room.sharingRevoked === true,
       syncRevision: Math.max(0, Number(room.syncRevision || 0))
     }
   }
@@ -988,7 +1046,17 @@ async function groupChatSyncRequest<T>(
   params: Record<string, unknown>
 ): Promise<T> {
   if (job.connectionId && typeof host.profileRoutes === 'function' && typeof host.requestProfile === 'function') {
-    const routes = await host.profileRoutes()
+    let routes: Awaited<ReturnType<typeof host.profileRoutes>>
+
+    try {
+      routes = await host.profileRoutes()
+    } catch (error) {
+      if (job.connectionId === groupChatSyncConnectionId()) {
+        return host.request(method, params)
+      }
+
+      throw error
+    }
 
     const route = (Array.isArray(routes) ? routes : []).find(candidate => {
       const profile = String(candidate?.targetProfile || candidate?.profile || '')
@@ -1035,6 +1103,25 @@ export async function pullGroupChatServerState(connectionId: string = groupChatS
 
   if (!remote) {
     return false
+  }
+
+  const current = $groupChats.get()
+  const localById = new Map(Object.entries(current).flatMap(([name, room]) => (room.roomId ? [[room.roomId, name]] : [])))
+
+  for (const [key, projected] of Object.entries(normalizeGroupChatSyncSnapshot(remote).rooms || {})) {
+    if (projected.shareWithGateways === true) {
+      continue
+    }
+
+    const localName = projected.roomId ? localById.get(projected.roomId) : projected.name
+
+    if (current[localName || '']?.shareWithGateways !== true) {
+      await rememberGroupChatTombstone(
+        projected.name || key,
+        projected.roomId || (key.startsWith('id:') ? key.slice(3) : null),
+        projected.revision
+      )
+    }
   }
 
   const pending = groupChatSyncPendingByConnection.get(String(connectionId || ''))
@@ -1093,6 +1180,7 @@ async function groupChatSyncTargetConnections() {
   if (typeof host.profileRoutes === 'function' && typeof host.requestProfile === 'function') {
     try {
       const routes = await host.profileRoutes()
+      groupChatRouteInventoryUnavailable = false
 
       for (const route of Array.isArray(routes) ? routes : []) {
         const profile = String(route?.targetProfile || route?.profile || '')
@@ -1103,6 +1191,11 @@ async function groupChatSyncTargetConnections() {
         }
       }
     } catch {
+      if (!groupChatRouteInventoryUnavailable) {
+        host.notify({ kind: 'info', message: botsText().group.routesUnavailable })
+        groupChatRouteInventoryUnavailable = true
+      }
+
       // Route inventory unavailable — the active gateway alone still syncs.
     }
   }
@@ -1232,6 +1325,7 @@ async function flushGroupChatServerSync(connectionId?: string) {
       // that gateway re-seeds it via the gateway-transition pull/publish.
       if (retries > 8) {
         groupChatSyncRetryCounts.delete(id)
+        host.notify({ kind: 'error', message: botsText().group.syncFailed })
 
         return
       }
@@ -1294,12 +1388,13 @@ export function scheduleGroupChatServerSync(
     return
   }
 
-  const snapshot = groupChatSyncSnapshot(all)
+  const snapshot = groupChatSyncSnapshot(all, groupChatTombstones)
+  const revokedRooms = Object.entries(all).filter(([, room]) => room?.sharingRevoked === true && room.roomId)
 
   // A newly installed Desktop has no local room cache. Publishing that empty
   // state on hydrate/reconnect would erase a valid mirror produced elsewhere.
   // Only an explicit final-room disband is allowed to clear the projection.
-  if (Object.keys(snapshot.rooms).length === 0 && !allowEmpty) {
+  if (Object.keys(snapshot.rooms).length === 0 && !Object.keys(snapshot.deleted || {}).length && !allowEmpty) {
     return
   }
 
@@ -1327,7 +1422,13 @@ export function scheduleGroupChatServerSync(
         connectionId: id,
         allowEmpty: Boolean(allowEmpty || coalesced?.allowEmpty),
         changedRooms: [...new Set([...(coalesced?.changedRooms || []), ...changedRooms])],
-        deletedRooms: [...new Set([...(coalesced?.deletedRooms || []), ...deletedRooms])]
+        deletedRooms: [
+          ...new Set([
+            ...(coalesced?.deletedRooms || []),
+            ...deletedRooms,
+            ...revokedRooms.map(([, room]) => `id:${room.roomId}`)
+          ])
+        ]
       })
     )
   }
@@ -1638,6 +1739,8 @@ export function updateGroupChat(
         pinned: room.pinned,
         // Sidebar filing (user-sections) is room-local; keep it durable.
         sectionId: room.sectionId ?? null,
+        shareWithGateways: room.shareWithGateways === true,
+        sharingRevoked: room.sharingRevoked === true,
         syncRevision: Math.max(0, Number(room.syncRevision || 0))
       }
     }
@@ -1685,6 +1788,40 @@ export function setGroupChatHoldDetection(group: string, enabled: boolean) {
     holdDetection: enabled,
     ...(enabled ? {} : { holds: {} })
   }))
+}
+
+export async function setGroupChatSharing(group: string, enabled: boolean) {
+  const all = {
+    ...$groupChats.get()
+  }
+
+  const current = all[group]
+
+  if (!current) {
+    throw new Error('Group chat no longer exists')
+  }
+
+  const next = {
+    ...current,
+    shareWithGateways: enabled,
+    sharingRevoked: enabled ? false : current.shareWithGateways === true || current.sharingRevoked === true
+  }
+
+  all[group] = next
+
+  const storage = getPluginCtx()?.storage
+
+  if (typeof storage?.set !== 'function') {
+    throw new Error('Group chat sharing settings could not be saved')
+  }
+
+  await storage.set('group-chats', durableGroupChatRooms(all))
+  $groupChats.set(all)
+  scheduleGroupChatServerSync(all, {
+    changedRooms: [group]
+  })
+
+  return next
 }
 
 /** Set or clear a group chat's room picture (small data URL, normalized by

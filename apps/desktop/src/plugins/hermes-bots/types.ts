@@ -188,6 +188,10 @@ export interface GroupHold {
 }
 
 export interface GroupChat {
+  /** Whether this room's bounded projection may be copied to connected gateways. */
+  shareWithGateways?: boolean
+  /** A prior gateway copy must stay revoked while this local room remains. */
+  sharingRevoked?: boolean
   /** Whether user text may create sticky member holds. Defaults to true for
    *  rooms written by older builds; the room settings switch can disable it. */
   holdDetection?: boolean

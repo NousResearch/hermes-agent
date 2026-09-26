@@ -76,16 +76,8 @@ def test_unreachable_failure_pulls_next_run_earlier_then_ladder_exhausts(
 
 
 def test_will_retry_mirrors_plan_retry_yield(tmp_cron_home):
-    """The notice-suppression predictor must mirror what ``plan_retry`` will actually do
-    for THIS failure:
-
-    - a cadence at or under the next ladder rung makes the schedule's own fire the retry
-      (``plan_retry`` yields without consuming an attempt), so no re-run is scheduled and
-      the failure notice must go out — otherwise a fast job holds every failure notice
-      for as long as the outage lasts (the "ladder exhausted" escape is unreachable when
-      every rung yields);
-    - a slow job still gets its silent bounded re-runs (regression guard for the feature).
-    """
+    """``will_retry`` answers True only when ``plan_retry`` would park a re-run. Called after
+    ``mark_job_run`` — valid, the predictor reads only persisted job state."""
     fast = create_job("fast poll", "every 2m")
     assert mark_job_run(fast["id"], False, "ConnectError: dns", model_unreachable=True)
     j = get_job(fast["id"])

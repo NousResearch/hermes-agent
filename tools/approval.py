@@ -545,7 +545,7 @@ def _gateway_notify_cb(session_key: str):
 
 def _pending_result(spec, session_key: str, *, command: str, description: str,
                     pattern_key: str, pattern_keys: list[str], body: str | None,
-                    smart_denied: bool) -> dict:
+                    smart_denied: bool, intent: str | None = None) -> dict:
     """Queue an approval nobody can answer right now (no gateway notifier, no CLI panel) for
     ``/approve`` / ``/deny`` review. Command/code gates return the backward-compatible
     ``pending_approval`` shape (``pattern_keys`` + STOP text); the action gate ``approval_required``."""
@@ -553,6 +553,8 @@ def _pending_result(spec, session_key: str, *, command: str, description: str,
     if spec.pending_keys:
         pending["pattern_keys"] = pattern_keys
     pending["description"] = description
+    if intent:
+        pending["agent_intent"] = str(intent).strip()[:300]
     if smart_denied:
         pending.update(smart_denied=True, allow_permanent=False)
     submit_pending(session_key, pending)
@@ -794,7 +796,8 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
                     pattern_key: str, pattern_keys: list[str], warnings: list[tuple],
                     session_key: str, approval_callback, is_cli: bool, is_gateway: bool,
                     is_ask: bool, smart: bool = False,
-                    permanent_capable: bool = True, pending_body=None) -> dict:
+                    permanent_capable: bool = True, pending_body=None,
+                    intent: str | None = None) -> dict:
     """Ask a human (after the optional guardian-LLM step) and turn the answer into the gate result.
 
     ``warnings`` are the ``(key, _, is_tirith)`` tuples :func:`_persist_choice` stores on
@@ -802,6 +805,10 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
     allowlisted (pure-tirith prompts); a smart-DENY owner override reduces every surface to
     once/deny and persists nothing. ``pending_body`` is a thunk, built only once a human is
     actually asked, so a smart APPROVE never pays for redacting a large script.
+    ``intent`` is the calling tool's plain-language claim about the command. It is DISPLAY-ONLY:
+    it never enters ``description`` (which the smart guardian interpolates into its prompt's
+    trusted region) and never affects the decision. It is rendered on the human card, labelled,
+    alongside the detector's own description.
     """
     from agent.redact import redact_sensitive_text
 
@@ -865,6 +872,8 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
                 "allow_permanent": permanent_capable and not smart_denied,
                 "allow_session": not smart_denied,
             }
+            if intent:
+                data["agent_intent"] = redact_sensitive_text(str(intent).strip()[:300])
             if smart_denied:
                 data["smart_denied"] = True
             decision = _await_gateway_decision(session_key, notify_cb, data, surface="gateway")
@@ -901,7 +910,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
                 display_command, display_description = command, description
             return _pending_result(
                 spec, session_key, command=display_command, description=display_description, pattern_key=pattern_key,
-                pattern_keys=pattern_keys, body=pending_body, smart_denied=smart_denied,
+                pattern_keys=pattern_keys, body=pending_body, smart_denied=smart_denied, intent=intent,
             )
 
     # CLI interactive: single combined prompt, wrapped in the pre/post plugin hooks.
@@ -1172,11 +1181,7 @@ def check_all_command_guards(command: str, env_type: str,
     """Run all pre-exec security checks and return a single approval decision. Tirith and
     dangerous-command findings are presented as ONE combined approval request, so a gateway
     force=True replay cannot bypass one check when only the other was shown to the user.
-    ``has_host_access``: a Docker sandbox with bind-mounted host paths takes the normal flow.
-    ``intent``: optional plain-language summary supplied by the calling tool (from the model's
-    ``intent`` argument) — rendered at the top of the approval card so the user sees what the
-    command is meant to do, not just the code. Never trusted for the security decision itself:
-    it is display-only and always shown alongside the detector's own class description."""
+    ``has_host_access``: a Docker sandbox with bind-mounted host paths takes the normal flow."""
     if _should_skip_container_guards(env_type, has_host_access=has_host_access):
         return _user_deny_block(command) or _approved()
 
@@ -1223,11 +1228,11 @@ def check_all_command_guards(command: str, env_type: str,
         return _approved()
 
     combined_desc = "; ".join(desc for _, desc, _ in warnings)
-    # Agent-supplied intent (display-only, see check_all_command_guards docstring): shown first on
-    # the card, clearly labelled as the caller's claim — the security description always follows.
-    _intent = (str(intent).strip()[:300] if intent else "")
-    if _intent:
-        combined_desc = f"Agent says: {_intent} | Detected: {combined_desc}"
+    # Agent-supplied intent: NEVER concatenated into ``description`` — that string is interpolated
+    # into the smart guardian's prompt trusted region (approval_smart.py) and smart-APPROVE runs
+    # without a human card. It travels as its own ``intent`` field and is rendered only on the
+    # human-facing card, clearly labelled as the caller's claim.
+    _intent = str(intent).strip()[:300] if intent else None
     primary_key = warnings[0][0]
     all_keys = [key for key, _, _ in warnings]
 
@@ -1239,7 +1244,7 @@ def check_all_command_guards(command: str, env_type: str,
         pattern_key=primary_key, pattern_keys=all_keys, warnings=warnings,
         session_key=session_key, approval_callback=approval_callback,
         is_cli=is_cli, is_gateway=is_gateway, is_ask=is_ask, smart=approval_mode == "smart",
-        permanent_capable=any(not is_t for _, _, is_t in warnings),
+        permanent_capable=any(not is_t for _, _, is_t in warnings), intent=_intent,
     )
 
 
@@ -1311,15 +1316,13 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
     # run independently. The gateway renders the pending payload to Discord/Slack, so the script body is redacted for
     # display; the raw code is what gets assessed and run.
     from agent.redact import redact_sensitive_text
-    _intent = (str(intent).strip()[:300] if intent else "")
-    if _intent:
-        description = f"Agent says: {_intent} | Detected: {description}"
     return _human_decision(
         _EXECUTE_CODE_GATE, command=command, description=description, pattern_key=pattern_key,
         pattern_keys=[pattern_key], warnings=[(pattern_key, None, False)], session_key=session_key,
         approval_callback=approval_callback, is_cli=is_cli, is_gateway=is_gateway, is_ask=is_ask,
         smart=approval_mode == "smart",
         pending_body=lambda: f"**Code:**\n```python\n{redact_sensitive_text(code)}\n```",
+        intent=(str(intent).strip()[:300] if intent else None),
     )
 
 

@@ -1254,7 +1254,6 @@ def _degraded_result(e: EnvironmentConnectionError, task_id: Optional[str]) -> s
 
 def terminal_tool(
     command: str,
-    intent: Optional[str] = None,
     background: bool = False,
     timeout: Optional[int] = None,
     task_id: Optional[str] = None,
@@ -1268,6 +1267,7 @@ def terminal_tool(
     _completion_output_chars: int = 0,
     heartbeat: int = 0,
     persist_on_release: bool = False,
+    intent: Optional[str] = None,
 ) -> str:
     """Execute *command* in the configured terminal environment; returns a JSON string.
 

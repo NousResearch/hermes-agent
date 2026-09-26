@@ -392,6 +392,18 @@ TASK_COMPLETION_GUIDANCE = (
     "produce. Reporting a blocker honestly is always better than inventing a result."
 )
 
+# Tool-scoped exception to the universal "keep working" guidance. Background delegation's
+# delivery contract requires the parent turn to end before a completed child can re-enter the conversation;
+# manufacturing activity to keep that turn open therefore prevents the dependency from ever arriving.
+ASYNC_HANDOFF_GUIDANCE = (
+    "# Async handoff\n"
+    "When delegate_task explicitly says background work will deliver its result only after you end the current turn, "
+    "ending the turn is the required handoff — not abandoning the task. Finish only work that does not depend on the "
+    "pending result, then give a brief status and stop so delivery can occur. Do not manufacture polling, no-op, "
+    "placeholder, or unrelated tool calls just to keep the turn open. Do not claim the pending result or task "
+    "completion before it is delivered."
+)
+
 # Universal parallel-tool-call guidance (ALL models): the runtime already executes independent calls
 # concurrently. Supersedes the former Google-only bullet so no model receives the steer twice.
 # Why this matters for cost: every assistant turn resends the entire accumulated conversation (and, on

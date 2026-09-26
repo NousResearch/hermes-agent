@@ -43,6 +43,36 @@ _ASSISTANT_ONLY_KEYS = (
 )
 
 
+def transcript_append_kwargs(session_id: str, message: Dict[str, Any], *, fallback_ts: Any = None) -> Dict[str, Any]:
+    """``SessionDB.append_message`` kwargs for one transcript row. The live writer and the restart
+    replay of the transcript spool (gateway/shutdown_flush.py) both build rows here, so a replayed
+    message lands as the row the live drain would have written. Fields are listed rather than
+    splatted: a spooled message is arbitrary JSON from disk, and an unexpected key would raise and
+    abort the replay. *fallback_ts* applies only to a message with no timestamp at all, because a
+    truthiness test would rewrite epoch 0."""
+    is_assistant = message.get("role") == "assistant"
+    timestamp = message.get("timestamp")
+    return {
+        "session_id": session_id,
+        "role": message.get("role", "unknown"),
+        "content": message.get("content"),
+        "tool_name": message.get("tool_name"),
+        "tool_calls": message.get("tool_calls"),
+        "tool_call_id": message.get("tool_call_id"),
+        **{k: message.get(k) if is_assistant else None for k in _ASSISTANT_ONLY_KEYS},
+        "platform_message_id": message.get("platform_message_id") or message.get("message_id"),
+        "observed": bool(message.get("observed")),
+        "timestamp": fallback_ts if timestamp is None else timestamp,
+        # Exact bytes sent to the API (prompt-cache-stable replay); must survive every
+        # persistence path or the next replay diverges.
+        "api_content": extract_api_content_sidecar(message),
+        # Presentation typing ("internal_notification" for self-injected async-delegation/background
+        # notification turns, #82888). DB-only; stripped from provider-bound payloads.
+        "display_kind": message.get("display_kind"),
+        "display_metadata": message.get("display_metadata"),
+    }
+
+
 class SessionTranscriptMixin:
     """SessionStore transcript I/O: SQLite append with a per-session retry queue,
     compression-reroute following, FTS corruption recovery, rewrite/rewind/load."""
@@ -370,27 +400,7 @@ class SessionTranscriptMixin:
             # into the ambient store.
             raise RuntimeError(
                 f"no owning session store for {session_id}; deferring transcript write")
-        is_assistant = message.get("role") == "assistant"
-        _db.append_message(
-            session_id=session_id,
-            role=message.get("role", "unknown"),
-            content=message.get("content"),
-            tool_name=message.get("tool_name"),
-            tool_calls=message.get("tool_calls"),
-            tool_call_id=message.get("tool_call_id"),
-            **{k: message.get(k) if is_assistant else None for k in _ASSISTANT_ONLY_KEYS},
-            platform_message_id=(message.get("platform_message_id") or message.get("message_id")),
-            observed=bool(message.get("observed")),
-            timestamp=message.get("timestamp"),
-            # Exact bytes sent to the API (prompt-cache-stable replay); must survive every
-            # persistence path or the next replay diverges.
-            api_content=extract_api_content_sidecar(message),
-            # Presentation typing (e.g. "internal_notification"); DB-only.
-            # "internal_notification" for self-injected async-delegation/background notification turns,
-            # #82888). DB-only; stripped from provider-bound payloads.
-            display_kind=message.get("display_kind"),
-            display_metadata=message.get("display_metadata"),
-        )
+        _db.append_message(**transcript_append_kwargs(session_id, message))
 
     @staticmethod
     def _is_fts_corruption_error(exc: Exception) -> bool:

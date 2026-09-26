@@ -4,14 +4,14 @@
 
 name: pcs-security-tls-posture
 repo: https://github.com/Pacific-Cloud-Solutions/hermes-plugins
-sha: ce21597d13f7e42db8970f0010e97f31df2fbf4f
+sha: 389d300cd43de459fd6f260498ba3c2e7fff95dc
 subdir: plugins/pcs-security-tls-posture
 description: Read-only audit of local TLS posture — certificate validity, key strength, deprecated protocols, weak cipher suites, and the certificate each server actually presents
 maintainer: Pacific-Cloud-Solutions
 tier: community
 category: tools
 version: "0.3.0"
-image: https://raw.githubusercontent.com/Pacific-Cloud-Solutions/hermes-plugins/ce21597d13f7e42db8970f0010e97f31df2fbf4f/docs/hero-2x1.webp
+image: https://raw.githubusercontent.com/Pacific-Cloud-Solutions/hermes-plugins/389d300cd43de459fd6f260498ba3c2e7fff95dc/docs/hero-2x1.webp
 readme: true
 platforms: []
 capabilities:

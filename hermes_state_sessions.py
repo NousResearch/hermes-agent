@@ -16,9 +16,11 @@ from agent.session_activity import (
 )
 from hermes_startup_watchdog import report_startup_progress
 from hermes_state_common import (
-    _LISTABLE_CHILD_SQL, _PREVIEW_ELIGIBLE_SQL, _PREVIEW_RAW_SELECT, _RECOVERABLE_END_REASONS,
-    _RECOVERABLE_END_REASONS_SQL, _RESET_CHILD_SQL, _RESET_END_REASONS, _legacy_reset_child_sql, _shape_preview,
-    _sql_in_window, _sql_json_extract, _sql_session_last_active, _sql_session_last_active_by_id,
+    _DELEGATE_CHILD_SQL, _LISTABLE_CHILD_SQL, _PREVIEW_ELIGIBLE_SQL, _PREVIEW_RAW_SELECT,
+    _RECOVERABLE_END_REASONS,
+    _RECOVERABLE_END_REASONS_SQL, _RESET_END_REASONS, _continuation_child_edge_sql,
+    _legacy_reset_child_sql, _shape_preview, _sql_in_window, _sql_json_extract,
+    _sql_session_last_active, _sql_session_last_active_by_id,
     escape_like as _escape_like, _SQL_IN_CHUNK, _id_chunks, _placeholders as _session_ids_placeholders,
 )
 
@@ -101,7 +103,7 @@ def _session_filter_where(
     where: List[str] = []
     params: List[Any] = []
     if exclude_children:
-        where += [_LISTABLE_CHILD_SQL, f"{_delegate_from_json('s.model_config')} IS NULL"]
+        where += [_LISTABLE_CHILD_SQL, f"NOT ({_DELEGATE_CHILD_SQL.format(a='s')})"]
     # Show roots and user-visible branch/reset sessions, while still hiding sub-agent runs and compression
     # continuations. All four carry parent_session_id, so the shared predicate classifies the edge from
     # stable markers plus legacy-compatible parent metadata. Branch sessions are identified two ways, OR'd
@@ -487,10 +489,8 @@ class SessionSessionsMixin:
             conn.execute(
                 "UPDATE sessions AS child SET model_config = json_set("
                 "COALESCE(child.model_config, '{}'), '$._reset_from', child.parent_session_id) "
-                f"WHERE child.parent_session_id = ? AND {_sql_json_extract('child.model_config', '$._reset_from')} IS NULL "
-                f"AND {_sql_json_extract('child.model_config', '$._branched_from')} IS NULL "
-                f"AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL "
-                "AND COALESCE(child.source, '') != 'tool' "
+                f"WHERE child.parent_session_id = ? "
+                f"AND {_continuation_child_edge_sql('child', 'child.parent_session_id')} "
                 "AND child.started_at >= (SELECT p.started_at FROM sessions p WHERE p.id = child.parent_session_id) "
                 f"AND {_legacy_reset_child_sql('child', _session_ids_placeholders(_RESET_END_REASONS))}",
                 (session_id, *_RESET_END_REASONS),
@@ -880,6 +880,7 @@ class SessionSessionsMixin:
                 JOIN sessions child ON child.id = a.id
                 JOIN sessions parent ON parent.id = child.parent_session_id
                 WHERE parent.end_reason = 'compression'
+                  AND {_continuation_child_edge_sql('child', 'parent.id')}
               ),
               descendants(id) AS (
                 SELECT ?
@@ -889,6 +890,7 @@ class SessionSessionsMixin:
                 JOIN sessions parent ON parent.id = d.id
                 JOIN sessions child ON child.parent_session_id = parent.id
                 WHERE parent.end_reason = 'compression'
+                  AND {_continuation_child_edge_sql('child', 'parent.id')}
               ),
               lineage(id) AS (
                 SELECT id FROM ancestors
@@ -1093,7 +1095,7 @@ class SessionSessionsMixin:
         candidate_clauses = [
             "s.archived = 0",
             "s.hidden = 0",
-            f"{_delegate_from_json('s.model_config')} IS NULL",
+            f"NOT ({_DELEGATE_CHILD_SQL.format(a='s')})",
         ]
         candidate_params: List[Any] = []
         if exclude_sources:
@@ -1110,11 +1112,7 @@ class SessionSessionsMixin:
         compression_parent_edge = f"""
             parent.end_reason = 'compression'
             AND child.parent_session_id = parent.id
-            AND json_extract(
-                COALESCE(child.model_config, '{{}}'), '$._branched_from'
-            ) IS NULL
-            AND {_delegate_from_json('child.model_config')} IS NULL
-            AND COALESCE(child.source, '') != 'tool'
+            AND {_continuation_child_edge_sql('child', 'parent.id')}
         """
 
         query = f"""
@@ -1207,7 +1205,7 @@ class SessionSessionsMixin:
               AND s.archived = 0
               AND s.hidden = 0
               AND {_LISTABLE_CHILD_SQL}
-              AND {_delegate_from_json('s.model_config')} IS NULL
+              AND NOT ({_DELEGATE_CHILD_SQL.format(a='s')})
             ORDER BY rt.activity DESC, s.started_at DESC, tip.id DESC
             LIMIT ?
         """
@@ -1310,10 +1308,7 @@ class SessionSessionsMixin:
                     JOIN sessions parent ON parent.id = c.cur_id
                     JOIN sessions child ON child.parent_session_id = c.cur_id
                     WHERE parent.end_reason = 'compression'
-                      AND {_sql_json_extract('child.model_config', '$._branched_from')} IS NULL
-                      AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL
-                      AND NOT ({_RESET_CHILD_SQL.format(a='child')})
-                      AND COALESCE(child.source, '') != 'tool'
+                      AND {_continuation_child_edge_sql('child', 'parent.id')}
                 ),
                 chain_max AS (
                     SELECT

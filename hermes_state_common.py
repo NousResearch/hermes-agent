@@ -148,10 +148,22 @@ _PREVIEW_RAW_SUBQUERY_SQL = (f"COALESCE((SELECT {_PREVIEW_RAW_SELECT} FROM messa
 
 # ── Session lineage predicates ({a} = sessions alias) ───────────────────────
 
+def _marker_names_parent_sql(alias: str, marker: str) -> str:
+    """Stable fork marker bound to this row's current parent, matching the Python classifier."""
+    marker_sql = _sql_json_extract(f"{alias}.model_config", f"$.{marker}")
+    return (
+        f"({marker_sql} IS NOT NULL AND "
+        f"({alias}.parent_session_id IS NULL OR {marker_sql} = {alias}.parent_session_id))"
+    )
+
+
 # /branch child (kept visible, never cascade-deleted): stable marker OR legacy end_reason heuristic.
-_BRANCH_CHILD_SQL = (f"{_sql_json_extract('{a}.model_config', '$._branched_from')} IS NOT NULL"
-    " OR EXISTS (SELECT 1 FROM sessions p            WHERE p.id = {a}.parent_session_id"
-    "            AND p.end_reason = 'branched'            AND {a}.started_at >= p.ended_at)")
+_BRANCH_CHILD_SQL = (
+    _marker_names_parent_sql("{a}", "_branched_from")
+    + " OR EXISTS (SELECT 1 FROM sessions p            WHERE p.id = {a}.parent_session_id"
+      "            AND p.end_reason = 'branched'            AND {a}.started_at >= p.ended_at)"
+)
+_DELEGATE_CHILD_SQL = _marker_names_parent_sql("{a}", "_delegate_from")
 _COMPRESSION_CHILD_SQL = ("EXISTS (SELECT 1 FROM sessions p        WHERE p.id = {a}.parent_session_id"
     "        AND p.end_reason = 'compression')")
 
@@ -203,8 +215,25 @@ def _legacy_reset_child_sql(alias: str, reasons_sql: str) -> str:
 
 # A reset starts a separate user-visible conversation though rows keep parent_session_id for lineage.
 # Stable marker, or the same-key fallback for pre-marker rows (exact key keeps subagent children out).
-_RESET_CHILD_SQL = (f"{_sql_json_extract('{a}.model_config', '$._reset_from')} IS NOT NULL"
-    " OR " + _legacy_reset_child_sql("{a}", _RESET_END_REASONS_SQL))
+_RESET_CHILD_SQL = (
+    _marker_names_parent_sql("{a}", "_reset_from")
+    + " OR " + _legacy_reset_child_sql("{a}", _RESET_END_REASONS_SQL)
+)
+
+def _continuation_child_edge_sql(child_alias: str, parent_id_sql: str) -> str:
+    """Return the child-side SQL predicate for one continuation edge.
+
+    Fork markers are edge-scoped, not presence-scoped: compression copies
+    ``model_config`` forward, so a marker naming an earlier parent must not
+    sever the current continuation. The caller owns any parent end-reason rule;
+    ``parent_id_sql`` is a trusted SQL expression supplied by repository code.
+    """
+    checks = []
+    for marker in ("_branched_from", "_delegate_from", "_reset_from"):
+        marker_sql = _sql_json_extract(f"{child_alias}.model_config", f"$.{marker}")
+        checks.append(f"COALESCE({marker_sql}, '') != {parent_id_sql}")
+    checks.append(f"COALESCE({child_alias}.source, '') != 'tool'")
+    return " AND ".join(checks)
 
 # Picker-visible rows: roots + branch/reset children (not subagent runs or compression continuations).
 _LISTABLE_CHILD_SQL = (f"(s.parent_session_id IS NULL OR {_BRANCH_CHILD_SQL.format(a='s')}"

@@ -9,7 +9,9 @@ import time
 from pathlib import Path
 from typing import Dict, Optional
 
-from hermes_state_common import _RESET_CHILD_SQL, _sql_json_extract
+from hermes_state_common import (
+    _RESET_END_REASONS_SQL, _continuation_child_edge_sql, _legacy_reset_child_sql,
+)
 
 # Same logger the code used before extraction (record parity).
 _log = logging.getLogger("hermes_cli.web_server")
@@ -24,10 +26,8 @@ _DESCENDANTS_SQL = f"""
                 -- Continuation edges only (same predicate as the session list's chain CTE): a subagent run,
                 -- a /branch fork, a /new reset child or a tool-owned row is its own conversation, and resuming
                 -- INTO one parks the user's chat in a row the sidebar never lists (#115092).
-                WHERE {_sql_json_extract('s.model_config', '$._delegate_from')} IS NULL
-                  AND {_sql_json_extract('s.model_config', '$._branched_from')} IS NULL
-                  AND NOT ({_RESET_CHILD_SQL.format(a='s')})
-                  AND COALESCE(s.source, '') != 'tool'
+                WHERE {_continuation_child_edge_sql('s', 's.parent_session_id')}
+                  AND NOT ({_legacy_reset_child_sql('s', _RESET_END_REASONS_SQL)})
             )
             SELECT id, parent_session_id, started_at FROM descendants
             """

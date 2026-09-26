@@ -22,9 +22,13 @@ class RingBuffer:
         self._cap = capacity
         self._buf = bytearray()
         self.truncated = False
+        # Monotonic timestamp of the most recent output. ``reap_idle`` uses it to tell a
+        # detached-but-working session (a long task still printing) from an idle one.
+        self.last_append_at: float = 0.0
 
     def append(self, data: bytes) -> None:
         self._buf.extend(data)
+        self.last_append_at = time.monotonic()
         overflow = len(self._buf) - self._cap
         if overflow > 0:
             del self._buf[:overflow]
@@ -212,7 +216,16 @@ class PtySessionRegistry:
         now = time.monotonic() if now is None else now
         doomed = [
             key for key, s in self._sessions.items()
-            if not s.alive or (not s.attached and s.last_detached_at is not None and (now - s.last_detached_at) > self._ttl)
+            if not s.alive or (
+                not s.attached
+                and s.last_detached_at is not None
+                # Idle time is measured from the last activity, not from the detach: a session
+                # whose PTY keeps producing output is still doing work (a long-running turn),
+                # and reaping it killed the process and its task while the user was away.
+                # max(detached_at, last_append_at) keeps the leak guard intact — a session that
+                # is truly silent for the whole TTL is still reaped.
+                and (now - max(s.last_detached_at, s.buffer.last_append_at)) > self._ttl
+            )
         ]
         for key in doomed:
             # Reaps overlap (attach_or_spawn and the background reaper) and close()

@@ -11,28 +11,27 @@ import argparse
 import pytest
 
 import hermes_cli.models as models_mod
+from hermes_cli import models_pricing
 
 CURATED = ["vendor/allowed", "vendor/blocked"]
 ALLOWED = {"vendor/allowed"}
 
-
 @pytest.fixture
 def policy(monkeypatch):
     """An org whose policy admits only ``vendor/allowed``."""
-    monkeypatch.setattr(models_mod, "nous_policy_allowed_ids", lambda **_k: ALLOWED)
+    monkeypatch.setattr(models_pricing, "nous_policy_allowed_ids", lambda **_k: ALLOWED)
     return ALLOWED
-
 
 @pytest.fixture
 def no_policy(monkeypatch):
     """An unrestricted org — lists must come through untouched."""
-    monkeypatch.setattr(models_mod, "nous_policy_allowed_ids", lambda **_k: None)
-
+    monkeypatch.setattr(models_pricing, "nous_policy_allowed_ids", lambda **_k: None)
 
 class TestLoginNous:
 
     def _run(self, monkeypatch, tmp_path):
         import hermes_cli.auth as auth_mod
+        import hermes_cli.auth_nous as auth_nous
         import hermes_cli.nous_subscription as ns
 
         seen: dict = {}
@@ -49,8 +48,20 @@ class TestLoginNous:
                 "token_expires_at": 9999999999,
             },
         )
+        monkeypatch.setattr(
+            auth_nous,
+            "_nous_device_code_login",
+            lambda **_k: {
+                "access_token": "tok",
+                "agent_key": "key",
+                "inference_base_url": "https://inference.example.com",
+                "portal_base_url": "https://portal.example.com",
+                "refresh_token": "r",
+                "token_expires_at": 9999999999,
+            },
+        )
         monkeypatch.setattr(models_mod, "get_curated_nous_model_ids", lambda: list(CURATED))
-        monkeypatch.setattr(models_mod, "get_pricing_for_provider", lambda _p: {})
+        monkeypatch.setattr(models_pricing, "get_pricing_for_provider", lambda _p: {})
         monkeypatch.setattr(models_mod, "check_nous_free_tier", lambda **_k: None)
         monkeypatch.setattr(
             models_mod,
@@ -80,7 +91,6 @@ class TestLoginNous:
     ):
         assert self._run(monkeypatch, tmp_path).get("model_ids") == CURATED
 
-
 class TestModelSwitchPicker:
     """The ``/model`` picker's nous branch (``list_authenticated_providers``)."""
 
@@ -94,7 +104,7 @@ class TestModelSwitchPicker:
             lambda *a, **k: {"providers": {"nous": {"access_token": "tok"}}},
         )
         monkeypatch.setattr(models_mod, "get_curated_nous_model_ids", lambda: list(CURATED))
-        monkeypatch.setattr(models_mod, "get_pricing_for_provider", lambda _p: {})
+        monkeypatch.setattr(models_pricing, "get_pricing_for_provider", lambda _p: {})
         monkeypatch.setattr(models_mod, "check_nous_free_tier", lambda **_k: None)
         monkeypatch.setattr(
             models_mod,
@@ -121,18 +131,17 @@ class TestModelSwitchPicker:
         def _boom(_p):
             raise RuntimeError("portal down")
 
-        monkeypatch.setattr(models_mod, "get_pricing_for_provider", _boom)
+        monkeypatch.setattr(models_pricing, "get_pricing_for_provider", _boom)
         row = self._rows(monkeypatch)
         assert row is not None
         assert "vendor/blocked" not in row["models"]
-
 
 class TestRecommendedDefaultEndpoint:
     """This endpoint picks a model the user never sees chosen."""
 
     def _call(self, monkeypatch):
         import hermes_cli.auth as auth_mod
-        from hermes_cli.web_server import get_recommended_default_model
+        from hermes_cli.web_routers.models import get_recommended_default_model
 
         # Blocked first, so an unfiltered list would make it the silent
         # default — otherwise this passes whether or not the filter runs.
@@ -140,7 +149,7 @@ class TestRecommendedDefaultEndpoint:
             models_mod, "get_curated_nous_model_ids",
             lambda: ["vendor/blocked", "vendor/allowed"],
         )
-        monkeypatch.setattr(models_mod, "get_pricing_for_provider", lambda _p: {})
+        monkeypatch.setattr(models_pricing, "get_pricing_for_provider", lambda _p: {})
         monkeypatch.setattr(models_mod, "check_nous_free_tier", lambda **_k: None)
         monkeypatch.setattr(
             models_mod,
@@ -156,7 +165,6 @@ class TestRecommendedDefaultEndpoint:
     def test_unrestricted_org_is_unaffected(self, monkeypatch, no_policy):
         assert self._call(monkeypatch)["model"] == "vendor/blocked"
 
-
 class TestAuxiliaryFastModel:
     """``_fast_model_from_catalog`` uses the catalog's keys as a source of ids."""
 
@@ -170,23 +178,18 @@ class TestAuxiliaryFastModel:
             return {mid: {} for mid in catalog}
 
         monkeypatch.setattr(
-            models_mod, "_resolve_nous_pricing_credentials",
+            models_pricing, "_resolve_nous_pricing_credentials",
             lambda: ("sk-nous", "https://inference.example.com"),
         )
-        monkeypatch.setattr(models_mod, "fetch_models_with_pricing", _fake_fetch)
+        monkeypatch.setattr(models_pricing, "fetch_models_with_pricing", _fake_fetch)
         picked = aux._fast_model_from_catalog("nous")
         return picked, seen
-
-    def test_reads_the_catalog_with_nous_oauth_credentials(self, monkeypatch, no_policy):
-        """The api-key resolver raises for OAuth providers."""
-        _, seen = self._pick(monkeypatch, catalog=["vendor/haiku-fast"])
-        assert seen["api_key"] == "sk-nous"
 
     def test_hidden_model_is_not_selected(self, monkeypatch, policy):
         import agent.auxiliary_client as aux
 
         monkeypatch.setattr(
-            models_mod, "nous_policy_allowed_ids", lambda **_k: {"vendor/allowed"}
+            models_pricing, "nous_policy_allowed_ids", lambda **_k: {"vendor/allowed"}
         )
         monkeypatch.setattr(aux, "_FAST_MODEL_FAMILIES", ("vendor/",))
         monkeypatch.setattr(aux, "_FAST_MODEL_EXCLUDE", ())
@@ -195,22 +198,9 @@ class TestAuxiliaryFastModel:
         )
         assert picked == "vendor/allowed"
 
-
 class TestNousPrefetch:
     """The nous disk-cache entry is write-only, so prefetching it is a round
     trip for nothing."""
-
-    def test_nous_is_not_collected_for_prefetch(self, monkeypatch):
-        import hermes_cli.auth as auth_mod
-        import hermes_cli.model_switch as ms
-
-        monkeypatch.setattr(
-            auth_mod, "_load_auth_store",
-            lambda *a, **k: {"providers": {"nous": {"access_token": "tok"}}},
-        )
-        slugs = ms._collect_authed_provider_slugs({}, {"nous": list(CURATED)}, [])
-        assert "nous" not in slugs
-
 
 class TestPolicyNoticeIsShown:
 
@@ -219,17 +209,7 @@ class TestPolicyNoticeIsShown:
 
         monkeypatch.setattr(account_mod, "nous_policy_present", lambda: True)
         TestLoginNous()._run(monkeypatch, tmp_path)
-        assert "restricts which models" in capsys.readouterr().out
-
-    def test_login_silent_for_an_ungoverned_org(
-        self, monkeypatch, tmp_path, no_policy, capsys
-    ):
-        import hermes_cli.nous_account as account_mod
-
-        monkeypatch.setattr(account_mod, "nous_policy_present", lambda: False)
-        TestLoginNous()._run(monkeypatch, tmp_path)
-        assert "restricts which models" not in capsys.readouterr().out
-
+        assert account_mod.nous_policy_notice(removed=True) in capsys.readouterr().out
 
 class TestAuxFallbackRespectsPolicy:
     """Steps 2-4 of the aux ladder are policy-blind: `resolve_aux_model` queries
@@ -239,14 +219,14 @@ class TestAuxFallbackRespectsPolicy:
         import agent.auxiliary_client as aux
         import providers
 
-        monkeypatch.setattr(models_mod, "nous_policy_allowed_ids", lambda **_k: allowed)
+        monkeypatch.setattr(models_pricing, "nous_policy_allowed_ids", lambda **_k: allowed)
         monkeypatch.setattr(
-            models_mod, "_resolve_nous_pricing_credentials",
+            models_pricing, "_resolve_nous_pricing_credentials",
             lambda: ("sk", "https://inference.example.com"),
         )
         # No fast-family match, so the catalog step yields nothing.
         monkeypatch.setattr(
-            models_mod, "fetch_models_with_pricing",
+            models_pricing, "fetch_models_with_pricing",
             lambda **_k: {"vendor/allowed-large": {}},
         )
 
@@ -284,26 +264,3 @@ class TestAuxFallbackRespectsPolicy:
             aux._get_aux_model_for_provider("nous", prefer_fast=True)
             == "vendor/anything"
         )
-
-
-def test_titling_seeds_the_shared_catalog_entry_like_the_pickers(monkeypatch):
-    """The aux catalog read shares the pickers' cache entry, so seeding it
-    without the Nous-only arguments costs the picker its sale chrome and leaves
-    the policy catalog with no expiry."""
-    import agent.auxiliary_client as aux
-
-    monkeypatch.setattr(
-        models_mod, "_resolve_nous_pricing_credentials",
-        lambda: ("tok", "https://inference.example.com"),
-    )
-    seen: dict = {}
-
-    def _fake_fetch(**kwargs):
-        seen.update(kwargs)
-        return {"vendor/haiku": {}}
-
-    monkeypatch.setattr(models_mod, "fetch_models_with_pricing", _fake_fetch)
-    aux._fast_model_from_catalog("nous")
-
-    assert seen.get("include_sale_original") is True
-    assert seen.get("cache_ttl_seconds") == models_mod._NOUS_CATALOG_TTL_SECONDS

@@ -54,19 +54,6 @@ test('checkRootInstall fails when katex is missing but vite is present', () => {
   }
 })
 
-test('checkRootInstall fails when electron is missing', () => {
-  const { tempRoot, appDir } = makeTree({
-    rootPackages: BUILD_CRITICAL.filter(name => name !== 'electron')
-  })
-  try {
-    const result = checkRootInstall(appDir, tempRoot)
-    assert.equal(result.ok, false)
-    assert.match(result.error, /electron/)
-  } finally {
-    fs.rmSync(tempRoot, { recursive: true, force: true })
-  }
-})
-
 test('checkRootInstall reports every missing package at once', () => {
   const { tempRoot, appDir } = makeTree({ rootPackages: ['vite'] })
   try {

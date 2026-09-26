@@ -371,7 +371,15 @@ class SearchMixin:
                 exit_code = 124
                 break
         if proc.poll() is None:
-            _kill_process_group_posix(proc)  # native lane is POSIX-only (gate above)
+            try:
+                _kill_process_group_posix(proc)  # native lane is POSIX-only (gate above)
+            except OSError:
+                # A fast rg can exit between poll() and getpgid(). Do not discard
+                # its captured results; terminate just this child if still alive.
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
         proc.wait()
         drainer.join()
         proc.stdout.close()

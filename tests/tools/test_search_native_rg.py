@@ -126,3 +126,17 @@ def test_limit_hit_keeps_drained_matches_when_group_kill_is_refused(tree, ops_fa
     monkeypatch.setattr(os, "killpg", lambda pgid, sig: (_ for _ in ()).throw(PermissionError(1, "Operation not permitted")))
     result = ops.search(pattern="needle", path=str(tree), limit=2)
     assert not result.error and len(result.matches) == 2, result.to_dict()
+
+
+def test_native_rg_cleanup_getpgid_race_keeps_completed_results(tree, ops_factory, monkeypatch):
+    """ESRCH after poll must not discard rg's already-drained matches (#123930)."""
+    import tools.environments.local as local
+
+    def missing_group(proc):
+        raise ProcessLookupError(3, "No such process")
+
+    monkeypatch.setattr(local, "_kill_process_group_posix", missing_group)
+    ops = ops_factory(tree, [])
+    result = ops._run_rg_native(['sh', '-c', '"printf needle; printf \'\\n\'; sleep 20"'], 1, timeout=2)
+    assert result.exit_code == 0
+    assert result.stdout == "needle\n"

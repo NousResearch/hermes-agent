@@ -60,6 +60,41 @@ def classify_pressure(available_kib: Any, total_kib: Any) -> str:
     return "ok"
 
 
+def classify_pressure_sample(sample: Optional[Dict[str, Any]]) -> str:
+    """Pressure for the SUBJECT a dispatcher actually shares memory with — cgroup-aware.
+
+    ``/proc/meminfo`` reports the whole NODE. On a shared cluster node other
+    tenants fill it, so a container that is nowhere near its own budget read as
+    "critical" and starved its dispatch (shared/claude-plugins#1012). When the
+    sample carries the container's own cgroup usage:
+
+    * cgroup-limited (a pod with a memory limit, a systemd unit with
+      ``MemoryMax=``) — headroom is ``limit - usage`` against the limit;
+    * uncapped — headroom is the node's ``MemTotal`` minus OUR OWN usage: we
+      may burst into the node's capacity, and the only usage that bounds that
+      burst is ours (neighbour pressure costs us an eviction risk the operator
+      accepted, not a licence to throttle the factory — owner rule: no hard
+      caps imposed by RAM).
+    * no cgroup fields (plain VM, non-Linux, read failure) — node fields, the
+      historical behaviour: on a single-tenant host MemAvailable *is* our
+      subject.
+    """
+    if not sample:
+        return "unknown"
+    usage = _nonneg_int(sample.get("cgroup_usage_bytes"))
+    limit = _nonneg_int(sample.get("cgroup_limit_bytes"))
+    if usage is not None:
+        if limit is not None and limit > 0:
+            return classify_pressure(max(limit - usage, 0) // 1024, limit // 1024)
+        node_total_kib = _nonneg_int(sample.get("mem_total_kib"))
+        if node_total_kib:
+            own_used_kib = usage // 1024
+            return classify_pressure(
+                max(node_total_kib - own_used_kib, 0), node_total_kib
+            )
+    return classify_pressure(sample.get("mem_available_kib"), sample.get("mem_total_kib"))
+
+
 def _read_state_files(home: Optional[Path]) -> tuple:
     """``(heartbeat, sentinel)`` dicts, each ``None`` when unreadable."""
     try:

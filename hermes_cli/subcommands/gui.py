@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Callable
 
 
-def build_gui_parser(subparsers, *, cmd_gui: Callable) -> None:
+def build_gui_parser(subparsers, *, cmd_gui: Callable, cmd_desktop_finish_update: Callable) -> None:
     """Attach the ``gui`` subcommand to ``subparsers``."""
     gui_parser = subparsers.add_parser(
         "desktop", aliases=["gui"], help="Build and launch the native desktop app",
@@ -52,4 +52,14 @@ def build_gui_parser(subparsers, *, cmd_gui: Callable) -> None:
         "--identity", default="Hermes Local Signing",
         help="Certificate name to create/use for --setup-tcc-identity (default: Hermes Local Signing)",
     )
+    gui_parser.set_defaults(func=cmd_gui)
+
+    # Skipped desktop installs (#123737): a running bundle is never swapped
+    # under, so the updater records the staged install and this command
+    # completes it after the user quits the app.
+    finish_subparsers = gui_parser.add_subparsers(dest="desktop_command")
+    finish = finish_subparsers.add_parser(
+        "finish-update",
+        help="Finish a desktop app install the updater skipped (app was running)")
+    finish.set_defaults(func=cmd_desktop_finish_update)
     gui_parser.set_defaults(func=cmd_gui)

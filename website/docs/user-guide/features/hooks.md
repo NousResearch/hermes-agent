@@ -11,8 +11,8 @@ Hermes has four hook systems that run custom code at key lifecycle points:
 | System | Registered via | Runs in | Use case |
 |--------|---------------|---------|----------|
 | **[Gateway hooks](#gateway-event-hooks)** | `HOOK.yaml` + `handler.py` in `~/.hermes/hooks/` | Gateway only | Logging, alerts, webhooks |
-| **[Plugin hooks](#plugin-hooks)** | `ctx.register_hook()` in a [plugin](/user-guide/features/plugins) | CLI + Gateway | Tool interception, metrics, guardrails |
-| **[Shell hooks](#shell-hooks)** | `hooks:` block in `~/.hermes/config.yaml` pointing at shell scripts | CLI + Gateway | Drop-in scripts for blocking, auto-formatting, context injection |
+| **[Plugin hooks](#plugin-hooks)** | `ctx.register_hook()` in a [plugin](./plugins.md) | CLI + Gateway | Tool interception, metrics, guardrails |
+| **[Shell hooks](#shell-hooks)** | `hooks:` block in profile `config.yaml` pointing at shell scripts | CLI + Gateway + Desktop/TUI/dashboard chat | Drop-in scripts for blocking, auto-formatting, context injection |
 | **[Outbound webhooks](#outbound-webhooks)** | `hooks.outbound:` list in `~/.hermes/config.yaml` | CLI + Gateway | Push signed lifecycle events to external HTTP endpoints — CI, dashboards, other agents |
 
 Hook callback errors are isolated and logged rather than crashing the agent. Hooks are not all passive: directive/control hooks can change flow, transforms can replace content, and a shell `pre_tool_call` hook can block or fail closed.
@@ -20,6 +20,16 @@ Hook callback errors are isolated and logged rather than crashing the agent. Hoo
 ## Gateway Event Hooks
 
 Gateway hooks fire automatically during gateway operation (Telegram, Discord, Slack, WhatsApp, Teams) without blocking the main agent pipeline.
+
+### Trust model: placing the files is the opt-in {#gateway-hook-trust}
+
+The hooks directory is a **trusted-by-placement** extension point — the documented contract since `3988c3c245f` (April 2026), when the comparison table below first recorded its consent model as "Implicit (dir trust)". It has no enable list, and `plugins.enabled` / `plugins.disabled` do not apply to it — gateway hooks are not plugins. Exactly what loads:
+
+- **When:** once, at gateway startup (`HookRegistry.discover_and_load()`, called from `gateway/run_startup.py`). Under [multi-profile gateways](../multi-profile-gateways.md), each served profile's own `hooks/` is loaded the first time an event fires inside that profile. The CLI, TUI, Desktop and cron never load gateway hooks.
+- **What:** every subdirectory of `<profile home>/hooks/` (`~/.hermes/hooks/` for the default profile) that contains both a `HOOK.yaml` parsing to a mapping with a non-empty `events` list **and** a `handler.py`. Directories missing either file are skipped silently; an invalid manifest or an empty `events` list is skipped with a `[hooks] Skipping …` log line.
+- **How:** `handler.py` is imported in-process — its module body runs at import, and its `handle` function is registered for the declared events. It runs as the gateway process with the same access as the gateway itself (loaded credentials, tools, plugin state). There is no sandbox, no first-use prompt, and `HERMES_SAFE_MODE` does not skip this loader.
+
+Dropping the two files into the directory **is** the opt-in; removing (or renaming) `HOOK.yaml` or the directory is the opt-out. Anyone who can write into your profile home can already run code as you through `config.yaml` shell hooks or `plugins.enabled`, so the directory sits inside the same trust envelope as the rest of `~/.hermes/` — see [Trusted-by-placement extension points](../security.md#trusted-by-placement) on the security page. Review a hook's `handler.py` before you place it, exactly as you would a plugin before enabling it.
 
 ### Creating a Hook
 
@@ -349,7 +359,7 @@ An earlier version of Hermes shipped this as a built-in hook and silently spawne
 ### How It Works
 
 1. On gateway startup, `HookRegistry.discover_and_load()` scans `~/.hermes/hooks/`
-2. Each subdirectory with `HOOK.yaml` + `handler.py` is loaded dynamically
+2. Each subdirectory with `HOOK.yaml` + `handler.py` is imported in-process — no enable list is consulted (see [Trust model](#gateway-hook-trust))
 3. Handlers are registered for their declared events
 4. At each lifecycle point, `hooks.emit()` fires all matching handlers
 5. Errors in any handler are caught and logged — a broken hook never crashes the agent
@@ -360,10 +370,10 @@ Gateway hooks only fire in the **gateway** (Telegram, Discord, Slack, WhatsApp, 
 
 ## Plugin Hooks
 
-[Plugins](/user-guide/features/plugins) can register hooks that fire in **both CLI and gateway** sessions. These are registered programmatically via `ctx.register_hook()` in your plugin's `register()` function.
+[Plugins](./plugins.md) can register hooks that fire in **both CLI and gateway** sessions. These are registered programmatically via `ctx.register_hook()` in your plugin's `register()` function.
 
 For plugin packaging and registration details, see
-the [Plugins guide](/docs/user-guide/features/plugins).
+the [Plugins guide](./plugins.md).
 
 ```python
 def register(ctx):
@@ -382,7 +392,8 @@ def register(ctx):
 **General rules for all hooks:**
 
 - Callbacks receive **keyword arguments**. Always accept `**kwargs` for forward compatibility.
-- Callback exceptions are logged and skipped; later callbacks continue.
+- Callback exceptions are logged and skipped; later callbacks continue. A callback that fails the same way on every call (typically a signature naming a field the hook does not send, e.g. `tool_data` instead of `tool_name`/`args`) is reported **once** at WARNING — the message lists the fields the hook provides — and identical repeats go to DEBUG, so a mis-declared plugin cannot flood the log.
+- If a Python plugin callback on a **timeout-bounded** hook (hot-path observers such as `post_tool_call` / `pre_llm_call`, plus the policy hook `pre_tool_call`) **blocks** longer than `plugins.hook_callback_timeout` (default 30s, set `0` to disable, max 600), it is abandoned without joining the worker so the agent loop continues. Timed-out or still-running `pre_tool_call` callbacks **fail closed** (block the tool); other bounded hooks fail open (skip). Hooks with a documented caller-thread contract (`subagent_stop`) are never moved onto a timeout worker. Shell hooks keep their own per-entry `timeout`.
 - The catalog below is descriptive: **observers** ignore returns, **transforms** accept the first valid string replacement, and **directive/control** hooks consume documented return shapes. Plugin middleware is a separate registry and surface, not another hook category.
 - Correlation fields such as `turn_id`, `api_request_id`, `task_id`, `session_id`, and `api_call_count` are hook-specific and may be absent. Treat IDs as opaque.
 - Runtime event-name validity comes from `hermes_cli.plugins.VALID_HOOKS`. `hermes hooks list` lists configured shell/outbound hooks, not every available event; `hermes hooks test <event>` reports the valid set only when an invalid event is supplied.
@@ -437,7 +448,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 
 | Hook | Category | Exact timing and return behavior | Explicit payload fields | Privacy / sensitivity |
 |---|---|---|---|---|
-| `pre_tool_call` | Directive/control | Once before execution; first valid `block` or `approve` directive wins. | `tool_name`, `args`, `task_id`, `session_id`, `tool_call_id`, `turn_id`, `api_request_id`, `middleware_trace` | Raw arguments may contain user content, paths, commands, or secrets. |
+| [`pre_tool_call`](#pre_tool_call) | Directive/control | Once before execution; any valid `block` wins over any `approve` (then the first valid `approve`), and `modify` returns are shallow-merged into the tool arguments. | `tool_name`, `args`, `task_id`, `session_id`, `tool_call_id`, `turn_id`, `api_request_id`, `middleware_trace` | Raw arguments may contain user content, paths, commands, or secrets. |
 | `post_tool_call` | Observer | After blocked, error, or successful result; return ignored. | `tool_name`, `args`, `result`, `task_id`, `session_id`, `tool_call_id`, `turn_id`, `api_request_id`, `duration_ms`, `status`, `error_type`, `error_message`, `middleware_trace` | Result/error text may contain arbitrary tool or user content and secrets. |
 | `transform_tool_result` | Transform | After `post_tool_call`, before conversation append; first string replaces the result. | `tool_name`, `args`, `result`, `task_id`, `session_id`, `tool_call_id`, `turn_id`, `api_request_id`, `duration_ms`, `status`, `error_type`, `error_message` | Exposes the full model-bound result and arguments. |
 | `transform_terminal_output` | Transform | After bounded foreground process capture, before final output limiting; first string replaces output. | `command`, `output`, `returncode`, `task_id`, `env_type` | Command/output may contain credentials. |
@@ -449,6 +460,8 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `pre_api_request` | Observer | Per provider attempt, immediately before the request; return ignored. | `task_id`, `turn_id`, `api_request_id`, `session_id`, `user_message`, `conversation_history`, `platform`, `model`, `provider`, `base_url`, `api_mode`, `api_call_count`, `retry_count`, `request_messages`, `message_count`, `tool_count`, `approx_input_tokens`, `request_char_count`, `max_tokens`, `started_at`, `middleware_trace`, `request` | High sensitivity: legacy `user_message`, `conversation_history`, and `request_messages` are intentionally raw; prefer sanitized `request`. |
 | `post_api_request` | Observer | After normalized provider success; return ignored. | `task_id`, `turn_id`, `api_request_id`, `session_id`, `platform`, `model`, `provider`, `base_url`, `api_mode`, `api_call_count`, `api_duration`, `started_at`, `ended_at`, `finish_reason`, `message_count`, `response_model`, `response`, `usage`, `assistant_message`, `assistant_content_chars`, `assistant_tool_call_count` | Sanitized `response` is available, but raw normalized `assistant_message` may contain model/user content; `usage` is accounting data. |
 | `api_request_error` | Observer | On each failed provider attempt; return ignored. | `task_id`, `turn_id`, `api_request_id`, `session_id`, `platform`, `model`, `provider`, `base_url`, `api_mode`, `api_call_count`, `api_duration`, `started_at`, `ended_at`, `status_code`, `retry_count`, `max_retries`, `retryable`, `reason`, `error`, `request` | Error text may contain provider/user data; `request` is intended to be sanitized. |
+| `pre_auxiliary_call` | Observer | Per provider attempt of an auxiliary LLM call (titling, compression, MoA, vision, approval, ...), immediately before the request; return ignored. | `aux_task`, `task_id`, `turn_id`, `session_id`, `platform` (the parent turn's, empty outside a turn), `api_request_id`, `api_call_count`, `retry_count`, `streaming`, `model`, `provider`, `base_url`, `api_mode`, `request_messages`, `system_prompt`, `message_count`, `tool_count`, `approx_input_tokens`, `request_char_count`, `max_tokens`, `started_at`, `request` | `request_messages` is raw (compression sees the whole transcript); prefer sanitized `request`. |
+| `post_auxiliary_call` | Observer | After the same attempt returns or raises; return ignored. | `pre_auxiliary_call` identity fields plus `api_duration`, `ended_at`, `finish_reason`, `response_model`, `usage`, `response`, `assistant_content_chars`, `assistant_tool_call_count`, `error`, `error_type` (`None` on success; `usage`/`response` are `None` on error and for `streaming=True`) | Sanitized `response`; `usage` is accounting data; `error` may contain provider text. |
 | `on_stream_start` | Observer | Dispatched when a streaming LLM response begins; delivered off the token path via a host-owned bounded queue with one worker per callback; return ignored. | `turn_id`, `iteration`, `session_id`, `model`, `provider`, `surface` | Identifiers and routing metadata only. |
 | `on_stream_delta` | Observer | Dispatched per normalized streaming text delta via the bounded observer queue; a stalled callback drops only its own oldest events; return ignored. | `delta`, `kind` (`text` or `reasoning`), `turn_id`, `iteration`, `session_id`, `model`, `provider`, `surface` | Delta text is raw model output; reasoning deltas require the `plugins.stream_reasoning_deltas` opt-in. |
 | `on_stream_end` | Observer | Dispatched when a streaming response finishes or errors, after the stream closes; return ignored. | `final_text`, `finished`, `error`, `turn_id`, `iteration`, `session_id`, `model`, `provider`, `surface` | Full assembled response text; error text may include provider data. |
@@ -456,8 +469,9 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `transform_api_error_classification` | Transform | On each failed provider attempt, at the top of the built-in classifier; all callbacks run, then the first dict with a valid `reason` wins (run-all-then-pick-first), and skipped valid results log a runtime warning. Python plugins only. | `provider`, `model`, `status_code`, `error_type`, `error_code`, `error_message`, `error_body`, `error`, `approx_tokens`, `context_length`, `num_messages` | `error_message` and `error_body` may contain raw provider/user data. |
 | `on_session_start` | Observer | First turn of a new session; return ignored. | `session_id`, `model`, `platform` | Identifiers and routing metadata only. |
 | `on_session_end` | Observer | Canonically at each turn finalization; CLI/TUI exits have additional reduced legacy shapes. Return ignored. | Canonical: `session_id`, `task_id`, `turn_id`, `completed`, `failed`, `interrupted`, `turn_exit_reason`, `model`, `platform`; exit paths may add `reason`/`api_request_id` and omit fields. | IDs, model/platform, and outcome; canonical payload has no message body. |
-| `on_session_finalize` | Observer | CLI/TUI/gateway teardown through `finalize_session`; gateway shutdown or expiry may finalize without a reset. Return ignored. | Surface-dependent `session_id`, `platform`, optionally `reason`, `old_session_id`, `new_session_id` | Session and routing identifiers. |
+| `on_session_finalize` | Observer | CLI/TUI/gateway teardown through `finalize_session`; gateway shutdown may finalize without a reset. Return ignored. | Surface-dependent `session_id`, `platform`, optionally `reason`, `old_session_id`, `new_session_id` | Session and routing identifiers. |
 | `on_session_reset` | Observer | CLI/TUI session boundary and gateway after the replacement session exists; return ignored. | CLI: `session_id`, `platform`, `reason`; TUI: `session_id`, `platform`; gateway: those plus `reason`, `old_session_id`, `new_session_id` | Session and routing identifiers. |
+| `agent_loop_stopped` | Observer | Immediately after a real running agent is interrupted — gateway `_interrupt_and_clear_session` or TUI/desktop `session.interrupt`; return ignored. | `session_key`, `platform`, `reason`, `invalidation_reason` | Session/routing identifiers and interruption reasons; no message body. |
 | `on_skill_lifecycle` | Observer | After an authoritative skill-usage state change; return ignored. | `action`, `skill_name`, `provenance`, `task_id`, `session_id`, `use_count`, `reused`, `reuse_after_patch` | Exposes the local skill name and provenance. |
 | `subagent_start` | Observer | Child constructed and about to run; return ignored. | `parent_session_id`, `parent_turn_id`, `parent_subagent_id`, `child_session_id`, `child_subagent_id`, `child_role`, `child_goal` | Child goal may contain user/project content. |
 | `subagent_stop` | Observer | Child exit; return ignored. | `parent_session_id`, `parent_turn_id`, `child_session_id`, `child_role`, `child_summary`, `child_status`, `tool_call_history`, `duration_ms` | Summary and redacted tool-history metadata may reveal project structure. |
@@ -466,6 +480,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `pre_command` | Observer | Recognized slash command about to be dispatched, before the handler runs, on CLI and gateway cold-path dispatch; return ignored in v1 (directive-shaped dicts are logged at debug). Gateway running-agent intercept commands (`/stop`, `/approve` during an active run) are deliberately excluded — control-plane escape hatches must stay outside plugin reach. | `surface` (`"cli"` \| `"gateway"`), `command` (canonical name), `alias_used`, `args_raw`, `session_key`, `platform` | `args_raw` may contain user content or secrets typed after the command. |
 | `pre_approval_request` | Observer | Before prompted or smart approval; return ignored. | `command`, `description`, `pattern_key`, `pattern_keys`, `session_key`, `surface`, `turn_id`, `tool_call_id` | Command may contain secrets; smart observer preparation force-redacts, but surfaces do not all have identical redaction. |
 | `post_approval_response` | Observer | After a decision, timeout, or gateway notification failure; return ignored. | `command`, `description`, `pattern_key`, `pattern_keys`, `session_key`, `surface`, `turn_id`, `tool_call_id`, `choice`; smart path may add `decided_by` | Same command sensitivity plus decision metadata. |
+| `on_room_member_activity` | Observer | While a hosted Group Chat member turn runs on the Bot Mode gateway, once per runtime event the member session emits (tool start/complete, approval request, message/reasoning deltas, errors); queued per consumer off the token path; return ignored. | `room_id`, `thread_id`, `member_id`, `turn_id`, `task_id`, `execution_generation`, `kind`, `seq`, `payload` | `payload` is the client-safe session event body: tool args and results, redacted approval commands, streamed member text. |
 | `kanban_task_claimed` | Observer | After claim commit, in dispatcher process before worker spawn; return ignored. | `task_id`, `profile_name`, `board`, `assignee`, `run_id` | Board/task/profile/assignee identifiers. |
 | `kanban_task_completed` | Observer | After completion and cleanup, usually in worker process; return ignored. | `task_id`, `profile_name`, `board`, `assignee`, `run_id`, `summary` | Summary may contain project/user content. |
 | `kanban_task_blocked` | Observer | After a blocked transition; the dependency-wait path fires before its transaction exits. Return ignored. | `task_id`, `profile_name`, `board`, `assignee`, `run_id`, `reason` | Reason may contain project/user content. |
@@ -551,9 +566,27 @@ return {"action": "block", "message": "Reason the tool call was blocked"}
 return {"action": "approve", "message": "Why approval is required", "rule_key": "optional:scope"}
 ```
 
-The first valid directive wins. `block` requires a non-empty `message` and short-circuits the tool with that text as the error returned to the model. `approve` escalates the call to the existing human-approval gate; `message` and `rule_key` are optional, and denial, timeout, or gate error fails closed. Other return values are ignored.
+Precedence is `block` > `approve` > no directive, regardless of registration order: any plugin's valid `block` wins over an earlier plugin's `approve`, and among `approve` directives the first valid one wins (Python plugins are registered first, then shell hooks). `block` requires a non-empty `message` and short-circuits the tool with that text as the error returned to the model. `approve` escalates the call to the existing human-approval gate; `message` and `rule_key` are optional, and denial, timeout, or gate error fails closed. Other return values are ignored, so existing observer-only callbacks keep working unchanged.
 
-**Use cases:** Logging, audit trails, tool call counters, blocking dangerous operations, rate limiting, per-user policy enforcement.
+**Return value — rewrite the tool's arguments:**
+
+```python
+return {"action": "modify", "args": {"new_string": "fixed content"}}
+```
+
+The returned `args` dictionary is shallow-merged over the original tool arguments before the tool executes. Multiple `modify` hooks accumulate — each hook's keys are merged into one accumulated dict built from the original args, so hook A changing `path` and hook B changing `content` both survive. If two hooks modify the same key, the later hook wins.
+
+Shell hooks also accept the Claude Code-compatible format:
+
+```json
+{"decision": "modify", "tool_input": {"new_string": "fixed content"}}
+```
+
+Both formats are normalized internally to `{"action": "modify", "args": {...}}`.
+
+If a `pre_tool_call` callback exceeds `plugins.hook_callback_timeout` (or is still running from a previous timed-out fire), Hermes **fails closed**: the tool is blocked with a timeout message rather than proceeding without a policy decision. The same applies to a callback that raises: the block message names the callback and the error. A hung callback is skipped for a 60s suppression window; after that a new tool call runs it again (up to three abandoned workers per callback, so a permanently hung plugin blocks tool calls with a warning naming it instead of silently wedging the agent until restart).
+
+**Use cases:** Logging, audit trails, tool call counters, blocking dangerous operations, rate limiting, per-user policy enforcement, argument sanitization, path rewriting, injecting default parameters.
 
 **Example — tool call audit log:**
 
@@ -651,13 +684,13 @@ def my_callback(session_id: str, user_message: str, conversation_history: list,
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `session_id` | `str` | Unique identifier for the current session |
-| `user_message` | `str` | The user's original message for this turn (before any skill injection) |
+| `user_message` | `str \| list` | The user's original message for this turn (before any skill injection). A multimodal turn (image or other attachment) is the list of content parts, exactly as sent |
 | `conversation_history` | `list` | Copy of the full message list (OpenAI format: `[{"role": "user", "content": "..."}]`) |
 | `is_first_turn` | `bool` | `True` if this is the first turn of a new session, `False` on subsequent turns |
 | `model` | `str` | The model identifier (e.g. `"anthropic/claude-sonnet-4.6"`) |
 | `platform` | `str` | Where the session is running: `"cli"`, `"telegram"`, `"discord"`, etc. |
 
-**Fires:** In `run_agent.py`, inside `run_conversation()`, after context compression but before the main `while` loop. Fires once per `run_conversation()` call (i.e. once per user turn), not once per API call within the tool loop.
+**Fires:** In `agent/turn_context.py` (turn preparation for `run_conversation()` in `agent/conversation_loop.py`), after context compression but before the main `while` loop. Fires once per `run_conversation()` call (i.e. once per user turn), not once per API call within the tool loop.
 
 **Return value:** If the callback returns a dict with a `"context"` key, or a plain non-empty string, the text is appended to the current turn's user message. Return `None` for no injection.
 
@@ -675,6 +708,8 @@ return None
 **Where context is injected:** Always the **user message**, never the system prompt. This preserves the prompt cache — the system prompt stays identical across turns, so cached tokens are reused. The system prompt is Hermes's territory (model guidance, tool enforcement, personality, skills). Plugins contribute context alongside the user's input.
 
 The clean user-message `content` remains unchanged. For replay and prompt-cache stability, Hermes may persist the exact API-bound message, including plugin-injected context, in the row's `api_content` sidecar.
+
+On a **multimodal turn** (the user message is a list of content parts — an image attachment, or text sent as parts) there is no string sidecar: the joined context is appended to that turn's content as one extra `{"type": "text"}` part, before the first request, and the part is persisted with the turn so a resumed session, compaction and replay all see the same message the model saw. Earlier messages and the system prompt are never touched.
 
 When **multiple plugins** return context, their outputs are joined with double newlines in plugin discovery order (alphabetical by directory name).
 
@@ -739,7 +774,7 @@ def my_callback(session_id: str, user_message: str, assistant_response: str,
 | `model` | `str` | The model identifier |
 | `platform` | `str` | Where the session is running |
 
-**Fires:** In `run_agent.py`, inside `run_conversation()`, after the tool loop exits with a final response. Guarded by `if final_response and not interrupted` — so it does **not** fire when the user interrupts mid-turn or the agent hits the iteration limit without producing a response.
+**Fires:** In `agent/turn_finalizer.py` (`finalize_turn()`, called by `run_conversation()` in `agent/conversation_loop.py`), after the tool loop exits with a final response. Guarded by `if final_response and not interrupted` — so it does **not** fire when the user interrupts mid-turn or the agent hits the iteration limit without producing a response.
 
 **Return value:** Ignored.
 
@@ -880,7 +915,7 @@ def my_callback(session_id: str, model: str, platform: str, **kwargs):
 | `model` | `str` | The model identifier |
 | `platform` | `str` | Where the session is running |
 
-**Fires:** In `run_agent.py`, inside `run_conversation()`, during the first turn of a new session — specifically after the system prompt is built but before the tool loop starts. The check is `if not conversation_history` (no prior messages = new session).
+**Fires:** In `agent/conversation_loop.py`, inside `run_conversation()`, during the first turn of a new session — specifically after the system prompt is built but before the tool loop starts. The check is `if not conversation_history` (no prior messages = new session).
 
 **Return value:** Ignored.
 
@@ -925,7 +960,7 @@ def my_callback(session_id: str, completed: bool, interrupted: bool,
 | `platform` | `str` | Where the session is running |
 
 **Fires:** In two places:
-1. **`run_agent.py`** — at the end of every `run_conversation()` call, after all cleanup. Always fires, even if the turn errored.
+1. **`agent/turn_finalizer.py`** — at the end of every `run_conversation()` call (`agent/conversation_loop.py`), after all cleanup. Always fires, even if the turn errored.
 2. **`cli.py`** — in the CLI's atexit handler, but **only** if the agent was mid-turn (`_agent_running=True`) when the exit occurred. This catches Ctrl+C and `/exit` during processing. In this case, `completed=False` and `interrupted=True`.
 
 **Return value:** Ignored.
@@ -975,7 +1010,7 @@ def register(ctx):
 
 ### `on_session_finalize`
 
-Fires when the CLI or gateway **tears down** an active session — for example, when the user runs `/new`, the gateway GC'd an idle session, or the CLI quit with an active agent. Use it to flush state tied to the outgoing session ID. On gateway reset, the replacement session already exists before this callback runs.
+Fires when the CLI or gateway **tears down** an active session — for example, when the user runs `/new` or the CLI quits with an active agent. Resource-only idle cache eviction does not finalize the durable conversation. Use it to flush state tied to the outgoing session ID. On gateway reset, the replacement session already exists before this callback runs.
 
 **Callback signature:**
 
@@ -988,7 +1023,7 @@ def my_callback(session_id: str | None, platform: str, **kwargs):
 | `session_id` | `str` or `None` | The outgoing session ID. May be `None` if no active session existed. |
 | `platform` | `str` | `"cli"` or the messaging platform name (`"telegram"`, `"discord"`, etc.). |
 
-**Fires:** In CLI/TUI teardown and in gateway reset, shutdown, or idle-expiry paths. Gateway shutdown and expiry can finalize without a matching `on_session_reset`.
+**Fires:** In CLI/TUI teardown and in gateway reset or shutdown paths. Gateway shutdown can finalize without a matching `on_session_reset`.
 
 **Return value:** Ignored.
 
@@ -1022,7 +1057,34 @@ def my_callback(session_id: str, platform: str, **kwargs):
 
 ---
 
-See the **[Build a Plugin guide](/developer-guide/plugins)** for the full walkthrough including tool schemas, handlers, and advanced hook patterns.
+See the **[Build a Plugin guide](../../developer-guide/plugins/index.md)** for the full walkthrough including tool schemas, handlers, and advanced hook patterns.
+
+---
+
+### `agent_loop_stopped`
+
+Fires when the gateway **interrupts a running agent turn** — the user ran `/stop` while the loop was working, or the running-agent fast-path inside `/new` cleared the in-flight run before swapping the session. Unlike `on_session_finalize`, this fires earlier, while a turn is mid-flight, so plugins can drop per-turn external resources the agent loop will never consume (e.g. an outbound RPC that was waiting for a tool result).
+
+Fires on both interruption surfaces: the messaging **gateway** (`/stop`, `/new` fast-path) and the **TUI/desktop** `session.interrupt` path (platform is reported as `"tui"`). Does not fire in the plain CLI; there is no equivalent interruption surface there.
+
+**Callback signature:**
+
+```python
+def my_callback(session_key: str, platform: str, reason: str, invalidation_reason: str, **kwargs):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `session_key` | `str` | The session whose run was interrupted. |
+| `platform` | `str` | The messaging platform name (`"telegram"`, `"discord"`, etc.); empty string if unknown. |
+| `reason` | `str` | Why the agent was interrupted (e.g. `"user_stop"`, the reset/new reason). |
+| `invalidation_reason` | `str` | Why queued session state was invalidated (e.g. `"stop_command"`, `"stop_command_thread_sibling"`, `"stop_command_chat_scope"`, `"reset_command"`). |
+
+**Fires:** In `gateway/run_agent_cache.py::_interrupt_and_clear_session`, immediately after `request_hard_interrupt()` interrupts the running agent. Only when a real agent was running — the pending-sentinel `/stop` path (no agent loop yet started) does **not** fire this hook, since there is no in-flight work to drop. On the slow `/new` reset path, `on_session_finalize` fires later in `_handle_reset_command` instead.
+
+**Return value:** Ignored.
+
+**Use cases:** Cancel external requests blocked on a tool result the loop will never consume, notify a connected voice/realtime client that a tool call was abandoned, release per-turn credentials or locks held only for the duration of an active turn.
 
 ---
 
@@ -1099,7 +1161,7 @@ def register(ctx):
 
 ### `subagent_stop`
 
-Fires **once per child agent** after `delegate_task` finishes. Whether you delegated a single task or a batch of three, this hook fires once for each child, serialised on the parent thread.
+Fires **once per child agent** after `delegate_task` finishes. Whether you delegated a single task or a batch of three, this hook fires once for each child. Dispatch is serialised on the parent thread after child futures drain, and each Python callback body runs on that same caller thread (not on a timeout worker).
 
 **Callback signature:**
 
@@ -1118,7 +1180,7 @@ def my_callback(parent_session_id: str, child_role: str | None,
 | `tool_call_history` | `list[dict]` | Ordered metadata-only tool calls: `tool_name`, bounded `tool_input`, `input_bytes`, `output_bytes`, and `status`; raw inputs and outputs are excluded |
 | `duration_ms` | `int` | Wall-clock time spent running the child, in milliseconds |
 
-**Fires:** In `tools/delegate_tool.py`, after `ThreadPoolExecutor.as_completed()` drains all child futures. Firing is marshalled to the parent thread so hook authors don't have to reason about concurrent callback execution.
+**Fires:** In `tools/delegate_tool.py`, after `ThreadPoolExecutor.as_completed()` drains all child futures. `invoke_hook("subagent_stop", ...)` is marshalled to the parent thread so authors don't see child-pool re-entrancy, and callbacks stay on that caller thread.
 
 **Return value:** Ignored.
 
@@ -1165,6 +1227,8 @@ def my_callback(event, gateway, session_store, **kwargs):
 **Fires:** In `gateway/run.py`, inside `GatewayRunner._handle_message()`, immediately after `is_internal` is computed. **Internal events skip the hook entirely** (they are system-generated — background-process completions, etc. — and must not be gate-kept by user-facing policy).
 
 **Return value:** `None` or a dict. The first recognized action dict wins; remaining plugin results are ignored. Exceptions in plugin callbacks are caught and logged; the gateway always falls through to normal dispatch on error.
+
+Callbacks may be `async def`: they are awaited on the gateway's own event loop, so awaiting loop-bound work (an `asyncio.Event`, an aiohttp session, `asyncio.to_thread`) makes progress and other inbound messages keep flowing while the callback runs. The hook is intentionally not bounded by `plugins.hook_callback_timeout` — dropping or passing a message on timeout are both wrong for a policy gate — so a callback that never returns holds up dispatch of that message.
 
 | Return | Effect |
 |--------|--------|
@@ -1303,7 +1367,7 @@ def register(ctx):
 
 ### `post_approval_response`
 
-Fires after a prompted or smart approval decision, after a prompt times out, or when the gateway cannot deliver the approval notification. Notification failure emits `choice="notify_failed"` before any approval decision exists.
+Fires after a prompted or smart approval decision, after a prompt times out or is withdrawn (turn interrupted or ended before an answer), or when the gateway cannot deliver the approval notification. Notification failure emits `choice="notify_failed"` before any approval decision exists.
 
 **Callback signature:**
 
@@ -1324,7 +1388,7 @@ Same kwargs as `pre_approval_request`, plus:
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `choice` | `str` | Prompted surfaces use `"once"`, `"session"`, `"always"`, `"deny"`, `"timeout"`, or `"notify_failed"`; smart decisions use `"smart_approve"` or `"smart_deny"` |
+| `choice` | `str` | Prompted surfaces use `"once"`, `"session"`, `"always"`, `"deny"`, `"timeout"`, `"cancelled"` (nobody answered — the prompt was withdrawn because the turn was interrupted or ended, or on the CLI it never reached the user because the approval callback failed, no callback was registered under prompt_toolkit, or the read was interrupted; the command did not run), or `"notify_failed"`; smart decisions use `"smart_approve"` or `"smart_deny"` |
 | `decided_by` | `str` | `"aux_llm"` for smart decisions; absent on prompted surfaces |
 
 **Return value:** ignored.
@@ -1337,6 +1401,51 @@ def log_decision(command, choice, session_key, **kwargs):
 
 def register(ctx):
     ctx.register_hook("post_approval_response", log_decision)
+```
+
+---
+
+### `on_room_member_activity`
+
+Fires while a hosted [Group Chat](../bot-mode.md#groups-and-group-chats) member turn runs. A member executes on a hidden `Group: <room>` session that no client is attached to, so between the room log's `turn.started` and `turn.settled` the turn is a black box. This hook projects the runtime events that session already produces — tool start/complete, approval requests, streamed text and reasoning, errors — stamped with the room coordinates, so a client (Hermes Crew, a dashboard, an audit log) can render tool cards, approval prompts and live member status without inferring anything from text. The Group Chat runtime keeps ownership of execution, scheduling and the durable log; plugins only observe.
+
+**Callback signature:**
+
+```python
+def my_callback(
+    room_id: str,
+    thread_id: str,
+    member_id: str,
+    turn_id: str,
+    task_id: str,
+    execution_generation: int,
+    kind: str,
+    seq: int | None,
+    payload: dict,
+    **kwargs,
+):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `room_id`, `thread_id`, `turn_id`, `task_id` | `str` | The same coordinates the room log's `turn.*` and `message.member` events carry; join on them. |
+| `member_id` | `str` | The seated member (`members[].member_id` from `groups.state`). |
+| `execution_generation` | `int` | Increments on every retry of the same task; events from a superseded attempt carry the older value. |
+| `kind` | `str` | `tool.started`, `tool.completed`, `tool.output_risk`, `request.opened` (approval), `message.delta`, `message.interim`, `reasoning.delta`, `turn.error`. New kinds are additive. |
+| `seq` | `int \| None` | The member session's per-process event sequence (same numbering as `session.events.since`); monotonic within one gateway process, resets on restart. |
+| `payload` | `dict` | The client-safe body of the underlying session event (`tool_id`, `name`, `args`, `result`, `request_id`, `choices`, `text`, ...). Approval commands are already credential-redacted. |
+
+**Delivery:** each registered callback gets its own bounded queue and worker thread (the `on_stream_*` mechanism); a slow callback drops its oldest pending event and never delays the member's turn. Nothing is written to the room log — deltas are not durable and do not replay; clients that need durability persist what they receive. Local members only: a member seated from another machine runs on that machine's gateway, whose plugins see it.
+
+**Return value:** ignored.
+
+```python
+def on_member_activity(room_id, member_id, turn_id, kind, payload, **kwargs):
+    if kind == "request.opened":
+        notify(f"{member_id} in {room_id} needs approval: {payload['command']}")
+
+def register(ctx):
+    ctx.register_hook("on_room_member_activity", on_member_activity)
 ```
 
 ---
@@ -1365,7 +1474,7 @@ def my_callback(
 | `provider` | `str` | Resolved STT provider (`local`, `groq`, `openai`, `mistral`, `xai`, `elevenlabs`, `deepinfra`, `local_command`, a command provider name, or a plugin provider name). |
 | `model` | `str \| None` | Model resolved so far, or `None` when the backend default applies. |
 | `language` | `str \| None` | Language from the provider's config section, or `None`. |
-| `prompt` | `str \| None` | The static [`stt.prompt`](/user-guide/configuration#transcription-prompt-vocabulary-hints) value, or `None`. |
+| `prompt` | `str \| None` | The static [`stt.prompt`](../configuration.md#transcription-prompt-vocabulary-hints) value, or `None`. |
 | `source` | `str \| None` | Caller surface label (`gateway`, `voice_mode`, …). Observability only, not used for dispatch. |
 
 **Return value:** a `dict` with any of `"prompt"`, `"language"`, `"model"` mapped to strings, or `None` to leave the request unchanged. Non-string values, unknown keys, and `file_path` are ignored (`file_path` attempts are logged as a warning). Results are applied in **registration order, last-writer-wins per field**, on top of the `stt.prompt` config value. Returning `""` for `prompt` clears the configured prompt for that request.
@@ -1384,7 +1493,7 @@ def register(ctx):
     ctx.register_hook("pre_transcription", add_vocab)
 ```
 
-Not every backend accepts a prompt. `local` maps it to faster-whisper's `initial_prompt`; `openai`, `groq`, `mistral`, and `deepinfra` send it as `prompt`; `xai`, `elevenlabs`, `local_command`, and `type: command` providers log at DEBUG and transcribe without it. See the [provider support table](/user-guide/configuration#transcription-prompt-vocabulary-hints) for the full matrix and the privacy boundary. Hook-plumbing errors are fail-open: the dispatch continues with the unmodified request.
+Not every backend accepts a prompt. `local` maps it to faster-whisper's `initial_prompt`; `openai`, `groq`, `mistral`, and `deepinfra` send it as `prompt`; `xai`, `elevenlabs`, `local_command`, and `type: command` providers log at DEBUG and transcribe without it. See the [provider support table](../configuration.md#transcription-prompt-vocabulary-hints) for the full matrix and the privacy boundary. Hook-plumbing errors are fail-open: the dispatch continues with the unmodified request.
 
 ---
 
@@ -1424,6 +1533,8 @@ Applies to every tool. For terminal-only rewriting see `transform_terminal_outpu
 ### `transform_terminal_output`
 
 Fires inside the `terminal` tool after foreground process capture has already been bounded by the environment, and before the final output limit. It lets plugins replace the captured stdout/stderr; the replacement is still subject to the final output limit.
+
+It also fires for background-process output on its way to the model or the chat: the `process_manage` `poll` / `wait` / `log` / `kill` results (and `list` previews) and the completion, heartbeat and watch-pattern notifications. There `returncode` is `None` while the process is still running and `env_type` is an empty string (the environment is not recorded per process). In both cases the hook runs *before* secret redaction, so a replacement that still carries a credential is masked.
 
 **Callback signature:**
 
@@ -1466,7 +1577,7 @@ Pairs with `transform_tool_result`, which runs afterward for every tool, includi
 
 ### `transform_llm_output`
 
-Fires **once per turn** after the tool-calling loop completes and the model has produced a final response, **before** that response is delivered to the user (CLI, gateway, or programmatic caller). Lets a plugin rewrite the assistant's final text using classical-programming methods — no extra inference tokens burned on SOUL flavor text or a skill-driven transform.
+Fires **once per turn** after the tool-calling loop completes and the model has produced a final response, **before** that response is delivered to the user (CLI, gateway, or programmatic caller) and **before** the assistant row is persisted — the replacement is what the session stores, what `/resume` shows and what the next turn replays, so the transcript never diverges from what the user saw. Hermes' own trailers (the file-mutation warning, the abnormal-exit note) are appended afterwards and are not part of `response_text`. Lets a plugin rewrite the assistant's final text using classical-programming methods — no extra inference tokens burned on SOUL flavor text or a skill-driven transform.
 
 **Callback signature:**
 
@@ -1524,6 +1635,12 @@ Fires after a provider response has been normalized successfully. This is observ
 
 Fires for a failed provider attempt with status/retry timing, an `error` object, and sanitized `request`. This is observer-only. Error messages may still contain provider or user data.
 
+### Auxiliary-call observer hooks
+
+#### `pre_auxiliary_call` / `post_auxiliary_call`
+
+Auxiliary LLM calls — session titling, context compression, MoA advisors and the aggregator, vision, approval classification, memory and other side tasks — run outside the main tool-calling loop and do **not** fire `pre_api_request` / `post_api_request` (those stay turn-scoped, so a trace-per-turn plugin never sees side traffic by accident). Subscribe to `pre_auxiliary_call` / `post_auxiliary_call` instead: they fire once per physical provider attempt (retries and fallbacks included) with the same payload shape plus `aux_task` (the task name, e.g. `title_generation`, `compression`, `moa_aggregator`, `vision`). `session_id` / `task_id` / `turn_id` are the parent turn's when the call runs under one, empty otherwise; `api_request_id` (`aux-…`) is shared by every attempt of one logical call and `retry_count` distinguishes them. Both are observer-only and fail-open: a raising or timed-out callback is logged and the auxiliary task proceeds. `post_auxiliary_call` carries `error` / `error_type` when the attempt raised and `streaming: True` (with `usage`/`response` `None`) when the response is handed back as a stream.
+
 ### `on_skill_lifecycle`
 
 Fires after an authoritative skill-usage state change. It is observer-only and exposes the local `skill_name`, provenance, correlation IDs, usage count, and reuse flags.
@@ -1558,11 +1675,13 @@ Five additional observers (RFC #58548) extend the kanban family. All are observe
 
 ## Shell Hooks
 
-Declare shell-script hooks in your `~/.hermes/config.yaml` and Hermes will run them as subprocesses whenever the corresponding plugin-hook event fires — in both CLI and gateway sessions. No Python plugin authoring required.
+Declare shell-script hooks in your profile's `config.yaml` and Hermes will run them as subprocesses whenever the corresponding plugin-hook event fires — in CLI, gateway, Desktop, TUI, and dashboard chat sessions. No Python plugin authoring required.
+
+Desktop, TUI, and dashboard chat register hooks when building an agent, using that session's profile configuration and consent allowlist. Switching profiles does not reuse another profile's hooks. Existing hook consent requirements and safe-mode behavior still apply; unapproved hooks are skipped rather than silently approved.
 
 Use shell hooks when you want a drop-in, single-file script (Bash, Python, anything with a shebang) to:
 
-- **Block a tool call** — reject dangerous `terminal` commands, enforce per-directory policies, require approval for destructive `write_file` / `patch` operations.
+- **Block or modify a tool call** — reject dangerous `terminal` commands, enforce per-directory policies, require approval for destructive `write_file` / `patch` operations, or rewrite arguments (sanitize paths, inject defaults) before the tool runs.
 - **Run after a tool call** — auto-format Python or TypeScript files that the agent just wrote, log API calls, trigger a CI workflow.
 - **Inject context into the next LLM turn** — prepend `git status` output, the current weekday, or retrieved documents to the user message (see [`pre_llm_call`](#pre_llm_call)).
 - **Observe lifecycle events** — write a log line when a subagent completes (`subagent_stop`) or a session starts (`on_session_start`).
@@ -1580,7 +1699,7 @@ Shell hooks are registered by calling `agent.shell_hooks.register_from_config(cf
 | Events | `VALID_HOOKS` (incl. `subagent_stop`) | `VALID_HOOKS` | Gateway lifecycle (`gateway:startup`, `agent:*`, `command:*`) |
 | Can block a tool call | Yes (`pre_tool_call`) | Yes (`pre_tool_call`) | No |
 | Can inject LLM context | Yes (`pre_llm_call`) | Yes (`pre_llm_call`) | No |
-| Consent | First-use prompt per `(event, command)` pair | Implicit (Python plugin trust) | Implicit (dir trust) |
+| Consent | First-use prompt per `(event, command)` pair | Explicit (`plugins.enabled`), then in-process trust | Implicit ([dir trust](#gateway-hook-trust)) |
 | Inter-process isolation | Yes (subprocess) | No (in-process) | No (in-process) |
 
 ### Configuration schema
@@ -1599,6 +1718,8 @@ hooks_auto_accept: false         # See "Consent model" below
 
 Event names must be one of the [plugin hook events](#plugin-hooks); typos produce a "Did you mean X?" warning and are skipped. Unknown keys inside a single entry are ignored; missing `command` is a skip-with-warning. `timeout > 300` is clamped with a warning. `fail_closed: true` on an event other than `pre_tool_call` warns and is ignored (only blocking-capable events can fail closed).
 
+On Windows, a `command` that starts with an existing script file — the `~/.hermes/agent-hooks/x.sh` shape the examples below use — is spawned through that file's own interpreter (Git Bash for `.sh`/`.bash`, the running Hermes Python for `.py`), because `CreateProcess` has no shebang support and rejects a bare script with `WinError 193`. Every other command, and every POSIX platform, passes `argv` straight to `Popen`, where the kernel already honours the shebang.
+
 ### JSON wire protocol
 
 Each time the event fires, Hermes spawns a subprocess for every matching hook (matcher permitting), pipes a JSON payload to **stdin**, and reads **stdout** back as JSON.
@@ -1612,11 +1733,14 @@ Each time the event fires, Hermes spawns a subprocess for every matching hook (m
   "tool_input":      {"command": "rm -rf /"},
   "session_id":      "sess_abc123",
   "cwd":             "/home/user/project",
+  "profile":         "default",
   "extra":           {"task_id": "...", "tool_call_id": "..."}
 }
 ```
 
-`tool_name` and `tool_input` are `null` for non-tool events (`pre_llm_call`, `subagent_stop`, session lifecycle). The `extra` dict carries all event-specific kwargs (`user_message`, `conversation_history`, `child_role`, `duration_ms`, …). Unserialisable values are stringified rather than omitted.
+`profile` names the Hermes profile that fired the hook (`"default"` outside profiles), so one
+script can serve every profile behind a multiplexed gateway; the subprocess also runs with that
+profile's `HERMES_HOME`. `tool_name` and `tool_input` are `null` for non-tool events (`pre_llm_call`, `subagent_stop`, session lifecycle). The `extra` dict carries all event-specific kwargs (`user_message`, `conversation_history`, `child_role`, `duration_ms`, …). Unserialisable values are stringified rather than omitted.
 
 **stdout — optional response:**
 
@@ -1624,6 +1748,14 @@ Each time the event fires, Hermes spawns a subprocess for every matching hook (m
 // Block a pre_tool_call (both shapes accepted; normalised internally):
 {"decision": "block", "reason":  "Forbidden: rm -rf"}   // Claude-Code style
 {"action":   "block", "message": "Forbidden: rm -rf"}   // Hermes-canonical
+
+// Modify a pre_tool_call — rewrite tool args before dispatch:
+{"action": "modify", "args": {"new_string": "fixed content"}}         // Hermes-canonical
+{"decision": "modify", "tool_input": {"new_string": "fixed content"}} // Claude-Code style
+
+// Escalate a pre_tool_call to the human-approval gate (Hermes-only; `message` and `rule_key`
+// are optional). Claude-Code's `{"decision": "approve"}` means auto-allow and is NOT mapped here:
+{"action": "approve", "message": "Why approval is required", "rule_key": "optional:scope"}
 
 // Inject context for pre_llm_call:
 {"context": "Today is Friday, 2026-04-17"}
@@ -1815,11 +1947,11 @@ Shell hooks run with **your full user credentials** — same trust boundary as a
 
 ### Ordering and precedence
 
-Both Python plugin hooks and shell hooks flow through the same `invoke_hook()` dispatcher. Python plugins are registered first (`discover_and_load()`), shell hooks second (`register_from_config()`), so Python `pre_tool_call` block decisions take precedence in tie cases. The first valid block wins — the aggregator returns as soon as any callback produces `{"action": "block", "message": str}` with a non-empty message.
+Both Python plugin hooks and shell hooks flow through the same `invoke_hook()` dispatcher. Python plugins are registered first (`discover_and_load()`), shell hooks second (`register_from_config()`), so Python `pre_tool_call` decisions take precedence in tie cases. The first valid block wins — the aggregator returns as soon as any callback produces `{"action": "block", "message": str}` with a non-empty message — and a block anywhere in the list outranks an `approve` returned earlier.
 
 ## Outbound Webhooks
 
-Outbound webhooks are the push-side mirror of the [inbound webhook platform](/user-guide/messaging/webhooks): inbound webhooks wake Hermes when the world changes; outbound webhooks tell the world when Hermes does something. Configure a list of HTTP endpoints and the lifecycle events they care about, and Hermes POSTs a signed JSON payload to each endpoint whenever a matching event fires — no polling on the receiving end.
+Outbound webhooks are the push-side mirror of the [inbound webhook platform](../messaging/webhooks.md): inbound webhooks wake Hermes when the world changes; outbound webhooks tell the world when Hermes does something. Configure a list of HTTP endpoints and the lifecycle events they care about, and Hermes POSTs a signed JSON payload to each endpoint whenever a matching event fires — no polling on the receiving end.
 
 Typical uses:
 
@@ -1853,11 +1985,12 @@ Secrets: prefer `secret_env` (the name of an environment variable, typically set
 
 ### Wire format
 
-Each firing POSTs a JSON body with the same top-level shape as shell hooks' stdin, plus delivery metadata:
+Each firing POSTs a JSON body with the same top-level shape as shell hooks' stdin, plus delivery metadata. `profile` names the Hermes profile that emitted the event (`"default"` outside profiles), so receivers behind a multiplexed gateway can tell profiles apart:
 
 ```json
 {
   "hook_event_name": "on_session_end",
+  "profile": "default",
   "tool_name": null,
   "tool_input": null,
   "session_id": "sess_abc123",

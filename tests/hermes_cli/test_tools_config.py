@@ -7,7 +7,6 @@ from unittest.mock import patch
 
 import pytest
 
-from tools.browser_tool import AGENT_BROWSER_NPX_SPEC
 from hermes_cli.nous_account import NousPortalAccountInfo, NousToolAccessInfo
 from hermes_cli.nous_subscription import NousSubscriptionFeatures
 from hermes_cli.tools_config import (
@@ -15,20 +14,13 @@ from hermes_cli.tools_config import (
     _RECENTLY_SHIPPED_TOOLSETS,
     _apply_toolset_change,
     _checklist_toolset_keys,
-    _configure_provider,
-    _reconfigure_provider,
     _get_platform_tools,
-    _platform_toolset_summary,
-    _reconfigure_tool,
     _run_post_setup,
     _save_platform_tools,
     _toolset_has_keys,
-    _toolset_needs_configuration_prompt,
     CONFIGURABLE_TOOLSETS,
     TOOL_CATEGORIES,
-    gui_toolset_label,
     _visible_providers,
-    provider_readiness_status,
     tools_command,
 )
 
@@ -74,6 +66,59 @@ def test_partially_valid_platform_toolsets_no_runtime_warning(caplog):
     assert not any("#38798" in r.getMessage() for r in caplog.records)
 
 
+def test_null_platform_toolsets_fall_back_to_platform_default():
+    """A YAML ``platform:`` value is absent, not an explicit empty list."""
+    config = {"platform_toolsets": {"cli": None}}
+
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+    default_enabled = _get_platform_tools(
+        {}, "cli", include_default_mcp_servers=False
+    )
+
+    assert enabled == default_enabled
+
+
+def test_scalar_platform_toolsets_fall_back_to_platform_default():
+    """A non-list platform value is ignored by the resolver."""
+    config = {"platform_toolsets": {"cli": "bogus"}}
+
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+    default_enabled = _get_platform_tools(
+        {}, "cli", include_default_mcp_servers=False
+    )
+
+    assert enabled == default_enabled
+
+
+def test_enable_on_string_platform_toolsets_keeps_listed_entries():
+    """#115866: `hermes tools enable` must operate on the selection a list-literal
+    string encodes — not re-baseline it on the platform default, which silently
+    dropped the user's default-off entries (video, video_gen) on write."""
+    config = {"platform_toolsets": {"telegram": '["browser", "terminal", "video", "video_gen"]'}}
+
+    with patch("hermes_cli.tools_config.save_config"):
+        _apply_toolset_change(config, "telegram", ["computer_use"], "enable")
+
+    saved = config["platform_toolsets"]["telegram"]
+    assert isinstance(saved, list)
+    assert {"browser", "terminal", "video", "video_gen", "computer_use"} <= set(saved)
+
+
+def test_malformed_list_string_platform_toolsets_warns_then_falls_back(caplog):
+    """A string that does not parse as a list falls back to the platform default
+    loudly: one warning naming the expected shape, never a silent substitution (#115866)."""
+    import hermes_cli.tools_config as tc
+
+    config = {"platform_toolsets": {"cli": '["web", terminal'}}
+    tc._warned_invalid_platform_toolsets.discard("cli")
+
+    with caplog.at_level("WARNING", logger="hermes_cli.tools_config"):
+        enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+    default_enabled = _get_platform_tools({}, "cli", include_default_mcp_servers=False)
+
+    assert enabled == default_enabled
+    assert [r for r in caplog.records if "platform_toolsets.cli" in r.getMessage()
+            and "expected a YAML list" in r.getMessage()]
 
 
 
@@ -209,7 +254,7 @@ def test_first_install_nous_auto_configures_video_gen(monkeypatch):
     video_gen.use_gateway so the FAL plugin can route through the gateway
     at runtime.  Regression test for the bug where video_gen was marked as
     auto-configured but no config was actually written."""
-    monkeypatch.setattr("hermes_cli.nous_subscription.managed_nous_tools_enabled", lambda: True)
+    monkeypatch.setattr("tools.tool_backend_helpers.managed_nous_tools_enabled", lambda: True)
     config = {
         "model": {"provider": "nous"},
         "platform_toolsets": {"cli": []},
@@ -220,6 +265,7 @@ def test_first_install_nous_auto_configures_video_gen(monkeypatch):
         "ELEVENLABS_API_KEY",
         "FIRECRAWL_API_KEY",
         "FIRECRAWL_API_URL",
+        "KEENABLE_API_KEY",
         "TAVILY_API_KEY",
         "PARALLEL_API_KEY",
         "BROWSERBASE_API_KEY",
@@ -256,8 +302,8 @@ def test_first_install_nous_auto_configures_video_gen(monkeypatch):
 
     tools_command(first_install=True, config=config)
 
-    assert config["video_gen"]["provider"] == "fal"
-    assert config["video_gen"]["use_gateway"] is True
+    assert config["video_gen"]["provider"] == "nous"
+    assert "use_gateway" not in config["video_gen"]
     # video_gen should NOT appear in the manual configure list — it's auto-configured
     assert "video_gen" not in configured
 
@@ -348,282 +394,35 @@ def test_numeric_mcp_server_name_does_not_crash_sorted():
 
 
 class TestAgentBrowserPostSetup:
-    """_run_post_setup('agent_browser'/'browserbase') — #43564.
-
-    agent-browser is no longer a root package.json dependency (there's no
-    local `npm install` step anymore); it resolves at runtime via
-    tools.browser_tool._find_agent_browser (PATH -> Homebrew/Hermes-managed
-    node -> local .bin -> npx). This class exercises the Chromium-install
-    branch of _run_post_setup, which now delegates to that same resolution
-    cascade instead of hand-rolling its own node_modules/.bin/agent-browser
-    (and Windows .cmd-shim) lookup.
-    """
+    """Cloud isolation, image ownership, and failed setup remain observable."""
 
     @pytest.fixture(autouse=True)
     def _stub_browser_use_install(self):
-        """Both browser branches now attempt a Browser Use CLI install first
-        (the CLI drives every non-Camofox backend). Stub it so these
-        Chromium-branch tests never bootstrap uv / hit the network, and so
-        their print/subprocess assertions stay scoped to the agent-browser
-        logic under test."""
-        with patch("hermes_cli.tools_config._ensure_browser_use_cli") as stub:
+        with patch("hermes_cli.tools_config_post_setup._ensure_browser_use_cli") as stub:
             yield stub
 
-    def test_warns_when_neither_npx_nor_agent_browser_on_path(self):
-        with patch("shutil.which", return_value=None), patch(
-            "subprocess.run"
-        ) as run, patch("hermes_cli.tools_config._print_warning") as warn:
-            _run_post_setup("agent_browser")
+    @pytest.fixture(autouse=True)
+    def _stub_package_install(self):
+        with patch("pm.ensure") as ensure:
+            yield ensure
 
-        run.assert_not_called()
-        warn.assert_called_once()
-        assert "npx not found" in warn.call_args.args[0]
 
-    def test_browserbase_returns_before_any_chromium_check(self):
-        """browserbase hosts its own Chromium; it must never reach the
-        agent-browser-only Chromium-install branch."""
-        with patch("shutil.which", return_value="/usr/bin/npx"), patch(
-            "subprocess.run"
-        ) as run, patch(
-            "tools.browser_tool._chromium_installed"
-        ) as chromium_check:
-            _run_post_setup("browserbase")
 
-        run.assert_not_called()
-        chromium_check.assert_not_called()
+    @pytest.mark.parametrize("failure", ["pm", "timeout"])
+    def test_install_failure_reports_error(self, failure):
+        import pm
 
-    def test_chromium_already_installed_skips_subprocess(self):
-        with patch("shutil.which", return_value="/usr/bin/npx"), patch(
-            "tools.browser_tool.node_tool_runnable", return_value=True
-        ), patch(
-            "subprocess.run"
-        ) as run, patch(
-            "tools.browser_tool._chromium_installed", return_value=True
-        ), patch(
-            "hermes_cli.tools_config._print_success"
-        ) as success:
-            _run_post_setup("agent_browser")
-
-        run.assert_not_called()
-        success.assert_called_once()
-        assert "already installed" in success.call_args.args[0]
-
-    def test_docker_with_missing_chromium_warns_instead_of_installing(self):
-        with patch("shutil.which", return_value="/usr/bin/npx"), patch(
-            "tools.browser_tool.node_tool_runnable", return_value=True
-        ), patch(
-            "subprocess.run"
-        ) as run, patch(
-            "tools.browser_tool._chromium_installed", return_value=False
-        ), patch(
-            "tools.browser_tool._running_in_docker", return_value=True
-        ), patch(
-            "hermes_cli.tools_config._print_warning"
-        ) as warn:
-            _run_post_setup("agent_browser")
-
-        run.assert_not_called()
-        assert any("Docker" in c.args[0] for c in warn.call_args_list)
-
-    def test_find_agent_browser_not_found_warns_before_any_chromium_check(self):
-        """_find_agent_browser is resolved up front now (shared with the
-        browserbase early-return gate), so a FileNotFoundError here must
-        short-circuit before even checking Chromium/Docker status."""
-        with patch("shutil.which", return_value="/usr/bin/npx"), patch(
-            "subprocess.run"
-        ) as run, patch(
-            "tools.browser_tool._chromium_installed"
-        ) as chromium_check, patch(
-            "tools.browser_tool._running_in_docker"
-        ) as docker_check, patch(
-            "tools.browser_tool._find_agent_browser",
-            side_effect=FileNotFoundError("agent-browser CLI not found"),
-        ), patch(
-            "hermes_cli.tools_config._print_warning"
-        ) as warn:
-            _run_post_setup("agent_browser")
-
-        run.assert_not_called()
-        chromium_check.assert_not_called()
-        docker_check.assert_not_called()
-        assert any("browser tools require Node.js" in c.args[0] for c in warn.call_args_list)
-
-    def test_installs_chromium_via_npx_when_no_local_binary_resolved(self):
-        """When _find_agent_browser falls through to npx, the install command
-        must shell out to npx directly (not the unresolved 'npx agent-browser'
-        string as a single argv element)."""
-        with patch(
-            "shutil.which",
-            # accepts the `path=` kwarg _resolve_npx_bin's extended-path rung
-            # calls shutil.which with, not just the bare-PATH positional form.
-            side_effect=lambda name, path=None: "/usr/bin/npx" if name == "npx" else None,
-        ), patch(
-            "tools.browser_tool.node_tool_runnable", return_value=True
-        ), patch("subprocess.run") as run, patch(
-            "tools.browser_tool._chromium_installed", return_value=False
-        ), patch(
-            "tools.browser_tool._running_in_docker", return_value=False
-        ), patch(
-            "tools.browser_tool._find_agent_browser", return_value="npx agent-browser"
-        ), patch(
-            "hermes_cli.tools_config._print_success"
-        ):
-            run.return_value = SimpleNamespace(returncode=0, stdout="", stderr="")
-            _run_post_setup("agent_browser")
-
-        run.assert_called_once()
-        assert run.call_args.args[0] == [
-            "/usr/bin/npx", "--ignore-scripts", "-y", AGENT_BROWSER_NPX_SPEC, "install", "--with-deps",
-        ]
-
-    def test_installs_chromium_via_npx_resolved_only_through_extended_path(self):
-        """Hermes-managed-Node-only setups: npx resolves via
-        _find_agent_browser's extended-PATH fallback, not a bare PATH lookup.
-        The install command must use that same resolved npx, not silently
-        hand subprocess.run a None argument from a bare shutil.which('npx')
-        re-derivation (#43564 regression — Copilot review, task #9)."""
-        hermes_npx = "/home/user/.hermes/node/bin/npx"
-        with patch("shutil.which", return_value=None), patch(
-            "subprocess.run"
-        ) as run, patch(
-            "tools.browser_tool._chromium_installed", return_value=False
-        ), patch(
-            "tools.browser_tool._running_in_docker", return_value=False
-        ), patch(
-            "tools.browser_tool._find_agent_browser", return_value="npx agent-browser"
-        ), patch(
-            "tools.browser_tool._resolve_npx_bin", return_value=hermes_npx
-        ), patch(
-            "hermes_cli.tools_config._print_success"
-        ):
-            run.return_value = SimpleNamespace(returncode=0, stdout="", stderr="")
-            _run_post_setup("agent_browser")
-
-        run.assert_called_once()
-        assert run.call_args.args[0] == [
-            hermes_npx, "--ignore-scripts", "-y", AGENT_BROWSER_NPX_SPEC, "install", "--with-deps",
-        ]
-
-    def test_warns_instead_of_crashing_when_npx_unresolvable_after_all(self):
-        """Defensive: if _resolve_npx_bin somehow returns None even though
-        _find_agent_browser resolved "npx agent-browser" (e.g. a race where
-        npx disappears between the two calls), warn and return instead of
-        building a command with a None argv element."""
-        with patch("shutil.which", return_value=None), patch(
-            "subprocess.run"
-        ) as run, patch(
-            "tools.browser_tool._chromium_installed", return_value=False
-        ), patch(
-            "tools.browser_tool._running_in_docker", return_value=False
-        ), patch(
-            "tools.browser_tool._find_agent_browser", return_value="npx agent-browser"
-        ), patch(
-            "tools.browser_tool._resolve_npx_bin", return_value=None
-        ), patch(
-            "hermes_cli.tools_config._print_warning"
-        ) as warn:
-            _run_post_setup("agent_browser")  # must not raise
-
-        run.assert_not_called()
-        assert any("npx not found" in c.args[0] for c in warn.call_args_list)
-
-    def test_installs_chromium_via_resolved_local_binary_path(self):
-        """When _find_agent_browser resolves a concrete executable (global
-        install, Homebrew, or the Windows .cmd shim it already knows how to
-        pick), that path must be invoked directly — not re-wrapped in npx."""
-        with patch("shutil.which", return_value="/usr/bin/npx"), patch(
-            "subprocess.run"
-        ) as run, patch(
-            "tools.browser_tool._chromium_installed", return_value=False
-        ), patch(
-            "tools.browser_tool._running_in_docker", return_value=False
-        ), patch(
-            "tools.browser_tool._find_agent_browser",
-            return_value="/usr/local/bin/agent-browser",
-        ), patch(
-            "hermes_cli.tools_config._print_success"
-        ):
-            run.return_value = SimpleNamespace(returncode=0, stdout="", stderr="")
-            _run_post_setup("agent_browser")
-
-        run.assert_called_once()
-        assert run.call_args.args[0] == [
-            "/usr/local/bin/agent-browser", "install", "--with-deps",
-        ]
-
-    def test_install_success_invalidates_chromium_cache(self):
-        import tools.browser_tool as _bt
-
-        with patch("shutil.which", return_value="/usr/bin/npx"), patch(
-            "tools.browser_tool.node_tool_runnable", return_value=True
-        ), patch(
-            "subprocess.run",
-            return_value=SimpleNamespace(returncode=0, stdout="", stderr=""),
-        ), patch(
-            "tools.browser_tool._chromium_installed", return_value=False
-        ), patch(
-            "tools.browser_tool._running_in_docker", return_value=False
-        ), patch(
-            "tools.browser_tool._find_agent_browser", return_value="npx agent-browser"
-        ), patch(
-            "hermes_cli.tools_config._print_success"
-        ):
-            _bt._cached_chromium_installed = True
-            _run_post_setup("agent_browser")
-
-        assert _bt._cached_chromium_installed is None, (
-            "a successful install must invalidate the cached chromium-missing "
-            "result so the next check_browser_requirements() call re-probes"
-        )
-
-    def test_install_failure_prints_stderr_tail_and_does_not_invalidate_cache(self):
-        import tools.browser_tool as _bt
-
-        with patch("shutil.which", return_value="/usr/bin/npx"), patch(
-            "tools.browser_tool.node_tool_runnable", return_value=True
-        ), patch(
-            "subprocess.run",
-            return_value=SimpleNamespace(
-                returncode=1, stdout="", stderr="line1\nline2\nfatal: network error"
-            ),
-        ), patch(
-            "tools.browser_tool._chromium_installed", return_value=False
-        ), patch(
-            "tools.browser_tool._running_in_docker", return_value=False
-        ), patch(
-            "tools.browser_tool._find_agent_browser", return_value="npx agent-browser"
-        ), patch(
-            "hermes_cli.tools_config._print_warning"
-        ) as warn, patch(
-            "hermes_cli.tools_config._print_info"
+        error = (pm.InstallError("agent-browser", "fatal: network error") if failure == "pm"
+                 else subprocess.TimeoutExpired(cmd=["agent-browser"], timeout=600))
+        with patch("pm.ensure", side_effect=error), patch(
+            "tools.browser_tool_install._running_in_docker", return_value=False
+        ), patch("hermes_cli.tools_config_post_setup._print_warning") as warn, patch(
+            "hermes_cli.tools_config_post_setup._print_info"
         ) as info:
-            _bt._cached_chromium_installed = "sentinel"
             _run_post_setup("agent_browser")
 
-        assert any("Chromium install failed" in c.args[0] for c in warn.call_args_list)
-        assert any("fatal: network error" in c.args[0] for c in info.call_args_list)
-        assert _bt._cached_chromium_installed == "sentinel", (
-            "a failed install must not invalidate the chromium cache"
-        )
-
-    def test_install_timeout_warns_without_raising(self):
-        with patch("shutil.which", return_value="/usr/bin/npx"), patch(
-            "tools.browser_tool.node_tool_runnable", return_value=True
-        ), patch(
-            "subprocess.run",
-            side_effect=subprocess.TimeoutExpired(cmd=["npx"], timeout=600),
-        ), patch(
-            "tools.browser_tool._chromium_installed", return_value=False
-        ), patch(
-            "tools.browser_tool._running_in_docker", return_value=False
-        ), patch(
-            "tools.browser_tool._find_agent_browser", return_value="npx agent-browser"
-        ), patch(
-            "hermes_cli.tools_config._print_warning"
-        ) as warn:
-            _run_post_setup("agent_browser")  # must not raise
-
-        assert any("timed out" in c.args[0] for c in warn.call_args_list)
+        assert any(str(error) in c.args[0] for c in warn.call_args_list)
+        assert any("hermes tools post-setup agent_browser" in c.args[0] for c in info.call_args_list)
 
 
 class TestBrowserUseCliInstalledForAllNonCamofoxBackends:
@@ -634,9 +433,9 @@ class TestBrowserUseCliInstalledForAllNonCamofoxBackends:
 
     @pytest.mark.parametrize("key", ["agent_browser", "browserbase", "browser_use_cli"])
     def test_browser_post_setup_attempts_cli_install(self, key):
-        with patch("hermes_cli.tools_config._ensure_browser_use_cli") as ensure, patch(
+        with patch("hermes_cli.tools_config_post_setup._ensure_browser_use_cli") as ensure, patch(
             "shutil.which", return_value=None
-        ), patch("subprocess.run"):
+        ), patch("subprocess.run"), patch("pm.ensure"):  # the managed driver install is PM's, not this test's
             _run_post_setup(key)
         ensure.assert_called_once()
 
@@ -644,7 +443,7 @@ class TestBrowserUseCliInstalledForAllNonCamofoxBackends:
         """Camofox is Firefox-based with no CDP surface; the CDP-only
         browser-use harness cannot drive it, so its setup must not pull
         the CLI in."""
-        with patch("hermes_cli.tools_config._ensure_browser_use_cli") as ensure, patch(
+        with patch("hermes_cli.tools_config_post_setup._ensure_browser_use_cli") as ensure, patch(
             "hermes_constants.find_node_executable", return_value=None
         ), patch("subprocess.run"):
             _run_post_setup("camofox")
@@ -655,7 +454,7 @@ class TestBrowserUseCliInstalledForAllNonCamofoxBackends:
         helper — install_cli() owns the managed-copy check and provisions
         $HERMES_HOME/bin when only side installs exist."""
         with patch(
-            "hermes_cli.tools_config.shutil.which", return_value="/usr/bin/browser-use"
+            "hermes_cli.tools_config_post_setup.shutil.which", return_value="/usr/bin/browser-use"
         ), patch(
             "tools.browser_use_cli.install_cli",
             return_value=(True, "browser-use CLI already installed (/managed/bin/browser-use)"),
@@ -671,11 +470,11 @@ class TestBrowserUseCliInstalledForAllNonCamofoxBackends:
         from hermes_cli.tools_config import _ensure_browser_use_cli
 
         with patch(
-            "hermes_cli.tools_config.shutil.which", return_value=None
+            "hermes_cli.tools_config_post_setup.shutil.which", return_value=None
         ), patch(
             "tools.browser_use_cli.install_cli",
             return_value=(False, "`uv tool install browser-use` failed:\nboom"),
-        ), patch("hermes_cli.tools_config._print_warning") as warn:
+        ), patch("hermes_cli.tools_config_post_setup._print_warning") as warn:
             _ensure_browser_use_cli()  # must not raise
 
         assert any("failed" in c.args[0] for c in warn.call_args_list)
@@ -684,26 +483,16 @@ class TestBrowserUseCliInstalledForAllNonCamofoxBackends:
 class TestImagegenBackendRegistry:
     """IMAGEGEN_BACKENDS tags drive the model picker flow in tools_config."""
 
-    def test_fal_backend_registered(self):
-        from hermes_cli.tools_config import IMAGEGEN_BACKENDS
-        assert "fal" in IMAGEGEN_BACKENDS
 
-    def test_fal_catalog_loads_lazily(self):
-        """catalog_fn should defer import to avoid import cycles."""
-        from hermes_cli.tools_config import IMAGEGEN_BACKENDS
-        catalog, default = IMAGEGEN_BACKENDS["fal"]["catalog_fn"]()
-        assert default == "fal-ai/flux-2/klein/9b"
-        assert "fal-ai/flux-2/klein/9b" in catalog
-        assert "fal-ai/flux-2-pro" in catalog
 
-    def test_image_gen_providers_tagged_with_fal_backend(self):
-        """Both Nous Subscription and FAL.ai providers must carry the
-        imagegen_backend tag so _configure_provider fires the picker."""
-        from hermes_cli.tools_config import TOOL_CATEGORIES
+    def test_image_gen_providers_tagged_with_registered_backend(self):
+        """Every hardcoded image_gen row must name a backend in IMAGEGEN_BACKENDS
+        so _configure_provider can fire that backend's model picker."""
+        from hermes_cli.tools_config import IMAGEGEN_BACKENDS, TOOL_CATEGORIES
         providers = TOOL_CATEGORIES["image_gen"]["providers"]
         for p in providers:
-            assert p.get("imagegen_backend") == "fal", (
-                f"{p['name']} missing imagegen_backend tag"
+            assert p.get("imagegen_backend") in IMAGEGEN_BACKENDS, (
+                f"{p['name']} missing a registered imagegen_backend tag"
             )
 
 
@@ -718,8 +507,10 @@ class TestImagegenModelPicker:
         with patch("hermes_cli.tools_config._prompt_choice", return_value=1):
             _configure_imagegen_model("fal", config)
         # ordered[0] == current (default klein), ordered[1] == first non-default
-        assert config["image_gen"]["model"] != "fal-ai/flux-2/klein/9b"
-        assert config["image_gen"]["model"].startswith("fal-ai/")
+        from hermes_cli.tools_config import IMAGEGEN_BACKENDS
+        catalog, default_model = IMAGEGEN_BACKENDS["fal"]["catalog_fn"]({})
+        assert config["image_gen"]["model"] != default_model
+        assert config["image_gen"]["model"] in catalog
 
     def test_picker_with_gpt_image_does_not_prompt_quality(self):
         """GPT-Image quality is pinned to medium in the tool's defaults —
@@ -728,7 +519,7 @@ class TestImagegenModelPicker:
             _configure_imagegen_model,
             IMAGEGEN_BACKENDS,
         )
-        catalog, default_model = IMAGEGEN_BACKENDS["fal"]["catalog_fn"]()
+        catalog, default_model = IMAGEGEN_BACKENDS["fal"]["catalog_fn"]({})
         model_ids = list(catalog.keys())
         ordered = [default_model] + [m for m in model_ids if m != default_model]
         gpt_idx = ordered.index("fal-ai/gpt-image-1.5")
@@ -753,12 +544,32 @@ class TestImagegenModelPicker:
     def test_picker_repairs_corrupt_config_section(self):
         """When image_gen is a non-dict (user-edit YAML), the picker should
         replace it with a fresh dict rather than crash."""
-        from hermes_cli.tools_config import _configure_imagegen_model
+        from hermes_cli.tools_config import IMAGEGEN_BACKENDS, _configure_imagegen_model
         config = {"image_gen": "some-garbage-string"}
         with patch("hermes_cli.tools_config._prompt_choice", return_value=0):
             _configure_imagegen_model("fal", config)
         assert isinstance(config["image_gen"], dict)
-        assert config["image_gen"]["model"] == "fal-ai/flux-2/klein/9b"
+        assert config["image_gen"]["model"] == IMAGEGEN_BACKENDS["fal"]["catalog_fn"]({})[1]
+
+    def test_plugin_picker_falls_back_when_default_is_missing_from_catalog(self):
+        """A stale cross-provider model must not become an unindexable row."""
+        from hermes_cli.tools_config import _configure_imagegen_model_for_plugin
+
+        catalog = {
+            "openai/gpt-5.4-image-2": {"strengths": "quality"},
+            "google/gemini-3-pro-image": {"strengths": "fallback"},
+        }
+        config = {"image_gen": {"model": "gpt-image-2-medium"}}
+        with (
+            patch(
+                "hermes_cli.tools_config._plugin_image_gen_catalog",
+                return_value=(catalog, "also-missing"),
+            ),
+            patch("hermes_cli.tools_config._prompt_choice", return_value=0),
+        ):
+            _configure_imagegen_model_for_plugin("openrouter", config)
+
+        assert config["image_gen"]["model"] == "openai/gpt-5.4-image-2"
 
 
 
@@ -783,71 +594,40 @@ def test_get_effective_configurable_toolsets_dedupes_bundled_plugins():
     spotify_rows = [t for t in all_ts if t[0] == "spotify"]
     assert len(spotify_rows) == 1, spotify_rows
     # Built-in label wins over the plugin label.
-    assert spotify_rows[0][1] == "🎵 Spotify"
+    builtin_label = next(label for key, label, _ in CONFIGURABLE_TOOLSETS if key == "spotify")
+    assert spotify_rows[0][1] == builtin_label
 
 
 
 
 
 
-# ---------------------------------------------------------------------------
-# Inline Nous Portal login gate on managed-provider selection
-# ---------------------------------------------------------------------------
-
-
-
-
-
-
-
-
-
-
-# ── Checklist diff scope: non-configurable toolsets (kanban) must not be
-#    reported as added/removed by `hermes tools` ──────────────────────────
-
-
-
-
-def test_kanban_not_reported_as_removed_in_diff():
-    """Reproduces the false-signal bug: `hermes tools` printed ``- kanban``
-    when saving a platform that resolves kanban as enabled, even though the
-    checklist never offered kanban as a toggle.
-
-    The printed diff must be scoped to ``_checklist_toolset_keys`` so a tool
-    the user could not deselect is never reported as removed. The persisted
-    config still keeps kanban (verified separately by _save_platform_tools).
-    """
+# Kanban now participates in the checklist: an explicit deselection must be
+# both visible in the diff and durable in the platform selection.
+def test_kanban_checklist_reports_and_persists_explicit_removal():
     config = {"platform_toolsets": {"telegram": ["kanban", "web", "terminal"]}}
     current = _get_platform_tools(config, "telegram", include_default_mcp_servers=False)
-    assert "kanban" in current  # resolved as enabled at read time
-
-    # The checklist can only return configurable keys it was shown; kanban
-    # is never one of them.
     universe = _checklist_toolset_keys("telegram")
-    new_enabled = {t for t in current if t != "kanban"}
-
-    # Unscoped (old, buggy) diff would surface kanban.
-    assert (current - new_enabled) == {"kanban"}
-    # Scoped (fixed) diff drops it.
-    assert ((current - new_enabled) & universe) == set()
-
-
-
-
+    new_enabled = current - {"kanban"}
+    assert ((current - new_enabled) & universe) == {"kanban"}
+    with patch("hermes_cli.tools_config.save_config"):
+        _save_platform_tools(config, "telegram", new_enabled)
+    assert "kanban" not in _get_platform_tools(config, "telegram", include_default_mcp_servers=False)
+    assert {"web", "terminal"} <= set(config["platform_toolsets"]["telegram"])
 
 
 def test_vision_picker_custom_endpoint(tmp_path, monkeypatch):
     """Custom endpoint writes base_url+model to config and the key to env."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     import hermes_cli.tools_config as tc
+    import hermes_cli.tools_config_providers as tcp
     from hermes_cli.config import load_config
 
     seq = iter([2])  # Custom OpenAI-compatible endpoint
     prompts = iter(["https://my.endpoint/v1", "sk-secret", "my-vision-model"])
     with patch.object(tc, "_prompt_choice", side_effect=lambda *a, **k: next(seq)), \
-         patch.object(tc, "_prompt", side_effect=lambda *a, **k: next(prompts)), \
-         patch.object(tc, "save_env_value") as save_env, \
+         patch.object(tcp, "_prompt", side_effect=lambda *a, **k: next(prompts)), \
+         patch.object(tcp, "save_env_value") as save_env, \
          patch.object(tc, "_toolset_has_keys", return_value=False):
         tc._configure_vision_backend()
 
@@ -859,26 +639,6 @@ def test_vision_picker_custom_endpoint(tmp_path, monkeypatch):
     save_env.assert_called_once_with("OPENAI_API_KEY", "sk-secret")
 
 
-
-
-# ─── provider_readiness_status ────────────────────────────────────────────────
-#
-# Server-side truth for the GUI "Ready" pill (issue: Capabilities tab showed
-# Ready for every zero-env-var provider row, including logged-out Nous
-# Subscription rows and never-installed KittenTTS/Piper).
-
-
-def _fake_features(*, logged_in: bool, paid: bool = True):
-    account = (
-        NousPortalAccountInfo(
-            logged_in=True, source="jwt", fresh=False, paid_service_access=paid
-        )
-        if logged_in
-        else NousPortalAccountInfo(
-            logged_in=False, source="none", fresh=False, paid_service_access=None
-        )
-    )
-    return SimpleNamespace(nous_auth_present=logged_in, account_info=account)
 
 
 def test_visible_providers_reuses_logged_out_feature_snapshot(monkeypatch):
@@ -951,26 +711,63 @@ def test_visible_providers_reuses_pool_video_feature_snapshot(monkeypatch):
 
 
 
-# ── Windows console-flash guard for post-setup subprocess spawns ──────────────
+# ── One managed image row ─────────────────────────────────────────────────────
 #
-# The desktop GUI runs post-setup hooks through a detached, console-less
-# `hermes tools post-setup <key>` child. On Windows each console child (npm,
-# npx, pip, powershell) spawned without CREATE_NO_WINDOW materializes a brand
-# new console window — the "terminal flash" reported on the Capabilities
-# browser-setup journey. `_post_setup_no_window_flags` is the single wrapper
-# every hook spawn passes as `creationflags`.
+# FAL, Krea and Portal models all live behind the single "Nous Subscription" row; the stored
+# model id picks the gateway. Before, the Portal plugin rendered its own row that also wrote
+# `provider: nous`, so two rows read active at once and the Portal pick generated on FAL.
 
 
+def _managed_image_row() -> dict:
+    return next(p for p in TOOL_CATEGORIES["image_gen"]["providers"] if p.get("managed_nous_feature") == "image_gen")
 
 
+def test_exactly_one_image_row_is_active_for_a_managed_selection(monkeypatch):
+    import hermes_cli.tools_config as tools_config
+    from hermes_cli.tools_config_providers import _plugin_image_gen_providers
+
+    monkeypatch.setattr(
+        tools_config, "get_nous_subscription_features",
+        lambda config, **kwargs: SimpleNamespace(features={"image_gen": SimpleNamespace(managed_by_nous=True)}),
+    )
+    rows = TOOL_CATEGORIES["image_gen"]["providers"] + _plugin_image_gen_providers()
+    for model in ("fal-ai/flux-2/klein/9b", "krea-2-medium", "google/gemini-3-pro-image"):
+        config = {"image_gen": {"provider": "nous", "model": model}}
+        active = [r["name"] for r in rows if tools_config._is_provider_active(r, config)]
+        assert active == [_managed_image_row()["name"]], (model, active)
 
 
-# ── Post-setup readiness predicates for the browser rows ─────────────────────
-#
-# The GUI's "Run setup" idempotence rides on provider_readiness_status
-# reporting ready/needs_setup honestly. agent_browser (local browser) must
-# track the FULL local install (CLI + Chromium), the cloud-provider hook
-# ("browserbase") only the CLI, and camofox its npm package.
+def test_gui_model_catalog_for_the_managed_row_spans_every_managed_gateway(monkeypatch):
+    import hermes_cli.tools_config as tools_config
+    from hermes_cli.web_routers.tools import _resolve_toolset_model_plugin, _toolset_model_catalog
+    from plugins.image_gen.krea import KREA_MODEL_IDS
+    from tools.image_generation_catalog import FAL_MODELS
+
+    paid = NousPortalAccountInfo(logged_in=True, source="jwt", fresh=False, paid_service_access=True)
+    monkeypatch.setattr(
+        tools_config, "get_nous_subscription_features",
+        lambda *args, **kwargs: SimpleNamespace(features={}, account_info=paid))
+    plugin = _resolve_toolset_model_plugin("image_gen", _managed_image_row())
+    catalog, default_model = _toolset_model_catalog("image_gen", plugin, {})
+
+    assert default_model in catalog and default_model in FAL_MODELS
+    assert KREA_MODEL_IDS <= set(catalog)
+    assert not any(mid.startswith("fal-ai/krea/") for mid in catalog), "Krea 2 must appear once, natively"
+
+
+def test_pool_only_account_is_offered_fal_models_only(monkeypatch):
+    import hermes_cli.tools_config as tools_config
+    from hermes_cli.tools_config_providers import _managed_image_catalog
+
+    pool = NousPortalAccountInfo(
+        logged_in=True, source="jwt", fresh=False, paid_service_access=False,
+        tool_access=NousToolAccessInfo(enabled=True, coverage={"fal": True, "krea": False}))
+    monkeypatch.setattr(
+        tools_config, "get_nous_subscription_features",
+        lambda *args, **kwargs: SimpleNamespace(features={}, account_info=pool))
+    catalog, _ = _managed_image_catalog({})
+
+    assert catalog and {meta["backend"] for meta in catalog.values()} == {"fal"}
 
 
 # ── Toolsets that shipped after a platform's last `hermes tools` save ────────
@@ -1014,8 +811,8 @@ def _saved_list_from_before(platform="cli"):
 
 @_requires_recently_shipped
 def test_saved_list_gains_toolsets_that_shipped_after_it_was_written():
-    """The bug: a frozen list never gained bfl, so composite users got Nous
-    Portal video generation on upgrade and picker users silently did not."""
+    """The bug: a frozen list never gained a newly shipped toolset, so
+    composite users got it on upgrade and picker users silently did not."""
     on_composite = _get_platform_tools(
         {"platform_toolsets": {"cli": ["hermes-cli"]}},
         "cli",
@@ -1051,6 +848,67 @@ def test_agent_disabled_toolsets_still_wins():
     enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
 
     assert not (_RECENTLY_SHIPPED_TOOLSETS & enabled)
+
+
+@_requires_recently_shipped
+def test_agent_disabled_toolsets_json_array_string_form_still_wins():
+    """#86661: the suppression list may arrive as a JSON-array string (e.g.
+    `hermes config set agent.disabled_toolsets '["memory"]'`). It must be
+    parsed, not treated as one dead toolset name that filters nothing."""
+    config = _saved_list_from_before()
+    import json as _json
+
+    config["agent"] = {
+        "disabled_toolsets": _json.dumps(sorted(_RECENTLY_SHIPPED_TOOLSETS))
+    }
+
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+
+    assert not (_RECENTLY_SHIPPED_TOOLSETS & enabled)
+
+
+@_requires_recently_shipped
+def test_agent_disabled_toolsets_python_literal_string_form_still_wins():
+    """Single-quoted Python-literal form (as written by some config editors)
+    must resolve the same way as the JSON form."""
+    config = _saved_list_from_before()
+    quoted = ", ".join(repr(ts) for ts in sorted(_RECENTLY_SHIPPED_TOOLSETS))
+    config["agent"] = {"disabled_toolsets": f"[{quoted}]"}
+
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+
+    assert not (_RECENTLY_SHIPPED_TOOLSETS & enabled)
+
+
+def test_disabled_composite_debugging_prunes_constituent_platform_toolsets():
+    """#97015: ``agent.disabled_toolsets: [debugging]`` must hide member
+    toolsets on ``hermes tools --summary``, not only strip them at runtime."""
+    config = {
+        "platform_toolsets": {"cli": ["hermes-cli"]},
+        "agent": {"disabled_toolsets": ["debugging"]},
+    }
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+
+    assert "terminal" not in enabled
+    assert "file" not in enabled
+    assert "web" not in enabled
+
+
+def test_disabled_composite_display_matches_runtime_tool_selection():
+    """Display/runtime parity: a toolset is listed as enabled iff the agent keeps
+    at least one of its tools after the runtime's tool-level subtraction."""
+    from model_tools import _select_tool_names
+    from toolsets import resolve_toolset
+
+    config = {
+        "platform_toolsets": {"cli": ["hermes-cli"]},
+        "agent": {"disabled_toolsets": ["debugging"]},
+    }
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+    runtime = _select_tool_names(sorted(enabled), ["debugging"], quiet_mode=True)
+
+    for name in ("terminal", "file", "web", "vision", "skills"):
+        assert (name in enabled) == bool(set(resolve_toolset(name)) & runtime), name
 
 
 @_requires_recently_shipped
@@ -1120,7 +978,6 @@ def test_explicit_plugin_toolset_admitted_in_platform_toolsets(monkeypatch):
     # Resolve dplat_call inside the dplat_client toolset — _get_platform_tools
     # ends up calling resolve_toolset() which can fall back to the registry
     # for plugin-provided names. Patch resolve_toolset for "dplat_client".
-    from toolsets import TOOLSETS as _BASE_TOOLSETS
     import toolsets as _toolsets_mod
 
     original_resolve = _toolsets_mod.resolve_toolset
@@ -1169,3 +1026,50 @@ def test_explicit_plugin_toolset_admitted_against_real_a2a_plugin(monkeypatch):
         f"plugin-provided 'a2a' toolset dropped by _get_platform_tools "
         f"(Layer 2 of #81163); enabled={sorted(enabled)}"
     )
+
+
+class TestLightpandaPostSetup:
+    """The Lightpanda picker row: no Chromium, just the binary check."""
+
+    @pytest.fixture(autouse=True)
+    def _stub_browser_use_install(self):
+        with patch("hermes_cli.tools_config_post_setup._ensure_browser_use_cli") as stub:
+            yield stub
+
+    def test_reports_binary_when_found(self, _stub_browser_use_install):
+        from hermes_cli.tools_config import _run_post_setup
+
+        with patch("tools.browser_lightpanda.find_lightpanda_binary", return_value="/opt/lightpanda"), \
+             patch("hermes_cli.tools_config_post_setup._print_success") as ok, \
+             patch("hermes_cli.tools_config_post_setup._print_warning") as warn:
+            _run_post_setup("lightpanda")
+        _stub_browser_use_install.assert_called_once()
+        assert "/opt/lightpanda" in ok.call_args.args[0]
+        warn.assert_not_called()
+
+    def test_prints_install_hint_when_missing(self):
+        from hermes_cli.tools_config import _run_post_setup
+        from tools.browser_lightpanda import LIGHTPANDA_INSTALL_URL
+
+        with patch("tools.browser_lightpanda.find_lightpanda_binary", return_value=None), \
+             patch("hermes_cli.tools_config_post_setup._print_warning") as warn, \
+             patch("hermes_cli.tools_config_post_setup._print_info") as info:
+            _run_post_setup("lightpanda")
+        assert "not found" in warn.call_args.args[0]
+        assert any(LIGHTPANDA_INSTALL_URL in c.args[0] for c in info.call_args_list)
+
+    def test_post_setup_key_is_valid_and_readiness_gated(self):
+        from hermes_cli.tools_config import (
+            _POST_SETUP_INSTALLED,
+            _POST_SETUP_READY,
+            valid_post_setup_keys,
+        )
+
+        assert "lightpanda" in valid_post_setup_keys()
+        with patch("tools.browser_lightpanda.find_lightpanda_binary", return_value="/opt/lightpanda"):
+            assert _POST_SETUP_READY["lightpanda"]() is True
+        with patch("tools.browser_lightpanda.find_lightpanda_binary", return_value=None):
+            assert _POST_SETUP_READY["lightpanda"]() is False
+        # Not in the forced-setup gate: a missing binary must not nag every
+        # user who toggles the browser toolset.
+        assert "lightpanda" not in _POST_SETUP_INSTALLED

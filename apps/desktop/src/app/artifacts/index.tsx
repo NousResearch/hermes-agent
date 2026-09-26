@@ -30,7 +30,7 @@ import {
   useLinkTitle
 } from '@/lib/external-link'
 import { FileImage, FileText, FolderOpen, Link2 } from '@/lib/icons'
-import { downloadGatewayMediaFile, isRemoteGateway } from '@/lib/media'
+import { downloadGatewayMediaFile, isArtifactFilePath, isRemoteGateway } from '@/lib/media'
 import { normalize } from '@/lib/text'
 import { fmtDayTime } from '@/lib/time'
 import { cn } from '@/lib/utils'
@@ -38,7 +38,7 @@ import { notify, notifyError } from '@/store/notifications'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
-import { openSession } from '../open-session'
+import { openSessionFromPicker } from '../open-session'
 import { PageSearchShell } from '../page-search-shell'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
@@ -92,7 +92,7 @@ function paginationItems(page: number, pageCount: number): Array<number | 'ellip
 }
 
 type CellCtx = {
-  onOpen: (href: string) => void | Promise<void>
+  onOpen: (artifact: ArtifactRecord) => void | Promise<void>
   onOpenChat: (sessionId: string) => void
 }
 
@@ -270,14 +270,18 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   }, [artifacts])
 
   const openArtifact = useCallback(
-    async (href: string) => {
+    async (artifact: ArtifactRecord) => {
+      const { href } = artifact
+
       try {
         // A gateway-local file resolves to file:// in remote mode (the file
         // lives on the gateway, not this disk). Opening that locally fails —
         // and an OAuth remote connection has no query token to build a download
         // URL. Fetch the bytes over the authenticated fs bridge instead.
-        if (isRemoteGateway() && /^file:/i.test(href)) {
-          await downloadGatewayMediaFile(href)
+        // Tilde/relative hrefs have no file URL form. Keep them gateway-owned:
+        // expanding them on the client would target the wrong home or cwd.
+        if (isRemoteGateway() && isArtifactFilePath(artifact.value)) {
+          await downloadGatewayMediaFile(artifact.value, { sessionId: artifact.sessionId, profile: artifact.profile })
 
           return
         }
@@ -308,7 +312,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   // every artifact cell re-render whenever the page did — and a link cell's
   // async title fetch re-rendered the page repeatedly. openArtifact is already
   // a useCallback; navigate is stable, so onOpenChat can be too.
-  const openChat = useCallback((sessionId: string) => openSession(sessionId, navigate), [navigate])
+  const openChat = useCallback((sessionId: string) => openSessionFromPicker(sessionId, navigate), [navigate])
   const cellCtx: CellCtx = useMemo(() => ({ onOpen: openArtifact, onOpenChat: openChat }), [openArtifact, openChat])
 
   return (
@@ -373,7 +377,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
                       failedImage={failedImageIds.has(artifact.id)}
                       key={artifact.id}
                       onImageError={markImageFailed}
-                      onOpenChat={sessionId => openSession(sessionId, navigate)}
+                      onOpenChat={sessionId => openSessionFromPicker(sessionId, navigate)}
                     />
                   ))}
                 </div>
@@ -492,7 +496,10 @@ function ArtifactImageCard({ artifact, failedImage, onImageError, onOpenChat }: 
   }, [artifact.href, artifact.id, artifact.value, onImageError])
 
   return (
-    <article className="group/artifact overflow-hidden rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background)">
+    <article
+      className="group/artifact overflow-hidden rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background)"
+      data-tour="artifact-card"
+    >
       <div
         className={cn(
           'relative flex h-40 w-full items-center justify-center overflow-hidden border-b border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-1.5',
@@ -587,7 +594,7 @@ const PrimaryCell = memo(function PrimaryCell({ artifact, ctx }: { artifact: Art
   return (
     <ArtifactCellAction
       href={isLink ? artifact.href : undefined}
-      onClick={isLink ? undefined : () => void ctx.onOpen(artifact.href)}
+      onClick={isLink ? undefined : () => void ctx.onOpen(artifact)}
       title={label}
     >
       <span className="mt-0.5 grid size-6 shrink-0 place-items-center self-start rounded-md bg-(--ui-bg-tertiary) text-(--ui-text-tertiary)">

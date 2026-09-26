@@ -4,6 +4,7 @@ import { useLocation, useNavigate } from 'react-router'
 import { closeActiveTab } from '@/app/chat/close-tab'
 import { hudTargetSessionId } from '@/app/hud/handoff'
 import { setTerminalTakeover } from '@/app/right-sidebar/store'
+import { toggleTerminalPane } from '@/app/right-sidebar/terminal/reveal-focus'
 import { closeActiveTerminal, createTerminal, cycleTerminal } from '@/app/right-sidebar/terminal/terminals'
 import { appViewForPath, isOverlayView } from '@/app/routes'
 import {
@@ -11,15 +12,17 @@ import {
   cycleTreeTabInFocusedZone,
   isPaneVisible,
   layoutHasRootSide,
-  togglePaneVisible
+  toggleTargetZoneTabStrip
 } from '@/components/pane-shell/tree/store'
+import { setWorkspaceScope } from '@/components/pane-shell/workspace-scope'
 import { onReleaseTypingFocus } from '@/components/ui/keyboard-first'
 import { findBarClaimsCombo } from '@/lib/find-in-page'
 import { contributedKeybindHandler, PROFILE_SLOT_COUNT, SESSION_SLOT_COUNT } from '@/lib/keybinds/actions'
+import { handleApprovalKey, releaseApprovalKey } from '@/lib/keybinds/approval-keys'
 import { actionAllowedInInput, comboFromEvent, isEditableTarget } from '@/lib/keybinds/combo'
 import { composerFocusKeysAllowed, isComposerFocusSoftCombo, typeToFocusChar } from '@/lib/keybinds/composer-focus-keys'
 import { openWorktreeDialog } from '@/store/coding-status'
-import { toggleCommandPalette } from '@/store/command-palette'
+import { $commandPaletteOpen, openCommandPalettePage, toggleCommandPalette } from '@/store/command-palette'
 import {
   $findInPage,
   findNext as findNextMatch,
@@ -27,14 +30,17 @@ import {
   openFindBar
 } from '@/store/find-in-page'
 import { toggleHud } from '@/store/hud'
-import { $capture, $comboIndex, endCapture, setBinding } from '@/store/keybinds'
+import { toggleSimpleMode } from '@/store/interface-mode'
+import { $capture, $comboIndex, captureStep, endCapture, setBinding } from '@/store/keybinds'
 import {
+  cycleSidebarGrouping,
   requestSessionSearchFocus,
   setFileBrowserOpen,
   toggleFileBrowserOpen,
   togglePanesFlipped,
   toggleSidebarOpen
 } from '@/store/layout'
+import { openBrowserTab } from '@/store/preview'
 import {
   $newChatProfile,
   cycleProfile,
@@ -43,10 +49,11 @@ import {
   switchToDefaultProfile,
   toggleShowAllProfiles
 } from '@/store/profile'
+import { toggleProfileRailVisible } from '@/store/profile-rail-prefs'
 import { openFolderAsProject } from '@/store/projects'
 import { toggleReview } from '@/store/review'
 import { $selectedStoredSessionId, setModelPickerOpen } from '@/store/session'
-import { reopenLastClosedTile } from '@/store/session-states'
+import { $focusedStoredSessionId, reopenLastClosedTile } from '@/store/session-states'
 import {
   $switcherOpen,
   closeSwitcher,
@@ -59,24 +66,31 @@ import {
   switcherJustClosed
 } from '@/store/session-switcher'
 import { toggleStatusbarVisible } from '@/store/statusbar-prefs'
+import { requestThreadPageScroll } from '@/store/thread-scroll'
 import { openNewWindow } from '@/store/windows'
 import { useTheme } from '@/themes/context'
 
-import { requestComposerFocus, requestModelMenuToggle, requestVoiceToggle } from '../chat/composer/focus'
+import {
+  requestComposerDictation,
+  requestComposerFocus,
+  requestModelMenuToggle,
+  requestVoiceToggle
+} from '../chat/composer/focus'
+import { handleComposerFocusChord } from '../chat/composer/focus-chord'
 import { handleWindowPaste } from '../chat/composer/paste-to-focus'
 import { openSession } from '../open-session'
 import {
   $workspaceIsPage,
   AGENTS_ROUTE,
   ARTIFACTS_ROUTE,
+  CAPABILITIES_ROUTE,
   CRON_ROUTE,
   MESSAGING_ROUTE,
   navigateToWorkspacePage,
   NEW_CHAT_ROUTE,
   PROFILES_ROUTE,
   sessionRoute,
-  SETTINGS_ROUTE,
-  SKILLS_ROUTE
+  SETTINGS_ROUTE
 } from '../routes'
 
 export interface KeybindRuntimeDeps {
@@ -189,12 +203,23 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
       }
     },
     'composer.voice': requestVoiceToggle,
+    'composer.dictate': requestComposerDictation,
 
-    'nav.commandPalette': toggleCommandPalette,
+    // On the Settings overlay, ⌘K scopes to settings search; the second press
+    // (or Esc) still closes as usual via toggle.
+    'nav.commandPalette': () => {
+      if (!$commandPaletteOpen.get() && appViewForPath(location.pathname) === 'settings') {
+        openCommandPalettePage('settings')
+
+        return
+      }
+
+      toggleCommandPalette()
+    },
     'nav.commandCenter': deps.toggleCommandCenter,
     'nav.settings': () => navigate(SETTINGS_ROUTE),
     'nav.profiles': () => navigate(PROFILES_ROUTE),
-    'nav.skills': () => navigateToWorkspacePage(navigate, SKILLS_ROUTE),
+    'nav.capabilities': () => navigateToWorkspacePage(navigate, CAPABILITIES_ROUTE),
     'nav.messaging': () => navigateToWorkspacePage(navigate, MESSAGING_ROUTE),
     'nav.artifacts': () => navigateToWorkspacePage(navigate, ARTIFACTS_ROUTE),
     'nav.cron': () => navigate(CRON_ROUTE),
@@ -204,6 +229,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
       // Match the sidebar New Session button. A plain keyboard new chat should
       // target the current live profile, not a stale per-profile quick-create
       // selection from a prior action.
+      setWorkspaceScope('sessions')
       $newChatProfile.set(null)
       deps.startFreshSession()
       window.dispatchEvent(new CustomEvent('hermes:new-session-shortcut'))
@@ -216,6 +242,8 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'session.focusSearch': requestSessionSearchFocus,
     'session.togglePin': deps.toggleSelectedPin,
     'session.archive': deps.archiveSelectedSession,
+    'conversation.scrollPageUp': () => requestThreadPageScroll(-1, $focusedStoredSessionId.get()),
+    'conversation.scrollPageDown': () => requestThreadPageScroll(1, $focusedStoredSessionId.get()),
     // openWorktreeDialog resolves the target. There is no test for a repo
     // here, so the key works from a detached session that sits inside a
     // project, and not only from a session with a repo. When no repo is in
@@ -227,16 +255,20 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
 
     // Narrow-viewport reveal is handled inside the store toggles now.
     'view.toggleSidebar': toggleSidebarOpen,
+    'view.cycleSidebarGrouping': cycleSidebarGrouping,
     // ⌘J toggles the right sidebar — but a layout with no right side (e.g.
     // terminal-on-bottom) would leave it a dead key, so it falls back to the
     // terminal there. The single "secondary panel" toggle.
-    'view.toggleRightSidebar': () =>
-      layoutHasRootSide('right') ? toggleFileBrowserOpen() : togglePaneVisible('terminal'),
+    'view.toggleRightSidebar': () => (layoutHasRootSide('right') ? toggleFileBrowserOpen() : toggleTerminalPane()),
     'view.toggleReview': toggleReview,
     'view.toggleStatusbar': toggleStatusbarVisible,
+    'view.toggleProfileRail': toggleProfileRailVisible,
+    'view.toggleSimpleMode': toggleSimpleMode,
+    'view.toggleTabStrip': () => void toggleTargetZoneTabStrip(),
     'view.showFiles': showFiles,
+    'view.showBrowser': openBrowserTab,
     'view.toggleHud': () => toggleHud(hudTargetSessionId()),
-    'view.showTerminal': () => togglePaneVisible('terminal'),
+    'view.showTerminal': () => toggleTerminalPane(),
     // Create first so the pane's open-effect ensure sees a non-empty set and
     // doesn't also spawn one — net effect is exactly one fresh terminal.
     'view.newTerminal': () => {
@@ -302,6 +334,43 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
   )
 
   useEffect(() => {
+    const updateF12Ownership = () => {
+      const hasF12Binding = [...$comboIndex.get().keys()].some(combo => combo === 'f12' || combo.endsWith('+f12'))
+      window.hermesDesktop?.setF12ShortcutActive?.(hasF12Binding || $capture.get() !== null)
+    }
+
+    const stopBindings = $comboIndex.subscribe(updateF12Ownership)
+    const stopCapture = $capture.subscribe(updateF12Ownership)
+
+    return () => {
+      stopBindings()
+      stopCapture()
+      window.hermesDesktop?.setF12ShortcutActive?.(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    const stopF12Shortcut = window.hermesDesktop?.onF12Shortcut?.(input => {
+      const target = document.activeElement ?? document.body ?? document.documentElement
+      target.dispatchEvent(
+        new KeyboardEvent('keydown', {
+          altKey: input.alt,
+          bubbles: true,
+          cancelable: true,
+          code: input.code,
+          ctrlKey: input.control,
+          key: input.key,
+          metaKey: input.meta,
+          repeat: input.repeat,
+          shiftKey: input.shift
+        })
+      )
+    })
+
+    return () => stopF12Shortcut?.()
+  }, [])
+
+  useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       // An active IME composition owns the keyboard. Windows Chinese IMEs
       // (Microsoft Pinyin, Sogou) use Ctrl+, as their punctuation-mode toggle,
@@ -313,27 +382,26 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
         return
       }
 
-      // Capture mode: the next real key becomes the binding. Swallow everything
-      // so e.g. ⌘K rebinds instead of opening the palette.
+      // Capture mode: the next real key becomes the binding. Backspace/Delete
+      // clears it (empty combos) so a shipped chord like the sidebar's mod+b
+      // can be unbound. Escape cancels. Swallow everything so e.g. ⌘K rebinds
+      // instead of opening the palette.
       const capturing = $capture.get()
 
       if (capturing) {
         event.preventDefault()
         event.stopPropagation()
 
-        if (event.key === 'Escape') {
-          endCapture()
+        const step = captureStep(event.key, comboFromEvent(event))
 
+        if (step.type === 'wait') {
           return
         }
 
-        const combo = comboFromEvent(event)
-
-        if (!combo) {
-          return
+        if (step.type === 'set') {
+          setBinding(capturing, step.combos)
         }
 
-        setBinding(capturing, [combo])
         endCapture()
 
         return
@@ -362,6 +430,10 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
       // listeners are on `window`, so stopPropagation in the bar can't
       // suppress this one — the dispatcher has to yield explicitly.
       if ($findInPage.get().active && findBarClaimsCombo(combo)) {
+        return
+      }
+
+      if (handleApprovalKey(event)) {
         return
       }
 
@@ -412,6 +484,10 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     // highlighted session. A window blur (Cmd+Tab away mid-switch) cancels so
     // the overlay never gets stranded waiting for a keyup that never comes.
     const onKeyUp = (event: KeyboardEvent) => {
+      if (event.key === 'Enter' || event.key === 'Escape') {
+        releaseApprovalKey()
+      }
+
       if (event.key === 'Tab') {
         onSwitcherTabUp()
       }
@@ -421,7 +497,13 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
       }
     }
 
-    const onBlur = () => switcherActive() && closeSwitcher()
+    const onBlur = () => {
+      releaseApprovalKey()
+
+      if (switcherActive()) {
+        closeSwitcher()
+      }
+    }
 
     // Swallow trailing contextmenu after Ctrl+click commit (Electron main menu).
     const onContextMenu = (event: MouseEvent) => {
@@ -439,6 +521,9 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     // clipboard (text AND images) into the active composer. Bubble phase so
     // editables' own paste handlers run first and mark the event handled.
     window.addEventListener('paste', handleWindowPaste)
+    // ⌘/Ctrl+L moves focus to the composer. Bubble phase so capture-phase
+    // claimants run first; the priority ladder lives in focus-chord.ts.
+    window.addEventListener('keydown', handleComposerFocusChord)
 
     return () => {
       window.removeEventListener('keydown', onKeyDown, { capture: true })
@@ -446,6 +531,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
       window.removeEventListener('blur', onBlur)
       window.removeEventListener('contextmenu', onContextMenu, { capture: true })
       window.removeEventListener('paste', handleWindowPaste)
+      window.removeEventListener('keydown', handleComposerFocusChord)
     }
   }, [])
 }

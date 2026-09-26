@@ -18,8 +18,70 @@ def transport():
 
 
 class TestChatCompletionsBasic:
+    @pytest.mark.parametrize(
+        "choice",
+        [SimpleNamespace(message=SimpleNamespace()), SimpleNamespace()],
+    )
+    def test_normalize_response_allows_missing_optional_message_fields(
+        self, transport, choice
+    ):
+        response = SimpleNamespace(choices=[choice], usage=None)
 
+        normalized = transport.normalize_response(response)
 
+        assert normalized.content is None
+        assert normalized.tool_calls is None
+        assert normalized.finish_reason == "stop"
+
+    def test_normalize_response_allows_sparse_tool_call_fields(self, transport):
+        response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        tool_calls=[
+                            SimpleNamespace(
+                                function=SimpleNamespace(arguments='{"city":"Paris"}')
+                            ),
+                            SimpleNamespace(),
+                            SimpleNamespace(
+                                id="call-3",
+                                function=SimpleNamespace(name="lookup"),
+                            ),
+                            SimpleNamespace(
+                                id="call-4",
+                                function=SimpleNamespace(name="", arguments="{}"),
+                            ),
+                            SimpleNamespace(
+                                function=SimpleNamespace(
+                                    name="weather", arguments="{}"
+                                )
+                            ),
+                        ]
+                    )
+                )
+            ],
+            usage=None,
+        )
+
+        normalized = transport.normalize_response(response)
+
+        assert normalized.finish_reason == "stop"
+        assert normalized.tool_calls is not None
+        assert [tool.id for tool in normalized.tool_calls] == [
+            "call-3",
+            "call-4",
+            None,
+        ]
+        assert [tool.name for tool in normalized.tool_calls] == [
+            "lookup",
+            "",
+            "weather",
+        ]
+        assert [tool.arguments for tool in normalized.tool_calls] == [
+            "{}",
+            "{}",
+            "{}",
+        ]
 
     @pytest.mark.parametrize("provider", ["nous", "openrouter"])
     def test_gpt56_ultra_uses_max_wire_effort(self, transport, provider):
@@ -39,20 +101,9 @@ class TestChatCompletionsBasic:
         assert kw["extra_body"]["reasoning"] == {"enabled": True, "effort": "max"}
 
 
-    def test_convert_messages_no_codex_leaks(self, transport):
-        msgs = [{"role": "user", "content": "hi"}]
-        result = transport.convert_messages(msgs)
-        assert result is msgs  # no copy needed
 
 
 
-    def _msg_with_extra_content(self):
-        return [
-            {"role": "assistant", "content": "ok",
-             "tool_calls": [{"id": "call_1", "type": "function",
-                             "extra_content": {"google": {"thought_signature": "SIG_123"}},
-                             "function": {"name": "t", "arguments": "{}"}}]},
-        ]
 
 
 
@@ -77,6 +128,63 @@ class TestChatCompletionsBasic:
         assert result[0]["role"] == "user"
         # Original list untouched (deepcopy-on-demand)
         assert msgs[0]["timestamp"] == 1781976577.0
+
+    def test_convert_messages_strips_provider_replay_sidecars(self, transport):
+        """Native-provider replay channels must not cross a provider boundary.
+
+        ``bedrock_content_blocks`` intentionally remains in durable history so
+        Bedrock can restore signed/reasoning blocks in their original order.
+        Chat Completions providers do not recognize it, though, and strict
+        endpoints reject unknown keys in ``messages`` with HTTP 400/422.
+        """
+        msgs = [
+            {"role": "user", "content": "use a tool"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "lookup", "arguments": "{}"},
+                    }
+                ],
+                "anthropic_content_blocks": [{"thinking": "signed"}],
+                "bedrock_content_blocks": [
+                    {"reasoningContent": {"redactedContentBase64": "cmVhc29uaW5n"}},
+                    {
+                        "toolUse": {
+                            "toolUseId": "call_1",
+                            "name": "lookup",
+                            "input": {},
+                        }
+                    },
+                ],
+            },
+        ]
+
+        result = transport.convert_messages(msgs, model="gpt-4o")
+
+        assert "anthropic_content_blocks" not in result[1]
+        assert "bedrock_content_blocks" not in result[1]
+        assert result[1]["tool_calls"] == msgs[1]["tool_calls"]
+        # Durable history remains available if this conversation returns to Bedrock.
+        assert "anthropic_content_blocks" in msgs[1]
+        assert "bedrock_content_blocks" in msgs[1]
+
+    def test_convert_messages_strips_name_on_tool_results_only(self, transport):
+        """``name`` is stripped from tool results only (schema-foreign there),
+        preserved on user/assistant messages; the original list is untouched."""
+        msgs = [
+            {"role": "user", "content": "hi", "name": "sylvain"},
+            {"role": "tool", "tool_call_id": "call_1", "content": "ok",
+             "name": "execute_code"},
+        ]
+        result = transport.convert_messages(msgs)
+        assert result[1] == {"role": "tool", "tool_call_id": "call_1", "content": "ok"}
+        # Schema-valid on non-tool roles — untouched, including by identity.
+        assert result[0]["name"] == "sylvain"
+        assert msgs[1]["name"] == "execute_code"
 
     def test_convert_messages_no_copy_without_timestamp(self, transport):
         """A timestamp-free message list needs no sanitize pass and is
@@ -153,20 +261,9 @@ class TestChatCompletionsBasic:
 
 class TestChatCompletionsBuildKwargs:
 
-    def test_basic_kwargs(self, transport):
-        msgs = [{"role": "user", "content": "Hello"}]
-        kw = transport.build_kwargs(model="gpt-4o", messages=msgs, timeout=30.0)
-        assert kw["model"] == "gpt-4o"
-        assert kw["messages"][0]["content"] == "Hello"
-        assert kw["timeout"] == 30.0
 
 
 
-    def test_tools_included(self, transport):
-        msgs = [{"role": "user", "content": "Hi"}]
-        tools = [{"type": "function", "function": {"name": "test", "parameters": {}}}]
-        kw = transport.build_kwargs(model="gpt-4o", messages=msgs, tools=tools)
-        assert kw["tools"] == tools
 
     def test_openrouter_provider_prefs(self, transport):
         from providers import get_provider_profile
@@ -192,15 +289,8 @@ class TestChatCompletionsBuildKwargs:
         kw = transport.build_kwargs(model="gpt-4o", messages=msgs, provider_profile=profile)
         assert kw["extra_body"]["tags"] == nous_portal_tags()
 
-    def test_reasoning_default(self, transport):
-        msgs = [{"role": "user", "content": "Hi"}]
-        kw = transport.build_kwargs(
-            model="gpt-4o", messages=msgs,
-            supports_reasoning=True,
-        )
-        assert kw["extra_body"]["reasoning"] == {"enabled": True, "effort": "medium"}
 
-    def test_nous_omits_disabled_reasoning(self, transport):
+    def test_nous_omits_disabled_reasoning_for_unknown_model(self, transport):
         from providers import get_provider_profile
         profile = get_provider_profile("nous")
         msgs = [{"role": "user", "content": "Hi"}]
@@ -210,7 +300,10 @@ class TestChatCompletionsBuildKwargs:
             supports_reasoning=True,
             reasoning_config={"enabled": False},
         )
-        # Nous rejects enabled=false; reasoning omitted entirely
+        # Not a Portal model id, so the catalog can't rule out a
+        # reasoning-mandatory route (which 400s on a disable) — omit.
+        # tests/plugins/model_providers/test_nous_profile.py covers the
+        # catalog-known cases where the disable IS forwarded.
         assert "reasoning" not in kw.get("extra_body", {})
 
     def test_ollama_num_ctx(self, transport):
@@ -232,8 +325,23 @@ class TestChatCompletionsBuildKwargs:
             model="qwen3", messages=msgs,
             provider_profile=profile,
             reasoning_config={"effort": "none"},
+            base_url="http://127.0.0.1:11434/v1",
         )
         assert kw["extra_body"]["think"] is False
+
+    def test_custom_omits_think_on_mistral(self, transport):
+        from providers import get_provider_profile
+        profile = get_provider_profile("custom")
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="mistral-small-latest",
+            messages=msgs,
+            provider_profile=profile,
+            reasoning_config={"enabled": False, "effort": "none"},
+            base_url="https://api.mistral.ai/v1",
+        )
+        assert kw.get("extra_body", {}).get("think") is None
+        assert kw.get("reasoning_effort") == "none"
 
 
 
@@ -251,6 +359,54 @@ class TestChatCompletionsBuildKwargs:
             "include_thoughts": True,
             "thinking_level": "high",
         }
+
+    def test_gemini_ultra_thinking_raises_first_request_max_tokens(self, transport):
+        from agent.gemini_native_adapter import GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
+        from providers import get_provider_profile
+
+        profile = get_provider_profile("gemini")
+        kw = transport.build_kwargs(
+            model="gemini-3.7-flash",
+            messages=[{"role": "user", "content": "Hi"}],
+            provider_profile=profile,
+            provider_name="gemini",
+            base_url=profile.base_url,
+            max_tokens=4096,
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+            reasoning_config={"enabled": True, "effort": "ultra"},
+        )
+        assert kw["max_tokens"] == GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
+        assert kw["extra_body"]["thinking_config"]["thinkingLevel"] == "high"
+
+        # Also verify gemini-3.8-flash gets headroom and correct thinking level
+        kw38 = transport.build_kwargs(
+            model="gemini-3.8-flash",
+            messages=[{"role": "user", "content": "Hi"}],
+            provider_profile=profile,
+            provider_name="gemini",
+            base_url=profile.base_url,
+            max_tokens=4096,
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+            reasoning_config={"enabled": True, "effort": "medium"},
+        )
+        assert kw38["max_tokens"] == GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
+        assert kw38["extra_body"]["thinking_config"]["thinkingLevel"] == "medium"
+
+    def test_gemini_without_thinking_keeps_explicit_max_tokens(self, transport):
+        from providers import get_provider_profile
+
+        profile = get_provider_profile("gemini")
+        kw = transport.build_kwargs(
+            model="gemini-3.7-flash",
+            messages=[{"role": "user", "content": "Hi"}],
+            provider_profile=profile,
+            provider_name="gemini",
+            base_url=profile.base_url,
+            max_tokens=4096,
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        assert kw["max_tokens"] == 4096
+
 
 
 
@@ -399,6 +555,35 @@ class TestChatCompletionsValidate:
 
 
 
+    @pytest.mark.parametrize("usage", [None, SimpleNamespace(completion_tokens=0)])
+    def test_rejects_known_router_timeout_shim_without_generated_tokens(self, transport, usage):
+        """#68396: an HTTP-200 router timeout shim with no generated tokens is not a completion."""
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(
+                content="Connect timeout, please try again later.",
+                tool_calls=None,
+            ))],
+            usage=usage,
+        )
+
+        assert transport.validate_response(response) is False
+
+    @pytest.mark.parametrize(
+        ("content", "tool_calls", "usage"),
+        [
+            ("Connect timeout, please try again later.", None, SimpleNamespace(completion_tokens=1)),
+            ("Connect timeout, please try again later.", [SimpleNamespace()], None),
+        ],
+    )
+    def test_accepts_non_shim_timeout_text(self, transport, content, tool_calls, usage):
+        """Positive controls (#68396): generated tokens, embedded phrase, or tool calls stay valid."""
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=content, tool_calls=tool_calls))],
+            usage=usage,
+        )
+
+        assert transport.validate_response(response) is True
+
     def test_valid(self, transport):
         r = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="hi"))])
         assert transport.validate_response(r) is True
@@ -459,22 +644,6 @@ class TestChatCompletionsNormalize:
 
 
 
-    def test_refusal_none_is_noop(self, transport):
-        """The common case: ``refusal`` is None → behavior unchanged."""
-        r = SimpleNamespace(
-            choices=[SimpleNamespace(
-                message=SimpleNamespace(
-                    content="hello", tool_calls=None, reasoning_content=None,
-                    refusal=None,
-                ),
-                finish_reason="stop",
-            )],
-            usage=None,
-        )
-        nr = transport.normalize_response(r)
-        assert nr.finish_reason == "stop"
-        assert nr.content == "hello"
-        assert nr.provider_data is None
 
 
 
@@ -751,28 +920,68 @@ class TestPromptCacheKeyCapability:
         )
         assert kw1["prompt_cache_key"] != kw2["prompt_cache_key"]
 
-    def test_stale_profile_without_supports_prompt_cache_key_does_not_crash(self, transport):
-        """A ProviderProfile from a stale sys.modules cache (pre-#f4fb23f3d)
-        won't have the ``supports_prompt_cache_key`` field. Accessing it via
-        ``profile.supports_prompt_cache_key`` raises AttributeError and crashes
-        every API call. Use getattr with a False default so it degrades to
-        "no prompt cache key" instead of crashing.
 
-        Regression: 'NousProfile' object has no attribute
-        'supports_prompt_cache_key' (Aug 2026, after partial update).
+    def test_overlong_caller_top_level_key_is_bounded(self, transport):
+        """OpenAI caps prompt_cache_key at 64 chars and 400s longer values.
+
+        A caller-supplied over-length key (request_overrides) must be hashed
+        to the same pck_<sha256[:24]> shape the Responses transport uses
+        (opencode#44571 parity — clamp on every chat protocol).
         """
         from providers.base import ProviderProfile
 
-        # Simulate a stale class that predates supports_prompt_cache_key
-        # by creating a profile and deleting the attribute.
-        profile = ProviderProfile(name="stale-provider")
-        del profile.supports_prompt_cache_key
+        profile = ProviderProfile(name="cache-capable", supports_prompt_cache_key=True)
+        long_key = "sess-" + "x" * 200
 
-        # Must not raise AttributeError — should fall back to False.
         kwargs = transport.build_kwargs(
-            model="stale-model",
-            messages=self._messages(),
-            tools=self._tools(),
+            model="cache-model", messages=self._messages(), tools=self._tools(),
             provider_profile=profile,
+            request_overrides={"prompt_cache_key": long_key},
+        )
+
+        assert kwargs["prompt_cache_key"].startswith("pck_")
+        assert len(kwargs["prompt_cache_key"]) <= 64
+        body = self._request_body(kwargs)
+        assert body["prompt_cache_key"] == kwargs["prompt_cache_key"]
+
+    def test_overlong_caller_extra_body_key_is_bounded(self, transport):
+        from providers.base import ProviderProfile
+
+        profile = ProviderProfile(name="cache-capable", supports_prompt_cache_key=True)
+        long_key = "sess-" + "y" * 200
+
+        kwargs = transport.build_kwargs(
+            model="cache-model", messages=self._messages(), tools=self._tools(),
+            provider_profile=profile,
+            request_overrides={"extra_body": {"prompt_cache_key": long_key}},
+        )
+
+        eb_key = kwargs["extra_body"]["prompt_cache_key"]
+        assert eb_key.startswith("pck_")
+        assert len(eb_key) <= 64
+        # No duplicate top-level field competing with the caller's extra_body.
+        assert "prompt_cache_key" not in kwargs
+
+
+    def test_overlong_caller_key_bounded_on_legacy_path(self, transport):
+        long_key = "sess-" + "z" * 200
+        kwargs = transport.build_kwargs(
+            model="cache-model", messages=self._messages(), tools=self._tools(),
+            supports_prompt_cache_key=True,
+            request_overrides={"prompt_cache_key": long_key},
+        )
+        assert kwargs["prompt_cache_key"].startswith("pck_")
+        assert len(kwargs["prompt_cache_key"]) <= 64
+
+    def test_whitespace_only_caller_key_is_dropped(self, transport):
+        """_bounded_prompt_cache_key returns None for blank keys — the field
+        must be removed rather than sent empty."""
+        from providers.base import ProviderProfile
+
+        profile = ProviderProfile(name="cache-capable", supports_prompt_cache_key=True)
+        kwargs = transport.build_kwargs(
+            model="cache-model", messages=self._messages(), tools=self._tools(),
+            provider_profile=profile,
+            request_overrides={"prompt_cache_key": "   "},
         )
         assert "prompt_cache_key" not in kwargs

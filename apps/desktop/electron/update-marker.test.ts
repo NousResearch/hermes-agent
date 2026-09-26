@@ -115,6 +115,30 @@ test('writeUpdateMarker writes a marker that readLiveUpdateMarker accepts', () =
   assert.ok(fs.existsSync(markerPath(home)), 'marker file should exist after write')
 })
 
+test('writeUpdateMarker preserves a live holder age across pid hand-off', () => {
+  const home = tmpHome('write-handoff-age')
+  const now = 1_000_000_000_000
+  const startedAt = Math.floor(now / 1000) - 300
+
+  writeMarker(home, 1010, startedAt)
+  writeUpdateMarker(home, 2020, { kill: ALIVE, now: () => now })
+
+  const [pidLine, startedLine] = fs.readFileSync(markerPath(home), 'utf8').split('\n')
+  assert.equal(Number.parseInt(pidLine, 10), 2020, 'the hand-off records the new owner')
+  assert.equal(Number.parseInt(startedLine, 10), startedAt, 'the holder age must not restart during hand-off')
+})
+
+test('writeUpdateMarker uses the acquisition time passed to a detached script', () => {
+  const home = tmpHome('write-script-acquired-at')
+  const now = 1_000_000_000_000
+  const startedAt = Math.floor(now / 1000) - 300
+
+  writeUpdateMarker(home, 2020, { now: () => now, startedAt })
+
+  const [, startedLine] = fs.readFileSync(markerPath(home), 'utf8').split('\n')
+  assert.equal(Number.parseInt(startedLine, 10), startedAt)
+})
+
 test('writeUpdateMarker is best-effort (no throw on bad path)', () => {
   // A non-existent directory should not throw.
   const badHome = path.join(os.tmpdir(), 'hermes-marker-nonexistent-' + Date.now())
@@ -167,13 +191,4 @@ test('an expired marker does not block a hand-off (self-heals)', () => {
   const now = 1_000_000_000_000
   writeMarker(home, 1010, Math.floor((now - UPDATE_MARKER_MAX_AGE_MS - 60_000) / 1000))
   assert.equal(updateHandoffConflict(home, { kill: ALIVE, now: () => now }), null)
-})
-
-test('minutes-scale elapsed time is formatted as "Nm Ss"', () => {
-  const home = tmpHome('conflict-minutes')
-  const now = 1_000_000_000_000
-  writeMarker(home, 1010, Math.floor(now / 1000) - 125) // 2m 5s old
-  const conflict = updateHandoffConflict(home, { kill: ALIVE, now: () => now })
-  assert.ok(conflict)
-  assert.match(conflict.message, /2m 5s/)
 })

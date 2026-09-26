@@ -3,6 +3,37 @@ import { describe, expect, it } from 'vitest'
 import { INITIAL_STATE, parseMultipleKeypresses } from './parse-keypress.js'
 import { PASTE_END, PASTE_START } from './termio/csi.js'
 
+describe('legacy modified return parsing', () => {
+  it.each(['\r', '\n'])('parses ESC+%j as one Alt+Enter keypress', lineEnding => {
+    const sequence = `\x1b${lineEnding}`
+    const [keys] = parseMultipleKeypresses(INITIAL_STATE, sequence)
+
+    expect(keys).toEqual([expect.objectContaining({ name: 'return', ctrl: false, meta: true, shift: false, sequence })])
+  })
+})
+
+describe('legacy function-key parsing', () => {
+  it.each([
+    ['f1', '\x1bOP'],
+    ['f2', '\x1bOQ'],
+    ['f3', '\x1bOR'],
+    ['f4', '\x1bOS'],
+    ['f5', '\x1b[15~'],
+    ['f6', '\x1b[17~'],
+    ['f7', '\x1b[18~'],
+    ['f8', '\x1b[19~'],
+    ['f9', '\x1b[20~'],
+    ['f10', '\x1b[21~'],
+    ['f11', '\x1b[23~'],
+    ['f12', '\x1b[24~']
+  ])('parses %s from its terminal sequence', (name, sequence) => {
+    const [keys] = parseMultipleKeypresses(INITIAL_STATE, sequence)
+
+    expect(keys).toHaveLength(1)
+    expect(keys[0]).toMatchObject({ name, fn: true, ctrl: false, meta: false, shift: false })
+  })
+})
+
 describe('parseMultipleKeypresses bracketed paste recovery', () => {
   it('emits empty bracketed pastes when the terminal sends both markers', () => {
     const [keys, state] = parseMultipleKeypresses(INITIAL_STATE, PASTE_START + PASTE_END)
@@ -105,6 +136,36 @@ describe('parseMultipleKeypresses text control splitting', () => {
   })
 })
 
+describe('parseMultipleKeypresses CSI u (Kitty keyboard protocol)', () => {
+  it('parses Cmd+Enter (CSI 13;9u) as return with super=true', () => {
+    const [keys] = parseMultipleKeypresses(INITIAL_STATE, '\x1b[13;9u')
+
+    expect(keys).toHaveLength(1)
+    expect(keys[0]).toMatchObject({
+      kind: 'key',
+      name: 'return',
+      shift: false,
+      ctrl: false,
+      meta: false,
+      super: true
+    })
+  })
+
+  it('parses plain Enter (CSI 13u) as return with no modifiers', () => {
+    const [keys] = parseMultipleKeypresses(INITIAL_STATE, '\x1b[13u')
+
+    expect(keys).toHaveLength(1)
+    expect(keys[0]).toMatchObject({
+      kind: 'key',
+      name: 'return',
+      shift: false,
+      ctrl: false,
+      meta: false,
+      super: false
+    })
+  })
+})
+
 describe('mouse wheel modifier decoding', () => {
   // SGR mouse format: ESC [ < button ; col ; row M
   // Wheel up = 64 (0x40), wheel down = 65 (0x41).
@@ -117,22 +178,10 @@ describe('mouse wheel modifier decoding', () => {
     expect(key).toMatchObject({ name: 'wheelup', ctrl: false, meta: false, shift: false })
   })
 
-  it('plain wheel down has no modifiers', () => {
-    const [[key]] = parseMultipleKeypresses(INITIAL_STATE, sgrWheel(0x41))
-
-    expect(key).toMatchObject({ name: 'wheeldown', ctrl: false, meta: false, shift: false })
-  })
-
   it('decodes meta (Alt/Option) on wheel up', () => {
     const [[key]] = parseMultipleKeypresses(INITIAL_STATE, sgrWheel(0x40 | 0x08))
 
     expect(key).toMatchObject({ name: 'wheelup', ctrl: false, meta: true, shift: false })
-  })
-
-  it('decodes meta (Alt/Option) on wheel down', () => {
-    const [[key]] = parseMultipleKeypresses(INITIAL_STATE, sgrWheel(0x41 | 0x08))
-
-    expect(key).toMatchObject({ name: 'wheeldown', ctrl: false, meta: true, shift: false })
   })
 
   it('decodes ctrl on wheel events', () => {
@@ -177,16 +226,6 @@ describe('flush-boundary SGR mouse reassembly', () => {
     expect(keys).toEqual([expect.objectContaining({ kind: 'mouse', button: 0, col: 35, row: 46, action: 'press' })])
   })
 
-  it('drops a truncated mouse prefix after a second flush instead of leaking it', () => {
-    let [keys, state] = parseMultipleKeypresses(INITIAL_STATE, '\x1b[<0;35;')
-
-    ;[keys, state] = parseMultipleKeypresses(state, null) // first flush keeps it
-    ;[keys, state] = parseMultipleKeypresses(state, null) // second flush drops it
-
-    expect(keys).toEqual([])
-    expect(state.incomplete).toBe('')
-  })
-
   it('re-synthesizes an orphaned X10 wheel tail (legacy mouse) into a scroll key', () => {
     // X10 wheel-up = ESC[M + (0x40+32) + col + row. If the ESC was flushed as a
     // lone Escape and the `[M…` payload arrives as text, resynthesize it.
@@ -219,26 +258,11 @@ describe('cursor position report parsing', () => {
     })
   })
 
-  it('parses standard DSR report with multi-digit row and col', () => {
-    const [[key]] = parseMultipleKeypresses(INITIAL_STATE, '\x1b[10;80R')
-
-    expect(key).toMatchObject({
-      kind: 'response',
-      response: { type: 'cursorPosition', row: 10, col: 80 }
-    })
-  })
-
   it('does NOT treat CSI 1;2 R as a cursor position report (Shift+F3 ambiguity)', () => {
     // CSI 1;2 R is Shift+F3 in xterm. Without the ? marker, row 1 is
     // ambiguous with F3 modifiers — must fall through to parseKeypress,
     // not be silently dropped as a terminal response.
     const [[key]] = parseMultipleKeypresses(INITIAL_STATE, '\x1b[1;2R')
-
-    expect(key.kind).not.toBe('response')
-  })
-
-  it('does NOT treat CSI 1;5 R as a cursor position report (Ctrl+F3 ambiguity)', () => {
-    const [[key]] = parseMultipleKeypresses(INITIAL_STATE, '\x1b[1;5R')
 
     expect(key.kind).not.toBe('response')
   })

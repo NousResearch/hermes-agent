@@ -8,8 +8,9 @@ import { Fragment, useEffect, useMemo, useState } from 'react'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
 import type { I18nContextValue } from '@/i18n'
 import { extractEmbeddedImages } from '@/lib/embedded-images'
-import { openExternalLink } from '@/lib/external-link'
+import { ExternalLink, openLink } from '@/lib/external-link'
 import { triggerHaptic } from '@/lib/haptics'
+import { downscaleDataUrlForPreview, FALLBACK_PLACEHOLDER } from '@/lib/image-resize'
 import { gatewayMediaDataUrl, isRemoteGateway } from '@/lib/media'
 import { useSessionLinkTitle } from '@/lib/session-link-title'
 import { parseSessionRefValue, sessionRefFallbackLabel } from '@/lib/session-refs'
@@ -401,7 +402,12 @@ export const DirectiveText: TextMessagePartComponent = ({ text }: TextMessagePar
  * across initial send and refresh. */
 const DirectiveImage: FC<{ id: string; label: string }> = ({ id, label }) => {
   const isUrl = /^(?:https?|data):/i.test(id)
+  // `src` is the bounded thumbnail painted inline; `zoomSrc` is the full-
+  // resolution source the lightbox and download use. Keeping inline bounded is
+  // what lets the in-flight bubble render an `@image:<path>` ref without the
+  // multi-image paint freeze the 512px cap exists to prevent (#93204).
   const [src, setSrc] = useState<string | null>(isUrl ? id : null)
+  const [zoomSrc, setZoomSrc] = useState<string | null>(isUrl ? id : null)
   const [failed, setFailed] = useState(false)
 
   useEffect(() => {
@@ -417,7 +423,23 @@ const DirectiveImage: FC<{ id: string; label: string }> = ({ id, label }) => {
       window.hermesDesktop && isRemoteGateway() ? gatewayMediaDataUrl(id) : window.hermesDesktop?.readFileDataUrl(id)
 
     void Promise.resolve(load)
-      .then(url => alive && url && setSrc(url))
+      .then(async url => {
+        if (!alive || !url) {
+          return
+        }
+
+        // Full resolution powers the click-to-zoom lightbox and Save; the inline
+        // <img> gets a bounded thumbnail so a turn full of screenshots does not
+        // hand Chromium multi-MB paint sources.
+        setZoomSrc(url)
+        const thumbnail = await downscaleDataUrlForPreview(url)
+
+        if (!alive) {
+          return
+        }
+
+        setSrc(thumbnail && thumbnail !== FALLBACK_PLACEHOLDER ? thumbnail : url)
+      })
       .catch(() => alive && setFailed(true))
 
     return () => {
@@ -445,6 +467,7 @@ const DirectiveImage: FC<{ id: string; label: string }> = ({ id, label }) => {
       draggable={false}
       slot="aui_directive-image"
       src={src}
+      zoomSrc={zoomSrc ?? undefined}
     />
   )
 }
@@ -474,9 +497,15 @@ export function openSessionRef(value: string) {
  *  table. `icon`/`label` are for the pill; the transcript chip carries its own
  *  glyph and only reads `run`. */
 export interface DirectiveAction {
+  /** The web target of a reference kind that IS a link. A kind with an `href`
+   *  renders as a real anchor so it inherits the one link surface's gestures:
+   *  plain click opens the in-app pane, ⌘/Ctrl-click (or middle-click) escapes
+   *  to the system browser, and the context-menu coordinator resolves the link
+   *  verbs. A button has neither. */
+  href?: (value: string) => string
   icon: string
   label: (t: I18nContextValue['t']) => string
-  run: (value: string) => void
+  run: (value: string, options?: { native?: boolean }) => void
 }
 
 export const DIRECTIVE_ACTIONS: Record<string, DirectiveAction> = {
@@ -486,9 +515,10 @@ export const DIRECTIVE_ACTIONS: Record<string, DirectiveAction> = {
     run: openSessionRef
   },
   url: {
+    href: value => value,
     icon: 'link-external',
     label: t => t.composer.openDirective,
-    run: openExternalLink
+    run: openLink
   }
 }
 
@@ -539,17 +569,22 @@ const SlashChip: FC<{ kind: SlashChipKind; label: string; value: string }> = ({ 
   </span>
 )
 
-/** A directive reference in a sent message. A kind with a `DIRECTIVE_ACTIONS`
- *  entry (a url, …) renders as a real button that runs it on click; everything
- *  else is inert text. `onClick` overrides for chips that resolve their target
- *  themselves (session, which needs the async navigator). */
+/** A directive reference in a sent message. A kind whose action declares an
+ *  `href` (url) renders as a real anchor — every transcript link's gestures
+ *  come from `ExternalLink` and the context-menu coordinator. An action
+ *  without an `href` (a session, or an `onClick` override) stays a button;
+ *  a kind with no action is an inert span. */
 const DirectiveChip: FC<{
   type: string
   label: string
   id: string
   onClick?: () => void
 }> = ({ type, label, id, onClick }) => {
-  const activate = onClick ?? (DIRECTIVE_ACTIONS[type] ? () => DIRECTIVE_ACTIONS[type]!.run(id) : undefined)
+  // An `onClick` override is a bespoke activation, not the kind's link action —
+  // an override must not turn its carrier into a link.
+  const action = onClick ? undefined : DIRECTIVE_ACTIONS[type]
+  const activate = onClick ?? (action ? () => action.run(id) : undefined)
+  const href = action?.href?.(id)
 
   const body = (
     <>
@@ -563,6 +598,16 @@ const DirectiveChip: FC<{
     'data-directive-id': id,
     'data-slot': 'aui_directive-chip',
     title: id
+  }
+
+  if (href) {
+    return (
+      // The explicit className must come after the spread so it wins over the
+      // refAttrs className — `ExternalLink` prepends its own `ref` class.
+      <ExternalLink {...props} className="wrap-anywhere cursor-pointer" href={href}>
+        {body}
+      </ExternalLink>
+    )
   }
 
   return activate ? (

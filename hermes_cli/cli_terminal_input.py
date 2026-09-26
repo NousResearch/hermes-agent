@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import Dict, Any, Optional, Mapping
 from urllib.parse import unquote, urlparse
 
+from hermes_cli import pt_input_extras_parser
+
 # Log-record parity with the origin module.
 logger = logging.getLogger("cli")
 
@@ -334,7 +336,12 @@ _TERMINAL_INPUT_MODE_RESET_SEQ = (
 )
 
 
-_KITTY_KEYBOARD_PUSH_SEQ = "\x1b[>1u"
+# Flag 4 makes the terminal state the shifted key rather than leaving it to be inferred,
+# which is what makes a non-US layout decodable (#100169). It is additive --- a terminal
+# without it omits the field --- but the spelling it produces has no entry in
+# ANSI_SEQUENCES, so it is only safe because cli.py installs pt_input_extras_parser
+# alongside the alias tables.
+_KITTY_KEYBOARD_PUSH_SEQ = pt_input_extras_parser.push()
 
 
 _MODIFY_OTHER_KEYS_SEQ = "\x1b[>4;2m"

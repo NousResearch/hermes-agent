@@ -22,6 +22,7 @@ from datetime import datetime, timedelta, timezone
 from gateway.config import SHARED_LISTENER_MIRROR_PLATFORMS, Platform, platform_binds_port as _platform_binds_port
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.helpers import carry_inbound_dedup, inbound_dedup_caches
+from gateway.plugin_dispatch import connect_adapter
 from gateway.restart import is_global_startup_conflict
 from gateway.run_shutdown import _log_suppressed
 from gateway.session import SessionSource
@@ -170,14 +171,16 @@ class GatewayAdapterLifecycleMixin:
         ``is_reconnect`` is forwarded to ``adapter.connect()`` so platform adapters can distinguish a cold
         first boot (drop any stale server-side queue) from a watcher reconnect after a prolonged outage
         (preserve the queue so messages sent during the outage are delivered rather than silently dropped —
-        #46621).
+        #46621). It is only forwarded when the adapter's ``connect()`` actually accepts it: a third-party
+        adapter on the older bare ``connect()`` signature (keet-platform) must connect instead of raising
+        TypeError (#97065).
         ``initial`` selects the capped cold-start budget for platforms whose full connect budget is too long
         to spend before the gateway reaches ``running`` (#85993 — Telegram's 180s).
         """
         timeout = self._platform_connect_timeout_secs(platform, initial=initial)
         if timeout <= 0:
-            return await adapter.connect(is_reconnect=is_reconnect)
-        task = asyncio.ensure_future(adapter.connect(is_reconnect=is_reconnect))
+            return await connect_adapter(adapter, is_reconnect=is_reconnect)
+        task = asyncio.ensure_future(connect_adapter(adapter, is_reconnect=is_reconnect))
         if await self._wait_or_detach(task, timeout):
             return bool(await task)
         raise TimeoutError(f"{platform.value} connect timed out after {timeout:g}s")

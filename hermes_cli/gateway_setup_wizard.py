@@ -710,15 +710,38 @@ def _builtin_setup_fn(key: str):
     }.get(key)
 
 
+def _legacy_setup_config(platform: dict):
+    """``PlatformConfig`` for a plugin's legacy ``setup_fn(config)`` (#97065).
+
+    The platform's own ``platforms.<key>`` block from the merged config (defaults when
+    unset) — the same type ``adapter_factory``/``validate_config`` receive. Built lazily
+    by ``invoke_setup_fn`` so the documented ``setup_fn()`` path never loads config.
+    """
+    from gateway.config import PlatformConfig
+
+    try:
+        from hermes_cli.config import load_config
+        block = load_config().get("platforms", {}).get(platform["key"], {})
+        return PlatformConfig.from_dict(block if isinstance(block, dict) else {})
+    except Exception:
+        return PlatformConfig()
+
+
 def _configure_platform(platform: dict) -> None:
     """Plugin ``setup_fn`` -> built-in by key -> ``_setup_standard_platform`` (``vars``) -> env-var hint.
-    Bundled plugins auto-load; user plugins must already be in ``plugins.enabled``."""
+    Bundled plugins auto-load; user plugins must already be in ``plugins.enabled``.
+
+    ``setup_fn`` is dispatched by signature (``gateway.plugin_dispatch``): the documented
+    ``setup_fn()`` is called bare, while a third-party ``setup_fn(config)``
+    (keet-platform) gets the platform's ``PlatformConfig`` instead of a TypeError (#97065)."""
     entry = platform.get("_registry_entry")
     fn = entry.setup_fn if entry is not None else None
     if fn is None:
         fn = _builtin_setup_fn(platform["key"])
     if fn is not None:
-        fn()
+        from gateway.plugin_dispatch import invoke_setup_fn
+
+        invoke_setup_fn(fn, lambda: _legacy_setup_config(platform))
         return
     if platform.get("vars"):
         _gw()._setup_standard_platform(platform)

@@ -117,6 +117,33 @@ class TestIRCInteractiveSetup:
         out = capsys.readouterr().out
         assert "IRC setup complete!" in out
 
+    def test_configure_platform_supplies_config_to_legacy_setup_fn(self, monkeypatch, capsys):
+        """A third-party ``setup_fn(config)`` (keet-platform) must not TypeError (#97065).
+
+        ``PlatformEntry.setup_fn`` is documented as ``() -> None``, but plugins
+        written against the ``adapter_factory``/``validate_config`` convention
+        declare ``setup_fn(config: PlatformConfig)``. Selecting that platform
+        in ``hermes gateway setup`` used to crash with
+        ``TypeError: _setup_fn() missing 1 required positional argument: 'config'``.
+        """
+        import hermes_cli.gateway as gateway_mod
+        from gateway.config import PlatformConfig
+
+        seen = []
+
+        def fake_setup(config):
+            seen.append(config)
+            print("legacy setup complete")
+
+        plat = _register_irc_platform(setup_fn=fake_setup)
+        try:
+            gateway_mod._configure_platform(plat)
+        finally:
+            _unregister_irc_platform()
+
+        assert len(seen) == 1, f"setup_fn(config) must run exactly once; got {seen!r}"
+        assert isinstance(seen[0], PlatformConfig)
+        assert "legacy setup complete" in capsys.readouterr().out
 
     def test_configure_platform_fallback_when_no_setup_fn(self, monkeypatch, capsys):
         """A plugin with no setup_fn falls back to env-var instructions."""

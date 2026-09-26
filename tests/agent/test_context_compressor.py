@@ -1105,6 +1105,69 @@ class TestSustainedOverloadEscalation:
         assert fresh_abort == msgs
         assert c._last_compress_aborted is True
 
+    def test_overload_budget_survives_a_fresh_compressor_bound_to_the_same_session(self, tmp_path):
+        """Review P1: the N=3 budget must be session-scoped, not object-local.
+
+        The gateway binds a fresh compressor to the existing session on every turn /
+        cache eviction, and restart/resume constructs one too. Each of those used to
+        restart the budget at zero, so a sustained outage never escalated (#123167;
+        same contract as the durable fallback streak, #100185).
+        """
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        session_id = "OVERLOAD_FRESH_BIND"
+        db.create_session(session_id, source="telegram")
+        msgs = self._msgs(12)
+
+        first = self._compressor(abort_on_summary_failure=False)
+        first.bind_session_state(db, session_id)
+        with patch("agent.context_compressor.call_llm", side_effect=self._err()):
+            for _ in range(2):  # exactly two aborts — one below the escalation threshold
+                assert first.compress(msgs, current_tokens=999999, force=True) == msgs
+        assert first._consecutive_overload_aborts == 2
+        assert db.get_compression_overload_streak(session_id) == 2
+
+        # Fresh agent, same session (eviction / restart / API-server request construction).
+        second = self._compressor(abort_on_summary_failure=False)
+        second.bind_session_state(db, session_id)
+        assert second._consecutive_overload_aborts == 2  # inherited, not restarted
+        with patch("agent.context_compressor.call_llm", side_effect=self._err()):
+            third = second.compress(msgs, current_tokens=999999, force=True)
+        # Third consecutive abort IN THE SESSION escalates even though this object saw one.
+        # (A fresh object's first overload may burn the aux→main one-shot retry first, which
+        # claims telemetry failure_class=aux_model_fallback; the escalation contract is the
+        # committed fallback + settled budget, not which telemetry label won the race.)
+        assert third != msgs
+        assert second._last_summary_fallback_used is True
+        assert second._last_summary_overload_degraded is True
+        # The committed degraded fallback settles the budget so recovery gets a fresh run
+        # (the boundary caller records the completed compaction, as compress_context does).
+        second.record_completed_compaction(used_fallback=True)
+        assert db.get_compression_overload_streak(session_id) == 0
+
+    def test_overload_budget_follows_compression_rotation_to_the_child_row(self, tmp_path):
+        """A mid-outage compression rotation must not restart the budget either."""
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent, child = "OVERLOAD_ROT_PARENT", "OVERLOAD_ROT_CHILD"
+        db.create_session(parent, source="telegram")
+
+        compressor = self._compressor(abort_on_summary_failure=False)
+        compressor.bind_session_state(db, parent)
+        with patch("agent.context_compressor.call_llm", side_effect=self._err()):
+            for _ in range(2):
+                assert compressor.compress(self._msgs(12), current_tokens=999999, force=True) == self._msgs(12)
+        assert db.get_compression_overload_streak(parent) == 2
+
+        db.create_session(child, source="telegram", parent_session_id=parent)
+        compressor.on_session_start(
+            child, session_db=db, boundary_reason="compression", old_session_id=parent,
+        )
+        assert compressor._consecutive_overload_aborts == 2
+        assert db.get_compression_overload_streak(child) == 2
+
     def _msgs(self, n=10):
         return [
             {"role": "user" if i % 2 == 0 else "assistant", "content": f"msg {i}"}

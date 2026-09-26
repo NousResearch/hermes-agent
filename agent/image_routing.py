@@ -526,10 +526,47 @@ def _file_to_data_url(path: Path) -> Optional[str]:
     return f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
 
 
+# One handle line per natively attached image, written by ``build_native_content_parts``
+# and read back by ``next_image_index`` / ``vision_tools_history_budget``. The optional
+# ``#N`` ordinal is session-wide so the user and the model share one numbering
+# (inspired by Muse Code 1.2.1's ``[Image #N]`` labels that survive resume and forks).
+IMAGE_HANDLE_RE = re.compile(r"^\[Image(?: #(\d+))? attached(?: at)?: (.+?)\]\s*$", re.MULTILINE)
+
+
+def next_image_index(history: Optional[Iterable[Any]]) -> int:
+    """1-based ordinal for the next image attached to this session.
+
+    Scans the user turns already in ``history`` for image handle lines: the next index is one
+    past the highest ``#N`` seen, or past the count of legacy unnumbered handles, whichever is
+    larger — so a session that started before numbering keeps counting instead of restarting
+    at #1. Handles live in the text part, so they survive the history image budget dropping
+    the ``image_url`` parts themselves.
+    """
+    highest = seen = 0
+    for msg in history or ():
+        if not isinstance(msg, dict) or msg.get("role") != "user":
+            continue
+        content = msg.get("content")
+        if isinstance(content, str):
+            texts = [content]
+        elif isinstance(content, list):
+            texts = [p.get("text") or "" for p in content if isinstance(p, dict) and p.get("type") == "text"]
+        else:
+            continue
+        for text in texts:
+            for match in IMAGE_HANDLE_RE.finditer(text):
+                seen += 1
+                if match.group(1):
+                    highest = max(highest, int(match.group(1)))
+    return max(highest, seen) + 1
+
+
 def build_native_content_parts(
     user_text: str,
     image_paths: List[str],
     image_urls: Optional[List[str]] = None,
+    *,
+    first_index: Optional[int] = None,
 ) -> Tuple[List[Dict[str, Any]], List[str]]:
     """Build an OpenAI-style ``content`` list for a user turn.
 
@@ -537,19 +574,29 @@ def build_native_content_parts(
     When any image attaches, one text part combines the caption (or a neutral
     default) with a ``[Image attached at: <path>]`` / ``[Image attached: <url>]``
     hint per image — a string handle for tools taking an image path/URL, mirroring
-    ``Runner._enrich_message_with_vision``. Returns ``(content_parts, skipped)``;
-    ``skipped`` holds unreadable local paths (URLs are never skipped).
+    ``Runner._enrich_message_with_vision``. With ``first_index`` (see
+    ``next_image_index``) the handles are numbered ``[Image #N attached at: <path>]``
+    so the user can refer to "image #3" and the model knows which one that is.
+    Returns ``(content_parts, skipped)``; ``skipped`` holds unreadable local paths
+    (URLs are never skipped).
     """
+    def _label() -> str:
+        if first_index is None:
+            return "Image"
+        return f"Image #{first_index + len(attached)}"
+
     skipped: List[str] = []
     attached: List[Tuple[str, str]] = []  # (url, hint)
     for raw_path in image_paths:
         p = Path(raw_path)
         data_url = _file_to_data_url(p) if p.exists() and p.is_file() else None
         if data_url:
-            attached.append((data_url, f"[Image attached at: {raw_path}]"))
+            attached.append((data_url, f"[{_label()} attached at: {raw_path}]"))
         else:
             skipped.append(str(raw_path))
-    attached += [(u, f"[Image attached: {u}]") for u in ((u or "").strip() for u in image_urls or []) if u]
+    for u in ((u or "").strip() for u in image_urls or []):
+        if u:
+            attached.append((u, f"[{_label()} attached: {u}]"))
 
     text = (user_text or "").strip()
     if not attached:
@@ -559,4 +606,4 @@ def build_native_content_parts(
     return [{"type": "text", "text": combined_text}, *image_parts], skipped
 
 
-__all__ = ["decide_image_input_mode", "build_native_content_parts", "extract_image_refs"]
+__all__ = ["decide_image_input_mode", "build_native_content_parts", "extract_image_refs", "next_image_index"]

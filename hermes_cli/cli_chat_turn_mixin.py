@@ -188,7 +188,7 @@ class CLIChatTurnMixin:
             return message
         text = message if isinstance(message, str) else ""
         try:
-            from agent.image_routing import build_native_content_parts, decide_image_input_mode
+            from agent.image_routing import build_native_content_parts, decide_image_input_mode, next_image_index
             from hermes_cli.config import load_config
 
             _img_model = (_split_model_config_default(self.model)[0]
@@ -206,7 +206,8 @@ class CLIChatTurnMixin:
         if _img_mode == "native":
             try:
                 _img_str_paths = [str(p) for p in images]
-                _parts, _skipped = build_native_content_parts(text, _img_str_paths)
+                _parts, _skipped = build_native_content_parts(
+                    text, _img_str_paths, first_index=next_image_index(self.conversation_history))
                 if _skipped:
                     _cprint(f"  {_DIM}⚠ skipped {len(_skipped)} unreadable image path(s){_RST}")
                 if any(p.get("type") == "image_url" for p in _parts):

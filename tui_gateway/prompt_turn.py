@@ -203,12 +203,12 @@ class _TurnScopes:
     terminal: Any = None
 
 
-def _route_turn_images(agent, prompt: Any, images: list[str]) -> Any:
+def _route_turn_images(agent, prompt: Any, images: list[str], history: list | None = None) -> Any:
     """Run message for a turn with attached images: "native" content parts, or "text" path
     references the agent analyzes in-loop (never blocking submit on vision calls).
     Decision table: agent/image_routing.py."""
     try:
-        from agent.image_routing import build_native_content_parts, decide_image_input_mode
+        from agent.image_routing import build_native_content_parts, decide_image_input_mode, next_image_index
         from hermes_cli.config import load_config as _tui_load_config
         _provider, _model = _active_image_routing_identity(agent)
         mode = decide_image_input_mode(
@@ -223,7 +223,7 @@ def _route_turn_images(agent, prompt: Any, images: list[str]) -> Any:
     if mode != "native":
         return _build_image_ref_message(prompt, images)
     try:
-        parts, skipped = build_native_content_parts(prompt, images)
+        parts, skipped = build_native_content_parts(prompt, images, first_index=next_image_index(history))
         if skipped:
             print(
                 f"[tui_gateway] native image attachment skipped {len(skipped)} unreadable path(s)",
@@ -655,7 +655,7 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
             return None
         prompt = ctx.message
     st.prompt_text = prompt if isinstance(prompt, str) else ""
-    run_message: Any = _route_turn_images(agent, prompt, images) if images else prompt
+    run_message: Any = _route_turn_images(agent, prompt, images, history=st.history) if images else prompt
     from agent.notification_presentation import event_presentation_muted
     if not event_presentation_muted("message.delta", sid):
         st.tts_queue, st.thinking_started = _start_turn_voice()

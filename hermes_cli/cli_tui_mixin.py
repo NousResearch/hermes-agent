@@ -1907,7 +1907,11 @@ class CLITuiMixin:
         from cli import _format_image_attachment_badges
         if not self._attached_images:
             return []
-        badges = _format_image_attachment_badges(self._attached_images, self._image_counter)
+        from agent.image_routing import next_image_index
+        # ``image_counter`` is the ordinal of the LAST attached image; derive it from the session
+        # history so the badge shows the same ``Image #N`` the model receives in its handle line.
+        last_index = next_image_index(getattr(self, "conversation_history", None)) + len(self._attached_images) - 1
+        badges = _format_image_attachment_badges(self._attached_images, last_index)
         return [("class:image-badge", f" {badges} ")]
 
     def _tui_voice_status_fragments(self):

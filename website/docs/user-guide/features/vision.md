@@ -23,6 +23,8 @@ Portal subscribers get vision-capable models (Claude, GPT-5, Gemini) in the same
 
 You can attach multiple images before sending — each gets its own badge. Press `Ctrl+C` to clear all attached images.
 
+Image numbers are session-wide and the model sees them too: each attached image reaches the model with an `[Image #N attached at: <path>]` handle, so "what's different in image #3?" refers to the same picture you saw badged as `#3`, even in a later turn or after `--resume`. (Inspired by Muse Code's `[Image #N]` labels.)
+
 Images are saved to `~/.hermes/images/` as PNG files with timestamped filenames.
 
 ## Paste Methods

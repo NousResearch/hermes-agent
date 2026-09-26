@@ -1664,7 +1664,7 @@ class TurnRunner:
             ctx.message = build_resume_recovery_note(resume_reason, "", interactive=self._resume_note_interactive())
         return persist_override, ctx.persist_user_timestamp
 
-    def _native_image_run_message(self):
+    def _native_image_run_message(self, agent_history=None):
         """Wrap the user turn as an OpenAI-style multimodal content list when
         _prepare_inbound_message_text buffered image paths; consume-and-clear so later turns on the
         same runner never re-attach stale images. Falls back to plain text when nothing is readable."""
@@ -1673,8 +1673,9 @@ class TurnRunner:
         if not native_imgs:
             return ctx.message
         try:
-            from agent.image_routing import build_native_content_parts
-            parts, skipped = build_native_content_parts(ctx.message, native_imgs)
+            from agent.image_routing import build_native_content_parts, next_image_index
+            parts, skipped = build_native_content_parts(
+                ctx.message, native_imgs, first_index=next_image_index(agent_history))
             if skipped:
                 logger.warning("Native image attachment: skipped %d unreadable path(s): %s", len(skipped), skipped)
             if any(p.get("type") == "image_url" for p in parts):
@@ -1695,7 +1696,8 @@ class TurnRunner:
         token = set_current_session_key(session_key)
         register_gateway_notify(session_key, self._approval_notify_sync)
         try:
-            api_message = _wrap_current_message_with_observed_context(self._native_image_run_message(), observed_group_context)
+            api_message = _wrap_current_message_with_observed_context(
+                self._native_image_run_message(agent_history), observed_group_context)
             kwargs = {"conversation_history": agent_history, "task_id": ctx.session_id}
             if _accepts_keyword(agent.run_conversation, "turn_author"):
                 # Sent on every transport: a provider gating durable writes needs the bot flag in a DM too.

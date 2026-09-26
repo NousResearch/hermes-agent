@@ -778,6 +778,37 @@ def is_skill_description_truncated_for_prompt(frontmatter: Dict[str, Any]) -> bo
     return len(_normalize_skill_description(frontmatter)) > SKILL_PROMPT_DESC_LIMIT
 
 
+def resolved_skill_path_is_excluded(candidate: str, skills_dir_str: str) -> bool:
+    """True when *candidate* resolves to a location inside the skills tree that
+    passes through an EXCLUDED_SKILL_DIR component.
+
+    os.walk(followlinks=True) descends through directory symlinks, so lexical
+    EXCLUDED_SKILL_DIR pruning alone lets ``alias -> .archive/old`` leak an
+    excluded skill into the index and manifest. Resolving the candidate also
+    collapses symlink chains to their true target. Links that escape the
+    skills root entirely are deliberately not filtered: a skill dir that is a
+    symlink to a checkout elsewhere is a documented, supported layout.
+    """
+    resolved = os.path.realpath(candidate)
+    try:
+        rel = os.path.relpath(resolved, os.path.realpath(skills_dir_str))
+    except ValueError:  # different drives on Windows
+        return False
+    if rel == os.pardir or rel.startswith(os.pardir + os.sep):
+        return False
+    return any(part in EXCLUDED_SKILL_DIRS for part in PurePath(rel).parts)
+
+
+def prune_skills_walk_dirs(root: str, dirs: list, skills_dir_str: str) -> None:
+    """In-place pruning shared by the skills-tree walkers: drop entries that
+    are lexically excluded AND entries whose resolved target is excluded
+    (symlinked paths into EXCLUDED_SKILL_DIRs with innocuous names)."""
+    dirs[:] = [
+        d for d in dirs
+        if d not in EXCLUDED_SKILL_DIRS and not resolved_skill_path_is_excluded(os.path.join(root, d), skills_dir_str)
+    ]
+
+
 def iter_skill_index_files(skills_dir: Path, filename: str):
     """Walk skills_dir yielding sorted paths matching *filename*; prunes
     EXCLUDED_SKILL_DIRS and support dirs of skill roots. Org mirrors are
@@ -793,8 +824,9 @@ def iter_skill_index_files(skills_dir: Path, filename: str):
             dirs.remove(ORG_MIRROR_DIR_NAME)
         elif root == org_root:
             dirs[:] = [d for d in dirs if d == active_org]
-        dirs[:] = [d for d in dirs if d not in EXCLUDED_SKILL_DIRS and not (has_skill_md and d in SKILL_SUPPORT_DIRS)]
-        if filename in files:
+        dirs[:] = [d for d in dirs if not (has_skill_md and d in SKILL_SUPPORT_DIRS)]
+        prune_skills_walk_dirs(root, dirs, skills_dir_str)
+        if filename in files and not resolved_skill_path_is_excluded(os.path.join(root, filename), skills_dir_str):
             matches.append(os.path.join(root, filename))
     yield from map(Path, sorted(matches))
 

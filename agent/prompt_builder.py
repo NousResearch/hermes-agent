@@ -23,6 +23,7 @@ from agent.model_metadata import CHARS_PER_TOKEN
 from agent.runtime_cwd import resolve_agent_cwd
 from agent.skill_utils import (
     EXCLUDED_SKILL_DIRS, ORG_ACTIVE_MARKER, ORG_MIRROR_DIR_NAME, ORG_PROVENANCE_FILE, SKILL_SUPPORT_DIRS,
+    prune_skills_walk_dirs, resolved_skill_path_is_excluded,
     extract_skill_conditions, extract_skill_description, get_all_skills_dirs, get_disabled_skill_names,
     iter_skill_index_files, parse_frontmatter, read_active_org_id, skill_matches_apps, skill_matches_environment,
     skill_matches_platform, skill_matches_platform_list,
@@ -1158,11 +1159,12 @@ def _build_skills_manifest(skills_dir: Path) -> dict[str, list[int]]:
             dirs.remove(ORG_MIRROR_DIR_NAME)
         elif root == org_root:
             dirs[:] = [d for d in dirs if d == active_org]
-        dirs[:] = [d for d in dirs if d not in EXCLUDED_SKILL_DIRS and not (has_skill_md and d in SKILL_SUPPORT_DIRS)]
+        dirs[:] = [d for d in dirs if not (has_skill_md and d in SKILL_SUPPORT_DIRS)]
+        prune_skills_walk_dirs(root, dirs, skills_dir_str)
         for filename in ("SKILL.md", "DESCRIPTION.md"):
             path = os.path.join(root, filename)
             try:
-                if filename in files:
+                if filename in files and not resolved_skill_path_is_excluded(path, skills_dir_str):
                     st = os.stat(path)
                     manifest[path[prefix_len:]] = list(file_signature(st))
             except OSError:

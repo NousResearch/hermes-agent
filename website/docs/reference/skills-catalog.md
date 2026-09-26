@@ -51,6 +51,7 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 | Skill | Description | Path |
 |-------|-------------|------|
 | [`sdlc-review`](../user-guide/skills/bundled/devops/devops-sdlc-review.md) | Review Kanban handoffs and route verified outcomes. | `devops/sdlc-review` |
+| [`wordpress-static-front-page`](../user-guide/skills/bundled/devops/devops-wordpress-static-front-page.md) | Set a WordPress static front page over XML-RPC, verified. | `devops/wordpress-static-front-page` |
 
 ## email
 

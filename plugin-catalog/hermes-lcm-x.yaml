@@ -10,7 +10,10 @@ description: 'Lossless context memory engine: instead of lossy compaction, LCM-X
   Summaries use the model Hermes is configured with. Disclosure — optional semantic recall (embeddings_enabled, off by
   default) sends message text to the embedding provider you configure (Voyage via VOYAGE_API_KEY, or an OpenAI-compatible
   endpoint, or a local Ollama); for known cloud providers the provider-bound copy is privacy-transformed by default
-  (LCM_EMBEDDING_PRIVACY_ENABLED=false opts out), while lcm.db keeps the raw text.'
+  (LCM_EMBEDDING_PRIVACY_ENABLED=false opts out), while lcm.db keeps the raw text. Every turn (user, assistant and tool
+  output) is stored in plaintext in lcm.db (secret redaction at rest is opt-in). The engine also reads Hermes'' state.db
+  read-only for session lineage, reads private AIAgent attributes via the call stack on Hermes builds without subagent
+  hooks, and runs git on its own install directory for lcm_status/lcm_doctor; tiktoken may fetch its BPE file on first use.'
 maintainer: electricsheephq
 tier: community
 category: memory

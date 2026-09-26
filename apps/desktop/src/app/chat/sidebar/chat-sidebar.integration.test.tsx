@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { atom } from 'nanostores'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -197,6 +198,47 @@ describe('ChatSidebar navigation activity', () => {
 
     act(() => dispose())
     expect(screen.getByRole('button', { name: 'Kanban' })).toBeTruthy()
+  })
+
+  // #123596: a contributed row's live count renders from its atom — no
+  // re-registration — capped visually at 99+ while the label keeps the truth.
+  it('renders a contributed nav count live from its atom', () => {
+    const count = atom(0)
+
+    act(() => {
+      disposeContributions()
+      disposeContributions = registry.registerMany([
+        { area: ROUTES_AREA, id: 'kanban-page', data: { path: '/kanban' }, render: () => null },
+        {
+          area: SIDEBAR_NAV_AREA,
+          id: 'kanban-nav',
+          data: {
+            codicon: 'project',
+            count,
+            countLabel: (n: number) => `${n} unseen`,
+            label: 'Kanban',
+            path: '/kanban'
+          }
+        }
+      ])
+    })
+
+    renderSidebar('/', 'chat')
+    const row = () => screen.getByRole('button', { name: /^Kanban/ })
+
+    expect(within(row()).queryByText('0')).toBeNull()
+    expect(screen.queryByLabelText(/unseen/)).toBeNull()
+
+    act(() => count.set(3))
+    expect(within(row()).getByText('3')).toBeTruthy()
+    expect(within(row()).getByLabelText('3 unseen')).toBeTruthy()
+
+    act(() => count.set(120))
+    expect(within(row()).getByText('99+')).toBeTruthy()
+    expect(within(row()).getByLabelText('120 unseen')).toBeTruthy()
+
+    act(() => count.set(0))
+    expect(screen.queryByLabelText(/unseen/)).toBeNull()
   })
 })
 

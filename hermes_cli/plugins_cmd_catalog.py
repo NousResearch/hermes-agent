@@ -329,7 +329,9 @@ def _user_tree_files(root: Path):
 def _changes_against_shipped(git_exe: str, target: Path) -> Optional[tuple[list[str], list[str]]]:
     """:func:`_local_changes` for a tree without ``.git``. Only the recorded revision's trees are fetched
     (``blob:none``), and the installed files are hashed with the clean filters git applied at checkout
-    (``core.autocrlf``), so an untouched file matches its blob. ``None`` when that revision is unreachable."""
+    (``core.autocrlf``), so an untouched file matches its blob; a symlink is hashed as git stores it (its
+    target string, unfiltered) and a file/symlink swap counts as an edit. ``None`` when that revision is
+    unreachable."""
     from hermes_cli.plugins_cmd import _clone_timeout_seconds, _resolve_git_url, _run_plugin_git
     record = _install_record(target) or {}
     source, revision = str(record.get("source") or ""), str(record.get("revision") or "")
@@ -339,6 +341,7 @@ def _changes_against_shipped(git_exe: str, target: Path) -> Optional[tuple[list[
     prefix = f"{subdir.strip('/')}/" if subdir else ""
     files = list(_user_tree_files(target))
     regular = [rel for rel in files if not (target / rel).is_symlink()]
+    links = [rel for rel in files if (target / rel).is_symlink()]
     with tempfile.TemporaryDirectory(prefix="hermes-plugin-shipped-") as tmp:
         try:
             for args in (("init", "-q"), ("fetch", "-q", "--depth", "1", "--filter=blob:none", git_url, revision),
@@ -347,35 +350,54 @@ def _changes_against_shipped(git_exe: str, target: Path) -> Optional[tuple[list[
                                          timeout=_clone_timeout_seconds())
                 if listed.returncode != 0:
                     return None
-            hashed = subprocess.run([git_exe, "hash-object", "--stdin-paths"], cwd=tmp, capture_output=True,
-                                    input="\n".join(str(target / rel) for rel in regular), text=True,
-                                    encoding="utf-8", errors="replace", timeout=_clone_timeout_seconds())
+            link_blobs = Path(tmp) / ".git" / "hermes-link-targets"
+            link_blobs.mkdir()
+            for i, rel in enumerate(links):
+                (link_blobs / str(i)).write_bytes(os.fsencode(os.readlink(target / rel)))
+            hashed = [subprocess.run([git_exe, "hash-object", *flags, "--stdin-paths"], cwd=tmp, capture_output=True,
+                                     input="\n".join(paths), text=True, encoding="utf-8", errors="replace",
+                                     timeout=_clone_timeout_seconds())
+                      for flags, paths in (((), [str(target / rel) for rel in regular]),
+                                           (("--no-filters",), [str(link_blobs / str(i)) for i in range(len(links))]))]
         except subprocess.TimeoutExpired:
             return None
-    if hashed.returncode != 0:
+    if any(run.returncode != 0 for run in hashed):
         return None
     shipped = {}
     for item in listed.stdout.split("\0"):
         meta, _, path = item.partition("\t")
         if path.startswith(prefix) and len(meta.split()) == 3:
-            shipped[path[len(prefix):]] = meta.split()[2]
-    digests = dict(zip((rel.as_posix() for rel in regular), hashed.stdout.split()))
+            mode, _type, sha = meta.split()
+            shipped[path[len(prefix):]] = (mode == "120000", sha)
+    digests = {**{rel.as_posix(): (False, sha) for rel, sha in zip(regular, hashed[0].stdout.split())},
+               **{rel.as_posix(): (True, sha) for rel, sha in zip(links, hashed[1].stdout.split())}}
     local, modified = [], []
     for rel in (rel.as_posix() for rel in files):
         if rel not in shipped:
             local.append(rel)
-        elif rel in digests and digests[rel] != shipped[rel]:
+        elif digests.get(rel) != shipped[rel]:
             modified.append(rel)
     return local, modified
+
+
+def _copy_entry(src: Path, dst: Path) -> None:
+    """Copy a file, or re-create a symlink as a symlink: the user's edit to a link is where it points.
+    ``copy2(follow_symlinks=False)`` is not used because its ``copystat`` fails on macOS for a link."""
+    if src.is_symlink():
+        os.symlink(os.readlink(src), dst)
+    else:
+        shutil.copy2(src, dst)
 
 
 def _stash_local_files(target: Path, rels: list[str], stash: Path) -> None:
     for rel in rels:
         src = target / rel
-        if src.is_file():
+        if src.is_symlink() or src.is_file():
             dst = stash / rel
             dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, dst)
+            if os.path.lexists(dst):
+                dst.unlink()
+            _copy_entry(src, dst)
 
 
 def _carry_user_files(old: Path, new: Path, local: Optional[list[str]], backup: Path) -> list[str]:
@@ -405,7 +427,7 @@ def _carry_user_files(old: Path, new: Path, local: Optional[list[str]], backup: 
         dst.parent.mkdir(parents=True, exist_ok=True)
         if os.path.lexists(dst):
             dst.unlink()
-        shutil.copy2(src, dst, follow_symlinks=False)
+        _copy_entry(src, dst)
     _stash_local_files(old, set_aside, backup)
     return set_aside
 

@@ -272,6 +272,70 @@ def test_update_of_a_subdir_install_keeps_user_files_and_drops_removed_code(worl
     assert (backup / "utils" / "__init__.py").exists() is (via == "url-old-revision-gone")
 
 
+def _installed_subdir_plugin(tmp_path, monkeypatch, via, prepare=None):
+    """A monorepo subdirectory install (no ``.git``) through *via*; returns ``(src, target, release)``,
+    ``release()`` committing the next version and moving the catalog pin to it."""
+    mono = tmp_path / "mono"
+    src = mono / "plugins" / "sub-plugin"
+    src.mkdir(parents=True)
+    (src / "plugin.yaml").write_text("name: sub-plugin\nversion: 1.0.0\ndescription: d\n")
+    (src / "__init__.py").write_text("def register(ctx):\n    pass\n")
+    if prepare is not None:
+        prepare(src)
+    sp.run(["git", "init", "-q"], cwd=mono, check=True, env=_GIT_ENV)
+    pin = {"sha": _commit(mono, "v1")}
+
+    def entry():
+        return pc_cat.PluginCatalogEntry(name="sub-plugin", repo=mono.as_uri(), sha=pin["sha"],
+                                         description="d", maintainer="t", subdir="plugins/sub-plugin")
+
+    def release():
+        (src / "plugin.yaml").write_text("name: sub-plugin\nversion: 2.0.0\ndescription: d\n")
+        pin["sha"] = _commit(mono, "v2")
+
+    monkeypatch.setattr(pc_cat, "load_catalog", lambda catalog_dir=None: [entry()])
+    if via == "catalog":
+        target = cat.install_catalog_entry(entry(), force=False)[0]
+    else:
+        target = pc._install_plugin_core(f"{mono.as_uri()}#plugins/sub-plugin", force=False)[0]
+    assert not (target / ".git").exists()
+    return src, target, release
+
+
+@pytest.mark.parametrize("via", ["url", "catalog"])
+def test_update_scans_the_user_files_it_carries(world, tmp_path, monkeypatch, via):
+    """The carry adds files to a tree the installer already scanned; a carried file the scanner blocks
+    must block the update instead of being published under the fresh clone's clean verdict."""
+    _src, target, release = _installed_subdir_plugin(tmp_path, monkeypatch, via)
+    (target / "evil.py").write_text("open('/etc/passwd').read()\n")
+    release()
+    monkeypatch.setattr(pc, "_scan_on_install_enabled", lambda: True)
+
+    assert pc.dashboard_update_user_plugin("sub-plugin")["ok"] is False
+    assert "version: 1.0.0" in (target / "plugin.yaml").read_text()
+
+
+@pytest.mark.platforms("posix")  # symlink creation needs privileges on Windows
+@pytest.mark.parametrize("via", ["url", "catalog"])
+def test_update_backs_up_a_repointed_shipped_symlink(world, tmp_path, monkeypatch, via):
+    """A shipped symlink the user re-pointed is an edit to a shipped file: the new version's link is
+    published and the user's link is kept under ``plugins-backup/`` as a link, not lost."""
+    def prepare(src):
+        (src / "default.txt").write_text("default")
+        (src / "mine.txt").write_text("mine")
+        (src / "active").symlink_to("default.txt")
+
+    _src, target, release = _installed_subdir_plugin(tmp_path, monkeypatch, via, prepare)
+    (target / "active").unlink()
+    (target / "active").symlink_to("mine.txt")
+    release()
+
+    assert pc.dashboard_update_user_plugin("sub-plugin")["ok"] is True
+    assert os.readlink(target / "active") == "default.txt"
+    backup, = (world["plugins_dir"].parent / "plugins-backup").iterdir()
+    assert os.readlink(backup / "active") == "mine.txt"
+
+
 def test_repin_keeps_a_wholly_ignored_data_dir_in_a_git_checkout(world):
     """``git status --ignored=matching`` reports an ignored dir as ONE ``data/`` entry; its files must
     still be carried into the re-pinned tree."""

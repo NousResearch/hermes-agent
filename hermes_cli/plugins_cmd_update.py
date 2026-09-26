@@ -57,8 +57,13 @@ def _reclone_plugin_update(target: Path, source: str, previous_revision: object)
     previous = previous_revision if isinstance(previous_revision, str) else ""
     carry = _UserFileCarry(
         target, _pc()._plugins_dir().parent / "plugins-backup" / f"{target.name}-{previous[:8] or 'old'}")
-    new_target, _manifest, _name = _pc()._install_plugin_core(
-        source, force=True, before_swap=lambda _manifest, tree: carry(tree))
+
+    def carry_and_rescan(_manifest, tree: Path) -> None:
+        # The installer scanned the fresh clone before this hook; what the carry adds must pass the same scan.
+        carry(tree)
+        _pc()._scan_plugin_tree(tree, source, force=True)
+
+    new_target, _manifest, _name = _pc()._install_plugin_core(source, force=True, before_swap=carry_and_rescan)
     revision = str(_pc()._read_install_metadata().get(new_target.name, {}).get("revision") or "")
     if revision and revision == previous:
         return "\n".join(["Already up to date.", *carry.warnings()])

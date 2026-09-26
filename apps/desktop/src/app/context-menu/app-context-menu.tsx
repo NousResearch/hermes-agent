@@ -24,7 +24,7 @@ import { isBrowserHostedDesktop } from '@/lib/platform'
 import { reachablePreviewUrl } from '@/lib/preview-reach'
 import { openCommandPalette } from '@/store/command-palette'
 import { openPreview } from '@/store/preview'
-import { toggleProfileRailVisible } from '@/store/profile-rail-prefs'
+import { PROFILE_RAIL_TOGGLEABLE, toggleProfileRailVisible } from '@/store/profile-rail-prefs'
 import { toggleStatusbarVisible } from '@/store/statusbar-prefs'
 import { requestActiveUpdate } from '@/store/updates'
 import { canOpenNewWindow, openNewWindow } from '@/store/windows'
@@ -567,12 +567,14 @@ function shellSections({ navigate, t }: ShellVerbs): ReactNode[][] {
         label={t.keybinds.actions['view.toggleStatusbar']}
         onSelect={toggleStatusbarVisible}
       />,
-      <Item
-        icon="organization"
-        key="shell-profile-rail"
-        label={t.keybinds.actions['view.toggleProfileRail']}
-        onSelect={toggleProfileRailVisible}
-      />,
+      PROFILE_RAIL_TOGGLEABLE ? (
+        <Item
+          icon="organization"
+          key="shell-profile-rail"
+          label={t.keybinds.actions['view.toggleProfileRail']}
+          onSelect={toggleProfileRailVisible}
+        />
+      ) : null,
       // The pointer-only way back to a hidden tab strip: right-clicking the
       // shell reaches this menu from anywhere, including a zone that has no
       // chrome left to right-click.
@@ -588,7 +590,7 @@ function shellSections({ navigate, t }: ShellVerbs): ReactNode[][] {
         label={t.commandCenter.settings}
         onSelect={() => navigateToWorkspacePage(navigate, SETTINGS_ROUTE)}
       />
-    ],
+    ].filter(Boolean),
     [
       <Item
         icon="cloud-download"

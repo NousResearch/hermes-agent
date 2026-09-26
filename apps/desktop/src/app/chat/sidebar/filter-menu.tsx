@@ -61,7 +61,7 @@ import {
   requestProfileCreate,
   toggleShowAllProfiles
 } from '@/store/profile'
-import { $profileRailVisible, toggleProfileRailVisible } from '@/store/profile-rail-prefs'
+import { $profileRailVisible, PROFILE_RAIL_TOGGLEABLE, toggleProfileRailVisible } from '@/store/profile-rail-prefs'
 import { runImportProfileFlow } from '@/store/profile-share'
 import { $projectTree } from '@/store/projects'
 import type { PullRequestBucket } from '@/store/pull-requests'
@@ -322,8 +322,9 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
 
           {/* The colored strip at the sidebar foot. Off, the statusbar grows a
               profile dropdown beside the gateway switcher, so nobody loses the
-              door — this is for people whose profiles are bots, not workspaces. */}
-          {showsAdvancedChrome && (
+              door — this is for people whose profiles are bots, not workspaces.
+              The Webapp always uses that dropdown, so there is nothing to toggle. */}
+          {showsAdvancedChrome && PROFILE_RAIL_TOGGLEABLE && (
             <OptionCheckbox
               checked={profileRailVisible}
               onCheck={toggleProfileRailVisible}

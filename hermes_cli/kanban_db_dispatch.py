@@ -991,6 +991,14 @@ def _worker_final_output(task_id: str, board: Optional[str] = None) -> str:
     summary, rule lines and the ``session_id:`` trailer; returns "" (never raises)
     on a missing/empty log.
 
+    The log is append-mode across re-runs, so the window is anchored to the LAST
+    run's own output: when anything follows the final exit-summary block, that
+    content belongs to a run that died before writing its own summary (a pre-boot
+    crash prints its stanzas right after the predecessor's block) and it wins;
+    only when nothing follows does the legacy cut (before the last
+    ``Resume this session with:`` marker) keep the clean-exit protocol-violation
+    diagnostic: the worker's own final chat.
+
     ``board`` must come from the dispatching tick: ambient current-board resolution
     is wrong for every board but the one the dispatcher thread happens to call
     "current", so the log would silently not be found.
@@ -1002,9 +1010,22 @@ def _worker_final_output(task_id: str, board: Optional[str] = None) -> str:
     if not raw:
         return ""
     raw = _EXIT_TRAILER_RE.sub("", raw)
-    cut = raw.rfind(_EXIT_SUMMARY_MARKER)
-    if cut != -1:
-        raw = raw[:cut]
+    anchored = False
+    messages_at = raw.rfind("Messages:")
+    if messages_at != -1:
+        # "Messages:" is the last line of the exit summary; whatever follows the
+        # end of that line is post-summary output. Cutting there (rather than at
+        # the marker itself) keeps a predecessor's summary from swallowing the
+        # crashed run's own error stanzas — the incident where six pre-boot
+        # "Unknown skill(s)" deaths were all attributed to run 2's final chat.
+        line_end = raw.find("\n", messages_at)
+        if line_end != -1 and raw[line_end + 1:].strip():
+            raw = raw[line_end + 1:]
+            anchored = True
+    if not anchored:
+        cut = raw.rfind(_EXIT_SUMMARY_MARKER)
+        if cut != -1:
+            raw = raw[:cut]
     lines = []
     for ln in raw.splitlines():
         ln = _LOG_CHROME.sub("", ln).strip()
@@ -1758,14 +1779,124 @@ def has_spawnable_review(conn: sqlite3.Connection) -> bool:
 
 
 def review_dispatch_enabled() -> bool:
-    """Whether review tasks dispatch automatically. Default true (Hermes ships
-    ``sdlc-review``); operators disable it for human-only review boards.
+    """Whether review tasks dispatch automatically. Default true (the default
+    home ships ``sdlc-review``; profile homes must have it installed — the
+    dispatcher validates it at claim time and blocks rather than crash-looping).
+    Operators disable it for human-only review boards.
     """
     try:
         from hermes_cli.config import load_config
         return bool((load_config() or {}).get("kanban", {}).get("review_dispatch", True))
     except Exception:
         return True
+
+
+def _review_skill_profile_home(assignee: str) -> Optional[Path]:
+    """The assignee profile's home dir for review-skill validation, or None.
+
+    Mirrors :func:`_default_spawn`'s resolution (``resolve_profile_env``;
+    ``None`` for a missing/isolated-fixture profile dir — the CLI re-resolves
+    from ``HERMES_PROFILE`` in the child). Validation is skipped for such
+    homes: the spawn itself decides.
+    """
+    try:
+        from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
+        return Path(resolve_profile_env(normalize_profile_name(assignee)))
+    except Exception:
+        return None
+
+
+def _set_home_override_everywhere(profile_home: Path) -> list:
+    """Set the hermes-home override in every live ``hermes_constants`` namespace.
+
+    Long-lived processes (and the test suite) can end up with more than one
+    ``hermes_constants`` module object — a ``sys.modules`` purge followed by a
+    re-import leaves earlier importers bound to the original namespace while a
+    fresh ``from hermes_constants import ...`` binds to the new one, and the
+    override ContextVar they read would not be the one we set. The namespace
+    that MATTERS is the one the skill loader chain reads, anchored at
+    ``tools.skills_tool.get_hermes_home.__globals__`` (the loader calls that
+    very function); ``sys.modules["hermes_constants"]`` and a fresh import are
+    covered too. Returns reset tokens for :func:`_reset_home_override_everywhere`.
+    """
+    import sys
+
+    setters: dict[int, Callable[[str], object]] = {}
+    try:
+        st = sys.modules.get("tools.skills_tool")
+        g = getattr(st, "get_hermes_home", None)
+        if g is not None:
+            setter = g.__globals__.get("set_hermes_home_override")
+            if callable(setter):
+                setters[id(g.__globals__)] = setter
+    except Exception:
+        pass
+    hc = sys.modules.get("hermes_constants")
+    if hc is not None and hasattr(hc, "set_hermes_home_override"):
+        setters.setdefault(id(hc.__dict__), hc.set_hermes_home_override)
+    try:
+        import hermes_constants as fresh
+
+        setters.setdefault(id(fresh.__dict__), fresh.set_hermes_home_override)
+    except Exception:
+        pass
+    tokens = []
+    for setter in setters.values():
+        try:
+            tokens.append(setter(str(profile_home)))
+        except Exception:
+            tokens.append(None)
+    return tokens
+
+
+def _reset_home_override_everywhere(tokens: list) -> None:
+    """Restore every override set by :func:`_set_home_override_everywhere`."""
+    for token in tokens:
+        if token is None:
+            continue
+        try:
+            token.var.reset(token)
+        except Exception:
+            pass
+
+
+def _review_skill_missing(assignee: str) -> Optional[str]:
+    """Block reason when the review lane's forced skill cannot load on the
+    assignee's home; ``None`` when it loads (or validation itself is not
+    possible — a resolver failure keeps the legacy spawn).
+
+    Uses ``build_preloaded_skills_prompt``'s loader contract (missing AND
+    operator-disabled skills resolve to nothing → ``ValueError`` in the
+    worker's ``--skills`` preload), so the guard blocks exactly what the
+    worker would die on. Project-local skill dirs are deliberately not
+    consulted: the child's cwd differs from this process's, so a
+    cwd-dependent resolution here could false-block; the guard fails closed
+    on home + external dirs only.
+    """
+    profile_home = _review_skill_profile_home(assignee)
+    if profile_home is None:
+        return None
+    from agent.skill_commands import _load_skill_payload
+
+    tokens = _set_home_override_everywhere(profile_home)
+    try:
+        loaded = _load_skill_payload("sdlc-review")
+    except Exception as exc:  # resolver fault — never block on our own diagnostics
+        _kb._log.warning(
+            "kanban dispatcher: could not validate sdlc-review for profile %r (%s); spawning anyway",
+            assignee, exc,
+        )
+        return None
+    finally:
+        _reset_home_override_everywhere(tokens)
+    if loaded is None:
+        return (
+            f"review dispatch requires the sdlc-review skill on profile {assignee} "
+            f"({profile_home / 'skills'} has no loadable sdlc-review — install it there, "
+            "e.g. copy it from the default home's skills/devops/sdlc-review, or disable "
+            "kanban.review_dispatch for manual review)"
+        )
+    return None
 
 
 # Memory-aware dispatch guard: an uncapped board once OOM'd a 1 GiB host. Two
@@ -2073,6 +2204,24 @@ def _dispatch_lane_task(
         # Force-load sdlc-review; the kanban lifecycle is already in every
         # worker's system prompt via KANBAN_GUIDANCE.
         claimed.skills = list(dict.fromkeys([*(claimed.skills or []), "sdlc-review"]))
+        # The forced skill must resolve under the ASSIGNEE's home or the worker
+        # dies in CLI boot ("Unknown skill(s)") before its first turn — every
+        # attempt, burning the failure budget (profile homes don't inherit the
+        # default home's bundled skills). Validate with the same loader the
+        # worker's own --skills preload uses; a clean "absent" verdict (missing
+        # OR operator-disabled skill) blocks the card once, fail-closed, instead
+        # of spawning a guaranteed crash loop. A resolver failure keeps the
+        # legacy spawn: this guard must never take the review lane down over its
+        # own diagnostics.
+        missing_reason = _review_skill_missing(claimed.assignee or assignee)
+        if missing_reason:
+            if _record_task_failure(
+                conn, claimed.id, missing_reason,
+                outcome="spawn_failed", failure_limit=failure_limit,
+                release_claim=True, end_run=True, force_trip=True,
+            ):
+                result.auto_blocked.append(claimed.id)
+            return False
     try:
         pid = _call_spawn_fn(spawn_fn if spawn_fn is not None else _default_spawn, claimed, str(workspace), board)
         if pid:

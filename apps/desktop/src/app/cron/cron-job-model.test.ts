@@ -2,13 +2,26 @@ import { describe, expect, it } from 'vitest'
 
 import {
   cronEditorUpdates,
+  cronModelChoiceValue,
   jobIsScriptOnly,
   lastErrorSummary,
   parseCronDeliveryTargets,
+  parseCronModelChoiceValue,
   toggleCronDeliveryTarget,
   validateCronEditor
 } from './cron-job-model'
 import { nextRunOverdueMs } from './job-state'
+
+describe('cron model choice values', () => {
+  it('round-trips provider and model colons without ambiguous pairs', () => {
+    const customProvider = cronModelChoiceValue('custom:internlm', 'intern-latest')
+    const colonModel = cronModelChoiceValue('custom', 'internlm:intern-latest')
+
+    expect(customProvider).not.toBe(colonModel)
+    expect(parseCronModelChoiceValue(customProvider)).toEqual({ provider: 'custom:internlm', model: 'intern-latest' })
+    expect(parseCronModelChoiceValue(colonModel)).toEqual({ provider: 'custom', model: 'internlm:intern-latest' })
+  })
+})
 
 describe('jobIsScriptOnly', () => {
   it('is true when no_agent is set and a script is present', () => {
@@ -157,7 +170,9 @@ describe('nextRunOverdueMs', () => {
   it('keeps upcoming, within-grace, paused and unparseable slots as plain next runs', () => {
     expect(nextRunOverdueMs({ enabled: true, next_run_at: '2026-09-17T21:00:00+04:00' }, now)).toBeNull()
     expect(nextRunOverdueMs({ enabled: true, next_run_at: '2026-09-17T20:30:00+04:00' }, now)).toBeNull()
-    expect(nextRunOverdueMs({ enabled: true, next_run_at: '2026-09-17T13:34:18+04:00', state: 'paused' }, now)).toBeNull()
+    expect(
+      nextRunOverdueMs({ enabled: true, next_run_at: '2026-09-17T13:34:18+04:00', state: 'paused' }, now)
+    ).toBeNull()
     expect(nextRunOverdueMs({ enabled: false, next_run_at: '2026-09-17T13:34:18+04:00' }, now)).toBeNull()
     expect(nextRunOverdueMs({ enabled: true, next_run_at: 'not-a-date' }, now)).toBeNull()
   })

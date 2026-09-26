@@ -20,15 +20,40 @@ def policy_generation(store, provider):
     return generation
 
 
-def read_policy_snapshot(provider):
+def read_policy_snapshot(provider, *, expected_source=None):
     """Read one atomic auth file; reject incomplete updates without recovering or writing it."""
-    from hermes_cli.auth import _auth_file_path
-    store = json.loads(_auth_file_path().read_text(encoding="utf-8-sig"))
-    if not isinstance(store, dict) or not isinstance(store.get("credential_pool"), dict):
+    from hermes_cli.auth import _auth_file_path, _global_auth_file_path
+    from agent.credential_pool import _guarded_global_root
+
+    path = _auth_file_path()
+    try:
+        store = json.loads(path.read_text(encoding="utf-8-sig"))
+    except FileNotFoundError:
+        # A borrower may never have created an active auth store. Losing an
+        # owned store is different: keep the last good runtime in that case.
+        if expected_source is None or expected_source == str(path):
+            raise
+        store = {}
+    if not isinstance(store, dict) or not isinstance(store.get("credential_pool", {}), dict):
         raise ValueError("Invalid pool store")
-    rows = store["credential_pool"].get(provider)
+    rows = store.get("credential_pool", {}).get(provider, [])
     if not isinstance(rows, list):
-        raise ValueError("Missing pool")
+        raise ValueError("Invalid pool")
+    if not rows:
+        root = _guarded_global_root(_global_auth_file_path())
+        if root is not None and root != path:
+            try:
+                global_store = json.loads(root.read_text(encoding="utf-8-sig"))
+            except FileNotFoundError:
+                global_store = {}
+            if (not isinstance(global_store, dict)
+                    or not isinstance(global_store.get("credential_pool", {}), dict)):
+                raise ValueError("Invalid global pool store")
+            global_rows = global_store.get("credential_pool", {}).get(provider, [])
+            if not isinstance(global_rows, list):
+                raise ValueError("Invalid global pool")
+            if global_rows:
+                rows, store, path = global_rows, global_store, root
     ids = set()
     for row in rows:
         if (not isinstance(row, dict) or not isinstance(row.get("id"), str)
@@ -37,7 +62,7 @@ def read_policy_snapshot(provider):
                 or not isinstance(row.get("access_token", ""), str)):
             raise ValueError("Invalid pool entry")
         ids.add(row["id"])
-    return rows, policy_generation(store, provider)
+    return rows, policy_generation(store, provider), str(path)
 
 
 def read_policy_strategy(provider):
@@ -77,7 +102,7 @@ def bind_pool_policy(agent):
     from agent.credential_pool import CredentialPool
     pool = getattr(agent, "_credential_pool", None)
     if isinstance(pool, CredentialPool):
-        agent._credential_pool_policy = (pool, pool._policy_generation, pool._strategy)
+        agent._credential_pool_policy = (pool, pool._policy_generation, pool._strategy, pool._policy_source)
         agent._credential_pool_policy_entry = (agent._credential_pool_entry_id, agent.api_key)
 
 
@@ -112,12 +137,12 @@ def refresh_pool_policy(agent):
         logger.info("Credential selection source=pinned_or_overridden")
         return
     try:
-        snapshot = read_policy_snapshot(pool.provider)
+        snapshot = read_policy_snapshot(pool.provider, expected_source=pool._policy_source)
         strategy = read_policy_strategy(pool.provider)
         generation = snapshot[1]
         if applied is None or applied[0] is not pool:
-            applied = (pool, pool._policy_generation, pool._strategy)
-        if (generation, strategy) == applied[1:]:
+            applied = (pool, pool._policy_generation, pool._strategy, pool._policy_source)
+        if (generation, strategy, snapshot[2]) == applied[1:]:
             logger.debug("Credential selection source=sticky generation=%d", generation)
             return
         candidate = load_pool(pool.provider, policy_snapshot=snapshot)

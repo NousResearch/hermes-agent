@@ -12,19 +12,14 @@ Class under test (#98814 / #89614):
   mismatched identity.
 - ``hermes_cli._subprocess_compat.pid_is_hermes`` fails closed on foreign
   processes and identity mismatches.
-- ``hermes_cli.update_cmd._refuse_gateway_ancestor_tree_kill`` refuses to
-  nominate any ancestor of the current process for a tree-kill.
 """
-import os
 import subprocess
 import sys
 import time
 
 import pytest
 
-pytestmark = pytest.mark.skipif(
-    sys.platform != "win32", reason="live taskkill-identity probes are Windows-only"
-)
+pytestmark = pytest.mark.platforms("windows")  # live taskkill-identity probes are Windows-only
 
 
 def _spawn_sleeper(seconds: int = 60) -> subprocess.Popen:
@@ -147,46 +142,3 @@ class TestPidIsHermesLive:
         from hermes_cli._subprocess_compat import pid_is_hermes
 
         assert pid_is_hermes(2**24) is False
-
-
-class TestAncestorRefusalLive:
-    def test_real_parent_chain_is_refused(self, capsys):
-        """Walk the REAL psutil parent chain: every ancestor of this test
-        process must be refused as a tree-kill target (#98814)."""
-        import psutil
-
-        from hermes_cli.gateway import _is_pid_ancestor_of_current_process
-        from hermes_cli.update_cmd import _refuse_gateway_ancestor_tree_kill
-
-        ancestors = [os.getpid()]
-        parent = psutil.Process(os.getpid()).parent()
-        while parent is not None and len(ancestors) < 6:
-            ancestors.append(parent.pid)
-            parent = parent.parent()
-
-        for pid in ancestors:
-            assert _is_pid_ancestor_of_current_process(pid) is True, pid
-
-        refused = _refuse_gateway_ancestor_tree_kill(
-            ancestors, gateway_mode=False
-        )
-        assert refused is True
-        out = capsys.readouterr().out
-        assert "taskkill /T" in out
-        assert "separate terminal" in out
-
-    def test_unrelated_live_process_is_not_refused(self):
-        from hermes_cli.gateway import _is_pid_ancestor_of_current_process
-        from hermes_cli.update_cmd import _refuse_gateway_ancestor_tree_kill
-
-        proc = _spawn_sleeper()
-        try:
-            assert _is_pid_ancestor_of_current_process(proc.pid) is False
-            assert (
-                _refuse_gateway_ancestor_tree_kill(
-                    [proc.pid], gateway_mode=False
-                )
-                is False
-            )
-        finally:
-            _cleanup(proc)

@@ -317,7 +317,7 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
         "_recycled_reason", "initialize_result", "_ping_unsupported", "_list_cache_meta",
         "_reconnect_retries", "_session_proven", "_was_parked", "_inflight_tasks", "_reconnecting",
         "_suspect_reason", "_teardown_race", "_permanent_grace_used", "_stdio_child_pids",
-        "_ever_connected", "_sse_fallback", "_park_reason")
+        "_ever_connected", "_sse_fallback", "_park_reason", "_last_park_line", "_resolved_identity")
 
     def __init__(self, name: str):
         self.name = name
@@ -357,6 +357,10 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
         # Lets cron preflight tell a network-blip park (recovering) from a permanent-error park
         # (revoked credentials, dead endpoint) that must not run the job tool-less forever.
         self._park_reason: Optional[str] = None
+        self._last_park_line: Optional[str] = None  # last park WARNING text; identical re-parks log at DEBUG
+        # Digest of the resolved inputs the transport last connected with; a cross-profile adopter
+        # must resolve the same digest in its own scope. None until the transport publishes it.
+        self._resolved_identity: Optional[str] = None
         # In-flight RPC tasks so a deliberate teardown fails them fast; _reconnecting is True
         # during that teardown so _track_inflight_rpc turns the cancel into a retryable error.
         # In-flight RPC bookkeeping (#48069 salvage): user-visible requests registered while running so a
@@ -680,8 +684,16 @@ def _server_visible_in_scope(key, scope: Optional[str]) -> bool:
 # See issue #62771.
 _LOCK_UNAVAILABLE: Any = object()  # sentinel: locking broken/unavailable
 _MCP_DISCOVERY_LOCK_PATH: Optional[str] = None  # resolved lazily
-# Bounded wait when another process holds the lock.
-_MCP_DISCOVERY_LOCK_MAX_RETRIES, _MCP_DISCOVERY_LOCK_RETRY_DELAY_S = 240, 0.5
+# A discovery pass (bounded gathers, one 120 s budget per wave) may legitimately
+# run past the 120 s a scatter completes in. The waiter must outlast the worst
+# legitimate holder (pass ceiling + slack), or it fails over at 120 s, discovers
+# unguarded beside a still-connecting holder, and spawns duplicate stdio trees.
+# See #117373: the concurrency cap made the old 120 s waiter budget stale.
+_MCP_DISCOVERY_PASS_MAX_SEC = 300          # overall pass ceiling
+_MCP_DISCOVERY_LOCK_RETRY_DELAY_S = 0.5
+# Waiter budget (max_retries * delay) must outlast the pass ceiling: 320 s > 300 s.
+_MCP_DISCOVERY_LOCK_MAX_RETRIES = int(
+    _MCP_DISCOVERY_PASS_MAX_SEC / _MCP_DISCOVERY_LOCK_RETRY_DELAY_S) + 20
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

@@ -10,7 +10,9 @@ import httpx
 
 from agent.anthropic_credentials import _is_oauth_token, resolve_anthropic_token
 from hermes_cli.auth import AuthError, _read_codex_tokens, resolve_codex_runtime_credentials
+from hermes_cli.auth_codex import _codex_pool_route_base_url
 from hermes_cli.runtime_provider import resolve_runtime_provider
+from hermes_time import safe_strftime
 
 if TYPE_CHECKING:
     from typing import TypeGuard
@@ -78,7 +80,7 @@ def _parse_dt(value: Any) -> Optional[datetime]:
 def _format_reset(dt: Optional[datetime]) -> str:
     if not dt:
         return "unknown"
-    stamp = dt.astimezone().strftime("%Y-%m-%d %H:%M %Z")
+    stamp = safe_strftime(dt.astimezone(), "%Y-%m-%d %H:%M %Z")
     total_seconds = int((dt - _utc_now()).total_seconds())
     if total_seconds <= 0:
         return f"now ({stamp})"
@@ -187,13 +189,28 @@ def _nous_logged_in() -> bool:
 
 
 def _fetch_portal_account(timeout: float):
-    """Wall-clock-bounded fresh portal account fetch (raises on any failure/timeout)."""
-    import concurrent.futures
+    """Wall-clock-bounded fresh portal account fetch (raises on any failure/timeout).
+
+    No ``with`` block on purpose: ``Executor.__exit__`` joins the worker via
+    ``shutdown(wait=True)``, so a portal that accepts the connection but never
+    answers would hold the caller until the provider's own timeout instead of
+    ``timeout``. The abandoned daemon worker runs on to its own network timeout
+    and never blocks the caller or process exit; its eventual exception is
+    drained so GC never logs "exception was never retrieved"."""
     import contextvars
     from hermes_cli.nous_account import get_nous_portal_account_info
+    from tools.daemon_pool import DaemonThreadPoolExecutor
+
     context = contextvars.copy_context()
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        return pool.submit(context.run, get_nous_portal_account_info, force_fresh=True).result(timeout=timeout)
+    pool = DaemonThreadPoolExecutor(max_workers=1)
+    future = pool.submit(context.run, get_nous_portal_account_info, force_fresh=True)
+    try:
+        return future.result(timeout=timeout)
+    except BaseException:
+        future.add_done_callback(lambda f: f.exception())
+        raise
+    finally:
+        pool.shutdown(wait=False)
 
 
 def nous_credits_lines(*, markdown: bool = False, timeout: float = 10.0) -> list[str]:
@@ -317,7 +334,7 @@ def _resolve_codex_usage_credentials(
             entry = load_pool("openai-codex").try_refresh_matching(api_key_hint=explicit_key)
             if entry is None:
                 raise RuntimeError("Could not refresh the Codex credential this session runs on")
-            return entry.runtime_api_key, str(entry.runtime_base_url or base_url or "").strip(), None
+            return entry.runtime_api_key, _codex_pool_route_base_url(entry.runtime_base_url or base_url), None
     # Only AuthError is caught so tier 3 can run: a broad except would mask a transient refresh/network failure
     # and hand back a DIFFERENT pool account's usage; such errors must propagate to the fail-open outer guard.
     # account_id is best-effort: a partial singleton store must not sink a usable credential.
@@ -346,7 +363,8 @@ def _resolve_codex_usage_credentials(
     entry = load_pool("openai-codex").select()
     if entry is None:
         raise RuntimeError("No available openai-codex credential in credential pool")
-    return entry.runtime_api_key, str(entry.runtime_base_url or base_url or "").strip(), None
+    # Pool rows keep the canonical URL; a gateway key must go to its route host, not chatgpt.com (#121486).
+    return entry.runtime_api_key, _codex_pool_route_base_url(entry.runtime_base_url or base_url), None
 
 
 def _codex_banked_resets(payload: dict) -> int:
@@ -635,11 +653,37 @@ _USAGE_FETCHERS: dict[str, Callable[[Optional[str], Optional[str]], Optional[Acc
 }
 
 
+# Wall-clock bound on a plugin profile's ``fetch_account_usage`` hook. The built-in fetchers above carry
+# their own httpx timeouts; a plugin hook is arbitrary code, and the gateway/TUI ``/usage`` paths await
+# this function with no deadline of their own (only the CLI wraps it in a 10 s future), so the bound
+# lives here where every surface shares it.
+PLUGIN_USAGE_HOOK_DEADLINE_S = 10.0
+
+
+def _call_plugin_usage_hook(profile, base_url: Optional[str], api_key: Optional[str]) -> Optional[AccountUsageSnapshot]:
+    """Run the profile hook under the shared deadline; past it → None. Exceptions re-raise in the
+    caller so ``fetch_account_usage`` fails open without a worker-thread traceback on ``/usage``."""
+    from agent.deadline import run_bounded_sync
+    from providers.base import ProviderProfile
+
+    if type(profile).fetch_account_usage is ProviderProfile.fetch_account_usage:
+        return None  # base no-op: no thread to spawn
+    bounded = run_bounded_sync(
+        lambda: profile.fetch_account_usage(base_url=base_url, api_key=api_key),
+        PLUGIN_USAGE_HOOK_DEADLINE_S, label="plugin-account-usage")
+    return None if bounded.timed_out else bounded.value
+
+
 def fetch_account_usage(
     provider: Optional[str], *, base_url: Optional[str] = None, api_key: Optional[str] = None,
 ) -> Optional[AccountUsageSnapshot]:
     fetcher = _USAGE_FETCHERS.get(str(provider or "").strip().lower())
     try:
-        return fetcher(base_url, api_key) if fetcher else None
+        if fetcher:
+            return fetcher(base_url, api_key)
+        from providers import get_provider_profile
+
+        profile = get_provider_profile(str(provider or "").strip().lower())
+        return _call_plugin_usage_hook(profile, base_url, api_key) if profile else None
     except Exception:
         return None

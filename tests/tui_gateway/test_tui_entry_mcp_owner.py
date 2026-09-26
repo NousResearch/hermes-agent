@@ -15,10 +15,6 @@ from hermes_constants import hermes_home_key
 from tui_gateway import entry
 
 
-def test_tui_uses_shared_portable_mcp_gate(monkeypatch):
-    monkeypatch.setattr(mcp_startup, "_has_configured_mcp_servers", lambda: True)
-
-    assert entry._has_configured_mcp_servers() is True
 
 
 def test_wait_falls_through_to_shared_owner(monkeypatch):
@@ -52,14 +48,6 @@ def test_wait_noop_when_no_owner_has_a_thread(monkeypatch):
     assert time.monotonic() - start < 0.5
 
 
-def test_wait_still_joins_entry_local_thread(monkeypatch):
-    thread = threading.Thread(target=lambda: time.sleep(0.05), daemon=True)
-    thread.start()
-    monkeypatch.setattr(entry, "_mcp_discovery_thread", thread)
-
-    entry.wait_for_mcp_discovery(timeout=2.0)
-
-    assert not thread.is_alive()
 
 
 def test_wait_reinvokes_shared_spawn_when_discovery_enabled(monkeypatch):

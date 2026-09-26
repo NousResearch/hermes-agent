@@ -8,7 +8,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_state_common import (
-    AUTO_VACUUM_MIN_FREELIST_RATIO, _id_chunks, _placeholders, _sql_session_last_active, escape_like as _escape_like
+    AUTO_VACUUM_MIN_FREELIST_RATIO, _id_chunks, _non_continuation_child_sql, _placeholders, _sql_session_last_active,
+    escape_like as _escape_like
 )
 from hermes_startup_watchdog import report_startup_progress
 
@@ -72,7 +73,22 @@ _PRUNE_FILTERS = (
     ("min_tool_calls", "notnone", _one("COALESCE(s.tool_call_count, 0) >= ?")),
     ("max_tool_calls", "notnone", _one("COALESCE(s.tool_call_count, 0) <= ?")),
 )
-_PRUNE_FILTER_NAMES = frozenset(name for name, _, _ in _PRUNE_FILTERS) | {"archived", "include_pinned"}
+_PRUNE_FILTER_NAMES = frozenset(name for name, _, _ in _PRUNE_FILTERS) | {"archived", "include_pinned", "lineage_tips_only"}
+
+# Child ``c`` continues compression-ended ``p`` (same predicate as compression's child lookup).
+_CONTINUATION_EDGE_SQL = "p.end_reason = 'compression'\n" + _non_continuation_child_sql("c.", "p.id")
+
+
+def _continued_ancestors_sql(candidates_where: str) -> str:
+    """Compression ancestors of every row *candidates_where* (alias ``s``) does not select."""
+    return ("WITH RECURSIVE kept(id) AS ("
+            " SELECT p.id FROM sessions c JOIN sessions p ON p.id = c.parent_session_id"
+            f" WHERE {_CONTINUATION_EDGE_SQL}"
+            f" AND NOT EXISTS (SELECT 1 FROM sessions s WHERE s.id = c.id AND {candidates_where})"
+            " UNION"
+            " SELECT p.id FROM kept k JOIN sessions c ON c.id = k.id JOIN sessions p ON p.id = c.parent_session_id"
+            f" WHERE {_CONTINUATION_EDGE_SQL}"
+            ") SELECT id FROM kept")
 
 
 class SessionMaintenanceMixin:
@@ -176,15 +192,20 @@ class SessionMaintenanceMixin:
 
     @staticmethod
     def _prune_filter_where(*, archived: Optional[bool] = None, include_pinned: bool = False,
-                            **filters) -> Tuple[str, list]:
+                            lineage_tips_only: bool = False, **filters) -> Tuple[str, list]:
         """Shared WHERE clause for bulk prune/archive selection (alias ``s``): ``_PRUNE_FILTERS``
         AND together, only ended sessions are ever candidates, ``archived`` is tri-state
-        (None = both), ``*_like`` are case-insensitive substrings, the rest exact."""
+        (None = both), ``*_like`` are case-insensitive substrings, the rest exact.
+        ``lineage_tips_only`` (bulk archive) drops compression ancestors: they are archived with
+        their tip, never on their own age — matching an old ancestor would fan out over the lineage
+        and hide its OPEN, recently active tip (#115489)."""
         unknown = set(filters) - _PRUNE_FILTER_NAMES
         if unknown:
             raise TypeError("SessionMaintenanceMixin._prune_filter_where() got an unexpected "
                             f"keyword argument {sorted(unknown)[0]!r}")
         clauses = ["s.ended_at IS NOT NULL"]
+        if lineage_tips_only:
+            clauses.append("COALESCE(s.end_reason, '') <> 'compression'")
         params: list = []
         for name, applies, build in _PRUNE_FILTERS:
             value = filters.get(name)
@@ -199,18 +220,29 @@ class SessionMaintenanceMixin:
             clauses.append("COALESCE(s.pinned, 0) = 0")
         return " AND ".join(clauses), params
 
-    def _prune_where(self, older_than_days, source, filters) -> Tuple[str, list]:
-        """Translate the legacy age window into the shared activity filter, then build WHERE."""
+    def _prune_where(self, older_than_days, source, filters, *, whole_lineages: bool = False) -> Tuple[str, list]:
+        """Translate the legacy age window into the shared activity filter, then build WHERE.
+        ``whole_lineages`` (prune) keeps a compression ancestor while any continuation after it
+        is unmatched."""
         if (older_than_days is not None and filters.get("last_active_before") is None
                 and filters.get("started_before") is None):
+            if older_than_days < 0:
+                raise ValueError(
+                    f"older_than_days must be >= 0, got {older_than_days!r}: a negative "
+                    "retention builds a future cutoff that matches every ended session.")
             filters["last_active_before"] = time.time() - (older_than_days * 86400)
-        return self._prune_filter_where(source=source, **filters)
+        where, params = self._prune_filter_where(source=source, **filters)
+        if not whole_lineages:
+            return where, params
+        # A compressed-away segment ages with its conversation, not on its own: while any later
+        # segment stays, deleting it would cut the start off a chat that is still in use.
+        return f"{where} AND s.id NOT IN ({_continued_ancestors_sql(where)})", [*params, *params]
 
-    def list_prune_candidates(self, older_than_days: Optional[float] = None, source: str = None,
-                              **filters) -> List[Dict[str, Any]]:
+    def list_prune_candidates(self, older_than_days: Optional[float] = None, source: str = None, *,
+                              whole_lineages: bool = False, **filters) -> List[Dict[str, Any]]:
         """Dry-run: sessions a matching prune/archive would touch, oldest first (``older_than_days``
         = inactivity threshold: freshest of ``last_activity_at`` / latest message / ``started_at``)."""
-        where, params = self._prune_where(older_than_days, source, filters)
+        where, params = self._prune_where(older_than_days, source, filters, whole_lineages=whole_lineages)
         return [dict(row) for row in self._read_all(
             f"""SELECT s.id, s.source, s.title, s.model, s.started_at,
                            {_LAST_ACTIVE_SQL} AS last_active,
@@ -268,8 +300,9 @@ class SessionMaintenanceMixin:
         Children outside the window are orphaned (parent NULLed), not cascade-deleted.  With
         *sessions_dir*, transcript files are removed outside the DB transaction.
         ``exclude_active_write_guards`` (automatic maintenance) skips rows under a live turn lease
-        or compression lock while expired/dead holders are reclaimed and fenced."""
-        where, where_params = self._prune_where(older_than_days, source, filters)
+        or compression lock while expired/dead holders are reclaimed and fenced.  A compression
+        ancestor is deleted only together with every continuation after it (``whole_lineages``)."""
+        where, where_params = self._prune_where(older_than_days, source, filters, whole_lineages=True)
         removed_ids: list[str] = []
         def _do(conn):
             cursor = conn.execute(f"SELECT s.id FROM sessions s WHERE {where}", where_params)
@@ -339,13 +372,15 @@ class SessionMaintenanceMixin:
         VACUUM reads every page and commits the result back, turning contained damage into an
         amplified one (#105670). Same guard ``_execute_write`` applies to every write."""
         self._raise_if_db_corrupt()
-        self._raise_if_db_replaced()
         optimized = 0
         try:
             optimized = self.optimize_fts()  # manages its own lock
         except Exception as exc:
             logger.warning("FTS optimize before VACUUM failed: %s", exc)
         with self._lock:
+            self._raise_if_db_replaced()
+            if self._conn is None:
+                self._reopen_after_close_locked(context="write")
             # PASSIVE, not TRUNCATE: a manual `hermes sessions vacuum` runs in a transient CLI
             # process; a TRUNCATE reset here would race a live gateway writer.
             self._try_checkpoint("PASSIVE", "WAL checkpoint (PASSIVE) before VACUUM failed: %s")
@@ -382,6 +417,15 @@ class SessionMaintenanceMixin:
         """
         from hermes_state_repair import _release_auto_maintenance_lock, _try_acquire_auto_maintenance_lock
         result: Dict[str, Any] = {"skipped": False, "pruned": 0, "closed": 0, "vacuumed": False}
+        if retention_days is None or retention_days < 0:
+            # A negative retention would build a future cutoff and match every ended
+            # session; auto_prune=false is the disable switch, not a negative bound.
+            logger.warning(
+                "state.db auto-maintenance skipped: sessions.retention_days=%r is outside the allowed "
+                "range (a whole number of days >= 0); set sessions.auto_prune: false to disable pruning",
+                retention_days)
+            result["skipped"] = True
+            return result
         maintenance_lock = _try_acquire_auto_maintenance_lock(self.db_path)
         if maintenance_lock is None:
             result["skipped"] = True
@@ -413,7 +457,24 @@ class SessionMaintenanceMixin:
             vacuum_due = since_vacuum is None or since_vacuum >= min_vacuum_interval_days * 86400
             if vacuum and pruned > 0 and vacuum_due:
                 result["freelist_ratio"] = ratio = self._freelist_ratio()
-                if ratio is None or ratio > min_vacuum_freelist_ratio:
+                # Same admission `hermes sessions optimize` runs: VACUUM plus the TRUNCATE checkpoint
+                # retire the WAL generation a sibling writer (gateway, Desktop, dashboard, cron) still
+                # holds, and that is exactly the state every agent then refuses turns in (#110054).
+                # The foreign scan skips our own pid, so it is paired with the in-process arm: under
+                # one multiplexed process another live SessionDB generation for this same path is
+                # just as much a holder as another process would be.
+                # Automatic maintenance only ever SKIPS — a turn is never refused over housekeeping.
+                from hermes_state_holders import (
+                    foreign_state_db_holders, in_process_state_db_holders)
+                holders = (foreign_state_db_holders(self.db_path)
+                           + in_process_state_db_holders(self.db_path, exclude=self))
+                if holders:
+                    result["vacuum_skipped_holders"] = len(holders)
+                    logger.debug(
+                        "state.db auto-maintenance: skipping VACUUM, %d other process(es) hold the "
+                        "store or a WAL sidecar (%s)",
+                        len(holders), ", ".join(f"{pid}:{target}" for pid, target in holders[:3]))
+                elif ratio is None or ratio > min_vacuum_freelist_ratio:
                     try:
                         # VACUUM rewrites every page with ~zero CPU: renew the lease here so
                         # a multi-minute rewrite on a large state.db never outlives the clamp.

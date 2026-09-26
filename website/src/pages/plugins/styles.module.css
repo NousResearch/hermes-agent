@@ -44,7 +44,7 @@
 }
 
 [data-theme="light"] .heroEyebrow {
-  color: #a8860a;
+  color: var(--ifm-color-primary-darker);
 }
 
 .heroTitle {
@@ -121,34 +121,8 @@
 }
 
 /* Three promises every listing carries; replaces the registry-style counters. */
-.trustRow {
-  display: flex;
-  justify-content: center;
-  gap: 0.6rem;
-  flex-wrap: wrap;
-  list-style: none;
-  margin: 0 -6rem;
-  padding: 0;
-}
 
-.trustChip {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.45rem 0.9rem;
-  border-radius: 999px;
-  border: 1px solid rgba(255, 215, 0, 0.18);
-  background: rgba(255, 215, 0, 0.05);
-  font-size: 0.88rem;
-  color: var(--ifm-font-color-base);
-}
 
-.trustIcon {
-  width: 1rem;
-  height: 1rem;
-  flex: none;
-  color: #ffd700;
-}
 
 .controlsBar {
   position: sticky;
@@ -274,6 +248,29 @@
 
 .tierBtnActive .tierCount {
   background: rgba(255, 255, 255, 0.08);
+}
+
+/* Sort control: Most starred / Newest / Recently updated, same pill shape as the tier tabs. */
+.sortPills {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+}
+
+.sortLabel {
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ifm-color-emphasis-500);
+  margin-right: 0.15rem;
+}
+
+.sortBtnActive {
+  border-color: rgba(255, 215, 0, 0.3);
+  background: rgba(255, 215, 0, 0.06);
+  color: #ffd700;
 }
 
 /* ── Category pills + grouped sections ─────────────────────────────────── */
@@ -477,10 +474,6 @@
   transform: translateY(-1px);
 }
 
-.cardExpanded {
-  border-color: rgba(255, 215, 0, 0.2);
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 215, 0, 0.08);
-}
 
 .cardAccent {
   position: absolute;
@@ -576,21 +569,28 @@
   line-height: 1.55;
   color: var(--ifm-font-color-secondary, #9a968e);
   margin: 0 0 0.6rem;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
 }
 
-.cardDescFull {
-  -webkit-line-clamp: unset;
-}
 
 .cardMeta {
   display: flex;
   align-items: center;
   gap: 0.35rem;
   flex-wrap: wrap;
+}
+
+/* Added / Updated line from the catalog's git history. */
+.cardDates {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: 0.5rem;
+  font-size: 0.7rem;
+  color: var(--ifm-color-emphasis-500);
+}
+
+.cardDatesSep {
+  opacity: 0.5;
 }
 
 /* Capability chips: tools/hooks/middleware counts. */
@@ -628,7 +628,6 @@
   margin-top: 0.75rem;
   padding-top: 0.7rem;
   border-top: 1px solid rgba(255, 255, 255, 0.04);
-  animation: cardIn 0.2s ease both;
 }
 
 .metaRow {
@@ -873,6 +872,195 @@
   background: rgba(255, 215, 0, 0.08);
 }
 
+.filterPanel {
+  display: contents;
+}
+
+.controlsTopRow {
+  display: contents;
+}
+
+.filterToggle,
+.compactSelect {
+  display: none;
+}
+
+@media (max-width: 1024px), (max-height: 800px) {
+  .controlsBar {
+    flex-direction: row;
+    gap: 0.65rem;
+    justify-content: center;
+    padding: 0.55rem 1rem;
+  }
+
+  .controlsTopRow {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    width: min(100%, 1200px);
+    min-width: 0;
+  }
+
+  .searchWrap {
+    flex: 1 1 22rem;
+    min-width: 8rem;
+    max-width: none;
+  }
+
+  .searchInput {
+    min-height: 44px;
+  }
+
+  .compactSelect {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    /* Hold the select's 7.5rem floor: without it the column shrinks below the
+       select and the control overruns its neighbour. */
+    min-width: 7.5rem;
+    color: var(--ifm-color-emphasis-600);
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .compactSelect select {
+    height: 44px;
+    max-width: 10.5rem;
+    min-width: 7.5rem;
+    padding: 0 1.9rem 0 0.65rem;
+    border: 1px solid rgba(255, 215, 0, 0.14);
+    border-radius: 8px;
+    background: var(--ifm-background-surface-color);
+    color: var(--ifm-font-color-base);
+    font: 500 0.78rem "DM Sans", sans-serif;
+  }
+
+  [data-theme="light"] .compactSelect select {
+    border-color: var(--ifm-color-emphasis-300);
+  }
+
+  .compactSort select { max-width: 11.5rem; }
+  .filterPanel { display: none; }
+}
+
+/* Below ~820px the uppercase labels leave no room for the select's own value. */
+@media (max-width: 820px) {
+  .compactSelect > span { display: none; }
+}
+
+@media (max-width: 600px) {
+  .controlsBar {
+    display: contents;
+  }
+
+  .controlsTopRow {
+    position: sticky;
+    top: 60px;
+    z-index: 50;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    width: 100%;
+    min-width: 0;
+    padding: 0.55rem 0.75rem;
+    background: var(--ifm-navbar-background-color);
+    border-bottom: 1px solid var(--ifm-hr-border-color);
+    backdrop-filter: blur(16px);
+  }
+
+  .searchWrap {
+    position: relative;
+    flex: 1 1 auto;
+    min-width: 0;
+    margin: 0;
+    width: 100%;
+    padding: 0;
+  }
+
+  .filterToggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
+    flex: 0 0 auto;
+    min-height: 44px;
+    margin: 0;
+    padding: 0 0.85rem;
+    border: 1px solid rgba(255, 215, 0, 0.16);
+    border-radius: 8px;
+    background: rgba(255, 215, 0, 0.04);
+    color: var(--ifm-font-color-base);
+    font: 600 0.82rem "DM Sans", sans-serif;
+  }
+
+  .activeFilterCount {
+    min-width: 1.25rem;
+    border-radius: 999px;
+    background: var(--ifm-color-emphasis-200);
+    color: var(--ifm-font-color-base);
+  }
+
+  /* Gold accents are tuned for the dark theme; against the light surface the
+     translucent gold borders are invisible. */
+  [data-theme="light"] .controlsTopRow .filterToggle {
+    border-color: var(--ifm-color-emphasis-300);
+  }
+
+  [data-theme="dark"] .activeFilterCount {
+    background: rgba(255, 215, 0, 0.14);
+    color: #ffd700;
+  }
+
+  .compactSelect { display: none; }
+
+  .filterPanel.filterPanelOpen {
+    display: block;
+    margin: 0 0.75rem 0.75rem;
+    padding: 0.75rem;
+    border: 1px solid rgba(255, 215, 0, 0.12);
+    border-radius: 10px;
+    background: var(--ifm-background-surface-color);
+    scroll-margin-top: 120px;
+  }
+
+  .filterPanelOpen .tierPills,
+  .filterPanelOpen .categoryPills,
+  .filterPanelOpen .sortPills {
+    justify-content: flex-start;
+  }
+
+  .clearBtn {
+    right: 0.25rem;
+    width: 44px;
+    height: 44px;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .filterPanelOpen .tierBtn,
+  .filterPanelOpen .categoryBtn {
+    min-height: 44px;
+  }
+
+  .categoryHeader {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.25rem 0.5rem;
+  }
+
+  .categoryTitle,
+  .categoryBlurb,
+  .metaValue,
+  .chipList {
+    min-width: 0;
+  }
+
+  .envChip {
+    max-width: 100%;
+    overflow-wrap: anywhere;
+  }
+}
+
 @media (max-width: 900px) {
   .hero {
     padding: 2.5rem 1.25rem 1.75rem;
@@ -882,14 +1070,6 @@
     font-size: 2rem;
   }
 
-  .trustRow {
-    gap: 0.4rem;
-  }
-
-  .trustChip {
-    font-size: 0.8rem;
-    padding: 0.35rem 0.7rem;
-  }
 
   .controlsBar {
     padding: 0.75rem 1rem;
@@ -918,7 +1098,8 @@
 /* The navbar is hidden in picker mode, so the sticky controls bar must pin
    to the frame top — its normal 60px navbar offset would float it over the
    first card row. */
-.pickerMode .controlsBar {
+.pickerMode .controlsBar,
+.pickerMode .controlsTopRow {
   top: 0;
 }
 
@@ -945,4 +1126,190 @@
 .pickBtn:hover {
   background: var(--ifm-color-primary);
   color: #fff;
+  text-decoration: none;
+}
+
+a.pickBtn {
+  text-align: center;
+  text-decoration: none;
+}
+
+/* Card title doubles as the link to the plugin's own page. */
+.cardTitleLink {
+  color: inherit;
+  text-decoration: none;
+}
+
+.cardTitleLink:hover,
+.card:hover .cardTitleLink {
+  color: var(--ifm-color-primary);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/* Dark-theme gold (#ffd700, 1.4:1 on white) and sky blue (#7dd3fc / #60a5fa)
+   are unreadable on the light page. Text uses the theme's darker amber and a
+   blue that clears WCAG AA; tints stay translucent versions of the same hues. */
+[data-theme="light"] .heroLink,
+[data-theme="light"] .heroLink:hover,
+[data-theme="light"] .crossNavActive,
+[data-theme="light"] .crossNavLink:hover,
+[data-theme="light"] .emptyCta,
+[data-theme="light"] .emptyCta:hover,
+[data-theme="light"] .emptyReset,
+[data-theme="light"] .emptyReset:hover,
+[data-theme="light"] .installHint code {
+  color: var(--ifm-color-primary-darker);
+}
+
+[data-theme="light"] .searchIcon {
+  color: var(--ifm-color-primary);
+}
+
+[data-theme="light"] .searchInput {
+  border-color: rgba(28, 30, 33, 0.18);
+}
+
+[data-theme="light"] .searchInput::placeholder {
+  color: #525860;
+  opacity: 1;
+}
+
+[data-theme="light"] .controlsBar {
+  background: rgba(255, 255, 255, 0.92);
+  border-bottom-color: rgba(28, 30, 33, 0.08);
+}
+
+[data-theme="light"] .tierBtn,
+[data-theme="light"] .categoryBtn {
+  color: #3c4043;
+  border-color: rgba(28, 30, 33, 0.16);
+}
+
+/* Active rules below must stay after these: same specificity as :hover. */
+[data-theme="light"] .tierBtn:hover,
+[data-theme="light"] .categoryBtn:hover {
+  border-color: rgba(28, 30, 33, 0.32);
+  color: #1c1e21;
+}
+
+[data-theme="light"] .tierBtnActive,
+[data-theme="light"] .tierBtnActive:hover {
+  color: var(--pill-color, var(--ifm-color-primary-darker));
+  border-color: var(--pill-border, rgba(110, 79, 0, 0.45));
+  background: var(--pill-bg, rgba(110, 79, 0, 0.08));
+}
+
+[data-theme="light"] .sortBtnActive,
+[data-theme="light"] .sortBtnActive:hover {
+  color: var(--ifm-color-primary-darker);
+  border-color: rgba(110, 79, 0, 0.45);
+  background: rgba(110, 79, 0, 0.08);
+}
+
+[data-theme="light"] .categoryViewAll,
+[data-theme="light"] .categoryViewAll:hover {
+  color: #075985;
+}
+
+[data-theme="light"] .categoryBtnActive,
+[data-theme="light"] .categoryBtnActive:hover {
+  border-color: rgba(7, 89, 133, 0.55);
+  background: rgba(7, 89, 133, 0.1);
+  box-shadow: none;
+  color: #075985;
+}
+
+[data-theme="light"] .categoryBtnActive .tierCount {
+  background: rgba(7, 89, 133, 0.14);
+  color: #075985;
+}
+
+[data-theme="light"] .categoryChip {
+  border-color: rgba(7, 89, 133, 0.35);
+  background: rgba(7, 89, 133, 0.08);
+  color: #075985;
+}
+
+[data-theme="light"] .card {
+  background: #fff;
+  border-color: rgba(28, 30, 33, 0.12);
+}
+
+[data-theme="light"] .card:hover {
+  border-color: rgba(110, 79, 0, 0.45);
+  box-shadow: 0 4px 16px rgba(28, 30, 33, 0.06);
+}
+
+[data-theme="light"] .starPill,
+[data-theme="light"] .starPill:hover {
+  border-color: rgba(110, 79, 0, 0.35);
+  background: rgba(110, 79, 0, 0.08);
+  color: var(--ifm-color-primary-darker);
+}
+
+[data-theme="light"] .capChip,
+[data-theme="light"] .envChip {
+  border-color: rgba(110, 79, 0, 0.28);
+  background: rgba(110, 79, 0, 0.06);
+  color: var(--ifm-color-primary-darker);
+}
+
+[data-theme="light"] .cardDates,
+[data-theme="light"] .sortLabel,
+[data-theme="light"] .categoryBlurb,
+[data-theme="light"] .metaLabel {
+  color: #525860;
+  opacity: 1;
+}
+
+[data-theme="light"] .shaLink,
+[data-theme="light"] .shaLink:hover {
+  color: var(--plugin-catalog-link);
+}
+
+[data-theme="light"] .docsLink,
+[data-theme="light"] .emptyCtaSecondary {
+  border-color: rgba(29, 78, 216, 0.35);
+  background: rgba(29, 78, 216, 0.06);
+  color: var(--plugin-catalog-link);
+}
+
+[data-theme="light"] .docsLink:hover,
+[data-theme="light"] .emptyCtaSecondary:hover {
+  color: #1e3a8a;
+  border-color: rgba(30, 58, 138, 0.45);
+  background: rgba(29, 78, 216, 0.1);
+}
+
+[data-theme="light"] .versionPill,
+[data-theme="light"] .platformPill {
+  border-color: rgba(29, 78, 216, 0.4);
+  background: rgba(29, 78, 216, 0.08);
+  color: var(--plugin-catalog-link);
+}
+
+[data-theme="light"] .installHint {
+  background: rgba(110, 79, 0, 0.06);
+  border-color: rgba(110, 79, 0, 0.22);
+}
+
+[data-theme="light"] .copyBtn,
+[data-theme="light"] .copyBtn:hover {
+  border-color: rgba(110, 79, 0, 0.35);
+  background: rgba(110, 79, 0, 0.08);
+  color: var(--ifm-color-primary-darker);
+}
+
+[data-theme="light"] .copyBtn:hover {
+  background: rgba(110, 79, 0, 0.16);
+}
+
+[data-theme="light"] .highlight {
+  background: rgba(110, 79, 0, 0.15);
+  color: var(--ifm-color-primary-darker);
+}
+
+[data-theme="light"] .filterPanelOpen {
+  border-color: rgba(28, 30, 33, 0.12);
 }

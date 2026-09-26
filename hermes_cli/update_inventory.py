@@ -8,6 +8,7 @@ side-effect-free probe, so ``hermes update --plan`` is safe on a live fleet.
 from __future__ import annotations
 
 import logging
+import shlex
 import sys
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field, asdict, fields as dataclass_fields
@@ -84,6 +85,7 @@ def _detect_supervisor_for_pid(pid: int, service_pids: set, windows_service_pids
 _RESTART_MECHANISMS = {
     "systemd": "systemd", "launchd": "launchd", "desktop": "desktop",
     "windows-service": "windows-service", "manual-serve": "respawn-argv",
+    "desktop-ssh": "desktop-ssh",
 }
 
 _MECHANISM_DESCRIPTIONS = {
@@ -92,9 +94,14 @@ _MECHANISM_DESCRIPTIONS = {
     "desktop": "Desktop app respawns its serve backend",
     "windows-service": "sc.exe stop before venv mutation, sc.exe start after update",
     "respawn-argv": "stop before code swap, relaunch with recorded launch args",
+    "desktop-ssh": "the remote Desktop that spawned it over SSH respawns it when it reconnects",
 }
 
 _SERVE_KINDS = ("serve", "dashboard")
+# Serve backends a Desktop client owns and recycles: this app's own pool child (``desktop``) or one
+# another machine's Desktop spawned here over SSH (``desktop-ssh``). The updater never restarts
+# either; stopping one out from under its client only makes the client respawn it.
+CLIENT_OWNED_SERVE_SUPERVISORS = frozenset({"desktop", "desktop-ssh"})
 
 
 def _restart_mechanism(supervisor: str, profile: str) -> str:
@@ -217,14 +224,61 @@ def _collect_gateway_runtimes(plan: UpdatePlan, profile_homes: list, seen: set[i
                 plan.runtimes.append(_runtime("gateway", proc.profile, proc.pid, supervisor(proc.pid)))
 
 
+def _loaded_backend_launchd_jobs() -> list:
+    """Loaded launchd dashboard/serve jobs for supervisor classification.
+
+    The probe itself is darwin-gated (``[]`` on every other host); here any failure also degrades
+    to ``[]`` — classification falls back to the spawner probe and never aborts the inventory.
+    See #116503."""
+    with suppress(Exception):
+        from hermes_cli import main_dashboard as _dash
+
+        return _dash._loaded_launchd_backend_jobs()
+    return []
+
+
+def _launchd_owner_for_ledger_entry(entry: dict, pid: int, jobs: list) -> "tuple[str, str, int | None] | None":
+    """``(domain, label, live_pid)`` of the loaded launchd job owning this ledger row, if any.
+
+    A KeepAlive LaunchAgent backend's recorded spawner (the bootstrap shell) is long dead, so the
+    spawner probe alone misreads the row as ``manual-serve`` — and a respawn-argv restart then
+    fights the job's own KeepAlive respawn. The loaded-job match (live PID, an ancestor, or the
+    normalized ``ProgramArguments``) is the authoritative classification. See #116503."""
+    with suppress(Exception):
+        from hermes_cli import main_dashboard as _dash
+        from hermes_cli.dashboard_procs import _process_ancestors
+
+        try:
+            cmdline = shlex.split(str(entry.get("argv") or "")) or None
+        except ValueError:
+            cmdline = None
+        return _dash._launchd_job_owning_backend(pid, cmdline, jobs, ancestors=_process_ancestors(pid))
+    return None
+
+
+def _is_desktop_ssh_ledger_entry(entry: dict) -> bool:
+    """Is this row the backend a (possibly remote) Desktop spawned over SSH? The canonical argv
+    predicate also classifies rows written before the ledger carried ``isolated``, which is exactly
+    the pre-update serve the first update after this change inventories."""
+    from hermes_cli._startup_fast import is_desktop_ssh_backend_argv
+
+    try:
+        return is_desktop_ssh_backend_argv(shlex.split(str(entry.get("argv") or "")))
+    except ValueError:
+        return False
+
+
 def _collect_ledger_runtimes(plan: UpdatePlan, seen: set[int]) -> None:
     """Serve/dashboard backends from the spawn ledger — runtimes the gateway collectors can never see
     (a manual `hermes serve --host <ip>` for a remote Desktop, a long-lived `hermes dashboard`).
     ledger_entries() live-verifies (pid, create_time) so PID reuse never fabricates a row. Desktop-
-    supervised backends (spawner still alive) restart via the Desktop's own respawn, not ours."""
+    supervised backends (spawner still alive) restart via the Desktop's own respawn, not ours.
+    A backend owned by a loaded launchd job is classified ``launchd`` (kickstart restart, never a
+    detached argv respawn) — the spawner probe cannot see that (#116503)."""
     with _probe("Serve/dashboard ledger inventory"):
         from hermes_cli.process_identity import ledger_entries, spawner_is_dead
 
+        launchd_jobs = _loaded_backend_launchd_jobs()
         for entry in ledger_entries():
             purpose, pid = entry.get("purpose"), entry.get("pid")
             if purpose not in _SERVE_KINDS or not isinstance(pid, int) or pid in seen:
@@ -232,13 +286,21 @@ def _collect_ledger_runtimes(plan: UpdatePlan, seen: set[int]) -> None:
             seen.add(pid)
             # detail.create_time: process incarnation, not just the numeric PID — a post-update
             # survivor probe comparing PIDs alone calls a NEW serve that reused the number a survivor.
+            detail = {
+                "argv": entry.get("argv") or "", "host": entry.get("host") or "",
+                "port": entry.get("port"), "create_time": entry.get("create_time"),
+            }
+            job = _launchd_owner_for_ledger_entry(entry, pid, launchd_jobs) if launchd_jobs else None
+            if job:
+                supervisor, detail["launchd_domain"], detail["launchd_label"] = "launchd", job[0], job[1]
+            elif _is_desktop_ssh_ledger_entry(entry):
+                # No local spawner, so the probe below would read manual-serve and file a reminder
+                # nobody here can discharge; its token file and owner nonce belong to the client.
+                supervisor = "desktop-ssh"
+            else:
+                supervisor = "desktop" if spawner_is_dead(entry) is False else "manual-serve"
             plan.runtimes.append(_runtime(
-                str(purpose), str(entry.get("profile") or "default"), pid,
-                "desktop" if spawner_is_dead(entry) is False else "manual-serve",
-                detail={
-                    "argv": entry.get("argv") or "", "host": entry.get("host") or "",
-                    "port": entry.get("port"), "create_time": entry.get("create_time"),
-                },
+                str(purpose), str(entry.get("profile") or "default"), pid, supervisor, detail=detail,
             ))
 
 
@@ -250,7 +312,7 @@ def collect_runtime_inventory() -> UpdatePlan:
     plan = UpdatePlan()
     _collect_install_shape(plan)
     with _probe("Code-identity probe"):
-        from hermes_cli.build_info import get_code_identity
+        from hermes_cli.version_info import get_code_identity
 
         identity = get_code_identity(refresh=True)
         plan.expected_sha = identity.get("sha")
@@ -366,10 +428,10 @@ def match_runtime_outcomes(
                     # Incarnation-verified: the pre-update process is gone (replaced by its unit / the
                     # dashboard cleanup respawn / the Desktop app).
                     return "restarted"
-                if r.supervisor == "desktop":
+                if r.supervisor in CLIENT_OWNED_SERVE_SUPERVISORS:
                     if stale_serves is not None:
-                        # Still alive on pre-update code, but the Desktop app owns it and the restart phase
-                        # must not kill it (_DESKTOP_SERVE_SKIP_REASON); only the app can pick up the new code.
+                        # Still alive on pre-update code, but a Desktop client owns it and the restart phase
+                        # must not kill it (_DESKTOP_SERVE_SKIP_REASON); only that client can pick up the new code.
                         return "deferred"
                     return "unaccounted"
                 if stale_serves is not None:
@@ -413,7 +475,9 @@ def report_unaccounted_runtimes(outcomes: list[dict[str, Any]]) -> bool:
         print()
         print("  ℹ Left to the Desktop app (still on pre-update code until it is relaunched):")
         for o in deferred:
-            print(f"    • {o['kind']} [{o['profile']}] pid {o['pid']} — relaunch the Desktop app to pick up the update")
+            action = ("owned by a Desktop connected over SSH; it picks up the update when that Desktop reconnects"
+                      if o.get("mechanism") == "desktop-ssh" else "relaunch the Desktop app to pick up the update")
+            print(f"    • {o['kind']} [{o['profile']}] pid {o['pid']} — {action}")
     missed = [o for o in outcomes if o.get("outcome") == "unaccounted"]
     if not missed:
         return False
@@ -439,8 +503,9 @@ def record_plan_in_receipt(plan: UpdatePlan) -> None:
     try:
         import hermes_cli.update_receipt as ur
 
-        if ur._current is not None:
-            ur._current.data["plan"] = plan.to_dict()
+        current = ur._current.get()
+        if current is not None:
+            current.data["plan"] = plan.to_dict()
     except Exception as exc:
         logger.debug("Could not record plan in receipt: %s", exc)
 

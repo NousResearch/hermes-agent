@@ -15,7 +15,7 @@ Import an OpenClaw setup (memories, skills) into Hermes.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/migration/openclaw-migration` |
-| Path | `optional-skills/migration\openclaw-migration` |
+| Path | `optional-skills/migration/openclaw-migration` |
 | Version | `1.0.0` |
 | Author | Hermes Agent (Nous Research) |
 | License | MIT |
@@ -243,6 +243,9 @@ Prefer these two presets in normal use:
 The helper script still supports category-level `--include` / `--exclude`, but treat that as an advanced fallback rather than the default UX.
 
 ## Commands
+
+Run the helper with Hermes' Python environment, which includes `ruamel.yaml`.
+For a standalone Python environment, install `ruamel.yaml==0.18.17` first.
 
 Dry run with full discovery:
 

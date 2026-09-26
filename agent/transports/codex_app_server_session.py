@@ -217,6 +217,7 @@ class CodexAppServerSession:
         client_factory: Optional[Callable[..., CodexAppServerClient]] = None,
         model: Optional[str] = None, model_provider: Optional[str] = None,
         developer_instructions: Optional[str] = None, resume_thread_id: Optional[str] = None,
+        history_seed: Optional[str] = None,
     ) -> None:
         self._cwd = cwd or os.getcwd()
         self._codex_bin = codex_bin
@@ -233,6 +234,9 @@ class CodexAppServerSession:
         # inserts this as the first developer message of every model request. ``baseInstructions`` would
         # REPLACE codex's base and ``instructions`` is accepted but ignored (verified against codex 0.147).
         self._developer_instructions = developer_instructions
+        # Hermes' prior transcript, appended to developerInstructions ONLY when a thread is started from
+        # scratch: a resumed thread already holds the conversation (agent/codex_runtime_history_seed.py).
+        self._history_seed = history_seed
         self._permission_profile = permission_profile or _HERMES_TO_CODEX_PERMISSION_PROFILE.get(
             os.environ.get("HERMES_TERMINAL_SECURITY_MODE", "auto"), "workspace-write"
         )
@@ -276,6 +280,9 @@ class CodexAppServerSession:
             thread_id = self._resume_thread(wanted, params)
             logger.info("codex app-server thread resumed: id=%s cwd=%s", thread_id[:8], self._cwd)
         else:
+            if self._history_seed:
+                params["developerInstructions"] = "\n\n".join(
+                    part for part in (params.get("developerInstructions"), self._history_seed) if part)
             result = self._client.request("thread/start", params, timeout=15)
             thread_id = _extract_thread_id(result)
             if not thread_id:

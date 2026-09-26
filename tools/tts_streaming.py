@@ -16,8 +16,10 @@ import time
 from abc import ABC, abstractmethod
 from typing import Callable, Dict, Iterator, List, Optional
 
+from agent.think_scrubber import THINK_TAG_NAMES
 from tools.tool_backend_helpers import resolve_openai_audio_api_key
 from tools.tts_tool import _get_provider, _load_tts_config
+from tools.tts_tool_providers import DEFAULT_XAI_SAMPLE_RATE
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +63,11 @@ def take_speech_interrupted() -> bool:
 
 # Sentence boundary: after .!? followed by whitespace, or a blank line.
 SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[.!?])(?:\s|\n)|(?:\n\n)")
-_THINK_BLOCK_RE = re.compile(r"<think[\s>].*?</think>", flags=re.DOTALL)
+# Reasoning tags come from the one canonical list (agent.think_scrubber), matched case-insensitively,
+# so feed() and flush() strip/cut exactly the tags every other reasoning-hiding surface does.
+_THINK_NAMES = "|".join(re.escape(name) for name in THINK_TAG_NAMES)
+_THINK_BLOCK_RE = re.compile(rf"<({_THINK_NAMES})[\s>].*?</\1>", flags=re.DOTALL | re.IGNORECASE)
+_THINK_OPEN_RE = re.compile(rf"<(?:{_THINK_NAMES})(?=[\s>]|$)", flags=re.IGNORECASE)
 
 
 class SentenceChunker:
@@ -86,7 +92,7 @@ class SentenceChunker:
     def feed(self, delta: str) -> List[str]:
         """Absorb *delta*; return every complete sentence now ready to speak."""
         self.buf = _THINK_BLOCK_RE.sub("", self.buf + delta)
-        if "<think" in self.buf and "</think>" not in self.buf:
+        if _THINK_OPEN_RE.search(self.buf):
             return []  # open think tag — the closing tag may arrive next delta
         out: List[str] = []
         start = 0  # skip boundaries that would leave the head too short
@@ -102,7 +108,10 @@ class SentenceChunker:
 
     def flush(self) -> List[str]:
         """Drain the tail (end-of-text or long-idle flush)."""
-        tail, self.buf = _THINK_BLOCK_RE.sub("", self.buf).strip(), ""
+        tail, self.buf = _THINK_BLOCK_RE.sub("", self.buf), ""
+        if m := _THINK_OPEN_RE.search(tail):
+            tail = tail[: m.start()]  # unterminated reasoning block: never speak it
+        tail = tail.strip()
         return [tail] if tail else []
 
 
@@ -300,7 +309,7 @@ class GeminiStreamer(StreamingTTSProvider):
         voice = str(self.section.get("voice", DEFAULT_GEMINI_TTS_VOICE)).strip() or DEFAULT_GEMINI_TTS_VOICE
         from agent.gemini_native_adapter import normalize_gemini_base_url
         base_url = normalize_gemini_base_url(
-            self.section.get("base_url") or get_env_value("GEMINI_BASE_URL") or DEFAULT_GEMINI_TTS_BASE_URL, api_key,
+            self.section.get("base_url") or get_env_value("GEMINI_BASE_URL") or DEFAULT_GEMINI_TTS_BASE_URL,
         )
         payload = {
             "contents": [{"parts": [{"text": text}]}],
@@ -311,7 +320,8 @@ class GeminiStreamer(StreamingTTSProvider):
 
         def _sse_chunks() -> Iterator[bytes]:
             with requests.post(
-                url, params={"alt": "sse", "key": api_key}, json=payload, timeout=60, stream=True,
+                url, params={"alt": "sse"}, headers={"x-goog-api-key": api_key},
+                json=payload, timeout=60, stream=True,
             ) as response:
                 response.raise_for_status()
                 for line in response.iter_lines(decode_unicode=True):
@@ -333,15 +343,43 @@ class GeminiStreamer(StreamingTTSProvider):
         yield from _capped(_sse_chunks(), "Gemini streaming TTS")
 
 
+# Bounded like SpeakerPipeline's _CHUNK_QUEUE_MAX: the pump waits for the consumer instead of
+# buffering up to the full byte cap.
+_XAI_QUEUE_MAX = 64
+
+
+def _put_unless_stopped(q, item, stop, poll_s: float = 0.1) -> bool:
+    """Put *item* on bounded *q*, giving up once *stop* is set; False when dropped."""
+    import queue
+
+    while not stop.is_set():
+        try:
+            q.put(item, timeout=poll_s)
+            return True
+        except queue.Full:
+            continue
+    return False
+
+
 @register("xai")
 class XAIStreamer(StreamingTTSProvider):
-    """xAI WebSocket TTS (``wss://api.x.ai/v1/tts``) → binary PCM frames (24 kHz mono int16).
-    Credentials route through ``resolve_xai_http_credentials`` (OAuth or XAI_API_KEY), same as the
-    sync path. ``_collect_async`` bridges the async WS loop to the sync iterator contract (test
-    seam).
+    """xAI WebSocket TTS → base64 PCM ``audio.delta`` frames (24 kHz mono int16).
 
-    Salvaged from PR #47588 (@Cdddo): xAI's chunked TTS API is WebSocket-only (``wss://api.x.ai/v1/tts``).
+    Salvaged from PR #47588 (@Cdddo) and rewritten against the real wire
+    protocol: voice/language/codec/sample_rate ride in the URL query string
+    (the server 400s the bare path at handshake), the client sends
+    ``text.delta`` + ``text.done``, and the server streams JSON
+    ``audio.delta`` envelopes (base64 PCM in ``delta``) until ``audio.done``.
+    Credentials route through ``resolve_xai_http_credentials`` (XAI_API_KEY
+    first, OAuth as fallback), same as the sync ``_generate_xai_tts`` path. The async WS
+    loop runs on a background thread feeding a queue, so ``stream()`` yields
+    chunks as they arrive and works from sync CLI code and from gateway
+    adapters that already run an event loop.
     """
+
+    sample_rate = DEFAULT_XAI_SAMPLE_RATE
+
+    _RECV_TIMEOUT_S = 60  # a sentence of TTS should never gap this long
 
     @staticmethod
     def available() -> bool:
@@ -354,47 +392,134 @@ class XAIStreamer(StreamingTTSProvider):
             return False
 
     def stream(self, text: str) -> Iterator[bytes]:
-        yield from _capped(iter(self._collect_async(text)), "xAI streaming TTS")
+        # The per-sentence byte cap is enforced once, pump-side (``_pump``), before enqueueing.
+        yield from self._queued_frames(text)
 
-    def _collect_async(self, text: str) -> List[bytes]:
+    # -- async→sync bridge -------------------------------------------------
+
+    def _queued_frames(self, text: str) -> Iterator[bytes]:
+        """Yield PCM chunks as the WS delivers them, on a pump thread.
+
+        The thread owns a fresh event loop, so ``asyncio.run`` never fights
+        a loop the caller is already running (gateway adapters are async).
+        Exceptions from the pump are re-raised on the consumer side so the
+        caller's "raise on failure" contract holds.
+
+        The byte budget is enforced in the pump before each enqueue (see
+        ``_pump``); the queue is bounded and every put polls ``stop``, so a
+        consumer that stops early makes the pump close the socket instead of
+        blocking on (or piling PCM into) a queue nobody drains.
+        """
         import asyncio
+        import queue
+        import threading
+        from contextvars import copy_context
 
-        async def _drain() -> List[bytes]:
-            return [frame async for frame in self._async_frames(text)]
-        return asyncio.run(_drain())
+        q: "queue.Queue[object]" = queue.Queue(maxsize=_XAI_QUEUE_MAX)
+        done = object()
+        stop = threading.Event()
 
-    async def _async_frames(self, text: str):
+        def _pump_thread() -> None:
+            try:
+                asyncio.run(self._pump(text, q, stop))
+            except BaseException as exc:  # hand failures to the consumer
+                _put_unless_stopped(q, exc, stop)
+            finally:
+                _put_unless_stopped(q, done, stop)
+
+        threading.Thread(
+            target=copy_context().run, args=(_pump_thread,), name="xai-tts-pump", daemon=True
+        ).start()
+        try:
+            while True:
+                item = q.get()
+                if item is done:
+                    return
+                if isinstance(item, BaseException):
+                    raise item
+                yield item
+        finally:
+            # Generator closed early (cap, playback failure, caller dropped
+            # it): stop the pump at its next frame.
+            stop.set()
+
+    async def _pump(self, text: str, q, stop) -> None:
+        import asyncio
+        import base64
         import json as _json
+        from urllib.parse import urlencode
+
         import websockets
-        from tools.tts_tool_providers import DEFAULT_XAI_VOICE_ID
+
+        from tools.tts_tool_providers import DEFAULT_XAI_LANGUAGE, DEFAULT_XAI_VOICE_ID
         from tools.xai_http import resolve_xai_http_credentials
         api_key = str(resolve_xai_http_credentials(prefer_api_key=True).get("api_key") or "").strip()
         if not api_key:
             raise RuntimeError("No xAI credentials for streaming TTS")
         voice = str(self.section.get("voice_id", DEFAULT_XAI_VOICE_ID)).strip() or DEFAULT_XAI_VOICE_ID
-        ws_url = str(self.section.get("streaming_url") or "wss://api.x.ai/v1/tts").strip()
-        async with websockets.connect(ws_url, extra_headers={"Authorization": f"Bearer {api_key}"}) as ws:
-            await ws.send(_json.dumps({"text": text, "voice_id": voice, "response_format": "pcm"}))
-            try:
-                while True:
-                    message = await ws.recv()
-                    if isinstance(message, (bytes, bytearray, memoryview)):
-                        yield bytes(message)
-                        continue
-                    try:
-                        envelope = _json.loads(message)
-                    except (ValueError, TypeError):
-                        if message == "done":
+        language = str(self.section.get("language", DEFAULT_XAI_LANGUAGE)).strip() or DEFAULT_XAI_LANGUAGE
+        base = str(
+            self.section.get("streaming_url") or "wss://api.x.ai/v1/tts"
+        ).strip()
+        params = urlencode({
+            "voice": voice,
+            "language": language,
+            "codec": "pcm",
+            "sample_rate": self.sample_rate,
+        })
+        sep = "&" if "?" in base else "?"
+        ws_url = f"{base}{sep}{params}"
+
+        async with websockets.connect(
+            ws_url, additional_headers={"Authorization": f"Bearer {api_key}"}
+        ) as ws:
+            await ws.send(_json.dumps({"type": "text.delta", "delta": text}))
+            await ws.send(_json.dumps({"type": "text.done"}))
+            enqueued = 0
+            while True:
+                try:
+                    message = await asyncio.wait_for(
+                        ws.recv(), timeout=self._RECV_TIMEOUT_S
+                    )
+                except asyncio.TimeoutError:
+                    raise RuntimeError(f"xAI streaming TTS: no audio for {self._RECV_TIMEOUT_S}s")
+                except websockets.exceptions.ConnectionClosedOK:
+                    return  # clean close, with or without audio.done
+                except websockets.exceptions.ConnectionClosedError as exc:
+                    raise RuntimeError(f"xAI WS closed mid-stream: {exc}") from exc
+                if isinstance(message, (bytes, bytearray, memoryview)):
+                    continue  # the server speaks JSON; binary is not expected
+                try:
+                    envelope = _json.loads(message)
+                except (ValueError, TypeError):
+                    continue
+                msg_type = envelope.get("type")
+                if msg_type == "audio.delta":
+                    b64 = envelope.get("delta") or ""
+                    if b64:
+                        pcm = base64.b64decode(b64)
+                        enqueued += len(pcm)
+                        if enqueued > _STREAM_SENTENCE_BYTE_CAP:
+                            # The single per-sentence byte-budget check,
+                            # BEFORE enqueueing, so a runaway upstream
+                            # never piles decoded PCM into the queue.
+                            # Returning exits the context manager, which
+                            # closes the socket — we stop reading upstream.
+                            logger.warning(
+                                "xAI streaming TTS exceeded %d bytes for one "
+                                "sentence; closing upstream",
+                                _STREAM_SENTENCE_BYTE_CAP,
+                            )
                             return
-                        continue
-                    etype = envelope.get("type")
-                    if etype == "error":
-                        logger.warning(
-                            "xAI WS error envelope: %s", envelope.get("error") or envelope.get("message") or envelope,
-                        )
-                    if etype in ("done", "error"):
-                        return
-            except Exception as exc:
-                if exc.__class__.__name__ != "ConnectionClosed":
-                    logger.warning("xAI WS receive failed: %s", exc)
-                return
+                        if not _put_unless_stopped(q, pcm, stop):
+                            # Consumer went away (playback failure, caller
+                            # dropped it): close and stop reading rather
+                            # than blocking on a queue nobody drains.
+                            return
+                elif msg_type == "audio.done":
+                    return
+                elif msg_type == "error":
+                    detail = (
+                        envelope.get("message") or envelope.get("error") or envelope
+                    )
+                    raise RuntimeError(f"xAI streaming TTS error: {detail}")

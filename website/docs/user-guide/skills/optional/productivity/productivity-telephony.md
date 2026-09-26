@@ -15,13 +15,13 @@ Provision Twilio numbers, SMS/MMS, and AI outbound calls.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/productivity/telephony` |
-| Path | `optional-skills/productivity\telephony` |
+| Path | `optional-skills/productivity/telephony` |
 | Version | `1.0.0` |
 | Author | Nous Research |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `telephony`, `phone`, `sms`, `mms`, `voice`, `twilio`, `bland.ai`, `vapi`, `calling`, `texting` |
-| Related skills | [`maps`](../../bundled/productivity/productivity-maps.md), [`google-workspace`](../../bundled/productivity/productivity-google-workspace.md), [`agentmail`](../email/email-agentmail.md) |
+| Related skills | [`maps`](../../bundled/productivity/productivity-maps.md), [`google-workspace`](../../bundled/productivity/productivity-google-workspace.md), [`agentmail`](../../optional/email/email-agentmail.md) |
 
 ## Reference: full SKILL.md
 

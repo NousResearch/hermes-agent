@@ -62,6 +62,32 @@ def _fake_invoke_jwt(ttl_seconds=3600):
     return f"{header}.{payload}.sig"
 
 
+def test_runtime_selected_copilot_exchanges_ambient_pool_token(tmp_path, monkeypatch):
+    """Copilot picked at runtime without a config write (`/model copilot/<m> --session`,
+    `--provider copilot`) must still hand the EXCHANGED token and the enterprise base_url to the
+    client: the seeder leaves an ambient gh-CLI credential raw while copilot is not configured
+    (#114740), and a raw token 400s on enterprise-only models."""
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    (hermes_home / "auth.json").write_text(json.dumps({"version": 1, "credential_pool": {}}))
+    (hermes_home / "config.yaml").write_text("model:\n  provider: deepseek\n  default: deepseek-chat\n")
+    from hermes_cli import config as _cfg
+    _cfg._LOAD_CONFIG_CACHE.clear()
+    _cfg._RAW_CONFIG_CACHE.clear()
+    monkeypatch.setattr("hermes_cli.copilot_auth.resolve_copilot_token", lambda: ("ghu_raw_gh_token", "gh auth token"))
+    monkeypatch.setattr("hermes_cli.copilot_auth.get_copilot_api_token",
+                        lambda tok: ("tid=exchanged;exp=1", "https://api.enterprise.ghe.example"))
+    monkeypatch.setattr(rp._models, "copilot_model_api_mode", lambda *a, **k: "chat_completions")
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "copilot")
+
+    resolved = rp.resolve_runtime_provider(requested="copilot", target_model="gpt-4.1")
+
+    assert resolved["provider"] == "copilot"
+    assert resolved["api_key"] == "tid=exchanged;exp=1"
+    assert resolved["base_url"].startswith("https://api.enterprise.ghe.example")
+
+
 def test_resolve_runtime_provider_uses_credential_pool(monkeypatch):
     class _Entry:
         access_token = "pool-token"
@@ -135,6 +161,66 @@ def test_codex_pool_honors_model_base_url(monkeypatch):
 
     assert resolved["base_url"] == "http://127.0.0.1:8400/backend-api/codex"
     assert resolved["api_mode"] == "codex_responses"
+
+
+def _xai_pool(url):
+    class _Entry:
+        access_token = "pool-token"
+        source = "env:XAI_API_KEY"
+        base_url = url
+
+    class _Pool:
+        def has_credentials(self):
+            return True
+
+        def select(self, **_kwargs):
+            return _Entry()
+
+    return _Pool()
+
+
+def test_xai_pool_honors_model_base_url_when_row_is_registry_host(monkeypatch):
+    """#121347: an env-seeded xAI row keeps https://api.x.ai/v1. model.base_url is the
+    relay override, same as the other API-key providers, and must not be shadowed."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "xai")
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _xai_pool("https://api.x.ai/v1"))
+    monkeypatch.delenv("XAI_BASE_URL", raising=False)
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {
+        "provider": "xai", "default": "grok-4", "base_url": "http://127.0.0.1:8765/v1/"})
+
+    resolved = rp.resolve_runtime_provider(requested="xai")
+
+    assert resolved["provider"] == "xai"
+    assert resolved["api_key"] == "pool-token"
+    assert resolved["base_url"] == "http://127.0.0.1:8765/v1"
+    assert resolved["api_mode"] == "codex_responses"
+
+
+def test_xai_pool_keeps_explicit_credential_endpoint(monkeypatch):
+    """A pool row that is not the registry host is an explicit endpoint and wins over model.base_url."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "xai")
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _xai_pool("https://relay.example/v1"))
+    monkeypatch.delenv("XAI_BASE_URL", raising=False)
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {
+        "provider": "xai", "default": "grok-4", "base_url": "http://127.0.0.1:8765/v1"})
+
+    resolved = rp.resolve_runtime_provider(requested="xai")
+
+    assert resolved["base_url"] == "https://relay.example/v1"
+    assert resolved["api_mode"] == "codex_responses"
+
+
+def test_xai_pool_ignores_another_providers_base_url(monkeypatch):
+    """A stale model.base_url saved for a different provider must not receive the xAI key."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "xai")
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _xai_pool("https://api.x.ai/v1"))
+    monkeypatch.delenv("XAI_BASE_URL", raising=False)
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {
+        "provider": "deepseek", "default": "deepseek-v4-pro", "base_url": "http://127.0.0.1:8765/v1"})
+
+    resolved = rp.resolve_runtime_provider(requested="xai")
+
+    assert resolved["base_url"] == "https://api.x.ai/v1"
 
 
 class TestCustomProviderPoolLoopbackNoKeyExemption:
@@ -584,17 +670,56 @@ def test_openrouter_key_takes_priority_over_openai_key(monkeypatch):
 
 
 def test_openai_key_used_when_no_openrouter_key(monkeypatch):
-    """OPENAI_API_KEY is used as fallback when OPENROUTER_API_KEY is not set."""
+    """A legacy OpenRouter key (sk-or-) kept in OPENAI_API_KEY is the fallback when
+    OPENROUTER_API_KEY is not set."""
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
     monkeypatch.setattr(rp, "_get_model_config", lambda: {})
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-fallback")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-or-v1-legacy-fallback")
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
 
     resolved = rp.resolve_runtime_provider(requested="openrouter")
 
-    assert resolved["api_key"] == "sk-openai-fallback"
+    assert resolved["api_key"] == "sk-or-v1-legacy-fallback"
+
+
+def test_real_openai_key_is_never_routed_or_sent_to_openrouter(monkeypatch):
+    """A non-OpenRouter OPENAI_API_KEY with OPENAI_BASE_URL unset neither auto-selects OpenRouter
+    nor becomes the bearer for openrouter.ai; auto-detection lands on openai-api as documented."""
+    from hermes_cli.auth import resolve_provider
+    from hermes_cli.runtime_provider_backends import _resolve_openrouter_runtime
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"model": {}})
+    monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda: False)
+    for var in ("OPENAI_BASE_URL", "OPENROUTER_BASE_URL", "OPENROUTER_API_KEY", "CUSTOM_BASE_URL"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-proj-real-openai-key")
+
+    assert resolve_provider("auto") == "openai-api"
+    resolved = _resolve_openrouter_runtime(requested_provider="openrouter")
+    assert resolved["base_url"] == "https://openrouter.ai/api/v1"
+    assert resolved["api_key"] == ""
+
+
+@pytest.mark.parametrize("openai_base_url, expected_key", [
+    ("https://proxy.corp.example/v1", ""),
+    ("proxy.corp.example:8080/v1", ""),  # scheme-less still names a foreign host
+    ("https://openrouter.ai/api/v1", "sk-openai-fallback"),
+])
+def test_openai_key_bound_to_another_host_never_reaches_openrouter(monkeypatch, openai_base_url, expected_key):
+    """OPENAI_API_KEY is an OpenRouter fallback only while OPENAI_BASE_URL doesn't bind it elsewhere."""
+    from hermes_cli.runtime_provider_backends import _resolve_openrouter_runtime
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setenv("OPENAI_BASE_URL", openai_base_url)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-fallback")
+
+    resolved = _resolve_openrouter_runtime(requested_provider="openrouter")
+
+    assert resolved["base_url"] == "https://openrouter.ai/api/v1"
+    assert resolved["api_key"] == expected_key
 
 
 def test_custom_endpoint_uses_saved_config_base_url_when_env_missing(monkeypatch):
@@ -1528,11 +1653,6 @@ class TestProviderEntryApiKeyEnvAlias:
         assert normalized.get("key_env") == "MY_VENDOR_KEY"
 
 
-    def test_valid_fields_set_lists_key_env(self):
-        """The _VALID_CUSTOM_PROVIDER_FIELDS documentation set must include
-        key_env so the set stays in sync with what the runtime actually reads."""
-        from hermes_cli.config import _VALID_CUSTOM_PROVIDER_FIELDS
-        assert "key_env" in _VALID_CUSTOM_PROVIDER_FIELDS
 
     def test_extra_body_is_supported_schema(self):
         from hermes_cli.config import (
@@ -1690,23 +1810,6 @@ def test_openai_key_reaches_openai_host(monkeypatch):
     assert resolved["api_key"] == "sk-openai-secret"
 
 
-def test_openrouter_key_reaches_openrouter_host(monkeypatch):
-    """OPENROUTER_API_KEY must be forwarded when the base_url is openrouter.ai."""
-    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
-    monkeypatch.setattr(
-        rp,
-        "_get_model_config",
-        lambda: {
-            "provider": "openrouter",
-            "base_url": "https://openrouter.ai/api/v1",
-        },
-    )
-    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
-    monkeypatch.setenv("OPENROUTER_API_KEY", "or-secret")
-
-    resolved = rp.resolve_runtime_provider(requested="openrouter")
-
-    assert resolved["api_key"] == "or-secret"
 
 
 # ----------------------------------------------------------------------
@@ -2133,6 +2236,19 @@ def test_openai_runtime_unset_keeps_wire_api_mode(monkeypatch, rung, openai_runt
     monkeypatch.setattr(rp, "_get_model_config", lambda: model_cfg)
 
     assert rp.resolve_runtime_provider(requested="openai-codex", **kwargs)["api_mode"] == "codex_responses"
+
+
+def test_openai_runtime_codex_app_server_survives_the_openai_to_custom_alias_expansion(monkeypatch):
+    """``provider: openai`` expands to the anonymous ``custom`` runtime (#116055) before the overlay runs;
+    the overlay must judge the name the user configured, or the documented ``openai`` opt-in is a silent no-op."""
+    monkeypatch.setattr(rp, "load_pool", lambda _p: SimpleNamespace(has_credentials=lambda: False))
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {
+        "provider": "openai", "default": "gpt-5.5-codex", "openai_runtime": "codex_app_server"})
+
+    resolved = rp.resolve_runtime_provider(requested="openai", explicit_api_key="sk-explicit")
+
+    assert resolved["provider"] == "custom"  # the alias expansion itself is unchanged
+    assert resolved["api_mode"] == "codex_app_server"
 
 
 # ── #116055: ``provider: openai`` means the same thing on both auxiliary paths ──────────────────

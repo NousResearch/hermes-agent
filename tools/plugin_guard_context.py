@@ -55,6 +55,21 @@ def is_doc_prose(rel_path: str) -> bool:
     return not any(part.lower() in _AGENT_INSTRUCTION_DIRS for part in p.parts[:-1])
 
 
+# A repository's CI pipeline (``.github/workflows/*.yml``) runs on the forge's runner, never on the
+# host that installs the plugin, and the agent never reads it as instructions. Its ``os.environ``
+# reads (``RUNNER_TEMP``, ``GITHUB_ENV``) and ``pip install`` steps are the CI's own plumbing, so
+# it takes the same one-step prose cap as a README: visible, confirmable, never a hard block on
+# its own. Only the workflow directory proper — a ``.github/scripts/*.py`` is real code.
+_CI_WORKFLOW_SUFFIXES = {".yml", ".yaml"}
+
+
+def is_ci_workflow(rel_path: str) -> bool:
+    """A forge CI workflow definition (``.github/workflows/<name>.yml``)."""
+    p = Path(rel_path)
+    return (len(p.parts) == 3 and p.parts[0].lower() == ".github" and p.parts[1].lower() == "workflows"
+            and p.suffix.lower() in _CI_WORKFLOW_SUFFIXES)
+
+
 def is_agent_facing(finding: Finding) -> bool:
     """A shape whose prose IS the payload (injection, agent-config edit, install one-liner, leaked key)."""
     return (finding.category in _PROSE_KEEPS_FULL_SEVERITY_CATEGORIES
@@ -89,20 +104,21 @@ def is_self_uninstall_doc(finding: Finding, line: str) -> bool:
 # plugin rejects them. They are still scanned — ``from .tests import evil`` would run — but a
 # finding there steps down once, so a fixture cannot hard-block and a string-only fixture is
 # a note. A root-level test dir (``tests/``, ``fixtures/``) or the unambiguous dunder names at any
-# depth (``src/__tests__/``), plus test-file naming (``foo.test.js``, ``test_foo.py``); a nested
-# ``src/spec/handler.py`` is runtime code and gets no cap.
+# depth (``src/__tests__/``), plus test-file naming (``foo.test.js``, ``test_foo.py``, and the
+# plural ``tests_state.py`` / ``state_tests.py`` a single-module plugin uses when it has no
+# ``tests/`` dir); a nested ``src/spec/handler.py`` is runtime code and gets no cap.
 TEST_TREE_DIRS = {"tests", "test", "testing", "spec", "specs", "fixtures"}
 _TEST_DIRS_ANY_DEPTH = {"__tests__", "__fixtures__", "__mocks__"}
-_TEST_FILE_NAME = re.compile(r"^(?:test_[^/]*|[^/]*_test\.[^./]+|[^/]*\.(?:test|spec)\.[^./]+)$", re.IGNORECASE)
+_TEST_FILE_NAME = re.compile(r"^(?:tests?_[^/]*|[^/]*_tests?\.[^./]+|[^/]*\.(?:test|spec)\.[^./]+)$", re.IGNORECASE)
 
 
 # In a test file, a hostile string that is only DATA — quoted, with no exec verb on the line
 # (``verdict_for("rm -rf /")``, ``("/etc/passwd", "DENY")``) — is a note; a fixture file that is
-# not code at all (``corpus.json``) likewise. ``os.system('rm -rf /')`` in a test still steps
-# down only once: the line executes when imported.
+# not code at all (``corpus.json``) likewise. ``os.system('rm -rf /')`` or ``open('/etc/passwd')``
+# in a test still steps down only once: the line executes when imported.
 _EXEC_ON_LINE = re.compile(
     r"\b(?:system|popen|run|call|check_output|check_call|Popen|exec|execv\w*|spawn\w*|eval|execSync|execFile\w*"
-    r"|spawnSync|child_process|source|os\.startfile)\s*\(|\$\(|(?<![\w\\])`", re.IGNORECASE)
+    r"|spawnSync|child_process|source|os\.startfile|open)\s*\(|\$\(|(?<![\w\\])`", re.IGNORECASE)
 
 
 def is_inert_fixture_line(finding: Finding, line: str, is_code: bool) -> bool:
@@ -167,8 +183,11 @@ def is_base64_media(line: str) -> bool:
 LITERAL_INERT_PATTERN_IDS = {"sudo_usage", "dump_all_env"}
 _LITERAL_SPANS = re.compile(
     r"""(?P<s>[rRbBuUfF]{0,2}"(?:[^"\\\n]|\\.)*"|[rRbBuUfF]{0,2}'(?:[^'\\\n]|\\.)*'|`(?:[^`\\\n]|\\.)*`)"""
-    r"""|(?P<rx>(?<![\w)\]])/(?:[^/\\\n\[]|\\.|\[(?:[^\]\\\n]|\\.)*\])+/[a-z]*)"""  # js regex literal
+    r"""|(?P<rx>(?<![\w)\]])/(?:[^/\\\n\[]|\\.|\[(?:[^\]\\\n]|\\.)*\])+/[dgimsuvy]*(?![A-Za-z]))"""  # js regex literal
 )
+# The regex-literal branch accepts only real JS flags: with ``[a-z]*`` a bare Unix path lexed as a
+# literal (``/etc/`` + flags ``passwd``) and an unquoted ``cat /etc/passwd | curl …`` in a test
+# script scored as inert data.
 _PATTERN_TOKEN = {"sudo_usage": re.compile(r"\bsudo\b"), "dump_all_env": re.compile(r"printenv|env\s*\|")}
 
 
@@ -218,9 +237,55 @@ def is_data_decode(line: str) -> bool:
     return m is not None and _INTERPRETERS.match(m.group("cmd")) is None
 
 
+# ── (7) loopback address with port ───────────────────────────────────────────────────────────
+# ``hardcoded_ip_port`` is the "network" family's egress tripwire, yet ``127.0.0.1:12306`` in a
+# README, an ``.mcp.json`` or a client default is a LOCAL service the plugin talks to on the same
+# machine — nothing leaves the host. When every IP:port on the line is loopback the finding is
+# informational; a routable address anywhere on the line keeps the pattern's severity.
+_LOOPBACK_IP_PORT = re.compile(r"\b127\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d{2,5}")
+
+
+def is_loopback_only(finding: Finding, line: str) -> bool:
+    """Every ``hardcoded_ip_port`` hit on the line is a 127.0.0.0/8 address."""
+    if finding.pattern_id != "hardcoded_ip_port":
+        return False
+    rx = _PATTERN_BY_ID.get(finding.pattern_id)
+    hits = list(rx.finditer(line)) if rx else []
+    return bool(hits) and all(_LOOPBACK_IP_PORT.match(line, h.start()) for h in hits)
+
+
+# ── (8) ``pip install`` as words inside a message string ─────────────────────────────────────
+# ``unpinned_pip_install`` describes a dependency the plugin pulls at runtime. In code, the same
+# two words inside a quoted literal at a NON-command position — ``"... no pip install is
+# needed"``, ``f"(no pip install is suggested)"`` — are prose the plugin shows a user. A literal
+# that starts with the command (``"pip install requests"``), or names it after ``python -m`` /
+# ``uv`` / ``pipx`` / ``sudo`` / a shell separator, is a command string and never qualifies, nor
+# does any line that executes something (``subprocess.run("pip install x", shell=True)``).
+_PIP_INSTALL_TOKEN = re.compile(r"pip\s+install\b", re.IGNORECASE)
+_PIP_COMMAND_POSITION = re.compile(r"(?:^|[;&|`(]|\b(?:uv|pipx|sudo|python[\d.]*\s+-m))\s*$", re.IGNORECASE)
+
+
+def is_pip_install_in_prose_literal(finding: Finding, line: str) -> bool:
+    """Every ``pip install`` on a code line sits mid-sentence inside a string literal, and the
+    line executes nothing."""
+    if finding.pattern_id != "unpinned_pip_install" or _EXEC_ON_LINE.search(line):
+        return False
+    spans = [m.span() for m in _LITERAL_SPANS.finditer(line)]
+    hits = list(_PIP_INSTALL_TOKEN.finditer(line))
+
+    def prose(h: "re.Match[str]") -> bool:
+        span = next(((a, b) for a, b in spans if a <= h.start() and h.end() <= b), None)
+        if span is None:
+            return False
+        content_start = next((i for i in range(span[0], span[1]) if line[i] in "\"'`/"), span[0]) + 1
+        return _PIP_COMMAND_POSITION.search(line[content_start:h.start()]) is None
+
+    return bool(hits) and all(prose(h) for h in hits)
+
+
 __all__ = [
     "STEP_DOWN", "DOC_PROSE_EXTENSIONS", "TEST_TREE_DIRS", "LITERAL_INERT_PATTERN_IDS",
-    "is_doc_prose", "is_agent_facing", "prose_cap", "is_self_uninstall_doc", "is_test_tree",
+    "is_doc_prose", "is_ci_workflow", "is_agent_facing", "prose_cap", "is_self_uninstall_doc", "is_test_tree",
     "is_inert_fixture_line", "is_base64_media",
-    "is_regex_alternation_token", "is_data_decode",
+    "is_regex_alternation_token", "is_data_decode", "is_loopback_only", "is_pip_install_in_prose_literal",
 ]

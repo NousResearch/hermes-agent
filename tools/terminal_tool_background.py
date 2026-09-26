@@ -87,9 +87,10 @@ def _stamp_gateway_routing(proc_session, get_session_env) -> None:
 
 
 def _spawn(process_registry, *, env, env_type, command, cwd, effective_task_id, task_id,
-           session_key, effective_pty):
+           session_key, effective_pty, persist_on_release: bool = False):
     common = dict(command=command, cwd=cwd, task_id=effective_task_id,
-                  owner_task_id=task_id or effective_task_id, session_key=session_key)
+                  owner_task_id=task_id or effective_task_id, session_key=session_key,
+                  persist_on_release=persist_on_release)
     if env_type == "local":
         return process_registry.spawn_local(
             env_vars=env.env if hasattr(env, 'env') else None, use_pty=effective_pty, **common)
@@ -142,7 +143,10 @@ def spawn_background_process(
     *, command: str, env: Any, env_type: str, effective_task_id: str, task_id: Optional[str],
     session_key: str, workdir: Optional[str], cwd: str, effective_pty: bool,
     notify_on_complete: bool, watch_patterns: Optional[List[str]], approval_note: Optional[str],
+    completion_output_chars: int = 0,
     pty_disabled_reason: Optional[str],
+    heartbeat_seconds: int = 0,
+    persist_on_release: bool = False,
 ) -> str:
     """Spawn *command* as a tracked background process and return the JSON result.
 
@@ -161,10 +165,12 @@ def spawn_background_process(
         proc_session = _spawn(
             process_registry, env=env, env_type=env_type, command=command, cwd=effective_cwd,
             effective_task_id=effective_task_id, task_id=task_id, session_key=session_key,
-            effective_pty=effective_pty,
+            effective_pty=effective_pty, persist_on_release=persist_on_release,
         )
         result_data = {"output": "Background process started", "session_id": proc_session.id,
                        "pid": proc_session.pid, "exit_code": 0, "error": None}
+        if persist_on_release:
+            result_data["persist_on_release"] = True
         if approval_note:
             result_data["approval"] = approval_note
         if pty_disabled_reason:
@@ -187,12 +193,20 @@ def spawn_background_process(
         if notify_on_complete:
             proc_session.notify_on_complete = True
             result_data["notify_on_complete"] = True
+            if completion_output_chars:
+                proc_session.completion_output_chars = int(completion_output_chars)
             if proc_session.watcher_platform:
                 _register_completion_watcher(process_registry, proc_session, session_key)
             from agent.delegation_context import is_delegated_child_context
             if is_delegated_child_context():
                 result_data["notify_on_complete"] = False
                 result_data["subagent_note"] = _SUBAGENT_NOTIFY_NOTE
+            elif heartbeat_seconds:
+                # Heartbeats ride the same delivery path as the completion notice, so they are
+                # only armed where that notice can actually reach the agent.
+                result_data["heartbeat_seconds"] = process_registry.arm_heartbeat(proc_session, heartbeat_seconds)
+        elif heartbeat_seconds:
+            result_data["heartbeat_ignored"] = "heartbeat needs notify=true delivery, which this session cannot receive"
         if watch_patterns:
             proc_session.watch_patterns = list(watch_patterns)
             result_data["watch_patterns"] = proc_session.watch_patterns

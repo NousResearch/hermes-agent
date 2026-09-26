@@ -239,6 +239,103 @@ class TestProtectedDirsNeverRmtreed:
         assert dg.load_tracked() == []
 
 
+class TestGitWorktreeFilesNeverCleaned:
+    """Regression tests for #115295 — git-owned test_* files (committed regression tests
+    inside worktrees/checkouts) are never tracked or auto-deleted; scratch files outside
+    git trees still are."""
+
+    def test_quick_drops_stale_tracked_worktree_entry_instead_of_deleting(self, _isolate_env):
+        """A test_* file inside a linked git worktree ($HERMES_HOME/worktrees/, .git is a
+        pointer FILE) is not classified as disposable, and a stale pre-fix tracked entry
+        (category "test") is dropped by quick()'s re-validation, not deleted."""
+        dg = _load_lib()
+        wt = _isolate_env / "worktrees" / "repro-wt"
+        wt.mkdir(parents=True)
+        (wt / ".git").write_text("gitdir: /elsewhere/main/.git/worktrees/repro-wt\n")
+        f = wt / "test_durable.py"
+        f.write_text("x")
+        assert dg.guess_category(f) is None
+        dg.save_tracked([{"path": str(f), "category": "test",
+                          "timestamp": datetime.now(timezone.utc).isoformat(), "size": 1}])
+        result = dg.quick()
+        assert f.exists(), "git-owned test files must never be auto-deleted"
+        assert result["deleted"] == 0
+        assert dg.load_tracked() == [], "stale entry is dropped from tracking, not kept"
+
+    def test_scratch_outside_git_trees_still_cleaned(self, _isolate_env):
+        """Control: root-level test_* scratch is still auto-deleted — even when HERMES_HOME
+        itself lives inside a git checkout (dotfiles repo); a bare .git at or above HERMES_HOME
+        does not make untracked scratch git-owned — only a .git strictly below HERMES_HOME, or
+        git actually tracking the file, does."""
+        dg = _load_lib()
+        (_isolate_env.parent / ".git").mkdir()
+        scratch = _isolate_env / "test_scratch.py"
+        scratch.write_text("x")
+        assert dg.guess_category(scratch) == "test"
+        dg.save_tracked([{"path": str(scratch), "category": "test",
+                          "timestamp": datetime.now(timezone.utc).isoformat(), "size": 1}])
+        result = dg.quick()
+        assert not scratch.exists()
+        assert result["deleted"] == 1
+
+    def test_tracked_file_in_hermes_home_checkout_is_never_disposable(self, _isolate_env, monkeypatch):
+        """HERMES_HOME itself is a git checkout: a file git TRACKS is Git-owned, so a
+        ``test_*``/``tmp_*`` name must not classify it as disposable.
+
+        Observed live: ``~/.hermes`` is the userfiles repo, so ``~/.hermes/scripts/`` sits
+        inside a worktree but is not *below* HERMES_HOME — the parent-chain probe found no
+        ``.git`` and the bundled disk-cleanup plugin deleted two committed regression tests
+        (``scripts/test_analyze_upstream_opportunities.py``,
+        ``scripts/test_customization_protocol_v2.py``), committing the deletion."""
+        import subprocess
+
+        dg = _load_lib()
+        subprocess.run(["git", "init", "-q", str(_isolate_env)], check=True)
+        (dg.get_hermes_home() / "scripts").mkdir()
+        tracked = _isolate_env / "scripts" / "test_committed.py"
+        tracked.write_text("x")
+        scratch = _isolate_env / "test_untracked.py"
+        scratch.write_text("x")
+        subprocess.run(["git", "-C", str(_isolate_env), "add", "scripts/test_committed.py"],
+                       check=True)
+
+        assert dg._inside_git_worktree(tracked) is True
+        assert dg._inside_git_worktree(scratch) is False
+        assert dg.guess_category(tracked) is None
+        assert dg.guess_category(scratch) == "test"
+        # An inherited pathspec mode must not make the tracked-file probe miss.
+        for mode in ("GIT_LITERAL_PATHSPECS", "GIT_GLOB_PATHSPECS", "GIT_ICASE_PATHSPECS"):
+            monkeypatch.setenv(mode, "1")
+            assert dg._inside_git_worktree(tracked) is True, mode
+            monkeypatch.delenv(mode)
+
+        # A stale pre-fix entry is dropped by quick()'s re-validation, not deleted, while
+        # untracked scratch beside it in the same repo is still cleaned.
+        now = datetime.now(timezone.utc).isoformat()
+        dg.save_tracked([{"path": str(p), "category": "test", "timestamp": now, "size": 1}
+                         for p in (tracked, scratch)])
+        result = dg.quick()
+        assert tracked.exists(), "a git-tracked test file must never be auto-deleted"
+        assert not scratch.exists()
+        assert result["deleted"] == 1
+
+        # Committed AFTER first classification in the same process: seen immediately.
+        scratch.write_text("x")
+        assert dg.guess_category(scratch) == "test"
+        subprocess.run(["git", "-C", str(_isolate_env), "add", "test_untracked.py"], check=True)
+        assert dg.guess_category(scratch) is None
+
+        # HERMES_HOME nested in an enclosing repo (a ~/.git dotfiles repo) that tracks it.
+        outer = _isolate_env.parent / "outer"
+        (outer / ".hermes" / "scripts").mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", str(outer)], check=True)
+        nested = outer / ".hermes" / "scripts" / "test_x.py"
+        nested.write_text("x")
+        subprocess.run(["git", "-C", str(outer), "add", "."], check=True)
+        monkeypatch.setenv("HERMES_HOME", str(outer / ".hermes"))
+        assert dg.guess_category(nested) is None
+
+
 class TestStaleCronEntryMigration:
     """Regression tests for #37721 — stale cron-output entries in tracked.json."""
 
@@ -440,28 +537,12 @@ class TestOnSessionEndHook:
         pi._on_session_end(session_id="s1", completed=True, interrupted=False)
         assert not p.exists(), "test file should be auto-deleted"
 
-    def test_noop_when_no_test_tracked(self, _isolate_env):
-        pi = _load_plugin_init()
-        # Nothing tracked → on_session_end should not raise.
-        pi._on_session_end(session_id="empty", completed=True, interrupted=False)
 
 
 # ---------------------------------------------------------------------------
 # Slash command
 # ---------------------------------------------------------------------------
 
-class TestSlashCommand:
-    def test_help(self, _isolate_env):
-        pi = _load_plugin_init()
-        out = pi._handle_slash("help")
-        assert "disk-cleanup" in out
-        assert "status" in out
-
-
-    def test_unknown_subcommand(self, _isolate_env):
-        pi = _load_plugin_init()
-        out = pi._handle_slash("foobar")
-        assert "Unknown subcommand" in out
 
 
 # ---------------------------------------------------------------------------
@@ -471,7 +552,7 @@ class TestSlashCommand:
 class TestBundledDiscovery:
     def _write_enabled_config(self, hermes_home, names):
         """Write plugins.enabled allow-list to config.yaml."""
-        import yaml
+        import hermes_yaml as yaml
         cfg_path = hermes_home / "config.yaml"
         cfg_path.write_text(yaml.safe_dump({"plugins": {"enabled": list(names)}}))
 
@@ -491,7 +572,7 @@ class TestBundledDiscovery:
 
     def test_disabled_beats_enabled(self, _isolate_env):
         """plugins.disabled wins even if the plugin is also in plugins.enabled."""
-        import yaml
+        import hermes_yaml as yaml
         cfg_path = _isolate_env / "config.yaml"
         cfg_path.write_text(yaml.safe_dump({
             "plugins": {

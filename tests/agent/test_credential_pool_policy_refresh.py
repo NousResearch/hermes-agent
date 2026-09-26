@@ -178,3 +178,64 @@ def test_policy_refresh_preserves_last_good_and_explicit_intent(tmp_path, monkey
         agent.run_conversation("recovered", conversation_history=result["messages"])
         assert agent.api_key == "test-secret-a-1"
     agent.close()
+
+
+def test_policy_refresh_tracks_borrowed_root_and_local_generation_collision(tmp_path, monkeypatch):
+    from agent.credential_pool import load_pool
+    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+
+    root, profile = tmp_path / "root", tmp_path / "profile"
+    _home(root, "root")
+    _home(profile, "local")
+    local_auth = (profile / "auth.json").read_text()
+    (profile / "auth.json").write_text('{"credential_pool": {}}')
+    monkeypatch.setenv("HERMES_HOME", str(profile))
+    monkeypatch.setattr("hermes_cli.auth._global_auth_file_path", lambda: root / "auth.json")
+    seen = []
+
+    def transport(request):
+        seen.append(request.headers["authorization"])
+        return _reply(request)
+
+    agent = _agent(monkeypatch, transport)
+    result = agent.run_conversation("first")
+    token = set_hermes_home_override(root)
+    try:
+        load_pool("openrouter").move_entry("root-1", 0)
+    finally:
+        reset_hermes_home_override(token)
+    result = agent.run_conversation("root reorder", conversation_history=result["messages"])
+    assert agent.api_key == "test-secret-root-1"
+    local = json.loads(local_auth)
+    local["credential_pool_generations"] = {"openrouter": 1}
+    (profile / "auth.json").write_text(json.dumps(local))
+    agent.run_conversation("profile claims credentials", conversation_history=result["messages"])
+    assert seen == ["Bearer test-secret-root-0", "Bearer test-secret-root-1", "Bearer test-secret-local-0"]
+    agent.close()
+
+
+def test_borrowed_runtime_preserves_root_policy_and_newer_token_pair(tmp_path, monkeypatch):
+    from agent.credential_pool import persist_pool_entries
+    from hermes_cli.auth import _token_pairs_by_id
+
+    root, profile = tmp_path / "root", tmp_path / "profile"
+    _home(root, "root")
+    profile.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(profile))
+    monkeypatch.setattr("agent.credential_pool._global_auth_file_path", lambda: root / "auth.json")
+    store = json.loads((root / "auth.json").read_text())
+    rows = store["credential_pool"].pop("openrouter")
+    for row in rows:
+        row.update(auth_type="oauth", refresh_token="old-refresh", access_token="old-access")
+    stale = [dict(row) for row in rows]
+    bases = _token_pairs_by_id(stale)
+    rows[0].update(priority=1, access_token="new-access", refresh_token="new-refresh")
+    rows[1]["priority"] = 0
+    store["credential_pool"]["anthropic"] = rows
+    store["credential_pool_generations"] = {"anthropic": 1}
+    (root / "auth.json").write_text(json.dumps(store))
+    persist_pool_entries("anthropic", stale, token_bases=bases, expected_policy_generation=0)
+    written = json.loads((root / "auth.json").read_text())["credential_pool"]["anthropic"]
+    assert [row["priority"] for row in written] == [1, 0]
+    assert (written[0]["access_token"], written[0]["refresh_token"]) == ("new-access", "new-refresh")
+    assert not (profile / "auth.json").exists()

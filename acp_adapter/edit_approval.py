@@ -30,6 +30,10 @@ class EditProposal:
     old_text: str | None
     new_text: str
     arguments: dict[str, Any]
+    # Every file the edit will actually touch. ``path`` may be a comma-joined
+    # display string for multi-file V4A patches; ``paths`` is the authoritative
+    # set for auto-approve checks. Empty means "``path`` alone".
+    paths: tuple[str, ...] = ()
 
 
 EditApprovalRequester = Callable[[EditProposal], bool]
@@ -59,7 +63,7 @@ def reset_edit_approval_requester(token: Token) -> None:
 def _read_text_if_exists(path: str) -> str | None:
     p = Path(path).expanduser()
     if p.is_file():
-        return p.read_text(encoding="utf-8", errors="replace")
+        return p.read_text(encoding="utf-8-sig", errors="replace")
     if p.exists():
         raise OSError(f"Cannot edit non-file path: {path}")
     return None
@@ -118,6 +122,7 @@ def _proposal_for_patch_v4a(arguments: dict[str, Any]) -> EditProposal:
     return EditProposal(
         "patch", paths[0] if single else ", ".join(paths),
         _read_text_if_exists(paths[0]) if single else None, patch_body, dict(arguments),
+        tuple(paths),
     )
 
 
@@ -145,16 +150,22 @@ def should_auto_approve_edit(proposal: EditProposal, policy: str, cwd: str | Non
 
     Session-scoped and conservative: sensitive paths still ask under autonomous policies."""
     policy = str(policy or AUTO_APPROVE_ASK).strip()
-    if policy == AUTO_APPROVE_ASK or _is_sensitive_auto_approve_path(proposal.path):
+    # Multi-file V4A proposals join paths into one display string; the checks
+    # must run per real target or a sensitive/escaped file hides in the join.
+    paths = proposal.paths or (proposal.path,)
+    if policy == AUTO_APPROVE_ASK or any(_is_sensitive_auto_approve_path(p) for p in paths):
         return False
-    path = Path(proposal.path).expanduser().resolve(strict=False)
+    resolved = [Path(p).expanduser().resolve(strict=False) for p in paths]
     if policy == AUTO_APPROVE_SESSION:
         return True
     if policy == AUTO_APPROVE_WORKSPACE:
         # tempfile.gettempdir() is the real temp root on every platform
         # (``/private/tmp`` on macOS since resolve() follows the symlink).
-        return path.is_relative_to(Path(tempfile.gettempdir()).resolve(strict=False)) or (
-            bool(cwd) and path.is_relative_to(Path(cwd).expanduser().resolve(strict=False)))
+        tmp = Path(tempfile.gettempdir()).resolve(strict=False)
+        ws = Path(cwd).expanduser().resolve(strict=False) if cwd else None
+        return all(
+            path.is_relative_to(tmp) or (ws is not None and path.is_relative_to(ws))
+            for path in resolved)
     return False
 
 

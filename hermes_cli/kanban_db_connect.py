@@ -665,6 +665,30 @@ def _open_configured(path: Path, under_lock) -> tuple[sqlite3.Connection, Any]:
     return conn, out
 
 
+def _refuse_archived_board_resurrection(path: Path, board: Optional[str]) -> None:
+    """Refuse to create a fresh DB for a board whose ``board.json`` marks it
+    archived.  Stale dashboard/gateway watch paths can hand connect()/init_db()
+    an archived slug — without this guard the mkdir + init below creates an
+    empty stub that list_boards() treats as an active board.  See #43243."""
+    if board is None or path.exists():
+        return
+    slug = _kb._normalize_board_slug(board) or _kb.DEFAULT_BOARD
+    if slug == _kb.DEFAULT_BOARD:
+        return
+    meta_path = _kb.board_metadata_path(slug)
+    if not meta_path.exists():
+        return
+    try:
+        import json as _json
+        raw = _json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    if isinstance(raw, dict) and raw.get("archived"):
+        raise ValueError(
+            f"Board '{slug}' is archived; refusing to create a new database for it."
+        )
+
+
 def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> sqlite3.Connection:
     """Open (and initialize if needed) the kanban DB. WAL is (re)enabled on
     every connection so a re-created file stays robust; the first connection
@@ -684,6 +708,7 @@ def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> s
             conn.close()
             raise PermissionError("Kanban descendants require an initialized board; ask its owner to initialize it")
         return conn
+    _refuse_archived_board_resurrection(path, board)
     path.parent.mkdir(parents=True, exist_ok=True)
 
     # Fast path: once THIS process has initialized this path, skip the
@@ -758,6 +783,7 @@ def init_db(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> P
     migration pass — callers that know the on-disk schema may have drifted
     (tests writing legacy event kinds, external upgrades) use it to force it."""
     path = db_path if db_path is not None else _kb.kanban_db_path(board=board)
+    _refuse_archived_board_resurrection(path, board)
     path.parent.mkdir(parents=True, exist_ok=True)
     # Clear the cache entry so connect() re-runs schema + migrations.
     with _INIT_LOCK:

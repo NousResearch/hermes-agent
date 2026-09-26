@@ -554,7 +554,7 @@ browser_cdp(
 | 策略 | 行为 |
 |--------|----------|
 | `must_respond`（默认） | 捕获，在快照中显示，等待显式 `browser_dialog()` 调用。在 `browser.dialog_timeout_s`（默认 300 秒）后安全自动关闭，防止有问题的 Agent 永久阻塞。 |
-| `auto_dismiss` | 捕获，立即关闭。Agent 仍可在 `browser_state` 历史中看到对话框，但无需操作。 |
+| `auto_dismiss` | 捕获，立即关闭。Agent 仍可在 `browser_snapshot.recent_dialogs` 历史中看到对话框，但无需操作。 |
 | `auto_accept` | 捕获，立即接受。适用于导航带有频繁 `beforeunload` 提示的页面。 |
 
 `browser_snapshot.frame_tree` 中的**帧树**上限为 30 帧、OOPIF 深度 2，以控制广告密集页面的负载大小。达到限制时会显示 `truncated: true` 标志；需要完整帧树的 Agent 可使用 `browser_cdp` 配合 `Page.getFrameTree`。

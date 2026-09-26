@@ -7463,7 +7463,10 @@ async function clearOauthSession(baseUrl) {
 //     ``/auth/login`` → portal ``/oauth/authorize`` (auto-approves org members)
 //     → ``/auth/callback``, which sets the gateway cookie with NO interactive
 //     prompt. This is the per-agent cloud cascade (decisions.md Q5).
-function openOauthLoginWindow(baseUrl, { silent = false, background = false, connectionId = '', pendingAuthMode = '', pendingKind = '' } = {}) {
+function openOauthLoginWindow(
+  baseUrl,
+  { silent = false, background = false, connectionId = '', pendingAuthMode = '', pendingKind = '' } = {}
+) {
   return new Promise((resolve, reject) => {
     if (!app.isReady()) {
       reject(new Error('Desktop is not ready to start an OAuth login.'))

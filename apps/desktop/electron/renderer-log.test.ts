@@ -38,9 +38,7 @@ describe('formatRendererConsoleLine', () => {
   })
 
   it('drops a canonical non-error string level', () => {
-    expect(
-      formatRendererConsoleLine('main', { level: 'info', message: 'x', sourceId: 's', lineNumber: 1 })
-    ).toBeNull()
+    expect(formatRendererConsoleLine('main', { level: 'info', message: 'x', sourceId: 's', lineNumber: 1 })).toBeNull()
   })
 
   it('drops malformed event objects', () => {

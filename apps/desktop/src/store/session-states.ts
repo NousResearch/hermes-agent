@@ -1304,7 +1304,8 @@ function sameSessionOwner(left: SessionOwnerScope, right: SessionOwnerScope): bo
     return (
       left.connectionId.trim() === right.connectionId.trim() &&
       normalizeProfileKey(left.profile) === normalizeProfileKey(right.profile) &&
-      normalizeProfileKey(left.targetProfile ?? left.profile) === normalizeProfileKey(right.targetProfile ?? right.profile)
+      normalizeProfileKey(left.targetProfile ?? left.profile) ===
+        normalizeProfileKey(right.targetProfile ?? right.profile)
     )
   }
 
@@ -1345,11 +1346,7 @@ function tilesShareOwner(left: SessionTile, right: SessionTile): boolean {
   return true
 }
 
-function tileBelongsToMain(
-  tile: SessionTile,
-  selectedStoredSessionId: string,
-  tileProfile = profileKey()
-): boolean {
+function tileBelongsToMain(tile: SessionTile, selectedStoredSessionId: string, tileProfile = profileKey()): boolean {
   if (tileWorkspaceMode(tile) === 'bots') {
     return false
   }

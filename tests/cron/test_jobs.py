@@ -1779,12 +1779,17 @@ class TestJobsJsonIdKeyedMap:
         on_disk = json.loads(JOBS_FILE.read_text(encoding="utf-8"))
         assert [j["id"] for j in on_disk["jobs"]] == [job["id"]]
 
-        for bad in ([None, "***", 42], None, "not-a-list"):
+        for bad, detail in (([None, "***", 42], "Skipping 3 non-object"),
+                            (None, "Replacing invalid"), ("not-a-list", "Replacing invalid")):
             JOBS_FILE.write_text(json.dumps({"jobs": bad}), encoding="utf-8")
+            caplog.clear()
             with caplog.at_level("WARNING", logger="cron.jobs"):
-                assert load_jobs() == []
+                assert load_jobs() == []  # unlocked: re-runs under the lock, which logs
             assert json.loads(JOBS_FILE.read_text(encoding="utf-8"))["jobs"] == []
-        assert "***" not in caplog.text
+            msgs = [r.getMessage() for r in caplog.records]
+            assert sum(detail in m for m in msgs) == 1, msgs
+            assert sum("Auto-repaired" in m for m in msgs) == 1, msgs
+            assert "***" not in caplog.text
 
 
 

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_state_common import (
-    AUTO_VACUUM_MIN_FREELIST_RATIO, _id_chunks, _placeholders, _sql_json_extract, _sql_session_last_active,
+    AUTO_VACUUM_MIN_FREELIST_RATIO, _id_chunks, _non_continuation_child_sql, _placeholders, _sql_session_last_active,
     escape_like as _escape_like
 )
 from hermes_startup_watchdog import report_startup_progress
@@ -75,14 +75,8 @@ _PRUNE_FILTERS = (
 )
 _PRUNE_FILTER_NAMES = frozenset(name for name, _, _ in _PRUNE_FILTERS) | {"archived", "include_pinned", "lineage_tips_only"}
 
-# Child ``c`` continues compression-ended ``p``; a fork names ``p`` in its marker (compression copies
-# ``model_config``, so a marker naming another row is inherited, not a fork of ``p``).
-_CONTINUATION_EDGE_SQL = " AND ".join([
-    "p.end_reason = 'compression'",
-    *(f"COALESCE({_sql_json_extract('c.model_config', f'$.{marker}')}, '') != p.id"
-      for marker in ("_branched_from", "_delegate_from", "_reset_from")),
-    "COALESCE(c.source, '') != 'tool'",
-])
+# Child ``c`` continues compression-ended ``p`` (same predicate as compression's child lookup).
+_CONTINUATION_EDGE_SQL = "p.end_reason = 'compression'\n" + _non_continuation_child_sql("c.", "p.id")
 
 
 def _continued_ancestors_sql(candidates_where: str) -> str:

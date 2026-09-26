@@ -12,6 +12,103 @@ concurrency:
   cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 jobs:
+  claude-sdk-packaging:
+    name: Claude SDK packaging
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout exact head
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      # What `hermes pm install --extra claude-agent-sdk` gives a user: PM's
+      # pinned Python and uv, and the locked runtime with the opt-in SDK extra.
+      - name: Install the PM runtime with the Claude SDK extra
+        id: runtime
+        uses: ./.github/actions/setup-pm
+        with:
+          extras: '["claude-agent-sdk"]'
+
+      - name: Verify the exact head and real imports in the PM runtime
+        id: imports
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          RUNTIME_PYTHON: ${{ steps.runtime.outputs.python-path }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            tested_sha=$(git rev-parse HEAD)
+            test "$tested_sha" = "$EXPECTED_SHA"
+            echo "Tested SHA: $tested_sha"
+            "$RUNTIME_PYTHON" --version
+            "$RUNTIME_PYTHON" - <<'PY'
+          from importlib import metadata
+          import claude_agent_sdk
+          import httpx2
+          import starlette
+          from mcp.server import MCPServer
+          from agent.transports.hermes_tools_mcp_server import main
+          from pm.extras import available
+
+          for name in ("claude-agent-sdk", "mcp", "mcp-types", "httpx2", "starlette"):
+              print(f"{name}=={metadata.version(name)}")
+          assert callable(MCPServer) and callable(main)
+          assert available("claude-agent-sdk")
+          print("PM runtime SDK, MCPServer and hermes-tools wrapper imports: OK")
+          PY
+          } 2>&1 | tee "$RUNNER_TEMP/claude-sdk-packaging.log"
+
+      # The isolated test interpreter (dev and test groups) never becomes the
+      # runtime above; the tools it needs are already in this job's PM store.
+      - name: Build the test environment with the Claude SDK extra
+        uses: ./.github/actions/setup-pm
+        with:
+          extras: '["claude-agent-sdk"]'
+          test-environment: 'true'
+          cache: 'false'
+          cache-python: 'false'
+
+      - name: Run the locked packaging tests
+        id: packaging
+        shell: bash
+        run: |
+          set -euo pipefail
+          scripts/run_tests.sh -j 2 --file-retries 0 tests/test_packaging_metadata.py \
+            --junitxml="$RUNNER_TEMP/claude-sdk-packaging.xml" 2>&1 | tee -a "$RUNNER_TEMP/claude-sdk-packaging.log"
+
+      - name: Summarize packaging evidence
+        if: always()
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          IMPORTS_OUTCOME: ${{ steps.imports.outcome }}
+          PACKAGING_OUTCOME: ${{ steps.packaging.outcome }}
+        shell: bash
+        run: |
+          {
+            echo '### Claude SDK packaging'
+            echo "Requested head: $EXPECTED_SHA"
+            echo "PM runtime imports: $IMPORTS_OUTCOME"
+            echo "Packaging tests: $PACKAGING_OUTCOME"
+            echo 'See the claude-sdk-packaging artifact for commands, versions, and test results.'
+            echo 'No live provider call or subscription credentials are used by this job.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload packaging evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: claude-sdk-packaging
+          path: |
+            ${{ runner.temp }}/claude-sdk-packaging.log
+            ${{ runner.temp }}/claude-sdk-packaging.xml
+          retention-days: 30
+          if-no-files-found: warn
+
   test:
     name: Run tests
     # One 96-core runner for the whole suite. There is no slicing. Slicing

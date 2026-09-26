@@ -409,6 +409,14 @@ class TestHermesHomeLeakGuard:
             f"{env.get('HERMES_HOME')!r}"
         )
 
+    def test_session_id_is_never_burned_into_codex_config(self, monkeypatch):
+        """Migration-time config must not retain a transient session's identity."""
+        monkeypatch.setenv("HERMES_SESSION_ID", "sess-must-not-persist")
+        entry = _build_hermes_tools_mcp_entry()
+        env = entry.get("env", {})
+        assert not any("SESSION_ID" in key for key in env), (
+            f"no session id may be serialized into config.toml, got: {env!r}"
+        )
 
 # ---- same-name user-owned [mcp_servers.X] tables (issue #79023) ----
 

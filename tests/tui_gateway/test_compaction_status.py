@@ -51,6 +51,24 @@ def test_compaction_lifecycle_is_retagged(server, monkeypatch):
     assert events == [{"kind": "compacting", "text": COMPACTION_STATUS}]
 
 
+def test_typed_compaction_start_preserves_desktop_transition(server, monkeypatch):
+    from agent.conversation_compression import COMPACTION_STATUS
+
+    events = _capture(server, monkeypatch)
+    server._status_update("sid", "compaction", COMPACTION_STATUS)
+
+    assert events == [{"kind": "compacting", "text": COMPACTION_STATUS}]
+
+
+def test_typed_compaction_done_clears_desktop_transition(server, monkeypatch):
+    from agent.conversation_compression import COMPACTION_DONE_STATUS
+
+    events = _capture(server, monkeypatch)
+    server._status_update("sid", "compaction", COMPACTION_DONE_STATUS)
+
+    assert events == [{"kind": "compacted", "text": COMPACTION_DONE_STATUS}]
+
+
 def test_idle_compaction_lifecycle_is_retagged(server, monkeypatch):
     from agent.conversation_compression import IDLE_COMPACTION_STATUS_TEMPLATE
 

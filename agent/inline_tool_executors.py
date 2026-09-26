@@ -39,6 +39,7 @@ def emit_terminal_post_tool_call(
     error_type: Optional[str] = None,
     error_message: Optional[str] = None,
     middleware_trace: Optional[list] = None,
+    hook_ids: Optional[Dict[str, str]] = None,
 ) -> None:
     """Emit the one terminal ``post_tool_call`` hook for a tool_call_id (best-effort)."""
     try:
@@ -47,7 +48,7 @@ def emit_terminal_post_tool_call(
             function_name=function_name,
             function_args=function_args,
             result=result,
-            **tool_hook_ids(agent, effective_task_id, tool_call_id),
+            **(hook_ids or tool_hook_ids(agent, effective_task_id, tool_call_id)),
             duration_ms=duration_ms,
             status=status,
             error_type=error_type,
@@ -67,6 +68,7 @@ def apply_transform_tool_result(
     effective_task_id: str,
     tool_call_id: Optional[str],
     duration_ms: int = 0,
+    hook_ids: Optional[Dict[str, str]] = None,
 ) -> Any:
     """Apply ``transform_tool_result`` to an inline-dispatched tool's result.
 
@@ -77,7 +79,7 @@ def apply_transform_tool_result(
         from model_tools import _CallIds, _apply_transform_tool_result_hook
         return _apply_transform_tool_result_hook(
             function_name, function_args, result, duration_ms,
-            _CallIds(**tool_hook_ids(agent, effective_task_id, tool_call_id)),
+            _CallIds(**(hook_ids or tool_hook_ids(agent, effective_task_id, tool_call_id))),
         )
     except Exception:
         return result
@@ -90,6 +92,7 @@ class InlineToolContext:
     effective_task_id: str
     tool_call_id: Optional[str] = None
     messages: Optional[list] = None
+    session_id: str = ""
 
 
 InlineToolExecutor = Callable[[Any, dict, InlineToolContext], Any]
@@ -133,7 +136,7 @@ def _session_search(agent, args: dict, ctx: InlineToolContext) -> Any:
             ("detail", "detail", "adaptive"), ("after", "after"), ("before", "before"),
             ("exclude_session_ids", "exclude_session_ids"),
         ),
-        db=session_db, current_session_id=agent.session_id,
+        db=session_db, current_session_id=ctx.session_id or agent.session_id,
     )
 
 

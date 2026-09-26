@@ -1854,6 +1854,8 @@ def _fallback_api_mode_hint(fb: dict, fb_provider: str, fb_base_url_hint: Option
         declared = (_get_named_custom_provider(fb_provider) or {}).get("api_mode")
         if declared:
             return True, declared
+    if fb_provider == "claude-agent-sdk":
+        return False, "claude_agent_sdk"
     if fb_provider == "anthropic" or (fb_base_url_hint and _is_anthropic_wire_url(fb_base_url_hint)):
         return False, "anthropic_messages"
     return False, "chat_completions"

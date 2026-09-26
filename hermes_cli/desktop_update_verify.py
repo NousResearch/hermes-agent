@@ -59,7 +59,7 @@ def _verify_packaged_entry(resources: Path) -> None:
 
     index = resources / "app.asar.unpacked" / "dist" / "index.html"
     try:
-        html = index.read_text(encoding="utf-8")
+        html = index.read_text(encoding="utf-8-sig")
         if not any(_MODULE_TAG.search(match.group(0))
                    and match.group(0).lower().startswith("<script")
                    and not re.match(r"^[a-z]+:|^//", match.group(1), re.IGNORECASE)
@@ -69,8 +69,20 @@ def _verify_packaged_entry(resources: Path) -> None:
         raise RuntimeError(f"The updated Desktop renderer entry is invalid: {exc}") from exc
 
 
-def verify_windows_desktop_update(project_root: Path) -> None:
-    """Raise when a zero-exit updater left an incomplete or stale packaged app."""
+def checkout_root() -> Path:
+    """The checkout this module was imported from: the only root the receipt may describe."""
+    return Path(__file__).resolve().parent.parent
+
+
+def verify_windows_desktop_update(project_root: Path | None = None) -> None:
+    """Raise when a zero-exit updater left an incomplete or stale packaged app.
+
+    The root defaults to the imported checkout, never the caller's cwd: the hand-off
+    is spawned from HERMES_HOME by the pre-update Desktop, and a cwd-derived root
+    reported a healthy install as "Desktop executable is missing" (Sep 2026).
+    """
+    if project_root is None:
+        project_root = checkout_root()
     desktop = project_root / "apps" / "desktop"
     executable = _desktop_packaged_executable(desktop)
     if executable is None:
@@ -81,3 +93,7 @@ def verify_windows_desktop_update(project_root: Path) -> None:
     _verify_packaged_entry(executable.parent / "resources")
     if _desktop_build_needed(desktop, project_root, source_mode=False):
         raise RuntimeError("The updated Desktop build is stale, unstamped, or incomplete")
+
+
+if __name__ == "__main__":
+    verify_windows_desktop_update()

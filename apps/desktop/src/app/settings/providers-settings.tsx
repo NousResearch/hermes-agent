@@ -16,6 +16,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { RowButton } from '@/components/ui/row-button'
 import { SearchField } from '@/components/ui/search-field'
+import { Tip } from '@/components/ui/tooltip'
 import { disconnectOAuthProvider, listOAuthProviders } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Check, ChevronDown, ChevronRight, KeyRound, Loader2, Terminal, Trash2 } from '@/lib/icons'
@@ -157,13 +158,16 @@ function OAuthPicker({
 
   const select = (p: OAuthProvider) => startManualProviderOAuth(p.id, profile)
 
-  const featured = ordered.find(p => p.id === FEATURED_ID && !p.status?.logged_in) ?? null
+  // The free tier holds a token but no account: it is never "connected"; the featured Nous row
+  // names it (Nous · free tier) and offers the sign-in that keeps its connectors.
+  const isConnected = (p: OAuthProvider) => Boolean(p.status?.logged_in) && p.status?.free_tier !== true
+  const featured = ordered.find(p => p.id === FEATURED_ID && !isConnected(p)) ?? null
   const rest = featured ? ordered.filter(p => p.id !== FEATURED_ID) : ordered
   // Keep connected accounts grouped and always visible; only the unconnected
   // providers hide behind the disclosure, so the page leads with what's set up.
   // Both lists preserve `sortProviders` order (curated priority, then name).
-  const connected = rest.filter(p => p.status?.logged_in)
-  const others = rest.filter(p => !p.status?.logged_in)
+  const connected = rest.filter(isConnected)
+  const others = rest.filter(p => !isConnected(p))
   const collapsible = others.length > 0
   const showOthers = !collapsible || showAll
 
@@ -256,7 +260,10 @@ function ConnectedProviderRow({
 
   return (
     <div className="group grid grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-[6px] transition-colors hover:bg-(--ui-control-hover-background)">
-      <RowButton className="min-w-0 px-3 py-2.5 text-left" onClick={() => onSelect(provider)}>
+      <RowButton
+        className="min-w-0 px-3 py-2.5 text-left"
+        onClick={() => (terminalDisconnect ? onTerminalDisconnect(provider) : onSelect(provider))}
+      >
         <div className="flex min-w-0 items-center gap-2">
           <span className="truncate text-[length:var(--conversation-text-font-size)] font-semibold">{title}</span>
           <span className="inline-flex shrink-0 items-center gap-1 bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
@@ -272,14 +279,25 @@ function ConnectedProviderRow({
         )}
       </RowButton>
       <div className="flex items-center gap-1 pr-2">
-        <Trail className="size-4 text-muted-foreground transition group-hover:text-foreground" />
+        {terminalDisconnect ? (
+          <Button
+            aria-label={`${copy.disconnect} ${title} in terminal`}
+            onClick={() => onTerminalDisconnect(provider)}
+            size="icon-xs"
+            type="button"
+            variant="ghost"
+          >
+            <Terminal className="size-4" />
+          </Button>
+        ) : (
+          <Trail className="size-4 text-muted-foreground transition group-hover:text-foreground" />
+        )}
         {canDisconnect && (
           <Button
             aria-label={`${t.common.remove} ${title}`}
             disabled={disconnecting}
             onClick={() => onDisconnect(provider)}
             size="icon-xs"
-            title={`${t.common.remove} ${title}`}
             type="button"
             variant="ghost"
           >
@@ -287,16 +305,17 @@ function ConnectedProviderRow({
           </Button>
         )}
         {terminalDisconnect && (
-          <Button
-            aria-label={`${copy.disconnect} ${title}`}
-            onClick={() => onTerminalDisconnect(provider)}
-            size="icon-xs"
-            title={copy.disconnectInTerminal}
-            type="button"
-            variant="ghost"
-          >
-            <Trash2 className="size-3" />
-          </Button>
+          <Tip label={copy.disconnectInTerminal}>
+            <Button
+              aria-label={`${copy.disconnect} ${title}`}
+              onClick={() => onTerminalDisconnect(provider)}
+              size="icon-xs"
+              type="button"
+              variant="ghost"
+            >
+              <Trash2 className="size-3" />
+            </Button>
+          </Tip>
         )}
       </div>
     </div>
@@ -419,7 +438,7 @@ export function ProvidersSettings({
     runInTerminal(command)
     notify({
       kind: 'info',
-      title: t.settings.providers.removedTitle,
+      title: t.settings.providers.disconnect,
       message: t.settings.providers.removeTerminalRunning(name)
     })
   }
@@ -440,7 +459,14 @@ export function ProvidersSettings({
     setDisconnecting(provider.id)
 
     try {
-      await disconnectOAuthProvider(provider.id, scopeProfile)
+      const result = await disconnectOAuthProvider(provider.id, scopeProfile)
+
+      if (!result?.ok) {
+        notifyError(new Error('No stored credentials were removed'), t.settings.providers.failedRemove(name))
+
+        return
+      }
+
       notify({
         durationMs: 3_000,
         kind: 'success',

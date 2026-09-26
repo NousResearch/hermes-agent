@@ -20,7 +20,7 @@ from tui_gateway._stdin_recovery import handle_spurious_eof
 
 from tui_gateway import server
 from tui_gateway.event_replay import replay_epoch
-from tui_gateway.server import _CRASH_LOG, dispatch, resolve_skin, write_json
+from tui_gateway.server import _CRASH_LOG, _err, dispatch, resolve_skin, write_json
 from tui_gateway.transport import TeeTransport
 
 logger = logging.getLogger(__name__)
@@ -31,6 +31,27 @@ _mcp_discovery_thread = None
 # Set once MCP servers are found configured so wait_for_mcp_discovery can re-invoke the
 # idempotent spawn on later builds without a config re-probe.
 _mcp_discovery_enabled = False
+
+
+def _close_rpc_stdin_on_exec() -> None:
+    """Keep stdio RPC requests out of children launched by the gateway.
+
+    The TUI's stdin is the Node-to-Python JSON-RPC socketpair.  Standard
+    descriptors survive subprocess execution unless they are explicitly
+    close-on-exec, so a dependency that launches a child without ``stdin=``
+    could otherwise consume a request before this process reads it.
+
+    Windows does not provide the POSIX FD_CLOEXEC contract used here; retain
+    its existing descriptor behavior rather than changing its launch paths.
+    """
+    if os.name != "posix":
+        return
+    try:
+        os.set_inheritable(sys.stdin.fileno(), False)
+    except (OSError, ValueError):
+        # Embedded launchers can supply a stream without an inheritable file
+        # descriptor. Keep gateway startup available when no guard is possible.
+        logger.debug("could not mark TUI RPC stdin close-on-exec", exc_info=True)
 
 
 def _install_sidecar_publisher() -> None:
@@ -79,6 +100,16 @@ def _append_crash_log(header: str, dump=None) -> None:
                 dump(f)
 
 
+def _hard_exit() -> None:
+    """The grace timer's ``os._exit``. The flush runs first and the graceful foreground kill
+    (TERM, wait, KILL) after it, so a SIGTERM-ignoring command is usually still alive here:
+    SIGKILL its tree now or it outlives us, reparented to init."""
+    with suppress(Exception):
+        from tools.environments.base import kill_live_foreground_processes
+        kill_live_foreground_processes(now=True)
+    os._exit(0)
+
+
 def _log_signal(signum: int, frame) -> None:
     """Capture WHICH thread and WHERE a termination signal hit us, then exit. ``sys.exit(0)``
     alone raced the worker pool (a thread holding ``_stdout_lock`` mid-flush blocks interpreter
@@ -100,7 +131,7 @@ def _log_signal(signum: int, frame) -> None:
     _append_crash_log(f"{name} received · {time.strftime('%Y-%m-%d %H:%M:%S')}", _dump)
     print(f"[gateway-signal] {name}", file=sys.stderr, flush=True)
     # ``os._exit`` skips atexit but breaks the mid-flush deadlock; the crash log is the trail.
-    timer = threading.Timer(_shutdown_grace_seconds(), lambda: os._exit(0))
+    timer = threading.Timer(_shutdown_grace_seconds(), _hard_exit)
     timer.daemon = True
     timer.start()
     # atexit (_shutdown_sessions) can be blocked past the grace window by a worker holding
@@ -212,18 +243,16 @@ def _has_configured_mcp_servers() -> bool:
 
 
 def ensure_mcp_discovery_started() -> None:
-    """Start background MCP discovery for the current profile context, once. ``main()`` calls
-    this for stdio; ``server._start_agent_build`` also calls it AFTER binding the session
-    profile's HERMES_HOME. MCP registration is process-global: the FIRST profile wins.
+    """Start background MCP discovery for the current profile context, once per profile home.
+    ``main()`` calls this for stdio; ``server._start_agent_build`` also calls it AFTER binding the
+    session profile's HERMES_HOME.
 
     WebSocket/Desktop entrypoints can accept sessions without running ``main()``, so the agent-build path
     (``server._start_agent_build``) also calls it AFTER binding the session profile's HERMES_HOME override —
     the shared owner in ``hermes_cli.mcp_startup`` captures the caller's context-local override and
     propagates it into the discovery thread, so discovery reads the SELECTED profile's ``mcp_servers``, not
-    the launch profile's (#67605).
-    Known limitation: MCP tool registration is process-global, so in a multi-profile process the FIRST
-    profile that builds an agent wins the discovery slot. Full per-profile MCP registries are tracked in
-    #67605.
+    the launch profile's. The discovery slot in ``hermes_cli.mcp_startup`` is keyed by profile home, so
+    every profile a shared backend serves discovers its own ``mcp_servers`` (#67605).
     """
     global _mcp_discovery_enabled
     if not _has_configured_mcp_servers():
@@ -239,7 +268,23 @@ def _write_or_exit(payload: dict, reason: str) -> None:
 
 
 def main():
+    # stdout is this process's JSON-RPC client channel: peer-less global broadcasts belong on it.
+    server._stdio_is_rpc_channel = True
+    try:
+        server.install_tui_message_injector()
+    except Exception:
+        logger.warning("TUI message injector did not install", exc_info=True)
+    _close_rpc_stdin_on_exec()
     _install_sidecar_publisher()
+
+    # One TLS authority: trust the OS store process-wide before any
+    # outbound call resolves a CA bundle (see agent/ssl_verify.py).
+    try:
+        from agent.ssl_verify import install_truststore
+
+        install_truststore()
+    except Exception:
+        logger.debug("truststore install skipped", exc_info=True)
 
     # The heartbeat row lets the orphan sweep tell "live but idle" from "truly orphaned",
     # so it must start BEFORE the sweep.
@@ -290,7 +335,19 @@ def main():
             continue
 
         method = req.get("method") if isinstance(req, dict) else None
-        resp = dispatch(req)
+        try:
+            resp = dispatch(req)
+        except Exception as exc:
+            # Pool-routed handlers already turn failures into this response; keep an
+            # inline handler from taking down the stdio reader before it can reply.
+            rid = req.get("id") if isinstance(req, dict) else None
+            logger.exception("inline RPC handler failed for method=%r id=%r", method, rid)
+            # The crash log is where "gateway exited" forensics start; a survived crash
+            # must leave the same trail or the degraded reply looks like a client bug.
+            _append_crash_log(
+                f"inline dispatch crash · {time.strftime('%Y-%m-%d %H:%M:%S')} · method={method!r}",
+                lambda f: f.write(traceback.format_exc()))
+            resp = _err(rid, -32000, f"handler error: {exc}")
         if resp is not None:
             _write_or_exit(
                 resp, f"response write failed for method={method!r} (broken stdout pipe)")

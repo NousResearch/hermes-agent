@@ -169,6 +169,8 @@ def _fs_regular_file(path: Path) -> tuple[Path, os.stat_result]:
         raise HTTPException(status_code=400, detail="Path points to a directory")
     if not stat.S_ISREG(st.st_mode):
         raise HTTPException(status_code=400, detail="Only regular files can be read")
+    if _is_sensitive_path(target):
+        raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
     return target, st
 
 
@@ -215,7 +217,10 @@ def _fs_default_cwd() -> str:
 
 def _fs_git_branch(cwd: str) -> str:
     try:
-        run_kwargs: Dict[str, Any] = {"capture_output": True, "text": True, "timeout": 2, "check": False}
+        # git emits UTF-8 (branch names, localized "not a git repository" stderr); the locale codec
+        # (cp936 on zh-CN Windows) raised inside communicate()'s reader threads on every poll (#83851).
+        run_kwargs: Dict[str, Any] = {"capture_output": True, "text": True, "encoding": "utf-8",
+                                      "errors": "replace", "timeout": 2, "check": False}
         if sys.platform == "win32":
             run_kwargs["creationflags"] = windows_hide_flags()
         result = subprocess.run(["git", "-C", cwd, "branch", "--show-current"], **run_kwargs)
@@ -238,6 +243,11 @@ def _media_serve_roots() -> list[Path]:
     return out
 
 
+def _read_base64_file(path: Path) -> str:
+    """Read and encode a bounded file from a worker thread."""
+    return base64.b64encode(path.read_bytes()).decode("ascii")
+
+
 @router.get("/api/media")
 async def get_media(path: str):
     """Return a gateway-local image as a base64 data URL for remote clients
@@ -258,7 +268,7 @@ async def get_media(path: str):
     if target.stat().st_size > _MEDIA_MAX_BYTES:
         raise HTTPException(status_code=413, detail="File too large")
 
-    encoded = base64.b64encode(target.read_bytes()).decode("ascii")
+    encoded = await asyncio.to_thread(_read_base64_file, target)
     return {"data_url": f"data:{_MEDIA_CONTENT_TYPES[target.suffix.lower()]};base64,{encoded}"}
 
 
@@ -408,7 +418,7 @@ async def read_managed_file(request: Request, path: str):
     policy, target, display_path, max_bytes, mime_type = _managed_readable_file(request, path)
     size = _managed_file_size(target, max_bytes)
     with _io_errors("File is not readable", "Could not read file"):
-        encoded = base64.b64encode(target.read_bytes()).decode("ascii")
+        encoded = await asyncio.to_thread(_read_base64_file, target)
     return {
         "name": target.name,
         "path": display_path,
@@ -611,7 +621,7 @@ async def fs_list(path: str):
         entries = []
         with os.scandir(target) as scan:
             for entry in scan:
-                if entry.name in _FS_READDIR_HIDDEN:
+                if entry.name in _FS_READDIR_HIDDEN or _is_sensitive_path(Path(entry.path)):
                     continue
                 entries.append({
                     "name": entry.name,
@@ -632,7 +642,9 @@ async def fs_read_text(path: str):
     target, st = _fs_regular_file(_fs_path(path))
     if st.st_size > _FS_TEXT_SOURCE_MAX_BYTES:
         raise HTTPException(status_code=413, detail="File too large")
-    data = _fs_read_bytes(target, min(st.st_size, _FS_TEXT_PREVIEW_MAX_BYTES))
+    data = await asyncio.to_thread(
+        _fs_read_bytes, target, min(st.st_size, _FS_TEXT_PREVIEW_MAX_BYTES),
+    )
     return {
         "binary": _fs_looks_binary(data[:4096]),
         "byteSize": st.st_size,
@@ -710,11 +722,11 @@ async def fs_read_data_url(
 ):
     from hermes_cli.web_server import _FS_DATA_URL_MAX_BYTES
     target, st = _fs_regular_file(await _fs_download_path(path, profile, session_id))
-    if _is_sensitive_path(target):
-        raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
     if st.st_size > _FS_DATA_URL_MAX_BYTES:
         raise HTTPException(status_code=413, detail="File too large")
-    encoded = base64.b64encode(_fs_read_bytes(target)).decode("ascii")
+    encoded = await asyncio.to_thread(
+        lambda: base64.b64encode(_fs_read_bytes(target)).decode("ascii"),
+    )
     return {"dataUrl": f"data:{_fs_mime_type(target)};base64,{encoded}"}
 
 
@@ -723,8 +735,6 @@ async def fs_download(
     path: str, profile: Optional[str] = None, session_id: Optional[str] = None,
 ):
     target, _st = _fs_regular_file(await _fs_download_path(path, profile, session_id))
-    if _is_sensitive_path(target):
-        raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
     return FileResponse(
         path=str(target),
         media_type=_fs_mime_type(target),

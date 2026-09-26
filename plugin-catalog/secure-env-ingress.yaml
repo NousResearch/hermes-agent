@@ -1,0 +1,16 @@
+name: secure-env-ingress
+repo: https://github.com/web3blind/hermes-secure-env-plugin
+sha: cf64cd058b6c8dd1541b16546104acc8d031cdf3
+subdir: secure_env_ingress
+description: "One-use HTTPS forms for adding missing environment secrets outside Telegram chat and LLM input. Disclosure — /senv setup hands the model a skill that installs host packages with sudo (certbot, Let's Encrypt IP certificate) after your approval; the form server binds all interfaces over TLS for one single-use link at a time."
+maintainer: web3blind
+tier: community
+category: tools
+version: "0.3.0"
+docs_url: https://github.com/web3blind/hermes-secure-env-plugin#readme
+platforms: [linux]
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_gateway_dispatch]
+  provides_middleware: []
+  requires_env: []

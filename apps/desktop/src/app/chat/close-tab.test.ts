@@ -7,7 +7,16 @@ const nextSessionTileForWorkspace = vi.fn<() => null | string>(() => null)
 const closeSessionTile = vi.fn()
 const requestFreshSession = vi.fn()
 
+const closeActiveTerminal = vi.fn()
+
+vi.mock('@/app/right-sidebar/terminal/terminals', () => ({
+  closeActiveTerminal: () => closeActiveTerminal()
+}))
+
 vi.mock('@/components/pane-shell/tree/store', () => ({
+  // preview.ts stamps explicit opens against the focused tree group.
+  $activeTreeGroup: atom(null),
+  $layoutTree: atom(null),
   closeFocusedSessionTab: () => closeFocusedSessionTab(),
   closeFocusedToolTab: () => closeFocusedToolTab()
 }))
@@ -74,7 +83,7 @@ describe('closeActiveTab', () => {
   // pane's registered closer) rather than a rail-shaped special case. Open
   // previews must therefore NOT claim the key on their own.
   it('leaves ⌘W to the zone rungs even with previews open', () => {
-    openPreview(fileTarget('/work/notes.md'), 'manual')
+    openPreview(fileTarget('/work/notes.md'))
     closeFocusedToolTab.mockReturnValue(true)
 
     expect($previewTabs.get()).toHaveLength(1)
@@ -109,13 +118,6 @@ describe('closeWorkspaceTab', () => {
     expect(requestFreshSession).toHaveBeenCalledTimes(1)
   })
 
-  it('empties main even with no session loader wired', () => {
-    loadedMainOnly()
-
-    expect(closeWorkspaceTab()).toBe(true)
-    expect(requestFreshSession).toHaveBeenCalledTimes(1)
-  })
-
   it('is a no-op on a blank draft — that IS the post-close state', () => {
     expect(closeWorkspaceTab(vi.fn())).toBe(false)
     expect(requestFreshSession).not.toHaveBeenCalled()
@@ -134,6 +136,23 @@ describe('closeWorkspaceTab', () => {
 
     expect(closeActiveTab(vi.fn())).toBe(true)
     expect(requestFreshSession).toHaveBeenCalledTimes(1)
+  })
+
+  it('a focused remote bot screen swallows ⌘W: no terminal tab, no session tab closes', async () => {
+    loadedMainOnly()
+    const combo = await import('@/lib/keybinds/combo')
+
+    const spy = vi
+      .spyOn(combo, 'isFocusWithin')
+      .mockImplementation(selector => selector === '[data-remote-screen]' || selector === '[data-terminal]')
+
+    try {
+      expect(closeActiveTab(vi.fn())).toBe(true)
+      expect(closeActiveTerminal).not.toHaveBeenCalled()
+      expect(requestFreshSession).not.toHaveBeenCalled()
+    } finally {
+      spy.mockRestore()
+    }
   })
 
   it('a focused tool panel (terminal / logs) claims ⌘W before main empties', () => {

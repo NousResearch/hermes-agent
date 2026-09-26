@@ -157,9 +157,8 @@ const TranscriptPane = memo(function TranscriptPane({
   const bodyCols = Math.max(28, (useGutter && petBox ? composer.cols - petBox.width : composer.cols) - railCols)
   const petBandRows = petBox && !useGutter ? petBox.height : 0
 
-  // LiveTodoPanel rides as a child of the latest user-message row so it
-  // visually belongs to the prompt and follows it during scroll. -1 when
-  // empty → row.index === -1 is always false → no render.
+  // lastUserIdx is retained for the archived-todo rendering path in
+  // messageLine.tsx, which still inlines past todos into the transcript.
   const lastUserIdx = useMemo(() => {
     const items = transcript.historyItems
 
@@ -234,7 +233,6 @@ const TranscriptPane = memo(function TranscriptPane({
             />
           )}
 
-          {row.index === lastUserIdx && <LiveTodoPanel />}
         </Box>
       ))}
 
@@ -607,6 +605,12 @@ export const AppLayout = memo(function AppLayout({
           )}
           {!overlay.agents && !overlay.journey && <AmbientRail side="right" />}
         </Box>
+
+        {!overlay.agents && !overlay.journey && (
+          <Box flexShrink={0} marginLeft={1}>
+            <LiveTodoPanel />
+          </Box>
+        )}
 
         {!overlay.agents && !overlay.journey && (
           <>

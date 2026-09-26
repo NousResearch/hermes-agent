@@ -329,6 +329,10 @@ def _cmd_gc(args: argparse.Namespace) -> int:
         if row["workspace_kind"] != "scratch":
             continue
         path = Path(row["workspace_path"] or (scratch_root / row["id"]))
+        # Same containment predicate as completion cleanup (#28818): strictly below a
+        # managed root, never the root itself (which holds every task's scratch dir).
+        if not kbw._is_managed_scratch_path(path):
+            continue
         try:
             path = path.resolve()
         except OSError:

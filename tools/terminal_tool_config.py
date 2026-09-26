@@ -127,12 +127,38 @@ def coerce_ssh_remote_cwd(cwd: str | None, env_type: str | None) -> str | None:
     return text if rel == ".." or rel.startswith("../") else f"~/{rel}"
 
 
-def _is_unusable_container_cwd(cwd: str) -> bool:
+def _is_mounted_host_cwd(cwd: str, mounted_host: str | None) -> bool:
+    """True when *cwd* is the host directory mounted at ``/workspace``.
+
+    Checked before the ``/Users`` / ``/home`` / drive-letter heuristic: a WSL
+    checkout under ``/mnt/...`` or an absolute path under ``/srv/...`` is
+    ``os.path.isabs`` and would otherwise look like a valid container workdir.
+    """
+    if not cwd or not isinstance(mounted_host, str) or not mounted_host:
+        return False
+    try:
+        left = os.path.normpath(os.path.abspath(os.path.expanduser(cwd)))
+        right = os.path.normpath(os.path.abspath(os.path.expanduser(mounted_host)))
+    except (OSError, ValueError):
+        return False
+    return left == right
+
+
+def _is_unusable_container_cwd(cwd: str, *, mounted_host: str | None = None) -> bool:
     """True if *cwd* is a host or relative path that can't be a container
     workdir: ``docker run -w`` needs an absolute in-sandbox path, otherwise the
     container fails to start (exit 125). Windows drive paths aren't ``isabs``
-    on POSIX, so they're caught by the prefix check."""
-    return bool(cwd) and (_is_host_cwd(cwd) or not os.path.isabs(cwd))
+    on POSIX, so they're caught by the prefix check.
+
+    The directory mounted at ``/workspace`` is unusable inside the container
+    even when it matches none of those prefixes. That equality check runs
+    first so ``/mnt/...`` and ``/srv/...`` are not wrapped as ``cd`` targets.
+    """
+    if not cwd:
+        return False
+    if _is_mounted_host_cwd(cwd, mounted_host):
+        return True
+    return _is_host_cwd(cwd) or not os.path.isabs(cwd)
 
 
 def _tenv(name: str, default: str = "") -> str:

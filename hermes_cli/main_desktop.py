@@ -1543,6 +1543,7 @@ def cmd_gui(args: argparse.Namespace):
         launch_command.extend(config_electron_flags)
     if getattr(args, "local", False):
         launch_command.append("--local")
+    launch_command.extend(_explicit_profile_args())
     if not source_mode:
         desktop_launch_notice(f"→ Launching packaged Hermes Desktop: {' '.join(launch_command)}")
     pass_fds: tuple[int, ...] = ()
@@ -1608,6 +1609,18 @@ def cmd_gui(args: argparse.Namespace):
     sys.exit(launch_result.returncode)
 
 
+def _explicit_profile_args() -> list[str]:
+    """``--profile <name>`` for Electron when ``-p``/``--profile`` was on argv.
+
+    Explicit flag only. A bare `hermes desktop` must not forward the sticky CLI
+    profile — Electron would persist it over the stored desktop one.
+    """
+    from hermes_cli.main import explicit_cli_profile
+
+    profile = explicit_cli_profile()
+    return ["--profile", profile] if profile else []
+
+
 def _launch_bundled_desktop(
     args: argparse.Namespace, env: dict, electron_flags: list[str]
 ) -> None:
@@ -1663,6 +1676,7 @@ def _launch_bundled_desktop(
             sys.exit(1)
 
     launch_command.extend(electron_flags)
+    launch_command.extend(_explicit_profile_args())
     pid = launch_detached(launch_command, env=env, cwd=layout.app_root)
     print(f"→ Launched Hermes Desktop: {' '.join(launch_command)} (pid {pid})")
     sys.exit(0)

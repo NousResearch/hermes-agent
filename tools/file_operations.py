@@ -266,7 +266,9 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         sentinel = _new_sentinel(_BYTES_SENTINEL_PREFIX)
         mark = f"echo {sentinel}"
         rest = "".join(f"{mark}; {cmd}; " for cmd in more)
-        result = self._exec(f"{mark}; {body}; __hb=$?; {rest}{mark}; echo $__hb")
+        # xtrace off first: a traced ``+ echo <sentinel>`` line is an extra separator, and the
+        # traces of the transport commands would land inside the payload segments.
+        result = self._exec(f"{{ set +x; }} 2>/dev/null; {mark}; {body}; __hb=$?; {rest}{mark}; echo $__hb")
         segments = _split_segments(result.stdout or "", sentinel)
         if len(segments) != len(more) + 3:
             return None, None, result
@@ -1251,7 +1253,9 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         """Delete a single file (directories rejected) via the backend's ``python -c``
         so one code path works on local/docker/ssh AND Windows shells (no ``rm``)."""
         path = self._expand_path(path)
-        denied = get_write_denied_error(path, verb="Delete")
+        # Delete removes the directory entry (a symlink itself, not its target), so
+        # the guards vet the entry as well as the target it resolves to.
+        denied = get_write_denied_error(path, verb="Delete", entry=True)
         if denied:
             return WriteResult(error=denied)
         # Path baked in via repr() for shell-independent quoting; no
@@ -1288,8 +1292,9 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
     def move_file(self, src: str, dst: str) -> WriteResult:
         src = self._expand_path(src)
         dst = self._expand_path(dst)
+        # Entry-level op like delete_file: vet both entries, not just their targets.
         for p in (src, dst):
-            denied = get_write_denied_error(p, verb="Move")
+            denied = get_write_denied_error(p, verb="Move", entry=True)
             if denied:
                 return WriteResult(error=denied)
         result = self._exec(f"mv {self._escape_shell_arg(src)} {self._escape_shell_arg(dst)}")

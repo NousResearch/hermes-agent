@@ -107,6 +107,12 @@ _PERSISTENCE_CAUSE_EXPLANATIONS: Dict[str, str] = {
         "for the other process to finish, then send your message "
         "again."
     ),
+    "session_row_missing": (
+        "this session was deleted from storage while the chat was still open, "
+        "and Hermes could not recreate it, so this message was not saved. "
+        "Send your message again; if it keeps failing, run "
+        "`hermes {profile_arg}doctor`."
+    ),
     "locked": (
         "the turn was stopped because session storage was busy "
         "(another Hermes process was writing to the state "

@@ -22,6 +22,7 @@ from hermes_constants import (
     display_hermes_home,
 )
 from hermes_state_dbfile import RETIRED_GENERATION_DIR_SUFFIX
+from hermes_state_holders import read_only_db_uri
 
 from hermes_cli.archive_safe import normalize_archive_parts
 from hermes_cli.backup_sqlite import _close_quietly, _safe_copy_db
@@ -348,7 +349,7 @@ def _query_ro_sqlite(path: Path, fn):
     """Run ``fn(conn)`` on a read-only connection to *path*; return ``(value, None)`` or ``(None, exc)``."""
     conn = None
     try:
-        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=1.0)
+        conn = sqlite3.connect(read_only_db_uri(path), uri=True, timeout=1.0)
         return fn(conn), None
     except Exception as exc:
         return None, exc
@@ -1514,9 +1515,9 @@ def restore_quick_snapshot(
                 # restored data instead of continuing to serve stale
                 # cached pages from a replaced inode (issue #65942).
                 if not _safe_restore_db(src, dst):
-                    # Refused (live holder) or failed: the destination was
-                    # left as it was. Count it as a failure, not a restore.
-                    logger.error("Failed to restore %s: live-safe restore refused", rel)
+                    # Refused, failed, or source failed its integrity check:
+                    # dst left as it was. Count as a failure, not a restore.
+                    logger.error("Failed to restore %s: refused or source integrity check failed (see previous log)", rel)
                     continue
             else:
                 shutil.copy2(src, dst)

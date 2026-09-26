@@ -50,9 +50,11 @@ from hermes_cli.web_server_profiles import _config_profile_scope, _hermes_home_s
 # Same logger the handlers used before extraction (identical logger object).
 _log = logging.getLogger("hermes_cli.web_server")
 
-# Per-profile session reads report failures only in the response's ``errors`` array, which
-# the desktop sidebar does not surface. Warn once per (profile, message) per process so a
-# persistent failure is loud in errors.log without turning every sidebar poll into spam.
+# A per-profile read failure is not an empty session list. The sidebar slice for
+# that profile is a failed load (``failed`` + ``retry``) so Desktop can offer Retry
+# instead of "No sessions yet". A successful read of zero rows still returns
+# ``sessions: []``. Warn once per (profile, message) per process so a persistent
+# failure is loud in errors.log without turning every sidebar poll into spam.
 _profile_read_warned: set = set()
 
 
@@ -340,6 +342,44 @@ def _sidebar_profile_cache_clear():
         _SIDEBAR_PROFILE_CACHE.clear()
 
 
+def _sidebar_profile_cache_drop(key) -> None:
+    with _SIDEBAR_PROFILE_CACHE_LOCK:
+        _SIDEBAR_PROFILE_CACHE.pop(key, None)
+
+
+def _profile_state_db(home) -> Path:
+    return Path(home) / "state.db"
+
+
+def _profile_heal_exhausted(home) -> bool:
+    """True when the one-shot writable heal already gave up on this store."""
+    from hermes_cli.web_server_sessions import _session_db_heal_exhausted
+
+    return str(_profile_state_db(home)) in _session_db_heal_exhausted
+
+
+def _slice_has_rows(slices: Dict[str, Any]) -> bool:
+    return any(slices.get(key) for key in ("recents", "cron", "messaging"))
+
+
+def _retryable_profile_errors(errors: List[Dict[str, str]], scanned) -> List[Dict[str, str]]:
+    """Scan failures Retry can re-attempt. A latched corrupt store has its own notice."""
+    corrupt = set(_corrupt_profile_stores(scanned))
+    return [dict(err) for err in errors if err.get("profile") not in corrupt]
+
+
+def _failed_load_slice(errors: List[Dict[str, str]], **extra) -> Dict[str, Any]:
+    """Failed load: no ``sessions`` key. An empty list would read as data loss."""
+    return {"failed": True, "retry": True, "errors": [dict(err) for err in errors], **extra}
+
+
+def _profiles_failed(errors: List[Dict[str, str]]) -> Dict[str, Dict[str, Any]]:
+    return {
+        err["profile"]: {"failed": True, "retry": True, "error": err.get("error", "")}
+        for err in errors if err.get("profile")
+    }
+
+
 def _sidebar_singleflight_cache(func):
     """Coalesce concurrent sidebar scans and briefly reuse their response.
 
@@ -512,11 +552,12 @@ def get_profiles_sessions_sidebar(
         return slices
 
     scanned = []
+    contributed: set = set()
     for name, home in targets:
         if recents_scope != "all" and name != recents_scope:
             continue
         scanned.append((name, home))
-        db_path = Path(home) / "state.db"
+        db_path = _profile_state_db(home)
         if not db_path.exists():
             continue
         profile_cache_key = (str(db_path), _sidebar_db_fingerprint(db_path), cap["recents"],
@@ -528,6 +569,19 @@ def get_profiles_sessions_sidebar(
                                       lambda db: _build_slices(db, profile_cache_key))
             if slices is None:
                 continue
+        # Heal already gave up and this read found no rows. That is not "no
+        # sessions" — the probe-less open can miss the schema the list needs.
+        # Drop the cached empty page so the next poll does not reuse the lie.
+        if _profile_heal_exhausted(home) and not _slice_has_rows(slices):
+            _sidebar_profile_cache_drop(profile_cache_key)
+            if not any(err.get("profile") == name for err in errors):
+                errors.append({
+                    "profile": name,
+                    "error": "schema heal exhausted; session list unavailable",
+                })
+            continue
+        if _slice_has_rows(slices):
+            contributed.add(name)
         # A full window means more rows remain on disk — all "load more" needs, at no cost
         # beyond the rows already read. Pinned rows count: they occupy LIMIT slots, and a
         # short list has nothing past the page for the pin back-fill to add, so pins cannot
@@ -543,12 +597,47 @@ def get_profiles_sessions_sidebar(
         _strip_session_list_rows(win)
         return win
 
-    return {
+    storage = _corrupt_profile_stores(scanned)
+    retryable = _retryable_profile_errors(errors, scanned)
+    failed_names = {err["profile"] for err in retryable if err.get("profile")}
+    corrupt = set(storage)
+    live = [name for name, _home in scanned if name not in corrupt]
+    scoped_failed = (
+        recents_scope != "all"
+        and recents_scope in failed_names
+        and recents_scope not in contributed
+    )
+    all_failed = (
+        recents_scope == "all"
+        and bool(live)
+        and not contributed
+        and all(name in failed_names for name in live)
+    )
+    if scoped_failed or all_failed:
+        # The whole answer is this profile's (or every profile's) failed scan.
+        # Do not include ``sessions``: an empty list is a successful read.
+        return {
+            "recents": _failed_load_slice(
+                retryable, profiles_truncated={}, profiles_usage={}),
+            "cron": _failed_load_slice(retryable),
+            "messaging": _failed_load_slice(retryable, total=0),
+            "errors": errors, "storage": storage}
+
+    body = {
         "recents": {"sessions": _window("recents"), "profiles_truncated": recents_truncated,
                     "profiles_usage": profile_totals},
         "cron": {"sessions": _window("cron")},
         "messaging": {"sessions": _window("messaging"), "total": len(rows["messaging"])},
-        "errors": errors, "storage": _corrupt_profile_stores(scanned)}
+        "errors": errors, "storage": storage}
+    # A sibling profile still listed does not make the failed profile's absence
+    # a successful empty slice. Stamp that profile as a failed load with Retry.
+    failed = _profiles_failed(retryable)
+    if failed:
+        body["profiles_failed"] = failed
+        for key in ("recents", "cron", "messaging"):
+            body[key]["profiles_failed"] = failed
+            body[key]["errors"] = [dict(err) for err in retryable]
+    return body
 
 
 def _merge_by_id(into: Dict[str, Dict[str, Any]], entries: List[Dict[str, Any]], child_key: str) -> None:

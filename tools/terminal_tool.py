@@ -44,7 +44,7 @@ from tools.terminal_tool_lifecycle import (
     _evict_environment_for_task, cleanup_all_environments, ensure_task_env,
 )
 from tools.terminal_tool_config import (
-    _is_container_backend, _is_host_cwd, _is_unusable_container_cwd, _parse_env_var,
+    _is_container_backend, _is_host_cwd, _is_mounted_host_cwd, _is_unusable_container_cwd, _parse_env_var,
     coerce_ssh_remote_cwd,
     _plugin_env_flag, _quiet, _safe_getcwd, _tenv, _tenv_bool,
 )
@@ -282,25 +282,25 @@ def _sanitize_cwd_for_live_env(env: Any, new_cwd: str) -> Optional[str]:
     workspace, e.g. ``C:\\Users\\me`` or ``/Users/me/workspace``) cannot be the
     in-sandbox workdir: every file-tools ``_exec`` wrapper does
     ``builtin cd -- <env.cwd> || exit 126``, so a host cwd poisons all later
-    file operations with an unrelated ``cd:`` error. The creation paths already
-    sanitize this (``_is_unusable_container_cwd`` guards); the live-env write
-    here is the one remaining unsanitized site. When the host path is the one
-    mounted at ``/workspace`` (docker cwd passthrough), the session's directory
-    is still reachable — remap instead of discarding, mirroring the env-creation
-    remap in ``terminal_tool()``. Non-container backends apply the override
+    file operations with an unrelated ``cd:`` error. Prefix-shaped host paths
+    are already rejected on the creation paths. This write classifies the
+    directory mounted at ``/workspace`` as unusable before that prefix
+    heuristic, then remaps the match to ``/workspace`` instead of storing the
+    host path. Non-container backends apply the override
     verbatim (ACP project-root switching must keep working).
     """
     env_type = getattr(env, "env_type", None)
     if not env_type or not _is_container_backend(env_type):
         return new_cwd
-    if not _is_unusable_container_cwd(new_cwd):
-        return new_cwd
     host_mount = getattr(env, "host_cwd", None)
-    if isinstance(host_mount, str) and host_mount:
-        candidate = os.path.abspath(os.path.expanduser(new_cwd))
-        mounted = os.path.abspath(os.path.expanduser(host_mount))
-        if candidate == mounted:
-            return "/workspace"
+    mounted = host_mount if isinstance(host_mount, str) and host_mount else None
+    # Mount equality before the prefix heuristic. /mnt and /srv are absolute,
+    # so the heuristic alone would write the host path through as env.cwd and
+    # every later file-tools exec would `cd` to it (exit 126).
+    if not _is_unusable_container_cwd(new_cwd, mounted_host=mounted):
+        return new_cwd
+    if _is_mounted_host_cwd(new_cwd, mounted):
+        return "/workspace"
     return None
 
 
@@ -833,6 +833,7 @@ def _resolve_command_cwd(
     default_cwd: str,
     session_key: Optional[str] = None,
     env_type: Optional[str] = None,
+    mounted_host: Optional[str] = None,
 ) -> str:
     """cwd for a command: explicit ``workdir`` > the session's own cwd record >
     ``default_cwd``.
@@ -843,12 +844,26 @@ def _resolve_command_cwd(
     its workspace) is unusable in the sandbox — ``cd <host path>`` fails with
     exit 126 — so it is discarded in favor of ``default_cwd``.
 
+    A recorded cwd that IS the host directory mounted at ``/workspace`` is
+    classified unusable before the ``/Users`` / ``/home`` / drive-letter
+    heuristic (``/mnt/...``, ``/srv/...`` are absolute and miss that heuristic)
+    and remapped to ``/workspace`` so the session wrapper does not ``cd`` to it.
+
     Same guard class as the env-creation sanitizers (#50636, #54447); this is the per-command sibling site.
     """
     if workdir:
         return coerce_ssh_remote_cwd(workdir, env_type)
     recorded = get_session_cwd(session_key)
-    if recorded and _is_container_backend(env_type) and _is_unusable_container_cwd(recorded):
+    if recorded and _is_container_backend(env_type) and _is_unusable_container_cwd(
+        recorded, mounted_host=mounted_host
+    ):
+        if _is_mounted_host_cwd(recorded, mounted_host):
+            logger.info(
+                "Remapping recorded session cwd %r for %s backend "
+                "(mounted host directory). Using '/workspace' instead.",
+                recorded, env_type,
+            )
+            return "/workspace"
         logger.info(
             "Ignoring recorded session cwd %r for %s backend "
             "(host/relative path won't work in sandbox). Using %r instead.",
@@ -1014,8 +1029,9 @@ def _plan_execution(
     # but an override / session record is raw: a host path would reach
     # `docker run -w` and fail with exit 125. Re-apply the guard to the
     # resolved cwd; when the host path IS this session's mounted workspace,
-    # remap to /workspace instead of discarding it.
-    if _is_container_backend(env_type) and _is_unusable_container_cwd(cwd):
+    # remap to /workspace instead of discarding it. Mount equality is part of
+    # the unusable check so /mnt and /srv are not left as the container cwd.
+    if _is_container_backend(env_type) and _is_unusable_container_cwd(cwd, mounted_host=host_cwd):
         remapped = "/workspace" if host_cwd else config["cwd"]
         if cwd != remapped:
             logger.info(
@@ -1151,6 +1167,7 @@ def _run_foreground(
         try:
             command_cwd = _resolve_command_cwd(
                 workdir=workdir, default_cwd=plan.cwd, session_key=session_key, env_type=env_type,
+                mounted_host=getattr(env, "host_cwd", None) or plan.host_cwd,
             )
             # bounded_capture: model-facing output keeps a head/tail window
             # while streaming so a verbose command can't OOM the gateway;
@@ -1344,6 +1361,7 @@ def terminal_tool(
             result = spawn_background_process(
                 command=command, env=env, env_type=env_type, effective_task_id=effective_task_id,
                 task_id=task_id, session_key=session_key, workdir=workdir, cwd=cwd,
+                mounted_host=getattr(env, "host_cwd", None) or plan.host_cwd,
                 effective_pty=pty and not pty_disabled, notify_on_complete=notify_on_complete,
                 watch_patterns=watch_patterns, approval_note=verdict.note,
                 pty_disabled_reason=_PTY_DISABLED_REASON if pty_disabled else None,

@@ -375,8 +375,10 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
     # Only an explicitly chosen existing workspace persists as cwd; the launch-dir fallback is "No workspace".
     explicit_cwd = False
     raw_cwd = _str_param(params, "cwd")  # unguarded, as on BASE: only the path check is best-effort
+    # An ssh profile's cwd lives on the remote host, where the host isdir check cannot vouch for it.
+    remote_cwd = bool(raw_cwd) and _is_remote_cwd_shape(raw_cwd) and _cwd_is_remote(profile_home)
     with contextlib.suppress(Exception):
-        explicit_cwd = bool(raw_cwd) and os.path.isdir(os.path.abspath(os.path.expanduser(raw_cwd)))
+        explicit_cwd = bool(raw_cwd) and (remote_cwd or os.path.isdir(os.path.abspath(os.path.expanduser(raw_cwd))))
     _enable_gateway_prompts()
     session_model_override, create_reasoning_override, create_service_tier_override = _create_overrides(params)
     now = time.time()
@@ -428,6 +430,11 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
         _seed_branch_row(_sessions[sid], key, parent_session_id, history, source, profile_home)
     elif history:
         _seed_row(_sessions[sid])
+    elif explicit_cwd and remote_cwd:
+        # A remote project session persists its row now: the per-profile gateway that runs the first turn mints
+        # the row itself (AIAgent INSERT-OR-IGNORE) with cwd=None, and the sidebar then drops it to Home. Local
+        # project drafts stay lazy — their cwd reaches the row on the first prompt (no "Untitled" litter).
+        _ensure_session_db_row(_sessions[sid])
     # Return immediately so Ink can paint; the AIAgent builds right after the flush.
     _schedule_agent_build(sid)
     _schedule_session_cap_enforcement()  # trim detached idle sessions over the cap
@@ -949,7 +956,7 @@ def _(rid, params: dict) -> dict:
         _resume_follow_tip(ctx)
         if (resp := _resume_guard(ctx)) is not None:
             return resp
-        ctx.profile_resume_cwd = _str_param(ctx.found, "cwd") or _profile_configured_cwd(ctx.profile_home)
+        ctx.profile_resume_cwd = _str_param(ctx.found, "cwd") or _profile_workspace_cwd(ctx.profile_home)
         # Fast path: reuse a session live IN THIS PROFILE (never another profile's runtime).
         with _session_resume_lock:
             live = _find_live_session_by_key(ctx.target, ctx.profile_home)
@@ -994,14 +1001,17 @@ def _(rid, params: dict) -> dict:
     if not (raw := _str_param(params, "cwd")):
         return _err(rid, 4016, "cwd required")
     from hermes_constants import translate_cwd_for_wsl_backend
-    resolved = os.path.abspath(os.path.expanduser(translate_cwd_for_wsl_backend(raw)))
-    if not os.path.isdir(resolved):
-        return _err(rid, 4017, f"working directory does not exist: {raw}")
     # Snapshot under the lock — concurrent RPCs mutate _sessions.
     with _sessions_lock:
         live_sid, live = next(
             ((sid, sess) for sid, sess in list(_sessions.items()) if sess.get("session_key") == target), ("", None))
-    branch, root = git_probe.branch(resolved), git_probe.common_repo_root(resolved)
+    # The live session's profile decides (as _set_session_cwd below does); an ssh workspace is never host-validated.
+    home = live.get("profile_home") if live is not None else _profile_home(params.get("profile"))
+    try:
+        target_cwd = _workspace_cwd(home, translate_cwd_for_wsl_backend(raw))
+    except ValueError:
+        return _err(rid, 4017, f"working directory does not exist: {raw}")
+    branch, root = git_probe.branch(target_cwd), git_probe.common_repo_root(target_cwd)
     with _profile_db(params, writer=True) as db:
         if db is None:
             return _db_unavailable_error(rid, code=5007)
@@ -1011,16 +1021,16 @@ def _(rid, params: dict) -> dict:
                 return _err(rid, 4007, "session not found")
         else:
             try:
-                db.update_session_cwd(target, resolved, branch, root, replace_git_meta=True)
+                db.update_session_cwd(target, target_cwd, branch, root, replace_git_meta=True)
             except Exception as e:
                 return _err(rid, 5007, f"move failed: {e}")
     if live is not None:
         try:
-            _set_session_cwd(live, resolved)
+            _set_session_cwd(live, target_cwd)
         except ValueError as e:
             return _err(rid, 4017, str(e))
-        _emit("session.info", live_sid, _cwd_info(live, resolved, branch=branch))
-    return _ok(rid, {"cwd": resolved, "branch": branch, "git_repo_root": root})
+        _emit("session.info", live_sid, _cwd_info(live, target_cwd, branch=branch))
+    return _ok(rid, {"cwd": target_cwd, "branch": branch, "git_repo_root": root})
 
 
 @method("session.active_list")

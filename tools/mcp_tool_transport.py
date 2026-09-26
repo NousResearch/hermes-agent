@@ -111,6 +111,43 @@ def _live_endpoint(server_name: str) -> Optional[tuple[str, dict]]:
     return endpoint.url, headers
 
 
+def _http_endpoint(server_name: str, config: dict) -> tuple[str, dict]:
+    """URL + configured headers, overlaid by a ``server_json`` live endpoint's URL and bearer."""
+    url, headers = config["url"], dict(config.get("headers") or {})
+    live = _live_endpoint(server_name)
+    if live is not None:
+        url, live_headers = live
+        headers.update(live_headers)
+    return url, headers
+
+
+def _stdio_launch(config: dict) -> tuple:
+    """(command, env, cwd) a stdio child is spawned with, resolved in the current profile's scope."""
+    command, env = _config._resolve_stdio_command(config["command"], _config._build_safe_env(config.get("env")))
+    # A stdio child inherits this process's cwd when none is configured. Hosted sessions (ACP,
+    # gateway) pin a logical cwd via agent.runtime_cwd; without it the child resolves relative
+    # paths against the daemon's launch dir, not the session workspace. Explicit config always
+    # wins; an existing session/TERMINAL_CWD anchor becomes the default; else native (None).
+    # The resolved default is fixed for the connection's lifetime.
+    cwd = config.get("cwd")
+    if cwd is None:
+        cwd = _runtime_cwd.resolve_context_cwd() or None
+    return command, env, cwd
+
+
+def _connect_inputs(server_name: str, config: dict) -> tuple[list, set]:
+    """What a connection is opened with, resolved in the current profile's scope: stdio
+    ``[command, env, cwd]``; HTTP ``[url, headers]`` after the live endpoint and the identity
+    header. The owner hashes this very list and an adopter recomputes it, so both digests are
+    built from one code path. Also returns the configured header names (HTTP only), captured
+    before the identity header is merged in, for the strict-redirect boundary."""
+    if "url" in config:
+        url, headers = _http_endpoint(server_name, config)
+        configured_header_names = {key.lower() for key in headers}
+        return [url, _apply_identity_header(server_name, config, headers)], configured_header_names
+    return list(_stdio_launch(config)), set()
+
+
 class MCPServerTransportMixin:
     """Methods of :class:`tools.mcp_tool.MCPServerTask` (mixed in; relies on its attributes)."""
 
@@ -316,16 +353,12 @@ class MCPServerTransportMixin:
         command = config.get("command")
         if not command:
             raise ValueError(f"MCP server '{self.name}' has no 'command' in config")
-        command, safe_env = _config._resolve_stdio_command(command, _config._build_safe_env(config.get("env")))
+        inputs, _ = _connect_inputs(self.name, config)
+        # Hash the inputs this attempt spawns with, never a second resolution of them.
+        self._resolved_identity = _registration._identity_digest(inputs)
+        command, safe_env, stdio_cwd = inputs
         # OSV malware preflight, then the cached-npx swap (ordering enforced there).
         command, args = await _core._preflight_stdio_command(self.name, command, config.get("args", []))
-        # A stdio child inherits this process's cwd when none is configured. Hosted sessions (ACP,
-        # gateway) pin a logical cwd via agent.runtime_cwd; without it the child resolves relative
-        # paths against the daemon's launch dir, not the session workspace. Explicit config always
-        # wins; an existing session/TERMINAL_CWD anchor becomes the default; else native (None).
-        stdio_cwd = config.get("cwd")
-        if stdio_cwd is None:
-            stdio_cwd = _runtime_cwd.resolve_context_cwd() or None
         server_params = _core.StdioServerParameters(
             command=command, args=args, env=safe_env or None, cwd=stdio_cwd,
             # Windows pipes can split non-UTF-8 bytes at chunk boundaries; substitute, don't raise.
@@ -528,18 +561,15 @@ class MCPServerTransportMixin:
             raise ImportError(f"MCP server '{self.name}' requires HTTP transport but "
                               "mcp.client.streamable_http is not available. "
                               "Upgrade the mcp package to get HTTP support.")
-        url = config["url"]
-        headers = dict(config.get("headers") or {})
-        live = _live_endpoint(self.name)
-        if live is not None:
-            url, live_headers = live
-            headers.update(live_headers)
+        # Agent Plugins v1 strict_redirect_headers: configured headers MUST NOT follow a cross-origin
+        # redirect — their names are captured BEFORE client-generated headers are merged in.
+        inputs, configured_header_names = _connect_inputs(self.name, config)
+        # Hash the endpoint this attempt connects to: a second read of the runtime file could
+        # publish another endpoint's identity alongside this session.
+        self._resolved_identity = _registration._identity_digest(inputs)
+        url, headers = inputs
         logger.debug("MCP server '%s': connecting to %s", self.name, url)
         self._http_rejection = {}  # last 4xx/5xx the owned client saw this attempt (recorder hook)
-        # Agent Plugins v1 strict_redirect_headers: configured headers MUST NOT follow a cross-origin
-        # redirect — capture their names BEFORE client-generated headers are merged in.
-        configured_header_names = {key.lower() for key in headers}
-        headers = _apply_identity_header(self.name, config, headers)  # explicit same-name headers win
         # Seed MCP-Protocol-Version (user override wins) from the HANDSHAKE version, not the latest: a
         # 2026-07-28 header routes the handshake-era ``initialize()`` onto the envelope ladder, which rejects it.
         if not any(key.lower() == "mcp-protocol-version" for key in headers):

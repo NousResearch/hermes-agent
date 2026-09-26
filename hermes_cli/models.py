@@ -1255,6 +1255,20 @@ def _model_dedup_key(model_id: str) -> str:
         return key
 
 
+def _provider_catalog_dedup_key(model_id: str, provider: str) -> str:
+    """``_model_dedup_key`` within ONE provider's catalog, treating the provider's own ``<slug>/``
+    prefix as noise: plugin profiles often namespace ``fallback_models`` with their own slug
+    (``my-proxy/model-a``) while the live ``/models`` endpoint returns bare ids (``model-a``).
+
+    Only the provider's own slug is stripped, on the ``/`` boundary — a blanket namespace strip
+    would collapse vendor-namespaced aggregator ids (``openai/gpt-5`` vs ``azure/gpt-5``)."""
+    key = str(model_id).strip()
+    own_prefix = f"{str(provider or '').strip().lower()}/"
+    if own_prefix != "/" and key.lower().startswith(own_prefix):
+        key = key[len(own_prefix):]
+    return _model_dedup_key(key)
+
+
 def _merge_with_models_dev(provider: str, curated: list[str]) -> list[str]:
     """models.dev entries first (their order), then curated-only extras, case-insensitively deduped
     while preserving curated casing. Curated unchanged when models.dev is unreachable/empty."""
@@ -1582,7 +1596,7 @@ def merge_profile_catalog(normalized: str, profile, live: Optional[list[str]]) -
             rows = live
         else:
             primary, secondary = (live, curated) if normalized in _LIVE_FIRST_PICKER_PROVIDERS else (curated, live)
-            rows = _merge_unique(primary, secondary, key=_model_dedup_key)
+            rows = _merge_unique(primary, secondary, key=lambda m: _provider_catalog_dedup_key(m, normalized))
     return _drop_delisted_opencode_models(normalized, rows)
 
 

@@ -376,16 +376,25 @@ def _kb_poll_board(_kb, slug: str, session_key: str) -> list:
                 continue
             sub_ident = dict(task_id=sub["task_id"], platform=sub["platform"], chat_id=sub["chat_id"],
                              thread_id=sub.get("thread_id") or "")
-            _old, _new, events = _kbn.claim_unseen_events_for_sub(conn, kinds=_KANBAN_NOTIFY_KINDS, **sub_ident)
+            old_cursor, claimed_cursor, events = _kbn.claim_unseen_events_for_sub(
+                conn, kinds=_KANBAN_NOTIFY_KINDS, **sub_ident)
             if not events:
                 continue
-            task = _kb.get_task(conn, sub["task_id"])
-            from gateway.kanban_watchers_notifier import diagnostic_event
-            from gateway.warning_notifications import DiagnosticText
-            for ev in events:
-                text = _format_kanban_event_text(sub, task, ev, slug)
-                if text:
-                    texts.append(DiagnosticText(text) if diagnostic_event(ev) else text)
+            try:
+                task = _kb.get_task(conn, sub["task_id"])
+                from gateway.kanban_watchers_notifier import diagnostic_event
+                from gateway.warning_notifications import DiagnosticText
+                for ev in events:
+                    text = _format_kanban_event_text(sub, task, ev, slug)
+                    if text:
+                        texts.append(DiagnosticText(text) if diagnostic_event(ev) else text)
+                # The TUI has no platform send. Release this formatted batch so
+                # the next poll can claim later events for the same subscription.
+                _kbn.advance_notify_cursor(conn, new_cursor=claimed_cursor, **sub_ident)
+            except Exception:
+                _kbn.rewind_notify_cursor(
+                    conn, claimed_cursor=claimed_cursor, old_cursor=old_cursor, **sub_ident)
+                raise
             # Unsubscribe only on archive: ``done`` is reversible in review/controller flows, so keeping the sub lets a
             # later reopen notify the same session. The claimed cursor prevents replay.
             if task and getattr(task, "status", "") == "archived":

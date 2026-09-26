@@ -235,6 +235,15 @@ def gateway_lifecycle_block(
         read_remote_script=lambda p: _read_script_for_guard(env, guard_cwd, p, _MAX_REFERENCED_SCRIPT_BYTES),
     )
     if unsafe and refusal:
+        from cron.lifecycle_guard import is_budget_exhaustion_refusal
+        if is_budget_exhaustion_refusal(refusal):
+            # Budget exhaustion is a work-bound verdict, not a lifecycle command.  In interactive
+            # sessions the approval layer (#119322) surfaces a prompt ("approve to run anyway");
+            # in unattended sessions the hard deny below still applies.
+            from tools.approval import _store_lifecycle_budget_refusal, _is_interactive_session
+            if _is_interactive_session():
+                _store_lifecycle_budget_refusal(session_key, refusal)
+                return None  # let the command through to the approval layer
         # Not a lifecycle command: a script the command EXECUTES could not be scanned (budget,
         # size, device, live SQLite, cloud placeholder). Say so, or the model rewords and retries
         # the same command in a loop (#113944).

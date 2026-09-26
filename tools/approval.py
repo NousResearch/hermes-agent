@@ -64,6 +64,33 @@ _permanent_approved_by_home: dict[str, set] = {}
 _denial_tally: dict[str, int] = {}
 _DENIAL_TALLY_MAX_SESSIONS = 256
 
+# Lifecycle scan-budget exhaustion: refusal strings stored by session key so the
+# approval layer can surface an approval prompt instead of a hard block (#119322).
+# Thread-safe: single-threaded producer (gateway_lifecycle_block in a bounded-guard
+# worker) + single-threaded consumer (check_all_command_guards in the main thread)
+# within each terminal() call; the dict entry is popped immediately after reading.
+_lifecycle_budget_refusals: dict[str, str] = {}
+
+
+def _store_lifecycle_budget_refusal(session_key: str, refusal: str) -> None:
+    """Store a lifecycle scan-budget exhaustion refusal for the approval layer to pick up."""
+    _lifecycle_budget_refusals[session_key] = refusal
+
+
+def _pop_stored_lifecycle_refusal(session_key: str) -> str | None:
+    """Retrieve and remove a stored lifecycle budget refusal, or None."""
+    return _lifecycle_budget_refusals.pop(session_key, None)
+
+
+def _is_interactive_session() -> bool:
+    """True when the current terminal call is in an interactive CLI or gateway session.
+
+    Used by ``gateway_lifecycle_block`` to decide whether budget exhaustion should be
+    escalated to the approval layer (interactive) or remain a hard deny (cron/unattended).
+    """
+    approval_callback, is_cli, is_gateway, is_ask = _presence()
+    return is_cli or is_gateway or is_ask
+
 
 def _get_denial_breaker_threshold() -> int:
     """``approvals.denial_breaker_threshold``: default 3; 0 or negative disables."""
@@ -756,6 +783,34 @@ _ACTION_GATE = _GateSpec(
     ),
     smart_log="",
 )
+# Lifecycle scan-budget exhaustion: the guard could not finish scanning referenced scripts
+# but no actual lifecycle command was found.  Interactive sessions surface an approval
+# prompt; unattended sessions are hard-blocked before reaching this gate (#119322).
+_LIFECYCLE_BUDGET_GATE = _GateSpec(
+    noun="command", transport=False, user_approved=True, redact_cli=False, pending_keys=False,
+    notify_failed=(
+        "BLOCKED: The lifecycle scan budget was exhausted but the approval prompt could "
+        "not be delivered. The command was not run."
+    ),
+    gateway_refused=(
+        "BLOCKED: The lifecycle scan budget was exhausted — the guard could not fully scan "
+        "the command or its referenced scripts.  Nothing is known to be a lifecycle command, "
+        "but the scan could not complete.  Run this command from outside the gateway process, "
+        "or approve it to run anyway."
+        "{reason_addendum}{timeout_addendum}{breaker}"
+    ),
+    transport_denied="",
+    cli_timeout=(
+        "BLOCKED: Lifecycle scan budget exhaustion — approval timed out without user "
+        "response. The command was not run.  Run it from outside the gateway process instead."
+        "{breaker}"
+    ),
+    cli_denied=(
+        "BLOCKED: User denied this command after lifecycle scan-budget exhaustion.  "
+        "Run the command from outside the gateway process instead.{breaker}"
+    ),
+    smart_log="Smart approval: auto-approved lifecycle-budget-exhausted command ({description})",
+)
 
 
 def _smart_gate(spec: _GateSpec, command: str, description: str, pattern_key: str,
@@ -1191,6 +1246,34 @@ def check_all_command_guards(command: str, env_type: str,
         return _approved()
 
     approval_callback, is_cli, is_gateway, is_ask = _presence(approval_callback)
+
+    # --- lifecycle scan-budget exhaustion → approval prompt (#119322) --------------------
+    # When gateway_lifecycle_block detected budget exhaustion in an interactive session, it
+    # stored the refusal instead of hard-blocking.  Surface it through the standard approval
+    # layer so the operator can "approve to run anyway / run from outside the gateway".
+    # Non-interactive / cron / unattended sessions never reach this point (the guard returns
+    # a hard block for them).
+    if is_cli or is_gateway or is_ask:
+        session_key = get_current_session_key()
+        lifecycle_refusal = _pop_stored_lifecycle_refusal(session_key)
+        if lifecycle_refusal is not None:
+            pattern_key = "lifecycle_scan_budget"
+            description = (
+                f"The lifecycle guard's scan budget was exhausted ({lifecycle_refusal}). "
+                "Nothing in the command is known to contain a gateway lifecycle command, but "
+                "the referenced-script walk could not complete its scan.  Approve to run "
+                "anyway, or run this command from outside the gateway process."
+            )
+            if not is_approved(session_key, pattern_key):
+                return _human_decision(
+                    _LIFECYCLE_BUDGET_GATE, command=command, description=description,
+                    pattern_key=pattern_key, pattern_keys=[pattern_key],
+                    warnings=[(pattern_key, description, False)],
+                    session_key=session_key, approval_callback=approval_callback,
+                    is_cli=is_cli, is_gateway=is_gateway, is_ask=is_ask,
+                    smart=approval_mode == "smart", permanent_capable=False,
+                )
+
     # Outside CLI/gateway/ask flows we never block on approvals: each
     # unattended context applies its configured deny/approve mode, else allow.
     if not is_cli and not is_gateway and not is_ask:

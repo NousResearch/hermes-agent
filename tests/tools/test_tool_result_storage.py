@@ -10,7 +10,6 @@ from tools.budget_config import (
 from tools.tool_result_storage import (
     PERSISTED_OUTPUT_TAG,
     PERSISTED_OUTPUT_CLOSING_TAG,
-    STORAGE_DIR,
     _build_persisted_message,
     _resolve_storage_dir,
     _safe_result_filename,
@@ -155,8 +154,13 @@ class TestWriteToSandbox:
         assert _write_to_sandbox("data", "/tmp/hermes-results/np.txt", env) is True
 
 class TestResolveStorageDir:
-    def test_defaults_to_storage_dir_without_env(self):
-        assert _resolve_storage_dir(None) == STORAGE_DIR
+    def test_defaults_to_posix_tmp_without_env(self):
+        # No env answer: remote writes fall back to the POSIX contract, never
+        # the host temp path. The gettempdir patch models a Windows host so
+        # the arm discriminates on POSIX hosts too.
+        with patch("tempfile.gettempdir",
+                   return_value="C:\\Users\\x\\AppData\\Local\\Temp"):
+            assert _resolve_storage_dir(None) == "/tmp/hermes-results"
 
     def test_uses_env_temp_dir_when_available(self):
         env = MagicMock()
@@ -267,11 +271,10 @@ class TestMaybePersistToolResult:
         cmd = env.execute.call_args_list[1][0][0]
         target = cmd.split("cat > ", 1)[1].split(" <<", 1)[0]
 
-        from tools.tool_result_storage import STORAGE_DIR
-
-        assert f"Full output saved to: {STORAGE_DIR}/outside_whoami_x_" in result
-        assert f"{STORAGE_DIR}/../" not in result
-        assert target.startswith(f"{STORAGE_DIR}/outside_whoami_x_")
+        storage_dir = "/tmp/hermes-results"
+        assert f"Full output saved to: {storage_dir}/outside_whoami_x_" in result
+        assert f"{storage_dir}/../" not in result
+        assert target.startswith(f"{storage_dir}/outside_whoami_x_")
         assert "/../" not in target
         assert "$(whoami)" not in target
         assert ";" not in target

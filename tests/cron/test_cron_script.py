@@ -725,3 +725,76 @@ class TestScriptTimeoutTreeKill:
                     psutil.Process(gpid).kill()
                 except psutil.NoSuchProcess:
                     pass
+
+
+class TestRunJobScriptFailureStatus:
+    """A failed pre-run script must fail the run itself (#20301).
+
+    The agent still runs on the injected "Script Error" block and its report stays
+    deliverable, but ``run_job`` must return ``success=False`` with a non-empty error —
+    the values that become ``last_status`` / ``last_error`` and the executions-ledger
+    row — instead of reporting "ok" over a broken data collection.
+    """
+
+    def _run_with_script(self, cron_env, script_text):
+        from unittest.mock import MagicMock, patch
+
+        from cron import scheduler as sched
+
+        fake_provider_key = "test" + "-provider-key"  # dummy fixture value, never a real secret
+        script = cron_env / "scripts" / "collect.py"
+        script.write_text(textwrap.dedent(script_text))
+        job = {
+            "id": "script-status",
+            "name": "script-status-test",
+            "prompt": "Report status.",
+            "schedule_display": "every 1h",
+            "script": str(script),
+        }
+        agent = MagicMock()
+        agent.run_conversation.return_value = {
+            "final_response": "The data-collection script failed; see the error block.",
+            "messages": [],
+            "failed": False,
+            "completed": True,
+        }
+        with patch("cron.scheduler._hermes_home", cron_env), \
+             patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
+             patch("hermes_state_registry.acquire", return_value=MagicMock()), \
+             patch("tools.mcp_tool_discovery.discover_mcp_tools", return_value=[]), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value={
+                 "api_key": fake_provider_key,
+                 "base_url": "https://example.invalid/v1",
+                 "provider": "openrouter",
+                 "api_mode": "chat_completions",
+             }), \
+             patch("run_agent.AIAgent", return_value=agent):
+            return sched.run_job(dict(job))
+
+    def test_failing_script_fails_the_run(self, cron_env):
+        """Non-zero exit ⇒ success=False and the error carries the script output."""
+        success, output, response, error = self._run_with_script(
+            cron_env,
+            """\
+            import sys
+            print("error: data source unavailable", file=sys.stderr)
+            sys.exit(1)
+            """,
+        )
+
+        assert success is False
+        assert error is not None
+        assert "Pre-run script failed" in error
+        assert "data source unavailable" in error
+        # The agent still ran on the injected Script Error block; its report survives.
+        assert response == "The data-collection script failed; see the error block."
+
+    def test_successful_script_keeps_run_ok(self, cron_env):
+        """Zero exit ⇒ success=True with no error."""
+        success, output, response, error = self._run_with_script(
+            cron_env, 'print("data collected")\n')
+
+        assert success is True
+        assert error is None

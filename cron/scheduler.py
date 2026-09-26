@@ -2168,10 +2168,13 @@ _RunResult = tuple[bool, str, str, Optional[str]]
 
 def _prepare_job_prompt(
     job: dict, job_id: str, job_name: str, extra_prompt: Optional[str], cancel_event,
-) -> tuple[Optional[_RunResult], Optional[str]]:
-    """Run every pre-agent gate and build the prompt. Returns ``(early_result, prompt)``: an early
-    result short-circuits ``run_job`` (no_agent job, empty payload, monitor gate, wake gate,
-    injection block, empty prompt); otherwise ``prompt`` is set."""
+) -> tuple[Optional[_RunResult], Optional[str], Optional[tuple[bool, Optional[str]]]]:
+    """Run every pre-agent gate and build the prompt. Returns ``(early_result, prompt,
+    script_failure)``: an early result short-circuits ``run_job`` (no_agent job, empty payload,
+    monitor gate, wake gate, injection block, empty prompt); otherwise ``prompt`` is set.
+    ``script_failure`` carries ``(failed, script_output)`` from the pre-run script so ``run_job``
+    can fail the run while still delivering the agent's report on the injected Script Error
+    block (#20301); it is ``None`` on every early-return path and when no script ran."""
     # Fail closed on a corrupt config.yaml: defaults would let auto-detection bill a provider the
     # user never chose. no_agent jobs are exempt. Escape hatch: HERMES_IGNORE_USER_CONFIG=1.
     if not job.get("no_agent"):
@@ -2181,21 +2184,21 @@ def _prepare_job_prompt(
             require_parseable_user_config()
         except InvalidUserConfigError as exc:
             logger.error("Job '%s': refusing to run — %s", job_id, exc)
-            return (False, f"# Cron Job: {job_name}\n\nError: {exc}\n", "", str(exc)), None
+            return (False, f"# Cron Job: {job_name}\n\nError: {exc}\n", "", str(exc)), None, None
 
     # no_agent short-circuits BEFORE importing run_agent / opening SessionDB.
     if job.get("no_agent"):
-        return _run_no_agent_job(job, job_id, job_name, cancel_event), None
+        return _run_no_agent_job(job, job_id, job_name, cancel_event), None, None
 
     # Legacy / hand-edited job with nothing to run: pause it instead of waking the LLM every fire.
     from cron.jobs import EMPTY_PAYLOAD_ERROR, job_payload_is_empty
 
     if job_payload_is_empty(job):
-        return _block_and_pause_job(job_id, job_name, EMPTY_PAYLOAD_ERROR), None
+        return _block_and_pause_job(job_id, job_name, EMPTY_PAYLOAD_ERROR), None, None
 
     _early, extra_prompt, monitor_context = _apply_monitor_gate(job, job_id, job_name, extra_prompt)
     if _early is not None:
-        return _early, None
+        return _early, None, None
 
     # Wake-gate: run the pre-check script BEFORE building the prompt; its result is passed into
     # _build_job_prompt so the script runs only once.
@@ -2205,6 +2208,8 @@ def _prepare_job_prompt(
     # happens inside the main try, right before the agent is constructed — after every early-return path
     # (#96290).
     prerun_script = None
+    script_failed = False
+    script_error: Optional[str] = None
     script_path = job.get("script")
     if script_path:
         prerun_script = _run_job_script_with_claim_heartbeat(
@@ -2214,6 +2219,9 @@ def _prepare_job_prompt(
             cancel_event=cancel_event,
         )
         _ran_ok, _script_output = prerun_script
+        if not _ran_ok:
+            script_failed = True
+            script_error = _script_output
         if _ran_ok and not _parse_wake_gate(_script_output):
             logger.info("Job '%s' (ID: %s): wakeAgent=false, skipping agent run", job_name, job_id)
             silent_doc = (
@@ -2222,7 +2230,7 @@ def _prepare_job_prompt(
                 f"**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
                 "Script gate returned `wakeAgent=false` — agent skipped.\n"
             )
-            return (True, silent_doc, SILENT_MARKER, None), None
+            return (True, silent_doc, SILENT_MARKER, None), None, None
 
     try:
         prompt = _build_job_prompt(
@@ -2247,11 +2255,11 @@ def _prepare_job_prompt(
             "and the match is a false positive, rephrase the content to avoid "
             "the threat pattern (`tools/cronjob_tools.py::_CRON_THREAT_PATTERNS`)."
         )
-        return (False, blocked_doc, "", str(block_exc)), None
+        return (False, blocked_doc, "", str(block_exc)), None, None
     if prompt is None:
         logger.info("Job '%s': script produced no output, skipping AI call.", job_name)
-        return (True, "", SILENT_MARKER, None), None
-    return None, prompt
+        return (True, "", SILENT_MARKER, None), None, None
+    return None, prompt, (script_failed, script_error)
 
 
 _CRON_DELIVERY_VARS = (
@@ -2488,7 +2496,7 @@ def run_job(
     job_id = job["id"]
     job_name = str(job.get("name") or job.get("prompt") or job_id or "cron job")
 
-    early, prompt = _prepare_job_prompt(job, job_id, job_name, extra_prompt, cancel_event)
+    early, prompt, script_failure = _prepare_job_prompt(job, job_id, job_name, extra_prompt, cancel_event)
     if early is not None:
         return early
     from run_agent import AIAgent
@@ -2538,6 +2546,13 @@ def run_job(
         output = _run_doc_header(job, job_name, job_id, prompt) + f"## Response\n\n{logged_response}\n"
         logger.info("Job '%s' completed successfully", job_name)
         _audit.write(dict(result, response_silent=_is_cron_silence_response(final_response or "")), None)
+        if script_failure and script_failure[0]:
+            # The pre-run script failed but the agent still ran on the injected "Script Error"
+            # block. Fail the run itself so mark_job_run() (last_status / failure_streak /
+            # last_error) and the executions ledger record the broken data collection instead
+            # of "ok", while final_response keeps the agent's report deliverable (#20301).
+            logger.warning("Job '%s': pre-run script failed — recording run as failed", job_name)
+            return False, output, final_response, f"Pre-run script failed: {script_failure[1]}"
         return True, output, final_response, None
 
     except Exception as e:

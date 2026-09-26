@@ -36,7 +36,7 @@ export function useLiveCompletionAdapter(options: {
   /** Bump to declare the held answer stale. Without it a popover left open on
    *  an unchanged query would keep serving what it fetched before the source
    *  changed, because the adapter de-dupes on the query alone. */
-  epoch?: number
+  epoch?: number | string
   toItem: (entry: CompletionEntry, index: number) => Unstable_TriggerItem
 }): { adapter: Unstable_TriggerAdapter; loading: boolean } {
   const { enabled, debounceMs = 60, epoch = 0, fetcher, isCached, toItem } = options

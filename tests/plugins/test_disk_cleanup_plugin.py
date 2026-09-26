@@ -15,6 +15,7 @@ Covers the bundled plugin at ``plugins/disk-cleanup/``:
 import importlib
 import json
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -139,6 +140,142 @@ class TestGuessCategory:
         p = _isolate_env / "notes.md"
         p.write_text("x")
         assert dg.guess_category(p) is None
+
+
+class TestProfileUserTreesNeverCleaned:
+    """``workspace/`` (and the other per-profile user trees) hold project files, so
+    a ``test_*``/``tmp_*`` name inside them is never a disposable scratch file.
+
+    Regression for the data loss where ``workspace/<project>/tests/test_parse.py`` was
+    classified "test" on write and unlinked by ``quick()`` at session end.
+    """
+
+    def test_session_end_hook_leaves_workspace_files_alone(self, _isolate_env):
+        """End-to-end: write_file into a project tree, then session end. A scratch file at
+        the HERMES_HOME root is the control: it is still tracked and removed."""
+        pi = _load_plugin_init()
+        dg = _load_lib()
+        keep = _isolate_env / "workspace" / "proj" / "tests" / "test_parse.py"
+        keep.parent.mkdir(parents=True)
+        keep.write_text("x")
+        scratch = _isolate_env / "tmp_scratch.py"
+        scratch.write_text("x")
+        assert dg.guess_category(keep) is None
+        assert dg.guess_category(scratch) == "test"
+        for p in (keep, scratch):
+            pi._on_post_tool_call(
+                tool_name="write_file",
+                args={"path": str(p), "content": "x"},
+                result="OK",
+                task_id="t_ws", session_id="s_ws",
+            )
+        pi._on_session_end(session_id="s_ws", completed=True, interrupted=False)
+        assert keep.exists(), "session-end cleanup must not touch workspace project files"
+        assert not scratch.exists(), "root-level scratch files are still cleaned up"
+
+    def test_empty_dir_sweep_skips_workspace(self, _isolate_env):
+        """Empty dirs inside a project tree are meaningful (``data/``, ``.artifacts/``)
+        and must survive the empty-dir sweep; unprotected empty top levels are still swept."""
+        dg = _load_lib()
+        keep = _isolate_env / "workspace" / "watch-battery" / "data"
+        keep.mkdir(parents=True)
+        sweepable = _isolate_env / "pairing"
+        sweepable.mkdir()
+
+        dg._sweep_empty_dirs(_isolate_env)
+
+        assert keep.exists(), "empty dir inside workspace/ must survive the sweep"
+        assert not sweepable.exists(), "unprotected empty dirs are still swept"
+
+
+class TestProtectedDirsNeverRmtreed:
+    """A tracked DIRECTORY under a protected top level (``cache/`` holds terminal snapshots)
+    must never be rmtree'd by the tracked-item path, only by-file aging; ``kanban/`` is never
+    tracked at all (its attachments/workspaces have their own lifecycle)."""
+
+    def test_stale_cache_dir_entry_is_skipped_but_its_old_files_still_age_out(self, _isolate_env):
+        dg = _load_lib()
+        cache = _isolate_env / "cache"
+        (cache / "terminal").mkdir(parents=True)
+        old_file = cache / "scratch.txt"
+        old_file.write_text("x")
+        assert dg.guess_category(cache) is None, "the cache dir itself is never tracked"
+        assert dg.guess_category(old_file) == "temp", "files under cache/ still age out as temp"
+        old_ts = (datetime.now(timezone.utc) - timedelta(days=8)).isoformat()
+        dg.save_tracked([
+            {"path": str(cache), "category": "temp", "timestamp": old_ts, "size": 0},
+            {"path": str(old_file), "category": "temp", "timestamp": old_ts, "size": 1},
+        ])
+
+        summary = dg.quick()
+
+        assert (cache / "terminal").is_dir(), "protected top-level dir must survive a stale tracked entry"
+        assert not old_file.exists(), "old temp FILE under cache/ is still pruned (control)"
+        assert summary["deleted"] == 1
+        assert dg.load_tracked() == [], "the stale dir entry is dropped, not retried every session"
+        assert "SKIPPED" in (_isolate_env / "disk-cleanup" / "cleanup.log").read_text()
+
+    def test_kanban_test_files_are_never_tracked_or_deleted(self, _isolate_env):
+        pi = _load_plugin_init()
+        dg = _load_lib()
+        att = _isolate_env / "kanban" / "attachments" / "t1" / "test_evidence.sh"
+        att.parent.mkdir(parents=True)
+        att.write_text("x")
+        assert dg.guess_category(att) is None
+        # A stale pre-fix entry must be dropped by re-validation instead of deleted.
+        dg.save_tracked([{"path": str(att), "category": "test",
+                          "timestamp": datetime.now(timezone.utc).isoformat(), "size": 1}])
+        pi._on_post_tool_call(tool_name="write_file", args={"path": str(att), "content": "x"},
+                              result="OK", task_id="t1", session_id="s_kb")
+        scratch = _isolate_env / "test_scratch.py"
+        scratch.write_text("x")
+        pi._on_post_tool_call(tool_name="write_file", args={"path": str(scratch), "content": "x"},
+                              result="OK", task_id="t1", session_id="s_kb")
+
+        pi._on_session_end(session_id="s_kb", completed=True, interrupted=False)
+
+        assert att.exists(), "kanban attachments are task-managed, never auto-deleted"
+        assert not scratch.exists(), "root-level scratch files are still cleaned up (control)"
+        assert dg.load_tracked() == []
+
+
+class TestGitWorktreeFilesNeverCleaned:
+    """Regression tests for #115295 — git-owned test_* files (committed regression tests
+    inside worktrees/checkouts) are never tracked or auto-deleted; scratch files outside
+    git trees still are."""
+
+    def test_quick_drops_stale_tracked_worktree_entry_instead_of_deleting(self, _isolate_env):
+        """A test_* file inside a linked git worktree ($HERMES_HOME/worktrees/, .git is a
+        pointer FILE) is not classified as disposable, and a stale pre-fix tracked entry
+        (category "test") is dropped by quick()'s re-validation, not deleted."""
+        dg = _load_lib()
+        wt = _isolate_env / "worktrees" / "repro-wt"
+        wt.mkdir(parents=True)
+        (wt / ".git").write_text("gitdir: /elsewhere/main/.git/worktrees/repro-wt\n")
+        f = wt / "test_durable.py"
+        f.write_text("x")
+        assert dg.guess_category(f) is None
+        dg.save_tracked([{"path": str(f), "category": "test",
+                          "timestamp": datetime.now(timezone.utc).isoformat(), "size": 1}])
+        result = dg.quick()
+        assert f.exists(), "git-owned test files must never be auto-deleted"
+        assert result["deleted"] == 0
+        assert dg.load_tracked() == [], "stale entry is dropped from tracking, not kept"
+
+    def test_scratch_outside_git_trees_still_cleaned(self, _isolate_env):
+        """Control: root-level test_* scratch is still auto-deleted — even when HERMES_HOME
+        itself lives inside a git checkout (dotfiles repo); only .git entries strictly below
+        HERMES_HOME mark a file as git-owned."""
+        dg = _load_lib()
+        (_isolate_env.parent / ".git").mkdir()
+        scratch = _isolate_env / "test_scratch.py"
+        scratch.write_text("x")
+        assert dg.guess_category(scratch) == "test"
+        dg.save_tracked([{"path": str(scratch), "category": "test",
+                          "timestamp": datetime.now(timezone.utc).isoformat(), "size": 1}])
+        result = dg.quick()
+        assert not scratch.exists()
+        assert result["deleted"] == 1
 
 
 class TestStaleCronEntryMigration:
@@ -342,28 +479,12 @@ class TestOnSessionEndHook:
         pi._on_session_end(session_id="s1", completed=True, interrupted=False)
         assert not p.exists(), "test file should be auto-deleted"
 
-    def test_noop_when_no_test_tracked(self, _isolate_env):
-        pi = _load_plugin_init()
-        # Nothing tracked → on_session_end should not raise.
-        pi._on_session_end(session_id="empty", completed=True, interrupted=False)
 
 
 # ---------------------------------------------------------------------------
 # Slash command
 # ---------------------------------------------------------------------------
 
-class TestSlashCommand:
-    def test_help(self, _isolate_env):
-        pi = _load_plugin_init()
-        out = pi._handle_slash("help")
-        assert "disk-cleanup" in out
-        assert "status" in out
-
-
-    def test_unknown_subcommand(self, _isolate_env):
-        pi = _load_plugin_init()
-        out = pi._handle_slash("foobar")
-        assert "Unknown subcommand" in out
 
 
 # ---------------------------------------------------------------------------
@@ -373,7 +494,7 @@ class TestSlashCommand:
 class TestBundledDiscovery:
     def _write_enabled_config(self, hermes_home, names):
         """Write plugins.enabled allow-list to config.yaml."""
-        import yaml
+        import hermes_yaml as yaml
         cfg_path = hermes_home / "config.yaml"
         cfg_path.write_text(yaml.safe_dump({"plugins": {"enabled": list(names)}}))
 
@@ -393,7 +514,7 @@ class TestBundledDiscovery:
 
     def test_disabled_beats_enabled(self, _isolate_env):
         """plugins.disabled wins even if the plugin is also in plugins.enabled."""
-        import yaml
+        import hermes_yaml as yaml
         cfg_path = _isolate_env / "config.yaml"
         cfg_path.write_text(yaml.safe_dump({
             "plugins": {

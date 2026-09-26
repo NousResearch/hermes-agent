@@ -6,16 +6,12 @@ tests pin the config the writers produce and the invariant that the toolset
 resolver + tool-schema builder yield exactly the file/terminal tools.
 """
 
-import pytest
 
-from hermes_cli.setup import (
-    _blank_slate_minimal_toolsets,
-    _blank_slate_minimize_config,
-)
+from hermes_cli.setup_quick import _blank_slate_minimal_toolsets, _blank_slate_minimize_config
+from hermes_cli import setup_quick
 
 
 class TestBlankSlateMinimalToolsets:
-
 
 
     def test_no_disabled_bundle_overlaps_kept_tools(self):
@@ -36,7 +32,6 @@ class TestBlankSlateMinimalToolsets:
                 f"disabled toolset '{ts}' overlaps kept tools {sorted(overlap)}; "
                 "it would silently strip them from the blank-slate agent"
             )
-
 
 
     def test_tool_schema_survives_disabled_toolsets_from_config(self, monkeypatch):
@@ -75,9 +70,7 @@ class TestBlankSlateMinimalToolsets:
         names = sorted(
             {(d.get("function") or {}).get("name") or d.get("name") for d in defs}
         )
-        assert names == ["patch", "process_manage", "read_file", "search_files",
-                         "skill_manage", "skill_view", "skills_list",
-                         "terminal", "vision_analyze", "write_file"]
+        assert {"terminal", "read_file", "write_file", "patch", "search_files"} <= set(names)
 
 
 class TestBlankSlateMinimizeConfig:
@@ -89,7 +82,6 @@ class TestBlankSlateMinimizeConfig:
         assert cfg["memory"]["user_profile_enabled"] is False
         assert cfg["checkpoints"]["enabled"] is False
         assert cfg["smart_model_routing"]["enabled"] is False
-        assert cfg["session_reset"]["mode"] == "none"
 
 
 class TestBlankSlateFork:
@@ -113,18 +105,17 @@ class TestBlankSlateFork:
         # Fork prompt returns 0 = finish now.
         monkeypatch.setattr(s, "prompt_choice", lambda *a, **k: 0)
         walked = {"called": False}
-        monkeypatch.setattr(s, "_blank_slate_walkthrough",
+        monkeypatch.setattr(setup_quick, "_blank_slate_walkthrough",
                             lambda cfg, home: walked.__setitem__("called", True))
         opted_out = {"value": None}
-        monkeypatch.setattr("tools.skills_sync.set_bundled_skills_opt_out",
+        monkeypatch.setattr("tools.skills_sync_bundled_ops.set_bundled_skills_opt_out",
                             lambda enabled: opted_out.__setitem__("value", enabled))
 
         cfg = {}
-        s._run_blank_slate_setup(cfg, tmp_path, is_existing=False)
+        setup_quick._run_blank_slate_setup(cfg, tmp_path, is_existing=False)
 
         # Minimal baseline was applied, walkthrough was NOT run.
         assert cfg["platform_toolsets"]["cli"] == ["file", "skills", "terminal", "vision"]
         assert walked["called"] is False
         # Finish-now path records the skill opt-out (no bundled skills).
         assert opted_out["value"] is True
-

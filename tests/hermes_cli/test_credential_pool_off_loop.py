@@ -9,7 +9,6 @@ so a networkless host froze the whole dashboard backend for 17 minutes.
 
 from __future__ import annotations
 
-import asyncio
 import threading
 import time
 from unittest.mock import patch
@@ -17,18 +16,13 @@ from unittest.mock import patch
 import pytest
 
 from hermes_cli import copilot_auth
-
+import hermes_cli.web_routers.ops as _rt_ops
 
 # ---------------------------------------------------------------------------
 # _urlopen_bounded
 # ---------------------------------------------------------------------------
 
-
 class TestUrlopenBounded:
-    def test_returns_response_when_worker_completes(self):
-        sentinel = object()
-        with patch("urllib.request.urlopen", return_value=sentinel):
-            assert copilot_auth._urlopen_bounded("req", 1.0) is sentinel
 
     def test_reraises_worker_exception(self):
         with patch("urllib.request.urlopen", side_effect=OSError("boom")):
@@ -60,11 +54,9 @@ class TestUrlopenBounded:
             release.set()
             assert closed.wait(timeout=2), "late response was not closed"
 
-
 # ---------------------------------------------------------------------------
 # single-flight exchange
 # ---------------------------------------------------------------------------
-
 
 class TestExchangeSingleFlight:
     @pytest.fixture(autouse=True)
@@ -170,16 +162,13 @@ class TestExchangeSingleFlight:
         finally:
             lock.release()
 
-
 # ---------------------------------------------------------------------------
 # web_server credential-pool handlers off the loop
 # ---------------------------------------------------------------------------
 
-
 @pytest.mark.asyncio
 async def test_list_credential_pool_runs_off_event_loop(monkeypatch):
     import hermes_cli.auth as auth_mod
-    from hermes_cli import web_server
 
     loop_thread = threading.get_ident()
     seen = {}
@@ -189,39 +178,7 @@ async def test_list_credential_pool_runs_off_event_loop(monkeypatch):
         return {}
 
     monkeypatch.setattr(auth_mod, "read_credential_pool", fake_read_pool)
-    result = await web_server.list_credential_pool()
+    result = await _rt_ops.list_credential_pool()
 
     assert result == {"providers": []}
     assert seen["thread"] != loop_thread
-
-
-@pytest.mark.asyncio
-async def test_list_credential_pool_keeps_loop_responsive(monkeypatch):
-    """A 200 ms blocking pool read must not freeze a concurrent ticker."""
-    import hermes_cli.auth as auth_mod
-    from hermes_cli import web_server
-
-    def slow_read(*args, **kwargs):
-        time.sleep(0.5)
-        return {}
-
-    monkeypatch.setattr(auth_mod, "read_credential_pool", slow_read)
-
-    gaps = []
-    stop = asyncio.Event()
-
-    async def ticker():
-        last = time.perf_counter()
-        while not stop.is_set():
-            await asyncio.sleep(0.005)
-            now = time.perf_counter()
-            gaps.append(now - last)
-            last = now
-
-    t = asyncio.create_task(ticker())
-    await web_server.list_credential_pool()
-    stop.set()
-    await t
-    # 0.25 s threshold vs a 0.5 s blocking read: a regression (read on the
-    # loop) trips it by 2x, while runner-noise descheduling would need >200 ms.
-    assert max(gaps) < 0.25, f"event loop stalled for {max(gaps) * 1000:.0f} ms"

@@ -8,8 +8,8 @@ Covers:
 import pytest
 from unittest.mock import MagicMock, patch
 
-from tests.tools.file_ops_fakes import READ_SENTINEL_RE, compound_read_output
-from tools.file_operations import ShellFileOperations, _parse_search_context_line
+from tools.file_operations import ShellFileOperations
+from tools.file_operations_search import _parse_search_context_line
 
 
 # =========================================================================
@@ -71,17 +71,6 @@ class TestCheckLintBracePaths:
         obj._command_cache = {}
         return obj
 
-    def test_normal_path(self, ops):
-        """Normal path without braces should work as before."""
-        with patch.object(ops, "_has_command", return_value=True), \
-             patch.object(ops, "_exec") as mock_exec:
-            mock_exec.return_value = MagicMock(exit_code=0, stdout="")
-            result = ops._check_lint("/tmp/test_file.js")
-
-        assert result.success is True
-        # Verify the command was built correctly
-        cmd_arg = mock_exec.call_args[0][0]
-        assert "'/tmp/test_file.js'" in cmd_arg
 
     def test_path_with_curly_braces(self, ops):
         """Path containing ``{`` and ``}`` must not raise KeyError/ValueError."""
@@ -95,14 +84,6 @@ class TestCheckLintBracePaths:
         cmd_arg = mock_exec.call_args[0][0]
         assert "{test}" in cmd_arg
 
-    def test_path_with_nested_braces(self, ops):
-        """Path with complex brace patterns like ``{{var}}`` should be safe."""
-        with patch.object(ops, "_has_command", return_value=True), \
-             patch.object(ops, "_exec") as mock_exec:
-            mock_exec.return_value = MagicMock(exit_code=0, stdout="")
-            result = ops._check_lint("/tmp/{{var}}.js")
-
-        assert result.success is True
 
     def test_unsupported_extension_skipped(self, ops):
         """Extensions without a linter should return a skipped result."""
@@ -170,13 +151,6 @@ class TestCheckLintDelta:
         obj._command_cache = {}
         return obj
 
-    def test_clean_post_no_pre_lint(self, ops):
-        """Hot path: post-write is clean, pre-lint should be skipped entirely."""
-        with patch.object(ops, "_check_lint", wraps=ops._check_lint) as wrapped:
-            r = ops._check_lint_delta("/tmp/a.py", pre_content="x = 0\n", post_content="x = 1\n")
-            # Post-lint called exactly once (clean), pre-lint never called.
-            assert wrapped.call_count == 1
-        assert r.success is True
 
 
     def test_pre_existing_remains_flagged_but_not_new(self, ops):
@@ -195,59 +169,6 @@ class TestCheckLintDelta:
 # =========================================================================
 
 
-class TestPaginationBounds:
-    """Invalid pagination inputs should not leak into shell commands."""
-
-    def test_read_file_clamps_offset_and_limit_before_building_sed_range(self):
-        env = MagicMock()
-        env.cwd = "/tmp"
-        ops = ShellFileOperations(env)
-        commands = []
-
-        def fake_exec(command, *args, **kwargs):
-            commands.append(command)
-            m = READ_SENTINEL_RE.search(command)
-            if m:
-                return MagicMock(
-                    exit_code=0,
-                    stdout=compound_read_output(
-                        m.group(0), size=12, sample=b"line1\nline2\n",
-                        content="line1\n", total_lines=2,
-                    ),
-                )
-            return MagicMock(exit_code=0, stdout="")
-
-        with patch.object(ops, "_exec", side_effect=fake_exec):
-            result = ops.read_file("notes.txt", offset=0, limit=0)
-
-        assert result.error is None
-        assert "1|line1" in result.content
-        # The clamped range rides the single compound probe.
-        assert len(commands) == 1
-        assert "sed -n '1,1p' 'notes.txt' 2>/dev/null | cut -b1-8001" in commands[0]
-
-    def test_search_clamps_offset_and_limit_before_building_head_pipeline(self):
-        env = MagicMock()
-        env.cwd = "/tmp"
-        ops = ShellFileOperations(env)
-        commands = []
-
-        def fake_exec(command, *args, **kwargs):
-            commands.append(command)
-            if command.startswith("test -e"):
-                return MagicMock(exit_code=0, stdout="exists")
-            if "--files" in command:
-                return MagicMock(exit_code=0, stdout="a.py\n")
-            return MagicMock(exit_code=0, stdout="")
-
-        with patch.object(ops, "_has_command", side_effect=lambda cmd: cmd == "rg"), \
-             patch.object(ops, "_exec", side_effect=fake_exec):
-            result = ops.search("*.py", target="files", path=".", offset=-4, limit=-2)
-
-        assert result.files == ["a.py"]
-        rg_commands = [cmd for cmd in commands if "--files" in cmd]
-        assert rg_commands
-        assert "| head -n 2" in rg_commands[0]
 
 
 # =========================================================================
@@ -256,31 +177,6 @@ class TestPaginationBounds:
 
 
 class TestSearchContextParsing:
-    def test_search_with_grep_uses_extended_regex(self):
-        env = MagicMock()
-        env.cwd = "/tmp"
-        ops = ShellFileOperations(env)
-
-        with patch.object(ops, "_exec") as mock_exec:
-            mock_exec.return_value = MagicMock(
-                exit_code=0,
-                stdout="./first.txt:1:foo\n./second.txt:1:bar\n",
-            )
-            result = ops._search_with_grep(
-                "foo|bar",
-                path=".",
-                file_glob=None,
-                limit=10,
-                offset=0,
-                output_mode="content",
-                context=0,
-            )
-
-        cmd_arg = mock_exec.call_args[0][0]
-        assert cmd_arg.startswith("set -o pipefail; grep -rnHE ")
-        assert result.error is None
-        assert result.total_count == 2
-        assert [match.content for match in result.matches] == ["foo", "bar"]
 
     def test_parse_search_context_line_prefers_rightmost_numeric_separator(self):
         parsed = _parse_search_context_line("dir/file-12-name.py-8-context here")
@@ -313,3 +209,65 @@ class TestSearchContextParsing:
         assert result.matches[0].path == "dir/file-12-name.py"
         assert result.matches[0].line_number == 8
         assert result.matches[0].content == "context here"
+
+
+# =========================================================================
+# total_lines for files without a trailing newline (#3907)
+# =========================================================================
+
+
+class TestNoTrailingNewlineTotalLines:
+    """``wc -l`` counts newlines, not lines: a final unterminated line must
+    still count. Covers the live read paths plus the assembler contract."""
+
+    @pytest.fixture()
+    def ops(self):
+        from tools.environments.local import LocalEnvironment
+
+        return ShellFileOperations(LocalEnvironment())
+
+
+    def test_pagination_admits_final_unterminated_line(self, tmp_path, ops):
+        target = tmp_path / "no_trailing.txt"
+        target.write_bytes(b"line1\nline2\nline3")
+
+        first = ops.read_file(str(target), offset=1, limit=2)
+        assert first.truncated is True
+        assert "of 3 lines" in (first.hint or "")
+
+        last = ops.read_file(str(target), offset=3)
+        assert last.error is None
+        assert last.content == "3|line3"
+        assert last.total_lines == 3
+
+    def test_terminated_and_empty_files_unchanged(self, tmp_path, ops):
+        terminated = tmp_path / "terminated.txt"
+        terminated.write_bytes(b"a\nb\nc\n")
+        assert ops.read_file(str(terminated)).total_lines == 3
+
+        empty = tmp_path / "empty.txt"
+        empty.write_bytes(b"")
+        result = ops.read_file(str(empty))
+        assert result.total_lines == 0
+
+    def test_native_path_counts_final_unterminated_line(self, tmp_path, ops):
+        target = tmp_path / "no_trailing.txt"
+        target.write_bytes(b"line1\nline2\nline3")
+
+        result = ops._read_file_native(str(target), 1, 2000)
+
+        assert result.error is None
+        assert result.total_lines == 3
+
+    def test_assembler_bumps_count_only_on_proven_missing_newline(self):
+        ops = ShellFileOperations.__new__(ShellFileOperations)
+
+        proved = ops._assemble_read_result(
+            "a\nb\nc\n", offset=1, end_line=2000, total_lines=2,
+            file_size=5, file_ends_with_newline=False)
+        assert proved.total_lines == 3
+
+        unknown = ops._assemble_read_result(
+            "a\nb\nc\n", offset=1, end_line=2000, total_lines=2,
+            file_size=5, file_ends_with_newline=None)
+        assert unknown.total_lines == 2

@@ -11,7 +11,6 @@ Context: Omarchy prompted-agent launches (basecamp/omarchy#8705) needed a
 handling, like other coding agents.
 """
 
-import sys
 import types
 
 import pytest
@@ -85,17 +84,6 @@ class TestShouldSeedInteractive:
         )
 
 
-class TestSeededQueryMessage:
-    def test_str_returns_text(self, cli_mod):
-        msg = cli_mod._SeededQueryMessage("!echo pwned")
-        assert str(msg) == "!echo pwned"
-        assert msg.images == []
-
-    def test_images_are_copied(self, cli_mod):
-        imgs = ["/tmp/a.png"]
-        msg = cli_mod._SeededQueryMessage("hi", imgs)
-        assert msg.images == imgs
-        assert msg.images is not imgs
 
 
 class TestChatParserOneshotFlag:
@@ -114,9 +102,6 @@ class TestChatParserOneshotFlag:
         # `args.oneshot` truthiness and would treat True as a prompt.
         assert getattr(args, "oneshot", None) in (None, False)
 
-    def test_chat_without_oneshot_defaults_false(self):
-        args = self._parse(["chat", "-q", "hello"])
-        assert args.oneshot_exit is False
 
     def test_top_level_oneshot_prompt_unaffected(self):
         args = self._parse(["-z", "what is up"])

@@ -427,6 +427,13 @@ def _ensure_windows_gateway_venv_imports() -> None:
         return
 
     project_root = Path(__file__).resolve().parent.parent
+    from pm.environments import committed_venv
+
+    if committed_venv(project_root) is not None:
+        # PM already activated its committed generation at bootstrap. Re-adding
+        # the in-tree venv would shadow its native wheels with another Python ABI.
+        return
+
     candidates: list[Path] = []
     if os.environ.get("VIRTUAL_ENV"):
         candidates.append(Path(os.environ["VIRTUAL_ENV"]))

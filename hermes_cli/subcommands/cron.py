@@ -39,11 +39,14 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     cron_create.add_argument("--skill", dest="skills", action="append",
         help="Attach a skill. Repeat to add multiple skills.")
     cron_create.add_argument("--script",
-        help="Path to a script under ~/.hermes/scripts/. Default mode: "
-            "script stdout is injected into the agent's prompt each run. "
-            "With --no-agent: the script IS the job and its stdout is "
-            "delivered verbatim. .sh/.bash files run via bash, everything "
-            "else via Python.")
+        help="Script path. New script jobs default to --target backend and require "
+            "an absolute path visible to that backend. With --target scheduler, "
+            "use a path under ~/.hermes/scripts/. Default mode: script stdout is "
+            "injected into the agent's prompt each run. With --no-agent: the script "
+            "IS the job and its stdout is delivered verbatim. .sh/.bash files run "
+            "via bash, everything else via Python.")
+    cron_create.add_argument("--target", choices=["scheduler", "backend"],
+        help="Script target; new script jobs default to backend. Scheduler scripts stay under ~/.hermes/scripts/.")
     _flag(cron_create, "--no-agent", dest="no_agent", default=False,
         help="Skip the LLM entirely — run --script on schedule and deliver "
             "its stdout directly. Empty stdout = silent. Classic watchdog "
@@ -106,9 +109,12 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         help="Remove a specific attached skill. Repeatable.")
     _flag(cron_edit, "--clear-skills", help="Remove all attached skills from the job")
     cron_edit.add_argument("--script",
-        help="Path to a script under ~/.hermes/scripts/. Pass empty string to clear. "
-            "With --no-agent the script IS the job; otherwise its stdout is "
-            "injected into the agent's prompt each run.")
+        help="Script path. Scheduler-target jobs use paths under ~/.hermes/scripts/; "
+            "backend-target jobs require an absolute backend-visible path. Pass empty "
+            "string to clear. With --no-agent the script IS the job; otherwise its "
+            "stdout is injected into the agent's prompt each run.")
+    cron_edit.add_argument("--target", choices=["scheduler", "backend"],
+        help="Change the script execution target.")
     cron_edit.add_argument(
         "--no-agent", dest="no_agent", action="store_const", const=True, default=None,
         help="Enable no-agent mode on this job (requires --script or an "

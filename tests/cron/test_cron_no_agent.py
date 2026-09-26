@@ -12,6 +12,8 @@ Covers:
 from __future__ import annotations
 
 
+import subprocess
+
 import pytest
 
 
@@ -54,7 +56,7 @@ def test_update_job_roundtrips_no_agent_flag(hermes_env):
 
     script_path = hermes_env / "scripts" / "w.sh"
     script_path.write_text("echo hi\n")
-    job = create_job(prompt=None, schedule="every 5m", script="w.sh", no_agent=True, deliver="local")
+    job = create_job(prompt=None, schedule="every 5m", script="w.sh", target="scheduler", no_agent=True, deliver="local")
 
     update_job(job["id"], {"no_agent": False})
     reloaded = get_job(job["id"])
@@ -86,7 +88,7 @@ def test_run_job_no_agent_success_returns_script_stdout(hermes_env):
     script_path.write_text("#!/usr/bin/env bash\necho 'RAM 92% on host'\n")
 
     job = create_job(
-        prompt=None, schedule="every 5m", script="alert.sh", no_agent=True, deliver="local"
+        prompt=None, schedule="every 5m", script="alert.sh", target="scheduler", no_agent=True, deliver="local"
     )
     success, doc, final_response, error = run_job(job)
     assert success is True
@@ -116,7 +118,7 @@ def test_run_job_no_agent_reloads_dotenv_before_script(hermes_env, monkeypatch):
     script_path.write_text('#!/usr/bin/env bash\necho "ok"\n')
 
     job = create_job(
-        prompt=None, schedule="every 5m", script="probe.sh", no_agent=True, deliver="local"
+        prompt=None, schedule="every 5m", script="probe.sh", target="scheduler", no_agent=True, deliver="local"
     )
     success, doc, final_response, error = run_job(job)
     assert success is True
@@ -182,6 +184,111 @@ def test_no_agent_script_of_launch_profile_keeps_its_own_env_credential(hermes_e
 
 
 
+
+
+
+def test_timed_out_no_agent_script_delivery_is_not_mislabeled_as_provider_failure(
+    hermes_env, monkeypatch,
+):
+    """A watchdog timeout happens before any LLM/provider call.
+
+    The delivery summary must preserve that process-level failure taxonomy and
+    must not claim a provider fallback was attempted or exhausted.
+    """
+    from cron.jobs import create_job
+    import cron.scheduler as scheduler
+    from cron import scheduler_script as sched_script
+
+    (hermes_env / "scripts" / "slow.py").write_text("import time; time.sleep(999)\n")
+    job = create_job(
+        prompt=None,
+        schedule="every 5m",
+        script="slow.py",
+        target="scheduler",
+        no_agent=True,
+        deliver="telegram",
+        name="slow watchdog",
+    )
+    delivered = []
+
+    # The script runner uses Popen + a polling loop (cancel/timeout aware),
+    # so simulate a process that never finishes: communicate() always times
+    # out and the script deadline is shrunk to keep the test fast.
+    class _NeverFinishes:
+        returncode = None
+        pid = 0
+        stdout = None
+        stderr = None
+
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def poll(self):
+            return None
+
+        def communicate(self, timeout=None):
+            raise subprocess.TimeoutExpired(cmd="slow.py", timeout=timeout)
+
+        def wait(self, timeout=None):
+            raise subprocess.TimeoutExpired(cmd="slow.py", timeout=timeout)
+
+        def kill(self):
+            self.returncode = -9
+
+    monkeypatch.setattr(scheduler.subprocess, "Popen", _NeverFinishes)
+    monkeypatch.setattr(sched_script, "_get_script_timeout", lambda: 1)
+    monkeypatch.setattr(sched_script, "_terminate_cron_script_process",
+        lambda proc: setattr(proc, "returncode", -15),
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "_deliver_result",
+        lambda _job, content, **_kwargs: delivered.append(content),
+    )
+
+    assert scheduler.run_one_job(job) is True
+    assert len(delivered) == 1
+    assert "script timed out" in delivered[0].lower()
+    assert "provider" not in delivered[0].lower()
+    assert "fallback" not in delivered[0].lower()
+
+
+def test_agent_provider_timeout_delivery_keeps_fallback_guidance(hermes_env, monkeypatch):
+    """Provider timeout classification remains available to agent-backed jobs."""
+    from cron.jobs import create_job
+    import cron.scheduler as scheduler
+    from cron import scheduler_script as sched_script
+
+    job = create_job(
+        prompt="Summarize the overnight logs.",
+        schedule="every 5m",
+        deliver="telegram",
+        name="provider-backed report",
+    )
+    delivered = []
+
+    monkeypatch.setattr(
+        scheduler,
+        "run_job",
+        lambda *_args, **_kwargs: (
+            False,
+            "# Cron Job: provider-backed report\n\nprovider request timed out\n",
+            "",
+            "ReadTimeout: provider request timed out after fallback attempts",
+        ),
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "_deliver_result",
+        lambda _job, content, **_kwargs: delivered.append(content),
+    )
+
+    assert scheduler.run_one_job(job) is True
+    assert len(delivered) == 1
+    assert "did not respond in time" in delivered[0].lower()
+    # Chain wording is honest (#85508): "no backup provider succeeded" when configured,
+    # "no backup provider is configured" guidance otherwise.
+    assert "backup provider" in delivered[0].lower()
 
 
 

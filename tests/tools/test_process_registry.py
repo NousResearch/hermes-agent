@@ -937,6 +937,27 @@ class TestSpawnEnvSanitization:
         # A failed launch must not be exposed as a running/tracked session.
         assert session.id not in registry._running
 
+    def test_spawn_via_env_wrapper_writes_numeric_exit_status(self, registry, tmp_path):
+        """A successful non-local wrapper must persist a parseable exit code."""
+        class FakeEnv:
+            def get_temp_dir(self):
+                return str(tmp_path)
+
+            def execute(self, command, **kwargs):
+                completed = subprocess.run(
+                    ["bash", "-lc", command], text=True, capture_output=True, check=False,
+                )
+                return {"output": completed.stdout, "returncode": completed.returncode}
+
+        with patch("tools.process_registry.threading.Thread"):
+            session = registry.spawn_via_env(FakeEnv(), "printf remote-ok")
+
+        exit_path = tmp_path / f"hermes_bg_{session.id}.exit"
+        deadline = time.monotonic() + 5
+        while not exit_path.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert exit_path.read_text().strip() == "0"
+
     def test_env_poller_quotes_temp_paths_with_spaces(self, registry):
         session = _make_session(sid="proc_space")
         session.exited = False
@@ -1344,6 +1365,35 @@ class TestKillProcess:
         registry._finished[s.id] = s
         result = registry.kill_process(s.id)
         assert result["status"] == "already_exited"
+
+    def test_remote_kill_targets_the_dedicated_process_group(self, registry):
+        class FakeEnv:
+            def __init__(self):
+                self.calls = []
+
+            def execute(self, command, **kwargs):
+                self.calls.append((command, kwargs))
+                return {"returncode": 0}
+
+        session = _make_session(sid="proc_remote_group")
+        session.pid = 4242
+        session.env_ref = env = FakeEnv()
+
+        assert registry._signal_kill(session, session.id, consume_output=False) is None
+        assert env.calls == [("kill -TERM -4242 2>/dev/null", {"timeout": 5})]
+
+    def test_remote_kill_propagates_backend_signal_failure(self, registry):
+        class FakeEnv:
+            def execute(self, command, **kwargs):
+                return {"returncode": 1, "output": "kill: Operation not permitted"}
+
+        session = _make_session(sid="proc_remote_group_failure")
+        session.pid = 4242
+        session.env_ref = FakeEnv()
+
+        result = registry._signal_kill(session, session.id, consume_output=False)
+        assert result["status"] == "error"
+        assert "Operation not permitted" in result["error"]
 
 
     def test_kill_detached_session_uses_host_pid(self, registry):

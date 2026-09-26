@@ -637,10 +637,11 @@ def _cron_doctor_issues_for_job(job: Dict[str, Any]) -> List[str]:
     script = str(job.get("script") or "").strip()
     if job.get("no_agent") and not script:
         issues.append("no-agent job has no script")
-    if script and (script_issue := _script_health_issue(script)):
+    target = str(job.get("target") or "scheduler").strip().lower()
+    if script and target != "backend" and (script_issue := _script_health_issue(script)):
         issues.append(script_issue)
     workdir = str(job.get("workdir") or "").strip()
-    if workdir and not Path(workdir).expanduser().exists():
+    if workdir and target != "backend" and not Path(workdir).expanduser().exists():
         issues.append(f"workdir not found: {workdir}")
     return issues
 
@@ -668,7 +669,7 @@ def cron_doctor() -> int:
 
 
 _JOB_ARG_FIELDS = (("name", "name"), ("deliver", "deliver"), ("failure_deliver", "failure_deliver"),
-                   ("repeat", "repeat"), ("script", "script"), ("workdir", "workdir"),
+                   ("repeat", "repeat"), ("script", "script"), ("target", "target"), ("workdir", "workdir"),
                    ("model", "model"), ("provider", "model_provider"), ("pinned", "pinned"),
                    ("monitor_script", "monitor_script"), ("monitor_url", "monitor_url"),
                    ("continuity", "continuity"), ("reasoning_effort", "reasoning_effort"))

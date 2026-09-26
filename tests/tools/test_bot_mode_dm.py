@@ -11,6 +11,7 @@ import shlex
 import subprocess
 import sys
 import textwrap
+import threading
 import time
 from pathlib import Path
 
@@ -629,6 +630,34 @@ def test_live_dm_runner_retry_never_reexecutes_failed_claim(tmp_path, monkeypatc
     assert failed["status"] == "failed"
     assert failed["delivery_id"] == queued["delivery_id"]
     assert dm_file.read_text(encoding="utf-8") == "hello"
+
+
+def test_live_dm_wait_reports_reply_after_initial_wait_budget(tmp_path, monkeypatch, capsys):
+    """A retained live receipt must still deliver its reply after the old 300 s boundary."""
+    from tools import bot_live_delivery as live
+
+    owner = dict(profile_home=str(tmp_path), session_id="bot", lease_id="lease", live_session_id="live")
+    record = live.deliver_to_live_owner(tmp_path, owner, "ping", delivery_id="a" * 32)
+    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0)
+    monkeypatch.setattr(live, "_POLL_SECONDS", 0.01)
+
+    def settle_later():
+        time.sleep(0.05)
+        claimed = live.claim_pending_delivery(tmp_path, owner)
+        assert claimed is not None
+        live.complete_delivery(tmp_path, claimed["delivery_id"], status="settled", reply="PONG")
+
+    settling = threading.Thread(target=settle_later)
+    settling.start()
+    try:
+        exit_code = bot_mode_dm._wait_live_dm(str(tmp_path), record["delivery_id"])
+    finally:
+        settling.join(timeout=2)
+
+    notice = json.loads(capsys.readouterr().out)
+    assert exit_code == 0
+    assert notice["status"] == "settled"
+    assert notice["reply"] == "PONG"
 
 
 # ── plaintext tempfile lifecycle ─────────────────────────────────────────────

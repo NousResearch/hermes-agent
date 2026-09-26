@@ -5,7 +5,7 @@ import { translateNow, type Translations } from '@/i18n'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { type CommandsCatalogLike, filterDesktopCommandsCatalog } from '@/lib/desktop-slash-commands'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
-import type { ComposerAttachment } from '@/store/composer'
+import type { ComposerAttachment, ComposerFollowUp } from '@/store/composer'
 
 import { registerRecoveredRuntime, singleFlightSessionResume, takeRecoveredRuntime } from './single-flight-resume'
 
@@ -705,6 +705,10 @@ export function visibleUserIndexAtOrdinal(messages: readonly ChatMessage[], targ
 
 export interface SubmitTextOptions {
   attachments?: ComposerAttachment[]
+  /** The quoted transcript passage this send answers, when the caller carries
+   *  its own (a queue drain froze it at park time). Omit to let the submit read
+   *  the composer scope it was handed; pass null to send without one. */
+  followUp?: ComposerFollowUp | null
   /** The composer scope key that was actually loaded when this text was
    *  submitted (see use-composer-draft's activeQueueSessionKeyRef). Compared
    *  against the resolved submit target in sessionContextDrift — a mismatch

@@ -3143,6 +3143,12 @@ export interface Translations {
 
   composer: {
     message: string
+    followUp: {
+      action: string
+      fromAssistant: string
+      fromYou: string
+      remove: string
+    }
     wakingProfile: (profile: string) => string
     placeholderStarting: string
     placeholderReconnecting: string

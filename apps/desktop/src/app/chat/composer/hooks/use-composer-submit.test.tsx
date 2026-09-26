@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { PaneVisibleContext } from '@/components/pane-shell/pane-visibility'
 import { $clarifyRequests } from '@/store/clarify'
-import type { ComposerAttachment } from '@/store/composer'
+import { type ComposerAttachment, mainComposerFollowUpScope } from '@/store/composer'
 import { clearQueuedPrompts, getQueuedPrompts } from '@/store/composer-queue'
 import {
   clearAllPrompts,
@@ -338,6 +338,7 @@ describe('useComposerSubmit external request routing', () => {
 describe('useComposerSubmit busy-turn routing', () => {
   afterEach(() => {
     cleanup()
+    mainComposerFollowUpScope.clear()
     vi.restoreAllMocks()
   })
 
@@ -467,6 +468,47 @@ describe('useComposerSubmit busy-turn routing', () => {
     expect(onSteer).not.toHaveBeenCalled()
     expect(queueCurrentDraft).not.toHaveBeenCalled()
     expect(onCancel).not.toHaveBeenCalled()
+  })
+
+  it('sends a passage-only draft instead of treating the composer as empty', async () => {
+    const { hook, onCancel, onSteer, onSubmit, queueCurrentDraft } = renderSubmitHook()
+    mainComposerFollowUpScope.set({ passage: 'the quoted answer', source: 'assistant' })
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    await waitFor(() =>
+      expect(onSubmit).toHaveBeenCalledWith('', { attachments: [], composerScope: 'stored-session' })
+    )
+    expect(onCancel).not.toHaveBeenCalled()
+    expect(onSteer).not.toHaveBeenCalled()
+    expect(queueCurrentDraft).not.toHaveBeenCalled()
+  })
+
+  it('never stops the running turn for a passage-only draft', async () => {
+    const { hook, onCancel, onSubmit, queueCurrentDraft } = renderSubmitHook({ busy: true })
+    mainComposerFollowUpScope.set({ passage: 'the quoted answer', source: 'assistant' })
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    expect(onCancel).not.toHaveBeenCalled()
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect(queueCurrentDraft).toHaveBeenCalledTimes(1)
+  })
+
+  it('queues a quoted draft instead of letting a redirect swallow the passage', async () => {
+    const { hook, onSteer, queueCurrentDraft } = renderSubmitHook({ busy: true, text: 'tighten this' })
+    mainComposerFollowUpScope.set({ passage: 'the quoted answer', source: 'assistant' })
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    expect(onSteer).not.toHaveBeenCalled()
+    expect(queueCurrentDraft).toHaveBeenCalledTimes(1)
   })
 })
 

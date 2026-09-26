@@ -4,7 +4,7 @@ import { type RefObject, useCallback, useEffect, useRef, useState } from 'react'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { useSessionSlice } from '@/lib/use-session-slice'
-import { type ComposerAttachment } from '@/store/composer'
+import { type ComposerAttachment, type ComposerFollowUp } from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
 import {
   $parkedQueueSessions,
@@ -101,6 +101,15 @@ export function useComposerQueue({
   const drainFailuresRef = useRef(new Map<string, number>())
   const [drainRetryTick, setDrainRetryTick] = useState(0)
 
+  /** Point the composer's card at an entry's quote (or empty it). */
+  const seedFollowUp = (quote: ComposerFollowUp | null | undefined) => {
+    if (quote) {
+      scope.followUp.set(quote)
+    } else {
+      scope.followUp.clear()
+    }
+  }
+
   const beginQueuedEdit = (entry: QueuedPromptEntry) => {
     if (!activeQueueSessionKey || queueEdit) {
       return
@@ -110,11 +119,15 @@ export function useComposerQueue({
       attachments: cloneAttachments(attachments),
       draft: draftRef.current,
       entryId: entry.id,
+      followUp: scope.followUp.$followUp.get(),
       sessionKey: activeQueueSessionKey
     })
     // Edit what the panel SHOWS. A queued `/skill` entry's text is the
     // expanded skill body — never drop that into the composer.
     loadIntoComposer(entry.displayText ?? entry.text, entry.attachments)
+    // …including the passage it answers: the entry is the only place that
+    // quote still lives, and the card is where the user can see or drop it.
+    seedFollowUp(entry.followUp)
     triggerHaptic('selection')
     focusInput()
   }
@@ -136,6 +149,7 @@ export function useComposerQueue({
 
     const saved = updateQueuedPrompt(queueEdit.sessionKey, queueEdit.entryId, {
       attachments: cloneAttachments(attachments),
+      followUp: scope.followUp.$followUp.get() ?? null,
       text: draftRef.current
     })
 
@@ -144,9 +158,11 @@ export function useComposerQueue({
     if (next) {
       setQueueEditSnapshot({ ...queueEdit, entryId: next.id })
       loadIntoComposer(next.displayText ?? next.text, next.attachments)
+      seedFollowUp(next.followUp)
     } else {
       setQueueEditSnapshot(null)
       loadIntoComposer(queueEdit.draft, queueEdit.attachments)
+      seedFollowUp(queueEdit.followUp)
     }
 
     triggerHaptic(saved ? 'success' : 'selection')
@@ -163,12 +179,18 @@ export function useComposerQueue({
     if (action === 'save') {
       const text = draftRef.current
       const next = cloneAttachments(attachments)
+      const followUp = scope.followUp.$followUp.get() ?? null
 
-      if (!text.trim() && next.length === 0) {
+      if (!text.trim() && next.length === 0 && !followUp) {
         return false
       }
 
-      const saved = updateQueuedPrompt(queueEdit.sessionKey, queueEdit.entryId, { attachments: next, text })
+      const saved = updateQueuedPrompt(queueEdit.sessionKey, queueEdit.entryId, {
+        attachments: next,
+        followUp,
+        text
+      })
+
       triggerHaptic(saved ? 'success' : 'selection')
     } else {
       triggerHaptic('cancel')
@@ -176,6 +198,9 @@ export function useComposerQueue({
 
     setQueueEditSnapshot(null)
     loadIntoComposer(queueEdit.draft, queueEdit.attachments)
+    // The draft the user stepped away from gets its own quote back, whether the
+    // edit was saved (the entry kept the passage) or cancelled.
+    seedFollowUp(queueEdit.followUp)
     focusInput()
 
     return true
@@ -183,12 +208,15 @@ export function useComposerQueue({
 
   const queueCurrentDraft = useCallback(() => {
     const text = draftRef.current
+    const followUp = scope.followUp.$followUp.get()
 
-    if (!activeQueueSessionKey || (!text.trim() && attachments.length === 0)) {
+    if (!activeQueueSessionKey || (!text.trim() && attachments.length === 0 && !followUp)) {
       return false
     }
 
-    if (!enqueueQueuedPrompt(activeQueueSessionKey, { text, attachments })) {
+    // The passage moves WITH the prompt it was attached to: a queued reply that
+    // lost its quote would reach the model answering nothing in particular.
+    if (!enqueueQueuedPrompt(activeQueueSessionKey, { text, attachments, followUp })) {
       return false
     }
 
@@ -196,10 +224,12 @@ export function useComposerQueue({
     // Queue entry retains blob: previews; revoke when the entry is discarded
     // or drained into a submit that takes ownership (see composer-queue).
     scope.attachments.clear({ retainPreviewUrls: true })
+    // The passage moved into the entry along with the words; the card is done.
+    scope.followUp.clear()
     triggerHaptic('selection')
 
     return true
-  }, [activeQueueSessionKey, attachments, clearDraft, draftRef, scope.attachments])
+  }, [activeQueueSessionKey, attachments, clearDraft, draftRef, scope.attachments, scope.followUp])
 
   // All queue drain paths share one lock + send-then-remove sequence.
   // `pickEntry` lets each caller choose head, by-id, or skip-edited.
@@ -227,7 +257,8 @@ export function useComposerQueue({
             ...(entry.displayKind ? { displayKind: entry.displayKind } : {}),
             fromQueue: true,
             sessionId: drainRuntimeSessionId,
-            storedSessionId: drainQueueSessionKey
+            storedSessionId: drainQueueSessionKey,
+            followUp: entry.followUp ?? null
           })
         )
 

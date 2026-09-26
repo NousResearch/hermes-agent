@@ -90,7 +90,7 @@ export function useComposerDraft({
   visibleRef.current = paneVisible
   const floating = useStoreSelector($composerPopout, state => state.poppedOut)
   // Which composer this is on the focus bus + which attachment set it owns.
-  const { attachments: attachmentScope, target } = useComposerScope()
+  const { attachments: attachmentScope, followUp: followUpScope, target } = useComposerScope()
 
   // Coarse edges only — these flip rarely (empty↔non-empty, the `?` help sigil,
   // steerable-vs-slash), so typing within a line costs no render.
@@ -527,6 +527,15 @@ export function useComposerDraft({
       // unmounted one's — so move it into the fresh draft when the gone
       // verdict announced it. No announcement, no-op.
       adoptGoneSessionDraft()
+    }
+
+    // A pending follow-up belongs to the session that was on screen when it was
+    // quoted, and it is not part of the persisted draft: drop it on the switch
+    // rather than let a card the user has stopped looking at ride the next send
+    // in another session. Checked against the PREVIOUS scope, before the ref is
+    // repointed below.
+    if (draftScopeRef.current !== activeQueueSessionKey) {
+      followUpScope.clear()
     }
 
     draftScopeRef.current = activeQueueSessionKey

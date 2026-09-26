@@ -309,6 +309,8 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
     scope: {
       removeAttachments: attachments => scope.attachments.removeOccurrences(attachments),
       readAttachments: () => scope.attachments.$attachments.get(),
+      readFollowUp: () => scope.followUp.$followUp.get(),
+      clearFollowUp: () => scope.followUp.clear(),
       // Busy/messages flow through updateSession -> the tile's state slice;
       // the primary view atoms must never see a tile turn.
       setAwaitingResponse: () => undefined,

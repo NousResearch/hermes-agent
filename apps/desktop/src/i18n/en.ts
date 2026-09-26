@@ -3709,6 +3709,12 @@ export const en: Translations = {
 
   composer: {
     message: 'Message',
+    followUp: {
+      action: 'Follow-up',
+      fromAssistant: 'Follow-up · answer',
+      fromYou: 'Follow-up · your message',
+      remove: 'Remove follow-up'
+    },
     wakingProfile: profile => `Waking up ${profile}…`,
     placeholderStarting: 'Starting Hermes...',
     placeholderReconnecting: 'Reconnecting to Hermes…',

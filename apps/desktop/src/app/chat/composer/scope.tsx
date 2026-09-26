@@ -2,7 +2,12 @@ import type { ReadableAtom } from 'nanostores'
 import { createContext, useContext } from 'react'
 
 import type { ChatMessage } from '@/lib/chat-messages'
-import { type ComposerAttachmentScope, mainComposerScope } from '@/store/composer'
+import {
+  type ComposerAttachmentScope,
+  type ComposerFollowUpScope,
+  mainComposerFollowUpScope,
+  mainComposerScope
+} from '@/store/composer'
 import { $activeSessionAwaitingInput } from '@/store/prompts'
 import { $messages } from '@/store/session'
 
@@ -23,6 +28,9 @@ export interface ComposerScope {
   /** This scope's "turn parked on user input" edge — gates Esc-to-stop. */
   $awaitingInput: ReadableAtom<boolean>
   attachments: ComposerAttachmentScope
+  /** This scope's pending transcript follow-up — the passage attached to the
+   *  message it is about to send (cleared on a session switch). */
+  followUp: ComposerFollowUpScope
   /** This scope's transcript. Read it imperatively (input-history browse) to
    *  keep streaming out of the composer's renders; subscribe only off-render
    *  (auto-speak) where the reply edge is the whole point. */
@@ -42,6 +50,7 @@ export const MAIN_COMPOSER_SCOPE: ComposerScope = {
   $awaitingInput: $activeSessionAwaitingInput,
   $messages,
   attachments: mainComposerScope,
+  followUp: mainComposerFollowUpScope,
   target: 'main'
 }
 

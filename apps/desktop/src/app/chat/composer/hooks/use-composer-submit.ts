@@ -217,7 +217,12 @@ export function useComposerSubmit({
     // descend, then Enter) is still the reference the user picked — promote it
     // on the way out so it attaches instead of submitting as inert text.
     const text = pathifyRefs(draftRef.current)
-    const payloadPresent = text.trim().length > 0 || attachments.length > 0
+    // A pending follow-up is a sendable payload on its own: the prompt pipeline
+    // merges the passage ahead of the text, exactly like an attachment rides
+    // along. Every ladder below has to see it, or Enter on a passage-only draft
+    // is a no-op while idle and the Stop branch while busy.
+    const followUpPresent = scope.followUp.$followUp.get() !== null
+    const payloadPresent = text.trim().length > 0 || attachments.length > 0 || followUpPresent
 
     // A clarify card parked on this session owns the turn: the agent is blocked
     // inside its tool batch waiting on `clarify.respond`, so a follow-up routed
@@ -262,10 +267,13 @@ export function useComposerSubmit({
         triggerHaptic('submit')
         clearDraft()
         dispatchSubmit(text)
-      } else if (!compacting && !blockingPrompt && !attachments.length && text.trim()) {
+      } else if (!compacting && !blockingPrompt && !attachments.length && !followUpPresent && text.trim()) {
         // Cursor-style stop-and-correct: interrupt the live turn and redirect
         // it with this text. redirect() preserves the shown reasoning/work; if
         // the turn already ended, steerDraft re-queues so nothing is lost.
+        // A quoted passage never rides a redirect — it is merged into the
+        // message at submit, while a redirect injects text into the live turn —
+        // so its presence queues the whole payload for the next turn instead.
         steerDraft()
       } else if (payloadPresent) {
         // Attachments can't ride a redirect (no tool-result image carriage) —

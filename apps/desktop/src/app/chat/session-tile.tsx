@@ -37,7 +37,7 @@ import { useI18n } from '@/i18n'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { NEW_SESSION_TITLE, sessionTitle } from '@/lib/chat-runtime'
 import { transcribeAudioClientDirect } from '@/lib/voice-client-direct'
-import { createComposerAttachmentScope, draftTitleFor } from '@/store/composer'
+import { createComposerAttachmentScope, createComposerFollowUpScope, draftTitleFor } from '@/store/composer'
 import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $projectTree } from '@/store/projects'
@@ -274,18 +274,23 @@ function TileChat({
 
   // One attachment set + focus key per tile, stable for the tile's lifetime.
   const attachments = useRef(createComposerAttachmentScope()).current
+  // Same reasoning for the pending follow-up: a passage quoted in this tile's
+  // transcript must reach THIS tile's composer, never the main chat's.
+  const followUp = useRef(createComposerFollowUpScope()).current
 
   const scope = useMemo<ComposerScope>(
     () => ({
       $awaitingInput: sessionAwaitingInput(runtimeId),
       $messages: view.$messages,
       attachments,
+      followUp,
       connectionId: ownerRoute?.connectionId || undefined,
       profile: ownerRoute?.targetProfile || ownerRoute?.profile || undefined,
       target: `tile:${storedSessionId}`
     }),
     [
       attachments,
+      followUp,
       ownerRoute?.connectionId,
       ownerRoute?.profile,
       ownerRoute?.targetProfile,

@@ -772,6 +772,142 @@ export function clearComposerTerminalSelections() {
   $composerTerminalSelections.set({})
 }
 
+// ---------------------------------------------------------------------------
+// Pending follow-up — the passage a reader picked out of the transcript and
+// attached to the message they are about to send. It is the transcript's
+// sibling to the terminal's `@terminal:` selection above, and it travels the
+// same way: the composer holds it, the send merges it into the prompt.
+//
+// Where the terminal copy rides an inline `@terminal:` ref (the chip IS the
+// passage's address, and the fence is expanded at send), a follow-up is a
+// whole quoted passage with nothing to address, so it rides one card above
+// the composer and reaches the message as a plain blockquote — the wire shape
+// every other Hermes surface can read.
+//
+// It is NOT stashed with the per-session draft: a quote points at something
+// on screen, so a session switch drops it (the composer's scope swap clears
+// the scope) instead of letting a card the user has stopped looking at ride a
+// send in another session.
+// ---------------------------------------------------------------------------
+
+/** A passage lifted out of the transcript, waiting on the next send. */
+export interface ComposerFollowUp {
+  /** The quoted text exactly as it will be sent (normalized once, on capture). */
+  passage: string
+  /** Which side of the transcript it came from — the card's attribution. */
+  source: 'assistant' | 'user'
+}
+
+export const $composerFollowUp = atom<ComposerFollowUp | null>(null)
+
+/** Past this many characters the tail is dropped rather than sending a whole
+ *  chapter to the model; the cap is applied once, on capture. */
+export const FOLLOW_UP_PASSAGE_MAX_CHARS = 4000
+
+/** How much of a passage a card or a sent bubble SHOWS. The full passage still
+ *  travels with the message; this is only what the reader sees, so a long quote
+ *  cannot take over the transcript. */
+export const FOLLOW_UP_PREVIEW_MAX_CHARS = 240
+
+/** Trim a raw selection into the passage we send. Idempotent, so the capture
+ *  path and the block builder can both run it. */
+export function normalizeFollowUpPassage(text: string): string {
+  const collapsed = text
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .map(line => line.replace(/\s+$/, ''))
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+
+  return collapsed.length > FOLLOW_UP_PASSAGE_MAX_CHARS
+    ? `${collapsed.slice(0, FOLLOW_UP_PASSAGE_MAX_CHARS).trimEnd()}…`
+    : collapsed
+}
+
+/**
+ * The blockquote a pending follow-up contributes to the outgoing message, or
+ * `''` when there is none.
+ *
+ * EVERY line is quoted (a blank line keeps a bare `>`), because a blank line
+ * inside a markdown blockquote ENDS it — an unquoted one would drop the rest
+ * of the passage into the message body, where the reader's own words and the
+ * quoted ones become indistinguishable.
+ */
+export function followUpBlockFromQuote(quote: ComposerFollowUp | null | undefined): string {
+  const passage = quote ? normalizeFollowUpPassage(quote.passage) : ''
+
+  if (!passage) {
+    return ''
+  }
+
+  return passage
+    .split('\n')
+    .map(line => (line ? `> ${line}` : '>'))
+    .join('\n')
+}
+
+/**
+ * What a card or a sent bubble SHOWS for a passage: the head of it, with an
+ * ellipsis marking the cut. The full passage is what the message carries — this
+ * only keeps a long quote from taking over the transcript or the composer.
+ */
+export function followUpPreview(passage: string): { text: string; truncated: boolean } {
+  const normalized = normalizeFollowUpPassage(passage)
+
+  if (normalized.length <= FOLLOW_UP_PREVIEW_MAX_CHARS) {
+    return { text: normalized, truncated: false }
+  }
+
+  return { text: `${normalized.slice(0, FOLLOW_UP_PREVIEW_MAX_CHARS).trimEnd()}…`, truncated: true }
+}
+
+/** One pending follow-up PER MOUNTED COMPOSER, like the attachment scope: a
+ *  tile's quote must never land in the main chat's next send. */
+export interface ComposerFollowUpScope {
+  $followUp: ReturnType<typeof atom<ComposerFollowUp | null>>
+  /** Replace the pending quote. An empty passage clears the slot. */
+  set(quote: ComposerFollowUp): void
+  clear(): void
+}
+
+export function createComposerFollowUpScope(
+  $followUp = atom<ComposerFollowUp | null>(null)
+): ComposerFollowUpScope {
+  return {
+    $followUp,
+    set(quote) {
+      const passage = normalizeFollowUpPassage(quote.passage)
+      const current = $followUp.get()
+
+      if (!passage) {
+        if (current) {
+          $followUp.set(null)
+        }
+
+        return
+      }
+
+      // Preserve identity on a no-op: re-picking the same passage (or the pill
+      // firing twice on one selection) must not re-render every subscriber.
+      if (current?.passage === passage && current.source === quote.source) {
+        return
+      }
+
+      $followUp.set({ passage, source: quote.source })
+    },
+    clear() {
+      if ($followUp.get()) {
+        $followUp.set(null)
+      }
+    }
+  }
+}
+
+/** The main chat's follow-up slot — the module atom above, so every reader of
+ *  `$composerFollowUp` IS this scope. */
+export const mainComposerFollowUpScope = createComposerFollowUpScope($composerFollowUp)
+
 function upsertAttachment(attachments: ComposerAttachment[], attachment: ComposerAttachment) {
   const index = attachments.findIndex(item => item.id === attachment.id)
 

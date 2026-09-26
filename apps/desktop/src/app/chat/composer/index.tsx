@@ -58,6 +58,7 @@ import { ComposerControls } from './controls'
 import { ComposerDirectiveActions } from './directive-actions'
 import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from './drop-affordance'
 import { markActiveComposer, onComposerAttachImagesRequest } from './focus'
+import { FollowUpCard } from './follow-up/card'
 import { HelpHint } from './help-hint'
 import { useAtCompletions } from './hooks/use-at-completions'
 import { useComposerBranch } from './hooks/use-composer-branch'
@@ -1523,6 +1524,10 @@ export function ChatBar({
                     </div>
                   )}
                   {attachments.length > 0 && <AttachmentList attachments={attachments} onRemove={onRemoveAttachment} />}
+                  {/* The pending transcript follow-up sits with the attachment
+                      chips — both are "what the next send carries" — and above
+                      the input so the quote reads before the answer to it. */}
+                  <FollowUpCard />
                   <div
                     className={cn(
                       'grid w-full',

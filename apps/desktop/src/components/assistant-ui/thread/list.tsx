@@ -17,6 +17,7 @@ import {
 } from 'react'
 import { type GetTargetScrollTop, useStickToBottom } from 'use-stick-to-bottom'
 
+import { FollowUpPill } from '@/app/chat/composer/follow-up/pill'
 import { useComposerSurfaceId } from '@/app/chat/composer/scope'
 import { usePaneLifecycle, usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { useI18n } from '@/i18n'
@@ -1578,6 +1579,11 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
           )}
         </div>
       </div>
+      {/* Overlays the transcript box it measured against: a passage selected
+          in the viewport above turns into a follow-up for this pane's
+          composer. Outside the scroller so the pill never scrolls with the
+          text it quotes. */}
+      <FollowUpPill viewportRef={scrollRef} />
     </div>
   )
 }

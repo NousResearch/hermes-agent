@@ -3,6 +3,7 @@ import { atom } from 'nanostores'
 
 import {
   type ComposerAttachment,
+  type ComposerFollowUp,
   revokeAttachmentPreviewUrls,
   revokeDiscardedAttachmentPreviews
 } from './composer'
@@ -26,16 +27,22 @@ export interface QueuedPromptEntry {
    *  shows a neutral label and the drain submits it hidden again. */
   displayKind?: 'hidden'
   attachments: ComposerAttachment[]
+  /** The transcript passage this prompt answers, frozen when it was parked:
+   *  the composer's card is gone by drain time, so the quote has to travel
+   *  with the entry or the reply loses what it was replying to. */
+  followUp?: ComposerFollowUp | null
   queuedAt: number
 }
 
 /** Whether a queued entry can ride a mid-turn redirect: text-only, non-empty,
  *  not a slash command — the same gate `steerDraft` applies to the live draft
- *  (attachments can't ride a redirect; slash commands execute, not steer). */
-export const isSteerableEntry = (entry: Pick<QueuedPromptEntry, 'attachments' | 'text'>): boolean => {
+ *  (attachments can't ride a redirect; slash commands execute, not steer). A
+ *  quoted passage can't ride one either: it is merged into the message at
+ *  submit, and a redirect injects text into the running turn instead. */
+export const isSteerableEntry = (entry: Pick<QueuedPromptEntry, 'attachments' | 'followUp' | 'text'>): boolean => {
   const text = entry.text.trim()
 
-  return Boolean(text) && entry.attachments.length === 0 && !SLASH_COMMAND_RE.test(text)
+  return Boolean(text) && entry.attachments.length === 0 && !entry.followUp && !SLASH_COMMAND_RE.test(text)
 }
 
 type QueueState = Record<string, QueuedPromptEntry[]>
@@ -161,7 +168,13 @@ export const getQueuedPrompts = (key: string | null | undefined): QueuedPromptEn
 
 export const enqueueQueuedPrompt = (
   key: string | null | undefined,
-  payload: { text: string; attachments: ComposerAttachment[]; displayText?: string; displayKind?: 'hidden' }
+  payload: {
+    text: string
+    attachments: ComposerAttachment[]
+    displayText?: string
+    displayKind?: 'hidden'
+    followUp?: ComposerFollowUp | null
+  }
 ): null | QueuedPromptEntry => {
   const sid = sidOf(key)
 
@@ -175,6 +188,7 @@ export const enqueueQueuedPrompt = (
     ...(payload.displayText ? { displayText: payload.displayText } : {}),
     ...(payload.displayKind ? { displayKind: payload.displayKind } : {}),
     attachments: cloneAttachments(payload.attachments),
+    ...(payload.followUp ? { followUp: payload.followUp } : {}),
     queuedAt: Date.now()
   }
 
@@ -257,7 +271,7 @@ export const promoteQueuedPrompt = (key: string | null | undefined, id: string):
 export const updateQueuedPrompt = (
   key: string | null | undefined,
   id: string,
-  update: { text: string; attachments?: ComposerAttachment[] }
+  update: { text: string; attachments?: ComposerAttachment[]; followUp?: ComposerFollowUp | null }
 ): boolean => {
   const sid = sidOf(key)
 
@@ -274,8 +288,11 @@ export const updateQueuedPrompt = (
     }
 
     const attachments = update.attachments ? cloneAttachments(update.attachments) : entry.attachments
+    // An explicit pass sets (or, with null, drops) the quote; omitting the key
+    // leaves whatever the entry already answers.
+    const followUp = update.followUp === undefined ? entry.followUp : update.followUp
 
-    if (entry.text === update.text && !update.attachments) {
+    if (entry.text === update.text && !update.attachments && followUp === entry.followUp) {
       return entry
     }
 
@@ -288,9 +305,9 @@ export const updateQueuedPrompt = (
     // The user rewrote the text, so any display projection it carried (a
     // `/skill` invocation standing in for the expanded body) no longer
     // describes it — what they typed is now what sends.
-    const { displayText: _dropped, ...rest } = entry
+    const { displayText: _dropped, followUp: _previousFollowUp, ...rest } = entry
 
-    return { ...rest, text: update.text, attachments }
+    return { ...rest, text: update.text, attachments, ...(followUp ? { followUp } : {}) }
   })
 
   if (!changed) {

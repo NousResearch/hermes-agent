@@ -8,7 +8,13 @@ import { getLatestSessionMessages, getSession } from '@/hermes'
 import { textPart, toChatMessages } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $compactingSessions, setSessionCompacting } from '@/store/compaction'
-import { $composerAttachments, $composerDraft, type ComposerAttachment, setComposerDraft } from '@/store/composer'
+import {
+  $composerAttachments,
+  $composerDraft,
+  type ComposerAttachment,
+  mainComposerFollowUpScope,
+  setComposerDraft
+} from '@/store/composer'
 import { $queuedPromptsBySession, getQueuedPrompts } from '@/store/composer-queue'
 import { requestGatewayForAgent } from '@/store/gateway'
 import { $goalsBySession, setSessionGoal } from '@/store/goals'
@@ -1672,6 +1678,58 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
 
     dropSessionState(tabRuntimeId)
     $queuedPromptsBySession.set({})
+  })
+
+  it('sends a pending follow-up as a blockquote ahead of the prompt — and consumes it', async () => {
+    const submitted: (Record<string, unknown> | undefined)[] = []
+    const states: Record<string, unknown>[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'prompt.submit') {
+        submitted.push(params)
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        activeSessionId="follow-up-runtime"
+        onReady={h => (handle = h)}
+        onSeedState={state => states.push(state)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        storedSessionId="follow-up-stored"
+      />
+    )
+
+    mainComposerFollowUpScope.set({ passage: 'the quoted answer\n\nsecond paragraph', source: 'assistant' })
+    await handle!.submitText('what about it?')
+
+    // The quote leads the message the agent receives, every line marked so the
+    // blank line cannot end the blockquote and hand the passage back to the
+    // reader's own words.
+    expect(submitted).toEqual([
+      expect.objectContaining({
+        text: '> the quoted answer\n>\n> second paragraph\n\nwhat about it?'
+      })
+    ])
+
+    // …and the bubble the reader sees carries the same passage: a reply whose
+    // quote is invisible reads as a non-sequitur.
+    const messages = states.flatMap(state => (Array.isArray(state.messages) ? state.messages : [])) as {
+      parts?: { text?: string }[]
+      role?: string
+    }[]
+
+    const optimistic = messages.find(message => message.role === 'user')
+    const optimisticText = (optimistic?.parts ?? []).map(part => part.text ?? '').join('')
+
+    expect(optimisticText).toBe('> the quoted answer\n>\n> second paragraph\n\nwhat about it?')
+
+    // A passage rides ONE send: the card above the composer is its receipt.
+    expect(mainComposerFollowUpScope.$followUp.get()).toBeNull()
   })
 
   it('renders a skill turn as its invocation — the expanded body never reaches a bubble', async () => {

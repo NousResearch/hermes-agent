@@ -1481,7 +1481,9 @@ def _live_send_text(
         router._deliver_to_platform(
             route_target, text_to_send, route_metadata, transport=t.transport), t.loop)
     if future is None:
-        target_errors.append("live adapter event loop scheduling failed")
+        msg = "live adapter event loop scheduling failed"
+        target_errors.append(msg)
+        _warn_live_lane_failure(job, f"live adapter send to {t.where}: {msg}", t.is_relay)
         return False, False, None
     try:
         send_result = future.result(timeout=60)
@@ -1742,9 +1744,19 @@ def _standalone_send(
 
 def _deliver_standalone(
     t: _TargetDelivery, content: str, media_files: list, target_errors: list, delivery_errors: list,
+    unverified_targets: Optional[list] = None,
 ) -> None:
-    """Standalone fallback for a target the live lane did not deliver."""
+    """Standalone fallback for a target the live lane did not deliver. The result goes through
+    the same ``_confirm_adapter_delivery`` evidence gate as the live lane (#121725): an
+    evidence-free ack is accepted but recorded in ``unverified_targets`` (surfaced via
+    ``last_delivery_unverified``), and a shape with no confirmation fails closed instead of
+    logging a phantom ``delivered``."""
     job = t.job
+    if unverified_targets is None:
+        # ponytail: throwaway keeps unknown callers safe; the production caller always passes
+        # the per-run list so the marker reaches the job record. Upgrade to required if a second
+        # caller appears.
+        unverified_targets = []
     if t.is_relay:
         # Relay owns the destination and credential; a native retry could duplicate — fail closed.
         if not target_errors:
@@ -1766,7 +1778,27 @@ def _deliver_standalone(
         msg = f"delivery warning: {_w} (target {t.where})"
         logger.error("Job '%s': %s", job["id"], msg)
         delivery_errors.append(msg)
-    logger.info("Job '%s': delivered to %s:%s", job["id"], t.platform_name, t.chat_id)
+    _evidence_gap: list = []
+    if not _confirm_adapter_delivery(result, job["id"], _evidence_gap):
+        if result is None:
+            shape = "None"
+        elif isinstance(result, dict):
+            shape = "dict"
+        else:
+            shape = type(result).__name__
+        msg = (f"standalone send to {t.where} returned unconfirmed result "
+               f"({shape}) — not marking delivered")
+        logger.warning("Job '%s': %s", job["id"], msg)
+        target_errors.append(msg)
+        delivery_errors.extend(target_errors)
+        return
+    if _evidence_gap:
+        unverified_targets.append(t.where)
+        logger.info(
+            "Job '%s': delivered to %s:%s (UNVERIFIED: no message_id, no raw_response)",
+            job["id"], t.platform_name, t.chat_id)
+    else:
+        logger.info("Job '%s': delivered to %s:%s", job["id"], t.platform_name, t.chat_id)
     # Thread seeding only happens on the live lane, so no thread_seeded gate applies here.
     _maybe_mirror_cron_delivery(
         job, t.platform_name, t.chat_id, t.mirror_text, thread_id=t.thread_id,
@@ -2043,8 +2075,16 @@ def _deliver_result(
             unverified_targets=unverified_targets,
         )
         if not delivered:
+            if not t.live_adapter_ready and not t.is_relay:
+                # The live lane was never attempted (no live transport/loop), so none of its
+                # failure paths ran: log the downgrade here or the lane choice is invisible (#121725).
+                # Attempted-but-failed already warned via _warn_live_lane_failure; don't double-log.
+                logger.warning(
+                    "Job '%s': live adapter not ready for %s, falling back to standalone",
+                    job["id"], t.where)
             _deliver_standalone(
-                t, cleaned_delivery_content, media_files, target_errors, delivery_errors)
+                t, cleaned_delivery_content, media_files, target_errors, delivery_errors,
+                unverified_targets)
 
     # Filter-time drops apply to every target; report them once. A run whose every target was
     # suppressed sent nothing, so there is no drop to report.

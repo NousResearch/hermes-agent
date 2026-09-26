@@ -2371,6 +2371,12 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
     def _persist_consecutive_overload_aborts(self) -> None:
         self._durable_write("set_compression_overload_streak", "compression overload streak", self._consecutive_overload_aborts)
 
+    def _clear_terminal_summary_failures(self, *, keep_auth: bool = False) -> None:
+        """Clear every terminal summary-failure flag; ``keep_auth`` spares the auth/quota flag."""
+        for flag, _class, _msg in _TERMINAL_SUMMARY_FAILURES:
+            if not (keep_auth and flag == "_last_summary_auth_failure"):
+                setattr(self, flag, False)
+
     def _reset_consecutive_overload_aborts(self) -> None:
         """Zero the sustained-overload budget and ALWAYS write the row: the in-memory count is not
         authoritative when two agents share a session, so skipping the write would let another
@@ -2810,8 +2816,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         self._reset_session_compaction_state()
         # Terminal summary failures (access/quota, network, empty content, finish_reason=length): compress()
         # must ABORT and preserve the session regardless of abort_on_summary_failure (see _TERMINAL_SUMMARY_FAILURES).
-        for flag, _class, _msg in _TERMINAL_SUMMARY_FAILURES:
-            setattr(self, flag, False)
+        self._clear_terminal_summary_failures()
 
     def update_from_response(self, usage: Dict[str, Any]):
         """Update tracked token usage from API response."""
@@ -3954,8 +3959,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             self._clear_compression_failure_cooldown()
             self._summary_model_fallen_back = False
             self._last_summary_error = None
-            for flag, _class, _msg in _TERMINAL_SUMMARY_FAILURES:
-                setattr(self, flag, False)
+            self._clear_terminal_summary_failures()
             # The provider answered a summary again: the sustained-overload budget restarts (#123167).
             self._reset_consecutive_overload_aborts()
             return self._with_summary_prefix(summary)
@@ -4183,10 +4187,7 @@ Write only the summary body. Do not include any preamble or prefix."""
                 # an earlier failure (only a success clears those) must not keep aborting forever.
                 # An auth/quota flag set by THIS error stays: a 403/402 that also says "overloaded"
                 # must keep aborting, never commit the lossy fallback (#29559).
-                keep_auth = _is_summary_access_or_quota_error(e)
-                for flag, _class, _msg in _TERMINAL_SUMMARY_FAILURES:
-                    if not (keep_auth and flag == "_last_summary_auth_failure"):
-                        setattr(self, flag, False)
+                self._clear_terminal_summary_failures(keep_auth=_is_summary_access_or_quota_error(e))
         logger.warning(
             "Failed to generate context summary: %s. Further summary attempts paused for %d seconds.", e,
             _transient_cooldown,

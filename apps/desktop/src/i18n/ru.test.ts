@@ -13,7 +13,7 @@ it('keeps merged Russian plugin and fleet labels on the live nested paths', () =
   }
 })
 
-it('declines connector counts and retains payment-verification warnings', () => {
+it('declines counts and retains interpolated plugin names and payment warnings', () => {
   const fact = TRANSLATIONS.ru.connectorsPage.card.fact.tools
   const reachable = TRANSLATIONS.ru.settings.customEndpoints.endpointReachableModels
   for (const [count, verb, tools, models] of [
@@ -26,6 +26,10 @@ it('declines connector counts and retains payment-verification warnings', () => 
     expect(fact(count)).toBe(`${count} ${tools}`)
     expect(reachable('Доступно.', count)).toContain(`${verb} ${count} ${models}`)
   }
+  const missingKey = TRANSLATIONS.ru.settings.plugins.installModal.missingEnv('Plugin Ω', 'VAR_SECRET')
+  expect(missingKey).toContain('Plugin Ω')
+  expect(missingKey).toContain('VAR_SECRET')
+  expect(missingKey).toContain('не заработают')
   const warning = TRANSLATIONS.ru.settings.billing.charge.unconfirmedBody('Платёж обрабатывается.')
   expect(warning).toContain('Платёж обрабатывается.')
   expect(warning).toContain('прежде чем повторять попытку')

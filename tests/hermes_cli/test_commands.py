@@ -1070,9 +1070,12 @@ def test_gateway_command_copy_respects_locale_and_live_registry(monkeypatch):
         i18n.reset_language_cache()
         lines = gateway_help_lines()
         assert any("`/help" in line and "Помощь по командам" in line for line in lines)
+        debug = next(line for line in lines if line.startswith("`/debug "))
+        assert all(word in debug for word in ("Отправить", "журналы", "ссылку"))
         assert any("псевдоним:" in line for line in lines)
         menu = dict(telegram_bot_commands(include_plugins=False))
         assert menu["help"] == "Помощь по командам"
+        assert "журналы" in menu["debug"]
         assert menu["reload_mcp"] == "Перезагрузить MCP-серверы"
 
         for lang in ("en", "ja"):

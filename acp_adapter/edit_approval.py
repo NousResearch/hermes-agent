@@ -41,7 +41,7 @@ EditApprovalRequester = Callable[[EditProposal], bool]
 _EDIT_APPROVAL_REQUESTER: ContextVar[EditApprovalRequester | None] = ContextVar("ACP_EDIT_APPROVAL_REQUESTER", default=None)
 _PERMISSION_REQUEST_IDS = count(1)
 
-SENSITIVE_AUTO_APPROVE_NAMES = {".env", ".env.local", ".env.production", "id_rsa", "id_ed25519"}
+SENSITIVE_AUTO_APPROVE_NAMES = {".env", ".env.local", ".env.production", "id_rsa", "id_ed25519", "id_ecdsa", "id_dsa", "authorized_keys", ".netrc", ".pgpass", ".npmrc", ".pypirc", ".git-credentials", "credentials"}
 AUTO_APPROVE_ASK = "ask"
 AUTO_APPROVE_WORKSPACE = "workspace_session"
 AUTO_APPROVE_SESSION = "session"
@@ -142,7 +142,7 @@ def build_edit_proposal(tool_name: str, arguments: dict[str, Any]) -> EditPropos
 
 def _is_sensitive_auto_approve_path(path: str) -> bool:
     lowered = {part.lower() for part in Path(path).expanduser().parts}
-    return bool(lowered & {".git", ".ssh"}) or Path(path).name.lower() in SENSITIVE_AUTO_APPROVE_NAMES
+    return bool(lowered & {".git", ".ssh", ".aws", ".docker", ".kube", ".gnupg", ".azure"}) or Path(path).name.lower() in SENSITIVE_AUTO_APPROVE_NAMES
 
 
 def should_auto_approve_edit(proposal: EditProposal, policy: str, cwd: str | None = None) -> bool:

@@ -13,6 +13,7 @@ summarizer prompt. ``test_context_compressor_summary_continuity`` already
 proves ``compress()`` routes into ``_generate_summary``.
 """
 
+import contextlib
 from unittest.mock import MagicMock, patch
 
 from agent.context_compressor import ContextCompressor
@@ -72,4 +73,27 @@ def test_sections_and_headings_clause_present():
     prompt = mock_call.call_args.kwargs["messages"][0]["content"]
     assert "Sections and headings follow that language" in prompt
     # The end-of-template anchor still closes the prompt.
+    assert prompt.rstrip().endswith("Do not include any preamble or prefix.")
+
+
+def test_end_of_prompt_rule_in_no_user_turn_variant():
+    """The no-user-turn variant has its own language directive (different
+    preamble wording, same protective intent). Its language + structure rule
+    must also sit at the end of the prompt, right before the closing anchor."""
+    compressor = _compressor()
+    compressor._summary_has_user_turn = False
+    with patch(
+        "agent.context_compressor.call_llm", return_value=_response("summary")
+    ) as mock_call, contextlib.suppress(Exception):
+        # The mocked summary body doesn't match the no-user-turn sentinel, so
+        # post-generation validation raises; the prompt under test was already built.
+        compressor._generate_summary([])
+
+    prompt = mock_call.call_args.kwargs["messages"][0]["content"]
+    # The variant's own language directive is present...
+    assert "no user-authored turns" in prompt
+    # ...and the structure rule is the last instruction before the closing anchor.
+    assert "Sections and headings follow that language; only quoted literal values stay verbatim." in prompt
+    last = prompt.rfind("Sections and headings follow that language")
+    assert len(prompt) - last < 400
     assert prompt.rstrip().endswith("Do not include any preamble or prefix.")

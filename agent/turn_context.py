@@ -1051,6 +1051,15 @@ def build_turn_context(
         _turn_args.append(_turn_origin)
     logger.info(_turn_fmt, *_turn_args)
 
+    # Per-turn skill shortlist rides the current user message, never the system
+    # prompt, so the cached prefix stays byte-stable. persist_user_message keeps
+    # the durable transcript on the original ask.
+    from agent.skill_selection import apply_turn_skill_selection
+    user_message, persist_user_message, _skill_candidates = apply_turn_skill_selection(
+        user_message, persist_user_message,
+    )
+    agent._skill_selection_candidates = _skill_candidates
+
     # Copy so the caller's list is never mutated.
     messages = list(conversation_history) if conversation_history else []
     user_msg, pending_cli_message = _stage_turn_user_message(

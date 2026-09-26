@@ -2219,6 +2219,11 @@ def _profile_suffix() -> str:
     temp-home harness resolve to the default profile's ``hermes-gateway`` unit and uninstall the
     production gateway. Service names are host-wide identities; a home with no installed bare unit and
     no native default keeps its own suffix.
+
+    NOTE: the named-profile branch still collides across two independent custom roots that each have
+    a same-named profile (``<a>/profiles/coder`` and ``<b>/profiles/coder`` both return ``"coder"``,
+    #93349 remainder after #106611). Native launchd/systemd identity call sites go through
+    :func:`_native_service_suffix` instead, which folds a root hash into that branch only.
     """
     import hashlib
     from hermes_constants import get_default_hermes_root
@@ -2237,6 +2242,52 @@ def _current_profile_name() -> str:
     return profile_name_for_home(get_hermes_home()) or _profile_suffix()
 
 
+def _native_root_hash(root: Path) -> str:
+    """Short stable digest of *root*, or ``""`` when it owns the bare service name.
+
+    Reuses :func:`_native_service_homes` — the same "is this root a bare-name owner" check
+    ``_profile_suffix()`` itself relies on (native default, or under sudo the invoking user's) —
+    rather than a second, competing derivation of "native root" (flagged in review on #93349).
+    """
+    import hashlib
+
+    if root in _native_service_homes():
+        return ""
+    return hashlib.sha256(str(root).encode()).hexdigest()[:8]
+
+
+def _root_qualified_profile_suffix(name: str, root: Path) -> str:
+    """Fold *root*'s hash into a named-profile suffix, e.g. ``coder`` -> ``coder-<root-hash>``.
+
+    ``_profile_suffix()``'s named-profile branch (``<root>/profiles/<name>`` -> ``name``) collides
+    across two independent custom HERMES_HOME roots that each have a same-named profile
+    (``<a>/profiles/coder`` and ``<b>/profiles/coder`` both return ``"coder"``, #93349 remainder
+    after #106611) — installing the second can overwrite or unlink the first's launchd
+    label/plist or systemd unit. The hash is empty for a root that already owns the bare name, so
+    canonical profile names stay backward compatible.
+    """
+    root_hash = _native_root_hash(root)
+    return f"{name}-{root_hash}" if root_hash else name
+
+
+def _native_service_suffix() -> str:
+    """Root-qualified variant of :func:`_profile_suffix` for native launchd/systemd identity.
+
+    Only the named-profile branch needs qualifying (see :func:`_root_qualified_profile_suffix`):
+    the bare-name branch is already root-unique by construction, and the "no name, no bare-name
+    home" branch already hashes the full resolved home, which differs per root on its own.
+    """
+    from hermes_constants import get_default_hermes_root
+
+    suffix = _profile_suffix()
+    if not suffix:
+        return suffix
+    root = get_default_hermes_root().resolve()
+    if _profile_name_from_home(get_hermes_home().resolve(), root) != suffix:
+        return suffix
+    return _root_qualified_profile_suffix(suffix, root)
+
+
 def _profile_arg(hermes_home: str | None = None, default_root: str | Path | None = None) -> str:
     """``--profile <name>`` for ``<root>/profiles/<name>``, else "". *hermes_home*/*default_root* let a
     sudo/root process generate a unit for another user (the defaults would refer to root)."""
@@ -2250,9 +2301,10 @@ def _profile_arg(hermes_home: str | None = None, default_root: str | Path | None
 
 
 def get_service_name() -> str:
-    """Systemd service name: ``hermes-gateway`` for default HERMES_HOME, ``hermes-gateway-<profile>``
-    or ``-<hash>`` otherwise."""
-    suffix = _profile_suffix()
+    """Systemd service name: ``hermes-gateway`` for default HERMES_HOME, ``hermes-gateway-<profile>``,
+    ``hermes-gateway-<profile>-<root-hash>`` when that profile name collides across custom roots, or
+    ``-<hash>`` otherwise (see :func:`_native_service_suffix`)."""
+    suffix = _native_service_suffix()
     return f"{_SERVICE_BASE}-{suffix}" if suffix else _SERVICE_BASE
 
 
@@ -2859,7 +2911,7 @@ def get_systemd_linger_status(username: str | None = None) -> tuple[bool | None,
 def get_launchd_plist_path() -> Path:
     """``~/Library/LaunchAgents/ai.hermes.gateway[-<profile>].plist`` under the real account home."""
     import pwd
-    suffix = _profile_suffix()
+    suffix = _native_service_suffix()
     name = f"ai.hermes.gateway-{suffix}" if suffix else "ai.hermes.gateway"
     # Real account home: profile mode may point HOME at a profile dir.
     home = Path(pwd.getpwuid(os.getuid()).pw_dir)  # windows-footgun: ok — POSIX launchd (macOS) helper, never invoked on Windows
@@ -2872,13 +2924,19 @@ def launchd_gateway_labels_for_install() -> list[str]:
     restarts another install's fleet. Names that can't map to a suffix are skipped."""
     import re as _re
     from hermes_cli.profiles import list_profiles
+    from hermes_constants import get_default_hermes_root
+
+    # All profiles of this install share one root, so one root hash is folded into every
+    # NAMED-profile label below (#93349 remainder after #106611 — two custom roots with a
+    # same-named profile still collide; see _root_qualified_profile_suffix).
+    root = get_default_hermes_root().resolve()
     root_label: list[str] = []
     profile_labels: list[str] = []
     for profile in list_profiles():
         if profile.is_default:
             root_label.append("ai.hermes.gateway")
         elif _re.match(r"^[a-z0-9][a-z0-9_-]{0,63}$", profile.name):
-            profile_labels.append(f"ai.hermes.gateway-{profile.name}")
+            profile_labels.append(f"ai.hermes.gateway-{_root_qualified_profile_suffix(profile.name, root)}")
     return root_label + sorted(profile_labels)
 
 

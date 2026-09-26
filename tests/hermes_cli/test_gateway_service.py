@@ -1790,7 +1790,67 @@ class TestProfileArg:
 
         plist_path = gateway_cli.get_launchd_plist_path()
 
-        assert plist_path == machine_home / "Library" / "LaunchAgents" / "ai.hermes.gateway-orcha.plist"
+        # profile_dir's root (tmp_path/.hermes) is not the real account home
+        # (machine_home/.hermes) here, so it is a "custom root" for identity
+        # purposes and the suffix is root-qualified — see #93349.
+        import hashlib
+
+        root_hash = hashlib.sha256(str((tmp_path / ".hermes").resolve()).encode()).hexdigest()[:8]
+        assert plist_path == (
+            machine_home / "Library" / "LaunchAgents" / f"ai.hermes.gateway-orcha-{root_hash}.plist"
+        )
+        # The real account home is always used for the *directory*, regardless.
+        assert plist_path.parent == machine_home / "Library" / "LaunchAgents"
+
+
+class TestNativeServiceIdentityRootQualification:
+    """Regression for #93349's remainder after #106611 landed on main: two independent custom
+    HERMES_HOME roots that each carry a same-named profile must not collide, since launchd
+    label / plist path / systemd unit name are all derived from this suffix."""
+
+    @staticmethod
+    def _root_hash(root: Path) -> str:
+        import hashlib
+
+        return hashlib.sha256(str(root.resolve()).encode()).hexdigest()[:8]
+
+    def test_canonical_names_stay_backward_compatible(self, tmp_path, monkeypatch):
+        canonical_home = tmp_path / "home"
+        canonical_home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: canonical_home)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+
+        assert gateway_cli.get_service_name() == "hermes-gateway"
+        assert gateway_cli.get_launchd_label() == "ai.hermes.gateway"
+
+        coder = canonical_home / ".hermes" / "profiles" / "coder"
+        coder.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(coder))
+
+        assert gateway_cli.get_service_name() == "hermes-gateway-coder"
+        assert gateway_cli.get_launchd_label() == "ai.hermes.gateway-coder"
+
+    def test_same_named_profile_on_distinct_custom_roots_never_collides(self, tmp_path, monkeypatch):
+        canonical_home = tmp_path / "home"
+        canonical_home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: canonical_home)
+
+        root_a = tmp_path / "roots" / "a"
+        root_b = tmp_path / "roots" / "b"
+        (root_a / "profiles" / "coder").mkdir(parents=True)
+        (root_b / "profiles" / "coder").mkdir(parents=True)
+
+        monkeypatch.setenv("HERMES_HOME", str(root_a / "profiles" / "coder"))
+        label_a_coder = gateway_cli.get_launchd_label()
+
+        monkeypatch.setenv("HERMES_HOME", str(root_b / "profiles" / "coder"))
+        label_b_coder = gateway_cli.get_launchd_label()
+
+        assert label_a_coder != label_b_coder
+        assert label_a_coder == f"ai.hermes.gateway-coder-{self._root_hash(root_a)}"
+        assert label_b_coder == f"ai.hermes.gateway-coder-{self._root_hash(root_b)}"
+        # Also distinct from a canonical "coder" profile (no hash at all).
+        assert "coder-" in label_a_coder and label_a_coder != "ai.hermes.gateway-coder"
 
 
 class TestRemapPathForUser:

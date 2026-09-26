@@ -922,6 +922,140 @@ describe('createBundleSkewProbe', () => {
       spy.mockRestore()
     }
   })
+
+  // P2: an in-flight run used to be joined on the ROOT alone, so a caller whose
+  // HEAD moved while that run was in flight was handed the OLD commit's answer.
+  // The run now publishes the sha it read; a same-root caller resolves its own
+  // HEAD and joins only a run that answers for that sha. Otherwise it supersedes
+  // the run the way a root change does, aborting its controller.
+  it('does not join an in-flight run whose HEAD has moved, and supersedes it', async () => {
+    const pending: { resolve?: (value: { code: number; stderr: string; stdout: string }) => void } = {}
+    const calls: string[][] = []
+    const signals: Array<{ cwd: string; signal?: AbortSignal }> = []
+    let head = 'a'.repeat(40)
+    let revListCalls = 0
+
+    const git: RunGit = async (args, options) => {
+      calls.push(args)
+      signals.push({ cwd: options.cwd, signal: options.signal })
+
+      if (args[0] === 'rev-parse') {
+        return { code: 0, stderr: '', stdout: `false\n${head}\n` }
+      }
+
+      if (args[0] === 'merge-base') {
+        return { code: 0, stderr: '', stdout: '' }
+      }
+
+      if (args[0] === 'rev-list') {
+        revListCalls += 1
+
+        if (revListCalls === 1) {
+          return new Promise(resolve => {
+            pending.resolve = resolve
+          })
+        }
+
+        return { code: 0, stderr: '', stdout: '6\n' }
+      }
+
+      return { code: 1, stderr: '', stdout: '' }
+    }
+
+    const probe = createBundleSkewProbe({ stamp: STAMP, runGit: git, repoRoot: REPO })
+
+    const first = probe()
+    await tick()
+
+    const oldSignal = signals.find(call => call.cwd === REPO)?.signal
+
+    expect(oldSignal).toBeDefined()
+    expect(oldSignal?.aborted).toBe(false)
+
+    // HEAD moves while the first run waits on its rev-list.
+    head = 'b'.repeat(40)
+
+    // This caller must NOT take the run in flight: its answer describes 'a'.
+    expect(await probe()).toEqual({ desktopCommitsBehind: 6, outOfSync: true })
+    expect(oldSignal?.aborted).toBe(true)
+
+    // The abandoned run still answers its own caller with its own commit's count.
+    pending.resolve?.({ code: 0, stderr: '', stdout: '9\n' })
+    await tick()
+
+    expect(await first).toEqual({ desktopCommitsBehind: 9, outOfSync: true })
+  })
+
+  // The join must still happen when HEAD is unchanged: the comparison spawn is
+  // one rev-parse, and the expensive pair runs once across both callers.
+  it('joins an in-flight run for the same root and HEAD with a single rev-list', async () => {
+    const pending: { resolve?: (value: { code: number; stderr: string; stdout: string }) => void } = {}
+    const calls: string[][] = []
+    const head = 'a'.repeat(40)
+    let revListCalls = 0
+
+    const git: RunGit = async (args, options) => {
+      calls.push(args)
+
+      if (args[0] === 'rev-parse') {
+        return { code: 0, stderr: '', stdout: `false\n${head}\n` }
+      }
+
+      if (args[0] === 'merge-base') {
+        return { code: 0, stderr: '', stdout: '' }
+      }
+
+      if (args[0] === 'rev-list') {
+        revListCalls += 1
+
+        if (revListCalls === 1) {
+          return new Promise(resolve => {
+            pending.resolve = resolve
+          })
+        }
+
+        return { code: 0, stderr: '', stdout: '6\n' }
+      }
+
+      return { code: 1, stderr: '', stdout: '' }
+    }
+
+    const probe = createBundleSkewProbe({ stamp: STAMP, runGit: git, repoRoot: REPO })
+
+    const first = probe()
+    await tick()
+
+    // Same root, same HEAD: this caller joins rather than starting a second run.
+    const second = probe()
+    await tick()
+
+    expect(spawnsOf(calls, 'rev-list')).toBe(1)
+    expect(spawnsOf(calls, 'merge-base')).toBe(1)
+
+    pending.resolve?.({ code: 0, stderr: '', stdout: '4\n' })
+    await tick()
+
+    expect(await first).toEqual({ desktopCommitsBehind: 4, outOfSync: true })
+    expect(await second).toEqual({ desktopCommitsBehind: 4, outOfSync: true })
+  })
+
+  // Non-blocking: the in-flight and cache keys used the raw root string, so a
+  // trailing slash named a different tree even though path.resolve collapses it
+  // to the same directory. That must not miss the cache or restart the probe.
+  it('treats a trailing slash in the root as the same root', async () => {
+    const { calls, git } = gitScripted({ count: '2\n' })
+    let root = '/repo'
+    const probe = createBundleSkewProbe({ stamp: STAMP, runGit: git, repoRoot: () => root })
+
+    expect(await probe()).toEqual({ desktopCommitsBehind: 2, outOfSync: true })
+    expect(spawnsOf(calls, 'rev-list')).toBe(1)
+
+    root = '/repo/'
+
+    // Same directory, same HEAD: a cache hit, so no second rev-list.
+    expect(await probe()).toEqual({ desktopCommitsBehind: 2, outOfSync: true })
+    expect(spawnsOf(calls, 'rev-list')).toBe(1)
+  })
 })
 
 // Real-git integration: proves the pathspec discriminates docs/e2e-only

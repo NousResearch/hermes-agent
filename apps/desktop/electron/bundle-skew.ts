@@ -53,6 +53,8 @@
  * Pure + injectable so it is testable without booting Electron or git.
  */
 
+import { resolve } from 'node:path'
+
 export interface BundleSkewStamp {
   commit: string
   /** write-build-stamp.mjs source tag — 'fallback' means the commit is fake. */
@@ -129,6 +131,22 @@ function isResolvedSha(value: string): boolean {
 /** The literal revision git may resolve itself, or a resolved object id. */
 function isTrustedHead(value: string): boolean {
   return value === 'HEAD' || isResolvedSha(value)
+}
+
+/**
+ * Parse the two-line `rev-parse --is-shallow-repository HEAD` output: the
+ * shallow flag, then the sha (git 2.54). Null when either line is not what the
+ * probe trusts — a missing line, an error message, an abbreviated or uppercase
+ * id — so neither the cache key nor a git argument can be built from a guess.
+ */
+function parseHeadRevision(stdout: string): { headSha: string; shallow: boolean } | null {
+  const [flag, sha] = stdout.trim().split(/\r?\n/)
+
+  if ((flag !== 'true' && flag !== 'false') || !sha || !isResolvedSha(sha)) {
+    return null
+  }
+
+  return { headSha: sha, shallow: flag === 'true' }
 }
 
 export async function detectBundleSkew(
@@ -276,6 +294,12 @@ interface InFlightRun {
   promise: Promise<BundleSkewResult>
   root: string
   /**
+   * The HEAD sha this run read, once it knows it; null until then. A same-root
+   * caller compares its own HEAD against it, so it never joins a run whose
+   * answer describes a different commit.
+   */
+  headSha: string | null
+  /**
    * The signal this run's git calls carry. A run replaced by one for another
    * root is aborted through it, so its git child is killed instead of holding
    * a core for a tree no caller is waiting on.
@@ -313,7 +337,11 @@ export function createBundleSkewProbe({
   // background, and must not write its late answer over a newer run's.
   let generation = 0
 
-  const run = async (cwd: string, controller: AbortController): Promise<BundleSkewResult> => {
+  const run = async (
+    cwd: string,
+    controller: AbortController,
+    onHeadResolved: (headSha: string) => void
+  ): Promise<BundleSkewResult> => {
     if (!stamp?.commit || stamp.source === 'fallback' || isFallbackCommit(stamp.commit)) {
       return NOT_STALE
     }
@@ -363,27 +391,30 @@ export function createBundleSkewProbe({
         return NOT_STALE
       }
 
-      const [shallowFlag, resolved] = head.stdout.trim().split(/\r?\n/)
-      const headSha = resolved ?? ''
+      const revision = parseHeadRevision(head.stdout)
 
       // A sha git did not actually resolve — an error message, an abbreviated or
       // uppercase id, a missing line — cannot key the cache or fill a git
       // argument. Fail quiet and cache nothing, so the next call reads HEAD
       // again instead of pinning a guess.
-      if ((shallowFlag !== 'true' && shallowFlag !== 'false') || !isResolvedSha(headSha)) {
+      if (!revision) {
         return NOT_STALE
       }
+
+      // Publish the sha this run will answer for, so a same-root caller can
+      // compare its own HEAD against it before joining.
+      onHeadResolved(revision.headSha)
 
       // One sha, resolved once. It is both the cache key and the commit the
       // expensive calls below run against, so a HEAD that moves during the
       // probe cannot make a cached answer describe a commit other than its key.
-      const key = `${cwd}:${stamp.commit}:${headSha}`
+      const key = `${cwd}:${stamp.commit}:${revision.headSha}`
 
       if (key === cachedKey) {
         return cachedResult
       }
 
-      const answer = await answerBundleSkew(stamp, signaled, cwd, headSha, shallowFlag === 'true')
+      const answer = await answerBundleSkew(stamp, signaled, cwd, revision.headSha, revision.shallow)
 
       // Cache only an answer git actually produced, and only from a run that
       // is still current: a run the timeout aborted answers fail-quiet (not
@@ -415,22 +446,52 @@ export function createBundleSkewProbe({
     }
   }
 
-  return () => {
-    // Resolve the root first: the source tree can be retargeted at runtime, so
-    // a run already in flight for another root must not be joined — that would
-    // hand this caller the old tree's answer. The generation counter keeps the
-    // abandoned run from writing the cache.
-    const cwd = typeof repoRoot === 'function' ? repoRoot() : repoRoot
+  /**
+   * Read HEAD the same cheap way a cache hit does, so a caller can prove an
+   * in-flight run answers for its own commit. Null when git cannot resolve HEAD
+   * to a trustworthy sha: there is nothing to compare against, so no in-flight
+   * run can be joined on that reading.
+   */
+  const readHeadSha = async (cwd: string): Promise<string | null> => {
+    try {
+      const head = await runGit(['rev-parse', '--is-shallow-repository', 'HEAD'], { cwd })
 
-    if (inFlight?.root === cwd) {
-      return inFlight.promise
+      return head.code === 0 ? (parseHeadRevision(head.stdout)?.headSha ?? null) : null
+    } catch {
+      return null
+    }
+  }
+
+  return async (): Promise<BundleSkewResult> => {
+    // Normalize the root first. The source tree can be retargeted at runtime, so
+    // a run already in flight for another root must not be joined — that would
+    // hand this caller the old tree's answer. path.resolve folds a trailing
+    // slash or a relative segment, so two spellings of one directory share one
+    // cache key and one in-flight entry instead of spawning twice. The
+    // generation counter keeps an abandoned run from writing the cache.
+    const cwd = resolve(typeof repoRoot === 'function' ? repoRoot() : repoRoot)
+
+    // The entry is captured in a local: the checks below await a git spawn, and
+    // the shared `inFlight` could be replaced in the meantime.
+    const joining = inFlight
+
+    if (joining && joining.root === cwd) {
+      // Join only a run that answers for THIS caller's commit. A run that has
+      // already read HEAD answers for that sha; if HEAD moved since, its answer
+      // describes an older commit and must not be handed over. A run that has
+      // not read HEAD yet reads it after this call, so it cannot be older: join
+      // it without a spawn.
+      if (joining.headSha === null || (await readHeadSha(cwd)) === joining.headSha) {
+        return joining.promise
+      }
     }
 
-    // This run supersedes one for a different root. That run's caller still
-    // waits on it, but its git is doing work for a tree nobody else needs:
-    // abort its controller so the child is killed (SIGTERM, then SIGKILL, via
-    // killChildOnAbort) instead of holding a core for minutes. The generation
-    // guard already keeps its late answer out of the cache.
+    // This run supersedes one for a different root, or for a HEAD that moved
+    // since that run read it. Its caller still waits on it, but its git is
+    // doing work for a tree or a commit nobody else needs: abort its controller
+    // so the child is killed (SIGTERM, then SIGKILL, via killChildOnAbort)
+    // instead of holding a core for minutes. The generation guard already keeps
+    // its late answer out of the cache.
     if (inFlight) {
       try {
         inFlight.controller.abort()
@@ -442,7 +503,17 @@ export function createBundleSkewProbe({
     }
 
     const controller = new AbortController()
-    const entry: InFlightRun = { controller, promise: run(cwd, controller), root: cwd }
+
+    const entry: InFlightRun = {
+      controller,
+      headSha: null,
+      promise: Promise.resolve(NOT_STALE),
+      root: cwd
+    }
+
+    entry.promise = run(cwd, controller, headSha => {
+      entry.headSha = headSha
+    })
 
     entry.promise = entry.promise.finally(() => {
       if (inFlight === entry) {

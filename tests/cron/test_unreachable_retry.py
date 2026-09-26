@@ -97,7 +97,8 @@ def test_will_retry_mirrors_plan_retry_yield(tmp_cron_home):
     jm = get_job(mid["id"])
     assert jm is not None
     # 10m cadence beats the 15m and 30m rungs: the ladder can never climb past attempt 1,
-    # so the exhaustion escape is unreachable and the notice must go out immediately.
+    # so the exhaustion escape is unreachable. At attempt 1 the next (15m) rung loses to the
+    # 10m run, so this failure's notice goes out rather than being held for a retry.
     assert jm[ur.STATE_KEY]["attempt"] == 1
     assert ur.will_retry(jm) is False, "10m cadence beats the 15m rung: yielded, notice goes out"
 

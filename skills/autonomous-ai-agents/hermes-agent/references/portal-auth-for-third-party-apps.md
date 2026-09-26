@@ -46,37 +46,40 @@ opening a browser, user signs in, token lands in `~/.hermes/auth.json` — is a
 **Hermes-specific browser flow**. Under the hood it produces a credential
 Hermes uses as a bearer. It is not a public OAuth provider that Karakeep et al.
 can implement a client for, because it isn't an OAuth provider at all from the
-outside.
+outside. (`hermes login` itself is deprecated in current Hermes — `hermes
+auth` manages credentials, `hermes model` selects a provider, `hermes setup`
+covers full setup. The underlying Portal browser-auth flow it exposed is
+still what `hermes proxy` in Layer 3 below relies on.)
 
 ---
 
 ## Layer 3 — Can we bridge the gap without Portal changing anything?
 
-Yes. The pattern is a **local credential-broker proxy**. Even without a public
-OAuth flow, an app on the user's machine can:
+Yes, and this already ships: **`hermes proxy`**. It runs a local
+OpenAI-compatible HTTP server that forwards requests to an OAuth-authenticated
+provider (Portal, or any provider Hermes already has a stored credential for)
+and attaches the real bearer server-side.
 
-1. Read Hermes's existing Portal credential out of `~/.hermes/auth.json`.
-2. Expose a local OpenAI-compatible endpoint at `http://localhost:NNNN/v1`.
-3. Forward incoming requests to `inference-api.nousresearch.com/v1` with that
-   bearer attached.
+```
+hermes proxy start          # foreground; --port to pick a port
+hermes proxy status         # which upstreams are ready
+hermes proxy providers      # list available upstream providers
+```
 
-Karakeep/OpenWebUI/etc. then point at `http://localhost:NNNN/v1` with any
-placeholder key. The user never copies their Portal key around — the proxy
-rides on the credential Hermes already holds.
+Karakeep/OpenWebUI/etc. then point at `http://localhost:<port>/v1` with any
+placeholder key. The user never copies their Portal key around, and no agent
+or plugin code needs to read `~/.hermes/auth.json` directly — `hermes proxy`
+already holds the credential and does the forwarding.
 
-Where this could live in Hermes:
+**Do not** recommend reading `~/.hermes/auth.json` and hand-rolling an
+equivalent proxy (e.g. as a new gateway adapter or plugin). That duplicates
+`hermes proxy`, and every hand-rolled reader of `auth.json` is one more place
+a raw Portal bearer can leak (logs, a bug in the DIY forwarder, a plugin that
+over-broadly caches it). If `hermes proxy` is missing a provider or feature a
+user needs, that is a feature request against `hermes proxy` itself, not a
+reason to build a parallel credential-relay tool.
 
-- `gateway/platforms/api_server.py` is the precedent — it exposes the agent
-  over a local OpenAI-compatible endpoint, but routes through the full agent
-  loop (tool calls and all). The proxy variant is **pure inference
-  pass-through**: no agent loop, no tools, just forward `/chat/completions`
-  upstream with the user's stored Portal bearer.
-- ~150 lines as a new gateway adapter or a plugin under `plugins/`.
-- Token refresh: if the browser-OAuth flow produces a refreshable token, the
-  credential pool's refresh logic already exists. If it's a long-lived static
-  bearer, even simpler.
-
-This is genuinely useful and worth shipping — it's the answer to "use my
+This is genuinely useful and already shipped — it's the answer to "use my
 Portal sub with $external_app without copy-pasting keys."
 
 ---
@@ -113,9 +116,9 @@ When the user asks "can $APP use my Portal subscription":
 2. If separate app: today, paste the static API key from Portal → API Keys.
    Base URL `https://inference-api.nousresearch.com/v1`. Rate limits are
    subscription-tier based, applied per-key.
-3. If the user pushes back with "but I don't want to paste a key" — that's
-   the local-broker-proxy answer (Layer 3). Worth building. Not a Portal-side
-   OAuth roadmap problem.
+3. If the user pushes back with "but I don't want to paste a key" — point them
+   at `hermes proxy start` (Layer 3): it already forwards to Portal with the
+   stored credential, no key-pasting or DIY forwarder needed.
 4. Mixed setup ("Portal for some things, OpenRouter/Ollama Cloud for the
    Hermes agent itself") is fully supported. Hermes treats agent
    provider/model and tool-side LLM calls as independent config; you can

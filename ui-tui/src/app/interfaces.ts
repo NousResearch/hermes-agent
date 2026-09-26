@@ -366,6 +366,8 @@ export interface UiState {
   // `display.timestamps` — dim [HH:MM] labels on user/assistant transcript
   // rows, the same config key the classic CLI honors (#41531).
   timestamps: boolean
+  // display.vim_mode — enables modal editing in the Ink composer.
+  vimEnabled: boolean
   usage: Usage
 }
 

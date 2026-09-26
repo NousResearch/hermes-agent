@@ -4,6 +4,7 @@ import type { Usage } from '@hermes/shared/gateway-events'
 import { useStore } from '@nanostores/react'
 import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from 'react'
 import unicodeSpinners from 'unicode-animations'
+import type { BrailleSpinnerName, Spinner } from 'unicode-animations'
 
 import { $delegationState } from '../app/delegationStore.js'
 import type { BatteryInfo, IndicatorStyle, Notice } from '../app/interfaces.js'
@@ -48,6 +49,14 @@ interface IndicatorRender {
   showVerb: boolean
 }
 
+// Resolve a `unicode` / `unicode:<spinner>` style to its package spinner.
+// Unknown names fall back to braille so a stale config value can never
+// blank the status bar.
+const unicodeSpinnerFor = (style: IndicatorStyle): Spinner => {
+  const name = style.startsWith('unicode:') ? style.slice('unicode:'.length) : 'braille'
+  return unicodeSpinners[name as BrailleSpinnerName] ?? unicodeSpinners.braille
+}
+
 const renderIndicator = (style: IndicatorStyle, tick: number): IndicatorRender => {
   if (style === 'kaomoji') {
     return { frame: FACES[tick % FACES.length] ?? '', intervalMs: FACE_TICK_MS, showVerb: true }
@@ -69,11 +78,12 @@ const renderIndicator = (style: IndicatorStyle, tick: number): IndicatorRender =
     }
   }
 
-  // 'unicode' — braille spinner (fixed 1-col).  Authored interval is
-  // ~80ms; honour it but bound below at a safe minimum so React
-  // re-renders stay reasonable.  This style is for users who want
-  // the cleanest possible status, so no verb rotation either.
-  const spinner = unicodeSpinners.braille
+  // 'unicode' / 'unicode:<spinner>' — braille-family spinner (fixed width
+  // per spinner).  Authored intervals are ~60-250ms; honour them but bound
+  // below at a safe minimum so React re-renders stay reasonable.  This
+  // style family is for users who want the cleanest possible status, so
+  // no verb rotation either.
+  const spinner = unicodeSpinnerFor(style)
   const frame = spinner.frames[tick % spinner.frames.length] ?? '⠋'
 
   return { frame, intervalMs: Math.max(SPINNER_TICK_MS, spinner.interval), showVerb: false }
@@ -84,6 +94,13 @@ const renderIndicator = (style: IndicatorStyle, tick: number): IndicatorRender =
 const KAOMOJI_FRAME_WIDTH = FACES.reduce((max, f) => Math.max(max, stringWidth(f)), 1)
 const EMOJI_FRAME_WIDTH = EMOJI_FRAMES.reduce((max, f) => Math.max(max, stringWidth(f)), 1)
 
+// 'unicode' / 'unicode:<spinner>' frame widths, measured once per style
+// (frames are static per spinner, so the Map caches for the process
+// lifetime).  1-col for braille/orbit/breathe, up to 5 for scan/cascade;
+// the reservation keeps the rest of the status bar from jittering as
+// frames rotate.
+const UNICODE_FRAME_WIDTH_CACHE = new Map<string, number>()
+
 const indicatorFrameWidth = (style: IndicatorStyle): number => {
   if (style === 'kaomoji') {
     return KAOMOJI_FRAME_WIDTH
@@ -93,8 +110,21 @@ const indicatorFrameWidth = (style: IndicatorStyle): number => {
     return EMOJI_FRAME_WIDTH
   }
 
-  // 'ascii' and 'unicode' are single-column glyphs.
-  return 1
+  if (style === 'ascii') {
+    return 1
+  }
+
+  const cached = UNICODE_FRAME_WIDTH_CACHE.get(style)
+
+  if (cached !== undefined) {
+    return cached
+  }
+
+  const width = unicodeSpinnerFor(style).frames.reduce((max, f) => Math.max(max, stringWidth(f)), 1)
+
+  UNICODE_FRAME_WIDTH_CACHE.set(style, width)
+
+  return width
 }
 
 // Bounded width of the elapsed-time clock, derived from `fmtDuration` itself so

@@ -6,7 +6,7 @@ Keys match exactly except ``details_mode.<section>`` (prefix) and ``_DISPLAY_TOG
 
 import os
 
-from hermes_constants import INDICATOR_STYLES
+from hermes_constants import INDICATOR_STYLE_VALUES
 
 from .method_ctx import HandlerRegistry, bind_module
 
@@ -346,7 +346,7 @@ def _word_setters() -> dict:
         "theme": (_word, {"auto", "light", "dark"}, "unknown theme value: {value} (use auto|light|dark)",
                   lambda w: _write_config_key("display.tui_theme", w)),
         # _raw_word: 0/False/[] keep their text so the error names what was sent.
-        "indicator": (_raw_word, INDICATOR_STYLES, "unknown indicator: {raw!r}; pick one of " + "|".join(INDICATOR_STYLES),
+        "indicator": (_raw_word, INDICATOR_STYLE_VALUES, "unknown indicator: {raw!r}; pick one of " + "|".join(sorted(INDICATOR_STYLE_VALUES)),
                       lambda w: _write_config_key("display.tui_status_indicator", w)),
         # Which engine the desktop voice button mounts; applies to the NEXT conversation.
         "voice.voice_chat_mode": (_word, {"chained", "gpt-live"}, "unknown voice chat mode: {value}; pick chained|gpt-live",

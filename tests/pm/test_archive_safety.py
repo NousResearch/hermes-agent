@@ -343,6 +343,7 @@ class TestFlattenSeesThroughOsMetadata:
 
         assert (staged / "bin" / "tool").is_file()
         assert not (staged / "wrapper").exists()
+        assert not (staged / ".DS_Store").exists()
 
     def test_metadata_only_tree_flattens_nothing_and_stays_empty(self, tmp_path):
         staged = self._staged(tmp_path)

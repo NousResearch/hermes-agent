@@ -238,6 +238,16 @@ def _is_os_metadata(entry: Path) -> bool:
     )
 
 
+def _unlink_os_metadata(entry: Path) -> None:
+    try:
+        entry.unlink()
+    except OSError:
+        # A metadata file the OS refuses to release right now is inert next
+        # to the real payload; refusing to flatten it is a clearer failure
+        # than crashing the install on it.
+        pass
+
+
 def flatten_single_dir(dest: Path) -> None:
     """Hoist a lone top-level dir's contents unless it IS the layout
     (bin/, cmd/, lib/...). Refuses on name collisions. OS metadata Finder
@@ -246,7 +256,7 @@ def flatten_single_dir(dest: Path) -> None:
     an entry nor survives into the published layout."""
     for item in list(dest.iterdir()):
         if _is_os_metadata(item):
-            item.unlink()
+            _unlink_os_metadata(item)
     keep = {"bin", "cmd", "lib", "libexec", "share", "etc", "usr"}
     entries = list(dest.iterdir())
     if len(entries) != 1 or not entries[0].is_dir() or entries[0].name in keep:
@@ -254,7 +264,7 @@ def flatten_single_dir(dest: Path) -> None:
     inner = entries[0]
     for item in list(inner.iterdir()):
         if _is_os_metadata(item):
-            item.unlink()
+            _unlink_os_metadata(item)
             continue
         target = dest / item.name
         if target.exists():

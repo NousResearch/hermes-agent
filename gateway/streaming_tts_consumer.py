@@ -39,7 +39,7 @@ class StreamingTTSConsumer:
         # Resolved once; None => inactive, gateway falls back to whole-file TTS.
         self._streamer = resolve_streaming_provider(tts_config)
         from tools.tts_tool import _get_provider
-        self._provider = _get_provider(tts_config)
+        self._provider = getattr(self._streamer, "provider_name", _get_provider(tts_config))
         self._chunker = SentenceChunker.from_config(tts_config)
         # Provisional: refreshed from the streamer when the handle opens on the first PCM chunk,
         # since an OpenAI-compatible endpoint reports its real rate only in the response (#76466).

@@ -127,6 +127,7 @@ class StreamingTTSProvider(ABC):
     sample_rate: int = 24000
     channels: int = 1
     sample_width: int = 2  # bytes/sample (int16)
+    provider_name: str = ""  # set by resolver to the actual selected backend
 
     def __init__(self, tts_config: Dict, section: Dict):
         self.tts_config = tts_config
@@ -158,7 +159,9 @@ def _try_instantiate(name: str, tts_config: Dict) -> Optional[StreamingTTSProvid
     if cls is None or not cls.available():
         return None
     try:
-        return cls(tts_config, tts_config.get(name) or {})
+        streamer = cls(tts_config, tts_config.get(name) or {})
+        streamer.provider_name = name
+        return streamer
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("streaming provider %s init failed: %s", name, exc)
         return None

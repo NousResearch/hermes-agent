@@ -39,6 +39,26 @@ def test_streaming_clause_is_guarded_before_provider(monkeypatch):
     _run_test(run)
 
 
+def test_policy_provider_matches_selected_gateway_streamer(monkeypatch):
+    from hermes_cli.plugins import PluginManager
+    manager = PluginManager()
+    seen = []
+    manager._hooks["pre_tts_synthesis"] = [
+        lambda text, provider: seen.append(provider) or
+        ({"action": "block"} if provider == "openai" else None)]
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+    streamer = FakeStreamer()
+    setattr(streamer, "provider_name", "openai")
+    monkeypatch.setattr("tools.tts_streaming.resolve_streaming_provider", lambda cfg: streamer)
+
+    async def run(loop):
+        consumer = StreamingTTSConsumer(FakeVoiceAdapter(), "voice", {"provider": "edge"}, loop)
+        with pytest.raises(ValueError, match="blocked"):
+            await consumer._synthesise_and_write("Hello there")
+        assert seen == ["openai"] and streamer._clause_count == 0
+    _run_test(run)
+
+
 # ---------------------------------------------------------------------------
 # Fakes
 # ---------------------------------------------------------------------------

@@ -48,6 +48,7 @@ def test_required_failed_plugin_blocks_manual_before_provider_and_is_profile_sco
         calls.append(text)
         Path(path).write_bytes(b"audio")
     monkeypatch.setattr(tts_tool, "_generate_edge_tts", generate)
+    monkeypatch.setattr(tts_tool, "_import_edge_tts", lambda: object())
     for index, (home, expected) in enumerate(((a, False), (b, True), (a, False))):
         token = set_hermes_home_override(home)
         try:

@@ -512,8 +512,9 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
         with _config_profile_scope(profile):
             cfg = _load_tts_config()
             streamer = resolve_streaming_provider(cfg)
-            cap = _resolve_max_text_length(_get_provider(cfg), cfg)
-        return streamer, cap, cfg, _get_provider(cfg)
+            provider = getattr(streamer, "provider_name", _get_provider(cfg))
+            cap = _resolve_max_text_length(provider, cfg)
+        return streamer, cap, cfg, provider
 
     try:
         streamer, cap, cfg, provider = await loop.run_in_executor(None, _resolve)

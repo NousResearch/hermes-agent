@@ -349,13 +349,14 @@ def stream_tts_to_speaker(
         # synthesis (universal — edge + every non-streamer).
         from tools.tts_streaming import SentenceChunker, resolve_streaming_provider
         streamer = resolve_streaming_provider(tts_config, preferred=provider)
+        if streamer is not None:
+            resolved_provider = getattr(streamer, "provider_name", resolved_provider)
         stream_max_len = 0
         if streamer is None:
             sync_pipeline = _SyncSentencePipeline(stop_event)
         else:
             with contextlib.suppress(Exception):
-                stream_max_len = origin._resolve_max_text_length(
-                    provider or origin._get_provider(tts_config), tts_config)
+                stream_max_len = origin._resolve_max_text_length(resolved_provider, tts_config)
             playback = _StreamerPlayback(streamer, stop_event)
         chunker = SentenceChunker.from_config(tts_config)
         spoken_sentences: list[str] = []  # skip duplicate/near-duplicate sentences (LLM repetition)

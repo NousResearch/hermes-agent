@@ -142,6 +142,37 @@ def test_speaker_streamer_does_not_call_backend_for_denied_sentence(monkeypatch)
     assert done.is_set() and streamer.requests == []
 
 
+def test_speaker_policy_sees_selected_streamer_not_sync_default(monkeypatch):
+    import queue
+    import threading
+    from tools import tts_tool_speaker
+    manager = PluginManager()
+    seen = []
+    manager._hooks["pre_tts_synthesis"] = [
+        lambda text, provider: seen.append(provider) or
+        ({"action": "block"} if provider == "openai" else None)]
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+
+    class Streamer:
+        provider_name = "openai"
+        requests = []
+        sample_rate = 24000
+        channels = 1
+        def stream(self, text):
+            self.requests.append(text)
+            yield b"\x00\x00"
+
+    streamer = Streamer()
+    monkeypatch.setattr("tools.tts_streaming.resolve_streaming_provider", lambda cfg, preferred=None: streamer)
+    monkeypatch.setattr(tts_tool, "_load_tts_config", lambda: {"provider": "edge"})
+    monkeypatch.setattr(tts_tool_speaker._StreamerPlayback, "_device_usable", lambda self: False)
+    text_queue = queue.Queue()
+    text_queue.put("Hello there.")
+    text_queue.put(None)
+    tts_tool_speaker.stream_tts_to_speaker(text_queue, threading.Event(), threading.Event())
+    assert seen == ["openai"] and streamer.requests == []
+
+
 def test_policy_dispatch_failure_is_not_synthesized(monkeypatch, tmp_path):
     def unavailable(*args, **kwargs):
         raise RuntimeError("plugin manager unavailable")

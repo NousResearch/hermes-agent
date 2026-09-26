@@ -642,6 +642,8 @@ def test_declined_INITIAL_draft_is_not_retried_as_a_plain_send():
             self._draft_id = 1
             self._use_draft_streaming = True
             self._draft_failures = 0
+            self._draft_cooldown_until = None
+            self._last_draft_retryable = False
             self._initial_reply_to_id = None
             self._already_sent = False
             self._last_sent_text = ""
@@ -865,12 +867,16 @@ def test_declined_draft_frame_is_terminal_for_the_run():
             return self._result
 
     class _Consumer(StreamTransportMixin):
+        _MAX_DRAFT_FAILURES = 3
+
         def __init__(self, adapter):
             self.adapter = adapter
             self.chat_id = "C1"
             self._draft_id = "d1"
             self._use_draft_streaming = True
             self._draft_failures = 0
+            self._draft_cooldown_until = None
+            self._last_draft_retryable = False
             self._last_sent_text = None
             self._egress_declined = False
 
@@ -883,13 +889,16 @@ def test_declined_draft_frame_is_terminal_for_the_run():
     assert asyncio.run(consumer._send_draft_frame("partial")) is False
     assert consumer._egress_declined is True
 
-    # CONTROL: an ordinary draft failure disables drafts WITHOUT going terminal,
-    # otherwise this fix silently becomes "one flaky frame mutes the chat".
+    # CONTROL: an ordinary draft failure takes the retry-budget path, NOT the
+    # terminal one — it counts toward _MAX_DRAFT_FAILURES rather than setting
+    # _egress_declined, otherwise this fix silently becomes "one flaky frame
+    # mutes the chat" (drafts stay enabled until the budget is exhausted).
     adapter2 = _Adapter(SendResult(success=False, error="rate limited"))
     consumer2 = _Consumer(adapter2)
     assert asyncio.run(consumer2._send_draft_frame("partial")) is False
     assert consumer2._egress_declined is False
-    assert consumer2._use_draft_streaming is False
+    assert consumer2._draft_failures == 1
+    assert consumer2._use_draft_streaming is True
 
 
 # ── round 10 blockers ──────────────────────────────────────────────────────

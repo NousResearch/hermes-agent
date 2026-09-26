@@ -613,8 +613,10 @@ def _rule_stuck_in_blocked(task, events, runs, now, cfg) -> list[Diagnostic]:
         detail=f"This task transitioned to blocked {int(age_hours)}h ago and has had no comments or "
                f"unblock attempts since. Blocked tasks are waiting for human input — check the block "
                f"reason and either unblock with feedback or answer with a comment.",
-        actions=[DiagnosticAction(kind="comment", label="Add a comment / unblock the task",
-                                  suggested=True)],
+        actions=[
+            DiagnosticAction(kind="comment", label="Add a comment", suggested=True),
+            DiagnosticAction(kind="unblock", label="Unblock task"),
+        ],
         first_seen_at=last_blocked_ts, last_seen_at=last_blocked_ts, count=1,
         data={"blocked_at": last_blocked_ts, "age_hours": round(age_hours, 1)},
     )]

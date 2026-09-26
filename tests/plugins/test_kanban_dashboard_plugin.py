@@ -963,6 +963,35 @@ def test_reassign_endpoint_switches_profile(client):
 # Diagnostics endpoint (/api/plugins/kanban/diagnostics)
 # ---------------------------------------------------------------------------
 
+def test_stale_block_diagnostic_unblock_preserves_task_event(client):
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="Waiting for operator", assignee="alice")
+        assert kb.block_task(conn, task_id, reason="Awaiting input")
+        conn.execute(
+            "UPDATE task_events SET created_at = ? WHERE task_id = ? AND kind = 'blocked'",
+            (int(time.time()) - 48 * 3600, task_id),
+        )
+        conn.commit()
+
+    response = client.get("/api/plugins/kanban/diagnostics")
+    assert response.status_code == 200
+    row = next(r for r in response.json()["diagnostics"] if r["task_id"] == task_id)
+    diagnostic = next(d for d in row["diagnostics"] if d["kind"] == "stuck_in_blocked")
+    assert any(a["kind"] == "unblock" for a in diagnostic["actions"])
+
+    # The existing dashboard action sends exactly this request.
+    response = client.patch(f"/api/plugins/kanban/tasks/{task_id}", json={"status": "ready"})
+    assert response.status_code == 200, response.text
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, task_id).status == "ready"
+        events = [e for e in kb.list_events(conn, task_id) if e.kind == "unblocked"]
+        assert len(events) == 1
+        assert events[0].run_id is None
+    rows = client.get("/api/plugins/kanban/diagnostics").json()["diagnostics"]
+    assert not any(d["kind"] == "stuck_in_blocked" for r in rows
+                   if r["task_id"] == task_id for d in r["diagnostics"])
+
+
 def test_diagnostics_endpoint_surfaces_blocked_hallucination(client):
     conn = kbc.connect()
     try:

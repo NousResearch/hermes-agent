@@ -3251,6 +3251,10 @@
           ),
           h("div", { className: "hermes-kanban-card-title" },
             t.title || tx(i18n, "untitled", "(untitled)")),
+          t.status === "blocked" && t.block_kind
+            ? h(Badge, { variant: "outline" },
+                tx(i18n, "blockKind", "Block kind") + ": " + t.block_kind)
+            : null,
           h("div", { className: "hermes-kanban-card-row hermes-kanban-card-meta" },
             t.assignee
               ? h("span", { className: "hermes-kanban-assignee",
@@ -4020,6 +4024,18 @@
       ),
       h("div", { className: "hermes-kanban-drawer-meta" },
         h(MetaRow, { label: tx(i18n, "status", "Status"), value: t.status }),
+        t.status === "blocked" && t.block_kind ? h(MetaRow, {
+          label: tx(i18n, "blockKind", "Block kind"), value: t.block_kind,
+        }) : null,
+        t.block_recurrences > 0 ? h(MetaRow, {
+          label: tx(i18n, "blockRecurrences", "Block recurrences"), value: t.block_recurrences,
+        }) : null,
+        t.consecutive_failures > 0 ? h(MetaRow, {
+          label: tx(i18n, "consecutiveFailures", "Consecutive failures"), value: t.consecutive_failures,
+        }) : null,
+        t.last_failure_error ? h(MetaRow, {
+          label: tx(i18n, "lastFailure", "Last failure"), value: t.last_failure_error,
+        }) : null,
         h(AssigneeEditor, { task: t, onPatch: props.onPatch }),
         h(PriorityEditor, { task: t, onPatch: props.onPatch }),
         h(ModelEditor, { task: t, onPatch: props.onPatch }),

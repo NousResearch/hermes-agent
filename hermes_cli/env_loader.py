@@ -319,8 +319,8 @@ def _load_dotenv_with_fallback(path: Path, *, override: bool, load_pass: int | N
 
 def _sanitize_env_file_if_needed(path: Path) -> None:
     """Pre-sanitize a .env file before python-dotenv reads it. Sniffs a leading BOM *before* any text
-    decode: UTF-16 (Notepad "Unicode") is rewritten as clean UTF-8; UTF-32 is refused (left untouched) so
-    we never fall through to the errors=replace corruption path."""
+    decode: UTF-16 (Notepad "Unicode") is rewritten as clean UTF-8; UTF-32 is refused (left untouched)
+    because the byte-preserving path below would strip its NUL padding and glue the BOM onto the first key."""
     if not path.exists():
         return
     try:
@@ -354,15 +354,12 @@ def _sanitize_env_file_if_needed(path: Path) -> None:
             return
         force_utf8_rewrite = True  # always rewrite UTF-16 as UTF-8 so the dotenv load sees a canonical file
     else:
-        # utf-8-sig strips a UTF-8 BOM; errors=replace so embedded NULs can be stripped below.
+        # utf-8-sig strips a UTF-8 BOM; surrogateescape so bytes that are not UTF-8 (a cp1252 file the
+        # latin-1 fallback loads) are written back unchanged while embedded NULs are stripped below.
         try:
-            with open(path, encoding="utf-8-sig", errors="replace") as f:
+            with open(path, encoding="utf-8-sig", errors="surrogateescape") as f:
                 original = f.readlines()
         except Exception:
-            return
-        # errors=replace turns undecodable leading bytes into U+FFFD; persisting would glue them onto
-        # the first key name permanently — leave the file untouched instead.
-        if original and original[0].startswith("\ufffd"):
             return
 
     try:
@@ -373,7 +370,7 @@ def _sanitize_env_file_if_needed(path: Path) -> None:
             import tempfile
             fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp", prefix=".env_")
             try:
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                with os.fdopen(fd, "w", encoding="utf-8", errors="surrogateescape") as f:
                     f.writelines(sanitized)
                     f.flush()
                     os.fsync(f.fileno())

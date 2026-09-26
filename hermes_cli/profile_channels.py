@@ -290,7 +290,8 @@ def strip_channel_env_file(env_path: Path, index: Optional[ChannelKeyIndex] = No
     index = index or ChannelKeyIndex()
     removed: Dict[str, List[str]] = {}
     kept: List[str] = []
-    text = env_path.read_text(encoding="utf-8-sig", errors="replace")
+    # surrogateescape both ways: bytes that are not UTF-8 (a cp1252 file) in kept lines survive verbatim.
+    text = env_path.read_text(encoding="utf-8-sig", errors="surrogateescape")
     for line in text.splitlines():
         key = _env_key_of_line(line)
         platform = index.platform_for(key) if key else None
@@ -299,7 +300,8 @@ def strip_channel_env_file(env_path: Path, index: Optional[ChannelKeyIndex] = No
         else:
             removed.setdefault(platform, []).append(key)
     if removed:
-        env_path.write_text("\n".join(kept) + ("\n" if text.endswith("\n") or kept else ""), encoding="utf-8")
+        env_path.write_text("\n".join(kept) + ("\n" if text.endswith("\n") or kept else ""), encoding="utf-8",
+                            errors="surrogateescape")
     return removed
 
 

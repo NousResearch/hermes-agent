@@ -390,18 +390,55 @@ def prune_stale_shallow_grafts(repo_root: Path) -> int:
         return 0
 
 
+def _partial_clone_filter(repo_root: Path, **run_kwargs) -> "str | None":
+    """The checkout's existing fetch filter, or None for a non-partial clone.
+
+    Decides WHICH filter the tag fetch repeats — a partial clone must keep its
+    own transfer semantics (a ``blob:none`` clone must not be silently tightened
+    to ``tree:0``) — while a non-partial clone falls back to the ``tree:0``
+    default at the call site. Read-only config probe; failures read as
+    "not partial".
+    """
+    result = subprocess.run(
+        ["git", "config", "--get", "remote.origin.promisor"],
+        cwd=str(repo_root), capture_output=True, text=True,
+        encoding="utf-8", errors="replace", timeout=30, **run_kwargs,
+    )
+    if result.returncode != 0 or result.stdout.strip().lower() != "true":
+        return None
+    configured = subprocess.run(
+        ["git", "config", "--get", "remote.origin.partialclonefilter"],
+        cwd=str(repo_root), capture_output=True, text=True,
+        encoding="utf-8", errors="replace", timeout=30, **run_kwargs,
+    )
+    return configured.stdout.strip() or None
+
+
 def fetch_full_commit_graph(repo_root: Path, **run_kwargs) -> bool:
     """Refresh release tags and fill shallow history before publishing identity.
 
     A full commit graph does not imply current tags, especially after a --no-tags
     clone. Fetch version tags explicitly without fetching every remote branch or
-    replacing existing tags. Trees and blobs stay on demand. Returns whether the
-    checkout was unshallowed; fetch failures raise subprocess errors.
+    replacing existing tags. On partial clones trees stay on demand. Every fetch
+    carries ``--filter=tree:0`` (the clone's own filter when it has one): a
+    shallow, non-partial checkout must not pay for an unfiltered ``--unshallow``
+    history transfer. The promisor keys are declared for THIS invocation only
+    via ``-c`` — bare ``git fetch --filter=...`` *writes*
+    ``remote.origin.promisor`` / ``remote.origin.partialclonefilter``, which
+    would convert a deliberately de-partialised checkout back into a partial
+    clone and re-arm the ``should_include_obj`` fetch failure (#122353). The
+    ``-c`` form keeps the config file untouched in every state (full, shallow,
+    de-partialised, partial). Returns whether the checkout was unshallowed;
+    fetch failures raise subprocess errors.
     """
     shallow = _shallow_file_path(repo_root) is not None
+    partial_filter = _partial_clone_filter(repo_root, **run_kwargs) or "tree:0"
     subprocess.run(
-        ["git", "fetch", "--quiet", *(["--unshallow"] if shallow else []),
-         "--filter=tree:0", "--no-tags", "origin", "refs/tags/v*:refs/tags/v*"],
+        ["git", "-c", "remote.origin.promisor=true",
+         "-c", f"remote.origin.partialclonefilter={partial_filter}",
+         "fetch", "--quiet", *([ "--unshallow" ] if shallow else []),
+         f"--filter={partial_filter}",
+         "--no-tags", "origin", "refs/tags/v*:refs/tags/v*"],
         cwd=str(repo_root), check=True, capture_output=True, text=True,
         encoding="utf-8", errors="replace", timeout=900, **run_kwargs,
     )

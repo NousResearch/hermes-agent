@@ -25,6 +25,31 @@ import tools.file_tools_paths as ftp
 import tools.terminal_tool as terminal_tool
 
 
+@pytest.fixture(autouse=True)
+def _clean_cwd_state(monkeypatch):
+    """Keep this file's cwd records out of every OTHER test's resolution base.
+
+    ``terminal_tool._session_cwd`` is a process-global dict. Tests here call
+    ``record_session_cwd("default", ...)`` (directly, or via
+    ``register_task_env_overrides``) to pin a workspace, and a record written
+    under the shared ``"default"`` key outlives the test that wrote it: nothing
+    in production clears it except an explicit ``clear_task_env_overrides``.
+    The record is step 1 of ``file_tools._resolve_base_dir``'s resolution
+    order, so it outranks ``$TERMINAL_CWD`` — a leaked record silently
+    re-anchors any later test that sets ``TERMINAL_CWD`` and resolves a
+    relative path (e.g. ``test_resolve_path.py`` failing only when run in the
+    same session as this file, against a tmp_path from
+    ``test_container_relative_path_keeps_container_cwd_symlink``).
+
+    Per-file subprocess isolation (``scripts/run_tests_parallel.py``) hides
+    this, but a plain ``pytest tests/tools/`` shares one interpreter. Reset the
+    stores per test — same idiom as ``tests/tools/test_session_cwd_store.py``.
+    """
+    monkeypatch.setattr(terminal_tool, "_session_cwd", {})
+    monkeypatch.setattr(terminal_tool, "_task_env_overrides", {})
+    monkeypatch.setattr(ft, "_file_ops_cache", {})
+
+
 @pytest.fixture
 def _isolated_cwd(tmp_path, monkeypatch):
     """Two checkouts: workspace (intended) + decoy (process cwd)."""

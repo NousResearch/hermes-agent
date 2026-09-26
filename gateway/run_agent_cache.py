@@ -548,6 +548,14 @@ class GatewayAgentCacheMixin:
             # Guarded release: a message that arrived during the awaits above may already run as
             # the successor generation — the displaced /stop tail must not wipe its slot.
             self._drop_turn_slot(session_key, run_generation=_generation_at_interrupt)
+        from gateway.run import _INTERRUPT_REASON_STOP
+        if interrupt_reason == _INTERRUPT_REASON_STOP:
+            # /stop ends the turn "interrupted", which never clears a resume marker left by an earlier
+            # restart; clear it here (both /stop routes land here) or the next boot resumes the stopped work.
+            try:
+                await self.async_session_store.clear_resume_pending(session_key)
+            except Exception:
+                logger.debug("clear_resume_pending after /stop failed for %s", session_key, exc_info=True)
 
     async def _refresh_agent_cache_message_count(self, session_key: str, session_id: Optional[str]) -> None:
         """Re-baseline a cached agent's stored message_count after THIS turn — the coherence guard

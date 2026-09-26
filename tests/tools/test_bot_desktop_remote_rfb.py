@@ -246,6 +246,15 @@ def test_invalid_or_loopback_config_is_refused(tmp_path, monkeypatch, endpoint):
         runtime.remote_endpoint()
 
 
+def test_quoted_false_does_not_allow_loopback(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _config(tmp_path, remote_endpoint="localhost:5900", remote_allow_loopback="false")
+    with pytest.raises(ValueError, match="loopback"):
+        runtime.remote_endpoint()
+    with pytest.raises(ValueError, match="loopback"):
+        runtime.validate_remote_peer("127.0.0.1")
+
+
 def test_observe_status_and_management_for_remote_only(tmp_path, monkeypatch):
     import tui_gateway.server as server
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -405,6 +414,8 @@ def test_public_warning_and_loopback_peer_check(tmp_path, monkeypatch, caplog):
     _config(tmp_path)
     with pytest.raises(ValueError, match="loopback"):
         runtime.validate_remote_peer("127.0.0.1")
+    with pytest.raises(ValueError, match="loopback"):
+        runtime.validate_remote_peer("0.0.0.0")
     runtime.validate_remote_peer("100.65.115.112")
     runtime.validate_remote_peer("192.168.1.5")
     assert not caplog.records

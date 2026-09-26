@@ -107,7 +107,7 @@ def remote_endpoint() -> Optional[tuple[str, int]]:
     addresses = [getattr(a, "ipv4_mapped", None) or a for a in addresses]
     loopback = host.rstrip(".").lower() == "localhost" or any(
         a.is_loopback or a.is_unspecified for a in addresses)
-    if loopback and not cfg.get("remote_allow_loopback", False):
+    if loopback and cfg.get("remote_allow_loopback") is not True:
         raise ValueError("loopback remote_endpoint requires bot_desktop.remote_allow_loopback")
     return host, int(port)
 
@@ -132,7 +132,7 @@ def validate_remote_peer(address: str) -> None:
     cfg = load_config_readonly().get("bot_desktop") or {}
     ip = ipaddress.ip_address(address.split("%")[0])
     ip = getattr(ip, "ipv4_mapped", None) or ip
-    if ip.is_loopback and not cfg.get("remote_allow_loopback", False):
+    if (ip.is_loopback or ip.is_unspecified) and cfg.get("remote_allow_loopback") is not True:
         raise ValueError("loopback remote_endpoint requires bot_desktop.remote_allow_loopback")
     if not cfg.get("remote_warn_public", True):
         return

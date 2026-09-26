@@ -1205,9 +1205,21 @@ def _cmd_notify_unsubscribe(args: argparse.Namespace) -> int:
 
 
 def _cmd_log(args: argparse.Namespace) -> int:
-    content = kb.read_worker_log(args.task_id, tail_bytes=args.tail)
+    board = getattr(args, "log_board", None) or getattr(args, "board", None)
+    content = kb.read_worker_log(args.task_id, tail_bytes=args.tail, board=board)
     if content is None:
-        return _err(f"(no log for {args.task_id} — task may not have spawned yet)")
+        slug = board or kb.get_current_board()
+        searched = kb.worker_log_path(args.task_id, board=board)
+        elsewhere = [
+            b["slug"] for b in kb.list_boards()
+            if b["slug"] != slug and kb.worker_log_path(args.task_id, board=b["slug"]).exists()
+        ]
+        if elsewhere:
+            hint = "; ".join(f"'{s}' (rerun with --board {s})" for s in elsewhere[:3])
+            return _err(f"(no log for {args.task_id} on board '{slug}' — no log file at {searched}; "
+                        f"a log exists on board {hint})")
+        return _err(f"(no log for {args.task_id} on board '{slug}' — no log file at {searched}; "
+                    "the task may not have spawned yet)")
     sys.stdout.write(content)
     if not content.endswith("\n"):
         sys.stdout.write("\n")

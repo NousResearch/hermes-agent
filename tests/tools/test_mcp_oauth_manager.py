@@ -75,6 +75,44 @@ def _set_interactive_stdin(monkeypatch, *, is_tty: bool = True) -> None:
 
 
 
+def test_reconnect_reuses_one_consent_prompt_until_tokens_change(tmp_path, monkeypatch):
+    """The manager/provider path must not reopen tabs for rejected refreshes."""
+    import asyncio
+    from tools import mcp_oauth
+    from tools.mcp_oauth_manager import MCPOAuthManager
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _set_interactive_stdin(monkeypatch)
+    monkeypatch.setattr(mcp_oauth, "_is_interactive", lambda: True)
+    monkeypatch.setattr(mcp_oauth, "_can_open_browser", lambda: True)
+    browser = MagicMock(return_value=True)
+    monkeypatch.setattr(mcp_oauth.webbrowser, "open", browser)
+    provider = MCPOAuthManager().get_or_build_provider("linear", "https://mcp.example/mcp", {})
+    assert provider is not None
+    redirect = provider.context.redirect_handler
+    first = "https://example.test/authorize?state=first"
+    second = "https://example.test/authorize?state=second"
+
+    token_path = tmp_path / "mcp-tokens" / "linear.json"
+    token_path.parent.mkdir(parents=True, exist_ok=True)
+    token_path.write_text('{"access_token":"old","token_type":"Bearer"}', encoding="utf-8")
+    asyncio.run(redirect(first))
+    with pytest.raises(mcp_oauth.OAuthNonInteractiveError, match="already requested"):
+        asyncio.run(redirect(second))
+    browser.assert_called_once_with(first)
+
+    # Issuer stamping or other bookkeeping can rewrite the file without
+    # supplying a new credential; it must NOT re-arm browser consent.
+    token_path.write_text('{"access_token":"old","token_type":"Bearer","hermes_issuer":"https://issuer.test"}', encoding="utf-8")
+    with pytest.raises(mcp_oauth.OAuthNonInteractiveError, match="already requested"):
+        asyncio.run(redirect(second))
+    browser.assert_called_once_with(first)
+
+    token_path.write_text('{"access_token":"new","token_type":"Bearer"}', encoding="utf-8")
+    asyncio.run(redirect(second))
+    assert browser.call_count == 2
+
+
 @pytest.mark.asyncio
 async def test_disk_watch_invalidates_on_mtime_change(tmp_path, monkeypatch):
     """When the tokens file mtime changes after baseline, provider reloads.

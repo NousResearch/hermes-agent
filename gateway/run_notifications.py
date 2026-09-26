@@ -334,7 +334,8 @@ class GatewayNotificationsMixin:
         return switched
 
     async def _deliver_media_from_response(
-        self, response: str, event: MessageEvent, adapter, thread_metadata: Optional[Dict[str, Any]] = None
+        self, response: str, event: MessageEvent, adapter, thread_metadata: Optional[Dict[str, Any]] = None,
+        media_files: Optional[list] = None,
     ) -> None:
         """Deliver explicit MEDIA: tags from an already-streamed response (text already delivered).
         EXPLICIT-ONLY, unlike the non-streaming path in ``gateway/platforms/base.py``: a bare local
@@ -350,8 +351,9 @@ class GatewayNotificationsMixin:
             # Capture [[as_document]] before extract_media strips it: images then go via send_document.
             force_document_attachments = "[[as_document]]" in response
             from gateway.platforms.base import BasePlatformAdapter, should_send_media_as_audio
-            media_files, cleaned = adapter.extract_media(response)
-            media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+            extracted, cleaned = adapter.extract_media(response)
+            if media_files is None:
+                media_files = BasePlatformAdapter.filter_media_delivery_paths(extracted)
             # Strip image URLs (parity with the non-streaming chain); no extract_local_files here.
             # Do NOT deduplicate explicit MEDIA tags against prior turns here (#73771). This rescan is
             # already EXPLICIT-ONLY (see docstring): a MEDIA: directive in the final streamed reply is the
@@ -400,6 +402,7 @@ class GatewayNotificationsMixin:
         metadata: Optional[Dict[str, Any]] = None, event_message_id: Optional[str] = None,
         text_already_delivered: bool = False, deliver_media: bool = True, stream_consumer=None,
         session_key: Optional[str] = None, inbound_message_id: Optional[str] = None,
+        message_type: Optional[MessageType] = None, delivery_result: Optional[dict] = None,
     ) -> bool:
         """Deliver a queued response using the normal text+attachment split.
 
@@ -412,8 +415,16 @@ class GatewayNotificationsMixin:
         already delivered it, the reconcile edit landed, the send succeeded, or there was nothing
         textual to send. False: the send was REFUSED (flood control, dead transport) — the caller
         must leave the normal completion send as the fallback, or the user gets nothing. A connector
-        DECLINE returns True: that destination is not approved and must not be re-sent."""
+        DECLINE returns True: that destination is not approved and must not be re-sent.
+        ``message_type`` belongs to the first inbound turn, not the queued follow-up;
+        ``delivery_result`` records successful voice delivery so the completion fallback
+        cannot speak that first reply twice."""
         from gateway.run import _strip_response_attachments_for_direct_send
+        # The auto-TTS gate counts only deliverable attachments; reuse the validated list
+        # for upload because validation may fetch files from a remote sandbox.
+        media_files = None
+        if message_type == MessageType.VOICE and not text_already_delivered:
+            media_files = BasePlatformAdapter.filter_media_delivery_paths(adapter.extract_media(response)[0])
         if not text_already_delivered:
             text_content = _strip_response_attachments_for_direct_send(response, adapter)
             if text_content:
@@ -452,9 +463,11 @@ class GatewayNotificationsMixin:
                     except Exception as _qe:
                         logger.debug("Queued-lane reconcile edit failed (%s); falling back to send.", _qe)
                 if not _reconciled:
-                    _sent = await self._send_queued_final_text(
+                    _sent, voice_delivered = await self._send_queued_final_text(
                         adapter, source, text_content, metadata, event_message_id, session_key,
-                        inbound_message_id)
+                        inbound_message_id, message_type=message_type, media_files=media_files)
+                    if voice_delivered and delivery_result is not None:
+                        delivery_result["queued_voice_delivered"] = True
                     if not getattr(_sent, "success", False):
                         # The text never landed. Report it undelivered and skip the attachments too:
                         # the caller's normal completion send replays the whole response (text and
@@ -466,7 +479,7 @@ class GatewayNotificationsMixin:
             return True
         await self._deliver_media_from_response(
             response, MessageEvent(text="", source=source, message_id=event_message_id), adapter,
-            thread_metadata=metadata,
+            thread_metadata=metadata, media_files=media_files,
         )
         return True
 
@@ -474,6 +487,7 @@ class GatewayNotificationsMixin:
         self, adapter, source: SessionSource, text_content: str, metadata: Optional[Dict[str, Any]],
         event_message_id: Optional[str], session_key: Optional[str],
         inbound_message_id: Optional[str] = None,
+        message_type: Optional[MessageType] = None, media_files: Optional[list] = None,
     ):
         """Send a queued-lane final through the same ledger bracket as the normal final
         (``send_final_ledgered``). This lane used to call ``adapter.send`` bare and discard the
@@ -482,18 +496,58 @@ class GatewayNotificationsMixin:
         ``event_message_id`` is only the reply anchor, which is None wherever replies are not used
         (Telegram forum topics, Slack reaction handoffs) and so cannot identify the turn; with no
         inbound id the ledger falls back to the event's own (empty) message id. Adapters without
-        the base contract and sends without a session key keep the plain send."""
+        the base contract and sends without a session key keep the plain send.
+        Returns the text/caption send result and whether voice audio landed."""
+        voice_delivered = False
         if session_key and isinstance(adapter, BasePlatformAdapter):
-            result, _ = await adapter.send_final_ledgered(
-                MessageEvent(text="", source=source, ledger_message_id=inbound_message_id),
-                session_key, text_content, _mark_notify_metadata(metadata), reply_to=event_message_id)
+            event = MessageEvent(text="", source=source, ledger_message_id=inbound_message_id,
+                                 message_type=message_type or MessageType.TEXT)
+            notify_metadata = _mark_notify_metadata(metadata)
+            if message_type == MessageType.VOICE:
+                voice_result, caption_delivered = await self._speak_queued_final_text(
+                    adapter, event, session_key, text_content, notify_metadata, media_files or [])
+                voice_delivered = voice_result is not None
+            else:
+                voice_result, caption_delivered = None, False
+            if caption_delivered:
+                result = voice_result
+            else:
+                result, _ = await adapter.send_final_ledgered(
+                    event, session_key, text_content, notify_metadata, reply_to=event_message_id)
         else:
             result = await adapter.send(source.chat_id, text_content, metadata=metadata)
         if not getattr(result, "success", False):
             logger.warning(
                 "Queued-lane final send to %s failed: %s", getattr(source, "chat_id", "?"),
                 getattr(result, "error", None) or "no result")
-        return result
+        return result, voice_delivered
+
+    @staticmethod
+    async def _speak_queued_final_text(adapter, event, session_key, text_content, metadata, media_files):
+        """Use the adapter's normal voice-first policy; retain text fallback on audio failure."""
+        interrupt_event = getattr(adapter, "_active_sessions", {}).get(session_key)
+        if not adapter._wants_auto_tts(event, session_key, interrupt_event, text_content, media_files):
+            return None, False
+        paths, requested_path = await adapter._synthesize_auto_tts(text_content)
+        voice_result = None
+        caption_delivered = False
+        for index, path in enumerate(paths):
+            try:
+                results = []
+                caption = await adapter._play_tts_file(
+                    event, text_content, path, index == 0, metadata, results.append)
+                if results and getattr(results[-1], "success", False):
+                    voice_result = results[-1]
+                    caption_delivered |= caption
+            except Exception as exc:
+                logger.warning("Queued-lane voice send failed (%s); falling back to text.", exc)
+            finally:
+                with suppress(OSError):
+                    Path(path).unlink()
+        if not paths and requested_path:
+            with suppress(OSError):
+                Path(requested_path).unlink()
+        return voice_result, caption_delivered
 
     def _schedule_update_notification_watch(self) -> None:
         """Ensure a background task is watching for update completion."""

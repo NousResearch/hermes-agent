@@ -31,6 +31,7 @@ import pytest
 from gateway import delivery_ledger as dl
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.event import MessageType
 
 SESSION_KEY = "agent:main:telegram:dm:5230977008"
 TOPIC_SESSION_KEY = "agent:main:telegram:group:-1001:topic:7"
@@ -243,8 +244,10 @@ async def test_a_chained_queued_turn_carries_its_own_inbound_id():
 
     await GatewayRunner._run_agent_queued_followup(
         runner, turn_ctx, adapter=None, pending="hi again", pending_event=pending_event,
-        response="resp", result={"interrupted": True, "messages": []}, stream_task=None)
+        response="resp", result={"interrupted": False, "messages": []}, stream_task=None,
+        message_type=MessageType.VOICE)
 
+    assert runner._run_agent_deliver_first_response.await_args.kwargs["message_type"] == MessageType.VOICE
     runner._run_agent.assert_awaited_once()
     assert runner._run_agent.await_args.kwargs["inbound_message_id"] == "6002"
     assert runner._run_agent.await_args.kwargs["event_message_id"] is None

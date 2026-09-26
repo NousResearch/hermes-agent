@@ -487,6 +487,59 @@ class TestNativeEnvironmentContracts:
         assert result["PYTHONPATH"] == unrelated
         assert "VIRTUAL_ENV" not in result
 
+    def test_superseded_runtime_generation_still_stripped(self, tmp_path, monkeypatch):
+        """A backend that outlives an environment switch keeps stripping its own
+        launch-time site-packages: `_validated_runtime_venv` follows facts.json at
+        call time, so once the record moves to a new generation the old one must
+        still be recognized as Hermes-owned via the launch-time sys.path capture.
+        """
+        import tools.environments.local as local
+        from tools.environments import local_pythonpath
+
+        repo_root = tmp_path / "hermes-agent"
+        repo_root.mkdir()
+        # Two PM generations on disk under the install's environments/ root.
+        # The layout helpers key off the module's own repo root, so reuse the
+        # real install_key rather than inventing a directory spelling.
+        from pm.environments import install_key
+        module_root = Path(local_pythonpath.__file__).resolve().parents[2]
+        generations = tmp_path / "installs" / install_key(module_root) / "environments"
+        old_env = generations / "bae72136" / "venv"
+        new_env = generations / "44cfec79" / "venv"
+        for env_dir in (old_env, new_env):
+            sp = env_dir / "lib" / "python3.14" / "site-packages"
+            sp.mkdir(parents=True)
+            (env_dir / "pyvenv.cfg").write_text("version = 3.14\n", encoding="utf-8")
+        old_sp = old_env / "lib" / "python3.14" / "site-packages"
+        new_sp = new_env / "lib" / "python3.14" / "site-packages"
+
+        # facts.json now selects the NEW generation; the process under test was
+        # launched on the OLD one and still carries it on sys.path.
+        facts = generations.parent / "facts.json"
+        facts.write_text(json.dumps(
+            {"packages": {"venv": {"environment": str(new_env)}}}), encoding="utf-8")
+
+        monkeypatch.setattr(local, "_hermes_repo_root_aliases", (repo_root,))
+        monkeypatch.setattr(local, "_in_venv", False)
+        monkeypatch.setattr(local, "_hermes_site_packages", None)
+        # The launch-time capture is derived from sys.path at import time; emulate
+        # a process whose sys.path carries the old generation's site-packages.
+        monkeypatch.setattr(local_pythonpath, "_LAUNCH_SITE_PACKAGES", (old_sp,),
+                            raising=False)
+        monkeypatch.setattr(
+            "pm.environments.dependency_home_root", lambda: tmp_path)
+
+        user_sp = tmp_path / "project" / ".venv" / "lib" / "python3.11" / "site-packages"
+        env = {
+            "PYTHONPATH": os.pathsep.join([str(old_sp), str(new_sp), str(user_sp)]),
+        }
+        local_pythonpath._strip_hermes_owned_pythonpath(env)
+
+        entries = [e for e in env.get("PYTHONPATH", "").split(os.pathsep) if e]
+        assert str(old_sp) not in entries, "stale launch-time generation must be stripped"
+        assert str(new_sp) not in entries, "newly selected generation must be stripped"
+        assert str(user_sp) in entries, "user site-packages must survive"
+
     def test_unrelated_virtual_env_is_not_runtime_provenance(self, tmp_path, monkeypatch):
         """An arbitrary inherited VIRTUAL_ENV cannot claim PYTHONPATH ownership."""
         import tools.environments.local as local

@@ -73,16 +73,25 @@ def _truncate_stdout_text(stdout_text: str) -> Tuple[str, Dict[str, Any]]:
     spill_path = _spill_full_stdout(stdout_text)
     if spill_path:
         metadata["stdout_spill_path"] = spill_path
-        metadata["warning"] = ("execute_code stdout was truncated (head/tail shown); the "
-                               f"script did run. FULL output saved to {spill_path} — page it "
-                               f'with read_file(path="{spill_path}", offset=...) instead of re-running.')
+        if len(stdout_text) > MAX_SPILLED_STDOUT_BYTES:
+            # The spill file holds only a prefix: never call it the full output (#109757 class).
+            metadata["stdout_spill_capped"] = True
+            metadata["warning"] = ("execute_code stdout was truncated (head/tail shown); the script did "
+                                   f"run. Only the first {MAX_SPILLED_STDOUT_BYTES:,} chars of the "
+                                   f"{len(stdout_text):,}-char output are saved to {spill_path} — the file is "
+                                   "INCOMPLETE; treat it as partial when paging it with read_file.")
+        else:
+            metadata["warning"] = ("execute_code stdout was truncated (head/tail shown); the "
+                                   f"script did run. FULL output saved to {spill_path} — page it "
+                                   f'with read_file(path="{spill_path}", offset=...) instead of re-running.')
     return text, metadata
 
 
 def _spill_full_stdout(stdout_text: str) -> Optional[str]:
     """Write full stdout to cache/exec; return its path (None on failure — best-effort,
     the truncated inline output is still returned). Keyed by content digest so identical
-    reruns coalesce; the dir rides the cache/web remote bind-mount list (credential_files)."""
+    reruns coalesce; the dir rides the cache/web remote bind-mount list (credential_files).
+    Past ``MAX_SPILLED_STDOUT_BYTES`` the file is a capped prefix (the caller flags it)."""
     try:
         import hashlib
         from hermes_constants import get_hermes_dir

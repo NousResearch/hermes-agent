@@ -1208,18 +1208,31 @@ def _github_publish(skill_path: Path, skill_name: str, target_repo: str, auth) -
     try:
         resp = call("post", f"{target_repo}/forks", timeout=30)
         if resp.status_code in {200, 202}:
-            fork_repo = resp.json()["full_name"]
+            fork = resp.json()
+            fork_repo = fork.get("full_name", "") if isinstance(fork, dict) else ""
+            if not fork_repo:
+                return False, (
+                    "GitHub fork response missing 'full_name'. "
+                    "The fork may still be processing (async 202). "
+                    "Please wait a moment and retry."
+                )
         elif resp.status_code == 403:
             return False, "GitHub token lacks permission to fork repos"
         else:
             return False, f"Failed to fork {target_repo}: {resp.status_code}"
     except httpx.HTTPError as e:
         return False, f"Network error forking repo: {e}"
+    except ValueError:
+        return False, "GitHub fork response is not valid JSON. Please retry."
 
+    # The fork response can identify the branch even if the metadata lookup fails.
+    fallback_branch = fork.get("default_branch") or "main"
     try:
-        default_branch = call("get", target_repo).json().get("default_branch", "main")
+        resp = call("get", target_repo)
+        resp.raise_for_status()
+        default_branch = resp.json().get("default_branch") or fallback_branch
     except Exception:
-        default_branch = "main"
+        default_branch = fallback_branch
     try:
         ref = call("get", f"{fork_repo}/git/refs/heads/{default_branch}").json()
         base_sha = ref["object"]["sha"]
@@ -1228,20 +1241,26 @@ def _github_publish(skill_path: Path, skill_name: str, target_repo: str, auth) -
 
     branch_name = f"add-skill-{skill_name}"
     try:
-        call("post", f"{fork_repo}/git/refs",
+        resp = call("post", f"{fork_repo}/git/refs",
              json={"ref": f"refs/heads/{branch_name}", "sha": base_sha})
-    except Exception as e:
-        return False, f"Failed to create branch: {e}"
+        if resp.status_code not in {200, 201}:
+            return False, f"Failed to create branch: {resp.status_code} {resp.text[:200]}"
+    except httpx.HTTPError as e:
+        return False, f"Network error creating branch: {e}"
 
     for f in skill_path.rglob("*"):
         if not f.is_file():
             continue
         rel = str(f.relative_to(skill_path))
         try:
-            call("put", f"{fork_repo}/contents/skills/{skill_name}/{rel}",
+            resp = call("put", f"{fork_repo}/contents/skills/{skill_name}/{rel}",
                  json={"message": f"Add {skill_name} skill: {rel}",
                        "content": base64.b64encode(f.read_bytes()).decode(), "branch": branch_name})
-        except Exception as e:
+            if resp.status_code not in {200, 201}:
+                return False, (
+                    f"Failed to upload {rel}: {resp.status_code} {resp.text[:200]}"
+                )
+        except (httpx.HTTPError, OSError) as e:
             return False, f"Failed to upload {rel}: {e}"
 
     try:

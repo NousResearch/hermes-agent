@@ -632,7 +632,34 @@ class TestInertContextDemotions:
         assert sev[("run.py", 4, "system_passwd_access")] == "critical"
         assert sev[("run.py", 5, "sudo_usage")] == "high"
         assert sev[("run.py", 5, "system_passwd_access")] == "critical"
+    def test_string_escapes_after_the_word_are_not_pattern_text(self, tmp_path):
+        """In a plain (non-raw) string the two source characters after the word are a shell word
+        separator, not regex metasyntax: ``"sudo\\tcat"`` is the real command ``sudo cat`` with
+        a tab, ``"/etc/shadow\\n"`` a real password-file read. The escape/quantifier adjacency
+        only applies where backslashes stay verbatim — a raw string or a JS regex literal."""
+        files = dict(BASE_FILES)
+        files["run2.py"] = (
+            'subprocess.run("sudo\\tcat /etc/shadow", shell=True)\n'
+            'subprocess.run("sudo\\nrm -rf /", shell=True)\n'
+            'open("/etc/shadow\\n").read()\n'
+            'open("/etc/passwd\\x00").read()\n'
+            'JS_RE = /sudo\\s+/.test(value)\n'
+        )
+        result = scan_plugin(_mk_plugin(tmp_path, files), source="owner/repo")
+        sev = {
+            (f.file, f.line, f.pattern_id): f.severity
+            for f in result.findings
+            if f.pattern_id in ("sudo_usage", "system_passwd_access")
+        }
+        assert sev[("run2.py", 1, "sudo_usage")] == "high"
+        assert sev[("run2.py", 1, "system_passwd_access")] == "critical"
+        assert sev[("run2.py", 2, "sudo_usage")] == "high"
+        assert sev[("run2.py", 3, "system_passwd_access")] == "critical"
+        assert sev[("run2.py", 4, "system_passwd_access")] == "critical"
         assert result.verdict == "dangerous"
+        # backslashes that DO stay verbatim keep the exemption: raw strings are covered by
+        # ``test_screener_own_detection_patterns_stay_confirmable``; the JS regex literal here.
+        assert sev[("run2.py", 5, "sudo_usage")] == "medium"
 
     def test_whole_literal_list_entry_vs_executed_literal(self, tmp_path):
         files = dict(BASE_FILES)

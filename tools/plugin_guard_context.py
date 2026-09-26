@@ -199,7 +199,24 @@ _PATTERN_TOKEN = {
 }
 
 
-def _is_alternation_member(line: str, start: int, end: int) -> bool:
+def _regex_like_literal(m: "re.Match[str]", line: str) -> bool:
+    """The span is a JS regex literal, or a Python string literal whose prefix makes it raw.
+
+    The escape/quantifier adjacency only means "pattern text" when the enclosing literal keeps
+    its backslashes verbatim: a JS regex literal or a Python ``r"..."``/``rb"..."`` string. In
+    a plain (non-raw) string the two source characters ``\\t`` after the word are the tab
+    escape — a shell word separator — so ``"sudo\\tcat /etc/shadow"`` is a real command.
+    """
+    if m.group("rx") is not None:
+        return True
+    a = m.start("s")
+    # The ``s`` alternative is ``[rRbBuUfF]{0,2}`` + quote: the prefix is whatever sits between
+    # the span start and the opening quote (empty for the backtick form, which has no prefix).
+    k = next((i for i in (0, 1, 2) if line[a + i:a + i + 1] in ('"', "'", "`")), 0)
+    return any(c in "rR" for c in line[a:a + k])
+
+
+def _is_alternation_member(line: str, start: int, end: int, regex_like: bool) -> bool:
     before = line[start - 1] if start > 0 else ""
     after = line[end] if end < len(line) else ""
     if before in "|(" or after in "|)":
@@ -207,13 +224,16 @@ def _is_alternation_member(line: str, start: int, end: int) -> bool:
     # Regex metasyntax adjacency — the patterns a screener itself compiles (#123193): ``(?:sudo\s+)?``
     # opens with a group marker, ``\bsudo\b`` / ``sudo\s+`` end against an escape, ``sudo?`` against
     # a quantifier. None of those parse back into the command when the literal reaches a shell
-    # (``sudo\s``, ``sudo?`` and ``sudo+`` are not ``sudo``), so the token is pattern text. A lone
+    # (``sudo\s``, ``sudo?`` and ``sudo+`` are not ``sudo``), so the token is pattern text — but
+    # only where backslashes stay verbatim (a regex literal or a raw string, per
+    # ``_regex_like_literal``): in a plain string ``"sudo\tcat /etc/shadow"`` the escape after the
+    # word is a shell word separator and the word is a real command, not a pattern. A lone
     # backslash before the word and the glob/brace metacharacters after it are deliberately NOT
     # accepted: ``"\sudo x"`` is how an obfuscated ``sudo`` reaches ``sh -c``, and ``sudo*`` /
     # ``sudo{…}`` can glob/expand back into the word.
     return (
         start >= 2 and line[start - 2:start] in ("?:", "?=", "?!")
-    ) or after in "\\?+"
+    ) or (regex_like and after in "\\?+")
 
 
 def _is_whole_literal(line: str, start: int, end: int, span: tuple[int, int]) -> bool:
@@ -224,21 +244,25 @@ def _is_whole_literal(line: str, start: int, end: int, span: tuple[int, int]) ->
 
 def is_regex_alternation_token(finding: Finding, line: str) -> bool:
     """Every occurrence of the finding's token sits inside a literal as an alternation member
-    (a ``|``/``(`` neighbour, a regex group opener, or a regex escape/quantifier right after it)
-    or as the whole literal (a list entry) on a line that executes nothing."""
+    (a ``|``/``(`` neighbour, a regex group opener, or a regex escape/quantifier right after it
+    inside a regex literal or a raw string) or as the whole literal (a list entry) on a line
+    that executes nothing."""
     token = _PATTERN_TOKEN.get(finding.pattern_id)
     if token is None:
         return False
-    spans = [m.span() for m in _LITERAL_SPANS.finditer(line)]
+    literals = list(_LITERAL_SPANS.finditer(line))
     hits = list(token.finditer(line))
 
     def inert(h: "re.Match[str]") -> bool:
         if " " in h.group(0):
             return False
-        span = next(((a, b) for a, b in spans if a <= h.start() and h.end() <= b), None)
-        if span is None:
+        lm = next((m for m in literals if m.start() <= h.start() and h.end() <= m.end()), None)
+        if lm is None:
             return False
-        return _is_alternation_member(line, h.start(), h.end()) or _is_whole_literal(line, h.start(), h.end(), span)
+        return (
+            _is_alternation_member(line, h.start(), h.end(), _regex_like_literal(lm, line))
+            or _is_whole_literal(line, h.start(), h.end(), lm.span())
+        )
 
     return bool(hits) and all(inert(h) for h in hits)
 

@@ -35,7 +35,7 @@ import logging
 import os
 import threading
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, Iterator, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, Iterator, List, Optional, Tuple, cast
 
 from hermes_state_common import stat_db_file_identity as _stat_db_file_identity
 
@@ -99,10 +99,10 @@ _path_lifecycle_locks: Dict[Path, threading.Lock] = {}
 
 
 def _open_session_db(path: Path) -> "SessionDB":
-    """Construct the SessionDB for *path* (call-time import avoids cycles; tests patch this)."""
-    from hermes_state import SessionDB
+    """Construct the configured session store for *path* (call-time import avoids cycles)."""
+    from hermes_state_provider import open_session_store
 
-    return SessionDB(db_path=path)
+    return cast("SessionDB", open_session_store(path))
 
 
 def _teardown(db: "SessionDB") -> None:

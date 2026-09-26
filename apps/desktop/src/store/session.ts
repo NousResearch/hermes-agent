@@ -169,7 +169,9 @@ export function migrateSessionOwnerHintsForProfile(oldProfile: string, newProfil
   for (const [key, entry] of [...sessionOwnerHints]) {
     const { route } = entry
 
-    if (route.profile !== from && route.targetProfile !== from) {
+    // Local-connection hints only, like every other rename family: a same-named
+    // profile on another connection was not renamed.
+    if (route.connectionId !== 'local' || (route.profile !== from && route.targetProfile !== from)) {
       continue
     }
 

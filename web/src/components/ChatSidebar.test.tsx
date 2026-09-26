@@ -4,14 +4,29 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { EVENTS_CONNECT_TIMEOUT_MS } from '@/lib/events-reconnect'
+import type { ModelInfoResponse } from '@/lib/api'
 
 const apiMocks = vi.hoisted(() => ({
   buildWsUrl: vi.fn(async () => 'ws://localhost/api/events?channel=chat-1'),
-  getModelInfo: vi.fn(async () => ({
+  getModelInfo: vi.fn<() => Promise<ModelInfoResponse>>(async () => ({
+    auto_context_length: 0,
     capabilities: { supports_reasoning: false },
-    model: 'test/model'
+    config_context_length: 0,
+    effective_context_length: 0,
+    model: 'test/model',
+    provider: 'test'
   }))
 }))
+
+const modelInfo = (over: Partial<ModelInfoResponse> = {}): ModelInfoResponse => ({
+  auto_context_length: 0,
+  capabilities: { supports_reasoning: false },
+  config_context_length: 0,
+  effective_context_length: 0,
+  model: 'test/model',
+  provider: 'test',
+  ...over
+})
 
 const gatewayMocks = vi.hoisted(() => {
   const handlers = new Map<string, (event: unknown) => void>()
@@ -543,5 +558,44 @@ describe('ChatSidebar event socket reconnect', () => {
 
     await advance(60_000)
     expect(FakeWebSocket.instances).toHaveLength(3)
+  })
+})
+
+describe('ChatSidebar model badge', () => {
+  beforeEach(() => {
+    apiMocks.getModelInfo.mockResolvedValue(modelInfo())
+  })
+
+  it('names the model that is actually answering while a fallback is active', async () => {
+    apiMocks.getModelInfo.mockResolvedValue(modelInfo({
+      active_model: 'backup/model-b',
+      active_model_provider: 'openrouter',
+      fallback_active: true,
+      model: 'primary/model-a'
+    }))
+    const { ChatSidebar } = await import('./ChatSidebar')
+
+    await render(<ChatSidebar channel="chat-1" />)
+
+    await vi.waitFor(() => expect(container.textContent).toContain('model-b'))
+    const marker = container.querySelector('[aria-label="running on a fallback model"]')
+    expect(marker).not.toBeNull()
+    // Tooltip names both: what is answering and what config says.
+    expect(marker?.getAttribute('title')).toContain('model-b')
+    expect(marker?.getAttribute('title')).toContain('model-a')
+  })
+
+  it('keeps the configured model when nothing is substituted', async () => {
+    apiMocks.getModelInfo.mockResolvedValue(modelInfo({
+      active_model: 'primary/model-a',
+      fallback_active: false,
+      model: 'primary/model-a'
+    }))
+    const { ChatSidebar } = await import('./ChatSidebar')
+
+    await render(<ChatSidebar channel="chat-1" />)
+
+    await vi.waitFor(() => expect(container.textContent).toContain('model-a'))
+    expect(container.querySelector('[aria-label="running on a fallback model"]')).toBeNull()
   })
 })

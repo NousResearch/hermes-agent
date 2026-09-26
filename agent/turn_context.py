@@ -1020,6 +1020,10 @@ def build_turn_context(
     from tools.skill_provenance import set_review_attended
     set_review_attended(getattr(agent, "_review_attended", False))
     agent._restore_primary_runtime()
+    # Record what this turn will actually run on (primary, or the fallback the
+    # restore was deliberately gated on) for the dashboard's model badge.
+    from agent.active_model_state import record_agent_model
+    record_agent_model(agent)
     _publish_runtime_main(agent)
     _refresh_mcp_tools_between_turns(agent)
 

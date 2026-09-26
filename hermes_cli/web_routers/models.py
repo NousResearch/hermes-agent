@@ -17,6 +17,7 @@ from hermes_cli.web_server_config import (
     _prepare_main_assignment,
 )
 from agent.model_metadata import is_local_endpoint
+from agent.active_model_state import read_active_model
 from starlette.concurrency import run_in_threadpool
 from hermes_cli.web_models import ModelAssignment, MoaConfigPayload, MoaModelSlot
 from hermes_cli.web_routers._common import _CONFIG_MUTATION_LOCK, config_write_scope, http_failure
@@ -37,6 +38,20 @@ _EMPTY_MODEL_INFO: dict = {
 }
 _CAPABILITY_FIELDS = ("supports_tools", "supports_vision", "supports_reasoning", "context_window",
                       "max_output_tokens", "model_family")
+
+
+def active_model_fields() -> dict:
+    """Route the last turn actually ran on, from the agent's runtime snapshot.
+
+    ``model`` above is the *configured* one, which a runtime fallback silently
+    overrides. Empty when no snapshot exists or it aged out — then the configured
+    model is the best (and only) answer, exactly what every older client expects.
+    """
+    snapshot = read_active_model()
+    if not snapshot:
+        return {}
+    return {"active_model": snapshot["model"], "active_model_provider": snapshot["provider"],
+            "fallback_active": snapshot["fallback"]}
 
 
 def _main_model_fields(model_cfg) -> tuple[str, str]:
@@ -124,6 +139,9 @@ def get_model_info(profile: Optional[str] = None):
             "config_context_length": config_ctx_int,
             "effective_context_length": config_ctx_int or auto_ctx,  # what the agent actually uses
             "capabilities": caps,
+            # What the last turn really ran on. Equals the configured model normally;
+            # ``fallback_active`` says a backup model took over (agent/active_model_state.py).
+            **active_model_fields(),
         }
     except HTTPException:
         # Unknown/invalid profile must surface as 404, not degrade into a

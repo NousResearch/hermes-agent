@@ -3507,6 +3507,43 @@ class TestModelInfoEndpoint:
         assert data["effective_context_length"] == 100000  # override wins
 
 
+    def test_model_info_reports_the_model_that_is_actually_answering(self, monkeypatch, _isolate_hermes_home):
+        """A runtime fallback switches the answering model without touching config,
+        so the endpoint has to surface the route the agent recorded."""
+        from agent.active_model_state import record_active_model
+
+        monkeypatch.setattr(_cfg_mod, "load_config", lambda: {
+            "model": {"default": "anthropic/claude-opus-4.6", "provider": "openrouter"}
+        })
+        # Exactly what the agent writes when the primary fails over mid-session.
+        record_active_model("kimi-k2", "kimi-coding", fallback=True)
+
+        with patch("agent.model_metadata.get_model_context_length", return_value=200000):
+            resp = self.client.get("/api/model/info")
+
+        data = resp.json()
+        assert data["model"] == "anthropic/claude-opus-4.6"  # configured value, unchanged
+        assert data["active_model"] == "kimi-k2"
+        assert data["active_model_provider"] == "kimi-coding"
+        assert data["fallback_active"] is True
+
+
+    def test_model_info_omits_the_active_route_when_none_is_recorded(self, monkeypatch, _isolate_hermes_home):
+        """No snapshot (nothing ran yet, or it aged out): keys absent, old clients unaffected."""
+
+        monkeypatch.setattr(_cfg_mod, "load_config", lambda: {
+            "model": {"default": "anthropic/claude-opus-4.6", "provider": "openrouter"}
+        })
+
+        with patch("agent.model_metadata.get_model_context_length", return_value=200000):
+            resp = self.client.get("/api/model/info")
+
+        data = resp.json()
+        assert data["model"] == "anthropic/claude-opus-4.6"
+        assert "active_model" not in data
+        assert "fallback_active" not in data
+
+
     def test_model_info_graceful_on_metadata_error(self, monkeypatch):
         """Endpoint should return zeros on import/resolution errors, not 500."""
 

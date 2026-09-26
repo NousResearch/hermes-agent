@@ -17,6 +17,7 @@ import json
 import re
 import os
 import stat
+import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -29,6 +30,7 @@ from agent.vault_login_classifier import (  # noqa: E402
     ClassifiedLoginControl,
     LoginControl,
     build_fill_js,
+    build_inspection_js,
     classify_login_control,
     select_password_fill,
 )
@@ -236,6 +238,125 @@ class TestClassifier:
         assert "[data-hermes-vault-slot=" in js and "nonce + ':' + f.index" in js
         assert 'f.token === "current-password" && el.type !== "password"' in js  # a password fill never lands in a text box
         assert js.index('removeAttribute("data-hermes-vault-slot")') > js.index("setter.set.call")
+
+    def test_inspection_and_fill_support_open_shadow_roots_only(self):
+        """Regression for #122561: component login fields live in nested open
+        roots, while closed roots remain invisible and no secret is resolved by
+        inspection alone."""
+        node_program = r'''
+const fs = require("fs");
+const payload = JSON.parse(fs.readFileSync(0, "utf8"));
+
+class HTMLInputElement {
+  constructor({ name, type, autocomplete, root }) {
+    this.name = name;
+    this.type = type;
+    this.autocomplete = autocomplete;
+    this.tagName = "INPUT";
+    this.disabled = false;
+    this.readOnly = false;
+    this.labels = [];
+    this.form = null;
+    this.maxLength = -1;
+    this._root = root;
+    this._attrs = new Map();
+    this._events = [];
+    this._value = "";
+  }
+  get value() { return this._value; }
+  set value(value) { this._value = String(value); }
+  getAttribute(name) { return this._attrs.get(name) || ""; }
+  setAttribute(name, value) { this._attrs.set(name, String(value)); }
+  removeAttribute(name) { this._attrs.delete(name); }
+  getClientRects() { return [{ width: 1, height: 1 }]; }
+  getRootNode() { return this._root; }
+  focus() {}
+  dispatchEvent(event) { this._events.push(event.type); return true; }
+}
+class ElementNode {
+  constructor({ root, shadowRoot = undefined, id = "", textContent = "" }) {
+    this._root = root;
+    this.shadowRoot = shadowRoot;
+    this.id = id;
+    this.textContent = textContent;
+  }
+}
+class Root {
+  constructor(nodes = []) { this.nodes = nodes; this.forms = []; }
+  querySelectorAll(selector) {
+    const all = this.nodes;
+    if (selector === "input, select") return all.filter((node) => node instanceof HTMLInputElement);
+    if (selector === "*") return all;
+    const prefix = '[data-hermes-vault-slot="';
+    const slot = selector.startsWith(prefix) && selector.endsWith('"]')
+      ? selector.slice(prefix.length, -2)
+      : null;
+    return slot === null ? [] : all.filter((node) => node.getAttribute && node.getAttribute("data-hermes-vault-slot") === slot);
+  }
+  querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
+  getElementById(id) { return this.nodes.find((node) => node.id === id) || null; }
+}
+
+const document = new Root();
+const outerRoot = new Root();
+const innerRoot = new Root();
+const closedRoot = new Root();
+const password = new HTMLInputElement({
+  name: "password", type: "password", autocomplete: "current-password", root: innerRoot,
+});
+password.setAttribute("aria-labelledby", "password-label");
+const passwordLabel = new ElementNode({ root: innerRoot, id: "password-label", textContent: "Password" });
+const closedPassword = new HTMLInputElement({
+  name: "closed", type: "password", autocomplete: "current-password", root: closedRoot,
+});
+const closedHost = new ElementNode({ root: innerRoot });
+const inner = new ElementNode({ root: outerRoot, shadowRoot: innerRoot });
+const outer = new ElementNode({ root: document, shadowRoot: outerRoot });
+document.nodes = [outer];
+outerRoot.nodes = [inner];
+innerRoot.nodes = [passwordLabel, password, closedHost];
+closedRoot.nodes = [closedPassword];
+
+global.document = document;
+global.window = { location: { origin: "https://assistant.example" } };
+global.HTMLInputElement = HTMLInputElement;
+global.getComputedStyle = () => ({ display: "block", visibility: "visible" });
+global.CSS = { escape: (value) => value };
+global.Event = class Event { constructor(type) { this.type = type; } };
+global.InputEvent = class InputEvent { constructor(type) { this.type = type; } };
+
+const inspected = JSON.parse(eval(payload.inspection));
+const passwordControl = inspected.find((control) => control.name.trim() === "password");
+const fill = eval(payload.fill.replace("__PASSWORD_INDEX__", String(passwordControl.index)));
+process.stdout.write(JSON.stringify({
+  inspected: inspected.map((control) => ({ name: control.name.trim(), label: control.label.trim() })),
+  password: password.value,
+  events: password._events,
+  filled: JSON.parse(fill).filled,
+  slots: outerRoot.querySelectorAll("[data-hermes-vault-slot]").length
+    + innerRoot.querySelectorAll("[data-hermes-vault-slot]").length,
+}));
+'''
+        inspection = build_inspection_js("shadow-nonce")
+        fill = build_fill_js(
+            [{"index": "__PASSWORD_INDEX__", "token": "current-password", "value": "test-password"}],
+            expected_origin="https://assistant.example",
+            nonce="shadow-nonce",
+        )
+        result = subprocess.run(
+            ["node", "-e", node_program],
+            input=json.dumps({"inspection": inspection, "fill": fill}),
+            text=True,
+            capture_output=True,
+            cwd=Path(__file__).resolve().parent.parent.parent,
+        )
+        assert result.returncode == 0, result.stderr
+        observed = json.loads(result.stdout)
+        assert observed["inspected"] == [{"name": "password", "label": "Password"}]
+        assert observed["password"] == "test-password"
+        assert observed["events"] == ["input", "change"]
+        assert observed["filled"] == 1
+        assert observed["slots"] == 0
 
     def test_build_fill_js_asserts_origin_before_any_write(self):
         # P1-2: the origin assert must run inside the SAME script, before

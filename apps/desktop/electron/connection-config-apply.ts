@@ -37,15 +37,37 @@ export async function applyConnectionConfigAtomically<TConfig, TRegistry>({
   try {
     writeConfig(nextConfig)
     writeRegistry(nextRegistry)
-    await apply()
   } catch (error) {
     try {
       writeConfig(previousConfig)
       writeRegistry(previousRegistry)
     } catch {
-      // Preserve the original activation/write failure. Both storage writers
-      // are atomic replacements, so a rollback failure cannot be repaired by
-      // retrying one side blindly here.
+      // Preserve the original write failure. Both storage writers are atomic
+      // replacements, so a rollback failure cannot be repaired by retrying
+      // one side blindly here.
+    }
+
+    throw error
+  }
+
+  try {
+    await apply()
+  } catch (error) {
+    // A completed preflight already exercised the authenticated REST + real
+    // WebSocket leg against the config we just wrote, so it is proven
+    // reachable. A later failure here is a live re-home/teardown hiccup
+    // (tearing down the OLD primary, in-flight dial to a dead gateway, a
+    // "not ready yet" race), not evidence the new connection is bad. Rolling
+    // back would silently undo the one action (editing and saving a new URL)
+    // meant to escape a dead gateway, so only roll back when nothing already
+    // validated the config being applied.
+    if (!preflight) {
+      try {
+        writeConfig(previousConfig)
+        writeRegistry(previousRegistry)
+      } catch {
+        // Preserve the original activation failure, for the same reason as above.
+      }
     }
 
     throw error

@@ -1187,6 +1187,11 @@ DEFAULT_CONFIG = {
             "model": "",  # empty = first stt-tagged model from the live catalog
             # optional "base_url" key overrides DEEPINFRA_BASE_URL for STT only
         },
+        "minimax": {
+            "model": "asr-1.0",
+            "region": "cn",  # "cn" | "global" (empty = auto-detect based on configured key)
+            "timeout": 60,
+        },
     },
 
     "voice": {

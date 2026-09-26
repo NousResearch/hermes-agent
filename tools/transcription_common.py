@@ -19,6 +19,9 @@ DEFAULT_STT_MODEL = os.getenv("STT_OPENAI_MODEL", "whisper-1")
 DEFAULT_GROQ_STT_MODEL = os.getenv("STT_GROQ_MODEL", "whisper-large-v3-turbo")
 DEFAULT_MISTRAL_STT_MODEL = os.getenv("STT_MISTRAL_MODEL", "voxtral-mini-latest")
 DEFAULT_ELEVENLABS_STT_MODEL = os.getenv("STT_ELEVENLABS_MODEL", "scribe_v2")
+DEFAULT_MINIMAX_STT_MODEL = os.getenv("STT_MINIMAX_MODEL", "asr-1.0")
+DEFAULT_MINIMAX_STT_BASE_URL = "https://api.minimax.io/v1/speech_to_text"
+DEFAULT_MINIMAX_STT_CN_BASE_URL = "https://api.minimax.cn/v1/speech_to_text"
 # Seconds for one STT HTTP request; shared by the OpenAI-SDK path and the QQ adapter so a
 # self-hosted model's cold start is not cut off at the old fixed 30s (#112939).
 DEFAULT_STT_TIMEOUT = 60.0
@@ -46,7 +49,7 @@ GROQ_MODELS = {"whisper-large-v3", "whisper-large-v3-turbo", "distil-whisper-lar
 # The plugin hook from issue #30398-style follow-up rejects plugins registering under any of these names;
 # the dispatcher in ``transcribe_audio`` short-circuits them defensively as well.
 BUILTIN_STT_PROVIDERS = frozenset({
-    "local", "local_command", "groq", "openai", "mistral", "xai", "elevenlabs", "deepinfra"})
+    "local", "local_command", "groq", "openai", "mistral", "xai", "elevenlabs", "deepinfra", "minimax"})
 # Built-in providers that upload audio to a remote API.
 CLOUD_STT_PROVIDERS = frozenset(BUILTIN_STT_PROVIDERS - {"local", "local_command"})
 

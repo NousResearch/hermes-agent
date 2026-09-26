@@ -1678,6 +1678,9 @@ stt:
   #   # by the `stt` surface tag — leave `model` blank to take the first
   #   # live result. Pin only when you need a specific Whisper variant.
   #   model: ""
+  # minimax:
+  #   model: "asr-1.0"
+  #   region: "cn"                    # "cn" (default if MINIMAX_CN_API_KEY) | "global"
 
 # Text-to-speech. Only the deepinfra block is documented here — the
 # remaining providers (edge, openai, xai, minimax, mistral, gemini,

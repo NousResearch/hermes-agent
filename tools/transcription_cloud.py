@@ -443,3 +443,107 @@ def _extract_transcript_text(transcription: Any) -> str:
     text = (value if isinstance(value, str) else str(transcription)).strip()
     match = _ASR_TEXT_RE.match(text)
     return match.group("text").strip() if match else text
+
+
+def _transcribe_minimax(
+    file_path: str, model_name: str, *, language: Optional[str] = None, prompt: Optional[str] = None
+) -> Dict[str, Any]:
+    """Transcribe using MiniMax Speech-to-Text API (asr-1.0).
+
+    Supports region: 'cn' (default if MINIMAX_CN_API_KEY present) or 'global'.
+    """
+    import mimetypes
+    import requests
+    from hermes_cli.config import get_env_value
+    from tools.transcription_common import (
+        DEFAULT_MINIMAX_STT_MODEL, DEFAULT_MINIMAX_STT_BASE_URL, DEFAULT_MINIMAX_STT_CN_BASE_URL,
+        DEFAULT_STT_TIMEOUT, _config_number,
+    )
+    from tools.transcription_tools import _load_stt_config, _resolve_provider_key, _resolve_stt_language
+
+    stt_config = _load_stt_config()
+    mm_config = _get_stt_section(stt_config, "minimax")
+
+    # 1. Determine region and API key
+    region = str(mm_config.get("region") or "").strip().lower()
+    explicit_key = str(mm_config.get("api_key") or "").strip()
+
+    cn_key = explicit_key or _resolve_provider_key("MINIMAX_CN_API_KEY", "minimax")
+    global_key = explicit_key or _resolve_provider_key("MINIMAX_API_KEY", "minimax")
+
+    if not region:
+        region = "cn" if cn_key and not global_key else "global"
+    elif region not in ("cn", "global"):
+        region = "cn"
+
+    api_key = cn_key if region == "cn" else (global_key or cn_key)
+    if not api_key:
+        return _error_result(
+            "MINIMAX_API_KEY / MINIMAX_CN_API_KEY not set. Get one at https://platform.minimaxi.com/"
+        )
+
+    default_base = DEFAULT_MINIMAX_STT_CN_BASE_URL if region == "cn" else DEFAULT_MINIMAX_STT_BASE_URL
+    base_url = str(mm_config.get("base_url") or default_base).strip().rstrip("/")
+    if not base_url.endswith("/speech_to_text"):
+        url = f"{base_url}/speech_to_text" if "/v1" in base_url else f"{base_url}/v1/speech_to_text"
+    else:
+        url = base_url
+
+    timeout = _config_number(mm_config, "timeout", DEFAULT_STT_TIMEOUT)
+    language = language or _resolve_stt_language("minimax", stt_config) or ""
+    proxy_url = str(mm_config.get("proxy") or mm_config.get("proxy_url") or get_env_value("MINIMAX_PROXY_URL") or "").strip()
+    proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
+
+    try:
+        audio_bytes = Path(file_path).read_bytes()
+    except Exception as exc:
+        return _error_result(f"Failed to read audio file {file_path}: {exc}")
+
+    if not audio_bytes:
+        return _error_result("Audio file is empty", no_speech=True)
+
+    model = model_name or str(mm_config.get("model") or DEFAULT_MINIMAX_STT_MODEL).strip() or DEFAULT_MINIMAX_STT_MODEL
+
+    headers = {"Authorization": f"Bearer {api_key}"}
+    if language:
+        headers["language"] = language
+
+    mime_type, _ = mimetypes.guess_type(file_path)
+    if not mime_type or not mime_type.startswith("audio/"):
+        ext = Path(file_path).suffix.lower()
+        mime_map = {
+            ".wav": "audio/wav",
+            ".mp3": "audio/mp3",
+            ".ogg": "audio/ogg",
+            ".m4a": "audio/m4a",
+            ".flac": "audio/flac",
+            ".opus": "audio/opus",
+            ".aac": "audio/aac",
+        }
+        mime_type = mime_map.get(ext, "audio/wav")
+
+    files = {"file": (Path(file_path).name, audio_bytes, mime_type)}
+    data = {"model": model, "response_format": "json"}
+
+    try:
+        resp = requests.post(url, headers=headers, files=files, data=data, timeout=timeout, proxies=proxies)
+        if resp.status_code != 200:
+            try:
+                err_detail = resp.json().get("base_resp", {}).get("status_msg") or resp.text[:300]
+            except Exception:
+                err_detail = resp.text[:300]
+            return _error_result(f"MiniMax STT API error (HTTP {resp.status_code}): {err_detail}")
+
+        body = resp.json()
+        base_resp = body.get("base_resp", {})
+        if base_resp.get("status_code", 0) != 0:
+            return _error_result(f"MiniMax STT error: {base_resp.get('status_msg', 'unknown error')}")
+
+        transcript = str(body.get("text") or "").strip()
+        logger.info(
+            "Transcribed %s via MiniMax STT API (%s, region=%s, %d chars)",
+            Path(file_path).name, model, region, len(transcript),
+        )
+        return _ok_result(transcript, "minimax")
+    except Exception as exc:
+        return _cloud_failure(exc, file_path, "MiniMax STT")

@@ -1964,6 +1964,33 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             return None
         return stored
 
+    def _stored_session_provider(self, session: Any) -> Optional[str]:
+        """The provider that was persisted ALONGSIDE a session's model.
+
+        ``update_session_model`` writes the whole route (both the top-level keys
+        the TUI/Desktop read and the ``gateway_runtime`` shape the CLI reads) so a
+        later resume recombines model with provider (#79536). The session-persisted
+        model branch has to honour that: pinning the model STRING while
+        re-resolving the *ambient* provider sends a custom endpoint's model id to
+        a fallback rung, which 400s ("modelCode: does not exist") from turn 2
+        onward (#94017).
+
+        Returns None - never a guess - when the row carries no route or the row
+        is one we treat as having no stored selection at all (virtual alias).
+        """
+        if not isinstance(session, dict):
+            return None
+        if self._stored_session_model(session) is None:
+            return None
+        model_config = self._parse_session_model_config(session.get("model_config"))
+        for source in (model_config, model_config.get("gateway_runtime")):
+            if not isinstance(source, dict):
+                continue
+            provider = self._clean_runtime_id(source.get("provider"))
+            if provider:
+                return provider
+        return None
+
     @staticmethod
     def _clean_runtime_id(value: Any, *, max_len: int = 200) -> str:
         text = "" if value is None else str(value).strip()
@@ -2252,6 +2279,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     def _select_agent_runtime(
         self, runtime_kwargs: Dict[str, Any], model: str, *, requested_model: Optional[str],
         requested_provider: Optional[str], route: Optional[Dict[str, Any]], session_model: Optional[str],
+        session_provider: Optional[str] = None,
         confirmed_runtime_lock: bool, gateway_session_key: Optional[str], session_id: Optional[str]) -> tuple:
         """Apply the model/provider precedence chain for one agent (mutates ``runtime_kwargs``):
         confirmed Browser lock > session ``/model`` override > session-persisted model >
@@ -2283,9 +2311,13 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     session_key or "")
         elif session_row_model and not confirmed_runtime_lock:
             # A session-persisted raw model (no route alias) is a standing selection that pins
-            # this session's turns ahead of per-request body values.
+            # this session's turns ahead of per-request body values. Its provider was persisted
+            # with it, so re-resolve THAT provider rather than the ambient one - otherwise a
+            # custom endpoint's model id is sent to whatever fallback rung is currently
+            # configured, which answers 400 from turn 2 onward (#94017).
             self._apply_provider_runtime(
-                runtime_kwargs, current_provider, target_model=session_row_model)
+                runtime_kwargs, _clean_request_string(session_provider) or current_provider,
+                target_model=session_row_model)
             model = resolve_effective_model(None, session_row_model, model)
             if request_model or request_provider:
                 logger.debug(
@@ -2325,7 +2357,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         status_callback=None, gateway_session_key: Optional[str] = None,
         requested_model: Optional[str] = None, requested_provider: Optional[str] = None,
         model_options: Optional[Dict[str, Any]] = None, route: Optional[Dict[str, Any]] = None,
-        session_model: Optional[str] = None, confirmed_runtime_lock: bool = False,
+        session_model: Optional[str] = None, session_provider: Optional[str] = None,
+        confirmed_runtime_lock: bool = False,
         room_dispatch: Optional[Dict[str, Any]] = None,
         room_execution_policy: Optional[Dict[str, Any]] = None) -> Any:
         """Create an AIAgent from the gateway runtime config + platform toolsets.
@@ -2352,7 +2385,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         model, session_override, request_model, request_provider = self._select_agent_runtime(
             runtime_kwargs, model,
             requested_model=requested_model, requested_provider=requested_provider, route=route,
-            session_model=session_model, confirmed_runtime_lock=confirmed_runtime_lock,
+            session_model=session_model, session_provider=session_provider,
+            confirmed_runtime_lock=confirmed_runtime_lock,
             gateway_session_key=gateway_session_key, session_id=session_id)
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
@@ -3321,6 +3355,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         if lock_active:
             route = runtime_request.get("route")
             session_model = None
+            session_provider = None
             requested = runtime_request.get("requested") or {}
             agent_overrides: Dict[str, Any] = {}
             for src_key, dst_key in (("model", "requested_model"), ("provider", "requested_provider")):
@@ -3333,6 +3368,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             stored_route = self._resolve_route(stored_model)
             route = stored_route or self._resolve_route(body.get("model"))
             session_model = stored_model if (stored_model and stored_route is None) else None
+            # Only a raw persisted model takes the session branch; when the stored
+            # name resolves to a configured alias the route carries the provider
+            # already, so no session provider is consulted (#94017).
+            session_provider = (
+                self._stored_session_provider(session) if session_model else None)
             agent_overrides = _request_agent_overrides(body, virtual_model=self._model_name)
             selection_error = self._request_route_conflict_error(
                 session_id=session_id, gateway_session_key=gateway_session_key,
@@ -3343,6 +3383,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         run_kwargs = dict(
             user_message=user_message, ephemeral_system_prompt=system_prompt, session_id=session_id,
             gateway_session_key=gateway_session_key, route=route, session_model=session_model,
+            session_provider=session_provider,
             requested_runtime=runtime_request.get("requested") or {},
             route_source=runtime_request.get("route_source") or "global",
             confirmed_runtime_lock=lock_active, turn_author=turn_author,
@@ -4134,6 +4175,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         gateway_session_key: Optional[str] = None, requested_model: Optional[str] = None,
         requested_provider: Optional[str] = None, model_options: Optional[Dict[str, Any]] = None,
         route: Optional[Dict[str, Any]] = None, session_model: Optional[str] = None,
+        session_provider: Optional[str] = None,
         requested_runtime: Optional[Dict[str, Any]] = None, route_source: str = "global",
         confirmed_runtime_lock: bool = False, bind_declared_conversation: bool = False,
         session_history_delivery: str = "", turn_author: Optional[Dict[str, Any]] = None,
@@ -4182,7 +4224,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                         reasoning_callback=reasoning_callback, status_callback=status_callback,
                         gateway_session_key=gateway_session_key, requested_model=requested_model,
                         requested_provider=requested_provider, model_options=model_options, route=route,
-                        session_model=session_model, confirmed_runtime_lock=confirmed_runtime_lock)
+                        session_model=session_model, session_provider=session_provider,
+                        confirmed_runtime_lock=confirmed_runtime_lock)
                     if agent_ref is not None:
                         agent_ref[0] = agent
                     if resume_unanswered_turn:

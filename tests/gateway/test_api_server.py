@@ -2719,6 +2719,160 @@ class TestStoredSessionModelFilter:
         assert adapter._stored_session_model(None) is None
 
 
+class TestSessionPersistedModelKeepsItsProvider:
+    """A session-persisted model must be re-resolved against the provider that
+    served it, not the ambient one. #94017: with a named custom provider as the
+    default (model.default=/models/model.gguf, model.provider=custom:inference)
+    turn 1 resolves correctly, but turn 2+ pins the session's model STRING while
+    re-resolving the AMBIENT provider. When that rung is a fallback, the custom
+    endpoint's model id is sent to the wrong host and the provider answers 400
+    ("modelCode: does not exist"). The route was already persisted by
+    update_session_model (both top-level and gateway_runtime shapes); this path
+    just never read it back.
+    """
+
+    @staticmethod
+    def _session_with_route(model="model.gguf", provider="custom:inference"):
+        route = {"provider": provider, "base_url": "http://127.0.0.1:8080/v1",
+                 "api_mode": "chat_completions"}
+        return {"model": model, "model_config": dict(route, gateway_runtime=dict(route))}
+
+    def test_stored_session_route_reads_back_provider(self):
+        adapter = _make_routing_adapter({})
+        session = self._session_with_route()
+        assert adapter._stored_session_model(session) == "model.gguf"
+        # The provider that owns that model must come back with it.
+        assert adapter._stored_session_provider(session) == "custom:inference"
+
+    def test_no_persisted_provider_falls_back_to_none(self):
+        """A row written before routes were persisted must not invent one."""
+        adapter = _make_routing_adapter({})
+        assert adapter._stored_session_provider({"model": "model.gguf"}) is None
+        assert adapter._stored_session_provider(None) is None
+        assert adapter._stored_session_provider({}) is None
+        assert adapter._stored_session_provider(
+            {"model": "m", "model_config": "not-json"}
+        ) is None
+
+    def test_virtual_model_row_yields_no_provider(self):
+        """The virtual alias is filtered from the model; its provider must not
+        be smuggled back in on a row we treat as "no stored selection"."""
+        adapter = _make_routing_adapter({})
+        session = self._session_with_route(model=adapter._model_name)
+        assert adapter._stored_session_model(session) is None
+        assert adapter._stored_session_provider(session) is None
+
+    def test_session_model_turn_reapplies_persisted_provider(self, monkeypatch):
+        """End-to-end on the real selection chain: a session row carrying its
+        own route must re-resolve THAT provider, not the ambient one."""
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_agent_kwargs_for_provider",
+            lambda provider, target_model=None: {
+                "provider": provider,
+                "api_key": f"sk-{provider}",
+                "base_url": "http://127.0.0.1:8080/v1",
+                "api_mode": "chat_completions",
+            },
+        )
+        adapter = _make_routing_adapter({})
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+        monkeypatch.setattr(adapter, "_session_model_override_for", lambda *_: None)
+
+        # Ambient provider is the FALLBACK rung, as after a config default that
+        # is not itself a named custom endpoint.
+        runtime_kwargs = {"provider": "openrouter", "api_key": "sk-ambient"}
+        model, *_ = adapter._select_agent_runtime(
+            runtime_kwargs, "google/gemini-3.7-flash",
+            requested_model=None, requested_provider=None, route=None,
+            session_model="model.gguf", session_provider="custom:inference",
+            confirmed_runtime_lock=False,
+            gateway_session_key=None, session_id="s1",
+        )
+
+        assert model == "model.gguf"
+        # The bug: provider stayed "openrouter" and the custom model id went to
+        # the fallback rung. The fix: the session's own provider wins.
+        assert runtime_kwargs.get("provider") == "custom:inference"
+
+    def test_ambient_provider_still_used_without_a_persisted_route(self, monkeypatch):
+        """A row with no persisted provider must keep today's behaviour: fall
+        back to the ambient rung rather than resolving nothing."""
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_agent_kwargs_for_provider",
+            lambda provider, target_model=None: {
+                "provider": provider, "api_key": f"sk-{provider}",
+                "base_url": "https://example/v1", "api_mode": "chat_completions",
+            },
+        )
+        adapter = _make_routing_adapter({})
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+        monkeypatch.setattr(adapter, "_session_model_override_for", lambda *_: None)
+
+        runtime_kwargs = {"provider": "openrouter", "api_key": "sk-ambient"}
+        model, *_ = adapter._select_agent_runtime(
+            runtime_kwargs, "google/gemini-3.7-flash",
+            requested_model=None, requested_provider=None, route=None,
+            session_model="model.gguf", session_provider=None,
+            confirmed_runtime_lock=False,
+            gateway_session_key=None, session_id="s1",
+        )
+
+        assert model == "model.gguf"
+        assert runtime_kwargs.get("provider") == "openrouter"
+
+    def test_persisted_provider_does_not_beat_a_confirmed_lock(self, monkeypatch):
+        """A confirmed Browser lock is the strongest rung; a persisted route
+        must not resurrect itself underneath it."""
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_agent_kwargs_for_provider",
+            lambda provider, target_model=None, required=False: {
+                "provider": provider, "api_key": f"sk-{provider}",
+                "base_url": "https://example/v1", "api_mode": "chat_completions",
+            },
+        )
+        adapter = _make_routing_adapter({})
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+        monkeypatch.setattr(adapter, "_session_model_override_for", lambda *_: None)
+        monkeypatch.setattr(
+            adapter, "_runtime_request_from_persisted_session_lock",
+            lambda *a, **k: {"route": {"model": "locked/model", "provider": "lockedprov"},
+                             "require_model_lock": True, "confirmed": True},
+        )
+
+        runtime_kwargs = {"provider": "openrouter", "api_key": "sk-ambient"}
+        model, *_ = adapter._select_agent_runtime(
+            runtime_kwargs, "google/gemini-3.7-flash",
+            requested_model=None, requested_provider=None,
+            route={"model": "locked/model", "provider": "lockedprov"},
+            session_model=None, session_provider="custom:inference",
+            confirmed_runtime_lock=True,
+            gateway_session_key=None, session_id="s1",
+        )
+
+        assert runtime_kwargs.get("provider") == "lockedprov"
+
+
 # ---------------------------------------------------------------------------
 # Event-loop offloading for synchronous SessionDB calls (P1)
 # ---------------------------------------------------------------------------

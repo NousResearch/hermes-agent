@@ -8,7 +8,7 @@ export interface ProfileContextValue {
   currentProfile: string;
   /** Known profile names (includes "default"). */
   profiles: string[];
-  setProfile: (name: string) => void;
+  setProfile: (name: string, options?: { clearResume?: boolean }) => void;
 }
 
 export const ProfileContext = createContext<ProfileContextValue>({

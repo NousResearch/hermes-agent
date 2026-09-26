@@ -307,13 +307,29 @@ def _finish_source_update(root: Path, *, current: bool, pending: Path) -> None:
     # The tail's progress lines go to stderr: this is an automatic repair in
     # front of whatever command the user ran, and that command may be
     # emitting machine-readable stdout (a JSON probe, a piped query).
-    code = subprocess.call(
+    tail = subprocess.Popen(
         [sys.executable, "-I", "-B", "-u",
          str(root / "hermes_cli/source_completion.py"),
          "--source", str(root), "--finish-update",
          *(("--desktop",) if desktop else ())],
         cwd=root, env=activation_environment(root), stdout=sys.__stderr__,
     )
+    try:
+        code = tail.wait()
+    except KeyboardInterrupt:
+        # A ^C at the prompt reaches this parent inside wait() while the tail
+        # child — an interactive install/migration mid-question — swallows the
+        # same signal in its own input() and keeps prompting as an orphan.
+        # Take the child down before re-raising so an interrupted resume leaves
+        # nothing running behind it; the pending marker stays armed for the
+        # next launch to finish the tail cleanly.
+        tail.terminate()
+        try:
+            tail.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            tail.kill()
+            tail.wait()
+        raise
     if code != 0:
         raise RuntimeError(
             "source update completion failed; run `hermes update` to finish it"

@@ -753,6 +753,17 @@ class ResponsesApiTransport(ProviderTransport):
             kwargs.update(request_overrides)
             kwargs["model"] = wire_model
 
+        # ``prompt_cache_options`` is not a Responses.create() kwarg in the OpenAI SDK, so a
+        # top-level copy (the only place request_overrides can put it) fails the call before
+        # any request is sent, on every route. Endpoints that manage cache lifetime own it
+        # server-side; a proxy that accepts the field gets it via request_overrides
+        # ``extra_body``, which the SDK merges into the body post-transform.
+        if kwargs.pop("prompt_cache_options", None) is not None:
+            logger.warning(
+                "Dropped prompt_cache_options: not a Responses.create() kwarg "
+                "(use request_overrides={'extra_body': ...} for wire-only fields)."
+            )
+
         _sanitize_astra_request_kwargs(kwargs, model, params.get("base_url"))
 
         _bound_prompt_cache_key_field(kwargs)

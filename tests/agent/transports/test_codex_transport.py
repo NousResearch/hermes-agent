@@ -97,6 +97,29 @@ class TestCodexBuildKwargs:
         assert kw["reasoning"]["effort"] == "none"
         assert kw["temperature"] == 0.4
 
+    def test_prompt_cache_options_dropped_from_overrides(self, transport):
+        """``prompt_cache_options`` has no Responses.create() kwarg, so a top-level copy
+        from request_overrides raises TypeError before any request is sent — on the
+        official API, the Codex backend, and custom Responses endpoints alike."""
+        for base_url, is_codex in (
+            ("https://api.openai.com/v1", False),
+            ("https://chatgpt.com/backend-api/codex", True),
+            ("https://responses.example.com/v1", False),
+        ):
+            kw = transport.build_kwargs(
+                model="gpt-6-astra",
+                messages=[{"role": "user", "content": "Hi"}],
+                tools=[],
+                base_url=base_url,
+                is_codex_backend=is_codex,
+                request_overrides={
+                    "prompt_cache_options": {"ttl": "30m"},
+                    "store": True,
+                },
+            )
+            assert "prompt_cache_options" not in kw, base_url
+            assert kw["store"] is True
+
     def test_900k_context_variant_suffix_stripped_on_wire(self, transport):
         """``-900k`` large-context picker variants are Hermes-side aliases —
         the Codex backend only knows the base slug, so build_kwargs must

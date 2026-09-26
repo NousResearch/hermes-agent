@@ -74,10 +74,10 @@ def test_gateway_ancestor_refusal_never_kills_unknown_ancestry(monkeypatch, gate
     forbidden.assert_not_called()
 
 
-def test_command_reaches_checkout_preparation_without_holder_gates(monkeypatch, tmp_path):
+def test_command_reaches_git_preflight_without_holder_gates_or_gateway_pause(monkeypatch, tmp_path):
     from hermes_cli import update_inventory
 
-    class ReachedCheckout(BaseException):
+    class ReachedGitPreflight(BaseException):
         pass
 
     reached = []
@@ -100,13 +100,14 @@ def test_command_reaches_checkout_preparation_without_holder_gates(monkeypatch, 
     monkeypatch.setattr(main, "_is_windows", forbidden)
     monkeypatch.setattr(os, "kill", forbidden)
 
-    def prepare_checkout():
-        reached.append("checkout")
-        raise ReachedCheckout
+    def prepare_git_preflight():
+        reached.append("git-preflight")
+        raise ReachedGitPreflight
 
-    monkeypatch.setattr(update_cmd, "_prepare_git_command", prepare_checkout)
-    with pytest.raises(ReachedCheckout):
+    monkeypatch.setattr(update_cmd, "_prepare_git_command", prepare_git_preflight)
+    with pytest.raises(ReachedGitPreflight):
         main.cmd_update(SimpleNamespace(gateway=False, check=False, yes=True, force=False, force_venv=False))
-    assert reached == ["backup", "pause", "checkout"]
+    # #123370: source/network preflight must not stop a healthy Windows gateway.
+    assert reached == ["backup", "git-preflight"]
     forbidden.assert_not_called()
 

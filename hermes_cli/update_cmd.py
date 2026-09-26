@@ -89,7 +89,8 @@ from hermes_cli.update_cmd_git import (  # noqa: F401
     OFFICIAL_REPO_URL, OFFICIAL_REPO_URLS, SKIP_UPSTREAM_PROMPT_FILE, _ORPHAN_RESCUE_REFS_TO_KEEP,
     _ORPHAN_RESCUE_REF_MAX_AGE_DAYS, _add_upstream_remote, _assess_parked_branch_switch,
     _branch_head_label, _branch_head_suffix, _classify_fetch_failure, _count_commits_between,
-    _discard_lockfile_churn, _ensure_non_trampoline_git, _get_origin_url, _git_is_trampoline,
+    _discard_lockfile_churn, _ensure_non_trampoline_git, _fetch_failure_is_transient,
+    _get_origin_url, _git_is_trampoline,
     _has_upstream_remote, _is_fork, _locate_real_git, _mark_skip_upstream_prompt,
     _normalize_managed_eol, _portable_git_candidates, _print_fetch_failure,
     _print_parked_branch_kept_notice, _print_parked_branch_skip_warning,
@@ -199,6 +200,32 @@ def _record_update_step(step: str, ok: bool, detail: str = "") -> None:
 # otherwise leaves `hermes update` on "Fetching updates..." forever (#93759, #95777). Five
 # minutes is generous for a scoped single-branch fetch and still ends in a real error.
 NETWORK_GIT_TIMEOUT_SECONDS = 300
+_UPDATE_FETCH_MAX_ATTEMPTS = 3
+_UPDATE_FETCH_BACKOFF_SECONDS = 1.0
+
+
+def _fetch_updates_with_retry(git_cmd, fetch_args):
+    """Fetch one update ref, retrying only short-lived transport/server failures.
+
+    The checkout is untouched by git fetch, so retries happen before Windows
+    gateways are paused. Authentication, missing refs and HTTP 429 fail
+    immediately; retrying a GitHub secondary-rate-limit response can extend its
+    cooldown (#89317).
+    """
+    result = None
+    for attempt in range(1, _UPDATE_FETCH_MAX_ATTEMPTS + 1):
+        result = _git_run(git_cmd, fetch_args, network=True)
+        if result.returncode == 0:
+            return result
+        if attempt >= _UPDATE_FETCH_MAX_ATTEMPTS or not _fetch_failure_is_transient(result.stderr):
+            return result
+        delay = _UPDATE_FETCH_BACKOFF_SECONDS * (2 ** (attempt - 1))
+        print(
+            f"  ⚠ Transient network error while fetching; retrying in {delay:g}s "
+            f"(attempt {attempt + 1}/{_UPDATE_FETCH_MAX_ATTEMPTS})..."
+        )
+        _time.sleep(delay)
+    return result
 
 
 def _record_update_skip(step: str, reason: str) -> None:
@@ -656,6 +683,25 @@ def _print_update_check_result(behind: int | None, compare_branch: str) -> None:
     print(f"  Run '{recommended_update_command()}' to install.")
 
 
+def _pause_windows_gateways_before_mutation(completion_request: dict) -> dict | None:
+    """Pause Windows gateways at the first live-checkout/venv mutation boundary.
+
+    Network discovery and git fetch leave the live source tree untouched, so
+    keeping the gateway up through those fallible steps avoids an outage when
+    GitHub is temporarily unreachable (#123370). Reuse an existing token when a
+    later recovery path crosses the same mutation boundary.
+    """
+    existing = completion_request.get("windows_resume")
+    if existing is not None:
+        return existing
+    token = _m()._pause_windows_gateways_for_update()
+    completion_request["windows_resume"] = token
+    if token:
+        import atexit as _atexit
+        _atexit.register(_m()._resume_windows_gateways_after_update, token)
+    return token
+
+
 def _source_completion_request(opts, plan, snapshot_id, windows_resume, desktop, gateway_mode) -> dict:
     """Freeze data before mutation; no pre-swap module objects cross the seam."""
     from copy import deepcopy
@@ -934,6 +980,12 @@ def _prepare_checkout_for_update(
     date, -1 when tips differ but the shallow count is unrecoverable."""
     if target_ref is None:
         target_ref = f"origin/{branch}"
+
+    # First live-checkout mutation boundary. Once the Windows gateway is paused,
+    # clean machine-generated churn before stash/branch logic.
+    _discard_lockfile_churn(git_cmd, _m().PROJECT_ROOT)
+    _normalize_managed_eol(git_cmd, _m().PROJECT_ROOT)
+
     release_tag = target_ref != f"origin/{branch}"
     if release_tag:
         # A release lands detached at its exact commit, never merges into or
@@ -1111,11 +1163,6 @@ def _prepare_git_command() -> tuple[bool, list, bool]:
     # See #87876.
     git_cmd = _ensure_non_trampoline_git(git_cmd)
 
-    # Before stash/branch logic: npm rewrites package-lock.json non-deterministically and
-    # line-ending churn is machine-made dirt; both would otherwise force an autostash every update.
-    _discard_lockfile_churn(git_cmd, _m().PROJECT_ROOT)
-    _normalize_managed_eol(git_cmd, _m().PROJECT_ROOT)
-
     origin_url = _m()._get_origin_url(git_cmd, _m().PROJECT_ROOT)
     is_fork = _is_fork(origin_url)
 
@@ -1182,6 +1229,8 @@ def _handle_update_called_process_error(
         print(f"⚠ {stage}: {e}")
         print("→ Falling back to ZIP download...")
         print()
+        if completion_request is not None:
+            _pause_windows_gateways_before_mutation(completion_request)
         _update_via_zip(
             args, had_desktop_app_before_update=had_desktop_app_before_update,
             target_sha=target_sha, completion_request=completion_request,
@@ -1279,11 +1328,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
     pre_update_snapshot_id = _m()._run_pre_update_backup(args)
     _record_pre_update_backup_outcome(args, pre_update_snapshot_id)
 
-    _windows_gateway_resume = _m()._pause_windows_gateways_for_update()
-    if _windows_gateway_resume:
-        import atexit as _atexit
-        _atexit.register(_m()._resume_windows_gateways_after_update, _windows_gateway_resume)
-
+    # Keep Windows gateways serving while source/network preflight can still fail.
+    _windows_gateway_resume = None
 
     desktop_dir = _m().PROJECT_ROOT / "apps" / "desktop"
     had_desktop_app_before_update = (
@@ -1336,6 +1382,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             target_ref = f"origin/{branch}"
 
     if use_zip_update:
+        _windows_gateway_resume = _pause_windows_gateways_before_mutation(completion_request)
         try:
             _update_via_zip(
                 args, had_desktop_app_before_update=had_desktop_app_before_update,
@@ -1372,16 +1419,19 @@ def _cmd_update_impl(args, gateway_mode: bool):
         _m()._warn_orphaned_update_autostashes(git_cmd, _m().PROJECT_ROOT)
 
         print("→ Fetching updates...")
-        if release_sha:
-            fetch_result = _git_run(git_cmd, ["fetch", "--no-tags", "origin", target_ref], network=True)
-        else:
-            fetch_result = _git_run(git_cmd, ["fetch", "origin", branch], network=True)
+        fetch_args = (
+            ["fetch", "--no-tags", "origin", target_ref]
+            if release_sha else ["fetch", "origin", branch]
+        )
+        fetch_result = _fetch_updates_with_retry(git_cmd, fetch_args)
         if fetch_result.returncode != 0:
             _print_fetch_failure(fetch_result.stderr)
-            _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
             sys.exit(1)
 
+        # The branch-name probe is still read-only and can fail (corrupt/inaccessible .git).
+        # Keep the healthy gateway serving until that last pre-mutation check has succeeded.
         current_branch = _current_branch_name(git_cmd, check=True)
+        _windows_gateway_resume = _pause_windows_gateways_before_mutation(completion_request)
         _plan = _prepare_checkout_for_update(
             git_cmd, branch, current_branch, is_fork=is_fork, assume_yes=assume_yes,
             gateway_mode=gateway_mode, gw_input_fn=gw_input_fn, switch_branch=opts.switch_branch,

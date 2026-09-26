@@ -1746,7 +1746,7 @@ _FALLBACK_REASON_LABELS = {
     FailoverReason.upstream_rate_limit: "upstream model rate limit",
     FailoverReason.overloaded: "provider overloaded",
     FailoverReason.server_error: "provider server error",
-    FailoverReason.timeout: "request timeout",
+    FailoverReason.timeout: "timeout or connection failure",
     FailoverReason.ssl_cert_verification: "TLS certificate verification failed",
     FailoverReason.context_overflow: "context window exceeded",
     FailoverReason.payload_too_large: "request payload too large",

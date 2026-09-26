@@ -493,8 +493,9 @@ async def get_session_stats(profile: Optional[str] = None):
     """Session-store statistics (mirrors `hermes sessions stats`)."""
     def _stats(db):
         out = {
-            "total": db.session_count(include_archived=True),
-            "active_store": db.session_count(include_archived=False),
+            # Storage-wide statistics: hidden rows (Bot Mode) still count here.
+            "total": db.session_count(include_archived=True, include_hidden=True),
+            "active_store": db.session_count(include_archived=False, include_hidden=True),
             "archived": db.session_count(archived_only=True), "messages": db.message_count(),
             "by_source": {}}
         try:

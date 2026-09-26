@@ -47,8 +47,8 @@ from typing import Any, Dict, Optional, Set
 
 from agent.secret_scope import get_secret
 from gateway.platforms._shared import (
-    apply_yaml_bridge as _apply_yaml_bridge, extra_or_secret as _extra_or_secret,
-    get_scoped_secret as _get_scoped_secret, send_error
+    apply_yaml_bridge as _apply_yaml_bridge, decode_json_list_literal as _decode_json_list_literal,
+    extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret, send_error
 )
 
 try:
@@ -528,7 +528,8 @@ def _env_number(name: str, default, cast):
 
 
 def _csv_set(raw: Any) -> Set[str]:
-    """Normalize a comma-separated string or list into a set of stripped tokens."""
+    """Normalize a comma-separated string, JSON-list string, or list into a set of stripped tokens."""
+    raw = _decode_json_list_literal(raw)
     if isinstance(raw, list):
         return {str(r).strip() for r in raw if str(r).strip()}
     return {r.strip() for r in str(raw).split(",") if r.strip()}

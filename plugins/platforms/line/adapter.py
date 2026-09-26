@@ -36,7 +36,8 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from urllib.parse import quote as _urlquote
 
 from gateway.platforms._shared import (
-    get_scoped_secret as _get_scoped_secret, seed_extra_from_env as _seed_extra_from_env, send_error
+    decode_json_list_literal as _decode_json_list_literal, get_scoped_secret as _get_scoped_secret,
+    seed_extra_from_env as _seed_extra_from_env, send_error
 )
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, SendResult,
@@ -325,7 +326,10 @@ def _is_interim_send(content: str, metadata: Optional[Dict[str, Any]] = None) ->
 
 
 def _csv_set(value: str) -> Set[str]:
-    return {x.strip() for x in (value or "").split(",") if x.strip()}
+    value = _decode_json_list_literal(value or "")
+    if isinstance(value, list):
+        return {str(v).strip() for v in value if str(v).strip()}
+    return {x.strip() for x in value.split(",") if x.strip()}
 
 
 def _truthy_env(name: str, default: bool = False) -> bool:

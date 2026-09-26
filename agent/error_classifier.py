@@ -273,6 +273,11 @@ CODEX_ACCOUNT_MODEL_ENTITLEMENT_MARKER = "model is not supported when using code
 _MODEL_NOT_FOUND_PATTERNS = (
     "is not a valid model", "invalid model", "model not found", "model_not_found", "does not exist",
     "no such model", "unknown model", "unsupported model", "no endpoints found that support tool use",
+    # Nous retires a :free route with a 404 naming the paid replacement
+    # ("This model is no longer free. To continue using the paid variant, switch to
+    # '…'."). Deterministic model-lifecycle rejection: fail over / self-heal, never
+    # retry the dead slug (#123180).
+    "no longer free",
 )
 
 # Qwen/vLLM chat-template "No user query found". Shared by the invalid-body

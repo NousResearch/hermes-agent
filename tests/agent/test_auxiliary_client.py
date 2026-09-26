@@ -1411,8 +1411,20 @@ class TestIsModelNotFoundError:
         exc.status_code = 404
         assert _is_model_not_found_error(exc) is True
 
-
-
+    def test_retired_free_route_wording(self):
+        """Regression for #123180: Nous retires a :free route with "This model
+        is no longer free. To continue using the paid variant, switch to
+        '…'." — a deterministic lifecycle rejection an auxiliary call pinned
+        to the dead slug must fail over on, not retry. The message mentions
+        free/paid but no free-tier refusal phrase, so the billing exclusion
+        above must not claim it."""
+        exc = Exception(
+            "This model is no longer free. To continue using the paid "
+            "variant, switch to 'meituan/longcat-2.0'."
+        )
+        exc.status_code = 404
+        assert _is_model_not_found_error(exc) is True
+        assert _is_payment_error(exc) is False
 
     def test_billing_404_is_not_model_not_found(self):
         """Free-tier / credit 404s belong to _is_payment_error, not here —

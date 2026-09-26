@@ -633,6 +633,25 @@ class TestClassifyApiError:
         assert result.should_fallback is True
         assert result.retryable is False
 
+    def test_404_retired_free_route_is_model_not_found(self):
+        """Nous retires a :free route with a 404 naming the paid replacement.
+
+        Regression for #123180: "This model is no longer free. To continue
+        using the paid variant, switch to 'meituan/longcat-2.0'." fell into
+        the generic-404 branch as unknown/retryable, so the dead slug burned
+        retries it could never win. The wording carries no free-tier refusal
+        phrase, so the billing rules must not claim it first.
+        """
+        msg = (
+            "HTTP 404: This model is no longer free. To continue using the "
+            "paid variant, switch to 'meituan/longcat-2.0'."
+        )
+        e = MockAPIError(msg, status_code=404)
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.model_not_found
+        assert result.retryable is False
+        assert result.should_fallback is True
+
     def test_404_generic(self):
         # Generic 404 with no "model not found" signal — common for local
         # llama.cpp/Ollama/vLLM endpoints with slightly wrong paths.  Treat

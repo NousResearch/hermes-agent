@@ -3461,6 +3461,10 @@ def _is_model_not_found_error(exc: Exception) -> bool:
         "is not a valid model", "no such model", "model not found",
         "the model `",            # OpenAI-style: "The model `X` does not exist"
         "model_not_found", "unknown model",
+        # Nous retires a :free route with a 404 naming the paid replacement —
+        # deterministic lifecycle rejection, same wording the shared classifier
+        # grew for #123180. "free tier" wording stays owned by _is_payment_error.
+        "no longer free",
     ))
 
 

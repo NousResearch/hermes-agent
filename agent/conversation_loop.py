@@ -718,6 +718,54 @@ def _restore_pinned_tools(agent, session_row) -> list:
     return built_for_this_surface
 
 
+def _refresh_bot_chat_tool_snapshot(agent) -> None:
+    """Adopt the current on-disk toolset selection and rebuild tools[] for a Bot Chat
+    capability refresh (#124211).
+
+    A canonical Bot Chat never forks, so without this its tools[] is a fossil of session
+    creation: the epoch rebuilds the prompt while the tool schema stays frozen. The
+    selection is re-resolved (it is what ``hermes tools enable/disable`` writes) and the
+    snapshot rebuilt content-aware like the compaction boundary — no prefix preservation,
+    so a disabled toolset actually drops (the prompt rebuild already breaks the cache).
+    Only a session that already carries a selection adopts a new one: ``None`` means
+    unrestricted and must stay that way. Fail-open: any failure keeps the previous
+    tools[] and the prompt rebuild still lands."""
+    try:
+        from agent.skill_utils import parse_config_string_list
+        from agent.system_prompt import _agent_home
+        from hermes_cli.config import load_config_readonly
+        from hermes_cli.tools_config import _get_platform_tools
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        home = _agent_home(agent)
+        token = set_hermes_home_override(str(home)) if home is not None else None
+        try:
+            cfg = load_config_readonly() or {}
+        finally:
+            if token is not None:
+                reset_hermes_home_override(token)
+        if getattr(agent, "enabled_toolsets", None) is not None:
+            try:
+                platform = getattr(agent, "platform", None) or "cli"
+                agent.enabled_toolsets = sorted(_get_platform_tools(cfg, platform))
+            except Exception:
+                logger.debug("Bot Chat toolset re-resolve skipped", exc_info=True)
+        try:
+            agent.disabled_toolsets = (
+                parse_config_string_list((cfg.get("agent") or {}).get("disabled_toolsets")) or None
+            )
+        except Exception:
+            logger.debug("Bot Chat disabled-toolsets re-resolve skipped", exc_info=True)
+    except Exception:
+        logger.debug("Bot Chat toolset adoption skipped", exc_info=True)
+    try:
+        from tools.mcp_tool_agent import refresh_agent_mcp_tools
+        added = refresh_agent_mcp_tools(agent, quiet_mode=True, content_aware=True)
+        if added:
+            logger.info("Bot Chat capability refresh added tools: %s", sorted(added))
+    except Exception:
+        logger.debug("Bot Chat tool refresh skipped", exc_info=True)
+
+
 def _restore_or_build_system_prompt(agent, system_message, conversation_history):
     """Restore the cached system prompt from the session DB or build it fresh.
 
@@ -757,14 +805,18 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
                 clear_skills_system_prompt_cache(clear_snapshot=True)
             except Exception:
                 pass
+            _refresh_bot_chat_tool_snapshot(agent)
             agent._cached_system_prompt = agent._build_system_prompt(system_message)
             stage_surface_switch_note(agent, agent._cached_system_prompt, conversation_history)
             # Persist so the NEXT turn restores the new bytes verbatim (cache break is
-            # once per capability change). on_session_start not re-fired: continuation.
+            # once per capability change). Tools re-pin too: without it the next
+            # turn's pin-restore would resurrect the pre-refresh toolset (#124211).
+            # on_session_start not re-fired: continuation.
             _persist_system_prompt(
                 agent,
                 "Session DB update_system_prompt failed after Bot Chat capability refresh "
                 "(session=%s): %s. The refresh will re-fire next turn.",
+                persist_tools=True,
             )
             return
         # Continuing session — reuse the exact system prompt from the

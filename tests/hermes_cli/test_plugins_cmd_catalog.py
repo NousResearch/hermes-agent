@@ -264,13 +264,16 @@ def test_update_of_a_subdir_install_keeps_files_the_user_created_or_edited(world
 def test_repin_keeps_a_wholly_ignored_data_dir_in_a_git_checkout(world):
     """A single ``!! data/`` status entry must preserve every file below that ignored directory."""
     repo = world["repo"]
-    (repo / ".gitignore").write_text("data/\n")
+    (repo / ".gitignore").write_text("data/\n.venv/\n")
     world["state"]["pin"] = _commit(repo, "ignore data")
     target = cat.install_catalog_entry(pc_cat.get_live_catalog_entry("cat-plugin"), force=False)[0]
     assert (target / ".git").exists()
 
     (target / "data" / "db").mkdir(parents=True)
     (target / "data" / "db" / "index.db").write_text("user data")
+    # An ignored venv always holds symlinks (bin/python); it is a reproducible artefact, not user state.
+    (target / ".venv" / "bin").mkdir(parents=True)
+    (target / ".venv" / "bin" / "python").symlink_to("/usr/bin/python3")
 
     (repo / "__init__.py").write_text("def register(ctx):\n    pass  # v3\n")
     world["state"]["pin"] = _commit(repo, "v3")

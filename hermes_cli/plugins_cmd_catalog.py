@@ -362,6 +362,7 @@ def _carry_user_files(old: Path, new: Path, local: Optional[list[str]]) -> list[
     Returns the carried paths (POSIX, relative to the tree) so a later scan block can name them.
     """
     from hermes_cli.plugins_cmd import PluginOperationError
+    from tools.plugin_guard import EXCLUDED_DIRS
 
     keep = {Path(rel) for rel in local or ()}
     linked: list[str] = []
@@ -370,8 +371,9 @@ def _carry_user_files(old: Path, new: Path, local: Optional[list[str]]) -> list[
     def _user_link(rel: Path) -> None:
         # Git-owned user state that is a symlink is refused, never followed: a link injected after the
         # installer's scan could point outside the plugin root past the guard (which skips links).
-        # Links under node_modules/ are reproducible install artefacts (.bin shims), not user state.
-        if local is not None and not keep.isdisjoint((rel, *rel.parents)) and "node_modules" not in rel.parts:
+        # Links under the guard's excluded dirs (node_modules/.bin shims, .venv/bin/python) are
+        # reproducible install artefacts, not user state.
+        if local is not None and not keep.isdisjoint((rel, *rel.parents)) and EXCLUDED_DIRS.isdisjoint(rel.parts):
             linked.append(rel.as_posix())
 
     def _walk_error(exc: OSError) -> None:

@@ -3142,6 +3142,8 @@ def _rebuild_system_prompt_at_boundary(agent: Any, system_message: str) -> str:
         # surface: its builder output drops the skills index, external provider blocks and tool guidance,
         # and the commit below would persist that over the live session's snapshot (restored verbatim by
         # the next fresh agent). Keep the seeded bytes; the live agent's own compaction propagates updates.
+        # Returning here also deliberately skips _refresh_agent_tool_definitions: its MCP refresh persists
+        # the agent's tool names, which would overwrite the session's saved tools[] with the memory-only set.
         seeded_system_prompt = agent._cached_system_prompt or ""
         agent._cached_system_prompt = seeded_system_prompt
         if seeded_system_prompt:

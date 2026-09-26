@@ -787,3 +787,32 @@ def test_live_apply_keeps_selection_on_failed_union(locked_project, tmp_path, mo
     assert set(generations.iterdir()) == prior_generations
     assert (source / "uv.lock").read_bytes() == source_lock
     assert env == original_env
+
+
+def test_no_config_drops_bridged_index_settings_from_child_env(tmp_path):
+    """no_config must isolate the pinned runtime builder from ALL ambient uv
+    configuration: --no-config covers config files, but PM's pip-mirror bridge
+    injects UV_INDEX_URL as an env var, and re-resolving the official-index
+    runtime lockfile against that mirror trips `uv sync --locked` (#124418).
+    The default path keeps the bridge — mirrored networks need it to resolve
+    their application dependencies at all."""
+    import io
+    from pm.environment import PythonEnvironment
+
+    ambient = dict(os.environ, UV_INDEX_URL="https://fixture-mirror.invalid/simple",
+                   UV_HTTP_TIMEOUT="99")
+    child = ("import os, sys\n"
+             "present = sorted(k for k in ('UV_INDEX_URL', 'UV_HTTP_TIMEOUT') if k in os.environ)\n"
+             "sys.exit(', '.join(present) if present else None)\n")
+
+    def run(**kwargs):
+        environment = PythonEnvironment(
+            uv=Path(sys.executable), python=Path(sys.executable), destination=tmp_path / "venv",
+            cache=tmp_path / "cache", env=ambient, output=io.StringIO(), **kwargs)
+        return environment._run(["-c", child], cwd=tmp_path, timeout=60)
+
+    isolated = run(no_config=True)
+    assert isolated.returncode == 0, f"bridged settings leaked into no_config child: {isolated.stderr}"
+    bridged = run()
+    assert bridged.returncode == 1, "default path must keep the bridge"
+    assert "UV_INDEX_URL" in bridged.stderr and "UV_HTTP_TIMEOUT" in bridged.stderr

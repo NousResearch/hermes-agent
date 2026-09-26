@@ -272,6 +272,16 @@ class PythonEnvironment:
         # Explicit index credentials survive, but cannot redirect the project,
         # interpreter or cache selected by the operation.
         env = _base_environment(self.env)
+        if self.no_config:
+            # --no-config only removes config files; the pip-mirror bridge
+            # (pm.index_config) reaches uv as env vars. The pinned runtime
+            # builder asked to be isolated from ambient index configuration:
+            # re-resolving its official-index lockfile against a mirror trips
+            # `--locked` (#124418), and a fully-pinned graph never needs a
+            # mirror to resolve.
+            from pm.index_config import is_forwarded
+
+            env = {key: value for key, value in env.items() if not is_forwarded(key)}
         env.update(UV_PYTHON=str(self.python), UV_PROJECT_ENVIRONMENT=str(self.destination),
                    UV_CACHE_DIR=str(self.cache), UV_PYTHON_DOWNLOADS="never")
         with tempfile.TemporaryDirectory(prefix="pm-uv-config-") as config:

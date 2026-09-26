@@ -390,7 +390,7 @@ def _sweep_dead_ssh_runtime_markers(purelib: str) -> None:
                 try:
                     if not entry.is_file(follow_symlinks=False):
                         continue
-                    marker_stat = entry.stat(follow_symlinks=False)
+                    marker_stat = os.stat(entry.path, follow_symlinks=False)
                     payload = Path(entry.path).read_text(encoding="utf-8")
                 except (OSError, UnicodeError):
                     continue
@@ -398,12 +398,13 @@ def _sweep_dead_ssh_runtime_markers(purelib: str) -> None:
                 if identity is None:
                     continue
                 pid, create_time = identity
-                if (
-                    _pid_alive_matches(
+                try:
+                    alive = _pid_alive_matches(
                         pid, create_time, strict=create_time is not None
                     )
-                    is not False
-                ):
+                except Exception:
+                    continue
+                if alive is not False:
                     continue
                 try:
                     current_stat = os.stat(entry.path, follow_symlinks=False)
@@ -440,15 +441,25 @@ def _apply_ssh_owner_nonce(nonce: Optional[str]) -> None:
         try:
             marker = os.path.join(purelib, f".hermes-ssh-runtime-{nonce}")
             owner_pid = os.getpid()
-            create_time = _process_create_time(owner_pid)
+            try:
+                create_time = _process_create_time(owner_pid)
+            except Exception:
+                create_time = None
             payload = f"pid={owner_pid}\n"
             if create_time is not None:
                 payload += f"create_time={create_time}\n"
-            with open(marker, "w", encoding="utf-8") as fh:
-                fh.write(payload)
-            _SSH_RUNTIME_MARKER = marker
-            _SSH_RUNTIME_MARKER_OWNER_PID = owner_pid
-            _SSH_RUNTIME_MARKER_PAYLOAD = payload
+            try:
+                fh = open(marker, "x", encoding="utf-8")
+            except FileExistsError:
+                # Another dashboard won the nonce. Its marker is still the
+                # runtime identity, but only its creator may remove it.
+                _SSH_RUNTIME_MARKER = marker
+            else:
+                with fh:
+                    fh.write(payload)
+                _SSH_RUNTIME_MARKER = marker
+                _SSH_RUNTIME_MARKER_OWNER_PID = owner_pid
+                _SSH_RUNTIME_MARKER_PAYLOAD = payload
         except OSError:
             pass  # read-only site-packages — fall back to the stat snapshot
         try:

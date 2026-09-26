@@ -184,6 +184,30 @@ def resolve_launchd_capped_drain(
     return min(drain, max(budget - _seconds(cleanup_reserve_s), 0.0))
 
 
+def fit_drain_to_armed_leash(
+    drain_timeout: float,
+    armed_leash_s: float | None,
+    elapsed_s: float,
+    *,
+    cleanup_reserve_s: float = LAUNCHD_STOP_CLEANUP_RESERVE_S,
+) -> float:
+    """Drain budget, measured from NOW, that still leaves ``cleanup_reserve_s`` of teardown before the
+    shutdown watchdog armed at the top of ``stop()`` hard-exits.
+
+    The drain and the watchdog used to be sized by two formulas: the drain was capped at
+    ``ExitTimeOut - cleanup_reserve`` and ran from whenever it started, while the watchdog was armed at
+    ``min(drain + grace, ExitTimeOut - dump_margin)`` from the start of ``stop()``. They agree only in
+    special cases; otherwise the drain can end so close to the armed ``os._exit`` that teardown (interrupt
+    agents, disconnect adapters, close SQLite) is cut short, or never runs. This makes the ARMED deadline
+    the one source. Never extends the drain; ``None`` (no watchdog armed) returns it unchanged.
+    """
+    drain = _seconds(drain_timeout)
+    if armed_leash_s is None:
+        return drain
+    remaining = _seconds(armed_leash_s) - max(_seconds(elapsed_s), 0.0) - _seconds(cleanup_reserve_s)
+    return max(0.0, min(drain, remaining))
+
+
 def effective_stop_drain_timeout(runner: object) -> float:
     """Drain budget for the stop in progress on ``runner``.
 

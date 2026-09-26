@@ -24,7 +24,8 @@ from typing import Any, Callable, Dict, Optional
 from gateway.config import Platform
 from gateway.restart import (
     DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT, GATEWAY_SERVICE_RESTART_EXIT_CODE,
-    effective_stop_drain_timeout, effective_stop_watchdog_delay, resolve_cron_drain_budget
+    effective_stop_drain_timeout, effective_stop_watchdog_delay, fit_drain_to_armed_leash,
+    resolve_cron_drain_budget,
 )
 from gateway.run_common import _UNSET
 from gateway.shutdown_watchdog import arm_shutdown_watchdog, resolve_shutdown_watchdog_delay
@@ -168,6 +169,10 @@ class GatewayShutdownMixin:
         # API-server runs still live when the adapters were released; the adapter map is empty by the
         # time the SessionDB close gate runs, so the count has to be taken before ``adapters.clear()``.
         api_live: int = 0
+        # The shutdown watchdog's leash and when it was armed: THE deadline the drain and the cron leash
+        # are fitted to (see gateway.restart.fit_drain_to_armed_leash).
+        armed_leash_s: Optional[float] = None
+        armed_at: Optional[float] = None
 
         def elapsed(self) -> float:
             return time.monotonic() - self.started_at
@@ -1846,9 +1851,15 @@ class GatewayShutdownMixin:
         # before cleanup runs.
         # ``timeout`` is already the effective (launchd-capped) drain, so this is the same
         # leash the thread watchdog is armed with — dump margin included.
-        _cron_leash = effective_stop_watchdog_delay(self, resolve_shutdown_watchdog_delay(timeout))
+        # The armed leash when stop() armed one (elapsed measured from the same instant); otherwise the
+        # leash the watchdog would have been armed with.
+        if ctx.armed_leash_s is not None and ctx.armed_at is not None:
+            _cron_leash, _cron_elapsed = ctx.armed_leash_s, time.monotonic() - ctx.armed_at
+        else:
+            _cron_leash = effective_stop_watchdog_delay(self, resolve_shutdown_watchdog_delay(timeout))
+            _cron_elapsed = ctx.elapsed()
         _cron_timeout = resolve_cron_drain_budget(
-            timeout, _cron_drain_cfg, watchdog_delay=_cron_leash, elapsed=ctx.elapsed(),
+            timeout, _cron_drain_cfg, watchdog_delay=_cron_leash, elapsed=_cron_elapsed,
         )
         if _cron_at_start and _cron_timeout > timeout:
             logger.info(
@@ -2179,19 +2190,22 @@ class GatewayShutdownMixin:
         ctx = GatewayShutdownMixin._StopContext(
             deferred_count=getattr(self, "_active_deferred_agent_worker_count", lambda: 0)
         )
+        # ONE leash: armed below, and the drain + cron leash are fitted to it (not re-derived).
+        ctx.armed_leash_s, ctx.armed_at = _effective_watchdog_leash(self), time.monotonic()
         if not os.environ.get("PYTEST_CURRENT_TEST"):
             arm_shutdown_watchdog(
-                _effective_watchdog_leash(self), done_event=_watchdog_done,
+                ctx.armed_leash_s, done_event=_watchdog_done,
                 snapshot_fn=lambda: GatewayRunner._shutdown_watchdog_snapshot(self, ctx), exit_code=1,
             )
         try:
             await GatewayRunner._stop_begin_teardown(self, ctx)
-            timeout = effective_stop_drain_timeout(self)
+            timeout = fit_drain_to_armed_leash(
+                effective_stop_drain_timeout(self), ctx.armed_leash_s, time.monotonic() - ctx.armed_at)
             if timeout < self._restart_drain_timeout:
                 logger.warning(
-                    "Shutdown drain capped to %.0fs (configured %.0fs) to fit the live launchd exit "
-                    "timeout of %.0fs — launchd SIGKILLs past it",
-                    timeout, self._restart_drain_timeout, self._launchd_exit_timeout_s,
+                    "Shutdown drain capped to %.0fs (configured %.0fs) to leave teardown time before the "
+                    "shutdown watchdog (%.0fs from stop(); live launchd exit timeout %s)",
+                    timeout, self._restart_drain_timeout, ctx.armed_leash_s, self._launchd_exit_timeout_s,
                 )
             await GatewayRunner._stop_drain_active_work(self, timeout, ctx)
             if ctx.timed_out:

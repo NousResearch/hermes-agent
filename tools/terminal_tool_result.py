@@ -221,7 +221,8 @@ def finalize_foreground_result(
     if (result or {}).get("cwd_observed"):
         observed_cwd = (result or {}).get("cwd") or getattr(env, "cwd", None)
     if not workdir and observed_cwd:
-        record_session_cwd(session_key, observed_cwd)
+        from tools.terminal_tool import cwd_record_key
+        record_session_cwd(cwd_record_key(task_id, session_key), observed_cwd)
 
     output = result.get("output", "")
     returncode = result.get("returncode", 0)

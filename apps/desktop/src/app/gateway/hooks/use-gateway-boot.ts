@@ -642,7 +642,7 @@ export function useGatewayBoot({
       const peer = isPeerInstanceWindow()
 
       const route = profile
-        ? { profile, connectionId: peer ? new URLSearchParams(window.location.search).get('connectionId') : null }
+        ? { profile, connectionId: new URLSearchParams(window.location.search).get('connectionId') }
         : startup && !peer
           ? await desktop.profile?.getDefault?.()
           : null

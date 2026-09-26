@@ -205,12 +205,19 @@ def thinking_toggle_extras(
     ``efforts``) replaces the toggle. DeepSeek instead requires the toggle on every
     request (an omitted toggle defaults thinking on and then demands
     ``reasoning_content`` echoes), hence ``always_emit_toggle``. A requested effort of
-    ``none`` is not a level on these wires; it falls back to the plain toggle.
+    ``none`` maps to the explicit disabled toggle, matching the documented
+    equivalence with ``enabled: false``.
     """
     if isinstance(reasoning_config, dict) and reasoning_config.get("enabled") is False:
         return {"thinking": {"type": "disabled"}}, {}
     effort = requested_effort(reasoning_config)
-    clamped = clamp_effort(None if effort == "none" else effort, efforts, overrides)
+    if effort == "none":
+        # `reasoning_effort: none` is documented as equivalent to `enabled: false`;
+        # it must map to the explicit disabled toggle, never fall through to the
+        # toggle-on default below (which bills thinking the caller asked not to
+        # spend).
+        return {"thinking": {"type": "disabled"}}, {}
+    clamped = clamp_effort(effort, efforts, overrides)
     if clamped in efforts:
         return ({"thinking": {"type": "enabled"}} if always_emit_toggle else {}), {"reasoning_effort": clamped}
     return {"thinking": {"type": "enabled"}}, {}

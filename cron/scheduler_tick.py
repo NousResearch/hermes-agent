@@ -53,7 +53,10 @@ def _tick_admitted(
             return 0
 
         from cron.scheduler_authority import reconcile_pending
-        reconcile_pending()
+        if headless:
+            reconcile_pending(allow_connect=False)
+        else:
+            reconcile_pending()
         _sched._maybe_reap_dead_owners()
         # Periodic worktree GC (6h, threaded) — the only sweep gateway-only boxes get.
         try:

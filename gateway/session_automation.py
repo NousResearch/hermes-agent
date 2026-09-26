@@ -128,16 +128,17 @@ def snapshot_local_automation(authority, adapter, event, identity, entry):
     return {'text': event.text, 'local_automation_v1': descriptor}, entry
 
 
-def check_local_automation(authority, ref, row):
-    live = authority.sessions[ref.session_id]
+def check_local_automation(authority, ref, row, *, route=None):
+    live = authority.sessions.get(ref.session_id)
+    route = route or (live.route if live is not None else None)
     payload = row['payload']
     descriptor = payload['local_automation_v1']
-    if (set(payload) != {'text', 'local_automation_v1'}
-            or row['principal_id'] != 'automation:' + live.route
-            or descriptor['owner'] != ref.session_id or descriptor['route'] != live.route
+    if (not route or set(payload) != {'text', 'local_automation_v1'}
+            or row['principal_id'] != 'automation:' + route
+            or descriptor['owner'] != ref.session_id or descriptor['route'] != route
             or descriptor['identity'] != row['request_id']):
         raise RuntimeStoreError('permission_denied')
-    entry = authority.runner.session_store.lookup_by_session_key(live.route)
+    entry = authority.runner.session_store.lookup_by_session_key(route)
     if (entry is None or entry.suspended or (entry.session_id != descriptor['target']
             and authority.db.get_compression_tip(descriptor['target']) != entry.session_id)):
         raise RuntimeStoreError('admission_conflict')

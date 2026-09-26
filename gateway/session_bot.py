@@ -4,6 +4,7 @@ The mailbox is a delivery receipt, not an execution queue. A committed canonical
 admission is the only consumer; unknown execution is never retried as inference.
 """
 import asyncio
+import logging
 from pathlib import Path
 
 from agent.turn_author import parse_turn_author
@@ -13,6 +14,19 @@ from gateway.config import Platform
 from gateway.platforms.event import MessageEvent
 from hermes_state_runtime import RuntimeStoreError, get_session_admission
 from tools.bot_live_delivery import _delivery_id, _locked, _read, _write
+
+
+def _scan_records(root):
+    """Bulk mailbox scan: isolate unreadable records without weakening exact-id reads."""
+    for path in root.glob('*.json'):
+        try:
+            record = _read(path)
+        except (OSError, ValueError):
+            logging.getLogger(__name__).warning(
+                "Skipping unreadable Bot mailbox receipt %s", path, exc_info=True)
+            continue
+        if record is not None:
+            yield path, record
 
 
 def _home(authority, actor, profile):
@@ -124,7 +138,7 @@ def relay_operation(connection, operation, params):
 
 
 async def _migrate(authority, actor, home, root):
-    records = [(path, _read(path)) for path in root.glob('*.json')]
+    records = list(_scan_records(root))
     legacy = [(path, record) for path, record in records
               if record and 'owner' in record and not record.get('admission_id')
               and record['status'] in {'queued', 'claimed'}]
@@ -153,7 +167,7 @@ async def recover_bot_deliveries(authority):
     """Rebuild derivative replies and queued legacy admissions at owner startup."""
     home = Path(authority.db.db_path).parent.resolve()
     with _locked(home) as root:
-        records = [(path, _read(path)) for path in root.glob('*.json')]
+        records = list(_scan_records(root))
         for path, record in records:
             if not record or record.get('profile_home') != str(home) or not record.get('admission_id'):
                 continue

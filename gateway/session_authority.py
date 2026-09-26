@@ -268,10 +268,18 @@ class SessionAuthority:
                 source, route = await check_native_route(self.runner, native[-1]['payload'], target,
                                                     available_source, adapter)
                 for row in rows:
-                    if row['status'] == 'queued':
-                        if 'native_text_v1' not in row['payload']:
-                            raise RuntimeStoreError('invalid_params')
+                    if row['status'] != 'queued':
+                        continue
+                    if 'native_text_v1' in row['payload']:
                         await check_native_route(self.runner, row['payload'], target, available_source, adapter)
+                    elif 'local_automation_v1' in row['payload']:
+                        from gateway.session_automation import check_local_automation
+                        check_local_automation(
+                            self, SessionRef(self.profile_id, sid), row, route=route)
+                    else:
+                        from gateway.session_operator import check_local_input
+                        check_local_input(
+                            self, SessionRef(self.profile_id, sid), row, source=source)
                 self._require_admission_open()
                 self.sessions.setdefault(sid, LiveSession(source, route))
                 if any(row['status'] == 'unknown' for row in rows):

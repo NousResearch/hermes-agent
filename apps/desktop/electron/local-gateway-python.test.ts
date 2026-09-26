@@ -14,7 +14,9 @@ test.skipIf(process.platform === 'win32')('Python ticket bridge pins profile, ow
   const root = path.resolve('../..')
   // The JS-only CI runner has no repository venv; this helper uses stdlib only.
   const python = process.env.HERMES_TEST_PYTHON || 'python3'
-  const endpoint = { profile_id: home, instance_id: 'owner', runtime_protocol: 1 }
+  // Real serialized endpoints include control_home (null for the launch profile).
+  // The bridge must merge the default rather than pass a duplicate Python keyword.
+  const endpoint = { profile_id: home, instance_id: 'owner', runtime_protocol: 1, control_home: null }
   const requests: any[] = []
   let override = {}
 

@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 def bootstrap(start: bool) -> dict:
     from hermes_constants import get_hermes_home
-    from hermes_cli.gateway_runtime import discover_gateway_endpoint, ensure_gateway_runtime
+    from hermes_cli.gateway_runtime import control_home_for, discover_gateway_endpoint, ensure_gateway_runtime
     from hermes_cli.gateway_runtime_discovery import _socket_path
 
     home = get_hermes_home().resolve()
@@ -25,16 +25,17 @@ def bootstrap(start: bool) -> dict:
     if receipt.state != "ready" or receipt.endpoint is None:
         raise RuntimeError(f"gateway {receipt.state}: {receipt.reason_code or 'not ready'}")
     endpoint = receipt.endpoint
+    control_home = control_home_for(home, endpoint)
     request = json.dumps({"protocol": 1, "id": 1, "verb": "session-ticket", "params": {
         "profile_id": endpoint.profile_id, "instance_id": endpoint.instance_id,
         "purpose": "interactive"}}).encode() + b"\n"
     if os.name == "nt":
         from gateway.runtime_bootstrap_windows import query_runtime_control
-        raw = query_runtime_control(home, request, 5)
+        raw = query_runtime_control(control_home, request, 5)
     else:
         with socket.socket(socket.AF_UNIX) as peer:
             peer.settimeout(5)
-            peer.connect(str(_socket_path(home)))
+            peer.connect(str(_socket_path(control_home)))
             peer.sendall(request)
             with peer.makefile("rb") as stream:
                 raw = stream.readline(65537)

@@ -45,6 +45,16 @@ async def test_cancelled_admission_suppresses_only_interrupt_metadata(text, visi
 
 
 @pytest.mark.asyncio
+async def test_replay_gap_is_a_recoverable_projection_failure():
+    agent = agent_with_admission()
+    with pytest.raises(GatewayClientError, match='session_replay_gap'):
+        await agent._project({
+            'session_id': 's', 'type': 'session.replay_gap',
+            'payload': {'reason': 'subscriber_overflow'},
+        })
+
+
+@pytest.mark.asyncio
 async def test_failed_admission_raises_without_poisoning_the_next_success():
     agent = agent_with_admission()
     await complete(agent, 'current', 'failed', 'The admitted turn failed.')

@@ -133,12 +133,37 @@ def test_tick_holds_agent_jobs_while_gateway_is_starting_or_silent(cron_home, mo
     assert len([r for r in caplog.records if "skipped" in r.getMessage()]) == 1
 
 
+def test_headless_receipt_recovery_never_connects_or_spawns(cron_home, monkeypatch):
+    import json
+    from hermes_cli import gateway_client
+
+    job = J.create_job(prompt="summarise inbox", schedule="every 1h", name="agent", deliver="local")
+    request_id = "prepared-fire"
+    journal = scheduler_authority.journal_path(job["id"], request_id)
+    journal.parent.mkdir(parents=True, exist_ok=True)
+    journal.write_text(json.dumps({
+        "params": {"job_id": job["id"], "request_id": request_id, "extra_prompt": None},
+        "receipt": None,
+    }), encoding="utf-8")
+
+    monkeypatch.setattr("gateway.session_cron.owner_for_home", lambda home: None)
+    monkeypatch.setattr(
+        gateway_client, "connect_gateway",
+        lambda *a, **k: pytest.fail("headless recovery must not connect/ensure a gateway"))
+
+    scheduler_authority.reconcile_pending(allow_connect=False)
+
+    assert journal.exists(), "deferred evidence stays durable for the next live owner"
+
+
 def test_no_agent_jobs_still_fire_without_a_gateway(cron_home, monkeypatch):
     counter = cron_home / "fires.txt"
     script = cron_home / "scripts" / "fire.sh"
     script.write_text(f"#!/bin/sh\necho fired >> {counter}\necho fired\n", encoding="utf-8")
     script.chmod(0o755)
-    monkeypatch.setattr(scheduler_authority, "reconcile_pending", lambda: None)
+    monkeypatch.setattr(
+        scheduler_authority, "reconcile_pending",
+        lambda *, allow_connect=True: None)
     job = J.create_job(prompt=None, schedule="every 1h", name="script", script="fire.sh",
                        no_agent=True, deliver="local")
     _make_due(job["id"])

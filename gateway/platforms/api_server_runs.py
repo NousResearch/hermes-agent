@@ -1124,8 +1124,8 @@ async def _handle_run_events(self, request: "web.Request", *, _api_server) -> "w
     q = stream.subscribe()
     response = web.StreamResponse(status=200, headers={
         "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
-    await response.prepare(request)
     try:
+        await response.prepare(request)
         while True:
             try:
                 event = await asyncio.wait_for(

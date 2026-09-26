@@ -64,6 +64,38 @@ async def test_cancel_interrupts_only_when_our_admission_is_the_one_running():
 
 
 @pytest.mark.asyncio
+async def test_cancel_during_submit_is_applied_when_admission_id_arrives():
+    agent = agent_with_queued_prompt()
+    submit_started = asyncio.Event()
+    release_submit = asyncio.Event()
+    calls = []
+
+    async def rpc(method, **params):
+        calls.append((method, params))
+        if method == 'prompt.submit':
+            submit_started.set()
+            await release_submit.wait()
+            return {'admission_id': 'ours'}
+        if method == 'prompt.cancel':
+            return {'admission_id': 'ours', 'status': 'terminal', 'outcome': 'cancelled'}
+        return {}
+
+    agent._gateway.rpc.side_effect = rpc
+    task = asyncio.create_task(agent.prompt([TextContentBlock(type='text', text='hello')], 's'))
+    await asyncio.wait_for(submit_started.wait(), 2)
+    await agent.cancel('s')
+    assert [method for method, _ in calls] == ['prompt.submit']
+
+    release_submit.set()
+    for _ in range(20):
+        if any(method == 'prompt.cancel' for method, _ in calls):
+            break
+        await asyncio.sleep(0)
+    assert ('prompt.cancel', {'session_id': 's', 'admission_id': 'ours'}) in calls
+    assert (await settle(agent, task, 'cancelled')).stop_reason == 'cancelled'
+
+
+@pytest.mark.asyncio
 async def test_cancel_without_an_acp_prompt_leaves_other_surfaces_turn_alone():
     agent = agent_with_queued_prompt()
     await agent.cancel('s')

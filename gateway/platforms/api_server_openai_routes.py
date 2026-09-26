@@ -76,8 +76,10 @@ def _finish_reason(completed, is_partial, is_failed, err_msg, agent_error=None) 
     return 'cancelled' if not completed else 'stop'
 
 
-_RESPONSES_FINGERPRINT_KEYS = ("input", "instructions", "previous_response_id", "conversation", "model",
-                               "provider", "model_options", "tools")
+_RESPONSES_FINGERPRINT_KEYS = (
+    "input", "instructions", "previous_response_id", "conversation", "conversation_history", "model",
+    "provider", "model_options", "tools",
+)
 
 
 def _response_status(result):

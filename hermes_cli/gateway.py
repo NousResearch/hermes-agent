@@ -579,7 +579,9 @@ def _scan_gateway_pids(
         hermes_home_assignments,
         command_line_names_hermes_home,
     )
-    current_home = str(get_hermes_home().resolve())
+    from hermes_cli.dashboard_procs import _hermes_home_for_pid, _normalized_home_for_compare
+    current_home_path = get_hermes_home().resolve()
+    current_home = str(current_home_path)
     # Forward slashes on both sides of the HERMES_HOME= match (mirrors gateway.status), and no
     # trailing separator: the assignments parser strips one, so the systemd ``Environment=``
     # spelling (``HERMES_HOME=/root/.hermes/``) compares equal to the resolved home.
@@ -587,8 +589,11 @@ def _scan_gateway_pids(
     current_profile_arg = _profile_arg(current_home)
     current_profile_name = current_profile_arg.split()[-1] if current_profile_arg else ""
     current_profile_name_lc = current_profile_name.lower()
+    # ``_profile_arg`` is "" for ANY root, and get_default_hermes_root() calls a temp or Docker
+    # HERMES_HOME "the root itself", so only the home owning the bare service name is the default one.
+    current_home_is_native = not current_profile_name and _home_owns_bare_service_name(current_home_path)
 
-    def _matches_current_profile(command: str) -> bool:
+    def _matches_current_profile(pid: int, command: str) -> bool:
         command_lc = command.lower().replace("\\", "/")
         if current_profile_name:
             # Token equality, not substring: `-p ops` must not claim (or SIGTERM) an `-p ops-2` gateway.
@@ -596,20 +601,28 @@ def _scan_gateway_pids(
                 return True
             return command_line_names_hermes_home(command_lc, current_home_lc)
 
-        # Default profile: accept unless argv advertises another profile in any spelling the CLI
-        # pre-parser accepts (``--profile=ops`` slipped past a substring test, so a default-profile
-        # fallback stop could SIGTERM the named gateway). HERMES_HOME may come via env (invisible to
-        # wmic/CIM), so only a non-matching explicit HERMES_HOME= disqualifies.
+        # Root home: reject argv that advertises another profile in any spelling the CLI pre-parser
+        # accepts (``--profile=ops`` slipped past a substring test, so a default-profile fallback stop
+        # could SIGTERM the named gateway) or a HERMES_HOME= naming another home.
         if profile_flag_value(command_lc) is not None:
             return False
-        return (not hermes_home_assignments(command_lc)
-                or command_line_names_hermes_home(command_lc, current_home_lc))
+        if hermes_home_assignments(command_lc):
+            return command_line_names_hermes_home(command_lc, current_home_lc)
+        # No home on argv: it came through the environment (launchd plist, systemd unit, a test's
+        # child), so argv proves nothing. Treating that as "ours" let a temp-home web server's orphan
+        # reaper SIGTERM the operator's launchd gateway. The process's own environment decides.
+        owner_home = _hermes_home_for_pid(pid)
+        if owner_home is not None:
+            return _normalized_home_for_compare(owner_home) == _normalized_home_for_compare(current_home)
+        # Unreadable environment (another user, hardened /proc, an elevated process behind the
+        # wmic/CIM listing): only the native default home keeps the legacy bare-argv claim.
+        return current_home_is_native
 
     def _consider(pid: int, command: str) -> None:
         matches_runtime = looks_like_gateway_command_line(command) or (
             include_restart_managers and looks_like_gateway_runtime_command_line(command)
         )
-        if matches_runtime and (all_profiles or _matches_current_profile(command)):
+        if matches_runtime and (all_profiles or _matches_current_profile(pid, command)):
             _append_unique_pid(pids, pid, exclude_pids)
 
     try:
@@ -2201,6 +2214,11 @@ def _bare_unit_pinned_home() -> Path | None:
         return None
 
 
+def _home_owns_bare_service_name(home: Path) -> bool:
+    """True for the resolved ``home`` that owns the bare service name (see ``_profile_suffix``)."""
+    return home in _native_service_homes() or home == _bare_unit_pinned_home()
+
+
 def _profile_suffix() -> str:
     """Service-name suffix for HERMES_HOME: "" for a home that owns the bare name, the profile name for
     ``<root>/profiles/<name>``, else a short hash of the path.
@@ -2223,7 +2241,7 @@ def _profile_suffix() -> str:
     import hashlib
     from hermes_constants import get_default_hermes_root
     home = get_hermes_home().resolve()
-    if home in _native_service_homes() or home == _bare_unit_pinned_home():
+    if _home_owns_bare_service_name(home):
         return ""
     name = _profile_name_from_home(home, get_default_hermes_root().resolve())
     return name or hashlib.sha256(str(home).encode()).hexdigest()[:8]

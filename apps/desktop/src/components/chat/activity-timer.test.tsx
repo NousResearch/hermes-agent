@@ -1,7 +1,12 @@
 import { act, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { __resetElapsedTimerRegistryForTests, useElapsedSeconds, useMeasuredDuration } from './activity-timer'
+import {
+  __resetElapsedTimerRegistryForTests,
+  timerOriginFromUnixSeconds,
+  useElapsedSeconds,
+  useMeasuredDuration
+} from './activity-timer'
 
 function Probe({ active, since, timerKey }: { active: boolean; since?: number; timerKey?: string }) {
   const elapsed = useElapsedSeconds(active, timerKey, since)
@@ -9,8 +14,8 @@ function Probe({ active, since, timerKey }: { active: boolean; since?: number; t
   return <span data-testid="elapsed">{elapsed}</span>
 }
 
-function DurationProbe({ active, timerKey }: { active: boolean; timerKey: string }) {
-  const measured = useMeasuredDuration(active, timerKey)
+function DurationProbe({ active, since, timerKey }: { active: boolean; since?: number; timerKey: string }) {
+  const measured = useMeasuredDuration(active, timerKey, since)
 
   return <span data-testid="measured">{measured === null ? 'unknown' : measured}</span>
 }
@@ -59,6 +64,18 @@ describe('useElapsedSeconds', () => {
     render(<Probe active since={mountedAt + 28_000} />)
 
     expect(screen.getByTestId('elapsed').textContent).toBe('2')
+  })
+
+  it('restores a backend-seeded timer at its real age after mounting off-screen', () => {
+    const backendStartedAt = Date.now() / 1000
+
+    act(() => {
+      vi.advanceTimersByTime(35_000)
+    })
+
+    render(<Probe active since={timerOriginFromUnixSeconds(backendStartedAt)} timerKey="tool:late-mount" />)
+
+    expect(screen.getByTestId('elapsed').textContent).toBe('35')
   })
 
   it('re-anchors when the epoch moves', () => {
@@ -184,5 +201,22 @@ describe('useMeasuredDuration', () => {
     probe.rerender(<DurationProbe active={false} timerKey="reasoning:background" />)
 
     expect(screen.getByTestId('measured').textContent).toBe('5')
+  })
+
+  it('measures from a backend origin when observation begins late', () => {
+    const startedAt = Date.now()
+
+    act(() => {
+      vi.advanceTimersByTime(12_000)
+    })
+
+    const probe = render(<DurationProbe active since={startedAt} timerKey="reasoning:late-mount" />)
+
+    act(() => {
+      vi.advanceTimersByTime(3_000)
+    })
+    probe.rerender(<DurationProbe active={false} since={startedAt} timerKey="reasoning:late-mount" />)
+
+    expect(screen.getByTestId('measured').textContent).toBe('15')
   })
 })

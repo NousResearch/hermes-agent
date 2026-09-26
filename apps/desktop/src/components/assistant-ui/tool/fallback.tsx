@@ -21,7 +21,7 @@ import { useSessionView } from '@/app/chat/session-view'
 import { AnsiText } from '@/components/assistant-ui/ansi-text'
 import { MarkdownImage } from '@/components/assistant-ui/markdown-text'
 import { TimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
-import { useElapsedSeconds } from '@/components/chat/activity-timer'
+import { timerOriginFromUnixSeconds, useElapsedSeconds } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { CompactMarkdown } from '@/components/chat/compact-markdown'
 import { FileDiffPanel } from '@/components/chat/diff-lines'
@@ -394,7 +394,7 @@ function ToolEntry({ part }: ToolEntryProps) {
   // so they paint statically without a settle cascade. The wrapping group
   // handles its own enter animation, so embedded children skip it.
   const enterRef = useEnterAnimation(messageRunning && !embedded, `tool-entry:${disclosureId}`)
-  const elapsed = useElapsedSeconds(isPending, `tool:${disclosureId}`)
+  const elapsed = useElapsedSeconds(isPending, `tool:${disclosureId}`, timerOriginFromUnixSeconds(timestamp))
 
   // A stopped turn is not evidence that an unobserved tool succeeded. Use a
   // presentation-only completion marker, never manufacture a result.

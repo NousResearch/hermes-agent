@@ -1519,7 +1519,13 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         with _auth_store_lock(timeout_seconds=self._single_use_refresh_lock_timeout()):
             if self.provider == "openai-codex":
                 synced = self._sync_entry_from_auth_store(entry)
-                if synced is not entry and not force and not self._entry_needs_refresh(synced):
+                if (synced is not entry and not self._entry_needs_refresh(synced)
+                        and (not force or synced.access_token != entry.access_token)):
+                    # A peer rotated while this request used the stale bearer.
+                    # Forced 401 recovery may adopt only a fresh *different*
+                    # bearer; a new refresh grant with the failed bearer still
+                    # needs a POST. Proactive refresh must not keep an expiring
+                    # bearer merely because it was adopted from the store.
                     return synced
                 return self._refresh_entry_impl(synced, force=force)
             synced = self._sync_entry_from_pool_store(entry)

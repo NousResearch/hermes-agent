@@ -327,7 +327,13 @@ def _translate_remote(config: Mapping[str, Any]) -> Dict[str, Any]:
     url = _validate_remote_url(config.get("url"))
     if not _validate_headers(config.get("headers")):
         raise ValueError("invalid headers")
-    translated: Dict[str, Any] = {"url": url, "strict_redirect_headers": True}
+    # Agent Plugins leaves remote authorization client-managed; the provider is inert unless the
+    # endpoint returns an MCP OAuth challenge.
+    translated: Dict[str, Any] = {
+        "url": url,
+        "auth": "oauth",
+        "strict_redirect_headers": True,
+    }
     if config.get("headers"):
         translated["headers"] = dict(config["headers"])
     return translated

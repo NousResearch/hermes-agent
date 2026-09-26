@@ -4749,12 +4749,10 @@ Write only the summary body. Do not include any preamble or prefix."""
     def _has_merged_inflight_replay(cls, message: Any) -> bool:
         """Recognize the active request on a handoff, including after DB reload.
 
-        SessionDB and cold-history restore preserve content but not private
-        in-memory flags. The explicit replay after the summary end marker is
-        authoritative; a request quoted inside the historical summary is not.
+        Detection is content-only, anchored on the last summary end marker: the
+        explicit replay after it is authoritative; a request quoted inside the
+        historical summary is not.
         """
-        if not isinstance(message, dict):
-            return False
         if not cls._is_context_summary_message(message):
             return False
         text = _content_text_for_contains(message.get("content"))

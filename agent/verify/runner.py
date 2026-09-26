@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import signal
+import socket
 import subprocess
 import time
 import urllib.error
@@ -124,6 +125,14 @@ def _poll_readiness(url: str, timeout: float, interval: float = 1.0) -> tuple[bo
     return False, None, last_error
 
 
+def _port_accepts(port: int) -> bool:
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+            return True
+    except OSError:
+        return False
+
+
 def _terminate_process_group(proc: subprocess.Popen) -> None:
     """SIGTERM the app's process group (``start_new_session=True`` on POSIX; just the
     direct child on Windows, which lacks ``os.killpg``), SIGKILL after 10s."""
@@ -168,6 +177,10 @@ def _run_start_phase(
     port = port_override or recipe.port or 8000
     url = f"http://127.0.0.1:{port}{recipe.readiness_path}"
     started = time.monotonic()
+    if _port_accepts(port):
+        # Something already serves the port: its answer would pass for the app's.
+        return ReadinessResult(url, False, None, time.monotonic() - started,
+                               f"port {port} already in use by another process; start command not run")
     # start_new_session: own process group for clean teardown.
     proc = subprocess.Popen(recipe.start, cwd=str(root), start_new_session=True, **_SUBPROCESS_KW)
     output = ""

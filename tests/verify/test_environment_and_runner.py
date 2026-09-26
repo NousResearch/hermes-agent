@@ -3,8 +3,8 @@
 import http.server
 import json
 import subprocess
+import sys
 import threading
-import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -238,7 +238,23 @@ class TestReadiness:
         assert result.readiness is None
         assert not result.ok
 
+    @pytest.mark.platforms("linux")
     def test_port_override(self, tmp_path):
+        port = _free_port()
+        recipe = Recipe(
+            name="x",
+            start=f"python3 -m http.server {port} --bind 127.0.0.1",
+            port=1,
+        )
+        result = run_verify(
+            tmp_path, recipe, phases=("start",), ready_timeout=15, port_override=port
+        )
+        assert result.readiness.ready
+        assert result.readiness.url == f"http://127.0.0.1:{port}/"
+
+    def test_port_already_in_use_is_not_readiness(self, tmp_path):
+        """A server that was already on the port is not the app: its answer must not
+        count as ready, and the start command must not run against the taken port."""
         port = _free_port()
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -252,14 +268,14 @@ class TestReadiness:
         server = http.server.HTTPServer(("127.0.0.1", port), Handler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
-        time.sleep(0.05)
         try:
-            recipe = Recipe(name="x", start="sleep 30", port=1)
-            result = run_verify(
-                tmp_path, recipe, phases=("start",), ready_timeout=10, port_override=port
-            )
-            assert result.readiness.ready
-            assert result.readiness.status_code == 204
+            start = subprocess.list2cmdline([sys.executable, "-c", "open('started', 'w').close()"])
+            recipe = Recipe(name="x", start=start, port=port)
+            result = run_verify(tmp_path, recipe, phases=("start",), ready_timeout=10)
+            assert not result.readiness.ready
+            assert not result.ok
+            assert "already in use" in (result.readiness.error or "")
+            assert not (tmp_path / "started").exists(), "the start command must not run"
         finally:
             server.shutdown()
             thread.join(timeout=5)

@@ -81,6 +81,11 @@ def test_fresh_process_sweep_books_the_logged_exit_code(kanban_home, rc, event, 
             assert KANBAN_WORKER_EXIT_TRAILER not in (run["error"] or "")
         else:
             assert run["outcome"] == "rate_limited"
+            # Rate-limit exits must retain the provider's own diagnostic in both
+            # durable run history and the task summary. Real providers include
+            # reset timestamps here, which the generic sentinel text cannot recover.
+            assert "the model said something" in (run["error"] or "")
+            assert "the model said something" in (task.last_failure_error or "")
 
 
 def test_violation_budget_trip_holds_until_operator_unblock(kanban_home):

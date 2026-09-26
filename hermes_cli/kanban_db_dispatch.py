@@ -1040,12 +1040,13 @@ def _classify_dead_worker(
 ) -> _DeadWorker:
     """Map a dead worker's reaped exit status to its reclaim bookkeeping.
 
-    A clean exit or a crash carries the worker's own last output (``worker_output``
-    in the event payload, appended to the error text) so the board and the retry
-    worker see WHY instead of a bare label; a rate-limited requeue does not need it.
+    A dead worker carries its own last output so the board and retry logic see WHY
+    instead of only a synthetic exit label. This includes rate-limited exits: provider
+    messages often carry the quota reset time, and dropping them turns an actionable
+    billing/rate-limit diagnosis into a generic "quota wall".
     """
     dead = _classify_dead_worker_exit(pid, claimer, task_id=task_id, board=board)
-    if task_id and not dead.rate_limited:
+    if task_id:
         worker_output = _worker_final_output(task_id, board=board)
         if worker_output:
             dead.error_text += f" Worker's last output: {worker_output!r}"

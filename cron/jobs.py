@@ -1390,6 +1390,13 @@ def load_jobs() -> List[Dict[str, Any]]:
             ", ".join(sorted({type(j).__name__ for j in junk}))))
         jobs = [j for j in jobs if isinstance(j, dict)]
         repair = repair or "non-object entries dropped"
+    for job in jobs:
+        # A hand-edited "completed": null would crash every counter reader (None += 1, None >= n)
+        # and render as "None/3"; normalize it once here so readers can trust an int.
+        rep = job.get("repeat")
+        if isinstance(rep, dict) and "completed" in rep and rep["completed"] is None:
+            rep["completed"] = 0
+            repair = repair or "null repeat.completed reset to 0"
     # Persist even an empty result, or an all-junk store repeats the repair on every tick.
     if repair:
         if not getattr(_jobs_lock_state, "depth", 0):
@@ -1973,7 +1980,7 @@ def _normalize_job_updates(job: Dict[str, Any], updates: Dict[str, Any]) -> None
             updates[key] = norm(updates[key])
     if "repeat" in updates:
         _rp = updates["repeat"]
-        completed = (job.get("repeat") or {}).get("completed") or 0
+        completed = (job.get("repeat") or {}).get("completed", 0)
         if isinstance(_rp, dict):
             _rp = dict(_rp)
             _rp["times"] = normalize_repeat_value(_rp.get("times"))
@@ -2360,7 +2367,7 @@ def _advance_after_run(job: Dict[str, Any], now: str) -> None:
     if repeat:
         times = repeat.get("times")
         finite = times is not None and times > 0
-        completed = repeat.get("completed") or 0
+        completed = repeat.get("completed", 0)
         # Finite one-shots were pre-claimed by claim_dispatch() (completed already incremented) —
         # do not double-count; recurring jobs and direct callers still get the increment.
         if not (kind == "once" and finite and completed > 0):
@@ -2541,7 +2548,7 @@ def claim_dispatch(job_id: str) -> bool:
         # Recurring jobs use advance_next_run(); no/infinite repeat limit always dispatches.
         if job.get("schedule", {}).get("kind") != "once" or times is None or times <= 0:
             return True
-        completed = repeat.get("completed") or 0
+        completed = repeat.get("completed", 0)
         label = job.get("name", job.get("id", "?"))
         if completed >= times:
             if job.get("last_run_at") is not None:
@@ -3098,7 +3105,7 @@ def _oneshot_dispatch_limit_reached(job: Dict[str, Any], scan: _DueScan) -> bool
     process is still running it (a run outliving the run_claim TTL is slow, not stale)."""
     repeat = job.get("repeat") or {}
     times = repeat.get("times")
-    completed = repeat.get("completed") or 0
+    completed = repeat.get("completed", 0)
     if times is None or times <= 0 or completed < times:
         return False
     name = job.get("name", job.get("id", "?"))

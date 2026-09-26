@@ -36,6 +36,26 @@ def _ensure_discord_mock():
             def add_command(self, cmd):
                 self._children[cmd.name] = cmd
 
+            def command(self, *, name=None, description=None, **kwargs):
+                """Decorator mirroring discord.app_commands.Group.command.
+
+                Registers a subcommand on this group so the documented
+                ``@group.command(name=..., description=...)`` idiom works
+                against the stub (see issue #83936).
+                """
+
+                def decorator(fn):
+                    cmd = _FakeCommand(
+                        name=name or fn.__name__,
+                        description=description or "No description provided",
+                        callback=fn,
+                        parent=self,
+                    )
+                    self.add_command(cmd)
+                    return cmd
+
+                return decorator
+
         class _FakeCommand:
             def __init__(self, *, name, description, callback, parent=None):
                 self.name = name

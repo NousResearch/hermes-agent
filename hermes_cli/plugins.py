@@ -288,6 +288,16 @@ class PluginContext:
         return PluginState(self.plugin_id, self.manifest.skill_namespace)
 
     @cached_property
+    def kanban_events(self):
+        """Kanban task-event log for this plugin: ``append(task_id, kind, payload)``
+        (stored as ``<plugin_id>:<kind>``, same write transaction as core) and
+        ``read(task_id=, since_id=, kinds=, board=)`` with an id cursor. The stable
+        replacement for importing ``kanban_db._append_event`` or querying
+        ``task_events`` directly."""
+        from hermes_cli.kanban_plugin_events import KanbanEvents
+        return KanbanEvents(self.plugin_id)
+
+    @cached_property
     def platform_actions(self):
         """Capability-gated platform action facade (``add_reaction``, ``set_thread_title``). Every call
         re-checks ``gateway.platform_actions`` (legacy ``plugins.entries.<id>.allow_platform_actions``,

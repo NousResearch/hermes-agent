@@ -10,6 +10,7 @@ import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { SidebarGroup, SidebarGroupContent } from '@/components/ui/sidebar'
 import { Tip } from '@/components/ui/tooltip'
 import { deleteCronJob, getCronJobRuns, pauseCronJob, resumeCronJob, type SessionInfo } from '@/hermes'
+import { useIdleClock } from '@/hooks/use-idle-clock'
 import { useI18n } from '@/i18n'
 import { fmtDayTime, relativeTime } from '@/lib/time'
 import { cn } from '@/lib/utils'
@@ -90,7 +91,11 @@ export function SidebarCronJobsSection({
   onToggle,
   open
 }: SidebarCronJobsSectionProps) {
-  const [nowMs, setNowMs] = useState(() => Date.now())
+  // #122413: countdowns share the single visibility+focus-gated 1s ticker
+  // (useIdleClock) instead of a private always-on interval per mount.
+  // Rows are pure and take nowMs as a prop; formatting uses the memoized
+  // Intl instances in lib/time and the font comes from the --dt-font-sans
+  // theme var, so a parked tick changes nothing and renders nothing.
   // Single-open inline peek so the section stays scannable.
   const [peekJobId, setPeekJobId] = useState<null | string>(null)
   // Rows revealed so far; starts compact, grows in steps via "load more".
@@ -137,17 +142,7 @@ export function SidebarCronJobsSection({
 
   const visible = usePaneVisible()
 
-  // One clock for the whole section (rows are pure) so the countdowns tick
-  // without re-rendering the rest of the sidebar. Only runs while expanded and visible.
-  useEffect(() => {
-    if (!open || !visible) {
-      return
-    }
-
-    const id = window.setInterval(() => setNowMs(Date.now()), 1000)
-
-    return () => window.clearInterval(id)
-  }, [open, visible])
+  const nowMs = useIdleClock(open && visible)
 
   // Upcoming first (soonest next run), jobs with no next run sink to the bottom,
   // then alphabetical for stability.

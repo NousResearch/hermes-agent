@@ -588,6 +588,59 @@ def command_line_runs_inline_source(tokens: list[str]) -> bool:
     return inline_source_flag_index(tokens) is not None
 
 
+_HERMES_LAUNCHER_BOOTSTRAP_MARKER = "hermes_bootstrap"
+_HERMES_LAUNCHER_ENTRYPOINT_MARKERS = (
+    "runpy.run_module('hermes_cli.main'",
+    'runpy.run_module("hermes_cli.main"',
+)
+
+
+def hermes_cli_launcher_argv(cased_tokens: list[str]) -> list[str] | None:
+    """``["hermes_cli.main", *argv]`` when *cased_tokens* wraps Hermes' own CLI launcher, else None.
+
+    ``bin/hermes.cmd`` (the Desktop's entry point, and the launcher behind every ``hermes …`` the
+    shim runs) is an INLINE-SOURCE command line: ``python -I -c <bootstrap source> <argv>``, where
+    the source imports ``hermes_bootstrap`` and hands ``sys.argv`` to
+    ``runpy.run_module('hermes_cli.main')``. The tokens AFTER the source literal are therefore this
+    process's OWN argv — unlike a foreign ``python -c <src> …``, whose trailing tokens are data for a
+    program it will spawn later (#107002, e.g. ``gateway._spawn_gateway_restart_watcher``).
+
+    Both markers must be present, so neither the restart watcher (its source never imports the
+    bootstrap) nor an unrelated inline program (never names ``hermes_cli.main``) can be adopted.
+
+    Callers use the result both to RECOGNIZE such a process and to RESPAWN it canonically
+    (``python -m hermes_cli.main gateway run``), which the strict matchers accept.
+    """
+    index = inline_source_flag_index(cased_tokens)
+    if index is None:
+        return None
+    # The inline source is ONE argv element when Hermes spawns the launcher (the shell quotes it), but
+    # ``psutil``/wmic listings re-join argv WITHOUT their quotes, so its fragments arrive as many
+    # tokens. Locate the source span structurally rather than assuming a single token: it ends at the
+    # launcher's own final expression (``alter_sys=True)``), and no interpreter flag may appear inside.
+    # The restart watcher fails both tests: its own source never names the bootstrap, and the nested
+    # ``-c <bootstrap>`` hidden in its argv sits before any terminator it could find.
+    terminator = None
+    for offset in range(index + 1, len(cased_tokens)):
+        token = cased_tokens[offset]
+        if token == "-c":
+            return None
+        if "alter_sys=True)" in token:
+            terminator = offset
+            break
+    if terminator is None:
+        return None
+    source = " ".join(cased_tokens[index + 1:terminator + 1])
+    if _HERMES_LAUNCHER_BOOTSTRAP_MARKER not in source:
+        return None
+    if not any(marker in source for marker in _HERMES_LAUNCHER_ENTRYPOINT_MARKERS):
+        return None
+    argv = cased_tokens[terminator + 1:]
+    if not argv:
+        return None
+    return ["hermes_cli.main", *argv]
+
+
 def _gateway_command_subcommand(command: str | None) -> str | None:
     """Hermes gateway lifecycle subcommand from a command line, or None. No loose substring matches
     (``"gateway" in cmdline`` also matched ``gateway status`` / ``python -m tui_gateway``): needs a
@@ -610,7 +663,19 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
     # the inline source will spawn later, not to this process (#107002). Case-preserving tokens:
     # the operand-taking ``-X``/``-W``/``-Q`` must not be conflated with ``-q``/``-b``.
     if command_line_runs_inline_source(cased_tokens):
-        return None
+        # Hermes' own CLI launcher is the ONE inline program whose trailing argv IS this process's
+        # identity, so it is unwrapped and matched like ``python -m hermes_cli.main …``. Refusing it
+        # made every identity probe blind to a RUNNING Desktop-started gateway: ``gateway.pid``
+        # adoption, the wmic/CIM process-table scan, and ``hermes update``'s post-relaunch liveness
+        # poll all came back empty, so the update failed its own verification gate and the Desktop
+        # reported "couldn't finish updating" (exit 1) on a perfectly healthy install.
+        # Foreign inline sources stay refused (#107002).
+        launched = hermes_cli_launcher_argv(cased_tokens)
+        if launched is None:
+            return None
+        cased_tokens = launched
+        tokens = [t.lower() for t in cased_tokens]
+        basenames = [t.rsplit("/", 1)[-1] for t in tokens]
     # The launchd job's osascript wrapper (gateway_launchd.launchd_program_arguments) carries the gateway argv
     # inside one AppleScript string; the gateway itself is its child and is matched on its own command line.
     if basenames[0] == "osascript":
@@ -2051,6 +2116,7 @@ def get_running_pid(
         )
         expected_home = pid_path.parent if pid_path is not None else None
         saw_live_pid = False
+        own_live_pid = False
         for record in records:
             pid = _live_pid_from_record(record)
             if pid is None:
@@ -2067,7 +2133,14 @@ def get_running_pid(
             # unlinking its identity files would break that home's double-run protection
             # while the PID is alive. Unscoped keeps the #89315 poison-file cleanup.
             saw_live_pid = True
-        if expected_home is None or not saw_live_pid:
+            own_live_pid = own_live_pid or home_ok
+        # An OWN-home record naming a live PID is never poison, even when identity adoption failed:
+        # the matcher may simply not recognize the command line its launcher produced. Unlinking it
+        # escalated "we could not vouch for this gateway" into the hard "active gateway lock has no
+        # PID metadata" state that aborted a whole update, and destroyed the double-run protection of
+        # a gateway that had been running the entire time. Only dead records and live records owned
+        # by ANOTHER home (#89315) are unlinked.
+        if not saw_live_pid or (expected_home is None and not own_live_pid):
             _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=cleanup_stale)
         return get_runtime_status_running_pid() if pid_path is None else None
     # Lock inactive: the runtime-status fallback runs BEFORE cleanup here.

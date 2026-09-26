@@ -39,6 +39,55 @@ test('forces a single Windows exit once the admitted quit exceeds its deadline; 
   assert.equal(posixExit.mock.calls.length, 0)
 })
 
+test('a sealed teardown forces exit on every platform when quit never finishes', () => {
+  let onTimeout: (() => void) | undefined
+  const hardExit = vi.fn()
+
+  const finalization = createQuitFinalization({
+    isWindows: false,
+    schedule: callback => {
+      onTimeout = callback
+
+      return 'timer'
+    },
+    hardExit
+  })
+
+  finalization.arm()
+  assert.equal(onTimeout, undefined, 'will-quit arm stays Windows-only')
+
+  finalization.armAfterSealedTeardown()
+  finalization.armAfterSealedTeardown()
+  assert.ok(onTimeout)
+  onTimeout()
+  onTimeout()
+  assert.deepEqual(hardExit.mock.calls, [[0]])
+})
+
+test('a completed quit cancels the sealed-teardown fallback before it can exit', () => {
+  let onTimeout: (() => void) | undefined
+  const cancel = vi.fn()
+  const hardExit = vi.fn()
+
+  const finalization = createQuitFinalization({
+    isWindows: false,
+    schedule: callback => {
+      onTimeout = callback
+
+      return 'timer'
+    },
+    cancel,
+    hardExit
+  })
+
+  finalization.armAfterSealedTeardown()
+  finalization.cancel()
+  onTimeout?.()
+
+  assert.deepEqual(cancel.mock.calls, [['timer']])
+  assert.equal(hardExit.mock.calls.length, 0)
+})
+
 test('a completed quit cancels the fallback and it never re-arms', () => {
   let onTimeout: (() => void) | undefined
   const cancel = vi.fn()

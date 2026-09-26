@@ -1194,6 +1194,35 @@ describe('preserveLocalPendingTurnMessages', () => {
     expect(preserved.map(message => message.id)).not.toContain('assistant-stream-final')
   })
 
+  // #121613: a completed reply that settled onto a non-stream id (an interim
+  // id the completion settled onto, or an appended `assistant-<ts>` bubble)
+  // is invisible to the stream-id rule, but when the refreshed page has not
+  // committed it the local row is the only copy and must survive.
+  it('keeps a settled non-stream reply the authoritative history has not committed', () => {
+    const reply = msg('assistant-99', 'assistant', 'the completed reply', { pending: false, interim: false })
+    const previous = [msg('1-user', 'user', 'question'), reply]
+    const next = [msg('1-user', 'user', 'question')]
+
+    expect(preserveLocalPendingTurnMessages(next, previous).map(message => message.id)).toEqual([
+      '1-user',
+      'assistant-99'
+    ])
+  })
+
+  it('does not re-append a settled non-stream reply the authoritative history already carries', () => {
+    const next = [msg('1-user-stored', 'user', 'question'), msg('2-assistant-stored', 'assistant', 'answer')]
+    const settledLocal = msg('assistant-99', 'assistant', 'answer', { pending: false, interim: false })
+
+    expect(preserveLocalPendingTurnMessages(next, [...next, settledLocal])).toBe(next)
+  })
+
+  it('does not resurrect a superseded interim bubble the refresh rewrote', () => {
+    const next = [msg('1-user', 'user', 'question'), msg('2-assistant', 'assistant', 'rewritten final')]
+    const interim = msg('assistant-interim-1', 'assistant', 'old interim', { pending: false, interim: true })
+
+    expect(preserveLocalPendingTurnMessages(next, [msg('1-user', 'user', 'question'), interim])).toBe(next)
+  })
+
   it('keeps a settled final-answer bubble the folded tool round has not absorbed', () => {
     const toolRound = {
       id: 'row-1-assistant',

@@ -1483,6 +1483,8 @@ export const en: Translations = {
   },
 
   channels: {
+    gatewayNotRunning: "The gateway is not running. Configure channels here, then start the gateway with {command} (or the Restart button above).",
+    channelsConfigured: "{configured} of {total} channels configured. Credentials are written to {path}; the gateway connects each enabled channel on its next restart.",
     catalog: {
       telegram: {
         name: "Telegram",

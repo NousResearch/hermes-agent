@@ -379,18 +379,21 @@ export default function ChannelsPage() {
           <CardContent className="flex items-center gap-2 p-4 text-sm text-muted-foreground">
             <WifiOff className="h-4 w-4 shrink-0" />
             <span>
-              The gateway is not running. Configure channels here, then start the
-              gateway with <code className="font-courier">{gatewayStartCommand}</code>{" "}
-              (or the Restart button above).
+              {t.channels.gatewayNotRunning.split("{command}")[0]}
+              <code className="font-courier">{gatewayStartCommand}</code>
+              {t.channels.gatewayNotRunning.split("{command}")[1]}
             </span>
           </CardContent>
         </Card>
       )}
 
       <p className="text-xs text-muted-foreground">
-        {configured} of {platforms.length} channels configured. Credentials are
-        written to <code className="font-courier">{envPath}</code>; the
-        gateway connects each enabled channel on its next restart.
+        {t.channels.channelsConfigured
+          .replace("{configured}", String(configured))
+          .replace("{total}", String(platforms.length))
+          .split("{path}")[0]}
+        <code className="font-courier">{envPath}</code>
+        {t.channels.channelsConfigured.split("{path}")[1]}
       </p>
 
       {/* Config modal */}

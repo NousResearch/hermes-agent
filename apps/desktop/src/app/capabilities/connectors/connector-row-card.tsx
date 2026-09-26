@@ -1,3 +1,4 @@
+import { StatusDot, type StatusTone } from '@/components/status-dot'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ConnectorLogo } from '@/components/ui/connector-logo'
@@ -12,15 +13,15 @@ import { connectorKindWord, showsCatalogMark } from './connector-kind'
 import { twinPillOf } from './derive'
 import type { ConnectorCardModel, ConnectorFact, ConnectorState } from './types'
 
-const STATE_DOT = {
-  available: 'bg-(--ui-text-quaternary)',
-  broken: 'bg-(--ui-red)',
-  connected: 'bg-(--ui-green)',
-  connecting: 'bg-(--ui-yellow)',
-  expired: 'bg-(--ui-orange)',
-  off: 'bg-(--ui-text-quaternary)',
-  unknown: 'bg-(--ui-text-quaternary)'
-} satisfies Record<ConnectorState, string>
+const STATE_TONE = {
+  available: 'muted',
+  broken: 'bad',
+  connected: 'good',
+  connecting: 'warn',
+  expired: 'warn',
+  off: 'muted',
+  unknown: 'muted'
+} satisfies Record<ConnectorState, StatusTone>
 
 const REASON_TONE = {
   available: '',
@@ -155,9 +156,7 @@ function CardLane({
   return (
     <div className="relative z-10 flex w-[7.75rem] shrink-0 flex-col items-end gap-1">
       <span className="flex items-center gap-1.5 text-[0.6875rem] text-(--ui-text-secondary)">
-        {withDot ? (
-          <span aria-hidden className={cn('size-[5px] shrink-0 rounded-full', STATE_DOT[card.state])} />
-        ) : null}
+        {withDot ? <StatusDot tone={STATE_TONE[card.state]} /> : null}
         <span className="truncate">{stateLabel}</span>
       </span>
 

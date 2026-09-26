@@ -162,6 +162,12 @@ Never hardcode `border-gray-*`, `bg-white`, `text-black`, etc. The two tiles in
 `BrandMark` (white in light mode, `#0d1117` in dark) are the sanctioned literals
 (the mark needs a fixed backdrop).
 
+**Status is never color-only.** Use `StatusDot` for compact good/warn/bad/muted
+state: it encodes the tone with both shape and color (circle / diamond / square /
+hollow circle). If a surface needs richer status, pair an icon or shape with
+visible text. A hue may reinforce meaning, but it must not be the only way to
+tell states apart.
+
 ## Buttons — one component
 
 `src/components/ui/button.tsx` is the single source. Pick a `variant` + `size`;

@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
 
+import { StatusDot, type StatusTone } from '@/components/status-dot'
 import { ActionsContextMenu, ActionsMenu, type MenuKit, renderActionItem } from '@/components/ui/actions-menu'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -143,7 +144,9 @@ export function PanelList({
 
 interface PanelListRowProps {
   active: boolean
-  // Leading status dot color class (e.g. 'bg-emerald-500'); omit for none.
+  // Prefer dotTone for semantic status: the shared mark encodes tone by shape + color.
+  dotTone?: StatusTone
+  // Raw class remains for non-semantic/custom swatches.
   dotClassName?: string
   // Leading codicon glyph name (used when there's no lead/dot).
   icon?: string
@@ -170,6 +173,7 @@ interface PanelListRowProps {
 export function PanelListRow({
   active,
   dotClassName,
+  dotTone,
   icon,
   lead,
   menu,
@@ -193,7 +197,9 @@ export function PanelListRow({
         onClick={onSelect}
       >
         {lead ??
-          (dotClassName ? (
+          (dotTone ? (
+            <StatusDot tone={dotTone} />
+          ) : dotClassName ? (
             <span aria-hidden="true" className={cn('size-1.5 shrink-0 rounded-full', dotClassName)} />
           ) : icon ? (
             <Codicon className="shrink-0 text-muted-foreground/55" name={icon} size="0.85rem" />

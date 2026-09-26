@@ -71,3 +71,20 @@ def test_bundled_js_eval_payload_constants_are_single_line():
                 seen.append((mod_info.name, name))
                 assert "\n" not in value, f"tools/{mod_info.name}.py::{name} spans multiple lines"
     assert ("browser_tool", "_GET_IMAGES_JS") in seen
+
+
+def test_cmd_shim_routes_cmd_operators_through_batch(monkeypatch):
+    """An unquoted cmd.exe operator in an argument (a query-string ``&`` above all) splits the
+    shim's command line: ``open https://x/?a=1&page_no=2`` loads ``?a=1`` and runs ``page_no``
+    as a second command while the tool still reports success. Such arguments go through
+    ``batch`` on stdin like newlines and ``%``; non-shim spawns keep the raw argv."""
+    for url in ("https://httpbin.org/get?a=1&page_no=2", "https://x/?q=a|b", "https://x/?q=<a>",
+                "https://x/?q=a^b", "https://x/(a)", 'https://x/?q="a"'):
+        parts, stdin, _ = _run_through_seam(monkeypatch, _SHIM, "open", [url], json.dumps(
+            [{"command": ["open", url], "error": None, "result": {"url": url}, "success": True}]))
+        assert parts[-1] == "batch" and not any(url in p for p in parts)
+        assert json.loads(stdin) == [["open", url]]
+    url = "https://httpbin.org/get?a=1&page_no=2"
+    parts, stdin, _ = _run_through_seam(monkeypatch, "/usr/local/bin/agent-browser", "open", [url],
+                                        '{"success":true,"data":{}}')
+    assert parts[-2:] == ["open", url] and stdin is None

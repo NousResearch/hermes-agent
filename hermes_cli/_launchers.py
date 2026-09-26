@@ -363,9 +363,18 @@ def _publish_conveniences(root: Path, out_dir: Path, names, *, create: bool = Tr
 
 
 def stage_launcher(name: str, repo_root: Path, out_dir: Path) -> Path | None:
-    """Publish one launcher bound to store Python, or refuse missing tools."""
+    """Publish one launcher bound to store Python, or refuse missing tools.
+
+    A generation workspace (a copy PM runs code from, with its own sibling
+    ``venv`` but no install state of its own) resolves store Python through
+    the owning install — minting against the orphan workspace would produce
+    a launcher that boots to "no dependency environment is committed".
+    """
     repo_root = Path(repo_root)
-    store_python = resolve_store_python(repo_root)
+    from pm.environments import owning_install_root
+
+    launch_root = owning_install_root(repo_root) or repo_root
+    store_python = resolve_store_python(launch_root)
     if store_python is not None:
         path = mint_launcher(name, repo_root, out_dir, store_python, None)
         if path is not None and path.suffix == ".cmd":

@@ -194,6 +194,124 @@ def _recorded_venv(project_root: Path) -> Path | None:
     return environment
 
 
+def owning_generation(project_root: Path) -> Path | None:
+    """When *project_root* IS a generation workspace copy, its generation root.
+
+    PM materializes each committed generation under ``installs/<install-key>/
+    environments/<uuid>/``: a ``venv`` child holding the committed environment
+    plus a ``workspace`` copy of the code PM runs from. Code that imports from
+    a generation workspace — a venv console script, or an ACP host launching a
+    tree script — resolves its project root to the workspace, not to the
+    install the generation belongs to: the workspace carries no install stamp,
+    so ``install_key()`` would invent an orphan install-state directory and
+    every store launcher minted for it would fail at boot with "no dependency
+    environment is committed". Recognizing the layout lets launcher and doctor
+    contracts resolve through the owning install instead. An install root —
+    whose environment lives *inside* it as ``venv``, never as a sibling under
+    ``environments/`` — never matches.
+    """
+    root = Path(project_root).resolve()
+    if root.parent.parent.name != "environments":
+        return None
+    committed = root.parent / "venv"
+    if not (committed / "pyvenv.cfg").is_file():
+        return None  # sibling is not a committed environment
+    if (root / "pyvenv.cfg").is_file():
+        return None  # the environment itself, not the code copy beside it
+    return root.parent
+
+
+def owning_install_root(project_root: Path) -> Path | None:
+    """The install whose dependency state *project_root* should consult.
+
+    The tree itself when it is a real install root; its owning install when
+    it is a generation workspace. ``None`` when neither has facts.
+
+    The install root is not recoverable from the generation path —
+    ``installs/<install-key>/`` is a hash of the install root, not a path
+    under it — and the workspace snapshot carries no install markers, so
+    resolve it from the process instead: the module checkout, the
+    interpreter's own venv (a console script boots from inside the
+    generation), or an explicit ``HERMES_INSTALL_ROOT``. A candidate owns
+    the workspace only when re-hashing it reproduces the generation's
+    install-state directory exactly. Stdlib and hermes_constants only:
+    this runs before dependencies are importable.
+    """
+    root = Path(project_root).resolve()
+    if (runtime_facts_path(root).is_file()
+            or (root / "install-stamp.json").is_file()):
+        return root
+    if owning_generation(root) is None:
+        return None
+    install_state = root.parent.parent.parent
+    if not (install_state / "facts.json").is_file():
+        return None
+
+    # The workspace is a build-input snapshot: PM's materializer excludes
+    # dotfiles and install markers (pm/workspace.py), so nothing inside it
+    # names its owner and no marker scan can find the install. The launch
+    # contract lives in the *process*: the interpreter that imports here was
+    # booted from inside the generation (a venv console script, a module
+    # path inside the workspace), or its launch command carries an explicit
+    # root. Neither is consulted for a root that owns itself, so a wrong
+    # answer can only ever widen an already-broken check.
+    import sys
+
+    markers = ("install-stamp.json", ".install_method")
+
+    def is_install_root(candidate: Path) -> bool:
+        if not candidate.is_dir() or candidate == root:
+            return False  # a generation workspace never owns itself
+        return any((candidate / name).is_file() for name in markers)
+
+    roots: list[Path] = []
+    try:
+        checkout = Path(__file__).resolve().parent.parent  # this module's tree
+    except OSError:
+        checkout = None
+    if checkout is not None:
+        roots.append(checkout)
+    # The launch contract, in order of authority. A launch command that
+    # names its root (``HERMES_INSTALL_ROOT`` — set by stewards, packaged
+    # payloads, and the update hand-off) binds first; nothing outside the
+    # generation's own home is consulted. Otherwise the interpreter names
+    # the tree it was built for: three levels above a venv's
+    # ``bin/python``. Paths are taken before resolution — the store
+    # interpreter's ``bin`` symlinks into the tool store, whose directory
+    # carries no install markers and so cannot pose as an install root.
+    override = os.environ.get("HERMES_INSTALL_ROOT")
+    if override:
+        roots.insert(0, Path(override).expanduser())
+    try:
+        executable = Path(sys.executable)
+    except OSError:
+        executable = None
+    if executable is not None and executable.parent.name in ("bin", "Scripts"):
+        for _ in range(3):
+            executable = executable.parent
+        roots.append(executable)
+
+    # Confinement by the hash, not by markers: an owning install root is the
+    # sole preimage of ``install_state`` under this home's installs/, so a
+    # foreign tree cannot own the generation and is never probed for files.
+    # Candidates inside the home need no markers either — the collision
+    # probability of the truncated sha-256 is nil — and only the answer is
+    # marker-checked, so a bogus or missing root still resolves to None.
+    for candidate in roots:
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            continue
+        if resolved == root or resolved == checkout:
+            continue  # a workspace never owns itself; a checkout resolves its own state
+        if install_state != install_state_dir(resolved):
+            continue
+        if not is_install_root(resolved):
+            continue  # bogus root (e.g. the tool store): refuse, do not adopt
+        return resolved  # exact preimage of this generation's install state
+    return None
+
+
 def venv_bin_dir(venv: Path, *, windows: bool | None = None) -> Path:
     """``Scripts`` on Windows, ``bin`` elsewhere. Returned unconditionally — callers
     differ on whether a missing venv is an error. *windows* lets a POSIX process

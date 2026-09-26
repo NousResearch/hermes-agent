@@ -524,15 +524,22 @@ def _check_command_installation(should_fix: bool, f: Finding) -> None:
             f.manual_issues.append(_python_repair_hint())
         return
     from hermes_cli._launchers import resolve_store_python
-    from pm.environments import base_venv, selected_venv
+    from pm.environments import (base_venv, owning_install_root, selected_venv)
+
+    # A doctor run from a venv console script or an ACP host resolves
+    # PROJECT_ROOT to the generation tree PM materialized the code into. That
+    # copy carries no install state of its own; its launch contract is the
+    # owning install's, so resolve through it.
+    install_root = owning_install_root(PROJECT_ROOT) or PROJECT_ROOT
 
     try:
-        selected = selected_venv(PROJECT_ROOT)
+        selected = selected_venv(install_root)
     except (OSError, ValueError, RuntimeError) as exc:
         check_fail("Cannot resolve selected dependencies", str(exc))
         return f.manual_issues.append(_python_repair_hint())
-    pm_launcher = selected != base_venv(PROJECT_ROOT) or resolve_store_python(PROJECT_ROOT) is not None
-    venv_bin = PROJECT_ROOT / "hermes" if pm_launcher else selected / "bin" / "hermes"
+    pm_launcher = (selected != base_venv(install_root)
+                   or resolve_store_python(install_root) is not None)
+    venv_bin = install_root / "hermes" if pm_launcher else selected / "bin" / "hermes"
     if not venv_bin.is_file():
         check_warn("Hermes entry point not found", f"({venv_bin})")
         return f.manual_issues.append("Repair or reinstall the Hermes launcher through the installation owner")

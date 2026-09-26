@@ -23,6 +23,20 @@ type KanbanMessages = {
   arcRunning: string
   arcStale: string
   title: string
+  sessions: string
+  sessionsReadOnly: string
+  promoteSession: string
+  sessionTitle: string
+  sessionBody: string
+  archiveSession: string
+  deleteSession: string
+  sessionArchived: string
+  sessionDeleted: string
+  sessionPromoted: string
+  noSessions: string
+  sessionReceived: string
+  sessionStarted: string
+  sessionCompleted: string
   orchestrationSettings: string
   newTask: string
   filterCards: string
@@ -240,6 +254,18 @@ export const en: KanbanMessages = {
   arcRunning: 'An agent is working on this now.',
   arcStale: 'Claimed, but no worker heartbeat for 2+ minutes — the dispatcher will reclaim it.',
   title: 'Kanban',
+  sessions: 'Sessions',
+  sessionsReadOnly: 'Read-only session mirrors — not tasks and never dispatched.',
+  promoteSession: 'Promote to task',
+  sessionTitle: 'Task title (required)',
+  sessionBody: 'Task description (optional)',
+  archiveSession: 'Archive session',
+  deleteSession: 'Delete session',
+  sessionArchived: 'Session archived',
+  sessionDeleted: 'Session deleted',
+  sessionPromoted: 'Promoted to a parked task',
+  noSessions: 'No mirrored sessions on this board.',
+  sessionReceived: 'Received', sessionStarted: 'Started', sessionCompleted: 'Completed',
   orchestrationSettings: 'Orchestration settings',
   newTask: 'New task',
   filterCards: 'Filter cards…',
@@ -454,6 +480,13 @@ const ja: KanbanMessages = {
   arcRunning: 'エージェントが現在作業中です。',
   arcStale: '取得済みですが、2分以上ワーカーのハートビートがありません — ディスパッチャが再取得します。',
   title: 'カンバン',
+  sessions: 'セッション',
+  sessionsReadOnly: '読み取り専用のセッションミラー — タスクではなく、実行されません。',
+  promoteSession: 'タスクに昇格', sessionTitle: 'タスク名（必須）', sessionBody: 'タスク説明（任意）',
+  archiveSession: 'セッションをアーカイブ', deleteSession: 'セッションを削除',
+  sessionArchived: 'セッションをアーカイブしました', sessionDeleted: 'セッションを削除しました',
+  sessionPromoted: '保留タスクに昇格しました', noSessions: 'このボードにミラーされたセッションはありません。',
+  sessionReceived: '受信', sessionStarted: '開始', sessionCompleted: '完了',
   orchestrationSettings: 'オーケストレーション設定',
   newTask: '新しいタスク',
   filterCards: 'カードを絞り込み…',
@@ -667,6 +700,11 @@ const zh: KanbanMessages = {
   arcRunning: '有代理正在处理它。',
   arcStale: '已领取，但超过 2 分钟没有工作单元心跳 — 调度器将重新领取。',
   title: '看板',
+  sessions: '会话', sessionsReadOnly: '只读会话镜像 — 不是任务，不会被调度。',
+  promoteSession: '提升为任务', sessionTitle: '任务标题（必填）', sessionBody: '任务描述（可选）',
+  archiveSession: '归档会话', deleteSession: '删除会话', sessionArchived: '会话已归档',
+  sessionDeleted: '会话已删除', sessionPromoted: '已提升为搁置任务', noSessions: '此面板没有镜像会话。',
+  sessionReceived: '收到', sessionStarted: '开始', sessionCompleted: '完成',
   orchestrationSettings: '编排设置',
   newTask: '新建任务',
   filterCards: '筛选卡片…',
@@ -877,6 +915,11 @@ const zhHant: KanbanMessages = {
   arcRunning: '有代理正在處理它。',
   arcStale: '已領取，但超過 2 分鐘沒有工作單元心跳 — 排程器將重新領取。',
   title: '看板',
+  sessions: '会话', sessionsReadOnly: '只读会话镜像 — 不是任务，不会被调度。',
+  promoteSession: '提升为任务', sessionTitle: '任务标题（必填）', sessionBody: '任务描述（可选）',
+  archiveSession: '归档会话', deleteSession: '删除会话', sessionArchived: '会话已归档',
+  sessionDeleted: '会话已删除', sessionPromoted: '已提升为搁置任务', noSessions: '此面板没有镜像会话。',
+  sessionReceived: '收到', sessionStarted: '开始', sessionCompleted: '完成',
   orchestrationSettings: '編排設定',
   newTask: '新增任務',
   filterCards: '篩選卡片…',

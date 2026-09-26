@@ -2218,6 +2218,7 @@ class GatewayTurnMixin:
                     **reply_expected_metadata(event.reply_expected), **diagnostic_metadata(event)},
                 message_type=event.message_type,
                 scheduled_heartbeat=bool(getattr(event, "_heartbeat_session_id", None)),
+                _gateway_event=event,
             )
             _turn_seconds = time.monotonic() - _turn_started_monotonic
 
@@ -2945,10 +2946,36 @@ class GatewayTurnMixin:
         self, message: str, context_prompt: str, history: List[Dict[str, Any]],
         source: SessionSource, session_id: str, **turn_kwargs,
     ) -> Dict[str, Any]:
-        """Profile-scoping wrapper around ``_run_agent_inner`` (same keyword parameters; pass-through
-        when multiplexing is off)."""
+        """Bind the source profile around execution and its opt-in Kanban mirror lifecycle."""
+        mirror_event = turn_kwargs.pop("_gateway_event", None)
+        scheduled_heartbeat = bool(turn_kwargs.get("scheduled_heartbeat"))
+        from gateway.run import _load_gateway_config
+        from gateway.session_mirror import begin_session_mirror, finish_session_mirror
+
         with self._profile_scope_for_source(source):
-            return await self._run_agent_inner(message, context_prompt, history, source, session_id, **turn_kwargs)
+            mirror_ref = None
+            profile_config = None
+            if mirror_event is not None:
+                try:
+                    profile_config = _load_gateway_config()
+                    mirror_ref = await asyncio.to_thread(
+                        begin_session_mirror, mirror_event, source, session_id, profile_config,
+                        scheduled_heartbeat=scheduled_heartbeat,
+                    )
+                except Exception:
+                    logger.warning("Could not start the Kanban session mirror; continuing the gateway turn", exc_info=True)
+            try:
+                result = await self._run_agent_inner(
+                    message, context_prompt, history, source, session_id, **turn_kwargs,
+                )
+            except asyncio.CancelledError:
+                await asyncio.to_thread(finish_session_mirror, mirror_ref, cancelled=True)
+                raise
+            except Exception:
+                await asyncio.to_thread(finish_session_mirror, mirror_ref, {"failed": True})
+                raise
+            await asyncio.to_thread(finish_session_mirror, mirror_ref, result)
+            return result
 
     def _run_agent_display_settings(self, source: SessionSource) -> "GatewayRunner._RunAgentDisplay":
         """Resolve per-platform display, progress, status and streaming-surface settings for a turn."""
@@ -3922,6 +3949,7 @@ class GatewayTurnMixin:
                 reply_expected=next_reply_expected,
                 persist_user_display_metadata={
                     **reply_expected_metadata(next_reply_expected), **diagnostic_metadata(pending_event)} or None,
+                _gateway_event=pending_event,
             )
         except asyncio.CancelledError:
             await _run_followup_processing_hook(

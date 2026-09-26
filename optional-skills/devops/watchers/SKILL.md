@@ -48,7 +48,7 @@ All three live in `$HERMES_HOME/skills/devops/watchers/scripts/` once the skill 
 All three:
 
 - First run records a baseline — never replays existing feed
-- Watermark is a bounded ID set (max 500) to cap memory
+- Watermark is a bounded ID set (default 500); `--max-seen N` sets its positive capacity independently of `--max`, which limits emitted items
 - Output format: `## <title>\n<url>\n\n<optional body>` per item
 - Empty stdout on no-new — the caller treats that as silent
 - Non-zero exit on fetch errors
@@ -107,6 +107,6 @@ All three scripts use the same template: load watermark, fetch, diff, save, emit
 
 1. **Printing a "no new items" header every tick.** Callers rely on empty stdout = silent. If you print anything on an empty delta, you spam the channel. The shipped scripts handle this; custom scripts must too.
 2. **Expecting the first run to emit items.** It won't — first run records a baseline. If you need an initial digest, delete the state file after the first run or add a `--prime-with-latest N` flag in your own script.
-3. **Unbounded watermark growth.** The shared helper caps at 500 IDs. Raise it for high-churn feeds; lower it on constrained filesystems.
+3. **Unbounded watermark growth.** The shared helper caps at 500 IDs by default. Pass `--max-seen 2000` on each run for high-churn feeds, or a smaller positive value on constrained filesystems. This changes capacity, not eviction order; a feed larger than the cap can still repeat evicted items.
 4. **Putting the state dir where the agent's sandbox can't write.** `$HERMES_HOME/watcher-state/` is always writable. Docker/Modal backends may not see arbitrary host paths.
 

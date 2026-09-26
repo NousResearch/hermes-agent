@@ -291,8 +291,9 @@ class A2AAdapter(BasePlatformAdapter):
         self._profile_sessions: Dict[tuple[str, str, str, str], str] = {}
         self._profile_session_locks: Dict[tuple[str, str, str, str], threading.Lock] = {}
         self._profile_session_locks_guard = threading.Lock()
-        # Pending reply futures: task_id -> (context_id, Future). _pending_order keeps per-context
-        # FIFO so adapter.send() — which only knows the context — resolves the oldest task.
+        # Pending reply futures: task_id -> (gateway conversation key, Future).
+        # The gateway conversation key includes the authenticated peer and routed agent;
+        # the wire context_id alone is not an authorization boundary.
         self._pending: Dict[str, tuple[str, Future]] = {}
         self._pending_order: Dict[str, deque[str]] = {}
         # Request ownership outlives reply Futures and also covers synchronous profile forwards.
@@ -517,6 +518,12 @@ class A2AAdapter(BasePlatformAdapter):
     def _scope_for_agent(self, agent: Optional[dict]) -> tuple[str, str]:
         return tuple(str((agent or self._agents[""]).get(k) or "") for k in ("slug", "tenant"))
 
+    def _conversation_key(self, peer: str, context_id: str, agent: dict) -> str:
+        """Stable, collision-resistant gateway session identity for one authenticated peer."""
+        identity = [str(agent.get("profile") or ""), str(agent.get("slug") or ""), peer, context_id]
+        digest = hashlib.sha256(json.dumps(identity, ensure_ascii=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+        return "a2a-" + digest
+
     def _storage_home(self, agent: dict) -> Path:
         """HTTP worker threads have no profile scope; resolve the actual execution owner."""
         if agent.get("local", True):
@@ -548,7 +555,8 @@ class A2AAdapter(BasePlatformAdapter):
         text = protocol.extract_text(params)
         context_id = protocol.extract_context_id(params) or protocol.new_context_id()
         task_id = protocol.new_task_id()
-        turn = self._turns.track(context_id)
+        conversation = self._conversation_key(peer, context_id, agent)
+        turn = self._turns.track(conversation)
         max_turns = protocol.max_pingpong_turns()
         rec = self.tasks.create(task_id, context_id, peer, *self._scope_for_agent(agent))
         if turn > max_turns:
@@ -577,9 +585,9 @@ class A2AAdapter(BasePlatformAdapter):
                 self._pop_pending(task_id)
         if self._loop is None or self._message_handler is None:
             return self._end_task(rec, protocol.STATE_FAILED, "Agent gateway not ready to accept A2A tasks.")
-        fut = self._add_pending(task_id, context_id)
+        fut = self._add_pending(task_id, conversation)
         event = MessageEvent(text=framed, message_type=MessageType.TEXT, message_id=task_id,
-                             source=self.build_source(chat_id=context_id, chat_name=f"a2a:{peer}", chat_type="dm", user_id=peer, user_name=peer))
+                             source=self.build_source(chat_id=conversation, chat_name=f"a2a:{peer}", chat_type="dm", user_id=peer, user_name=peer))
         try:
             asyncio.run_coroutine_threadsafe(self.handle_message(event), self._loop)
         except Exception as e:
@@ -801,7 +809,7 @@ class A2AAdapter(BasePlatformAdapter):
         if rec["state"] in protocol.TERMINAL_STATES:
             return _err(req_id, protocol.ERR_TASK_NOT_CANCELABLE, f"task {task_id} already {rec['state']}")
         self.tasks.complete(task_id, protocol.STATE_CANCELED, "")
-        self._turns.reset(rec["context_id"])
+        self._turns.reset(self._conversation_key(rec["peer"], rec["context_id"], agent or self._agents[""]))
         self._resolve_task(task_id, protocol.STATE_CANCELED, "")
         rec = self.tasks.get(task_id, *self._scope_for_agent(agent)) or rec
         return _ok(req_id, protocol.TaskStore.to_task(rec))
@@ -867,7 +875,7 @@ class A2AAdapter(BasePlatformAdapter):
         logger.debug("A2A: push notification sent for task %s", task_id)
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None):
-        """Fulfil the oldest pending reply Future for this context (``chat_id`` = A2A context id).
+        """Fulfil the oldest pending reply Future for this peer-bound gateway conversation.
         Only sends carrying ``metadata['notify']`` (the base adapter's final-reply marker) satisfy
         the caller; progress/status/preview sends must not."""
         if not (metadata or {}).get("notify"):

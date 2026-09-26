@@ -68,6 +68,10 @@ via `tasks/get`.
 - Outbound text is scrubbed of credential-shaped strings.
 - Push callbacks are SSRF-guarded and HMAC-SHA256 signed (`X-A2A-Signature`).
 - Every exchange is logged under the executing profile's `a2a_audit.jsonl`.
+- Local gateway conversation IDs and pending final replies are partitioned by
+  routed agent, authenticated peer, and exact A2A context ID. Peers reusing a
+  wire context cannot enter one another's model session or receive one another's
+  final reply. Repeated turns by the same peer/context continue that session.
 - Conversations persist under the executing profile's `a2a_conversations/` —
   they survive context compaction and restarts (`a2a_history` recalls them
   from that profile). A configured route to another profile stores the inbound
@@ -101,7 +105,7 @@ via `tasks/get`.
 | `A2A_TRUSTED_PEERS` | _(unset)_ | Allow-list of authenticated identities. |
 | `A2A_ALLOW_ALL_USERS` | `false` | Allow any authed peer (dev only). |
 | `A2A_RATE_LIMIT` | `60` | Requests/minute per identity. |
-| `A2A_MAX_PINGPONG_TURNS` | `5` | Anti-loop turn cap per context (max 20). |
+| `A2A_MAX_PINGPONG_TURNS` | `5` | Anti-loop turn cap per authenticated peer, routed agent and exact context (max 20). |
 | `A2A_REPLY_TIMEOUT` | `300` | Seconds to wait for the agent's reply; the orphan sweep never fails a task before this window (floor 300s) or while a request still waits on it. |
 | `A2A_PUSH_SECRET` | bearer token | HMAC secret for push signing. |
 | `A2A_ADVERTISED_TOOLSETS` | all registered | Restrict skills on the Agent Card. |

@@ -16,6 +16,8 @@ import json
 import re
 import os
 import socket
+import subprocess
+import sys
 import threading
 import urllib.error
 import urllib.request
@@ -660,13 +662,14 @@ class TestTaskRpcHandlers:
         """Cancel must reset anti-loop turns for the task's CONTEXT (the old
         code passed the task_id into a context-keyed map — silent no-op)."""
         adapter = _bare_adapter()
+        key = adapter._conversation_key("peer", "ctx-loopy", adapter._agents[""])
         for _ in range(4):
-            adapter._turns.track("ctx-loopy")
+            adapter._turns.track(key)
         adapter.tasks.create("task-c", "ctx-loopy", "peer")
         resp = adapter._rpc_tasks_cancel(1, {"taskId": "task-c"})
         assert resp["result"]["status"]["state"] == "TASK_STATE_CANCELED"
         # Turn counter went back to zero: next track() is turn 1.
-        assert adapter._turns.track("ctx-loopy") == 1
+        assert adapter._turns.track(key) == 1
 
     def test_cancel_terminal_task_not_cancelable(self):
         adapter = _bare_adapter()
@@ -851,6 +854,80 @@ def _send_body(text, ctx="", extra_params=None):
 
 @pytest.mark.integration
 class TestInboundRoundTrip:
+    def test_authenticated_peers_same_context_concurrent_http_replies_isolated(self, monkeypatch, tmp_path):
+        """Two authenticated peers sharing a wire context cannot share a gateway turn or reply."""
+        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+
+        monkeypatch.setenv("A2A_PEER_TOKENS", "alice:token-alice,bob:token-bob")
+        monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
+        token = set_hermes_home_override(tmp_path)
+        try:
+            adapter, base = _make_live_adapter(monkeypatch)
+            alice_seen = asyncio.Event()
+            bob_seen = asyncio.Event()
+            bob_sent = asyncio.Event()
+            conversations = {}
+
+            async def handler(event):
+                peer = event.source.user_id
+                conversations[peer] = event.source.chat_id
+                if peer == "alice":
+                    alice_seen.set()
+                    await bob_sent.wait()
+                else:
+                    bob_seen.set()
+                    await alice_seen.wait()
+                if peer == "bob":
+                    bob_sent.set()
+                return f"private-{peer}"
+
+            adapter.handle_message = type(adapter).handle_message.__get__(adapter)
+            adapter._message_handler = handler
+
+            async def run():
+                assert await adapter.connect() is True
+                try:
+                    async def call(peer):
+                        body = _send_body(f"question-{peer}", ctx="shared/id")
+                        return await asyncio.to_thread(
+                            _post_json, base + "/", body,
+                            {"Authorization": f"Bearer token-{peer}"})
+
+                    alice, bob = await asyncio.wait_for(asyncio.gather(call("alice"), call("bob")), 12)
+                    assert bob_seen.is_set(), (alice, bob)
+                    assert conversations["alice"] != conversations["bob"]
+                    for peer, response in (("alice", alice), ("bob", bob)):
+                        task = response["result"]
+                        assert task["contextId"] == "shared/id"
+                        assert task["status"]["state"] == protocol.STATE_COMPLETED
+                        assert protocol.extract_text(task["artifacts"][0]) == f"private-{peer}"
+                    continuation = await call("alice")
+                    assert protocol.extract_text(continuation["result"]["artifacts"][0]) == "private-alice"
+                    assert conversations["alice"] == adapter._conversation_key("alice", "shared/id", adapter._agents[""])
+                finally:
+                    await adapter.disconnect()
+
+            asyncio.run(run())
+            for peer, other in (("alice", "bob"), ("bob", "alice")):
+                own = protocol.load_conversation("shared/id", peer=peer)
+                expected = [f"question-{peer}", f"private-{peer}"]
+                if peer == "alice":
+                    expected += ["question-alice", "private-alice"]
+                assert [item["text"] for item in own] == expected
+                assert all(other not in item["text"] for item in own)
+            code = ("import json; from plugins.platforms.a2a.tools import a2a_history; "
+                    "print(json.dumps([a2a_history({'context_id':'shared/id','peer':p}) "
+                    "for p in ('alice','bob')]))")
+            readback = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                                      timeout=20, env={**os.environ, "HERMES_HOME": str(tmp_path)})
+            assert readback.returncode == 0, readback.stderr
+            alice_history, bob_history = json.loads(readback.stdout.strip().splitlines()[-1])
+            assert "private-alice" in alice_history and "private-bob" not in alice_history
+            assert "private-bob" in bob_history and "private-alice" not in bob_history
+            assert len(list((tmp_path / "a2a_conversations").glob("*.jsonl"))) == 2
+        finally:
+            reset_hermes_home_override(token)
+
     def test_live_server_card_and_message_send(self, monkeypatch):
         """Start the real adapter server, hit the Agent Card, then send a task
         and verify the mocked agent's reply comes back as a v1.0 Task."""

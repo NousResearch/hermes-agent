@@ -1,7 +1,7 @@
 # Design System: Miro
 
 
-> **Hermes Agent — Implementation Notes**
+> **Hermes Agent: Implementation Notes**
 >
 > The original site uses proprietary fonts. For self-contained HTML output, use these CDN substitutes:
 > - **Primary:** `Inter` | **Mono:** `system monospace stack`
@@ -15,7 +15,7 @@
 
 ## 1. Visual Theme & Atmosphere
 
-Miro's website is a clean, collaborative-tool-forward platform that communicates "visual thinking" through generous whitespace, pastel accent colors, and a confident geometric font. The design uses a predominantly white canvas with near-black text (`#1c1c1e`) and a distinctive pastel color palette — coral, rose, teal, orange, yellow, moss — each representing different collaboration contexts.
+Miro's website is a clean, collaborative-tool-forward platform that communicates "visual thinking" through generous whitespace, pastel accent colors, and a confident geometric font. The design uses a predominantly white canvas with near-black text (`#1c1c1e`) and a distinctive pastel color palette (coral, rose, teal, orange, yellow, moss) each representing different collaboration contexts.
 
 The typography uses Roobert PRO Medium as the primary display font with OpenType character variants (`"blwf", "cv03", "cv04", "cv09", "cv11"`) and negative letter-spacing (-1.68px at 56px). Noto Sans handles body text with its own stylistic set (`"liga" 0, "ss01", "ss04", "ss05"`). The design is built with Framer, giving it smooth animations and modern component patterns.
 
@@ -60,9 +60,9 @@ The typography uses Roobert PRO Medium as the primary display font with OpenType
 ## 3. Typography Rules
 
 ### Font Families
-- **Display**: `Roobert PRO Medium`, fallback: Placeholder — `"blwf", "cv03", "cv04", "cv09", "cv11"`
+- **Display**: `Roobert PRO Medium`, fallback: Placeholder, `"blwf", "cv03", "cv04", "cv09", "cv11"`
 - **Display Variants**: `Roobert PRO SemiBold`, `Roobert PRO SemiBold Italic`, `Roobert PRO`
-- **Body**: `Noto Sans` — `"liga" 0, "ss01", "ss04", "ss05"`
+- **Body**: `Noto Sans`, `"liga" 0, "ss01", "ss04", "ss05"`
 
 ### Hierarchy
 
@@ -96,7 +96,7 @@ The typography uses Roobert PRO Medium as the primary display font with OpenType
 - Ring shadow: `rgb(224,226,232) 0px 0px 0px 1px`
 
 ## 6. Depth & Elevation
-Minimal — ring shadow + pastel surface contrast
+Minimal: ring shadow + pastel surface contrast
 
 ## 7. Do's and Don'ts
 ### Do

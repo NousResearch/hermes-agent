@@ -8,11 +8,11 @@ Creates 3Blue1Brown-style animated videos from text prompts. The agent handles t
 
 ## Use cases
 
-- **Concept explainers** — "Explain how neural networks learn"
-- **Equation derivations** — "Animate the proof of the Pythagorean theorem"
-- **Algorithm visualizations** — "Show how quicksort works step by step"
-- **Data stories** — "Animate our before/after performance metrics"
-- **Architecture diagrams** — "Show our microservice architecture building up"
+- **Concept explainers**: "Explain how neural networks learn"
+- **Equation derivations**: "Animate the proof of the Pythagorean theorem"
+- **Algorithm visualizations**: "Show how quicksort works step by step"
+- **Data stories**: "Animate our before/after performance metrics"
+- **Architecture diagrams**: "Show our microservice architecture building up"
 
 ## Prerequisites
 

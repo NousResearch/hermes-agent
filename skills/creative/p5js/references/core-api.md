@@ -139,10 +139,10 @@ pop();
 ## Offscreen Buffers (createGraphics)
 
 Offscreen buffers are separate canvases you can draw to and composite. Essential for:
-- **Layered composition** — background, midground, foreground
-- **Persistent trails** — draw to buffer, fade with semi-transparent rect, never clear
-- **Masking** — draw mask to buffer, apply with `image()` or pixel operations
-- **Post-processing** — render scene to buffer, apply effects, draw to main canvas
+- **Layered composition**: background, midground, foreground
+- **Persistent trails**: draw to buffer, fade with semi-transparent rect, never clear
+- **Masking**: draw mask to buffer, apply with `image()` or pixel operations
+- **Post-processing**: render scene to buffer, apply effects, draw to main canvas
 
 ```javascript
 let layer;

@@ -70,7 +70,7 @@ The baseline duties in the Procedure section still apply on every round; the len
 
 ### Lens variation for ad-hoc review fan-outs
 
-The same principle applies outside the Kanban review lane. When spawning multiple parallel reviewers via `delegate_task`, give each reviewer a different lens — one diff-only brief, one full-context brief, one checkout-and-run brief — rather than identical briefs. Identical briefs produce correlated verdicts and duplicate findings; varied briefs cover more defect classes for the same review spend.
+The same principle applies outside the Kanban review lane. When spawning multiple parallel reviewers via `delegate_task`, give each reviewer a different lens: one diff-only brief, one full-context brief, one checkout-and-run brief, rather than identical briefs. Identical briefs produce correlated verdicts and duplicate findings; varied briefs cover more defect classes for the same review spend.
 
 ## Procedure
 

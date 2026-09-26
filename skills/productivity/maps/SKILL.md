@@ -20,7 +20,7 @@ categories, zero dependencies (Python stdlib only), no API key required.
 
 Data sources: OpenStreetMap/Nominatim, Overpass API, OSRM, TimeAPI.io.
 
-This skill supersedes the old `find-nearby` skill — all of find-nearby's
+This skill supersedes the old `find-nearby` skill: all of find-nearby's
 functionality is covered by the `nearby` command below, with the same
 `--near "<place>"` shortcut and multi-category support.
 
@@ -37,7 +37,7 @@ functionality is covered by the `nearby` command below, with the same
 
 ## Prerequisites
 
-Python 3.8+ (stdlib only — no pip installs needed).
+Python 3.8+ (stdlib only: no pip installs needed).
 
 Script path: `~/.hermes/skills/maps/scripts/maps_client.py`
 
@@ -47,7 +47,7 @@ Script path: `~/.hermes/skills/maps/scripts/maps_client.py`
 MAPS=~/.hermes/skills/maps/scripts/maps_client.py
 ```
 
-### search — Geocode a place name
+### search: Geocode a place name
 
 ```bash
 python $MAPS search "Eiffel Tower"
@@ -56,7 +56,7 @@ python $MAPS search "1600 Pennsylvania Ave, Washington DC"
 
 Returns: lat, lon, display name, type, bounding box, importance score.
 
-### reverse — Coordinates to address
+### reverse: Coordinates to address
 
 ```bash
 python $MAPS reverse 48.8584 2.2945
@@ -64,7 +64,7 @@ python $MAPS reverse 48.8584 2.2945
 
 Returns: full address breakdown (street, city, state, country, postcode).
 
-### nearby — Find places by category
+### nearby: Find places by category
 
 ```bash
 # By coordinates (from a Telegram location pin, for example)
@@ -89,10 +89,10 @@ stadium, nightclub.
 
 Each result includes: `name`, `address`, `lat`/`lon`, `distance_m`,
 `maps_url` (clickable Google Maps link), `directions_url` (Google Maps
-directions from the search point), and promoted tags when available —
+directions from the search point), and promoted tags when available:
 `cuisine`, `hours` (opening_hours), `phone`, `website`.
 
-### distance — Travel distance and time
+### distance: Travel distance and time
 
 ```bash
 python $MAPS distance "Paris" --to "Lyon"
@@ -103,7 +103,7 @@ python $MAPS distance "Big Ben" --to "Tower Bridge" --mode walking
 Modes: driving (default), walking, cycling. Returns road distance, duration,
 and straight-line distance for comparison.
 
-### directions — Turn-by-turn navigation
+### directions: Turn-by-turn navigation
 
 ```bash
 python $MAPS directions "Eiffel Tower" --to "Louvre Museum" --mode walking
@@ -113,7 +113,7 @@ python $MAPS directions "JFK Airport" --to "Times Square" --mode driving
 Returns numbered steps with instruction, distance, duration, road name, and
 maneuver type (turn, depart, arrive, etc.).
 
-### timezone — Timezone for coordinates
+### timezone: Timezone for coordinates
 
 ```bash
 python $MAPS timezone 48.8584 2.2945
@@ -122,7 +122,7 @@ python $MAPS timezone 35.6762 139.6503
 
 Returns timezone name, UTC offset, and current local time.
 
-### area — Bounding box and area for a place
+### area: Bounding box and area for a place
 
 ```bash
 python $MAPS area "Manhattan, New York"
@@ -132,7 +132,7 @@ python $MAPS area "London"
 Returns bounding box coordinates, width/height in km, and approximate area.
 Useful as input for the bbox command.
 
-### bbox — Search within a bounding box
+### bbox: Search within a bounding box
 
 ```bash
 python $MAPS bbox 40.75 -74.00 40.77 -73.98 restaurant --limit 20
@@ -161,7 +161,7 @@ current.
 
 **"Find Italian restaurants near the Colosseum":**
 1. `nearby --near "Colosseum Rome" --category restaurant --radius 500`
-   — one command, auto-geocoded
+: one command, auto-geocoded
 
 **"What's near this location pin they sent?":**
 1. Extract lat/lon from the Telegram message
@@ -177,7 +177,7 @@ current.
 ## Pitfalls
 
 - Nominatim ToS: max 1 req/s (handled automatically by the script)
-- `nearby` requires lat/lon OR `--near "<address>"` — one of the two is needed
+- `nearby` requires lat/lon OR `--near "<address>"`: one of the two is needed
 - OSRM routing coverage is best for Europe and North America
 - Overpass API can be slow during peak hours; the script automatically
   falls back between mirrors (overpass-api.de → overpass.kumi.systems)

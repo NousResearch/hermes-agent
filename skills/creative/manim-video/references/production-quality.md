@@ -92,7 +92,7 @@ Empty scenes look unfinished. If the main content is small, add context:
 Check that no two consecutive scenes use the exact same:
 - Animation type (if Scene 3 uses Write for everything, Scene 4 should use FadeIn or Create)
 - Color emphasis (rotate through palette colors)
-- Layout (center, left-right, grid — alternate)
+- Layout (center, left-right, grid: alternate)
 - Pacing (if Scene 2 was slow and deliberate, Scene 3 can be faster)
 
 ### Tempo curve
@@ -182,7 +182,7 @@ Before running `manim -qh`:
 
 After stitching the final video:
 
-- [ ] Watch the complete video at 1x speed — does it feel rushed anywhere?
+- [ ] Watch the complete video at 1x speed: does it feel rushed anywhere?
 - [ ] Is there a moment where two things animate simultaneously and it's confusing?
 - [ ] Does every text label have enough time to be read?
 - [ ] Are transitions between scenes smooth (no black frames, no jarring cuts)?

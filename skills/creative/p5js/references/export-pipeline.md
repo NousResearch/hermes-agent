@@ -81,7 +81,7 @@ saveGif('output', 5, {
 ```
 
 Limitations:
-- GIF is 256 colors max — dithering artifacts on gradients
+- GIF is 256 colors max: dithering artifacts on gradients
 - Large canvases produce huge files
 - Use a smaller canvas (640x360) for GIF, higher for PNG/MP4
 - Frame rate is approximate
@@ -139,7 +139,7 @@ function draw() {
 
 ### Deterministic Capture (Critical for Video)
 
-The `noLoop()` + `redraw()` pattern is **required** for frame-perfect headless capture. Without it, p5's draw loop runs freely in Chrome while Puppeteer screenshots are slow — the sketch runs ahead and you get duplicate/missing frames.
+The `noLoop()` + `redraw()` pattern is **required** for frame-perfect headless capture. Without it, p5's draw loop runs freely in Chrome while Puppeteer screenshots are slow: the sketch runs ahead and you get duplicate/missing frames.
 
 ```javascript
 function setup() {
@@ -403,7 +403,7 @@ function renderTiled(totalW, totalH, tileSize) {
 }
 ```
 
-## CCapture.js — Deterministic Video Capture
+## CCapture.js: Deterministic Video Capture
 
 The built-in `saveFrames()` has limitations: small frame counts, memory issues, browser download blocking. CCapture.js solves all of these by hooking into the browser's timing functions to simulate constant time steps regardless of actual render speed.
 
@@ -512,10 +512,10 @@ function draw() {
 ```
 
 **Critical SVG caveats:**
-- **Must call `clear()` in `draw()`** for animated sketches — SVG DOM accumulates child elements, causing memory bloat
+- **Must call `clear()` in `draw()`** for animated sketches. SVG DOM accumulates child elements, causing memory bloat
 - `blendMode()` is **not implemented** in SVG renderer
 - `filter()`, `loadPixels()`, `updatePixels()` don't work
-- Requires **p5.js 1.11.x** — not compatible with p5.js 2.x
+- Requires **p5.js 1.11.x**: not compatible with p5.js 2.x
 - Perfect for: line art, geometric patterns, pen plotter output
 
 ## Platform Export

@@ -17,8 +17,8 @@ metadata:
 
 When you are developing `apps/desktop` and the user is running that same app
 (`hgui` / `npm run dev`), you can read the **live rendered DOM** of the window
-they are looking at — computed styles, geometry, which CSS rule actually won,
-console output — instead of inferring it from `.tsx` and being wrong.
+they are looking at: computed styles, geometry, which CSS rule actually won,
+console output: instead of inferring it from `.tsx` and being wrong.
 
 Dev-server runs open a Chrome DevTools Protocol port on `127.0.0.1:9222`
 automatically. The renderer is a Chromium page, so everything DevTools can read,
@@ -33,7 +33,7 @@ CDP; hand aesthetics to the user.
 ## When to Use
 
 - Verifying a UI change actually took effect in the running app
-- "Why is this element still X?" — find the winning rule before editing anything
+- "Why is this element still X?": find the winning rule before editing anything
 - Locating a stable selector for a component you're about to change
 - Checking a design token's computed value on a real node
 - Reading renderer console errors the user mentions but can't copy out
@@ -47,8 +47,8 @@ look right".
 Open on `127.0.0.1:9222` for any dev-server run. Closed in exactly two cases
 (`apps/desktop/electron/dev-cdp.ts`):
 
-- **packaged builds** — always, and no environment value overrides it;
-- **no `HERMES_DESKTOP_DEV_SERVER`** — an unpackaged `electron .` against
+- **packaged builds**: always, and no environment value overrides it;
+- **no `HERMES_DESKTOP_DEV_SERVER`**: an unpackaged `electron .` against
   `dist/` is how the packaged app gets smoke tested, so it behaves like one.
 
 `HERMES_DESKTOP_CDP_PORT` moves the port (`=9333`) or disables it (`=off`).
@@ -73,7 +73,7 @@ cd apps/desktop
 node scripts/eval.mjs "document.querySelectorAll('[data-slot]').length"
 ```
 
-For multi-step work use the shared client — it has target discovery and
+For multi-step work use the shared client: it has target discovery and
 promise-aware eval:
 
 ```js
@@ -89,7 +89,7 @@ cdp.close()
 
 `SELECTORS` in `scripts/perf/lib/cdp.mjs` holds the stable `data-slot` hooks
 (composer, thread viewport, assistant message, turn pair, profile rail). Prefer
-them over inventing a `querySelector` — they are updated as a unit when
+them over inventing a `querySelector`: they are updated as a unit when
 components move.
 
 ## The question this is best at: which rule won?
@@ -111,7 +111,7 @@ JSON.stringify({
 })
 ```
 
-If the node carries no class of its own, the value is **inherited** — sweeping
+If the node carries no class of its own, the value is **inherited**: sweeping
 call sites will not fix it, and you need the ancestor rule. A plugin stylesheet
 (e.g. `@tailwindcss/typography`'s `prose a { font-weight: 500 }`) routinely beats
 a utility class; override on the shared class, not at each usage.
@@ -143,7 +143,7 @@ also want the perf harness.
   gets blamed on whatever you just changed.
 - **A throwaway `HERMES_HOME` has no backend.** The app logs `ECONNREFUSED` for
   `hermes:api` and may exit on its own. The renderer still mounts and the DOM is
-  readable — read promptly, and don't mistake a self-exited probe for a broken
+  readable: read promptly, and don't mistake a self-exited probe for a broken
   port. Chromium logs `DevTools listening on ws://127.0.0.1:<port>/…` when it
   binds; that line is the proof the port opened.
 - **Poll, don't probe once.** A just-launched app needs a second or two before

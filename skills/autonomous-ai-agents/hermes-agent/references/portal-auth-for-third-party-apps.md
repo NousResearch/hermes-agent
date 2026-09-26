@@ -1,15 +1,15 @@
-# Nous Portal — authenticating third-party apps against the subscription
+# Nous Portal: authenticating third-party apps against the subscription
 
 Recurring user question: "Can app X (Karakeep, OpenWebUI, LibreChat, OpenViking,
 LangChain pipeline, n8n flow, etc.) use my Nous Portal subscription without me
-copy-pasting an API key — ideally via the Portal login I already have?"
+copy-pasting an API key: ideally via the Portal login I already have?"
 
 The honest answer has three architectural layers people conflate. Walk through
 them in order before proposing solutions.
 
 ---
 
-## Layer 1 — Is this thing a Hermes plugin, or a separate app?
+## Layer 1: Is this thing a Hermes plugin, or a separate app?
 
 This is the question to answer FIRST. The "OpenViking" case in particular
 trips agents up.
@@ -17,7 +17,7 @@ trips agents up.
 | Surface | What it actually is | Auth path |
 |---|---|---|
 | **OpenViking memory plugin** (`plugins/memory/openviking/`) | Code that runs **inside the Hermes process**. Its LLM calls go through Hermes's already-configured provider. | Already uses Portal if user's Hermes is configured for Portal. Nothing extra needed. `OPENVIKING_API_KEY` is the OpenViking *server's* own auth, not LLM auth. |
-| **OpenViking the standalone server** (separate container) | A separate context-DB service. If it ever calls an LLM on its own, that's a separate HTTP client. | Same as any external app — Layer 2/3 below. |
+| **OpenViking the standalone server** (separate container) | A separate context-DB service. If it ever calls an LLM on its own, that's a separate HTTP client. | Same as any external app: Layer 2/3 below. |
 | **Karakeep, n8n, LibreChat, OpenWebUI, any self-hosted app** | Different process, often different machine. Makes its own HTTPS calls to `inference-api.nousresearch.com`. | Layer 2/3 below. |
 
 **Pitfall to avoid**: do not pitch "OAuth into Portal" as the solution for a
@@ -28,7 +28,7 @@ Portal.
 
 ---
 
-## Layer 2 — For genuinely external apps, what does Portal actually expose?
+## Layer 2: For genuinely external apps, what does Portal actually expose?
 
 Portal at `https://inference-api.nousresearch.com/v1` is an OpenAI-compatible
 inference endpoint. It accepts **bearer-token authentication only**: either
@@ -41,8 +41,8 @@ There is **no general OAuth 2.0 authorization server**. There is no
 against. There is no shared cookie or session that browser-Portal-login
 extends to other apps on the same machine.
 
-What Hermes Agent has that *feels* like OAuth — `hermes login --provider nous`
-opening a browser, user signs in, token lands in `~/.hermes/auth.json` — is a
+What Hermes Agent has that *feels* like OAuth: `hermes login --provider nous`
+opening a browser, user signs in, token lands in `~/.hermes/auth.json`: is a
 **Hermes-specific browser flow**. Under the hood it produces a credential
 Hermes uses as a bearer. It is not a public OAuth provider that Karakeep et al.
 can implement a client for, because it isn't an OAuth provider at all from the
@@ -50,7 +50,7 @@ outside.
 
 ---
 
-## Layer 3 — Can we bridge the gap without Portal changing anything?
+## Layer 3: Can we bridge the gap without Portal changing anything?
 
 Yes. The pattern is a **local credential-broker proxy**. Even without a public
 OAuth flow, an app on the user's machine can:
@@ -61,12 +61,12 @@ OAuth flow, an app on the user's machine can:
    bearer attached.
 
 Karakeep/OpenWebUI/etc. then point at `http://localhost:NNNN/v1` with any
-placeholder key. The user never copies their Portal key around — the proxy
+placeholder key. The user never copies their Portal key around: the proxy
 rides on the credential Hermes already holds.
 
 Where this could live in Hermes:
 
-- `gateway/platforms/api_server.py` is the precedent — it exposes the agent
+- `gateway/platforms/api_server.py` is the precedent: it exposes the agent
   over a local OpenAI-compatible endpoint, but routes through the full agent
   loop (tool calls and all). The proxy variant is **pure inference
   pass-through**: no agent loop, no tools, just forward `/chat/completions`
@@ -76,12 +76,12 @@ Where this could live in Hermes:
   credential pool's refresh logic already exists. If it's a long-lived static
   bearer, even simpler.
 
-This is genuinely useful and worth shipping — it's the answer to "use my
+This is genuinely useful and worth shipping: it's the answer to "use my
 Portal sub with $external_app without copy-pasting keys."
 
 ---
 
-## Real OAuth provider on Portal — when is it worth pitching?
+## Real OAuth provider on Portal: when is it worth pitching?
 
 Only when the consumer is *another first-party Nous thing* (a future SDK, a
 Nous-branded extension, a Discord-bot integration that needs per-user
@@ -109,11 +109,11 @@ without depending on third-party app changes:
 When the user asks "can $APP use my Portal subscription":
 
 1. First decide: Hermes plugin (runs inside Hermes) or separate app? If plugin,
-   it already uses Portal via Hermes's provider config — done.
+   it already uses Portal via Hermes's provider config: done.
 2. If separate app: today, paste the static API key from Portal → API Keys.
    Base URL `https://inference-api.nousresearch.com/v1`. Rate limits are
    subscription-tier based, applied per-key.
-3. If the user pushes back with "but I don't want to paste a key" — that's
+3. If the user pushes back with "but I don't want to paste a key": that's
    the local-broker-proxy answer (Layer 3). Worth building. Not a Portal-side
    OAuth roadmap problem.
 4. Mixed setup ("Portal for some things, OpenRouter/Ollama Cloud for the

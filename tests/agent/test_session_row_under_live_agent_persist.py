@@ -34,63 +34,25 @@ def _make_agent(session_db, session_id):
 
 
 def test_flush_recreates_row_deleted_under_live_agent():
+    """Real turn shape (messages = history + tail, conversation_history=history): every
+    deletion round replays the whole in-memory transcript onto the recreated row."""
     from hermes_state import SessionDB
 
     with tempfile.TemporaryDirectory() as tmpdir:
         db = SessionDB(db_path=Path(tmpdir) / "test.db")
         agent = _make_agent(db, "sess-live")
 
-        transcript = [
-            {"role": "user", "content": "turn one"},
-            {"role": "assistant", "content": "answer one"},
-        ]
-        agent._flush_messages_to_session_db(transcript, [])
-        assert len(db.get_messages("sess-live")) == 2
-        assert agent._session_db_created is True
-
-        # Row removed under the live agent: the same store API behind
-        # `hermes sessions delete`, the Desktop/web delete, and bulk prune.
-        assert db.delete_session("sess-live") is True
-
-        # The live transcript keeps growing: two more turns join the same list
-        # (marked dicts from the earlier flush + fresh tail), as in a real session.
-        transcript += [
-            {"role": "user", "content": "turn two"},
-            {"role": "assistant", "content": "answer two"},
-        ]
-        healed = agent._flush_messages_to_session_db(transcript, [])
-
-        assert healed is True
+        history = []
+        for n in ("one", "two", "three"):
+            if history:
+                # Row removed under the idle live agent (sessions delete / Desktop / prune).
+                assert db.delete_session("sess-live") is True
+            tail = [{"role": "user", "content": f"turn {n}"}, {"role": "assistant", "content": f"answer {n}"}]
+            messages = list(history) + tail
+            assert agent._flush_messages_to_session_db(messages, history) is True
+            history = messages
+            assert [r["content"] for r in db.get_messages("sess-live")] == [m["content"] for m in history]
         assert agent._last_persistence_error_cause == "session_row_missing"
-        rows = db.get_messages("sess-live")
-        assert len(rows) == 4, (
-            "Heal must replay the FULL in-memory transcript onto the recreated "
-            "row (4 messages), not just the current tail; a silent drop here is "
-            "the #123583 transcript-loss bug."
-        )
-        assert agent._session_db_created is True
-        db.close()
-
-
-def test_flush_recovers_when_row_deleted_between_turns_twice():
-    """The healed state is stable: a second deletion keeps healing, not just once."""
-    from hermes_state import SessionDB
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db = SessionDB(db_path=Path(tmpdir) / "test.db")
-        agent = _make_agent(db, "sess-live-2")
-
-        agent._flush_messages_to_session_db([{"role": "user", "content": "a"}], [])
-        assert len(db.get_messages("sess-live-2")) == 1
-
-        for round_no in ("x", "y"):
-            assert db.delete_session("sess-live-2") is True
-            healed = agent._flush_messages_to_session_db(
-                [{"role": "user", "content": round_no}], []
-            )
-            assert healed is True
-            rows = db.get_messages("sess-live-2")
-            assert len(rows) == 1 and rows[-1]["role"] == "user"
         db.close()
 
 

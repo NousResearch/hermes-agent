@@ -7248,10 +7248,12 @@ function getOauthSession() {
 // shared partition; see oauth-partition.ts for the full rules.
 const oauthSessionsByPartition = new Map()
 
-function resolveOauthPartitionForUrl(url, { connectionId = '' } = {}) {
+function resolveOauthPartitionForUrl(url, { connectionId = '', pendingAuthMode = '', pendingKind = '' } = {}) {
   try {
     return resolveOauthPartition(url, {
       connectionId,
+      pendingAuthMode,
+      pendingKind,
       registry: readDesktopConnectionsRegistry(),
       v1RemoteUrl: readDesktopConnectionConfig()?.remote?.url
     })
@@ -7261,8 +7263,8 @@ function resolveOauthPartitionForUrl(url, { connectionId = '' } = {}) {
   }
 }
 
-function getOauthSessionForUrl(url, { connectionId = '' } = {}) {
-  const partition = resolveOauthPartitionForUrl(url, { connectionId })
+function getOauthSessionForUrl(url, { connectionId = '', pendingAuthMode = '', pendingKind = '' } = {}) {
+  const partition = resolveOauthPartitionForUrl(url, { connectionId, pendingAuthMode, pendingKind })
 
   if (partition === OAUTH_SESSION_PARTITION) {
     return getOauthSession()
@@ -7337,8 +7339,8 @@ function warmOauthCookieStore(url?) {
 // connection-config.ts (cookiesHaveSession / cookiesHaveLiveSession). See
 // that module for details.
 
-async function hasOauthSessionCookie(baseUrl, { connectionId = '' } = {}) {
-  const sess = getOauthSessionForUrl(baseUrl, { connectionId })
+async function hasOauthSessionCookie(baseUrl, { connectionId = '', pendingAuthMode = '', pendingKind = '' } = {}) {
+  const sess = getOauthSessionForUrl(baseUrl, { connectionId, pendingAuthMode, pendingKind })
 
   if (!sess) {
     return false
@@ -7460,7 +7462,7 @@ async function clearOauthSession(baseUrl) {
 //     ``/auth/login`` → portal ``/oauth/authorize`` (auto-approves org members)
 //     → ``/auth/callback``, which sets the gateway cookie with NO interactive
 //     prompt. This is the per-agent cloud cascade (decisions.md Q5).
-function openOauthLoginWindow(baseUrl, { silent = false, background = false, connectionId = '' } = {}) {
+function openOauthLoginWindow(baseUrl, { silent = false, background = false, connectionId = '', pendingAuthMode = '', pendingKind = '' } = {}) {
   return new Promise((resolve, reject) => {
     if (!app.isReady()) {
       reject(new Error('Desktop is not ready to start an OAuth login.'))
@@ -7468,7 +7470,7 @@ function openOauthLoginWindow(baseUrl, { silent = false, background = false, con
       return
     }
 
-    const sess = getOauthSessionForUrl(baseUrl, { connectionId })
+    const sess = getOauthSessionForUrl(baseUrl, { connectionId, pendingAuthMode, pendingKind })
 
     if (!sess) {
       reject(new Error('OAuth session partition is unavailable.'))
@@ -7521,7 +7523,7 @@ function openOauthLoginWindow(baseUrl, { silent = false, background = false, con
         return
       }
 
-      if (await hasOauthSessionCookie(baseUrl, { connectionId })) {
+      if (await hasOauthSessionCookie(baseUrl, { connectionId, pendingAuthMode, pendingKind })) {
         finish(null)
       }
     }
@@ -16326,6 +16328,15 @@ ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl, ra
     loginConnectionId = ''
   }
 
+  // The draft's intended entry shape (kind/authMode the save will persist).
+  // The identity branch in oauth-partition.ts gates the pre-save private jar
+  // on it: only a cookie-auth remote draft earns its own jar up front; a
+  // cloud or token draft signs in on the legacy jar — the jar the saved
+  // entry reads — so login and read can never disagree. Invalid or missing
+  // values fail closed to the legacy jar in the resolver.
+  const pendingKind = typeof rawOpts?.kind === 'string' ? rawOpts.kind : ''
+  const pendingAuthMode = typeof rawOpts?.authMode === 'string' ? rawOpts.authMode : ''
+
   let statusBody: any = null
 
   try {
@@ -16391,9 +16402,17 @@ ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl, ra
   }
 
   // Legacy embedded-webview cookie flow.
-  await openOauthLoginWindow(baseUrl, { connectionId: loginConnectionId })
+  await openOauthLoginWindow(baseUrl, {
+    connectionId: loginConnectionId,
+    pendingAuthMode,
+    pendingKind
+  })
 
-  const connected = await hasOauthSessionCookie(baseUrl, { connectionId: loginConnectionId })
+  const connected = await hasOauthSessionCookie(baseUrl, {
+    connectionId: loginConnectionId,
+    pendingAuthMode,
+    pendingKind
+  })
 
   // Only a CONFIRMED sign-in releases the latch. A cancelled/closed login
   // window must leave it set, or the overlay's "Sign in" button starts

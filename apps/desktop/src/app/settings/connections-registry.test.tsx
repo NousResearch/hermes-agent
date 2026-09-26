@@ -136,7 +136,11 @@ describe('ConnectionsRegistrySection', () => {
     await waitFor(() =>
       expect(oauthLoginConnectionConfig).toHaveBeenCalledWith('https://a.example', {
         connectionId: null,
-        label: 'New gateway'
+        label: 'New gateway',
+        // The draft's kind/authMode ride along: they gate the pre-save cookie
+        // jar in oauth-partition.ts (a cookie-auth remote earns its own jar).
+        authMode: 'oauth',
+        kind: 'remote'
       })
     )
     fireEvent.change(url, { target: { value: 'https://b.example' } })
@@ -216,11 +220,15 @@ describe('ConnectionsRegistrySection', () => {
     fireEvent.click(await screen.findByRole('button', { name: /sign in/i }))
     // The draft identity rides along (#99989): a pre-save sign-in must name the
     // connection whose jar the login writes into — connectionId null (unset draft)
-    // plus the draft label here.
+    // plus the draft label here. The kind/authMode matter just as much: a CLOUD
+    // draft must sign in on the legacy shared portal jar, which is the jar the
+    // saved cloud entry reads — never a private per-connection jar.
     await waitFor(() =>
       expect(oauthLoginConnectionConfig).toHaveBeenCalledWith('https://team.hermes.cloud', {
         connectionId: null,
-        label: 'Team cloud'
+        label: 'Team cloud',
+        authMode: 'oauth',
+        kind: 'cloud'
       })
     )
 

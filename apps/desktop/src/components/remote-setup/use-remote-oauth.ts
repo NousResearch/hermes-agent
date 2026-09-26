@@ -1,6 +1,6 @@
 import { type RefObject, useRef, useState } from 'react'
 
-import type { DesktopConnectionConfigInput } from '@/global'
+import type { DesktopConnectionConfigInput, DesktopOauthLoginOptions } from '@/global'
 import { useI18n } from '@/i18n'
 import type { NotificationInput } from '@/store/notifications'
 
@@ -19,11 +19,14 @@ interface RemoteOAuthOptions {
   /**
    * Registry-draft identity for a sign-in that runs BEFORE the draft is
    * saved. The main process derives the login window's cookie partition from
-   * the settled connection id; without it an unsaved draft's session lands in
-   * the legacy shared jar the saved connection never reads. Absent on the
-   * first-run/settings hosts, which have no draft identity.
+   * the settled connection id, gated on the draft's kind/authMode — only a
+   * cookie-auth remote draft gets its own jar; cloud and token drafts sign in
+   * on the legacy shared jar the saved entry reads. Without the identity an
+   * unsaved draft's session lands in the legacy shared jar the saved
+   * connection never reads. Absent on the first-run/settings hosts, which
+   * have no draft identity.
    */
-  oauthLoginIdentity?: () => { connectionId: null | string; label: string } | undefined
+  oauthLoginIdentity?: () => DesktopOauthLoginOptions | undefined
   /** Reports the settled id a pre-save sign-in wrote the session for. */
   onOAuthLoginSettled?: (connectionId: string) => void
 }
@@ -89,6 +92,7 @@ export function useRemoteOAuth(options: RemoteOAuthOptions): RemoteOAuth {
       // Absent identity (first-run/settings hosts) keeps the legacy single-arg
       // call; the registry host always supplies one for its draft.
       const identity = oauthLoginIdentity?.()
+
       const result = identity
         ? await window.hermesDesktop.oauthLoginConnectionConfig(url, identity)
         : await window.hermesDesktop.oauthLoginConnectionConfig(url)

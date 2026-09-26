@@ -1,6 +1,10 @@
 import { useRef, useState } from 'react'
 
-import type { DesktopConnectionConfigInput, DesktopConnectionProbeResult } from '@/global'
+import type {
+  DesktopConnectionConfigInput,
+  DesktopConnectionProbeResult,
+  DesktopOauthLoginOptions
+} from '@/global'
 import { useI18n } from '@/i18n'
 import { deriveRemoteAuthProviderShape } from '@/lib/desktop-remote-auth'
 import { coerceRemoteUrlScheme } from '@/lib/remote-url'
@@ -28,10 +32,11 @@ export interface RemoteSetupOptions {
   enabled?: boolean
   beforeOAuthLogin?: (payload: DesktopConnectionConfigInput) => Promise<void>
   /**
-   * Registry-draft identity for a sign-in that runs before the draft is
-   * saved; see useRemoteOAuth. Only the registry host supplies it.
+   * Registry-draft identity (id, label, kind, authMode) for a sign-in that
+   * runs before the draft is saved; see useRemoteOAuth. Only the registry
+   * host supplies it.
    */
-  oauthLoginIdentity?: () => { connectionId: null | string; label: string }
+  oauthLoginIdentity?: () => DesktopOauthLoginOptions
   /** Reports the settled connection id a pre-save sign-in wrote the session for. */
   onOAuthLoginSettled?: (connectionId: string) => void
   onNotice?: (notice: NotificationInput) => void
@@ -145,7 +150,7 @@ export function useRemoteSetup(options: RemoteSetupOptions): RemoteSetup {
     targetSeq,
     beforeOAuthLogin: (value: DesktopConnectionConfigInput): Promise<void> | undefined =>
       callbacks.current.beforeOAuthLogin?.(value),
-    oauthLoginIdentity: (): { connectionId: null | string; label: string } | undefined =>
+    oauthLoginIdentity: (): DesktopOauthLoginOptions | undefined =>
       callbacks.current.oauthLoginIdentity?.(),
     onOAuthLoginSettled: (connectionId: string): void => {
       callbacks.current.onOAuthLoginSettled?.(connectionId)

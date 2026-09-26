@@ -73,6 +73,10 @@ frozen snapshot without awaiting.
   Idempotent.
 - **Stop:** session teardown or `/browser disconnect`. Cancels the asyncio
   task, closes the WebSocket, discards state.
+  Browser Use keeps task-based lookups for the vault tools but records the
+  resolved backend session key separately (including named sessions and profile
+  scope). Session teardown stops every connection owned by that key before closing
+  the cloud endpoint; a task rebound to a different session is left running.
 - **Dropped endpoint:** after a successful attach the supervisor reconnects with
   backoff (≤10 s) but gives up after `MAX_POST_ATTACH_RECONNECT_FAILURES`
   consecutive failures — one final warning, the thread exits and the registry

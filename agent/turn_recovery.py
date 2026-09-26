@@ -1076,6 +1076,8 @@ def nonretryable_client_error_result(
         _final_response = nonretryable_copy(
             classified, provider=provider, model=model, summary=_nonretryable_summary,
             prefix_suggestion=_prefix_suggestion,
+            fallback_route=getattr(agent, "_provider_fallback_route", None)
+            if getattr(agent, "_provider_fallback_active", False) else None,
         )
     # Same verdict fields as the max-retries path: without them the UI descriptor
     # (agent/error_surface.py) reads a rejected OAuth token as a retryable

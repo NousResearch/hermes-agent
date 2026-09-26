@@ -340,6 +340,10 @@ _MOA_ADAPTER_SHAPE_BUGS = (
 _PROVIDER_POLICY_BLOCKED_PATTERNS = (
     "no endpoints available matching your guardrail", "no endpoints available matching your data policy",
     "no endpoints found matching your data policy",
+    # Workspace/account privacy gates that refuse a model itself (not this prompt).
+    # OpenCode Go: "This Go model trains on request data. Allow paid endpoints..."
+    "trains on request data",
+    "allow paid endpoints that train on request data",
 )
 
 # Upstream account ban relayed by an aggregator, often as HTTP 200 + an SSE error

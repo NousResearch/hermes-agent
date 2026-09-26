@@ -422,6 +422,39 @@ class TestInstall:
         assert server["tools"]["include"] == ["tool_a"]
         assert "exclude" not in server["tools"]
 
+    def test_install_from_worker_thread_with_required_env_raises_instead_of_blocking(
+        self, catalog_dir, monkeypatch
+    ):
+        """The credential prompt runs BEFORE the tool checklist, so the checklist
+        guard alone never gets a chance on a thread whose required env has no
+        value: the install must fail fast with CatalogError (mapped to a 400 by
+        the web router) instead of parking the thread on stdin — while holding
+        the profile lock, which is what parks every thread-pool slot."""
+        body = _basic_manifest(
+            auth={
+                "type": "api_key",
+                "env": [{"name": "DEMO_TOKEN", "prompt": "Demo token"}],
+            },
+        )
+        _write_manifest(catalog_dir, "demo", body)
+        import sys as _sys
+        from concurrent.futures import ThreadPoolExecutor
+
+        import hermes_cli.mcp_catalog as mc
+        from hermes_cli.mcp_catalog import CatalogError
+
+        def _fail_prompt(*args, **kwargs):
+            raise AssertionError("interactive prompt must not open on a worker thread")
+
+        # A TTY stdin, so the only disqualifier is the worker thread itself.
+        monkeypatch.setattr(_sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr(mc, "_prompt_input", _fail_prompt)
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(mc.install_entry, _entry("demo"), enable=True)
+            with pytest.raises(CatalogError, match="DEMO_TOKEN"):
+                future.result(timeout=10)
+
     def test_reinstall_preserves_user_edited_exclude_list(
         self, catalog_dir, monkeypatch
     ):
@@ -590,8 +623,11 @@ class TestInstall:
         )
         _write_manifest(catalog_dir, "demo", body)
 
+        import sys as _sys
+
         from hermes_cli import mcp_catalog
 
+        monkeypatch.setattr(_sys.stdin, "isatty", lambda: True)
         monkeypatch.setattr(mcp_catalog, "_prompt_input", lambda *a, **kw: "secret-val")
 
         from hermes_cli.mcp_catalog import install_entry
@@ -612,8 +648,11 @@ class TestInstall:
         )
         _write_manifest(catalog_dir, "demo", body)
 
+        import sys as _sys
+
         from hermes_cli import mcp_catalog
 
+        monkeypatch.setattr(_sys.stdin, "isatty", lambda: True)
         monkeypatch.setattr(mcp_catalog, "_prompt_input", lambda *a, **kw: "secret-val")
 
         from hermes_cli.mcp_catalog import install_entry
@@ -652,6 +691,9 @@ class TestInstall:
         from hermes_cli import mcp_catalog
         from hermes_cli.config import get_config_path, get_env_value, load_config
 
+        import sys as _sys
+
+        monkeypatch.setattr(_sys.stdin, "isatty", lambda: True)
         monkeypatch.setattr(mcp_catalog, "_prompt_input", lambda prompt, **kw: f"val-for-{prompt}")
         mcp_catalog.install_entry(_entry("demo"), enable=True)
 

@@ -464,6 +464,17 @@ def _expand_install_dir(value: str, install_dir: Optional[Path]) -> str:
     return value.replace(_INSTALL_DIR_VAR, str(install_dir))
 
 
+def _interactive_prompt_possible() -> bool:
+    """Whether an interactive prompt can be driven right now.
+
+    The console belongs to the main thread: on a worker thread (e.g. a serve dashboard
+    request routed through ``asyncio.to_thread``) a prompt would block forever on stdin
+    nobody is watching. A non-TTY stdin has the same problem."""
+    import sys as _sys
+    import threading as _threading
+    return _sys.stdin.isatty() and _threading.current_thread() is _threading.main_thread()
+
+
 def _prompt_env_vars(specs: List[EnvVarSpec], preloaded: Optional[Dict[str, str]] = None) -> Dict[str, str]:
     """Prompt for each env spec.
 
@@ -484,7 +495,13 @@ def _prompt_env_vars(specs: List[EnvVarSpec], preloaded: Optional[Dict[str, str]
             _say(f"  ✓ {spec.name} already set in .env")
             collected[spec.name] = existing
             continue
-        value = _prompt_input(spec.prompt, default=spec.default or None, password=spec.secret)
+        if _interactive_prompt_possible():
+            value = _prompt_input(spec.prompt, default=spec.default or None, password=spec.secret)
+        else:
+            # A worker thread cannot drive the prompt. Take the declared default (the same
+            # value an interactive user would get by accepting it) and let the required-check
+            # below turn a missing value into an actionable CatalogError instead of a hang.
+            value = spec.default or ""
         if value:
             if spec.secret:
                 save_env_value(spec.name, value)
@@ -656,10 +673,8 @@ def _apply_tool_selection(
 
     # Non-TTY — or a worker thread (e.g. a serve dashboard request): the console
     # belongs to the main thread, so an interactive checklist here would block
-    # forever on stdin nobody is watching. Same priority as the interactive pre-check.
-    import sys as _sys
-    import threading as _threading
-    if not _sys.stdin.isatty() or _threading.current_thread() is not _threading.main_thread():
+    # forever on stdin nobody is watching. Same test as the credential prompt.
+    if not _interactive_prompt_possible():
         preferred = prior_selection if prior_selection is not None else (entry.tools.default_enabled or None)
         _write_tools_filter(
             name, "include", None if preferred is None else [n for n in preferred if n in tool_names]

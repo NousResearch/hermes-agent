@@ -1064,6 +1064,9 @@ class TestSustainedOverloadEscalation:
 
     def test_first_overloads_still_abort_then_third_commits_fallback(self):
         c = self._compressor(abort_on_summary_failure=False)
+        # A stale terminal flag from one earlier network failure (only a success clears it) must
+        # not pin the long-lived compressor in abort mode: the latest failure class decides.
+        c._last_summary_network_failure = True
         msgs = self._msgs(12)
         with patch("agent.context_compressor.call_llm", side_effect=self._err()):
             first = c.compress(msgs, current_tokens=999999, force=True)

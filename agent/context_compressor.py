@@ -4179,6 +4179,11 @@ Write only the summary body. Do not include any preamble or prefix."""
                 self._consecutive_overload_aborts < _CONSECUTIVE_OVERLOAD_ABORT_ESCALATION
             )
             self._last_summary_overload_degraded = not self._last_summary_overload_failure
+            if self._last_summary_overload_degraded:
+                # The latest failure class decides: a stale network/empty/truncated/auth flag from
+                # an earlier failure (only a success clears those) must not keep aborting forever.
+                for flag, _class, _msg in _TERMINAL_SUMMARY_FAILURES:
+                    setattr(self, flag, False)
         logger.warning(
             "Failed to generate context summary: %s. Further summary attempts paused for %d seconds.", e,
             _transient_cooldown,

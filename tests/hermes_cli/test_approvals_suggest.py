@@ -245,6 +245,45 @@ class TestProposalRedaction:
         assert not _command_matches_permanent_allowlist("GITHUB_TOKEN=x sudo git push --force origin main")
 
 
+    def test_render_masks_non_prefix_userinfo_url(self, db_path, isolated_allowlist, capsys):
+        """URL userinfo without a known token prefix must still be masked."""
+        pwd = "p4ssw0rdLeak"
+        path, con = db_path
+        cmd = f"git push --force https://user:{pwd}@git.internal.example.com/org/repo.git"
+        for _ in range(3):
+            _add_terminal_call(con, cmd)
+
+        assert suggest_command(_args(path)) == 0
+        out = capsys.readouterr().out
+
+        assert "git push *" in out
+        assert "e.g." in out
+        assert pwd not in out
+        assert "user:***@" in out
+
+    def test_json_examples_mask_non_prefix_userinfo_before_truncation(
+        self, db_path, isolated_allowlist, capsys
+    ):
+        """The JSON examples surface must not leak a userinfo password either."""
+        pwd = "p4ssw0rdLeak"
+        path, con = db_path
+        cmd = (
+            f"git push --force https://user:{pwd}@internal-git.corp.example.com/"
+            "very-long-org-name/very-long-repo-name-with-deep/path/to/repo.git"
+        )
+        assert len(cmd) > 100
+        for _ in range(3):
+            _add_terminal_call(con, cmd)
+
+        assert suggest_command(_args(path, json=True)) == 0
+        payload = json.loads(capsys.readouterr().out)
+        examples = [ex for p in payload["proposals"] for ex in p["examples"]]
+
+        assert examples
+        assert pwd not in "".join(examples)
+        assert all("user:***@" in ex for ex in examples)
+
+
 # ---------------------------------------------------------------------------
 # --apply / dry-run
 # ---------------------------------------------------------------------------

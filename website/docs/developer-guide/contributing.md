@@ -90,13 +90,17 @@ that disposable environment first. PM does not delete an existing destination.
 Do not run raw pip or uv commands to change a PM-built environment.
 
 To keep the test environment outside the checkout, replace `.venv` with a fresh absolute
-path. Set `HERMES_PYTHON` to that environment's interpreter:
+path. Either way, set `HERMES_PYTHON` to that environment's interpreter:
 
 - POSIX: `export HERMES_PYTHON="/absolute/path/to/hermes-dev/bin/python"`
 - PowerShell: `$env:HERMES_PYTHON = 'C:\absolute\path\to\hermes-dev\Scripts\python.exe'`
 
-The canonical runner discovers repository `.venv` automatically. It clears
-`PYTHONPATH`, so pytest must be installed in the interpreter's own environment.
+The canonical runner does not search for `.venv` or `venv` directories. From a
+shell that has not sourced `./activate`, it uses `HERMES_PYTHON` when that
+interpreter imports pytest. Otherwise, or inside an activated shell, it uses the
+test environment that `./activate` builds (activating itself when needed), and
+`HERMES_PYTHON` is ignored. It clears `PYTHONPATH`, so pytest must be installed
+in the interpreter's own environment.
 This test environment does not replace PM's application selection or tool
 store. Do not point a bundled app at it or install into an MSIX payload.
 
@@ -131,10 +135,10 @@ scripts/run_tests.sh
 scripts/run_tests.sh tests/agent/ -v
 ```
 
-On Windows, run the script through Bash. When no local `.venv` or `venv`
-contains pytest, the runner accepts the explicit `HERMES_PYTHON` above. It
-clears credentials, isolates `HERMES_HOME`, and runs each test file in a separate
-subprocess through `scripts/run_tests_parallel.py`. It does not use xdist.
+On Windows, run the script through Bash. Interpreter selection follows the
+`HERMES_PYTHON` rules above. The runner clears credentials, isolates
+`HERMES_HOME`, and runs each test file in a separate subprocess through
+`scripts/run_tests_parallel.py`. It does not use xdist.
 When `tests/conftest.py` redirects a production `HERMES_HOME` to a temporary
 session home, it sets the internal `HERMES_TEST_SANDBOX_HOME` marker. This lets
 re-imported test fixtures recognize their own sandbox instead of flagging it as

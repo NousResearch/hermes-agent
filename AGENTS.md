@@ -184,8 +184,10 @@ see `website/docs/reference/package-management.md#developer-workflow`.
 PowerShell: `. .\activate.ps1`. `deactivate` restores the prior environment.
 For tests, use the independent test environment in `CONTRIBUTING.md` (or Nix);
 PM activation's `PYTHONPATH` does not survive the test runner's environment scrub.
-`scripts/run_tests.sh` probes `.venv`, then `venv`, then `$HOME/.hermes/hermes-agent/venv`
-(worktrees sharing the main checkout's venv).
+`scripts/run_tests.sh` does not probe `.venv`/`venv` directories. In an activated shell it runs
+the activation's test environment (`__HERMES_TEST_PYTHON`, re-activating when stale) and
+ignores `HERMES_PYTHON`. Otherwise it uses `HERMES_PYTHON` if that interpreter imports
+pytest, else it sources `./activate` itself.
 
 ## Project Structure
 
@@ -372,8 +374,9 @@ python -m pm.build_env --source . --out .venv --group dev --group test
 
 This is a fresh build, not an in-place sync. If the disposable output exists,
 stop its processes and intentionally remove it before regeneration. The runner
-clears `PYTHONPATH`, so PM shell activation alone does not supply pytest. For a
-fresh output outside the checkout, set `HERMES_PYTHON` to its interpreter.
+clears `PYTHONPATH`, so PM shell activation alone does not supply pytest. The
+runner does not discover this output: from a non-activated shell, set
+`HERMES_PYTHON` to its interpreter (e.g. `.venv/bin/python`).
 
 ```bash
 scripts/run_tests.sh                                    # full suite

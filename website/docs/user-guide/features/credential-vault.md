@@ -67,6 +67,36 @@ origins; nothing is inferred beyond the URLs saved on the item.
 Prefer not to use a detected manager? `hermes vault sources --disable bitwarden`,
 or the switch in **Settings → Passwords & Logins**.
 
+## macOS Keychain
+
+On a Mac, Hermes can also keep website logins in a dedicated, passworded
+keychain file (`~/.hermes/vault/keychain.keychain-db`) driven by the system's
+own `security` tool: nothing to install, and the items show up as `kc:` handles
+next to the local and manager ones. Two ways to run it:
+
+- **Unattended** — `hermes vault keychain init` creates the keychain plus a
+  0600 password sidecar. Cron jobs and other headless sessions then fill from
+  it without a prompt; a keychain the OS re-locked is reopened in-process.
+- **Attended** — skip `init` and point `vault.keychain.file` at a keychain you
+  created yourself. The first fill asks for its password (masked prompt, once
+  per session), and Hermes locks it again when the session ends.
+
+`hermes vault keychain add` saves a login (origin, account and a hidden
+password prompt), `hermes vault keychain status` shows the mode and file, and
+`hermes vault keychain rm kc:example.com|you@example.com` removes one. Items are
+bound to the exact origin you saved, scheme and port included;
+`https://example.com` never fills `http://example.com`. Keychain passwords reach
+`security` over a pty, never its arguments. The login password you type at
+`add` is the one exception: `security add-internet-password -w` is the only
+channel macOS commits an item through, so for the milliseconds that command
+runs it is visible to processes of your own user. That is a command you run
+yourself; the agent's save path (`browser_vault_save_login`) writes to the
+local vault and never goes through it.
+
+The Passwords app / iCloud Keychain is not a source: Apple exposes no supported
+way for a third-party process to read it. Turn the backend off with
+`hermes vault sources --disable keychain` or `vault.keychain.enabled: false`.
+
 ## Paying and filling addresses
 
 Cards and addresses work the same way as logins: saved once (**Settings →
@@ -110,7 +140,9 @@ vault:
 ## What this does and does not guarantee
 
 **Does:** the password never enters the model's context through Hermes: not in
-tool results, logs, the session database, or the CLI arguments of any process.
+tool results, logs, the session database, or the CLI arguments of any process
+the agent drives (the one exception, the `-w` argument of the interactive
+`hermes vault keychain add`, is described above).
 Fills happen over the supervised browser session's direct CDP socket and are
 refused unless the page origin exactly matches the saved origin, checked again
 inside the page immediately before the write.

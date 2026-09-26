@@ -36,7 +36,7 @@ export const vaultOwnerKey = (connectionId: null | string, profile: string) => `
 const vaultQueryKey = (owner: string) => ['vault-items', owner] as const
 const vaultSourcesQueryKey = (owner: string) => ['vault-sources', owner] as const
 
-export type VaultSourceName = 'bitwarden' | 'local' | 'onepassword'
+export type VaultSourceName = 'bitwarden' | 'keychain' | 'local' | 'onepassword'
 
 /** One login source as reported by `vault.sources` — the backend is authoritative for enabled/unlocked. */
 export interface VaultSource {

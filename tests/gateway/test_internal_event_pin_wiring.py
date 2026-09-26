@@ -2,9 +2,9 @@
 
 ``_pinned_session_context_prompt(..., internal=True)`` reuses the existing pin
 verbatim so an internal event (kanban wake, delegation completion, watch
-notification) cannot re-key it.  The unit tests in test_prompt_tail_freeze.py
-exercise that helper directly, so they stay green if the call site in
-``_handle_message_with_agent`` stops forwarding ``event.internal``.  This test drives the REAL handler through
+notification) cannot re-key it.  A helper-level unit test would stay green if
+the call site in ``_handle_message_with_agent`` stopped forwarding
+``event.internal``, so this test drives the REAL handler through
 human -> internal -> human on one session and asserts the context prompt that
 reaches ``_run_agent`` is byte-identical on all three turns.
 """
@@ -146,7 +146,7 @@ async def test_internal_event_reuses_pin_through_real_handler(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Caveat C2: the other ephemeral components must not toggle either.
+# The other ephemeral prompt components must not toggle across the sequence either.
 # ---------------------------------------------------------------------------
 
 THREAD_ID = "1552000000000000001"

@@ -173,6 +173,77 @@ def test_codex_snapshot_exposes_exact_raw_payload_with_one_get(monkeypatch, code
     assert account_usage.AccountUsageSnapshot(provider="anthropic", source="x", fetched_at=snapshot.fetched_at).raw is None
 
 
+def test_anthropic_usage_keeps_percent_utilization_and_formats_confirmed_minor_units(monkeypatch):
+    payload = {
+        "five_hour": {"utilization": 1.0},
+        "seven_day": {"utilization": 22.0},
+        "extra_usage": {
+            "is_enabled": True,
+            "used_credits": 14375.0,
+            "monthly_limit": 20000.0,
+            "currency": "USD",
+        },
+        "spend": {
+            "used": {"amount_minor": 14375, "exponent": 2, "currency": "USD"},
+            "limit": {"amount_minor": 20000, "exponent": 2, "currency": "USD"},
+        },
+    }
+    monkeypatch.setattr(account_usage, "resolve_anthropic_token", lambda: "sk-ant-oat01-test")
+    monkeypatch.setattr(account_usage, "_get_json", lambda *args, **kwargs: payload)
+
+    snapshot = account_usage._fetch_anthropic_account_usage()
+
+    assert snapshot is not None
+    assert [(window.label, window.used_percent) for window in snapshot.windows] == [
+        ("Current session", 1.0), ("Current week", 22.0),
+    ]
+    assert snapshot.details == ("Extra usage: 143.75 / 200.00 USD",)
+
+
+def test_anthropic_usage_keeps_extra_usage_scale_without_minor_unit_confirmation(monkeypatch):
+    payload = {
+        "extra_usage": {
+            "is_enabled": True,
+            "used_credits": 143.75,
+            "monthly_limit": 200.0,
+            "currency": "USD",
+        },
+        "spend": {
+            "used": {"amount_minor": 14375, "exponent": 2},
+            "limit": {"amount_minor": 20000, "exponent": 2},
+        },
+    }
+    monkeypatch.setattr(account_usage, "resolve_anthropic_token", lambda: "sk-ant-oat01-test")
+    monkeypatch.setattr(account_usage, "_get_json", lambda *args, **kwargs: payload)
+
+    snapshot = account_usage._fetch_anthropic_account_usage()
+
+    assert snapshot is not None
+    assert snapshot.details == ("Extra usage: 143.75 / 200.00 USD",)
+
+
+def test_anthropic_usage_keeps_extra_usage_scale_when_spend_currency_conflicts(monkeypatch):
+    payload = {
+        "extra_usage": {
+            "is_enabled": True,
+            "used_credits": 14375.0,
+            "monthly_limit": 20000.0,
+            "currency": "USD",
+        },
+        "spend": {
+            "used": {"amount_minor": 14375, "exponent": 2, "currency": "EUR"},
+            "limit": {"amount_minor": 20000, "exponent": 2, "currency": "EUR"},
+        },
+    }
+    monkeypatch.setattr(account_usage, "resolve_anthropic_token", lambda: "sk-ant-oat01-test")
+    monkeypatch.setattr(account_usage, "_get_json", lambda *args, **kwargs: payload)
+
+    snapshot = account_usage._fetch_anthropic_account_usage()
+
+    assert snapshot is not None
+    assert snapshot.details == ("Extra usage: 14375.00 / 20000.00 USD",)
+
+
 def test_codex_invalid_payload_fails_closed(monkeypatch):
     snapshot, _ = _explicit_creds_snapshot(monkeypatch, ["not", "a", "dict"])
     assert snapshot is None

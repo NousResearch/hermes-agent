@@ -1761,6 +1761,11 @@ DEFAULT_CONFIG = {
         "tirith_path": "tirith",
         "tirith_timeout": 5,
         "tirith_fail_open": True,
+        # Extra "trusted scripts" directories for tirith's pipe_to_interpreter rule: when every
+        # producer feeding the interpreter resolves to a user-owned executable in one of these
+        # (or in a Hermes bin dir, which is always trusted), the finding is a false positive and
+        # the command is allowed. Absolute paths only; empty = Hermes/user bin dirs alone.
+        "trusted_executable_dirs": [],
         "website_blocklist": {"enabled": False, "domains": [], "shared_files": []},
         # IDs of supply-chain advisories the user has read and acted on; acked ones stop the startup
         # banner. Add via `hermes doctor --ack <id>`; remove by editing the list. Catalog:

@@ -4,14 +4,18 @@ remain the verdict authority and operational failures obey fail_open."""
 import json
 import logging
 import os
+import re
+import shlex
 import shutil
+import stat
 import subprocess
 import threading
 import time
+from contextlib import suppress
 from contextvars import copy_context
 from pathlib import Path
 
-from hermes_constants import hermes_home_key
+from hermes_constants import get_default_hermes_root, get_hermes_home, hermes_home_key
 
 logger = logging.getLogger(__name__)
 _REPO = "sheeki03/tirith"
@@ -43,7 +47,10 @@ def _load_security_config() -> dict:
         "tirith_enabled": _env_bool("TIRITH_ENABLED", cfg.get("tirith_enabled", True)),
         "tirith_path": os.getenv("TIRITH_BIN", cfg.get("tirith_path", "tirith")),
         "tirith_timeout": _env_int("TIRITH_TIMEOUT", cfg.get("tirith_timeout", 5)),
-        "tirith_fail_open": _env_bool("TIRITH_FAIL_OPEN", cfg.get("tirith_fail_open", True))}
+        "tirith_fail_open": _env_bool("TIRITH_FAIL_OPEN", cfg.get("tirith_fail_open", True)),
+        # Extra "trusted scripts" dirs for the pipe_to_interpreter false positive (#32737); the
+        # Hermes bin dirs are always trusted and this only appends to them.
+        "trusted_executable_dirs": cfg.get("trusted_executable_dirs") or []}
 
 
 # Circuit breaker: after _CRASH_LIMIT consecutive spawn/execution failures tirith is disabled so a broken
@@ -356,6 +363,18 @@ def check_command_security(command: str) -> dict:
     if action == "warn" and findings and all(_is_emoji_variation_selector_finding(f) for f in findings) \
             and _has_only_emoji_presentation_selectors(command):
         return _verdict("allow")
+    # Tirith matches the SHAPE ``<stage> | <interpreter>``, so it reports the user's own wrapper
+    # piped through python3 as HIGH exactly like ``curl | sh`` (#32737). Remote pipes carry their
+    # own findings (curl_pipe_shell / wget_pipe_shell / plain_http_to_sink / …), so when every
+    # finding is pipe_to_interpreter and every producer feeding the flagged interpreter is a
+    # user-owned executable from a trusted scripts directory, the report is a false positive and
+    # is downgraded to allow. Any producer that cannot be resolved fails closed.
+    if action in ("block", "warn") and findings and all(
+            _is_pipe_to_interpreter_finding(f) for f in findings) \
+            and _local_pipe_false_positive(command, cfg):
+        logger.debug("tirith pipe_to_interpreter downgraded: every producer is a local "
+                     "user-owned executable in a trusted directory (#32737)")
+        return _verdict("allow")
     return _verdict(action, summary, findings)
 
 
@@ -387,3 +406,199 @@ def _has_only_emoji_presentation_selectors(command: str) -> bool:
         if not any(start <= base <= end for start, end in _EMOJI_PRESENTATION_BASE_RANGES):
             return False
     return saw_selector
+
+# --- Pipe-to-interpreter false positives on local producers (#32737) -------------------------------------------------
+# Tirith's ``pipe_to_interpreter`` rule only sees the shape ``<stage> | <interpreter>``; it cannot
+# tell a remote download piped into a shell from the user's own wrapper filtered through python3,
+# so a kanban worker running ``my-wrapper | python3`` was blocked exactly like ``curl | sh``.
+# Remote pipes are covered by their own rules (``curl_pipe_shell``, ``wget_pipe_shell``,
+# ``plain_http_to_sink``), so this module only has to recognise the local case: every producer
+# feeding the flagged interpreter must resolve to a user-owned, non-world-writable executable
+# inside a trusted scripts directory. Anything that cannot be resolved (substitution, subshell,
+# a name nobody can find, a symlink out of the directory) fails closed and keeps the block.
+
+_PIPE_RULE_ID = "pipe_to_interpreter"
+
+# Interpreters that read their stdin as code. Deliberately narrow: an unrecognised consumer name
+# is not counted as a pipe-into-interpreter, so it becomes a producer that must itself be trusted.
+_INTERPRETER_RE = re.compile(
+    r"(?:sh|bash|zsh|ksh|dash|csh|tcsh|fish|ash|busybox|python[0-9.]*|pypy[0-9.]*|"
+    r"node(?:js)?|perl[0-9.]*|ruby[0-9.]*|php[0-9.]*|lua[0-9.]*|bun|deno|pwsh|powershell)",
+    re.IGNORECASE)
+
+# Producers that can pull remote content into the pipe even when they sit in a directory the user
+# listed as trusted: a careless ``trusted_executable_dirs: [/usr/bin]`` must not turn
+# ``nc … | sh`` into an allowed remote pipe.
+_FETCHER_NAMES = frozenset({
+    "curl", "wget", "http", "https", "httpie", "xh", "aria2", "aria2c",
+    "nc", "ncat", "netcat", "socat", "telnet", "ftp", "tftp", "scp", "sftp",
+    "rsync", "ssh", "git", "openssl", "cloudflared", "tar"})
+
+
+def _is_pipe_to_interpreter_finding(finding) -> bool:
+    """True only for the Tirith rule that reports piping into an interpreter."""
+    return isinstance(finding, dict) and finding.get("rule_id") == _PIPE_RULE_ID
+
+
+def _split_pipeline_groups(command: str) -> list[list[str]] | None:
+    """Split *command* into statements, each a list of its pipeline stages, or None when it uses
+    syntax this analysis cannot reason about — command substitution, subshells, brace groups — in
+    which case the caller fails closed. Quoting, escapes, comments and ``2>&1`` style redirects
+    are honoured; ``||``/``&&``/``;``/``&``/newline end a statement, a bare ``|`` ends a stage.
+    """
+    from tools.approval_detection import _scan_shell
+
+    statements: list[list[str]] = []
+    stages: list[str] = []
+    start = 0
+    skip_to = -1
+
+    def close_statement(end: int) -> None:
+        nonlocal stages
+        if end > start:
+            stages.append(command[start:end].strip())
+        if any(stages):
+            statements.append(stages)
+        stages = []
+
+    for kind, i, j, quote in _scan_shell(command, subst="u", comments=True):
+        if kind == "subst":  # $(…) / backticks: the content's origin is unknowable
+            return None
+        if i < skip_to:  # second half of a ``||`` already consumed with the statement break
+            continue
+        if kind == "comment":
+            if quote is None:
+                close_statement(i)
+                start = j
+            continue
+        if kind != "char" or quote is not None:
+            continue
+        ch = command[i]
+        if ch in "(){}":  # subshell, process substitution, brace group: fail closed
+            return None
+        if ch == "|":
+            if i + 1 < len(command) and command[i + 1] == "|":
+                close_statement(i)
+                start, skip_to = i + 2, i + 2
+            else:
+                stages.append(command[start:i].strip())
+                start = j
+        elif ch == ";" or ch == "\n" or (ch == "&" and not (i and command[i - 1] in "<>")):
+            close_statement(i)
+            start = j
+    close_statement(len(command))
+    return statements or None
+
+
+def _stage_command_word(stage: str) -> str | None:
+    """The literal command word of *stage*, or None when it is not a simple literal command
+    (bad quoting, a ``VAR=value`` prefix, or anything carrying ``$``/backticks/redirect syntax)."""
+    try:
+        tokens = shlex.split(stage, posix=True)
+    except ValueError:
+        return None
+    if not tokens:
+        return None
+    head = tokens[0]
+    if not head or any(ch in head for ch in "$`;&|<>(){}") or head[0] in "=#":
+        return None
+    if "=" in head and not head.startswith((".", "/", "~")):
+        return None  # an assignment, not a command
+    return head
+
+
+def _trusted_executable_dirs(cfg: dict) -> list[str]:
+    """Directories whose executables count as "scripts the user owns": the active Hermes home's
+    ``bin/``, the root home's ``bin/`` and ``profiles/*/bin/`` (a kanban worker's wrapper lives in
+    its own profile), the standard user script dirs, plus ``security.trusted_executable_dirs``."""
+    home, root = get_hermes_home(), get_default_hermes_root()
+    dirs = [str(home / "bin"), str(root / "bin")]
+    profiles = root / "profiles"
+    try:
+        dirs.extend(str(profiles / name / "bin") for name in os.listdir(profiles))
+    except OSError:
+        pass
+    # expanduser("~") follows $HOME, which Hermes rewrites to the profile home, so the login
+    # directory is read from passwd too — a wrapper in the real ~/.local/bin is still the user's.
+    home_dirs = {os.path.expanduser("~")}
+    with suppress(Exception):
+        import pwd
+        login_home = pwd.getpwuid(os.getuid()).pw_dir
+        if login_home:
+            home_dirs.add(login_home)
+    for home_dir in home_dirs:
+        if home_dir and home_dir != "~":
+            dirs.extend((os.path.join(home_dir, ".local", "bin"),
+                         os.path.join(home_dir, "bin")))
+    dirs.extend(str(d) for d in (cfg.get("trusted_executable_dirs") or [])
+                if isinstance(d, str) and d.strip())
+    return dirs
+
+
+def _is_trusted_executable(path: str, trusted: list[str]) -> bool:
+    """True when *path* is a user-owned, executable, non-world-writable regular file that stays
+    inside one of *trusted* after symlink resolution."""
+    try:
+        real = os.path.realpath(path)
+        info = os.stat(real)
+    except OSError:
+        return False
+    if not stat.S_ISREG(info.st_mode) or not os.access(real, os.X_OK):
+        return False
+    if info.st_mode & stat.S_IWOTH:  # any local account could rewrite it after the scan
+        return False
+    owner, uid = getattr(info, "st_uid", None), getattr(os, "getuid", lambda: None)()
+    if owner is not None and uid is not None and owner != uid:
+        return False
+    return any(real == root or real.startswith(root + os.sep)
+               for root in (os.path.realpath(d) for d in trusted))
+
+
+def _resolve_trusted_executable(head: str, trusted: list[str]) -> str | None:
+    """Absolute path of *head* when it resolves inside *trusted*, else None. PATH wins for a bare
+    name (that is what the shell will run); the trusted dirs are only consulted when PATH misses,
+    so a wrapper that exists solely in a profile's ``bin/`` is still recognised."""
+    if head.startswith((".", "~")) or os.path.isabs(head):
+        found = os.path.expanduser(head)
+        if not os.path.isabs(found):
+            found = os.path.join(os.getcwd(), found)
+    else:
+        found = shutil.which(head)
+        if found is None:
+            found = next((p for p in (os.path.join(d, head) for d in trusted)
+                          if os.path.isfile(p) and os.access(p, os.X_OK)), None)
+    if found is None:
+        return None
+    return found if _is_trusted_executable(found, trusted) else None
+
+
+def _local_pipe_false_positive(command: str, cfg: dict) -> bool:
+    """True when every ``<producer> | <interpreter>`` pipe on *command* is fed only by user-owned
+    executables from a trusted scripts directory, so tirith's ``pipe_to_interpreter`` report is a
+    false positive (#32737). No qualifying pipe, or one unresolvable producer, returns False."""
+    groups = _split_pipeline_groups(command)
+    if not groups:
+        return False
+    trusted = _trusted_executable_dirs(cfg)
+    if not trusted:
+        return False
+    qualifying_pipes = 0
+    for stages in groups:
+        for index in range(len(stages) - 1):
+            consumer = _stage_command_word(stages[index + 1])
+            if consumer is None or not _INTERPRETER_RE.fullmatch(os.path.basename(consumer)):
+                continue
+            qualifying_pipes += 1
+            # Everything upstream of the interpreter produced the piped content, so all of it
+            # has to be trusted — one /usr/bin stage keeps the block for the whole pipeline.
+            for producer_stage in stages[:index + 1]:
+                head = _stage_command_word(producer_stage)
+                if head is None:
+                    return False
+                resolved = _resolve_trusted_executable(head, trusted)
+                if resolved is None:
+                    return False
+                if (_FETCHER_NAMES & {os.path.basename(head).lower(),
+                                      os.path.basename(resolved).lower()}):
+                    return False
+    return qualifying_pipes > 0

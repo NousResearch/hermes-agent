@@ -2809,6 +2809,7 @@ security:
   tirith_path: "tirith"          # Path to tirith binary (default: "tirith" in $PATH)
   tirith_timeout: 5              # Seconds to wait for tirith scan before timing out
   tirith_fail_open: true         # Allow command execution if tirith is unavailable
+  trusted_executable_dirs: []    # Extra dirs whose local wrappers may be piped into an interpreter
   website_blocklist:             # See Website Blocklist section below
     enabled: false
     domains: []
@@ -2820,6 +2821,7 @@ security:
 - `tirith_path` — path to the tirith binary. Set this if tirith is installed in a non-standard location.
 - `tirith_timeout` — maximum seconds to wait for a tirith scan. Commands proceed if the scan times out.
 - `tirith_fail_open` — when `true` (default), commands are allowed to execute if tirith is unavailable or fails. Set to `false` to block commands when tirith cannot verify them.
+- `trusted_executable_dirs` — extra directories of local wrapper scripts that may be piped into an interpreter without tripping tirith's `pipe_to_interpreter` rule. Absolute paths. A producer still has to be a user-owned, executable, non-world-writable file inside one of these directories (the Hermes `bin/` directories and the login user's `bin/`/`.local/bin` are always trusted); everything else keeps the block. Remote producers such as `curl | bash` are blocked by their own rules regardless.
 
 ## Website Blocklist
 

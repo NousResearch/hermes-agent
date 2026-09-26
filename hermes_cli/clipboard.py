@@ -84,9 +84,12 @@ def _write_clipboard_commands(data: bytes) -> list:
     ps_argv = [*_PS_FLAGS, "-Command", "Set-Clipboard -Value ([System.Text.Encoding]::UTF8"
                f".GetString([System.Convert]::FromBase64String('{b64}')))"]
     ps_kw, pipe = {"stdin": subprocess.DEVNULL}, {"input": data}
+    # pbcopy decodes stdin in the locale's charset: under LANG unset, LC_ALL=C or a non-UTF-8
+    # LANG it stores UTF-8 CJK/emoji as MacRoman mojibake. LC_ALL outranks every other locale var.
+    pbcopy_kw = {**pipe, "env": {**os.environ, "LC_ALL": "en_US.UTF-8"}}
     linux = sys.platform not in ("darwin", "win32")
     return [(argv, kw) for enabled, argv, kw in (
-        (sys.platform == "darwin", ["pbcopy"], pipe),
+        (sys.platform == "darwin", ["pbcopy"], pbcopy_kw),
         (sys.platform == "win32", ["powershell", *ps_argv], ps_kw),
         (linux and _is_wsl(), ["powershell.exe", *ps_argv], ps_kw),
         (linux and os.environ.get("WAYLAND_DISPLAY"), ["wl-copy", "--type", "text/plain"], pipe),

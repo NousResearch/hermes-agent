@@ -64,6 +64,7 @@ def _compute_host_turn_frame(
         "cwd": _session_cwd(session),
         "context_cwd_is_launch_artifact": _context_cwd_is_launch_artifact(session),
         "profile_home": session.get("profile_home") or "",
+        "profile_incarnation": session.get("profile_incarnation") or "",
         "model_override": session.get("model_override"),
         "reasoning_config_override": session.get("create_reasoning_override"),
         "service_tier_override": session.get("create_service_tier_override"),
@@ -257,6 +258,8 @@ def _submit_prompt_to_compute_host(
     rid: str, sid: str, session: dict, text: Any, image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None, display_kind: str | None = None,
     display_metadata: dict | None = None) -> dict:
+    from .host_supervisor import TurnSettlement
+
     cfg = _load_dashboard_process_isolation_config()
     frame = _compute_host_turn_frame(rid, sid, session, text, image_paths=image_paths,
                                      queued_prompt_generation=queued_prompt_generation,
@@ -264,8 +267,10 @@ def _submit_prompt_to_compute_host(
     # Caller JSON-RPC ids may repeat across sockets and turns. Use an opaque
     # dispatch lifetime token, installed before a fast child can send activity.
     turn_id = frame["turn_id"] = frame["request_id"] = uuid.uuid4().hex
+    settlement = TurnSettlement()
     with session["history_lock"]:
         session["_compute_host_turn_id"] = turn_id
+        session["_compute_host_turn_settlement"] = settlement
         session.pop("_compute_host_activity_ns", None)
 
     def _complete(done: dict) -> None:
@@ -279,11 +284,12 @@ def _submit_prompt_to_compute_host(
                 session.pop("_compute_host_activity_ns", None)
             _on_compute_host_turn_done(rid, sid, session, done)
     try:
-        _get_compute_host_supervisor(cfg).submit_turn(frame, on_complete=_complete)
+        _get_compute_host_supervisor(cfg).submit_turn(frame, on_complete=_complete, settlement=settlement)
     except Exception as exc:
         with session["history_lock"]:
             if session.get("_compute_host_turn_id") == turn_id:
                 session.pop("_compute_host_turn_id", None)
+                session.pop("_compute_host_turn_settlement", None)
                 session.pop("_compute_host_activity_ns", None)
         return _err(rid, 5019, f"compute-host dispatch failed: {exc}")
     with session["history_lock"]:

@@ -9,7 +9,7 @@ Electron + React + nanostores (`@assistant-ui/react`) talking to a `tui_gateway`
 JSON-RPC (`requestGateway(method, params)`); transport lives in the framework-agnostic `apps/shared`
 (`@hermes/shared`: `JsonRpcGatewayClient` + WS URL helpers), which the web dashboard also consumes.
 The desktop has **no build/runtime dependency on the dashboard frontend**: it spawns a headless
-`hermes serve` (`headless_backend=True` → `cmd_dashboard` skips `_build_web_ui` and exports
+`hermes serve` (`ui_surface="serve"` → `cmd_dashboard` skips `_build_web_ui` and exports
 `HERMES_SERVE_HEADLESS=1` so `mount_spa()` disables the SPA even if a stray `web_dist/` exists).
 `dashboard` and `serve` share `cmd_dashboard`/`start_server` but neither launches the other. It does
 NOT embed `hermes --tui` — own composer, transcript, slash pipeline.

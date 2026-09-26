@@ -222,6 +222,25 @@ def _maybe_open_browser(host: str, actual_port: int, open_browser: bool, initial
     Skips headless Linux (no DISPLAY/WAYLAND_DISPLAY) so a TUI browser can't
     SIGHUP the server; maps ``0.0.0.0``/``::`` binds to ``127.0.0.1``.
     """
+    from hermes_cli.web_server import app
+    from hermes_cli.web_server_surface import private_launch
+    from urllib.parse import quote, urlencode
+
+    display_host = host if host not in ("0.0.0.0", "::") else "127.0.0.1"
+    if ":" in display_host:
+        display_host = f"[{display_host}]"
+    origin = f"http://{display_host}:{actual_port}"
+    query = f"?profile={quote(initial_profile, safe='')}" if initial_profile else ""
+    _open_url = f"{origin}/{query}" if query else origin
+    private = private_launch(app.state)
+    if private:
+        from hermes_cli.web_server import _SESSION_TOKEN
+
+        _open_url += f"#hermes-session={quote(_SESSION_TOKEN, safe='')}"
+        # Operator-only handoff, including --no-open/headless launches. Never log
+        # or serve this URL, or put the credential in a query string.
+        print(f"  Webapp launch link (private; grants host access): {_open_url}", flush=True)
+
     if not open_browser:
         return
 
@@ -235,16 +254,19 @@ def _maybe_open_browser(host: str, actual_port: int, open_browser: bool, initial
         )
         return
 
-    _display_host = host if host not in ("0.0.0.0", "::") else "127.0.0.1"
-    _open_url = f"http://{_display_host}:{actual_port}"
-    if initial_profile:
-        from urllib.parse import quote
-        _open_url += f"/?profile={quote(initial_profile)}"
-
     def _open():
         try:
             time.sleep(1.0)
-            webbrowser.open(_open_url)
+            target = _open_url
+            if private:
+                # Browser launchers put their URL in argv (world-readable on Linux), so it
+                # carries a one-use launch ticket, never the token. A URL rather than a local
+                # redirect file, which snap/Flatpak browsers cannot read under hidden dirs.
+                from hermes_cli.web_routers.webapp import mint_launch_ticket
+
+                fragment = urlencode({"ticket": mint_launch_ticket(app.state), "query": query})
+                target = f"{origin}/webapp/launch#{fragment}"
+            webbrowser.open(target)
         except Exception:
             pass
 

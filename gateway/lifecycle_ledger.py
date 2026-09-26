@@ -231,11 +231,13 @@ def check_state_db_integrity(home: Optional[Path] = None) -> str:
     (renewed from a SQLite progress handler, #115542) so a long healthy check
     on a huge store is not mistaken for a parked deadlock.
     """
+    from hermes_cli.sqlite_safe_read import connect_tracked
+
     path = _home_path(home, "state.db")
     if not path.exists():
         return "absent"
     try:
-        with closing(sqlite3.connect(str(path))) as conn:
+        with closing(connect_tracked(path)) as conn:
             _install_integrity_check_lease(conn)
             row = conn.execute("PRAGMA quick_check(1)").fetchone()
     except Exception as exc:

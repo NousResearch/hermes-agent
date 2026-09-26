@@ -21,14 +21,22 @@ def _args(**kw):
     defaults = dict(
         status=False, stop=False, host="127.0.0.1", port=9119,
         no_open=True, insecure=False, skip_build=False,
-        isolated=False, open_profile="",
+        isolated=False, open_profile="", ui_surface="dashboard",
     )
     defaults.update(kw)
     return types.SimpleNamespace(**defaults)
 
 
-class TestUnifiedDashboardRouting:
+def _host_owner(monkeypatch, surface):
+    from gateway import host_rendezvous as hr
 
+    record = types.SimpleNamespace(pid=123, host="127.0.0.1", port=9119, role="serve", profiles=())
+    monkeypatch.setattr(main_dashboard, "_host_backend_attachment", lambda: record)
+    monkeypatch.setattr(hr, "probe_owner", lambda _: {"servesSpa": True, "ui_surface": surface})
+    monkeypatch.setattr(main_dashboard, "_explicit_endpoint_flags", lambda: set())
+
+
+class TestUnifiedDashboardRouting:
 
     def test_profile_launch_reexecs_machine_dashboard(self, main_mod, monkeypatch):
         monkeypatch.delenv("HERMES_HOME", raising=False)
@@ -36,6 +44,7 @@ class TestUnifiedDashboardRouting:
             "hermes_cli.profiles.get_active_profile_name", lambda: "worker_x"
         )
         monkeypatch.setattr(main_dashboard, "_dashboard_listening", lambda host, port: False)
+        monkeypatch.setattr(main_dashboard, "_host_backend_attachment", lambda: None)
         execs = []
 
         if sys.platform == "win32":
@@ -83,6 +92,53 @@ class TestUnifiedDashboardRouting:
         # test below for why we resolve explicitly instead of popping.
         from hermes_constants import get_default_hermes_root
         assert env.get("HERMES_HOME") == str(get_default_hermes_root())
+
+    def test_named_webapp_refuses_to_attach_to_dashboard_surface(self, main_mod, monkeypatch):
+        monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+        monkeypatch.delenv("HERMES_WEB_DIST", raising=False)
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_active_profile_name", lambda: "worker_x"
+        )
+        _host_owner(monkeypatch, "dashboard")
+        opened = []
+        monkeypatch.setitem(
+            sys.modules,
+            "webbrowser",
+            types.SimpleNamespace(open=lambda url: opened.append(url)),
+        )
+
+        with pytest.raises(SystemExit) as exc:
+            main_mod.cmd_dashboard(
+                _args(no_open=False, skip_build=True, ui_surface="webapp")
+            )
+
+        assert exc.value.code == 1
+        assert opened == []
+
+    def test_named_webapp_prints_route_without_opening_unauthorized_tab(self, main_mod, monkeypatch, capsys):
+        monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+        monkeypatch.delenv("HERMES_WEB_DIST", raising=False)
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_active_profile_name", lambda: "worker_x"
+        )
+        _host_owner(monkeypatch, "webapp")
+        opened = []
+        monkeypatch.setitem(
+            sys.modules,
+            "webbrowser",
+            types.SimpleNamespace(open=lambda url: opened.append(url)),
+        )
+
+        with pytest.raises(SystemExit) as exc:
+            main_mod.cmd_dashboard(
+                _args(no_open=False, skip_build=True, ui_surface="webapp")
+            )
+
+        assert exc.value.code == 0
+        assert opened == []
+        output = capsys.readouterr().out
+        assert "http://127.0.0.1:9119/?profile=worker_x" in output
+        assert "private launch link" in output
 
 
     def test_desktop_profile_backend_skips_machine_dashboard_reroute(self, main_mod, monkeypatch):

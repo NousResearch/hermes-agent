@@ -13,6 +13,8 @@ from dataclasses import asdict
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 import hermes_cli.update_inventory as update_inventory
 import hermes_cli.main_dashboard as main_dashboard
 
@@ -97,6 +99,24 @@ def test_inventory_includes_manual_serve_from_ledger(monkeypatch):
     assert row.restart_via == "respawn-argv"
     assert row.detail["host"] == "100.94.65.93"
     assert row.detail["port"] == 9119
+
+
+def test_inventory_includes_manual_webapp_from_ledger(monkeypatch):
+    entry = _ledger_entry(purpose="webapp", argv="hermes webapp --port 9119")
+    fake_pi = SimpleNamespace(
+        ledger_entries=lambda **k: [entry],
+        spawner_is_dead=lambda e: None,
+    )
+    monkeypatch.setitem(sys.modules, "hermes_cli.process_identity", fake_pi)
+
+    plan = update_inventory.collect_runtime_inventory()
+
+    webapps = [runtime for runtime in plan.runtimes if runtime.kind == "webapp"]
+    assert len(webapps) == 1
+    assert webapps[0].pid == 4321
+    assert webapps[0].supervisor == "manual-serve"
+    assert webapps[0].restart_via == "respawn-argv"
+
 
 def test_inventory_classifies_desktop_owned_serve(monkeypatch):
     entry = _ledger_entry(spawner_pid=999, spawner_create=1.0)
@@ -222,26 +242,40 @@ def test_inventory_records_the_serve_process_incarnation(monkeypatch):
 # update_inventory: launchd-owned serve/dashboard classification (#116503)
 # ---------------------------------------------------------------------------
 
-def test_inventory_classifies_launchd_job_owned_serve(monkeypatch):
+@pytest.mark.parametrize("kind", ["serve", "dashboard", "webapp"])
+def test_inventory_classifies_launchd_job_owned_serve(monkeypatch, kind):
     """A KeepAlive LaunchAgent backend's recorded spawner (the bootstrap shell) is long dead,
     so the spawner probe alone reads manual-serve — and the update plan then restarts it as a
     detached argv respawn that fights the job's own KeepAlive respawn. A loaded job whose
     ProgramArguments match the ledger argv must classify the row launchd (kickstart restart)."""
-    entry = _ledger_entry(spawner_pid=999, spawner_create=1.0)
+    entry = _ledger_entry(
+        purpose=kind,
+        argv=f"hermes {kind} --host 100.94.65.93 --port 9119",
+        spawner_pid=999,
+        spawner_create=1.0,
+    )
     fake_pi = SimpleNamespace(
         ledger_entries=lambda **k: [entry],
         spawner_is_dead=lambda e: True,  # bootstrap shell provably gone
     )
     jobs = [("gui/501", "ai.hermes.dashboard",
-             ["hermes", "serve", "--host", "100.94.65.93", "--port", "9119"], None)]
+             ["hermes", kind, "--host", "100.94.65.93", "--port", "9119"], None)]
     monkeypatch.setitem(sys.modules, "hermes_cli.process_identity", fake_pi)
     with patch.object(main_dashboard, "_loaded_launchd_backend_jobs", return_value=jobs), \
          patch("hermes_cli.dashboard_procs._process_ancestors", return_value=[]):
         plan = update_inventory.collect_runtime_inventory()
-    serves = [r for r in plan.runtimes if r.kind == "serve"]
+    serves = [r for r in plan.runtimes if r.kind == kind]
     assert serves, "launchd-owned serve must appear in the inventory"
     row = serves[0]
     assert row.supervisor == "launchd"
     assert row.restart_via == "launchd"
     assert row.detail["launchd_domain"] == "gui/501"
     assert row.detail["launchd_label"] == "ai.hermes.dashboard"
+
+    from hermes_cli.update_cmd_fleet import _gateway_recovery_partition
+
+    candidates, skipped = _gateway_recovery_partition(SimpleNamespace(runtimes=[row]))
+    assert candidates == {}
+    assert len(skipped) == 1
+    assert "launchd" in skipped[0]["reason"]
+    assert "kickstarts" in skipped[0]["reason"]

@@ -154,3 +154,32 @@ def probe_root(tmp_path):
     """
     (tmp_path / "hermes_bootstrap.py").write_text("", encoding="utf-8")
     return tmp_path
+
+
+@pytest.fixture
+def busy_profile_lease():
+    """Hold profile lifecycle leases on another thread, as an in-flight profile mutation does."""
+    import threading
+
+    from hermes_cli.profile_lifecycle import profile_lifecycle_lease
+
+    release = threading.Event()
+    holders = []
+
+    def hold(*homes):
+        held = threading.Event()
+
+        def run():
+            with profile_lifecycle_lease(*homes):
+                held.set()
+                release.wait(30)
+
+        holder = threading.Thread(target=run, daemon=True)
+        holder.start()
+        holders.append(holder)
+        assert held.wait(10)
+
+    yield hold
+    release.set()
+    for holder in holders:
+        holder.join(10)

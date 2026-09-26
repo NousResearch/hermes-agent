@@ -7,7 +7,8 @@ import { isMain } from './frontend-common.mjs'
 
 const receiptName = 'hermes-build.json'
 const workspaces = { tui: 'ui-tui', web: 'web', desktop: 'apps/desktop' }
-const generated = new Set(['node_modules', 'dist', 'build', 'release', '.cache', '.git', 'coverage', 'test-results', 'playwright-report'])
+// Another product's output under a workspace is never this product's input.
+const generated = new Set(['node_modules', 'dist', 'dist-webapp', 'build', 'release', '.cache', '.git', 'coverage', 'test-results', 'playwright-report'])
 
 // buildTui bundles these source roots (including the Ink source alias), not
 // the workspaces' documentation, test runners or other product recipes.
@@ -19,42 +20,74 @@ const tuiInputs = [
   'scripts/build/tui.mjs', 'scripts/build/frontend-common.mjs', 'scripts/build/freshness.mjs',
 ]
 
-function treeHash(root, inputs, skip, contents = () => true) {
-  const hash = createHash('sha256')
-  function visit(name) {
-    if (skip(name)) return
-    const file = join(root, name)
-    hash.update(name.replaceAll('\\', '/')).update('\0')
-    if (!existsSync(file)) { hash.update('missing\0'); return }
-    if (statSync(file).isDirectory()) {
-      hash.update('directory\0')
-      for (const child of readdirSync(file).sort()) visit(`${name}/${child}`)
-    } else {
-      hash.update(contents(name) ? readFileSync(file) : 'file').update('\0')
-    }
-  }
-  for (const input of inputs) visit(input)
-  return hash.digest('hex')
-}
+// The browser renderer compiles Desktop and its shared package in a prepared
+// workspace. Release metadata (pyproject.toml, uv.lock, icons) is not its input.
+const webappInputs = [
+  'apps/desktop', 'apps/shared', 'package.json', 'package-lock.json', '.npmrc', 'pm/lock.json',
+  'scripts/build/webapp.mjs', 'scripts/build/node-deps.mjs', 'scripts/build/frontend-common.mjs',
+  'scripts/build/freshness.mjs',
+]
 
-export function sourceHash(source, product) {
+function productInputs(product) {
+  if (product === 'tui') return tuiInputs
+  if (product === 'webapp') return webappInputs
   const workspace = workspaces[product]
   if (!workspace) throw new Error(`Unknown frontend product: ${product}`)
-  return treeHash(source, product === 'tui' ? tuiInputs : [
+  return [
     workspace, 'apps/shared', 'package.json', 'package-lock.json', '.npmrc', 'pm/lock.json',
     'scripts/build',
     'scripts/generate-icons.mjs', 'scripts/generate_icons.py',
     // The root install-stamp.json is runtime identity rewritten after every install; desktop's
     // baked stamp is a prepared input.
     'assets', 'pyproject.toml', 'uv.lock',
-  ], name => {
+  ]
+}
+
+function skipInput(product) {
+  return name => {
     // Build scripts are inputs; workspace build directories are outputs.
     const parts = name.split('/')
     return (!name.startsWith('scripts/') && parts.some(part => generated.has(part)))
       || (product === 'tui' && (parts.includes('__tests__') || /\.(test|spec)(-d)?\.[cm]?[jt]sx?$/.test(name)))
       || parts.some(part => part.startsWith('.dist-') || part.startsWith('.staging-') || part === '__pycache__')
       || name.endsWith('.tsbuildinfo') || name.endsWith('.pyc')
+  }
+}
+
+// Pre-order walk: a directory is reported before its sorted children.
+function walkTree(root, inputs, skip, onEntry) {
+  function visit(name) {
+    if (skip(name)) return
+    const file = join(root, name)
+    if (!existsSync(file)) return onEntry(name, 'missing')
+    if (!statSync(file).isDirectory()) return onEntry(name, 'file')
+    onEntry(name, 'directory')
+    for (const child of readdirSync(file).sort()) visit(`${name}/${child}`)
+  }
+  for (const input of inputs) visit(input)
+}
+
+function treeHash(root, inputs, skip, contents = () => true) {
+  const hash = createHash('sha256')
+  walkTree(root, inputs, skip, (name, kind) => {
+    hash.update(name.replaceAll('\\', '/')).update('\0')
+    if (kind === 'file') hash.update(contents(name) ? readFileSync(join(root, name)) : 'file').update('\0')
+    else hash.update(`${kind}\0`)
   })
+  return hash.digest('hex')
+}
+
+export function sourceHash(source, product) {
+  return treeHash(source, productInputs(product), skipInput(product))
+}
+
+/** The present entries a product's source hash covers, for mirroring a prepared workspace. */
+export function sourceEntries(source, product) {
+  const entries = []
+  walkTree(source, productInputs(product), skipInput(product), (name, kind) => {
+    if (kind !== 'missing') entries.push({ name, kind })
+  })
+  return entries
 }
 
 function outputHash(out) {

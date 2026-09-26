@@ -71,12 +71,12 @@ def _resolve_profile(rid, params):
     name = str(params.get("name") or "").strip()
     if not name:
         return name, None, _err(rid, 4063, "name required")
-    from hermes_cli.profiles import get_profile_dir
+    from hermes_cli.profiles import get_profile_dir, profile_home_is_tombstoned
     try:
         profile_dir = Path(get_profile_dir(name))
     except ValueError:
         return name, None, _err(rid, 4064, f"profile '{name}' not found")
-    if not profile_dir.is_dir():
+    if not profile_dir.is_dir() or profile_home_is_tombstoned(profile_dir):
         return name, None, _err(rid, 4064, f"profile '{name}' not found")
     return name, profile_dir, None
 
@@ -217,11 +217,27 @@ def _profile_session_fields(row, profile_path):
     """Attach last_session / worker_session / canonical_session to a roster row. The DB is a
     read-only attach (a writable ``SessionDB()`` waits up to 20s for the write lock + runs DDL
     and stalled the 5s roster poll); no/unreadable DB -> every field None (the readers swallow)."""
+    from hermes_constants import named_profile_home_is_unavailable
+    from hermes_cli.profile_incarnation import read_profile_incarnation
+    from tui_gateway.profile_roster_cache import cached_session_fields, invalidate
+
+    profile_dir = Path(profile_path)
+    empty = dict(last_session=None, worker_session=None, canonical_session=None)
+    # A retired profile must not return a warm cache entry for its old store.
+    if named_profile_home_is_unavailable(profile_dir):
+        invalidate(profile_path)
+        row.update(empty)
+        return
+
+    incarnation = _try(lambda: read_profile_incarnation(profile_dir), None)
+
     def _read() -> dict:
-        db_path = Path(profile_path) / "state.db"
-        db = None
-        if _try(db_path.exists, False):
-            db = _try(lambda: _lazy("hermes_state", "SessionDB")(db_path=db_path, read_only=True), None)
+        db_path = profile_dir / "state.db"
+        if named_profile_home_is_unavailable(profile_dir) or not db_path.exists():
+            raise FileNotFoundError(f"Profile store is unavailable: {db_path}")
+        # Let a failed open escape the cache computation: an unavailable read
+        # is not a successful empty store and must be retried on the next poll.
+        db = _lazy("hermes_state", "SessionDB")(db_path=db_path, read_only=True)
         try:
             last, worker = _latest_profile_session_rows(db)
             # Resolved server-side on every listing so no client carries a session pointer.
@@ -233,9 +249,14 @@ def _profile_session_fields(row, profile_path):
 
     # These three are a pure function of the profile's session store, and the roster re-asks every
     # 5s per connection — so they are reused while that store has not moved (#117257).
-    from tui_gateway.profile_roster_cache import cached_session_fields
-
-    row.update(cached_session_fields(profile_path, _read))
+    fields = _try(lambda: cached_session_fields(profile_path, _read), None)
+    # A warm hit performs no SessionDB admission. Recheck at publication so a
+    # retirement or replacement during lookup cannot publish the old answer.
+    if (fields is None or named_profile_home_is_unavailable(profile_dir)
+            or _try(lambda: read_profile_incarnation(profile_dir), None) != incarnation):
+        invalidate(profile_path)
+        fields = empty
+    row.update(fields)
 
 
 def _profile_ui_meta_fields(row: dict, profile_dir) -> None:
@@ -421,7 +442,11 @@ def _(rid, params: dict) -> dict:
     ext = next((e for e, magic in _ASSET_MAGIC.items() if all(blob[a:b] == m for a, b, m in magic)), None)
     if ext is None:
         return _err(rid, 4070, "unsupported image format (PNG/JPEG/WebP only)")
-    assets_dir.mkdir(parents=True, exist_ok=True)
+    from hermes_cli.profiles import profile_home_is_tombstoned
+    from hermes_constants import mkdir_under_hermes_home
+    if profile_home_is_tombstoned(profile_dir):
+        return _err(rid, 4064, f"profile '{_name}' not found")
+    mkdir_under_hermes_home(assets_dir)
     _unlink_asset_files(assets_dir, asset)  # one canonical file per asset
     tmp = assets_dir / f"{asset}.{ext}.tmp"
     tmp.write_bytes(blob)

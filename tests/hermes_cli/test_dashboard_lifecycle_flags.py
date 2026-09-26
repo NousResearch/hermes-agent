@@ -33,7 +33,7 @@ class TestDashboardStatus:
             cmd_dashboard(_ns(status=True))
         assert exc.value.code == 0
         out = capsys.readouterr().out
-        assert "No hermes dashboard or serve processes running" in out
+        assert "No Hermes web server processes running" in out
 
     def test_status_with_processes(self, capsys):
         # Includes a serve-mode backend: --status must LIST it, not hide it —
@@ -55,6 +55,19 @@ class TestDashboardStatus:
         assert "PID 12345" in out
         assert "PID 12346" in out
         assert "PID 12347" in out and "[serve]" in out
+
+    def test_status_reports_webapp_with_os_assigned_port(self, capsys):
+        processes = [(12347, "python -m hermes_cli.main webapp --port 0")]
+        with patch("hermes_cli.dashboard_procs._scan_dashboard_processes", return_value=processes), \
+             patch("gateway.status._pid_exists", return_value=True), \
+             patch("hermes_cli.main_dashboard._dashboard_listening", side_effect=AssertionError("no fixed port")), \
+             pytest.raises(SystemExit) as exc:
+            cmd_dashboard(_ns(status=True))
+
+        assert exc.value.code == 0
+        out = capsys.readouterr().out
+        assert "PID 12347" in out
+
 
     def test_status_does_not_try_to_import_fastapi(self):
         """`--status` must not require dashboard runtime deps — it's a

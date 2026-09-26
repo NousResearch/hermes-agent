@@ -21,9 +21,10 @@ def runtime_outside_gateway_evidence(runtime: dict) -> bool:
     Unclassified backends and failed transfers stay evidence against settlement (#115090, #111494).
     """
     from hermes_cli.update_cmd_fleet import _SUPERVISOR_OWNED_SERVE_BACKENDS
+    from hermes_cli.update_inventory import _SERVE_KINDS
     from hermes_cli.update_serve_obligations import defer_manual_serve
 
-    return runtime.get("kind") in ("serve", "dashboard") and (
+    return runtime.get("kind") in _SERVE_KINDS and (
         defer_manual_serve(runtime) or runtime.get("supervisor") in _SUPERVISOR_OWNED_SERVE_BACKENDS
     )
 

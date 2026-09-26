@@ -98,11 +98,23 @@ _tearing_down: Dict[Path, _TeardownBarrier] = {}
 _path_lifecycle_locks: Dict[Path, threading.Lock] = {}
 
 
-def _open_session_db(path: Path) -> "SessionDB":
+def _open_session_db(path: Path, expected_profile_incarnation: Optional[str]) -> "SessionDB":
     """Construct the SessionDB for *path* (call-time import avoids cycles; tests patch this)."""
     from hermes_state import SessionDB
 
-    return SessionDB(db_path=path)
+    return SessionDB(db_path=path, expected_profile_incarnation=expected_profile_incarnation)
+
+
+def _assert_expected_profile_incarnation(
+    path: Path,
+    expected_profile_incarnation: Optional[str],
+) -> None:
+    """Reject a stale named-profile acquisition before lending a generation."""
+    if expected_profile_incarnation is None:
+        return
+    from hermes_cli.profile_incarnation import assert_profile_incarnation_current
+
+    assert_profile_incarnation_current(path.parent, expected_profile_incarnation)
 
 
 def _teardown(db: "SessionDB") -> None:
@@ -192,7 +204,7 @@ def _finish_opening(path: Path, opening: threading.Event) -> None:
     opening.set()
 
 
-def acquire(db_path: Optional[Path] = None) -> "SessionDB":
+def acquire(db_path: Optional[Path] = None, expected_profile_incarnation: Optional[str] = None) -> "SessionDB":
     """Return the shared SessionDB for *db_path*, incrementing its refcount. If the file was
     replaced (different inode) since the generation opened, that generation is RETIRED
     but stays alive for its holders, and a fresh one is opened in its place. Raises
@@ -206,7 +218,40 @@ def acquire(db_path: Optional[Path] = None) -> "SessionDB":
     except OSError:
         path = raw_path
 
+    with _lock:
+        generation = _generations.get(path)
+        if generation is not None:
+            current = _stat_db_file_identity(path)
+            if current is None or generation.identity is None or current == generation.identity:
+                # Warm readers take no mutation lease: the tracked connection already
+                # prevents deletion of its generation. Check under _lock, since a
+                # delete/recreate may have replaced it before this caller got here.
+                _assert_expected_profile_incarnation(path, expected_profile_incarnation)
+                generation.refcount += 1
+                return generation.db
+
+    # A stale caller fails as stale here, never waiting on (or timing out behind) the lease.
+    _assert_expected_profile_incarnation(path, expected_profile_incarnation)
+    from hermes_cli.profile_incarnation import profile_incarnation_lease
+
+    # Acquire BEFORE publishing _opening or taking a path lifecycle mutex:
+    # gateway callers can already hold this lease when they enter the registry.
+    # Teardown does not acquire the profile lease, so waiting for its barrier
+    # here cannot invert that order. Default/custom homes remain lock-free.
+    with profile_incarnation_lease(path.parent, expected_profile_incarnation):
+        return _acquire_at_path(path, expected_profile_incarnation)
+
+
+def _acquire_at_path(path: Path, expected_profile_incarnation: Optional[str]) -> "SessionDB":
+    """Cold acquisition with named-profile lifecycle authority already held."""
+    # A shared generation may predate this caller, so constructor-time checks
+    # alone are insufficient: validate every incarnation-scoped acquisition
+    # before an existing handle can be lent. If no generation exists (or it is
+    # retired below), SessionDB repeats the check under the profile lifecycle
+    # lease while opening the fresh connection, closing the validation/open
+    # race with profile delete/recreate.
     while True:
+        _assert_expected_profile_incarnation(path, expected_profile_incarnation)
         wait_for: Optional[threading.Event] = None
         with _lock:
             generation = _generations.get(path)
@@ -242,7 +287,7 @@ def acquire(db_path: Optional[Path] = None) -> "SessionDB":
         # serialising other files, the lifecycle mutex keeps the open off a same-path close.
         try:
             with lifecycle_lock:
-                db = _open_session_db(path)
+                db = _open_session_db(path, expected_profile_incarnation)
                 db._shared_registry_owned = True
                 identity = _stat_db_file_identity(path)
         except BaseException:

@@ -154,7 +154,11 @@ class PtyBridge:
 
         try:
             loop.add_writer(self._fd, _mark_ready)
-            await asyncio.wait_for(ready, timeout=timeout)
+            # wait_for can swallow cancellation on Python 3.11 if readiness
+            # completes in the same tick as viewer takeover. Never retry input
+            # from that cancelled writer after the new viewer owns the PTY.
+            async with asyncio.timeout(timeout):
+                await ready
             return not self._closed
         except (asyncio.TimeoutError, OSError, ValueError):
             return False

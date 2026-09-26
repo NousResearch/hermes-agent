@@ -91,6 +91,8 @@ hermes_cli/web_dist/
 .web_ui_build.lock
 apps/desktop/build/
 apps/desktop/dist/
+apps/desktop/dist-webapp/
+.dist-webapp-build-*
 
 # tsc-emitted artifacts (a stray `tsc -b` compiles into src/, and vite then
 # resolves the stale .js OVER the .tsx — never track these)

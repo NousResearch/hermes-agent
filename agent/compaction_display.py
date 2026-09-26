@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
-from agent.context_compressor import ContextCompressor, is_compaction_summary_message
+from agent.context_compressor import (
+    ContextCompressor, is_compaction_summary_message, user_originated_turn_view,
+)
 
 
 _COMPACTION_INTERNAL_FIELDS = (
@@ -36,19 +38,27 @@ def project_compaction_message_for_display(message: Dict[str, Any]) -> Optional[
     Model-facing recovery history retains the complete carrier. Display
     projections instead remove the handoff, inherited tool state, and internal
     reasoning while preserving any real prior-tail content or live user ask
-    embedded in the carrier.
+    embedded in the carrier. User rows carry the canonical human-turn
+    classification derived from the original row, before display unwrapping.
     """
     if not isinstance(message, dict):
         return None
-    if not is_compaction_summary_message(message):
-        return message.copy()
+    if is_compaction_summary_message(message):
+        projected = ContextCompressor._strip_context_summary_handoff_message(message)
+        if projected is None:
+            return None
+        projected = projected.copy()
+        for key in _COMPACTION_INTERNAL_FIELDS:
+            projected.pop(key, None)
+        projected.pop("display_kind", None)
+    else:
+        projected = message.copy()
 
-    projected = ContextCompressor._strip_context_summary_handoff_message(message)
-    if projected is None:
-        return None
-
-    projected = projected.copy()
-    for key in _COMPACTION_INTERNAL_FIELDS:
-        projected.pop(key, None)
-    projected.pop("display_kind", None)
+    if message.get("role") == "user":
+        # Classify the physical row before unwrapping its display content. A
+        # composite carrier can contain a real ask even with a hidden wrapper;
+        # a typed runtime notice can contain ordinary-looking prose. The same
+        # canonical view owns backend retry/undo ordinals. This field belongs
+        # only to the fresh display copy, never model history or persistence.
+        projected["user_originated"] = user_originated_turn_view(message) is not None
     return projected

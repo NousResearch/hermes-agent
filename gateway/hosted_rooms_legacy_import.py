@@ -77,10 +77,11 @@ def _copy_rows(target: sqlite3.Connection, source: Path) -> int:
     the source's own DDL so its rows survive the upgrade too.
     """
     from gateway.hosted_rooms import _EVENT_BYTES_BACKFILL
+    from hermes_cli.sqlite_safe_read import connect_tracked
 
     copied_rooms: list[str] = []
     existing = {str(row[0]) for row in target.execute("SELECT room_id FROM hosted_rooms")}
-    with closing(sqlite3.connect(f"file:{source}?mode=ro", uri=True, timeout=10)) as legacy:
+    with closing(connect_tracked(f"file:{source}?mode=ro", uri=True, timeout=10)) as legacy:
         names = [str(row[0]) for row in legacy.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name GLOB 'hosted_room*'")]
         # Parents first: hosted_room_events carries a foreign key into hosted_rooms.

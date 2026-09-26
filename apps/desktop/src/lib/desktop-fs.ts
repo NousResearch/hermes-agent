@@ -6,6 +6,7 @@ import type {
   HermesSelectPathsOptions
 } from '@/global'
 import { translateNow } from '@/i18n'
+import { isBrowserHostedDesktop } from '@/lib/platform'
 import { $connection } from '@/store/session'
 
 export interface DesktopFsRemotePicker {
@@ -43,7 +44,7 @@ export function desktopFsCacheKey(connection: HermesConnection | null = $connect
 }
 
 export function isDesktopFsRemoteMode() {
-  return $connection.get()?.mode === 'remote'
+  return $connection.get()?.mode === 'remote' || isBrowserHostedDesktop()
 }
 
 // Active profile for FS/git REST calls. Without it the Electron api bridge

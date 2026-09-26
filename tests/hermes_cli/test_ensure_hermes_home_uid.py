@@ -64,12 +64,13 @@ class TestChownToHermesUid:
         the entrypoint's startup chown -R will pick it up on restart, and
         in most cases the dir was already correctly-owned by the calling
         user anyway."""
-        monkeypatch.setenv("HERMES_UID", "1000")
-        monkeypatch.setenv("HERMES_GID", "911")
         import hermes_constants as cfg
 
         d = tmp_path / "subdir"
         d.mkdir()
+        owner = d.stat()
+        monkeypatch.setenv("HERMES_UID", str(owner.st_uid + 1))
+        monkeypatch.setenv("HERMES_GID", str(owner.st_gid + 1))
 
         def _raises_eperm(*args, **kwargs):
             raise PermissionError("operation not permitted")
@@ -88,16 +89,18 @@ class TestChownToHermesUid:
 class TestSecureDirChown:
     @pytest.mark.platforms("posix")  # chown is no-op on Windows
     def test_secure_dir_invokes_chown_when_env_set(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_UID", "1000")
-        monkeypatch.setenv("HERMES_GID", "911")
         from hermes_cli import config as cfg
 
         d = tmp_path / "subdir"
         d.mkdir()
+        owner = d.stat()
+        uid, gid = owner.st_uid + 1, owner.st_gid + 1
+        monkeypatch.setenv("HERMES_UID", str(uid))
+        monkeypatch.setenv("HERMES_GID", str(gid))
 
         with patch.object(cfg.os, "chown") as mock_chown:
             cfg._secure_dir(d)
-        mock_chown.assert_called_once_with(d, 1000, 911)
+        mock_chown.assert_called_once_with(d, uid, gid)
 
     @pytest.mark.platforms("posix")  # chown is no-op on Windows
     def test_secure_dir_no_chown_when_env_unset(self, tmp_path, monkeypatch):

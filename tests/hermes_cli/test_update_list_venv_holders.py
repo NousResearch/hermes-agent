@@ -34,6 +34,7 @@ def test_list_venv_holders_json_and_exit_3_when_holders_present(monkeypatch, cap
         (4343, "python.exe", r"C:\hermes\venv\Scripts\python.exe -m hermes_cli.main gateway run"),
         (4444, "python.exe", r"C:\hermes\venv\Scripts\python.exe -m hermes_cli.main -p work kanban list"),
         (4545, "python.exe", r"C:\hermes\venv\Scripts\python.exe some_script.py"),
+        (4646, "python.exe", r"C:\hermes\venv\Scripts\python.exe -m hermes_cli.main webapp --port 9119"),
     ]
     monkeypatch.setattr(cli_main, "_detect_venv_python_processes", lambda: holders)
 
@@ -43,7 +44,8 @@ def test_list_venv_holders_json_and_exit_3_when_holders_present(monkeypatch, cap
     assert exc.value.code == update_cmd_windows.VENV_HOLDERS_EXIT == 3
     payload = json.loads(capsys.readouterr().out)
     assert [(h["pid"], h["kind"]) for h in payload] == [
-        (4242, "backend"), (4343, "gateway"), (4444, "hermes:kanban"), (4545, "python")]
+        (4242, "backend"), (4343, "gateway"), (4444, "hermes:kanban"), (4545, "python"),
+        (4646, "backend")]
     assert set(payload[0]) == {"pid", "exe", "argv", "kind"}
     assert payload[0]["argv"].endswith("serve --port 8642")
 

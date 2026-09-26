@@ -4078,6 +4078,7 @@ export interface Translations {
       sentMessage: (count: number) => string
     }
     web: {
+      embeddedPreviewHint: string
       appFailedToBoot: string
       serverNotFound: string
       remoteLoopback: string

@@ -71,6 +71,7 @@ def test_served_profile_store_move_broadcasts_sessions_changed(watcher_home, mon
     home, events = watcher_home
     bot_home = home / "profiles" / "bot"
     bot_home.mkdir(parents=True)
+    (bot_home / "config.yaml").write_text("{}\n", encoding="utf-8")
     monkeypatch.setattr(server, "_served_profile_homes", set())
     monkeypatch.setattr("hermes_cli.profiles.get_profile_dir", lambda name: home / "profiles" / name)
     assert server._profile_home("bot") == bot_home

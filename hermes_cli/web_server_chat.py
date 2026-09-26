@@ -17,7 +17,7 @@ import urllib.request
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from pathlib import Path
 from typing import Optional
-from hermes_cli.pty_session import PtySessionRegistry
+from hermes_cli.pty_session import PtySessionRegistry, WS_CLOSE_PROCESS_EXITED
 
 # Same logger the code used before extraction (record parity).
 _log = logging.getLogger("hermes_cli.web_server")
@@ -69,10 +69,12 @@ async def _legacy_pump(ws: "WebSocket", bridge) -> None:
     loop = asyncio.get_running_loop()
 
     async def pump_pty_to_ws() -> None:
+        process_exited = False
         try:
             while True:
                 chunk = await loop.run_in_executor(None, bridge.read, _PTY_READ_CHUNK_TIMEOUT)
                 if chunk is None:  # EOF
+                    process_exited = True
                     return
                 if not chunk:  # no data this tick; yield control and retry
                     await asyncio.sleep(_PTY_IDLE_BACKOFF)
@@ -92,7 +94,7 @@ async def _legacy_pump(ws: "WebSocket", bridge) -> None:
                 # reap independent of that cancellation race (#54028).
                 await asyncio.to_thread(bridge.close)
             with contextlib.suppress(Exception):
-                await ws.close()
+                await ws.close(code=WS_CLOSE_PROCESS_EXITED if process_exited else 1000)
 
     reader_task = asyncio.create_task(pump_pty_to_ws())
 
@@ -217,7 +219,7 @@ def _gateway_ws_ticket_from_subprotocol(ws: "WebSocket") -> tuple[str, str]:
     return (ticket, "ok") if ticket else ("", "invalid")
 
 
-def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
+def _ws_auth_reason(ws: "WebSocket", *, allow_internal: bool = False) -> tuple[Optional[str], str]:
     """Validate WS-upgrade auth; return ``(reason, credential)``.
 
     ``reason`` is None when accepted, else a short token (``no_credential``,
@@ -255,6 +257,9 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
 
         internal = ws.query_params.get("internal", "")
         if internal:
+            if not allow_internal:
+                _reject("internal: endpoint not allowed")
+                return "internal_not_allowed", "internal"
             try:
                 _stamp_identity(consume_internal_credential(internal))
                 return None, "internal"
@@ -295,9 +300,74 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
     return "token_mismatch", "token"
 
 
-def _ws_auth_ok(ws: "WebSocket") -> bool:
+def _ws_auth_ok(ws: "WebSocket", *, allow_internal: bool = False) -> bool:
     """True when the WS-upgrade credential is accepted. See _ws_auth_reason."""
-    return _ws_auth_reason(ws)[0] is None
+    return _ws_auth_reason(ws, allow_internal=allow_internal)[0] is None
+
+
+def _ws_auth_mode() -> str:
+    """Short label for the active WS auth mode — logged on every connection."""
+    from hermes_cli.web_server import app
+    if getattr(app.state, "auth_required", False):
+        return "gated"
+    bound_host = (getattr(app.state, "bound_host", "") or "").strip().lower()
+    if bound_host and bound_host not in _LOOPBACK_HOSTS:
+        return "insecure"
+    return "loopback"
+
+
+def _ws_close_reason(text: str) -> str:
+    """Clamp to RFC 6455's 123-byte close-reason limit (uvicorn raises past it);
+    reasons embed an attacker-controlled origin, so truncate rather than crash."""
+    encoded = text.encode("utf-8", "replace")
+    if len(encoded) <= 123:
+        return text
+    return encoded[:120].decode("utf-8", "ignore") + "..."
+
+
+async def _ws_gate(ws: WebSocket, kind: str) -> Optional[tuple[str, str, str]]:
+    """Run the pre-accept gates for /api/console, /api/pty and /api/host-terminal.
+
+    Each gate maps to a distinct close code so the log and the browser banner
+    agree on the cause: 4404 chat disabled, 4401 bad credential, 4403
+    host/origin mismatch, 4408 peer not allowed. Returns ``(peer, mode, cred)``
+    once every gate passes, or None after closing the socket.
+    """
+    from hermes_cli.web_server import _DASHBOARD_EMBEDDED_CHAT_ENABLED
+    peer = ws.client.host if ws.client else "?"
+    if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
+        _log.info("%s refused: embedded chat disabled peer=%s", kind, peer)
+        await ws.close(code=4404, reason="embedded chat disabled")
+        return None
+
+    auth_reason, cred = _ws_auth_reason(ws)
+    mode = _ws_auth_mode()
+    if auth_reason is not None:
+        _log.warning("%s auth rejected reason=%s mode=%s cred=%s peer=%s", kind, auth_reason, mode, cred, peer)
+        await ws.close(code=4401, reason=_ws_close_reason(f"auth: {auth_reason}"))
+        return None
+
+    host_origin_reason = _ws_host_origin_reason(ws)
+    if host_origin_reason is not None:
+        _log.warning("%s refused: %s peer=%s", kind, host_origin_reason, peer)
+        await ws.close(code=4403, reason=_ws_close_reason(host_origin_reason))
+        return None
+
+    client_reason = _ws_client_reason(ws)
+    if client_reason is not None:
+        _log.warning("%s refused: %s", kind, client_reason)
+        await ws.close(code=4408, reason=_ws_close_reason(client_reason))
+        return None
+    return peer, mode, cred
+
+
+async def _pty_fail(ws: WebSocket, exc: BaseException, *, surface: str = "Chat") -> None:
+    """Tell the user why chat could not start, then close 1011 so the SPA renders
+    "Start new session". The raw exception goes to the server log only."""
+    from hermes_cli.web_routers.chat_ws_errors import chat_start_failure_message
+    _log.warning("pty start failed: %s: %s", type(exc).__name__, exc)
+    await ws.send_text(f"\r\n\x1b[31m{chat_start_failure_message(exc, surface=surface)}\x1b[0m\r\n")
+    await ws.close(code=1011)
 
 
 def _resolve_chat_argv(

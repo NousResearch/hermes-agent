@@ -19,8 +19,6 @@ from hermes_cli.update_cmd_common import _best_effort
 
 logger = logging.getLogger("hermes_cli.update_cmd")  # log-record parity with the origin module
 
-_BACKEND_PURPOSES = ("serve", "dashboard")
-
 
 def _try_call(fn, log_message: str, *log_args, default=None):
     """``fn()``, or *default* after logging the exception at debug (``log_message`` gets ``*log_args, exc``)."""
@@ -102,9 +100,12 @@ def _self_and_non_gateway_ancestor_pids(psutil) -> set[int]:
 
 
 def _cmdline_or_empty(proc) -> str:
-    """Joined argv of a psutil process, ``""`` when it can't be read."""
+    """Quoted argv of a psutil process, empty when it can't be read.
+
+    Keep executable/script paths with spaces as single tokens for the holder matcher.
+    """
     try:
-        return " ".join(proc.cmdline() or [])
+        return subprocess.list2cmdline(proc.cmdline() or [])
     except Exception:
         return ""
 
@@ -227,32 +228,44 @@ def _holder_value_flags() -> frozenset:
     return _holder_value_flags_cache
 
 
-def _hermes_holder_subcommand(cmdline: str) -> str | None:
+def _hermes_holder_subcommand(cmdline: str, *, module_only: bool = False) -> str | None:
     """The actual Hermes SUBCOMMAND a venv-holder argv runs, or None (callers must NOT guess a label).
 
-    Token-based, never substring (``kanban --preserve-cache`` contains "serve"): find the ``hermes_cli.main`` /
-    ``hermes(.exe)`` entry token, return the first following token that isn't a flag or a flag's value.
-
-    Profile selectors (``--profile X``, ``-p X``) are skipped like the canonical gateway matcher does. See
-    #90778.
+    Only the executable or Python's execution target may identify Hermes. A ``-c`` payload, another
+    script/module's arguments, or a shell carrying a Hermes command is not a backend. Console-script
+    wrappers and direct main.py launches remain valid; CLI value flags come from the real parser.
+    ``module_only`` restricts Desktop-owned callers to their ``-m hermes_cli.main`` spawn shape.
+    Interpreter options are walked by the canonical ``hermes_state_holders`` helpers, never a local
+    copy of Python's option table.
     """
-    try:
-        tokens = shlex.split(cmdline, posix=False)
-    except Exception:
-        tokens = cmdline.split()
-
-    def _is_entry(i: int, token: str) -> bool:
-        low = token.lower().strip('"')
-        return (low.endswith("hermes_cli.main") and i > 0 and tokens[i - 1] == "-m") or (
-            low.rsplit("\\", 1)[-1].rsplit("/", 1)[-1] in ("hermes", "hermes.exe"))
-
-    entry_idx = next((i for i, token in enumerate(tokens) if _is_entry(i, token)), None)
-    if entry_idx is None:
+    if not cmdline:
         return None
-    # ``python -c <src> … -m hermes_cli.main <subcommand>``: the entry token belongs to the argv the
-    # inline source carries for a LATER spawn, not to this holder (#107002).
-    from gateway.status import command_line_runs_inline_source
-    if command_line_runs_inline_source([t.strip('"').replace("\\", "/") for t in tokens]):
+    try:
+        tokens = [token.strip("\"'") for token in shlex.split(cmdline, posix=False)]
+    except ValueError:
+        return None
+    if not tokens:
+        return None
+
+    def _is_script(token: str) -> bool:
+        normalized = token.lower().replace("\\", "/")
+        return normalized.rsplit("/", 1)[-1] in ("hermes", "hermes.exe") or (
+            normalized == "hermes_cli/main.py" or normalized.endswith("/hermes_cli/main.py"))
+
+    entry_idx = 0
+    module_target = False
+    if not _is_script(tokens[0]):
+        from hermes_state_holders import _looks_like_python_executable, _python_execution_target
+
+        target = _python_execution_target(tokens) if _looks_like_python_executable(tokens[0]) else None
+        if target is None:
+            return None
+        kind, value, entry_idx = target
+        module_target = kind == "module"
+        # Hermes' other entry points (hermes-agent, hermes-acp, run_agent.py) have no subcommands.
+        if not (value == "hermes_cli.main" if module_target else _is_script(value)):
+            return None
+    if module_only and not module_target:
         return None
     value_flags = _holder_value_flags()
     i = entry_idx + 1
@@ -296,15 +309,16 @@ def _venv_launcher_ancestors(pids: list[int]) -> list[int]:
 def _venv_holder_kind(cmdline: str) -> str:
     """Machine-readable class of one venv holder for ``--list-venv-holders``.
 
-    ``gateway`` (the pausable gateway matcher), ``backend`` (``serve``/``dashboard`` -- the Desktop
-    app's backend shape), ``hermes:<subcommand>`` for any other Hermes entry, else ``python``.
+    ``gateway`` (the pausable gateway matcher), ``backend`` (all web-server purposes),
+    ``hermes:<subcommand>`` for any other Hermes entry, else ``python``.
     Derived from the same classifiers the refusal path uses so automation stops exactly what the
     guard would refuse on."""
     from hermes_cli._scan_venv_blockers import _is_pausable_gateway
+    from hermes_cli.process_identity import WEB_SERVER_PURPOSES
     if _is_pausable_gateway(cmdline):
         return "gateway"
     subcommand = _hermes_holder_subcommand(cmdline)
-    if subcommand in _BACKEND_PURPOSES:
+    if subcommand in WEB_SERVER_PURPOSES:
         return "backend"
     if subcommand:
         return f"hermes:{subcommand}"
@@ -328,7 +342,7 @@ def list_venv_holders() -> list[dict]:
             with suppress(Exception):
                 proc = psutil.Process(int(pid))
                 exe = proc.exe() or name
-                argv = " ".join(proc.cmdline()) or cmdline
+                argv = _cmdline_or_empty(proc) or cmdline
         holders.append({"pid": int(pid), "exe": exe, "argv": argv, "kind": _venv_holder_kind(argv)})
     return holders
 
@@ -346,7 +360,7 @@ def _leftover_pausable_gateway_pids(matches: list[tuple[int, str, str]]) -> list
         argv = cmdline
         if psutil is not None:
             with suppress(Exception):
-                argv = " ".join(psutil.Process(int(pid)).cmdline()) or cmdline
+                argv = _cmdline_or_empty(psutil.Process(int(pid))) or cmdline
         if not _is_pausable_gateway(argv):
             return None
         pids.append(int(pid))
@@ -380,19 +394,19 @@ def _refuse_gateway_ancestor_tree_kill(pids: list[int], *, gateway_mode: bool) -
 
 
 def _ledger_manual_serve_holders(matches: list[tuple[int, str, str]]) -> list[dict]:
-    """Full ledger entries for venv holders that are MANUAL serve/dashboard backends.
+    """Full ledger entries for venv holders that are manual web-server backends.
 
-    Positive identity only: self-registered purpose serve/dashboard, live (pid, create_time), recorded spawner
+    Positive identity only: self-registered purpose serve/dashboard/webapp, live (pid, create_time), recorded spawner
     NOT alive (a Desktop-owned backend keeps its live Electron spawner and must keep the refusal — the app would
     respawn what we kill). Full entries let the relauncher rebuild from host/port/profile, not argv."""
     try:
-        from hermes_cli.process_identity import ledger_entries, spawner_is_dead
+        from hermes_cli.process_identity import WEB_SERVER_PURPOSES, ledger_entries, spawner_is_dead
     except Exception:
         return []
     holder_pids = {int(pid) for pid, _name, _cmd in matches}
     return [
         entry for entry in ledger_entries()
-        if entry.get("purpose") in _BACKEND_PURPOSES and isinstance(entry.get("pid"), int) and entry["pid"] in holder_pids
+        if entry.get("purpose") in WEB_SERVER_PURPOSES and isinstance(entry.get("pid"), int) and entry["pid"] in holder_pids
         and spawner_is_dead(entry) is not False  # False = live Desktop supervisor owns it; keep refusing
     ]
 
@@ -434,17 +448,17 @@ def _relaunch_stopped_serves(token: dict) -> None:
     skipped = len(entries) - len(commands)
     failed: list = []
     if commands:
-        print("  ⟲ Relaunching stopped serve/dashboard backend(s)")
+        print("  ⟲ Relaunching stopped serve/dashboard/webapp backend(s)")
         failed = _m()._respawn_dashboard_processes(commands)
     if skipped or failed:
-        print("  ⚠ Some stopped backends could not be relaunched automatically; restart them manually (hermes serve --host <ip> --port <port>).")
+        print("  ⚠ Some stopped backends could not be relaunched automatically; restart them manually with their original web-server command.")
     _record_update_step(
         "serve_relaunch", not failed and not skipped,
         f"relaunched={len(commands) - len(failed)} failed={len(failed)} skipped={skipped}",
     )
 
 
-def _is_backend_argv(argv_low: str) -> bool:
+def _is_backend_argv(argv: str) -> bool:
     """Whether an argv is a DESKTOP backend — feeds ``taskkill /T`` via ``_orphaned_desktop_backend_pids``.
 
     Same predicate as ``_looks_like_desktop_control_plane``: ``-m hermes_cli.main`` entry shape (the
@@ -452,19 +466,23 @@ def _is_backend_argv(argv_low: str) -> bool:
     ``serve``/``dashboard``. A user-launched ``hermes.exe serve`` / ``hermes dashboard`` is NOT the
     Desktop's: the guard refuses on it, never reaps it.
     """
-    return _looks_like_desktop_control_plane(argv_low)
+    return _looks_like_desktop_control_plane(argv)
 
 
-def _live_argv_low(psutil, pid, cmdline: str) -> str | None:
-    """Current lower-cased argv of *pid* (falls back to the scanned *cmdline*); ``None`` if it exited."""
+def _live_argv(psutil, pid, cmdline: str) -> str | None:
+    """Current argv of *pid* (falls back to the scanned *cmdline*); ``None`` if it exited.
+
+    Preserve case: Python's -X/-W and -x/-w do not have interchangeable meanings.
+    """
     argv = cmdline
     try:
-        argv = " ".join(psutil.Process(int(pid)).cmdline()) or cmdline
+        proc = psutil.Process(int(pid))
+        argv = subprocess.list2cmdline(proc.cmdline()) or cmdline
     except psutil.NoSuchProcess:
         return None
     except Exception:
         pass
-    return argv.lower()
+    return argv
 
 
 def _orphaned_desktop_backend_pids(matches: list[tuple[int, str, str]]) -> list[tuple[int, int]] | None:
@@ -493,10 +511,10 @@ def _orphaned_desktop_backend_pids(matches: list[tuple[int, str, str]]) -> list[
     roots: list[tuple[int, int]] = []
     remaining: list[int] = []  # holders still to justify
     for pid, _name, cmdline in matches:
-        low = _live_argv_low(psutil, pid, cmdline)
-        if low is None:
+        argv = _live_argv(psutil, pid, cmdline)
+        if argv is None:
             continue  # exited between scan and classification — nothing to reap
-        if not _is_backend_argv(low):
+        if not _is_backend_argv(argv):
             remaining.append(int(pid))
             continue
         try:
@@ -570,10 +588,10 @@ def _handoff_reapable_backend_pids(matches: list[tuple[int, str, str]]) -> list[
         return None
     roots: list[int] = []
     for pid, _name, cmdline in matches:
-        low = _live_argv_low(psutil, pid, cmdline)
-        if low is None:
+        argv = _live_argv(psutil, pid, cmdline)
+        if argv is None:
             continue  # exited — nothing to reap
-        if not _is_backend_argv(low):
+        if not _is_backend_argv(argv):
             return None  # unexpected non-backend holder: refuse the whole set
         roots.append(int(pid))
     return roots or None
@@ -617,7 +635,8 @@ def _looks_like_desktop_control_plane(cmdline: str) -> bool:
     A cmdline whose subcommand cannot be determined is NOT a control plane — callers must not guess
     ownership. See #90778, #91869.
     """
-    return "hermes_cli.main" in (cmdline or "").lower() and _hermes_holder_subcommand(cmdline) in _BACKEND_PURPOSES
+    from hermes_cli.process_identity import WEB_SERVER_PURPOSES
+    return _hermes_holder_subcommand(cmdline, module_only=True) in WEB_SERVER_PURPOSES
 
 
 def _desktop_owns_gateway_lifecycle() -> bool:
@@ -631,8 +650,8 @@ def _desktop_owns_gateway_lifecycle() -> bool:
     """
     from hermes_cli.update_cmd import _m
     with _best_effort('Desktop-lifecycle ledger probe failed: %s'):
-        from hermes_cli.process_identity import ledger_entries, spawner_is_dead
-        if any(e.get("purpose") in _BACKEND_PURPOSES and spawner_is_dead(e) is False for e in ledger_entries()):
+        from hermes_cli.process_identity import WEB_SERVER_PURPOSES, ledger_entries, spawner_is_dead
+        if any(e.get("purpose") in WEB_SERVER_PURPOSES and spawner_is_dead(e) is False for e in ledger_entries()):
             return True
     psutil = _psutil()
     for pid, _name, cmdline in _try_call(_detect_venv_python_processes, "Desktop-lifecycle holder scan failed: %s") or []:

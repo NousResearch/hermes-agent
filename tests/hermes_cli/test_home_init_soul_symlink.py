@@ -22,7 +22,7 @@ def test_initialize_home_replaces_unwritable_soul_symlink(tmp_path, target):
     soul = home / "SOUL.md"
     soul.symlink_to(home / target)
 
-    initialize_home(home, _SUBDIRS, set())
+    initialize_home(home, _SUBDIRS, {})
 
     assert not soul.is_symlink()
     assert soul.read_text(encoding="utf-8") == DEFAULT_SOUL_MD
@@ -39,7 +39,7 @@ def test_soul_symlink_to_customized_file_is_left_alone(tmp_path):
     soul.symlink_to(target)
 
     _ensure_default_soul_md(home)
-    initialize_home(home, _SUBDIRS, set())
+    initialize_home(home, _SUBDIRS, {})
 
     assert soul.is_symlink()
     assert soul.read_text(encoding="utf-8") == "custom identity\n"

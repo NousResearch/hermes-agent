@@ -137,7 +137,8 @@ async def get_host_identity(request: Request):
     # `hermes dashboard` are one host role that differ in SPA.
     return {"ok": True, "protocolVersion": 1, "pid": os.getpid(),
             "role": getattr(app.state, "host_role", None) or "serve",
-            "servesSpa": bool(getattr(app.state, "serves_spa", False))}
+            "servesSpa": bool(getattr(app.state, "serves_spa", False)),
+            "ui_surface": getattr(app.state, "ui_surface", "dashboard")}
 
 
 @router.get("/api/health/idle")
@@ -499,6 +500,7 @@ async def get_status(profile: Optional[str] = None):
 
         status = {
             "version": get_version_info().base_version, "release_date": __release_date__,
+            "ui_surface": getattr(app.state, "ui_surface", "dashboard"),
             "config_version": current_ver, "latest_config_version": latest_ver,
             "can_update_hermes": not _dashboard_local_update_managed_externally(),
             "gateway_running": gateway_running, "gateway_state": gateway_state,

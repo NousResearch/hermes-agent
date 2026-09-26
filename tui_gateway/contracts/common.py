@@ -166,6 +166,7 @@ class TranscriptMessage(OpenModel):
     row_id: int | None = None
     display_kind: str | None = None
     display_metadata: JsonValue | None = None
+    user_originated: bool | None = None
     name: str | None = None
     context: str | None = None
     args: dict[str, JsonValue] | None = None

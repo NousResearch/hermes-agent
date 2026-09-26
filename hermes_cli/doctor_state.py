@@ -284,9 +284,9 @@ def _check_scratch_dir(hermes_home: Path, _DHH: str) -> None:
 
 
 def _session_count(state_db_path: Path):
-    import sqlite3
+    from hermes_cli.sqlite_safe_read import connect_tracked
     # mode=ro: doctor is a reader; a writable open of a gateway-held WAL DB is the second-writer class (#103339).
-    conn = sqlite3.connect(read_only_db_uri(state_db_path), uri=True)
+    conn = connect_tracked(read_only_db_uri(state_db_path), uri=True)
     try:
         return conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
     finally:
@@ -302,6 +302,7 @@ def _write_health_reason(state_db_path: Path, *, should_fix: bool):
     that probe is the second-writer class (#103339), so probe a read-only snapshot instead; a quiet
     store is probed in place. Returns the failure reason, or None when healthy or skipped."""
     from hermes_state_repair import _db_opens_cleanly, _live_writer_holds_db
+    from hermes_cli.sqlite_safe_read import connect_tracked
     if not _live_writer_holds_db(state_db_path):
         return _db_opens_cleanly(state_db_path)
     if not should_fix and state_db_path.stat().st_size > _WRITE_PROBE_SNAPSHOT_MAX_BYTES:
@@ -312,7 +313,7 @@ def _write_health_reason(state_db_path: Path, *, should_fix: bool):
     import tempfile
     with tempfile.TemporaryDirectory() as tmp:
         snapshot = Path(tmp) / "state.db"
-        src = sqlite3.connect(read_only_db_uri(state_db_path), uri=True, timeout=1.0)
+        src = connect_tracked(read_only_db_uri(state_db_path), uri=True, timeout=1.0)
         try:
             dest = sqlite3.connect(str(snapshot))
             try:

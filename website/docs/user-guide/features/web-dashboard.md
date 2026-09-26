@@ -972,6 +972,13 @@ browser-facing hostname while forwarding to a dashboard bound to
 such as `dashboard.example.com.evil.test` remains rejected by the DNS-rebinding
 guard.
 
+Cookie-authenticated writes (`POST`, `PUT`, `PATCH`, `DELETE`) must come from
+the dashboard's own origin. Current browsers prove that with the
+`Sec-Fetch-Site: same-origin` header, which works behind any proxy. For a
+browser that does not send it, the dashboard compares `Origin` with
+`public_url` (or, when unset, the scheme and Host it received), so set
+`public_url` when the proxy terminates TLS or rewrites `Host`.
+
 Declaring a non-loopback `public_url` always engages the dashboard auth gate,
 even when the backend binds to loopback. Configure a password or OAuth provider
 first; without one, Hermes fails closed at startup. This prevents the local SPA

@@ -74,3 +74,41 @@ def test_a_profile_without_a_store_is_not_memoised_and_picks_one_up(home):
     _seed(bare, "20260920_000003_c", "now it exists")
 
     assert _row("bare")["last_session"]["title"] == "now it exists"
+
+
+def test_cached_session_fields_never_outlive_profile_retirement_or_recreation(home):
+    import os
+    import shutil
+
+    from hermes_cli import profile_lifecycle
+    from hermes_cli.profile_incarnation import ensure_profile_incarnation, write_fresh_profile_incarnation
+    from hermes_constants import clear_named_profile_deleted, mark_named_profile_deleted
+
+    bob = home / "profiles" / "bob"
+    _seed(bob, "20260920_000001_a", "old chat")
+    ensure_profile_incarnation(bob)
+    original = {}
+    srv._profile_session_fields(original, bob)
+    assert original["last_session"]["title"] == "old chat"
+    mark_named_profile_deleted(bob)
+    try:
+        retired = {}
+        srv._profile_session_fields(retired, bob)
+        assert retired == dict(last_session=None, worker_session=None, canonical_session=None)
+    finally:
+        clear_named_profile_deleted(bob)
+
+    # Same pathname, size and timestamps must not preserve the old generation's
+    # memo. Keep a backup alive so an allocator cannot reuse its file identities.
+    srv._profile_session_fields({}, bob)
+    old = home / "old-bob"
+    shutil.copytree(bob, old)
+    signature = cache.store_signature(bob)
+    with profile_lifecycle.profile_lifecycle_lease(bob):
+        write_fresh_profile_incarnation(bob)
+    for path in old.iterdir():
+        target = bob / path.name
+        if target.exists():
+            stat = path.stat()
+            os.utime(target, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    assert cache.store_signature(bob) != signature

@@ -562,12 +562,33 @@ def _ensure_default_soul_md(home: Path) -> None:
     _secure_file(soul_path)
 
 
-# Home paths whose directory skeleton was created this process. Only successful passes are
-# recorded, so a raised managed-mode/missing-profile error keeps re-checking on later loads.
-_HERMES_HOME_ENSURED: set = set()
+# Named homes need a persisted generation: filesystems can reuse inode and ctime together.
+# No ctime either: every create/import mints a fresh token, while every write in the profile
+# root (config.yaml, auth.json, state.db -wal/-shm) moves ctime and would force a re-init.
+_HERMES_HOME_ENSURED: dict[str, tuple[int, int, str | None]] = {}
 _HERMES_HOME_SUBDIRS = (
     "cron", "sessions", "logs", "logs/curator", "memories",
     "pairing", "hooks", "image_cache", "audio_cache", "skills")
+
+
+def _hermes_home_identity(
+    home: Path, *, named_profile: bool,
+) -> tuple[int, int, str | None] | None:
+    try:
+        value = home.stat()
+        incarnation = None
+        if named_profile:
+            from hermes_cli.profile_incarnation import PROFILE_INCARNATION_FILENAME, read_incarnation_marker
+
+            # Callers already derived named_profile, so read the marker directly (this runs on
+            # every load). A tokenless home cannot prove a reusable cache identity until
+            # initialize_home adopts a marker, which it does whenever the lifecycle lease is free.
+            incarnation = read_incarnation_marker(home / PROFILE_INCARNATION_FILENAME)
+            if incarnation is None:
+                return None
+    except OSError:
+        return None
+    return (value.st_dev, value.st_ino, incarnation)
 
 
 def ensure_hermes_home():
@@ -579,9 +600,11 @@ def ensure_hermes_home():
 
     # Named profiles must be created explicitly. Check tombstones BEFORE the memo so a stale
     # empty shell cannot skip the deleted-profile guard.
-    from hermes_constants import assert_named_profile_home_live
-    assert_named_profile_home_live(home)
-    if key in _HERMES_HOME_ENSURED and home.is_dir():
+    from hermes_constants import assert_named_profile_home_available, profile_deletion_marker_path
+    named_profile = profile_deletion_marker_path(home) is not None
+    assert_named_profile_home_available(home)
+    current_identity = _hermes_home_identity(home, named_profile=named_profile)
+    if current_identity is not None and _HERMES_HOME_ENSURED.get(key) == current_identity:
         return
     from hermes_cli.config_home import initialize_home
     initialize_home(home, _HERMES_HOME_SUBDIRS, _HERMES_HOME_ENSURED)
@@ -2296,6 +2319,9 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
             _, fast_sig = _load_config_cache_sig(config_path)
             hit = _load_config_cache_hit(path_key, fast_sig)
             if hit is not None:
+                # YAML freshness cannot prove the named home's generation is live.
+                # Keep the lifecycle check without waiting on the config writer lock.
+                ensure_hermes_home()
                 return copy.deepcopy(hit) if want_deepcopy else hit
     except Exception:
         # Any surprise here falls through to the locked path, which is the

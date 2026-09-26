@@ -105,7 +105,20 @@ describe('useComposerDraft — attachment scope stays coherent with the committe
   })
 
   it('carries a pre-session draft onto the session the fresh chat is re-homed to, before its runtime id is known', () => {
-    const preSessionAttachment: ComposerAttachment = { id: 'file:new', kind: 'file', label: 'new.txt' }
+    const preSessionAttachment: ComposerAttachment = {
+      id: 'file:new',
+      kind: 'file',
+      label: 'new.txt',
+      path: '/srv/hermes/profiles/owner/uploads/new.txt',
+      stagedUpload: {
+        install_id: '11111111111111111111111111111111',
+        path: '/srv/hermes/profiles/owner/uploads/new.txt',
+        profile_home: '/srv/hermes/profiles/owner',
+        profile_incarnation: '22222222222222222222222222222222'
+      },
+      titlePreview: 'Pasted text used to title the new session'
+    }
+
     stashSessionDraft(null, 'do not lose this draft', [preSessionAttachment])
 
     const { rerender } = render(

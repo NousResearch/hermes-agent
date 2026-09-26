@@ -6,18 +6,15 @@ call time so imports stay one-way (both of those modules import this one lazily)
 
 import contextlib
 import os
+import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
 
 from hermes_cli._startup_fast import is_desktop_ssh_backend_argv
+from hermes_cli.process_identity import WEB_SERVER_PURPOSES
 
-# Cmdline substrings identifying the long-lived server (``serve`` = the headless name Desktop
-# spawns; reaped on update for the same reason).
-_DASHBOARD_PATTERNS = tuple(
-    f"{launcher} {cmd}"
-    for cmd in ("dashboard", "serve")
-    for launcher in ("hermes", "hermes_cli.main", "hermes_cli/main.py"))
 _PS_RUN_KWARGS = dict(capture_output=True, text=True, encoding="utf-8", errors="replace")
 
 
@@ -63,48 +60,98 @@ def _iter_process_table() -> list[tuple[int, str]]:
                 _append_row(rows, line[len("ProcessId=") :], current_cmd)
         return rows
     # ps, not `pgrep -f "hermes.*dashboard"` (greedy regex; consistent with gateway pid scan).
-    result = subprocess.run(["ps", "-A", "-o", "pid=,command="], timeout=10, **_PS_RUN_KWARGS)
+    result = subprocess.run(["ps", "-Aww", "-o", "pid=,command="], timeout=10, **_PS_RUN_KWARGS)
     if result.returncode == 0:
+        from hermes_cli.update_cmd_windows import _cmdline_or_empty, _psutil
+
+        psutil = _psutil()
         for line in getattr(result, "stdout", "").split("\n"):
             parts = line.strip().split(None, 1)
             if len(parts) == 2 and "grep" not in line:
+                # ps loses argv boundaries, including executable paths with spaces.
+                # Prefer live structured argv; keep ps as the unavailable-reader fallback.
+                # Only a row that can be Hermes pays for that read (thousands on a busy
+                # host, a KERN_PROCARGS2 sysctl each on macOS): every entry token the
+                # canonical matcher accepts (hermes, hermes.exe, hermes_cli.main,
+                # hermes_cli/main.py) spells "hermes", and -ww keeps ps from truncating it.
+                if psutil is not None and "hermes" in parts[1].lower():
+                    with contextlib.suppress(Exception):
+                        parts[1] = _cmdline_or_empty(psutil.Process(int(parts[0]))) or parts[1]
                 _append_row(rows, parts[0], parts[1])
     return rows
 
 
+def _is_dashboard_lifecycle_probe(command: str) -> bool:
+    """True for short-lived ``--stop`` / ``--status`` web-server commands."""
+    # Shell/process wrappers can carry the complete Hermes command as one
+    # quoted argv token. The exact flag boundary handles that shape before the
+    # structured parser below handles ordinary console-script argv.
+    if re.search(r"(?<!\S)--(?:status|stop)(?=\s|$|['\";])", command):
+        return True
+    try:
+        argv = shlex.split(command, posix=sys.platform != "win32")
+    except ValueError:
+        return False
+    index = _dashboard_subcommand_index(argv)
+    if index is None:
+        return False
+    return any(token in {"--status", "--stop"} for token in argv[index + 1 :])
+
+
+def _is_hermes_web_server_command(command: str) -> bool:
+    """True only when argv structurally invokes a Hermes web-server command."""
+    from hermes_cli.update_cmd_windows import _hermes_holder_subcommand
+
+    return _hermes_holder_subcommand(command) in WEB_SERVER_PURPOSES
+
+
+def _ledger_web_server_processes() -> dict[int, str]:
+    """Positively identified live web servers for this Hermes install."""
+    try:
+        from hermes_cli.process_identity import ledger_entries
+
+        entries = ledger_entries(verified_only=True)
+    except Exception:
+        return {}
+
+    processes: dict[int, str] = {}
+    for entry in entries:
+        if entry.get("purpose") not in WEB_SERVER_PURPOSES:
+            continue
+        pid = entry.get("pid")
+        if not isinstance(pid, int) or pid <= 0:
+            continue
+        command = str(entry.get("argv") or "")
+        if not _is_hermes_web_server_command(command):
+            # Ledger argv is display-only and may have lost quoting or been truncated.
+            # Preserve its verified process purpose instead of reparsing that lossy prefix.
+            command = f"hermes {entry['purpose']}"
+        # register_self intentionally records only a bounded argv prefix. When
+        # the process table is unreadable, treat the positive identity as an
+        # ephemeral port so status reports the live process without guessing a
+        # fixed listener address.
+        if "--port" not in command.split():
+            command = f"{command} --port 0".strip()
+        processes[pid] = command
+    return processes
+
+
 def _scan_dashboard_processes(*, exclude_pids: set[int] | None = None) -> list[tuple[int, str]]:
-    """``(pid, cmdline)`` of running ``dashboard``/``serve`` processes; empty on any scan error.
+    """Find live web servers using ledger identity and structural argv matching.
 
-    A forgotten dashboard keeps the old Python backend against the new JS bundle after
-    ``hermes update`` (every API call 401s). *exclude_pids* (Desktop's HERMES_DESKTOP_CHILD_PID
-    backends) are never returned.
-
-    *exclude_pids* is an optional set of PIDs that must never be returned. This is used by the Hermes
-    Desktop Electron app to protect its own backend child process: when the desktop spawns ``hermes serve``
-    as a backend and triggers an auto-update, the update must not kill the backend that the desktop itself
-    manages. The desktop sets the environment variable ``HERMES_DESKTOP_CHILD_PID`` on the spawned backend
-    process; ``_kill_stale_dashboard_processes`` reads it and passes it here. (#37532)
+    Registered servers remain visible when the process table is unreadable. Lifecycle
+    probes and Desktop-owned excluded PIDs must never enter the reaper's result.
     """
     skip = {os.getpid(), *(exclude_pids or ())}
+    positive = _ledger_web_server_processes()
     try:
         found = [(pid, cmd) for pid, cmd in _iter_process_table()
-                 if pid not in skip and any(p in cmd for p in _DASHBOARD_PATTERNS)]
+                 if pid not in skip and (pid in positive or _is_hermes_web_server_command(cmd))
+                 and not _is_dashboard_lifecycle_probe(cmd)]
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-        return []
-    # Spawn-ledger augmentation: substring patterns miss profiled launches (`hermes --profile p
-    # serve`); the ledger holds live-verified pids. Unavailable ledger → scan-only.
-    with contextlib.suppress(Exception):
-        # Every serve/ dashboard registers itself in the machine spawn ledger at startup with live-verified
-        # (pid, create_time), so ledger rows are positive identity, not argv guessing. Add any live ledger
-        # serve/dashboard the scan missed; prefer the ledger's recorded argv (full launch args) over the
-        # scan's truncated view. See #81564.
-        from hermes_cli.process_identity import ledger_entries
-        seen = {pid for pid, _ in found} | skip
-        for entry in ledger_entries():
-            pid = entry.get("pid")
-            if (entry.get("purpose") in ("serve", "dashboard") and isinstance(pid, int)
-                    and pid not in seen):
-                found.append((pid, str(entry.get("argv") or "")))
+        found = []
+    seen = {pid for pid, _ in found} | skip
+    found.extend((pid, cmd) for pid, cmd in positive.items() if pid not in seen)
     return found
 
 
@@ -189,7 +236,7 @@ def _hermes_home_for_pid(pid: int) -> str | None:
 
 
 def _dashboard_subcommand_index(argv: list[str]) -> int | None:
-    return next((i for i, tok in enumerate(argv) if tok in ("serve", "dashboard")), None)
+    return next((i for i, tok in enumerate(argv) if tok in WEB_SERVER_PURPOSES), None)
 
 
 def _profile_flag_value(argv: list[str]) -> str | None:
@@ -203,7 +250,7 @@ def _profile_flag_value(argv: list[str]) -> str | None:
 
 
 def _is_ephemeral_port_zero_backend(argv: list[str]) -> bool:
-    """True for Desktop-style ``serve|dashboard --port 0`` backends — replaying them after
+    """True for Desktop-style ``serve|dashboard|webapp --port 0`` backends — replaying them after
     ``hermes update`` multiplies listening backends because ``--port 0`` binds a fresh port.
 
     See #78821.
@@ -216,7 +263,7 @@ def _is_ephemeral_port_zero_backend(argv: list[str]) -> bool:
 
 
 def _normalize_dashboard_cmdline(argv: list[str]) -> tuple[str, ...]:
-    """Collapse argv to profile flags + serve/dashboard tail for dedupe."""
+    """Collapse argv to profile flags + web-server subcommand tail for dedupe."""
     idx = _dashboard_subcommand_index(argv)
     if idx is None:
         return tuple(argv)
@@ -435,7 +482,7 @@ def _kill_pids_windows(pids: list[int], killed: list[int], failed: list[tuple[in
 
 
 # SIGTERM → SIGKILL grace for the dashboard/serve backend. Must outlast the lifespan teardown in
-# hermes_cli/web_server.py::_lifespan: stop_hosted_room_service(timeout=5.0) + the startup-thread
+# hermes_cli/web_server_lifespan.py::_lifespan: stop_hosted_room_service(timeout=5.0) + the startup-thread
 # join(1.0) + PTY_REGISTRY.close_all() (≤1.5s per attached Chat PTY, serial). A SIGKILL inside
 # that window skips close_all(), so the ui-tui / tui_gateway.entry children outlive the backend
 # and keep the deleted state.db-wal inode open — the next hermes start refuses with a FATAL
@@ -574,6 +621,7 @@ def _kill_pids_posix(pids: list[int], killed: list[int], failed: list[tuple[int,
 def _kill_stale_dashboard_processes(
     reason: str = "the running backend no longer matches the updated frontend", *,
     restart_managed: bool = False, already_restarted_units: "set[str] | None" = None,
+    include_pids: set[int] | None = None,
     scope_home: str | None = None,
 ) -> dict[str, list]:
     """Kill running ``hermes dashboard`` / ``hermes serve`` processes (update end, ``--stop``).
@@ -608,6 +656,8 @@ def _kill_stale_dashboard_processes(
         # client's fixed SSH port-forward. Same ownership records as the reaper.
         exclude |= _lock_owned_serve_pids()
     pids = _dash._find_stale_dashboard_pids(exclude_pids=exclude or None, scope_home=scope_home)
+    if include_pids is not None:
+        pids = [pid for pid in pids if pid in include_pids]
     if not pids:
         return _empty_result()
     # Snapshot systemd unit/cgroup and argv BEFORE killing (the cgroup dies with the process).
@@ -651,7 +701,7 @@ def _kill_stale_dashboard_processes(
         for pid in pids:
             if job := _launchd_owner(pid, _dash._dashboard_cmdline_for_pid(pid)):
                 pid_launchd[pid] = job
-    print(f"\n⟲ Stopping {len(pids)} dashboard process(es) ({reason})")
+    print(f"\n⟲ Stopping {len(pids)} Hermes web server process(es) ({reason})")
     killed: list[int] = []
     failed: list[tuple[int, str]] = []
     (_kill_pids_windows if sys.platform == "win32" else _kill_pids_posix)(pids, killed, failed)
@@ -670,7 +720,7 @@ def _kill_stale_dashboard_processes(
             print(f"  ⚠ PID(s) supervised by launchd job {target}: a KeepAlive job restarts itself.\n"
                   f"    To keep it down: launchctl bootout {target}")
         if any(p not in pid_launchd for p in killed):
-            print("  Restart the dashboard when you're ready:\n    hermes dashboard --port <port>")
+            print("  Restart the browser surface or backend when you're ready:\n    hermes dashboard|webapp|serve --port <port>")
     return {"matched": list(pids), "killed": list(killed), "failed": list(failed),
             "unrecovered": list(unrecovered)}
 
@@ -680,17 +730,20 @@ def _restart_killed_backends(
     pid_cmdline: dict[int, list[str]], pid_home: dict[int, str | None], *,
     pid_launchd: dict[int, tuple[str, str, int | None]] | None = None) -> list[int]:
     """Update path: restart systemd units, kickstart launchd jobs (macOS), respawn manual argv
-    (detached, headless, logged to logs/dashboard-restart.log; one per profile, no ``--port 0``).
-    Returns PIDs not brought back."""
+    (detached, headless, logged to logs/dashboard-restart.log; one per profile, no ``--port 0``,
+    never a Webapp — the operator gets its restart command instead). Returns PIDs not brought
+    back, deliberate skips excluded."""
     # Two categories: Without this, a remote backend (hermes serve) under Restart=on-failure never comes
     # back after our clean SIGTERM, and the Desktop can't reconnect (#68934). Filtered so Desktop
     # ``serve|dashboard --port 0`` backends are not resurrected and duplicates collapse to one per profile
     # (#78821).
     from hermes_cli import main_dashboard as _dash
+    from hermes_cli.update_cmd_windows import _hermes_holder_subcommand
     unrecovered: list[int] = []
     failed_restarts: list[tuple[str, str]] = []
     seen_services: set[str] = set()
     respawn_candidates: list[tuple[int, list[str], str | None]] = []
+    operator_restarts: list[list[str]] = []
     for pid in killed:
         svc_name = pid_service.get(pid)
         launchd_job = (pid_launchd or {}).get(pid)
@@ -722,11 +775,23 @@ def _restart_killed_backends(
                     (target, f"launchd is not supervising a fresh process; run: {sudo}launchctl kickstart -k {target}"))
                 unrecovered.append(pid)
         elif pid in pid_cmdline:
-            respawn_candidates.append((pid, pid_cmdline[pid], pid_home.get(pid)))
+            # A Webapp start is an operator handoff: an unauthenticated one prints a private
+            # host-access launch link, which a detached respawn would write into
+            # dashboard-restart.log, and every open tab loses its session either way. Whether a
+            # start is private is decided at runtime by the auth gate, not by argv, so no Webapp
+            # is respawned. Set aside BEFORE the one-per-profile cap so a sibling dashboard of
+            # the same profile still comes back.
+            if _hermes_holder_subcommand(subprocess.list2cmdline(pid_cmdline[pid])) == "webapp":
+                operator_restarts.append(pid_cmdline[pid])
+            else:
+                respawn_candidates.append((pid, pid_cmdline[pid], pid_home.get(pid)))
         else:
             unrecovered.append(pid)
     for svc, err in failed_restarts:
         print(f"    ⚠ {svc}: {err}")
+    for argv in operator_restarts:
+        print("    ⚠ Webapp not restarted: each start hands you a new launch link.\n"
+              f"      Start it again when you're ready:  hermes {shlex.join(_normalize_dashboard_cmdline(argv))}")
     respawn_cmds = _filter_dashboard_respawn_candidates(respawn_candidates)
     failed_cmds = _dash._respawn_dashboard_processes(respawn_cmds) if respawn_cmds else None
     if failed_cmds:

@@ -19,7 +19,7 @@ from hermes_cli.main_dashboard import _attach_to_host_backend
 
 
 def _args(**over):
-    base = dict(host="127.0.0.1", port=9200, no_open=True, isolated=False, open_profile="")
+    base = dict(host="127.0.0.1", port=9200, no_open=True, isolated=False, open_profile="", ui_surface="serve")
     return SimpleNamespace(**{**base, **over})
 
 
@@ -35,6 +35,7 @@ def host_dir(tmp_path, monkeypatch):
 def owner(host_dir):
     """A live backend answering the identity handshake as THIS pid, on a real ephemeral port."""
     serves_spa = {"value": True}
+    surface = {"value": "dashboard"}
 
     class _Handler(BaseHTTPRequestHandler):
         def do_GET(self):  # noqa: N802 — BaseHTTPRequestHandler API
@@ -42,7 +43,8 @@ def owner(host_dir):
                 self.send_error(404)
                 return
             body = json.dumps({"ok": True, "pid": os.getpid(), "role": hr.ROLE_SERVE,
-                               "servesSpa": serves_spa["value"]}).encode()
+                               "servesSpa": serves_spa["value"],
+                               "ui_surface": surface["value"]}).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
@@ -56,7 +58,7 @@ def owner(host_dir):
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        yield SimpleNamespace(port=server.server_port, serves_spa=serves_spa)
+        yield SimpleNamespace(port=server.server_port, serves_spa=serves_spa, surface=surface)
     finally:
         server.shutdown()
         server.server_close()
@@ -86,7 +88,7 @@ def test_second_serve_attaches_to_the_live_host_backend(host_dir, owner, capsys)
     _publish(hr.process_create_time(), port=owner.port)
 
     with pytest.raises(SystemExit) as exc:
-        _attach_to_host_backend(_args(), headless_backend=True)
+        _attach_to_host_backend(_args())
 
     assert exc.value.code == 0
     assert f"port {owner.port}" in capsys.readouterr().out
@@ -103,7 +105,7 @@ def test_inherited_desktop_flag_without_spawn_credential_still_attaches(host_dir
     _publish(hr.process_create_time(), port=owner.port)
 
     with pytest.raises(SystemExit) as exc:
-        _attach_to_host_backend(_args(), headless_backend=True)
+        _attach_to_host_backend(_args())
 
     assert exc.value.code == 0
 
@@ -114,7 +116,7 @@ def test_desktop_owned_backend_keeps_its_separate_lifecycle(host_dir, owner, mon
     monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "desktop-spawn-token")
     _publish(hr.process_create_time(), port=owner.port)
 
-    assert _attach_to_host_backend(_args(), headless_backend=True) is None
+    assert _attach_to_host_backend(_args()) is None
 
 
 def test_stale_record_is_ignored_and_the_launch_proceeds(host_dir):
@@ -122,14 +124,14 @@ def test_stale_record_is_ignored_and_the_launch_proceeds(host_dir):
     backend: the launch must fall through and bind, never attach."""
     _publish(1.0)
 
-    assert _attach_to_host_backend(_args(), headless_backend=True) is None
+    assert _attach_to_host_backend(_args()) is None
 
 
 def test_isolated_never_attaches(host_dir, owner):
     """`--isolated` is load-bearing for Desktop's SSH backend ownership proof."""
     _publish(hr.process_create_time(), port=owner.port)
 
-    assert _attach_to_host_backend(_args(isolated=True), headless_backend=True) is None
+    assert _attach_to_host_backend(_args(isolated=True)) is None
 
 
 def test_a_record_whose_owner_does_not_answer_falls_through_to_the_bind(host_dir):
@@ -137,7 +139,7 @@ def test_a_record_whose_owner_does_not_answer_falls_through_to_the_bind(host_dir
     socket is already closed. Exiting 0 here reported success with NOTHING listening."""
     _publish(hr.process_create_time(), port=_dead_port())
 
-    assert _attach_to_host_backend(_args(), headless_backend=True) is None
+    assert _attach_to_host_backend(_args()) is None
 
 
 def test_unprovable_liveness_still_has_to_answer(host_dir, monkeypatch):
@@ -146,7 +148,7 @@ def test_unprovable_liveness_still_has_to_answer(host_dir, monkeypatch):
     monkeypatch.setattr("hermes_cli.process_identity._pid_alive_matches", lambda *_a, **_k: None)
     _publish(None, pid=2**22 - 1, port=_dead_port())
 
-    assert _attach_to_host_backend(_args(), headless_backend=True) is None
+    assert _attach_to_host_backend(_args()) is None
 
 
 @pytest.mark.parametrize(
@@ -163,7 +165,7 @@ def test_an_explicit_endpoint_the_owner_cannot_serve_is_refused(host_dir, owner,
     _publish(hr.process_create_time(), port=owner.port)
 
     with pytest.raises(SystemExit) as exc:
-        _attach_to_host_backend(_args(**over), headless_backend=True)
+        _attach_to_host_backend(_args(**over))
 
     # 78 (EX_CONFIG) is the deliberate refusal a supervisor parks on; exit 1 under
     # Restart=always was an infinite loop with nothing listening (#119824).
@@ -178,7 +180,41 @@ def test_dashboard_is_never_routed_to_a_headless_backend(host_dir, owner, capsys
     _publish(hr.process_create_time(), port=owner.port)
 
     with pytest.raises(SystemExit) as exc:
-        _attach_to_host_backend(_args(), headless_backend=False)
+        _attach_to_host_backend(_args(ui_surface="dashboard"))
 
     assert exc.value.code == GATEWAY_FATAL_CONFIG_EXIT_CODE
     assert "no dashboard UI" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("requested,actual", [
+    ("webapp", "dashboard"), ("dashboard", "webapp"), ("webapp", "unknown"),
+])
+def test_host_attach_refuses_a_different_ui_surface(host_dir, owner, monkeypatch, requested, actual):
+    import webbrowser
+
+    owner.surface["value"] = actual
+    _publish(hr.process_create_time(), port=owner.port)
+    opened = []
+    monkeypatch.setattr(webbrowser, "open", opened.append)
+    with pytest.raises(SystemExit) as exc:
+        _attach_to_host_backend(_args(ui_surface=requested, no_open=False))
+    assert exc.value.code == 1
+    assert not opened
+
+
+@pytest.mark.parametrize("profile", ["default", "coder"])
+def test_webapp_host_attach_preserves_private_launch_access(host_dir, owner, monkeypatch, capsys, profile):
+    import webbrowser
+
+    owner.surface["value"] = "webapp"
+    _publish(hr.process_create_time(), port=owner.port)
+    monkeypatch.setattr("hermes_cli.profiles.get_active_profile_name", lambda: profile)
+    opened = []
+    monkeypatch.setattr(webbrowser, "open", opened.append)
+    with pytest.raises(SystemExit) as exc:
+        _attach_to_host_backend(_args(ui_surface="webapp", no_open=False))
+    assert exc.value.code == 0
+    output = capsys.readouterr().out
+    assert f"http://127.0.0.1:{owner.port}/?profile={profile}" in output
+    assert "private launch link" in output and "BEFORE its # fragment" in output
+    assert not opened

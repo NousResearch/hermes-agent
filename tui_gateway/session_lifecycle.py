@@ -6,6 +6,7 @@ globals at install time (method_ctx.bind_module), so they reference server.py gl
 from __future__ import annotations
 
 import logging
+import threading
 
 import contextlib
 
@@ -235,9 +236,10 @@ def _own_live_lease_ids(*, exclude=None) -> set[str]:
     """Snapshot leases still backed by this process's live session records (plus leases deferred past a
     close for an unsettled isolated turn — still ours until the child settles)."""
     with _sessions_lock:
-        return {str(lease.lease_id) for session in _sessions.values()
-                if (lease := session.get("active_session_lease")) is not None and lease is not exclude
-                } | set(_deferred_active_session_leases)
+        live = {str(lease.lease_id) for session in _sessions.values()
+                if (lease := session.get("active_session_lease")) is not None and lease is not exclude}
+        with _deferred_active_session_lease_lock:
+            return live | set(_deferred_active_session_leases)
 
 
 @contextlib.contextmanager
@@ -506,29 +508,145 @@ def _pop_session_by_id(sid: str) -> dict | None:
     return session
 
 
-def _teardown_popped_session(session: dict | None, *, end_reason: str = "tui_close") -> bool:
+def _teardown_popped_session(
+    session: dict | None, *, end_reason: str = "tui_close"
+) -> bool:
     """Finish a close after the caller has atomically detached the session."""
     if session is None:
         return False
-    run_thread = session.get("_run_thread")
-    if end_reason != "tui_shutdown" and run_thread is not None and run_thread is not threading.current_thread():
+    settled = True
+    seen_threads: set[int] = set()
+    for label, thread in (
+        ("turn", session.get("_run_thread")),
+        ("agent build", session.get("_agent_build_thread")),
+    ):
+        if (
+            end_reason == "tui_shutdown"
+            or thread is None
+            or thread is threading.current_thread()
+            or id(thread) in seen_threads
+        ):
+            continue
+        seen_threads.add(id(thread))
         try:
-            if run_thread.is_alive():
-                run_thread.join(timeout=_TURN_SETTLE_BEFORE_CLOSE_SECONDS)
-            if run_thread.is_alive():
+            if thread.is_alive():
+                thread.join(timeout=_TURN_SETTLE_BEFORE_CLOSE_SECONDS)
+            if thread.is_alive():
                 logger.warning(
-                    "session turn thread still alive after %.1fs teardown grace", _TURN_SETTLE_BEFORE_CLOSE_SECONDS)
+                    "session %s thread still alive after %.1fs teardown grace",
+                    label,
+                    _TURN_SETTLE_BEFORE_CLOSE_SECONDS,
+                )
+                settled = False
         except Exception:
-            logger.debug("failed waiting for session turn thread", exc_info=True)
+            logger.debug("failed waiting for session %s thread", label, exc_info=True)
+            settled = False
     if end_reason != "tui_shutdown":
         _settle_isolated_turn_before_close(session)
     _teardown_session(session, end_reason=end_reason)
-    return True
+    return settled
+
+
+def _discard_agent(agent) -> None:
+    """Close a built agent that will not be published; a failing close must not mask the caller's outcome."""
+    if agent is not None:
+        with contextlib.suppress(Exception):
+            agent.close()
+
+
+def _profile_home_rejected(
+    profile_home: Path | str | None,
+    profile_incarnation: str | None = None,
+    *,
+    require_incarnation: bool = False,
+) -> bool:
+    return _profile_lifecycle.rejected(
+        profile_home or _hermes_home,
+        profile_incarnation,
+        require_incarnation=require_incarnation,
+    )
+
+
+def allow_profile_home(
+    profile_home: Path | str,
+    profile_incarnation: str | None = None,
+) -> None:
+    """Admit sessions for a profile that was explicitly created/recreated."""
+    with _sessions_lock:
+        _profile_lifecycle.allow(profile_home, profile_incarnation)
+
+
+def retire_profile_home(
+    profile_home: Path | str,
+    profile_incarnation: str | None = None,
+) -> int:
+    """Tear down every in-process session retaining ``profile_home``.
+
+    Profile DELETE marks the home unavailable before calling this function, so
+    finalization attempts fail closed instead of reopening state.db. The
+    registry pop prevents later title/history/cwd activity from using stale
+    session dictionaries after the directory is removed.
+    """
+    def _close_launch_db() -> int:
+        global _db
+
+        db, _db = _db, None
+        if db is None:
+            return 0
+        try:
+            db.close()
+            return 1
+        except Exception:
+            logger.debug("failed closing launch profile SessionDB", exc_info=True)
+            return 0
+
+    return _profile_lifecycle.retire_sessions(
+        profile_home,
+        profile_incarnation,
+        launch_home=_hermes_home,
+        sessions=_sessions,
+        sessions_lock=_sessions_lock,
+        close_session=lambda sid: _close_session_by_id(
+            sid,
+            end_reason="profile_deleted",
+        ),
+        close_launch_db=_close_launch_db,
+    )
+
+
+def _capture_profile_incarnation(profile_home: Path | str | None) -> str | None:
+    return _profile_lifecycle.capture(profile_home or _hermes_home)
+
+
+def _session_profile_identity_matches(
+    session: dict,
+    profile_home: Path | str | None,
+    profile_incarnation: str | None,
+) -> bool:
+    expected_home = str(profile_home) if profile_home is not None else None
+    return (
+        (session.get("profile_home") or None) == expected_home
+        and (session.get("profile_incarnation") or None) == profile_incarnation
+    )
+
+
+@contextlib.contextmanager
+def _profile_home_lease(
+    profile_home: Path | str | None,
+    profile_incarnation: str | None,
+):
+    """Hold generation identity stable while binding a profile pathname."""
+    effective_home = profile_home or _hermes_home
+    with _profile_lifecycle.lease(effective_home, profile_incarnation) as home:
+        yield home
 
 
 # lease_id -> REAL lease of a closed session whose isolated child turn has not settled yet. Still live
 # authority for the orphan sweep (``_own_live_lease_ids``); released by ``_release_deferred_active_session_lease``.
 _deferred_active_session_leases: dict[str, Any] = {}
+_deferred_active_session_settlements: dict[str, Any] = {}
+_deferred_active_session_releasing: set[str] = set()
+_deferred_active_session_lease_lock = threading.Lock()
 
 
 def _settle_isolated_turn_before_close(session: dict) -> None:
@@ -548,57 +666,78 @@ def _settle_isolated_turn_before_close(session: dict) -> None:
         if not session.get("_compute_host_turn_id") or (lease := session.pop("active_session_lease", None)) is None:
             return
         session["_deferred_active_session_lease"] = lease
-        _deferred_active_session_leases[str(lease.lease_id)] = lease
-        _deferred_active_session_lease_ages[str(lease.lease_id)] = time.time()
+        with _deferred_active_session_lease_lock:
+            lease_id = str(lease.lease_id)
+            _deferred_active_session_leases[lease_id] = lease
+            _deferred_active_session_lease_ages[lease_id] = time.time()
+            _deferred_active_session_settlements[lease_id] = session.get("_compute_host_turn_settlement")
     logger.warning("isolated turn still live after %.1fs close grace; holding lease for %s until the child settles",
                    _TURN_SETTLE_BEFORE_CLOSE_SECONDS, session.get("session_key"))
 
 
-# A deferred lease is released by the compute-host turn's completion callback
-# (_on_compute_host_turn_done → _release_deferred_active_session_lease). If that callback
-# is lost — supervisor restart/reload, a child killed without failing its pending turns,
-# a dropped completion — the lease sits in the registry FOREVER: _own_live_lease_ids
-# vouches for it, so the orphan sweep never reclaims it, and the concurrency cap treats
-# the dead session as active (#62823 zombie slot). A deferred lease past this generous
-# ceiling (the longest legitimate isolated turn is the compression ceiling, minutes) is
-# force-released by the reaper tick instead of leaking the slot until process exit.
+# Retry missed settlement callbacks after this interval (#62823). Age schedules
+# inspection, never revokes ownership: a live child can write after any deadline.
 _DEFERRED_ACTIVE_SESSION_LEASE_TTL_SECONDS = 1800.0
 _deferred_active_session_lease_ages: dict[str, float] = {}
 
 
 def _reap_stale_deferred_leases(now: float | None = None) -> int:
-    """Force-release deferred leases whose settlement callback never arrived. Returns the count."""
+    """Recover missed callbacks only with proof of completion or the exact child's exit."""
     now = time.time() if now is None else now
-    stale = [
-        lease_id for lease_id, deferred_at in list(_deferred_active_session_lease_ages.items())
-        if now - deferred_at > _DEFERRED_ACTIVE_SESSION_LEASE_TTL_SECONDS
-    ]
+    with _deferred_active_session_lease_lock:
+        stale = [
+            (lease, _deferred_active_session_settlements.get(lease_id))
+            for lease_id, lease in _deferred_active_session_leases.items()
+            if now - _deferred_active_session_lease_ages.get(lease_id, now)
+            > _DEFERRED_ACTIVE_SESSION_LEASE_TTL_SECONDS
+        ]
     reaped = 0
-    for lease_id in stale:
-        _deferred_active_session_lease_ages.pop(lease_id, None)
-        lease = _deferred_active_session_leases.pop(lease_id, None)
-        if lease is None:
-            continue
-        if (err := _lease_retry(3, lease.release)) is not None:
-            logger.warning("Failed to force-release stale deferred active session lease %s", lease_id,
-                           exc_info=err)
-            continue
-        logger.warning("Force-released deferred active session lease %s held past %.0fs without a "
-                       "compute-host settlement (zombie concurrency slot, #62823)",
-                       lease_id, _DEFERRED_ACTIVE_SESSION_LEASE_TTL_SECONDS)
-        reaped += 1
+    for lease, settlement in stale:
+        if settlement is not None and settlement.is_set():
+            reaped += _try_release_deferred_active_session_lease(lease)
     return reaped
+
+
+def _try_release_deferred_active_session_lease(lease) -> bool:
+    """Keep failed releases vouched and retryable; never hold bookkeeping locks over registry I/O."""
+    lease_id = str(lease.lease_id)
+    with _deferred_active_session_lease_lock:
+        if (_deferred_active_session_leases.get(lease_id) is not lease
+                or lease_id in _deferred_active_session_releasing):
+            return False
+        _deferred_active_session_releasing.add(lease_id)
+    try:
+        if (err := _lease_retry(3, lease.release)) is not None:
+            logger.warning("Failed to release deferred active session slot %s", lease_id, exc_info=err)
+            return False
+        with _deferred_active_session_lease_lock:
+            _deferred_active_session_leases.pop(lease_id, None)
+            _deferred_active_session_lease_ages.pop(lease_id, None)
+            _deferred_active_session_settlements.pop(lease_id, None)
+        return True
+    finally:
+        with _deferred_active_session_lease_lock:
+            _deferred_active_session_releasing.discard(lease_id)
 
 
 def _release_deferred_active_session_lease(session: dict) -> None:
     """Settlement half of ``_settle_isolated_turn_before_close``; a no-op for sessions that never deferred."""
-    lease = session.pop("_deferred_active_session_lease", None)
-    if lease is None:
-        return
-    _deferred_active_session_leases.pop(str(lease.lease_id), None)
-    _deferred_active_session_lease_ages.pop(str(lease.lease_id), None)
-    if (err := _lease_retry(3, lease.release)) is not None:
-        logger.warning("Failed to release deferred active session slot", exc_info=err)
+    with session["history_lock"]:
+        lease = session.get("_deferred_active_session_lease")
+        if lease is None:
+            return
+        # A prior callback can resume after a newer turn was admitted and closed.
+        # Only that deferred turn's own receipt can authorize its release.
+        with _deferred_active_session_lease_lock:
+            lease_id = str(lease.lease_id)
+            if _deferred_active_session_leases.get(lease_id) is lease:
+                settlement = _deferred_active_session_settlements.get(lease_id)
+                if settlement is None or not settlement.is_set():
+                    return
+    if _try_release_deferred_active_session_lease(lease) or getattr(lease, "released", False):
+        with session["history_lock"]:
+            if session.get("_deferred_active_session_lease") is lease:
+                session.pop("_deferred_active_session_lease", None)
 
 
 def _close_session_by_id(

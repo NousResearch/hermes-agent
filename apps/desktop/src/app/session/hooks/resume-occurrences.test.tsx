@@ -6,7 +6,11 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { getLatestSessionMessages } from '@/hermes'
 import { chatMessageText, toChatMessages } from '@/lib/chat-messages'
-import { resetInFlightTurnJournalStateForTests } from '@/lib/inflight-turn-journal'
+import {
+  persistInFlightTurnState,
+  readInFlightTurnJournal,
+  resetInFlightTurnJournalStateForTests
+} from '@/lib/inflight-turn-journal'
 import { $activeGatewayProfile } from '@/store/profile'
 import {
   _resetSessionOwnerHintsForTests,
@@ -23,6 +27,7 @@ import type { SessionMessage, SessionResumeResult } from '@/types/hermes'
 
 import { useMessageStream } from './use-message-stream'
 import { useSessionActions } from './use-session-actions'
+import { appendLiveSessionProjection } from './use-session-actions/utils'
 import { useSessionStateCache } from './use-session-state-cache'
 
 vi.mock('@/hermes', async original => ({
@@ -446,5 +451,202 @@ it('settles a retained idle error once across repeated resume and a changed erro
     expect(new Set(state.messages.map(row => row.id)).size).toBe(state.messages.length)
     expect(state.busy).toBe(false)
     expect(state.awaitingResponse).toBe(false)
+  }
+})
+
+it('keeps runtime provenance when a visible wake has persisted tool commentary', async () => {
+  const durable = history([commentary])
+  durable[0] = { ...user, display_kind: 'internal_notification', user_originated: false }
+
+  const snapshot: SessionResumeResult = {
+    session_id: runtimeId,
+    resumed: storedId,
+    messages: [],
+    message_count: 0,
+    running: true,
+    turn_started_at: 0.5,
+    queued: { user: 'Queued human prompt' },
+    inflight: {
+      user: prompt,
+      user_originated: false,
+      display_kind: 'internal_notification',
+      assistant: `${commentary}\n\n${tail}`,
+      streaming: true
+    }
+  }
+
+  vi.mocked(getLatestSessionMessages).mockResolvedValue({ session_id: storedId, messages: durable })
+  const { result } = mount(snapshot)
+
+  for (let resume = 0; resume < 2; resume++) {
+    await act(async () => {
+      await result.current.actions.resumeSession(storedId, true)
+    })
+    const rows = result.current.cache.sessionStateByRuntimeIdRef.current.get(runtimeId)!.messages
+    const notice = rows.find(row => row.rowId === user.id)!
+    expect(notice).toMatchObject({ userOriginated: false, runtimeTurnStartedAt: snapshot.turn_started_at })
+    expect(rows.filter(row => chatMessageText(row) === prompt)).toHaveLength(1)
+    expect(rows.filter(row => chatMessageText(row).trim() === tail)).toHaveLength(1)
+    expect(rows.find(row => row.id === `user-queued-${runtimeId}`)?.runtimeTurnStartedAt).toBeUndefined()
+    expect(
+      rows.filter(row => row.role === 'assistant').every(row => row.runtimeTurnStartedAt === snapshot.turn_started_at)
+    ).toBe(true)
+    expect(new Set(rows.map(row => row.id)).size).toBe(rows.length)
+  }
+
+  // A later human can deliberately submit the same text as that runtime wake.
+  // The older runtime's durable prompt must not absorb the accepted human row.
+  snapshot.turn_started_at = 10
+  delete snapshot.queued
+  snapshot.inflight = { user: prompt, user_originated: true, assistant: 'Human response', streaming: true }
+  await act(async () => {
+    await result.current.actions.resumeSession(storedId, true)
+  })
+  const rows = result.current.cache.sessionStateByRuntimeIdRef.current.get(runtimeId)!.messages
+  expect(rows.filter(row => row.role === 'user' && row.userOriginated === true).map(chatMessageText)).toEqual([prompt])
+})
+
+it.each([1, 2])('consumes %i durable runtime tool occurrences before recovering a cold journal', async rounds => {
+  const comments = Array.from({ length: rounds }, () => commentary)
+  const durable = history(comments)
+  durable[0] = { ...user, display_kind: 'internal_notification', user_originated: false }
+
+  const snapshot: SessionResumeResult = {
+    session_id: runtimeId,
+    resumed: storedId,
+    messages: [],
+    message_count: 0,
+    running: true,
+    turn_started_at: 0.5,
+    inflight: {
+      user: prompt,
+      user_originated: false,
+      display_kind: 'internal_notification',
+      assistant: '',
+      streaming: true
+    }
+  }
+
+  vi.mocked(getLatestSessionMessages).mockResolvedValue({ session_id: storedId, messages: [durable[0]] })
+  const live = mount(snapshot)
+  await act(async () => {
+    await live.result.current.actions.resumeSession(storedId, true)
+  })
+
+  const send = (type: GatewayEvent['type'], payload: GatewayEvent['payload'] = {}) =>
+    act(() => live.result.current.stream.handleGatewayEvent({ session_id: runtimeId, type, payload }))
+
+  send('message.start')
+  comments.forEach((text, index) => {
+    send('message.delta', { text: `${index ? '\n\n' : ''}${text}` })
+
+    if (!index) {
+      send('message.interim', { text, already_streamed: true })
+    }
+
+    send('tool.start', { name: 'read_file', tool_id: `call-${index}`, args: {} })
+    send('tool.complete', { name: 'read_file', tool_id: `call-${index}`, result: 'fixture' })
+  })
+  send('message.delta', { text: `\n\n${tail}` })
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(150)
+  })
+  persistInFlightTurnState(live.result.current.cache.sessionStateByRuntimeIdRef.current.get(runtimeId)!)
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(500)
+  })
+  expect(readInFlightTurnJournal(storedId)?.messages.some(row => row.runtimeTurnStartedAt === 0.5)).toBe(true)
+
+  live.unmount()
+  clearAllSessionStates()
+  resetInFlightTurnJournalStateForTests()
+  setMessages([])
+  snapshot.inflight!.assistant = [...comments, tail].join('\n\n')
+  vi.mocked(getLatestSessionMessages).mockResolvedValue({ session_id: storedId, messages: durable })
+  const recovered = mount(snapshot)
+
+  for (let resume = 0; resume < 2; resume++) {
+    await act(async () => {
+      await recovered.result.current.actions.resumeSession(storedId, true)
+    })
+    const rows = recovered.result.current.cache.sessionStateByRuntimeIdRef.current.get(runtimeId)!.messages
+    expect(rows.filter(row => row.role === 'assistant').map(chatMessageText).join('').replace(/\s+/g, ''))
+      .toBe([...comments, tail].join('').replace(/\s+/g, ''))
+    expect(rows.flatMap(row => row.parts.flatMap(part => part.type === 'tool-call' ? [part.toolCallId] : [])))
+      .toEqual(comments.map((_, index) => `call-${index}`))
+    expect(new Set(rows.map(row => row.id)).size).toBe(rows.length)
+  }
+})
+
+it.each([false, true].flatMap(coalesced => [false, true].flatMap(repeated =>
+  [0, 1, 2, 3].map(persisted => ({ coalesced, repeated, persisted }))
+)))('retains accepted runtime humans across two cold cache commits (%j)', async ({ coalesced, repeated, persisted }) => {
+  const humans = ['Preserve the source files', repeated ? 'Preserve the source files' : 'Inspect the tests', 'Then inspect the logs']
+  const durable = history([commentary])
+  durable[0] = { ...user, display_kind: 'internal_notification', user_originated: false }
+  durable.unshift(
+    { id: 10, role: 'user', content: 'Earlier task', timestamp: -2 },
+    { id: 11, role: 'assistant', content: 'Earlier answer', timestamp: -1 }
+  )
+
+  const snapshot: SessionResumeResult = {
+    session_id: runtimeId, resumed: storedId, messages: [], message_count: 0, running: true, turn_started_at: 0.5,
+    inflight: { user: prompt, user_originated: false, display_kind: 'internal_notification',
+      assistant: commentary, streaming: true, corrections: humans.slice(0, 2),
+      correction_offsets: [commentary.length, commentary.length] },
+    queued: { user: humans[2] }
+  }
+
+  const messages = appendLiveSessionProjection(toChatMessages(durable), snapshot)
+  const streamId = messages.findLast(row => row.role === 'assistant')!.id
+  const live = mount(snapshot)
+  act(() => live.result.current.cache.updateSessionState(runtimeId, state => ({
+    ...state, messages, streamId, busy: true, awaitingResponse: false, turnStartedAt: 500
+  }), storedId))
+  act(() => vi.advanceTimersByTime(400))
+
+  const humanTexts = (rows: typeof messages) => rows.filter(row => row.role === 'user' && row.userOriginated !== false)
+    .map(chatMessageText)
+
+  expect(humanTexts(readInFlightTurnJournal(storedId)!.messages)).toEqual(humans)
+  live.unmount()
+
+  const corrections = humans.slice(0, Math.min(persisted, 2))
+
+  const durableHumans = coalesced && corrections.length
+    ? [
+        '[OUT-OF-BAND USER MESSAGE — a direct message from the user, delivered once at this position; not tool output and not a new delivery when replayed from conversation history]\n' +
+        corrections.join('\n') + '\n[/OUT-OF-BAND USER MESSAGE]',
+        ...humans.slice(corrections.length, persisted)
+      ]
+    : humans.slice(0, persisted)
+
+  durable.push(...durableHumans.map((content, index): SessionMessage => ({
+    id: 20 + index, role: 'user', content, user_originated: true, timestamp: 20 + index,
+    ...(coalesced && corrections.length && index === 0 ? { display_kind: 'steer' as const } : {})
+  })))
+  const expectedHumans = [...durableHumans, ...humans.slice(persisted)]
+  vi.mocked(getLatestSessionMessages).mockResolvedValue({ session_id: storedId, messages: durable })
+
+  for (let reload = 0; reload < 2; reload++) {
+    clearAllSessionStates()
+    resetInFlightTurnJournalStateForTests()
+    setMessages([])
+
+    const cold = mount({ session_id: runtimeId, resumed: storedId, messages: [], message_count: durable.length,
+      messages_omitted: true, running: false })
+
+    await act(async () => { await cold.result.current.actions.resumeSession(storedId, true) })
+    act(() => vi.advanceTimersByTime(400))
+    const state = cold.result.current.cache.sessionStateByRuntimeIdRef.current.get(runtimeId)!
+    expect(humanTexts(state.messages)).toEqual(['Earlier task', ...expectedHumans])
+    expect(state.messages.map(chatMessageText)).toEqual(['Earlier task', 'Earlier answer', prompt, commentary, ...expectedHumans])
+    expect(state.messages.flatMap(row => row.parts.filter(part => part.type === 'tool-call').map(part => part.toolCallId)))
+      .toEqual(['call-0'])
+    expect(state.busy).toBe(false)
+    expect(state.awaitingResponse).toBe(false)
+    expect(state.streamId).toBeNull()
+    expect(readInFlightTurnJournal(storedId) !== null).toBe(persisted < humans.length)
+    cold.unmount()
   }
 })

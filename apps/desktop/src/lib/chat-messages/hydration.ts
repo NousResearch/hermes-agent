@@ -490,6 +490,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     result.push({
       id: `${message.timestamp || Date.now()}-${index}-${displayRole}`,
       role: displayRole,
+      ...(typeof message.user_originated === 'boolean' ? { userOriginated: message.user_originated } : {}),
       parts,
       ...(message.role === 'assistant' && durableComplete !== undefined ? { durableComplete } : {}),
       ...(message.display_kind === 'async_delegation_complete' || message.display_kind === 'process_complete'

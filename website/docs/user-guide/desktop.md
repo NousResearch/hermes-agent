@@ -14,6 +14,7 @@ It runs on **macOS (Apple Silicon), Windows, and Linux** — see [Platform Suppo
 Hermes has several front ends that all talk to the same agent:
 
 - **Desktop App** (this page) — a native application with a purpose-built UI for chat, configuration, and management.
+- **Desktop Webapp** (`hermes webapp`) — the same Desktop workspace rendered in a normal browser against the host running Hermes.
 - **CLI** (`hermes`) and **[TUI](./tui.md)** (`hermes --tui`) — terminal interfaces.
 - **[Web Dashboard](./features/web-dashboard.md)** (`hermes dashboard`) — a browser admin panel; its optional **Chat** tab embeds the TUI through a pseudo-terminal.
 
@@ -31,6 +32,108 @@ hermes desktop
 ```
 
 That uses your current config, keys, sessions, and skills.
+
+## Use the Desktop workspace from a browser
+
+`hermes webapp` builds the current Desktop renderer and serves it through the
+existing authenticated Hermes web server. This is **not the Web Dashboard**:
+the page is the chat-first Desktop workspace, including sessions, profiles,
+Capabilities, Messaging, Artifacts, scheduled jobs, the host file tree, Git
+review, previews, and the terminal rail.
+
+```bash
+# This host only
+hermes webapp
+
+# Reachable from your LAN/VPN; does not open a browser on the server
+hermes webapp --host 0.0.0.0 --port 9119 --no-open
+```
+
+The default loopback URL is `http://127.0.0.1:9119`. Any non-loopback bind
+engages the same fail-closed [dashboard authentication gate](./features/web-dashboard.md#authentication-gated-mode):
+configure username/password for a trusted LAN or VPN, or OAuth/OIDC for an
+internet-facing deployment. `--insecure` is a deprecated no-op and cannot
+disable that gate. HTTPS is strongly recommended remotely and is required by
+browsers for some microphone and clipboard APIs.
+
+:::warning Treat Webapp access like access to Hermes on the host
+An authenticated Webapp user can execute arbitrary commands as the OS account
+running Hermes, run agent tools, use host-scoped file and Git operations, and
+access that account's environment and credentials. Do not expose it without
+authentication. Prefer an SSH tunnel, Tailscale, or another trusted VPN; use
+OAuth/OIDC for direct internet exposure.
+:::
+
+Browser-selected files are staged under the active profile before they enter
+the normal attachment flow. Browser attachments are capped at **16 MiB**, the
+same limit used when the staged bytes enter that flow. The terminal rail opens
+the host's interactive shell through its own authenticated `/api/host-terminal`
+WebSocket, gated like Dashboard's Chat tab `/api/pty` endpoint. The host shell
+is available on loopback with the private launch link printed by `hermes webapp`,
+and on authenticated remote Webapp binds. The browser consumes the link's secret
+fragment into tab-local session storage; refresh keeps access. **New Window**,
+profile windows, and session pop-outs use a short-lived, single-use handoff
+from the authorized tab, without sharing an opener or putting the session token
+in the new URL. A manually opened fresh tab still needs the original link.
+Old links expire when the backend restarts. This is
+the same session token used by privileged APIs (host files, RPC command
+execution and terminals), and is never supplied in public Webapp HTML. A bare
+URL in a fresh tab shows launch-link instructions. To select a named profile
+on an existing server, navigate in an authorized tab or put `?profile=<name>`
+before the private link's `#` fragment. Keep the link and captured CLI output private.
+The named-profile CLI launcher prints these instructions rather than opening
+an unauthorized bare-URL tab when a Webapp is already running.
+The host shell is refused for any unauthenticated non-loopback bind. Native-only affordances—HUD/global shortcuts,
+always-on-top overlays, OS-window inspection, external-terminal launch, and the
+native updater—remain available only in Electron. Website links open in a
+separate browser tab by default in Webapp. Link labels are derived from their
+URLs without fetching page titles. Explicit URL previews use a capability-minimal
+sandboxed iframe that cannot open popups. Use **Open in browser** for sites that
+reject embedding or need popup flows such as OAuth sign-in. Electron-only
+DevTools and trusted-input preview automation are not exposed through that iframe.
+
+Host files download through your browser's download manager. Supported audio
+and video play inline with seeking, using the server's existing file-access
+rules and size limit. **Save Image** for cross-origin URLs requires CORS and
+fetches without credentials, with a **25 MiB** streamed byte ceiling and a
+**30-second** deadline covering the request and body. A failed download reports
+an error without navigating away; open the image in a separate tab to save it
+instead. These limits do not apply to browser-managed same-origin file downloads,
+inline media streams, blob/data URLs, or native Electron downloads.
+
+### Terminal continuity in Webapp
+
+Refreshing the page or temporarily losing the browser connection detaches the
+terminal without ending its shell or foreground process. The saved terminal tab
+reattaches to that same shell and its original profile, even if another profile
+is now selected. Hiding a terminal is not closing it; explicitly closing its tab
+ends the shell. A second browser tab attaching to the same terminal takes over
+the connection rather than creating another shell.
+
+Detached shells are retained for **15 minutes** while the Webapp backend stays
+running. The server allows **16 host terminals**, including detached terminals;
+close an unused terminal to free a slot. Expired terminals and terminals whose
+profiles were deleted or replaced cannot be resumed. A backend restart ends
+these shells—this is browser-disconnect persistence, not restart persistence.
+
+Reconnect replays up to **1 MiB** of recent terminal output instead of appending
+a second copy of locally saved scrollback. This is a bounded output tail, not a
+complete terminal-screen snapshot: older output may be missing, and full-screen
+programs may need their own redraw command after reconnect. Hermes does not
+inject a redraw keystroke into the running shell or foreground program.
+
+Useful build/lifecycle flags:
+
+- `--skip-build` reuses `apps/desktop/dist-webapp`.
+- `--force-build` rebuilds even when the renderer's build receipt is current.
+- `--build-only` prepares the renderer without starting a server.
+- `--status` and `--stop` inspect or stop Webapp processes only; they do not
+  stop the native Desktop app's headless `hermes serve` backend.
+
+The renderer's npm dependencies install into `.build/webapp-workspace` in the
+checkout, separate from the native Desktop install, and are reinstalled only
+when the lockfile changes. When lazy installs are disabled, a plain
+`hermes webapp` will not install them; `--build-only` or `--force-build` will.
 
 ## What's in the app
 

@@ -74,7 +74,17 @@ function parseMediaProtocolTarget(rawUrl: string): MediaProtocolTarget {
 }
 
 export function isStreamableMediaPath(filePath: string): boolean {
-  const lower = filePath.toLowerCase()
+  let mediaPath = filePath
+
+  if (/^file:/i.test(filePath)) {
+    try {
+      mediaPath = decodeURIComponent(new URL(filePath).pathname)
+    } catch {
+      return false
+    }
+  }
+
+  const lower = mediaPath.toLowerCase()
 
   return STREAMABLE_MEDIA_EXTENSIONS.some(extension => lower.endsWith(extension))
 }
@@ -99,6 +109,17 @@ export function remoteMediaEndpoint(baseUrl: string, filePath: string, profile?:
 
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
     throw new Error(`Unsupported Hermes backend URL protocol: ${url.protocol}`)
+  }
+
+  if (/^file:/i.test(filePath)) {
+    const fileUrl = new URL(filePath)
+    const pathname = decodeURIComponent(fileUrl.pathname)
+
+    // Older gateways accept native POSIX paths, not file URIs. Keep that
+    // lossless contract, but leave drive letters and UNC hosts to the gateway.
+    if (!fileUrl.hostname && !/^\/[a-z]:/i.test(pathname)) {
+      filePath = pathname
+    }
   }
 
   url.searchParams.set('path', filePath)

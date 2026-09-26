@@ -14,6 +14,7 @@ pre-existing regression unrelated to dashboard-auth.
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -114,13 +115,38 @@ def _logged_in(client: TestClient) -> None:
 class TestWsTicketEndpoint:
     def test_authenticated_session_can_mint(self, gated_app):
         _logged_in(gated_app)
-        r = gated_app.post("/api/auth/ws-ticket")
+        r = gated_app.post("/api/auth/ws-ticket", headers={"Origin": "https://fly-app.fly.dev"})
         assert r.status_code == 200
         body = r.json()
         assert "ticket" in body
         assert isinstance(body["ticket"], str)
         assert len(body["ticket"]) >= 32
         assert body["ttl_seconds"] == 30
+
+    def test_authenticated_spa_bootstrap_uses_cookie_mode_without_injected_token(
+        self, monkeypatch, tmp_path
+    ):
+        from fastapi import FastAPI
+
+        dist = tmp_path / "desktop-webapp"
+        dist.mkdir()
+        (dist / "assets").mkdir()
+        (dist / "index.html").write_text(
+            "<!doctype html><html><head></head><body><div id='root'></div></body></html>",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(web_server, "WEB_DIST", dist)
+        monkeypatch.delenv("HERMES_SERVE_HEADLESS", raising=False)
+        monkeypatch.setattr(web_server.app.state, "auth_required", True, raising=False)
+        application = FastAPI()
+        application.state.auth_required = True
+        web_server.mount_spa(application)
+
+        response = TestClient(application).get("/")
+
+        assert response.status_code == 200
+        assert "window.__HERMES_AUTH_REQUIRED__=true" in response.text
+        assert "__HERMES_SESSION_TOKEN__" not in response.text
 
     def test_unauthenticated_returns_401_or_redirect(self, gated_app):
         r = gated_app.post("/api/auth/ws-ticket", follow_redirects=False)
@@ -183,7 +209,7 @@ def _fake_ws(
     client_host: str = "127.0.0.1",
     path: str = "/api/pty",
     protocols: tuple[str, ...] = (),
-):
+) -> Any:
     """Build a stand-in for starlette.WebSocket good enough for _ws_auth_ok."""
 
     class _QP:
@@ -267,6 +293,26 @@ class TestWsAuthOkGated:
         _SESSION_TOKEN (e.g. a leaked log line)."""
         ws = _fake_ws(query={"token": web_server._SESSION_TOKEN})
         assert _web_server_chat._ws_auth_ok(ws) is False
+
+    def test_internal_credential_is_scoped_to_server_child_endpoints(self, gated_app):
+        credential = internal_ws_credential()
+
+        for path in (
+            "/api/pty",
+            "/api/console",
+            "/api/events",
+            "/api/audio/speak-stream",
+        ):
+            ws = _fake_ws(query={"internal": credential}, path=path)
+            assert _web_server_chat._ws_auth_reason(ws) == (
+                "internal_not_allowed",
+                "internal",
+            )
+
+        gateway = _fake_ws(query={"internal": credential}, path="/api/ws")
+        publisher = _fake_ws(query={"internal": credential}, path="/api/pub")
+        assert _web_server_chat._ws_auth_ok(gateway, allow_internal=True) is True
+        assert _web_server_chat._ws_auth_ok(publisher, allow_internal=True) is True
 
     def test_rejection_audit_logs(self, gated_app, tmp_path, monkeypatch):
         # Point the audit log at a tmp dir so we can read what got written.
@@ -473,4 +519,3 @@ class TestGatewayWsUrl:
         gw_cred = gw.split("internal=")[1].split("&")[0]
         sc_cred = sc.split("internal=")[1].split("&")[0]
         assert gw_cred == sc_cred
-

@@ -38,7 +38,7 @@ def test_desktop_serve_arms_mcp_discovery_only_after_ready_sentinel(monkeypatch)
     _stub_uvicorn_run(monkeypatch)
 
     web_server.start_server(
-        host="127.0.0.1", port=0, open_browser=False, headless=True,
+        host="127.0.0.1", port=0, open_browser=False, ui_surface="serve",
         start_mcp_discovery_after_bind=True,
     )
     timer = mcp_startup._mcp_discovery_deferred
@@ -53,7 +53,7 @@ def test_desktop_serve_arms_mcp_discovery_only_after_ready_sentinel(monkeypatch)
     # start discovery itself — cmd_dashboard's pre-import path still owns it.
     order.clear()
     _reset_discovery_state(monkeypatch)
-    web_server.start_server(host="127.0.0.1", port=0, open_browser=False, headless=True)
+    web_server.start_server(host="127.0.0.1", port=0, open_browser=False, ui_surface="serve")
     assert order == ["sentinel"] and mcp_startup._mcp_discovery_deferred is None
 
 
@@ -97,7 +97,7 @@ def test_standalone_dashboard_boot_arms_discovery_without_starting_it(monkeypatc
         mcp_startup, "start_background_mcp_discovery", lambda *, logger, thread_name: calls.append(thread_name)
     )
 
-    after_bind = main_mod._dashboard_prepare_runtime(types.SimpleNamespace(skip_build=True), False)
+    after_bind = main_mod._dashboard_prepare_runtime(types.SimpleNamespace(skip_build=True, ui_surface="dashboard"))
 
     assert after_bind is False and calls == []
     # armed, not started: firing on demand runs it exactly once
@@ -120,7 +120,8 @@ def test_first_gateway_ws_client_starts_the_armed_discovery_once(monkeypatch):
     )
     assert calls == []
 
-    async def _allowed(ws):
+    async def _allowed(ws, *, allow_internal=False):
+        assert allow_internal is True
         return True
 
     async def _handle_ws(ws, **kwargs):

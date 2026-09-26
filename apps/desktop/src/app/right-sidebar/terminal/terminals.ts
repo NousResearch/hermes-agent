@@ -1,6 +1,7 @@
 import { atom, computed } from 'nanostores'
 
 import { readKey, writeKey } from '@/lib/storage'
+import { notifyError } from '@/store/notifications'
 import { $currentCwd } from '@/store/session'
 
 import { setTerminalTakeover } from '../store'
@@ -29,6 +30,8 @@ export interface TerminalEntry {
    *  revived — a fresh shell starts beneath the restored buffer. Captured live
    *  for user tabs only; agent mirrors stay runtime-only. */
   reviveBuffer?: string
+  /** A server shell was created for this tab; restoration must never respawn it. */
+  persistent?: boolean
   /** `user` = interactive PTY shell. `agent` = read-only mirror of an agent
    *  background process (`terminal(background=true)`), keyed by `procId`. */
   kind: 'user' | 'agent'
@@ -41,6 +44,8 @@ interface PersistedTerminalEntry {
   id: string
   restoreCwd?: string
   reviveBuffer?: string
+  /** A server shell was created for this tab; restoration must never respawn it. */
+  persistent?: boolean
   title: string
 }
 
@@ -78,6 +83,7 @@ function sanitizePersistedTerminal(value: unknown): PersistedTerminalEntry | nul
     id,
     ...(restoreCwd ? { restoreCwd } : {}),
     ...(reviveBuffer ? { reviveBuffer } : {}),
+    ...(record.persistent === true ? { persistent: true } : {}),
     title: title || 'Terminal'
   }
 }
@@ -126,6 +132,7 @@ function persistTerminals(list: readonly TerminalEntry[], activeTerminalId: null
       id: term.id,
       ...(term.restoreCwd ? { restoreCwd: term.restoreCwd } : {}),
       ...(term.reviveBuffer ? { reviveBuffer: term.reviveBuffer } : {}),
+      ...(term.persistent ? { persistent: true } : {}),
       title: term.title
     }))
 
@@ -279,9 +286,30 @@ export function cycleTerminal(direction: 1 | -1): void {
   $activeTerminalId.set(list[(current + direction + list.length) % list.length].id)
 }
 
+const closingTerminals = new Set<string>()
+
 /** Drop a terminal. Focus slides to the neighbor that fills its slot; closing
  *  the last one closes the whole pane. */
 export function closeTerminal(id: string): void {
+  const entry = $terminals.get().find(term => term.id === id)
+  const closeSaved = window.hermesDesktop?.terminal?.closeSaved
+
+  if (entry?.kind !== 'user' || !closeSaved) {
+    removeExitedTerminal(id)
+
+    return
+  }
+
+  if (closingTerminals.has(id)) {return}
+  closingTerminals.add(id)
+  // Keep the tab and its resume handle until the server confirms termination.
+  void closeSaved(id).then(closed => {
+    if (!closed) {throw new Error('Terminal close was not confirmed; retry closing this tab')}
+    removeExitedTerminal(id)
+  }).catch(error => notifyError(error, 'Could not close terminal')).finally(() => closingTerminals.delete(id))
+}
+
+export function removeExitedTerminal(id: string): void {
   const list = $terminals.get()
   const index = list.findIndex(term => term.id === id)
 
@@ -327,33 +355,31 @@ export function closeActiveTerminal(): void {
 }
 
 export function closeAllTerminals(): void {
-  if ($terminals.get().length === 0) {
-    return
-  }
-
-  $terminals.set([])
-  $activeTerminalId.set(null)
-  setTerminalTakeover(false)
+  $terminals.get().forEach(term => closeTerminal(term.id))
 }
 
 export function closeOtherTerminals(id: string): void {
   const keep = $terminals.get().find(term => term.id === id)
 
   if (keep) {
-    $terminals.set([keep])
+    $terminals.get().filter(term => term.id !== id).forEach(term => closeTerminal(term.id))
     $activeTerminalId.set(keep.id)
   }
 }
 
-/** Record the latest serialized scrollback for a tab so it can be replayed on
- *  the next launch. Oversized buffers are tail-trimmed to stay under the storage
- *  budget; only user tabs ever carry one. */
+/** Server replay replaces renderer-only history once persistence is negotiated. */
+export function markTerminalPersistent(id: string): void {
+  $terminals.set($terminals.get().map(term =>
+    term.id === id ? { ...term, persistent: true, reviveBuffer: undefined } : term
+  ))
+}
+
 export function updateTerminalReviveBuffer(id: string, reviveBuffer: string): void {
   const capped =
     reviveBuffer.length > MAX_REVIVE_BUFFER_CHARS ? reviveBuffer.slice(-MAX_REVIVE_BUFFER_CHARS) : reviveBuffer
 
   $terminals.set(
-    $terminals.get().map(term => (term.id === id && term.kind === 'user' ? { ...term, reviveBuffer: capped } : term))
+    $terminals.get().map(term => (term.id === id && term.kind === 'user' && !term.persistent ? { ...term, reviveBuffer: capped } : term))
   )
 }
 

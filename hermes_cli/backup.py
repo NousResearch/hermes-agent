@@ -347,9 +347,11 @@ def _iter_backup_files(hermes_root: Path, out_path: Path, skipped_dirs: Optional
 
 def _query_ro_sqlite(path: Path, fn):
     """Run ``fn(conn)`` on a read-only connection to *path*; return ``(value, None)`` or ``(None, exc)``."""
+    from hermes_cli.sqlite_safe_read import connect_tracked
+
     conn = None
     try:
-        conn = sqlite3.connect(read_only_db_uri(path), uri=True, timeout=1.0)
+        conn = connect_tracked(read_only_db_uri(path), uri=True, timeout=1.0)
         return fn(conn), None
     except Exception as exc:
         return None, exc

@@ -21,17 +21,18 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Optional, Sequence
 
-from utils import atomic_json_write
-
 logger = logging.getLogger(__name__)
 
 SPAWN_ENV_VAR = "HERMES_SPAWN"
 _TAG_VERSION = "v1"
 LEDGER_FILENAME = "spawn-ledger.json"
 
+#: The one web-server stack's launch surfaces: the ``hermes serve|dashboard|webapp`` subcommand,
+#: its ledger purpose and the server's ``ui_surface`` all use this vocabulary.
+WEB_SERVER_PURPOSES = frozenset({"serve", "dashboard", "webapp"})
 #: Purposes a reaper may treat as "safe to kill when the owner is gone".
 #: Interactive processes (chat, REPLs) are deliberately NOT in this set.
-REAPABLE_PURPOSES = frozenset({"serve", "dashboard", "gateway", "mcp-helper"})
+REAPABLE_PURPOSES = WEB_SERVER_PURPOSES | {"gateway", "mcp-helper"}
 
 _IS_WINDOWS = platform.system() == "Windows"
 
@@ -300,6 +301,7 @@ def _append_entry(entry: LedgerEntry) -> bool:
         pruned.append(asdict(entry))
         try:
             from hermes_constants import mkdir_under_hermes_home
+            from utils import atomic_json_write
             mkdir_under_hermes_home(path.parent)
             # argv may carry surrogate-escaped bytes (non-UTF-8 paths); ensure_ascii keeps the
             # utf-8 text handle from raising UnicodeEncodeError (a ValueError, not an OSError).
@@ -360,6 +362,30 @@ def ledger_entries(
         and (_pid_alive_matches(e["pid"], e.get("create_time"), strict=True) is True
              if verified_only else _pid_alive_matches(e["pid"], e.get("create_time")) is not False)
     ]
+
+
+def reapable_ledger_identities() -> dict[int, float]:
+    """``{pid: create_time}`` of this install's live ledger entries with a reapable purpose.
+
+    Only positive identity counts: an entry without a recorded create time cannot rule out PID
+    reuse, so it is left out. ``{}`` when the ledger can't be read, so a caller acts on nothing
+    rather than guessing from argv.
+    """
+    identities: dict[int, float] = {}
+    try:
+        for entry in ledger_entries():
+            pid, created = entry.get("pid"), entry.get("create_time")
+            if (
+                entry.get("purpose") in REAPABLE_PURPOSES
+                and isinstance(pid, int)
+                and pid > 0
+                and isinstance(created, (int, float))
+                and not isinstance(created, bool)
+            ):
+                identities[pid] = float(created)
+    except Exception:
+        return {}
+    return identities
 
 
 def spawner_is_dead(entry: dict) -> Optional[bool]:

@@ -379,8 +379,8 @@ def test_history_projection_unwraps_composite_and_hides_sole_handoff():
     assert server._history_to_messages(
         [composite, {"role": "user", "content": "newer ask", "_row_id": 9}]
     ) == [
-        {"role": "user", "text": "REAL ASK", "row_id": 7},
-        {"role": "user", "text": "newer ask", "row_id": 9},
+        {"user_originated": True, "role": "user", "text": "REAL ASK", "row_id": 7},
+        {"user_originated": True, "role": "user", "text": "newer ask", "row_id": 9},
     ]
     assert server._history_to_messages([sole_handoff]) == []
 

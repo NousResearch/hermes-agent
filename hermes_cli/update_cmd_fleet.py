@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from hermes_cli.update_cmd_common import _best_effort
-from hermes_cli.update_inventory import _gateway_service_matches_profile
+from hermes_cli.update_inventory import _SERVE_KINDS, _gateway_service_matches_profile
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("hermes_cli.update_cmd")
@@ -276,7 +276,7 @@ def _receipt_owed_gateways(receipt: dict, pending_manual: list[dict]) -> set[tup
         # obligation mechanism's — a host running a dashboard carries such a row in every receipt,
         # and a blanket veto made the gateway warning permanently undischargeable there (#115090).
         # Only an unclassified backend or a failed manual transfer still makes coverage unverified.
-        if kind in ("serve", "dashboard") and entry.get("supervisor") in _SUPERVISED_SERVE_BACKENDS and entry not in pending_manual:
+        if kind in _SERVE_KINDS and entry.get("supervisor") in _SUPERVISED_SERVE_BACKENDS and entry not in pending_manual:
             continue
         if kind != "gateway" or not profile or profile == "unknown":
             unverified = True
@@ -1054,7 +1054,7 @@ _MANUAL_GATEWAY_SKIP_REASON = (
     "manual gateway has no supervisor relaunch authority; left running for explicit operator restart"
 )
 _DESKTOP_SERVE_SKIP_REASON = (
-    "desktop app owns and respawns this serve backend;"
+    "desktop app owns and respawns this control-plane backend;"
     " the recovery pass must not restart it out from under its supervisor"
 )
 # NOT a claim that no supervisor exists: a systemd-launched serve sets neither HERMES_SPAWN
@@ -1102,13 +1102,18 @@ def _gateway_recovery_partition(plan, *, skip_profiles: set[str] | None = None) 
                     candidates.setdefault(profile, str(supervisor))
                     continue
                 reason = _MANUAL_GATEWAY_SKIP_REASON
-            elif kind in ("serve", "dashboard"):
+            elif kind in _SERVE_KINDS:
                 from hermes_cli.update_inventory import CLIENT_OWNED_SERVE_SUPERVISORS
 
                 if supervisor in CLIENT_OWNED_SERVE_SUPERVISORS:
                     reason = _DESKTOP_SERVE_SKIP_REASON
                 elif supervisor == "launchd":
                     reason = _LAUNCHD_SERVE_SKIP_REASON
+                elif kind == "webapp":
+                    reason = (
+                        "manually launched web server has no relaunch authority; "
+                        "left running for explicit operator restart"
+                    )
                 else:
                     reason = _SERVE_SKIP_REASON
             else:

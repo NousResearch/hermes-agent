@@ -62,6 +62,18 @@ def file_digest(path: Path) -> str | None:
     return hashlib.sha256(data).hexdigest() if data is not None else None
 
 
+# link() failures meaning "this filesystem cannot hard-link", never "the target exists": EPERM
+# (FAT/exFAT), EACCES (SELinux on Android app data), ENOTSUP/EOPNOTSUPP/ENOSYS (SMB, FUSE). Windows
+# reports FAT and unsupported shares as ERROR_INVALID_FUNCTION (1) / ERROR_NOT_SUPPORTED (50).
+_HARD_LINK_REFUSED_ERRNOS = frozenset({errno.EPERM, errno.EACCES, errno.ENOTSUP, errno.EOPNOTSUPP, errno.ENOSYS})
+_HARD_LINK_REFUSED_WINERRORS = frozenset({1, 50})
+
+
+def hard_link_refused(exc: OSError) -> bool:
+    return (exc.errno in _HARD_LINK_REFUSED_ERRNOS
+            or getattr(exc, "winerror", None) in _HARD_LINK_REFUSED_WINERRORS)
+
+
 def durable_write_bytes(path: Path, data: bytes) -> None:
     """Replace ``path`` atomically and fsync file and directory so a crash keeps old or new bytes."""
     path.parent.mkdir(parents=True, exist_ok=True)

@@ -201,11 +201,15 @@ class TestScratchDirPermissionPolicy:
 
     def test_hermes_uid_gid_applied_to_scratch(self, tmp_path, monkeypatch):
         self._isolate_env(monkeypatch, tmp_path)
-        monkeypatch.setenv("HERMES_UID", "1000")
-        monkeypatch.setenv("HERMES_GID", "911")
+        scratch = tmp_path / "cache" / "scratch"
+        scratch.mkdir(parents=True)
+        owner = scratch.stat()
+        uid, gid = owner.st_uid + 1, owner.st_gid + 1
+        monkeypatch.setenv("HERMES_UID", str(uid))
+        monkeypatch.setenv("HERMES_GID", str(gid))
         with patch.object(os, "chown") as mock_chown:
             get_scratch_dir(tmp_path, prune=False)
-        mock_chown.assert_called_once_with(tmp_path / "cache" / "scratch", 1000, 911)
+        mock_chown.assert_called_once_with(scratch, uid, gid)
 
 
 @pytest.mark.platforms("posix")  # POSIX file modes

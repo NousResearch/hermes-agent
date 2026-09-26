@@ -30,13 +30,15 @@ import copy
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from hermes_cli.profile_incarnation import PROFILE_INCARNATION_FILENAME
+
 # Each keyed by resolved profile path. One entry per profile the roster has painted; a removed
 # profile leaves one stale entry, so a memo is dropped whole once it grows past any plausible fleet.
 _SESSION_CACHE: dict[str, tuple[tuple, dict]] = {}
 _UI_META_CACHE: dict[str, tuple[tuple, dict]] = {}
 _MAX_ENTRIES = 512
 
-_STORE_FILES = ("state.db", "state.db-wal")
+_STORE_FILES = ("state.db", "state.db-wal", PROFILE_INCARNATION_FILENAME)
 
 
 def _file_parts(path: Path, *, with_inode: bool = False) -> Optional[tuple]:
@@ -63,12 +65,14 @@ def _cached(cache: dict, key: str, signature: Optional[tuple], compute: Callable
 
 
 def store_signature(profile_path: "str | Path") -> Optional[tuple]:
-    """``(name, mtime_ns, size)`` per session-store file, or None when the profile has no store.
+    """File identities plus profile generation, or None when the profile has no store.
 
     The pair the change watcher already trusts for ``sessions.changed``.
     """
     base = Path(profile_path)
-    parts = [p for p in (_file_parts(base / name) for name in _STORE_FILES) if p is not None]
+    if not (base / "state.db").is_file():
+        return None
+    parts = [p for p in (_file_parts(base / name, with_inode=True) for name in _STORE_FILES) if p is not None]
     # Our own read-only open creates an EMPTY -wal sidecar on a store that never had one; it
     # carries no frames, so it must not read as "the store moved" on the very next poll.
     return tuple(p for p in parts if not (p[0].endswith("-wal") and p[2] == 0)) or None

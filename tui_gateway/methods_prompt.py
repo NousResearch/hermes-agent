@@ -703,25 +703,60 @@ def _(rid, params: dict) -> dict:
 
 @method("clipboard.paste")
 def _(rid, params: dict) -> dict:
+    sid = params.get("session_id") or ""
     session, err = _sess_building(params, rid)
     if err:
         return err
     try:
+        owner = _attachment_owner(session, sid)
+    except LookupError:
+        return _err(rid, 4001, "session not found")
+    try:
         from hermes_cli.clipboard import has_clipboard_image, save_clipboard_image
     except Exception as e:
         return _err(rid, 5027, f"clipboard unavailable: {e}")
-    session["image_counter"] = session.get("image_counter", 0) + 1
-    img_dir = _session_images_dir(session)
-    img_dir.mkdir(parents=True, exist_ok=True)
-    img_path = (
-        img_dir / f"clip_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{session['image_counter']}.png")
-    # Save-first (CLI keybinding parity): more robust than a has_image() precheck.
-    if not save_clipboard_image(img_path):
-        session["image_counter"] = max(0, session["image_counter"] - 1)
-        return _ok(rid, {"attached": False, "message": (
-            "Clipboard has image but extraction failed" if has_clipboard_image()
-            else "No image found in clipboard")})
-    session.setdefault("attached_images", []).append(str(img_path))
+
+    import tempfile
+
+    with _sessions_lock:
+        _, profile_home, profile_incarnation = owner
+        if _profile_home_rejected(
+            profile_home,
+            profile_incarnation,
+            require_incarnation=True,
+        ) or not _session_images_dir(session).parent.is_dir():
+            return _err(
+                rid,
+                4041,
+                "profile incarnation is stale or home is missing or being deleted",
+            )
+
+    # Native clipboard helpers can wait on several subprocesses. Keep both
+    # lifecycle and session locks free while extracting outside reusable homes.
+    with tempfile.TemporaryDirectory(
+        prefix="hermes-clipboard-", ignore_cleanup_errors=True,
+    ) as tmpdir:
+        staged_path = Path(tmpdir) / "clipboard.png"
+        # Save-first: mirrors CLI keybinding path; more robust than has_image().
+        if not save_clipboard_image(staged_path):
+            msg = (
+                "Clipboard has image but extraction failed"
+                if has_clipboard_image()
+                else "No image found in clipboard"
+            )
+            return _ok(rid, {"attached": False, "message": msg})
+        try:
+            img_bytes = _read_attachment_bytes(staged_path, _ATTACHMENT_MAX_BYTES)
+        except ValueError as exc:
+            return _err(rid, 4018, str(exc))
+
+    try:
+        img_path = _queue_attached_image(session, img_bytes, ".png", prefix="clip", owner=owner)
+    except LookupError:
+        return _err(rid, 4001, "session not found")
+    except FileNotFoundError:
+        return _err(rid, 4041, "profile incarnation changed during clipboard paste")
+
     return _ok(rid, _attached_image_result(session, img_path))
 
 
@@ -730,6 +765,10 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_building(params, rid)
     if err:
         return err
+    try:
+        owner = _attachment_owner(session, params.get("session_id") or "")
+    except LookupError:
+        return _err(rid, 4001, "session not found")
     raw = str(params.get("path", "") or "").strip()
     if not raw:
         return _err(rid, 4015, "path required")
@@ -745,7 +784,9 @@ def _(rid, params: dict) -> dict:
                 return _err(rid, 4016, f"image not found: {path_token}")
         if image_path.suffix.lower() not in _IMAGE_EXTENSIONS:
             return _err(rid, 4016, f"unsupported image: {image_path.name}")
-        session.setdefault("attached_images", []).append(str(image_path))
+        with _profile_home_lease(owner[1], owner[2]), _sessions_lock:
+            _check_attachment_owner(session, owner)
+            session.setdefault("attached_images", []).append(str(image_path))
         return _ok(rid, _attached_image_result(
             session, image_path,
             remainder=remainder, text=remainder or f"[User attached image: {image_path.name}]"))
@@ -760,6 +801,10 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_building(params, rid)
     if err:
         return err
+    try:
+        owner = _attachment_owner(session, params.get("session_id") or "")
+    except LookupError:
+        return _err(rid, 4001, "session not found")
     raw_b64 = str(params.get("content_base64") or params.get("data") or "").strip()
     if not raw_b64:
         return _err(rid, 4015, "content_base64 required")
@@ -776,7 +821,7 @@ def _(rid, params: dict) -> dict:
     if ext not in _allowed_image_extensions():
         return _err(rid, 4016, f"unsupported image extension: {ext}")
     try:
-        img_path = _queue_attached_image(session, img_bytes, ext, prefix="upload")
+        img_path = _queue_attached_image(session, img_bytes, ext, prefix="upload", owner=owner)
     except Exception as e:
         return _err(rid, 5027, f"write failed: {e}")
     return _ok(rid, _attached_image_result(
@@ -794,6 +839,10 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_building(params, rid)
     if err:
         return err
+    try:
+        owner = _attachment_owner(session, params.get("session_id") or "")
+    except LookupError:
+        return _err(rid, 4001, "session not found")
     if shutil.which("pdftoppm") is None:
         return _err(rid, 5028, "pdftoppm not installed (poppler-utils package required)")
     raw_path = str(params.get("path", "") or "").strip()
@@ -833,8 +882,16 @@ def _(rid, params: dict) -> dict:
                 page_int = int(page_num)
             except ValueError:
                 page_int = first_page + len(attached_pages)
-            dst = _queue_attached_image(
-                session, src.read_bytes(), ".png", prefix=f"pdf_p{page_num}")
+            try:
+                dst = _queue_attached_image(
+                    session, _read_attachment_bytes(src, _ATTACHMENT_MAX_BYTES), ".png",
+                    prefix=f"pdf_p{page_num}", owner=owner)
+            except LookupError:
+                return _err(rid, 4001, "session not found")
+            except FileNotFoundError as exc:
+                return _err(rid, 4041, str(exc))
+            except ValueError as exc:
+                return _err(rid, 4018, str(exc))
             attached_pages.append({"path": str(dst), "page": page_int, **_image_meta(dst)})
         return _ok(rid, {
             "attached": True, "filename": display_name, "pages_attached": len(attached_pages),
@@ -849,13 +906,21 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_building(params, rid)
     if err:
         return err
+    try:
+        owner = _attachment_owner(session, params.get("session_id") or "")
+    except LookupError:
+        return _err(rid, 4001, "session not found")
     raw, data_url, name = (
         str(params.get(k, "") or "").strip() for k in ("path", "data_url", "name"))
-    if not raw and not data_url:
+    staged_upload = params.get("staged_upload")
+    if not raw and not data_url and staged_upload is None:
         return _err(rid, 4015, "path or data_url required")
     try:
-        stored_path, uploaded = _stage_session_file_attachment(
-            session, raw_path=raw, data_url=data_url, name=name)
+        if staged_upload is not None:
+            stored_path, uploaded = _stage_browser_file_attachment(session, staged_upload, name, owner=owner)
+        else:
+            stored_path, uploaded = _stage_session_file_attachment(
+                session, raw_path=raw, data_url=data_url, name=name, owner=owner)
         ref_path = _attachment_ref_path(session, stored_path)
         return _ok(rid, {
             "attached": True, "name": stored_path.name, "path": str(stored_path),
@@ -1120,7 +1185,13 @@ def _pdf_attach_source(rid, params, td_path, raw_path, raw_b64):
     if pdf.stat().st_size > _PDF_ATTACH_MAX_BYTES:
         mb = _PDF_ATTACH_MAX_BYTES // (1024 * 1024)
         return None, None, _err(rid, 4018, f"PDF too large; cap is {mb} MB")
-    return pdf, pdf.name, None
+    try:
+        payload = _read_attachment_bytes(pdf, _PDF_ATTACH_MAX_BYTES)
+    except ValueError as exc:
+        return None, None, _err(rid, 4018, f"PDF too large: {exc}")
+    pdf_path = td_path / "input.pdf"
+    pdf_path.write_bytes(payload)
+    return pdf_path, pdf.name, None
 
 
 def _pdf_page_range(rid, params):

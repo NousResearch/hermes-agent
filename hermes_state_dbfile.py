@@ -65,25 +65,115 @@ def _prepare_connection_retirement():
 # every POSIX advisory lock this process holds on the file, dropping the writer's WAL-mode DMS
 # shared lock (see hermes_cli/sqlite_safe_read.py) so another process can treat this writer as
 # dead and rerun WAL-index recovery underneath it.  So the probe preads through a per-path fd
-# cached for the life of the process (opening never cancels locks).  When the path is re-pointed
-# at a new inode (the very replacement this probe detects) the stale fd is RETIRED, never closed
-# — closing it would cancel the live connection's locks.  Replacements are rare and halt writes.
+# cached while SQLite owns that inode (opening never cancels locks). A replaced inode's probe
+# stays retired until its SQLite descriptors disappear too. Release runs AFTER the SQLite
+# close, never in the lockguard release -> SQLite close handoff.
 _HEADER_PROBE_LOCK = threading.Lock()
 _HEADER_PROBE_FDS: "dict[str, tuple[int, int, int]]" = {}  # key -> (fd, dev, ino)
-_RETIRED_HEADER_PROBE_FDS: "list[int]" = []  # intentionally never closed
+_RETIRED_HEADER_PROBE_FDS: "list[int]" = []
 _FTS_TABLE_NAMES = ("messages_fts", "messages_fts_trigram", "messages_fts_cjk")
 
 
+def _header_probe_identities() -> "Dict[int, Optional[Tuple[int, int]]]":
+    """fd -> (st_dev, st_ino) of every probe; None marks a retired probe whose inode cannot be
+    read, which is never released. Caller holds ``_HEADER_PROBE_LOCK``."""
+    probes: "Dict[int, Optional[Tuple[int, int]]]" = {
+        fd: (dev, ino) for fd, dev, ino in _HEADER_PROBE_FDS.values()}
+    for fd in _RETIRED_HEADER_PROBE_FDS:
+        try:
+            st = os.fstat(fd)
+        except OSError:
+            probes[fd] = None
+        else:
+            probes[fd] = (st.st_dev, st.st_ino)
+    return probes
+
+
+def _descriptor_identities() -> "Optional[Dict[int, Tuple[int, int]]]":
+    """fd -> (st_dev, st_ino) for every descriptor of this process, or None when they cannot
+    all be read (the caller keeps every probe rather than guess)."""
+    for directory in ("/proc/self/fd", "/dev/fd"):
+        try:
+            names = os.listdir(directory)
+            break
+        except OSError:
+            continue
+    else:
+        return None
+    identities = {}
+    for name in names:
+        if not name.isdigit():
+            continue
+        try:
+            st = os.fstat(int(name))
+        except OSError as exc:
+            if exc.errno == errno.EBADF:  # a concurrent close (or listdir's own fd)
+                continue
+            return None
+        identities[int(name)] = (st.st_dev, st.st_ino)
+    return identities
+
+
+def _retire_unused_header_probes(identity: "Optional[Tuple[int, int]]" = None) -> None:
+    """Close every probe whose inode no other descriptor in this process holds.
+
+    Runs after a path's last tracked close, with *identity* the inode it opened (nothing is
+    scanned unless that inode has a probe), and after offline reads (``None``). A zero tracked
+    count is insufficient: sqlite3_close_v2 can defer the real close for a cursor, and aliases
+    or pinned connections can still own the inode, so descriptors decide. The O(#fds) scan
+    runs outside ``_live_lock``; the closes run under it (lock order lifecycle -> probe),
+    after a rescan when a tracked open raced the scan. That exclusion covers tracked opens
+    only, so every in-process opener of a probed database (readers too) must use
+    connect_tracked.
+    """
+    from hermes_cli import sqlite_safe_read as tracked
+
+    with tracked._live_lock:
+        opens = tracked._tracked_opens
+        with _HEADER_PROBE_LOCK:
+            probed = set(_header_probe_identities().values())
+    if not probed or (identity is not None and identity not in probed):
+        return
+    descriptors = _descriptor_identities()
+    with tracked._live_lock:
+        if tracked._tracked_opens != opens:
+            descriptors = _descriptor_identities()
+        if descriptors is None:
+            return
+        with _HEADER_PROBE_LOCK:
+            probes = _header_probe_identities()
+            occupied = {ident for fd, ident in descriptors.items() if fd not in probes}
+            released = {fd for fd, ident in probes.items() if ident is not None and ident not in occupied}
+            for fd in released:
+                os.close(fd)
+            for key, entry in list(_HEADER_PROBE_FDS.items()):
+                if entry[0] in released:
+                    del _HEADER_PROBE_FDS[key]
+            _RETIRED_HEADER_PROBE_FDS[:] = [
+                fd for fd in _RETIRED_HEADER_PROBE_FDS if fd not in released
+            ]
+
+
 def _pread_db_range(db_path: Path, offset: int, length: int) -> "Optional[bytes]":
-    """Lock-safe raw read of a possibly-live SQLite database: POSIX preads from a cached,
-    never-closed fd (rebound when the path names a new inode); Windows reads plainly, since
-    advisory-lock cancellation is a POSIX-only hazard."""
+    """Read through an inode-owned probe; offline reads release it before returning.
+
+    Use and release of a probe serialize on ``_HEADER_PROBE_LOCK``; opening one never
+    cancels a lock, so reads need no exclusion from tracked opens."""
+    from hermes_cli.sqlite_safe_read import has_live_connection
     from hermes_state import _IS_WINDOWS
     if _IS_WINDOWS:
         with contextlib.suppress(OSError), db_path.open("rb") as handle:
             handle.seek(offset)
             return handle.read(length)
         return None
+    try:
+        return _pread_db_range_cached(db_path, offset, length)
+    finally:
+        if not has_live_connection(db_path):
+            _retire_unused_header_probes()
+
+
+def _pread_db_range_cached(db_path: Path, offset: int, length: int) -> "Optional[bytes]":
     key = str(db_path)
     try:
         st = os.stat(db_path)
@@ -92,7 +182,7 @@ def _pread_db_range(db_path: Path, offset: int, length: int) -> "Optional[bytes]
     with _HEADER_PROBE_LOCK:
         cached = _HEADER_PROBE_FDS.get(key)
         if cached is not None and (cached[1], cached[2]) != (st.st_dev, st.st_ino):
-            # Path re-pointed at a new file. Retire (never close) the old fd.
+            # The old inode may still belong to a live/quarantined connection.
             _RETIRED_HEADER_PROBE_FDS.append(_HEADER_PROBE_FDS.pop(key)[0])
             cached = None
         if cached is None:
@@ -627,8 +717,9 @@ def has_invalid_sqlite_header_preopen(path: Path, *, probe_bytes: int = 100, for
 def quarantine_cross_process_lock(path: Path, timeout: float = 5.0):
     """Acquire the cross-process lock for path.quarantine.lock."""
     import platform
+    from hermes_constants import assert_named_profile_home_available, mkdir_under_hermes_home
     lock_path = path.with_name(path.name + ".quarantine.lock")
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    mkdir_under_hermes_home(lock_path.parent)
     handle = lock_path.open("a+b")
     acquired = False
     try:
@@ -653,6 +744,8 @@ def quarantine_cross_process_lock(path: Path, timeout: float = 5.0):
                 if time.monotonic() >= deadline:
                     break
                 time.sleep(0.020)
+        if acquired:
+            assert_named_profile_home_available(path.parent)
         yield acquired
     finally:
         try:

@@ -70,22 +70,32 @@ def describe_holder_pid(pid: int) -> str:
 
 
 def _looks_like_python_executable(program: str) -> bool:
-    name = os.path.basename(program).lower().removesuffix(".exe")
-    for prefix in ("python", "pypy"):
-        if name.startswith(prefix):
-            suffix = name[len(prefix) :]
-            return not suffix or all(char.isdigit() or char == "." for char in suffix)
-    return False
+    """``python``/``pythonw``/``pypy`` (optionally versioned and ``.exe``) under any directory.
+
+    ``pythonw`` is how Windows runs Hermes without a console (gateway launchers, Scheduled Tasks,
+    Desktop backends). Both separators split because ``os.path.basename`` keeps ``\\`` on POSIX,
+    and Windows command lines are classified on every host.
+    """
+    name = program.replace("\\", "/").rsplit("/", 1)[-1].lower().removesuffix(".exe")
+    return any(
+        name.startswith(prefix) and all(char.isdigit() or char == "." for char in name[len(prefix) :])
+        for prefix in ("python", "pythonw", "pypy")
+    )
 
 
-def _python_execution_target(argv: Sequence[str]) -> Optional[Tuple[str, str]]:
-    """Return the Python module or script selected by interpreter options."""
+def _python_execution_target(argv: Sequence[str]) -> Optional[Tuple[str, str, int]]:
+    """``(kind, target, index)`` of the module or script interpreter options select, else ``None``.
+
+    ``kind`` is ``"module"`` or ``"script"``. ``index`` is the argv slot holding the target (the
+    ``-mX`` cluster itself when the module is attached), so the target's own arguments start at
+    ``index + 1``. ``-c`` inline source has no target: its payload is data, not identity.
+    """
     index = 1
     while index < len(argv):
         arg = argv[index]
         if arg == "--":
             index += 1
-            return ("script", argv[index]) if index < len(argv) else None
+            return ("script", argv[index], index) if index < len(argv) else None
         if arg in _PYTHON_LONG_OPTIONS_WITH_OPERANDS:
             index += 2
             continue
@@ -106,16 +116,16 @@ def _python_execution_target(argv: Sequence[str]) -> Optional[Tuple[str, str]]:
                     return None
                 if option == "m":
                     if attached:
-                        return "module", attached
+                        return "module", attached, index
                     index += 1
-                    return ("module", argv[index]) if index < len(argv) else None
+                    return ("module", argv[index], index) if index < len(argv) else None
                 if option in _PYTHON_SHORT_OPTIONS_WITH_OPERANDS:
                     consumed_next = not attached
                     break
                 option_index += 1
             index += 2 if consumed_next else 1
             continue
-        return "script", arg
+        return "script", arg, index
     return None
 
 
@@ -131,7 +141,7 @@ def _looks_like_hermes(argv: Sequence[str]) -> bool:
     target = _python_execution_target(argv)
     if target is None:
         return False
-    kind, value = target
+    kind, value, _index = target
     normalized = value.lower().replace("\\", "/")
     if kind == "module":
         return normalized in _HERMES_PYTHON_MODULES

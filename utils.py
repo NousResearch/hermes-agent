@@ -15,6 +15,7 @@ from typing import Any, Union
 from urllib.parse import urlparse
 
 import hermes_yaml as yaml
+from pm.filesystem import hard_link_refused
 
 logger = logging.getLogger(__name__)
 
@@ -204,6 +205,29 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
         # The rewrite re-raises its own error, so an ACL denial is reported as such, not as contention.
         (_rewrite_in_place if contended else _copy_fallback)(tmp_str, real_path)
     return real_path
+
+
+def publish_no_clobber(tmp_path: Union[str, Path], target: Union[str, Path]) -> None:
+    """Publish the complete file *tmp_path* at *target*; ``FileExistsError`` if *target* exists.
+
+    A hard link is atomic and never replaces a concurrent winner. Where the filesystem refuses
+    hard links, an ``O_EXCL`` reservation keeps the no-clobber contract and :func:`atomic_replace`
+    then moves the complete bytes over it, consuming *tmp_path*; until then a racing reader sees
+    an empty file.
+    """
+    try:
+        os.link(tmp_path, target)
+        return
+    except OSError as exc:
+        if not hard_link_refused(exc):
+            raise
+    os.close(os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+    try:
+        atomic_replace(tmp_path, target)
+    except BaseException:
+        with suppress(OSError):
+            os.unlink(target)
+        raise
 
 
 def fsync_directory(path: Union[str, Path]) -> None:

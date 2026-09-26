@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Optional, Tuple
 from urllib.parse import urlparse
 
-from hermes_constants import OPENROUTER_BASE_URL, hermes_home_key, secure_parent_dir
+from hermes_constants import OPENROUTER_BASE_URL, hermes_home_key, mkdir_under_hermes_home, secure_parent_dir
 from agent.credential_persistence import sanitize_borrowed_credential_payload
 from utils import atomic_json_write, env_float, file_signature, is_truthy_value  # noqa: F401  (env_float: agent.credential_pool reads auth_mod.env_float)
 from hermes_cli.auth_zai_kimi import (  # noqa: F401  re-exported
@@ -604,7 +604,7 @@ def _file_lock(
             holder.depth -= 1
         return
 
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    mkdir_under_hermes_home(lock_path.parent)
     with ExitStack() as stack:
         lock_file = None
         if fcntl is not None or msvcrt is not None:
@@ -710,7 +710,6 @@ def _load_auth_store(auth_file: Optional[Path] = None) -> Dict[str, Any]:
 def _save_private_json(target: Path, data: Any, *, fsync_dir: bool = False, **dump_kwargs: Any) -> None:
     """0600 credential JSON under a 0700 parent (``secure_parent_dir`` refuses ``/``, top-level dirs
     and the install tree). ``atomic_json_write`` creates the temp file 0600 before any byte lands."""
-    from hermes_constants import mkdir_under_hermes_home
     mkdir_under_hermes_home(target.parent)
     secure_parent_dir(target)
     atomic_json_write(target, data, mode=0o600, fsync_dir=fsync_dir, **dump_kwargs)
@@ -2282,7 +2281,7 @@ def _update_config_for_provider(
         _save_auth_store(auth_store)
 
     config_path = get_config_path()
-    config_path.parent.mkdir(parents=True, exist_ok=True)
+    mkdir_under_hermes_home(config_path.parent)
     require_readable_config_before_write(config_path)
     config = read_raw_config()
     current_model = config.get("model")

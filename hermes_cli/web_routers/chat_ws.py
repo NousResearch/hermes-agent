@@ -18,10 +18,9 @@ from fastapi import APIRouter, FastAPI, HTTPException, WebSocket, WebSocketDisco
 from agent.interrupt_scope import InterruptScope, bind_interrupt_scope
 from hermes_cli.pty_session import RegistryFull
 from hermes_cli.web_deps import LateState, late
-from hermes_cli.web_routers.chat_ws_errors import chat_start_failure_message
 from hermes_cli.web_server_chat import (
-    _build_sidecar_url, _close_stalled_pty_input, _get_console_executor, _legacy_pump, _ws_auth_ok,
-    _ws_request_is_allowed,
+    _build_sidecar_url, _close_stalled_pty_input, _get_console_executor, _legacy_pump, _pty_fail, _ws_auth_ok,
+    _ws_close_reason, _ws_gate, _ws_request_is_allowed,
 )
 
 _log = logging.getLogger("hermes_cli.web_server")
@@ -32,9 +31,6 @@ _active_session_file_for_channel = late("_active_session_file_for_channel", "her
 _profile_scope = late("_profile_scope", "hermes_cli.web_server_profiles")
 _resolve_chat_argv_async = late("_resolve_chat_argv_async", "hermes_cli.web_server_chat")
 _resolve_profile_dir = late("_resolve_profile_dir", "hermes_cli.web_server_profiles")
-_ws_auth_reason = late("_ws_auth_reason", "hermes_cli.web_server_chat")
-_ws_client_reason = late("_ws_client_reason", "hermes_cli.web_server_chat")
-_ws_host_origin_reason = late("_ws_host_origin_reason", "hermes_cli.web_server_chat")
 _DASHBOARD_EMBEDDED_CHAT_ENABLED = LateState("_DASHBOARD_EMBEDDED_CHAT_ENABLED")
 
 
@@ -51,18 +47,6 @@ def _get_event_state(app: "FastAPI"):
 
 
 _VALID_CHANNEL_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
-
-
-def _ws_auth_mode() -> str:
-    """Short label for the active WS auth mode — logged on every connection."""
-    from hermes_cli.web_server_chat import _LOOPBACK_HOSTS
-    from hermes_cli.web_server import app
-    if getattr(app.state, "auth_required", False):
-        return "gated"
-    bound_host = (getattr(app.state, "bound_host", "") or "").strip().lower()
-    if bound_host and bound_host not in _LOOPBACK_HOSTS:
-        return "insecure"
-    return "loopback"
 
 
 async def _broadcast_event(app: Any, channel: str, payload: str) -> None:
@@ -92,57 +76,13 @@ def _read_active_session_file(path: Path) -> Optional[str]:
     return str(data.get("session_id") or "").strip() or None
 
 
-def _ws_close_reason(text: str) -> str:
-    """Clamp to RFC 6455's 123-byte close-reason limit (uvicorn raises past it);
-    reasons embed an attacker-controlled origin, so truncate rather than crash."""
-    encoded = text.encode("utf-8", "replace")
-    if len(encoded) <= 123:
-        return text
-    return encoded[:120].decode("utf-8", "ignore") + "..."
-
-
-async def _ws_gate(ws: WebSocket, kind: str) -> Optional[tuple[str, str, str]]:
-    """Run the pre-accept gates for /api/console and /api/pty.
-
-    Each gate maps to a distinct close code so the log and the browser banner
-    agree on the cause: 4404 chat disabled, 4401 bad credential, 4403
-    host/origin mismatch, 4408 peer not allowed. Returns ``(peer, mode, cred)``
-    once every gate passes, or None after closing the socket.
-    """
-    peer = ws.client.host if ws.client else "?"
-    if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
-        _log.info("%s refused: embedded chat disabled peer=%s", kind, peer)
-        await ws.close(code=4404, reason="embedded chat disabled")
-        return None
-
-    auth_reason, cred = _ws_auth_reason(ws)
-    mode = _ws_auth_mode()
-    if auth_reason is not None:
-        _log.warning("%s auth rejected reason=%s mode=%s cred=%s peer=%s", kind, auth_reason, mode, cred, peer)
-        await ws.close(code=4401, reason=_ws_close_reason(f"auth: {auth_reason}"))
-        return None
-
-    host_origin_reason = _ws_host_origin_reason(ws)
-    if host_origin_reason is not None:
-        _log.warning("%s refused: %s peer=%s", kind, host_origin_reason, peer)
-        await ws.close(code=4403, reason=_ws_close_reason(host_origin_reason))
-        return None
-
-    client_reason = _ws_client_reason(ws)
-    if client_reason is not None:
-        _log.warning("%s refused: %s", kind, client_reason)
-        await ws.close(code=4408, reason=_ws_close_reason(client_reason))
-        return None
-    return peer, mode, cred
-
-
-async def _close_unless_sidecar_allowed(ws: WebSocket) -> bool:
+async def _close_unless_sidecar_allowed(ws: WebSocket, *, allow_internal: bool = False) -> bool:
     """Pre-accept gates for the /api/ws, /api/pub and /api/events sidecars:
     4403 when chat is disabled or the request isn't allowed, 4401 on bad auth."""
     if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
         await ws.close(code=4403)
         return False
-    if not _ws_auth_ok(ws):
+    if not _ws_auth_ok(ws, allow_internal=allow_internal):
         await ws.close(code=4401)
         return False
     if not _ws_request_is_allowed(ws):
@@ -427,14 +367,6 @@ async def console_ws(ws: WebSocket) -> None:
                 pass
 
 
-async def _pty_fail(ws: WebSocket, exc: BaseException) -> None:
-    """Tell the user why chat could not start, then close 1011 so the SPA renders
-    "Start new session". The raw exception goes to the server log only."""
-    _log.warning("pty start failed: %s: %s", type(exc).__name__, exc)
-    await ws.send_text(f"\r\n\x1b[31m{chat_start_failure_message(exc)}\x1b[0m\r\n")
-    await ws.close(code=1011)
-
-
 @router.websocket("/api/pty")
 async def pty_ws(ws: WebSocket) -> None:
     from hermes_cli.web_server_chat import PTY_REGISTRY, PtyBridge, PtyUnavailableError, _PTY_BRIDGE_AVAILABLE, _RESIZE_RE
@@ -448,13 +380,7 @@ async def pty_ws(ws: WebSocket) -> None:
 
     # Native Windows can't import the POSIX PTY bridge: say so and close cleanly.
     if not _PTY_BRIDGE_AVAILABLE:
-        await ws.send_text(
-            "\r\n\x1b[31mChat unavailable: the embedded terminal requires a "
-            "POSIX PTY, which native Windows Python doesn't provide.\x1b[0m\r\n"
-            "\x1b[33mInstall Hermes inside WSL2 to use the dashboard's /chat "
-            "tab — the rest of the dashboard works here.\x1b[0m\r\n"
-        )
-        await ws.close(code=1011)
+        await _pty_fail(ws, PtyUnavailableError("Pseudo-terminal support is not installed on this host."))
         return
 
     raw_resume = ws.query_params.get("resume") or None
@@ -571,7 +497,7 @@ async def pty_ws(ws: WebSocket) -> None:
             # Resize escape is consumed locally, never written to the PTY.
             match = _RESIZE_RE.match(raw)
             if match and match.end() == len(raw):
-                session.bridge.resize(cols=int(match.group(1)), rows=int(match.group(2)))
+                session.resize(ws, cols=int(match.group(1)), rows=int(match.group(2)))
                 continue
             if not await session.write(ws, raw):
                 await _close_stalled_pty_input(ws, path="keepalive")
@@ -592,7 +518,7 @@ async def pty_ws(ws: WebSocket) -> None:
 
 @router.websocket("/api/ws")
 async def gateway_ws(ws: WebSocket) -> None:
-    if not await _close_unless_sidecar_allowed(ws):
+    if not await _close_unless_sidecar_allowed(ws, allow_internal=True):
         return
     from hermes_cli.mcp_startup import start_deferred_mcp_discovery_now
     from tui_gateway.ws import handle_ws
@@ -618,8 +544,8 @@ async def gateway_ws(ws: WebSocket) -> None:
 # child's stdio handshake with Ink.
 
 
-async def _accept_channel_ws(ws: WebSocket) -> Optional[str]:
-    if not await _close_unless_sidecar_allowed(ws):
+async def _accept_channel_ws(ws: WebSocket, *, allow_internal: bool = False) -> Optional[str]:
+    if not await _close_unless_sidecar_allowed(ws, allow_internal=allow_internal):
         return None
     channel = _channel_or_close_code(ws)
     if not channel:
@@ -631,7 +557,7 @@ async def _accept_channel_ws(ws: WebSocket) -> Optional[str]:
 
 @router.websocket("/api/pub")
 async def pub_ws(ws: WebSocket) -> None:
-    channel = await _accept_channel_ws(ws)
+    channel = await _accept_channel_ws(ws, allow_internal=True)
     if channel is None:
         return
     try:

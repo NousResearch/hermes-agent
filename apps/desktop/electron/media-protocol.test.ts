@@ -39,6 +39,10 @@ describe('media protocol helpers', () => {
     expect(isStreamableMediaPath('/tmp/render.MP4')).toBe(true)
     expect(isStreamableMediaPath('/tmp/voice.flac')).toBe(true)
     expect(isStreamableMediaPath('/tmp/secrets.txt')).toBe(false)
+    expect(isStreamableMediaPath('file:///tmp/render.MP4#t=30')).toBe(true)
+    expect(isStreamableMediaPath('file://nas/share/voice.flac?download=1')).toBe(true)
+    expect(isStreamableMediaPath('file:///tmp/secrets.txt?name=clip.mp4')).toBe(false)
+    expect(isStreamableMediaPath('file://%invalid/clip.mp4')).toBe(false)
   })
 
   it('forwards range/cache negotiation headers but strips renderer credentials', () => {
@@ -136,7 +140,16 @@ describe('createMediaProtocolHandler', () => {
     expect(deps.resolveRemoteConnection).not.toHaveBeenCalled()
   })
 
-  it('proxies token-auth remote media without placing the token in the URL', async () => {
+  it.each([
+    ['/root/outputs/render.mp4', '/root/outputs/render.mp4'],
+    ['file:///tmp/video%20clip.mp4', '/tmp/video clip.mp4'],
+    ['file://localhost/tmp/video%20clip.mp4#t=30', '/tmp/video clip.mp4'],
+    ['file:///tmp/video%20clip.mp4?download=1', '/tmp/video clip.mp4'],
+    ['file:///C:/Users/Alice/video%20clip.mp4', 'file:///C:/Users/Alice/video%20clip.mp4'],
+    ['file://nas/share/video%20clip.mp4', 'file://nas/share/video%20clip.mp4'],
+    ['file:///C:/Users/Alice/video%20clip.mp4#t=30', 'file:///C:/Users/Alice/video%20clip.mp4#t=30'],
+    ['file://nas/share/video%20clip.mp4?download=1', 'file://nas/share/video%20clip.mp4?download=1']
+  ])('keeps old POSIX gateways working and preserves drive/UNC information for %s', async (file, expectedPath) => {
     const deps = dependencies({
       resolveRemoteConnection: vi.fn(async () => ({
         authMode: 'token' as const,
@@ -147,7 +160,7 @@ describe('createMediaProtocolHandler', () => {
     })
 
     const response = await createMediaProtocolHandler(deps)(
-      request('hermes-media://remote/%2Froot%2Foutputs%2Frender.mp4?connectionId=work-ssh&profile=reviewer', {
+      request(`hermes-media://remote/${encodeURIComponent(file)}?connectionId=work-ssh&profile=reviewer`, {
         Range: 'bytes=0-1023'
       })
     )
@@ -158,7 +171,7 @@ describe('createMediaProtocolHandler', () => {
     const [rawUrl, headers] = vi.mocked(deps.fetchRemote).mock.calls[0]
     const url = new URL(rawUrl)
     expect(url.pathname).toBe('/hermes/api/files/stream')
-    expect(url.searchParams.get('path')).toBe('/root/outputs/render.mp4')
+    expect(url.searchParams.get('path')).toBe(expectedPath)
     expect(url.searchParams.has('token')).toBe(false)
     expect(headers.get('x-hermes-session-token')).toBe('s e/cret')
     expect(headers.get('range')).toBe('bytes=0-1023')

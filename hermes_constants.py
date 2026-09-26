@@ -22,6 +22,12 @@ _HERMES_HOME_OVERRIDE: ContextVar[str | object] = ContextVar("_HERMES_HOME_OVERR
 INDICATOR_STYLES: tuple[str, ...] = ("ascii", "emoji", "kaomoji", "unicode")
 DEFAULT_INDICATOR_STYLE: str = "kaomoji"
 
+# Browser-hosted attachments are staged on the Hermes host and then read back
+# as a base64 data URL for the normal remote attachment RPC. Keep the upload
+# and read-back boundaries identical so a successful picker/drop can always be
+# attached afterward.
+WEBAPP_ATTACHMENT_MAX_BYTES: int = 16 * 1024 * 1024
+
 
 def set_hermes_home_override(path: str | Path | None) -> Token:
     """Set a context-local Hermes home override and return its reset token.
@@ -368,21 +374,58 @@ def clear_named_profile_deleted(profile_home: str | Path) -> None:
 
 
 def assert_named_profile_home_live(path: str | Path) -> None:
-    """Refuse missing or tombstoned named profile homes."""
+    """Refuse a *path* inside a missing or tombstoned named profile home."""
     home = named_profile_home(path)
-    if home is not None and (named_profile_is_deleted(home) or not home.exists()):
-        raise FileNotFoundError(
-            f"Named profile home does not exist: {home}. "
-            "Create the profile explicitly before using it."
-        )
+    if home is not None:
+        assert_named_profile_home_available(home)
 
 
 def mkdir_under_hermes_home(path: str | Path) -> Path:
-    """Create *path*, but never materialize a deleted/missing named profile."""
+    """Create *path*, but never materialize a deleted/missing named profile.
+
+    Inside a named profile only the segments below the home are created, one at a time: a home
+    deleted after the liveness check makes the first ``mkdir`` fail where ``parents=True`` would
+    recreate it. The second check catches a delete that tombstoned the home mid-call.
+    """
     target = Path(path)
-    assert_named_profile_home_live(target)
-    target.mkdir(parents=True, exist_ok=True)
+    home = named_profile_home(target)
+    if home is None:
+        target.mkdir(parents=True, exist_ok=True)
+        return target
+    assert_named_profile_home_available(home)
+    current = home
+    for part in target.relative_to(home).parts:
+        current = current / part
+        current.mkdir(exist_ok=True)
+    assert_named_profile_home_available(home)
     return target
+
+
+def profile_deletion_marker_path(profile_home: Path | str) -> Path | None:
+    """Return the canonical deletion marker for a named profile home."""
+    home = Path(profile_home)
+    named_home = named_profile_home(home)
+    if named_home is None or named_home != home:
+        return None
+    return profile_tombstone_path(named_home)
+
+
+def named_profile_home_is_unavailable(profile_home: Path | str) -> bool:
+    """True when a named profile is absent or durably marked for deletion."""
+    home = Path(profile_home)
+    marker = profile_deletion_marker_path(home)
+    return marker is not None and (not home.is_dir() or marker.is_file())
+
+
+def assert_named_profile_home_available(profile_home: Path | str) -> None:
+    """Raise when :func:`named_profile_home_is_unavailable`.
+
+    Exact-home scope; :func:`assert_named_profile_home_live` guards any path under a home.
+    """
+    if named_profile_home_is_unavailable(profile_home):
+        raise FileNotFoundError(
+            f"Named profile home does not exist because it is missing or being deleted: {profile_home}. "
+            "Create the profile explicitly before using it.")
 
 
 def _packaged_dir(env_var: str, default: Path | None, subdir: str) -> Path:
@@ -845,6 +888,12 @@ def _chown_to_hermes_uid(path) -> None:
     if uid is None and gid is None:
         return
     try:
+        current = os.stat(path)
+    except OSError:
+        current = None
+    if current is not None and (uid is None or current.st_uid == uid) and (gid is None or current.st_gid == gid):
+        return
+    try:
         os.chown(path, uid if uid is not None else -1, gid if gid is not None else -1)
     except (OSError, AttributeError, NotImplementedError):
         pass
@@ -879,8 +928,15 @@ def apply_secure_dir_policy(path, *, home: str | Path | None = None) -> None:
         mode = int(explicit_mode or "700", 8)
     except ValueError:
         mode = 0o700
+    # Tokenless profile homes must revalidate on every read. Avoid changing
+    # metadata when the current directory already satisfies the policy.
     try:
-        os.chmod(path, mode)
+        current_mode = stat.S_IMODE(os.stat(path).st_mode)
+    except OSError:
+        current_mode = None
+    try:
+        if current_mode != mode:
+            os.chmod(path, mode)
     except (OSError, NotImplementedError):
         pass
     _chown_to_hermes_uid(path)

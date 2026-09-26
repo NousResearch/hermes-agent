@@ -1426,23 +1426,23 @@ class TestSafeCopyDb:
 
         clock = iter((100.0, 100.5, 101.1))
 
-        class FakeSourceConnection:
-            def backup(self, _destination, *, pages, progress, sleep):
+        class BusySourceConnection(sqlite3.Connection):
+            def backup(self, target, *, pages=-1, progress=None, name="main", sleep=0.250):
+                assert progress is not None
                 assert pages > 0
                 assert sleep > 0
                 progress(sqlite3.SQLITE_BUSY, 0, 1)
                 progress(sqlite3.SQLITE_BUSY, 0, 1)
 
-            def close(self):
-                pass
-
         destination_closed = []
 
-        class FakeDestinationConnection:
+        class DestinationConnection(sqlite3.Connection):
             def close(self):
+                super().close()
                 destination_closed.append(True)
 
-        connections = iter((FakeSourceConnection(), FakeDestinationConnection()))
+        real_connect = sqlite3.connect
+        factories = iter((BusySourceConnection, DestinationConnection))
         real_unlink = Path.unlink
 
         def assert_closed_before_unlink(path, *args, **kwargs):
@@ -1452,8 +1452,9 @@ class TestSafeCopyDb:
         connect_calls = []
 
         def fake_connect(*args, **kwargs):
-            connect_calls.append((args, kwargs))
-            return next(connections)
+            connect_calls.append((args, kwargs.copy()))
+            kwargs["factory"] = next(factories)
+            return real_connect(*args, **kwargs)
 
         monkeypatch.setattr(backup_mod.sqlite3, "connect", fake_connect)
         monkeypatch.setattr(backup_mod.time, "monotonic", lambda: next(clock))

@@ -202,8 +202,10 @@ channels (`profile_channels.py`: ownership-based inventory evaluated in the SOUR
 adapter-declared keys + canonical/alias prefixes + `GATEWAY_ALLOW*`/`GATEWAY_RELAY_*`; prefixes shared
 with tools (`HASS_`/`TWILIO_`/`EMAIL_`) are stripped only when the source runs that adapter; never a hand
 list). `--clone-channels` opts in and its live-multiplexer refusal lives in `create_profile` (CLI, REST
-and TUI all go through it). Clones are built in `profiles/.<name>.staging-<pid>` (hidden → invisible to
+and TUI all go through it). Clones are built under `profiles/.profile-creating/<attempt>/<name>` (hidden → invisible to
 `_iter_named_profile_dirs` and the hot-serve rescan) and published by one `os.rename` after the strip;
+the copy leases only the TARGET name (every cold `SessionDB` open takes its name's lease): the source is
+pinned by incarnation and re-checked before publish, so a source deleted/replaced mid-copy fails the clone;
 symlinked `.env`/`config.yaml` are materialized first so a clone never writes through to its source. Multiplex
 (`gateway.multiplex_profiles`) secret-scope rules: `gateway/AGENTS.md`. The served set is
 `profiles.py::profiles_to_serve(multiplex=True)` = default + every live dir under `profiles/` — live =

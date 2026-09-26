@@ -238,8 +238,23 @@ function readTargetMetadata(sha) {
   }
 }
 
+// The storage contract lives in the journal's store module; targets from
+// before that split still declare it in the journal itself.
+const JOURNAL_CONTRACT_PATHS = [
+  'apps/desktop/src/lib/inflight-turn-journal-store.ts',
+  'apps/desktop/src/lib/inflight-turn-journal.ts'
+]
+
 function readJournalContract(sha) {
-  const source = run('git', ['show', '--end-of-options', `${sha}:apps/desktop/src/lib/inflight-turn-journal.ts`])
+  const path =
+    JOURNAL_CONTRACT_PATHS.find(
+      candidate =>
+        spawnSync('git', ['rev-parse', '--verify', '--quiet', '--end-of-options', `${sha}:${candidate}`], {
+          cwd: REPO_ROOT
+        }).status === 0
+    ) ?? JOURNAL_CONTRACT_PATHS.at(-1)
+
+  const source = run('git', ['show', '--end-of-options', `${sha}:${path}`])
   const storageKey = source.match(/const (?:LEGACY_STORAGE_KEY|STORAGE_KEY) = '([^']+)'/)?.[1] ?? null
   const migrationKey = source.match(/const LEGACY_MIGRATION_KEY = '([^']+)'/)?.[1] ?? null
   const legacyStoreLimit = source.match(/const MAX_LEGACY_STORE_CHARS = (\d+) \* 1024 \* 1024/)?.[1]

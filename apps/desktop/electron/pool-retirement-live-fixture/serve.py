@@ -58,4 +58,4 @@ async def observed_lifespan(application):
 
 
 app.router.lifespan_context = observed_lifespan
-start_server(host="127.0.0.1", port=0, open_browser=False, headless=True)
+start_server(host="127.0.0.1", port=0, open_browser=False, ui_surface="serve")

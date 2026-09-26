@@ -16,6 +16,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterator, Optional
 
+from hermes_cli.sqlite_safe_read import connect_tracked
 from hermes_cli.timefmt import EPOCH_MAX, EPOCH_MIN
 from hermes_state import SessionDB
 from hermes_state_common import FTS_STORAGE_VERSION, SCHEMA_VERSION
@@ -216,8 +217,11 @@ def _count_rows(conn: sqlite3.Connection, table: str) -> int:
 
 
 def _connect(path: Path) -> sqlite3.Connection:
-    """Autocommit connection with a short busy timeout (source snapshot or fresh output)."""
-    return sqlite3.connect(str(path), isolation_level=None, timeout=1.0)
+    """Autocommit connection with a short busy timeout (source snapshot or fresh output).
+
+    Tracked because SessionDB initialized the output: releasing its cached header probe must be
+    able to see this connection, or the probe's close() would cancel this connection's locks."""
+    return connect_tracked(path, isolation_level=None, timeout=1.0)
 
 
 @contextmanager
@@ -902,7 +906,7 @@ def _verify_recovered_database(
     verification["opens_cleanly"] = open_error is None
     if open_error is not None:
         verification["errors"].append(f"database health probe: {open_error}")
-    conn = sqlite3.connect(str(output), isolation_level=None)
+    conn = _connect(output)
     try:
         _verify_structure(conn, verification)
         _verify_row_counts(
@@ -1126,7 +1130,7 @@ def _recover_via_lost_and_found(
     # Structural checks cannot see a positional mis-mapping: every row still inserts, so integrity/FK/FTS
     # stay green. A systematic timestamp violation is the semantic tell — never report such a salvage as verified.
     # See #101409.
-    plausibility_conn = sqlite3.connect(str(output), isolation_level=None)
+    plausibility_conn = _connect(output)
     try:
         plausibility_errors = _lost_and_found_plausibility_errors(plausibility_conn)
     finally:

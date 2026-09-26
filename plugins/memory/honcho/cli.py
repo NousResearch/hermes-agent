@@ -1071,6 +1071,7 @@ def _seen_gateway_accounts(db_path: Path) -> list[dict]:
         return []
     import sqlite3
     from contextlib import closing
+    from hermes_cli.sqlite_safe_read import connect_tracked
     # profile_name marks which profile a multiplexing gateway routed the
     # session to; older state.db files predate the column.
     query = """SELECT source, user_id,
@@ -1082,7 +1083,7 @@ def _seen_gateway_accounts(db_path: Path) -> list[dict]:
                 GROUP BY source, user_id
                 ORDER BY MAX(COALESCE(started_at, 0)) DESC"""
     try:
-        with closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
+        with closing(connect_tracked(f"file:{db_path}?mode=ro", uri=True)) as conn:
             try:
                 rows = conn.execute(query.format(
                     profiles_col=", GROUP_CONCAT(DISTINCT COALESCE(profile_name, 'default'))",

@@ -128,6 +128,18 @@ def test_download_authenticates_via_query_token(forced_files_client):
     assert ok.content == b"hello"
     assert ok.headers["content-disposition"].startswith("attachment;")
 
+    head = client.head(
+        "/api/files/download",
+        params={"path": str(file_path), "token": web_server._SESSION_TOKEN},
+    )
+    assert head.status_code == 200
+    assert head.content == b""
+    assert head.headers["content-length"] == str(len(ok.content))
+    assert client.head(
+        "/api/files/download",
+        params={"path": str(root / "missing.pdf"), "token": web_server._SESSION_TOKEN},
+    ).status_code == 404
+
     playback = client.get(
         "/api/files/download",
         params={"path": str(file_path), "token": web_server._SESSION_TOKEN},
@@ -153,7 +165,15 @@ def test_download_authenticates_via_query_token(forced_files_client):
     ).status_code == 401
 
 
-def test_download_resolves_paths_in_the_originating_profile_session(local_files_client, monkeypatch):
+@pytest.mark.parametrize("route,method", [
+    ("/api/fs/download", "get"),
+    ("/api/fs/read-data-url", "get"),
+    ("/api/files/download", "get"),
+    ("/api/files/download", "head"),
+])
+def test_download_resolves_paths_in_the_originating_profile_session(
+    local_files_client, monkeypatch, route, method,
+):
     from pathlib import Path
     from hermes_state import SessionDB
 
@@ -179,21 +199,48 @@ def test_download_resolves_paths_in_the_originating_profile_session(local_files_
             db.create_session(sid, source="gui", cwd=cwd)
         finally:
             db.close()
-    for route in ("/api/fs/download", "/api/fs/read-data-url"):
-        for path in ("./report.txt", "../project/report.txt", str(artifact), artifact.as_uri()):
-            response = client.get(route, params={
-                "path": path, "profile": "default", "session_id": "origin-session",
-            })
-            assert response.status_code == 200, response.text
+    request = getattr(client, method)
+    for path in ("./report.txt", "../project/report.txt", str(artifact), artifact.as_uri()):
+        response = request(route, params={
+            "path": path, "profile": "default", "session_id": "origin-session",
+        })
+        assert response.status_code == 200, response.text
+        if method == "head":
+            assert response.content == b""
+            assert response.headers["content-length"] == str(artifact.stat().st_size)
+        else:
             data = (base64.b64decode(response.json()["dataUrl"].split(",", 1)[1])
                     if route.endswith("read-data-url") else response.content)
             assert data == artifact.read_bytes()
-        for profile, session_id in (("other", "origin-session"), ("missing", "origin-session"),
-                                    ("default", "missing-session"), ("default", "")):
-            response = client.get(route, params={
-                "path": str(artifact), "profile": profile, "session_id": session_id,
-            })
-            assert response.status_code == 404, response.text
+    for profile, session_id in (("other", "origin-session"), ("missing", "origin-session"),
+                                ("default", "missing-session"), ("default", "")):
+        response = request(route, params={
+            "path": str(artifact), "profile": profile, "session_id": session_id,
+        })
+        assert response.status_code == 404, response.text
+
+
+@pytest.mark.parametrize("method", ["get", "head"])
+def test_managed_download_accepts_file_uris_without_bypassing_policy(
+    forced_files_client, monkeypatch, method,
+):
+    client, root = forced_files_client
+    artifact = _seed_file(client, root, name="out/a b.txt")
+    request = getattr(client, method)
+    response = request("/api/files/download", params={"path": artifact.as_uri()})
+    assert response.status_code == 200
+    assert response.headers["content-length"] == "5"
+    assert response.content == (b"hello" if method == "get" else b"")
+
+    outside = root.parent / "outside.txt"
+    outside.write_text("outside")
+    assert request("/api/files/download", params={"path": outside.as_uri()}).status_code == 403
+    sensitive = root / ".env"
+    sensitive.write_text("fixture-only")
+    assert request("/api/files/download", params={"path": sensitive.as_uri()}).status_code == 403
+
+    monkeypatch.setattr(web_server, "_MANAGED_FILE_MAX_BYTES", 1)
+    assert request("/api/files/download", params={"path": artifact.as_uri()}).status_code == 413
 
 
 def test_stream_requires_header_auth_and_supports_ranges(forced_files_client):
@@ -201,8 +248,8 @@ def test_stream_requires_header_auth_and_supports_ranges(forced_files_client):
     file_path = _seed_file(client, root, name="out/demo.mp4")
 
     # Electron's main-process proxy supplies the connection credential as a
-    # header. Unlike browser-visible download links, the stream endpoint must
-    # not accept credentials in its URL.
+    # header. The session token grants host shells, so browser media elements
+    # use a path-bound ticket instead: the stream URL never accepts the token.
     params = {"path": str(file_path)}
 
     full = client.get("/api/files/stream", params=params)
@@ -238,6 +285,50 @@ def test_stream_requires_header_auth_and_supports_ranges(forced_files_client):
     assert client.get("/api/files/stream", params=params).status_code == 401
 
 
+def test_browser_file_urls_authenticate_only_with_route_and_path_bound_tickets(
+    forced_files_client, monkeypatch,
+):
+    """A ticket admits exactly the URL it was minted for: reusable for media
+    Range requests, single-use for a download, useless for any other file."""
+    from hermes_cli import web_server_file_tickets
+
+    client, root = forced_files_client
+    video = _seed_file(client, root, name="out/demo.mp4")
+    other = _seed_file(client, root, name="out/other.mp4")
+
+    def ticket(route, **query):
+        response = client.post("/api/files/ticket", json={"route": route, **query})
+        assert response.status_code == 200, response.text
+        assert response.headers["cache-control"] == "no-store"
+        return response.json()["ticket"]
+
+    stream = ticket("stream", path=str(video), profile="default")
+    download = ticket("download", path=str(video))
+    monkeypatch.setattr(web_server_file_tickets, "STREAM_TTL_SECONDS", 0)
+    expired = ticket("stream", path=str(video))
+    del client.headers[web_server._SESSION_HEADER_NAME]
+    assert client.post("/api/files/ticket", json={"route": "stream", "path": str(video)}).status_code == 401
+
+    params = {"path": str(video), "profile": "default", "ticket": stream}
+    for _ in range(2):
+        partial = client.get("/api/files/stream", params=params, headers={"Range": "bytes=1-3"})
+        assert (partial.status_code, partial.content) == (206, b"ell")
+    for foreign in (
+        {**params, "path": str(other)},
+        {**params, "profile": "other"},
+        {"path": str(video), "ticket": stream},
+        {**params, "path": [str(video), str(other)]},
+    ):
+        assert client.get("/api/files/stream", params=foreign).status_code == 401, foreign
+    assert client.get("/api/files/download", params=params).status_code == 401
+    assert client.get("/api/files/stream", params={"path": str(video), "ticket": expired}).status_code == 401
+
+    once = {"path": str(video), "ticket": download}
+    assert client.get("/api/files/stream", params=once).status_code == 401
+    assert client.get("/api/files/download", params=once).content == b"hello"
+    assert client.get("/api/files/download", params=once).status_code == 401
+
+
 def test_stream_rejects_non_media_active_content(forced_files_client):
     client, root = forced_files_client
 
@@ -247,13 +338,84 @@ def test_stream_rejects_non_media_active_content(forced_files_client):
         assert response.status_code == 415
 
 
+@pytest.mark.parametrize("locked", [True, False])
+def test_stream_file_uri_uses_host_resolution_without_bypassing_policy(
+    forced_files_client, monkeypatch, locked,
+):
+    client, root = forced_files_client
+    artifact = _seed_file(client, root, name="out/a b.mp4")
+    if not locked:
+        monkeypatch.delenv("HERMES_DASHBOARD_FILES_ROOT")
+
+    params = {"path": artifact.as_uri()}
+    response = client.get("/api/files/stream", params=params, headers={"Range": "bytes=1-3"})
+    assert response.status_code == 206, response.text
+    assert response.content == b"ell"
+    assert response.headers["content-range"] == "bytes 1-3/5"
+    assert response.headers["content-disposition"].startswith("inline;")
+    assert response.headers["x-content-type-options"] == "nosniff"
+    head = client.head("/api/files/stream", params=params)
+    assert head.status_code == 200
+    assert head.content == b""
+    assert head.headers["content-length"] == "5"
+
+    outside = root.parent / "outside.mp4"
+    outside.write_bytes(b"outside")
+    assert client.get("/api/files/stream", params={"path": outside.as_uri()}).status_code == (
+        403 if locked else 200
+    )
+    sensitive = root / ".env"
+    sensitive.write_text("fixture-only")
+    assert client.get("/api/files/stream", params={"path": sensitive.as_uri()}).status_code == 403
+    non_media = root / "active.html"
+    non_media.write_text("<p>not media</p>")
+    assert client.get("/api/files/stream", params={"path": non_media.as_uri()}).status_code == 415
+    assert client.get("/api/files/stream", params={"path": (root / "missing.mp4").as_uri()}).status_code == 404
+
+    # Ordinary relative managed paths still resolve under the locked root, not cwd.
+    assert client.get("/api/files/stream", params={"path": "out/a b.mp4"}).status_code == (
+        200 if locked else 400
+    )
+    monkeypatch.setattr(web_server, "_MANAGED_FILE_MAX_BYTES", 1)
+    assert client.get("/api/files/stream", params=params).status_code == 413
+
+
+@pytest.mark.platforms("windows")
+@pytest.mark.parametrize("uri,expected", [
+    ("file:///C:/Users/Alice/video%20clip.mp4", "C:/Users/Alice/video clip.mp4"),
+    ("file://127.0.0.1/hermes-media-test/video%20clip.mp4", "//127.0.0.1/hermes-media-test/video clip.mp4"),
+])
+def test_stream_windows_file_uri_reaches_policy_with_absolute_host_path(
+    local_files_client, monkeypatch, uri, expected,
+):
+    from pathlib import Path
+    from starlette.responses import Response
+
+    client, _home = local_files_client
+    paths = []
+
+    def capture_response(request, path, *, content_disposition_type, media_only):
+        paths.append(Path(path))
+        assert content_disposition_type == "inline"
+        assert media_only is True
+        return Response(status_code=204)
+
+    # Exercise Windows URI conversion through the route without requiring a
+    # mounted SMB share; real policy/stream I/O is covered by the test above.
+    monkeypatch.setattr(_rt_files, "_managed_file_response", capture_response)
+    response = client.get("/api/files/stream", params={"path": uri})
+    assert response.status_code == 204
+    assert paths == [Path(expected).resolve(strict=False)]
+    assert paths[0].is_absolute()
+
+
 def test_query_token_does_not_authenticate_other_endpoints(forced_files_client):
     client, root = forced_files_client
     file_path = _seed_file(client, root)
 
     del client.headers[web_server._SESSION_HEADER_NAME]
 
-    # The query-token escape hatch is scoped to downloads only; it must not
+    # The query-token escape hatch is scoped to downloads and playback; it must not
     # unlock the rest of the API surface.
     leaked = client.get(
         "/api/files/read",
@@ -436,8 +598,6 @@ def test_credential_dir_trees_blocked_on_subdir_descent(forced_files_client):
     # is filtered because the parent component is a credential dir.
     mcp_listing = client.get("/api/files", params={"path": str(mcp_dir)})
     assert [e["name"] for e in mcp_listing.json()["entries"]] == []
-
-
 
 
 def test_git_branch_decodes_utf8_under_a_gbk_default_codec(tmp_path, monkeypatch):

@@ -85,7 +85,11 @@ function joinPath(base: string, rel: string) {
   return `${root}${parts.join('/')}`
 }
 
-function pathToFileUrl(path: string) {
+export function pathToFileUrl(path: string) {
+  if (/^(?:blob:|data:|https?:)/i.test(path)) {
+    return path
+  }
+
   const isWindowsUnc = path.startsWith('\\\\')
   const normalized = isWindowsUnc || /^[a-z]:[\\/]/i.test(path) ? path.replace(/\\/g, '/') : path
 
@@ -238,7 +242,10 @@ export function localPreviewTarget(rawTarget: string, cwd?: string | null): Prev
 
   if (/^file:\/\//i.test(raw)) {
     try {
-      path = decodeURIComponent(new URL(raw).pathname)
+      const url = new URL(raw)
+      const pathname = decodeURIComponent(url.pathname)
+
+      path = url.hostname ? `//${url.hostname}${pathname}` : pathname.replace(/^\/([a-z]:\/)/i, '$1')
     } catch {
       path = raw.replace(/^file:\/\//i, '')
     }

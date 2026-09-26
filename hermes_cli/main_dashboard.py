@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 from typing import NoReturn
 from hermes_cli.cli_output import line_input
-from hermes_cli.process_identity import is_desktop_owned_backend as _is_desktop_owned_backend
+from hermes_cli.process_identity import WEB_SERVER_PURPOSES, is_desktop_owned_backend as _is_desktop_owned_backend
 
 _PRE_BUILD_HINT = "  Pre-build first:  npm install --workspace web && npm run build -w web"
 
@@ -44,13 +44,10 @@ def _find_stale_dashboard_pids(*, exclude_pids: set[int] | None = None,
 
 def _parse_dashboard_runtime(command: str) -> tuple[str, str, int] | None:
     """Best-effort parse of a dashboard/server cmdline into mode, host, and port."""
-    mode = None
-    for candidate in ("dashboard", "serve"):
-        patterns = (f"hermes {candidate}", f"hermes_cli.main {candidate}", f"hermes_cli/main.py {candidate}")
-        if any(pattern in command for pattern in patterns):
-            mode = candidate
-            break
-    if mode is None:
+    from hermes_cli.update_cmd_windows import _hermes_holder_subcommand
+
+    mode = _hermes_holder_subcommand(command)
+    if mode not in WEB_SERVER_PURPOSES:
         return None
 
     port = 9119
@@ -496,32 +493,41 @@ def _finalize_update_output(state):
             log_file.close()
 
 
-def _report_dashboard_status() -> int:
-    """Print live listening dashboard/serve processes and return the count.
+def _report_dashboard_status(*, modes: set[str] | None = None) -> int:
+    """Print live listening Hermes web-server processes and return the count.
 
-    Serve-mode backends are INCLUDED: ``--stop`` kills them, so hiding them from
-    ``--status`` let an operator kill what they couldn't see.
-
-    Ledger-registered serves (profiled launches the argv scan can't match) surface via the spawn-ledger
-    augmentation in _scan_dashboard_processes. See #81564.
+    The default includes every mode ``dashboard --stop`` can affect. In
+    particular, serve-mode backends stay visible (#81564), while surface-
+    specific callers such as ``webapp --status`` can narrow the report.
+    Ledger-registered launches (including profiled commands the argv scan
+    cannot match) surface through ``_scan_dashboard_processes``.
     """
-    from hermes_cli.dashboard_procs import _scan_dashboard_processes
     from gateway.status import _pid_exists
+    from hermes_cli.dashboard_procs import _scan_dashboard_processes
+
+    accepted_modes = WEB_SERVER_PURPOSES if modes is None else modes
     live: list[tuple[int, str, str]] = []
     for pid, command in _scan_dashboard_processes():
         runtime = _parse_dashboard_runtime(command)
         if runtime is None:
             continue
         mode, host, port = runtime
-        if port <= 0 or not _pid_exists(pid) or not _dashboard_listening(host, port):
+        if mode not in accepted_modes:
+            continue
+        if port < 0 or not _pid_exists(pid):
+            continue
+        # `--port 0` asks the OS for an ephemeral port, which is not present in
+        # argv. Positive process identity is the only status signal available;
+        # fixed ports additionally prove readiness with a TCP probe.
+        if port > 0 and not _dashboard_listening(host, port):
             continue
         live.append((pid, command, mode))
 
     if not live:
-        print("No hermes dashboard or serve processes running.")
+        print("No Hermes web server processes running.")
         return 0
 
-    print(f"{len(live)} hermes dashboard/serve process(es) running:")
+    print(f"{len(live)} Hermes web server process(es) running:")
     for pid, command, mode in live:
         print(f"    PID {pid} [{mode}]: {command}")
     return len(live)
@@ -752,6 +758,72 @@ def _is_electron_packaged_web_dist(path: str) -> bool:
     return "app.asar" in path.replace("\\", "/")
 
 
+def cmd_webapp(args):
+    """Build the Desktop browser bundle, then hand off to the web server."""
+    from hermes_cli.main import PROJECT_ROOT, cmd_dashboard
+    from hermes_cli.dashboard_procs import (
+        _scan_dashboard_processes,
+        _kill_stale_dashboard_processes,
+        _pids_owned_by_hermes_home,
+    )
+
+    # Lifecycle probes are positive-identity-only and scoped to THIS Webapp
+    # surface. They must never stop a native Desktop `serve` backend merely
+    # because both share the same HTTP implementation.
+    if getattr(args, "status", False):
+        _report_dashboard_status(modes={"webapp"})
+        raise SystemExit(0)
+    if getattr(args, "stop", False):
+        from hermes_constants import get_hermes_home
+
+        own_home = str(get_hermes_home())
+
+        def _webapp_pids() -> list[int]:
+            return _pids_owned_by_hermes_home([
+                pid
+                for pid, command in _scan_dashboard_processes()
+                if (_parse_dashboard_runtime(command) or (None, "", 0))[0] == "webapp"
+            ], own_home)
+
+        webapp_pids = set(_webapp_pids())
+        if not webapp_pids:
+            print("No Hermes Webapp processes running for this profile.")
+            raise SystemExit(0)
+        _kill_stale_dashboard_processes(
+            reason="requested via webapp --stop",
+            include_pids=webapp_pids,
+            scope_home=own_home,
+        )
+        raise SystemExit(1 if _webapp_pids() else 0)
+
+    from hermes_cli.webapp import WebappBuildError, prepare_webapp_renderer
+
+    try:
+        dist = prepare_webapp_renderer(
+            PROJECT_ROOT,
+            force=getattr(args, "force_build", False),
+            skip_build=getattr(args, "skip_build", False),
+            explicit=getattr(args, "force_build", False) or getattr(args, "build_only", False),
+        )
+    except WebappBuildError as exc:
+        print(f"✗ {exc}")
+        # A requested build may install the renderer's dependencies even when lazy installs are off.
+        print("  Build it explicitly:")
+        print("    hermes webapp --build-only")
+        raise SystemExit(1) from exc
+
+    if getattr(args, "build_only", False):
+        print("✓ Hermes Webapp renderer ready (--build-only)")
+        return None
+
+    # Handed to start_server, never exported: shells and PTYs this server
+    # spawns must not inherit the Desktop renderer as their dashboard dist.
+    args.web_dist = dist
+    # A named-profile re-exec reuses this renderer instead of rebuilding it.
+    args.skip_build = True
+    return cmd_dashboard(args)
+
+
 def _host_backend_attachment():
     """Live host serve/dashboard record to attach to, or ``None``.
 
@@ -807,7 +879,7 @@ def _endpoint_conflict(args, record, typed: set) -> str:
     return ""
 
 
-def _attach_to_host_backend(args, headless_backend: bool) -> None:
+def _attach_to_host_backend(args) -> None:
     """Multiplex-only: a second `hermes serve`/`dashboard` attaches to the host backend.
 
     Exactly ONE backend runs per host and multiplexes every profile, so a second invocation —
@@ -844,6 +916,8 @@ def _attach_to_host_backend(args, headless_backend: bool) -> None:
         # answered". Fall through to the bind — never exit 0 on an attach that did not happen.
         return
 
+    surface = args.ui_surface
+    headless = surface == "serve"
     typed = _explicit_endpoint_flags()
     conflict = _endpoint_conflict(args, record, typed)
     if conflict:
@@ -852,11 +926,20 @@ def _attach_to_host_backend(args, headless_backend: bool) -> None:
         print("  Stop that backend, or drop the flag to use the running one.")
         sys.exit(GATEWAY_FATAL_CONFIG_EXIT_CODE)
 
-    if not headless_backend and not identity.get("servesSpa"):
+    if not headless and not identity.get("servesSpa"):
         print(f"Refusing to start: this host is already served by {hr.describe(record)}, "
               "which is a headless `hermes serve` backend with no dashboard UI.")
         print("  Stop it and run `hermes dashboard`, or use --isolated for a dedicated server.")
         sys.exit(GATEWAY_FATAL_CONFIG_EXIT_CODE)
+
+    # Pre-Webapp host identities only distinguish SPA from headless. Once an
+    # exact surface is advertised, an invalid or different value cannot attach.
+    owner_surface = identity.get("ui_surface", "dashboard")
+    if not headless and owner_surface != surface:
+        print(f"Refusing to start: {hr.describe(record)} serves {owner_surface}, "
+              f"not Hermes {surface}.")
+        print("  Stop that backend, or use --isolated with a different --port.")
+        sys.exit(1)
 
     try:
         from hermes_cli.profiles import get_active_profile_name
@@ -866,18 +949,22 @@ def _attach_to_host_backend(args, headless_backend: bool) -> None:
     wanted = getattr(args, "open_profile", "") or profile
     url = f"http://{hr.dial_host(record)}:{record.port}/?profile={wanted}"
 
-    kind = "backend" if headless_backend else "dashboard"
+    kind = "backend" if headless else surface
     print(f"Hermes {kind} already running on this host: PID {record.pid}, port {record.port}.")
     print(f"  Managing profile '{wanted}': {url}")
-    if not headless_backend and not args.no_open:
+    if kind == "webapp":
+        print("  Local Webapp: open this URL in an already authorized tab, or use the")
+        print("  private launch link from the running server, adding the profile query")
+        print("  above BEFORE its # fragment. A fresh bare-URL tab cannot sign in.")
+        print("  Lost the link? Restart that Webapp to print a new one. Remote OAuth is unchanged.")
+    if kind == "dashboard" and not args.no_open:
         with contextlib.suppress(Exception):
             import webbrowser
             webbrowser.open(url)
     sys.exit(0)
 
 
-def _route_named_profile_dashboard(
-    args, _headless_backend: bool, _ssh_owner_nonce: str, _token_file: str) -> None:
+def _route_named_profile_dashboard(args, _ssh_owner_nonce: str, _token_file: str) -> None:
     """Route a named-profile launch to the single MACHINE dashboard (per-request ``?profile=`` scoping
     makes one server per profile pure fragmentation).
 
@@ -908,9 +995,9 @@ def _route_named_profile_dashboard(
     reexec_argv = [
         sys.executable, "-m", "hermes_cli.main",
         "-p", "default",
-        # Preserve the lean serve path so a named-profile `serve` doesn't
-        # silently rebuild the UI as `dashboard`.
-        "serve" if _headless_backend else "dashboard",
+        # The surface IS the subcommand: a named-profile `serve` keeps the lean
+        # path instead of silently rebuilding the UI as `dashboard`.
+        args.ui_surface,
         "--port", str(args.port),
         "--host", args.host,
         "--open-profile", _launch_profile]
@@ -945,19 +1032,23 @@ def _route_named_profile_dashboard(
         os.execvpe(sys.executable, reexec_argv, env)
 
 
-def _resolve_dashboard_web_dist(args, _headless_backend: bool) -> None:
+def _resolve_dashboard_web_dist(args) -> None:
     """Build or validate the web UI dist before the server imports.
 
-    ``serve`` sets HERMES_SERVE_HEADLESS so mount_spa() stays off. Otherwise build
-    unless HERMES_WEB_DIST / --skip-build promise a dist — then verify index.html
-    (else the server serves 404s). --skip-build on the default location gets ONE
-    recovery build; a caller-managed HERMES_WEB_DIST can't be populated.
+    ``serve`` sets HERMES_SERVE_HEADLESS so mount_spa() stays off. A launch that
+    already prepared its own dist (``args.web_dist``: the Webapp renderer) passes
+    it to start_server as-is. Otherwise build unless HERMES_WEB_DIST / --skip-build
+    promise a dist — then verify index.html (else the server serves 404s).
+    --skip-build on the default location gets ONE recovery build; a caller-managed
+    HERMES_WEB_DIST can't be populated.
     """
     from hermes_cli.main import PROJECT_ROOT
     from hermes_cli.main_web_build import _build_web_ui
     skip_build = getattr(args, "skip_build", False)
-    if _headless_backend:
+    if args.ui_surface == "serve":
         os.environ["HERMES_SERVE_HEADLESS"] = "1"  # set before web_server import
+    elif getattr(args, "web_dist", None) is not None:
+        return
     elif "HERMES_WEB_DIST" not in os.environ and not skip_build:
         if not _build_web_ui(PROJECT_ROOT / "web", fatal=True):
             sys.exit(1)

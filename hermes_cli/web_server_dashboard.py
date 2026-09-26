@@ -93,17 +93,21 @@ _HEADLESS_MSG = (
 def mount_spa(application: FastAPI):
     """Mount the built SPA; unmatched paths fall back to index.html for client-side routing.
 
-    The session token is injected into index.html via a ``<script>`` tag so the SPA can
-    authenticate without a separate token-dispensing endpoint. Behind a path-prefix reverse
+    Dashboard injects its session token into index.html; Webapp instead receives
+    the same credential through an operator-only launch fragment. Behind a path-prefix reverse
     proxy (``X-Forwarded-Prefix: /hermes``) the served index.html is rewritten so absolute
     asset URLs and the runtime ``__HERMES_BASE_PATH__`` honour that prefix without a rebuild.
 
     A missing WEB_DIST is deliberately NOT a mount-time terminal state: every route copes
     with a missing dist per-request (404 JSON / ``check_dir=False``), so a long-lived
     ``--skip-build`` process recovers the moment a build appears on disk — no restart.
+    The dist is also chosen per request: this mount runs at import, and a launch that
+    prepared its own dist (``start_server(web_dist=)``, the Webapp renderer) records it on
+    ``application.state.web_dist`` later.
     """
-    from hermes_cli.web_server import WEB_DIST, _DASHBOARD_EMBEDDED_CHAT_ENABLED, app
+    from hermes_cli.web_server import WEB_DIST, _DASHBOARD_EMBEDDED_CHAT_ENABLED
     from hermes_cli.web_deps import _server
+    from hermes_cli.web_server_surface import policy
 
     # `hermes serve` is the headless backend: it must NEVER serve the browser SPA, even if a
     # dist is lying around, so only the JSON-RPC/WS/API surface is reachable.
@@ -137,6 +141,9 @@ def mount_spa(application: FastAPI):
     # index.html is unreadable; the asset mounts use check_dir=False and 404 on missing files), so mounting
     # them unconditionally makes the dashboard recover the moment a build appears on disk — no restart
     # needed.
+    def web_dist() -> Path:
+        return getattr(application.state, "web_dist", None) or WEB_DIST
+
     def _serve_index(prefix: str = ""):
         """index.html with the session token + base-path injected.
 
@@ -146,13 +153,19 @@ def mount_spa(application: FastAPI):
         and /api/ws (ticket vs token).
         """
         try:
-            html = (WEB_DIST / "index.html").read_text(encoding="utf-8-sig")
+            html = (web_dist() / "index.html").read_text(encoding="utf-8-sig")
         except OSError:
             # Partial build / wiped dist / permissions: same JSON 404 as a fully-missing dist.
             return JSONResponse({"error": "Frontend not built. Run: cd web && npm run build"}, status_code=404)
         chat_js = "true" if _DASHBOARD_EMBEDDED_CHAT_ENABLED else "false"
-        gated = bool(getattr(app.state, "auth_required", False))
-        token_js = "" if gated else f'window.__HERMES_SESSION_TOKEN__="{_server()._SESSION_TOKEN}";'
+        gated = bool(getattr(application.state, "auth_required", False))
+        surface = getattr(application.state, "ui_surface", "dashboard")
+        # Webapp grants host files and shell.exec as well as PTYs: its existing
+        # session token must come from the operator, never anonymous HTML.
+        token_js = (
+            f'window.__HERMES_SESSION_TOKEN__="{_server()._SESSION_TOKEN}";'
+            if policy(application.state).html_token and not gated else ""
+        )
         # Launcher-preselected profile (``--open-profile``): the SPA's fallback scope when the URL
         # omits ``?profile=`` (#73085). ``</`` escaped so a hostile name cannot close the script tag.
         initial_profile_js = json.dumps(str(getattr(application.state, "initial_profile", "") or "")).replace("</", "<\\/")
@@ -168,6 +181,7 @@ def mount_spa(application: FastAPI):
             f'window.__HERMES_BASE_PATH__="{prefix}";'
             f"window.__HERMES_AUTH_REQUIRED__={'true' if gated else 'false'};"
             f"window.__HERMES_INITIAL_PROFILE__={initial_profile_js};"
+            f"window.__HERMES_UI_SURFACE__={json.dumps(surface)};"
             f"window.__HERMES_DASHBOARD_PROFILE__={serving_profile_js};"
             f"</script>"
         )
@@ -187,8 +201,9 @@ def mount_spa(application: FastAPI):
     # BEFORE the StaticFiles mount and rewrite when a prefix is in play.
     @application.get("/assets/{filename}.css")
     async def serve_css(filename: str, request: Request):
-        css_path = WEB_DIST / "assets" / f"{filename}.css"
-        if not css_path.is_file() or not css_path.resolve().is_relative_to(WEB_DIST.resolve()):
+        dist = web_dist()
+        css_path = dist / "assets" / f"{filename}.css"
+        if not css_path.is_file() or not css_path.resolve().is_relative_to(dist.resolve()):
             return JSONResponse({"error": "not found"}, status_code=404)
         prefix = _normalise_prefix(request.headers.get("x-forwarded-prefix"))
         css = css_path.read_text(encoding="utf-8-sig")
@@ -209,10 +224,16 @@ def mount_spa(application: FastAPI):
                 response.headers["Cache-Control"] = _IMMUTABLE_ASSET_CACHE_CONTROL
             return response
 
-    # check_dir=False: the dist may not exist yet; StaticFiles 404s per-request until it does.
-    application.mount(
-        "/assets", _ImmutableAssetFiles(directory=WEB_DIST / "assets", check_dir=False), name="assets"
-    )
+    asset_files: Dict[Path, StaticFiles] = {}
+
+    async def serve_assets(scope, receive, send):
+        # check_dir=False: the dist may not exist yet; StaticFiles 404s per-request until it does.
+        directory = web_dist() / "assets"
+        if directory not in asset_files:
+            asset_files[directory] = _ImmutableAssetFiles(directory=directory, check_dir=False)
+        await asset_files[directory](scope, receive, send)
+
+    application.mount("/assets", serve_assets, name="assets")
 
     @application.get("/{full_path:path}")
     async def serve_spa(full_path: str, request: Request):
@@ -221,11 +242,14 @@ def mount_spa(application: FastAPI):
         # real 404 JSON instead of index.html (which breaks JSON clients with a SyntaxError).
         if full_path == "api" or full_path.startswith("api/"):
             return JSONResponse({"detail": f"No such API endpoint: /{full_path}"}, status_code=404)
-        file_path = WEB_DIST / full_path
+        if full_path == "index.html" and not policy(application.state).html_token:
+            return _serve_index(prefix)
+        dist = web_dist()
+        file_path = dist / full_path
         # Prevent path traversal via url-encoded sequences (%2e%2e/)
         if (
             full_path
-            and file_path.resolve().is_relative_to(WEB_DIST.resolve())
+            and file_path.resolve().is_relative_to(dist.resolve())
             and file_path.exists()
             and file_path.is_file()
         ):

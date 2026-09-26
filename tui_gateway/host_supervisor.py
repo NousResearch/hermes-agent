@@ -135,6 +135,22 @@ def is_compute_host_identity(pid: int) -> bool:
     return "tui_gateway.compute_host" in _pid_command(pid)
 
 
+class TurnSettlement:
+    """Local proof that one dispatch ended, independent of its callback's success."""
+
+    def __init__(self) -> None:
+        self.process: subprocess.Popen[str] | None = None
+        self.completed = threading.Event()
+
+    def is_set(self) -> bool:
+        if self.completed.is_set():
+            return True
+        try:
+            return self.process is not None and self.process.poll() is not None
+        except Exception:
+            return False  # Uncertain liveness is not permission to release a writer's fence.
+
+
 class HostSupervisor:
     """Own one persistent compute-host child and relay its frames."""
 
@@ -163,7 +179,7 @@ class HostSupervisor:
         self._closing = False
         self._stopped_respawning = False
         self._restart_times: list[float] = []
-        self._pending_turns: dict[str, tuple[str, Callable[[dict], None] | None]] = {}
+        self._pending_turns: dict[str, tuple[str, Callable[[dict], None] | None, TurnSettlement]] = {}
         self._pending_controls: dict[str, queue.Queue[dict]] = {}
         # request_id -> (registered_at, handler) for control waiters that timed out while their
         # host work still runs, so the eventual control.ack is not silently dropped.
@@ -231,15 +247,21 @@ class HostSupervisor:
         self._remove_registry()
         return outcome
 
-    def submit_turn(self, frame: dict[str, Any], *, on_complete: Callable[[dict], None] | None = None) -> str:
+    def submit_turn(
+        self, frame: dict[str, Any], *, on_complete: Callable[[dict], None] | None = None,
+        settlement: TurnSettlement | None = None,
+    ) -> str:
         self.start()
         request_id = str(frame.get("request_id") or uuid.uuid4().hex)
         sid = str(frame.get("sid") or "")
         payload = {**frame, "type": "turn.start", "request_id": request_id}
-        with self._lock:
-            self._pending_turns[request_id] = (sid, on_complete)
+        settlement = settlement if settlement is not None else TurnSettlement()
         try:
-            self._send_frame(payload)
+            with self._lock:
+                # Bind to the same child that receives the frame, before a fast completion.
+                settlement.process = self._proc
+                self._pending_turns[request_id] = (sid, on_complete, settlement)
+                self._send_frame(payload)
         except Exception as exc:
             with self._lock:
                 self._pending_turns.pop(request_id, None)
@@ -421,8 +443,10 @@ class HostSupervisor:
         elif ftype in ("turn.end", "turn.error"):
             with self._lock:
                 pending = self._pending_turns.pop(request_id, None)
-            if pending is not None and pending[1] is not None:
-                _call_logged(pending[1], frame, "compute host turn completion callback failed")
+            if pending is not None:
+                pending[2].completed.set()
+                if pending[1] is not None:
+                    _call_logged(pending[1], frame, "compute host turn completion callback failed")
 
     def _wait_for_exit(self, proc: subprocess.Popen[str]) -> None:
         code = proc.wait()
@@ -431,17 +455,28 @@ class HostSupervisor:
         with self._lock:
             if self._proc is not proc:
                 return
+            # Detach the dead child's work before another caller can start its replacement.
+            pending, late = self._pending_turns, self._late_control_handlers
+            self._pending_turns, self._late_control_handlers = {}, {}
             self._proc = None
         self._remove_registry()
-        self._fail_pending_turns(reason="crash", message=f"compute host exited with code {code}")
+        self._notify_failed_turns(pending, late, reason="crash", message=f"compute host exited with code {code}")
         self._maybe_respawn_after_crash()
 
     def _fail_pending_turns(self, *, reason: str, message: str) -> None:
         with self._lock:
-            pending = self._pending_turns
-            self._pending_turns = {}
+            pending, late = self._pending_turns, self._late_control_handlers
+            self._pending_turns, self._late_control_handlers = {}, {}
+        self._notify_failed_turns(pending, late, reason=reason, message=message)
+
+    def _notify_failed_turns(self, pending: dict, late: dict, *, reason: str, message: str) -> None:
+        # Receipt polling also recovers a dead child when shutdown bypasses these callbacks.
+        # Mark every proven exit before a fallible transport sink or completion callback.
+        for _sid, _cb, settlement in pending.values():
+            if settlement.is_set():
+                settlement.completed.set()
         failure = {"reason": reason, "message": message}
-        for request_id, (sid, cb) in pending.items():
+        for request_id, (sid, cb, _settlement) in pending.items():
             self.rpc_sink({"jsonrpc": "2.0", "method": "event",
                            "params": {"type": "error", "session_id": sid, "payload": dict(failure)}})
             if cb is not None:
@@ -449,9 +484,6 @@ class HostSupervisor:
                 _call_logged(cb, frame, "compute host error callback failed")
         # A crashed host never emits the late acks timed-out control waiters still expect; fail
         # them too so the client's "still running" notice can't hang.
-        with self._lock:
-            late = self._late_control_handlers
-            self._late_control_handlers = {}
         for request_id, (_registered_at, handler) in late.items():
             frame = {"type": "control.error", "request_id": request_id, **failure}
             _call_logged(handler, frame, "compute host late control error handler failed")

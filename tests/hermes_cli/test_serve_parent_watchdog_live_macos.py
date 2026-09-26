@@ -88,7 +88,7 @@ def test_live_backend_survives_timezone_drifted_parent_marker(tmp_path):
         env.pop("HERMES_DESKTOP", None)
         code = (
             "from hermes_cli.web_server import start_server\n"
-            "start_server(host='127.0.0.1', port=0, open_browser=False, headless=True)\n"
+            "start_server(host='127.0.0.1', port=0, open_browser=False, ui_surface='serve')\n"
         )
         serve = subprocess.Popen(
             [sys.executable, "-c", code],

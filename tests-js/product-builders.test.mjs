@@ -338,3 +338,108 @@ test('TUI freshness invalidates source, configuration and compiler inputs and da
   writeFileSync(entry, 'damaged output')
   expect(current()).toBe(false)
 })
+
+test('a browser renderer publish never invalidates the native Desktop inputs', async () => {
+  const { sourceHash } = await import('../scripts/build/freshness.mjs')
+  const source = fixture()
+  put(source, 'apps/desktop/package.json', '{}')
+  put(source, 'apps/desktop/src/main.ts', 'export {}')
+  const before = sourceHash(source, 'desktop')
+  put(source, 'apps/desktop/dist-webapp/index.html', 'browser renderer')
+  put(source, 'apps/desktop/.dist-webapp-build-1/product/index.html', 'staged renderer')
+  expect(sourceHash(source, 'desktop')).toBe(before)
+  put(source, 'apps/desktop/src/main.ts', 'export const changed = true')
+  expect(sourceHash(source, 'desktop')).not.toBe(before)
+})
+
+function webappSource(source) {
+  put(source, 'package.json', JSON.stringify({ private: true, type: 'module', workspaces: ['apps/*', 'web'] }))
+  put(source, 'package-lock.json', JSON.stringify({ lockfileVersion: 3, packages: {
+    '': { workspaces: ['apps/*', 'web'] },
+    'apps/desktop': { name: 'desktop' }, 'apps/shared': { name: 'shared' }, web: { name: 'web' },
+    'node_modules/desktop': { link: true, resolved: 'apps/desktop' },
+    'node_modules/shared': { link: true, resolved: 'apps/shared' },
+    'node_modules/web': { link: true, resolved: 'web' },
+  } }))
+  put(source, '.npmrc', 'engine-strict=true\n')
+  put(source, 'apps/desktop/package.json', '{"name":"desktop","type":"module"}')
+  put(source, 'apps/desktop/index.html', '<html><body><script type="module" src="/src/main.ts"></script></body></html>')
+  put(source, 'apps/desktop/src/main.ts', 'import { answer } from "../../shared/src/value"; document.body.textContent = answer;')
+  put(source, 'apps/shared/package.json', '{"name":"shared"}')
+  put(source, 'apps/shared/src/value.ts', 'export const answer: string = "browser renderer";')
+  put(source, 'web/package.json', '{"name":"web"}')
+}
+
+test('the Webapp receipt certifies its checkout inputs, not the workspace it compiled in', async () => {
+  const { productCurrent } = await import('../scripts/build/freshness.mjs')
+  const { buildWebapp } = await import('../scripts/build/webapp.mjs')
+  const { mirrorWebappInputs } = await import('../apps/desktop/scripts/build-webapp.mjs')
+  const base = fixture()
+  const source = path.join(base, 'source')
+  const workspace = path.join(base, 'workspace')
+  const out = path.join(source, 'apps/desktop/dist-webapp')
+  webappSource(source)
+  // Only the private workspace has installed dependencies.
+  dependency(workspace, '', 'vite')
+  const build = async () => {
+    mirrorWebappInputs(source, workspace)
+    await buildWebapp({ source, workspace, out })
+  }
+  const current = () => productCurrent({ source, product: 'webapp', out })
+  await build()
+  expect(current()).toBe(true)
+  expect(readFileSync(path.join(out, 'index.html'), 'utf8')).toContain('<script')
+  // Other products' sources, native outputs and release metadata never rebuild the renderer.
+  for (const name of ['web/src/unrelated.ts', 'pyproject.toml', 'assets/icon.svg', 'apps/desktop/dist/index.html', 'scripts/build/tui.mjs']) {
+    put(source, name, 'not a Webapp input')
+    expect(current(), name).toBe(true)
+  }
+  for (const [input, content] of [
+    ['apps/shared/src/value.ts', 'export const answer: string = "edited shared";'],
+    ['apps/desktop/src/main.ts', 'document.body.textContent = "edited desktop";'],
+    ['package-lock.json', readFileSync(path.join(source, 'package-lock.json'), 'utf8').replace('"lockfileVersion":3', '"lockfileVersion":3,"requires":true')],
+    ['.npmrc', 'engine-strict=false\n'],
+    ['pm/lock.json', '{}'],
+    ['scripts/build/webapp.mjs', '// compiler changed'],
+  ]) {
+    put(source, input, content)
+    expect(current(), input).toBe(false)
+    await build()
+    expect(current(), `rebuilt after ${input}`).toBe(true)
+  }
+  // A workspace that no longer mirrors the checkout must not publish under a current receipt.
+  put(workspace, 'apps/desktop/src/main.ts', 'document.body.textContent = "stale mirror";')
+  await expect(buildWebapp({ source, workspace, out })).rejects.toThrow(/does not match/)
+  expect(current()).toBe(true)
+  writeFileSync(path.join(out, 'index.html'), 'damaged output')
+  expect(current()).toBe(false)
+}, 60_000)
+
+test('Webapp builds install privately and never disturb the native Desktop installation', async () => {
+  const { buildSourceWebapp } = await import('../apps/desktop/scripts/build-webapp.mjs')
+  const base = fixture()
+  const source = path.join(base, 'source')
+  const workspace = path.join(base, 'workspace')
+  webappSource(source)
+  put(source, 'node_modules/electron/dist/electron', 'native install')
+  put(source, 'apps/desktop/dist/index.html', 'native renderer')
+  put(source, 'apps/desktop/src/removed-later.ts', 'export {}')
+  const installs = []
+  const prepare = options => {
+    installs.push(options.install)
+    expect(options.source).toBe(workspace)
+    expect(options.env.npm_config_ignore_scripts).toBe('true')
+    // npm ci validates the whole locked graph, not only the compiled workspaces.
+    expect(existsSync(path.join(workspace, 'web/package.json'))).toBe(true)
+    if (!existsSync(path.join(workspace, 'node_modules/vite'))) dependency(workspace, '', 'vite')
+  }
+  await buildSourceWebapp({ source, workspace, prepare, install: false })
+  rmSync(path.join(source, 'apps/desktop/src/removed-later.ts'))
+  await buildSourceWebapp({ source, workspace, prepare })
+  expect(installs).toEqual([false, true])
+  expect(existsSync(path.join(workspace, 'apps/desktop/src/removed-later.ts'))).toBe(false)
+  expect(existsSync(path.join(workspace, 'node_modules/vite/package.json'))).toBe(true)
+  expect(readFileSync(path.join(source, 'node_modules/electron/dist/electron'), 'utf8')).toBe('native install')
+  expect(readFileSync(path.join(source, 'apps/desktop/dist/index.html'), 'utf8')).toBe('native renderer')
+  expect(existsSync(path.join(source, 'apps/desktop/dist-webapp/hermes-build.json'))).toBe(true)
+}, 60_000)

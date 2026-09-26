@@ -410,8 +410,9 @@ class TestHttpSessionLifecycle:
              patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock):
             await adapter.disconnect()
 
-        mock_run.assert_called_once()
-        assert mock_run.call_args.args[0] == ["taskkill", "/PID", "12345", "/T"]
+        # ``adapter.subprocess`` is the process-wide subprocess module; an unrelated
+        # daemon git probe can land on this mock, so look for the taskkill among the calls.
+        assert ["taskkill", "/PID", "12345", "/T"] in [call.args[0] for call in mock_run.call_args_list]
         mock_proc.terminate.assert_not_called()
         mock_proc.kill.assert_not_called()
 

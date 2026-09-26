@@ -30,6 +30,30 @@ def _effective_mode() -> str:
     return _get_approval_mode()
 
 
+def approval_bypass_sources() -> list[str]:
+    """Describe effective bypass sources for the local CLI startup banner."""
+    from tools import approval
+
+    if not approval.is_approval_bypass_active():
+        return []
+    sources = []
+    if approval._YOLO_MODE_FROZEN:
+        sources.append(approval._YOLO_MODE_SOURCE_FROZEN or "HERMES_YOLO_MODE in process environment")
+    if approval.is_current_session_yolo_enabled():
+        sources.append("/yolo for this session")
+    if _effective_mode() == "off":
+        from hermes_cli import managed_scope
+        from hermes_cli.config import get_config_path
+
+        config_path = get_config_path()
+        if managed_scope.is_key_managed("approvals.mode"):
+            managed_dir = managed_scope.get_managed_dir()
+            if managed_dir is not None:
+                config_path = managed_dir / "config.yaml"
+        sources.append(f"approvals.mode: off in {config_path}")
+    return sources
+
+
 def run_approval_mode_command(requested_mode: Optional[str]) -> ApprovalModeResult:
     """Inspect or persist ``approvals.mode`` through canonical config APIs."""
     current = _effective_mode()

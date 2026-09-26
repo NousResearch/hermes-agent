@@ -376,7 +376,7 @@ test.runIf(process.platform !== 'win32')(
       await writeFile(
         path.join(receipts, `update_${CORRELATION}.json`),
         JSON.stringify({
-          correlation_id: CORRELATION,
+          update_id: CORRELATION,
           outcome: 'success',
           started_at: '2026-08-23T00:00:00Z',
           finished_at: '2026-08-23T00:01:00Z',

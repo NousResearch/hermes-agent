@@ -414,7 +414,7 @@ def receipt():
     for path in paths:
         try:payload=json.loads(path.read_text(encoding='utf-8'))
         except (OSError,UnicodeError,ValueError):continue
-        if not isinstance(payload,dict) or payload.get('correlation_id')!=correlation:continue
+        if not isinstance(payload,dict) or (payload.get('update_id') or payload.get('correlation_id'))!=correlation:continue
         if payload.get('outcome')=='running' or not payload.get('finished_at'):continue
         pre=payload.get('pre_update') if isinstance(payload.get('pre_update'),dict) else {}
         post=payload.get('post_update') if isinstance(payload.get('post_update'),dict) else {}

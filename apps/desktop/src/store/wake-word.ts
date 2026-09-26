@@ -37,14 +37,33 @@ export const $wakeWord = atom<WakeWordState>(INITIAL_WAKE_WORD_STATE)
 /** Active client mic stream for remote wake (capture: client). */
 let clientCapture: ClientWakeCaptureHandle | null = null
 
+/**
+ * Bumped by every stop/(re)start so a `startClientWakeCapture()` call that is
+ * still awaiting `getUserMedia()` (unbounded — a first-run OS mic-permission
+ * prompt blocks on the user's click) can tell, once it resolves, whether it
+ * is still the current attempt. Without this, a stop/start race during that
+ * wait clobbers whatever the other call just did — including resurrecting a
+ * mic stream after the caller believes capture is off (see the discard check
+ * in `maybeStartClientCapture` below).
+ */
+let captureGeneration = 0
+
 /** Stop client-side PCM capture (also called on wake.detected before voice). */
 export function stopClientCapture(): void {
+  captureGeneration++
   clientCapture?.stop()
   clientCapture = null
 }
 
 async function maybeStartClientCapture(result: WakeStartResponse | null | undefined): Promise<void> {
-  stopClientCapture()
+  // Claim the current epoch before the synchronous stop below, so this call —
+  // not a still-pending earlier one — owns it. An earlier call whose
+  // getUserMedia() is still in flight will see a mismatch when it resolves
+  // (see the two discard checks below) and never assign/act on a stream this
+  // call, or a bare stopClientCapture(), already superseded.
+  const generation = ++captureGeneration
+  clientCapture?.stop()
+  clientCapture = null
 
   if (!result?.started) {
     return
@@ -57,11 +76,27 @@ async function maybeStartClientCapture(result: WakeStartResponse | null | undefi
   }
 
   try {
-    clientCapture = await startClientWakeCapture({
+    const handle = await startClientWakeCapture({
       frameLength: result.frame_length,
       request: gatewayRequester
     })
+
+    if (generation !== captureGeneration) {
+      // Superseded while getUserMedia() was pending — the winner already
+      // owns `clientCapture` (or nothing should be listening at all). Close
+      // this orphaned stream instead of assigning it, or it keeps
+      // recording/transmitting audio with zero UI indication it's active.
+      handle.stop()
+
+      return
+    }
+
+    clientCapture = handle
   } catch (error) {
+    if (generation !== captureGeneration) {
+      return
+    }
+
     const current = $wakeWord.get()
     $wakeWord.set({
       ...current,

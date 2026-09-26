@@ -42,10 +42,11 @@ def approval_actions_config(extra: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     secret = str(extra.get("approval_actions_secret") or "").strip()
     if not url or not secret:
         return None
+    raw_port = extra.get("approval_actions_port")
     return {
         "url": url,
         "secret": secret,
-        "port": int(extra.get("approval_actions_port") or 8647),
+        "port": int(raw_port) if raw_port is not None else 8647,  # 0 = ephemeral (tests)
         # None = "half the configured approvals.timeout" (resolved at send time)
         "escalate_after": extra.get("approval_escalate_after"),
     }
@@ -81,7 +82,7 @@ def build_approval_props(prompt, callback_url: str) -> Dict[str, Any]:
     }
 
 
-def parse_action_payload(payload: Dict[str, Any], allowed_user_ids: set) -> Tuple[str, Optional[Dict[str, Any]]]:
+def parse_action_payload(payload: Any, allowed_user_ids: set) -> Tuple[str, Optional[Dict[str, Any]]]:
     """Validate a post-action callback → (verdict, fields).
 
     verdict: "ok" (fields: session_key/choice/user_id/user_name/post_id), "unauthorized",

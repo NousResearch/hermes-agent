@@ -4118,8 +4118,18 @@ def named_profile_served_by_running_multiplexer(profile_name: str | None = None)
         return False
 
     # The host record answers first: it names the live host process whatever home launched it, so a
-    # multiplexer started by a named profile is visible here too.
-    if host_multiplexer_serving(suffix) is not None:
+    # multiplexer started by a named profile is visible here too. But a record for THIS home's own
+    # process is never a multiplexer serving us: refusing on it would guard the owner out of
+    # restarting itself (exit 78 pointing at `-p default`). See #120871.
+    serving = host_multiplexer_serving(suffix)
+    if serving is not None:
+        try:
+            from gateway.status import _get_process_hermes_home, _same_hermes_home
+            if _same_hermes_home(serving.home, _get_process_hermes_home()):
+                serving = None
+        except Exception:
+            logger.debug("Host record home comparison failed", exc_info=True)
+    if serving is not None:
         return True
 
     try:

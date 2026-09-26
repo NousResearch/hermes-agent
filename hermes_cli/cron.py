@@ -385,6 +385,23 @@ def _ticker_age_is_fresh(age: Optional[float]) -> bool:
     return age is not None and age <= TICKER_INTERVAL_SECONDS * 3 + 20
 
 
+def _cron_scheduler_restart_command(running_pid, profile):
+    """Restart hint naming the profile whose service actually hosts the scheduler.
+
+    A standalone named profile runs its own gateway: pointing its operator at
+    ``hermes --profile default gateway restart`` (which exits 78 for a served
+    named profile) strands them. When the scheduler host pid is this home's own
+    running gateway, name this profile; otherwise name the default host. See #120871.
+    """
+    try:
+        from gateway.status import get_running_pid
+        if running_pid and running_pid == get_running_pid():
+            return f"hermes --profile {profile} gateway restart"
+    except Exception:
+        pass
+    return "hermes --profile default gateway restart"
+
+
 def _print_ticker_health(pids: list, restart_command: str = "hermes gateway restart") -> None:
     """Report builtin-ticker liveness for a gateway process known to be alive.
 
@@ -491,9 +508,11 @@ def cron_status():
                 served_by_multiplexer = named_profile_served_by_running_multiplexer()
         if host is not None:
             print(f"  Scheduler host: {host.describe()}")
-            # `hermes gateway restart` exits 78 for a served NAMED profile
-            # (_guard_named_profile_under_multiplexer): the one host process is the default's.
-            _print_ticker_health([host.pid], restart_command="hermes --profile default gateway restart")
+            # A standalone named profile hosts its own scheduler: name it so the hint does not
+            # point at `hermes --profile default gateway restart` (exits 78 for a served named
+            # profile). A default-hosted multiplexer still resolves to the default hint. See #120871.
+            _print_ticker_health([host.pid],
+                                 restart_command=_cron_scheduler_restart_command(host.pid, active))
         elif pids or gateway_alive_via_lock or served_by_multiplexer:
             if served_by_multiplexer:
                 print("  Scheduler host: the host gateway (multiplexing this profile)")

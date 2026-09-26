@@ -221,7 +221,8 @@ _LINUX_CHANNEL_FRAGMENTS = (
     "com.google.chrome.beta", "com.google.chrome.dev", "com.google.chrome.canary",
     "microsoft-edge-beta", "microsoft-edge-dev", "microsoft-edge-canary",
     "brave-browser-beta", "brave-browser-nightly", "brave-browser-dev",
-    "brave-origin-beta", "brave-origin-nightly", "brave-origin-dev")
+    "brave-origin-beta", "brave-origin-nightly", "brave-origin-dev",
+    "vivaldi-snapshot", "opera-beta", "opera-developer", "yandex-browser-beta")
 
 # Where sandboxed Linux packages keep the profile instead of $XDG_CONFIG_HOME.
 _LINUX_FLATPAK_IDS = {"chrome": "com.google.Chrome", "chromium": "org.chromium.Chromium",

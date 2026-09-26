@@ -35,7 +35,7 @@ def test_list_venv_holders_json_and_exit_3_when_holders_present(monkeypatch, cap
         (4444, "python.exe", r"C:\hermes\venv\Scripts\python.exe -m hermes_cli.main -p work kanban list"),
         (4545, "python.exe", r"C:\hermes\venv\Scripts\python.exe some_script.py"),
     ]
-    monkeypatch.setattr(cli_main, "_detect_venv_python_processes", lambda: holders)
+    monkeypatch.setattr(update_cmd_windows, "_detect_venv_python_processes", lambda: holders)
 
     with pytest.raises(SystemExit) as exc:
         cli_main.cmd_update(_args())
@@ -49,7 +49,7 @@ def test_list_venv_holders_json_and_exit_3_when_holders_present(monkeypatch, cap
 
 
 def test_list_venv_holders_empty_list_exits_zero_without_updating(monkeypatch, capsys, _quiet_preflight):
-    monkeypatch.setattr(cli_main, "_detect_venv_python_processes", lambda: [])
+    monkeypatch.setattr(update_cmd_windows, "_detect_venv_python_processes", lambda: [])
 
     def _boom(*_a, **_k):  # the mutating update body must never run behind the read-only flag
         raise AssertionError("update body ran")
@@ -58,3 +58,17 @@ def test_list_venv_holders_empty_list_exits_zero_without_updating(monkeypatch, c
 
     assert cli_main.cmd_update(_args()) is None
     assert json.loads(capsys.readouterr().out) == []
+
+
+def test_list_venv_holders_reads_the_live_scan_not_the_retired_main_alias(monkeypatch, _quiet_preflight):
+    # The holder scan must use this module's live detector; the ``hermes_cli.main`` alias is the
+    # retired no-work shim that always returns [] (#123050). The reverse patching also shows why
+    # the old tests hid the bug: patching the main alias used to satisfy the call chain while
+    # production stayed on the unconditional [].
+    rows = [(5050, "python.exe", r"C:\hermes\venv\Scripts\python.exe -m hermes_cli.main gateway run")]
+    monkeypatch.setattr(cli_main, "_detect_venv_python_processes", lambda: pytest.fail("retired main alias used"))
+    monkeypatch.setattr(update_cmd_windows, "_detect_venv_python_processes", lambda: rows)
+
+    holders = update_cmd_windows.list_venv_holders()
+
+    assert [(h["pid"], h["kind"]) for h in holders] == [(5050, "gateway")]

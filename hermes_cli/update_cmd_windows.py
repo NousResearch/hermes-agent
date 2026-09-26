@@ -319,10 +319,11 @@ def list_venv_holders() -> list[dict]:
 
     Off Windows (or without psutil) the guard never fires, so the list is empty. ``exe``/``argv`` are the
     live psutil values when readable (the scan may carry only a cmdline prefix)."""
-    from hermes_cli.update_cmd import _m
     psutil = _psutil()
     holders: list[dict] = []
-    for pid, name, cmdline in _m()._detect_venv_python_processes():
+    # The module's live detector, not ``_m()._detect_venv_python_processes``: that main-module
+    # alias is the retired no-work shim that always returns [] (#123050).
+    for pid, name, cmdline in _detect_venv_python_processes():
         exe, argv = name, cmdline
         if psutil is not None:
             with suppress(Exception):

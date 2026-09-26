@@ -239,7 +239,7 @@ def admit_durable_turn_lease(
     agent, *, session_id: str, relay_turn_id: str, task_context: Dict[str, Any],
     conversation_history: Optional[List[Dict[str, Any]]],
 ) -> TurnLeaseAdmission:
-    """Acquire the session turn lease when the session is durable; build (not start) its threads.
+    """Acquire the session turn lease (the row need not exist yet); build (not start) its threads.
 
     Mutates ``task_context["session_id"]`` and ``agent.session_id`` when the wait forced a resume-id
     reload. Returns an ``early_result`` (interrupted / timed out) instead of a lease when admission
@@ -248,17 +248,20 @@ def admit_durable_turn_lease(
     admission = TurnLeaseAdmission(conversation_history=conversation_history)
     if db is None or not session_id:
         return admission
-    # A fresh session id has no durable transcript to race over, and callers may supply an
-    # in-memory seed before the row exists — reloading would erase it. Check the concrete type:
-    # MagicMock-style shims accept any attribute without the protocol.
+    # Check the concrete type: MagicMock-style shims accept any attribute without the protocol.
     if (
         getattr(agent, "_persist_disabled", False)
-        or not _durable_session_exists(db, session_id)
         or not callable(getattr(type(db), "acquire_session_turn_lease", None))
     ):
         return admission
-    # Row proven to exist — suppress the redundant create attempt.
-    agent._session_db_created = True
+    # A session id without a row still takes the lease: client-addressed ids (API server
+    # X-Hermes-Session-Id, /v1/runs session_id, fingerprint-derived chat ids) are not
+    # process-unique, and the first turn creates the row mid-turn, so a second writer would
+    # otherwise find the row, take an unheld lease and interleave its turn into this one.
+    durable = _durable_session_exists(db, session_id)
+    if durable:
+        # Row proven to exist — suppress the redundant create attempt.
+        agent._session_db_created = True
     holder = (
         f"pid={os.getpid()}:turn={relay_turn_id}:platform={task_context['platform'] or 'unknown'}"
     )
@@ -287,7 +290,9 @@ def admit_durable_turn_lease(
     agent._active_session_turn_lease_holder = holder
     agent._active_session_turn_lease_ttl_seconds = LEASE_TTL_SECONDS
     try:
-        if waited:
+        # Reload only a transcript that exists: callers may seed a fresh id in memory before its
+        # row is written, and reloading an absent row would erase that seed.
+        if waited and (durable or _durable_session_exists(db, session_id)):
             agent._emit_status("Session is free; loading the latest transcript...")
             # The holder may have compressed/rotated the session while we waited: reload only
             # AFTER admission; an immediate acquisition skips this (needless prompt-cache miss).

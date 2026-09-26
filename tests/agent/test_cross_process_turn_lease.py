@@ -170,8 +170,16 @@ def test_run_conversation_acquires_lease_when_session_probe_raises(monkeypatch):
     ]
 
 
-def test_fresh_session_keeps_caller_seed_without_durable_lease(monkeypatch):
+def test_fresh_session_keeps_caller_seed(monkeypatch):
+    """Even after a contended wait, a session with no row keeps the in-memory seed."""
     db = _DB(session_exists=False)
+
+    def acquire_with_wait(session_id, holder, **kwargs):
+        db.events.append(("acquire", session_id, holder))
+        kwargs["on_wait"](0.0)
+        return True
+
+    db.acquire_session_turn_lease = acquire_with_wait
     agent = _agent_with_db(db, session_id="fresh", platform="subagent")
     agent._session_db_created = False
     agent._parent_session_id = "parent"
@@ -189,7 +197,54 @@ def test_fresh_session_keeps_caller_seed_without_durable_lease(monkeypatch):
     AIAgent.run_conversation(agent, "work", conversation_history=seed)
 
     assert observed["history"] is seed
-    assert db.events == []
+    assert "reload" not in [event[0] for event in db.events]
+
+
+def test_first_turn_on_fresh_session_serializes_a_second_writer(tmp_path, monkeypatch):
+    """A client-addressed session id has no row until its first turn writes one; a second
+    turn arriving meanwhile must wait for that turn and see its rows, not interleave."""
+    path = tmp_path / "state.db"
+    db_a, db_b = SessionDB(path), SessionDB(path)
+    a_in_turn, a_may_finish, a_finished = threading.Event(), threading.Event(), threading.Event()
+    observed = {}
+
+    def fake_run(_agent, message, _system, history, *_args, **_kwargs):
+        if message == "first":
+            _agent._session_db.create_session("client-id", source="api_server")
+            _agent._session_db.append_message("client-id", "user", "first")
+            a_in_turn.set()
+            a_may_finish.wait(timeout=10)
+            _agent._session_db.append_message("client-id", "assistant", "first answer")
+        else:
+            observed["a_finished"] = a_finished.is_set()
+            observed["history"] = [m.get("content") for m in history]
+        return {"final_response": "ok", "messages": history, "failed": False}
+
+    monkeypatch.setattr("agent.conversation_loop.run_conversation", fake_run)
+    agent_a = _agent_with_db(db_a, session_id="client-id", platform="api_server")
+    agent_a._session_db_created = False
+
+    def run_a():
+        AIAgent.run_conversation(agent_a, "first", conversation_history=[])
+        a_finished.set()
+
+    thread_a = threading.Thread(target=run_a)
+    thread_a.start()
+    assert a_in_turn.wait(timeout=10)
+    agent_b = _agent_with_db(db_b, session_id="client-id", platform="api_server")
+    thread_b = threading.Thread(
+        target=lambda: AIAgent.run_conversation(
+            agent_b, "second", conversation_history=db_b.get_messages_as_conversation("client-id")))
+    thread_b.start()
+    time.sleep(0.5)
+    a_may_finish.set()
+    thread_a.join(timeout=10)
+    thread_b.join(timeout=10)
+
+    assert observed["a_finished"] is True
+    assert observed["history"] == ["first", "first answer"]
+    db_a.close()
+    db_b.close()
 
 
 def test_run_conversation_lease_timeout_returns_resend_notice(monkeypatch):

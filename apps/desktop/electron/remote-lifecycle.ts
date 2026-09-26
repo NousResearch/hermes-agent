@@ -682,12 +682,16 @@ async function pidIsOurDashboard(
     ' args=shlex.split(line)\n' +
     'ok=False\n' +
     'try:\n' +
-    ' serve=args.index("serve")\n' +
+    // A profile literally named "serve" puts the value token before the
+    // subcommand; both index("serve") and count("serve") must skip it.
+    ' profile_arg=args.index("--profile") if expected_profile else -1\n' +
+    ' pval=profile_arg+1 if profile_arg>=0 else -1\n' +
+    ' serve_pos=[i for i,a in enumerate(args) if a=="serve" and i!=pval]\n' +
+    ' serve=serve_pos[0]\n' +
     ' owner=args.index("--ssh-owner-nonce",serve+1)\n' +
     ' token=args.index("--ssh-session-token-file",serve+1) if expected_token else -1\n' +
     ' isolated=args.index("--isolated",serve+1)\n' +
-    ' profile_arg=args.index("--profile") if expected_profile else -1\n' +
-    ' serve_count=args.count("serve")\n' +
+    ' serve_count=len(serve_pos)\n' +
     ' owner_count=args.count("--ssh-owner-nonce")\n' +
     ' token_count=args.count("--ssh-session-token-file")\n' +
     ' isolated_count=args.count("--isolated")\n' +
@@ -905,16 +909,20 @@ def identity_before_signal():
 
 def owned(args):
  try:
-  serve=args.index("serve")
+  # Same "serve"-named profile collision as pidIsOurDashboard: skip the
+  # --profile value token when locating and counting the subcommand.
+  profile_arg=args.index("--profile") if expected_profile else -1
+  pval=profile_arg+1 if profile_arg>=0 else -1
+  serve_pos=[i for i,a in enumerate(args) if a=="serve" and i!=pval]
+  serve=serve_pos[0]
   owner=args.index("--ssh-owner-nonce",serve+1)
   token=args.index("--ssh-session-token-file",serve+1)
   isolated=args.index("--isolated",serve+1)
-  profile_arg=args.index("--profile") if expected_profile else -1
   direct=args[0] in expected_entries
   python_entry=len(args)>1 and args[1] in expected_entries and os.path.basename(args[0]).startswith("python")
   profile_ok=(args.count("--profile")==1 and profile_arg<serve and args[profile_arg+1]==expected_profile) if expected_profile else args.count("--profile")==0
   return ((direct or python_entry or (args[token+1]==expected_token and profile_ok)) and
-          args.count("serve")==1 and args.count("--ssh-owner-nonce")==1 and
+          len(serve_pos)==1 and args.count("--ssh-owner-nonce")==1 and
           args.count("--ssh-session-token-file")==1 and args.count("--isolated")==1 and
           isolated>serve and args[owner+1]==nonce and args[token+1]==expected_token and profile_ok)
  except (ValueError,IndexError):return False

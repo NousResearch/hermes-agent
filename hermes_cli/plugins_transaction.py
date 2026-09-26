@@ -3,7 +3,10 @@ from __future__ import annotations
 
 from pathlib import Path
 import shutil
-from typing import Callable
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from hermes_cli.plugins_cmd_catalog import _UserFileCarry
 
 
 def recover_plugin_publication(project: Path, row: dict, journal: Path) -> None:
@@ -81,14 +84,15 @@ def update_plugin(
     *,
     catalog_entry=None,
     interactive: bool = False,
-    carry_user_files: Callable[[Path], None] | None = None,
+    carry_user_files: _UserFileCarry | None = None,
 ) -> str:
     """Prepare a catalog re-pin or custom Git pull without changing the live tree.
 
     *interactive*: a terminal user is present to consent to newly declared dependencies;
     the dashboard and the gateway's auto-apply pass False and get a refusal instead.
     *carry_user_files(staged)* copies the user's files into the fresh clone before it is
-    validated and before ``*.example`` defaults are materialised, so the user's copies win."""
+    validated and before ``*.example`` defaults are materialised, so the user's copies win;
+    the tree it classified is the one publication may replace."""
     import tempfile
 
     from hermes_cli import plugins_cmd as pc
@@ -121,7 +125,7 @@ def update_plugin(
             if feed.get("min_hermes"):
                 pc._check_manifest_version({"requires_hermes": feed["min_hermes"]}, target.name)
     refuse_if_installed_removed(target.name, target)
-    before = tree_digest(target)
+    before = carry_user_files.digest if carry_user_files is not None else tree_digest(target)
     with tempfile.TemporaryDirectory(prefix=".update-", dir=target.parent) as directory:
         staged = Path(directory) / "plugin"
         try:

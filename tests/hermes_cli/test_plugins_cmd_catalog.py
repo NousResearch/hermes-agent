@@ -345,6 +345,103 @@ def test_update_backs_up_a_repointed_shipped_symlink(world, tmp_path, monkeypatc
     assert os.readlink(backup / "active") == "mine.txt"
 
 
+@pytest.mark.platforms("posix")  # symlinks and the execute bit
+@pytest.mark.parametrize("edit", ["link-to-equal-bytes", "dangling-link", "link-to-dir", "execute-bit"])
+def test_update_without_the_installed_revision_backs_up_every_changed_shipped_entry(world, tmp_path, monkeypatch,
+                                                                                     edit):
+    """Once the installed revision is unfetchable, the old tree is compared with the new one entry by entry.
+    What differs as git would record it (kind, link target, bytes, execute bit) is the user's edit and goes
+    to ``plugins-backup/``: a link re-pointed at a file with the same bytes, a dangling link, a link to a
+    directory, a ``chmod +x``."""
+    def prepare(src):
+        for name in ("default.txt", "same.txt", "adir/f", "tool.sh"):
+            (src / name).parent.mkdir(exist_ok=True)
+            (src / name).write_text("same")
+        (src / "tool.sh").chmod(0o644)
+        (src / "active").symlink_to("default.txt")
+
+    src, target, _release = _installed_subdir_plugin(tmp_path, monkeypatch, "url", prepare)
+    link = {"link-to-equal-bytes": "same.txt", "dangling-link": "gone", "link-to-dir": "adir"}.get(edit)
+    if link is None:
+        (target / "tool.sh").chmod(0o755)
+    else:
+        (target / "active").unlink()
+        (target / "active").symlink_to(link)
+    mono = src.parents[1]
+    (src / "plugin.yaml").write_text("name: sub-plugin\nversion: 2.0.0\ndescription: d\n")
+    sp.run(["git", "commit", "-q", "-a", "--amend", "-m", "v2"], cwd=mono, check=True, env=_GIT_ENV)
+    sp.run(["git", "reflog", "expire", "--expire=now", "--all"], cwd=mono, check=True, env=_GIT_ENV)
+    sp.run(["git", "gc", "-q", "--prune=now"], cwd=mono, check=True, env=_GIT_ENV)
+
+    assert pc.dashboard_update_user_plugin("sub-plugin")["ok"] is True
+    assert "version: 2.0.0" in (target / "plugin.yaml").read_text()
+    assert os.readlink(target / "active") == "default.txt" and not (target / "tool.sh").stat().st_mode & 0o111
+    backup, = (world["plugins_dir"].parent / "plugins-backup").iterdir()
+    if link is None:
+        assert (backup / "tool.sh").stat().st_mode & 0o100
+    else:
+        assert os.readlink(backup / "active") == link
+
+
+@pytest.mark.platforms("posix")  # the execute bit
+@pytest.mark.parametrize("via", ["url", "catalog"])
+def test_update_backs_up_an_execute_bit_edit_to_a_shipped_file(world, tmp_path, monkeypatch, via):
+    """Git records a file's execute bit (``100644``/``100755``), so a ``chmod`` of a shipped file is an edit:
+    the new version's mode is published and the user's copy goes to ``plugins-backup/``. A shipped
+    executable the user left alone is not an edit."""
+    def prepare(src):
+        for name, mode in (("tool.sh", 0o644), ("run.sh", 0o755), ("kept.sh", 0o755)):
+            (src / name).write_text("#!/bin/sh\n")
+            (src / name).chmod(mode)
+
+    _src, target, release = _installed_subdir_plugin(tmp_path, monkeypatch, via, prepare)
+    (target / "tool.sh").chmod(0o755)
+    (target / "run.sh").chmod(0o644)
+    release()
+
+    assert pc.dashboard_update_user_plugin("sub-plugin")["ok"] is True
+    assert "version: 2.0.0" in (target / "plugin.yaml").read_text()
+    assert not (target / "tool.sh").stat().st_mode & 0o111 and (target / "run.sh").stat().st_mode & 0o100
+    backup, = (world["plugins_dir"].parent / "plugins-backup").iterdir()
+    assert (backup / "tool.sh").stat().st_mode & 0o100 and not (backup / "run.sh").stat().st_mode & 0o111
+    assert not (backup / "kept.sh").exists()
+
+
+@pytest.mark.parametrize("via", ["url", "catalog", "catalog-git-checkout"])
+def test_update_refuses_when_the_plugin_writes_after_its_files_were_classified(world, tmp_path, monkeypatch, via):
+    """What to carry is decided from the installed tree as classified. A file the live plugin writes after
+    that (e.g. during the clone) is not in that plan, so the update must refuse to replace the tree rather
+    than delete the file; a retry classifies it and carries it. Classifying does not itself count as a
+    change (``git status`` refreshing the index of a touched checkout)."""
+    if via == "catalog-git-checkout":
+        name = "cat-plugin"
+        target = cat.install_catalog_entry(pc_cat.get_live_catalog_entry(name), force=False)[0]
+        assert (target / ".git").exists()
+
+        def release():
+            world["state"]["pin"] = world["sha2"]
+    else:
+        name = "sub-plugin"
+        _src, target, release = _installed_subdir_plugin(tmp_path, monkeypatch, via)
+    release()
+    classify = cat._local_changes
+
+    def classify_then_plugin_writes(tree):
+        changes = classify(tree)
+        (tree / "late.json").write_text("{}")
+        return changes
+
+    monkeypatch.setattr(cat, "_local_changes", classify_then_plugin_writes)
+    result = pc.dashboard_update_user_plugin(name)
+    assert result["ok"] is False and "retry" in result["error"]
+    assert (target / "late.json").read_text() == "{}"
+
+    monkeypatch.setattr(cat, "_local_changes", classify)
+    os.utime(target / "__init__.py", (1_000_000_000, 1_000_000_000))  # same bytes, stale index stat
+    assert pc.dashboard_update_user_plugin(name)["ok"] is True
+    assert (target / "late.json").read_text() == "{}"
+
+
 def test_repin_keeps_a_wholly_ignored_data_dir_in_a_git_checkout(world):
     """``git status --ignored=matching`` reports an ignored dir as ONE ``data/`` entry; its files must
     still be carried into the re-pinned tree."""

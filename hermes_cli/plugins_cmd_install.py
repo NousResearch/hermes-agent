@@ -280,6 +280,7 @@ def _install_plugin_core(
     catalog: Optional[dict] = None,
     allow_removed: bool = False,
     before_swap=None,
+    replaces: Optional[tuple[Path, str]] = None,
 ) -> tuple[Path, dict, str]:
     """Clone a Git plugin and atomically record its source and exact revision.
 
@@ -292,7 +293,8 @@ def _install_plugin_core(
     its ``pin`` is kept only when the checkout satisfies it (a ``--ref`` install is off-pin).
     *allow_removed* records that the user knowingly bypassed the kill list.
     *before_swap(manifest, tree)* runs on the validated clone before anything moves into place
-    and may raise :class:`PluginOperationError` to abort (re-pin consent)."""
+    and may raise :class:`PluginOperationError` to abort (re-pin consent). *replaces* ``(path, digest)``
+    is the installed tree *before_swap* worked from; publishing over it refuses once its files changed."""
     requested_revision = _pc()._normalize_exact_revision(ref) if ref is not None else None
     try:
         git_url, subdir = _pc()._resolve_git_url(identifier)
@@ -380,8 +382,10 @@ def _install_plugin_core(
         new_metadata = {**old_metadata, plugin_name: record}
         from hermes_cli.plugins_transaction import publish_plugin
 
+        target_digest = replaces[1] if replaces and replaces[0].resolve() == target.resolve() else None
         try:
-            publish_plugin(tmp_target, target, old_metadata, new_metadata, require_consent=True)
+            publish_plugin(tmp_target, target, old_metadata, new_metadata, target_digest=target_digest,
+                           require_consent=True)
         except Exception as exc:
             raise _pc().PluginOperationError(f"Plugin '{plugin_name}' was not published: {exc}") from exc
 

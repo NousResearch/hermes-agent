@@ -309,8 +309,9 @@ def _local_changes(target: Path) -> Optional[tuple[list[str], list[str]]]:
         return None
     if not (target / ".git").exists():
         return _changes_against_shipped(git_exe, target)
-    status = _run_plugin_git(git_exe, target, "status", "--porcelain", "--ignored", "-z", "--untracked-files=all",
-                             "--ignored=matching", timeout=30)
+    # --no-optional-locks: a stat refresh of .git/index would change the tree digest taken before this.
+    status = _run_plugin_git(git_exe, target, "--no-optional-locks", "status", "--porcelain", "--ignored", "-z",
+                             "--untracked-files=all", "--ignored=matching", timeout=30)
     if status.returncode != 0:
         return None
     local, modified = [], []
@@ -352,7 +353,8 @@ def _changes_against_shipped(git_exe: str, target: Path) -> Optional[tuple[list[
     """:func:`_local_changes` for a tree without ``.git``. Only the recorded revision's trees are fetched
     (``blob:none``), and the installed files are hashed with the clean filters git applied at checkout
     (``core.autocrlf``), so an untouched file matches its blob; a symlink is hashed as git stores it (its
-    target string, unfiltered) and a file/symlink swap counts as an edit. ``None`` when that revision is
+    target string, unfiltered). The mode is compared as git records it (``100644``/``100755``/``120000``),
+    so a file/symlink swap or a ``chmod +x`` counts as an edit. ``None`` when that revision is
     unreachable."""
     from hermes_cli.plugins_cmd import _clone_timeout_seconds, _resolve_git_url, _run_plugin_git
     record = _install_record(target) or {}
@@ -364,7 +366,8 @@ def _changes_against_shipped(git_exe: str, target: Path) -> Optional[tuple[list[
     files = list(_user_tree_files(target))
     regular = [rel for rel in files if not (target / rel).is_symlink()]
     links = [rel for rel in files if (target / rel).is_symlink()]
-    with tempfile.TemporaryDirectory(prefix="hermes-plugin-shipped-") as tmp:
+    # Next to the plugin, so `git init` probes the execute bit on the plugin's own filesystem (core.fileMode).
+    with tempfile.TemporaryDirectory(prefix=".shipped-", dir=target.parent) as tmp:
         try:
             for args in (("init", "-q"), ("fetch", "-q", "--depth", "1", "--filter=blob:none", git_url, revision),
                          ("ls-tree", "-r", "-z", "FETCH_HEAD", "--", prefix or ".")):
@@ -372,6 +375,8 @@ def _changes_against_shipped(git_exe: str, target: Path) -> Optional[tuple[list[
                                          timeout=_clone_timeout_seconds())
                 if listed.returncode != 0:
                     return None
+            probed = _run_plugin_git(git_exe, Path(tmp), "config", "--bool", "core.fileMode")
+            filemode = probed.stdout.strip() != "false"
             link_blobs = Path(tmp) / ".git" / "hermes-link-targets"
             link_blobs.mkdir()
             for i, rel in enumerate(links):
@@ -385,14 +390,20 @@ def _changes_against_shipped(git_exe: str, target: Path) -> Optional[tuple[list[
             return None
     if any(run.returncode != 0 for run in hashed):
         return None
+
+    def compared(mode: str) -> str:  # where the filesystem keeps no execute bit, git ignores it too
+        return "100644" if mode == "100755" and not filemode else mode
+
     shipped = {}
     for item in listed.stdout.split("\0"):
         meta, _, path = item.partition("\t")
         if path.startswith(prefix) and len(meta.split()) == 3:
             mode, _type, sha = meta.split()
-            shipped[path[len(prefix):]] = (mode == "120000", sha)
-    digests = {**{rel.as_posix(): (False, sha) for rel, sha in zip(regular, hashed[0].stdout.split())},
-               **{rel.as_posix(): (True, sha) for rel, sha in zip(links, hashed[1].stdout.split())}}
+            shipped[path[len(prefix):]] = (compared(mode), sha)
+    executable = {rel for rel in regular if (target / rel).lstat().st_mode & stat.S_IXUSR}
+    digests = {**{rel.as_posix(): (compared("100755" if rel in executable else "100644"), sha)
+                  for rel, sha in zip(regular, hashed[0].stdout.split())},
+               **{rel.as_posix(): ("120000", sha) for rel, sha in zip(links, hashed[1].stdout.split())}}
     local, modified = [], []
     for rel in (rel.as_posix() for rel in files):
         if rel not in shipped:
@@ -400,6 +411,14 @@ def _changes_against_shipped(git_exe: str, target: Path) -> Optional[tuple[list[
         elif digests.get(rel) != shipped[rel]:
             modified.append(rel)
     return local, modified
+
+
+def _same_entry(a: Path, b: Path) -> bool:
+    """Whether git would record the two entries the same: same kind, a link's own target (not what it
+    resolves to), a file's bytes and execute bit."""
+    if a.is_symlink() or b.is_symlink():
+        return a.is_symlink() and b.is_symlink() and os.readlink(a) == os.readlink(b)
+    return not (a.stat().st_mode ^ b.stat().st_mode) & stat.S_IXUSR and filecmp.cmp(a, b, shallow=False)
 
 
 def _copy_entry(src: Path, dst: Path) -> None:
@@ -440,7 +459,7 @@ def _carry_user_files(old: Path, new: Path, local: Optional[list[str]], backup: 
             os.path.lexists(new / up) and ((new / up).is_symlink() or not (new / up).is_dir())
             for up in list(rel.parents)[:-1])
         if local is None and not clash and os.path.lexists(dst):
-            if src.is_file() and dst.is_file() and not filecmp.cmp(src, dst, shallow=False):
+            if not _same_entry(src, dst):
                 set_aside.append(str(rel))
             continue
         if clash or (local is None and _revision_owned(rel)):
@@ -461,9 +480,13 @@ def _carry_user_files(old: Path, new: Path, local: Optional[list[str]], backup: 
 class _UserFileCarry:
     """What a force-replace update keeps of the installed tree *target*: edits to files the installed
     version shipped are copied to *backup* now; calling the object with the validated replacement tree
-    carries the user's own files into it (:func:`_carry_user_files`)."""
+    carries the user's own files into it (:func:`_carry_user_files`). *digest* is the tree as classified:
+    it must be the publication baseline, or a file the live plugin writes later is deleted by the swap
+    without ever having been considered."""
 
     def __init__(self, target: Path, backup: Path):
+        from pm.store import tree_digest
+        self.digest = tree_digest(target)
         changes = _local_changes(target)
         self.local, self.modified = changes if changes is not None else (None, [])
         self.target, self.backup, self.set_aside = target, backup, []

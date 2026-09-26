@@ -163,7 +163,8 @@ not track (the `config.yaml` created from its `.example`, data files, `.env`).
 A monorepo (`subdir`) install has no git checkout to ask, so its files are
 compared with the tree the installed revision shipped (fetched without file
 contents); this also applies to `update` of a URL subdirectory install.
-Edits you made to *tracked* files are not carried onto the new code; copies are
+Edits you made to *tracked* files (including a changed execute bit or a
+re-pointed symlink) are not carried onto the new code; copies are
 saved under `~/.hermes/plugins-backup/<name>-<sha>/` and the update warns you.
 The same folder receives any file of yours where the new version has a
 directory (or the reverse). If the installed revision can no longer be
@@ -171,7 +172,9 @@ fetched, files the new version does not ship are kept, except code (Python
 and JavaScript files) and plugin declarations (manifests, `mcp.json`,
 dependency files, `desktop/`, `skills/`, `sidecar/`), which go to the backup
 folder along with files the new version ships with different content. Files
-kept this way pass the same security scan as the new version.
+kept this way pass the same security scan as the new version. If the plugin
+writes files while the update is being prepared, the update stops and asks
+you to retry instead of replacing them.
 If the new pin renames the plugin's manifest, the old directory is removed and
 your enabled flag follows the new name. `hermes plugins list` shows catalog
 installs as `catalog:<tier>@<sha>` so you can see provenance at a glance.

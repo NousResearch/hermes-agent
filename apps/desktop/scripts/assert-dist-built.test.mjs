@@ -182,6 +182,29 @@ test('checkDistBuilt fails when a chunk is not valid ES module syntax', () => {
   }
 })
 
+test('checkDistBuilt names each chunk while syntax-checking', () => {
+  const lines = []
+  const original = console.log
+  console.log = (...args) => {
+    lines.push(args.map(String).join(' '))
+  }
+  const { tempRoot, distDir } = makeDist(d => {
+    fs.writeFileSync(path.join(d, 'index.html'), '<!doctype html>', 'utf8')
+    fs.mkdirSync(path.join(d, 'assets'))
+    fs.writeFileSync(path.join(d, 'assets', 'index-abc123.js'), 'export const a = 1', 'utf8')
+    fs.writeFileSync(path.join(d, 'assets', 'vendor-def456.js'), 'export const b = 2', 'utf8')
+  })
+  try {
+    assert.deepEqual(checkDistBuilt(distDir), { ok: true })
+    const progress = lines.filter(line => line.includes('syntax-check'))
+    assert.ok(progress.some(line => line.includes('index-abc123.js')))
+    assert.ok(progress.some(line => line.includes('vendor-def456.js')))
+  } finally {
+    console.log = original
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
 test('checkDistBuilt passes when every chunk parses as an ES module', () => {
   const { tempRoot, distDir } = makeDist(d => {
     fs.writeFileSync(path.join(d, 'index.html'), '<!doctype html>', 'utf8')

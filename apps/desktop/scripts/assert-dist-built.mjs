@@ -103,6 +103,10 @@ function verifyChunksParse(assetsDir) {
   const chunks = readdirSync(assetsDir).filter(name => name.endsWith(".js"))
   for (const name of chunks) {
     const file = join(assetsDir, name)
+    // This pass spawns node --check per chunk and otherwise prints nothing.
+    // The Windows updater cancels a step whose log is unchanged for 10 minutes,
+    // so a slow machine looks stalled while the check is still running.
+    console.log(`→ syntax-check ${name}`)
     const probe = spawnSync(nodeBin, ["--input-type=module", "--check"], {
       input: readFileSync(file),
       maxBuffer: 64 * 1024 * 1024,

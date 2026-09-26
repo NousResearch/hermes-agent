@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from agent.interrupt_compat import _accepts_keyword
 from agent.replay_cleanup import canonicalize_replay_history
 from gateway.config import Platform
-from gateway.media_repair import repair_explicit_computer_use_media_paths
+from gateway.media_repair import repair_explicit_computer_use_media_paths, untagged_media_tags
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.turn_context import TurnContext
 from hermes_cli.config import cfg_get
@@ -1858,8 +1858,6 @@ class TurnRunner:
         a stale MEDIA: path from an earlier turn never rides a later reply; the history-path dedup is
         the secondary guard — and the sole one when mid-run compression shrank the list."""
         from gateway.run import _collect_auto_append_media_tags
-        if "MEDIA:" in final_response:
-            return final_response
         # Scan tool results for MEDIA:<path> tags that need to be delivered as native audio/file
         # attachments. The TTS tool embeds MEDIA: tags in its JSON response, but the model's final text
         # reply usually doesn't include them. We collect unique tags from tool results and append any that
@@ -1876,6 +1874,8 @@ class TurnRunner:
         media_tags, has_voice_directive = _collect_auto_append_media_tags(
             result.get("messages", []), history_offset=len(agent_history), history_media_paths=history_media_paths,
         )
+        # A reply that tags one file (a chart) still gets the ones it never tagged (the TTS voice note).
+        media_tags = untagged_media_tags(media_tags, final_response)
         if not media_tags:
             return final_response
         unique_tags = (["[[audio_as_voice]]"] if has_voice_directive else []) + list(dict.fromkeys(media_tags))

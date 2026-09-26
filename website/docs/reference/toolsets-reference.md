@@ -29,10 +29,12 @@ hermes chat --toolsets all              # everything
 ### Per-platform (config.yaml)
 
 ```yaml
-toolsets:
-  - hermes-cli          # default for CLI
-  # - hermes-telegram   # override for Telegram gateway
+platform_toolsets:
+  cli: [hermes-cli]                 # default for CLI
+  telegram: [web, file, terminal]   # override for Telegram gateway
 ```
+
+A platform's list replaces that platform's default. `hermes tools` writes this same key.
 
 ### Interactive management
 
@@ -142,19 +144,19 @@ Plugins can register their own toolsets via `ctx.register_tool()` during plugin 
 
 ### Custom toolsets
 
-Define custom toolsets in `config.yaml` to create project-specific bundles:
+Config cannot group existing toolsets under a new name; new toolset names come only from MCP servers (above) and plugins. For a project-specific bundle, list the toolsets it needs for the platform:
 
 ```yaml
-toolsets:
-  - hermes-cli
-custom_toolsets:
-  data-science:
+platform_toolsets:
+  cli:
     - file
     - terminal
     - code_execution
     - web
     - vision
 ```
+
+For a single session, pass the same names with `hermes chat --toolsets file,terminal,code_execution,web,vision`. To keep the bundle apart from your everyday setup, put the list in the `config.yaml` of a separate [profile](../user-guide/profiles.md).
 
 ### Wildcards
 

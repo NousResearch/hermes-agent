@@ -444,7 +444,10 @@ class SessionPersistenceMixin:
             return True
         except Exception as e:
             if _db_flush_failed(self, e, batch_rows, _adoption_budget, messages):
-                return self._flush_messages_to_session_db_unlocked(messages, conversation_history, _adoption_budget=0)
+                # A recreated row lost the history prefix too: the id()-based history shortcut must not skip it.
+                healed = self._last_persistence_error_cause == "session_row_missing"
+                return self._flush_messages_to_session_db_unlocked(
+                    messages, None if healed else conversation_history, _adoption_budget=0)
             return False
 
     def _get_messages_up_to_last_assistant(self, messages: List[Dict]) -> List[Dict]:

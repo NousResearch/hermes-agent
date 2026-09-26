@@ -23,6 +23,17 @@ describe('model-status-label', () => {
     expect(displayModelName('claude-opus-4-6-1m')).toBe('Opus 4.6')
   })
 
+  it('renders Copilot\'s real entitled 1M id (dotted version, -internal qualifier)', () => {
+    // Confirmed live via Copilot's /models catalog on a CNCF-entitled (Velero
+    // maintainer) account: the real id is dot-versioned with a trailing
+    // -internal qualifier after the -1m suffix, e.g.
+    // `claude-opus-4.7-1m-internal` (see github.com/anomalyco/models.dev#2021,
+    // github.com/openclaw/openclaw#72805).
+    expect(modelDisplayParts('claude-opus-4.7-1m-internal')).toEqual({ name: 'Opus 4.7', tag: '1M' })
+    expect(displayModelName('claude-opus-4.7-1m-internal')).toBe('Opus 4.7')
+    expect(displayModelName('claude-opus-4.7-1m-internal')).not.toContain('internal')
+  })
+
   it('renders local GGUF ids as a clean name with a quant tag', () => {
     expect(modelDisplayParts('Qwen3.6-27B-UD-Q4_K_XL')).toEqual({ name: 'Qwen3.6 27B', tag: 'Q4' })
     expect(modelDisplayParts('Nemotron-3-Nano-30B-A3B-UD-Q4_K_XL')).toEqual({

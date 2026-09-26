@@ -132,10 +132,12 @@ export function modelDisplayParts(model: string): { name: string; tag: string } 
   // variant of the same model, so it renders as a tag ("Sonnet 5 · 1M") rather
   // than raw brackets that read like an ANSI escape ("Sonnet 5[1m]"). Copilot's
   // own model catalog reports the same variant with a plain dash suffix instead
-  // (`claude-opus-4.6-1m`, no brackets) — recognize both forms so a
-  // Copilot-routed 1M model gets the same clean tag instead of a mangled
-  // literal name ("Opus 4.6 1m").
-  const contextWindow = base.match(/(?:\[(\d+[mk])\]|-(\d+[mk]))$/i)
+  // (e.g. `claude-opus-4.7-1m-internal` for entitled accounts — confirmed via
+  // Copilot's live /models catalog and github.com/anomalyco/models.dev#2021),
+  // optionally followed by its own `-internal`/`-preview` qualifier — recognize
+  // both forms so a Copilot-routed 1M model gets the same clean tag instead of
+  // a mangled literal name ("Opus 4.7 1m internal").
+  const contextWindow = base.match(/(?:\[(\d+[mk])\]|-(\d+[mk])(?:-(?:internal|preview))?)$/i)
 
   if (contextWindow) {
     const suffix = (contextWindow[1] ?? contextWindow[2]).toUpperCase()

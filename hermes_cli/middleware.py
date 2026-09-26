@@ -20,9 +20,25 @@ TOOL_REQUEST_MIDDLEWARE = "tool_request"
 TOOL_EXECUTION_MIDDLEWARE = "tool_execution"
 LLM_REQUEST_MIDDLEWARE = "llm_request"
 LLM_EXECUTION_MIDDLEWARE = "llm_execution"
+LLM_STREAM_TEXT_MIDDLEWARE = "llm_stream_text"
+
+class LLMStreamMiddlewareRefusal(RuntimeError):
+    """A fail-closed live-text middleware refused delivery.
+
+    Stream owners must keep this distinct from provider, transport, and display
+    failures so they do not retry, build a partial continuation, or suppress it.
+    """
+
+    def __init__(self, original: BaseException, *, callback_name: str = "") -> None:
+        self.original = original
+        self.callback_name = callback_name
+        label = f" ({callback_name})" if callback_name else ""
+        super().__init__(f"fail-closed llm_stream_text middleware refused delivery{label}: {original}")
+
 
 VALID_MIDDLEWARE: set[str] = {
     TOOL_REQUEST_MIDDLEWARE, TOOL_EXECUTION_MIDDLEWARE, LLM_REQUEST_MIDDLEWARE, LLM_EXECUTION_MIDDLEWARE,
+    LLM_STREAM_TEXT_MIDDLEWARE,
 }
 
 
@@ -148,6 +164,87 @@ def run_tool_execution_middleware(
         TOOL_EXECUTION_MIDDLEWARE, next_call,
         tool_name=tool_name, args=args, original_args=context.pop("original_args", args), **context)
 
+def run_llm_stream_text_middleware(
+    text: str, *, kind: str, **context: Any,
+) -> str:
+    """Synchronously transform live LLM text before Hermes delivers it to user-visible sinks.
+
+    Each callback receives ``text`` plus stream context and may return ``{"text": "..."}``.
+    Fail-open callbacks are isolated; a fail-closed callback exception propagates and prevents
+    delivery of the untransformed text.
+    """
+    from hermes_cli.plugins import _delivery_manager
+
+    import inspect
+
+    manager = _delivery_manager()
+    current = text
+    for callback in list(manager._middleware.get(LLM_STREAM_TEXT_MIDDLEWARE, [])):
+        call_kwargs = middleware_payload(text=current, kind=kind, **context)
+        failure_mode = getattr(callback, "_hermes_failure_mode", "open")
+        callback_name = getattr(callback, "__name__", repr(callback))
+        try:
+            result = callback(**call_kwargs)
+        except Exception as exc:
+            manager._report_hook_failure(
+                LLM_STREAM_TEXT_MIDDLEWARE, callback, call_kwargs, exc, surface="Middleware"
+            )
+            if failure_mode == "closed":
+                raise LLMStreamMiddlewareRefusal(exc, callback_name=callback_name) from exc
+            continue
+
+        async_result = (
+            inspect.isawaitable(result)
+            or inspect.isasyncgen(result)
+            or callable(getattr(result, "__aiter__", None))
+        )
+        if async_result:
+            # This hook is deliberately synchronous. Dispose awaitables where doing
+            # so is itself synchronous; async generators/iterables are never driven.
+            if inspect.isawaitable(result):
+                close = getattr(result, "close", None)
+                cancel = getattr(result, "cancel", None)
+                try:
+                    if callable(close):
+                        close()
+                    elif callable(cancel):
+                        cancel()
+                except Exception:
+                    logger.debug(
+                        "Failed to dispose deferred llm_stream_text result",
+                        exc_info=True,
+                    )
+
+            exc = TypeError(
+                "llm_stream_text middleware must be synchronous; "
+                "callback returned an asynchronous/deferred result"
+            )
+            manager._report_hook_failure(
+                LLM_STREAM_TEXT_MIDDLEWARE, callback, call_kwargs, exc, surface="Middleware"
+            )
+            if failure_mode == "closed":
+                raise LLMStreamMiddlewareRefusal(exc, callback_name=callback_name) from exc
+            continue
+
+        if result is None:
+            # None = intentional no-change sentinel; keep current text.
+            pass
+        elif isinstance(result, dict) and isinstance(result.get("text"), str):
+            current = result["text"]
+        else:
+            # Any other synchronous result shape is a contract violation.
+            exc = TypeError(
+                f"llm_stream_text middleware {callback_name} returned an invalid result "
+                f"type {type(result).__name__!r}; expected {{\"text\": <str>}} or None"
+            )
+            manager._report_hook_failure(
+                LLM_STREAM_TEXT_MIDDLEWARE, callback, call_kwargs, exc, surface="Middleware"
+            )
+            if failure_mode == "closed":
+                raise LLMStreamMiddlewareRefusal(exc, callback_name=callback_name) from exc
+            # fail-open: preserve current text, skip malformed callback
+    return current
+
 
 class _DownstreamExecutionError(Exception):
     """Marks an exception raised BELOW a middleware frame so the frame's own failure handling
@@ -205,6 +302,8 @@ def _run_execution_chain(kind: str, terminal_call: Callable[[Any], Any], **kwarg
             # Runs once per tool/LLM call: a mis-declared callback fails identically every time,
             # so it goes through the manager's warn-once reporter (#111922).
             manager._report_hook_failure(kind, callback, call_kwargs, exc, surface="Middleware")
+            if getattr(callback, "_hermes_failure_mode", "open") == "closed":
+                raise
             if next_succeeded:
                 return next_result
             if next_called:

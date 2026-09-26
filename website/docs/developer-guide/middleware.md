@@ -22,6 +22,8 @@ With middleware enabled, plugins can:
   execution see them.
 - Wrap the actual LLM execution callback while preserving Hermes retry,
   streaming, interrupt, and hook behavior.
+- Synchronously transform live LLM text immediately before display, TTS,
+  reasoning, or interim-message delivery.
 - Wrap the actual tool execution callback while preserving Hermes guardrails,
   approval, post-tool hooks, and tool-result transformation.
 
@@ -35,6 +37,7 @@ def register(ctx):
     ctx.register_middleware("llm_execution", on_llm_execution)
     ctx.register_middleware("tool_request", on_tool_request)
     ctx.register_middleware("tool_execution", on_tool_execution)
+    ctx.register_middleware("llm_stream_text", restore_live_text, failure_mode="closed")
 ```
 
 Every middleware callback receives:
@@ -53,6 +56,7 @@ Supported middleware kinds:
 | `tool_request` | `tool_name`, `args`, `original_args` | `{"args": {...}}` | Replace effective tool args before hooks, guardrails, approvals, and execution. |
 | `llm_execution` | `request`, `original_request`, `next_call` | Any provider response | Wrap or replace the actual provider call. |
 | `tool_execution` | `tool_name`, `args`, `original_args`, `next_call` | Any tool result | Wrap or replace the actual tool call. |
+| `llm_stream_text` | `text`, `kind` plus LLM request identity | `{"text": "..."}` | Synchronously transform live `text`, `reasoning`, or `interim` content before user-visible delivery. |
 
 Request middleware can return optional trace fields:
 
@@ -77,13 +81,28 @@ def on_tool_execution(**kwargs):
 ```
 
 If multiple plugins register the same execution middleware kind, Hermes runs
-them as a nested chain in registration order. Middleware failures are fail-open:
-Hermes logs a warning and continues with the next middleware or the base
-runtime path. A callback that fails the same way on every call (typically a
-signature naming a field the middleware does not send) is reported **once** at
-WARNING — the message lists the fields it does provide — and identical repeats go
-to DEBUG, so a mis-declared middleware cannot flood the log; a plugin reload
-resets the report.
+them as a nested chain in registration order.
+
+Failure policy is selected **per middleware registration**:
+
+```python
+ctx.register_middleware("llm_execution", callback, failure_mode="open")
+ctx.register_middleware("llm_execution", privacy_gate, failure_mode="closed")
+```
+
+`failure_mode="open"` is the default and preserves Hermes' existing behavior:
+Hermes logs the callback failure and continues where that middleware kind has a
+safe fallthrough path. `failure_mode="closed"` propagates the callback failure
+and aborts that middleware delivery/execution path. For `llm_execution`, this
+means a pre-`next_call` failure prevents the provider call, while a failure
+after a successful `next_call` prevents Hermes from returning a potentially
+unprocessed downstream result.
+
+A callback that fails the same way on every call (typically a signature naming
+a field the middleware does not send) is reported **once** at WARNING — the
+message lists the fields it does provide — and identical repeats go to DEBUG,
+so a mis-declared middleware cannot flood the log; a plugin reload resets the
+report.
 
 ## Execution Order
 
@@ -95,7 +114,10 @@ For each provider request, Hermes applies middleware in this order:
 2. Apply `llm_request` middleware.
 3. Emit `pre_api_request` observer hooks with the effective request.
 4. Run provider execution through `llm_execution` middleware.
-5. Emit `post_api_request` or `api_request_error` observer hooks.
+5. While the provider is streaming, apply `llm_stream_text` synchronously to
+   normalized live `text`, `reasoning`, and `interim` content immediately before
+   Hermes delivers it to display/TTS/interim surfaces.
+6. Emit `post_api_request` or `api_request_error` observer hooks.
 
 Request middleware sees the full provider kwargs, including `messages` or
 Responses API `input`, model settings, tool definitions, stream options, and
@@ -229,6 +251,41 @@ Return the same response shape Hermes expects from the provider adapter. Do not
 wrap the response in a plugin-specific envelope unless the rest of the runtime
 expects that envelope.
 
+### Fail-Closed LLM Privacy Middleware
+
+A plugin that must never send an unprotected request or display an un-restored
+live token can opt into fail-closed behavior explicitly:
+
+```python
+def register(ctx):
+    ctx.register_middleware(
+        "llm_execution",
+        protect_llm_call,
+        failure_mode="closed",
+    )
+    ctx.register_middleware(
+        "llm_stream_text",
+        restore_live_text,
+        failure_mode="closed",
+    )
+
+
+def protect_llm_call(**kwargs):
+    protected = protect_request(kwargs["request"])
+    response = kwargs["next_call"](protected)
+    return restore_completed_response(response)
+
+
+def restore_live_text(**kwargs):
+    return {"text": restore_stream_chunk(kwargs["text"], kind=kwargs["kind"])}
+```
+
+`llm_stream_text` receives the live text plus request identity including
+`provider`, `model`, `session_id`, `turn_id`, and `api_request_id` when
+available. It runs synchronously before the corresponding user-visible sink.
+Tool-call argument fragments are not passed through this hook; completed tool
+calls remain part of the normal `llm_execution` response-processing path.
+
 ### Tool Execution Middleware
 
 This plugin wraps tool execution while preserving the tool result:
@@ -260,12 +317,18 @@ Relay `plugins.toml`; see
   patches.
 - Execution middleware should call `next_call(...)` exactly once unless it is
   intentionally short-circuiting execution.
-- If execution middleware raises before calling `next_call(...)`, Hermes treats
-  that as middleware failure and continues with the remaining middleware chain
-  and base execution.
-- If execution middleware calls `next_call(...)` successfully and then raises
-  during post-processing, Hermes preserves the downstream result and does not
-  run the provider or tool a second time.
+- `failure_mode="open"` is the backward-compatible default. If execution
+  middleware raises before calling `next_call(...)`, Hermes continues with the
+  remaining middleware chain and base execution.
+- `failure_mode="closed"` propagates middleware failures instead. A pre-call
+  failure prevents downstream execution; a post-call failure prevents Hermes
+  from returning a potentially unsafe/unprocessed downstream result.
+- A fail-open execution callback that calls `next_call(...)` successfully and
+  then raises preserves the downstream result and does not run the provider or
+  tool a second time.
+- A fail-closed `llm_stream_text` error stops delivery of the untransformed
+  live text. A fail-open stream-text error logs and leaves the current text
+  unchanged.
 - If downstream provider or tool execution fails, middleware may let that error
   propagate or translate it deliberately. Hermes does not convert downstream
   failure into a successful `None` result.

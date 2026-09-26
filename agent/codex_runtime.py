@@ -54,7 +54,12 @@ def _call_guarded(fn: Callable | None, fail_msg: str, *fail_args: Any, args: tup
         return
     try:
         fn(*args, **(kwargs or {}))
-    except Exception:
+    except Exception as exc:
+        from hermes_cli.middleware import LLMStreamMiddlewareRefusal
+        if isinstance(exc, LLMStreamMiddlewareRefusal):
+            # A fail-closed live-output refusal is part of the execution contract,
+            # not a best-effort display callback failure.
+            raise
         logger.debug(fail_msg, *fail_args, exc_info=True)
 
 
@@ -422,7 +427,7 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
         # display.show_commentary=false keeps mid-turn narration off the interim path too (codex_responses contract).
         if isinstance(text, str) and text.strip() and getattr(agent, "show_commentary", True):
             agent_cb("_emit_interim_assistant_message", "_emit_interim_assistant_message raised",
-                     args=({"role": "assistant", "content": text},))
+                     args=({"role": "assistant", "content": text},), kwargs={"live": True})
         # Each agentMessage item is its own delivered message: the completed item was just compared
         # against ITS deltas, so drop them before the next item's deltas arrive. Otherwise the buffer
         # holds "commentary + final", the final agentMessage no longer prefix-matches, and it is
@@ -1003,7 +1008,10 @@ def _consume_codex_event_stream(
                 on_event(event)
             except (TimeoutError, InterruptedError):
                 raise  # watchdog / cancellation control flow must propagate
-            except Exception:
+            except Exception as exc:
+                from hermes_cli.middleware import LLMStreamMiddlewareRefusal
+                if isinstance(exc, LLMStreamMiddlewareRefusal):
+                    raise
                 logger.debug("Codex stream on_event hook raised", exc_info=True)
         if (interrupt_check is not None and interrupt_check()) or assembler.feed(event):
             break

@@ -34,6 +34,15 @@ class StreamDeliveryMixin:
         """Send ``text`` to the display + TTS delta callbacks; True if at least one accepted it."""
         results = [self._call_quietly(cb, text) for cb in (self.stream_delta_callback, self._stream_callback)]
         return any(results)
+    def _transform_live_text(self, text: str, *, kind: str) -> str:
+        """Apply synchronous LLM live-text middleware immediately before user-visible delivery."""
+        if not isinstance(text, str) or not text:
+            return text
+        from hermes_cli.middleware import run_llm_stream_text_middleware
+
+        return run_llm_stream_text_middleware(
+            text, kind=kind, **self._stream_hook_base_payload()
+        )
 
     def _enqueue_stream_hook(self, event: str, *, label: str | None = None, **fields: Any) -> None:
         """Best-effort plugin stream hook enqueue; never raises into the stream path."""
@@ -60,8 +69,10 @@ class StreamDeliveryMixin:
 
         def deliver(tail: str) -> None:
             if tail:
-                self._deliver_to_stream_callbacks(tail)
-                self._record_streamed_assistant_text(tail)
+                transformed = self._transform_live_text(tail, kind="text")
+                if transformed:
+                    self._deliver_to_stream_callbacks(transformed)
+                    self._record_streamed_assistant_text(transformed)
 
         # Flush any benign partial-tag tail held by the think scrubber first (#17924): an innocent '<' at
         # the end of the stream that turned out not to be a tag prefix should reach the UI. Then flush the
@@ -190,17 +201,25 @@ class StreamDeliveryMixin:
         if getattr(self, "interim_assistant_callback", None) is None or not isinstance(text, str):
             return
         visible = self._visible_commentary(text)
+        visible = self._transform_live_text(visible, kind="interim") if visible else visible
         if not visible or visible == "(empty)" or self._interim_text_was_delivered(visible):
             return
         self._deliver_interim(visible, already_streamed=False, record=[visible])
 
-    def _emit_interim_assistant_message(self, assistant_msg: Dict[str, Any]) -> None:
+    def _emit_interim_assistant_message(self, assistant_msg: Dict[str, Any], *, live: bool = False) -> None:
         """Surface a real mid-turn assistant commentary message to the UI layer. Does NOT set
         ``_response_was_previewed`` ("the final response was shown") — the CLI would then suppress a
         different final summary."""
         if not isinstance(assistant_msg, dict):
             return
         commentary_parts = self._extract_codex_interim_visible_parts(assistant_msg)
+        had_structured_commentary = bool(commentary_parts)
+        if live:
+            commentary_parts = [
+                transformed
+                for part in commentary_parts
+                if (transformed := self._transform_live_text(part, kind="interim"))
+            ]
         # Dedup within this message and against earlier deliveries, first occurrence wins.
         pending: dict[str, str] = {}
         for part in commentary_parts:
@@ -208,7 +227,12 @@ class StreamDeliveryMixin:
             if key and key not in pending and not self._interim_text_was_delivered(part):
                 pending[key] = part
         undelivered_parts = list(pending.values())
-        visible = "\n\n".join(undelivered_parts).strip() if commentary_parts else self._interim_assistant_visible_text(assistant_msg)
+        if had_structured_commentary:
+            visible = "\n\n".join(undelivered_parts).strip()
+        else:
+            visible = self._interim_assistant_visible_text(assistant_msg)
+            if live and visible:
+                visible = self._transform_live_text(visible, kind="interim")
         if not visible or visible == "(empty)" or self._interim_text_was_delivered(visible):
             return
         already_streamed = self._interim_content_fully_streamed(visible)
@@ -282,6 +306,7 @@ class StreamDeliveryMixin:
     def _stream_hook_base_payload(self) -> Dict[str, Any]:
         return {
             "turn_id": getattr(self, "_current_turn_id", "") or "",
+            "api_request_id": getattr(self, "_current_api_request_id", "") or "",
             "iteration": int(getattr(self, "_api_call_count", 0) or 0),
             "session_id": self.session_id or "",
             "model": self.model or "",
@@ -328,6 +353,9 @@ class StreamDeliveryMixin:
                 text = text.lstrip("\n")
         if not text:
             return
+        text = self._transform_live_text(text, kind="text")
+        if not text:
+            return
         delivered = self._deliver_to_stream_callbacks(text)
         self._enqueue_stream_hook("on_stream_delta", delta=text, kind="text")
         if delivered:
@@ -344,6 +372,9 @@ class StreamDeliveryMixin:
             # Single-writer guard (#65991): fence out a superseded stream's reasoning deltas the same way as
             # content deltas.
             self._note_dropped_stream_writer("_fire_reasoning_delta")
+            return
+        text = self._transform_live_text(text, kind="reasoning")
+        if not text:
             return
         self._call_quietly(self.reasoning_callback, text)
         # Resolve the opt-in once per stream, not per token: each lookup took _CONFIG_LOCK and

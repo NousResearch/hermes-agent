@@ -424,7 +424,10 @@ class CodexAppServerSession:
         if self._on_event is not None:
             try:
                 self._on_event(note)
-            except Exception:  # pragma: no cover - display callback
+            except Exception as exc:  # pragma: no cover - display callback
+                from hermes_cli.middleware import LLMStreamMiddlewareRefusal
+                if isinstance(exc, LLMStreamMiddlewareRefusal):
+                    raise
                 logger.debug("on_event callback raised", exc_info=True)
         _apply_accounting_notification(result, note)
         self._track_pending_file_change(note)

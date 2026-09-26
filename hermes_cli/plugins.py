@@ -32,7 +32,7 @@ from hermes_constants import get_hermes_home, get_process_hermes_home, hermes_ho
 from registration_lifecycle import replacement_coordinator
 from utils import env_var_enabled
 from hermes_cli.config import load_config_readonly
-from hermes_cli.middleware import VALID_MIDDLEWARE
+from hermes_cli.middleware import LLM_STREAM_TEXT_MIDDLEWARE, VALID_MIDDLEWARE
 from hermes_cli.plugin_capabilities import plugin_capability_granted
 from hermes_cli.relay_plugin_cutover import RELAY_PLUGINS_CONFIG_ENV, legacy_relay_plugin_keys
 # Sibling modules' names are re-exported here (origin) so plugins and tests keep one import path.
@@ -931,11 +931,35 @@ class PluginContext:
         """Register a lifecycle hook callback (unknown names warn but are still stored)."""
         return self._track_callback("hook", hook_name, callback, self._manager._hooks, VALID_HOOKS)
 
-    def register_middleware(self, kind: str, callback: Callable) -> PluginRegistration:
-        """Register behavior-changing middleware (request kinds rewrite the payload, execution kinds
-        wrap the callback). Unknown kinds warn but are stored."""
+    def register_middleware(
+        self, kind: str, callback: Callable, *, failure_mode: str = "open"
+    ) -> PluginRegistration:
+        """Register behavior-changing middleware.
+
+        ``failure_mode`` is selected per registration:
+
+        - ``"open"`` (default): preserve Hermes' legacy behavior and continue past a callback
+          failure when the middleware kind supports fail-open recovery.
+        - ``"closed"``: propagate the callback failure and stop the protected delivery/execution
+          path.
+
+        Unknown kinds warn but are still stored for forward-compatible plugins.
+        """
+        if failure_mode not in {"open", "closed"}:
+            raise ValueError("failure_mode must be 'open' or 'closed'")
+        if kind == LLM_STREAM_TEXT_MIDDLEWARE and (
+            inspect.iscoroutinefunction(callback) or inspect.isasyncgenfunction(callback)
+        ):
+            raise TypeError("llm_stream_text middleware must be synchronous")
+
+        @wraps(callback)
+        def registered_callback(*args: Any, **kwargs: Any) -> Any:
+            return callback(*args, **kwargs)
+
+        registered_callback._hermes_failure_mode = failure_mode  # type: ignore[attr-defined]
+        registered_callback._hermes_original_callback = callback  # type: ignore[attr-defined]
         return self._track_callback(
-            "middleware", kind, callback, self._manager._middleware, VALID_MIDDLEWARE
+            "middleware", kind, registered_callback, self._manager._middleware, VALID_MIDDLEWARE
         )
 
     def _track_callback(

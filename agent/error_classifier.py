@@ -970,6 +970,21 @@ def classify_api_error(
     dark-tier 403 on it because that refusal carries no distinguishing message.
     ``api_key`` identifies an anonymous request; a host or fairshare reason alone does not.
     The credential is never included in the returned context."""
+    from hermes_cli.middleware import LLMStreamMiddlewareRefusal
+    if isinstance(error, LLMStreamMiddlewareRefusal):
+        # Deterministic local policy decision: retrying, rotating credentials, or
+        # falling back would bypass the same fail-closed middleware boundary.
+        return ClassifiedError(
+            reason=FailoverReason.format_error,
+            provider=provider,
+            model=model,
+            message=str(error),
+            retryable=False,
+            should_compress=False,
+            should_rotate_credential=False,
+            should_fallback=False,
+            error_context={"middleware": "llm_stream_text", "failure_mode": "closed"},
+        )
     from hermes_cli.anon_auth import is_anonymous_request
     status_code = _extract_status_code(error)
     # Copilot/GitHub Models RateLimitError may not set .status_code; force 429.

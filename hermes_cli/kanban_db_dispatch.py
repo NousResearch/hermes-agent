@@ -2448,6 +2448,40 @@ def _module_hermes_argv() -> list[str]:
     return [sys.executable, "-m", "hermes_cli.main"]
 
 
+def _bootstrap_source_hermes_argv(spec) -> Optional[list[str]]:
+    """Re-enter a source checkout when the current process injected its root.
+
+    The shipped bootstrap wrapper runs the bare runtime as ``python -I -c``,
+    cleans inherited interpreter-path overrides, inserts the checkout root, and
+    imports ``hermes_bootstrap`` before the CLI dependency graph. A child using
+    ``python -m`` would lose that path (and PM dependency activation); carry the
+    root and the normal bootstrap sequence in a fresh isolated command instead.
+    Other launch modes keep the normal interpreter-bound argv.
+    """
+    if not sys.argv or sys.argv[0] != "-c":
+        return None
+    origin = getattr(spec, "origin", None)
+    if not origin or origin in {"built-in", "frozen"}:
+        return None
+    root = Path(origin).resolve().parent.parent
+    try:
+        injected_roots = {Path(entry).resolve() for entry in sys.path if entry}
+    except (OSError, RuntimeError, TypeError):
+        return None
+    if root not in injected_roots:
+        return None
+    code = (
+        "import os, sys; "
+        "os.environ.pop('PYTHONHOME', None); os.environ.pop('PYTHONPATH', None); "
+        f"sys.path.insert(0, {str(root)!r}); "
+        "from hermes_constants import get_default_hermes_root; "
+        "os.environ['HERMES_HOME'] = os.environ.get('HERMES_HOME') or str(get_default_hermes_root()); "
+        "import hermes_bootstrap; "
+        "from hermes_cli.main import main; raise SystemExit(main())"
+    )
+    return [sys.executable, "-I", "-c", code]
+
+
 def _absolute_hermes_path(path: str) -> str:
     """Return an absolute filesystem path for a resolved Hermes shim."""
     expanded = os.path.expanduser(path)
@@ -2510,7 +2544,8 @@ def _resolve_hermes_argv() -> list[str]:
     """Resolve the ``hermes`` invocation as argv for ``Popen``: ``$HERMES_BIN``
     (path-like -> absolute; bare names keep PATH semantics, never a
     same-directory file), then the running interpreter's ``sys.executable -m
-    hermes_cli.main`` (exactly this install; also covers shim-less cron,
+    hermes_cli.main`` (exactly this install; bootstrap ``-I -c`` launchers carry
+    their injected source root explicitly; also covers shim-less cron,
     systemd ``User=``, launchd), then ``which("hermes")`` (Windows: safe PATH
     search, batch shims fall back to the module form) only when ``hermes_cli``
     is not importable. The module argv must win over PATH: a PATH-first lookup
@@ -2531,8 +2566,10 @@ def _resolve_hermes_argv() -> list[str]:
         return _module_hermes_argv()
 
     try:
-        if importlib.util.find_spec("hermes_cli") is not None:
-            return _module_hermes_argv()
+        spec = importlib.util.find_spec("hermes_cli")
+        if spec is not None:
+            bootstrap_argv = _bootstrap_source_hermes_argv(spec)
+            return bootstrap_argv or _module_hermes_argv()
     except Exception:
         pass
 

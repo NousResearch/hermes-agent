@@ -206,6 +206,7 @@ def _cmd_subscribe(args):
 
 
 def _cmd_list(args):
+    from gateway.platforms.webhook_filters import route_names
     subs = _load_subscriptions()
     if not subs:
         print("  No dynamic webhook subscriptions.")
@@ -214,7 +215,7 @@ def _cmd_list(args):
 
     print(f"\n  {len(subs)} webhook subscription(s):\n")
     for name, route in subs.items():
-        events = ", ".join(route.get("events", [])) or "(all)"
+        events = ", ".join(route_names(route.get("events"))) or "(all)"
         deliver = route.get("deliver", "log")
         if route.get("deliver_only"):
             deliver = f"{deliver} (direct — no agent)"

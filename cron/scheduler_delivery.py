@@ -17,6 +17,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from typing import Any, List, Optional
 
@@ -1460,11 +1461,69 @@ def _live_route_metadata(t: _TargetDelivery) -> tuple[Optional[str], dict, dict]
     return route_thread_id, route_metadata, media_metadata
 
 
+# A ``send_path_degraded`` refusal comes from the adapter's PRE-DISPATCH guard, which runs before
+# any API call (``TelegramAdapter.send`` -> ``return SendResult(success=False,
+# error="send_path_degraded", retryable=True)``). Nothing reached the wire, so re-attempting cannot
+# duplicate a message — and the adapter sets ``retryable=True`` precisely to say so. It means the
+# transport is mid-reconnect: measured recovery on a production host is ~10-30s, far longer than a
+# single live-lane attempt (or a gateway turn's ~7s retry budget). Without this retry the cron
+# caller falls straight through to the standalone lane, which shares the same broken network path
+# and fails too, dropping the result entirely.
+_LIVE_DEGRADED_RETRY_BUDGET_SECS = 30.0
+_LIVE_DEGRADED_RETRY_BASE_DELAY = 2.0
+_LIVE_DEGRADED_RETRY_MAX_DELAY = 10.0
+
+
+def _is_degraded_refusal(send_result) -> bool:
+    """True for the adapter's pre-dispatch ``send_path_degraded`` refusal (nothing was sent)."""
+    return str(_result_field(send_result, "error") or "") == "send_path_degraded"
+
+
 def _live_send_text(
     t: _TargetDelivery, text_to_send: str, route_thread_id: Optional[str], route_metadata: dict, *,
     target_errors: list, delivery_errors: list, unverified_targets: list,
 ) -> tuple[bool, bool, Any]:
-    """Schedule the text send on the gateway loop; returns ``(adapter_ok, timed_out, message_id)``.
+    """Attempt the text send on the gateway loop, waiting out a transport that is mid-reconnect.
+
+    Each attempt is delegated to :func:`_live_send_once`. A ``send_path_degraded`` refusal is
+    retried while the budget lasts; every other outcome (success, timeout, a non-degraded
+    unconfirmed result) returns on the first attempt exactly as before.
+    """
+    deadline = time.monotonic() + _LIVE_DEGRADED_RETRY_BUDGET_SECS
+    retry_delay = _LIVE_DEGRADED_RETRY_BASE_DELAY
+    while True:
+        # Per-attempt scratch list: only the attempt that ends the loop contributes to the
+        # caller's error report, so a retried refusal is not reported N times.
+        attempt_errors: list = []
+        adapter_ok, timed_out, message_id, degraded = _live_send_once(
+            t, text_to_send, route_thread_id, route_metadata,
+            target_errors=attempt_errors, unverified_targets=unverified_targets,
+            delivery_errors=delivery_errors)
+        if adapter_ok or not degraded:
+            target_errors.extend(attempt_errors)
+            return adapter_ok, timed_out, message_id
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            logger.warning(
+                "Job '%s': live adapter send to %s still refused (send_path_degraded) after "
+                "%.0fs; falling back to standalone",
+                t.job["id"], t.where, _LIVE_DEGRADED_RETRY_BUDGET_SECS)
+            target_errors.extend(attempt_errors)
+            return adapter_ok, timed_out, message_id
+        sleep_for = min(retry_delay, remaining)
+        logger.warning(
+            "Job '%s': live adapter send to %s refused (send_path_degraded); retrying in %.1fs "
+            "while the transport reconnects",
+            t.job["id"], t.where, sleep_for)
+        time.sleep(sleep_for)
+        retry_delay = min(retry_delay * 2, _LIVE_DEGRADED_RETRY_MAX_DELAY)
+
+
+def _live_send_once(
+    t: _TargetDelivery, text_to_send: str, route_thread_id: Optional[str], route_metadata: dict, *,
+    target_errors: list, unverified_targets: list, delivery_errors: list,
+) -> tuple[bool, bool, Any, bool]:
+    """One live-lane attempt; returns ``(adapter_ok, timed_out, message_id, degraded_refused)``.
     Re-raises a real send error so the caller falls through to standalone."""
     from agent.async_utils import safe_schedule_threadsafe
     from gateway.delivery import DeliveryRouter, DeliveryTarget
@@ -1482,7 +1541,7 @@ def _live_send_text(
             route_target, text_to_send, route_metadata, transport=t.transport), t.loop)
     if future is None:
         target_errors.append("live adapter event loop scheduling failed")
-        return False, False, None
+        return False, False, None, False
     try:
         send_result = future.result(timeout=60)
     except TimeoutError:
@@ -1493,14 +1552,14 @@ def _live_send_text(
             msg = f"live adapter send to {t.where} timed out before the coroutine was dispatched"
             logger.warning("Job '%s': %s, falling back to standalone", job["id"], msg)
             target_errors.append(msg)
-            return False, False, None
+            return False, False, None, False
         logger.warning(
             "Job '%s': live adapter send to %s:%s timed out "
             "after 60s; already dispatched (in flight), "
             "assuming delivered (skipping standalone fallback "
             "to avoid duplicate)",
             job["id"], t.platform_name, t.chat_id)
-        return True, True, None
+        return True, True, None, False
     except Exception as ex:
         # Real send error (not a slow confirmation): fall through to standalone.
         target_errors.append(f"live adapter send failed: {ex}")
@@ -1527,7 +1586,7 @@ def _live_send_text(
         msg = f"live adapter send to {t.where} returned unconfirmed result ({shape}, error={err})"
         _warn_live_lane_failure(job, msg, t.is_relay)
         target_errors.append(msg)
-        return False, False, None
+        return False, False, None, _is_degraded_refusal(send_result)
     if send_raw_response and t.thread_id and send_raw_response.get("thread_fallback"):
         requested_thread_id = send_raw_response.get("requested_thread_id") or t.thread_id
         _note_target_error(
@@ -1535,7 +1594,7 @@ def _live_send_text(
             f"configured thread_id {requested_thread_id} for "
             f"{t.where} was not found; delivered without thread_id",
             delivery_errors)
-    return True, False, delivered_message_id
+    return True, False, delivered_message_id, False
 
 
 def _live_send_media(

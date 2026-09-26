@@ -1220,6 +1220,11 @@ def _account_crashes(conn: sqlite3.Connection, crash_details: list) -> list[str]
         fp_counts[fp] = fp_counts.get(fp, 0) + 1
     for tid, pid, claimer, dead in crash_details:
         error_text = dead.error_text
+        # ``exit_kind`` names how the worker stopped (``clean_exit``,
+        # ``nonzero_exit``, ``signaled``, ``terminal_provider``, ``unknown``), under
+        # the same key the ``crashed`` event uses, so a consumer of the ``gave_up``
+        # event can classify the cause without re-parsing ``error``.
+        base_extra = {"pid": pid, "claimer": claimer, "exit_kind": dead.kind}
         if dead.protocol_violation:
             streak = _protocol_violation_streak(conn, tid)
             trow = conn.execute("SELECT max_retries FROM tasks WHERE id = ?", (tid,)).fetchone()
@@ -1244,8 +1249,7 @@ def _account_crashes(conn: sqlite3.Connection, crash_details: list) -> list[str]
                 release_claim=False,
                 end_run=False,
                 event_payload_extra={
-                    "pid": pid,
-                    "claimer": claimer,
+                    **base_extra,
                     "protocol_violations": streak,
                     "protocol_violation_limit": violation_limit,
                 },
@@ -1262,11 +1266,11 @@ def _account_crashes(conn: sqlite3.Connection, crash_details: list) -> list[str]
                 force_trip=True,
                 release_claim=False,
                 end_run=False,
-                event_payload_extra={"pid": pid, "claimer": claimer, "terminal_provider": True},
+                event_payload_extra={**base_extra, "terminal_provider": True},
             )
         else:
             is_systemic = fp_counts.get(_error_fingerprint(error_text), 0) >= 3
-            extra = {"pid": pid, "claimer": claimer}
+            extra = dict(base_extra)
             if is_systemic:
                 # Trips at 1, below any ``failure_limit``: hold it for an operator.
                 extra["sticky"] = True

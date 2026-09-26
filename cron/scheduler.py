@@ -35,6 +35,13 @@ from typing import Any, Callable, Dict, List, Optional, Protocol, Union
 # `hermes update`) otherwise fail with ModuleNotFoundError for hermes_time et al.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+# Cron external worker PM boot (dependency lease + site-packages) lives in the
+# ``cron`` package prelude -- the top of ``cron/__init__.py``, which runs before
+# this module's first application import (``cron/__init__`` reaches
+# ``cron.jobs`` -> ``hermes_yaml`` -> ``ruamel`` before ``cron.scheduler`` is
+# even loaded).  A hook here ran too late: after that first import was already
+# in flight, the collector could reclaim the generation mid-import.  See
+# ``cron/worker_bootstrap.py``.  Do not re-add the call at this position.
 from hermes_constants import get_hermes_home, hermes_home_key
 from cron.env_settings import cron_env_setting
 from hermes_cli._subprocess_compat import windows_hide_flags

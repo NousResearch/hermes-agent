@@ -163,6 +163,15 @@ class _Recovery(OverflowVerdict):
             before, self.system_message, approx_tokens=request_tokens,
             task_id=self.effective_task_id, bypass_cooldown=True,
         )
+        hard_cancel = getattr(agent, "_hard_interrupt_requested", None)
+        if hard_cancel is not None and hard_cancel.is_set():
+            from agent.turn_recovery import abort_turn_on_interrupt
+
+            return self.done("return", abort_turn_on_interrupt(
+                agent, self.messages, self.conversation_history, self.api_call_count,
+                abort_message="Context compression interrupted.",
+                interrupt_text="Context compression interrupted.",
+            ))
         if self.messages is before:
             deferred = None
             if compression_skipped_due_to_lock(agent):

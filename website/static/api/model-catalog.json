@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-09-23T07:20:37Z",
+  "updated_at": "2026-09-25T01:05:05Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -264,6 +264,10 @@
         {
           "id": "stealth/union-alpha",
           "description": "free, stealth model"
+        },
+        {
+          "id": "stealth/space-bunny-alpha",
+          "description": "free, stealth model"
         }
       ]
     },
@@ -411,6 +415,9 @@
         },
         {
           "id": "sakana/fugu-ultra"
+        },
+        {
+          "id": "stealth/space-bunny-alpha"
         }
       ]
     }

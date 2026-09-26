@@ -489,6 +489,8 @@ class TestUpdate:
         (staged / "skills" / "research" / "web-search" / "SKILL.md").write_text("author v2\n", encoding="utf-8")
         (staged / "skills" / "research" / "arxiv").mkdir()
         (staged / "skills" / "research" / "arxiv" / "SKILL.md").write_text("new author skill\n", encoding="utf-8")
+        # Category metadata beyond DESCRIPTION.md must not turn the category into a root.
+        (staged / "skills" / "research" / "README.md").write_text("about research\n", encoding="utf-8")
 
         update_distribution("rb")
 
@@ -497,6 +499,12 @@ class TestUpdate:
         assert not (research / "web-search" / "stale.txt").exists()  # an owned root is still replaced whole
         assert (research / "arxiv" / "SKILL.md").exists()
         assert (research / "DESCRIPTION.md").read_text(encoding="utf-8") == "research skills\n"
+        assert (research / "README.md").read_text(encoding="utf-8") == "about research\n"
+        # A dir inside a skill is part of that skill: owning ``web-search/scripts`` replaces it whole.
+        from hermes_cli.profile_distribution import _merges_per_root
+        scripts = staged / "skills" / "research" / "web-search" / "scripts"
+        scripts.mkdir()
+        assert not _merges_per_root(scripts, ("skills", "research", "web-search", "scripts"))
 
     def test_an_owned_category_refuses_a_symlinked_subcategory_before_writing(self, profile_env, tmp_path):
         staged, plan = self._owned_category(profile_env, "rb")

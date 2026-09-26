@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ChatMessage } from '@/lib/chat-messages'
+import { messagesIfTranscriptBehind } from '@/lib/stale-transcript-guard'
 import { $transcriptTailBySessionId, recordTranscriptTail, transcriptTailState } from '@/store/transcript-tail'
 
 import {
@@ -218,6 +219,17 @@ describe('graftRefreshedTailOntoBackfill', () => {
     const refreshed = [chat('page-local-fold'), chat('reply-refetched', 3), chat('new-reply', 4)]
 
     expect(graftRefreshedTailOntoBackfill(refreshed, previous).map(m => m.rowId)).toEqual([1, 2, undefined, 3, 4])
+  })
+
+  it('does not treat a page that opens on its own orphan tool fold as behind itself (#124311)', () => {
+    const page = [chat('orphan-tools'), chat('user', 122886), chat('assistant', 122887)]
+
+    expect(graftRefreshedTailOntoBackfill(page, page)).toBe(page)
+    expect(messagesIfTranscriptBehind(page, page)).toBeNull()
+
+    const grown = [...page, chat('later', 122890)]
+
+    expect(messagesIfTranscriptBehind(page, grown)).toBe(grown)
   })
 
   it('returns the refreshed tail when it is not shorter than the previous transcript', () => {

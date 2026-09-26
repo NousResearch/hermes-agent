@@ -101,6 +101,11 @@ export const SETTINGS_MANIFEST = {
       available: () => TRANSLUCENCY_SUPPORTED
     },
     backdrop: appearanceSetting('window-layout', ['background', 'blur'], 'backdrop'),
+    fileBrowser: appearanceSetting(
+      'window-layout',
+      ['file browser', 'files', 'file tree', 'explorer', 'right sidebar', 'panel', 'startup'],
+      'fileBrowser'
+    ),
     composerPopout: appearanceSetting(
       'window-layout',
       ['composer', 'floating', 'drag', 'popout', 'dock', 'input'],

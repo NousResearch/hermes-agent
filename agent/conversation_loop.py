@@ -858,10 +858,13 @@ def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
     # Model/provider identity, then cwd drift.  A cwd change is a real content change (context
     # files, the workspace snapshot and the coding posture are all resolved from it), so it
     # still rebuilds; the runtime surface does not (agent/surface_switch.py).
+    # The builder omits an empty trailer line, so stored-but-now-empty is a route change too;
+    # the rebuilt prompt then carries no line and matches from the next turn on.  Stored-empty
+    # (pre-trailer prompts) keeps reusing.
     for label, attr in (("Model", "model"), ("Provider", "provider")):
         stored = identity_line_value(prompt, label)
         current = str(getattr(agent, attr, "") or "").strip()
-        if stored and current and stored != current:
+        if stored and stored != current:
             return False
     # A prompt stamped for another session (a /branch child copies its parent's bytes) must not
     # tell the model a foreign Session ID.  Checked only when the trailer is on: with it off, a

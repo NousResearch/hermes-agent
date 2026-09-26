@@ -291,7 +291,9 @@ def _install_plugin_core(
     checked-out sha — provenance lives OUTSIDE the plugin tree, so a repo cannot forge it;
     its ``pin`` is kept only when the checkout satisfies it (a ``--ref`` install is off-pin).
     *allow_removed* records that the user knowingly bypassed the kill list.
-    *before_swap(manifest, tree)* runs on the validated clone before anything moves into place
+    *before_swap(manifest, tree)* runs on the manifest-checked clone BEFORE the security scan, so
+    the single scan and portable-package check admit the merged tree (file-count/size limits
+    included). It may return the relative paths it merged in, which a scan block then attributes,
     and may raise :class:`PluginOperationError` to abort (re-pin consent)."""
     requested_revision = _pc()._normalize_exact_revision(ref) if ref is not None else None
     try:
@@ -326,9 +328,12 @@ def _install_plugin_core(
         except ValueError as e:
             raise _pc().PluginOperationError(str(e)) from e
         _check_manifest_version(manifest, plugin_name)
+        # A callback may merge user-owned state into the candidate tree; run it first so one scan
+        # admits the final bytes.
+        merged = before_swap(manifest, tmp_target) if before_swap is not None else None
         # Scan BEFORE anything is moved into place; raises PluginScanBlocked when blocked.
-        _pc()._scan_plugin_tree(tmp_target, identifier, force=force, scan_decision_cb=scan_decision_cb,
-                          reviewed_pin=at_reviewed_pin)
+        _pc()._scan_merged_tree(tmp_target, identifier, merged, force=force, scan_decision_cb=scan_decision_cb,
+                                reviewed_pin=at_reviewed_pin)
         if not python_deps:
             from pm.workspace import enabled_plugin_dirs
 
@@ -337,8 +342,6 @@ def _install_plugin_core(
                     "--no-deps cannot replace an active plugin. Retry without --no-deps; "
                     "PM must prepare its dependencies before publication.")
         _refuse_unavailable_portable_plugin(plugin_name, tmp_target)
-        if before_swap is not None:
-            before_swap(manifest, tmp_target)
 
         if target.exists() and not force:
             raise _pc().PluginOperationError(

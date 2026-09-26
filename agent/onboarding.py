@@ -119,10 +119,20 @@ def profile_build_mode(config: Mapping[str, Any]) -> str:
     return "off" if isinstance(mode, str) and mode.strip().lower() == "off" else "ask"
 
 
+# Shared by both first-contact notes so a real first-message task is never
+# replaced by the intro (plain or profile-build offer).
+TASK_FIRST_CLAUSE = (
+    "If this message is itself a real request or task, DO THE TASK FIRST -- call "
+    "whatever tools it needs -- and only then, in the closing sentences of that same "
+    "reply, do what this note asks. Never let this note replace or skip work the user "
+    "actually asked for. "
+)
+
 PLAIN_INTRO_NOTE = (
     "[System note: This is the user's very first message ever. "
-    "Briefly introduce yourself and mention that /help shows available commands. "
-    "Keep the introduction concise -- one or two sentences max.]"
+    + TASK_FIRST_CLAUSE
+    + "What this note asks: briefly introduce yourself and mention that /help shows "
+    "available commands, in one or two sentences.]"
 )
 
 
@@ -165,7 +175,8 @@ def profile_build_directive() -> str:
     """
     return (
         "\n\n"
-        "[System note: This is the user's very first message ever. After a one-sentence introduction (mention /help "
+        "[System note: This is the user's very first message ever. " + TASK_FIRST_CLAUSE
+        + "What this note asks: after a one-sentence introduction (mention /help "
         "shows commands), OFFER — do not assume — to build a short profile of them so you can be more useful, and "
         "explain they can decline or do it later. If and ONLY IF they accept:\n"
         "  1. Ask for whatever they're comfortable sharing (name, what they do, how they like you to work). "

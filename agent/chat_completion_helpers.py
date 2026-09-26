@@ -2325,7 +2325,8 @@ def _anthropic_summary_attempt(agent, api_messages: list, api_request_id: str):
             reasoning_config=agent.reasoning_config, is_oauth=agent._is_anthropic_oauth,
             preserve_dots=agent._anthropic_preserve_dots(), base_url=getattr(agent, "_anthropic_base_url", None))
         ant_kw = _merge_nous_portal_messages_extra_body(agent, ant_kw)
-        response = _managed_summary_call(agent, api_request_id, ant_kw, agent._anthropic_messages_create, retry_count=retry_count)
+        response = _managed_summary_call(
+            agent, api_request_id, ant_kw, agent._interruptible_api_call, retry_count=retry_count)
         return _summary_text(agent, response, strip_tool_prefix=agent._is_anthropic_oauth)
     return _attempt
 
@@ -2341,10 +2342,10 @@ def _chat_summary_attempt(agent, api_messages: list, api_request_id: str):
     sanitize_outbound_kwargs(agent, summary_kwargs)
 
     def _attempt(retry_count: int) -> str:
-        summary_client = agent._ensure_primary_openai_client(reason="iteration_limit_summary_retry" if retry_count else "iteration_limit_summary")
+        # Use the ordinary request-local lifecycle: a summary can be interrupted
+        # during a long prefill without closing the shared primary client.
         response = _managed_summary_call(
-            agent, api_request_id, summary_kwargs,
-            lambda request: summary_client.chat.completions.create(**bypass_chat_sdk_request_transform(request, summary_client)),
+            agent, api_request_id, summary_kwargs, agent._interruptible_api_call,
             retry_count=retry_count)
         return _summary_text(agent, response)
     return _attempt
@@ -2371,7 +2372,7 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
     # Shared constant so compaction recognizers can identify this runtime nudge by its stable
     # content after SessionDB projection strips metadata flags.
     from agent.context_compressor import MAX_ITERATIONS_SUMMARY_REQUEST
-    append_message(messages, {"role": "user", "content": MAX_ITERATIONS_SUMMARY_REQUEST})
+    nudge = append_message(messages, {"role": "user", "content": MAX_ITERATIONS_SUMMARY_REQUEST})
 
     try:
         api_messages = _iteration_summary_api_messages(agent, messages)
@@ -2392,6 +2393,13 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 final_response = text
             break
 
+    except InterruptedError:
+        # Cancellation is not a summary failure: drop the unanswered nudge and let the
+        # finalizer end the turn as interrupted so the pending message is requeued.
+        summary_call_outcome = "cancelled"
+        if messages and messages[-1] is nudge:
+            messages.pop()
+        raise
     except Exception as e:
         logger.warning("Failed to get summary response: %s", e)
         from agent.turn_failure_copy import site_copy

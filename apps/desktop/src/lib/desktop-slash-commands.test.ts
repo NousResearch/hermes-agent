@@ -180,6 +180,12 @@ describe('desktop slash command curation', () => {
   it('allows aliases to execute without cluttering the popover', () => {
     expect(isDesktopSlashSuggestion('/reset')).toBe(false)
     expect(isDesktopSlashCommand('/reset')).toBe(true)
+    // Help advertises `/clear` as "start a new session". On the TUI that
+    // also clears the terminal screen; on desktop it must take the same
+    // path as `/new` instead of being marked terminal-only (#95779).
+    expect(isDesktopSlashSuggestion('/clear')).toBe(false)
+    expect(isDesktopSlashCommand('/clear')).toBe(true)
+    expect(resolveDesktopCommand('/clear')?.surface).toEqual({ kind: 'action', action: 'new' })
   })
 
   it('surfaces an alias the user typed exactly, gated on desktop availability (#57641)', () => {
@@ -297,9 +303,10 @@ describe('desktop slash command curation', () => {
   it('resolves commands and aliases to their declared surface', () => {
     expect(resolveDesktopCommand('/new')?.surface).toEqual({ kind: 'action', action: 'new' })
     expect(resolveDesktopCommand('/reset')?.surface).toEqual({ kind: 'action', action: 'new' })
+    expect(resolveDesktopCommand('/clear')?.surface).toEqual({ kind: 'action', action: 'new' })
     expect(resolveDesktopCommand('/resume')?.surface).toEqual({ kind: 'picker', picker: 'session' })
     expect(resolveDesktopCommand('/usage')?.surface).toEqual({ kind: 'exec' })
-    expect(resolveDesktopCommand('/clear')?.surface).toEqual({ kind: 'unavailable', reason: 'terminal' })
+    expect(desktopSlashUnavailableMessage('/clear')).toBeNull()
     // Skill / quick commands aren't in the registry.
     expect(resolveDesktopCommand('/gif-search')).toBeNull()
   })

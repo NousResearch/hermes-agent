@@ -24,6 +24,7 @@ from agent.compression_marker import (
     elide_middle,
 )
 from agent.auxiliary_client import (
+    CODEX_STREAM_STALL_MARKER,
     AuxiliaryExplicitCancellation,
     _coerce_llm_message,
     _is_connection_error,
@@ -744,8 +745,9 @@ def _classify_summary_failure(e: Exception) -> _SummaryFailureKind:
     """
     status = _exc_status_code(e)
     err = str(e).lower()
-    # The Codex aux stream guard raises TimeoutError("... stream stalled ...") (#124077).
-    stall = isinstance(e, TimeoutError) and "stalled" in err
+    # The Codex aux stream guard's mid-stream stall is transient (#124077). Its no-progress and
+    # hard-ceiling timeouts deliberately stay terminal network failures.
+    stall = isinstance(e, TimeoutError) and CODEX_STREAM_STALL_MARKER in err
     return _SummaryFailureKind(
         # Permanent-looking error on a distinct summary model: fall back to main instead of cooldown.
         model_not_found=status in {404, 503}

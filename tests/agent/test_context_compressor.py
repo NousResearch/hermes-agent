@@ -3708,8 +3708,10 @@ class TestSummaryFailureClassification124077:
         return c
 
     def test_codex_stall_is_ladder_timeout_not_terminal_network_failure(self):
-        c = self._run_summary_failure(TimeoutError(
-            "Codex auxiliary Responses stream stalled: no new output for 60.0s (67.7s elapsed)"))
+        from agent.auxiliary_client import _CodexStreamGuard
+        guard = _CodexStreamGuard(None, 300.0)
+        guard.saw_content.set()  # mid-stream: content arrived, then the stream went quiet
+        c = self._run_summary_failure(TimeoutError(guard.timeout_message()))
         assert c._last_summary_network_failure is False
         assert c._consecutive_timeout_failures == 1
 

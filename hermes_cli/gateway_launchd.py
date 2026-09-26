@@ -597,6 +597,11 @@ def launchd_install(force: bool = False, *, start_now: bool = True):
     # Loading the plist starts the gateway (RunAtLoad), so a no-start install writes it without
     # loading it. A gateway that launchd already runs is still reloaded; this install did not start it.
     load = start_now or _gw()._launchctl_label_supervising_process(label)
+    # A forced reinstall over a live job must remember the incumbent before bootstrap starts.
+    # _launchctl_bootstrap() handles EIO by booting the stale label out and retrying once, but
+    # that immediate retry races the old gateway's drain (#120629). The install path can wait
+    # because it runs outside the supervised gateway process.
+    force_old_pid = _gw()._launchctl_supervised_pid(label) if force and load else None
 
     if plist_path.exists() and not force:
         if _gw().launchd_plist_is_current():
@@ -640,11 +645,35 @@ def launchd_install(force: bool = False, *, start_now: bool = True):
         print("  hermes gateway status             # Check status")
         return
 
-    try:
-        _gw()._launchctl_bootstrap(_gw()._launchd_domain(), plist_path, label, timeout=30)
-    except subprocess.CalledProcessError as e:
-        _gw()._launchd_degrade_or_raise(e, "launchctl bootstrap")
-        return
+    if force_old_pid is not None:
+        domain = _gw()._launchd_domain()
+        target = f"{domain}/{label}"
+        budget = _gw()._launchd_reload_budget()
+        subprocess.run(
+            ["launchctl", "bootout", target],
+            check=False, timeout=90, **_gw()._CAPTURE_TEXT)
+        if not _gw()._wait_for_pid_exit(force_old_pid, budget):
+            _gw()._append_launchd_reload_log(
+                f"old gateway pid {force_old_pid} still alive after "
+                f"{int(budget)}s forced-install drain wait — bootstrapping {target} anyway"
+            )
+        if not _gw()._retry_launchctl_bootstrap_until_registered(
+                domain, plist_path, label, deadline=time.monotonic() + budget):
+            _gw()._append_launchd_reload_log(
+                f"FAILED forced launchd install of {target} — service NOT registered after "
+                f"retrying for {int(budget)}s"
+            )
+            _gw().print_error(
+                f"launchctl bootstrap did not register {target} within {int(budget)}s; "
+                "the gateway service is NOT loaded."
+            )
+            sys.exit(1)
+    else:
+        try:
+            _gw()._launchctl_bootstrap(_gw()._launchd_domain(), plist_path, label, timeout=30)
+        except subprocess.CalledProcessError as e:
+            _gw()._launchd_degrade_or_raise(e, "launchctl bootstrap")
+            return
 
     print()
     print("✓ Service installed and loaded!")

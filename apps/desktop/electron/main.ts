@@ -563,6 +563,7 @@ import {
 } from './window-state'
 import { hiddenWindowsChildOptions } from './windows-child-options'
 import { buildPathExtCandidates, chooseUpdaterArgs, resolveVenvHermesCommand } from './windows-hermes-path'
+import { listExternalVenvHolderPids } from './windows-update-lock'
 import {
   connectWindowsRemote,
   detectRemotePlatform,
@@ -3759,6 +3760,45 @@ function forceKillProcessTree(pid) {
   execFileSync('taskkill', ['/PID', String(pid), '/T', '/F'], hiddenWindowsChildOptions({ stdio: 'ignore' }))
 }
 
+// Tree-kill the EXTERNAL processes holding the venv (gateway from a Scheduled
+// Task / Startup entry, dashboard, user terminal) that the desktop's own
+// teardown can never reach — the "venv shim still locked after 15s" abort of
+// #62311. Returns the killed PIDs for the caller's watch set. Never raises: a
+// failed scan degrades to the pre-fix abort behavior.
+function killExternalVenvHolderProcesses(updateRoot: string, tag: string, ownedPids: number[]) {
+  if (!IS_WINDOWS) {
+    return []
+  }
+
+  try {
+    const powerShellPath = findOnPath('pwsh.exe') || findOnPath('pwsh') || 'powershell'
+    const pids = listExternalVenvHolderPids({
+      childOptions: hiddenWindowsChildOptions,
+      currentPid: process.pid,
+      isWindows: IS_WINDOWS,
+      ownedPids,
+      powerShellPath,
+      updateRoot
+    })
+
+    if (pids.length > 0) {
+      rememberLog(`[${tag}] killing external venv-holder PIDs: ${pids.join(', ')}`)
+      for (const pid of pids) {
+        try {
+          forceKillProcessTree(pid)
+        } catch (error) {
+          rememberLog(`[${tag}] taskkill PID ${pid} failed: ${error instanceof Error ? error.message : String(error)}`)
+        }
+      }
+    }
+
+    return pids
+  } catch (error) {
+    rememberLog(`[${tag}] external venv-holder scan failed: ${error instanceof Error ? error.message : String(error)}`)
+    return []
+  }
+}
+
 function holderPidsFromLockFile(lockPath: string): Pick<RuntimeLock, 'holderPids' | 'held'> {
   try {
     const raw = fs.readFileSync(lockPath, 'utf8').trim()
@@ -4209,6 +4249,16 @@ async function releaseBackendLock(updateRoot: string, tag: string): Promise<{ un
   // (venv-holder-select) — external holders are never killed here.
   killHermesOwnedVenvDaemons(updateRoot)
 
+  // EXTERNAL venv holders (the gateway from a Scheduled Task / Startup entry,
+  // a dashboard, a user terminal) keep the shim locked without being children
+  // of this app. stopGatewayBeforeUpdate drains gateways through the CLI, but
+  // a worker that ignores the drain — or any other holder — still needs the
+  // process-table sweep: scan Win32_Process for PIDs whose exe or command
+  // line references the update root, excluding our own tree, and tree-kill
+  // them before the poll loop and again on each straggler pass (#62311). A
+  // failed scan degrades to the pre-fix abort behavior.
+  const externalPids = killExternalVenvHolderProcesses(updateRoot, tag, initialPids)
+
   const shim = venvHermesShimPath(updateRoot)
 
   const gate = await waitForBackendRelease(
@@ -4230,6 +4280,10 @@ async function releaseBackendLock(updateRoot: string, tag: string): Promise<{ un
             stragglers.push(entry.process.pid)
           }
         }
+
+        // A supervised gateway can respawn between passes; re-sweep external
+        // venv holders the same way (#62311).
+        stragglers.push(...killExternalVenvHolderProcesses(updateRoot, tag, stragglers))
 
         return stragglers
       },

@@ -232,3 +232,36 @@ def test_failed_turn_boundary_is_idempotent_on_the_durable_tail_and_skips_contex
     assert (messages[-1]["role"], messages[-1]["content"]) == ("assistant", PARTIAL_FAILED_TURN_NOTICE)  # a tool ran: hedge
     assert db.latest_conversation_role(sid) == "assistant"
     db.close()
+
+
+def test_failed_turn_boundary_keeps_the_error_card_for_rehydration(tmp_path, monkeypatch):
+    """The boundary row carries the failure's error text and ``error_surface`` so a client
+    reopening the session after a restart redraws the error card, not only the notice."""
+    from types import SimpleNamespace
+
+    from agent.conversation_loop import _close_durable_failed_turn
+    from hermes_state import SessionDB
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    db = SessionDB(tmp_path / "state.db")
+    sid = "s1"
+    db.create_session(session_id=sid, source="acp", model="m")
+    db.append_message(sid, "user", "say hello")
+
+    def flush(messages):
+        db.append_message(sid, messages[-1]["role"], messages[-1]["content"],
+                          display_metadata=messages[-1].get("display_metadata"))
+
+    agent = SimpleNamespace(_session_db=db, session_id=sid, _flush_messages_to_session_db=flush,
+                            provider="opencode-go", model="deepseek-v4.1-flash")
+    messages = [{"role": "user", "content": "say hello"}]
+    _close_durable_failed_turn(agent, {"completed": False, "failed": True, "failure_reason": "timeout",
+                                       "error": "Connection error.", "messages": messages})
+
+    metadata = messages[-1]["display_metadata"]
+    assert metadata["error"] == "Connection error."
+    assert metadata["error_surface"]["code"] == "timeout"
+    assert metadata["error_surface"]["provider"] == "opencode-go"
+    stored = db.get_messages(sid)[-1]["display_metadata"]
+    assert (stored if isinstance(stored, dict) else json.loads(stored))["error_surface"]["code"] == "timeout"
+    db.close()

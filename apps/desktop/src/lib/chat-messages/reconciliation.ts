@@ -225,6 +225,33 @@ function hydratedIdResolver(mergedNextMessages: ChatMessage[]): (message: ChatMe
         : hydratedIdByRowId.get(message.rowId)
 }
 
+// The refresh already carries this tail turn's error card, rebuilt from its
+// failed-turn boundary row (see hydration `failedTurnError`).
+function persistedTailErrorMatches(
+  mergedNextMessages: ChatMessage[],
+  currentMessages: ChatMessage[],
+  localIndex: number
+): boolean {
+  const local = currentMessages[localIndex]
+  const visibleUser = (message: ChatMessage) => message.role === 'user' && !message.hidden
+
+  if (currentMessages.slice(localIndex + 1).some(visibleUser)) {
+    return false
+  }
+
+  const storedUserIndex = mergedNextMessages.findLastIndex(visibleUser)
+
+  return mergedNextMessages
+    .slice(storedUserIndex + 1)
+    .some(
+      message =>
+        message.role === 'assistant' &&
+        !message.hidden &&
+        Boolean(message.error) &&
+        message.errorSurface?.code === local.errorSurface?.code
+    )
+}
+
 function localAssistantErrorIdsToPreserve(
   mergedNextMessages: ChatMessage[],
   currentMessages: ChatMessage[]
@@ -255,6 +282,10 @@ function localAssistantErrorIdsToPreserve(
       hydratedId === undefined
         ? tailTurnAssistantMatchIndex(mergedNextMessages, currentMessages, index)
         : mergedNextMessages.findIndex(candidate => candidate.id === hydratedId && candidate.role === 'assistant')
+
+    if (hydratedAssistantIndex === -1 && persistedTailErrorMatches(mergedNextMessages, currentMessages, index)) {
+      continue
+    }
 
     if (hydratedAssistantIndex !== -1) {
       mergedNextMessages[hydratedAssistantIndex] = {

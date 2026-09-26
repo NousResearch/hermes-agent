@@ -20,7 +20,7 @@ export function ReferenceChip({ name, onRemove, src }: ReferenceChipProps) {
 
   return (
     <div className="ml-auto flex h-6 items-center gap-2 self-start rounded-lg border border-border/60 bg-background/50 pl-1 pr-2">
-      <button className="shrink-0" onClick={() => setViewing(true)} title={t.desktop.openImage} type="button">
+      <button aria-label={t.desktop.openImage} className="shrink-0" onClick={() => setViewing(true)} type="button">
         <img alt={name} className="size-4 rounded-md object-cover" src={src} />
       </button>
 

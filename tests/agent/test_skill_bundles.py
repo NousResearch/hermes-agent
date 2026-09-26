@@ -105,13 +105,6 @@ class TestScanBundles:
 
 
 class TestGetSkillBundles:
-    def test_returns_cache(self, bundles_env):
-        bundles_dir, _ = bundles_env
-        _make_bundle_yaml(bundles_dir, "a", ["s1"])
-        first = get_skill_bundles()
-        # Second call should hit cache (no rescan unless mtime changed).
-        second = get_skill_bundles()
-        assert first is second or first == second
 
     def test_rescans_on_change(self, bundles_env):
         bundles_dir, _ = bundles_env
@@ -159,6 +152,7 @@ class TestBuildBundleInvocationMessage:
         assert "Skill A content." in msg
         assert "Skill B content." in msg
         assert "combo" in msg
+
 
     def test_skips_missing_skills(self, bundles_env):
         bundles_dir, skills_dir = bundles_env

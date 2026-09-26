@@ -21,26 +21,78 @@ import { slashCommandMatches, type SlashCommandScanOptions } from './slash-refs'
 
 export const RICH_INPUT_SLOT = 'composer-rich-input'
 
-/** Paints `data-placeholder` while the editor is empty.
+/** Chromium's litter: editing beside a `contenteditable=false` chip splits the
+ *  line and leaves zero-length text nodes behind. They render as nothing and
+ *  serialize as nothing, so no reader of the editor should count them. */
+function isEmptyTextNode(node: ChildNode | null): boolean {
+  return node?.nodeType === Node.TEXT_NODE && !node.textContent
+}
+
+/** The node before `node`, stepping over that litter. */
+function meaningfulPreviousSibling(node: ChildNode | null): ChildNode | null {
+  let prev = node?.previousSibling ?? null
+
+  while (isEmptyTextNode(prev)) {
+    prev = prev?.previousSibling ?? null
+  }
+
+  return prev
+}
+
+/** The node after `node`, stepping over that litter. */
+function meaningfulNextSibling(node: ChildNode | null): ChildNode | null {
+  let next = node?.nextSibling ?? null
+
+  while (isEmptyTextNode(next)) {
+    next = next?.nextSibling ?? null
+  }
+
+  return next
+}
+
+/** The live collapsed selection container, if it belongs to this editor. */
+function composerCollapsedSelectionContainer(editor: HTMLElement): Node | null {
+  const selection = window.getSelection()
+
+  if (!selection?.isCollapsed || selection.rangeCount === 0) {
+    return null
+  }
+
+  const range = selection.getRangeAt(0)
+
+  return editor.contains(range.startContainer) ? range.startContainer : null
+}
+
+/** Keep the `data-empty` marker the placeholder paints on in step with the
+ *  editor root's contents.
  *
  *  `:empty` can't be the whole test: a cleared editor keeps a scaffolding <br>
  *  so the contenteditable doesn't collapse, and that break makes `:empty`
  *  false. Nor can CSS infer it on its own — a text node is invisible to
  *  selectors, so `one<br>` and a lone `<br>` are the same shape, and
- *  `:has(> br:only-child)` would paint the placeholder straight over the
- *  user's text. The code that empties the editor is what knows, so it marks it.
+ *  `:has(> br:only-child)` would paint the placeholder over the user's text.
+ *  The code that empties the editor is what knows, so it marks it.
  *
- *  @see markEditorEmptiness */
-export const COMPOSER_PLACEHOLDER_CLASS =
-  '[&:is(:empty,[data-empty])]:before:content-[attr(data-placeholder)] [&:is(:empty,[data-empty])]:before:text-muted-foreground/60'
-
-/** Keep that marker in step with the editor root's contents. */
+ *  Zero-length text nodes don't count as contents. Chromium leaves them behind
+ *  whenever an edit lands next to a `contenteditable=false` chip, and counting
+ *  them left an editor the user had emptied looking occupied. */
 export function markEditorEmptiness(editor: HTMLElement) {
-  if (editor.childNodes.length === 0) {
+  if (Array.from(editor.childNodes).every(isEmptyTextNode)) {
     editor.dataset.empty = ''
   } else {
     delete editor.dataset.empty
   }
+}
+
+/** Drop the marker as IME composition starts, before any preedit text lands.
+ *
+ *  Input events during composition are deliberately skipped (they carry
+ *  uncommitted preedit text), so nothing else clears the marker until
+ *  `compositionend` — and the hint would otherwise sit behind the hiragana the
+ *  user is composing. `normalizeComposerEditorDom` restores it if composition
+ *  ends with nothing committed. */
+export function beginComposerComposition(editor: HTMLElement) {
+  delete editor.dataset.empty
 }
 
 /** @see referenceRe — the shared pattern every surface recognises a reference
@@ -307,6 +359,8 @@ export function insertComposerContentsAtCaret(editor: HTMLElement, text: string,
     selection?.removeAllRanges()
     selection?.addRange(caret)
   }
+
+  revealCaret(editor)
 }
 
 /** Range covering exactly `length` serialized characters immediately before a
@@ -407,7 +461,14 @@ export function replaceBeforeCaret(editor: HTMLElement, length: number, fragment
 /** Backspace at a collapsed caret immediately after a chip: delete the chip AND
  *  the single trailing space we auto-insert after it, atomically — so removing a
  *  directive never strands an orphaned space (the contenteditable-driven cleanup
- *  was unreliable). Returns whether it ran. */
+ *  was unreliable). Returns whether it ran.
+ *
+ *  "Immediately after" has to be read through Chromium's litter. Committing a
+ *  completion empties the typed token's text node rather than removing it, and
+ *  `Range.insertNode` splits around the caret, so the chip routinely sits
+ *  between zero-length text nodes. Reading those as content made the caret look
+ *  like it was after plain text; the delete declined and Chromium's own
+ *  backspace bounced between the leftovers instead of removing the chip. */
 export function deleteChipBeforeCaret(editor: HTMLElement): boolean {
   const hit = composerSelectionRange(editor)
 
@@ -419,16 +480,20 @@ export function deleteChipBeforeCaret(editor: HTMLElement): boolean {
   let chip: ChildNode | null = null
 
   if (startContainer === editor) {
-    chip = startOffset > 0 ? editor.childNodes[startOffset - 1] : null
+    chip = startOffset > 0 ? (editor.childNodes[startOffset - 1] ?? null) : null
+
+    if (isEmptyTextNode(chip)) {
+      chip = meaningfulPreviousSibling(chip)
+    }
   } else if (startContainer.nodeType === Node.TEXT_NODE && startOffset === 0) {
-    chip = startContainer.previousSibling
+    chip = meaningfulPreviousSibling(startContainer as ChildNode)
   }
 
   if (chip?.nodeType !== Node.ELEMENT_NODE || !(chip as HTMLElement).dataset.refText) {
     return false
   }
 
-  const after = chip.nextSibling
+  const after = meaningfulNextSibling(chip)
   chip.remove()
 
   // Drop the auto-inserted trailing space; keep any real following text.
@@ -528,6 +593,14 @@ export function composerPlainText(node: Node): string {
 }
 
 export function placeCaretEnd(element: HTMLElement) {
+  // A repaint can land on an editor React has already unmounted (the chat
+  // bar toggles with the thread's loading gate). Selecting into a detached
+  // node throws `addRange(): The given range isn't in document` from inside
+  // the commit phase, and React re-renders in a loop on it (#117285).
+  if (!element.isConnected) {
+    return
+  }
+
   const range = document.createRange()
   const selection = window.getSelection()
 
@@ -535,6 +608,93 @@ export function placeCaretEnd(element: HTMLElement) {
   range.collapse(false)
   selection?.removeAllRanges()
   selection?.addRange(range)
+  revealCaret(element)
+}
+
+/** The editor `scrollTop` that brings a caret spanning `caret.top..bottom`
+ *  (client px) inside the visible band `viewport`, or null when it's already
+ *  visible. Moves the nearest edge only, like `block: 'nearest'`. */
+export function caretRevealScrollTop(
+  caret: { bottom: number; top: number },
+  viewport: { bottom: number; top: number },
+  scrollTop: number
+): number | null {
+  if (caret.top < viewport.top) {
+    return scrollTop - (viewport.top - caret.top)
+  }
+
+  if (caret.bottom > viewport.bottom) {
+    return scrollTop + (caret.bottom - viewport.bottom)
+  }
+
+  return null
+}
+
+function caretClientRect(range: Range): { bottom: number; top: number } | null {
+  const end = range.cloneRange()
+  end.collapse(false)
+
+  const rects = typeof end.getClientRects === 'function' ? end.getClientRects() : null
+
+  if (rects?.length) {
+    return rects[rects.length - 1]
+  }
+
+  // Chromium gives a caret between elements (after a chip or <br>, or at the
+  // editor's end, which is where inserts leave it) no box. Measure a probe
+  // there instead. A text-node caret always has a box, so the probe never
+  // splits text.
+  if (end.startContainer.nodeType === Node.TEXT_NODE) {
+    return null
+  }
+
+  const probe = document.createElement('span')
+  probe.textContent = '\u200b'
+  end.insertNode(probe)
+
+  const rect = probe.getBoundingClientRect()
+
+  probe.remove()
+
+  return rect
+}
+
+const pendingReveals = new WeakSet<HTMLElement>()
+
+/** Scroll the editor so its caret is visible, on the next frame (one per
+ *  frame across a burst of inserts). Chromium only does this itself for native
+ *  edit commands; programmatic inserts (paste, voice transcripts, repaints)
+ *  leave the caret wherever the old scroll position puts it (#79806). Local to
+ *  the editor: `scrollIntoView` would also move the transcript. */
+export function revealCaret(editor: HTMLElement) {
+  if (pendingReveals.has(editor)) {
+    return
+  }
+
+  pendingReveals.add(editor)
+  window.requestAnimationFrame(() => {
+    pendingReveals.delete(editor)
+
+    const selection = window.getSelection()
+    const range = selection?.rangeCount ? selection.getRangeAt(0) : null
+
+    if (!editor.isConnected || !range || !editor.contains(range.endContainer)) {
+      return
+    }
+
+    const caret = caretClientRect(range)
+
+    if (!caret) {
+      return
+    }
+
+    const top = editor.getBoundingClientRect().top + editor.clientTop
+    const next = caretRevealScrollTop(caret, { bottom: top + editor.clientHeight, top }, editor.scrollTop)
+
+    if (next !== null) {
+      editor.scrollTop = next
+    }
+  })
 }
 
 /** The caret's offset in `composerPlainText` coordinates, so it can be restored
@@ -625,9 +785,9 @@ export function placeCaretAtOffset(editor: HTMLElement, offset: number) {
     return null
   }
 
-  const range = walk(editor)
+  const range = editor.isConnected ? walk(editor) : null
 
-  if (range) {
+  if (range?.startContainer.isConnected) {
     selection.removeAllRanges()
     selection.addRange(range)
 
@@ -635,6 +795,21 @@ export function placeCaretAtOffset(editor: HTMLElement, offset: number) {
   }
 
   placeCaretEnd(editor)
+}
+
+/** Snapshot only when cleanup actually removes the focused caret's container;
+ * cloning the draft on every input flush makes ordinary typing needlessly costly. */
+function removeComposerJunk(editor: HTMLElement, node: ChildNode) {
+  const selected = composerCollapsedSelectionContainer(editor)
+
+  const offset =
+    document.activeElement === editor && selected && node.contains(selected) ? caretOffsetInEditor(editor) : null
+
+  node.remove()
+
+  if (offset !== null) {
+    placeCaretAtOffset(editor, Math.min(offset, composerPlainText(editor).length))
+  }
 }
 
 /** Nothing but a break / whitespace (recursively) — i.e. no real text or chip. */
@@ -666,6 +841,16 @@ function isBlankNode(node: ChildNode | null): boolean {
  *  rendering emits (we use text nodes + <br> + chips). Real <br> line breaks
  *  (Shift+Enter, which sit after actual text) are preserved. */
 export function normalizeComposerEditorDom(editor: HTMLElement) {
+  const selectedContainer = composerCollapsedSelectionContainer(editor)
+
+  // Chromium's zero-length text nodes first: every check below reads siblings,
+  // and litter between them makes a chip look like it has text either side.
+  for (const child of Array.from(editor.childNodes)) {
+    if (isEmptyTextNode(child) && child !== selectedContainer) {
+      child.remove()
+    }
+  }
+
   // A trailing block wrapper holding only a break/whitespace is the phantom
   // "new line" Chromium adds after a chip on backspace — drop it.
   const tailBlock = editor.lastChild as HTMLElement | null
@@ -675,7 +860,7 @@ export function normalizeComposerEditorDom(editor: HTMLElement) {
     (tailBlock.tagName === 'DIV' || tailBlock.tagName === 'P') &&
     isBlankNode(tailBlock)
   ) {
-    editor.removeChild(tailBlock)
+    removeComposerJunk(editor, tailBlock)
   }
 
   // Unwrap a lone block wrapper back to inline content.
@@ -683,7 +868,26 @@ export function normalizeComposerEditorDom(editor: HTMLElement) {
     const wrapper = editor.firstChild as HTMLElement
 
     if ((wrapper.tagName === 'DIV' || wrapper.tagName === 'P') && wrapper.dataset.slot !== RICH_INPUT_SLOT) {
+      // Moving the text nodes out resets Chromium's selection to the editor's
+      // start. Keep DOM endpoints (and direction), not serialized text offsets:
+      // chips are atomic and the wrapper's trailing newline is being removed.
+      const selection = editor.ownerDocument.getSelection()
+      const anchorNode = selection?.anchorNode
+      const focusNode = selection?.focusNode
+      const anchorOffset = selection?.anchorOffset ?? 0
+      const focusOffset = selection?.focusOffset ?? 0
+      const ownsSelection = anchorNode && focusNode && wrapper.contains(anchorNode) && wrapper.contains(focusNode)
+
       editor.replaceChildren(...Array.from(wrapper.childNodes))
+
+      if (ownsSelection && editor.isConnected) {
+        selection?.setBaseAndExtent(
+          anchorNode === wrapper ? editor : anchorNode,
+          anchorOffset,
+          focusNode === wrapper ? editor : focusNode,
+          focusOffset
+        )
+      }
     }
   }
 
@@ -698,7 +902,7 @@ export function normalizeComposerEditorDom(editor: HTMLElement) {
     }
 
     if (!prev || (prev as HTMLElement).dataset?.refText) {
-      editor.removeChild(last)
+      removeComposerJunk(editor, last)
     }
   }
 

@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -45,18 +45,14 @@ describe('ComposerStatusStack goal indicator', () => {
     $goalsBySession.set({})
   })
 
-  it('renders nothing when the session has no goal', () => {
-    const view = renderStack()
-
-    expect(view.container.firstChild).toBeNull()
-  })
-
   it('shows an active goal with its title', () => {
     $goalsBySession.set({ [SID]: goal('active') })
 
     renderStack()
 
     expect(screen.getByText('Goal active')).toBeTruthy()
+    expect(screen.queryByText('ship the feature')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /Goal (active|paused)/ }))
     expect(screen.getByText('ship the feature')).toBeTruthy()
   })
 
@@ -66,15 +62,9 @@ describe('ComposerStatusStack goal indicator', () => {
     renderStack()
 
     expect(screen.getByText('Goal paused')).toBeTruthy()
+    expect(screen.queryByText('ship the feature')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /Goal (active|paused)/ }))
     expect(screen.getByText('ship the feature')).toBeTruthy()
-  })
-
-  it('shows the continuation detail line for an active goal', () => {
-    $goalsBySession.set({ [SID]: goal('active', 'ship it', 'Continuing toward goal (3/20)') })
-
-    renderStack()
-
-    expect(screen.getByText('Continuing toward goal (3/20)')).toBeTruthy()
   })
 
   it('scopes the indicator to the goal-owning session', () => {

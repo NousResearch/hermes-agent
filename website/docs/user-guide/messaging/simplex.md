@@ -7,7 +7,7 @@
 ## Prerequisites
 
 - The **simplex-chat** CLI installed and running as a daemon
-- Python package **websockets** (`pip install websockets`)
+- Python package **websockets** (`hermes pm repair`)
 
 ## Install simplex-chat
 
@@ -85,6 +85,23 @@ SIMPLEX_GROUP_ALLOWED=*              # any group the bot is in
 Address groups by prefixing the chat ID with `group:`, e.g.
 `simplex:group:12` as a cron `deliver=` target or in a `hermes send` call.
 
+## Sending with `hermes send`
+
+SimpleX works as a standalone send target — the daemon must be running,
+but a live gateway is not required for plain text:
+
+```bash
+hermes send --to simplex:alice "hello"          # DM by contact display name
+hermes send --to simplex:group:12 "hello"       # group by numeric ID
+hermes send --to simplex "hello"                # SIMPLEX_HOME_CHANNEL
+```
+
+While the gateway is running, the adapter enumerates your contacts and
+allowed groups into the channel directory (refreshed every 5 minutes), so
+`hermes send --list` shows them by name. Before the first gateway run the
+platform still appears in `--list` with a "no channels discovered yet"
+hint — direct targets like the ones above work regardless.
+
 ## Attachments
 
 The adapter supports native SimpleX attachments in both directions:
@@ -113,7 +130,7 @@ cronjob(
 )
 ```
 
-Or target a specific contact via the cron job's `deliver:` field, or from a shell script with the [`hermes send` CLI](/guides/pipe-script-output):
+Or target a specific contact via the cron job's `deliver:` field, or from a shell script with the [`hermes send` CLI](../../guides/pipe-script-output.md):
 
 ```bash
 hermes send simplex:<contact-id> "Done!"
@@ -129,6 +146,6 @@ hermes send simplex:<contact-id> "Done!"
 
 **"Cannot reach daemon"** — Ensure `simplex-chat -p 5225` is running and the port matches `SIMPLEX_WS_URL`.
 
-**"websockets not installed"** — Run `pip install websockets`.
+**"websockets not installed"** — Run `hermes pm repair`.
 
 **Messages not received** — Check that the contact's ID is in `SIMPLEX_ALLOWED_USERS` or approve them via DM pairing.

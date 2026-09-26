@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { HermesReviewFile } from '@/global'
 
-import { buildReviewTree } from './tree-data'
+import { buildReviewTree, countAllNodes, flattenReviewRows } from './tree-data'
 
 const file = (path: string, added = 1, removed = 0): HermesReviewFile => ({
   path,
@@ -41,5 +41,44 @@ describe('buildReviewTree', () => {
 
     expect(tree[0].name).toBe('a')
     expect(tree[0].children?.map(n => n.name).sort()).toEqual(['b', 'other.ts'])
+  })
+})
+
+describe('countAllNodes', () => {
+  it('counts every node including descendants', () => {
+    const tree = buildReviewTree([file('src/a.ts'), file('src/b.ts'), file('readme.md')], false)
+
+    // src + its two files + readme.
+    expect(countAllNodes(tree)).toBe(4)
+  })
+})
+
+describe('flattenReviewRows', () => {
+  it('includes a directory children only while it is open', () => {
+    const tree = buildReviewTree([file('src/a.ts'), file('readme.md')], false)
+
+    const collapsed = flattenReviewRows(tree, () => false)
+    expect(collapsed.map(r => r.node.id)).toEqual(['src', 'readme.md'])
+
+    const expanded = flattenReviewRows(tree, () => true)
+    expect(expanded.map(r => r.node.id)).toEqual(['src', 'src/a.ts', 'readme.md'])
+    expect(expanded[1].depth).toBe(1)
+  })
+
+  it('recurses into nested open directories with increasing depth', () => {
+    const tree = buildReviewTree([file('a/b/c.ts')], false)
+
+    const rows = flattenReviewRows(tree, () => true)
+
+    expect(rows.map(r => r.node.id)).toEqual(['a', 'a/b', 'a/b/c.ts'])
+    expect(rows.map(r => r.depth)).toEqual([0, 1, 2])
+  })
+
+  it('stops descending into a collapsed nested directory', () => {
+    const tree = buildReviewTree([file('a/b/c.ts')], false)
+
+    const rows = flattenReviewRows(tree, id => id !== 'a/b')
+
+    expect(rows.map(r => r.node.id)).toEqual(['a', 'a/b'])
   })
 })

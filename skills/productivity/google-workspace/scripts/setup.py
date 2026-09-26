@@ -26,10 +26,14 @@ from __future__ import annotations  # allow PEP 604 `X | None` on Python 3.9+
 import argparse
 import json
 import os
-import shutil
-import subprocess
 import sys
 from pathlib import Path
+
+try:
+    import pm
+except ImportError:
+    # A copied skill must not install into an unrelated Python environment.
+    pm = None
 
 # Ensure sibling modules (_hermes_home) are importable when run standalone.
 _SCRIPTS_DIR = str(Path(__file__).resolve().parent)
@@ -53,8 +57,6 @@ SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/documents",
 ]
-
-REQUIRED_PACKAGES = ["google-api-python-client", "google-auth-oauthlib", "google-auth-httplib2"]
 
 # OAuth redirect for "out of band" manual code copy flow.
 # Google deprecated OOB, so we use a localhost redirect and tell the user to
@@ -94,66 +96,29 @@ def _format_missing_scopes(missing_scopes: list[str]) -> str:
 
 
 def install_deps():
-    """Install Google API packages if missing. Returns True on success."""
+    """Sync Hermes' declared Google extra, ready for the next process."""
+    if pm is None:
+        print("ERROR: Run this script in the Hermes environment; use hermes setup first.")
+        return False
     try:
-        import googleapiclient  # noqa: F401
-        import google_auth_oauthlib  # noqa: F401
-        print("Dependencies already installed.")
-        return True
-    except ImportError:
-        pass
-
-    print("Installing Google API dependencies...")
-
-    # First choice: pip in the current interpreter. Works for most installs.
-    try:
-        subprocess.check_call(
-            [sys.executable, "-m", "pip", "install", "--quiet"] + REQUIRED_PACKAGES,
-            stdout=subprocess.DEVNULL,
-        )
-        print("Dependencies installed.")
-        return True
-    except subprocess.CalledProcessError as e:
-        pip_error = e
-
-    # Fallback: the interpreter has no pip (the Hermes Docker image's venv is
-    # built with `uv sync`, which does not bootstrap pip). `uv pip install
-    # --python <interpreter>` installs into that exact interpreter without
-    # needing pip present. Targeting sys.executable keeps us on the venv the
-    # script is actually running under, rather than guessing.
-    uv = shutil.which("uv")
-    if uv:
-        try:
-            subprocess.check_call(
-                [uv, "pip", "install", "--python", sys.executable, "--quiet"]
-                + REQUIRED_PACKAGES,
-                stdout=subprocess.DEVNULL,
-            )
-            print("Dependencies installed.")
-            return True
-        except subprocess.CalledProcessError as e:
-            print(f"ERROR: Failed to install dependencies via uv: {e}")
-            print(f"Manually: {uv} pip install --python {sys.executable} {' '.join(REQUIRED_PACKAGES)}")
-            return False
-
-    print(f"ERROR: Failed to install dependencies: {pip_error}")
-    print(
-        "On environments without pip (e.g. Nix, or the Hermes Docker image's "
-        "uv-managed venv), install the optional extra instead:"
-    )
-    print("  hermes setup")
-    print(f"Or manually: {sys.executable} -m pip install {' '.join(REQUIRED_PACKAGES)}")
-    return False
+        pm.sync_venv(["google"], explicit=True)
+    except Exception as exc:
+        print(f"ERROR: Failed to install Google dependencies: {exc}")
+        return False
+    print("Google dependencies synced. Restart Hermes, then rerun setup to continue OAuth.")
+    return True
 
 
 def _ensure_deps():
-    """Check deps are available, install if not, exit on failure."""
+    """Let PM check imports and stop if activation needs a new process."""
+    if pm is None:
+        print("ERROR: Run this script in the Hermes environment; use hermes setup first.")
+        sys.exit(1)
     try:
-        import googleapiclient  # noqa: F401
-        import google_auth_oauthlib  # noqa: F401
-    except ImportError:
-        if not install_deps():
-            sys.exit(1)
+        pm.ensure_import("google")
+    except Exception as exc:
+        print(f"ERROR: Google dependencies unavailable: {exc}")
+        sys.exit(1)
 
 
 def check_auth_live():

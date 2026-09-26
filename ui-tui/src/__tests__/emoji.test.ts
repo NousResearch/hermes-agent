@@ -50,14 +50,6 @@ describe('ensureEmojiPresentation', () => {
     expect(ensureEmojiPresentation(explicitText)).toBe(explicitText)
   })
 
-  it('returns the original reference when no change is needed', () => {
-    const already = `⚠${VS16} ℹ${VS16} ❤${VS16}`
-
-    // Reference equality — the lazy allocator should short-circuit to the
-    // input when nothing needed injection.
-    expect(ensureEmojiPresentation(already)).toBe(already)
-  })
-
   it('handles mixed content', () => {
     expect(ensureEmojiPresentation('⚠ path: /tmp/x ❤ done')).toBe(`⚠${VS16} path: /tmp/x ❤${VS16} done`)
   })

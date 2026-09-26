@@ -16,11 +16,8 @@ import os
 import unittest
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from email.mime.base import MIMEBase
-from email import encoders
-from unittest.mock import patch, MagicMock, AsyncMock, ANY
+from unittest.mock import patch, MagicMock, ANY
 
-from gateway.platforms.base import SendResult
 
 
 class TestConfigEnvOverrides(unittest.TestCase):
@@ -105,14 +102,6 @@ class TestExtractTextBody(unittest.TestCase):
         self.assertEqual(result, "Plain version")
 
 
-class TestExtractAttachments(unittest.TestCase):
-    """Test attachment extraction and caching."""
-
-    def test_no_attachments(self):
-        from plugins.platforms.email.adapter import _extract_attachments
-        msg = MIMEText("No attachments here.", "plain", "utf-8")
-        result = _extract_attachments(msg)
-        self.assertEqual(result, [])
 
 
 class TestDispatchMessage(unittest.TestCase):
@@ -182,7 +171,6 @@ class TestDispatchMessage(unittest.TestCase):
 
         adapter._message_handler = mock_handler
         # Override handle_message to capture the event directly
-        original_handle = adapter.handle_message
 
         async def capture_handle(event):
             captured_events.append(event)
@@ -238,7 +226,7 @@ class TestDispatchMessage(unittest.TestCase):
     def test_image_attachment_sets_photo_type(self):
         """Email with image attachment should set message type to PHOTO."""
         import asyncio
-        from gateway.platforms.base import MessageType
+        from gateway.platforms.event import MessageType
         adapter = self._make_adapter()
         captured_events = []
 
@@ -330,6 +318,98 @@ class TestDispatchMessage(unittest.TestCase):
 
             asyncio.run(adapter._dispatch_message(msg_data))
             self.assertEqual(len(captured), 1)
+
+
+class TestDispatchDefersToGatewayAuthorization(unittest.TestCase):
+    """The pre-dispatch gate must not drop mail the gateway would authorize (GATEWAY_ALLOWED_USERS,
+    an approved pairing) or answer itself (an explicit pair/decline unauthorized_dm_behavior)."""
+
+    STRANGER = "stranger@example.com"
+
+    def setUp(self):
+        self._env = patch.dict(os.environ, {}, clear=False)
+        self._env.start()
+        for key in ("EMAIL_ALLOWED_USERS", "EMAIL_ALLOW_ALL_USERS", "GATEWAY_ALLOWED_USERS",
+                    "GATEWAY_ALLOW_ALL_USERS", "EMAIL_TRUST_FROM_HEADER"):
+            os.environ.pop(key, None)
+
+    def tearDown(self):
+        self._env.stop()
+
+    def _reached_gateway(self, *, extra=None, env=None, paired=False, authenticated=True):
+        """Dispatch one mail from STRANGER with the real GatewayRunner auth callback wired, as startup does;
+        return the events handed to the gateway. Each call gets its own pairing store."""
+        import asyncio
+        import tempfile
+        from pathlib import Path
+        from gateway.config import GatewayConfig, Platform, PlatformConfig
+        from gateway.pairing import PairingStore
+        from gateway.run import GatewayRunner
+        from plugins.platforms.email.adapter import EmailAdapter
+        with tempfile.TemporaryDirectory() as pairing_dir, \
+                patch("gateway.pairing.PAIRING_DIR", Path(pairing_dir)), \
+                patch.dict(os.environ, {"EMAIL_ADDRESS": "hermes@test.com", "EMAIL_PASSWORD": "secret",
+                                        "EMAIL_IMAP_HOST": "imap.test.com", "EMAIL_SMTP_HOST": "smtp.test.com",
+                                        **(env or {})}):
+            adapter = EmailAdapter(PlatformConfig(enabled=True, extra=dict(extra or {})))
+            runner = object.__new__(GatewayRunner)
+            runner.config = GatewayConfig(platforms={Platform.EMAIL: adapter.config})
+            runner.adapters = {Platform.EMAIL: adapter}
+            runner.pairing_store = PairingStore()
+            adapter.set_authorization_check(runner._make_adapter_auth_check(Platform.EMAIL))
+            if paired:
+                code = runner.pairing_store.generate_code("email", self.STRANGER, "Stranger")
+                self.assertIsNotNone(runner.pairing_store.approve_code("email", code))
+            captured = []
+
+            async def capture(event):
+                captured.append(event)
+
+            adapter.handle_message = capture
+            asyncio.run(adapter._dispatch_message({
+                "uid": b"301", "sender_addr": self.STRANGER, "sender_name": "Stranger", "subject": "Hello",
+                "message_id": "<m301@example.com>", "in_reply_to": "", "body": "Hi there", "attachments": [],
+                "date": "", "sender_authenticated": authenticated,
+                "auth_reason": "dmarc=pass" if authenticated else "no Authentication-Results header"}))
+        return captured
+
+    def test_mail_the_gateway_admits_or_answers_reaches_it(self):
+        cases = {
+            "pair opt-in": {"extra": {"unauthorized_dm_behavior": "pair"}},
+            "decline opt-in": {"extra": {"unauthorized_dm_behavior": "decline"}},
+            "GATEWAY_ALLOWED_USERS": {"env": {"GATEWAY_ALLOWED_USERS": self.STRANGER}},
+            "EMAIL_ALLOWED_USERS JSON list literal": {"env": {"EMAIL_ALLOWED_USERS": f'["{self.STRANGER}"]'}},
+            "approved pairing": {"paired": True},
+        }
+        for label, kwargs in cases.items():
+            with self.subTest(label):
+                self.assertEqual(len(self._reached_gateway(**kwargs)), 1)
+
+    def test_mail_the_gateway_would_ignore_or_that_forges_from_is_dropped(self):
+        cases = {
+            "default ignore": {},
+            "pair opt-in, unauthenticated From": {"extra": {"unauthorized_dm_behavior": "pair"}, "authenticated": False},
+            "approved pairing, unauthenticated From": {"paired": True, "authenticated": False},
+            # Open access grants a stranger nothing beside a list, so a pairing code must not go to a forged From:.
+            "pair opt-in, allow-all beside EMAIL list, unauthenticated From": {
+                "extra": {"unauthorized_dm_behavior": "pair"}, "authenticated": False,
+                "env": {"GATEWAY_ALLOW_ALL_USERS": "true", "EMAIL_ALLOWED_USERS": "boss@example.com"}},
+            # GATEWAY_ALLOW_ALL_USERS is inert beside a list, so a listed address still has to authenticate its From:.
+            "listed sender, GATEWAY allow-all beside the list, unauthenticated From": {
+                "authenticated": False, "env": {"GATEWAY_ALLOW_ALL_USERS": "true", "EMAIL_ALLOWED_USERS": self.STRANGER}},
+            "pair opt-in, allow-all beside GATEWAY list, unauthenticated From": {
+                "extra": {"unauthorized_dm_behavior": "pair"}, "authenticated": False,
+                "env": {"GATEWAY_ALLOW_ALL_USERS": "true", "GATEWAY_ALLOWED_USERS": "boss@example.com"}},
+            # A bare entry (a chat username, say) names one principal, never stranger@<any domain>: the
+            # domain is the sender's to choose, so such mail is dropped rather than admitted or paired.
+            "GATEWAY_ALLOWED_USERS bare entry": {"env": {"GATEWAY_ALLOWED_USERS": "stranger"}},
+            "EMAIL_ALLOWED_USERS bare entry, JSON list literal": {"env": {"EMAIL_ALLOWED_USERS": '["stranger"]'}},
+            "bare entry, pair opt-in": {"env": {"GATEWAY_ALLOWED_USERS": "stranger"},
+                                        "extra": {"unauthorized_dm_behavior": "pair"}},
+        }
+        for label, kwargs in cases.items():
+            with self.subTest(label):
+                self.assertEqual(self._reached_gateway(**kwargs), [])
 
 
 class TestThreadContext(unittest.TestCase):
@@ -432,19 +512,27 @@ class TestSendMethods(unittest.TestCase):
             os.unlink(tmp_path)
 
 
-    def test_get_chat_info(self):
-        """get_chat_info should return email address as chat info."""
+    def test_send_document_threads_on_explicit_reply_to(self):
+        """An explicit reply_to wins over the cached thread context for attachment sends (#10131)."""
         import asyncio
+        import tempfile
         adapter = self._make_adapter()
-        adapter._thread_context["user@test.com"] = {"subject": "Test", "message_id": "<m@t>"}
+        adapter._thread_context["user@test.com"] = {"subject": "Old", "message_id": "<cached@test.com>"}
+        with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as f:
+            f.write(b"doc")
+            tmp_path = f.name
+        try:
+            with patch("smtplib.SMTP") as mock_smtp:
+                mock_server = MagicMock()
+                mock_smtp.return_value = mock_server
+                result = asyncio.run(adapter.send_document("user@test.com", tmp_path, reply_to="<explicit@test.com>"))
+                self.assertTrue(result.success)
+                sent_msg = mock_server.send_message.call_args[0][0]
+                self.assertEqual(sent_msg["In-Reply-To"], "<explicit@test.com>")
+                self.assertEqual(sent_msg["References"], "<explicit@test.com>")
+        finally:
+            os.unlink(tmp_path)
 
-        info = asyncio.run(
-            adapter.get_chat_info("user@test.com")
-        )
-
-        self.assertEqual(info["name"], "user@test.com")
-        self.assertEqual(info["type"], "dm")
-        self.assertEqual(info["subject"], "Test")
 
 
 class TestConnectDisconnect(unittest.TestCase):
@@ -580,6 +668,221 @@ class TestPollLoop(unittest.TestCase):
 
         self.assertEqual(len(dispatched), 1)
         self.assertEqual(dispatched[0]["subject"], "Inbox Test")
+
+    def test_check_inbox_notifies_fatal_error_on_fetch_failure(self):
+        """A failed IMAP check must surface through the fatal-error hook so
+        the gateway's reconnect/backoff machinery learns email is unhealthy
+        instead of silently treating the failed check as an empty inbox
+        (#80016)."""
+        import asyncio
+        adapter = self._make_adapter()
+        notified = []
+
+        async def mock_fatal_handler(adapter):
+            notified.append(adapter)
+
+        adapter.set_fatal_error_handler(mock_fatal_handler)
+
+        mock_imap = MagicMock()
+        mock_imap.login.side_effect = Exception("read operation timed out")
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            asyncio.run(adapter._check_inbox())
+
+        self.assertEqual(len(notified), 1)
+        self.assertEqual(adapter.fatal_error_code, "email_imap_fetch_failed")
+        self.assertTrue(adapter.fatal_error_retryable)
+        self.assertIn("read operation timed out", adapter.fatal_error_message)
+
+    def test_partial_batch_dispatched_before_escalation(self):
+        """A mid-batch IMAP failure must dispatch the messages already
+        fetched BEFORE escalating — dropping them would lose mail, since
+        their UIDs are marked seen (#80032 review)."""
+        import asyncio
+        adapter = self._make_adapter()
+        dispatched, notified = [], []
+
+        async def mock_dispatch(msg_data):
+            dispatched.append(msg_data)
+
+        async def mock_fatal_handler(a):
+            notified.append(a)
+
+        adapter._dispatch_message = mock_dispatch
+        adapter.set_fatal_error_handler(mock_fatal_handler)
+
+        raw_email = MIMEText("Body", "plain", "utf-8")
+        raw_email["From"] = "sender@test.com"
+        raw_email["Subject"] = "First of batch"
+        raw_email["Message-ID"] = "<batch1@test.com>"
+
+        mock_imap = MagicMock()
+        fetches = []
+
+        def uid_handler(command, *args):
+            if command == "search":
+                return ("OK", [b"1 2"])
+            if command == "fetch":
+                fetches.append(args)
+                if len(fetches) == 1:
+                    return ("OK", [(b"1", raw_email.as_bytes())])
+                raise OSError("connection dropped mid-batch")
+            return ("NO", [])
+
+        mock_imap.uid.side_effect = uid_handler
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            asyncio.run(adapter._check_inbox())
+
+        # The successfully fetched message was dispatched, not dropped.
+        self.assertEqual(len(dispatched), 1)
+        self.assertEqual(dispatched[0]["subject"], "First of batch")
+        # The failure still escalated through the fatal-error hook.
+        self.assertEqual(len(notified), 1)
+        self.assertEqual(adapter.fatal_error_code, "email_imap_fetch_failed")
+
+    def test_mid_batch_failure_leaves_unfetched_uids_eligible(self):
+        """UIDs are marked seen only after their fetch returns — a
+        connection failure mid-batch must leave the remaining UIDs eligible
+        for the next poll instead of permanently skipping them."""
+        adapter = self._make_adapter()
+
+        raw_email = MIMEText("Body", "plain", "utf-8")
+        raw_email["From"] = "sender@test.com"
+        raw_email["Subject"] = "ok"
+        raw_email["Message-ID"] = "<ok@test.com>"
+
+        mock_imap = MagicMock()
+        fetches = []
+
+        def uid_handler(command, *args):
+            if command == "search":
+                return ("OK", [b"1 2 3"])
+            if command == "fetch":
+                fetches.append(args)
+                if len(fetches) == 1:
+                    return ("OK", [(b"1", raw_email.as_bytes())])
+                raise OSError("connection dropped")
+            return ("NO", [])
+
+        mock_imap.uid.side_effect = uid_handler
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            results = adapter._fetch_new_messages()
+
+        self.assertEqual(len(results), 1)
+        self.assertIn(b"1", adapter._seen_uids)     # fetched → seen
+        self.assertNotIn(b"2", adapter._seen_uids)  # fetch raised → retry next poll
+        self.assertNotIn(b"3", adapter._seen_uids)  # never reached → retry next poll
+        self.assertTrue(adapter._last_fetch_failed)
+
+    def test_poison_message_skipped_once_without_escalation(self):
+        """A message whose processing raises is marked seen and skipped —
+        it must not abort the batch, escalate to a reconnect, or be
+        retried forever (#80032 review)."""
+        adapter = self._make_adapter()
+
+        good_email = MIMEText("Body", "plain", "utf-8")
+        good_email["From"] = "sender@test.com"
+        good_email["Subject"] = "good"
+        good_email["Message-ID"] = "<good@test.com>"
+
+        mock_imap = MagicMock()
+
+        def uid_handler(command, *args):
+            if command == "search":
+                return ("OK", [b"1 2"])
+            if command == "fetch":
+                uid = args[0]
+                if uid == b"1":
+                    return ("OK", [(b"1", b"poison")])
+                return ("OK", [(b"2", good_email.as_bytes())])
+            return ("NO", [])
+
+        mock_imap.uid.side_effect = uid_handler
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap), patch(
+            "plugins.platforms.email.adapter.EmailAdapter._parse_fetched_message",
+            side_effect=[ValueError("unparseable"), {"subject": "good"}],
+        ):
+            results = adapter._fetch_new_messages()
+
+        # Poison message consumed (seen, skipped); good message survived.
+        self.assertEqual(len(results), 1)
+        self.assertIn(b"1", adapter._seen_uids)
+        self.assertIn(b"2", adapter._seen_uids)
+        self.assertFalse(adapter._last_fetch_failed)
+
+
+class TestReconnectSeenUidsRestore(unittest.TestCase):
+    """connect(is_reconnect=True) must not re-mark the whole mailbox seen."""
+
+    def _make_adapter(self):
+        from gateway.config import PlatformConfig
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+        }):
+            from plugins.platforms.email.adapter import EmailAdapter
+            adapter = EmailAdapter(PlatformConfig(enabled=True))
+        return adapter
+
+    def setUp(self):
+        from plugins.platforms.email.adapter import EmailAdapter
+        EmailAdapter._seen_uids_snapshot.clear()
+
+    tearDown = setUp
+
+    def _run_connect(self, adapter, mailbox_uids, *, is_reconnect):
+        import asyncio
+
+        mock_imap = MagicMock()
+
+        def uid_handler(command, *args):
+            if command == "search":
+                return ("OK", [mailbox_uids])
+            return ("NO", [])
+
+        mock_imap.uid.side_effect = uid_handler
+        smtp = MagicMock()
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap), patch.object(
+            adapter, "_connect_smtp", return_value=smtp
+        ):
+            return asyncio.run(adapter.connect(is_reconnect=is_reconnect))
+
+    def test_reconnect_restores_snapshot_instead_of_marking_all_seen(self):
+        # First adapter connects with UIDs 1-2 in the mailbox.
+        first = self._make_adapter()
+        self.assertTrue(self._run_connect(first, b"1 2", is_reconnect=False))
+        self.assertEqual(first._seen_uids, {b"1", b"2"})
+        import asyncio
+        asyncio.run(first.disconnect())
+
+        # Outage: UID 3 arrives. The reconnect watcher builds a FRESH adapter
+        # and connects with is_reconnect=True.
+        second = self._make_adapter()
+        self.assertTrue(self._run_connect(second, b"1 2 3", is_reconnect=True))
+        # Baseline restored from the snapshot — UID 3 stays eligible.
+        self.assertEqual(second._seen_uids, {b"1", b"2"})
+        asyncio.run(second.disconnect())
+
+    def test_first_connect_still_marks_all_seen(self):
+        adapter = self._make_adapter()
+        self.assertTrue(self._run_connect(adapter, b"7 8 9", is_reconnect=False))
+        self.assertEqual(adapter._seen_uids, {b"7", b"8", b"9"})
+        import asyncio
+        asyncio.run(adapter.disconnect())
+
+    def test_reconnect_without_snapshot_falls_back_to_mark_all_seen(self):
+        # e.g. gateway restarted: no in-process snapshot exists.
+        adapter = self._make_adapter()
+        self.assertTrue(self._run_connect(adapter, b"4 5", is_reconnect=True))
+        self.assertEqual(adapter._seen_uids, {b"4", b"5"})
+        import asyncio
+        asyncio.run(adapter.disconnect())
 
 
 class TestSendEmailStandalone(unittest.TestCase):
@@ -724,6 +1027,7 @@ class TestImapIdExtensionForNetEase(unittest.TestCase):
         adapter = self._make_adapter()
 
         mock_imap = MagicMock()
+        mock_imap.capabilities = ("IMAP4REV1", "ID", "UIDPLUS")
         mock_imap.uid.return_value = ("OK", [b""])
 
         with patch("imaplib.IMAP4_SSL", return_value=mock_imap), \

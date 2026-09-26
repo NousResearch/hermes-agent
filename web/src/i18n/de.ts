@@ -165,6 +165,10 @@ export const de: Translations = {
     failedToDeleteSelected: "Ausgewählte Sitzungen konnten nicht gelöscht werden",
     resumeInChat: "Im Chat fortsetzen",
     newChat: "Neuer Chat",
+    workspace: "Arbeitsbereich",
+    workspaceDefault: "Standard",
+    workspaceRescan: "Repositories neu scannen",
+    workspaceCustom: "Anderer Pfad…",
     previousPage: "Vorherige Seite",
     nextPage: "Nächste Seite",
     roles: {
@@ -324,6 +328,8 @@ export const de: Translations = {
     disableRuntime: "Deaktivieren",
     enableAfterInstall: "Nach Installation aktivieren",
     enableRuntime: "Aktivieren",
+    toggleTakesEffectAfterRestart:
+      "Gespeichert — Gateway neu starten, um die Änderung anzuwenden.",
     forceReinstall: "Neuinstallation erzwingen (bestehenden Ordner zuerst löschen)",
     headline:
       "Hermes-Plugins entdecken, installieren, aktivieren und aktualisieren (entspricht `hermes plugins`).",
@@ -469,6 +475,8 @@ export const de: Translations = {
     copyCliCommand: "CLI-Befehl kopieren (für extern / Fallback)",
     connect: "Verbinden",
     sessionExpires: "Sitzung läuft in {time} ab",
+    sessionExpiredNoError:
+      "Die Anmeldung ist abgelaufen, ohne den Anbieter zu erreichen. Das bedeutet meist, dass die Anmeldeseite im geöffneten Tab hängen geblieben ist (serverseitiges Problem) — schließen Sie die Anmeldung dort ab und klicken Sie dann auf Erneut versuchen. Wenn es weiterhin fehlschlägt, verwenden Sie stattdessen einen API-Schlüssel oder die CLI.",
     initiatingLogin: "Login-Ablauf wird gestartet…",
     exchangingCode: "Code wird gegen Tokens getauscht…",
     connectedClosing: "Verbunden! Wird geschlossen…",
@@ -617,6 +625,12 @@ export const de: Translations = {
       "Mit Boards kannst du voneinander unabhängige Arbeitsabläufe trennen — eines pro Projekt, Repository oder Domäne. Worker auf einem Board sehen niemals die Aufgaben eines anderen Boards.",
     slug: "Slug",
     slugHint: "— Kleinbuchstaben, Bindestriche, z. B. atm10-server",
+    confirmDoneMany:
+      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
+    confirmArchiveMany:
+      "Archive {n} tasks? They disappear from the default board view.",
+    confirmBlockedMany:
+      "Mark {n} tasks as blocked? The workers' claims are released.",
     displayName: "Anzeigename",
     displayNameHint: "(optional)",
     description: "Beschreibung",

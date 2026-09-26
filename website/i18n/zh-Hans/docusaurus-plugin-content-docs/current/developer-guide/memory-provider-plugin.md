@@ -9,7 +9,7 @@ description: "如何为 Hermes Agent 构建 memory provider 插件"
 Memory provider 插件为 Hermes Agent 提供跨会话的持久化知识，超越内置的 MEMORY.md 和 USER.md。本指南介绍如何构建一个 memory provider 插件。
 
 :::tip
-Memory provider 是两种 **provider 插件**类型之一。另一种是 [Context Engine 插件](/developer-guide/context-engine-plugin)，用于替换内置的上下文压缩器。两者遵循相同的模式：单选、配置驱动、通过 `hermes plugins` 管理。
+Memory provider 是两种 **provider 插件**类型之一。另一种是 [Context Engine 插件](./context-engine-plugin.md)，用于替换内置的上下文压缩器。两者遵循相同的模式：单选、配置驱动、通过 `hermes plugins` 管理。
 :::
 
 ## 目录结构

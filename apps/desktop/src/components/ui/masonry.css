@@ -1,0 +1,21 @@
+.masonry {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--masonry-min-width, 17rem)), 1fr));
+  align-items: start;
+  gap: calc(var(--spacing) * 3);
+}
+
+.masonry > [data-slot='masonry-item'] {
+  min-width: 0;
+}
+
+.masonry[data-measured] > [data-slot='masonry-item'] {
+  position: absolute;
+}
+
+@supports (display: grid-lanes) {
+  .masonry {
+    display: grid-lanes;
+  }
+}

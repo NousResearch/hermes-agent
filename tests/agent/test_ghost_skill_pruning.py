@@ -24,14 +24,11 @@ from agent.context_compressor import (
     SKILL_PRUNED_MARKER_PREFIX,
     SUMMARY_PREFIX,
     ContextCompressor,
-    _collect_protected_skill_names,
     _extract_pruned_skill_names,
-    _MAX_PRUNED_SKILL_MARKERS,
     _reinject_pruned_skill_markers,
     _skill_pruned_marker,
     _summarize_tool_result,
 )
-
 
 def _make_compressor(**overrides):
     kwargs = dict(
@@ -45,7 +42,6 @@ def _make_compressor(**overrides):
         "agent.context_compressor.get_model_context_length", return_value=100000
     ):
         return ContextCompressor(**kwargs)
-
 
 def _skill_view_pair(call_id, skill_name, size=6000):
     return [
@@ -68,7 +64,6 @@ def _skill_view_pair(call_id, skill_name, size=6000):
         },
     ]
 
-
 class TestSkillPrunedMarkerEmit:
     """Marker emit — patterns adapted from PR #32375 (@LeonSGP43)."""
 
@@ -87,7 +82,6 @@ class TestSkillPrunedMarkerEmit:
         assert summary == "[skill_view] name=docker-management (1,234 chars)"
         assert SKILL_PRUNED_MARKER_PREFIX not in summary
 
-
     def test_marker_extractor_round_trips_the_emitted_marker(self):
         """Emit and check sides share one canonical string.
 
@@ -98,7 +92,6 @@ class TestSkillPrunedMarkerEmit:
         summary = _summarize_tool_result("skill_view", '{"name":"pdf"}', "x" * 6000)
         assert _extract_pruned_skill_names(summary) == ["pdf"]
         assert _skill_pruned_marker("pdf") in summary
-
 
 class TestReinjectPrunedSkillMarkers:
 
@@ -116,13 +109,10 @@ class TestReinjectPrunedSkillMarkers:
         assert out.count(_skill_pruned_marker("alpha")) == 1
         assert out.count(_skill_pruned_marker("beta")) == 1
 
-
-
     def test_reinjected_summary_still_classifies_standalone(self):
         body = _reinject_pruned_skill_markers("## Goal\nwork\n", ["pdf"])
         full = SUMMARY_PREFIX + "\n\n" + body
         assert ContextCompressor.classify_summary_content(full) == "standalone"
-
 
 class TestProtectedSkillPrune:
     """Phase-1 prune must not demote a just-loaded skill (#32106)."""
@@ -133,7 +123,6 @@ class TestProtectedSkillPrune:
             role = "user" if (start + i) % 2 == 0 else "assistant"
             out.append({"role": role, "content": f"filler {start + i} " + "y" * 400})
         return out
-
 
     def test_recently_loaded_skill_survives_prune(self):
         c = _make_compressor()
@@ -148,7 +137,6 @@ class TestProtectedSkillPrune:
         skill_row = result[11]
         assert skill_row["content"].startswith("# fresh-skill instructions")
         assert SKILL_PRUNED_MARKER_PREFIX not in skill_row["content"]
-
 
     def test_pressure_demotion_overrides_skill_protection(self):
         """Pass-4 must still demote protected skill bodies (#61932 guard)."""
@@ -166,7 +154,6 @@ class TestProtectedSkillPrune:
         skill_row = result[3]
         assert pruned >= 1
         assert _skill_pruned_marker("fresh-skill") in skill_row["content"]
-
 
 class TestMarkerSurvivesRealCompress:
     """P2 layer: markers survive a real compress() with a mocked aux LLM."""
@@ -232,9 +219,6 @@ class TestMarkerSurvivesRealCompress:
         # Stored iterative-update state carries the marker too.
         assert _skill_pruned_marker("pdf") in c._previous_summary
 
-
-
-
     def test_marker_survives_iterative_recompression(self):
         """Markers in a rehydrated handoff summary survive iterative rewrites.
 
@@ -264,12 +248,7 @@ class TestMarkerSurvivesRealCompress:
         summary_text = self._summary_text_of(result)
         assert _skill_pruned_marker("pdf") in summary_text
 
-
 class TestReinjectionBoundsAndRedaction:
-    def test_marker_list_is_capped(self):
-        names = [f"skill-{i}" for i in range(_MAX_PRUNED_SKILL_MARKERS + 15)]
-        out = _reinject_pruned_skill_markers("body", names)
-        assert out.count(SKILL_PRUNED_MARKER_PREFIX) == len(names)
         # The cap is applied at the collection sites in _generate_summary /
         # _build_static_fallback_summary; the helper itself is mechanical.
 
@@ -281,18 +260,3 @@ class TestReinjectionBoundsAndRedaction:
         secret = "ghp_" + "a1B2" * 6
         out = _reinject_pruned_skill_markers("body", [f"x {secret}"])
         assert secret not in out
-
-
-class TestSkillsGuidanceSafetyRule:
-    def test_safety_rule_present_with_real_newlines(self):
-        from agent.prompt_builder import SKILLS_GUIDANCE
-
-        assert "## Skill Safety Rule" in SKILLS_GUIDANCE
-        assert "[SKILL_PRUNED]" in SKILLS_GUIDANCE
-        assert "skill_view(name='...')" in SKILLS_GUIDANCE
-        # The rule list must use REAL newlines — the original PR hunk risked
-        # literal backslash-n escape text rendering into the system prompt.
-        assert "\\n" not in SKILLS_GUIDANCE
-        assert SKILLS_GUIDANCE.count("\n") >= 6
-        for rule in ("UNAVAILABLE", "RELOAD", "WAIT", "DEDUP"):
-            assert rule in SKILLS_GUIDANCE

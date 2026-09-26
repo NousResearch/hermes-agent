@@ -1,12 +1,12 @@
 ---
-title: "Huggingface Accelerate — Run PyTorch training across GPUs with minimal changes"
-sidebar_label: "Huggingface Accelerate"
+title: "Accelerate — Run PyTorch training across GPUs with minimal changes"
+sidebar_label: "Accelerate"
 description: "Run PyTorch training across GPUs with minimal changes"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
-# Huggingface Accelerate
+# Accelerate
 
 Run PyTorch training across GPUs with minimal changes.
 

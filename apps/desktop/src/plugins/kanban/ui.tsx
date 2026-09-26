@@ -9,14 +9,15 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
+  FadeScroll,
   profileColor,
   profileColorSoft,
   relativeTime,
   useQuery
 } from '@hermes/plugin-sdk'
-import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { type ReactNode, useEffect, useState } from 'react'
 
-import { fetchOrchestration, ORCHESTRATION_KEY } from './api'
+import { fetchOrchestration, orchestrationKey, useKanbanScope } from './api'
 import { columnLabel, useKanban } from './i18n'
 import { columnMeta, type KanbanTask } from './types'
 
@@ -33,7 +34,9 @@ export const $newTaskLane = atom<null | string>(null)
 
 /** Orchestration knobs (cached app-wide; the settings panel invalidates). */
 export function useOrchestration() {
-  return useQuery({ queryKey: ORCHESTRATION_KEY, queryFn: fetchOrchestration, staleTime: 60_000 }).data
+  const scope = useKanbanScope()
+
+  return useQuery({ queryKey: orchestrationKey(scope), queryFn: fetchOrchestration, staleTime: 60_000 }).data
 }
 
 /** The dispatcher's configured fallback for unassigned ready cards
@@ -226,6 +229,21 @@ export function StatusMenu({
   )
 }
 
+/** Priority as the board card shows it: an amber up-arrow + number when
+ *  raised, a muted bare number at 0. Shared by the card and the task modal. */
+export function PriorityGlyph({ priority }: { priority: number }) {
+  if (priority <= 0) {
+    return <span className="text-(--ui-text-quaternary)">{priority}</span>
+  }
+
+  return (
+    <span className="inline-flex items-center gap-0.5 text-amber-500">
+      <Codicon name="arrow-up" size="0.7rem" />
+      {priority}
+    </span>
+  )
+}
+
 // The board's one field/section-label style — hoisted so Section (here), the
 // create dialog's Field, and the orchestration panel all read identically.
 export const FIELD_LABEL = 'text-[0.62rem] font-semibold uppercase tracking-[0.14em] text-(--ui-text-quaternary)'
@@ -270,67 +288,13 @@ export function Callout({
   )
 }
 
-// A short, edge-masked scroll area. The fades are EDGE-AWARE like the rest of
-// the app: a gradient only appears on a side that actually has clipped content
-// (nothing to scroll → no mask at all), tracked via scroll + resize. Plus
-// `overscroll-contain` so scrolling it never chains into the drawer. When
-// `deps` is provided it re-pins to the bottom on change — the activity feed's
-// newest-at-bottom behavior.
+// A short, edge-masked scroll area. Thin wrapper over the app's FadeScroll so
+// the drawer's scrollers behave exactly like the ones in chat; kept as a local
+// name because every call site here passes `max`.
 export function ScrollFade({ children, deps, max = '9rem' }: { children: ReactNode; deps?: unknown; max?: string }) {
-  const ref = useRef<HTMLDivElement>(null)
-  const [edges, setEdges] = useState({ above: false, below: false })
-
-  const measure = () => {
-    const el = ref.current
-
-    if (!el) {
-      return
-    }
-
-    const above = el.scrollTop > 1
-    const below = el.scrollTop + el.clientHeight < el.scrollHeight - 1
-
-    setEdges(prev => (prev.above === above && prev.below === below ? prev : { above, below }))
-  }
-
-  useLayoutEffect(() => {
-    if (deps !== undefined && ref.current) {
-      ref.current.scrollTop = ref.current.scrollHeight
-    }
-
-    measure()
-  }, [deps])
-
-  useLayoutEffect(() => {
-    const el = ref.current
-
-    if (!el) {
-      return
-    }
-
-    const observer = new ResizeObserver(measure)
-    observer.observe(el)
-
-    return () => observer.disconnect()
-  }, [])
-
-  const stops = [
-    edges.above ? 'transparent, black 1.25rem' : 'black',
-    edges.below ? 'calc(100% - 1.25rem), transparent' : 'black'
-  ]
-
-  const mask = `linear-gradient(to bottom, ${stops[0]}, black ${stops[1]})`
-
   return (
-    <div
-      className="overflow-y-auto overscroll-contain"
-      onScroll={measure}
-      ref={ref}
-      style={
-        edges.above || edges.below ? { maskImage: mask, maxHeight: max, WebkitMaskImage: mask } : { maxHeight: max }
-      }
-    >
+    <FadeScroll deps={deps} maxHeight={max}>
       {children}
-    </div>
+    </FadeScroll>
   )
 }

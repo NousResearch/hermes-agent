@@ -351,11 +351,11 @@ class SessionUsageMixin:
         # ``usage`` dict below and the SQL params both inherit the cleaned values.
         estimated_cost_usd, bad_est = _clean_cost_amount(
             estimated_cost_usd, "estimated_cost_usd", session_id)
-        actual_cost_usd, _ = _clean_cost_amount(actual_cost_usd, "actual_cost_usd", session_id)
+        actual_cost_usd, bad_act = _clean_cost_amount(actual_cost_usd, "actual_cost_usd", session_id)
         cost_status = _clean_cost_enum(cost_status, _COST_STATUSES, "cost_status", session_id)
         cost_source = _clean_cost_enum(cost_source, _COST_SOURCES, "cost_source", session_id)
-        if bad_est:
-            # The amount was discarded as corruption: the row must not keep claiming a
+        if bad_est or bad_act:
+            # An amount was discarded as corruption: the row must not keep claiming a
             # status ('estimated'/'actual') that implies a trustworthy figure.
             cost_status, cost_source = "unknown", "none"
         billing_provider, _ = _clean_route_str(billing_provider, "billing_provider", session_id, 64)

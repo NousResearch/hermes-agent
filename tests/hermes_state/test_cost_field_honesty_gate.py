@@ -43,6 +43,28 @@ class TestCostAmountGate:
         assert row["cost_status"] == "unknown"
         assert row["cost_source"] == "none"
 
+    def test_discarded_actual_cost_also_resets_the_status(self, db):
+        # A corrupt actual_cost_usd must demote the row too: cost_status='actual'
+        # is the strongest trust signal in the row, and the discard warning already
+        # promises it is marked unknown (review follow-up on #121019).
+        db.create_session("s1", source="cli")
+        db.update_token_counts(
+            "s1", input_tokens=5, actual_cost_usd=2.0, cost_status="actual",
+            cost_source="provider_cost_api", model="test-model",
+        )
+        row = _row(db, "s1")
+        assert row["actual_cost_usd"] == 2.0  # legitimate baseline lands
+        db.update_token_counts(
+            "s1", input_tokens=3, estimated_cost_usd=1.0,
+            actual_cost_usd=1e179, cost_status="actual",
+            cost_source="provider_cost_api",
+        )
+        row = _row(db, "s1")
+        assert row["input_tokens"] == 8  # clean fields of the same write land
+        assert row["actual_cost_usd"] == 2.0  # corrupt discard keeps the previous amount
+        assert row["cost_status"] == "unknown"
+        assert row["cost_source"] == "none"
+
     @pytest.mark.parametrize("bad", [-5.0, float("inf"), float("nan"), "not-a-number"])
     def test_non_finite_or_negative_costs_never_reach_the_row(self, db, bad):
         db.create_session("s1", source="cli")

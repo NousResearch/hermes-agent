@@ -689,8 +689,15 @@ const ScheduledRetryAction: FC<{ resetsAt: number }> = ({ resetsAt }) => {
   const copy = t.assistant.thread
   const aui = useAui()
 
-  // Armed once the user clicks; `fireAt` is the wall-clock ms the timer targets.
-  const [fireAt, setFireAt] = useState<null | number>(null)
+  // `fireAt` is the wall-clock ms the timer targets. Auto-armed on mount when
+  // the provider named a schedulable reset (#98852): a usage-limit failure is
+  // surfaced to the UI but nothing re-runs the turn unless the user clicked,
+  // so overnight runs stalled here. When a reset is named, arm the retry for
+  // that moment so the failed turn recovers by itself; the user can still
+  // Cancel, and the stale gate below backs the timer off if the thread moved on.
+  const [fireAt, setFireAt] = useState<null | number>(() =>
+    scheduledRetryDelayMs(resetsAt) !== null ? resetsAt * 1000 : null
+  )
   const [now, setNow] = useState(() => Date.now())
 
   // A manual Retry, a new message, or a later turn all make firing wrong: the
@@ -861,7 +868,7 @@ const ErrorRecoveryActions: FC = () => {
 
   const localFolders = Boolean(window.hermesDesktop?.logsRoot)
   // The provider's own reset moment (429 Retry-After / resets_at), so the user knows WHEN
-  // Retry will work instead of guessing (#98852). Informational only: no automatic retry.
+  // Retry will work instead of guessing (#98852). Shown alongside the auto-armed retry.
   const limitReset = formatLimitReset(surface?.resetsAt)
 
   return (

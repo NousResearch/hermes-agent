@@ -583,6 +583,30 @@ Credential-named URL query parameters are not stripped (magic links and pre-sign
 legitimate cron output), and user-chosen secrets with no recognisable shape are not detected.
 The run document under `cron/output/<job_id>/` keeps the agent's response as written.
 
+### Failure notices (`failure_deliver`, `cron.failure_notice_deliver`)
+
+Failure notices (`⚠️ Cron '<job>' failed: …`, blocked-config and drift alerts)
+follow the job's `deliver` target by default. When that target is a channel that
+should only ever carry finished content, route the operational noise elsewhere:
+
+```yaml
+# per job
+deliver: telegram:-100FAMILY
+failure_deliver: telegram:7976161601   # failures go to the operator, not the group
+
+# or for every job in the profile (per-job value wins over it)
+cron:
+  failure_notice_deliver: local
+```
+
+`failure_deliver` and `failure_notice_deliver` take exactly the `deliver`
+grammar (`local`, `origin`, `platform`, `platform:chat_id[:thread_id]`, comma
+lists, `all`). `local` is the structural opt-out: nothing is sent to chat, but
+the run output file, `last_status`, run history, and the failure incident are
+recorded as before — the ledger's delivery outcome is `suppressed`. Success
+output never reads either key, and both are validated at preflight like
+`deliver`, so a typo is reported before a failure needs the notice.
+
 ### Delivery failures are a distinct status
 
 Execution and delivery are tracked separately. When the agent run succeeds but

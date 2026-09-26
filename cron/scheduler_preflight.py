@@ -266,6 +266,11 @@ def _preflight_check_delivery(job: dict) -> Optional[str]:
                 "delivery target. Fix the job's `deliver` value or configure "
                 "the platform's gateway credentials."
             )
+        # Adapterless local targets (desktop-session) are written straight to local state by the
+        # runner: there is no gateway adapter to connect, so the credential check below would
+        # always false-block them.
+        if platform_name.lower() in _delivery._ADAPTERLESS_DELIVERY_PLATFORMS:
+            continue
         if connected is None:
             try:
                 from gateway.config import load_gateway_config

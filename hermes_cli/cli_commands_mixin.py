@@ -14,7 +14,6 @@ import json
 import os
 import shlex
 import subprocess
-import sys
 import tempfile
 import threading
 import time
@@ -28,7 +27,7 @@ from rich import box as rich_box
 from rich.markup import escape as _escape
 from rich.panel import Panel
 
-from hermes_constants import display_hermes_home, is_termux as _is_termux_environment
+from hermes_constants import display_hermes_home
 from hermes_state_ids import new_session_id as mint_session_id
 from agent.turn_context import extract_api_content_sidecar
 from hermes_cli.cli_agent_setup_mixin import _retire_agent
@@ -926,7 +925,7 @@ class CLICommandsMixin:
             return print("  No running background processes.")
         if running:
             print(f"  Stopping {len(running)} background process(es)...")
-            print(f"  ✅ Stopped {process_registry.kill_all()} process(es).")
+            print(f"  ✅ Stopped {process_registry.kill_all(source='cli.stop')} process(es).")
         if n_async:
             from tools.async_delegation import interrupt_all
             print(f"  ✅ Interrupted {interrupt_all(reason='/stop')} background delegation(s).")
@@ -1000,13 +999,12 @@ class CLICommandsMixin:
             _cp(f"  /journey failed: {exc}")
 
     def _handle_paste_command(self):
-        """Handle /paste — explicitly check the clipboard for an image; the reliable fallback where
-        BracketedPaste doesn't fire for image-only clipboards (VSCode terminal, Windows Terminal/WSL2)."""
-        from cli import _termux_example_image_path
-        if _is_termux_environment():
-            return _cp(_dim_line(
-                       "Clipboard image paste is not available on Termux — use /image <path> or "
-                       f"paste a local image path like {_termux_example_image_path()}"))
+        """Handle /paste — explicitly check clipboard for an image.
+
+        This is the reliable fallback for terminals where BracketedPaste
+        doesn't fire for image-only clipboard content (e.g., VSCode terminal,
+        Windows Terminal with WSL2).
+        """
         from hermes_cli.clipboard import has_clipboard_image
         if not has_clipboard_image():
             _cp(_dim_line('(._.) No image found in clipboard'))
@@ -1052,12 +1050,13 @@ class CLICommandsMixin:
 
     def _handle_image_command(self, cmd_original: str):
         """Handle /image <path> — attach a local image file for the next prompt."""
-        from cli import (
-            _IMAGE_EXTENSIONS, _resolve_attachment_path, _split_path_input, _termux_example_image_path)
+        from cli import _DIM, _IMAGE_EXTENSIONS, _RST, _cprint, _resolve_attachment_path, _split_path_input
         raw_args = (cmd_original.split(None, 1)[1].strip() if " " in cmd_original else "")
         if not raw_args:
-            hint = _termux_example_image_path() if _is_termux_environment() else "/path/to/image.png"
-            return _cp(_dim_line(f'Usage: /image <path>  e.g. /image {hint}'))
+            hint = "/path/to/image.png"
+            _cprint(f"  {_DIM}Usage: /image <path>  e.g. /image {hint}{_RST}")
+            return
+
         path_token, _remainder = _split_path_input(raw_args)
         image_path = _resolve_attachment_path(path_token)
         if image_path is None:
@@ -1067,11 +1066,7 @@ class CLICommandsMixin:
         self._attached_images.append(image_path)
         _cp(f"  📎 Attached image: {image_path.name}")
         if _remainder:
-            _cp(_dim_line(f'Now type your prompt (or use --image in single-query mode): {_remainder}'))
-        elif _is_termux_environment():
-            example = _termux_example_image_path(image_path.name)
-            tip = f'Tip: type your next message, or run hermes chat -q --image {example} "What do you see?"'
-            _cp(_dim_line(tip))
+            _cprint(f"  {_DIM}Now type your prompt (or use --image in single-query mode): {_remainder}{_RST}")
 
     # ---- /tools, /profile -----------------------------------------------------------------
     def _handle_tools_command(self, cmd: str):
@@ -1410,10 +1405,17 @@ class CLICommandsMixin:
         # user is still on open, not ended with end_reason="branched" and no branch (#11030).
         # The stable ``_branched_from`` marker keeps the branch visible in /resume + /sessions
         # even after the parent is re-ended with a different end_reason.
+        # The child sends the parent's exact system prompt: a row without one makes the branch's first
+        # turn rebuild (re-probing the workspace), so the warm cache the copied transcript buys is
+        # lost at byte 0 whenever the repo moved since the parent's session start.
+        parent_prompt = getattr(self.agent, "_cached_system_prompt", None)
+        if not isinstance(parent_prompt, str) or not parent_prompt:
+            with suppress(Exception):
+                parent_prompt = (self._session_db.get_session(parent_session_id) or {}).get("system_prompt")
         try:
             self._session_db.create_session(
                 session_id=new_session_id, source=os.environ.get("HERMES_SESSION_SOURCE", "cli"),
-                model=self.model, parent_session_id=parent_session_id,
+                model=self.model, parent_session_id=parent_session_id, system_prompt=parent_prompt or None,
                 model_config={"max_iterations": self.max_turns, "reasoning_config": self.reasoning_config,
                               "_branched_from": parent_session_id})
         except Exception as e:
@@ -1981,6 +1983,7 @@ class CLICommandsMixin:
                     **{k: runtime.get(k) for k in ("api_key", "base_url", "provider", "api_mode",
                                                    "max_tokens")}, enabled_toolsets=self.enabled_toolsets,
                     quiet_mode=True, verbose_logging=False, session_id=task_id, platform="cli",
+                    side_agent=True,
                     session_db=self._session_db, reasoning_config=self.reasoning_config,
                     service_tier=self.service_tier,
                     request_overrides=turn_route.get("request_overrides"),
@@ -1999,11 +2002,19 @@ class CLICommandsMixin:
                             self._app.invalidate()
 
                 bg_agent.thinking_callback = _bg_thinking
-                result = bg_agent.run_conversation(user_message=prompt, task_id=task_id)
-                response = result.get("final_response", "") if result else ""
-                if not response and result and result.get("error"):
-                    response = f"Error: {result['error']}"
-                return response
+                try:
+                    result = bg_agent.run_conversation(user_message=prompt, task_id=task_id)
+                    response = result.get("final_response", "") if result else ""
+                    if not response and result and result.get("error"):
+                        response = f"Error: {result['error']}"
+                    return response
+                finally:
+                    # One agent per /bg task in a long-lived CLI process: close()
+                    # is the owner boundary (memory shutdown, tool subprocesses,
+                    # httpx clients); an unclosed side agent leaks all of them
+                    # until the CLI exits (#50197).
+                    with suppress(Exception):
+                        bg_agent.close()
             finally:
                 with suppress(Exception):
                     set_sudo_password_callback(None)
@@ -2414,7 +2425,7 @@ class CLICommandsMixin:
             except Exception:
                 # Fall back to a bare invocation (editor value may not be argv-splittable everywhere).
                 subprocess.call(f"{editor} {shlex.quote(path)}", shell=True)
-            with open(path, "r", encoding="utf-8") as fh:
+            with open(path, "r", encoding="utf-8-sig") as fh:
                 raw = fh.read()
         finally:
             with suppress(OSError):

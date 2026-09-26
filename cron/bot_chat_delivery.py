@@ -28,7 +28,7 @@ def _root() -> Path:
 def read_pending(key: str) -> dict | None:
     """Exact-id read: fails closed on anything but a JSON object, never licensing an overwrite."""
     try:
-        record = json.loads((_root() / f"{key}.json").read_text(encoding="utf-8"))
+        record = json.loads((_root() / f"{key}.json").read_text(encoding="utf-8-sig"))
     except FileNotFoundError:
         return None
     if not isinstance(record, dict):
@@ -40,7 +40,7 @@ def _records(root: Path) -> list[tuple[Path, dict]]:
     records = []
     for path in root.glob("*.json"):
         try:
-            record = json.loads(path.read_text(encoding="utf-8"))
+            record = json.loads(path.read_text(encoding="utf-8-sig"))
             if not isinstance(record, dict):
                 raise ValueError(f"expected a JSON object, got {type(record).__name__}")
         except (OSError, ValueError) as exc:  # ValueError: corrupt JSON and invalid UTF-8 alike
@@ -103,7 +103,7 @@ def _drain(root: Path) -> None:
         records = sorted(_records(root), key=lambda item: item[1]["sequence"])
     for path, _ in records:
         with _FileLock(root / ".lock"):
-            record = json.loads(path.read_text(encoding="utf-8"))
+            record = json.loads(path.read_text(encoding="utf-8-sig"))
             if not isinstance(record, dict) or record["status"] != "queued":
                 continue
             home = Path(record["home"])

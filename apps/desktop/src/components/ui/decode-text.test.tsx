@@ -14,7 +14,9 @@ const settleTicks = (text: string) => text.length * 2 + 16 + 4
 
 beforeEach(() => {
   vi.useFakeTimers()
-  window.matchMedia = vi.fn().mockReturnValue({ addEventListener: vi.fn(), matches: false, removeEventListener: vi.fn() })
+  window.matchMedia = vi
+    .fn()
+    .mockReturnValue({ addEventListener: vi.fn(), matches: false, removeEventListener: vi.fn() })
 })
 
 afterEach(() => {

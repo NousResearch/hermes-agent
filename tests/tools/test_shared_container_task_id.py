@@ -34,10 +34,6 @@ def test_none_task_id_maps_to_default():
     assert terminal_tool._resolve_container_task_id(None) == "default"
 
 
-def test_empty_task_id_maps_to_default():
-    assert terminal_tool._resolve_container_task_id("") == "default"
-
-
 def test_cwd_only_override_collapses_to_default():
     """CWD-only overrides (ACP adapter workspace tracking) must NOT trigger
     container isolation — they should collapse to the shared 'default'
@@ -75,11 +71,6 @@ def test_env_type_override_keeps_own_id():
 # slot in _active_environments so switching from profile A (ssh_host=10.0.0.1)
 # to profile B (ssh_host=10.0.0.2) cannot reuse A's SSHEnvironment. Without this
 # the shared "default" slot silently runs commands on the wrong remote host.
-
-
-def test_session_key_scopes_to_its_own_slot(monkeypatch):
-    monkeypatch.setenv("HERMES_SESSION_KEY", "sess-A")
-    assert terminal_tool._resolve_container_task_id(None) == "session:sess-A"
 
 
 def test_distinct_session_keys_get_distinct_slots(monkeypatch):

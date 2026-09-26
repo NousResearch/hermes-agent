@@ -12,6 +12,7 @@ import {
   extractDroppedFiles,
   HERMES_PATHS_MIME,
   partitionDroppedFiles,
+  resolveImageAttachmentPreview,
   useComposerActions
 } from './use-composer-actions'
 
@@ -299,17 +300,39 @@ describe('useComposerActions native image drops', () => {
 
   it('does not attach a screenshot when its draft changes during native image saving', async () => {
     let finishSave!: (path: string) => void
-    const saveImageBuffer = vi.fn(() => new Promise<string>(resolve => { finishSave = resolve }))
+
+    const saveImageBuffer = vi.fn(
+      () =>
+        new Promise<string>(resolve => {
+          finishSave = resolve
+        })
+    )
+
     const add = vi.fn()
     Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { saveImageBuffer } })
-    const { result } = renderHook(() => useComposerActions({
-      activeSessionId: null,
-      currentCwd: '/test',
-      requestGateway: vi.fn(),
-      scope: { add, remove: vi.fn(() => null), target: 'main', update: vi.fn(() => true), updateIfCurrent: vi.fn(() => true) }
-    }))
+
+    const { result } = renderHook(() =>
+      useComposerActions({
+        activeSessionId: null,
+        currentCwd: '/test',
+        requestGateway: vi.fn(),
+        scope: {
+          add,
+          remove: vi.fn(() => null),
+          target: 'main',
+          update: vi.fn(() => true),
+          updateIfCurrent: vi.fn(() => true)
+        }
+      })
+    )
+
     let current = true
-    const pending = result.current.attachImageBlob(new Blob([new Uint8Array([1])], { type: 'image/png' }), () => current)
+
+    const pending = result.current.attachImageBlob(
+      new Blob([new Uint8Array([1])], { type: 'image/png' }),
+      () => current
+    )
+
     await vi.waitFor(() => expect(saveImageBuffer).toHaveBeenCalledOnce())
     current = false
     finishSave('/test/screenshot.png')
@@ -371,12 +394,10 @@ describe('useComposerActions native image drops', () => {
 
     expect(attached).toBe(true)
     expect(saveImageBuffer).toHaveBeenCalledWith(expect.any(Uint8Array), '.png', 'Screen Shot 2026-08-11.png')
-    expect(readFileDataUrl).toHaveBeenCalledWith(durablePath)
-    expect(readFileDataUrl).not.toHaveBeenCalledWith(transientPath)
-    // The bounded-preview pipeline no longer retains the full-resolution data
-    // URL on the attachment (`previewUrl`); the durable path is the authority
-    // and the display thumbnail resolves asynchronously. What matters here is
-    // that the attachment is keyed to the DURABLE path, not the transient one.
+    // The in-hand blob backs the chip preview (object URL — #63682), so the
+    // durable path is never base64-read over IPC either.
+    expect(readFileDataUrl).not.toHaveBeenCalled()
+    // The attachment is keyed to the DURABLE path, not the transient one.
     expect(add).toHaveBeenCalledWith(
       expect.objectContaining({
         kind: 'image',
@@ -396,22 +417,33 @@ describe('useComposerActions generated paste title metadata', () => {
     const savePastedText = vi.fn(async () => '/tmp/composer-pastes/pasted-content.txt')
     const add = vi.fn<(attachment: ComposerAttachment) => void>()
     Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { savePastedText } })
-    const { result } = renderHook(() => useComposerActions({
-      activeSessionId: null,
-      currentCwd: '/test',
-      requestGateway: vi.fn(),
-      scope: { add, remove: vi.fn(() => null), target: 'main', update: vi.fn(() => true), updateIfCurrent: vi.fn(() => true) }
-    }))
+
+    const { result } = renderHook(() =>
+      useComposerActions({
+        activeSessionId: null,
+        currentCwd: '/test',
+        requestGateway: vi.fn(),
+        scope: {
+          add,
+          remove: vi.fn(() => null),
+          target: 'main',
+          update: vi.fn(() => true),
+          updateIfCurrent: vi.fn(() => true)
+        }
+      })
+    )
 
     const pasted = `Database migration incident\n${'x'.repeat(1_500)}`
     await expect(result.current.attachPastedText(pasted)).resolves.toBe(true)
 
-    expect(add).toHaveBeenCalledWith(expect.objectContaining({
-      kind: 'file',
-      path: '/tmp/composer-pastes/pasted-content.txt',
-      refText: '@file:/tmp/composer-pastes/pasted-content.txt',
-      titlePreview: pasted.slice(0, 1_000)
-    }))
+    expect(add).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'file',
+        path: '/tmp/composer-pastes/pasted-content.txt',
+        refText: '@file:/tmp/composer-pastes/pasted-content.txt',
+        titlePreview: pasted.slice(0, 1_000)
+      })
+    )
   })
 })
 
@@ -758,5 +790,51 @@ describe('attachImagePath thumbnail separation', () => {
 
     expect(attachment?.previewUrl).toBe('data:text/plain;base64,aGVsbG8=')
     expect(attachment?.thumbnailUrl).toBeUndefined()
+  })
+})
+
+describe('resolveImageAttachmentPreview', () => {
+  const LOCAL_PREVIEW = 'data:image/png;base64,bG9jYWw='
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+    $connection.set(null)
+  })
+
+  it('uses an object URL for an in-hand File/Blob (OS Explorer drop) and skips IPC base64', async () => {
+    const readFileDataUrl = vi.fn(async () => LOCAL_PREVIEW)
+    const createObjectURL = vi.fn(() => 'blob:hermes-preview-1')
+
+    vi.stubGlobal('window', { hermesDesktop: { readFileDataUrl } })
+    vi.stubGlobal('URL', { ...URL, createObjectURL, revokeObjectURL: vi.fn() })
+
+    const file = new File([new Uint8Array([1, 2, 3, 4])], 'Lattice.png', { type: 'image/png' })
+    const preview = await resolveImageAttachmentPreview('C:\\Users\\Administrator\\Desktop\\Lattice.png', file)
+
+    expect(preview).toBe('blob:hermes-preview-1')
+    expect(createObjectURL).toHaveBeenCalledWith(file)
+    // The freeze path: never base64-load the dropped image over IPC.
+    expect(readFileDataUrl).not.toHaveBeenCalled()
+  })
+
+  it('falls back to IPC data-URL preview when only a path is available (paperclip)', async () => {
+    const readFileDataUrl = vi.fn(async () => LOCAL_PREVIEW)
+
+    vi.stubGlobal('window', { hermesDesktop: { readFileDataUrl } })
+
+    await expect(resolveImageAttachmentPreview('/Users/me/Pictures/pic.png')).resolves.toBe(LOCAL_PREVIEW)
+    expect(readFileDataUrl).toHaveBeenCalledWith('/Users/me/Pictures/pic.png')
+  })
+
+  it('ignores an empty Blob and falls back to the path preview', async () => {
+    const readFileDataUrl = vi.fn(async () => LOCAL_PREVIEW)
+
+    vi.stubGlobal('window', { hermesDesktop: { readFileDataUrl } })
+
+    const empty = new Blob([])
+
+    await expect(resolveImageAttachmentPreview('/tmp/shot.png', empty)).resolves.toBe(LOCAL_PREVIEW)
+    expect(readFileDataUrl).toHaveBeenCalledWith('/tmp/shot.png')
   })
 })

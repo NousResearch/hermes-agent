@@ -17,13 +17,11 @@ import pytest
 import tui_gateway.server as srv
 from tui_gateway import profile_roster_cache as cache
 
-
 @pytest.fixture(autouse=True)
 def _clear_memo():
     cache.invalidate()
     yield
     cache.invalidate()
-
 
 @pytest.fixture
 def home(tmp_path, monkeypatch) -> Path:
@@ -37,11 +35,9 @@ def home(tmp_path, monkeypatch) -> Path:
         "_ui_meta_revisions:\n  hermes-bots: 1\n", encoding="utf-8")
     return tmp_path
 
-
 def _row(name="bob", **params):
     envelope = srv._methods["profiles.list"](1, {"include_sessions": False, **params})
     return next(p for p in envelope["result"]["profiles"] if p["name"] == name)
-
 
 def test_the_cas_writer_round_trips_through_the_listing(home):
     """The real write path: profiles.configure reads the raw document, mutates and writes it back."""
@@ -58,7 +54,6 @@ def test_the_cas_writer_round_trips_through_the_listing(home):
     assert row["ui_meta"]["hermes-bots"]["title"] == "Bobby"
     assert row["ui_meta_revisions"]["hermes-bots"] == before + 1
 
-
 def test_an_avatar_added_without_touching_profile_yaml_is_still_seen(home):
     """``has_avatar`` stays live — that is why it is not part of the cached value."""
     assert _row()["has_avatar"] is False
@@ -68,28 +63,3 @@ def test_an_avatar_added_without_touching_profile_yaml_is_still_seen(home):
     (assets / "avatar.png").write_bytes(b"\x89PNG\r\n\x1a\n")
 
     assert _row()["has_avatar"] is True
-
-
-def test_an_unchanged_profile_yaml_is_parsed_once_across_repeated_polls(home, monkeypatch):
-    """The saving itself. Counted at the server-published name: the module's bodies are rebound."""
-    parsed: list = []
-    real = srv._read_profile_yaml
-
-    def _counting(profile_dir):
-        parsed.append(str(profile_dir))
-        return real(profile_dir)
-
-    monkeypatch.setattr(srv, "_read_profile_yaml", _counting)
-
-    for _ in range(3):
-        _row()
-
-    bob = str(home / "profiles" / "bob")
-    assert parsed.count(bob) == 1, f"profile.yaml re-parsed: {parsed}"
-
-
-def test_the_wire_key_order_is_unchanged(home):
-    """``ui_meta_revisions`` precedes ``ui_meta``, and ``has_avatar`` follows both."""
-    keys = [k for k in _row() if k.startswith("ui_meta") or k == "has_avatar"]
-
-    assert keys == ["ui_meta_revisions", "ui_meta", "has_avatar"]

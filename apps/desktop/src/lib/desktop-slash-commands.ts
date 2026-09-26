@@ -1,3 +1,4 @@
+import { translateNow } from '@/i18n/runtime'
 import { peekCachedSlashCompletion } from '@/lib/slash-completion-cache'
 
 import desktopSlashRegistry from './desktop-slash-registry.json'
@@ -462,7 +463,7 @@ const UNAVAILABLE_MESSAGE: Record<DesktopUnavailableReason, (command: string) =>
   advanced: command =>
     `${command} is not shown in the desktop slash palette. Use the relevant desktop control or terminal interface instead.`,
   'composer-voice': () =>
-    'Voice chat lives in the composer here: click the microphone button and choose "Start voice chat" (or press Ctrl+B).',
+    'Voice chat lives in the composer here: click the microphone button and choose "Start voice chat", or use the voice shortcut from Settings → Keyboard Shortcuts.',
   messaging: command => `${command} is only used from messaging platforms.`,
   settings: command => `${command} is managed from the desktop sidebar.`,
   terminal: command => `${command} is only available in the terminal interface.`
@@ -555,10 +556,28 @@ export function isDesktopSlashCommand(command: string): boolean {
 
 /** Gates discovery in the popover/completions. */
 export function isDesktopSlashSuggestion(command: string): boolean {
+  return isDesktopSlashSuggestionWithOptions(command, {})
+}
+
+/**
+ * Same gate, with the one escape hatch the composer needs: an alias the user
+ * typed EXACTLY (`/reset`, not a browsing prefix) must surface, or the empty
+ * "no matches" popover reads as "this command doesn't exist" while Enter still
+ * executes it (#57641). Gated on `isDesktopSlashCommand` so aliases whose
+ * canonical has no desktop surface (e.g. `/reload_mcp`) stay hidden.
+ */
+export function isDesktopSlashSuggestionWithOptions(
+  command: string,
+  options: { exactAlias?: string } = {}
+): boolean {
   const normalized = normalizeCommand(command)
 
   // Aliases stay hidden so the popover isn't cluttered with duplicates.
   if (isAliasCommand(normalized)) {
+    if (options.exactAlias != null) {
+      return normalizeCommand(options.exactAlias) === normalized && isDesktopSlashCommand(normalized)
+    }
+
     return false
   }
 
@@ -611,7 +630,19 @@ export function desktopSlashUnavailableMessage(command: string): string | null {
 }
 
 export function desktopSlashDescription(command: string, fallback = ''): string {
-  return SPEC_BY_NAME.get(canonicalDesktopSlashCommand(command))?.description || fallback
+  const canonical = canonicalDesktopSlashCommand(command)
+  const key = `composer.commandDescs.${canonical}`
+  const translated = translateNow(key)
+  const description = translated !== key ? translated : SPEC_BY_NAME.get(canonical)?.description
+
+  if (!description) {
+    return fallback
+  }
+
+  // Keep backend-owned flags and placeholders verbatim when replacing prose.
+  const usage = fallback.match(/\s+\(usage:\s+(.+)\)$/s)?.[0] ?? ''
+
+  return `${description}${usage}`
 }
 
 export function desktopSlashCommandArgumentMode(command: string): DesktopSlashArgumentMode | null {

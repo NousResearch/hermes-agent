@@ -608,11 +608,12 @@ function ClarifyToolSinglePending({
   )
 
   // Arrow keys move a visual cursor, 1-9 and A/B/C… pick directly, and Enter
-  // confirms the current answer (or acts on the highlighted row). Stands down
-  // whenever a focusable control (a field, a choice button, the action bar) is
-  // focused, so it never eats keystrokes meant for the composer, the Other box,
-  // or a button the user tabbed to — and whenever this card is not the visible
-  // one, since the binding is window-wide but the answer is session-specific.
+  // confirms the current answer (or acts on the highlighted row). A focused
+  // choice row stays in this handler so Enter reaches activateActive: that
+  // submits a staged single-select answer and toggles a multi-select row.
+  // Every other focused control (the Other box, Skip, Continue, the composer)
+  // keeps its own keys. Inactive cards stand down too — the binding is
+  // window-wide but the answer is session-specific.
   useEffect(() => {
     if (!ready || !hasChoices || submitting) {
       return
@@ -638,7 +639,13 @@ function ClarifyToolSinglePending({
 
       if (
         active &&
-        (active.isContentEditable || active.matches('a[href], button, input, select, textarea, [role="button"]'))
+        (active.isContentEditable ||
+          (active.matches('a[href], button, input, select, textarea, [role="button"]') &&
+            // Choice rows stay in this handler so Enter reaches activateActive.
+            // That submits a staged single-select answer and toggles a
+            // multi-select row. Skip, Continue, and the Other field stay
+            // hands-off.
+            !active.matches('button[data-choice]')))
       ) {
         return
       }
@@ -1064,7 +1071,11 @@ function ClarifyToolBatchPending({
 
   const confirmAll = useCallback(async () => {
     if (!request || !gateway) {
-      notifyError(new Error(request ? copy.gatewayDisconnected : copy.notReady), copy.sendFailed, request ? { action: reconnectAction() } : {})
+      notifyError(
+        new Error(request ? copy.gatewayDisconnected : copy.notReady),
+        copy.sendFailed,
+        request ? { action: reconnectAction() } : {}
+      )
 
       return
     }

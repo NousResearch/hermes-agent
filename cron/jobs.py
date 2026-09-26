@@ -216,10 +216,13 @@ def _job_running_in_this_process(job_id: str) -> bool:
     "the claiming tick died" from "the run is alive but slow" — a run stalled on network I/O (or a laptop
     that slept mid-run) legitimately outlives the TTL. The in-process ticker and the run share this process,
     so the scheduler's running set settles the common single-gateway case without any claim-age guesswork.
+
+    Home-scoped: one process ticks every profile, so the host-wide union of bare job ids would let
+    profile A's running ``daily-brief`` keep profile B's stale one-shot alive forever.
     """
     try:
-        from cron.scheduler import get_running_job_ids
-        return job_id in get_running_job_ids()
+        from cron.scheduler import is_job_running
+        return is_job_running(job_id)
     except Exception:
         logger.warning(
             "Cron running-set liveness check failed for job %r; keeping the "
@@ -295,7 +298,7 @@ def _jobs_lock():
         try:
             try:
                 ensure_dirs()
-                lock_fd = open(_jobs_lock_file(), "a+", encoding="utf-8")
+                lock_fd = open(_jobs_lock_file(), "a+", encoding="utf-8-sig")
                 lock_fd.seek(0)
                 if _acquire_flock(lock_fd, _JOBS_LOCK_TIMEOUT_SECONDS) is False:
                     logger.error(
@@ -852,6 +855,32 @@ def _ensure_aware(dt: datetime) -> datetime:
     return dt.astimezone(target_tz)
 
 
+def _elapsed_seconds(later: datetime, earlier: datetime) -> float:
+    """Return elapsed seconds between aware instants, independent of wall time."""
+    return (later.astimezone(timezone.utc) - earlier.astimezone(timezone.utc)).total_seconds()
+
+
+def _instant_after(left: datetime, right: datetime) -> bool:
+    """Whether *left* is a later absolute instant than *right*."""
+    return left.astimezone(timezone.utc) > right.astimezone(timezone.utc)
+
+
+def _instant_at_or_before(left: datetime, right: datetime) -> bool:
+    """Whether *left* is at or before *right* as an absolute instant."""
+    return left.astimezone(timezone.utc) <= right.astimezone(timezone.utc)
+
+
+def _instant_before(left: datetime, right: datetime) -> bool:
+    """Whether *left* is an earlier absolute instant than *right*."""
+    return left.astimezone(timezone.utc) < right.astimezone(timezone.utc)
+
+
+def _seconds_after(dt: datetime, seconds: float) -> datetime:
+    """*dt* plus real *seconds*, in *dt*'s zone. Aware ``+ timedelta`` is wall-clock arithmetic
+    that drops ``fold``, so inside a fall-back hour it lands an hour off."""
+    return (dt.astimezone(timezone.utc) + timedelta(seconds=seconds)).astimezone(dt.tzinfo)
+
+
 def _parse_aware(value: Any) -> Optional[datetime]:
     """``_ensure_aware(datetime.fromisoformat(value))``, or None when *value* is not a parseable ISO
     string."""
@@ -885,7 +914,7 @@ def _recoverable_oneshot_run_at(
         return None
     run_at = schedule.get("run_at")
     run_at_dt = _parse_aware(run_at) if run_at else None
-    if run_at_dt is not None and run_at_dt >= now - timedelta(seconds=ONESHOT_GRACE_SECONDS):
+    if run_at_dt is not None and _elapsed_seconds(now, run_at_dt) <= ONESHOT_GRACE_SECONDS:
         return run_at
     return None
 
@@ -955,7 +984,7 @@ def _job_is_stale_error_recurring(
     last_run_dt = _parse_aware(last_run) if last_run else None
     if last_run_dt is None:
         return False
-    age_seconds = (now - last_run_dt).total_seconds()
+    age_seconds = _elapsed_seconds(now, last_run_dt)
     if age_seconds < 0:
         return False
     grace = _compute_grace_seconds(schedule)
@@ -1224,7 +1253,7 @@ def record_ticker_heartbeat(success: bool = False) -> None:
 def _epoch_file_age(name: str) -> Optional[float]:
     """Seconds since the epoch stamp stored in ``<cron_dir>/<name>``; None = missing/unreadable."""
     try:
-        raw = (_current_cron_store().cron_dir / name).read_text(encoding="utf-8").strip()
+        raw = (_current_cron_store().cron_dir / name).read_text(encoding="utf-8-sig").strip()
         return max(0.0, time.time() - float(raw))
     except Exception:
         return None
@@ -1255,7 +1284,7 @@ def get_catch_up_occurrence_count() -> int:
     """Return the profile-local stale-schedule catch-up count."""
     path = _current_cron_store().cron_dir / "catch_up_occurrences"
     try:
-        return max(0, int(path.read_text(encoding="utf-8").strip()))
+        return max(0, int(path.read_text(encoding="utf-8-sig").strip()))
     except (OSError, ValueError):
         return 0
 
@@ -1280,7 +1309,7 @@ def clear_ticker_error() -> None:
 def get_ticker_last_error() -> Optional[str]:
     """Return the most recent recorded tick error message, or None."""
     try:
-        raw = (_current_cron_store().cron_dir / "ticker_last_error").read_text(encoding="utf-8")
+        raw = (_current_cron_store().cron_dir / "ticker_last_error").read_text(encoding="utf-8-sig")
     except Exception:
         return None
     lines = raw.splitlines()
@@ -2065,7 +2094,7 @@ def resume_job(job_id: str) -> Optional[Dict[str, Any]]:
     if (
         job["schedule"].get("kind") in {"cron", "interval"}
         and stored_dt is not None
-        and stored_dt <= _hermes_now()
+        and _instant_at_or_before(stored_dt, _hermes_now())
     ):
         next_run_at = stored_next
         logger.info(
@@ -2139,7 +2168,7 @@ def _claim_is_live(claim: Any, now: datetime, ttl_seconds: float) -> bool:
     if not isinstance(claim, dict) or not claim.get("at"):
         return False
     claimed_at = _parse_aware(claim["at"])
-    if claimed_at is None or not (0 <= (now - claimed_at).total_seconds() < ttl_seconds):
+    if claimed_at is None or not (0 <= _elapsed_seconds(now, claimed_at) < ttl_seconds):
         return False
     return not _claim_owner_is_dead(claim)
 
@@ -2349,6 +2378,7 @@ def mark_job_run(
     expected_fire_owner: Optional[str] = None,
     model_unreachable: bool = False,
     quota_hold_seconds: Optional[float] = None,
+    recover_consumed_fire: bool = False,
 ) -> bool:
     """Mark a job as run: update last_run_at/last_status, bump completed, recompute next_run_at,
     and retire the record as a terminal completion when the repeat limit is reached.
@@ -2364,8 +2394,10 @@ def mark_job_run(
     (Cowork-style; see cron/unreachable_retry.py).
 
     ``quota_hold_seconds``: the provider said it stays closed for this long (a quota 429 with
-    ``retry after <N>s``). Recurring jobs are parked at their first occurrence after the window
-    instead of re-firing into it on every tick (cron/quota_hold.py, #89376).
+    ``retry after <N>s``). Recurring jobs are parked through the window instead of re-firing into
+    it on every tick. ``recover_consumed_fire`` lets a scheduled sparse cron recover its
+    consumed fire when the provider reopens; manual runs retain the natural schedule
+    (cron/quota_hold.py, #89376).
     """
     def apply(jobs, _i, job):
         if expected_fire_owner is not None:
@@ -2387,7 +2419,7 @@ def mark_job_run(
             # Any run that reached the model (either outcome) resets the re-run ladder.
             clear_state(job)
         if not success and quota_hold_seconds and not is_terminal_job(job):
-            quota_hold.plan_hold(job, quota_hold_seconds)
+            quota_hold.plan_hold(job, quota_hold_seconds, recover_consumed_fire=recover_consumed_fire)
         else:
             quota_hold.clear_state(job)
         save_jobs(jobs)
@@ -2897,7 +2929,7 @@ def _repair_timezone_shifted_cron(d: _DueJob) -> bool:
     offset change meeting the same conditions SKIPS the pending occurrence; accepted as rare."""
     now = d.scan.now
     if not (
-        d.next_run_dt <= now
+        _instant_at_or_before(d.next_run_dt, now)
         and _timezone_offset_mismatch(d.raw_next_run_dt, now)
         and _stored_wall_clock_is_future(d.raw_next_run_dt, now)
     ):
@@ -2925,7 +2957,7 @@ def _rearm_stale_error_recurring(d: _DueJob) -> datetime:
     now = d.scan.now
     if not (
         d.kind in ("cron", "interval")
-        and d.next_run_dt > now
+        and _instant_after(d.next_run_dt, now)
         and _job_is_stale_error_recurring(d.job, d.schedule, now)
     ):
         return d.next_run_dt
@@ -2935,7 +2967,10 @@ def _rearm_stale_error_recurring(d: _DueJob) -> datetime:
     else:
         recovered_next = d.recompute_next()
         recovered_next_dt = _parse_aware(recovered_next) if recovered_next else None
-    if not (recovered_next and recovered_next_dt is not None and recovered_next_dt < d.next_run_dt):
+    if not (
+        recovered_next and recovered_next_dt is not None
+        and _instant_before(recovered_next_dt, d.next_run_dt)
+    ):
         return d.next_run_dt
     jid = d.job.get("id")
     logger.warning(
@@ -2953,13 +2988,20 @@ def _reanchor_stale_cron(d: _DueJob) -> bool:
     """Stale-schedule guard for a due cron instant; True when re-anchored without firing.
 
     A direct edit of schedule.expr leaves next_run_at on the old lattice, so re-anchor first (from
-    the current expr, so this converges). An offset-representation migration also moves a legacy
-    instant off the lattice, and re-anchoring THAT swallowed a due occurrence — so classify, and
-    let
-    the migration case fall through to fire ONCE (at-most-once holds: nothing re-reads the legacy
-    instant after advance/mark_job_run rewrites it)."""
+    the current expr, so this converges). Some instants are off the lattice on purpose and
+    authorize one fire instead: an offset-representation migration that would otherwise swallow
+    a never-fired occurrence, and the failure-path planners' parked instants (a quota recovery
+    before a sparse cron's next natural occurrence, an unreachable-model retry rung). All fall
+    through to fire ONCE (at-most-once holds: completion rewrites the instant)."""
     stale_class = _classify_stale_cron_next_run(d.schedule, d.raw_next_run_dt, d.next_run_dt)
     if stale_class == STALE_CRON_EXPR_EDIT:
+        from cron.quota_hold import is_recovery_fire
+        from cron.unreachable_retry import is_retry_fire
+        if is_recovery_fire(d.job, d.next_run) or is_retry_fire(d.job, d.next_run):
+            logger.info(
+                "cron.off_lattice_fire job='%s' id=%s expr=%r at=%s",
+                d.label, d.job.get("id"), d.schedule.get("expr"), d.next_run)
+            return False
         new_next = d.recompute_next()
         logger.info(
             "Job '%s' next_run_at %s does not match its current "
@@ -2988,13 +3030,13 @@ def _fast_forward_missed_recurring(d: _DueJob, grace: int) -> bool:
     protects the crash window before mark_job_run and covers the external fire_due path, which never
     calls advance_next_run. mark_job_run re-anchors on completion, so the value is provisional.
     """
-    if (d.scan.now - d.next_run_dt).total_seconds() <= grace:
+    if _elapsed_seconds(d.scan.now, d.next_run_dt) <= grace:
         return False
     new_next = d.recompute_next()
     if not new_next:
         return False
     d.scan.persist(d.job["id"], next_run_at=new_next)
-    if (_ensure_aware(datetime.fromisoformat(new_next)) > d.scan.now
+    if (_instant_after(_ensure_aware(datetime.fromisoformat(new_next)), d.scan.now)
             and not _cron_config_number("catch_up_missed", True, lambda value: value is not False)):
         logger.info(
             "Job '%s' missed its scheduled time (%s, grace=%ds). "
@@ -3016,7 +3058,7 @@ def _retire_expired_oneshot(d: _DueJob) -> bool:
     and recovery never revives them; only the due scan used to dispatch them hours late). With no
     claim stamped, retire it with a diagnostic (never silently delete). A claim may mean a run is
     still in flight elsewhere — skip but keep the record so its mark_job_run can land."""
-    if (d.scan.now - d.next_run_dt).total_seconds() <= ONESHOT_GRACE_SECONDS:
+    if _elapsed_seconds(d.scan.now, d.next_run_dt) <= ONESHOT_GRACE_SECONDS:
         return False
     if not (d.job.get("run_claim") or d.job.get("fire_claim")):
         _write_missed_oneshot_diagnostic(d.job, d.next_run)
@@ -3125,7 +3167,7 @@ def _evaluate_due_job(job: Dict[str, Any], scan: _DueScan, run_claim_ttl: float)
     if kind == "cron" and not manual_run and _repair_timezone_shifted_cron(d):
         return False
     d.next_run_dt = _rearm_stale_error_recurring(d)
-    if d.next_run_dt > now:
+    if _instant_after(d.next_run_dt, now):
         return False
 
     # Only the dispatch snapshot carries this field; never infer it from a later stamp.
@@ -3151,7 +3193,7 @@ def _evaluate_due_job(job: Dict[str, Any], scan: _DueScan, run_claim_ttl: float)
     # late catch-up. Recurring only — expired one-shots were retired above; manual triggers aren't
     # late.
     if not manual_run and recurring:
-        lateness = max(0.0, (now - d.next_run_dt).total_seconds())
+        lateness = max(0.0, _elapsed_seconds(now, d.next_run_dt))
         # See #99879.
         dispatch_stamp = {
             "scheduled_at": next_run,

@@ -8,6 +8,7 @@ import path from 'node:path'
 import { ipcMain, shell } from 'electron'
 
 import { installDesktopPluginFromGit, probePluginRepo } from './desktop-plugin-install'
+import { removeDesktopPlugin } from './desktop-plugin-remove'
 import {
   DESKTOP_PLUGINS_DIR,
   ensureDir,
@@ -159,6 +160,12 @@ export function registerFsIpc({
       Boolean(payload?.force)
     )
   })
+
+  // Uninstall a standalone desktop plugin by FOLDER NAME under the app-level
+  // root. The renderer never passes a path; containment is re-checked inside.
+  ipcMain.handle('hermes:plugin:removeDesktop', async (_event, payload) =>
+    removeDesktopPlugin(path.join(hermesHome, DESKTOP_PLUGINS_DIR), payload?.name)
+  )
 
   // Rename a file/folder in place. The renderer passes the existing path + a new
   // base name; the destination is resolved in the SAME parent dir so a rename can

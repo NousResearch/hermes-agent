@@ -41,10 +41,10 @@ no-foreground invariant, click-dispatch internals — see
 
 ## Enabling
 
-**Fresh installs already have the driver.** The Hermes installer
-(`install.sh` / `install.ps1`) pre-installs `cua-driver` (best-effort;
-pass `--skip-computer-use` / `-SkipComputerUse` to opt out), so enabling
-Computer Use is just a config flip:
+**The driver is a PM-managed tool.** `cua-driver` is pinned in
+`pm/lock.json`; the installer does not fetch it up front (there is no
+`--skip-computer-use` / `-SkipComputerUse` flag), and it is prepared the
+first time something enables Computer Use:
 
 - **`hermes tools`** → pick `🖱️  Computer Use` — installs the driver
   automatically if it's still missing.
@@ -52,21 +52,21 @@ Computer Use is just a config flip:
   driver is missing, the toggle kicks off the install in the background
   automatically (watch progress in the toolset panel).
 
-**Manual fallback (older installs, skipped installer step):**
+**Manual install / repair:**
 
 ```
 hermes computer-use install
 ```
 
-This fetches and runs the upstream cua-driver installer — `install.sh`
-on macOS/Linux, `install.ps1` on Windows. Use `hermes computer-use
-status` to verify the install.
+This asks PM to prepare the pinned `cua-driver` package (verified against
+`pm/lock.json`) — it does not run the upstream installer. Use
+`hermes computer-use status` to verify the install.
 
 Already have cua-driver? Hermes reuses it when it supports the 0.20 runtime
 contract. During setup, toolset enablement, `hermes update`, and the first
 `computer_use` call of a session, Hermes checks the local version and
 manifest. It repairs an old or incomplete standard installation through
-the upstream installer (at most once per session at runtime). A binary
+PM (at most once per session at runtime). A binary
 selected with `HERMES_CUA_DRIVER_CMD` stays
 under your control, so Hermes reports the incompatibility and leaves it
 unchanged.
@@ -84,7 +84,7 @@ platform-appropriate prereqs:
 
 | Platform | Prereqs |
 |---|---|
-| **macOS** | System Settings → Privacy & Security → **Accessibility** + **Screen Recording**. Grant the identity named by `hermes computer-use doctor`. Standard mode uses CuaDriver.app; bounded and unrestricted modes use the Hermes host identity. |
+| **macOS** | System Settings → Privacy & Security → **Accessibility** + **Screen Recording**. Grant the identity named by `hermes computer-use doctor` (CuaDriver, `com.trycua.driver`, in every permission mode — the driver daemon always launches through `CuaDriver.app`). |
 | **Windows** | None at install time. If you're driving over SSH (not RDP / console), you need the autostart pattern — see [cua.ai/docs/how-to-guides/driver/windows-ssh](https://cua.ai/docs/how-to-guides/driver/windows-ssh) for the Session 0 ↔ Session 1+ proxy. |
 | **Linux** | A reachable display server: `DISPLAY` set for X11, or `XDG_SESSION_TYPE=wayland`. Wayland sessions need an XWayland bridge for capture. AT-SPI must be on (default on GNOME/KDE/Xfce). |
 
@@ -154,8 +154,8 @@ resetting or closing the Hermes session, cancellation cleanup, or process exit
 closes that transport session. Hermes also stops private runtimes that it
 launched for bounded or unrestricted access. One Hermes
 conversation cannot change another runtime's mode or grants. Bounded and
-unrestricted modes use a private
-embedded service under the Hermes host identity.
+unrestricted modes use a private embedded daemon, launched through
+`CuaDriver.app` on macOS (see above).
 
 `smart` approval remains `standard`: an LLM classification cannot stand in for
 a reviewed manifest.
@@ -441,10 +441,14 @@ of screenshot context, not ~600K.
     [windows-ssh](https://cua.ai/docs/how-to-guides/driver/windows-ssh)
     has the recipe.
   - **Linux** requires a reachable display server. Headless servers
-    need Xvfb (`Xvfb :99 -screen 0 1920x1080x24`) before
-    `computer_use` can capture or inject events. Pure Wayland sessions
-    need an XWayland bridge for screen capture (cua-driver's Wayland
-    inject path handles input independently).
+    get one from [Bot Screen](./bot-screen.md): a per-profile Xfce
+    desktop over TigerVNC, streamed into Hermes Desktop, where you can
+    take over for logins and 2FA. You start it from the Desktop's
+    Screen pane or `hermes computer-use screen start`; it starts on
+    first use (the first `computer_use` call or headed browser use) only
+    when `bot_desktop.auto_start: true` is set (off by default).
+    Pure Wayland sessions need an XWayland bridge for screen capture
+    (cua-driver's Wayland inject path handles input independently).
 
 For cross-platform GUI automation without the desktop overhead (and
 without TCC / Session 0 / X11 setup), the `browser` toolset uses a
@@ -609,6 +613,19 @@ run `hermes tools` and enable the Computer Use toolset.
 **Clicks seem to have no effect** — Capture and verify. A modal you
 didn't see may be blocking input. Dismiss it with `escape` or the close
 button.
+
+**macOS: System Settings shows CuaDriver ON, but `hermes computer-use
+permissions status` / `doctor` report Accessibility or Screen Recording as
+not granted** — the stored grant is stale. macOS keys each permission row to
+the app's code-signing requirement; a row written for an earlier CuaDriver
+build stops matching after a driver update, and flipping the toggle does not
+rewrite it. Reset the affected rows and re-grant:
+
+```
+tccutil reset Accessibility com.trycua.driver
+tccutil reset ScreenCapture com.trycua.driver
+hermes computer-use permissions grant
+```
 
 **Element indices are stale** — SOM indices are only valid until the
 next `capture`. Re-capture after any state-changing action. The

@@ -5,9 +5,9 @@ const openSessionTile = vi.fn()
 const reuseBlankDraftTile = vi.fn()
 const setSessionTileWorkspaceScope = vi.fn()
 
-const focusedSessionWorkspaceScope = vi.fn<
-  () => { workspaceMode: 'bots' | 'sessions'; workspaceOwnerKey?: string }
->(() => ({ workspaceMode: 'sessions' }))
+const focusedSessionWorkspaceScope = vi.fn<() => { workspaceMode: 'bots' | 'sessions'; workspaceOwnerKey?: string }>(
+  () => ({ workspaceMode: 'sessions' })
+)
 
 const openSessionInNewWindow = vi.fn()
 const canOpenSessionWindow = vi.fn(() => true)
@@ -35,31 +35,7 @@ vi.mock('./routes', () => ({
 
 import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
 
-import { mainChatOccupied, openSession, openSessionFromPicker, openSessionIntentFromModifiers } from './open-session'
-
-/**
- * The question behind both the sidebar "+" and a palette open: is there a
- * conversation on main that must not be discarded? A create affordance stacks a
- * tab rather than replacing a chat that may still be mid-turn, and an open from
- * nowhere does the same.
- */
-describe('mainChatOccupied', () => {
-  it('is occupied once a conversation is on screen', () => {
-    expect(mainChatOccupied('runtime-a', 'stored-a')).toBe(true)
-  })
-
-  it('is occupied by a live runtime whose stored id has not landed yet', () => {
-    expect(mainChatOccupied('runtime-a', null)).toBe(true)
-  })
-
-  it('is occupied by a selected session still resuming into a runtime', () => {
-    expect(mainChatOccupied(null, 'stored-a')).toBe(true)
-  })
-
-  it('is free when nothing is open', () => {
-    expect(mainChatOccupied(null, null)).toBe(false)
-  })
-})
+import { openSession, openSessionFromPicker, openSessionIntentFromModifiers } from './open-session'
 
 describe('openSessionIntentFromModifiers', () => {
   it('defaults to in-place', () => {

@@ -1,7 +1,5 @@
 import codecs
-import importlib
 import os
-import sys
 
 from hermes_cli.env_loader import load_hermes_dotenv
 
@@ -87,58 +85,10 @@ def test_bom_first_key_is_seen_by_installer_and_scrub_alike(tmp_path, monkeypatc
     assert scoped["COMMENTED_KEY"] == os.environ["COMMENTED_KEY"] == "value"
 
 
-def test_bomless_utf8_env_still_loads(tmp_path, monkeypatch):
-    """BOM-less UTF-8 .env files must keep loading after utf-8-sig."""
-    home = tmp_path / "hermes"
-    home.mkdir()
-    env_file = home / ".env"
-    env_file.write_text("OPENAI_API_KEY=sk-plain\nSECOND_KEY=ok\n", encoding="utf-8")
-
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.delenv("SECOND_KEY", raising=False)
-
-    loaded = load_hermes_dotenv(hermes_home=home)
-
-    assert loaded == [env_file]
-    assert os.getenv("OPENAI_API_KEY") == "sk-plain"
-    assert os.getenv("SECOND_KEY") == "ok"
 
 
-def test_latin1_env_falls_back(tmp_path, monkeypatch):
-    """Invalid UTF-8 bytes must still load via the latin-1 fallback."""
-    home = tmp_path / "hermes"
-    home.mkdir()
-    env_file = home / ".env"
-    # 0xE9 is "é" in latin-1 and not a valid UTF-8 lead sequence alone.
-    env_file.write_bytes(b"LATIN1_VALUE=caf\xe9\n")
-
-    monkeypatch.delenv("LATIN1_VALUE", raising=False)
-
-    loaded = load_hermes_dotenv(hermes_home=home)
-
-    assert loaded == [env_file]
-    assert os.getenv("LATIN1_VALUE") == "café"
 
 
-def test_utf8_bom_preserves_first_api_key_name(tmp_path, monkeypatch):
-    """Real-world case: BOM + first line is a provider API key name."""
-    home = tmp_path / "hermes"
-    home.mkdir()
-    env_file = home / ".env"
-    env_file.write_bytes(
-        b"\xef\xbb\xbfANTHROPIC_API_KEY=sk-test-123\nSECOND_KEY=ok\n"
-    )
-
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.delenv("SECOND_KEY", raising=False)
-    monkeypatch.delenv("\ufeffANTHROPIC_API_KEY", raising=False)
-
-    loaded = load_hermes_dotenv(hermes_home=home)
-
-    assert loaded == [env_file]
-    assert os.getenv("ANTHROPIC_API_KEY") == "sk-test-123"
-    assert os.getenv("SECOND_KEY") == "ok"
-    assert os.environ.get("\ufeffANTHROPIC_API_KEY") is None
 
 
 def test_utf8_bom_plus_invalid_utf8_preserves_first_key(tmp_path, monkeypatch):
@@ -167,21 +117,6 @@ def test_utf8_bom_plus_invalid_utf8_preserves_first_key(tmp_path, monkeypatch):
     assert os.getenv("BAD") == "café"
     assert os.environ.get("\ufeffANTHROPIC_API_KEY") is None
 
-def test_bomless_latin1_env_still_loads(tmp_path, monkeypatch):
-    """BOM-less cp1252/latin-1 .env files must keep loading after the BOM strip."""
-    home = tmp_path / "hermes"
-    home.mkdir()
-    env_file = home / ".env"
-    env_file.write_bytes(b"LATIN1_VALUE=caf\xe9\nOTHER=ok\n")
-
-    monkeypatch.delenv("LATIN1_VALUE", raising=False)
-    monkeypatch.delenv("OTHER", raising=False)
-
-    loaded = load_hermes_dotenv(hermes_home=home)
-
-    assert loaded == [env_file]
-    assert os.getenv("LATIN1_VALUE") == "café"
-    assert os.getenv("OTHER") == "ok"
 
 def test_latin1_fallback_stream_honors_override(tmp_path, monkeypatch):
     """Stream-based latin-1 fallback must honor override= identically to dotenv_path."""

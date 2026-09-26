@@ -43,6 +43,19 @@ PARTIAL_FAILED_TURN_NOTICE = (
     "This turn did not complete. Some actions may already have run; verify their effects "
     "before resending."
 )
+# ``messages.display_kind`` of that row: display-only (stripped before every provider request),
+# so renderers show a Hermes notice and room pollers never read it as the model's reply.
+FAILED_TURN_DISPLAY_KIND = "failed_turn"
+
+
+def untyped_failed_turn_display_kind(role: Any, content: Any) -> Optional[str]:
+    """``FAILED_TURN_DISPLAY_KIND`` for a boundary row persisted before the closers typed it
+    (exact notice text, so a real reply quoting it stays a reply); read-side only."""
+    if role == "assistant" and isinstance(content, str) and content.strip() in (
+        FAILED_TURN_NOTICE, PARTIAL_FAILED_TURN_NOTICE,
+    ):
+        return FAILED_TURN_DISPLAY_KIND
+    return None
 
 
 def failed_turn_notice(turn_messages: Any) -> str:
@@ -81,6 +94,9 @@ _EXIT_REASON_FAILURES: Tuple[Tuple[str, str, bool, bool], ...] = (
     # Advisory: the reasoning-only text may literally be the answer, and cron stays silent.
     ("empty_response_exhausted", "empty_response", True, False),
     ("all_retries_exhausted_no_response", FailoverReason.server_error.value, True, True),
+    # #55316/#54756: the loop stopped on a tool tail with no follow-up text; the
+    # finalizer synthesizes the visible close and fails the turn.
+    ("pending_tool_result", "loop_error", True, True),
     ("interpreter_shutdown", "interpreter_shutdown", False, True),
     # Advisory: a deterministic local bug is not a task failure for the kanban breaker.
     ("local_processing_error", "loop_error", False, False),
@@ -127,6 +143,23 @@ def exit_reason_failure(turn_exit_reason: Any) -> Optional[ExitFailure]:
     return None
 
 
+def is_max_iteration_handoff(result: Any) -> bool:
+    """A non-failed, non-interrupted ``max_iterations_reached(N/N)`` result that still carries a
+    summary. ``completed`` is False because the work did not finish in that turn, but the turn
+    itself is a resumable boundary — not a failure — so cron delivers the summary and an active
+    ``/goal`` may judge it (#102213). Provider/API failures never match (cf. #63180)."""
+    if not isinstance(result, dict):
+        return False
+    if result.get("failed") is True or result.get("interrupted") is True:
+        return False
+    if result.get("completed") is not False:
+        return False
+    reason = result.get("turn_exit_reason")
+    if not (isinstance(reason, str) and reason.startswith("max_iterations_reached(")):
+        return False
+    return bool(str(result.get("final_response") or "").strip())
+
+
 # ---- chat copy tables -----------------------------------------------------------------------
 
 _NEXT_STEPS_RETRY = "Wait a minute and send /retry, or switch models with /model."
@@ -166,8 +199,10 @@ _NONRETRYABLE_COPY: Dict[str, str] = {
         "with /model."
     ),
     FailoverReason.provider_policy_blocked.value: (
-        "{label}'s account settings don't allow this model for your request, so it didn't "
-        "answer. Check the provider's data/privacy settings, or switch models with /model."
+        "{label} refused this request because of a policy on your account (its data/privacy "
+        "settings, or a block the model's upstream provider placed on the account), so the model "
+        "didn't answer and retrying won't help. Check the account with the provider, or switch "
+        "models with /model."
     ),
     FailoverReason.upstream_blocked.value: (
         "A firewall/CDN in front of {label} blocked the request before it reached the model, so "
@@ -211,6 +246,9 @@ FAILURE_CAUSE_GLOSS: Dict[str, str] = {
     FailoverReason.upstream_blocked.value: "a firewall/CDN in front of the AI model service blocked the request",
     FailoverReason.model_not_found.value: "the model {subject} uses was not found at the AI model service",
     FailoverReason.content_policy_blocked.value: "the AI model service's safety filter rejected the request",
+    FailoverReason.provider_policy_blocked.value: (
+        "the AI model service refused the request because of a policy on the account"
+    ),
     "context_overflow": "{possessive} request grew too large for the model",
     "payload_too_large": "{possessive} request grew too large for the model",
 }

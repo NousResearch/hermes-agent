@@ -108,7 +108,7 @@ const config: Config = {
     // locale via the docusaurus_tag/lang facets the crawler records carry.
     algolia: {
       appId: '2JLBVEYZN5',
-      apiKey: '8fda2a49223ce185ac30c2dbf6898a07',
+      apiKey: '9629ec26628d1a126535fd5ef408990d',
       indexName: 'hermes docs',
       contextualSearch: true,
     },
@@ -127,6 +127,7 @@ const config: Config = {
       logo: {
         alt: 'Hermes Agent',
         src: 'img/logo.png',
+        srcDark: 'img/logo-dark.png',
       },
       items: [
         {

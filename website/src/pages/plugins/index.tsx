@@ -24,11 +24,14 @@ import {
   tierOf,
 } from "../../components/PluginCatalog/catalog";
 import CopyButton from "../../components/PluginCatalog/CopyButton";
+import { groupCatalogPlugins, sortCatalogPlugins } from "../../../../apps/shared/src/catalog-browse";
 
 // Routes Docusaurus serves the static API JSON from. `baseUrl` is `/docs/`,
 // `static/api/` ends up at `/docs/api/` — same pattern as the Skills Hub.
 const PLUGINS_URL = "/docs/api/plugins.json";
 const META_URL = "/docs/api/plugins-meta.json";
+/** Mirrors the `max-width: 600px` blocks in styles.module.css. */
+const MOBILE_PANEL_QUERY = "(max-width: 600px)";
 
 const TIER_ORDER = ["all", "official", "community"];
 
@@ -42,17 +45,8 @@ const SORT_OPTIONS: { key: SortKey; label: string; title: string }[] = [
   { key: "updated", label: "Recently updated", title: "Most recently re-pinned or edited first" },
 ];
 
-function dateMs(iso?: string | null): number {
-  const t = iso ? new Date(iso).getTime() : NaN;
-  return Number.isFinite(t) ? t : -Infinity;
-}
-
 function sortPlugins(list: CatalogPlugin[], sort: SortKey): CatalogPlugin[] {
-  if (sort === "stars") return list;
-  const field = sort === "newest" ? "addedAt" : "updatedAt";
-  return [...list].sort(
-    (a, b) => dateMs(b[field]) - dateMs(a[field]) || a.name.localeCompare(b.name),
-  );
+  return sortCatalogPlugins(list, sort);
 }
 
 function highlightMatch(text: string, query: string): React.ReactNode {
@@ -71,16 +65,12 @@ function highlightMatch(text: string, query: string): React.ReactNode {
 function PluginCard({
   plugin,
   query,
-  expanded,
-  onToggle,
   onPick,
   onCategoryClick,
   style,
 }: {
   plugin: CatalogPlugin;
   query: string;
-  expanded: boolean;
-  onToggle: () => void;
   /** Picker embed mode: render "+ Add to this Agent" and call this. */
   onPick?: (plugin: CatalogPlugin) => void;
   onCategoryClick?: (category: string) => void;
@@ -95,14 +85,21 @@ function PluginCard({
   const pagePath = pluginPagePath(plugin.name);
   const history = useHistory();
   const pageHref = useBaseUrl(pagePath); // <Link> adds baseUrl itself; history.push does not
-  // Outside the Desktop picker a card is a link to the plugin's own page (shareable, indexable);
-  // inside the picker iframe navigation would leave the host's embed, so the card keeps
-  // expanding in place there.
-  const onCardClick = onPick ? onToggle : () => history.push(pageHref);
+  // A card IS the link to the plugin's own page: nothing expands or collapses in place. Inside
+  // the Desktop picker iframe an in-frame navigation would leave the host's embed, so the page
+  // opens in a new tab there instead.
+  const onCardClick = onPick
+    ? () => window.open(new URL(pageHref, window.location.href).toString(), "_blank", "noopener,noreferrer")
+    : () => history.push(pageHref);
 
   return (
     <div
-      className={`${styles.card} ${expanded ? styles.cardExpanded : ""}`}
+      className={styles.card}
+      role="link"
+      tabIndex={0}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") onCardClick();
+      }}
       onClick={onCardClick}
       style={style}
     >
@@ -159,7 +156,7 @@ function PluginCard({
           </div>
         </div>
 
-        <p className={`${styles.cardDesc} ${expanded ? styles.cardDescFull : ""}`}>
+        <p className={styles.cardDesc}>
           {highlightMatch(plugin.description || "No description available.", query)}
         </p>
 
@@ -239,7 +236,7 @@ function PluginCard({
           </a>
         )}
 
-        {expanded && (
+        {
           <div className={styles.cardDetail}>
             {plugin.maintainer && (
               <div className={styles.metaRow}>
@@ -320,7 +317,7 @@ function PluginCard({
               ) : null}
             </div>
           </div>
-        )}
+        }
       </div>
     </div>
   );
@@ -382,8 +379,9 @@ export default function PluginCatalogPage() {
   const [tierFilter, setTierFilter] = useState("all");
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [sort, setSort] = useState<SortKey>("stars");
-  const [expandedCard, setExpandedCard] = useState<string | null>(null);
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
+  const filterPanelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -412,17 +410,44 @@ export default function PluginCatalogPage() {
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "/" && document.activeElement?.tagName !== "INPUT") {
+      const target = e.target instanceof HTMLElement ? e.target : null;
+      const isEditable =
+        target?.matches("input, textarea, select") ||
+        target?.isContentEditable ||
+        Boolean(target?.closest("[contenteditable='true']"));
+      if (e.key === "/" && !isEditable) {
         e.preventDefault();
+        e.stopImmediatePropagation();
         searchRef.current?.focus();
       }
       if (e.key === "Escape") {
         searchRef.current?.blur();
-        setExpandedCard(null);
+        setFiltersOpen(false);
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
+  }, []);
+
+  // Reveal the panel once it opens. `block: "nearest"` leaves the page alone
+  // when the panel is already in view; `start` scrolled the hero off-screen.
+  useEffect(() => {
+    if (!filtersOpen) return;
+    const frame = requestAnimationFrame(() => {
+      filterPanelRef.current?.scrollIntoView({ block: "nearest" });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [filtersOpen]);
+
+  // The panel only exists in the mobile band, so leaving it should drop the
+  // state too — otherwise `aria-expanded` stays "true" on a hidden toggle.
+  useEffect(() => {
+    const media = window.matchMedia(MOBILE_PANEL_QUERY);
+    const sync = () => {
+      if (!media.matches) setFiltersOpen(false);
+    };
+    media.addEventListener("change", sync);
+    return () => media.removeEventListener("change", sync);
   }, []);
 
   const allPlugins: CatalogPlugin[] = data?.plugins ?? [];
@@ -444,12 +469,7 @@ export default function PluginCatalogPage() {
   // than one undifferentiated wall. Filtering or searching flattens to a grid.
   const grouped = useMemo(() => {
     if (search.trim() || categoryFilter !== "all") return null;
-    const buckets = new Map<string, CatalogPlugin[]>();
-    for (const p of filtered) {
-      const key = CATEGORY_CONFIG[p.category] ? p.category : "general";
-      (buckets.get(key) ?? buckets.set(key, []).get(key)!).push(p);
-    }
-    return CATEGORY_ORDER.filter((c) => buckets.has(c)).map((c) => [c, buckets.get(c)!] as const);
+    return groupCatalogPlugins(filtered);
   }, [filtered, search, categoryFilter]);
 
   const categoryCounts = useMemo(() => {
@@ -462,14 +482,11 @@ export default function PluginCatalogPage() {
     return counts;
   }, [allPlugins, tierFilter]);
 
-  useEffect(() => {
-    setExpandedCard(null);
-  }, [search, tierFilter, categoryFilter]);
-
   const clearAll = useCallback(() => {
     setSearch("");
     setTierFilter("all");
     setCategoryFilter("all");
+    setFiltersOpen(false);
   }, []);
 
   const pickCategory = useCallback((c: string) => {
@@ -486,8 +503,6 @@ export default function PluginCatalogPage() {
         key={key}
         plugin={plugin}
         query={search}
-        expanded={expandedCard === key}
-        onToggle={() => setExpandedCard(expandedCard === key ? null : key)}
         onPick={pickerMode ? pickPlugin : undefined}
         onCategoryClick={pickCategory}
         style={{ animationDelay: `${Math.min(i, 20) * 25}ms` }}
@@ -551,6 +566,7 @@ export default function PluginCatalogPage() {
 
         {!catalogEmpty && (
           <div className={styles.controlsBar}>
+            <div className={styles.controlsTopRow}>
             <div className={styles.searchWrap}>
               <svg
                 className={styles.searchIcon}
@@ -568,7 +584,7 @@ export default function PluginCatalogPage() {
               <input
                 ref={searchRef}
                 type="text"
-                placeholder="Search plugins by name or by what you want Hermes to do"
+                placeholder="Search plugins"
                 title='Tip: press "/" to jump here'
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
@@ -587,6 +603,50 @@ export default function PluginCatalogPage() {
               )}
             </div>
 
+            <button
+              type="button"
+              className={styles.filterToggle}
+              aria-expanded={filtersOpen}
+              aria-controls="plugin-directory-filters"
+              onClick={() => setFiltersOpen((open) => !open)}
+            >
+              Filters
+              {(tierFilter !== "all" || categoryFilter !== "all") && (
+                <span className={styles.activeFilterCount}>
+                  {Number(tierFilter !== "all") + Number(categoryFilter !== "all")}
+                </span>
+              )}
+            </button>
+            <label className={styles.compactSelect}>
+              <span>Source</span>
+              <select value={tierFilter} onChange={(e) => setTierFilter(e.target.value)}>
+                {TIER_ORDER.map((tier) => (
+                  <option key={tier} value={tier}>{tier === "all" ? "All sources" : TIER_CONFIG[tier]?.label || tier}</option>
+                ))}
+              </select>
+            </label>
+            <label className={styles.compactSelect}>
+              <span>Category</span>
+              <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)}>
+                <option value="all">All categories</option>
+                {CATEGORY_ORDER.filter((c) => categoryCounts[c]).map((c) => (
+                  <option key={c} value={c}>{CATEGORY_CONFIG[c].label}</option>
+                ))}
+              </select>
+            </label>
+            <label className={`${styles.compactSelect} ${styles.compactSort}`}>
+              <span>Sort</span>
+              <select value={sort} onChange={(e) => setSort(e.target.value as SortKey)}>
+                {SORT_OPTIONS.map((opt) => <option key={opt.key} value={opt.key}>{opt.label}</option>)}
+              </select>
+            </label>
+            </div>
+
+            <div
+              id="plugin-directory-filters"
+              ref={filterPanelRef}
+              className={`${styles.filterPanel} ${filtersOpen ? styles.filterPanelOpen : ""}`}
+            >
             <div className={styles.tierPills}>
               {TIER_ORDER.map((tier) => {
                 const active = tierFilter === tier;
@@ -662,6 +722,7 @@ export default function PluginCatalogPage() {
                   </button>
                 );
               })}
+            </div>
             </div>
           </div>
         )}

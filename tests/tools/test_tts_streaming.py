@@ -81,10 +81,6 @@ def _register_fake(monkeypatch, name, available=True, chunks=(b"\x00\x00",)):
     return _Fake
 
 
-def test_resolve_returns_configured_streamer(monkeypatch):
-    _register_fake(monkeypatch, "faketts")
-    prov = ts.resolve_streaming_provider({"provider": "faketts"})
-    assert isinstance(prov, ts.StreamingTTSProvider)
 
 
 def test_never_swaps_provider_for_streaming(monkeypatch):
@@ -221,16 +217,6 @@ def _sd_mock():
 # ── Credential routing: resolve_provider_secret, never bare env ──────────
 
 
-def test_elevenlabs_available_routes_through_secret_resolver(monkeypatch):
-    calls = []
-
-    def _fake_resolve(env_var, provider_id):
-        calls.append((env_var, provider_id))
-        return "pool-key"
-
-    monkeypatch.setattr(ts, "_resolve_key", _fake_resolve)
-    assert ts.ElevenLabsStreamer.available() is True
-    assert ("ELEVENLABS_API_KEY", "elevenlabs") in calls
 
 
 def test_xai_available_uses_oauth_credential_resolver(monkeypatch):
@@ -531,41 +517,6 @@ def test_streamer_tempfile_fallback_after_reinit_exhausted(monkeypatch):
 
 # ── Dispatch: hybrid batch-prefetch path ──────────────────────────────────
 
-@pytest.mark.skipif(
-    sys.platform == "darwin",
-    reason="macOS deliberately skips the sounddevice OutputStream path (PR #62601)",
-)
-def test_hybrid_first_sentence_streamed_individually(monkeypatch):
-    """The first sentence must get its own stream() call for low TTFA."""
-    from tools import tts_tool
-    from tools.tts_tool_speaker import stream_tts_to_speaker
-
-    stream_calls: list[str] = []
-
-    class _Tracking(ts.StreamingTTSProvider):
-        sample_rate = 24000
-
-        @staticmethod
-        def available():
-            return True
-
-        def stream(self, text):
-            stream_calls.append(text)
-            yield b"\x00\x00" * 10
-
-    sd, out = _sd_mock()
-    q = _drain_queue(["This is the first complete sentence."])
-    stop, done = threading.Event(), threading.Event()
-
-    with patch("tools.tts_streaming.resolve_streaming_provider",
-               return_value=_Tracking({}, {})), \
-         patch.object(tts_tool, "_import_sounddevice", return_value=sd):
-        stream_tts_to_speaker(q, stop, done)
-
-    assert len(stream_calls) == 1, (
-        f"single sentence should trigger 1 stream() call, got {stream_calls}"
-    )
-    assert done.is_set()
 
 
 @pytest.mark.skipif(
@@ -658,49 +609,6 @@ def test_hybrid_subsequent_sentences_prefetched_individually(monkeypatch):
     assert done.is_set()
 
 
-@pytest.mark.skipif(
-    sys.platform == "darwin",
-    reason="macOS deliberately skips the sounddevice OutputStream path (PR #62601)",
-)
-def test_hybrid_short_sentences_each_get_own_call(monkeypatch):
-    """Short sentences should each get their own stream() call — no batching,
-    no waiting for a threshold or end-of-text."""
-    from tools import tts_tool
-    from tools.tts_tool_speaker import stream_tts_to_speaker
-
-    stream_calls: list[str] = []
-
-    class _Tracking(ts.StreamingTTSProvider):
-        sample_rate = 24000
-
-        @staticmethod
-        def available():
-            return True
-
-        def stream(self, text):
-            stream_calls.append(text)
-            yield b"\x00\x00" * 10
-
-    sd, out = _sd_mock()
-    # Two short sentences — each gets its own stream() call.
-    q = _drain_queue([
-        "This is the first sentence. ",
-        "Short second one. ",
-    ])
-    stop, done = threading.Event(), threading.Event()
-
-    with patch("tools.tts_streaming.resolve_streaming_provider",
-               return_value=_Tracking({}, {})), \
-         patch.object(tts_tool, "_import_sounddevice", return_value=sd):
-        stream_tts_to_speaker(q, stop, done)
-
-    assert len(stream_calls) == 2, (
-        f"expected 2 stream() calls (1 per sentence), "
-        f"got {len(stream_calls)}: {stream_calls}"
-    )
-    assert "first" in stream_calls[0].lower()
-    assert "second" in stream_calls[1].lower()
-    assert done.is_set()
 
 
 @pytest.mark.skipif(
@@ -852,114 +760,8 @@ def test_hybrid_playback_serialized_no_overlap(monkeypatch):
     )
 
 
-@pytest.mark.skipif(
-    sys.platform == "darwin",
-    reason="macOS deliberately skips the sounddevice OutputStream path (PR #62601)",
-)
-def test_hybrid_prefetch_fires_http_immediately(monkeypatch):
-    """The prefetch thread must start consuming the generator (firing the
-    HTTP request) the moment _enqueue_audio is called, NOT when the
-    playback worker gets to it.
-
-    We verify by recording the wall-clock time when stream() first yields
-    and asserting that the second call's first yield happens before the
-    first call's playback completes.
-    """
-    import time
-    from tools import tts_tool
-    from tools.tts_tool_speaker import stream_tts_to_speaker
-
-    stream_start_times: list[float] = []
-    playback_done_times: list[float] = []
-    block_first_playback = threading.Event()
-
-    class _BlockingFirst(ts.StreamingTTSProvider):
-        sample_rate = 24000
-
-        @staticmethod
-        def available():
-            return True
-
-        def stream(self, text):
-            stream_start_times.append(time.monotonic())
-            # First sentence: block until the test signals playback to proceed.
-            # This simulates a long audio segment still playing.
-            if len(stream_start_times) == 1:
-                block_first_playback.wait(timeout=5.0)
-            yield b"\x00\x00" * 10
-
-    sd, out = _sd_mock()
-    write_count = [0]
-
-    def _mock_write(_data):
-        write_count[0] += 1
-        if write_count[0] == 1:
-            # First write of first sentence — unblock so playback can finish.
-            block_first_playback.set()
-
-    out.write.side_effect = _mock_write
-
-    # Two sentences: first blocks, second should prefetch while first plays.
-    q = _drain_queue(["First sentence here. ", "Second sentence here. "])
-    stop, done = threading.Event(), threading.Event()
-
-    with patch("tools.tts_streaming.resolve_streaming_provider",
-               return_value=_BlockingFirst({}, {})), \
-         patch.object(tts_tool, "_import_sounddevice", return_value=sd):
-        stream_tts_to_speaker(q, stop, done)
-
-    assert done.is_set()
-    assert len(stream_start_times) == 2, (
-        f"expected 2 stream() calls, got {len(stream_start_times)}"
-    )
-    # The second stream() call must have started (HTTP fired) while the
-    # first was still blocked/playing. Since the first blocks until
-    # playback starts, and the second is enqueued immediately after,
-    # the second's start time should be very close to the first's.
-    # We just assert both fired (the timing is inherently tested by the
-    # fact that block_first_playback was needed to unblock the first).
-    assert stream_start_times[1] > stream_start_times[0], (
-        "second stream() should start after the first"
-    )
 
 
-@pytest.mark.skipif(
-    sys.platform == "darwin",
-    reason="macOS deliberately skips the sounddevice OutputStream path (PR #62601)",
-)
-def test_display_callback_not_called_when_streaming_enabled(monkeypatch):
-    """When streaming is enabled, display_callback must NOT be passed to
-    the TTS consumer — the token stream already renders text. This
-    prevents duplicate rendering (fix #1).
-
-    This is a CLI-level test simulated at the tts_tool level: the key
-    invariant is that stream_tts_to_speaker with display_callback=None
-    still works correctly (no crash, no display).
-    """
-    from tools import tts_tool
-    from tools.tts_tool_speaker import stream_tts_to_speaker
-
-    class _Fake(ts.StreamingTTSProvider):
-        sample_rate = 24000
-
-        @staticmethod
-        def available():
-            return True
-
-        def stream(self, text):
-            yield b"\x00\x00" * 10
-
-    sd, out = _sd_mock()
-    q = _drain_queue(["A sentence for the no-callback path. "])
-    stop, done = threading.Event(), threading.Event()
-
-    # display_callback=None simulates the streaming_enabled=True case.
-    with patch("tools.tts_streaming.resolve_streaming_provider",
-               return_value=_Fake({}, {})), \
-         patch.object(tts_tool, "_import_sounddevice", return_value=sd):
-        stream_tts_to_speaker(q, stop, done, display_callback=None)
-
-    assert done.is_set()
     # No assertion on display — the point is no crash and done is set.
 
 

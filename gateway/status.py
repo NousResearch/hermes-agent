@@ -153,7 +153,7 @@ _runtime_status_state: Optional[dict[str, Any]] = None
 
 def _merge_over_on_disk(path: Path, payload: dict[str, Any]) -> dict[str, Any]:
     """Lay the canonical snapshot over whatever is on disk right before writing. Out-of-process
-    writers (``hermes gateway migrate --standalone`` clearing multiplex-owned status, container_boot
+    writers (the migration's compensator clearing multiplex-owned status, container_boot
     seeding ``desired_state``) stamp this file directly; the gateway's fields win, theirs survive."""
     existing = _read_json_file(path)
     return {**existing, **payload} if isinstance(existing, dict) else payload
@@ -205,9 +205,14 @@ def record_start_and_check_storm(
         now = datetime.now(timezone.utc).timestamp()
         existing: list[float] = []
         if path.exists():
-            for line in path.read_text(encoding="utf-8").splitlines():
-                with contextlib.suppress(ValueError):
+            for line in path.read_text(encoding="utf-8-sig").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
                     existing.append(float(line))
+                except ValueError:
+                    pass  # corrupt/truncated ledger line — skip, never fatal
         existing.append(now)
         recent = [ts for ts in existing if now - ts <= window_s]
         # Ring-buffer the persisted file so it stays bounded.
@@ -306,11 +311,21 @@ def _get_runtime_status_path() -> Path:
 
 
 def _get_lock_dir() -> Path:
-    """Machine-local dir for token-scoped gateway locks; ``HERMES_GATEWAY_LOCK_DIR`` overrides."""
+    """Cross-profile rendezvous dir for machine-local locks; ``HERMES_GATEWAY_LOCK_DIR`` overrides.
+
+    Scope is the **OS user**, not the kernel host: separate users have separate ``$HOME``s,
+    separate ``~/.hermes`` profile roots and separate credentials, so "one gateway per host"
+    means "one per host per OS user". Holds the token-scoped locks (:func:`acquire_scoped_lock`)
+    and the host-role lock + rendezvous record (``gateway/host_rendezvous.py``); the per-home
+    ``gateway.pid``/``gateway.lock`` above deliberately stay under each profile's HERMES_HOME.
+    """
     override = os.getenv("HERMES_GATEWAY_LOCK_DIR")
     if override:
         return Path(override)
-    state_home = Path(os.getenv("XDG_STATE_HOME", Path.home() / ".local" / "state"))
+    # XDG spec: a relative $XDG_STATE_HOME is INVALID and must be ignored. Honouring one made the
+    # lock dir CWD-relative, so two serves started from different directories shared no singleton.
+    state_home_env = os.getenv("XDG_STATE_HOME") or ""
+    state_home = Path(state_home_env) if os.path.isabs(state_home_env) else Path.home() / ".local" / "state"
     return state_home / "hermes" / _LOCKS_DIRNAME
 
 
@@ -446,11 +461,33 @@ def _get_scope_lock_path(scope: str, identity: str) -> Path:
 
 
 def _get_process_start_time(pid: int) -> Optional[int]:
-    """Per-process start-time fingerprint (PID-reuse guard), or None: ``/proc/<pid>/stat`` field 22
-    on Linux, else psutil ``create_time()`` in centiseconds. Units differ per platform; the guard
-    only compares same-host values."""
-    with contextlib.suppress(IndexError, ValueError, OSError):
-        return int(Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").split()[21])
+    """Return a stable per-process start-time fingerprint, or None.
+
+    Used as a PID-reuse guard: a ``(pid, start_time)`` pair uniquely identifies
+    a process, so a recycled PID (same number, different process) yields a
+    different value and is never mistaken for the original.
+
+    On Linux this is field 22 of ``/proc/<pid>/stat`` (start time in clock
+    ticks since boot, an int).  On platforms without ``/proc`` (macOS, Windows)
+    we fall back to ``psutil.Process(pid).create_time()`` — a float epoch
+    timestamp — quantized to an int (centiseconds) for stable equality.
+
+    The two sources are never mixed on a single platform: ``/proc`` always
+    succeeds first on Linux, and always fails on macOS/Windows so psutil is
+    always used there.  Because the guard only compares the value recorded at
+    spawn against the live value *on the same host*, the differing units across
+    platforms are irrelevant — only same-source equality matters.
+    """
+    stat_path = Path(f"/proc/{pid}/stat")
+    try:
+        # Field 22 in /proc/<pid>/stat is process start time (clock ticks).
+        return int(stat_path.read_text(encoding="utf-8").split()[21])  # windows-footgun: ok (/proc is BOM-free)
+    except (FileNotFoundError, IndexError, PermissionError, ValueError, OSError):
+        pass
+
+    # No /proc (macOS / Windows): psutil is a hard dependency and exposes a
+    # cross-platform creation time.  Quantize to centiseconds so repeated reads
+    # of the same process compare equal without float-precision fragility.
     try:
         import psutil  # type: ignore
         return int(round(psutil.Process(pid).create_time() * 100))
@@ -491,6 +528,66 @@ def _read_process_cmdline(pid: int) -> Optional[str]:
     return None
 
 
+
+def inline_source_flag_index(tokens: list[str]) -> int | None:
+    """Index of the ``-c`` token when *tokens* is an interpreter running INLINE SOURCE, else None.
+
+    Everything after ``-c`` is data the inline program receives, not this process's own identity.
+    The detached gateway restart watcher (``gateway._spawn_gateway_restart_watcher``) is spawned as
+    ``python -c <watcher source> <old_pid> <python> -m hermes_cli.main gateway run``: its trailing
+    argv is the command the watcher will LATER spawn, so every argv matcher used to read it as a
+    live gateway. See #107002 and the "never infer process identity from argv substrings" rule.
+
+    Only interpreter options may precede ``-c``; the first non-option token ends the option block
+    (``python -m hermes_cli.main …`` therefore never matches).
+
+    The walk is VALUE-AWARE: ``-X``/``-W``/``-Q`` and ``--check-hash-based-pycs``/``--jit`` take a
+    SEPARATE operand, so a naive "first non-option token ends the block" walk mistakes that operand
+    for the end of the block and never reaches the ``-c`` behind it (``python -X utf8 -c <src> …``
+    was still read as a live gateway). The operand sets are the canonical ones in
+    ``hermes_state_holders``, not a second hand-rolled copy.
+
+    *tokens* must be CASE-PRESERVING: the operand-taking ``-Q``/``-W``/``-X`` differ from the
+    operand-less ``-q``/``-b``, so a lowercased argv would skip the token after a plain ``-q``.
+    """
+    from hermes_state_holders import (
+        _PYTHON_LONG_OPTIONS_WITH_OPERANDS,
+        _PYTHON_SHORT_OPTIONS_WITH_OPERANDS,
+    )
+
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            return None
+        if token in _PYTHON_LONG_OPTIONS_WITH_OPERANDS:
+            index += 2  # the next token is this option's operand, not the end of the option block
+            continue
+        if token.startswith("--"):
+            index += 1  # ``--opt=value`` and operand-less long options
+            continue
+        if not token.startswith("-") or token == "-":
+            return None
+        # Clustered short options (``-uc``, ``-IsB``). An operand-taking letter consumes the rest of
+        # the cluster as its attached value, or the following token when the cluster ends there --
+        # so ``-Xc`` is ``-X c``, NOT an inline-source ``-c``.
+        cluster = token[1:]
+        for position, letter in enumerate(cluster):
+            if letter == "c":
+                return index
+            if letter in _PYTHON_SHORT_OPTIONS_WITH_OPERANDS:
+                index += 1 if cluster[position + 1 :] else 2
+                break
+        else:
+            index += 1
+    return None
+
+
+def command_line_runs_inline_source(tokens: list[str]) -> bool:
+    """True when *tokens* is an interpreter running INLINE SOURCE (``python -c <src> [args]``)."""
+    return inline_source_flag_index(tokens) is not None
+
+
 def _gateway_command_subcommand(command: str | None) -> str | None:
     """Hermes gateway lifecycle subcommand from a command line, or None. No loose substring matches
     (``"gateway" in cmdline`` also matched ``gateway status`` / ``python -m tui_gateway``): needs a
@@ -504,12 +601,28 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
     except ValueError:
         raw_tokens = command.split()
     # Strip surrounding quotes, normalize slashes + case per token.
-    tokens = [t.strip("\"'").replace("\\", "/").lower() for t in raw_tokens]
+    cased_tokens = [t.strip("\"'").replace("\\", "/") for t in raw_tokens]
+    tokens = [t.lower() for t in cased_tokens]
     if not tokens:
         return None
     basenames = [t.rsplit("/", 1)[-1] for t in tokens]
+    # ``python -c <src> … -m hermes_cli.main gateway run``: the trailing argv belongs to the program
+    # the inline source will spawn later, not to this process (#107002). Case-preserving tokens:
+    # the operand-taking ``-X``/``-W``/``-Q`` must not be conflated with ``-q``/``-b``.
+    if command_line_runs_inline_source(cased_tokens):
+        return None
+    # The launchd job's osascript wrapper (gateway_launchd.launchd_program_arguments) carries the gateway argv
+    # inside one AppleScript string; the gateway itself is its child and is matched on its own command line.
+    if basenames[0] == "osascript":
+        return None
     # Gateway-dedicated entrypoints carry no subcommand to inspect.
     if any(t == "gateway/run.py" or t.endswith("/gateway/run.py") for t in tokens):
+        return "run"
+    # Atomic Hermes' bundled desktop runner shares HERMES_HOME with the CLI; without this,
+    # `gateway run --replace` does not recognise it as a running gateway, skips the
+    # terminate-and-scoped-lock-handoff path, and collides with its still-held scoped locks
+    # (e.g. the Discord bot-token lock). See #22418.
+    if any(b == "desktop-gateway.py" for b in basenames):
         return "run"
     if any(b in ("hermes-gateway", "hermes-gateway.exe") for b in basenames):
         return "run"
@@ -532,6 +645,40 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
         if token == "gateway":
             # Bare `hermes gateway` defaults to `run`.
             return filtered[i + 1] if i + 1 < len(filtered) else "run"
+    return None
+
+
+def gateway_spawn_intent_subcommand(command: str | None) -> str | None:
+    """Gateway lifecycle subcommand a command line would EVENTUALLY launch, or None.
+
+    The identity matcher (``_gateway_command_subcommand``) deliberately refuses ``python -c <src>
+    …``: the trailing argv is the inline program's data, not that process's own identity (#107002).
+    Callers that inspect a command line as SPAWN INTENT — "if I launch this, does a gateway runtime
+    eventually appear?" — need the opposite answer, because
+    ``gateway._spawn_gateway_restart_watcher`` hides a real ``… -m hermes_cli.main gateway run``
+    behind exactly that wrapper. ``tests/_fixtures/live_system_guard.py`` is the canonical caller.
+
+    Still no substring matching: the wrapper is peeled token-wise and each remaining suffix is
+    handed to the same canonical matcher.
+    """
+    direct = _gateway_command_subcommand(command)
+    if direct is not None or not command:
+        return direct
+    try:
+        raw_tokens = shlex.split(command, posix=False)
+    except ValueError:
+        raw_tokens = command.split()
+    cased_tokens = [t.strip("\"'").replace("\\", "/") for t in raw_tokens]
+    flag_index = inline_source_flag_index(cased_tokens)
+    if flag_index is None:
+        return None
+    # Skip the interpreter, its options, ``-c`` and the source literal; then try every suffix —
+    # the embedded argv starts at an unknown offset (the watcher prefixes it with the old PID).
+    start = flag_index + 2
+    for i in range(start, len(cased_tokens)):
+        nested = _gateway_command_subcommand(" ".join(raw_tokens[i:]))
+        if nested is not None:
+            return nested
     return None
 
 
@@ -626,17 +773,37 @@ def _command_line_belongs_to_profile(command: str, profile_home: Path) -> bool:
     return not hermes_home_assignments(command_lc) or command_line_names_hermes_home(command_lc, home_lc)
 
 
+def _host_gateway_serves_home(pid: int, profile_home: Path) -> bool:
+    """Does the ONE host gateway — PID ``pid`` — serve ``profile_home``'s profile?
+
+    Argv cannot answer this: the host singleton runs ONE home's (usually bare/default) command line
+    while multiplexing every profile, so :func:`_command_line_belongs_to_profile` rejects every
+    secondary and the profile reads as "not running" while its messages are being served. The live
+    served set is the only proof; the argv rule stays as the fallback when no record exists.
+    """
+    try:
+        from gateway.host_attach import host_gateway, profile_name_for_home
+
+        owner = host_gateway()
+    except Exception:
+        return False
+    return owner is not None and owner.pid == pid and owner.serves(profile_name_for_home(profile_home))
+
+
 def _record_matches_live_gateway_pid(
     record: dict[str, Any], pid: int, *, expected_home: Optional[Path] = None
 ) -> bool:
     """True when a live PID still identifies as this gateway record. The live command line wins (a
     stale record's argv must not make a recycled PID count as a gateway; with ``expected_home`` it
-    must also belong to that profile); unreadable cmdline (Windows/EACCES) -> persisted record."""
+    must also belong to that profile — or serve it as the host multiplexer); unreadable cmdline
+    (Windows/EACCES) -> persisted record."""
     live_cmdline = _read_process_cmdline(pid)
     if not live_cmdline:
         return _record_looks_like_gateway(record)
     if not looks_like_gateway_runtime_command_line(live_cmdline):
         return False
+    if expected_home is not None and _host_gateway_serves_home(pid, expected_home):
+        return True
     return expected_home is None or _command_line_belongs_to_profile(live_cmdline, expected_home)
 
 
@@ -660,7 +827,8 @@ def _get_code_identity_fields() -> dict[str, Any]:
     degrades to absent fields.
     """
     try:
-        from hermes_cli.build_info import get_code_identity
+        from hermes_cli.version_info import get_code_identity
+
         identity = get_code_identity()
         return {"code_sha": identity.get("sha"), "code_version": identity.get("version")}
     except Exception:
@@ -689,8 +857,11 @@ def _read_json_file(path: Path, *, bare_pid_ok: bool = False) -> Optional[dict[s
     """JSON object at ``path``, or None when absent/empty/unreadable/invalid. ``bare_pid_ok`` also
     accepts legacy bare-integer PID files as ``{"pid": N}``."""
     try:
-        raw = path.read_text(encoding="utf-8").strip() if path.exists() else ""
-    except (OSError, UnicodeDecodeError):  # vanished, EACCES, non-UTF-8 garbage
+        raw = path.read_text(encoding="utf-8-sig").strip()
+    except (OSError, UnicodeDecodeError):
+        # OSError: file vanished or permission flipped between exists() and
+        # read. UnicodeDecodeError: file holds non-UTF-8 / binary garbage
+        # (a truncated or clobbered status file). Either way it's unusable.
         return None
     if not raw:
         return None
@@ -835,13 +1006,6 @@ def _posix_is_zombie(pid: int) -> bool:
         return len(stat_fields) > 2 and stat_fields[2] == "Z"
     except FileNotFoundError:
         with contextlib.suppress(Exception):
-            # --compile-bytecode: uv does NOT write __pycache__ by default (pip does), so without it the
-            # first `import <backend>` in the foreground of a user request recompiles every module of the
-            # backend *and* its transitive deps (#100461). This covers the whole install;
-            # _warm_installed_bytecode below is the belt-and-braces pass for the spec's own roots on any
-            # tier.
-            # CREATE_NO_WINDOW on Windows — under the desktop GUI's windowless parent, this spawn otherwise
-            # flashes a console (#56747).
             r = subprocess.run(
                 ["ps", "-o", "state=", "-p", str(pid)],
                 capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
@@ -1026,6 +1190,7 @@ def _prepare_runtime_status_update(
     error_code: Any = _UNSET, error_message: Any = _UNSET, needs_attention: Any = _UNSET,
     retrying_since: Any = _UNSET, served_profiles: Any = _UNSET, session_store: Any = _UNSET,
     multiplex_standalone_reason: Any = _UNSET,
+    platform_metrics: Any = _UNSET,
     ingress_url: Any = _UNSET, listener_base: Any = _UNSET, clear_profile_platforms: bool = False,
     drop_profile_platforms: Optional[str] = None,
     load_existing: bool = True, reload_existing: bool = False,
@@ -1077,6 +1242,7 @@ def _prepare_runtime_status_update(
                 ("error_message", error_message, None),
                 ("needs_attention", needs_attention, bool),
                 ("retrying_since", retrying_since, None),
+                ("metrics", platform_metrics, None),
                 ("ingress_url", ingress_url, None),
                 ("listener_base", listener_base, None),
             ))
@@ -1094,7 +1260,6 @@ def _emit_runtime_status_transition(
     with contextlib.suppress(Exception):
         from agent.monitoring.gateway_health import emit_runtime_status_transition
         emit_runtime_status_transition(previous_payload, payload)
-
 
 def write_runtime_status(
     *, reload_existing: bool = False, wait_timeout: Optional[float] = None, **fields: Any,
@@ -1205,22 +1370,53 @@ class GatewayLiveness:
     runtime: Optional[dict[str, Any]] = None
 
 
-def multiplexer_liveness_for_profile(profile_dir: Path) -> Optional[tuple[int, dict[str, Any]]]:
-    """``(pid, default gateway_state.json)`` when the live default multiplexer serves the named profile at
-    ``profile_dir``; None for the default home itself, an unserved profile, or no live multiplexer.
+def profile_name_for_home(profile_home: Path) -> Optional[str]:
+    """Profile id of any Hermes home: ``<root>/profiles/<name>`` → ``<name>``, the default root →
+    ``"default"``, anything else → None. Multiplex-only makes ``default`` an ordinary served
+    profile, so reporting surfaces need a name for it too."""
+    home = Path(profile_home)
+    named = _profile_name_for_home(home)
+    if named:
+        return named
+    try:
+        from hermes_constants import get_default_hermes_root
+        if home.resolve() == Path(get_default_hermes_root()).resolve():
+            return "default"
+    except Exception:
+        return None
+    return None
 
-    A served profile owns no ``gateway.pid``/``gateway_state.json`` (#97120), so every PID-file rung of the
-    dashboard ladder reports it stopped while ``hermes -p X status`` says running — the two must agree.
+
+def multiplexer_liveness_for_profile(profile_dir: Path) -> Optional[tuple[int, dict[str, Any]]]:
+    """``(pid, host gateway_state.json)`` when the ONE live host gateway serves the profile whose home
+    is ``profile_dir``; None for a home it does not serve or when no gateway owns the host role.
+
+    Multiplex-only: ``default`` is just another served profile, not the owner of a private topology —
+    resolving from the host rendezvous record (``gateway/host_topology.py``) is what lets it be
+    reported as SERVED rather than only as owner. A served profile owns no
+    ``gateway.pid``/``gateway_state.json`` (#97120), so every PID-file rung of the dashboard ladder
+    reports it stopped while ``hermes -p X status`` says running — the two must agree.
     """
-    name = _profile_name_for_home(Path(profile_dir))
+    name = profile_name_for_home(Path(profile_dir))
     if not name:
         return None
+    from gateway.host_topology import host_gateway_topology
     from hermes_cli.gateway import named_profile_served_by_running_multiplexer
     from hermes_cli.gateway_multiplex_served import live_default_gateway_pid
     from hermes_constants import get_default_hermes_root
-    if not named_profile_served_by_running_multiplexer(name):
+    # The roster is matched by NAME, and the multiplexer only serves ``<default root>/profiles/<name>``:
+    # a profile directory copied to another root (sandbox, restore-from-backup) keeps the name but is
+    # not the home being served, so it must not borrow the multiplexer's PID.
+    if name != "default" and not _same_hermes_home(profile_dir, get_default_hermes_root() / "profiles" / name):
         return None
-    pid = live_default_gateway_pid()
+    topology = host_gateway_topology()
+    if topology is not None and topology.serves(name):
+        pid: Optional[int] = topology.pid
+    elif name != "default" and named_profile_served_by_running_multiplexer(name):
+        # Config-derived fallback for a record that predates ``served_profiles``.
+        pid = live_default_gateway_pid()
+    else:
+        return None
     if pid is None:
         return None
     return pid, read_runtime_status(get_default_hermes_root() / "gateway_state.json") or {}
@@ -1320,8 +1516,11 @@ def resolve_gateway_liveness(
     if runtime is _UNSET:
         reader_kwargs = {"path": profile_dir / "gateway_state.json"} if scoped else {}
         runtime = guarded(_runtime_reader, **reader_kwargs)
+    # A scoped home with no ``gateway_state.json`` gets an EMPTY record, never ``None``: ``None`` makes
+    # the probe re-read the PROCESS home's record and lend that gateway's PID to a home it does not
+    # own (a profile directory copied out of another root).
     probe_kwargs = {"expected_home": profile_dir} if scoped else {}
-    runtime_pid = guarded(_runtime_pid_probe, runtime, **probe_kwargs)
+    runtime_pid = guarded(_runtime_pid_probe, {} if (scoped and runtime is None) else runtime, **probe_kwargs)
     if runtime_pid is not None:
         return GatewayLiveness(
             running=True, pid=runtime_pid, source="runtime_status", health_body=health_body
@@ -1358,9 +1557,12 @@ def get_runtime_status_running_pid(
     pid = _live_pid_from_record(payload)
     if pid is None:
         return None
-    # Active-profile context: the record's hermes_home must match this process so a stale record
-    # cannot lend another profile's identity.
+    # The record's hermes_home must match the home asked about (this process unscoped) so a stale
+    # or copied record cannot lend another home's gateway identity; legacy records without the
+    # stamp prove nothing either way and fall through to the live command-line check.
     if expected_home is None and not _pid_record_belongs_to_current_profile(payload):
+        return None
+    if expected_home is not None and recorded_gateway_home_conflicts(payload, expected_home=expected_home):
         return None
     if not _record_matches_live_gateway_pid(payload, pid, expected_home=expected_home):
         return None

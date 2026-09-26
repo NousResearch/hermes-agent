@@ -12,7 +12,6 @@ import copy
 from tools.schema_sanitizer import (
     sanitize_tool_schemas,
     strip_pattern_and_format,
-    strip_slash_enum,
 )
 
 
@@ -223,7 +222,6 @@ def test_items_sanitized_in_array_schema():
 
 def test_strip_responses_mixed_formats():
     """Mixed list of OpenAI-format and Responses-format tools should both be sanitized."""
-    from tools.schema_sanitizer import strip_pattern_and_format
 
     tools = [
         # OpenAI-format: {"function": {"parameters": {...}}}
@@ -284,7 +282,7 @@ def test_strip_responses_mixed_formats():
 # in the tools array 400s the whole request on Anthropic/Bedrock/Vertex/Azure.
 # ---------------------------------------------------------------------------
 
-from tools.schema_sanitizer import sanitize_property_key, unrename_tool_args
+from tools.schema_sanitizer import sanitize_property_key
 
 
 def test_sanitize_property_key_empty_falls_back():
@@ -526,11 +524,58 @@ def test_collapse_const_unions_does_not_mutate_input():
     assert schema == snapshot
 
 
-def test_collapse_is_deterministic():
-    schema = {"anyOf": [{"const": "b"}, {"const": "a"}]}
-    first = collapse_const_unions(copy.deepcopy(schema))
-    second = collapse_const_unions(copy.deepcopy(schema))
-    assert first == second == {"type": "string", "enum": ["b", "a"]}
+def test_normalize_mcp_input_schema_preserves_constraint_fragments():
+    """``oneOf``/``if``/``then``/``else``/``not`` branches carrying ``required`` without
+    ``properties`` are constraints on the parent instance, not object declarations (#107141).
+
+    Regression: ``_repair_object_shape`` stamped ``type: object`` + ``properties: {}`` on them
+    and then pruned every name out of ``required``, so ``if: {required: [action]}`` matched
+    every object and the ``then`` branch (``effects: false``) always applied — the tool was
+    registered with "never effects" instead of "action OR effects" and every ``effects`` call
+    failed client-side validation while the MCP server was healthy.
+    """
+    from jsonschema.validators import Draft202012Validator  # what tool_search_validation selects
+    from tools.mcp_tool_schema import _normalize_mcp_input_schema
+
+    out = _normalize_mcp_input_schema({
+        "type": "object",
+        "properties": {"action": {"type": "string"}, "effects": {"type": "array"},
+                       "chain": {"type": "string"}, "chainId": {"type": "integer"}},
+        "if": {"required": ["action"]},
+        "then": {"properties": {"effects": False}},
+        "else": {"required": ["effects"]},
+        "allOf": [{"oneOf": [{"required": ["chain"], "not": {"required": ["chainId"]}},
+                             {"required": ["chainId"], "not": {"required": ["chain"]}}]}],
+    })
+    assert out["if"] == {"required": ["action"]}
+    assert out["else"] == {"required": ["effects"]}
+    assert out["allOf"] == [{"oneOf": [{"required": ["chain"], "not": {"required": ["chainId"]}},
+                                       {"required": ["chainId"], "not": {"required": ["chain"]}}]}]
+
+    valid = Draft202012Validator(out).is_valid
+    assert valid({"action": "enable", "chain": "eth"})
+    assert valid({"effects": ["blur"], "chainId": 1})
+    assert not valid({"action": "enable", "effects": ["blur"], "chain": "eth"})
+    assert not valid({"chain": "eth"})  # neither action nor effects
+    assert not valid({"action": "x", "chain": "eth", "chainId": 1})  # oneOf mutex
+
+
+def test_normalize_mcp_input_schema_still_repairs_declared_objects():
+    """The dangling-``required`` repair (PR #4651, Gemini 400s otherwise) still fires on the
+    root and on nested nodes that declare ``properties``/``type`` — only bare fragments are exempt."""
+    from tools.mcp_tool_schema import _normalize_mcp_input_schema
+
+    out = _normalize_mcp_input_schema({
+        "type": "object",
+        "properties": {"a": {"type": "string"}, "opts": {"properties": {"x": {"type": "string"}}}},
+        "required": ["a", "ghost"],
+    })
+    assert out["required"] == ["a"]
+    assert out["properties"]["opts"] == {"type": "object", "properties": {"x": {"type": "string"}}, "required": []}
+    bare = _normalize_mcp_input_schema({"type": "object", "required": ["a"]})
+    assert bare["properties"] == {} and bare["required"] == []
+
+
 
 
 def test_builtin_tool_without_required_gets_empty_required_list():

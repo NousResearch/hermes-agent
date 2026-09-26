@@ -10,10 +10,11 @@ emitting SSE events.
 
 Parsed-event activity is recorded on the request-local watchdog state;
 substantive model progress is recorded separately. For the implicit official
-OpenAI Codex policy on large contexts, lifecycle frames satisfy TTFB without
-arming the short post-progress idle budget. Small requests, explicit overrides,
-and compatible backends retain their first-parsed-event semantics. Raw SSE
-comments are outside this layer.
+OpenAI Codex policy on large contexts, lifecycle frames prove transport liveness
+but do not restart the attempt-local first-progress budget; substantive progress
+moves the attempt into the normal event-idle phase. Small requests, explicit
+overrides, and compatible backends retain their first-parsed-event semantics.
+Raw SSE comments are outside this layer.
 """
 
 from __future__ import annotations
@@ -70,14 +71,18 @@ def _make_codex_agent(
     return agent
 
 
-def _shorten_implicit_idle_watchdog(monkeypatch, helpers, timeout=2.0):
-    """Keep the resolver on its implicit branch while scaling time for tests."""
+def _shorten_implicit_idle_watchdog(monkeypatch, helpers, timeout=2.0, **overrides):
+    """Keep the resolver on its implicit branch while scaling time for tests.
+
+    ``timeout`` shortens ``idle_timeout``; ``overrides`` set any other resolved field."""
     monkeypatch.delenv("HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS", raising=False)
     original = helpers._resolve_nonstream_watchdogs
 
     def resolve(agent, api_kwargs):
         watchdogs = original(agent, api_kwargs)
         watchdogs.idle_timeout = timeout
+        for field, value in overrides.items():
+            setattr(watchdogs, field, value)
         return watchdogs
 
     monkeypatch.setattr(helpers, "_resolve_nonstream_watchdogs", resolve)
@@ -165,12 +170,12 @@ def test_ttfb_includes_silent_hang_hint_for_gpt_5_5(tmp_path, monkeypatch):
         with pytest.raises(TimeoutError) as excinfo:
             h.interruptible_api_call(agent, {"model": "gpt-5.5", "input": "hi"})
         message = str(excinfo.value)
-        assert "gpt-5.4" in message
-        assert "gpt-5.3-codex" not in message
-        assert "gpt-5.4-codex" in message
+        hint = agent._codex_silent_hang_hint(model="gpt-5.5")
+        assert hint, "gpt-5.5 on the Codex backend must match the silent-hang heuristic"
+        assert hint in message
         assert "codex_ttfb_kill" in closes
         assert statuses, "expected a user-facing watchdog status"
-        assert any("gpt-5.4" in s and "gpt-5.3-codex" not in s for s in statuses)
+        assert any(hint in s for s in statuses)
     finally:
         stop["flag"] = True
 
@@ -233,29 +238,6 @@ def test_ttfb_installs_and_retires_the_codex_request_token(tmp_path, monkeypatch
     assert getattr(agent, "_active_codex_stream_request_token", None) is None
 
 
-def test_non_codex_api_mode_installs_no_request_token(tmp_path, monkeypatch):
-    """The token is codex_responses-only — other api_modes stay untouched."""
-    from agent import chat_completion_helpers as h
-
-    agent = _make_codex_agent(tmp_path, monkeypatch)
-    agent.api_mode = "chat_completions"
-
-    seen = {"token": "unset"}
-    dummy_client = SimpleNamespace()
-    monkeypatch.setattr(agent, "_create_request_openai_client", lambda **k: dummy_client)
-
-    def fake_dispatch(_agent, _api_kwargs, *, make_client):
-        make_client("test")
-        seen["token"] = getattr(
-            _agent, "_active_codex_stream_request_token", "absent"
-        )
-        return SimpleNamespace(choices=[])
-
-    monkeypatch.setattr(h, "_dispatch_nonstreaming_api_request", fake_dispatch)
-
-    h.interruptible_api_call(agent, {"model": "gpt-5.5", "messages": []})
-
-    assert seen["token"] in (None, "absent")
 
 
 
@@ -343,6 +325,45 @@ def test_idle_phase_policy_is_narrow_and_preserves_operator_overrides(
     assert watchdogs.est_tokens == input_chars // 4
     assert watchdogs.idle_enabled is idle_enabled
     assert watchdogs.idle_requires_progress is requires_progress
+    assert (watchdogs.progress_timeout > 0) is requires_progress
+
+
+def test_lifecycle_event_does_not_restart_first_progress_deadline():
+    """The budget belongs to the physical attempt, not to the first lifecycle frame."""
+    from agent import chat_completion_wait_notice as wn
+
+    deadline = wn.codex_watchdog_deadline(
+        stale_timeout=900.0, ttfb_enabled=True, ttfb_timeout=300.0,
+        last_event_ts=280.0, last_progress_ts=None, retry_started_ts=None,
+        call_start=100.0, idle_enabled=True, idle_timeout=120.0,
+        idle_requires_progress=True, progress_timeout=300.0, elapsed=250.0,
+    )
+
+    assert deadline == ("first progress", 50.0)
+
+
+def test_large_codex_lifecycle_only_stream_hits_attempt_progress_budget(tmp_path, monkeypatch):
+    """Lifecycle events may change phase diagnostics, but cannot buy another full grace period."""
+    from agent import chat_completion_helpers as h
+
+    agent = _make_codex_agent(tmp_path, monkeypatch)
+    _shorten_implicit_idle_watchdog(monkeypatch, h, ttfb_timeout=0.9, progress_timeout=0.9)
+    closes = []
+
+    def stream_attempt():
+        time.sleep(0.7)
+        yield SimpleNamespace(type="response.created")
+        while getattr(agent, "_active_codex_stream_request_token", None) is not None:
+            time.sleep(0.02)
+        raise ConnectionError("retired lifecycle-only stream")
+
+    _install_codex_event_stream(agent, monkeypatch, stream_attempt, closes)
+    started = time.monotonic()
+    with pytest.raises(TimeoutError, match="no substantive model progress"):
+        h.interruptible_api_call(agent, {"model": "gpt-5.6-sol", "input": "x" * 40_004})
+
+    assert time.monotonic() - started < 1.5
+    assert "codex_progress_kill" in closes
 
 
 @pytest.mark.parametrize(

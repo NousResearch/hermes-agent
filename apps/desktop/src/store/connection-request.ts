@@ -1,4 +1,8 @@
 import type {
+  CatalogAppState,
+  CatalogScan,
+  CatalogTier,
+  ConnectionAnswer,
   ConnectionOperationStatus,
   ConnectionOperationTarget,
   ConnectionRequestPayload,
@@ -11,9 +15,13 @@ import type {
 } from '@hermes/shared'
 import { atom, computed } from 'nanostores'
 
+import { resolveSessionOwner } from '@/app/session/hooks/use-session-actions/utils'
 import type { SetupField } from '@/components/ui/setup-field-list'
 
-import { $gateway } from './gateway'
+import { $gateway, requestGatewayForAgent } from './gateway'
+import { $activeGatewayProfile } from './profile'
+import { assertSessionOwnerResolved } from './session-owner-resolution'
+import { isSessionOwnerRoute } from './session-request-router'
 
 /** The backend sends ``prompt`` as null when the catalog entry has none; the form takes an absent one. */
 const envFields = (fields: ConnectionTargetEnvField[] | null | undefined): SetupField[] =>
@@ -33,6 +41,26 @@ export type {
   ConnectionTargetState
 }
 
+/** What the catalog says about a `plugin` / `skill` row (CATALOG-ROW-CONTRACT.md). The host resolved all of
+ *  it; the model supplied only the id. */
+export interface CatalogEntry {
+  display: string
+  description: string
+  tier: CatalogTier | null
+  /** Empty when the entry runs everywhere; the card shows a platform only when it is restricted. */
+  platforms: string[]
+  repo: string | null
+  sha: string | null
+  subdir: string | null
+  scan: CatalogScan | null
+  requirements: string[]
+  hasDesktopHalf: boolean
+  targetProfile: string
+  appState: CatalogAppState | null
+  /** On an installed skill row: the qualified name the model can now load. */
+  skill: string | null
+}
+
 /** One target of the operation as the renderer knows it. State comes only from the backend
  *  (`connection.request`, `connectors.operation.status`, `connection.update`); the card never sets it. */
 export interface ConnectionTarget {
@@ -50,10 +78,17 @@ export interface ConnectionTarget {
   requiredEnv: SetupField[]
   instructions: string | null
   discoveryError: string | null
+  /** Present on `plugin` and `skill` rows only. */
+  catalog?: CatalogEntry
 }
 
 /** The session's connection operation. `deadlineAt`, `opId`, `targets[].state`, `settled` and
  *  `settledBy` are backend-owned; the renderer holds a cache and drives it through `connection.respond`. */
+export interface ConnectionOwner {
+  connectionId: null | string
+  profile: string
+}
+
 export interface ConnectionRequest {
   /** The model's tool call that opened the operation. The card lives on that row and no other. */
   toolCallId: string
@@ -70,18 +105,6 @@ export interface ConnectionRequest {
   sessionId: string | null
 }
 
-/** Answers the card may give for one target: the user said no, or the user consented and the backend
- *  does the work. The card never reports an outcome; only the backend moves a target. */
-export type ConnectionTargetOutcome =
-  | { name: string; status: 'skipped' }
-  | { env?: Record<string, string>; name: string; status: 'approved' }
-
-export interface ConnectionOutcome {
-  targets?: ConnectionTargetOutcome[]
-  /** `continue` ends the operation now with unresolved targets stamped `not_connected`. */
-  settled_by?: 'continue'
-}
-
 const keyFor = (sessionId: string | null | undefined): string => sessionId ?? ''
 
 export const $connectionRequests = atom<Record<string, ConnectionRequest>>({})
@@ -96,12 +119,12 @@ const TARGET_STATES: readonly ConnectionTargetState[] = [
   'initiated',
   'not_connected',
   'pending',
-  'skipped',
-  'unavailable'
+  'skipped'
 ]
 
+const KINDS: readonly ConnectionTargetKind[] = ['connector', 'mcp', 'plugin', 'skill']
 const ACTIONS: readonly ConnectionTargetAction[] = ['authorize', 'connect', 'enable', 'install', 'reconnect']
-const SETTLE_REASONS: readonly ConnectionSettleReason[] = ['all_resolved', 'continue', 'deadline', 'interrupt', 'unavailable']
+const SETTLE_REASONS: readonly ConnectionSettleReason[] = ['all_resolved', 'continue', 'deadline', 'interrupt']
 
 // The wire carries these as typed literals already; the lookups defend against a backend a version ahead.
 const oneOf =
@@ -109,22 +132,52 @@ const oneOf =
   (value: null | string | undefined): T | undefined =>
     allowed.find(candidate => candidate === value)
 
+const targetKind = oneOf(KINDS)
 const targetState = oneOf(TARGET_STATES)
 const targetAction = oneOf(ACTIONS)
 const settleReason = oneOf(SETTLE_REASONS)
 
-function parseTarget(entry: ConnectionOperationTarget): ConnectionTarget | null {
+export const isCatalogKind = (kind: ConnectionTargetKind): kind is 'plugin' | 'skill' =>
+  kind === 'plugin' || kind === 'skill'
+
+function catalogEntry(entry: ConnectionOperationTarget, name: string): CatalogEntry {
+  return {
+    appState: entry.app_state ?? null,
+    description: entry.description ?? '',
+    display: entry.display?.trim() || name,
+    hasDesktopHalf: entry.has_desktop_half ?? false,
+    platforms: entry.platforms ?? [],
+    repo: entry.repo ?? null,
+    requirements: entry.requirements ?? [],
+    scan: entry.scan ?? null,
+    sha: entry.sha ?? null,
+    skill: entry.skill ?? null,
+    subdir: entry.subdir ?? null,
+    targetProfile: entry.target_profile?.trim() || 'default',
+    tier: entry.tier ?? null
+  }
+}
+
+// Every frame carries a fresh object; a field-equal entry keeps the old reference so the row does not churn.
+const sameCatalog = (next: CatalogEntry | undefined, previous: CatalogEntry | undefined): boolean =>
+  next === previous || JSON.stringify(next) === JSON.stringify(previous)
+
+export function parseConnectionTarget(entry: ConnectionOperationTarget): ConnectionTarget | null {
   const name = entry.name.trim()
 
   if (!name) {
     return null
   }
 
+  // An unknown kind from a backend a version ahead renders as the generic MCP row.
+  const kind = targetKind(entry.kind) ?? 'mcp'
+
   return {
     action: targetAction(entry.action) ?? 'install',
+    catalog: isCatalogKind(kind) ? catalogEntry(entry, name) : undefined,
     connectUrl: entry.connect_url ?? null,
     detail: entry.detail ?? '',
-    kind: entry.kind === 'connector' ? 'connector' : 'mcp',
+    kind,
     name,
     state: targetState(entry.state) ?? 'pending',
     tools: entry.tools ?? [],
@@ -145,7 +198,9 @@ export function normalizeConnectionRequest(
     return null
   }
 
-  const targets = payload.targets.map(parseTarget).filter((target): target is ConnectionTarget => target !== null)
+  const targets = payload.targets
+    .map(parseConnectionTarget)
+    .filter((target): target is ConnectionTarget => target !== null)
 
   if (!payload.op_id || !payload.tool_call_id || !(payload.deadline_at > 0) || targets.length === 0) {
     return null
@@ -167,10 +222,7 @@ export function normalizeConnectionRequest(
 /** Overlay the authoritative `connectors.operation.status` snapshot on the cached request. Frames for
  *  another operation, and frames the operation wrote before the one already applied, change nothing:
  *  the transport can reorder them and an older one would regress a row. */
-export function applyOperationStatus(
-  request: ConnectionRequest,
-  status: ConnectionOperationStatus
-): ConnectionRequest {
+export function applyOperationStatus(request: ConnectionRequest, status: ConnectionOperationStatus): ConnectionRequest {
   if (status.op_id !== request.opId || status.seq <= request.seq) {
     return request
   }
@@ -199,8 +251,11 @@ export function applyOperationStatus(
 }
 
 function mergeLiveTarget(target: ConnectionTarget, live: ConnectionOperationTarget): ConnectionTarget {
+  const liveCatalog = target.catalog ? catalogEntry(live, target.name) : undefined
+
   const next: ConnectionTarget = {
     ...target,
+    catalog: sameCatalog(liveCatalog, target.catalog) ? target.catalog : liveCatalog,
     connectUrl: live.connect_url ?? target.connectUrl,
     detail: live.detail ?? target.detail,
     state: live.state,
@@ -212,6 +267,7 @@ function mergeLiveTarget(target: ConnectionTarget, live: ConnectionOperationTarg
   }
 
   const same =
+    next.catalog === target.catalog &&
     next.connectUrl === target.connectUrl &&
     next.connectionId === target.connectionId &&
     next.detail === target.detail &&
@@ -239,10 +295,7 @@ const sameEnvFields = (next: SetupField[], previous: SetupField[]): boolean =>
 
 /** Apply one `connection.update` frame. Every frame carries the operation's full target snapshot, so
  *  the store overlays it; frames for another operation or for a settled request are ignored. */
-export function applyConnectionUpdate(
-  request: ConnectionRequest,
-  update: ConnectionUpdatePayload
-): ConnectionRequest {
+export function applyConnectionUpdate(request: ConnectionRequest, update: ConnectionUpdatePayload): ConnectionRequest {
   if (update.op_id !== request.opId || request.settled) {
     return request
   }
@@ -300,20 +353,53 @@ export const hasConnectionRequest = (sessionId: string | null | undefined): bool
   return Boolean(request && !request.settled)
 }
 
-/** Drive the operation. The entry stays in the store: the backend answers with `connection.update`
- *  and the card re-renders from that; only settlement removes it. */
-export async function respondToConnectionRequest(request: ConnectionRequest, outcome: ConnectionOutcome): Promise<boolean> {
+export async function connectionOwnerFor(sessionId: string, method: string): Promise<ConnectionOwner | null> {
+  const ambientProfile = $activeGatewayProfile.get()
+
+  try {
+    const scope = await resolveSessionOwner(sessionId)
+    assertSessionOwnerResolved(scope, { method, sessionId })
+
+    return {
+      connectionId: isSessionOwnerRoute(scope) ? scope.connectionId : null,
+      profile: isSessionOwnerRoute(scope) ? scope.profile : scope || ambientProfile
+    }
+  } catch {
+    return null
+  }
+}
+
+export const connectionRequestOpen = (
+  request: ConnectionRequest
+): request is ConnectionRequest & { sessionId: string } => {
   const current = $connectionRequests.get()[keyFor(request.sessionId)]
 
-  if (!current || current.opId !== request.opId || current.settled) {
+  return Boolean(request.sessionId && current && current.opId === request.opId && !current.settled)
+}
+
+/** Drive the operation. The entry stays in the store: the backend answers with `connection.update`
+ *  and the card re-renders from that; only settlement removes it. */
+export async function respondToConnectionRequest(
+  request: ConnectionRequest,
+  outcome: ConnectionAnswer
+): Promise<boolean> {
+  if (!connectionRequestOpen(request)) {
     return false
   }
 
-  await $gateway.get()?.request('connection.respond', {
+  const params = {
     op_id: request.opId,
-    result: outcome,
-    session_id: request.sessionId
-  })
+    owner: { session_id: request.sessionId, type: 'session' as const },
+    result: outcome
+  }
+
+  const owner = await connectionOwnerFor(request.sessionId, 'connection.respond')
+
+  if (owner) {
+    await requestGatewayForAgent(owner.connectionId, owner.profile, 'connection.respond', params)
+  } else {
+    await $gateway.get()?.request('connection.respond', params)
+  }
 
   return true
 }

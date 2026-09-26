@@ -228,20 +228,31 @@ def _maybe_auto_archive_for_profile(profile: Optional[str]) -> None:
         _last_auto_archive_check[key] = now
 
         from hermes_cli.config import load_config as _load_full_config
-        cfg = (_load_full_config().get("sessions") or {})
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        # The config that governs a store is the one in that store's OWN home. A zero-arg
+        # load_config() resolves through the PROCESS HERMES_HOME, so the dashboard swept every
+        # profile's sessions with the launch profile's sessions.auto_archive/auto_archive_days —
+        # one profile's retention silently decided another's.
+        profile_home = _session_db_path_for_profile(profile).parent
+        _home_token = set_hermes_home_override(str(profile_home))
+        try:
+            cfg = (_load_full_config().get("sessions") or {})
+        finally:
+            reset_hermes_home_override(_home_token)
         if not cfg.get("auto_archive", False):
             return
         from hermes_cli.profiles import _check_gateway_running
 
         # A live gateway owns this profile's store and runs the same sweep on its own
-        # housekeeping tick ("Auto-archive tick" in gateway/run.py, profile-scoped so a
+        # housekeeping tick ("state.db maintenance tick" in gateway/run.py, profile-scoped so a
         # multiplexed secondary's store is swept too). Opening it WRITABLE from `hermes
         # serve` adds a second writer to a database another process is already archiving,
         # for zero extra coverage (#110405). `_check_gateway_running` is the canonical
         # per-profile predicate (`_maybe_run_skill_maintenance` below uses it): its
         # multiplexer rung catches a served secondary, which owns no gateway.pid or lock
         # of its own and a bare lock-file probe would report stopped.
-        if _check_gateway_running(_session_db_path_for_profile(profile).parent):
+        if _check_gateway_running(profile_home):
             return
         db = _open_session_db_for_profile(profile, read_only=False)
         try:

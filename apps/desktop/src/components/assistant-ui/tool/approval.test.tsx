@@ -1,5 +1,5 @@
 import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime } from '@assistant-ui/react'
-import { act, cleanup, fireEvent, render as renderUi, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render as renderUi, screen, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -82,12 +82,43 @@ describe('PendingApprovalStack', () => {
     expect(screen.getByRole('button', { name: /Reject/ })).toBeTruthy()
   })
 
-  it('renders approval controls for protected instruction writes', () => {
-    setRequest('Update protected agent instructions')
+  it('renders the description instead of a synthetic plugin-rule placeholder', () => {
+    // A pre_tool_call plugin returning {"action": "approve"} escalates through
+    // the same gate with a synthetic display target; the real command lives in
+    // the description. The card must show what would actually run.
+    setRequest('<terminal> (plugin approval rule)', undefined, { requestId: 'apr-synth' })
+    // setRequest stamps a generic description; overwrite with the plugin one.
+    $approvalRequest.get() && setApprovalRequest({
+      command: '<terminal> (plugin approval rule)',
+      description: 'Plugin requires approval for terminal: run\npwd',
+      requestId: 'apr-synth',
+      sessionId: 'sess-1'
+    })
     render(<PendingApprovalStack />)
 
-    expect(screen.getByRole('button', { name: /Run/ })).toBeTruthy()
-    expect(screen.getByRole('button', { name: /Reject/ })).toBeTruthy()
+    expect(screen.getByText(/Plugin requires approval for terminal: run/)).toBeTruthy()
+    expect(screen.getByText(/pwd/)).toBeTruthy()
+    expect(screen.queryByText(/plugin approval rule/)).toBeNull()
+  })
+
+  it('keeps showing the real command for ordinary dangerous-command approvals', () => {
+    setRequest('chmod -R 777 /tmp/x')
+    render(<PendingApprovalStack />)
+
+    expect(screen.getByText('chmod -R 777 /tmp/x')).toBeTruthy()
+  })
+
+  it('falls back to the description when a request carries no command at all', () => {
+    setRequest('', undefined, { requestId: 'apr-nocmd' })
+    setApprovalRequest({
+      command: '',
+      description: 'Approve config change: allow SSH tunnel',
+      requestId: 'apr-nocmd',
+      sessionId: 'sess-1'
+    })
+    render(<PendingApprovalStack />)
+
+    expect(screen.getByText('Approve config change: allow SSH tunnel')).toBeTruthy()
   })
 
   it('answers the live approval request with {choice: "once"} and clears the request on Run', async () => {
@@ -191,15 +222,6 @@ describe('PendingApprovalStack', () => {
     expect($approvalRequest.get()).toBeNull()
   })
 
-  it('keeps the full command in a bounded scrollable body', () => {
-    const longCommand = 'python -c "' + 'x'.repeat(400) + '"'
-    setRequest(longCommand)
-    render(<PendingApprovalStack />)
-
-    expect(screen.getByText(longCommand).className).toContain('max-h-40')
-    expect(screen.getByText(longCommand).className).toContain('overflow-auto')
-  })
-
   it('answers the live approval request with {choice: "deny"} on Reject', async () => {
     const request = mockGateway()
     const respond = liveApproval()
@@ -256,16 +278,6 @@ describe('PendingApprovalStack', () => {
     expect(screen.getByRole('button', { name: /Run/ })).toBeTruthy()
     expect(screen.getByRole('button', { name: /Reject/ })).toBeTruthy()
     expect(screen.queryByRole('button', { name: /More approval options/ })).toBeNull()
-  })
-
-  it('renders the stack independently of mounted tool rows', () => {
-    setRequest('rm /tmp/hermes_approval_test.txt')
-    const { container } = render(<PendingApprovalStack />)
-    const stack = container.querySelector('[data-slot="tool-approval-stack"]')
-
-    expect(stack).not.toBeNull()
-    expect(within(stack as HTMLElement).getByRole('button', { name: /Run/ })).toBeTruthy()
-    expect(within(stack as HTMLElement).getByRole('button', { name: /Reject/ })).toBeTruthy()
   })
 
   it('keeps a failed request in front and releases held Enter until the user retries', async () => {

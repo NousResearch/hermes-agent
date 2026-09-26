@@ -27,7 +27,8 @@ function relabelMemberControlFrames(text: string) {
  *  profile name (legacy call sites and single-connection jobs). */
 export type GroupChatLineViewer =
   | string
-  | (Pick<GroupMember, 'name'> & Partial<Pick<GroupMember, 'connectionId' | 'connectionLabel' | 'installId' | 'remoteSource'>>)
+  | (Pick<GroupMember, 'name'> &
+      Partial<Pick<GroupMember, 'connectionId' | 'connectionLabel' | 'installId' | 'remoteSource'>>)
 
 /** Room-log line as a member sees it: `Name (user): …` / `Name: …` /
  *  `Name (you): …`. */
@@ -71,6 +72,7 @@ export function formatGroupDeltaLines(delta: GroupMessage[], viewer: GroupChatLi
 
   for (let i = delta.length - 1; i >= 0 && lines.length < GROUP_CHAT_HISTORY_LIMIT; i--) {
     const entry = delta[i]
+
     const line = formatGroupChatLine(
       { ...entry, text: compactGroupChatSyncText(entry.text, GROUP_CHAT_HISTORY_LINE_CHARS).text },
       viewer,
@@ -110,7 +112,9 @@ function viewerConnectionSources(viewer: GroupChatLineViewer): string[] {
   return [viewer.connectionLabel, viewer.connectionId].filter((token): token is string => Boolean(token))
 }
 
-function isGroupChatSelf(from: GroupMessageAuthor, viewer: GroupChatLineViewer): boolean {
+/** Whether `from` is the viewer itself — the one authorship rule for the
+ *  `(you)` suffix and for the round's own-entry watermark walk. */
+export function isGroupChatSelf(from: GroupMessageAuthor, viewer: GroupChatLineViewer): boolean {
   if (!from.name || from.name !== viewerNameOf(viewer)) {
     return false
   }

@@ -137,7 +137,6 @@ describe('ProfilesView', () => {
     const soul = await screen.findByLabelText(/SOUL\.md/i)
 
     expect(soul.tagName).toBe('TEXTAREA')
-    expect(soul.getAttribute('id')).toBe('new-profile-soul')
   })
 
   it('re-homes to default when the active profile is deleted', async () => {

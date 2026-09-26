@@ -44,6 +44,47 @@ export function isBackgroundSlotWaitTimeout(error: unknown): boolean {
   return error instanceof LocalBackendSlotWaitTimeoutError && error.silent
 }
 
+export interface LocalBackendSlotEntry {
+  process?: unknown
+  releaseLocalBackendSlot?: ReleaseLocalBackendSlot | null
+  localBackendSlotKey?: string | null
+  localBackendSpawnRequest?: LocalBackendSpawnRequest | null
+}
+
+export function releaseLocalBackendSlot(entry: LocalBackendSlotEntry | undefined): void {
+  if (!entry) {
+    return
+  }
+
+  const release = entry.releaseLocalBackendSlot
+  const request = entry.localBackendSpawnRequest
+  entry.releaseLocalBackendSlot = null
+  entry.localBackendSlotKey = null
+  entry.localBackendSpawnRequest = null
+
+  if (release) {
+    release()
+  } else {
+    request?.cancel()
+  }
+}
+
+export function assertPoolEntryStillOwned(
+  poolKey: string,
+  entry: LocalBackendSlotEntry,
+  pool: ReadonlyMap<string, LocalBackendSlotEntry>,
+  signal: AbortSignal
+): void {
+  if (signal.aborted || pool.get(poolKey) !== entry) {
+    // A post-claim cancellation still owns a child. Its exit releases capacity.
+    if (!entry.process) {
+      releaseLocalBackendSlot(entry)
+    }
+
+    throw new Error(`Profile backend start for "${poolKey}" was cancelled during start.`)
+  }
+}
+
 /** A retry deferment is expected background control flow, not a start failure. */
 export class BackgroundSlotRetryDeferredError extends Error {
   constructor(key: string) {
@@ -140,7 +181,8 @@ export async function releaseLocalBackendSlotAfterExit(
  * Bounds the number of local profile backends that are starting or running.
  *
  * A lease is acquired immediately before local start work and is held until
- * the child exits or the start fails. Remote descriptors never call request().
+ * the child exits, or a start is cancelled before spawn. Remote descriptors
+ * never call request().
  *
  * When the cap is at least 2, one slot is reserved for foreground (user-open)
  * requests so background roster hydration cannot occupy the whole pool.
@@ -160,7 +202,9 @@ export class LocalBackendSpawnCoordinator {
   onChange(listener: () => void): () => void {
     this.#listeners.add(listener)
 
-    return () => { this.#listeners.delete(listener) }
+    return () => {
+      this.#listeners.delete(listener)
+    }
   }
 
   #changed(): void {

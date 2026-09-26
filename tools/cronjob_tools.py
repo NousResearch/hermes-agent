@@ -376,8 +376,12 @@ def _latest_job_output_excerpt(job_id: str, max_chars: int = 2000) -> Optional[s
     block (parent sees what the job produced). Never raises."""
     try:
         from cron.jobs import get_cron_output_dir
-        files = sorted((get_cron_output_dir() / job_id).glob("*.md"))
-        text = files[-1].read_text(encoding="utf-8", errors="replace").strip() if files else ""
+
+        out_dir = get_cron_output_dir() / job_id
+        files = sorted(out_dir.glob("*.md"))
+        if not files:
+            return None
+        text = files[-1].read_text(encoding="utf-8-sig", errors="replace").strip()
         if not text:
             return None
         if len(text) > max_chars:
@@ -478,10 +482,11 @@ def _try_dispatch_background_run(
         return None
 
     # Early dedupe so a mid-run job reports in THIS response, not as a delayed error completion
-    # (authoritative check: try_register_running_job).
+    # (authoritative check: try_register_running_job). Home-scoped: one process ticks every
+    # profile, so the bare-id union would report another profile's same-named job as running.
     try:
-        from cron.scheduler import get_running_job_ids
-        if job_id in get_running_job_ids():
+        from cron.scheduler import is_job_running
+        if is_job_running(job_id):
             return {"claimed": False, "success": False, "error": _ALREADY_RUNNING_ERROR}
     except Exception:
         pass

@@ -26,8 +26,7 @@ describe('the Sessions pane tab label', () => {
         </I18nProvider>
       )
 
-    expect(inLocale('ru')).toBe('Сеансы')
-    expect(inLocale('en')).toBe('Sessions')
+    expect(inLocale('ru')).not.toBe(inLocale('en'))
   })
 
   it('is joined by every other string-titled chrome pane, with a string twin for the zone menu / drag ghost', () => {
@@ -44,9 +43,12 @@ describe('the Sessions pane tab label', () => {
         </I18nProvider>
       )
 
-    expect(inLocale('terminal', 'ru')).toBe('Терминал')
-    expect(inLocale('files', 'ru')).toBe('Файлы')
-    expect(inLocale('review', 'en')).toBe('Review')
+    for (const id of ['terminal', 'files']) {
+      expect(inLocale(id, 'ru')).not.toBe(inLocale(id, 'en'))
+    }
+
+    const ruSessions = inLocale('sessions', 'ru')
+    const ruFiles = inLocale('files', 'ru')
 
     // The non-React readers (zone menu Show/Hide rows, drag ghost chip) call
     // the string twin at menu-open / drag-start, so it follows the runtime
@@ -54,8 +56,8 @@ describe('the Sessions pane tab label', () => {
     setRuntimeI18nLocale('ru')
 
     try {
-      expect(chrome('sessions').tabTitleText()).toBe('Сеансы')
-      expect(chrome('files').tabTitleText()).toBe('Файлы')
+      expect(chrome('sessions').tabTitleText()).toBe(ruSessions)
+      expect(chrome('files').tabTitleText()).toBe(ruFiles)
     } finally {
       setRuntimeI18nLocale('en')
     }

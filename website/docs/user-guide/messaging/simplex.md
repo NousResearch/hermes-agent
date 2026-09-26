@@ -7,7 +7,7 @@
 ## Prerequisites
 
 - The **simplex-chat** CLI installed and running as a daemon
-- Python package **websockets** (`pip install websockets`)
+- Python package **websockets** (`hermes pm repair`)
 
 ## Install simplex-chat
 
@@ -146,6 +146,6 @@ hermes send simplex:<contact-id> "Done!"
 
 **"Cannot reach daemon"** — Ensure `simplex-chat -p 5225` is running and the port matches `SIMPLEX_WS_URL`.
 
-**"websockets not installed"** — Run `pip install websockets`.
+**"websockets not installed"** — Run `hermes pm repair`.
 
 **Messages not received** — Check that the contact's ID is in `SIMPLEX_ALLOWED_USERS` or approve them via DM pairing.

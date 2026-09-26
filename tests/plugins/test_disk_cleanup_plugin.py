@@ -479,28 +479,12 @@ class TestOnSessionEndHook:
         pi._on_session_end(session_id="s1", completed=True, interrupted=False)
         assert not p.exists(), "test file should be auto-deleted"
 
-    def test_noop_when_no_test_tracked(self, _isolate_env):
-        pi = _load_plugin_init()
-        # Nothing tracked → on_session_end should not raise.
-        pi._on_session_end(session_id="empty", completed=True, interrupted=False)
 
 
 # ---------------------------------------------------------------------------
 # Slash command
 # ---------------------------------------------------------------------------
 
-class TestSlashCommand:
-    def test_help(self, _isolate_env):
-        pi = _load_plugin_init()
-        out = pi._handle_slash("help")
-        assert "disk-cleanup" in out
-        assert "status" in out
-
-
-    def test_unknown_subcommand(self, _isolate_env):
-        pi = _load_plugin_init()
-        out = pi._handle_slash("foobar")
-        assert "Unknown subcommand" in out
 
 
 # ---------------------------------------------------------------------------
@@ -510,7 +494,7 @@ class TestSlashCommand:
 class TestBundledDiscovery:
     def _write_enabled_config(self, hermes_home, names):
         """Write plugins.enabled allow-list to config.yaml."""
-        import yaml
+        import hermes_yaml as yaml
         cfg_path = hermes_home / "config.yaml"
         cfg_path.write_text(yaml.safe_dump({"plugins": {"enabled": list(names)}}))
 
@@ -530,7 +514,7 @@ class TestBundledDiscovery:
 
     def test_disabled_beats_enabled(self, _isolate_env):
         """plugins.disabled wins even if the plugin is also in plugins.enabled."""
-        import yaml
+        import hermes_yaml as yaml
         cfg_path = _isolate_env / "config.yaml"
         cfg_path.write_text(yaml.safe_dump({
             "plugins": {

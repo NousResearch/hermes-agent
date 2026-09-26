@@ -413,6 +413,13 @@ def format_process_notification(evt: dict) -> "str | None":
     if evt.get("handoff_note"):
         _attribution = f"Handed off to you by a subagent before it finished. Purpose: {evt['handoff_note']}"
     attribution = f"{_attribution}\n" if _attribution else ""
+    if evt_type == "heartbeat":
+        _out = evt.get("output") or "(no new output since the last heartbeat)"
+        return (
+            f"[Background process {_sid} heartbeat #{evt.get('seq', '?')} — still running after "
+            f"{_format_age(float(evt.get('elapsed') or 0))} (next in {evt.get('interval', '?')}s; "
+            f"you will also be told when it exits).\n"
+            f"{attribution}Command: {_cmd}\nOutput since last heartbeat:\n{_out}]")
     if evt_type == "watch_match":
         _sup = evt.get("suppressed", 0)
         return (

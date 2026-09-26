@@ -118,7 +118,9 @@ observation window does not extend the turn itself.
 Unresolved member failures remain visible in the collapsed Activity summary after
 the room settles — including a turn the member's backend itself failed (bad
 credentials, provider errors), which is reported the moment the gateway
-reports it instead of looking like twenty minutes of thinking. Expand Activity for the turn sequence; re-address the member to
+reports it instead of looking like twenty minutes of thinking. A failure row names its cause: `builder hit an error — <first line of
+the error>` (secret-shaped tokens redacted, long lines truncated), or `builder couldn't start — too many bots running` when the local
+backend pool had no free slot. Expand Activity for the turn sequence; re-address the member to
 try again. An ambiguous submit failure is not automatically resubmitted.
 
 

@@ -17,7 +17,11 @@ const handlers: VoiceLiveHandlers = {
 }
 
 function installApi() {
-  const api = vi.fn(async (_request: unknown) => ({ ok: true, session: { id: 's1' }, transport: { sdp: 'answer', type: 'answer' } }))
+  const api = vi.fn(async (_request: unknown) => ({
+    ok: true,
+    session: { id: 's1' },
+    transport: { sdp: 'answer', type: 'answer' }
+  }))
 
   Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { api } })
 

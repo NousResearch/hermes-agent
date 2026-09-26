@@ -11,7 +11,10 @@ import asyncio
 import time
 import urllib.parse
 from fastapi import APIRouter
-from hermes_cli.web_routers._common import http_failure, scoped_to_thread
+from hermes_cli.web_routers._common import (
+    REDACTED_CREDENTIAL_WRITE_DETAIL, http_failure, is_redacted_credential_preview,
+    redacted_credential_preview, scoped_to_thread,
+)
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_config import (
     _apply_main_model_assignment, _denormalize_config_from_web, _normalize_config_for_web, _schema_with_dynamic_provider_options,
@@ -21,7 +24,7 @@ from hermes_cli.web_server_profiles import (
     _approval_mode_of, _broadcast_gateway_session_info, _is_other_profile, _parse_model_entries,
 )
 from fastapi import HTTPException, Request
-from hermes_cli.config import DEFAULT_CONFIG, OPTIONAL_ENV_VARS, read_raw_config, custom_endpoint_key_env, coerce_provider_id, find_provider_entry, get_compatible_custom_providers, redact_key, _deep_merge
+from hermes_cli.config import DEFAULT_CONFIG, OPTIONAL_ENV_VARS, read_raw_config, require_readable_config_before_write, custom_endpoint_key_env, coerce_provider_id, find_provider_entry, get_compatible_custom_providers, _ENV_REF_RE, _deep_merge
 from hermes_cli.config_providers import _canonical_api_mode, _custom_provider_entry_to_provider_config
 from hermes_cli.web_models import ConfigUpdate, EnvVarUpdate, EnvVarDelete, EnvVarReveal, CustomEndpointUpdate
 from typing import Any, Dict, List, Optional, Tuple
@@ -105,10 +108,11 @@ async def get_schema(profile: Optional[str] = None):
 
 
 @config_router.get("/api/egress/status")
-async def get_egress_status():
+async def get_egress_status(profile: Optional[str] = None):
     """Dashboard/Desktop-readable egress proxy status and remediation text."""
     from hermes_cli.proxy_cli import format_status_text
-    return {"text": format_status_text()}
+    with _config_profile_scope(profile):  # reads the profile's ``proxy:`` config block
+        return {"text": format_status_text()}
 
 
 @router.put("/api/config")
@@ -123,7 +127,9 @@ async def update_config(
             # in the PUT body, so deep-merge incoming over disk rather than
             # full-replace — the frontend can only overwrite what it sends.
             with _CONFIG_MUTATION_LOCK:
-                existing = read_raw_config()
+                # Strict read: the merge below builds a new dict, so a swallowed read error here
+                # would save the PUT body alone over the whole file.
+                existing = require_readable_config_before_write()
                 incoming = _denormalize_config_from_web(body.config)
                 merged = _deep_merge(existing, incoming)
                 # Compare normalized approvals.mode across the in-memory
@@ -243,7 +249,7 @@ def _get_env_vars_sync(profile: Optional[str] = None):
         # gaps (description/url) and always supplies provider grouping hints.
         return {
             "is_set": bool(value),
-            "redacted_value": redact_key(value) if value else None,
+            "redacted_value": redacted_credential_preview(value),
             "description": info.get("description") or cat_meta.get("description", ""),
             "url": info.get("url") if info.get("url") is not None else cat_meta.get("url"),
             "category": info.get("category") or cat_meta.get("category", ""),
@@ -289,6 +295,10 @@ async def set_env_var(body: EnvVarUpdate, profile: Optional[str] = None):
     # mirror still holding the previous value of this var (model.api_key /
     # auxiliary.*.api_key / custom_providers[*]), so a rotation can't leave a
     # stale higher-precedence copy that keeps authenticating with the old key.
+    # Display-only previews (sentinel or legacy mask) must never gain write authority.
+    # Checked before the error mapper: it turns HTTPException into a 500 at this site.
+    if is_redacted_credential_preview(body.value):
+        raise HTTPException(status_code=400, detail=REDACTED_CREDENTIAL_WRITE_DETAIL)
     with _env_write_errors("PUT /api/env failed", http_passthrough=False):
         from hermes_cli.credential_lifecycle import save_provider_env_credential
 
@@ -357,7 +367,7 @@ def _api_key_display(entry: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
     """
     plaintext = str(entry.get("api_key") or "").strip()
     if plaintext:
-        return True, redact_key(plaintext)
+        return True, redacted_credential_preview(plaintext)
     key_env = str(entry.get("key_env") or "").strip()
     if key_env:
         return True, f"${{{key_env}}}"
@@ -617,6 +627,10 @@ def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> T
     env_var = custom_endpoint_key_env(endpoint_id)
     submitted_key = body.api_key.strip() if body.api_key is not None else None
     if submitted_key:
+        # ``${KEY_ENV}`` is the GET display for key_env entries; the helper covers the
+        # sentinel and legacy masks. Either one is display-only, current or stale.
+        if _ENV_REF_RE.fullmatch(submitted_key) or is_redacted_credential_preview(submitted_key):
+            raise HTTPException(status_code=400, detail=REDACTED_CREDENTIAL_WRITE_DETAIL)
         save_env_value(env_var, submitted_key)
         entry["key_env"] = env_var
         entry.pop("api_key", None)

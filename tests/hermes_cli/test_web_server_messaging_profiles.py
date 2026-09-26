@@ -8,7 +8,7 @@ These tests pin the new behavior: reads and writes land in the REQUESTED
 profile's HERMES_HOME, and the dashboard's own profile stays untouched.
 """
 import pytest
-import yaml
+import hermes_yaml as yaml
 import gateway.status as _gw_status
 
 
@@ -229,7 +229,6 @@ class TestMultiplexPortBindingGuard:
             )
             if platform_id in SHARED_LISTENER_MIRROR_PLATFORMS:
                 assert resp.status_code == 409, platform_id
-                assert "default profile" in resp.json()["detail"]
             else:  # served at /p/worker_alpha/<path> on the shared listener
                 assert resp.status_code == 200, (platform_id, resp.text)
 

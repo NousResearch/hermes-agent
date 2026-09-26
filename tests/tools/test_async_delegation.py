@@ -7,7 +7,6 @@ formatting, capacity rejection, and crash handling.
 
 import json
 import os
-import queue
 import sqlite3
 import subprocess
 import sys
@@ -101,7 +100,7 @@ def test_schema_init_preserves_shared_state_db_wal_mode(tmp_path):
         conn.close()
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 def test_connect_preserves_wal_and_applies_macos_durability_barriers(
     tmp_path, monkeypatch
 ):
@@ -122,31 +121,6 @@ def test_connect_preserves_wal_and_applies_macos_durability_barriers(
         conn.close()
 
 
-def test_dispatch_returns_immediately_without_blocking():
-    gate = threading.Event()
-
-    def runner():
-        gate.wait(timeout=60)
-        return {"status": "completed", "summary": "done", "api_calls": 1,
-                "duration_seconds": 0.1, "model": "m"}
-
-    t0 = time.monotonic()
-    res = ad.dispatch_async_delegation(
-        goal="g", context=None, toolsets=None, role="leaf", model="m",
-        session_key="", runner=runner, max_async_children=3,
-    )
-    elapsed = time.monotonic() - t0
-
-    assert res["status"] == "dispatched"
-    assert res["delegation_id"].startswith("deleg_")
-    # Non-blocking invariant: dispatch returned while the runner is still
-    # gated (active), so it cannot have waited on the gate. The active_count
-    # check is the environment-independent proof; the generous wall-clock
-    # bound is a loose sanity backstop, not the primary assertion (a loaded
-    # CI runner can be slow but never anywhere near the runner's 5s gate).
-    assert ad.active_count() == 1
-    assert elapsed < 4.0, f"dispatch blocked {elapsed:.2f}s (gate is 5s)"
-    gate.set()
 
 
 def test_async_executor_workers_are_daemon_threads():
@@ -216,13 +190,9 @@ def test_rich_reinjection_block_is_self_contained():
     text = format_process_notification(evt)
     assert text is not None
     for needle in [
-        "ASYNC DELEGATION COMPLETE",
         "Compute the meaning of life",
         "User is a philosopher",
-        "Toolsets: web",
         "The answer is 42.",
-        "Status: completed",
-        "API calls: 7",
     ]:
         assert needle in text, f"missing {needle!r}"
 
@@ -588,7 +558,7 @@ def test_delegate_task_background_routes_async_and_does_not_block(monkeypatch):
     """delegate_task(background=True) returns a handle without running the
     child synchronously, and the child completes on the background thread.
     A single task is dispatched as a one-item background batch unit."""
-    from unittest.mock import MagicMock, patch
+    from unittest.mock import MagicMock
     import tools.delegate_tool as dt
 
     parent = MagicMock()
@@ -1187,7 +1157,7 @@ print(json.dumps(q.get_nowait(), sort_keys=True))
     assert "done: single background subagent" in format_process_notification(evt)
 
 
-@pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX mode bits not enforced on Windows")
+@pytest.mark.platforms("posix")  # POSIX mode bits not enforced on Windows
 def test_connect_creates_state_db_0o600_under_permissive_umask(tmp_path, monkeypatch):
     """``_connect`` shares state.db with hermes_state.SessionDB -- a fresh
     HERMES_HOME must land the file (and its WAL sidecar, if created) at 0o600

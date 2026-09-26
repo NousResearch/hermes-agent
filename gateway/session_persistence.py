@@ -413,6 +413,7 @@ class SessionPersistenceMixin:
             logger.warning("gateway.session: recovered state.db routing load failed: %s", exc)
             return
         current = self._entries_as_dicts()
+        removed_keys: list = []
         for key, entry_json in durable.items():
             durable_entry = self._routing_entry_from_json(key, entry_json)
             if durable_entry is None:
@@ -422,9 +423,36 @@ class SessionPersistenceMixin:
                 # authoritative row that fallback never saw.
                 self._entries.setdefault(key, durable_entry)
             elif key not in current:
-                continue  # loaded from fallback and deliberately removed
+                # Loaded from fallback and deliberately removed while on fallback. The delete is a real
+                # mutation, not a view-only affordance: a prune could not reach the broken DB, so the stale
+                # row is still present there. Leave the live index without the key AND drop the stale row,
+                # otherwise the key resurrects on the next healthy load as a pending session.
+                removed_keys.append(key)
             elif current[key] == baseline[key]:
                 self._entries[key] = durable_entry  # unchanged fallback data yields to the DB copy
+        if removed_keys:
+            replacer = self._routing_db_method("replace_gateway_routing_entries")
+            if replacer is not None:
+                try:
+                    replacer(
+                        {k: v for k, v in durable.items() if k not in removed_keys},
+                        scope=self._routing_scope(),
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "gateway.session: could not drop stale routing rows %r after reconcile: %s",
+                        removed_keys, exc)
+            # Drop the deleted keys from the legacy sessions.json mirror too, or a
+            # subsequent healthy load (empty state.db => mirror import) resurrects
+            # them as pending sessions. state.db is authoritative; the mirror must
+            # not outlive a routing key that was deliberately removed.
+            if getattr(self, "_write_sessions_json", True):
+                try:
+                    self._save_sessions_json(self._entries_as_dicts())
+                except Exception as exc:
+                    logger.warning(
+                        "gateway.session: could not refresh sessions.json mirror after "
+                        "reconcile remove: %s", exc)
         self._routing_db_loaded = True
         self._routing_fallback_baseline = None
 

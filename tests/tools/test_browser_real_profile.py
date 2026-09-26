@@ -807,10 +807,12 @@ class TestReviewRound3:
         assert matched[0].info["name"] == "chrome.exe"
         assert f"--user-data-dir={ud}" in " ".join(matched[0].info["cmdline"])
 
+    @pytest.mark.platforms("windows")
     def test_processes_holding_profile_default_profile_main_process(self, tmp_path, monkeypatch):
         """A browser launched normally carries NO --user-data-dir; its main process must still
         bind when the profile is that install's default dir — but not a helper, and not a
-        different install that happens to share the binary name."""
+        different install that happens to share the binary name. Windows-native: the default
+        dir and install paths are the host's own (LOCALAPPDATA, Program Files)."""
         import hermes_cli.browser_connect as bc
 
         class FakeProc:
@@ -826,8 +828,7 @@ class TestReviewRound3:
 
         local = tmp_path / "Local"
         monkeypatch.setenv("LOCALAPPDATA", str(local))
-        monkeypatch.setattr(bc.platform, "system", lambda: "Windows")
-        ud = bc.real_profile_data_dir("chrome", "Windows")
+        ud = bc.real_profile_data_dir("chrome")
         chrome = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
         procs = [
             FakeProc(1, [chrome, "about:blank"]),                                   # match

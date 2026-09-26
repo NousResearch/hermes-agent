@@ -677,6 +677,8 @@ async def get_learning_graph(profile: Optional[str] = None):
         # _profile_scope takes _SKILLS_PROFILE_LOCK and the graph build reads skills/memories
         # from disk — keep it off the event loop.
         return await scoped_to_thread(profile, _run)
+    except HTTPException:
+        raise  # an unknown ?profile= is the scope's 404, not a graph failure
     except Exception:
         _log.exception("GET /api/learning/graph failed")
         raise HTTPException(status_code=500, detail="Failed to build learning graph")
@@ -793,6 +795,8 @@ async def run_debug_share_endpoint(body: DebugShareRequest | None = None,
     try:
         result = await config_scoped_to_thread(profile, lambda: build_debug_share(
             log_lines=max(1, min(int(req.lines), 5000)), redact=bool(req.redact)))
+    except HTTPException:
+        raise  # an unknown ?profile= is the scope's 404, not a failed share
     except RuntimeError as exc:
         # Required summary-report upload failed (offline / paste service down).
         raise HTTPException(status_code=502, detail=f"Upload failed: {exc}")

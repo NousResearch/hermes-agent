@@ -295,6 +295,8 @@ async def get_cron_delivery_targets(profile: Optional[str] = None):
 
         with _config_profile_scope(profile):
             targets.extend(cron_delivery_targets())
+    except HTTPException:
+        raise  # an unknown ?profile= is the scope's 404, not a missing platform list
     except Exception:
         _log.exception("GET /api/cron/delivery-targets failed")
     return {"targets": targets}
@@ -430,6 +432,8 @@ async def list_cron_blueprints(profile: Optional[str] = None):
             with _config_profile_scope(profile):
                 platforms = [t["id"] for t in cron_delivery_targets() if t.get("id")]
             deliver_options = ["origin", "local", *platforms]
+        except HTTPException:
+            raise  # an unknown ?profile= is the scope's 404, not a reason for static options
         except Exception:
             _log.debug("cron_delivery_targets unavailable; using static deliver options", exc_info=True)
 
@@ -442,6 +446,8 @@ async def list_cron_blueprints(profile: Optional[str] = None):
                         f["options"] = deliver_options
             entries.append(entry)
         return {"blueprints": entries}
+    except HTTPException:
+        raise
     except Exception as e:
         _log.exception("GET /api/cron/blueprints failed")
         raise HTTPException(status_code=500, detail=str(e))

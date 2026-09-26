@@ -59,18 +59,16 @@ _CATEGORY_ORDER = [
 
 
 @contextlib.contextmanager
-def _env_write_errors(log_msg: str, *, http_passthrough: bool):
+def _env_write_errors(log_msg: str):
     """``ValueError`` -> 400 with its message (save/remove_env_value reject
     invalid names and denylisted keys — LD_PRELOAD, PATH, PYTHONPATH, …, and
-    the SPA needs the reason, not an opaque 500); anything else is logged and
-    becomes 500 "Internal server error"."""
+    the SPA needs the reason, not an opaque 500); ``HTTPException`` (the
+    profile scope's 404 for an unknown ``?profile=``) passes through; anything
+    else is logged and becomes 500 "Internal server error"."""
     try:
         yield
     except HTTPException:
-        if http_passthrough:
-            raise
-        _log.exception(log_msg)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception:
@@ -296,10 +294,9 @@ async def set_env_var(body: EnvVarUpdate, profile: Optional[str] = None):
     # auxiliary.*.api_key / custom_providers[*]), so a rotation can't leave a
     # stale higher-precedence copy that keeps authenticating with the old key.
     # Display-only previews (sentinel or legacy mask) must never gain write authority.
-    # Checked before the error mapper: it turns HTTPException into a 500 at this site.
     if is_redacted_credential_preview(body.value):
         raise HTTPException(status_code=400, detail=REDACTED_CREDENTIAL_WRITE_DETAIL)
-    with _env_write_errors("PUT /api/env failed", http_passthrough=False):
+    with _env_write_errors("PUT /api/env failed"):
         from hermes_cli.credential_lifecycle import save_provider_env_credential
 
         return await scoped_to_thread(
@@ -961,7 +958,7 @@ async def remove_env_var(body: EnvVarDelete, profile: Optional[str] = None):
     # ones kept providers alive in the model picker), the affected providers'
     # model-cache rows, and value-matched config.yaml api_key mirrors.
     # OAuth/device-code/manual pool entries for the same provider are preserved.
-    with _env_write_errors("DELETE /api/env failed", http_passthrough=True):
+    with _env_write_errors("DELETE /api/env failed"):
         from hermes_cli.credential_lifecycle import remove_provider_env_credential
 
         result = await scoped_to_thread(

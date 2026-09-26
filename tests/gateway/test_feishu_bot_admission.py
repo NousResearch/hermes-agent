@@ -640,3 +640,57 @@ def test_dm_admission_config_falls_back_to_os_environ_when_unscoped(monkeypatch)
     adapter = object.__new__(FeishuAdapter)
     adapter._apply_settings(settings)
     assert adapter._admit(make_sender(open_id="ou_anyone"), make_message(chat_type="p2p")) is None
+
+
+# --- union_id as an allowlist anchor ---------------------------------------
+#
+# ``open_id`` is app-scoped: the same person holds a *different* open_id under
+# every Feishu app.  An allowlist that only matches open_id/user_id therefore
+# stops admitting everyone the moment the app is recreated or migrated, and a
+# multi-bot deployment has to duplicate one entry per bot for the same human.
+# ``union_id`` is developer-scoped and stable across all of an app's siblings,
+# so both gates must accept it.
+#
+# Regression: the group gate built its id set by hand and omitted union_id,
+# while the DM gate (``_sender_identity``) already included it — the same
+# identity got different admission answers on the two paths.
+
+
+@pytest.mark.parametrize("variant", ["open_id", "user_id", "union_id"])
+def test_group_allowlist_admits_any_tenant_id_variant(variant):
+    """Every id variant ``_sender_identity()`` collects is a valid anchor."""
+    allowed = "id_allowed"
+    ids = {"open_id": "ou_other", "user_id": "uid_other", "union_id": "on_other"}
+    ids[variant] = allowed
+
+    adapter = make_adapter_skeleton()
+    adapter._allowed_group_users = frozenset({allowed})
+    sender = make_sender(**ids)
+
+    assert adapter._allow_group_message(sender.sender_id, "oc_1") is True
+
+
+@pytest.mark.parametrize("variant", ["open_id", "user_id", "union_id"])
+def test_dm_allowlist_admits_any_tenant_id_variant(monkeypatch, variant):
+    """DM path pins the same contract (it already worked via _sender_identity)."""
+    monkeypatch.delenv("FEISHU_ALLOW_ALL_USERS", raising=False)
+    monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+
+    allowed = "id_allowed"
+    ids = {"open_id": "ou_other", "user_id": "uid_other", "union_id": "on_other"}
+    ids[variant] = allowed
+
+    adapter = make_adapter_skeleton()
+    adapter._allowed_group_users = frozenset({allowed})
+    sender = make_sender(**ids)
+
+    assert adapter._admit(sender, make_message(chat_type="p2p")) is None
+
+
+def test_group_allowlist_rejects_unlisted_union_id():
+    """Control: widening the id set must not admit anyone unlisted."""
+    adapter = make_adapter_skeleton()
+    adapter._allowed_group_users = frozenset({"on_owner"})
+    sender = make_sender(open_id="ou_stranger", union_id="on_stranger")
+
+    assert adapter._allow_group_message(sender.sender_id, "oc_1") is False

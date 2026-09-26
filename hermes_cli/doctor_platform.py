@@ -500,6 +500,54 @@ def _check_required_packages(should_fix: bool, f: Finding) -> None:
 
 
 @doctor_check()
+def _check_web_dashboard_import(should_fix: bool, f: Finding) -> None:
+    """Import the dashboard web surface in a subprocess so an import-time crash lands in the report.
+
+    When starlette is updated past the fastapi pinned beside it (the CVE starlette pin ships in
+    several extras on its own), ``hermes dashboard`` dies constructing ``FastAPI(...)`` with a
+    TypeError — not an ImportError — so the module's own lazy-install fallback never fires and the
+    process exits before a single log line. Importing in a subprocess keeps a dead web surface
+    from taking the doctor down with it; lazy installs stay off so the probe never mutates the
+    environment it is diagnosing.
+    """
+    from hermes_cli.doctor import PROJECT_ROOT
+
+    env = dict(os.environ, HERMES_DISABLE_LAZY_INSTALLS="1")
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", "import hermes_cli.web_server"],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            cwd=str(PROJECT_ROOT),
+            env=env,
+        )
+    except subprocess.TimeoutExpired:
+        _fail_and_issue(
+            "Dashboard web surface",
+            "(import probe timed out)",
+            "Repair the dashboard dependencies: `hermes pm repair`, then restart Hermes",
+            f.issues,
+        )
+        return
+    stderr = (proc.stderr or "").strip()
+    if proc.returncode == 0:
+        return check_ok("Dashboard web surface", "(imports cleanly)")
+    if "Web UI requires fastapi and uvicorn" in stderr:
+        # The optional web extra is simply absent; anyone who never opens the dashboard
+        # should not be told their install is broken.
+        return check_warn("Dashboard web surface", "(optional web extra not installed)")
+    detail = (
+        stderr.splitlines()[-1] if stderr else f"( exited with code {proc.returncode} )"
+    )
+    _fail_and_issue(
+        "Dashboard web surface",
+        detail,
+        "Repair the dashboard dependencies: `hermes pm repair`, then restart Hermes",
+        f.issues,
+    )
+
+@doctor_check()
 def _check_gateway_supervision(should_fix: bool, f: Finding) -> None:
     _check_gateway_service_linger(f.issues)
     _check_s6_supervision(f.issues)

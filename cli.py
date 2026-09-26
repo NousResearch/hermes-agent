@@ -926,7 +926,14 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
                 config=self.config,
                 # Writer identity: a re-claim by this process replaces its own entry.
                 # See #94595.
-                metadata={"live_session_id": str(self.session_id)},
+                metadata={
+                    "live_session_id": str(self.session_id),
+                    # One-shot Bot Chat turns drain the live-delivery mailbox before
+                    # releasing the lease, so they advertise the one-shot consumer the
+                    # mailbox admits; without it their DMs bounce target_busy. #122370.
+                    **({"bot_live_delivery_consumer": "oneshot"}
+                       if getattr(self, "_single_query_mode", False) else {}),
+                },
             )
         except Exception as exc:
             logger.warning("Failed to claim active session slot: %s", exc)

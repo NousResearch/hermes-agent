@@ -114,12 +114,17 @@ class RemoteKernel:
     last_used: float = field(default_factory=time.monotonic)
     execution_count: int = 0
     cell_seq: int = 0
-    # Cells currently running on this kernel. Reap/evict skip attached
+    # Cells running on or queued for this kernel. Reap/evict skip attached
     # kernels: killing one mid-cell tears the runner out from under a live
     # poll loop (same guard as tools.code_kernel, hermes-agent#101861).
     attached: int = 0
     # Owned by a live delegate_task child: exempt from LRU eviction (the child's teardown disposes it).
     pinned: bool = False
+    # Serializes cells, mirroring SessionKernel.lock: cell_seq minting, the
+    # rpc-dir sweep, and the poll loop are all per-cell state. ``attached`` only
+    # guards reap/evict; without it, parallel execute_code calls on one
+    # kernel mint the same cell_req_NNNNNN.json and clobber each other.
+    lock: threading.Lock = field(default_factory=threading.Lock)
 
     def sh(self, cmd: str, timeout: int = 15) -> str:
         return _sh(self.env, cmd, timeout)
@@ -258,16 +263,35 @@ def _acquire_remote_kernel(env, env_type: str, owner: str, task_env_id: str,
     with _REGISTRY.lock:
         expired = _reap_unlocked(idle_exit)
         kernel = _REMOTE_KERNELS.get(key)
+        if kernel is not None:
+            # Attach under the same lock as the fetch so no drop below can
+            # slip between lookup and attach; the caller owns the decrement.
+            kernel.attached += 1
     for doomed in expired:
         doomed.kill()
+
+    def _drop(doomed: RemoteKernel) -> None:
+        """Unregister and detach. Kill immediately only when no cell is running
+        or queued on it — otherwise the last attached cell's ``finally`` owns the
+        teardown (code_kernel.py:678-681 parity). Without the deferral a
+        concurrent reset or a transiently-failed is_alive probe rm -rf's the
+        kernel dir out from under a serialized mid-poll cell."""
+        with _REGISTRY.lock:
+            if _REMOTE_KERNELS.get(key) is doomed:
+                _REMOTE_KERNELS.pop(key)
+            doomed.attached -= 1
+            orphan = doomed.attached == 0
+        if orphan:
+            doomed.kill()
+
     if kernel is not None and reset:
-        _REGISTRY.discard(key, kernel)
+        _drop(kernel)
         kernel, state_reset = None, True
     if kernel is not None and not kernel.is_alive():
         # Transport drop, container restart, self-reaped on idle, OOM — all
         # the same answer: report the loss, respawn fresh (kill is then only
         # best-effort dir cleanup; the process is already gone).
-        _REGISTRY.discard(key, kernel)
+        _drop(kernel)
         kernel, state_lost = None, True
     reused = kernel is not None
     if kernel is None:
@@ -277,6 +301,7 @@ def _acquire_remote_kernel(env, env_type: str, owner: str, task_env_id: str,
             kernel.pinned = is_delegated_child_context()
             with _REGISTRY.lock:
                 _REMOTE_KERNELS[key] = kernel
+                kernel.attached += 1
     return kernel, reused, state_reset, state_lost
 
 
@@ -313,29 +338,64 @@ def execute_in_remote_kernel(
     timeout: int, max_tool_calls: int, reset: bool, idle_exit: int = 1800,
 ) -> Optional[Dict[str, Any]]:
     """Run one cell in the owner's remote kernel. Returns the raw cell result dict (caller
-    post-processes output), or ``None`` when no kernel could be spawned (caller falls open to
-    per-call). ``state_lost``/``state_reset``/``reused`` ride in the ``kernel`` sub-dict."""
+    post-processes output), or ``None`` when no kernel could be spawned or queueing on a busy
+    kernel outlasted this call's own timeout — the caller falls open to per-call either way.
+    ``state_lost``/``state_reset``/``reused`` ride in the ``kernel`` sub-dict."""
     from tools.code_kernel import _resolve_owner
     owner = _resolve_owner(task_env_id)
-    kernel, reused, state_reset, state_lost = _acquire_remote_kernel(
-        env, env_type, owner, task_env_id, sandbox_tools, reset=reset, idle_exit=idle_exit)
-    if kernel is None:
-        return None  # fail open to per-call
     key = _kernel_key(owner, env_type, task_env_id, sandbox_tools)
-    kernel.last_used = time.monotonic()
-    with _REGISTRY.lock:
-        kernel.attached += 1
-        evicted = _evict_over_cap_unlocked(keep=key)
-    for doomed in evicted:
-        doomed.kill()
-    try:
-        return _run_attached_cell(kernel, key, code, env=env, task_env_id=task_env_id,
-                                  sandbox_tools=sandbox_tools, timeout=timeout, max_tool_calls=max_tool_calls,
-                                  reused=reused, state_reset=state_reset, state_lost=state_lost)
-    finally:
+    for _attempt in range(2):
+        kernel, reused, state_reset, state_lost = _acquire_remote_kernel(
+            env, env_type, owner, task_env_id, sandbox_tools, reset=reset, idle_exit=idle_exit)
+        if kernel is None:
+            return None  # fail open to per-call
+        kernel.last_used = time.monotonic()
         with _REGISTRY.lock:
-            kernel.attached -= 1
-            kernel.last_used = time.monotonic()
+            evicted = _evict_over_cap_unlocked(keep=key)
+        for doomed in evicted:
+            doomed.kill()
+        try:
+            # One cell at a time per kernel (SessionKernel.lock parity): concurrent
+            # cells race cell_seq minting and let one cell's rpc-dir sweep delete a
+            # sibling's in-flight tool-RPC requests. The wait is bounded by this
+            # call's own cell budget — queueing past it and then running a full
+            # cell would double the caller-visible latency.
+            if not kernel.lock.acquire(timeout=timeout):
+                return None  # fail open to per-call
+            try:
+                with _REGISTRY.lock:
+                    registered = _REMOTE_KERNELS.get(key) is kernel
+                if not registered:
+                    # Popped while queued on the lock (a sibling cell timed out
+                    # or exited, a reset/shutdown dropped it): re-acquire once —
+                    # the retry respawns a fresh kernel instead of degrading
+                    # this call to stateless per-call.
+                    continue
+                if not kernel.is_alive():
+                    # Registered but dead remote-side (OOM, container restart,
+                    # runner self-exit): pop so the retry respawns, rather than
+                    # burning the cell timeout polling a dead kernel dir.
+                    with _REGISTRY.lock:
+                        if _REMOTE_KERNELS.get(key) is kernel:
+                            _REMOTE_KERNELS.pop(key)
+                    continue
+                return _run_attached_cell(kernel, key, code, env=env, task_env_id=task_env_id,
+                                          sandbox_tools=sandbox_tools, timeout=timeout,
+                                          max_tool_calls=max_tool_calls,
+                                          reused=reused, state_reset=state_reset, state_lost=state_lost)
+            finally:
+                kernel.lock.release()
+        finally:
+            with _REGISTRY.lock:
+                kernel.attached -= 1
+                kernel.last_used = time.monotonic()
+                # Popped while cells were still attached (reset, dead-probe,
+                # shutdown): the last one out owns the teardown, mirroring
+                # code_kernel.py's orphaned-kernel rule.
+                orphaned = kernel.attached == 0 and _REMOTE_KERNELS.get(key) is not kernel
+            if orphaned:
+                kernel.kill()
+    return None  # re-acquire raced another teardown; fail open to per-call
 
 
 def _run_attached_cell(kernel: RemoteKernel, key: Tuple, code: str, *, env, task_env_id: str,

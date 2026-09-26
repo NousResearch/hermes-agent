@@ -215,6 +215,331 @@ class TestOwnershipIsolation(RemoteKernelBase):
         self.assertEqual(remaining_owner, "owner-b")
 
 
+class TestConcurrentCellsSerialize(RemoteKernelBase):
+    """Cells on one remote kernel must serialize exactly like the local path
+    (SessionKernel.lock): concurrent execute_code calls in one turn attach to
+    the same kernel, and without a per-kernel lock they race cell_seq minting
+    (same cell_req_NNNNNN.json, one request clobbered, both pollers on one
+    cell_res file -> loser times out and the kernel is killed) and let one
+    cell's `rm -f req_* res_*` cleanup delete a sibling's in-flight tool RPC."""
+
+    def _kernel_dir_of(self, command):
+        import re
+        match = re.search(r"hermes_rkernel_\w+", command)
+        return match.group(0) if match else None
+
+    def _await_poll(self, env, needle="cell_res_"):
+        """Spin until the env sees a cell_res poll command; fail rather than
+        hang the suite if a regression stops the first cell from polling."""
+        deadline = time.monotonic() + 10
+        while not any(needle in c for c in env.commands):
+            self.assertLess(time.monotonic(), deadline, "first cell never polled")
+            time.sleep(0.005)
+
+    def test_second_cell_waits_for_first_to_settle(self):
+        import threading
+
+        gate = threading.Event()
+        dispatched = []  # cell seqs whose request ship started
+        finished = []
+
+        def cat_handler(command):
+            # Cell 1's poll stalls until released; cell 2 returns at once.
+            if "cell_res_000001" in command:
+                gate.wait(10)
+            return {"output": json.dumps(_cell()), "returncode": 0}
+
+        env = ScriptedEnv([
+            ("nohup", lambda c: {"output": "PID:4242\n", "returncode": 0}),
+            ("kill -0", lambda c: {"output": "ALIVE\n", "returncode": 0}),
+            ("cat ", cat_handler),
+        ])
+
+        def ship_spy(_env, path, _content):
+            dispatched.append(path)
+        self._ship.stop()
+        self._ship = patch(
+            "tools.code_execution_tool._ship_file_to_remote", side_effect=ship_spy,
+        )
+        self._ship.start()
+
+        t1 = threading.Thread(target=lambda: finished.append(_run(env)))
+        t1.start()
+        # Wait until cell 1 is mid-flight: its res_000001 poll is parked on the gate.
+        self._await_poll(env)
+        t2 = threading.Thread(target=lambda: finished.append(_run(env)))
+        t2.start()
+        time.sleep(0.3)
+        # Serialization: while cell 1 is still blocked, cell 2 must not have
+        # shipped its request file (or finished) yet.
+        self.assertTrue(t2.is_alive(), "second cell ran concurrently with the first")
+        self.assertEqual(
+            len([p for p in dispatched if "cell_req_" in p]), 1,
+            "queued cell shipped its request while the first was still running")
+        gate.set()
+        t1.join(10)
+        t2.join(10)
+        self.assertFalse(t1.is_alive() or t2.is_alive())
+        # BOTH cells ran on the kernel, with DISTINCT request seqs — a queued
+        # cell that wrongly fell open would ship nothing and pass a mere
+        # distinctness check.
+        self.assertEqual(len(finished), 2)
+        for result in finished:
+            self.assertEqual(result["status"], "success", result)
+        reqs = [p for p in dispatched if "cell_req_" in p]
+        self.assertEqual(len(reqs), 2)
+        self.assertEqual(len(set(reqs)), 2)
+
+    def test_cell_queued_on_discarded_kernel_respawns(self):
+        """A cell that queued behind one which timed out must not run on the
+        discarded (killed) kernel and must not silently degrade to stateless
+        per-call either — it re-acquires, respawns a fresh kernel, and runs
+        there (the "next call starts a fresh kernel" note made true early)."""
+        import threading
+
+        dispatched = []
+        dirs = []  # kernel dirs in first-seen order; dir 0 is the kernel under test
+
+        def cat_handler(command):
+            d = self._kernel_dir_of(command)
+            if d and d not in dirs:
+                dirs.append(d)
+            # Kernel 1's cell never gets a result (times out and kills it); a
+            # respawned kernel's res answers instantly.
+            if dirs and d == dirs[0]:
+                return {"output": "", "returncode": 0}
+            return {"output": json.dumps(_cell()), "returncode": 0}
+
+        env = ScriptedEnv([
+            ("nohup", lambda c: {"output": "PID:4242\n", "returncode": 0}),
+            ("kill -0", lambda c: {"output": "ALIVE\n", "returncode": 0}),
+            ("cat ", cat_handler),
+        ])
+
+        def ship_spy(_env, path, _content):
+            dispatched.append(path)
+        self._ship.stop()
+        self._ship = patch(
+            "tools.code_execution_tool._ship_file_to_remote", side_effect=ship_spy,
+        )
+        self._ship.start()
+
+        done = {}
+        t1 = threading.Thread(
+            target=lambda: done.__setitem__(1, _run(env, timeout=2)))
+        t1.start()
+        self._await_poll(env)
+        t2 = threading.Thread(
+            target=lambda: done.__setitem__(2, _run(env)))
+        t2.start()
+        t1.join(15)
+        t2.join(15)
+        self.assertFalse(t1.is_alive() or t2.is_alive())
+        self.assertEqual(done[1]["status"], "timeout", done[1])
+        # The queued cell saw the dead registry entry, respawned, and ran on a
+        # FRESH kernel — not the dead dir, not a stateless per-call run.
+        self.assertEqual(done[2]["status"], "success", done[2])
+        self.assertFalse(done[2]["kernel"]["reused"])
+        self.assertEqual(sum(1 for c in env.commands if "nohup" in c), 2)
+        reqs = [p for p in dispatched if "cell_req_" in p]
+        self.assertEqual(len(reqs), 2)
+        self.assertNotEqual(
+            self._kernel_dir_of(reqs[0]), self._kernel_dir_of(reqs[1]),
+            "queued cell must not ship a request to a discarded kernel")
+
+    def test_queued_cell_on_remote_dead_kernel_respawns(self):
+        """A kernel that dies remote-side while still registered (OOM,
+        container restart, runner self-exit) passes the registry-membership
+        check — the post-lock liveness re-probe must catch it, pop the corpse,
+        and respawn rather than burn the full cell timeout on a dead dir."""
+        import threading
+
+        gate = threading.Event()
+        dispatched, dirs = [], []
+        dead = {"v": False}
+        pids = iter(("4242", "5555"))
+
+        def cat_handler(command):
+            d = self._kernel_dir_of(command)
+            if d and d not in dirs:
+                dirs.append(d)
+            if dirs and d == dirs[0]:
+                gate.wait(10)
+            return {"output": json.dumps(_cell()), "returncode": 0}
+
+        def liveness(command):
+            if "4242" in command and dead["v"]:
+                return {"output": "", "returncode": 1}
+            return {"output": "ALIVE\n", "returncode": 0}
+
+        env = ScriptedEnv([
+            ("nohup", lambda c: {"output": f"PID:{next(pids)}\n", "returncode": 0}),
+            ("kill -0", liveness),
+            ("cat ", cat_handler),
+        ])
+
+        def ship_spy(_env, path, _content):
+            dispatched.append(path)
+        self._ship.stop()
+        self._ship = patch(
+            "tools.code_execution_tool._ship_file_to_remote", side_effect=ship_spy,
+        )
+        self._ship.start()
+
+        done = {}
+        t1 = threading.Thread(target=lambda: done.__setitem__(1, _run(env)))
+        t1.start()
+        self._await_poll(env)
+        kernel1 = next(iter(_REMOTE_KERNELS.values()))
+        t2 = threading.Thread(target=lambda: done.__setitem__(2, _run(env)))
+        t2.start()
+        # Wait until t2 is attached and queued on kernel.lock, then mark the
+        # runner dead remote-side and let cell 1 finish.
+        deadline = time.monotonic() + 10
+        while kernel1.attached < 2:
+            self.assertLess(time.monotonic(), deadline, "second cell never queued")
+            time.sleep(0.005)
+        dead["v"] = True
+        gate.set()
+        t1.join(15)
+        t2.join(15)
+        self.assertFalse(t1.is_alive() or t2.is_alive())
+        self.assertEqual(done[1]["status"], "success", done[1])
+        # The queued cell re-probed, found the corpse, popped it, and respawned.
+        self.assertEqual(done[2]["status"], "success", done[2])
+        self.assertFalse(done[2]["kernel"]["reused"])
+        self.assertEqual(sum(1 for c in env.commands if "nohup" in c), 2)
+        reqs = [p for p in dispatched if "cell_req_" in p]
+        self.assertEqual(len(reqs), 2)
+        self.assertNotEqual(
+            self._kernel_dir_of(reqs[0]), self._kernel_dir_of(reqs[1]))
+        # The dead kernel's dir was cleaned up by the last attached cell out.
+        self.assertTrue(
+            any("rm -rf" in c and dirs[0] in c for c in env.commands))
+
+    def test_reset_during_running_cell_defers_teardown(self):
+        """A concurrent reset must not kill a kernel under a running cell: the
+        entry is popped (so the reset spawns fresh) but teardown defers to the
+        last attached cell out — the local-kernel rule (hermes-agent#101861),
+        missing remotely until now."""
+        import threading
+
+        gate = threading.Event()
+        dirs = []
+
+        def cat_handler(command):
+            d = self._kernel_dir_of(command)
+            if d and d not in dirs:
+                dirs.append(d)
+            if dirs and d == dirs[0] and "cell_res_" in command:
+                gate.wait(10)
+            return {"output": json.dumps(_cell()), "returncode": 0}
+
+        env = ScriptedEnv([
+            ("nohup", lambda c: {"output": "PID:4242\n", "returncode": 0}),
+            ("kill -0", lambda c: {"output": "ALIVE\n", "returncode": 0}),
+            ("cat ", cat_handler),
+        ])
+
+        done = {}
+        t1 = threading.Thread(target=lambda: done.__setitem__(1, _run(env)))
+        t1.start()
+        self._await_poll(env)
+
+        # reset=True pops the live kernel and runs on a fresh one, but must not
+        # kill the old dir while cell 1 still polls it.
+        result = _run(env, reset=True)
+        self.assertEqual(result["status"], "success", result)
+        self.assertTrue(result["kernel"].get("state_reset"))
+        self.assertFalse(
+            any("rm -rf" in c and dirs[0] in c for c in env.commands),
+            "reset killed the kernel dir under a running cell")
+        self.assertFalse(
+            any("pkill -TERM -P" in c for c in env.commands),
+            "reset killed the runner under a running cell")
+
+        gate.set()
+        t1.join(10)
+        self.assertFalse(t1.is_alive())
+        self.assertEqual(done[1]["status"], "success", done[1])
+        # The last attached cell out owns the teardown: dir 1 is removed now.
+        self.assertTrue(
+            any("rm -rf" in c and dirs[0] in c for c in env.commands),
+            "orphaned kernel was never torn down")
+
+    def test_queue_wait_beyond_own_timeout_falls_open(self):
+        """A queued cell waits on kernel.lock only up to its own cell budget;
+        past that it fails open to per-call instead of doubling latency."""
+        env = ScriptedEnv(_spawn_ok_handlers([_cell()]))
+        self.assertEqual(_run(env)["status"], "success")
+        kernel = next(iter(_REMOTE_KERNELS.values()))
+        kernel.lock.acquire()
+        try:
+            started = time.monotonic()
+            self.assertIsNone(_run(env, timeout=1))
+            self.assertLess(time.monotonic() - started, 5)
+        finally:
+            kernel.lock.release()
+
+    def test_parallel_execute_remote_calls_serialize_e2e(self):
+        """End-to-end through _execute_remote: two concurrent calls resolve one
+        kernel and must serialize on it, not interleave cell dispatch."""
+        import threading
+        from tools.code_execution_tool import _execute_remote
+
+        gate = threading.Event()
+        dispatched, results = [], []
+
+        def cat_handler(command):
+            if "cell_res_000001" in command:
+                gate.wait(10)
+            return {"output": json.dumps(_cell()), "returncode": 0}
+
+        env = ScriptedEnv([
+            ("command -v python3", lambda c: {"output": "OK\n", "returncode": 0}),
+            ("nohup", lambda c: {"output": "PID:4242\n", "returncode": 0}),
+            ("kill -0", lambda c: {"output": "ALIVE\n", "returncode": 0}),
+            ("cat ", cat_handler),
+        ])
+
+        def ship_spy(_env, path, _content):
+            dispatched.append(path)
+        self._ship.stop()
+        self._ship = patch(
+            "tools.code_execution_tool._ship_file_to_remote", side_effect=ship_spy,
+        )
+        self._ship.start()
+
+        with patch("tools.code_execution_tool._load_config",
+                   return_value={"timeout": 30, "max_tool_calls": 5}), \
+             patch("tools.code_execution_tool._get_or_create_env",
+                   return_value=(env, "ssh")):
+            t1 = threading.Thread(
+                target=lambda: results.append(_execute_remote("print(1)", "t1", ["read_file"])))
+            t1.start()
+            self._await_poll(env)
+            t2 = threading.Thread(
+                target=lambda: results.append(_execute_remote("print(2)", "t1", ["read_file"])))
+            t2.start()
+            time.sleep(0.3)
+            self.assertTrue(t2.is_alive(),
+                            "second execute_code ran concurrently on one kernel")
+            gate.set()
+            t1.join(10)
+            t2.join(10)
+        self.assertFalse(t1.is_alive() or t2.is_alive())
+        # Both calls ran ON THE KERNEL (kernel provenance in the result), not
+        # silently on the stateless per-call path.
+        self.assertEqual(len(results), 2)
+        for r in results:
+            parsed = json.loads(r)
+            self.assertEqual(parsed["status"], "success", r)
+            self.assertTrue(parsed.get("kernel"), r)
+        reqs = [p for p in dispatched if "cell_req_" in p]
+        self.assertEqual(len(reqs), 2)
+        self.assertEqual(len(set(reqs)), 2)
+
+
 class TestIdleReapAndCapEviction(RemoteKernelBase):
     """Unlike local session kernels, remote kernels had no idle-reap or
     process-wide cap: _REMOTE_KERNELS grew one entry per distinct

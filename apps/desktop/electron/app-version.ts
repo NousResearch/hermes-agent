@@ -54,7 +54,7 @@ export function appVersionInfo(
     appVersion: build
       ? `${build.sourceVersion} (${build.channel} #${build.sequence}, ${build.commit.slice(0, 8)})`
       : stamp.payload === 'bootstrap'
-        ? runtimeVersion
+        ? stamp.displayVersion || stamp.baseVersion || (stamp.commit ? `git.${stamp.commit.slice(0, 7)}` : packageVersion)
         : stamp.displayVersion || packageVersion,
     baseVersion: build?.sourceVersion ?? stamp.baseVersion ?? undefined,
     sequence: build?.sequence,

@@ -3529,7 +3529,7 @@ function resolveCheckoutUpdateStrategy(): UpdaterStrategy {
         return
       }
 
-      preflightStateDb({
+      await preflightStateDb({
         python: await findPythonForRoot(root),
         script: path.join(root, 'hermes_cli', 'backup_sqlite.py'),
         home,
@@ -10914,7 +10914,8 @@ async function ensureRegistryBackend(
     return {
       ...primary,
       profile: profileKey,
-      connectionId: id
+      connectionId: id,
+      ...(profileKey === (String(source.remoteProfile || '').trim() || 'default') ? {} : { sharedRemote: true })
     }
   }
 

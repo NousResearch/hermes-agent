@@ -401,9 +401,15 @@ export async function reuseMatchingPrimarySshBackend({
   source
 }: ReuseMatchingPrimarySshBackendOptions): Promise<null | ResolvedConnectionDescriptor> {
   const id = String(connectionId ?? '').trim()
-  const profileKey = String(profile ?? '').trim() || 'default'
+  const rootProfile = (value: unknown) => String(value || '').trim() || 'default'
+  const profileKey = rootProfile(profile)
+  const sourceProfileKey = rootProfile(source.remoteProfile)
 
-  if (profileKey !== 'default' || !id || id !== registry.primary || source.id !== id || source.kind !== 'ssh') {
+  // A fixed remoteProfile launches one dashboard for every registry profile
+  // scope. The requested REST profile can differ from that launch profile;
+  // opening another SSH dashboard for it duplicates the same remote process.
+  // Without a fixed target, only the matching primary profile is reusable.
+  if ((!source.remoteProfile && profileKey !== sourceProfileKey) || !id || id !== registry.primary || source.id !== id || source.kind !== 'ssh') {
     return null
   }
 
@@ -422,7 +428,6 @@ export async function reuseMatchingPrimarySshBackend({
 
   const descriptor = await ensurePrimary()
   const activeSsh = descriptor.mode === 'remote' && descriptor.remoteKind === 'ssh' ? descriptor.ssh : null
-  const rootProfile = (value: unknown) => String(value || '').trim() || 'default'
 
   if (
     !sourceFingerprint ||

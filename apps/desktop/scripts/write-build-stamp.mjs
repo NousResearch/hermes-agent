@@ -58,11 +58,22 @@ export function fromLocalGit(repoRoot = REPO_ROOT, execFn = tryExec) {
   // differs from the commit being pinned.
   const status = execFn(["git", "status", "--porcelain", "-uno"], { cwd: repoRoot })
   const dirty = status !== null && status.length > 0
+  // Source-built clients must carry their own version. A remote backend can
+  // report a different version and must never become the client's label.
+  const described = execFn(["git", "describe", "--tags", "--long", "--match", "v2[0-9][0-9][0-9].*", "HEAD"], { cwd: repoRoot })
+  const release = described?.match(/^(v20\d{2}\.\d{1,2}\.\d{1,2})-(\d+)-g[0-9a-f]+$/)
+  const project = release ? execFn(["git", "show", `${release[1]}:pyproject.toml`], { cwd: repoRoot }) : null
+  const baseVersion = project?.match(/^version\s*=\s*"(\d+\.\d+\.\d+)"/m)?.[1] || null
+  const distance = release && baseVersion ? Number(release[2]) : null
+  const version = baseVersion && distance !== null
+    ? `${baseVersion}${distance > 0 ? `+${distance}.g${sha.slice(0, 7)}${dirty ? '.dirty' : ''}` : ''}`
+    : null
   return {
     commit: sha,
     branch: branch === "HEAD" ? null : branch, // detached HEAD -> null
     dirty: dirty,
-    source: "local"
+    source: "local",
+    ...(version ? { baseVersion, displayVersion: version, distance } : {})
   }
 }
 

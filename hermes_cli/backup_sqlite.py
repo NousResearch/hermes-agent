@@ -6,6 +6,7 @@ imports cannot load. Full and quick backups use the same SQLite copy operation.
 import json
 import logging
 import os
+import signal
 import sqlite3
 import sys
 import tempfile
@@ -105,6 +106,9 @@ def preflight_state_db(home: Path) -> dict:
         os.replace(staged, destination)
     finally:
         staged.unlink(missing_ok=True)
+        for suffix in ("-wal", "-shm", "-journal"):
+            with suppress(OSError):
+                Path(f"{staged}{suffix}").unlink(missing_ok=True)
     for old in sorted(home.glob(f"{prefix}*.bak"), reverse=True)[2:]:
         try:
             old.unlink()
@@ -114,4 +118,8 @@ def preflight_state_db(home: Path) -> dict:
 
 
 if __name__ == "__main__":
+    def _cancel_snapshot(_signum, _frame):
+        raise RuntimeError("SQLite snapshot cancelled")
+
+    signal.signal(signal.SIGTERM, _cancel_snapshot)
     print(json.dumps(preflight_state_db(Path(sys.argv[1]))))

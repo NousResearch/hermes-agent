@@ -104,6 +104,48 @@ class CLIStreamMixin:
         agent's clear callback is bound symmetrically with the show callback."""
         return
 
+    def _on_interim_assistant(self, text: str, *, already_streamed: bool = False) -> None:
+        """Render one display-only mid-turn assistant update in CLI scrollback.
+
+        The agent owns message roles, persistence, and delivery deduplication.  This callback
+        only projects an undelivered update; ``already_streamed`` means the current stream has
+        already shown the same text and must remain the single writer.
+        """
+        if (
+            already_streamed
+            or not getattr(self, "interim_assistant_messages", True)
+            or not isinstance(text, str)
+        ):
+            return
+        visible = text.strip()
+        if not visible:
+            return
+
+        # Commit live stream/reasoning chrome before writing a permanent scrollback entry.
+        # Reset after a flushed response box so a later final answer opens its own box instead
+        # of being mistaken for content that this interim update already displayed.
+        if getattr(self, "_stream_box_opened", False):
+            self._flush_stream()
+            self._reset_stream_state()
+        else:
+            self._close_reasoning_box()
+
+        from cli import _DIM, _RST, _cprint
+
+        content_width = max(_terminal_columns() - 10, 20)
+        lines = []
+        for source_line in visible.splitlines():
+            lines.extend(textwrap.wrap(source_line, width=content_width) or [""])
+        if not lines:
+            return
+        max_line = max(map(len, lines), default=0)
+        box_width = max_line + 6
+        _cprint(f"\n{_DIM}╭─ ◆ {'─' * max(box_width - 6, 0)}╮{_RST}")
+        for line in lines:
+            _cprint(f"{_DIM}│{_RST}  {line}{' ' * (max_line - len(line))}  {_DIM}│{_RST}")
+        _cprint(f"{_DIM}╰{'─' * max(box_width - 2, 0)}╯{_RST}")
+        getattr(self, "_invalidate", lambda: None)()
+
     def _current_reasoning_callback(self):
         """Return the active reasoning display callback for the current mode."""
         if self.show_reasoning and self.streaming_enabled:

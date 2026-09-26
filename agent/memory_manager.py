@@ -12,6 +12,7 @@ import json
 import logging
 import re
 import threading
+import weakref
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 from functools import partial
 from typing import Any, Callable, Dict, List, Optional
@@ -30,6 +31,31 @@ _LEGACY_PRE_COMPRESS_API_VERSION = 1
 # blocks interpreter exit.
 _SYNC_DRAIN_TIMEOUT_S = 5.0
 _EXTERNAL_PREFETCH_TIMEOUT_S = 8.0
+
+# Init context per provider object, process-wide (#119180). Singleton-style
+# providers hand the same object to every agent in a long-lived backend, so a
+# non-primary (cron/subagent/flush) re-init would otherwise tear down an
+# instance already live for a primary session. Weak keys: tracking never keeps
+# a provider alive; unhashable objects simply skip tracking (init as before).
+_provider_init_lock = threading.Lock()
+_provider_init_contexts: "weakref.WeakKeyDictionary[Any, str]" = weakref.WeakKeyDictionary()
+
+
+def _is_live_for_primary(provider: Any) -> bool:
+    """True when this exact object was initialized with a primary context."""
+    try:
+        with _provider_init_lock:
+            return _provider_init_contexts.get(provider) == "primary"
+    except TypeError:
+        return False
+
+
+def _record_provider_init(provider: Any, context: str) -> None:
+    try:
+        with _provider_init_lock:
+            _provider_init_contexts[provider] = context
+    except TypeError:
+        pass
 
 
 # -- Signature introspection (providers are duck-typed; call shapes vary) -----
@@ -894,9 +920,32 @@ class MemoryManager:
         )
 
     def initialize_all(self, session_id: str, **kwargs) -> None:
-        """Initialize all providers, injecting ``hermes_home`` so they resolve profile-scoped paths."""
+        """Initialize all providers, injecting ``hermes_home`` so they resolve profile-scoped paths.
+
+        A non-primary ``agent_context`` (cron/subagent/flush) never re-initializes a
+        provider object already live for a primary session in this process (#119180):
+        singleton-style providers share one object across agents, and a skip-context
+        re-init would deactivate the primary session's backend. Primary inits always
+        proceed (session switch refreshes state); first-time non-primary inits do too.
+        """
         if "hermes_home" not in kwargs:
             from hermes_constants import get_hermes_home
             kwargs["hermes_home"] = str(get_hermes_home())
-        self._each_provider("initialize failed", lambda p: p.initialize(session_id=session_id, **kwargs),
+        incoming = kwargs.get("agent_context") or "primary"
+        targets = []
+        for provider in self._providers:
+            if incoming != "primary" and _is_live_for_primary(provider):
+                logger.warning(
+                    "Skipping %s-context re-init of memory provider '%s': already live "
+                    "for a primary session in this process",
+                    incoming, provider.name,
+                )
+                continue
+            targets.append(provider)
+
+        def _init_and_record(provider: MemoryProvider) -> None:
+            provider.initialize(session_id=session_id, **kwargs)
+            _record_provider_init(provider, incoming)
+
+        self._each_provider("initialize failed", _init_and_record, providers=targets,
                             level=logging.WARNING)

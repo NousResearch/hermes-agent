@@ -122,3 +122,38 @@ def test_sudo_rewrite_preserves_env_operands_and_prose(monkeypatch):
 def test_count_real_sudo_invocations_ignores_mentions(monkeypatch):
     assert terminal_tool_sudo._count_real_sudo_invocations("grep sudo README.md") == 0
     assert terminal_tool_sudo._count_real_sudo_invocations("sudo a; sudo b") == 2
+
+
+def test_handle_terminal_accepts_string_boolean_and_array_notify(monkeypatch):
+    """_handle_terminal accepts stringified booleans and arrays for background and notify (#123345)."""
+    captured = {}
+
+    def mock_terminal_tool(**kwargs):
+        captured.clear()
+        captured.update(kwargs)
+        return '{"output": "ok"}'
+
+    monkeypatch.setattr(terminal_tool, "terminal_tool", mock_terminal_tool)
+
+    # 1. notify="true" string with background=True
+    res = terminal_tool._handle_terminal({"command": "echo 1", "background": True, "notify": "true"})
+    assert "error" not in res
+    assert captured["notify_on_complete"] is True
+    assert captured["watch_patterns"] is None
+
+    # 2. notify="false" string with background=True
+    res = terminal_tool._handle_terminal({"command": "echo 1", "background": True, "notify": "false"})
+    assert "error" not in res
+    assert captured["notify_on_complete"] is False
+
+    # 3. background="true" string with notify=True
+    res = terminal_tool._handle_terminal({"command": "echo 1", "background": "true", "notify": True})
+    assert "error" not in res
+    assert captured["background"] is True
+    assert captured["notify_on_complete"] is True
+
+    # 4. notify as JSON array string
+    res = terminal_tool._handle_terminal({"command": "echo 1", "background": True, "notify": '["ready"]'})
+    assert "error" not in res
+    assert captured["watch_patterns"] == ["ready"]
+    assert captured["notify_on_complete"] is False

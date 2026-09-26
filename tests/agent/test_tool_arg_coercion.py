@@ -159,6 +159,33 @@ class TestCoerceToolArgs:
         assert result["limit"] == 100
         assert isinstance(result["limit"], int)
 
+    def test_coerces_union_anyof_boolean_and_array(self):
+        """Properties with anyOf unions (e.g. boolean | array) coerce strings appropriately (#123345)."""
+        schema = self._mock_schema({
+            "notify": {
+                "anyOf": [
+                    {"type": "boolean"},
+                    {"type": "array", "items": {"type": "string"}},
+                ],
+            },
+        })
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            assert coerce_tool_args("test_tool", {"notify": "true"})["notify"] is True
+            assert coerce_tool_args("test_tool", {"notify": "false"})["notify"] is False
+            assert coerce_tool_args("test_tool", {"notify": '["started", "done"]'})["notify"] == ["started", "done"]
+
+    def test_terminal_notify_coercion(self):
+        """Terminal notify boolean and array string arguments coerce against the real registry schema (#123345)."""
+        args = {"command": "echo 1", "background": "true", "notify": "true"}
+        result = coerce_tool_args("terminal", args)
+        assert result["background"] is True
+        assert result["notify"] is True
+
+        args_patterns = {"command": "echo 1", "background": "true", "notify": '["ready"]'}
+        result_patterns = coerce_tool_args("terminal", args_patterns)
+        assert result_patterns["background"] is True
+        assert result_patterns["notify"] == ["ready"]
+
 
 # ── Schema-guided nested JSON-string normalization (cline/cline#11803) ─────
 

@@ -1459,14 +1459,24 @@ def _handle_terminal(args, **kw):
     persist_on_release = bool(args.get("persist_on_release", False))
     if not isinstance(heartbeat, int) or isinstance(heartbeat, bool) or heartbeat < 0:
         return tool_error("heartbeat must be a whole number of seconds (min 60).")
-    if not args.get("background", False):
+    background = args.get("background", False)
+    if isinstance(background, str):
+        background = background.strip().lower() in ("true", "1", "yes")
+    else:
+        background = bool(background)
+    pty = args.get("pty", False)
+    if isinstance(pty, str):
+        pty = pty.strip().lower() in ("true", "1", "yes")
+    else:
+        pty = bool(pty)
+    if not background:
         if notify or watch_patterns or notify_on_complete or heartbeat:
             return tool_error(
                 "notify/heartbeat only apply to background commands (foreground "
                 "results return directly). Either drop them, or run as "
                 "terminal(command=..., background=true, notify=...)."
             )
-        if args.get("pty", False):
+        if pty:
             return tool_error(
                 "pty requires background=true (a PTY session is interacted "
                 "with via process(action='write'/'submit'), which needs a "
@@ -1480,6 +1490,19 @@ def _handle_terminal(args, **kw):
                 "terminal(command=..., background=true, persist_on_release=true)."
             )
     if notify is not None:
+        if isinstance(notify, str):
+            val = notify.strip()
+            if val.lower() in ("true", "1", "yes"):
+                notify = True
+            elif val.lower() in ("false", "0", "no"):
+                notify = False
+            elif val.startswith("[") and val.endswith("]"):
+                try:
+                    parsed = json.loads(val)
+                    if isinstance(parsed, list):
+                        notify = parsed
+                except Exception:
+                    pass
         if isinstance(notify, bool):
             notify_on_complete = notify
             watch_patterns = None
@@ -1495,12 +1518,12 @@ def _handle_terminal(args, **kw):
         notify_on_complete = True  # the heartbeat rides the completion delivery path
     return terminal_tool(
         command=args.get("command"),
-        background=args.get("background", False),
+        background=background,
         timeout=args.get("timeout"),
         task_id=kw.get("task_id"),
         session_id=kw.get("session_id"),
         workdir=args.get("workdir"),
-        pty=args.get("pty", False),
+        pty=pty,
         notify_on_complete=notify_on_complete,
         watch_patterns=watch_patterns,
         heartbeat=heartbeat,

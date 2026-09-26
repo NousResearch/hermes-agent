@@ -120,6 +120,83 @@ def test_control_stream_with_done_still_authoritative():
     assert final.status == "completed"
 
 
+@pytest.mark.parametrize('done_id', ['fc_a_done', 'fc_a_alias_2'])
+def test_done_call_coalesces_all_pending_aliases_in_announced_order(done_id):
+    """PR #94708: done aliases inherit the earliest call_id announcement."""
+    events = []
+    for item_id, call_id in [
+        ('fc_a', 'call_a'), ('fc_b', 'call_b'),
+        ('fc_a_alias_1', 'call_a'), ('fc_a_alias_2', 'call_a'),
+        ('fc_zero', 'call_zero'),
+    ]:
+        events.append(SimpleNamespace(
+            type='response.output_item.added',
+            item=SimpleNamespace(type='function_call', id=item_id, call_id=call_id,
+                                 name='same_tool', arguments=''),
+        ))
+    done_items = [
+        SimpleNamespace(type='function_call', id='fc_b_done', call_id='call_b',
+                        name='same_tool', arguments='{"step": 2}'),
+        SimpleNamespace(type='function_call', id=done_id, call_id='call_a',
+                        name='same_tool', arguments='{"step": 1}'),
+    ]
+    events.extend(SimpleNamespace(type='response.output_item.done', item=item)
+                  for item in done_items)
+    events.append(SimpleNamespace(type='response.completed',
+                                  response=SimpleNamespace(status='completed', output=None)))
+
+    final = _consume_codex_event_stream(events, model='gpt-test')
+    assert [(item.call_id, item.arguments) for item in final.output] == [
+        ('call_a', '{"step": 1}'), ('call_b', '{"step": 2}'), ('call_zero', '{}'),
+    ]
+    assert final.output[0] is done_items[1]
+    assert final.output[1] is done_items[0]
+
+
+@pytest.mark.parametrize(('pending_fields', 'done_fields', 'done_index', 'confirms_a'), [
+    pytest.param({'call_id': 'call_a'}, {'id': 'fc_b', 'call_id': 'call_a'}, 1, True,
+                 id='call_id_over_conflicting_item_and_index'),
+    pytest.param({'call_id': 'call_a'}, {'id': 'fc_a', 'call_id': 'call_new'}, 0, False,
+                 id='unmatched_call_id_cannot_evict_by_item_or_index'),
+    *[pytest.param({'call_id': 'call_a'}, {**fields, 'call_id': 'call_a'}, 1, True,
+                   id=f'{label}_item_id_uses_call_id')
+      for label, fields in [('missing', {}), ('null', {'id': None}),
+                            ('empty', {'id': ''}), ('blank', {'id': ' '})]],
+    *[pytest.param({'call_id': 'call_a'}, {'id': 'fc_a', **fields}, 1, True,
+                   id=f'{label}_call_id_uses_item_before_index')
+      for label, fields in [('missing', {}), ('null', {'call_id': None}),
+                            ('empty', {'call_id': ''}), ('blank', {'call_id': ' '})]],
+    *[pytest.param(fields, {'id': 'fc_done', **fields}, None, False,
+                   id=f'{label}_call_ids_are_not_shared_identity')
+      for label, fields in [('missing', {}), ('null', {'call_id': None}),
+                            ('empty', {'call_id': ''}), ('blank', {'call_id': ' '})]],
+])
+def test_done_identity_precedence_does_not_remove_unrelated_calls(
+    pending_fields, done_fields, done_index, confirms_a,
+):
+    """Nonblank call_id is exclusive; without one, item id precedes index."""
+    events = [SimpleNamespace(
+        type='response.output_item.added', output_index=index,
+        item=SimpleNamespace(type='function_call', id=f'fc_{name}', name=name,
+                             arguments='', **fields),
+    ) for index, (name, fields) in enumerate([
+        ('a', pending_fields), ('b', {'call_id': 'call_b'}),
+        ('zero', {'call_id': 'call_zero'}),
+    ])]
+    done_item = SimpleNamespace(type='function_call', name='confirmed',
+                                arguments='{"authoritative": true}', **done_fields)
+    events.extend([
+        SimpleNamespace(type='response.output_item.done', output_index=done_index, item=done_item),
+        SimpleNamespace(type='response.completed', response=SimpleNamespace(status='completed')),
+    ])
+    final = _consume_codex_event_stream(events, model='gpt-test')
+    expected = [('b', '{}'), ('zero', '{}'), ('confirmed', done_item.arguments)]
+    if not confirms_a:
+        expected.append(('a', '{}'))
+    assert sorted((item.name, item.arguments) for item in final.output) == sorted(expected)
+    assert next(item for item in final.output if item.name == 'confirmed') is done_item
+
+
 def test_no_terminal_frame_does_not_settle_pending_function_call():
     """EOF/interruption before any terminal frame must NOT settle the pending
     call: unconfirmed stream state must not become executable authority.

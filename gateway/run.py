@@ -42,6 +42,7 @@ from agent.turn_context import compression_made_progress
 from agent.session_activity import ActivityProvenance
 from hermes_cli.config import _is_ssh_remote_tilde_cwd, cfg_get
 from hermes_cli.fallback_config import pre_agent_fallback_notice
+from gateway.turn_executor import _UnboundedThreadExecutor
 
 # Per-session AIAgent cache bounds (agents are heavy); see _enforce_agent_cache_cap/_session_housekeeping_watcher.
 _AGENT_CACHE_MAX_SIZE = 128
@@ -64,56 +65,6 @@ _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _TURN_MAX_WORKERS = None
 # Size of the separate pool for best-effort session HOUSEKEEPING; why it is separate: _run_housekeeping_in_executor.
 _HOUSEKEEPING_MAX_WORKERS = 4
-
-
-class _UnboundedThreadExecutor(concurrent.futures.Executor):
-    """One thread per submitted work item; no queue, no cap.
-
-    ``ThreadPoolExecutor(max_workers=None)`` is NOT unbounded (it is ``min(32, cpu_count + 4)``),
-    which is the same silent queue at a larger number. Exposes ``_threads`` and ``_shutdown`` like
-    ``ThreadPoolExecutor`` so ``_stop_pool`` / ``_shutdown_executor`` join and count its workers.
-    """
-
-    def __init__(self, thread_name_prefix: str = ""):
-        self._prefix = thread_name_prefix
-        self._threads: set = set()
-        self._shutdown = False
-        self._lock = threading.Lock()
-        self._n = 0
-
-    def submit(self, fn, /, *args, **kwargs):
-        with self._lock:
-            if self._shutdown:
-                raise RuntimeError("cannot schedule new futures after shutdown")
-            self._n += 1
-            n = self._n
-        fut: concurrent.futures.Future = concurrent.futures.Future()
-
-        def _run():
-            try:
-                if not fut.set_running_or_notify_cancel():
-                    return
-                try:
-                    fut.set_result(fn(*args, **kwargs))
-                except BaseException as exc:  # noqa: BLE001 - mirror ThreadPoolExecutor
-                    fut.set_exception(exc)
-            finally:
-                with self._lock:
-                    self._threads.discard(threading.current_thread())
-
-        t = threading.Thread(target=_run, name=f"{self._prefix}_{n}", daemon=True)
-        with self._lock:
-            self._threads.add(t)
-        t.start()
-        return fut
-
-    def shutdown(self, wait: bool = True, *, cancel_futures: bool = False):
-        with self._lock:
-            self._shutdown = True
-            threads = list(self._threads)
-        if wait:
-            for t in threads:
-                t.join()
 
 # End reasons meaning the USER deliberately closed this thread. Shared by _classify_completion_target and
 # _resolve_async_delegation_session so they never disagree (else a "delivered" reason is acked, then lost).

@@ -4131,11 +4131,18 @@ def compress_context(
     # finishes or closes in its daemon worker. Otherwise four timed-out streams retain all four shared
     # compression-pool slots until the auxiliary stream's longer absolute ceiling expires. See #23975.
     _hard_cancel_event = getattr(agent, "_hard_interrupt_requested", None)
-    phase = _run_summary_phase(
-        agent, messages, lease=lease, in_place=in_place, checkpoint_required=checkpoint_required,
-        approx_tokens=approx_tokens, focus_topic=focus_topic, force=force, bypass_cooldown=bypass_cooldown,
-        commit_fence=commit_fence, hard_cancel_event=_hard_cancel_event, system_message=system_message, attempt=attempt,
-    )
+    from agent.aux_compression_unload import schedule_aux_unload_after_compression
+    try:
+        phase = _run_summary_phase(
+            agent, messages, lease=lease, in_place=in_place, checkpoint_required=checkpoint_required,
+            approx_tokens=approx_tokens, focus_topic=focus_topic, force=force, bypass_cooldown=bypass_cooldown,
+            commit_fence=commit_fence, hard_cancel_event=_hard_cancel_event, system_message=system_message, attempt=attempt,
+        )
+    finally:
+        # The summary is the only phase that uses the aux model; drop the in-flight mark
+        # (the success path's schedule clears it first; aborts/exceptions land here).
+        from agent.aux_compression_unload import clear_aux_compression_in_flight
+        clear_aux_compression_in_flight(getattr(agent, "context_compressor", None))
     if phase.abort_prompt is not None:
         return phase.messages, phase.abort_prompt
     messages, compressed = phase.messages, phase.compressed
@@ -4223,6 +4230,7 @@ def compress_context(
             "context compression done: session=%s messages=%d->%d rough_tokens=~%s awaiting_real_usage=true",
             agent.session_id or "none", _pre_msg_count, len(compressed), f"{_compressed_est:,}",
         )
+        schedule_aux_unload_after_compression(agent)
         lifecycle.commit_status = (
             "committed" if split_status in {"not_applicable", "in_place_committed", "rotated_committed"} else "aborted"
         )

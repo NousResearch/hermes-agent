@@ -739,7 +739,18 @@ DEFAULT_CONFIG = {
         # (Codex/Responses streams only): seconds without a substantive event before the stream
         # fails fast; None = built-in 60s default. Independent of "timeout" (the overall request
         # budget) — raising "timeout" alone does not widen this window. See #108104.
-        "compression": _aux(120, no_progress_timeout=None),
+        # Idle unload of a local aux compression model after a compression had to LOAD it
+        # just to summarise (see agent/aux_compression_unload.py). unload_after_seconds is
+        # the switch: 0 = off; >0 = unload that many seconds after the LAST compression
+        # (a new compression resets it). The unload call itself resolves per endpoint:
+        # the provider entry's unload_cmd (custom_providers/providers) first, then
+        # auto-detection (LM Studio today). auxiliary.compression.unload_cmd overrides
+        # both for any server: a shell command string ('curl -s -X POST
+        # http://host:8642/api/models/unload/{model}') or a {path, method, body} mapping
+        # for a direct HTTP call with the provider's usual headers. {model}/{instance_id}
+        # are placeholders in every shape.
+        "compression": _aux(120, no_progress_timeout=None,
+                            unload_cmd="", unload_after_seconds=0),
         "skills_hub": _aux(30),
         "approval": _aux(30),   # classifier — a fast/cheap model is recommended
         # /review reviewer: a full subagent on the async delegation rail, credentials resolved like

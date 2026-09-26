@@ -3783,6 +3783,12 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             "Compression summary call dispatched: model=%s prompt_chars=%s prompt_build_ms=%s",
             self.summary_model or self.model, f"{len(prompt):,}", _latency_info["prompt_build_ms"],
         )
+        # This is the ONLY point where the aux compression model gets used (and JIT-loaded).
+        # Record its pre-call loaded state here — not before compress() — so a compression
+        # that never reaches the summary LLM pays no state probe.
+        from agent.aux_compression_unload import note_aux_state_before_summary_call
+
+        note_aux_state_before_summary_call(self)
         try:
             # Compression is atomic: shield the summary call from gateway interrupts. Re-entrant.
             with aux_interrupt_protection():
@@ -4992,6 +4998,8 @@ Write only the summary body. Do not include any preamble or prefix."""
         self._last_summary_fallback_used = False
         self._last_feasibility_skip = False
         self._last_summary_error = None
+        # Fresh compression: the pre-summary-call probe records per-attempt state again.
+        self._aux_compression_ctx = None
         self._last_aux_model_failure_error = None
         self._last_aux_model_failure_model = None
         self._last_compress_aborted = False

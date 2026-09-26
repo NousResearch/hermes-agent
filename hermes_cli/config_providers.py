@@ -119,7 +119,10 @@ _KNOWN_PROVIDER_KEYS = {
     "api_mode", "transport", "model", "default_model", "models", "models_discovered",
     "context_length", "rate_limit_delay", "request_timeout_seconds", "stale_timeout_seconds",
     "discover_models", "extra_body", "extra_headers", "capabilities", "ssl_ca_cert", "ssl_verify",
-    "catalog_provider", "session_affinity_header"}
+    "catalog_provider", "session_affinity_header",
+    # Idle-unload for aux compression models served by this endpoint (agent/aux_compression_unload.py):
+    # a shell command string, or a {path, method, body} mapping for a direct HTTP call.
+    "unload_cmd"}
 
 
 def _pick_provider_base_url(entry: Dict[str, Any], provider_key: str) -> str:
@@ -269,6 +272,12 @@ def _normalize_custom_provider_entry(
     _put("extra_headers", normalize_extra_headers(entry.get("extra_headers")))
     _put("session_affinity_header", _stripped("session_affinity_header"))
     _put("ssl_ca_cert", _stripped("ssl_ca_cert"))
+    # Idle-unload for aux compression: shell string OR {path, method, body} mapping.
+    unload = entry.get("unload_cmd")
+    if isinstance(unload, str) and unload.strip():
+        normalized["unload_cmd"] = unload.strip()
+    elif isinstance(unload, dict) and unload:
+        normalized["unload_cmd"] = dict(unload)
 
     ssl_verify = entry.get("ssl_verify")
     if isinstance(ssl_verify, bool):

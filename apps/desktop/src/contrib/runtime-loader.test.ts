@@ -650,6 +650,85 @@ export default { id: 'quoted-spec', register: () => { globalThis.__captured = do
     }
   })
 
+  it('a backtick inside a regex literal does not flip code/string classification (#120208)', async () => {
+    // The regex backtick must not open a template: the react import after it
+    // stays code and is rewritten to the shim, not left bare.
+    const restore = withBlobReroute()
+
+    try {
+      const id = await loadRuntimePlugin(
+        "const backtick = /`/\nimport { useState } from 'react'\nconst label = `ok`\nexport default { id: 'repro', register() { void useState; void label; void backtick } }",
+        'repro'
+      )
+
+      expect(id).toBe('repro')
+      expect($pluginRecords.get()['repro']).toMatchObject({ status: 'loaded' })
+    } finally {
+      unloadRuntimePlugin('repro')
+      restore()
+    }
+  })
+
+  it('rewrites imports after the entities htmlReplacer regex (#120208)', async () => {
+    // entities 6.0.1 encode.js (via the hermes-toolsmith bundle): the
+    // character class contains a backtick, then SDK/react imports follow.
+    const restore = withBlobReroute()
+
+    try {
+      const id = await loadRuntimePlugin(
+        "var htmlReplacer = /[\\t\\n\\f!-,./:-@[-`{-}\\^@-\\uFFFF]/g;\nimport { host } from '@hermes/plugin-sdk'\nconst label = `ok`\nexport default { id: 'entities-re', register() { void host; void label; void htmlReplacer } }",
+        'entities-re'
+      )
+
+      expect(id).toBe('entities-re')
+      expect($pluginRecords.get()['entities-re']).toMatchObject({ status: 'loaded' })
+    } finally {
+      unloadRuntimePlugin('entities-re')
+      restore()
+    }
+  })
+
+  it('divisions stay code: imports after real division still rewrite (#120208)', async () => {
+    // The other direction: `/` between two values is a division, not a
+    // pattern, so the import below must still be seen and rewritten.
+    const restore = withBlobReroute()
+
+    try {
+      const id = await loadRuntimePlugin(
+        "const total = 10, count = 4, earned = 6\nconst half = total / count + earned / 2\nimport { host } from '@hermes/plugin-sdk'\nconst label = `n=${half}`\nexport default { id: 'division', register() { void host; void label } }",
+        'division'
+      )
+
+      expect(id).toBe('division')
+      expect($pluginRecords.get()['division']).toMatchObject({ status: 'loaded' })
+    } finally {
+      unloadRuntimePlugin('division')
+      restore()
+    }
+  })
+
+  it('does not read import syntax inside a regex literal (#120208)', async () => {
+    // A regex body is not code: `from 'react'` inside it must not be
+    // rewritten in place (which would corrupt the pattern).
+    const restore = withBlobReroute()
+
+    try {
+      ;(globalThis as unknown as { __capturedRe?: unknown }).__capturedRe = undefined
+
+      const id = await loadRuntimePlugin(
+        "const re = /from 'react'/\nexport default { id: 'regex-spec', register: () => { globalThis.__capturedRe = re.source } }",
+        'regex-spec'
+      )
+
+      expect(id).toBe('regex-spec')
+      expect((globalThis as unknown as { __capturedRe?: string }).__capturedRe).toBe("from 'react'")
+    } finally {
+      unloadRuntimePlugin('regex-spec')
+      delete (globalThis as unknown as { __capturedRe?: unknown }).__capturedRe
+      restore()
+    }
+  })
+
   it('still rewrites a real mapped import', async () => {
     // The fix must not swing the other way: the SDK import is the load path.
     const restore = withBlobReroute()

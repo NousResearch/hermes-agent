@@ -504,7 +504,11 @@ async def upload_managed_file(payload: ManagedFileUpload, request: Request):
     data, _mime_type = _decode_data_url(payload.data_url)
     with _io_errors("File is not writable", "Could not write file"):
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(data)
+        try:
+            with target.open("wb" if payload.overwrite else "xb") as out:
+                out.write(data)
+        except FileExistsError:
+            raise HTTPException(status_code=409, detail="File already exists")
     return _managed_write_result(policy, target, display_path)
 
 
@@ -515,13 +519,15 @@ async def stream_upload_to_path(
     too_large: str,
     not_writable: str,
     write_failed: str,
+    overwrite: bool = True,
 ) -> int:
     """Stream a multipart upload to ``target`` in chunks; returns bytes written.
 
     Writes a sibling temp file first so a partial/aborted upload never clobbers
     an existing file, enforces ``_MANAGED_FILE_MAX_BYTES`` as it goes (413
-    ``too_large``), then atomically renames into place. The temp file is
-    removed on EVERY non-success exit — including asyncio.CancelledError when a
+    ``too_large``), then atomically publishes it, without replacing an existing
+    entry when ``overwrite`` is false. The temp file is removed on every exit,
+    including asyncio.CancelledError when a
     browser aborts a large upload mid-stream.
     """
     from hermes_cli.web_server import _MANAGED_FILE_MAX_BYTES, _UPLOAD_CHUNK_BYTES
@@ -539,8 +545,15 @@ async def stream_upload_to_path(
                 if total > _MANAGED_FILE_MAX_BYTES:
                     raise HTTPException(status_code=413, detail=too_large)
                 out.write(chunk)
-        os.replace(tmp_path, target)
-        renamed = True
+        if overwrite:
+            os.replace(tmp_path, target)
+            renamed = True
+        else:
+            # Link the complete sibling file atomically; an existence check
+            # followed by replace would clobber a concurrent writer's file.
+            os.link(tmp_path, target)
+    except FileExistsError:
+        raise HTTPException(status_code=409, detail="File already exists")
     except PermissionError:
         raise HTTPException(status_code=403, detail=not_writable)
     except OSError as exc:
@@ -569,6 +582,7 @@ async def upload_managed_file_stream(
         too_large="File is too large",
         not_writable="File is not writable",
         write_failed="Could not write file",
+        overwrite=overwrite,
     )
     return _managed_write_result(policy, target, display_path)
 

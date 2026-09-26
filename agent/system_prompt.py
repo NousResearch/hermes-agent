@@ -313,6 +313,18 @@ def _skills_prompt(agent: Any) -> str:
                                          compact_categories=_compact_cats or None, skills_dir_override=_agent_skills_dir(agent))
 
 
+def _mcp_instructions_part(agent: Any) -> str:
+    """Connected MCP servers' ``InitializeResult.instructions`` (config.yaml
+    ``mcp.server_instructions``, default on). Builder failures never block the prompt."""
+    if not getattr(agent, "_mcp_server_instructions", True):
+        return ""
+    try:
+        return _pb.build_mcp_instructions_prompt(agent.valid_tool_names)
+    except Exception:
+        logger.debug("MCP server instructions skipped", exc_info=True)
+        return ""
+
+
 def _auto_load_parts(agent: Any) -> List[str]:
     """``skills.auto_load`` blocks, resolved once per agent lifecycle (config, skill files and
     HERMES_IGNORE_RULES are read on the first build only) so the prompt stays byte-stable
@@ -773,7 +785,9 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # ── Volatile tier (most likely to differ on a rebuild; kept last so the stable prefix stays reusable) ──
     # Skills are runtime-mutable, so the index leads the volatile band: on a longest-prefix
     # backend an unchanged index stays inside the reused prefix; a changed one re-prefills from here.
-    volatile_parts: List[str] = [skills_prompt, *_memory_parts(agent)]
+    # MCP server instructions follow: which servers are connected at build time varies more
+    # between sessions (discovery timeout, /reload-mcp) than the skills index does.
+    volatile_parts: List[str] = [skills_prompt, _mcp_instructions_part(agent), *_memory_parts(agent)]
     # Plugin sections are confined to one coarse anchor in the volatile tail so
     # a resumed process can reconstruct the stable prefix without re-running plugins.
     volatile_parts.extend(_plugin_section_blocks(_frozen_plugin_prompt_sections(agent), "after_memory"))

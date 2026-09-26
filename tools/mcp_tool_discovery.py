@@ -727,6 +727,41 @@ def get_mcp_status(configured: Optional[Dict[str, dict]] = None, *, include_runt
     return result
 
 
+def get_mcp_server_instructions() -> List[dict]:
+    """``InitializeResult.instructions`` of every connected server visible in the current scope,
+    as ``{server, instructions, tool_names}`` rows sorted by server name (deterministic prompt
+    bytes regardless of connect order). Salvage of #58182 (@wheam); closes #118381.
+
+    The MCP spec lets a server describe how its tools are meant to be used ("call
+    resolve-library-id before query-docs") and says clients MAY add it to the system prompt.
+    The text is server-authored and lands in the cached prompt, so it goes through the shared
+    context threat scanner (a finding withholds that server's instructions; its tools still work)
+    and the ``mcp.max_description_chars`` cap. Reads cached state; never connects."""
+    from tools.mcp_tool_schema import truncate_mcp_text
+    from tools.threat_patterns import scan_for_threats
+
+    current_scope = _core._mcp_registry_scope()
+    with _core._lock:
+        servers = [(_key_name(k), s) for k, s in _core._servers.items()
+                   if _core._server_visible_in_scope(k, current_scope)]
+    rows: List[dict] = []
+    for name, server in sorted(servers, key=lambda item: item[0]):
+        raw = getattr(getattr(server, "initialize_result", None), "instructions", None)
+        instructions = raw.strip() if isinstance(raw, str) and server.session is not None else ""
+        if not instructions:
+            continue
+        findings = scan_for_threats(instructions, scope="context")
+        if findings:
+            logger.warning("MCP server '%s': suspicious content in initialize instructions — %s. "
+                           "Instructions withheld from the system prompt. Content: %.200s",
+                           name, ", ".join(findings), instructions)
+            continue
+        rows.append({"server": name,
+                     "instructions": truncate_mcp_text(instructions, f"MCP server '{name}' instructions"),
+                     "tool_names": list(getattr(server, "_registered_tool_names", None) or [])})
+    return rows
+
+
 def mcp_server_reconnecting(name: str) -> bool:
     """True when this profile's connection to *name* connected once in this process and is now
     between sessions (degraded/parked) after a transient failure: the run task is alive and

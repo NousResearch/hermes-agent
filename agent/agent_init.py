@@ -1408,6 +1408,8 @@ def _apply_agent_section(agent, _agent_cfg):
         "environment_probe", "bot_mode_protocol",
     ):
         setattr(agent, f"_{_key}", bool(_agent_section.get(_key, True)))
+    # Connected MCP servers' initialize ``instructions`` in the system prompt (mcp.server_instructions).
+    agent._mcp_server_instructions = bool(_cfg_dict(_agent_cfg, "mcp").get("server_instructions", True))
     # Warm the probe (~0.5s of subprocesses) off-thread so the first prompt build finds it cached.
     if agent._environment_probe:
         with suppress(Exception):

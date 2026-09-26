@@ -4997,14 +4997,31 @@ Write only the summary body. Do not include any preamble or prefix."""
         self._last_compress_aborted = False
         self._last_compress_refused_would_grow = False
         self._last_compression_made_progress = False
-        # Do NOT reset the *_failure flags: the cooldown early-return doesn't re-assert them, so a
-        # reset would fall through to the destructive static fallback (#29559). Success clears them.
+        # The *_failure flags are NOT reset unconditionally here: the cooldown early-return doesn't
+        # re-assert them, so an eager reset would fall through to the destructive static fallback
+        # (#29559). Success clears them; the expiry-scoped reset is at the end of this method.
         telemetry = self._begin_compression_telemetry(current_tokens=current_tokens)
         telemetry["chunk_count"] = 0
         # Manual /compress bypasses the failure cooldown and the structural no-op backoff (#93022).
         if force:
             self._clear_compression_failure_cooldown()
             self._structural_no_op_backoff_until = 0.0
+        # _last_summary_auth_failure / _last_summary_network_failure are set by _generate_summary() on
+        # a terminal failure and cleared on the next successful summary.  They must NOT be cleared
+        # eagerly on every compress() call: while the failure cooldown is active, _generate_summary()
+        # short-circuits in its cooldown early-return and returns None WITHOUT re-asserting the flags,
+        # so an eager clear would let the abort guard see False and fall through to the destructive
+        # static-fallback — the exact #29559 / #25585 data loss.  But letting them persist for the
+        # whole session is wrong in the other direction: after the cooldown lapses, a stale
+        # auth/network flag from a long-resolved blip forces every later generic summary failure onto
+        # the abort path, overriding abort_on_summary_failure=False for the rest of the session.
+        # Scope the flags to the failure episode: keep them while the cooldown is armed (the
+        # re-entrant call stays on the abort path), clear them once it has expired (force=True cleared
+        # it just above) so the next real attempt is classified fresh — _generate_summary() re-asserts
+        # them if the error persists.
+        if time.monotonic() >= self._summary_failure_cooldown_until:
+            self._last_summary_auth_failure = False
+            self._last_summary_network_failure = False
         return telemetry
 
     def _structural_no_op_result(self, telemetry: Dict[str, Any], failure_class: str, reason: str) -> None:

@@ -1240,15 +1240,49 @@ function persistTiles() {
   writeJson(TILES_KEY, Object.keys(tilesByProfile).length === 0 ? null : tilesByProfile)
 }
 
+/** The bucket a session tile belongs in: its OWNING profile, not whatever
+ *  profile happened to be active when it was last written.
+ *
+ *  Bucketing by `profileKey()` filed a tile under the foreground profile, so a
+ *  redapple tab saved while `mobil` was active moved into mobil's bucket and
+ *  stayed there. The row still carried its `ownerRoute`/`ownerProfile`, so the
+ *  same session could then sit in two buckets at once and reappear under
+ *  whichever profile the user happened to be on — the "random old tabs come
+ *  back" report. A tile with no recorded owner (a draft, or a legacy row) has
+ *  nothing better to go on, so it keeps the foreground bucket. */
+function tileBucketKey(tile: StoredTile): string {
+  return tile.ownerRoute?.profile || tile.ownerProfile || profileKey()
+}
+
 function saveTiles(tiles: SessionTile[]) {
   const stored = tiles.map(toStored)
   const sessionTiles = stored.filter(tile => tile.workspaceMode !== 'bots')
   const botTiles = stored.filter(tile => tile.workspaceMode === 'bots')
 
-  if (sessionTiles.length > 0) {
-    tilesByProfile[profileKey()] = sessionTiles
+  // Buckets are keyed by the tile's OWNER, so only the owners actually present
+  // in `tiles` are rewritten. A profile swap republishes just the newly
+  // foreground profile's tiles, and the buckets of profiles that are not
+  // visible right now must be left untouched — rebuilding them from the visible
+  // set (which does not contain them) would delete the other profiles' tabs on
+  // every switch. An EMPTY set is the exception: nothing is open at all, so
+  // every bucket is stale and Close All must not leave tiles behind for the
+  // next profile swap to restore.
+  if (sessionTiles.length === 0) {
+    for (const key of Object.keys(tilesByProfile)) {
+      if (key !== BOTS_TILE_BUCKET) {
+        delete tilesByProfile[key]
+      }
+    }
   } else {
-    delete tilesByProfile[profileKey()]
+    for (const key of new Set(sessionTiles.map(tileBucketKey))) {
+      const owned = sessionTiles.filter(tile => tileBucketKey(tile) === key)
+
+      if (owned.length > 0) {
+        tilesByProfile[key] = owned
+      } else {
+        delete tilesByProfile[key]
+      }
+    }
   }
 
   if (botTiles.length > 0) {

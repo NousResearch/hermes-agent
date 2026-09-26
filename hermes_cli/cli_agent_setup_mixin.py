@@ -616,6 +616,29 @@ class CLIAgentSetupMixin:
         self._reopen_session()
         return True
 
+    def _apply_pending_title(self) -> None:
+        """#124033: persist a queued /title or /new <title> once the session
+        DB row exists. Idempotent — safe to call from agent setup AND from
+        the top of every chat() turn. The pending title is cleared only
+        after it is actually written to state.db; a transient
+        ``_ensure_db_session`` failure keeps it for the next retry instead
+        of silently dropping the user-chosen title (the retry the docstring
+        of ``_ensure_db_session`` already promises).
+        """
+        if not self._pending_title or not self._session_db:
+            return
+        from cli import _cprint
+        try:
+            self.agent._ensure_db_session()
+            if self.agent._session_db_created:
+                self._session_db.set_session_title(self.session_id, self._pending_title)
+                _cprint(f"  Session title applied: {self._pending_title}")
+                self._pending_title = None
+            # else: row creation failed transiently — keep _pending_title for retry
+        except Exception as e:
+            _cprint(f"  Could not apply pending title: {e}")
+            # Keep _pending_title so it can be retried after row creation succeeds
+
     def _init_agent(self, *, model_override: str = None, runtime_override: dict = None, request_overrides: dict | None = None) -> bool:
         """Build the agent on first use; when resuming, restore history from SQLite.
         Returns True on success."""
@@ -720,18 +743,11 @@ class CLIAgentSetupMixin:
                 pass
             self._active_agent_route_signature = _route_signature(effective_model, runtime)
 
-            # Force-create DB row on /title intent, then apply title.
-            if self._pending_title and self._session_db:
-                try:
-                    self.agent._ensure_db_session()
-                    if self.agent._session_db_created:
-                        self._session_db.set_session_title(self.session_id, self._pending_title)
-                        _cprint(f"  Session title applied: {self._pending_title}")
-                        self._pending_title = None
-                    # else: row creation failed transiently — keep _pending_title for retry
-                except Exception as e:
-                    _cprint(f"  Could not apply pending title: {e}")
-                    # Keep _pending_title so it can be retried after row creation succeeds
+            # Force-create DB row on /title intent, then apply title. #124033:
+            # the helper is idempotent and is re-invoked from every turn start,
+            # so a transient row-creation failure retries instead of silently
+            # dropping the user-chosen title.
+            self._apply_pending_title()
             return True
         except Exception as e:
             console = ChatConsole()

@@ -507,20 +507,37 @@ async function main() {
   });
   if (values.format === 'results') {
     const jobs = (await readStdin()).split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l));
-    const annotations = /** @type {TagAnnotation[]} */ (JSON.parse(values.tags));
+    /** @type {TagAnnotation[]} */
+    let annotations = [];
+    if (values.tags.trim()) {
+      try { annotations = JSON.parse(values.tags); }
+      catch { annotations = []; }
+    }
     /** @type {Map<string, number>} */
     const artifactById = new Map();
     if (values.artifacts) {
-      for (const line of (await fs.promises.readFile(values.artifacts, 'utf8')).split('\n')) {
-        if (!line.trim()) continue;
-        const a = JSON.parse(line);
-        if (typeof a.name === 'string' && typeof a.id === 'number') artifactById.set(a.name, a.id);
+      try {
+        for (const line of (await fs.promises.readFile(values.artifacts, 'utf8')).split('\n')) {
+          if (!line.trim()) continue;
+          const a = JSON.parse(line);
+          if (typeof a.name === 'string' && typeof a.id === 'number') artifactById.set(a.name, a.id);
+        }
+      } catch {
+        // Artifacts file may not exist when the run has no legs.
       }
+    }
+    if (annotations.length === 0) {
+      process.stderr.write('warn: no tag annotations — results chart is incomplete (no release tags sampled)\n');
     }
     process.stdout.write(renderMarkdownResults(jobs, annotations, artifactById));
     return;
   }
-  const tags = /** @type {TagAnnotation[]} */ (JSON.parse(values.tags));
+  /** @type {TagAnnotation[]} */
+  let tags = [];
+  if (values.tags.trim()) {
+    try { tags = JSON.parse(values.tags); }
+    catch { tags = []; }
+  }
   const envs = generateEnvironments(SPEC);
   if (values.format === 'markdown') {
     process.stdout.write(renderMarkdownPlan(envs, tags));

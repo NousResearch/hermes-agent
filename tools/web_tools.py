@@ -170,8 +170,31 @@ def _get_search_backend() -> str:
 
 
 def _get_extract_backend() -> str:
-    """Backend for web_extract: ``web.extract_backend`` (strict, no probe) > ``web.backend`` > autodetect."""
-    return _configured_backend("extract_backend") or _get_backend()
+    """Backend for web_extract: ``web.extract_backend`` (strict, no probe) > ``web.backend`` > autodetect.
+
+    Autodetect reroutes a search-only ladder pick (ddgs, brave-free, searxng)
+    to the capability-filtered walk — the shared ladder is capability-blind and
+    would otherwise doom web_extract to a terminal typed error before the
+    keyless extract ring is consulted (see #119529). Explicit selections
+    (``web.extract_backend`` / ``web.backend`` / any stored web selection) keep
+    the strict typed error in ``_resolve_extract_provider``.
+    """
+    configured = _configured_backend("extract_backend")
+    if configured:
+        return configured
+    backend = _get_backend()
+    if backend and not _configured_backend() and not selection_exists("web"):
+        _ensure_web_plugins_loaded()
+        provider = _registered_web_provider(backend)
+        if provider is not None and not _probe(provider, "supports_extract"):
+            try:
+                from agent.web_search_registry import get_active_extract_provider
+                active = get_active_extract_provider()
+            except Exception:  # noqa: BLE001 — registry optional; never fatal
+                active = None
+            if active is not None:
+                return active.name
+    return backend
 
 
 def _ddgs_package_importable() -> bool:

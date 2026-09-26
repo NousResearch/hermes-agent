@@ -636,4 +636,165 @@ def ssrf_safe_http_transport(**kwargs: Any) -> Any:
                 schemes_by_origin_var.reset(token)
 
     return _Transport(**kwargs)
+
+def _install_ssrf_guard_on_async_transport(transport: Any, schemes_by_origin_var: Any) -> None:
+    state = getattr(transport, "__dict__", {}) if transport is not None else {}
+    if transport is None or state.get("_hermes_ssrf_guarded", False):
+        return
+
+    pool = state.get("_pool")
+    if pool is None or not hasattr(pool, "_network_backend"):
+        raise SSRFConnectionBlocked("Unsupported async httpx transport cannot be made SSRF-safe")
+    pool._network_backend = _SSRFGuardedAsyncNetworkBackend(schemes_by_origin_var)
+
+    handle_async_request = getattr(transport, "handle_async_request", None)
+    if handle_async_request is None:
+        raise SSRFConnectionBlocked("Unsupported async httpx transport cannot be made SSRF-safe")
+
+    async def guarded_handle_async_request(request: Any) -> Any:
+        token = schemes_by_origin_var.set(_origin_scheme_context(request))
+        try:
+            return await handle_async_request(request)
+        finally:
+            schemes_by_origin_var.reset(token)
+
+    transport.handle_async_request = guarded_handle_async_request
+    transport._hermes_ssrf_guarded = True
+
+
+def _install_ssrf_guard_on_transport(transport: Any, schemes_by_origin_var: Any) -> None:
+    state = getattr(transport, "__dict__", {}) if transport is not None else {}
+    if transport is None or state.get("_hermes_ssrf_guarded", False):
+        return
+
+    pool = state.get("_pool")
+    if pool is None or not hasattr(pool, "_network_backend"):
+        raise SSRFConnectionBlocked("Unsupported httpx transport cannot be made SSRF-safe")
+    pool._network_backend = _SSRFGuardedNetworkBackend(schemes_by_origin_var)
+
+    handle_request = getattr(transport, "handle_request", None)
+    if handle_request is None:
+        raise SSRFConnectionBlocked("Unsupported httpx transport cannot be made SSRF-safe")
+
+    def guarded_handle_request(request: Any) -> Any:
+        token = schemes_by_origin_var.set(_origin_scheme_context(request))
+        try:
+            return handle_request(request)
+        finally:
+            schemes_by_origin_var.reset(token)
+
+    transport.handle_request = guarded_handle_request
+    transport._hermes_ssrf_guarded = True
+
+
+def _install_ssrf_guard_on_async_client(client: Any) -> None:
+    import contextvars
+
+    schemes_by_origin_var = contextvars.ContextVar("hermes_ssrf_async_origin_schemes")
+    state = getattr(client, "__dict__", {})
+    _install_ssrf_guard_on_async_transport(
+        state.get("_transport"), schemes_by_origin_var
+    )
+
+
+def _install_ssrf_guard_on_client(client: Any) -> None:
+    import contextvars
+
+    schemes_by_origin_var = contextvars.ContextVar("hermes_ssrf_origin_schemes")
+    state = getattr(client, "__dict__", {})
+    _install_ssrf_guard_on_transport(
+        state.get("_transport"), schemes_by_origin_var
+    )
+
+
+# Identifying UA for Hermes-owned direct downloads (media caches, platform
+# adapter fallbacks, skill installs, ...). CDNs with basic bot detection —
+# upload.wikimedia.org confirmed in #89260 — 403 the bare httpx default
+# (``python-httpx/x``). Wikimedia's UA policy
+# (meta.wikimedia.org/wiki/User-Agent_policy) asks clients to identify
+# themselves rather than impersonate a browser, so this names the agent
+# instead of spoofing Chrome/Firefox. Applied as a client-level default by
+# both factories below rather than re-typed per call site (#93242) — a
+# caller that needs a different UA still overrides it per-request, since
+# httpx merges request headers over client headers.
+DEFAULT_USER_AGENT = "Mozilla/5.0 (compatible; HermesAgent/1.0)"
+
+
+def _with_default_user_agent(kwargs: dict) -> dict:
+    """Return ``kwargs`` with a client-level ``User-Agent`` default filled in.
+
+    Uses ``httpx.Headers`` rather than plain-dict ``setdefault`` for two
+    reasons: it never mutates a caller-supplied headers object (a dict passed
+    by reference would otherwise be permanently poisoned across requests),
+    and it's case-insensitive plus accepts every form httpx's ``headers=``
+    already accepts (dict, list of tuples, or another ``Headers``) — a plain
+    dict's ``setdefault`` would raise on a list and would miss a caller's
+    lowercase ``"user-agent"``, adding a duplicate header instead of leaving
+    it alone.
+    """
+    import httpx
+
+    headers = httpx.Headers(kwargs.get("headers"))
+    headers.setdefault("User-Agent", DEFAULT_USER_AGENT)
+    kwargs["headers"] = headers
+    return kwargs
+
+
+def create_ssrf_safe_async_client(**kwargs: Any) -> Any:
+    """Create an ``httpx.AsyncClient`` with connect-time SSRF validation.
+
+    Direct HTTP(S) connections are resolved, validated, and dialed by IP at
+    TCP-connect time while the original request hostname is preserved for Host,
+    SNI, and certificate verification.  If httpx routes through a proxy, final
+    target resolution is delegated to that configured proxy; treat the proxy as
+    a trusted egress boundary.
+
+    Sends ``DEFAULT_USER_AGENT`` by default (see above) unless the caller
+    already set a ``User-Agent``.
+    """
+    import httpx
+
+    client = httpx.AsyncClient(**_with_default_user_agent(kwargs))
+    _install_ssrf_guard_on_async_client(client)
+    return client
+
+
+def create_ssrf_safe_client(**kwargs: Any) -> Any:
+    """Create an ``httpx.Client`` with connect-time SSRF validation.
+
+    Sends ``DEFAULT_USER_AGENT`` by default (see above) unless the caller
+    already set a ``User-Agent``.
+    """
+    import httpx
+
+    client = httpx.Client(**_with_default_user_agent(kwargs))
+    _install_ssrf_guard_on_client(client)
+    return client
+
+
+def redirect_target_from_response(response: Any) -> Optional[str]:
+    """Return the redirect target visible from inside an httpx response hook.
+
+    In ``httpx.AsyncClient`` response event hooks, ``response.next_request`` is
+    frequently ``None`` even for a genuine redirect (it is populated later by
+    the redirect-following machinery). Relying on ``next_request`` alone means
+    an SSRF redirect guard silently never fires: a public URL that 302s to
+    ``http://169.254.169.254/`` gets followed anyway. The ``Location`` header,
+    however, is already present on the response, so resolve the target from it
+    first (handling relative Locations via ``urljoin``) and only fall back to
+    ``next_request`` when no ``Location`` header is set.
+    """
+    if not getattr(response, "is_redirect", False):
+        return None
+
+    headers = getattr(response, "headers", {}) or {}
+    location = headers.get("location")
+    if location:
+        return urljoin(str(getattr(response, "url", "")), str(location))
+
+    next_request = getattr(response, "next_request", None)
+    if next_request:
+        return str(next_request.url)
+
+    return None
 # ---- END PLUGIN-COMPAT ----

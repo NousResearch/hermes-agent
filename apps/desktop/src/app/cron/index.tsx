@@ -716,6 +716,13 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
             // No selection and no search — "Try a broader search query" here
             // just confused people staring at an empty panel with zero jobs.
             <PanelEmpty
+              action={
+                jobs.length === 0 ? (
+                  <Button onClick={() => setEditor({ mode: 'create' })} size="sm">
+                    {c.newCron}
+                  </Button>
+                ) : undefined
+              }
               description={c.emptyDescNew}
               icon="watch"
               title={jobs.length === 0 ? c.emptyTitleNew : undefined}

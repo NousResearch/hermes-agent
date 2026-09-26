@@ -381,6 +381,24 @@ def test_same_shell_cannot_change_alias_resolution_before_mutation(command):
         _resolved_guard_variants(command, _FakeDeviceEnv({}), "/work")
 
 
+@pytest.mark.parametrize("command", [
+    "busybox wipefs -a /workspace/raw-disk",
+    "toybox cp /tmp/source /workspace/raw-disk",
+])
+def test_multicall_force_replay_cannot_bypass_resolved_device_floor(command):
+    env = _FakeDeviceEnv({"/workspace/raw-disk": "/dev/nvme0n1"})
+    with pytest.raises(_Rejected):
+        _run_approval_guards(
+            command,
+            "local",
+            {"docker_volumes": []},
+            force=True,
+            env=env,
+            cwd="/workspace",
+        )
+    assert env.queries == ["/workspace/raw-disk"]
+
+
 def test_force_replay_cannot_bypass_resolved_device_floor():
     env = _FakeDeviceEnv({"/workspace/raw-disk": "/dev/nvme0n1"})
     with pytest.raises(_Rejected):

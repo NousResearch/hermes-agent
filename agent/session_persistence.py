@@ -350,7 +350,9 @@ def _db_flush_failed(agent, e: Exception, batch_rows: List[Dict[str, Any]], adop
                 agent._parent_session_id = parent_id
         if not agent._session_db_created:
             # Row creation failed too (transient store trouble): don't append into a guaranteed
-            # rollback — keep the batch unmarked so the next flush retries the whole thing.
+            # rollback — keep the batch unmarked so the next flush retries the whole thing. That flush
+            # recreates the row up front (no FK error, no heal), so it must replay the history prefix itself.
+            agent._session_row_replay_pending = agent.session_id
             logger.warning("Session DB row for %s is missing and could not be recreated; will retry next flush",
                            getattr(agent, "session_id", None))
             return None
@@ -460,8 +462,10 @@ class SessionPersistenceMixin:
         try:
             if not self._session_db_created:  # retry row creation if the earlier attempt failed transiently
                 self._ensure_db_session()
-            batch_rows, batch_msgs = _db_flush_collect(self, messages, conversation_history, _replay_history)
+            replay = _replay_history or getattr(self, "_session_row_replay_pending", None) == self.session_id
+            batch_rows, batch_msgs = _db_flush_collect(self, messages, conversation_history, replay)
             _db_flush_write(self, batch_rows, batch_msgs, messages)
+            self._session_row_replay_pending = None
             # Markers are now the sole truth; reset the one-shot seed so no id() outlives this flush.
             self._flushed_db_message_ids = set()
             self._last_flushed_db_idx = len(messages)

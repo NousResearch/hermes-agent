@@ -79,7 +79,8 @@ def test_flush_fails_closed_when_row_cannot_be_recreated(monkeypatch):
         db = SessionDB(db_path=Path(tmpdir) / "test.db")
         agent = _make_agent(db, "sess-gone")
 
-        agent._flush_messages_to_session_db([{"role": "user", "content": "a"}], [])
+        turn1 = [{"role": "user", "content": "a"}]
+        agent._flush_messages_to_session_db(turn1, [])
         assert len(db.get_messages("sess-gone")) == 1
         assert db.delete_session("sess-gone") is True
 
@@ -89,12 +90,17 @@ def test_flush_fails_closed_when_row_cannot_be_recreated(monkeypatch):
 
         monkeypatch.setattr(db, "create_session", _broken_create)
 
-        healed = agent._flush_messages_to_session_db(
-            [{"role": "user", "content": "b"}], []
-        )
+        turn2 = turn1 + [{"role": "user", "content": "b"}]
+        healed = agent._flush_messages_to_session_db(turn2, turn1)
         assert healed is False
         assert agent._session_db_created is False
         monkeypatch.undo()
+
+        # The next flush recreates the row before any FK error (so no heal runs) and must still
+        # replay the history prefix the failed heal left unwritten.
+        turn3 = turn2 + [{"role": "assistant", "content": "c"}]
+        assert agent._flush_messages_to_session_db(turn3, turn2) is True
+        assert [r["content"] for r in db.get_messages("sess-gone")] == ["a", "b", "c"]
 
         # FK failure while the session row still exists (e.g. a sessions-table FK): no heal, and
         # no replay of the history prefix onto the live transcript.

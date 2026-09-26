@@ -4,7 +4,6 @@ for GatewayRunner (MRO mixin). ``gateway.run`` internals are imported lazily ins
 
 from __future__ import annotations
 
-import dataclasses
 import importlib
 import logging
 import threading
@@ -664,7 +663,8 @@ class GatewayAgentCacheMixin:
             return channel_prompt, source
         pinned_prompt, pinned_parent = pin
         if pinned_parent and not getattr(source, "parent_chat_id", None):
-            source = dataclasses.replace(source, parent_chat_id=pinned_parent)
+            from gateway.session_identity import replace_source
+            source = replace_source(source, parent_chat_id=pinned_parent)
         return pinned_prompt, source
 
     @staticmethod

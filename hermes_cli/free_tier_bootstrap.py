@@ -203,14 +203,28 @@ def run_bootstrap(*, announce: bool = True) -> SetupRecord:
     ``setup.ready`` event: the plain CLI has no client to tell and its stdout is the user's terminal.
     """
     global _record, _started
+    wait_for_owner = False
     with _lock:
         if _record is not None:
             return _record
         if _started:
-            _done.wait(SETUP_READY_WAIT_SECONDS)
+            wait_for_owner = True
+        else:
+            _started = True
+
+    if wait_for_owner:
+        _done.wait(SETUP_READY_WAIT_SECONDS)
+        with _lock:
             if _record is not None:
                 return _record
-        _started = True
+        return SetupRecord(
+            provider_configured=False,
+            inference_provider="",
+            free_tier=False,
+            has_identity=False,
+            other_providers=False,
+            error="free tier bootstrap is still running",
+        )
 
     record = _build_record(other=_inventory_other_providers(), force=False)
     with _lock:

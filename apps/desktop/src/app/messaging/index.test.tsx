@@ -364,3 +364,56 @@ describe('MessagingView Telegram quick setup', () => {
     }
   })
 })
+
+describe('MessagingView single platform status (#120641)', () => {
+  it('shows one status pill, not three, for an unconfigured stopped platform', async () => {
+    // The backend already folds setup + liveness into one `state`; the extra
+    // pills repeated it back ("Needs setup", "Needs setup", "Messaging
+    // gateway stopped" on one screen). Only the state pill may speak.
+    getMessagingPlatforms.mockResolvedValue({
+      platforms: [
+        platform({
+          configured: false,
+          enabled: true,
+          gateway_running: false,
+          id: 'telegram',
+          name: 'Telegram',
+          state: 'not_configured'
+        })
+      ]
+    })
+
+    await renderMessaging()
+
+    expect((await screen.findAllByText('Telegram')).length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Needs setup')).toHaveLength(1)
+    expect(screen.queryByText('Messaging gateway stopped')).toBeNull()
+  })
+
+  it('offers a restart where the stopped hint points', async () => {
+    // The hint used to send users to the status bar, whose popover owns the
+    // backend connection and has no messaging-gateway Start. The page must
+    // carry its own Start/Restart control next to the hint.
+    getMessagingPlatforms.mockResolvedValue({
+      platforms: [
+        platform({
+          configured: true,
+          enabled: true,
+          gateway_running: false,
+          id: 'telegram',
+          name: 'Telegram',
+          state: 'gateway_stopped'
+        })
+      ]
+    })
+
+    await renderMessaging()
+
+    expect(await screen.findByText('Messaging gateway stopped')).toBeTruthy()
+    const start = screen.getByRole('button', { name: 'Restart now' })
+    await act(async () => {
+      fireEvent.click(start)
+    })
+    await waitFor(() => expect(runGatewayRestart).toHaveBeenCalled())
+  })
+})

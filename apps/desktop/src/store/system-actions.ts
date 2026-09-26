@@ -28,7 +28,9 @@ async function awaitAction(name: string): Promise<void> {
 
     if (!status.running) {
       if (status.exit_code != null && status.exit_code !== 0) {
-        throw new Error(translateNow('commandCenter.gatewayRestartFailed'))
+        // Name the exit code: the toast would otherwise repeat the fallback
+        // sentence as both title and message with zero cause (#120641).
+        throw new Error(`${translateNow('commandCenter.gatewayRestartFailed')} (exit ${status.exit_code})`)
       }
 
       return

@@ -3211,9 +3211,9 @@ export const esOverrides = {
       startup_failed: 'Falló el inicio'
     },
     unknown: 'Desconocido',
-    hintPendingRestart: 'Reinicia el gateway desde la barra de estado para aplicar este cambio.',
+    hintPendingRestart: 'Reinicia el gateway de mensajería para aplicar este cambio.',
     sharedListenerUrl: 'Servido en el listener del gateway compartido en',
-    hintGatewayStopped: 'Inicia el gateway desde la barra de estado para conectar.',
+    hintGatewayStopped: 'El gateway de mensajería está detenido. Inícialo aquí para conectar.',
     credentialsSet: 'Credenciales definidas',
     needsSetup: 'Necesita configuración',
     gatewayStopped: 'Gateway de mensajería detenido',

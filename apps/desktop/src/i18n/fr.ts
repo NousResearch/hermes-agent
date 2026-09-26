@@ -3228,9 +3228,9 @@ export const frOverrides = {
       startup_failed: 'Échec du démarrage'
     },
     unknown: 'Inconnu',
-    hintPendingRestart: "Redémarrez le gateway depuis la barre d'état pour appliquer ce changement.",
+    hintPendingRestart: "Redémarrez le gateway de messagerie pour appliquer ce changement.",
     sharedListenerUrl: 'Servi sur le listener partagé du gateway à',
-    hintGatewayStopped: "Démarrez le gateway depuis la barre d'état pour vous connecter.",
+    hintGatewayStopped: "Le gateway de messagerie est arrêté. Démarrez-le ici pour vous connecter.",
     credentialsSet: 'Identifiants définis',
     needsSetup: 'Nécessite une configuration',
     gatewayStopped: 'Gateway de messagerie arrêté',

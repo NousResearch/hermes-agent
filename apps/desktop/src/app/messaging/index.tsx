@@ -585,9 +585,11 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
                       }))
                     }
                     onRevoke={setPendingRevoke}
+                    onRestartGateway={() => void restartGatewayNow()}
                     onTelegramApplied={result => void handleTelegramApplied(result)}
                     pending={pendingByPlatform[selected.id] ?? []}
                     platform={selected}
+                    restarting={gatewayRestarting}
                     saving={saving}
                     scopeProfile={scopeProfile}
                   />
@@ -667,9 +669,11 @@ function PlatformDetail({
   onClear,
   onEdit,
   onRevoke,
+  onRestartGateway,
   onTelegramApplied,
   pending,
   platform,
+  restarting,
   saving,
   scopeProfile
 }: {
@@ -680,9 +684,11 @@ function PlatformDetail({
   onClear: (key: string) => void
   onEdit: (key: string, value: string) => void
   onRevoke: (user: PairingUser) => void
+  onRestartGateway: () => void
   onTelegramApplied: (result: TelegramOnboardingApplyResponse) => void
   pending: PairingUser[]
   platform: MessagingPlatformInfo
+  restarting: boolean
   saving: string | null
   scopeProfile: string | undefined
 }) {
@@ -702,19 +708,14 @@ function PlatformDetail({
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <h3 className="min-w-0 truncate text-[0.9375rem] font-semibold tracking-tight">{platform.name}</h3>
+            {/* One status per platform: the backend already folds setup +
+                liveness into `state`, so the state pill speaks alone (#120641). */}
             <StatePill tone={stateTone(platform)}>{stateLabel(platform.state, m)}</StatePill>
-            {/* Resting states earn no pill — only actionable ones. */}
-            {!platform.configured && <SetupPill active={false}>{m.needsSetup}</SetupPill>}
-            {/* The state pill already reads "gateway stopped" when that is the
-                platform's whole story; only add the hint when it is not. */}
-            {!platform.gateway_running && platform.state !== 'gateway_stopped' && (
-              <SetupPill active={false}>{m.gatewayStopped}</SetupPill>
-            )}
           </div>
           <p className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
             {platform.description}
           </p>
-          <PlatformHint platform={platform} />
+          <PlatformHint onRestartGateway={onRestartGateway} platform={platform} restarting={restarting} />
         </div>
       </header>
 
@@ -1037,7 +1038,15 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
   return <h4 className="text-[0.7rem] font-semibold uppercase tracking-[0.14em] text-muted-foreground">{children}</h4>
 }
 
-function PlatformHint({ platform }: { platform: MessagingPlatformInfo }) {
+function PlatformHint({
+  onRestartGateway,
+  platform,
+  restarting
+}: {
+  onRestartGateway: () => void
+  platform: MessagingPlatformInfo
+  restarting: boolean
+}) {
   const { t } = useI18n()
 
   // A served secondary's api_server/webhook live on the shared gateway listener under
@@ -1064,7 +1073,24 @@ function PlatformHint({ platform }: { platform: MessagingPlatformInfo }) {
         ? null
         : t.messaging.hintGatewayStopped
 
-  return hint ? <p className="mt-2 text-xs leading-5 text-muted-foreground">{hint}</p> : null
+  if (!hint) {
+    return null
+  }
+
+  return (
+    <p className="mt-2 flex flex-wrap items-center gap-2 text-xs leading-5 text-muted-foreground">
+      <span>{hint}</span>
+      {/* A stopped gateway has no other Start on this page — the restart
+          banner only appears after an edit — so the hint carries its own
+          control instead of pointing at the status bar (#120641). */}
+      {!platform.gateway_running && (
+        <Button disabled={restarting} onClick={onRestartGateway} size="xs" variant="secondary">
+          <RefreshCw className={restarting ? 'animate-spin' : undefined} />
+          {restarting ? t.messaging.restarting : t.messaging.restartNow}
+        </Button>
+      )}
+    </p>
+  )
 }
 
 function StatePill({ children, tone }: { children: string; tone: StatusTone }) {
@@ -1076,19 +1102,6 @@ function StatePill({ children, tone }: { children: string; tone: StatusTone }) {
       )}
     >
       <StatusDot tone={tone} />
-      {children}
-    </span>
-  )
-}
-
-function SetupPill({ active, children }: { active: boolean; children: string }) {
-  return (
-    <span
-      className={cn(
-        'inline-flex items-center rounded-full px-2 py-0.5 text-[0.66rem] font-medium',
-        PILL_TONE[active ? 'good' : 'muted']
-      )}
-    >
       {children}
     </span>
   )

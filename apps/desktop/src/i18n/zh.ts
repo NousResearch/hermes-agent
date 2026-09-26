@@ -2707,9 +2707,9 @@ export const zh = defineLocale({
       startup_failed: '启动失败'
     },
     unknown: '未知',
-    hintPendingRestart: '在状态栏重启网关以应用此更改。',
+    hintPendingRestart: '重启消息网关以应用此更改。',
     sharedListenerUrl: '通过共享网关监听器提供，地址为',
-    hintGatewayStopped: '在状态栏启动网关以建立连接。',
+    hintGatewayStopped: '消息网关已停止，在此启动以建立连接。',
     credentialsSet: '凭据已设置',
     needsSetup: '需要设置',
     gatewayStopped: '消息网关已停止',

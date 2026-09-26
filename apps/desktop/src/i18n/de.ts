@@ -3218,9 +3218,9 @@ export const deOverrides = {
       startup_failed: 'Start fehlgeschlagen'
     },
     unknown: 'Unbekannt',
-    hintPendingRestart: 'Starten Sie das Gateway über die Statusleiste neu, um diese Änderung zu übernehmen.',
+    hintPendingRestart: 'Starten Sie das Messaging-Gateway neu, um diese Änderung zu übernehmen.',
     sharedListenerUrl: 'Erreichbar über den gemeinsamen Gateway-Listener unter',
-    hintGatewayStopped: 'Starten Sie das Gateway über die Statusleiste, um die Verbindung herzustellen.',
+    hintGatewayStopped: 'Das Messaging-Gateway ist gestoppt. Starten Sie es hier, um die Verbindung herzustellen.',
     credentialsSet: 'Zugangsdaten gesetzt',
     needsSetup: 'Einrichtung nötig',
     gatewayStopped: 'Messaging-Gateway gestoppt',

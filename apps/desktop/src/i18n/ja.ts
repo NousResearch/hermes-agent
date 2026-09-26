@@ -1923,9 +1923,9 @@ export const ja = defineLocale({
       startup_failed: '起動失敗'
     },
     unknown: '不明',
-    hintPendingRestart: 'この変更を適用するにはステータスバーからゲートウェイを再起動してください。',
+    hintPendingRestart: 'この変更を適用するにはメッセージングゲートウェイを再起動してください。',
     sharedListenerUrl: '共有ゲートウェイのリスナーで提供中:',
-    hintGatewayStopped: 'ステータスバーからゲートウェイを起動して接続してください。',
+    hintGatewayStopped: 'メッセージングゲートウェイが停止しています。ここから起動して接続してください。',
     restartNeeded: '保存しました。新しい設定を反映するにはメッセージングゲートウェイを再起動してください。',
     restartNow: '今すぐ再起動',
     restarting: '再起動中…',

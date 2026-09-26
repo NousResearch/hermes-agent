@@ -2885,9 +2885,9 @@ export const en: Translations = {
       startup_failed: 'Startup failed'
     },
     unknown: 'Unknown',
-    hintPendingRestart: 'Restart the gateway from the status bar to apply this change.',
+    hintPendingRestart: 'Restart the messaging gateway to apply this change.',
     sharedListenerUrl: 'Served on the shared gateway listener at',
-    hintGatewayStopped: 'Start the gateway from the status bar to connect.',
+    hintGatewayStopped: 'The messaging gateway is stopped. Start it here to connect.',
     credentialsSet: 'Credentials set',
     needsSetup: 'Needs setup',
     gatewayStopped: 'Messaging gateway stopped',

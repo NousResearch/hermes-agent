@@ -2168,9 +2168,9 @@ export const zhHant = defineLocale({
       startup_failed: '啟動失敗'
     },
     unknown: '未知',
-    hintPendingRestart: '在狀態列重新啟動閘道以套用此變更。',
+    hintPendingRestart: '重新啟動訊息閘道以套用此變更。',
     sharedListenerUrl: '透過共享閘道監聽器提供，位址為',
-    hintGatewayStopped: '在狀態列啟動閘道以建立連線。',
+    hintGatewayStopped: '訊息閘道已停止，在此啟動以建立連線。',
     restartNeeded: '已儲存。請重新啟動訊息閘道以套用新設定。',
     restartNow: '立即重新啟動',
     restarting: '正在重新啟動…',

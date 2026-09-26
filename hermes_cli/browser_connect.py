@@ -537,9 +537,8 @@ def _processes_holding_profile(src: str):
     except ImportError:  # hard dep; defensive
         return
     norm = os.path.normcase(os.path.normpath(src))
-    browser_bins = (
-        "chrome", "chrome.exe", "chromium", "chromium.exe", "chrome_crashpad",
-        "brave", "brave.exe", "msedge", "msedge.exe", "google chrome")
+    system = platform.system()
+    seen: set[int] = set()
     for proc in psutil.process_iter(["name", "cmdline"]):
         try:
             name = (proc.info.get("name") or "").lower()
@@ -547,13 +546,81 @@ def _processes_holding_profile(src: str):
             joined = " ".join(cmd)
         except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
             continue
-        argv0 = cmd[0].lower() if cmd else ""  # some platforms report a generic name
-        if not any(b in name or b in argv0 for b in browser_bins):
+        if not _is_browser_process(name, cmd):
             continue
         # Binding: the exact user-data-dir must appear in the cmdline, normalized.
-        if (norm in os.path.normcase(os.path.normpath(joined))
-                or f"--user-data-dir={src}".lower() in joined.lower()):
-            yield proc
+        bound = (norm in os.path.normcase(os.path.normpath(joined))
+                 or f"--user-data-dir={src}".lower() in joined.lower())
+        # A browser started normally (Start menu, dock, taskbar) runs its DEFAULT profile with no
+        # --user-data-dir at all; only helpers such as crashpad name the dir. Bind that main
+        # process when ``src`` is the default dir of the exact install it was launched from.
+        if (not bound and cmd and not _cmdline_has_flag(cmd, "--user-data-dir")
+                and not _cmdline_has_flag(cmd, "--type")):
+            bound = _is_default_profile_owner(norm, cmd[0], system)
+        if not bound:
+            continue
+        root = _browser_root_process(proc, psutil)
+        pid = getattr(root, "pid", None)
+        if pid is not None:
+            if pid in seen:
+                continue
+            seen.add(pid)
+        yield root
+
+
+_BROWSER_PROCESS_NAMES = (
+    "chrome", "chrome.exe", "chromium", "chromium.exe", "chrome_crashpad",
+    "brave", "brave.exe", "msedge", "msedge.exe", "google chrome")
+
+
+def _is_browser_process(name: str, cmd: list[str]) -> bool:
+    argv0 = cmd[0].lower() if cmd else ""  # some platforms report a generic name
+    return any(b in name or b in argv0 for b in _BROWSER_PROCESS_NAMES)
+
+
+def _cmdline_has_flag(cmd: list[str], flag: str) -> bool:
+    return any(arg == flag or arg.startswith(flag + "=") for arg in cmd)
+
+
+def _is_default_profile_owner(src_norm: str, exe: str, system: str) -> bool:
+    """True when ``exe`` is a known install of a browser whose default user-data-dir is ``src``.
+    Matching the install path (not just the binary name) keeps Chromium's ``chrome.exe`` from
+    being taken for Google Chrome's."""
+    exe_norm = os.path.normcase(os.path.normpath(exe))
+    for b in _BROWSERS:
+        default = real_profile_data_dir(b.key, system)
+        if not default or os.path.normcase(os.path.normpath(default)) != src_norm:
+            continue
+        if system == "Windows":
+            if any(exe_norm.endswith(os.path.normcase(ntpath.sep + ntpath.join(*parts)))
+                   for parts in b.win_install):
+                return True
+        elif system == "Darwin":
+            if exe_norm == os.path.normcase(b.mac_app):
+                return True
+        elif (exe_norm in {os.path.normcase(p) for p in b.linux_paths}
+              or os.path.basename(exe_norm) in (*b.linux_bins, *(b.linux_exec or ()))):
+            return True
+    return False
+
+
+def _browser_root_process(proc, psutil):
+    """Climb from a matched helper (``--type=crashpad-handler``, renderer, ...) to the browser's
+    main process, so closing it takes the whole browser down rather than one child. Stops at the
+    first process that is not a browser helper; an unreadable parent keeps what we have."""
+    current = proc
+    for _ in range(8):  # helpers are one or two levels deep; bound the walk
+        try:
+            cmd = current.cmdline() if hasattr(current, "cmdline") else current.info.get("cmdline") or []
+            if not _cmdline_has_flag(cmd, "--type"):
+                return current
+            parent = current.parent() if hasattr(current, "parent") else None
+            if parent is None or not _is_browser_process(parent.name().lower(), parent.cmdline()):
+                return current
+        except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+            return current
+        current = parent
+    return current
 
 
 def close_browser_holding_profile(src: str, timeout: float = 15.0) -> tuple[bool, str]:

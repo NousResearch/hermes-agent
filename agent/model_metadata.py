@@ -644,13 +644,62 @@ def _maybe_cache_local_context_length(model: str, base_url: str, length: int) ->
         save_context_length(model, base_url, length)
 
 
+# Weight-file extensions a single-model server may use as its listing id: llama.cpp
+# serves a lone GGUF under its file path (``C:\\models\\Foo.gguf``), which no friendly
+# model id ever equals — the blind spot both name-unaware fallbacks below can see.
+_WEIGHT_FILE_EXTENSIONS = (".gguf", ".safetensors", ".bin", ".pt", ".onnx")
+
+
+def _listed_id_names_model(listed_id: str, model: str) -> bool:
+    """True when a live-listing id refers to the requested model: exact, publisher
+    slug, or weight-file stem (a GGUF path id names its file's stem)."""
+    if not listed_id or not model:
+        return False
+    if _model_id_matches(listed_id, model):
+        return True
+    want = _strip_provider_prefix(model).strip().lower()
+    stem = listed_id.replace("\\", "/").rsplit("/", 1)[-1].strip().lower()
+    for ext in _WEIGHT_FILE_EXTENSIONS:
+        if stem.endswith(ext):
+            stem = stem[: -len(ext)]
+            break
+    return bool(stem) and stem == want
+
+
+def _live_listing_names_model(model: str, base_url: str, api_key: str = "") -> bool:
+    """Fail-open check that the endpoint's live listing names ``model``.
+
+    A single-model server answers every id-blind probe (bare /props, sole-entry
+    /v1/models fallback) with the SERVING engine's window no matter which id was
+    asked for. Returning that live value is correct — persisting it under the
+    requested id is not: a stale tab's id would pin the wrong window forever.
+    Unreachable or anonymous listings fail open so probing can never make
+    resolution worse than today's behavior.
+    """
+    try:
+        listing = fetch_endpoint_model_metadata(base_url, api_key=api_key)
+    except Exception:
+        return True
+    if not listing:
+        return True
+    bare = _strip_provider_prefix(model)
+    return any(_listed_id_names_model(listed_id, bare) for listed_id in listing)
+
+
 def _probe_local_context_length(model: str, base_url: str, api_key: str, provider: str) -> Optional[int]:
     """Live local probe; persists a positive result unless the provider opts out of the disk cache."""
     local_ctx = _query_local_context_length(model, base_url, api_key=api_key)
     if not (local_ctx and local_ctx > 0):
         return None
     if not _skip_persistent_context_cache(base_url, provider):
-        _maybe_cache_local_context_length(model, base_url, local_ctx)
+        if _live_listing_names_model(model, base_url, api_key):
+            _maybe_cache_local_context_length(model, base_url, local_ctx)
+        else:
+            logger.info(
+                "Not caching local window %s for %r at %s: id absent from the live listing "
+                "(single-model fallback served another model's window)",
+                f"{local_ctx:,}", model, base_url,
+            )
     return local_ctx
 
 

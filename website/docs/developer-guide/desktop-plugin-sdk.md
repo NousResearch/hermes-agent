@@ -45,6 +45,17 @@ plugin, and fail to resolve in a disk plugin). Capability comes in tiers:
   restart the gateway, subscribe to the gateway event stream.
 - **`host.request`** — the gateway JSON-RPC door: sessions, config, skills,
   cron — everything the app itself calls.
+- **`captureGatewayFileDownload()`** — capture a gateway file-save action
+  immediately before starting a REST read, and retain it alongside the returned
+  data. The action `(storedPath, suggestedName) => Promise<void>` keeps that
+  read's connection/profile scope even if the user switches hosts before
+  clicking. Invoke only on an explicit user download gesture, using the
+  backend's persisted file path, never a guessed workspace path. Electron handles
+  authenticated streaming, the native save dialog, and older-gateway fallback;
+  plugins never receive credentials or open remote paths with `file://`. The
+  host shows the same "Saved" / "Download failed" toasts as the Files panel and
+  stays quiet on cancel; the promise settles when the save does and never
+  rejects.
 - **`ctx.rest` / `ctx.socket`** — your plugin's own backend namespace
   (`/api/plugins/<id>`) if you ship a `plugin_api.py`.
 - **`ui.*`** — the design language: the app's real components, theme variables,
@@ -223,6 +234,7 @@ Import the area constants from the SDK; each area has its own `data` payload.
 | Keybind | `KEYBINDS_AREA` | `data: KeybindContribution` |
 | Theme | `THEMES_AREA` | `data` as a `DesktopTheme` |
 | Composer | `COMPOSER_AREAS.*` | render slots, or middleware / attachment providers |
+| Appearance settings | `APPEARANCE_AREAS.extra` | `render` — controls appended to Settings → Appearance |
 
 ### Panes
 
@@ -407,10 +419,326 @@ plugin is the worked example (it is also a complete, installable disk plugin).
 
 ### Composer extensions
 
-`COMPOSER_AREAS` (`top`, `bottom`, `leading`, `actions`, `attachments`,
-`middleware`) let a plugin add controls around the message composer, provide an
-attachment source, or transform a draft before it is sent (`ComposerMiddleware`
-with a `handler(draft) => draft | null`).
+`COMPOSER_AREAS` (`top`, `bottom`, `underside`, `leading`, `actions`,
+`attachments`, `middleware`) let a plugin add controls around the message
+composer, provide an attachment source, or transform a draft before it is sent
+(`ComposerMiddleware` with a `handler(draft) => draft | null`). `top` is a
+banner strip above the input and `bottom` a row below the input grid, both
+inside the composer chrome; `underside` is the floating strip BELOW the whole
+composer with no chrome of its own — the seat for a suggestion pill or a status
+hint that should sit outside the input frame (the next-prompt plugin renders its
+"next prompt" pill there).
+
+### Composer draft API — read and write the live input
+
+For everything the composer areas can't do — put text INTO the input, replace
+what's there, read the current draft, or send it — use `host.composer`. This
+is the supported door; reaching for the ProseMirror DOM, `[data-composer-target]`
+lookups, or synthetic `InputEvent`s is out of the plugin surface (catalog rule 8)
+and breaks the moment the app's markup moves. Addressing: `null` = the composer
+the user is typing in; a session id (stored or runtime) = that session's
+composer, in the primary pane or a tile; `'new'` = the fresh draft that has no
+session id yet.
+
+```javascript
+import { host } from '@hermes/plugin-sdk'
+
+// Append to the active composer (modes: 'block' | 'inline' | 'prefix';
+// 'prefix' seats a slash command at the start). Acknowledged like setDraft:
+// true when a mounted surface applied the text, false when the text is blank
+// or no live surface answers for the address.
+const inserted = await host.composer.insertText(null, 'draft note', { mode: 'inline' })
+
+// Replace a session's whole draft — '@'-ref and '/command' tokens hydrate
+// into chips exactly like an official paste. False when no mounted surface
+// answers (an unmounted session is never half-written).
+const ok = await host.composer.setDraft('sess-1', 'plan:\n- @file:src/app.ts')
+
+// Read the live draft: the mounted surface's in-DOM text (unsaved keystrokes
+// included), falling back to the debounced persisted stash. Null when nothing
+// holds it.
+const text = await host.composer.getDraft('sess-1')
+
+// Send as if the user typed + pressed Enter. Fail-closed like the app's own
+// panels: no visible surface for the address → false, never a broadcast.
+const sent = host.composer.submit('sess-1', 'ship it')
+
+// Put the caret in a composer (same addressing). insertText/setDraft already
+// focus a visible surface they paint; use this to return the caret after a
+// plugin popover closes or from a "go to input" keybind.
+host.composer.focus(null)
+```
+
+```ts
+host.composer: {
+  getDraft(sessionId: string | null): Promise<string | null>
+  setDraft(sessionId: string | null, text: string): Promise<boolean>
+  insertText(sessionId: string | null, text: string, opts?: { mode?: 'block' | 'inline' | 'prefix' }): Promise<boolean>
+  submit(sessionId: string | null, text: string): boolean
+  focus(sessionId: string | null): void
+}
+```
+
+**Arbitration.** Every verb is fail-closed on its address: a request is
+answered only by the mounted composer that owns that session (its tile, or the
+primary pane when it shows that session); `null` is answered only by the surface
+the app's focus bus currently routes to; `'new'` only by the primary pane while it
+shows no session — it never falls through to the active composer. No exact
+surface → `null`/`false`, never
+a broadcast into whichever pane happens to be mounted. Writes go through the
+app's own paint path, so `@`-ref / `/`-command tokens hydrate as chips and the
+result is byte-for-byte what the user would get by pasting. These are discrete,
+user-triggered actions with the same authority as typing — no plugin "owns" the
+draft afterwards, so there is **nothing to tear down** on disable; a plugin that
+wants a persistent presence around the input uses a `COMPOSER_AREAS` slot instead.
+
+A multi-session plugin keeps its per-session state on its side (which session
+its panel is editing) and passes that id here; the bus guarantees one
+plugin write can never land in another session's composer.
+
+**Migrating off DOM reach-in** (the held catalog plugins that motivated this API):
+
+| Plugin | Was | Now |
+|---|---|---|
+| next-prompt (#120660) | `window.dispatchEvent(new CustomEvent('hermes:composer-insert', …))` + a `setTimeout` `hermes:composer-focus`; `[data-composer-target]`/`[data-pane-hidden]` scan for the visible target | `await host.composer.insertText(null, suggestion.text, { mode: 'block' })`, then `host.composer.focus(null)` if the pill lost the caret |
+| prompt-snippets (#116030) | same `hermes:composer-insert` event; `[data-slot="composer-input"]`/ProseMirror `textContent` + synthetic `InputEvent` fallback; `surfaceEditorEl().focus()` | `host.composer.insertText(sid, text, { mode: 'block' })`; `setDraft(sid, (await getDraft(sid) ?? '') + '\n' + text)` replaces the fallback; `host.composer.focus(sid)` — `sid = host.state.focusedSessionId.get()` |
+| prompt-enhancer (#116031) | walks the editor's child nodes to serialize, rebuilds chip DOM, `replaceChildren` + synthetic `InputEvent` | `const draft = await host.composer.getDraft(sid)` → transform → `await host.composer.setDraft(sid, enhanced)` (chips hydrate app-side); revert is another `setDraft` |
+| memory-review (#115966) | `host.request('slash.exec', { session_id, command })` for `/memory …` — already SDK-only | optional: `host.composer.insertText(sid, '/memory pending', { mode: 'prefix' })` to seat the command for the user instead of executing it |
+| intelligent-tool-break (#115964) | "Message" button only toasts "type /break" (no composer write) | `host.composer.setDraft(host.state.focusedSessionId.get(), '/break ')` then `host.composer.focus(null)` restores the intended behaviour |
+
+`sessionId` in the table is the id the plugin's UI is bound to; for a composer
+slot render it is `host.state.focusedSessionId.get()`.
+
+### Session rows — decorations + the session list API
+
+`SESSION_ROW_AREAS` (`leading`, `trailing`) let a plugin decorate sidebar
+session rows. Register a `data` contribution whose `render({ sessionId })`
+returns a small element (a badge, a swatch, a tag) or `null` for rows you don't
+own — registering costs nothing on every other row:
+
+```ts
+import { SESSION_ROW_AREAS, type SessionRowSlotContribution } from '@hermes/plugin-sdk'
+
+ctx.register({
+  area: SESSION_ROW_AREAS.trailing,
+  id: 'my-tag',
+  data: {
+    render: ({ sessionId }) => (owned.has(sessionId) ? <span className="my-tag">★</span> : null)
+  } satisfies SessionRowSlotContribution
+})
+```
+
+Pair it with the session list API, which writes the same stores the app's own
+controls write (so a plugin action and a hand click can never disagree):
+
+```ts
+host.sessions.pin(storedSessionId: string, pinned?: boolean, index?: number): void
+host.sessions.reorder(storedSessionIds: string[]): void   // Recents; [] = clear manual order → default sort
+host.sessions.reorderPinned(storedSessionIds: string[]): void  // Pinned section; omitted pins keep their slot
+host.sessions.setColor(storedSessionId: string, color: string | null): void
+```
+
+Ids are STORED session ids: a live id is resolved to its durable lineage root,
+so pins and colours survive compression's id rotation — and the row-decoration
+slots hand your render that same durable id (`_lineage_root_id ?? id`), never
+the live one. Resolution goes through the rows this window has loaded; an id
+that matches no loaded row is written as given, so pass the slot's durable id
+(not a live id you remembered) for a session that may have scrolled out of the
+list. `reorder` accepts the same ids and maps each to its row's live id
+internally — the Recents order store is keyed by the live id, like the drag
+path. `pin(id, true, index)` slots the pin at that position in the
+Pinned list (a drop target between two pins); without `index` it appends, like
+the row's ⇧-click.
+
+**Arbitration.** The verbs are discrete user-triggered edits of user data —
+last write wins, exactly as if the user had clicked, and no plugin owns the
+result afterwards. Slot contributions are ALL mounted (registration order, not
+first-wins), each inside its own error boundary: a plugin that throws or
+returns `null` for a row cannot suppress another plugin's decoration on it, and
+two decorations on one row render side by side. Core keeps the row's layout,
+gestures and title — slots augment, never replace.
+
+**Teardown.** The verbs need none. Slot contributions are removed by the
+`ctx.register` disposer (disable/reload drops them and the row re-renders
+without the decoration).
+
+Migration for the held catalog plugins:
+
+- **drag-to-pin-session** — replace the `__reactFiber$*` walk for `onTogglePin`
+  / `onReorderSessions` / `session._lineage_root_id` with the row's slot id
+  (`render: ({ sessionId }) => …` under `SESSION_ROW_AREAS.leading` gives you
+  the durable id per row), then `host.sessions.pin(sessionId, true, dropIndex)`
+  for a drop into the Pinned section, `host.sessions.pin(sessionId, false)` for
+  a drop back into Recents, `host.sessions.reorderPinned(ids)` for a drag
+  within the Pinned section, and `host.sessions.reorder([])` for its
+  "reset manual order" path.
+- **better-session-appearance** — replace the `localStorage`
+  `hermes.desktop.sessionColors` write and the fiber-harvested `onChange` with
+  `host.sessions.setColor(sessionId, hex)` (`null` clears), and render its
+  per-row glyph through `SESSION_ROW_AREAS.leading` instead of mutating the
+  row's status dot (the durable id it needed from `_lineage_root_id` is the
+  slot's `sessionId`).
+
+`COMPOSER_AREAS.modelPill` overrides the model pill's **label** — a provider
+(`{ label: (ctx: ComposerModelPillContext) => string | null }`) receives
+`{ model, reasoningEffort, compact }` and returns the text to show, or `null` to
+let the next provider (then the core label) win. The pill keeps its chrome, pin
+dot, and menu; only the label changes — the sanctioned replacement for the
+MutationObserver text-rewriting plugins do today.
+
+#### Model pill label providers
+
+```ts
+import { COMPOSER_AREAS, type ComposerModelPillContext, type ComposerModelPillProvider } from '@hermes/plugin-sdk'
+
+interface ComposerModelPillContext {
+  model: string            // the model slug the pill would show
+  reasoningEffort: string  // the session's live effort level, '' when the model has none
+  compact: boolean         // floating-composer mode: chevron only, providers are NOT consulted
+}
+interface ComposerModelPillProvider {
+  label: (ctx: ComposerModelPillContext) => string | null
+}
+
+ctx.register({
+  area: COMPOSER_AREAS.modelPill,
+  id: 'my-label',
+  data: { label: ({ model, reasoningEffort }) => reasoningEffort ? `${model} · ${reasoningEffort}` : null } satisfies ComposerModelPillProvider
+})
+```
+
+**Arbitration.** Providers are consulted in registry order and the *first
+non-empty string wins*; later providers are not called. Anything else declines
+and the next provider is asked: `null`, `''`, a whitespace-only string, and any
+non-string value (an object, array or number is never rendered — the label is
+placed straight into JSX). A provider that **throws** also declines — the error
+is swallowed and the pill falls through to the next provider, then to the core
+label, so a broken plugin can never blank the pill. `reasoningEffort` is always
+a `string` (`''` when the model has no effort level, never `undefined`). In
+compact (floating) mode the pill renders only the chevron and no provider is
+called. `label()` is re-evaluated only when the registry, the model, the effort
+level or the compact flag changes.
+
+**Teardown.** The provider is an ordinary data contribution: `ctx.register`
+returns its disposer and the loader drops it when the plugin is disabled or
+reloaded, at which point the core label is restored. There is nothing to undo
+in `ctx.onDispose`.
+
+**Migrating compact-reasoning-label.** The plugin used to find the pill via
+`[data-slot="composer-root"] button span.truncate`, regex-strip a trailing
+effort word from `span.textContent`, and re-run that sweep from a body-wide
+`MutationObserver` plus a 1 s `setInterval`. On current builds the core label no
+longer contains the effort word (the level has its own `ReasoningPill`), so the
+strip is a no-op; the sanctioned shape is to compute the label from the context
+instead of editing rendered text:
+
+```js
+register(ctx) {
+  ctx.register({
+    area: COMPOSER_AREAS.modelPill,
+    id: 'compact-reasoning-label',
+    // Decline (null) whenever there is nothing to change so the core label wins.
+    data: { label: ({ model }) => shorten(model) ?? null }
+  })
+  // No MutationObserver, no setInterval, no injected <style>: the contribution is
+  // disposed with the plugin.
+}
+```
+
+The reasoning-pill visibility CSS the plugin also injected has no hook; it is
+only needed if the app ever hides that label at narrow widths.
+
+### Appearance settings
+
+`APPEARANCE_AREAS.extra` renders contributions at the end of **Settings →
+Appearance**, after the built-in sections. It is the seam for a plugin that
+used to inject nodes into that page or drive its widgets through React
+internals.
+
+```ts
+APPEARANCE_AREAS = { extra: 'appearance.extra' } as const
+
+ctx.register({
+  area: APPEARANCE_AREAS.extra,
+  id: 'session-colour-rules',          // unique within your plugin
+  render: () => <MyAppearanceCard />   // any React tree; SDK hooks allowed
+})
+```
+
+*Arbitration:* every registration mounts, in registry order, each inside its
+own error boundary — a contribution that throws collapses to an inline error
+card naming its `id` (with Retry) and the rest of the page (and other plugins'
+cards) keep rendering. The slot mounts on the top-level Appearance page only,
+not on deep-link subpages (`settings/appearance/<section>`), and there is no
+"first wins" — plugins cannot suppress each other here.
+
+*Teardown:* the registration is owned by the plugin loader; disabling or
+reloading the plugin disposes it and the card disappears on the next render.
+Nothing persists app-side, so there is nothing to clean up in `ctx.onDispose`.
+
+For colour picking use the app's own swatch grid — `ColorSwatches` (already an
+SDK export) renders exactly what the profile rail and project dialog render,
+with your own `onChange`; feed it `PROFILE_SWATCHES` and pair it with
+`host.sessions.setColor(id, color)` for session colours.
+
+Migrations for the plugins that motivated this slot:
+
+* **better-session-appearance** — replace the fiber walk that harvests the
+  Appearance submenu's `{ onChange, swatches }` and the `clearBtn.after(...)` /
+  `host.appendChild(panel)` injection into the app dropdown with one
+  `ctx.register({ area: APPEARANCE_AREAS.extra, id: 'rules', render })` whose
+  card renders `<ColorSwatches swatches={PROFILE_SWATCHES} value onChange />`
+  plus its bold/glyph/auto-rule controls; drop the `data-better-session-appearance`
+  attribute writes and the dropdown `max-height` overrides.
+* **hermes-appearance-hub** — mount its paper-texture / font / intro-copy
+  controls as an `APPEARANCE_AREAS.extra` card instead of a status-bar menu
+  that reaches into Settings; the settings *values* still go through
+  `host.settings` (allowlisted keys) and `THEMES_AREA`.
+
+### Embedding external content
+
+Use the SDK's `<SandboxedFrame src title />` for any external web content
+(reader views, dashboards, docs). It renders a sandboxed iframe with the app's
+guest-content posture: opaque origin, `allow-scripts` by default, `no-referrer`,
+lazy loading. Never mount a raw Electron `<webview>`: it lands on the app's
+`persist:` preview partition, sharing the app's cookies and storage.
+
+```ts
+interface SandboxedFrameProps {
+  src: string      // absolute http(s): or data: URL; any other scheme renders nothing (console.warn)
+  title: string    // required — an untitled frame is unlabelled in the a11y tree
+  sandbox?: string // extra tokens; filtered through the allowlist below
+  className?: string; style?: CSSProperties
+  onLoad?, onError?: ReactEventHandler<HTMLIFrameElement>
+  ref?: Ref<HTMLIFrameElement>
+}
+```
+
+The props are an explicit allowlist, not `ComponentProps<'iframe'>`: `allow`
+(Permissions-Policy delegation — would hand a third-party site the mic/camera
+grant the app holds), `srcdoc`, `name`, `allowFullScreen`, `csp`,
+`credentialless` and every other iframe attribute are not props and nothing is
+spread onto the element, so they cannot reach the DOM even through a cast.
+
+*Arbitration (allowlist, not blocklist):* the only tokens a caller may add are
+`allow-scripts`, `allow-forms`, `allow-downloads`, `allow-pointer-lock`,
+`allow-orientation-lock`, `allow-presentation`. Everything else —
+`allow-same-origin`, `allow-top-navigation*`, `allow-popups*`, `allow-modals`,
+`allow-storage-access-by-user-activation`, and any token the primitive does not
+know — is dropped case-insensitively even if passed; an emptied set falls back
+to the default posture (`allow-scripts`), because a frame with **no** `sandbox`
+attribute is fully privileged. `loading="lazy"` and
+`referrerPolicy="no-referrer"` are not props. The opaque origin IS the
+containment: guest content cannot reach the app, its storage, or the preload
+bridge.
+
+*Teardown:* it is a plain React element — unmounting your pane/page removes the
+frame and its realm; nothing is registered app-side.
+
+Migration for **rss-reader** (#115972): replace the stubbed `/preview` → 501 →
+`host.openWorkspace('rss-browser')` → empty `RssBrowserFrame` → `ctx.os.openExternal`
+chain with `<SandboxedFrame src={article.url} title={article.title} />` inside
+the workspace page; drop the leftover `.rss-browser-frame-host webview` CSS.
 
 ### Transcript directives — inline components the model addresses
 
@@ -485,6 +813,70 @@ jsx(Contribute, {
 
 It registers on mount and disposes on unmount automatically.
 
+### Sidebar nav visibility and order (`SIDEBAR_NAV_PREFS_AREA`)
+
+A plugin hides or re-orders the sidebar's top nav rows by **contributing a
+preference**, not by writing a setting. Core merges every `sidebarNav.prefs`
+contribution at render and applies the result to the rows it would otherwise
+show; the default list itself never changes.
+
+```ts
+import { SIDEBAR_NAV_PREFS_AREA, type SidebarNavPrefsContribution } from '@hermes/plugin-sdk'
+
+// Payload (`data`) of a sidebarNav.prefs contribution
+interface SidebarNavPrefsContribution {
+  hide?: string[]   // rows to drop
+  order?: string[]  // rows to place first, in this order
+}
+
+ctx.register({
+  id: 'prefs',
+  area: SIDEBAR_NAV_PREFS_AREA,
+  data: { hide: ['cron'], order: ['capabilities', 'new-session'] } satisfies SidebarNavPrefsContribution
+})
+```
+
+Nav ids are the rows' own ids. Core rows: `new-session`, `capabilities`,
+`messaging`, `artifacts`, `cron` (the `SidebarNavId` type; `artifacts` and
+`cron` only render in Advanced mode). A contributed row's id is its
+**registered** `SIDEBAR_NAV_AREA` id, which `ctx.register` namespaces to
+`${pluginId}:${id}` — a plugin that registered `{ id: 'kanban-nav', area:
+SIDEBAR_NAV_AREA }` as `kanban` names that row `'kanban:kanban-nav'` in
+`hide`/`order`.
+
+**Arbitration.** Hidden rows are the **union** of every contribution's `hide`
+(no plugin can un-hide another's row; hide beats order), except
+`capabilities`: the row hosting the Plugins tab is the user's path to a
+plugin's own off-switch, so it can be moved but never hidden. Contributions
+apply in the registry's area order — **lowest `order`, then registration** —
+and the first one's `order` wins: later contributions place only ids not yet
+placed, rows no order names keep their default relative order after the
+named ones. Unknown ids are inert.
+
+**Teardown.** The contribution lives in the registry, so disabling or reloading
+the plugin disposes it and the rows come straight back — nothing to clear.
+This is why it is not a `host.sidebar.hide()` verb: `host` is a singleton that
+cannot attribute a write, a persisted preference would outlive the plugin, and
+two plugins would overwrite each other's order.
+
+**Persisting the user's choice** is the plugin's job, in its own
+`ctx.storage`: read the saved prefs on `register`, contribute them, and on every
+edit save + dispose + re-contribute (re-registering the same `id` replaces it).
+
+```ts
+// sidebar-manager: replaces `[data-sbm-off] { display:none }` + re-parenting <li>s
+let dispose = () => {}
+const apply = (prefs: SidebarNavPrefsContribution) => {
+  dispose()
+  dispose = ctx.register({ id: 'prefs', area: SIDEBAR_NAV_PREFS_AREA, data: prefs })
+}
+apply(ctx.storage.get('navPrefs', {}))
+// in the editor's onChange:
+ctx.storage.set('navPrefs', next); apply(next)
+```
+
+Session sections (Pinned, Recents, Cron jobs) are not covered — nav rows only.
+
 ## Host API
 
 Everything on `host` is reachable from anywhere in a plugin. State atoms are
@@ -542,6 +934,17 @@ host.profileRoutes()                       // [{ profile, targetProfile, connect
 host.requestProfile<T>(route, method, params?, timeoutMs?, { spawnPriority? })   // registry-routed RPC; no foreground swap
 host.requestProfile<T>(profile, method, params?) // legacy v1/local overload
 host.request<T>(method, params?)           // active-gateway JSON-RPC — the real power
+host.sessions.pin(storedSessionId, pinned?, index?)  // pin/unpin (default pinned=true); index = slot in Pinned;
+                                           //   same store the row's ⇧-click / drop writes
+host.sessions.reorder(ids)                 // replace the manual Recents order (what a drag persists); [] resets
+host.sessions.reorderPinned(ids)           // permute the Pinned section (the pinned drag path)
+host.sessions.setColor(storedSessionId, color | null)  // per-session colour override; null clears
+host.skills.list(profile?)                 // every skill for the scope (Capabilities endpoints)
+host.skills.setEnabled(name, on, profile?)  // enable/disable a skill — the Capabilities toggle
+host.toolsets.list(profile?)               // toolsets + enabled state
+host.toolsets.setEnabled(name, on, profile?)// enable/disable a toolset
+host.profiles.list(scope?: ProfileScope)   // the profile list the profile rail reads
+host.pluginDecisions                       // READ-ONLY atom: this window's plugin on/off decisions (frozen copies)
 ```
 
 `host.request` is the same JSON-RPC the app itself uses (sessions, config, skills,
@@ -661,6 +1064,138 @@ happens on user click — never from a background event alone.
 The other doors (`openExternal`, `revealPath`, `writeClipboard`) resolve
 `false` instead of throwing when the capability isn't available (older desktop
 shell, plain browser) — branch on the result rather than sniffing the bridge.
+
+### Desktop appearance settings — `host.settings`
+
+`host.settings` is the supported door for the small set of Desktop-local
+appearance preferences plugins may share with the native Settings page. Every
+key is bound to the store atom + setter the Settings page itself uses, so a
+plugin write is exactly a user click on that control: it takes effect at once,
+persists through the preference's existing storage schema, and the last write
+wins (no plugin "owns" the value afterwards, nothing to tear down for `set`).
+
+```ts
+type DesktopSettingValues = {
+  'backdrop.v1': boolean
+  'composerPopout.gesturesEnabled': boolean
+  'intro-splash.v1': boolean
+  'reasoning.collapsedByDefault': boolean
+  sessionListDensity: 'compact' | 'comfortable' | 'detailed'
+  tabStripDefault: 'auto' | 'always' | 'never'
+}
+host.settings.get<K extends DesktopSettingKey>(key: K): DesktopSettingValues[K]
+host.settings.set<K extends DesktopSettingKey>(key: K, value: DesktopSettingValues[K]): void
+host.settings.subscribe<K extends DesktopSettingKey>(key: K, fn: (value: DesktopSettingValues[K]) => void): () => void
+```
+
+```ts
+register(ctx) {
+  host.settings.set('sessionListDensity', 'detailed')
+
+  // subscribe emits the current value now, then after every native or plugin write.
+  const dispose = host.settings.subscribe('backdrop.v1', enabled => { /* … */ })
+  // Teardown rule: `host` is a module singleton and cannot tell which plugin
+  // subscribed, so YOU retire the listener — otherwise it outlives a disable/reload.
+  ctx.onDispose(dispose)
+}
+```
+
+Arbitration: the allowlist above is closed. An unknown key or a value outside
+the key's type throws **synchronously** (`Unsupported desktop setting: …` /
+`Invalid value for desktop setting: …`) and nothing is written — `host.settings`
+never touches `localStorage` directly, so it cannot bypass a store's schema or
+migration. Feature-detect `host.settings` when supporting older Desktop builds.
+
+Deliberately **not** keys, and why:
+
+| Wanted | Use instead | Why not a raw key |
+|--------|-------------|-------------------|
+| keybind map (`hermes.desktop.keybinds`) | `KEYBINDS_AREA` contribution | a raw map write rebinds every other plugin's shortcuts; the area merges per plugin and is torn down with it |
+| active theme / mode record | `THEMES_AREA` (register a theme; the user selects it) | theme selection is per window/profile and arbitrated by the app, not a flat preference |
+| `pluginDecisions` (desktop plugin on/off) | the app's Plugins tab (a read-only view is a separate SDK hook) | a plugin toggling another plugin's enable state is plugins interfering with each other |
+| `toolView.technical`, `embed-mode`, `titlebarAppActions`, `translucency.v2`, `user-bubble-transparency.v1`, `hermesDesktop.zoom.*` | follow-up keys after each store is audited | some drive the main process or window chrome; each needs its own guard and ownership review before it becomes plugin-writable |
+
+Migration — `hermes-appearance-hub`, which today does
+`localStorage.setItem('hermes.desktop.sessionListDensity', id)` followed by
+`window.dispatchEvent(new StorageEvent('storage', …))` to wake the app's store
+(`readSimpleKey`/`writeSimpleKey`, `readBoolKey`/`writeBoolKey`):
+
+```ts
+// before
+localStorage.setItem('hermes.desktop.backdrop.v1', String(on))
+window.dispatchEvent(new StorageEvent('storage', { key: 'hermes.desktop.backdrop.v1', newValue: String(on) }))
+// after — the store notifies its own subscribers; no synthetic StorageEvent
+host.settings.set('backdrop.v1', on)
+host.settings.set('sessionListDensity', id)          // was hermes.desktop.sessionListDensity
+host.settings.set('tabStripDefault', id)             // was hermes.desktop.tabStripDefault
+host.settings.set('reasoning.collapsedByDefault', on) // was hermes.desktop.reasoning.collapsedByDefault
+host.settings.set('composerPopout.gesturesEnabled', on)
+host.settings.set('intro-splash.v1', mode !== 'off') // replaces clicking #setting-field-appearance.intro-splash
+```
+
+Reads become `host.settings.get(key)`; its `MutationObserver` on the Settings
+page's intro-splash switch becomes `host.settings.subscribe('intro-splash.v1', fn)`
+(disposer → `ctx.onDispose`). `prompt-snippets` reads
+`localStorage.getItem('hermes.desktop.keybinds')` to back up its shortcut — that
+is the keybind-map row above: contribute the default through `KEYBINDS_AREA` and
+keep the user's override in `ctx.storage`, not in the app's map.
+
+### Typed capabilities bridge — `host.skills`, `host.toolsets`, `host.profiles`, `host.pluginDecisions`
+
+```ts
+type ProfileScope = undefined | null | string | { connectionId?: null | string; profile?: null | string }
+
+host.skills.list(profile?: ProfileScope): Promise<SkillInfo[]>
+host.skills.setEnabled(name: string, enabled: boolean, profile?: ProfileScope): Promise<{ ok: boolean; name: string; enabled: boolean }>
+host.toolsets.list(profile?: ProfileScope): Promise<ToolsetInfo[]>
+host.toolsets.setEnabled(name: string, enabled: boolean, profile?: ProfileScope): Promise<{ ok: boolean; name: string; enabled: boolean }>
+host.profiles.list(scope?: ProfileScope): Promise<{ profiles: ProfileInfo[] }>
+host.pluginDecisions: ReadableAtom<Record<string, boolean>>   // get() / subscribe() / listen() — no set()
+```
+
+These wrap the **same `api/*` module functions the Capabilities page calls**
+(`GET /api/skills`, `PUT /api/skills/toggle`, `GET /api/tools/toolsets`,
+`PUT /api/tools/toolsets/<name>`, `GET /api/profiles`) with the page's profile
+scoping. Omit `profile` to act on the app-wide active profile; pass a name or a
+`{ connectionId, profile }` route to configure another profile without swapping
+the foreground one. Nothing new is arbitrated: every call is already reachable
+through `host.request` — the value is typing plus profile scoping, so stop
+calling `window.hermesDesktop.api` raw.
+
+`host.pluginDecisions` mirrors the app's plugin enable/disable map (plugin id →
+`true`/`false`; an absent id means the user never chose and the plugin's own
+`defaultEnabled` applies). It is **read-only by design**: a `set()` would let one
+plugin flip another plugin's enable state — exactly "plugins messing with each
+other's functionality" — and `host` is a module singleton that cannot tell which
+plugin is calling to restrict a writer to the caller's own id. The object has no
+`set` at runtime, not just in the types, and every value it hands out (`get()`,
+`.value`, the argument to `subscribe`/`listen` callbacks) is a **frozen copy** —
+assigning into it throws instead of leaking into the map the app reads and
+persists. Enabling/disabling plugins stays in the
+app's Plugins tab; link to it with `host.navigate('/capabilities?tab=plugins')`.
+
+Teardown: the verbs are discrete user-triggered actions that write the same
+backend state the page writes, so nothing is owned afterwards and there is
+nothing to tear down. A `subscribe()` on `host.pluginDecisions` returns its
+disposer — register it with `ctx.onDispose` so a disabled or reloaded plugin
+stops listening.
+
+Migration (better-capabilities):
+
+```ts
+// before                                                  // after
+desktopApi({ path: '/api/skills' })                        host.skills.list()
+desktopApi({ path: '/api/skills/toggle', method: 'PUT',    host.skills.setEnabled(name, enabled)
+  body: { name, enabled } })
+desktopApi({ path: '/api/tools/toolsets' })                host.toolsets.list()
+desktopApi({ path: `/api/tools/toolsets/${name}`,          host.toolsets.setEnabled(name, enabled)
+  method: 'PUT', body: { enabled } })
+desktopApi({ path: '/api/profiles' })                      host.profiles.list()
+JSON.parse(localStorage.getItem(                           host.pluginDecisions.get()
+  'hermes.desktop.pluginDecisions.v2'))                    ctx.onDispose(host.pluginDecisions.subscribe(fn))
+localStorage.setItem('hermes.desktop.pluginDecisions.v2')  // declined — host.navigate('/capabilities?tab=plugins')
+row.querySelector('[data-slot="switch"]').click()          // same: the app's Plugins tab owns the toggle
+```
 
 ## Data layer — React Query + nanostores
 
@@ -841,6 +1376,52 @@ never auto-import Python. This is a security boundary, not an oversight
 (GHSA-mcfc-hp25-cjv7).
 :::
 
+#### Pushing events to your desktop half
+
+Your backend runs inside the gateway process, so it can push an update to your
+own desktop half over the app's global event stream — the same stream
+`host.onEvent` subscribes to:
+
+```python
+from hermes_cli.plugin_events import broadcast_plugin_event
+
+broadcast_plugin_event("rss-reader", "feed.updated", {"count": 3})
+# → event "plugin.rss-reader.feed.updated" reaches every connected desktop client
+```
+
+```javascript
+// register(ctx): the subscription is retired with the plugin
+host.onEvent('plugin.rss-reader.feed.updated', ({ payload }) => refreshFeeds(payload))
+```
+
+`broadcast_plugin_event(plugin_id, event, payload=None)`: the wire name is
+always `plugin.<plugin_id>.<event>`. `plugin_id` is your catalog name
+(`[a-z0-9_-]{1,64}`, no dots — it is the namespace and can't spell another
+plugin's); `event` is the BARE dotted name (`"feed.updated"`, not
+`"plugin.rss-reader.feed.updated"`), segments of `[A-Za-z0-9_-]`, so `""`,
+`"../x"` or `"a..b"` raise `ValueError` instead of stranding the desktop half
+on a name nobody emits. `payload` is a JSON dict (or omitted → `{}`), delivered
+as the event's `payload`; the frame carries `session_id: ""` like every global
+event. Delivery is fire-and-forget (a wedged client is skipped, never stalling
+your handler). Where it lands depends on the process the call runs in:
+
+| Caller runs in | Reaches |
+|---|---|
+| `hermes serve` (the Desktop backend): `plugin_api.py` routers, plugin slash commands, tools and hooks in the agent turn | every connected Desktop window |
+| the `dashboard.turn_isolation` compute-host child (tools/hooks of an isolated turn) | relayed over the host pipe to `hermes serve`, then every window |
+| the stdio TUI (`hermes` in a terminal) | that terminal's client |
+| `hermes gateway run` (messaging platforms), `hermes chat`, cron, `hermes plugins validate` | nobody — no Desktop client is attached to that process; the call is a logged no-op |
+
+Use this instead of importing `tui_gateway.server` internals; for plugin-scoped frames
+with a payload tailored per connection, `ctx.socket('/events')` remains the
+richer door.
+
+Migration (rss-reader): drop the `~/.hermes/rss-reader/commands.jsonl` queue,
+`GET /commands` and the 3 s `ctx.rest('/commands')` poll — the Python side
+calls `broadcast_plugin_event('rss-reader', 'feed.updated', payload)` where it
+used to enqueue, and the desktop side replaces the timer with
+`host.onEvent('plugin.rss-reader.feed.updated', fn)` inside `register(ctx)`.
+
 ### Calling it from the plugin
 
 ```javascript
@@ -966,13 +1547,13 @@ pipeline as a trust boundary.
 
 | Category | Exports |
 |----------|---------|
-| Host | `host` (`.state.*`, `.notify`, `.notifyError`, `.navigate`, `.onEvent`, `.logs`, `.status`, `.restartGateway`, `.request`) |
+| Host | `host` (`.state.*`, `.settings`, `.notify`, `.notifyError`, `.navigate`, `.onEvent`, `.logs`, `.status`, `.restartGateway`, `.request`, `.composer`, `.sessions`, `.skills`, `.toolsets`, `.profiles`, `.pluginDecisions`) |
 | Plugin contract | `HermesPlugin`, `PluginContext`, `PluginContribution`, `PluginStorage`, `PluginOs`, `PluginRestOptions`, `PluginNativeNotificationInput`, `PluginNotificationAction`, `HermesOpenTarget`, `Contribution` |
-| Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `WORKSPACE_PAGE_HEADER_AREA`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS` |
-| Area payloads | `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider` |
+| Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `WORKSPACE_PAGE_HEADER_AREA`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS`, `SESSION_ROW_AREAS`, `SIDEBAR_NAV_PREFS_AREA`, `APPEARANCE_AREAS` |
+| Area payloads | `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider`, `SessionRowSlotContribution`, `SidebarNavPrefsContribution` |
 | React / state | `useValue`, `atom`, `computed`, `useQuery`, `useMutation`, `useQueryClient`, `queryClient`, `Contribute` |
 | Theming | `useTheme`, `requestTheme`, `setAccentOverride`, `$accentOverride`, `retintTheme`, `themeHue`, `DesktopTheme`, `DesktopThemeColors`, plus OKLCH math (`hexToOklch`, `oklchToHex`, `oklchToSrgb255`, `mixOklab`, `maxChroma`, `hueDelta`, `normalizeHex`) and sRGB measures (`contrastRatio` — `number | null`, null for unparseable input — `readableOn`) |
-| UI kit | `Button`, `Input`, `Textarea`, `Select*`, `Switch`, `Checkbox`, `SegmentedControl`, `Tabs*`, `Dialog*`, `ConfirmDialog`, `DropdownMenu*`, `ContextMenu*`, `Popover*`, `Tip`/`Tooltip*`, `Badge`, `Kbd`/`KbdGroup`, `SearchField`, `ScrollArea`, `Separator`, `Skeleton`, `GlyphSpinner`, `Loader`, `EmptyState`, `ErrorState`, `CopyButton`, `StatusDot`, `LogView`, `Codicon`, `DecodeText` |
+| UI kit | `Button`, `Input`, `Textarea`, `Select*`, `Switch`, `Checkbox`, `SegmentedControl`, `Tabs*`, `Dialog*`, `ConfirmDialog`, `DropdownMenu*`, `ContextMenu*`, `Popover*`, `Tip`/`Tooltip*`, `Badge`, `Kbd`/`KbdGroup`, `SearchField`, `ScrollArea`, `Separator`, `Skeleton`, `GlyphSpinner`, `Loader`, `EmptyState`, `ErrorState`, `CopyButton`, `StatusDot`, `LogView`, `Codicon`, `DecodeText`, `SandboxedFrame` |
 | Helpers | `cn`, `icons`, `haptic`, `useI18n`, `profileColor`, `profileColorSoft`, `relativeTime`, `fmtDateTime`, `fmtDayTime`, `coarseElapsed`, `evaluateRuntimeReadiness` |
 
 The canonical, always-current export list is `apps/desktop/src/sdk/index.ts`.

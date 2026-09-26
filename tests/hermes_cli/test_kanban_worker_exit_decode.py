@@ -26,7 +26,7 @@ def _spawn_exit(code: int) -> subprocess.Popen:
 
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_native_windows_reaper_and_decode(monkeypatch):
     """Native Windows, nothing patched: ``_IS_WINDOWS`` selects the Popen-poll
     reaper and the decode runs where ``os.WIFEXITED`` does not exist, so the

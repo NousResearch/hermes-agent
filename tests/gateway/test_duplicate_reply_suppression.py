@@ -24,7 +24,6 @@ from gateway.platforms.base import (
 from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource, build_session_key
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -52,7 +51,6 @@ class StubAdapter(BasePlatformAdapter):
     async def get_chat_info(self, chat_id):
         return {"id": chat_id}
 
-
 def _make_event(text="hello", chat_id="c1", user_id="u1"):
     return MessageEvent(
         text=text,
@@ -64,7 +62,6 @@ def _make_event(text="hello", chat_id="c1", user_id="u1"):
         ),
         message_id="m1",
     )
-
 
 # ===================================================================
 # Test 1: base.py — stale response suppressed on interrupt (#8221)
@@ -122,24 +119,13 @@ class TestBaseInterruptSuppression:
         pending_sends = [s for s in adapter.sent if s["content"] == pending_response]
         assert len(pending_sends) == 1, "Pending message response should be sent"
 
-
 # Test 2: run.py — partial streamed output must not suppress final send
 # ===================================================================
-
-
 
 # ===================================================================
 # Test 2b: run.py — empty response never suppressed (#10xxx)
 # ===================================================================
 
-
-
-
-
 # ===================================================================
 # Test 4: stream_consumer.py — cancellation handler delivery confirmation
 # ===================================================================
-
-
-
-

@@ -9,7 +9,6 @@ from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.event import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
-
 def _make_source() -> SessionSource:
     return SessionSource(
         platform=Platform.TELEGRAM,
@@ -19,10 +18,8 @@ def _make_source() -> SessionSource:
         chat_type="dm",
     )
 
-
 def _make_event(text: str = "/compress") -> MessageEvent:
     return MessageEvent(text=text, source=_make_source(), message_id="m1")
-
 
 def _make_history() -> list[dict[str, str]]:
     return [
@@ -31,7 +28,6 @@ def _make_history() -> list[dict[str, str]]:
         {"role": "user", "content": "three"},
         {"role": "assistant", "content": "four"},
     ]
-
 
 def _make_runner(history: list[dict[str, str]]):
     from gateway.run import GatewayRunner
@@ -56,7 +52,6 @@ def _make_runner(history: list[dict[str, str]]):
     runner.session_store._save = MagicMock()
     runner._session_db = None
     return runner
-
 
 @pytest.mark.asyncio
 async def test_compress_focus_topic_passed_to_agent():
@@ -85,6 +80,3 @@ async def test_compress_focus_topic_passed_to_agent():
     agent_instance._compress_context.assert_called_once()
     call_kwargs = agent_instance._compress_context.call_args
     assert call_kwargs.kwargs.get("focus_topic") == "database schema"
-
-
-

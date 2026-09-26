@@ -331,9 +331,16 @@ class StreamTransportMixin:
             return True  # cursor-only / whitespace-only update
         # Don't open a new message for 1-2 tokens + cursor (rapid tool-calling): if
         # the cursor-strip edit is then rate-limited, "X ▉" stays forever.
-        if (self._message_id is None and self.cfg.cursor and self.cfg.cursor in text
-                and len(visible_stripped) < self._MIN_NEW_MSG_CHARS):
-            return True  # too short for a standalone message — accumulate more
+        # A segment-break finalize never carries the cursor, so gate it too or a 1-2 token
+        # preamble lands durably at every tool boundary and resets the progress anchor
+        # (#99026).  Turn finals are exempt: a short complete answer must be delivered.
+        # Tradeoff: on non-cumulative transports the held preamble is DROPPED, not
+        # carried — _end_segment sees update_visible=True and resets the segment.
+        preamble_finalize = finalize and not is_turn_final
+        if (self._message_id is None and len(visible_stripped) < self._MIN_NEW_MSG_CHARS
+                and (preamble_finalize or (self.cfg.cursor and self.cfg.cursor in text))):
+            # Mid-stream: accumulate more.  Segment-break finalize: dropped (see above).
+            return True
 
         # A failed native/draft transport disables itself and falls through so the
         # accumulated text still reaches the user via edit/send.

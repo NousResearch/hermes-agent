@@ -10,7 +10,6 @@ Invariant tests only, no list snapshots. They pin what would silently regress:
    gpt-5.6 effort ladder (``max`` allowed).
 """
 
-
 from agent.auxiliary_client import _compression_threshold_for_model
 from agent.model_metadata import (
     _verified_codex_ctx_for_slug,
@@ -23,13 +22,11 @@ from hermes_cli.model_switch import _model_sort_key
 
 GPT6_TIERS = ("gpt-6-sol", "gpt-6-luna")  # terra: never published by OpenAI, not on OpenRouter/Codex (2026-09-22)
 
-
 def test_model_gpt_resolves_flagship_across_gpt6_tiers():
     models = ["gpt-6-luna", "gpt-5.6-sol", "gpt-6-sol", "gpt-6-astra"]
     models.sort(key=lambda m: _model_sort_key(m, "gpt"))
     assert models[:2] == ["gpt-6-astra", "gpt-6-sol"]
     assert models.index("gpt-6-luna") < models.index("gpt-5.6-sol")
-
 
 def test_gpt6_tiers_share_the_codex_900k_contract_with_56():
     ids = _finalize_codex_models(["gpt-5.5"])  # forward-compat synthesizes the tiers from 5.5
@@ -43,7 +40,3 @@ def test_gpt6_tiers_share_the_codex_900k_contract_with_56():
             _compression_threshold_for_model("gpt-5.6-sol", provider="openai-codex")
         assert _compression_threshold_for_model(f"{base}-900k", provider="openai-codex") is None
         assert codex_supported_efforts(f"openai/{base}") == CODEX_GPT56_EFFORTS
-
-
-
-

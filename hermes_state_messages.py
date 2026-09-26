@@ -732,15 +732,101 @@ class SessionMessagesMixin:
                 resolved.append(matches[0])
         return list(dict.fromkeys(resolved))
 
+    def _matching_active_ids(self, conn, session_id: str, message: Dict[str, Any]) -> List[int]:
+        """Active row ids whose stored role and content equal *message*. Empty when it was never persisted."""
+        content = message.get("content")
+        if not isinstance(content, str):
+            return []
+        stored = self._encode_content(self._loaded_view_content(message.get("role", "unknown"), content))
+        return [int(row["id"]) for row in conn.execute(
+            "SELECT id FROM messages WHERE session_id = ? AND active = 1 AND role = ? AND content = ?",
+            (session_id, message.get("role"), stored)).fetchall()]
+
+    def _proved_coverage(
+        self, conn, session_id: str, covered_ids: Optional[List[int]],
+        unresolved_held: Optional[List[Dict[str, Any]]],
+    ) -> Optional[List[int]]:
+        """Ids safe to archive as summarized, or None when a durable held row cannot be named.
+
+        An unresolved dict that still carries the persist marker was loaded from the DB.
+        Failing to name it means the watermark path, which archives the rows the compressor
+        saw, including ones whose ids were stripped. A marker-less miss is an unpersisted
+        turn: it names nothing, and it is not a reason to abandon the ids we do have.
+        Several active rows with the same content are ambiguous, so that also abandons.
+        """
+        if covered_ids is None:
+            return None
+        from agent.context_compressor import _DB_PERSISTED_MARKER
+
+        proved = [int(row_id) for row_id in covered_ids if isinstance(row_id, int) and row_id > 0]
+        for message in unresolved_held or ():
+            if not isinstance(message, dict):
+                continue
+            matches = self._matching_active_ids(conn, session_id, message)
+            if len(matches) > 1 or (message.get(_DB_PERSISTED_MARKER) and len(matches) != 1):
+                return None
+            proved.extend(matches)
+        return list(dict.fromkeys(proved))
+
+    def _archive_named_rows(
+        self, conn, session_id: str, compacted_messages: List[Dict[str, Any]], covered: List[int], *,
+        tail_count: int, carried_messages: Optional[List[Dict[str, Any]]], patched_model_config: Any,
+        patch: bool,
+    ) -> int:
+        """Archive *covered* as summarized and clone every other active row after the new set.
+
+        A gap below the newest held id, and rows appended after an unpersisted turn, are not
+        in *covered*. They take the concurrent-append path: rewind the original, insert the
+        compacted transcript, then clone them so they stay live and searchable once each.
+        """
+        active_ids = [int(row["id"]) for row in conn.execute(_ACTIVE_IDS_SQL, (session_id,)).fetchall()]
+        covered_set = set(covered)
+        carried_ids = self._resolve_carried_row_ids(conn, session_id, carried_messages or [])
+        covered_set.update(carried_ids)
+        unseen = [row_id for row_id in active_ids if row_id not in covered_set]
+        covered_active = [row_id for row_id in active_ids if row_id in covered_set]
+        rewind_ids = list(carried_ids)
+        if tail_count > 0:
+            rewind_ids += covered_active[-int(tail_count):]
+        rewind_ids += unseen
+        rewind_ids = list(dict.fromkeys(rewind_ids))
+        if rewind_ids:
+            placeholders = _placeholders(rewind_ids)
+            conn.execute(
+                "UPDATE messages SET active = 0, compacted = 0 "
+                f"WHERE session_id = ? AND id IN ({placeholders})",
+                [session_id, *rewind_ids])
+        conn.execute(_ARCHIVE_ACTIVE_SQL, (session_id,))
+        inserted, tool_calls_total = self._insert_message_rows(conn, session_id, compacted_messages)
+        if unseen:
+            _ids, unseen_tool_calls = self._tail_rows_after_watermark(
+                conn,
+                "SELECT id, tool_calls FROM messages WHERE id IN ({}) ORDER BY id".format(
+                    _placeholders(unseen)),
+                tuple(unseen))
+            self._clone_message_rows(conn, unseen)
+            inserted += len(unseen)
+            tool_calls_total += unseen_tool_calls
+        conn.execute(
+            f"{_SET_COUNTERS_SQL}{', model_config = ?' if patch else ''} WHERE id = ?",
+            (inserted, tool_calls_total, *((patched_model_config,) if patch else ()), session_id))
+        return inserted
+
     def archive_and_compact(self, session_id: str, compacted_messages: List[Dict[str, Any]],
         model_config_patch: Optional[Dict[str, Any]] = None, watermark: Optional[int] = None,
         lock_holder: Optional[str] = None, tail_count: int = 0,
-        carried_messages: Optional[List[Dict[str, Any]]] = None) -> int:
+        carried_messages: Optional[List[Dict[str, Any]]] = None,
+        covered_ids: Optional[List[int]] = None,
+        unresolved_held: Optional[List[Dict[str, Any]]] = None) -> int:
         """Non-destructive in-place compaction under ONE session id: soft-archive the active rows (``active=0,
         compacted=1``: summarized away, still searchable) and insert *compacted_messages* as fresh active
         rows, atomically; returns the new ACTIVE count (= ``message_count``). *watermark* (compression
         START): rows ``id > watermark`` arrived during the slow summary and are re-sequenced after the
-        compacted set by a pure-SQL clone (fresh ids); ``None`` archives everything. *lock_holder*: verified
+        compacted set by a pure-SQL clone (fresh ids); ``None`` archives everything. *covered_ids*: the
+        rows the compressor actually held. When proved, only those are summarized; every other active
+        row is cloned after the new set, so a gap below the newest held id is not archived unseen.
+        ``None`` keeps the watermark path. *unresolved_held*: held dicts with no row id, matched inside
+        the transaction. *lock_holder*: verified
         in-txn so a reclaimed lease fails instead of clobbering the winner. *tail_count*: the LAST N compacted
         rows are the verbatim carried tail; *carried_messages* names exact durable originals carried forward
         verbatim when they are not a contiguous suffix (micro-compaction's prefix + marker + suffix shape).
@@ -768,6 +854,11 @@ class SessionMessagesMixin:
             # on_missing="raise": never commit against a vanished session row (caller keeps the original).
             patched_model_config = self._merge_model_config_json(
                 conn, session_id, model_config_patch, on_missing="raise") if patch else None
+            proved = self._proved_coverage(conn, session_id, covered_ids, unresolved_held)
+            if proved is not None:
+                return self._archive_named_rows(
+                    conn, session_id, compacted_messages, proved, tail_count=tail_count,
+                    carried_messages=carried_messages, patched_model_config=patched_model_config, patch=patch)
             tail_ids, tail_tool_calls = ([], 0) if watermark is None else self._tail_rows_after_watermark(
                 conn, "SELECT id, tool_calls FROM messages WHERE session_id = ? AND active = 1 AND id > ? ORDER BY id",
                 (session_id, int(watermark)))
@@ -866,6 +957,18 @@ class SessionMessagesMixin:
         return self._write_rowcount(
             "UPDATE messages SET content = ? WHERE id = ? AND session_id = ? AND role = 'user' AND active = 1",
             (self._encode_content(content), row_id, session_id))
+
+    def deactivate_message(self, session_id: str, row_id: int) -> int:
+        """Deactivate ONE known row (id-addressed, idempotent; returns the affected row count). Used by
+        the queued-prompt drain: the row written at accept time sits ahead of the in-flight turn's
+        assistant reply, and the drain re-appends an identical row at the transcript end — leaving the
+        early row active would put two user rows before that reply and the alternation repair would
+        glue the two turns into one. The durable row is preserved (inactive), never deleted."""
+        if not session_id or isinstance(row_id, bool) or not isinstance(row_id, int) or row_id <= 0:
+            return 0
+        return self._write_rowcount(
+            "UPDATE messages SET active = 0 WHERE id = ? AND session_id = ?",
+            (row_id, session_id))
 
     def _display_dedupe_key(self, row) -> Tuple[Any, ...]:
         """Historical display identity, including normalized live content from user handoff carriers."""

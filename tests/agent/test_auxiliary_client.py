@@ -20,11 +20,12 @@ from agent.auxiliary_client import (
     call_llm,
     async_call_llm,
     _build_call_kwargs,
-    _read_codex_access_token,
+    _resolve_codex_credential_and_base,
     _is_payment_error,
     _is_rate_limit_error,
     _is_model_not_found_error,
     _is_model_incompatible_error,
+    _is_statusless_structured_provider_error,
     _refresh_nous_recommended_model,
     _normalize_aux_provider,
     _try_payment_fallback,
@@ -53,6 +54,10 @@ class _FakeAnthropicStream:
 
     def __exit__(self, exc_type, exc, tb):
         return False
+
+    def __iter__(self):
+        # A completed Messages stream ends in message_stop (#121320 gate).
+        yield SimpleNamespace(type="message_stop")
 
     def get_final_message(self):
         return self._final_message
@@ -246,7 +251,7 @@ class TestMoaAggregatorSharedResolution:
 
     @staticmethod
     def _write_moa_config(tmp_path, monkeypatch, default_preset="opus-gpt"):
-        import yaml
+        import hermes_yaml as yaml
 
         home = tmp_path / ".hermes"
         home.mkdir(exist_ok=True)
@@ -287,7 +292,7 @@ class TestMoaAggregatorSharedResolution:
     def test_real_config_explicit_task_provider_moa(self, tmp_path, monkeypatch):
         """auxiliary.<task>.provider: moa in a REAL config.yaml resolves to the
         aggregator through the genuine load_config()/resolve_moa_preset() path."""
-        import yaml
+        import hermes_yaml as yaml
 
         home = self._write_moa_config(tmp_path, monkeypatch)
         cfg = yaml.safe_load((home / "config.yaml").read_text())
@@ -483,7 +488,9 @@ class TestNormalizeAuxProvider:
             assert _normalize_aux_provider(alias) == canonical, alias
 
 
-class TestReadCodexAccessToken:
+class TestResolveCodexCredentialToken:
+    """Token half of ``_resolve_codex_credential_and_base`` with no pool (auth.json only)."""
+
     def test_valid_auth_store(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir(parents=True, exist_ok=True)
@@ -496,14 +503,9 @@ class TestReadCodexAccessToken:
             },
         }))
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        result = _read_codex_access_token()
+        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
+            result = _resolve_codex_credential_and_base()[0]
         assert result == "tok-123"
-
-
-
-
-
-
 
     def test_expired_jwt_returns_none(self, tmp_path, monkeypatch):
         """Expired JWT tokens should be skipped so auto chain continues."""
@@ -528,7 +530,7 @@ class TestReadCodexAccessToken:
         }))
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
-            result = _read_codex_access_token()
+            result = _resolve_codex_credential_and_base()[0]
         assert result is None, "Expired JWT should return None"
 
     def test_valid_jwt_returns_token(self, tmp_path, monkeypatch):
@@ -552,7 +554,8 @@ class TestReadCodexAccessToken:
             },
         }))
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        result = _read_codex_access_token()
+        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
+            result = _resolve_codex_credential_and_base()[0]
         assert result == valid_jwt
 
 
@@ -685,7 +688,9 @@ class TestBuildCodexClient:
     def test_pool_without_selected_entry_falls_back_to_auth_store(self):
         with (
             patch("agent.auxiliary_client._select_pool_entry", return_value=(True, None)),
-            patch("agent.auxiliary_client._read_codex_access_token", return_value="codex-auth-token"),
+            # A present pool with no usable row reads auth.json directly (no re-selection that
+            # could pair another row's key with the default host, #121486).
+            patch("agent.auxiliary_client._read_codex_singleton_token", return_value="codex-auth-token"),
             patch("agent.auxiliary_client.OpenAI") as mock_openai,
         ):
             mock_openai.return_value = MagicMock()
@@ -721,7 +726,8 @@ class TestBuildCodexClient:
     def test_profile_codex_base_url_applies_to_raw_codex_client(self, monkeypatch):
         """The main agent's raw Codex client honours the same endpoint override."""
         with (
-            patch("agent.auxiliary_client._read_codex_access_token", return_value="codex-auth-token"),
+            patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)),
+            patch("agent.auxiliary_client._read_codex_singleton_token", return_value="codex-auth-token"),
             patch("agent.auxiliary_client.OpenAI") as mock_openai,
         ):
             monkeypatch.setenv("HERMES_CODEX_BASE_URL", "http://127.0.0.1:8787/v1")
@@ -1149,7 +1155,8 @@ class TestGetTextAuxiliaryClient:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
         with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
-             patch("agent.auxiliary_client._read_codex_access_token", return_value=None), \
+             patch("agent.auxiliary_client._resolve_codex_credential_and_base",
+                   return_value=(None, "https://chatgpt.com/backend-api/codex")), \
              patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)):
             client, model = get_text_auxiliary_client()
         assert client is None
@@ -1568,6 +1575,67 @@ class TestCallLlmPaymentFallback:
         return exc
 
 
+    @staticmethod
+    def _sdk_stream_error(error_payload):
+        """The APIError the real OpenAI SDK raises for an HTTP-200 SSE ``error`` event."""
+        import httpx
+        from openai import APIError, OpenAI
+
+        sse = f"data: {json.dumps({'error': error_payload})}\n\n".encode()
+        transport = httpx.MockTransport(lambda request: httpx.Response(
+            200, headers={"content-type": "text/event-stream"}, content=sse))
+        client = OpenAI(api_key="k", base_url="https://relay.example/v1",
+                        http_client=httpx.Client(transport=transport))
+        with pytest.raises(APIError) as caught:
+            for _ in client.chat.completions.create(
+                    model="m", messages=[{"role": "user", "content": "hi"}], stream=True):
+                pass
+        return caught.value
+
+    def test_statusless_structured_error_detection(self):
+        """A status-less SDK stream error with a non-empty structured body counts (#101538)."""
+        assert _is_statusless_structured_provider_error(
+            self._sdk_stream_error({"type": "server_error", "code": "overloaded", "message": "busy"}))
+        assert _is_statusless_structured_provider_error(self._sdk_stream_error("service unavailable"))
+        assert not _is_statusless_structured_provider_error(self._sdk_stream_error({"metadata": {}}))
+        assert not _is_statusless_structured_provider_error(Exception("stream_error: mid_stream_failure"))
+
+        class _StatusCoded(Exception):
+            status_code = 503
+            body = {"type": "server_error"}
+
+        assert not _is_statusless_structured_provider_error(_StatusCoded("unavailable"))
+
+    def test_statusless_structured_error_after_param_strip_triggers_configured_fallback(self):
+        """An in-stream error event on an explicit relay reaches the fallback chain, also when it
+        arrives on a parameter-strip retry (#101538)."""
+        primary_client = MagicMock()
+        primary_client.base_url = "https://relay.example/v1"
+        primary_client.chat.completions.create.side_effect = [
+            Exception("Unsupported parameter: temperature"),
+            self._sdk_stream_error({"type": "server_error", "code": "overloaded"}),
+        ]
+        fallback_client = MagicMock()
+        fallback_client.chat.completions.create.return_value = MagicMock(choices=[
+            MagicMock(message=MagicMock(content="fallback response"))
+        ])
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary_client, "virtual-model")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("custom", "virtual-model", "https://relay.example/v1", "test-key", None)), \
+             patch("agent.auxiliary_client._try_configured_fallback_chain",
+                   return_value=(fallback_client, "fallback-model", "fallback_chain[0](openrouter)")) as mock_chain, \
+             patch("agent.auxiliary_client._try_main_agent_model_fallback",
+                   return_value=(None, None, "")):
+            call_llm(task="compression", messages=[{"role": "user", "content": "summarize"}],
+                     temperature=0.3)
+
+        assert fallback_client.chat.completions.create.called
+        assert primary_client.chat.completions.create.call_count == 2
+        assert "temperature" not in primary_client.chat.completions.create.call_args.kwargs
+        assert mock_chain.call_args.kwargs["reason"] == "structured provider error"
+
     def test_429_rate_limit_triggers_fallback(self, monkeypatch):
         """429 rate-limit errors should trigger fallback to next provider."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
@@ -1882,7 +1950,7 @@ class TestAuxiliaryFallbackLayering:
 
         with patch("agent.auxiliary_client._select_pool_entry",
                    return_value=(True, pool_entry)), \
-             patch("agent.auxiliary_client._read_codex_access_token",
+             patch("agent.auxiliary_client._read_codex_singleton_token",
                    side_effect=AssertionError("should use pool token")), \
              patch("agent.auxiliary_client.OpenAI", return_value=real_client) as mock_openai:
             client, model = _resolve_fallback_entry({
@@ -4755,7 +4823,7 @@ class TestNoProgressTimeoutTaskConfigGating:
         CodexAuxiliaryClient path (both the first-output and between-output deadlines derive from
         ``guard.no_progress_timeout``); other tasks keep the 60s default; a non-positive value
         is rejected with a warning and falls back to the default."""
-        import yaml
+        import hermes_yaml as yaml
         from agent import auxiliary_client as aux
 
         home = tmp_path / ".hermes"

@@ -181,6 +181,82 @@ function normalizeLineBreaks(text: string): string {
     .replace(SOFT_BREAK_RE, ' ')
 }
 
+// ---------------------------------------------------------------------------
+// Sentence cutter for the streaming TTS session — mirrors the server-side
+// SentenceChunker's contract: emit complete sentences as they form, hold
+// the incomplete tail, flush everything on finish.
+// ---------------------------------------------------------------------------
+
+const SENTENCE_CUT_RE = /[.!?…。！？]+["'”’)\]]*\s+/g
+const MIN_SENTENCE_CHARS = 24
+
+export function cutSentences(
+  buffer: string,
+  flush: boolean,
+  minSentenceChars?: null | number
+): { sentences: string[]; rest: string } {
+  // tts.streaming.min_len when the backend sends it (a 5–7 char CJK opener is a
+  // whole clause); the historical 24 for older backends without the key.
+  const minChars = minSentenceChars ?? MIN_SENTENCE_CHARS
+  const sentences: string[] = []
+  let rest = buffer
+  let start = 0
+
+  SENTENCE_CUT_RE.lastIndex = 0
+
+  let match = SENTENCE_CUT_RE.exec(buffer)
+
+  while (match) {
+    const end = match.index + match[0].length
+    const candidate = buffer.slice(start, end).trim()
+
+    // Too-short fragments ("e.g. ", "1. ") stay buffered so we don't fire a
+    // provider call per abbreviation — unless a later boundary extends them.
+    if (candidate.length >= minChars) {
+      sentences.push(candidate)
+      start = end
+    }
+
+    match = SENTENCE_CUT_RE.exec(buffer)
+  }
+
+  rest = buffer.slice(start)
+
+  if (flush) {
+    const tail = rest.trim()
+
+    if (tail) {
+      sentences.push(tail)
+    }
+
+    rest = ''
+  }
+
+  return { sentences, rest }
+}
+
+/** Incremental wrapper over cutSentences() for the sync (non-streaming
+ *  provider) fallback. Deliberately a pure accumulator — like the streaming
+ *  session's ingest (voice-playback.ts) — because the reply text it is fed is
+ *  already text-parts-only (reasoning lives in separate parts). */
+export class IncrementalSpeechSentenceBuffer {
+  private buffer = ''
+
+  append(delta: string): string[] {
+    const { sentences, rest } = cutSentences(this.buffer + delta, false)
+    this.buffer = rest
+
+    return sentences
+  }
+
+  flush(): string[] {
+    const { sentences } = cutSentences(this.buffer, true)
+    this.buffer = ''
+
+    return sentences
+  }
+}
+
 export function sanitizeTextForSpeech(text: string): string {
   // Tables first: their right-align marker is a trailing colon (":-"), and
   // closing colons before the table detector runs would mangle it.

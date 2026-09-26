@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import contextlib
 import re
-from typing import Iterator, Tuple, Type
+from typing import ContextManager, Iterator, Mapping, Tuple, Type
 
 import pytest
 
@@ -30,3 +30,11 @@ def known_failure(pattern: str, reason: str,
         if not re.search(pattern, str(exc)):
             raise
         pytest.xfail(f"{reason} [observed: {str(exc).splitlines()[0][:240]}]")
+
+
+def known_gate(known: Mapping[str, Tuple[str, str]], key: str,
+               raises: Type[BaseException] | Tuple[Type[BaseException], ...] = AssertionError) -> ContextManager[None]:
+    """:func:`known_failure` for a cell a file's ``KNOWN`` table (key -> ``(pattern, reason)``)
+    names, a no-op for every other cell, so one wrapped block serves gated and plain cells."""
+    entry = known.get(key)
+    return known_failure(*entry, raises=raises) if entry else contextlib.nullcontext()

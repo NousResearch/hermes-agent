@@ -25,10 +25,17 @@ import {
 } from '../chrome'
 import { shellOwnsPress } from '../reorderable-list'
 
-import { expandedProjectSessions, latestProjectSessions, PROJECT_PREVIEW_COUNT, useWorkspaceNodeOpen } from './model'
+import {
+  expandedProjectSessions,
+  latestProjectSessions,
+  PROJECT_PREVIEW_COUNT,
+  PROJECT_SESSION_PAGE,
+  useRevealedRows,
+  useWorkspaceNodeOpen
+} from './model'
 import { ProjectContextMenu, ProjectMenu } from './project-menu'
 import { excludeProjectSessions, type SidebarProjectTree } from './workspace-groups'
-import { WorkspaceAddButton } from './workspace-header'
+import { WorkspaceAddButton, WorkspaceShowMoreRow } from './workspace-header'
 
 // A bare color dot (no icon) or an icon glyph — tinted by `color` when set, else
 // the lead's default tertiary. The glyph wrapper centers + caps size either way.
@@ -132,6 +139,10 @@ export function ProjectOverviewRow({
   // (index.tsx) — they haven't been through the tree's exclusion filter yet.
   const visible = expanded && isSessionHidden ? excludeProjectSessions(expanded, isSessionHidden) : expanded
   const preview = renderRows ? (visible ? expandedProjectSessions(recent, visible) : recent) : []
+  // Once hydrated, the whole project is reachable but mounts a page at a time
+  // (a project can hold thousands of chats; the collapsed preview stays 3).
+  const page = useRevealedRows(preview, PROJECT_SESSION_PAGE)
+  const rows = expanded ? page.shown : preview
   const total = project.sessionCount - hiddenSessionCount
   const hiddenCount = total - preview.length
   const offerShowAll = !showAllSessions && !expanded && preview.length > 0 && hiddenCount > 0
@@ -268,24 +279,12 @@ export function ProjectOverviewRow({
       )}
       {open && preview.length > 0 && (
         <SidebarRowNest>
-          {renderRows?.(preview)}
+          {renderRows?.(rows)}
           {offerShowAll && (
-            <SidebarRowShell>
-              <SidebarRowBody
-                className="group/more w-full text-(--ui-text-tertiary) hover:text-foreground"
-                disabled={expanding}
-                onClick={showAll}
-              >
-                <SidebarRowLead>
-                  <SidebarRowLeadGlyph>
-                    <Codicon name="ellipsis" size={SIDEBAR_LEAD_ICON_SIZE} />
-                  </SidebarRowLeadGlyph>
-                </SidebarRowLead>
-                <SidebarRowLabel className="text-xs underline-offset-4 group-hover/more:underline">
-                  {s.projects.showAllCount(total)}
-                </SidebarRowLabel>
-              </SidebarRowBody>
-            </SidebarRowShell>
+            <WorkspaceShowMoreRow disabled={expanding} label={s.projects.showAllCount(total)} onClick={showAll} />
+          )}
+          {expanded && page.more > 0 && (
+            <WorkspaceShowMoreRow label={s.showMoreIn(page.more, project.label)} onClick={page.showMore} />
           )}
         </SidebarRowNest>
       )}

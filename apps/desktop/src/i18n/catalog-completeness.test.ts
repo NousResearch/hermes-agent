@@ -1,12 +1,16 @@
 import { describe, expect, it } from 'vitest'
 
 import { TRANSLATIONS } from './catalog'
+import { deOverrides } from './de'
+import { esOverrides } from './es'
+import { frOverrides } from './fr'
 import type { Locale } from './types'
 
 // Locales that shipped fully translated. They are `defineLocale` overlays like
 // ja/ru, so an English key added later falls back to English instead of
 // failing typecheck; these checks keep the translated copy structurally sound.
 const COMPLETE_LOCALES = ['fr', 'de', 'es'] as const satisfies readonly Locale[]
+const completeOverrides = { fr: frOverrides, de: deOverrides, es: esOverrides }
 
 type Leaf = { path: string; value: unknown }
 
@@ -37,8 +41,20 @@ const catalogLeaves = (locale: Locale) =>
 
 const english = catalogLeaves('en')
 
+it.each(['de', 'es', 'fr', 'ja', 'ru', 'zh', 'zh-hant', 'ar'] as const)(
+  '%s renders localized retirement copy instead of English fallback',
+  locale => {
+    expect(TRANSLATIONS[locale].updates.discontinuedTitle).not.toBe(TRANSLATIONS.en.updates.discontinuedTitle)
+    expect(TRANSLATIONS[locale].updates.discontinuedBody).not.toBe(TRANSLATIONS.en.updates.discontinuedBody)
+  }
+)
+
 describe.each(COMPLETE_LOCALES)('%s desktop catalog', locale => {
   const catalog = catalogLeaves(locale)
+
+  it('keeps Updates copy in the locale overlay rather than falling back to English', () => {
+    expect(Object.keys(completeOverrides[locale].updates).sort()).toEqual(Object.keys(TRANSLATIONS.en.updates).sort())
+  })
 
   it('covers exactly the English key set with matching value kinds', () => {
     expect([...catalog.keys()].sort()).toEqual([...english.keys()].sort())

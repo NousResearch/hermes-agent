@@ -23,12 +23,10 @@ from types import SimpleNamespace
 from agent.model_metadata import estimate_messages_tokens_rough
 from agent.usage_anchor import anchored_context_tokens, capture_usage_anchor
 
-
 def _msg(role, content, **extra):
     m = {"role": role, "content": content}
     m.update(extra)
     return m
-
 
 class TestChargeStaleThinkingKwarg:
     def test_delta_excludes_stale_reasoning(self):
@@ -67,9 +65,6 @@ class TestChargeStaleThinkingKwarg:
         assert anchored_context_tokens(messages, anchor) == anchored_context_tokens(
             messages, anchor, charge_stale_thinking=True
         )
-
-
-
 
 class TestContextBreakdownPrefersTurnBaseAnchor:
     def test_breakdown_uses_turn_base_over_last_response(self, monkeypatch):
@@ -120,7 +115,6 @@ class TestContextBreakdownPrefersTurnBaseAnchor:
         payload = cb.compute_session_context_breakdown(agent, messages)
         assert payload["context_used"] >= 300_000
 
-
 class TestInvalidationSitesClearTurnBaseAnchor:
     def test_clearing_the_anchor_clears_the_turn_base_too(self):
         """Compaction and the codex-native rewrite clear via set_usage_anchor(None): both the
@@ -136,4 +130,3 @@ class TestInvalidationSitesClearTurnBaseAnchor:
         assert agent._turn_base_usage_anchor is first
         set_usage_anchor(agent, None)
         assert agent._usage_anchor is None and agent._turn_base_usage_anchor is None
-

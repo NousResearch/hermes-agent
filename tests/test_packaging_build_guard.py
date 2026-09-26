@@ -7,9 +7,7 @@ from pathlib import Path
 
 import pytest
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-
 
 def _build_artifact(kind: str, tmp_path, *, nix_build: bool) -> subprocess.CompletedProcess[str]:
     """Invoke the real PEP 517 hook (build_sdist / build_wheel) as a subprocess.
@@ -52,12 +50,9 @@ def _build_artifact(kind: str, tmp_path, *, nix_build: bool) -> subprocess.Compl
         check=False,
     )
 
-
 @pytest.mark.parametrize("kind", ["sdist", "wheel"])
 def test_artifact_build_rejects_nix_development_shell_environment(kind, tmp_path):
     result = _build_artifact(kind, tmp_path, nix_build=False)
 
     assert result.returncode != 0
     assert "Building wheels or sdists for hermes-agent is not supported" in result.stderr
-
-

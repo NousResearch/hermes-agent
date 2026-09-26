@@ -21,10 +21,7 @@ import pytest
 
 import hermes_cli.web_server_chat as _web_server_chat
 
-
-
-
-@pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX-only")
+@pytest.mark.platforms("posix")  # POSIX-only
 def test_web_server_uses_posix_pty_bridge_on_posix():
     """On POSIX, the bridge must be the fcntl/termios PtyBridge."""
     from hermes_cli.pty_bridge import PtyBridge as PosixBridge
@@ -33,5 +30,3 @@ def test_web_server_uses_posix_pty_bridge_on_posix():
     assert _web_server_chat.PtyBridge is PosixBridge
     assert _web_server_chat._PTY_BRIDGE_AVAILABLE is True
     assert _web_server_chat.PtyUnavailableError is PosixErr
-
-

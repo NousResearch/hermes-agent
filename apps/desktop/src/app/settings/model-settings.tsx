@@ -43,7 +43,7 @@ import { PanelEmpty } from '../overlays/panel'
 import { CONTROL_TEXT } from './constants'
 import { getNested, setNested } from './helpers'
 import { ModelSelect, withActive } from './model-select'
-import { ListRow, Pill, SectionHeading } from './primitives'
+import { ListRow, ListRowSkeleton, Pill, SectionHeading, SectionHeadingSkeleton } from './primitives'
 import { useDeepLinkHighlight } from './use-deep-link-highlight'
 
 // Skeleton mirror of the Model settings DOM so the page keeps its shape while
@@ -70,22 +70,10 @@ export function ModelSettingsSkeleton({ subpage }: Pick<ModelSettingsProps, 'sub
 
       {(subpage === undefined || subpage === 'auxiliary' || subpage === 'moa') && (
         <section>
-          <div className="mb-2.5 flex items-center gap-2 pt-2">
-            <Skeleton className="size-4" />
-            <Skeleton className="h-4 w-36" />
-          </div>
+          <SectionHeadingSkeleton />
           <div className="grid gap-1">
             {[0, 1, 2, 3].map(row => (
-              <div
-                className="grid gap-3 py-3 @2xl:grid-cols-[minmax(0,1fr)_minmax(15rem,22rem)] @2xl:items-center"
-                key={row}
-              >
-                <div className="min-w-0 space-y-1.5">
-                  <Skeleton className="h-3.5 w-32" />
-                  <Skeleton className="h-3 w-52 max-w-full" />
-                </div>
-                <Skeleton className="h-8 w-full @2xl:justify-self-end @2xl:w-56" />
-              </div>
+              <ListRowSkeleton key={row} />
             ))}
           </div>
         </section>
@@ -303,26 +291,56 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
       setSkewRestart(false)
 
       try {
-        const [modelInfo, modelOptions, auxiliaryModels, moaModels] = await Promise.all([
+        // Degrade per call: a hung /api/model/info (its context-length probe
+        // hits the configured provider, which can be unreachable) must not
+        // block the config-backed sections — auxiliary and MOA are fast
+        // config-file reads — behind a single all-or-nothing Promise.all.
+        const [modelInfoResult, modelOptionsResult, auxiliaryModelsResult, moaModelsResult] = await Promise.allSettled([
           getGlobalModelInfo(scopeProfile),
           getGlobalModelOptions(undefined, scopeProfile),
           getAuxiliaryModels(scopeProfile),
-          getMoaModels(scopeProfile).catch(() => null)
+          getMoaModels(scopeProfile)
         ])
 
         if (profileEpoch.current !== epoch) {
           return
         }
 
-        setMainModel({ model: modelInfo.model, provider: modelInfo.provider })
-        setCatalogProviders(modelOptions.providers || [])
+        const failures: string[] = []
 
-        if (replaceSelection) {
-          setSelectedProvider(modelInfo.provider)
-          setSelectedModel(modelInfo.model)
-        } else {
-          setSelectedProvider(prev => prev || modelInfo.provider)
-          setSelectedModel(prev => prev || modelInfo.model)
+        const settledValue = <T,>(result: PromiseSettledResult<T>): T | null => {
+          if (result.status === 'fulfilled') {
+            return result.value
+          }
+
+          failures.push(result.reason instanceof Error ? result.reason.message : String(result.reason))
+
+          return null
+        }
+
+        const modelInfo = settledValue(modelInfoResult)
+        const modelOptions = settledValue(modelOptionsResult)
+        const auxiliaryModels = settledValue(auxiliaryModelsResult)
+        // MOA has always been optional-on-failure; keep it out of the banner.
+        const moaModels = moaModelsResult.status === 'fulfilled' ? moaModelsResult.value : null
+        // The main assignment also lives in the auxiliary config read, so the
+        // page still knows the current model when only the live probe failed.
+        const resolvedMain = modelInfo ?? auxiliaryModels?.main ?? null
+
+        if (resolvedMain) {
+          setMainModel({ model: resolvedMain.model, provider: resolvedMain.provider })
+
+          if (replaceSelection) {
+            setSelectedProvider(resolvedMain.provider)
+            setSelectedModel(resolvedMain.model)
+          } else {
+            setSelectedProvider(prev => prev || resolvedMain.provider)
+            setSelectedModel(prev => prev || resolvedMain.model)
+          }
+        }
+
+        if (modelOptions) {
+          setCatalogProviders(modelOptions.providers || [])
         }
 
         setAuxiliary(auxiliaryModels)
@@ -330,6 +348,10 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
 
         if (moaModels) {
           setSelectedMoaPreset(prev => (prev && moaModels.presets[prev] ? prev : moaModels.default_preset))
+        }
+
+        if (failures.length > 0) {
+          setCaughtError(new Error(failures.join('; ')), m.loadFailed)
         }
 
         // The config record loads via its own shared query; a model switch can
@@ -670,15 +692,15 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
     const lower = slug.toLowerCase()
 
     if (lower === 'custom' || lower === 'local' || lower.startsWith('custom:')) {
-      startManualLocalEndpoint()
+      startManualLocalEndpoint(null, scopeProfile)
     } else if (rowSlug) {
-      startManualProviderOAuth(rowSlug)
+      startManualProviderOAuth(rowSlug, scopeProfile)
     } else {
       // An absent row has no trustworthy auth metadata. Open the generic
       // provider picker instead of deep-linking an unknown or stale slug.
-      startManualOnboarding()
+      startManualOnboarding(undefined, scopeProfile)
     }
-  }, [selectedProvider, selectedProviderRow])
+  }, [scopeProfile, selectedProvider, selectedProviderRow])
 
   const applyMainModel = useCallback(async () => {
     if (!selectedProvider || !selectedModel) {

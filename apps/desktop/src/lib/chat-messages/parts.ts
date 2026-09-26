@@ -89,13 +89,18 @@ const _MEDIA_EXT_ALTERNATION = [...MEDIA_DELIVERY_EXTS].sort((a, b) => b.length 
  */
 const _MEDIA_PATH_ANCHORED = `(?:~/|/|[A-Za-z]:[/\\\\])\\S+?(?:[^\\S\\n]+\\S+?)*?\\.(?:${_MEDIA_EXT_ALTERNATION})(?=[\\s\`"'*_,;:)\\]}]|MEDIA:|$)`
 
+// Bare-word fallback for paths the anchored branch misses (relative paths,
+// unknown extensions). Stop before backtick and double-quote so an inline-code
+// closer is not swallowed. Apostrophes stay legal inside the path.
+const _MEDIA_PATH_BARE = '[^\\s`"]+'
+
 const MEDIA_LINE_RE = new RegExp(
-  `(^|\\n)[\\t ]*[\`"']?MEDIA:\\s*(?<line>\`[^\`\\n]+\`|"[^"\\n]+"|'[^'\\n]+'|${_MEDIA_PATH_ANCHORED}|\\S+)[\`"']?[\\t ]*(\\n|$)`,
+  `(^|\\n)[\\t ]*[\`"']?MEDIA:\\s*(?<line>\`[^\`\\n]+\`|"[^"\\n]+"|'[^'\\n]+'|${_MEDIA_PATH_ANCHORED}|${_MEDIA_PATH_BARE})[\`"']?[\\t ]*(\\n|$)`,
   'g'
 )
 
 const MEDIA_TAG_RE = new RegExp(
-  `[\`"']?MEDIA:\\s*(?<inline>\`[^\`\\n]+\`|"[^"\\n]+"|'[^'\\n]+'|${_MEDIA_PATH_ANCHORED}|\\S+)[\`"']?`,
+  `[\`"']?MEDIA:\\s*(?<inline>\`[^\`\\n]+\`|"[^"\\n]+"|'[^'\\n]+'|${_MEDIA_PATH_ANCHORED}|${_MEDIA_PATH_BARE})[\`"']?`,
   'g'
 )
 
@@ -103,7 +108,15 @@ function unquoteMediaPath(value: string): string {
   const trimmed = value.trim()
   const quote = trimmed[0]
 
-  return quote && quote === trimmed.at(-1) && ['"', "'", '`'].includes(quote) ? trimmed.slice(1, -1) : trimmed
+  if (quote && quote === trimmed.at(-1) && ['"', "'", '`'].includes(quote)) {
+    return trimmed.slice(1, -1)
+  }
+
+  // A trailing backtick or double-quote left in the value is formatting residue,
+  // not part of the path. Apostrophes are not residue (`john's.md`).
+  const last = trimmed.at(-1)
+
+  return last === '`' || last === '"' ? trimmed.slice(0, -1) : trimmed
 }
 
 function mediaLink(value: string): string {

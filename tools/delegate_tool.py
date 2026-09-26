@@ -52,6 +52,9 @@ from tools.delegate_tool_tasks import (  # noqa: F401
 from tools.delegate_tool_toolsets import (  # noqa: F401
     DELEGATE_BLOCKED_TOOLS, _expand_parent_toolsets, _resolve_child_toolsets, _strip_blocked_tools,
 )
+from hermes_cli.model_override import (  # noqa: F401
+    ModelOverrideError, format_route, parse_model_override,
+)
 from tools.delegate_tool_results import (  # noqa: F401
     _apply_summary_budget, _build_child_preserving_parent_tools, _run_child_lifecycle, _summarize_tool_arguments,
 )
@@ -365,6 +368,7 @@ def _run_single_child(
 def _build_children(
     task_list: List[Dict[str, Any]], task_schemas: List[Optional[Dict[str, Any]]], creds: Dict[str, Any], *,
     top_role: str, max_iterations: int, parent_agent, routing_cfg: Dict[str, Any],
+    batch_override=None,
     live_deleg_id: Optional[str], live_writers: list, task_images: Optional[List[Optional[List[str]]]] = None,
 ) -> tuple[List[tuple], Optional[str]]:
     """Build every child on the main thread (construction is not thread-safe);
@@ -379,6 +383,44 @@ def _build_children(
         "override_acp_args": creds.get("args"),
         "routing_cfg": routing_cfg,
     }
+
+    def _child_overrides(task: Dict[str, Any]) -> tuple:
+        """Resolve one child's route: per-task ``model`` > batch > config > parent.
+
+        Returns ``(overrides_kwargs, model, route_line)``.  Resolving per task
+        (not once per batch) lets one task in a fan-out ride a different model
+        without a second ``delegate_task`` call.
+        """
+        per_task = parse_model_override(task.get("model"), field="tasks[].model")
+        effective = per_task.merged_over(batch_override) if per_task else batch_override
+        if not effective:
+            source = "config" if (creds.get("model") or creds.get("provider")) else "parent"
+            return overrides, creds["model"], format_route(
+                creds.get("provider") or getattr(parent_agent, "provider", None),
+                creds.get("model") or getattr(parent_agent, "model", None), source)
+        # Resolve through the SAME credential path the config pin uses, so a
+        # call-routed child never gets a differently-resolved bundle.
+        resolved = _resolve_delegation_credentials(effective.as_delegation_cfg(), parent_agent)
+        merged = dict(creds)
+        for key in ("model", "provider", "base_url", "api_key", "api_mode",
+                    "request_overrides", "command", "args"):
+            if resolved.get(key):
+                merged[key] = resolved[key]
+        if not merged.get("model") and effective.model:
+            merged["model"] = effective.model
+        if not merged.get("provider") and effective.provider:
+            merged["provider"] = effective.provider
+        task_overrides = dict(overrides)
+        task_overrides.update({
+            "override_provider": merged["provider"], "override_base_url": merged["base_url"],
+            "override_api_key": merged["api_key"], "override_api_mode": merged["api_mode"],
+            "override_request_overrides": merged.get("request_overrides"),
+            "override_acp_command": merged.get("command"),
+            "override_acp_args": merged.get("args"),
+        })
+        return task_overrides, merged["model"], format_route(
+            merged.get("provider"), merged.get("model"), "call")
+
     children = []
     for i, t in enumerate(task_list):
         _task_schema = task_schemas[i] if i < len(task_schemas) else None
@@ -386,11 +428,15 @@ def _build_children(
         if _task_schema is not None:
             _child_context = append_output_contract(_child_context, _task_schema)
         try:
+            _task_overrides, _task_model, _route_line = _child_overrides(t)
+            # ANNOUNCE: state the route and who chose it, so an operator can
+            # answer "what did this run on?" from the log alone.
+            logger.info("delegate_task child %d: %s", i, _route_line)
             child = _build_child_preserving_parent_tools(
                 task_index=i, goal=t["goal"], context=_child_context,
                 toolsets=None,  # always inherit the parent's toolsets
-                model=creds["model"], max_iterations=max_iterations, task_count=len(task_list),
-                parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **overrides,
+                model=_task_model, max_iterations=max_iterations, task_count=len(task_list),
+                parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **_task_overrides,
             )
         except ValueError as exc:
             return [], str(exc)
@@ -441,8 +487,8 @@ def delegate_task(
     goal: Optional[str] = None, context: Optional[str] = None, tasks: Optional[List[Dict[str, Any]]] = None,
     max_iterations: Optional[int] = None, role: Optional[str] = None, background: Optional[bool] = None,
     output_schema: Optional[Dict[str, Any]] = None, images: Optional[List[str]] = None, action: Optional[str] = None,
-    subagent_id: Optional[str] = None, message: Optional[str] = None, parent_agent=None,
-    credentials_cfg: Optional[Dict[str, Any]] = None,
+    subagent_id: Optional[str] = None, message: Optional[str] = None, model: Optional[Dict[str, Any]] = None,
+    parent_agent=None, credentials_cfg: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Spawn child agents (single ``goal`` or ``tasks=[...]`` batch) or control running ones. ``action``
     list/steer/stop run synchronously and bypass the pause gate, depth limit and async dispatch. ``role`` is legacy
@@ -491,6 +537,14 @@ def delegate_task(
     # a per-call routing owner shaped like the delegation config section. Keep
     # the route and its fallback policy together through child construction.
     routing_cfg = credentials_cfg if credentials_cfg is not None else cfg
+    # Per-call route object. Parsed here — before any child is constructed — so a
+    # malformed object or an unjustified flagship route refuses the whole call
+    # rather than spawning half a batch. This is the knob that removes the need
+    # to edit `delegation:` in config.yaml to move one batch.
+    try:
+        batch_override = parse_model_override(model, field="model")
+    except ModelOverrideError as exc:
+        return tool_error(str(exc))
     try:
         creds = _resolve_delegation_credentials(routing_cfg, parent_agent)
     except ValueError as exc:
@@ -519,10 +573,15 @@ def delegate_task(
     _announce_batch(parent_agent, len(task_list), live_deleg_id)
     origin = _capture_origin()
 
-    children, err = _build_children(
-        task_list, task_schemas, creds, top_role=top_role, max_iterations=default_max_iter, parent_agent=parent_agent,
-        routing_cfg=routing_cfg, live_deleg_id=live_deleg_id, live_writers=live_writers, task_images=task_images,
-    )
+    try:
+        children, err = _build_children(
+            task_list, task_schemas, creds, top_role=top_role, max_iterations=default_max_iter,
+            parent_agent=parent_agent, routing_cfg=routing_cfg, live_deleg_id=live_deleg_id,
+            live_writers=live_writers, task_images=task_images,
+            batch_override=batch_override,
+        )
+    except ModelOverrideError as exc:
+        return tool_error(str(exc))
     if err:
         return tool_error(err)
     batch = _Batch(
@@ -685,11 +744,29 @@ DELEGATE_TASK_SCHEMA = {
                             "together in ONE message; ungrouped tasks return individually as each finishes. This does not "
                             "order execution; if B needs A's output, dispatch B after A returns.",
                         ),
+                        "model": {"type": "object", "properties": {
+                            "model": {"type": "string"}, "provider": {"type": "string"},
+                            "reasoning_effort": {"type": "string"}, "firepower": {"type": "string"}},
+                            "description": (
+                                "Per-task route override, same object as the top-level 'model'. Wins over it. "
+                                "Use when ONE task in the batch needs a different model or provider."
+                            )},
                     },
                     "required": ["goal"],
                 },
                 "description": "(rebuilt at get_definitions() time)",
             },
+            "model": {"type": "object", "properties": {
+                    "model": {"type": "string"}, "provider": {"type": "string"},
+                    "reasoning_effort": {"type": "string"}, "firepower": {"type": "string"}},
+                "description": (
+                    "Route THIS batch's children to a specific model/provider, e.g. "
+                    "{\"provider\": \"my-proxy\"} to move one batch off a capacity-limited pool. "
+                    "All keys optional — pass only what you want to change; the rest falls through to "
+                    "the delegation config. Must be an OBJECT: a bare string is refused. Do NOT edit "
+                    "`delegation:` in config.yaml to route a batch — that changes the standing default "
+                    "for every future subagent in every session."
+                )},
             # `background` (bool) is also accepted — DEPRECATED, ignored: top-level
             # delegations always run in the background. Unadvertised; do not re-add.
             "action": _p(
@@ -742,7 +819,7 @@ registry.register(
         goal=args.get("goal"), context=args.get("context"), tasks=_strip_model_hidden_task_fields(args.get("tasks")),
         max_iterations=args.get("max_iterations"), role=args.get("role"),
         background=_model_background_value(args, kw.get("parent_agent")), output_schema=args.get("output_schema"),
-        images=args.get("images"), action=args.get("action"), subagent_id=args.get("subagent_id"), message=args.get("message"),
+        images=args.get("images"), action=args.get("action"), subagent_id=args.get("subagent_id"), message=args.get("message"), model=args.get("model"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

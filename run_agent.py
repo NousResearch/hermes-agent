@@ -1365,7 +1365,12 @@ class AIAgent(
             max_iterations=function_args.get("max_iterations"), role=function_args.get("role"),
             background=not (getattr(self, "_delegate_depth", 0) > 0), images=function_args.get("images"),
             action=function_args.get("action"),
-            subagent_id=function_args.get("subagent_id"), message=function_args.get("message"), parent_agent=self,
+            subagent_id=function_args.get("subagent_id"), message=function_args.get("message"),
+            # Per-call route object. This is the LIVE dispatch path — the registry
+            # lambda is only the fallback for a bypassed intercept — so omitting
+            # `model` here would leave the override inert in production while unit
+            # tests against the lambda still passed.
+            model=function_args.get("model"), parent_agent=self,
         )
 
     _invoke_tool = _forward("agent.agent_runtime_helpers", "invoke_tool")

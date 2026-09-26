@@ -176,6 +176,19 @@ def _start_parent_process_watchdog():
 _start_parent_process_watchdog()
 _start_parent_death_pipe_watchdog()
 
+
+def _detach_request_channel():
+    """Move the host's request pipe off fd 0 and leave /dev/null there. Cells and the
+    subprocesses they spawn inherit fd 0: on the request pipe, input() or a stdin-reading
+    child blocked until the cell timeout, and a background reader swallowed the next cell."""
+    requests = os.fdopen(os.dup(0), "r", encoding="utf-8")
+    null_fd = os.open(os.devnull, os.O_RDONLY)
+    os.dup2(null_fd, 0)
+    os.close(null_fd)
+    return requests
+
+
+_requests = _detach_request_channel()
 _real_stdout = sys.stdout
 
 {cell_source}
@@ -204,7 +217,7 @@ def _reply(payload):
 
 def main():
     execution_count = 0
-    for line in sys.stdin:
+    for line in _requests:
         line = line.strip()
         if not line:
             continue

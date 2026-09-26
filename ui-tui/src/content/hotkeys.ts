@@ -32,6 +32,7 @@ export const HOTKEYS: [string, string][] = [
   [action + '+Z / ' + action + '+Y', 'undo / redo input edits'],
   [action + '+W', 'delete word'],
   [action + '+U/K', 'kill to line start / end (repeat across lines)'],
+  [action + '+K (empty input)', 'send the next queued message now'],
   [action + '+←/→', 'jump word'],
   ['Home/End', 'start / end of line'],
   ['Shift+Enter / Alt+Enter', 'insert newline'],

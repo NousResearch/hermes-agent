@@ -706,6 +706,29 @@ function Emit-Frame([bool]$ok, [string]$name, [bool]$skipped, [string]$reason = 
     $frame | ConvertTo-Json -Compress | Write-Output
 }
 
+# A terminating stage error reported to the user (UI line and -Json frame)
+# must carry more than its localized message: "Odmowa dostępu" alone cannot
+# tell an inherited ACL from an elevated process's leftover file, AV
+# interference, or a bootstrap bug (#124052). For a real exception, append
+# the type, HResult and the operation it died on; the category target is
+# best-effort (cmdlet errors carry the offending path there). Fail() throws
+# bare strings that are already actionable -- and asserted verbatim by
+# tests -- so an OperationStopped RuntimeException passes through as-is.
+function Get-StageFailureReason([System.Management.Automation.ErrorRecord]$ErrorRecord) {
+    if ($ErrorRecord.CategoryInfo.Category -eq 'OperationStopped') { return "$ErrorRecord" }
+    $parts = @($ErrorRecord.Exception.GetType().FullName)
+    try { $parts += ('hresult 0x{0:X8}' -f [int]$ErrorRecord.Exception.HResult) } catch {}
+    if ($ErrorRecord.CategoryInfo -and $ErrorRecord.CategoryInfo.TargetName) {
+        $parts += "target: $($ErrorRecord.CategoryInfo.TargetName)"
+    }
+    if ($ErrorRecord.InvocationInfo -and $ErrorRecord.InvocationInfo.PositionMessage) {
+        $where = @($ErrorRecord.InvocationInfo.PositionMessage -split "`r?`n" |
+            Select-Object -First 2 | ForEach-Object { $_.Trim() })
+        $parts += ($where -join ' ')
+    }
+    return "$($ErrorRecord.Exception.Message) [$($parts -join '; ')]"
+}
+
 $ProductTitle = if ($IncludeDesktop) { "Install command and app + desktop" } else { "Install command and app" }
 $Stages = @(
     @{ name = "prerequisites"; title = "System prerequisites"; category = "runtime"; needs_user_input = $false },
@@ -1265,8 +1288,9 @@ if ($Stage) {
         if ($Json) { Emit-Frame $true $Stage $false }
         exit 0
     } catch {
-        Write-Err "$_"
-        if ($Json) { Emit-Frame $false $Stage $false "$_" }
+        $reason = Get-StageFailureReason $_
+        Write-Err "$reason"
+        if ($Json) { Emit-Frame $false $Stage $false $reason }
         exit 1
     }
 }
@@ -1280,7 +1304,8 @@ try {
     }
     Write-PathReloadHint
 } catch {
-    Write-Err "$_"
+    $reason = Get-StageFailureReason $_
+    Write-Err "$reason"
     if ($script:RunAsFile) { exit 1 }
     # Under iex: report failure without closing the user's window.
     $global:LASTEXITCODE = 1

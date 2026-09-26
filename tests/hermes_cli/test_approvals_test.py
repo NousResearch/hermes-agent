@@ -121,7 +121,9 @@ class TestNormalizationParity:
     def test_normalized_trace_shown_when_command_normalizes(self,
                                                             isolated_approvals,
                                                             capsys):
-        rc = at.approvals_test_command(_args(['git', 'st""atus']))
+        # One argv word keeps the command string verbatim, so '""' reaches the
+        # normalizer as empty-quote syntax rather than literal characters.
+        rc = at.approvals_test_command(_args(['git st""atus']))
         out = capsys.readouterr().out
         assert rc == 0
         assert "git status" in out
@@ -195,3 +197,75 @@ class TestOutputAndWiring:
         assert rc == 0
         assert "ls -la" in out
         assert "-- ls" not in out
+
+
+class TestShellQuotingFidelity:
+    """``test -- <words>`` arrives post-shell-split; reconstruction must
+    restore the quoting the user's shell erased so the dry-run verdict matches
+    the runtime verdict for the real command string."""
+
+    def test_quoted_separator_stays_data(self, isolated_approvals, capsys):
+        # hermes approvals test -- git commit -m "x; rm -rf /"
+        rc = at.approvals_test_command(
+            _args(["git", "commit", "-m", "x; rm -rf /"]))
+        out = capsys.readouterr().out
+        assert rc == 2
+        assert "ask-approval" in out
+        # Same verdict the runtime gives the real quoted string.
+        assert at.evaluate_command(
+            'git commit -m "x; rm -rf /"')["exit_code"] == rc
+
+    def test_quoted_pipe_stays_data(self, isolated_approvals, capsys):
+        # hermes approvals test -- echo "a | reboot"
+        rc = at.approvals_test_command(_args(["echo", "a | reboot"]))
+        capsys.readouterr()
+        assert rc == 0
+
+    def test_quoted_shell_payload_scanned_as_code(self, isolated_approvals,
+                                                  capsys):
+        # hermes approvals test -- sh -c "rm -rf /": the dequoted join would
+        # report only ask-approval while the runtime hardline-denies.
+        rc = at.approvals_test_command(_args(["sh", "-c", "rm -rf /"]))
+        capsys.readouterr()
+        assert rc == 3
+
+    def test_single_word_command_evaluated_verbatim(self, isolated_approvals,
+                                                    capsys):
+        # hermes approvals test 'git commit -m "x; rm -rf /"': one argv word is
+        # already the complete command string; re-quoting it would turn the
+        # command into data.
+        rc = at.approvals_test_command(
+            _args(['git commit -m "x; rm -rf /"'], as_json=True))
+        payload = json.loads(capsys.readouterr().out)
+        assert rc == 2
+        assert payload["command"] == 'git commit -m "x; rm -rf /"'
+
+    def test_requoted_command_shown_in_json(self, isolated_approvals, capsys):
+        # The reported command is the faithful reconstruction, not the
+        # dequoted join, so what the user sees is what was evaluated.
+        rc = at.approvals_test_command(
+            _args(["git", "commit", "-m", "x; rm -rf /"], as_json=True))
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["command"] == "git commit -m 'x; rm -rf /'"
+
+    def test_embedded_quote_word_round_trips(self, isolated_approvals, capsys):
+        # hermes approvals test -- git commit -m "don't": the apostrophe is
+        # data inside the word and must survive reconstruction.
+        rc = at.approvals_test_command(_args(["git", "commit", "-m", "don't"]))
+        capsys.readouterr()
+        assert rc == 0
+        assert at.evaluate_command('git commit -m "don\'t"')["exit_code"] == rc
+
+    def test_parser_pipeline_restores_quoting(self, isolated_approvals, capsys):
+        # e2e through the real parser + dispatcher, exactly as the shell
+        # delivers the post-split words via argparse REMAINDER.
+        from hermes_cli.approvals_suggest import approvals_command
+        from hermes_cli.subcommands.approvals import build_approvals_parser
+        parser = argparse.ArgumentParser()
+        sub = parser.add_subparsers()
+        build_approvals_parser(sub, cmd_approvals=approvals_command)
+        args = parser.parse_args(
+            ["approvals", "test", "--", "git", "commit", "-m", "x; rm -rf /"])
+        rc = args.func(args)
+        capsys.readouterr()
+        assert rc == 2

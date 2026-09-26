@@ -47,6 +47,7 @@ def spawn_env(monkeypatch):
             self.name = name
 
         async def start(self, config):
+            captured["config"] = config
             captured["env"] = _build_safe_env(config.get("env"))
 
         async def shutdown(self):
@@ -100,6 +101,24 @@ def test_unscoped_discover_interpolates_header_refs_under_the_owners_scope(profi
 
     assert set(handed_over) == {"httpsrv", "stdiosrv"}
     assert handed_over["httpsrv"]["headers"]["Authorization"] == f"Bearer {TOKEN_VALUE}"
+    assert current_secret_scope() is None
+
+
+def test_connect_reinterpolates_placeholder_after_owner_scope_hydration(profile_home, spawn_env, monkeypatch):
+    """A config frozen before hydration gets one owner-scoped render at connect time."""
+    monkeypatch.setenv(TOKEN_NAME, "launch-env-value")
+    monkeypatch.setitem(env_loader._SECRET_SOURCES, TOKEN_NAME, "command")
+    config = {
+        "url": "https://example.invalid/mcp",
+        "headers": {"Authorization": f"Bearer ${{{TOKEN_NAME}}}"},
+    }
+
+    asyncio.run(discovery._connect_server("demo", config))
+
+    assert spawn_env["config"]["headers"]["Authorization"] == f"Bearer {TOKEN_VALUE}"
+    # Do not mutate the cached/raw caller object: it remains reusable if a later
+    # reconnect needs to resolve a rotated secret again.
+    assert config["headers"]["Authorization"] == f"Bearer ${{{TOKEN_NAME}}}"
     assert current_secret_scope() is None
 
 

@@ -668,9 +668,15 @@ def base_url_path(base_url: str) -> str:
 
 
 def model_forces_max_completion_tokens(model: str) -> bool:
-    """True for OpenAI families that reject ``max_tokens`` (HTTP 400 ``unsupported_parameter``)."""
+    """True for model families that reject ``max_tokens`` (HTTP 400 ``unsupported_parameter``).
+
+    Covers OpenAI families (gpt-4o, gpt-4.1, gpt-5.x, o1, o3, o4) and MiniMax's
+    OpenAI-compatible models (MiniMax-M3, M2.7, M2.5, M2.1, MiniMax-Text-01), all of
+    which require ``max_completion_tokens`` on /v1/chat/completions. Vendor prefixes
+    (e.g., ``openai/gpt-5``, ``minimaxai/MiniMax-M3``) are stripped before matching.
+    """
     m = (model or "").strip().lower().rsplit("/", 1)[-1]
-    return m.startswith(("gpt-4o", "gpt-4.1", "gpt-5", "o1", "o3", "o4"))
+    return m.startswith(("gpt-4o", "gpt-4.1", "gpt-5", "o1", "o3", "o4", "minimax-"))
 
 
 def base_url_origin(base_url: str) -> tuple[str, str, int]:

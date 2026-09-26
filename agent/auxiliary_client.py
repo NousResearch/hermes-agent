@@ -5709,10 +5709,25 @@ def get_auxiliary_extra_body() -> dict:
     return _nous_extra_body() if auxiliary_is_nous else {}
 
 
-def auxiliary_max_tokens_param(value: int, *, model: Optional[str] = None) -> dict:
+def auxiliary_max_tokens_param(
+    value: int,
+    *,
+    model: Optional[str] = None,
+    provider: Optional[str] = None,
+    base_url: Optional[str] = None,
+) -> dict:
     """Max-tokens kwarg for the auxiliary provider: direct OpenAI/Copilot and newer OpenAI-family
-    models (by ``model`` name, so custom endpoints fronting gpt-5.x are caught) need max_completion_tokens."""
-    _custom_host = base_url_hostname(_current_custom_base_url()) or ""
+    models (by ``model`` name, so custom endpoints fronting gpt-5.x are caught) need max_completion_tokens.
+
+    Anthropic-compatible wires (provider in ``_ANTHROPIC_COMPAT_PROVIDERS`` or ``/anthropic`` in the
+    base URL) always use ``max_tokens`` — that's the field name on the Messages API and on MiniMax's
+    Anthropic transport. Name-based OpenAI-family detection (incl. ``minimax-*``) only applies on the
+    OpenAI-compatible wire, otherwise an Anthropic-routed MiniMax call would 400 on an unknown kwarg.
+    """
+    effective_base = base_url or _current_custom_base_url() or ""
+    if _is_anthropic_compat_endpoint((provider or "").strip().lower(), effective_base):
+        return {"max_tokens": value}
+    _custom_host = base_url_hostname(effective_base) or ""
     direct_openai_family = (
         not _scoped_key_env("OPENROUTER_API_KEY") and _read_nous_auth() is None
         and (_custom_host in ("api.openai.com", "api.githubcopilot.com") or _custom_host.endswith(".githubcopilot.com"))
@@ -6655,7 +6670,7 @@ def _build_call_kwargs(
             kwargs["temperature"] = temperature
     provider_norm = str(provider or "").strip().lower()
     if max_tokens is not None and _forwards_max_tokens(provider, provider_norm, model, effective_base, task):
-        kwargs.update(auxiliary_max_tokens_param(max_tokens, model=model))  # picks max_completion_tokens where needed
+        kwargs.update(auxiliary_max_tokens_param(max_tokens, model=model, provider=provider, base_url=effective_base))  # picks max_completion_tokens where needed
     if tools:
         kwargs["tools"] = _dedupe_tool_names(tools, provider, model)
     # Provider profiles are the source of truth for reasoning wire shapes (top-level, nested body,

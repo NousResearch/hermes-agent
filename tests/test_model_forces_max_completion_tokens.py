@@ -37,6 +37,18 @@ class TestPositiveCases:
         assert model_forces_max_completion_tokens("o3") is True
 
 
+    def test_minimax_bare_models(self):
+        # MiniMax's OpenAI-compatible chat models all require max_completion_tokens.
+        assert model_forces_max_completion_tokens("MiniMax-M3") is True
+        assert model_forces_max_completion_tokens("MiniMax-M2.7") is True
+        assert model_forces_max_completion_tokens("MiniMax-Text-01") is True
+
+
+    def test_minimax_case_insensitive(self):
+        assert model_forces_max_completion_tokens("minimax-m3") is True
+        assert model_forces_max_completion_tokens("MINIMAX-M2.5") is True
+
+
 
 
 # ─── Negative cases: older or non-OpenAI families still use max_tokens ──────
@@ -54,6 +66,13 @@ class TestNegativeCases:
     def test_claude_family(self):
         assert model_forces_max_completion_tokens("claude-3-opus") is False
         assert model_forces_max_completion_tokens("claude-sonnet-4-6") is False
+
+
+    def test_local_minimax_clone_not_matched(self):
+        # Prefix-matching with the dash boundary must not catch unrelated models
+        # that merely contain "minimax" as a substring.
+        assert model_forces_max_completion_tokens("local-minimax-clone") is False
+        assert model_forces_max_completion_tokens("minimaxer-m3") is False
 
 
 
@@ -78,6 +97,9 @@ class TestEdgeCases:
         assert model_forces_max_completion_tokens("openai/gpt-5.4") is True
         assert model_forces_max_completion_tokens("openai/gpt-4o-mini") is True
         assert model_forces_max_completion_tokens("openai/o3-mini") is True
+        # Same shape for MiniMax routed through a vendor prefix (e.g. openclaw-router).
+        assert model_forces_max_completion_tokens("minimaxai/MiniMax-M3") is True
+        assert model_forces_max_completion_tokens("custom/minimax-m2.7") is True
 
 
 

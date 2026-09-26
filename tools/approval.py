@@ -340,6 +340,8 @@ def _permanent_set() -> set:
     if approved is None:
         try:
             approved = _read_permanent_allowlist()
+            # A lazy profile load is a disk sync too, not a set of new grants.
+            _permanent_baseline_by_home[home_key] = set(approved)
         except Exception as e:
             logger.warning("Failed to load permanent allowlist: %s", e)
             approved = set()

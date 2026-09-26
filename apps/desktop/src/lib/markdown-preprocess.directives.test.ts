@@ -58,8 +58,11 @@ describe('preprocessMarkdown / directive lines', () => {
   })
 
   it('does not touch prose that merely contains ::', () => {
+    // The `::` itself is never structure, but `<int>` is an unknown html-like
+    // token: escaping it to entities is the #53953 behavior (the renderer
+    // would otherwise swallow it), and it paints identically as literal text.
     const text = 'Use std::vector<int> for *speed*.'
 
-    expect(preprocessMarkdown(text)).toBe(text)
+    expect(preprocessMarkdown(text)).toBe('Use std::vector&lt;int&gt; for *speed*.')
   })
 })

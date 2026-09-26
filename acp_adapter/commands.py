@@ -243,7 +243,7 @@ class SlashCommandsMixin:
             logger.warning("ACP session state reset failed for %s", state.session_id, exc_info=True)
             return "Conversation history cleared. Agent session state reset failed; see logs."
         finally:
-            self.session_manager.save_session(state.session_id)
+            self.session_manager.save_session(state.session_id, history_rewritten=True)
         return "Conversation history cleared."
 
     def _cmd_compress(self, args: str, state: SessionState) -> str:

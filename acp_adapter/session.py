@@ -265,13 +265,14 @@ class SessionManager:
         self._schedule_git_metadata(state, self._claim_cwd_generation(state))
         return state
 
-    def save_session(self, session_id: str) -> None:
+    def save_session(self, session_id: str, *, history_rewritten: bool = False) -> None:
         """Persist a session; called by the server after prompt completion,
-        history-mutating slash commands, and model switches."""
+        history-mutating slash commands, and model switches. ``history_rewritten``: the caller
+        replaced ``state.history`` outside a turn (``/reset``)."""
         with self._lock:
             state = self._sessions.get(session_id)
         if state is not None:
-            self._persist(state)
+            self._persist(state, history_rewritten=history_rewritten)
 
     # ---- persistence via SessionDB ------------------------------------------
 
@@ -311,7 +312,7 @@ class SessionManager:
                 logger.debug("ACP session cwd backfill failed", exc_info=True)
         return self._db_instance
 
-    def _persist(self, state: SessionState) -> None:
+    def _persist(self, state: SessionState, *, history_rewritten: bool = False) -> None:
         """Create/update the session record, then sync the live message set."""
         db = self._get_db()
         if db is None:
@@ -361,6 +362,11 @@ class SessionManager:
             # #13675).
             agent = state.agent
             if getattr(agent, "_session_db", None) is db and getattr(agent, "_session_db_created", False):
+                if history_rewritten:
+                    # The agent's flush only appends its own turns, so a rewrite made between turns
+                    # never reaches disk and a reload brings the dropped turns back. Archive them
+                    # (not DELETE) so they stay recoverable and searchable.
+                    db.replace_messages(state.session_id, state.history, archive_dropped=True)
                 return
             # A non-owning agent (model switch, /restore: fresh agent, _session_db_created=False)
             # may still sit on archived rows, so replace ONLY the active=1 set: on a fresh

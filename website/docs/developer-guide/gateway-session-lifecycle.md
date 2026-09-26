@@ -171,6 +171,7 @@ SessionStore(sessions_dir: Path, config: GatewayConfig, has_active_processes_fn=
 | `update_session(session_key, last_prompt_tokens=None)` | Lightweight metadata update after an interaction. Bumps `updated_at`, optionally records `last_prompt_tokens`. |
 | `reset_session(session_key, display_name=None)` | Explicit reset (from `/new` or `/reset`). Creates new `session_id`, sets `is_fresh_reset=True`. Ends old SQLite session, creates new one. |
 | `switch_session(session_key, target_session_id, *, expected_session_id=None)` | Switch to a different existing session ID (from `/resume`). Ends current SQLite session, reopens target. With `expected_session_id=` the repoint is a compare-and-swap: returns `None` without switching when the key no longer points at that session, so a caller that resolved against a snapshot across an `await` (async-delegation re-pin, Telegram topic-binding heal) cannot overwrite a concurrent `/new` or `/resume`. |
+| `set_runtime_options(session_key, *, model_override=, reasoning_override=, service_tier_override=, expected_session_id=None)` | Strictly persist the named runtime options in one save (omitted fields keep their value), then publish them to the entry. Raises `OSError` when state.db was the routing source and did not save. Returns `False` when the entry is missing or its `session_id` no longer equals `expected_session_id`. `get_runtime_options(session_key)` reads them back. |
 | `suspend_session(session_key)` | Mark session as `suspended=True` (from `/stop`). Forces auto-reset on next access. |
 | `mark_resume_pending(session_key, reason)` | Mark session as `resume_pending=True` (from drain timeout). Preserves session_id on next access. Will NOT override `suspended=True`. |
 | `clear_resume_pending(session_key)` | Clear `resume_pending` after a successful resumed turn. Called from gateway after `run_conversation()` returns. |
@@ -303,6 +304,13 @@ is inert compatibility data, not a runtime policy.
 Explicit suspension still creates a boundary on the next inbound turn. Recovery
 respects explicit and historical finalized boundaries rather than reopening them.
 Resource-only eviction and WebSocket orphan reaping leave conversations resumable.
+
+The session's runtime options (`model_override`, `reasoning_override` and
+`service_tier_override`, set by `/model`, `/reasoning`, `/fast` or
+`apply_session_options`) are stored on the `SessionEntry` and survive a gateway
+restart. `/new`, `/reset`, `/resume` and a suspension replacement publish a fresh
+entry, so every boundary clears all three. See
+[Gateway Internals § Per-Session Runtime Options](./gateway-internals.md#per-session-runtime-options).
 
 ---
 

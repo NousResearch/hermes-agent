@@ -14,6 +14,7 @@ The messaging gateway is the long-running process that connects Hermes to 20+ ex
 |------|---------|
 | `gateway/run.py` | `GatewayRunner` facade — composes the `gateway/run_*.py` sibling mixins (startup, adapters, inbound, turn, busy, goals, notifications, shutdown, …) and `gateway/slash_commands_*.py` handlers |
 | `gateway/session.py` | `SessionStore` — conversation persistence and session key construction |
+| `gateway/run_session_options.py` | Per-session runtime options: the durable-first commit, the session admission lock and `apply_session_options` (see [Per-Session Runtime Options](#per-session-runtime-options)) |
 | `gateway/delivery.py` | Outbound message delivery to target platforms/channels |
 | `gateway/pairing.py` | DM pairing flow for user authorization |
 | `gateway/channel_directory.py` | Maps chat IDs to human-readable names for cron delivery |
@@ -308,6 +309,50 @@ Plugins that load after the adapters connected (install/enable from the CLI, Des
   `activations` and `adapters_rewired`, so the caller can say "active now" truthfully.
 - **Scope limit** — handlers only. Tools and system-prompt sections of a late plugin wait for the next
   session (prompt-cache invariant); portable MCP servers wait for `mcp.reload`. Nothing un-wires on disable.
+
+## Per-Session Runtime Options
+
+A session's model, reasoning effort and `/fast` tier can be set by the user (`/model`,
+`/reasoning`, `/fast`, typed or from a picker) or by a host UI through the structured API. Both
+paths share one write in `gateway/run_session_options.py` (`GatewaySessionOptionsMixin`):
+
+- **Durable first.** `_commit_session_runtime_options(source, patch)` persists the patched fields
+  with `SessionStore.set_runtime_options` (one strict save: it raises `OSError` when state.db was the
+  routing source and did not save, even if the `sessions.json` mirror did) and only then assigns live
+  state. A failed save raises with memory, the queued model note and any one-turn restore untouched,
+  so a slash command fails visibly instead of replying "set" for a value a restart would drop.
+- **Admission lock.** One per-session `asyncio.Lock` is shared by the commit, the idle->running claim in
+  `_handle_message` (no await inside, so an uncontended claim never yields), the `/login` free-tier clear
+  and boot-resume. Boot-resume cannot await: while a commit holds the lock it defers the session, and the
+  commit reschedules it on release. The commit re-checks busy under the lock, so a picker tap mid-turn
+  gets the same busy reply as a typed command. Lock order: `_model_switch_lock`, then the admission lock.
+  The lock is not re-entrant.
+- **Boundaries.** The commit resolves the route first and consumes an auto-reset boundary (#48031,
+  #58403). The store write is a compare-and-swap on the entry's `session_id`, and
+  `_clear_conversation_scope` bumps a conversation epoch, so a `/new`, `/resume` or reset that lands while
+  a write is in flight leaves the value in neither memory nor the new entry (`SessionMissing`).
+- **One-turn overrides are never saved.** `/model --once` and `/moa` never commit. A commit writes only
+  the fields it names, and a durable model commit pops an armed one-turn restore when it is assigned.
+- **Cancellation.** Live state is assigned by a done-callback on the executor Future of the write, so no
+  task cancellation (including `asyncio.run` teardown) separates the two. The caller waits for that
+  callback under the lock across any number of cancels, then re-raises the last cancel without
+  `uncancel()`; a write failure behind a cancel is logged at WARNING with its traceback.
+- **What is stored.** `model_override` keeps only model/provider/base_url (credentials are re-resolved on
+  rehydrate), `reasoning_override` only `{enabled, effort}`, and `service_tier_override` is `"normal"`
+  (explicit normal), `"priority"`, `"auto"` or `"cold"`; absent means inherit `agent.service_tier`.
+  `_rehydrate_session_runtime_options` reads them back once per process, and a live value wins.
+
+`GatewayRunner.apply_session_options(source, options)` is the structured API. Keys: `model` (`""` means
+inherit the configured model), `provider`, `reasoning_effort` (`""` means inherit, `none`, or a
+`VALID_REASONING_EFFORTS` level), `fast` (bool), `confirm_model_selection` and `initial` (no next-turn
+model note). The source goes through `_canonicalize` and runs under `_profile_scope_for_source`. The whole
+patch is validated first (same switch resolution and selection guards as `/model`); nothing moves on a
+rejection. Only changed fields are written, so re-sending current values is a no-op. A slash command
+that lands between validation and commit wins (`conflict`). Results: `accepted` (with `applied` and
+`effective`), `confirmation_required` (with `title`, `message` and `error`), or `rejected` with `code`
+and `error`: `invalid_options`, `invalid_session`, `session_busy`, `model_rejected`,
+`reasoning_rejected`, `fast_rejected`, `fast_unsupported`, `conflict`, `session_missing` or
+`durable_write_failed` (an `OSError` from the store).
 
 ## Related Docs
 

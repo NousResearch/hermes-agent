@@ -224,3 +224,91 @@ def test_sanitize_model_override():
         "provider": "openai",
         "base_url": "https://api.openai.example/v1",
     }
+
+
+# -- Shared strict runtime-options write (model + reasoning + /fast tier) -----------------------
+
+
+@pytest.fixture
+def db_store_factory(tmp_path, monkeypatch):
+    """SessionStores over a real state.db (primary) plus the sessions.json mirror."""
+    import hermes_state
+
+    real_session_db = hermes_state.SessionDB
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr(hermes_state, "SessionDB", lambda **_kw: real_session_db(db_path=db_path))
+    stores = []
+
+    def _make() -> SessionStore:
+        for previous in stores:  # a "restart": the previous process let go of the file
+            if previous._db is not None:
+                previous._db.close()
+        store = SessionStore(sessions_dir=tmp_path / "sessions", config=GatewayConfig())
+        assert store._db is not None
+        stores.append(store)
+        return store
+
+    yield _make
+    if stores and stores[-1]._db is not None:
+        stores[-1]._db.close()
+
+
+@pytest.mark.parametrize("tier", ["auto", "cold"])
+def test_runtime_options_round_trip_and_reset_clear(db_store_factory, tmp_path, tier):
+    store = db_store_factory()
+    session_key = store.get_or_create_session(_make_source()).session_key
+
+    assert store.set_runtime_options(
+        session_key, model_override=OVERRIDE,
+        reasoning_override={"enabled": True, "effort": "high", "extra": "drop"},
+        service_tier_override=tier,
+    ) is True
+
+    restarted = db_store_factory()
+    assert restarted.get_runtime_options(session_key) == {
+        "model_override": sanitize_model_override(OVERRIDE),
+        "reasoning_override": {"enabled": True, "effort": "high"},
+        "service_tier_override": tier,
+    }
+    # Credentials reach neither the primary copy nor the legacy mirror.
+    durable = restarted._routing_db.load_gateway_routing_entries(scope=restarted._routing_scope())
+    assert "sk-SUPER-SECRET" not in json.dumps(durable)
+    assert "sk-SUPER-SECRET" not in (tmp_path / "sessions" / "sessions.json").read_text(encoding="utf-8")
+
+    # Explicit normal stays distinct from inherit across a restart.
+    assert restarted.set_runtime_options(session_key, service_tier_override="normal") is True
+    assert db_store_factory().get_runtime_options(session_key)["service_tier_override"] == "normal"
+
+    # /new publishes a fresh entry: all three fields are gone, on disk too.
+    reset_store = db_store_factory()
+    reset_store.reset_session(session_key)
+    assert db_store_factory().get_runtime_options(session_key) == {
+        "model_override": None, "reasoning_override": None, "service_tier_override": None,
+    }
+
+
+def test_state_db_failure_is_not_hidden_by_json_mirror(db_store_factory, monkeypatch):
+    """F1 in its state.db form: state.db (the primary copy) fails while the sessions.json mirror
+    is healthy. On main the mirror save hides that failure and a restart brings back the old
+    value. The strict write must raise instead, with memory unchanged and a restart matching it."""
+    store = db_store_factory()
+    session_key = store.get_or_create_session(_make_source()).session_key
+    assert store.set_runtime_options(session_key, reasoning_override={"enabled": True, "effort": "low"})
+
+    def _db_down(*_a, **_kw):
+        raise RuntimeError("database is locked")
+
+    with monkeypatch.context() as m:
+        m.setattr(store._routing_db, "replace_gateway_routing_entries", _db_down)
+        with pytest.raises(OSError, match="state.db routing save failed"):
+            store.set_runtime_options(
+                session_key, model_override=OVERRIDE,
+                reasoning_override={"enabled": True, "effort": "max"}, service_tier_override="cold",
+            )
+    in_memory = store.get_runtime_options(session_key)
+    assert in_memory == {
+        "model_override": None,
+        "reasoning_override": {"enabled": True, "effort": "low"},
+        "service_tier_override": None,
+    }
+    assert db_store_factory().get_runtime_options(session_key) == in_memory

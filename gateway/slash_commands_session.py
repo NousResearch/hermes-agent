@@ -169,18 +169,22 @@ class GatewaySessionCommandsMixin:
         old_entry = self.session_store._entries.get(session_key)
         await self._cleanup_old_agent_for_reset(session_key)
         self._evict_cached_agent(session_key)
-        # Conversation boundary: ALL conversation-scoped per-session state + security state in one
-        # funnel call (see _CONVERSATION_SCOPED_STATE in gateway/run.py).
-        self._clear_conversation_scope(session_key, reason="session_reset")
-        # In-flight async delegations end WITH the conversation: once the id rotates their
-        # completions have no live owner. Expire by durable id, routing key as legacy fallback.
-        with contextlib.suppress(Exception):
-            from tools.async_delegation import interrupt_for_session
-            interrupt_for_session(session_key=session_key, reason="session_reset",
-                                  parent_session_id=str(getattr(old_entry, "session_id", "") or ""))
-        _reset_process_scoped_tool_state()
+        # The clear and the fresh entry are one step under the session admission lock: a runtime-
+        # options commit that read the cleared conversation but still holds the old session_id
+        # could otherwise land between them and leave its value live in the new conversation.
+        async with self._session_admission(session_key):
+            # Conversation boundary: ALL conversation-scoped per-session state + security state in
+            # one funnel call (see _CONVERSATION_SCOPED_STATE in gateway/run.py).
+            self._clear_conversation_scope(session_key, reason="session_reset")
+            # In-flight async delegations end WITH the conversation: once the id rotates their
+            # completions have no live owner. Expire by durable id, routing key as legacy fallback.
+            with contextlib.suppress(Exception):
+                from tools.async_delegation import interrupt_for_session
+                interrupt_for_session(session_key=session_key, reason="session_reset",
+                                      parent_session_id=str(getattr(old_entry, "session_id", "") or ""))
+            _reset_process_scoped_tool_state()
 
-        new_entry = await self.async_session_store.reset_session(session_key)
+            new_entry = await self.async_session_store.reset_session(session_key)
         _old_sid = old_entry.session_id if old_entry else None
         await self._fire_session_reset_hooks(source, session_key, _old_sid,
                                              new_entry.session_id if new_entry else None)

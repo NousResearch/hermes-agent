@@ -22,6 +22,9 @@ logger = logging.getLogger("gateway.session")
 # deliberate ``store._db = None`` (JSONL fallback).
 _DB_UNPINNED = object()
 
+# "Caller did not name this field" for the partial runtime-options patch (``set_runtime_options``).
+UNSET = object()
+
 # Self-documenting sentinel written first into sessions.json; "_" keys are skipped on load.
 _SESSIONS_JSON_README = (
     "LEGACY MIRROR of the gateway routing index (the primary copy lives in the gateway_routing "
@@ -433,8 +436,15 @@ class SessionPersistenceMixin:
         self._reconcile_recovered_routing_locked()
         return self._entries_as_dicts(), self._next_routing_generation_locked()
 
-    def _persist_routing_data(self, data: Dict[str, Any], generation: int) -> None:
-        """Serialize all whole-index writers through one durable write lock."""
+    def _persist_routing_data(
+        self, data: Dict[str, Any], generation: int, *, require_db: bool = False,
+    ) -> None:
+        """Serialize all whole-index writers through one durable write lock.
+
+        ``require_db`` (strict writers): when routing was loaded from state.db, a state.db save
+        that failed or had no handle raises ``OSError`` instead of falling back to the
+        sessions.json mirror. The mirror only fills keys the DB lacks on the next load, so a
+        mirror-only save would come back stale after a restart."""
         with self._lazy("_save_lock", threading.Lock):
             if generation <= getattr(self, "_persisted_routing_generation", 0):
                 return
@@ -446,13 +456,19 @@ class SessionPersistenceMixin:
                     if revision > generation:
                         data[key] = json.loads(entry_json)
             db_saved = False
+            db_error: Optional[BaseException] = None
             replacer = self._routing_db_method("replace_gateway_routing_entries")
             if replacer is not None:
                 try:
                     replacer({k: json.dumps(v) for k, v in data.items()}, scope=self._routing_scope())
                     db_saved = True
                 except Exception as exc:
+                    db_error = exc
                     logger.warning("gateway.session: state.db routing save failed: %s", exc)
+            if require_db and not db_saved and getattr(self, "_routing_db_loaded", False):
+                raise OSError(
+                    f"state.db routing save failed: {db_error or 'no state.db handle'}"
+                ) from db_error
             if getattr(self, "_write_sessions_json", True) or not db_saved:
                 try:
                     self._save_sessions_json(data)
@@ -525,3 +541,88 @@ class SessionPersistenceMixin:
             self._persist_routing_data(fallback_data, revision)
         else:
             self._save_entries()
+
+    # -- per-session runtime options (/model, /reasoning, /fast) --------------------------------
+
+    def _replace_entry_fields(
+        self, session_key: str, fields: Dict[str, Any], *,
+        expected_session_id: Optional[str] = None, strict: bool = False,
+    ) -> bool:
+        """Persist ``fields`` on the entry for *session_key*, then publish them to the live entry.
+
+        Snapshot, ``replace``, persist, publish: a failed save raises with the entry untouched.
+        False when there is no entry or its session_id no longer equals *expected_session_id* (a
+        /new, /resume or auto-reset published a fresh entry since the caller read it). Nothing is
+        written when every field already holds the value. The full rewrite runs under ``_lock``,
+        so no fast upsert of this key can be numbered above the snapshot and folded over it."""
+        from dataclasses import replace
+
+        with self._lock:
+            entry = self._entry_locked(session_key)
+            if entry is None or (
+                expected_session_id is not None and entry.session_id != expected_session_id
+            ):
+                return False
+            if all(getattr(entry, name) == value for name, value in fields.items()):
+                return True
+            data, generation = self._snapshot_routing_locked()
+            # Snapshot reconciliation may replace the entry after database recovery.
+            entry = self._entries.get(session_key)
+            if entry is None or (
+                expected_session_id is not None and entry.session_id != expected_session_id
+            ):
+                return False
+            data[session_key] = replace(entry, **fields).to_dict()
+            self._persist_routing_data(data, generation, require_db=strict)
+            for name, value in fields.items():
+                setattr(entry, name, value)
+            return True
+
+    def set_runtime_options(
+        self, session_key: str, *, model_override: Any = UNSET, reasoning_override: Any = UNSET,
+        service_tier_override: Any = UNSET, expected_session_id: Optional[str] = None,
+    ) -> bool:
+        """Strictly persist the named runtime options in ONE write; omitted fields keep their value.
+
+        Credentials never reach disk (``sanitize_model_override``); reasoning keeps only
+        ``{enabled, effort}``; the tier is ``"normal"``, ``"priority"``, ``"auto"``, ``"cold"`` or
+        ``None`` (inherit). Raises ``OSError`` when the save failed, including a state.db failure
+        hidden behind a successful sessions.json mirror. Returns False when the entry is missing
+        or was replaced (see ``_replace_entry_fields``)."""
+        from gateway.session import (
+            sanitize_model_override, sanitize_reasoning_override, sanitize_service_tier_override,
+        )
+
+        fields: Dict[str, Any] = {}
+        if model_override is not UNSET:
+            fields["model_override"] = sanitize_model_override(model_override)
+        if reasoning_override is not UNSET:
+            cleaned = sanitize_reasoning_override(reasoning_override)
+            if reasoning_override is not None and cleaned is None:
+                raise ValueError(f"invalid reasoning override: {reasoning_override!r}")
+            fields["reasoning_override"] = cleaned
+        if service_tier_override is not UNSET:
+            tier = sanitize_service_tier_override(service_tier_override)
+            if service_tier_override is not None and tier is None:
+                raise ValueError(f"invalid service tier override: {service_tier_override!r}")
+            fields["service_tier_override"] = tier
+        if not fields:
+            with self._lock:
+                entry = self._entry_locked(session_key)
+                return entry is not None and (
+                    expected_session_id is None or entry.session_id == expected_session_id)
+        return self._replace_entry_fields(
+            session_key, fields, expected_session_id=expected_session_id, strict=True)
+
+    def get_runtime_options(self, session_key: str) -> Optional[Dict[str, Any]]:
+        """The persisted runtime options for *session_key* (copies), or None without an entry."""
+        with self._lock:
+            entry = self._entry_locked(session_key)
+            if entry is None:
+                return None
+            return {
+                "model_override": dict(entry.model_override) if entry.model_override else None,
+                "reasoning_override": (
+                    dict(entry.reasoning_override) if entry.reasoning_override else None),
+                "service_tier_override": entry.service_tier_override,
+            }

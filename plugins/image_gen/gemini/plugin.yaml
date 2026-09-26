@@ -1,0 +1,12 @@
+name: gemini
+version: 1.0.0
+description: "Gemini (Google AI Studio) image generation backend (Nano Banana / Nano Banana Pro) via the native generateContent API. Saves generated images to $HERMES_HOME/cache/images/."
+author: NousResearch
+kind: backend
+requires_env:
+  - GOOGLE_API_KEY
+optional_env:
+  - name: GEMINI_API_KEY
+    description: "Alias for GOOGLE_API_KEY (same AI Studio key)."
+    prompt: "Google AI Studio API key (alias)"
+    password: true

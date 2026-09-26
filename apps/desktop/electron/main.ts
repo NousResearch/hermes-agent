@@ -2751,19 +2751,28 @@ async function unwrapWindowsVenvHermesCommand(command, backendArgs) {
   })
 }
 
-// Does the resolved runtime understand the `serve` subcommand? The desktop
-// spawns `hermes serve`; runtimes older than serve only have `dashboard`. We
-// detect support so getBackendArgsForRuntime() can route old runtimes through
-// the legacy `dashboard --no-open` form instead of crashing on an unknown
-// subcommand (would brick every user mid-upgrade — #54568 follow-up).
+// Resolve the backend command understood by the selected runtime. Desktop
+// prefers `serve` and only routes to legacy `dashboard --no-open` after a
+// successful capability check (#54568 follow-up).
 // Fast-path / probe / cache strategy: see backend-serve-support.ts header.
-const backendSupportsServe = createBackendServeSupportResolver(HERMES_HOME, rememberLog)
+const resolveBackendSubcommand = createBackendServeSupportResolver(HERMES_HOME, rememberLog)
 
 // Given a resolved backend whose args target `serve`, return the args the
 // runtime actually understands: unchanged when `serve` is supported, or
 // rewritten to `dashboard --no-open` for older runtimes.
 async function getBackendArgsForRuntime(backend) {
-  return (await backendSupportsServe(backend)) ? backend.args : dashboardFallbackArgs(backend.args)
+  // The managed launcher was probed as a real command during resolution.
+  const subcommand = backend.serverSubcommand || (await resolveBackendSubcommand(backend))
+
+  if (subcommand === 'serve') {
+    return backend.args
+  }
+
+  if (subcommand === 'dashboard') {
+    return dashboardFallbackArgs(backend.args)
+  }
+
+  throw new Error(`Hermes backend CLI at ${backend.label || backend.command} has no verified serve or dashboard command`)
 }
 
 function normalizeExecutablePathForCompare(commandPath) {

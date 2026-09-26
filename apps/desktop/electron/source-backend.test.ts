@@ -233,3 +233,42 @@ test('Windows console selection uses only the selected interpreter directory', (
     fs.rmSync(temp, { recursive: true, force: true })
   }
 })
+
+test('managed launcher needs a Desktop backend command, including the legacy dashboard', async (): Promise<void> => {
+  const temp: string = fs.mkdtempSync(path.join(os.tmpdir(), 'desktop-backend-command-'))
+  const root: string = path.join(temp, 'hermes-agent')
+  const launcher: string = path.join(root, '.hermes', 'bin', process.platform === 'win32' ? 'hermes.cmd' : 'hermes')
+
+  try {
+    fs.mkdirSync(path.join(root, 'hermes_cli'), { recursive: true })
+    fs.writeFileSync(path.join(root, 'hermes_cli', 'main.py'), '')
+    fs.mkdirSync(path.dirname(launcher), { recursive: true })
+
+    for (const mode of ['neither', 'serve', 'dashboard'] as const) {
+      if (process.platform === 'win32') {
+        fs.writeFileSync(
+          launcher,
+          `@echo off\r\nif "%~1"=="--version" exit /b 0\r\nif "%~1"=="${mode}" exit /b 0\r\nexit /b 2\r\n`
+        )
+      } else {
+        fs.writeFileSync(
+          launcher,
+          `#!/bin/sh\n[ "$1" = "--version" ] && exit 0\n[ "$1" = "${mode}" ] && exit 0\nexit 2\n`,
+          { mode: 0o755 }
+        )
+      }
+
+      const backend: SourceBackend | null = await resolveSourceInstallationBackend(root, serveBackendArgs(), {
+        hermesHome: path.join(temp, 'home')
+      })
+
+      if (mode === 'neither') {
+        assert.equal(backend, null, 'a version-only CLI must not block Desktop recovery')
+      } else {
+        assert.equal(backend?.serverSubcommand, mode)
+      }
+    }
+  } finally {
+    fs.rmSync(temp, { recursive: true, force: true })
+  }
+})

@@ -207,11 +207,12 @@ class TestNonBedrockProvidersKeepVerbatimLabels:
             adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
             adapter._bot, adapter._app = AsyncMock(), MagicMock()
             models = ["openai.gpt-6-astra", "openai.gpt-5.6-terra"]
+            on_selected = AsyncMock(return_value="ok")
             adapter._model_picker_state["12345"] = {
                 "providers": [{"slug": "openai-codex", "name": "Codex", "models": models,
                                "total_models": len(models)}],
                 "current_model": models[0], "current_provider": "openai-codex",
-                "session_key": "s", "on_model_selected": AsyncMock(return_value="ok"), "msg_id": 42}
+                "session_key": "s", "on_model_selected": on_selected, "msg_id": 42}
 
             query = AsyncMock()
             query.data = "mp:openai-codex"
@@ -224,12 +225,17 @@ class TestNonBedrockProvidersKeepVerbatimLabels:
             assert query.edit_message_text.await_count == 1, "tap reached no handler"
             kwargs = query.edit_message_text.call_args[1]
             buttons = [b for row in kwargs["reply_markup"].inline_keyboard for b in row]
-            picks = [(b.text, b.callback_data) for b in buttons
-                     if str(b.callback_data).startswith("mm:")]
+            picks = [b for b in buttons if str(b.callback_data).startswith("mm:")]
             # Straight to the models (no vendor step) and IDs untouched.
-            assert picks == [("openai.gpt-6-astra", "mm:0"), ("openai.gpt-5.6-terra", "mm:1")]
+            assert [b.text for b in picks] == ["openai.gpt-6-astra", "openai.gpt-5.6-terra"]
             assert not [b for b in buttons if str(b.callback_data).startswith("mvd:")]
             assert "in-region" not in kwargs["text"] and "= global" not in kwargs["text"]
+
+            query.data = picks[1].callback_data
+            await adapter._handle_callback_query(SimpleNamespace(callback_query=query), MagicMock())
+            switch = adapter._model_picker_state.get("12345")
+            assert switch is None, "a completed switch must drop the picker state"
+            assert on_selected.await_args[0][1] == "openai.gpt-5.6-terra"
         finally:
             telegram_adapter.InlineKeyboardButton, telegram_adapter.InlineKeyboardMarkup = original
 

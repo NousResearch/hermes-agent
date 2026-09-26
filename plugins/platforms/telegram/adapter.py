@@ -150,6 +150,10 @@ _UNAUTHORIZED = unauthorized_action_notice(Platform.TELEGRAM)
 
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from plugins.platforms.telegram.telegram_entities import expand_link_entities
+from plugins.platforms.telegram.model_picker_callbacks import (
+    STALE_LISTING_NOTICE as PICKER_STALE_NOTICE, canonical_indices as picker_canonical_indices,
+    resolve_selection as picker_resolve_selection, selection_payload as picker_selection_payload,
+)
 from plugins.platforms.telegram.model_picker_display import (
     configured_region_geo, group_models_by_vendor as group_bedrock_models_by_vendor,
     model_button_labels as bedrock_model_labels, pack_rows as pack_picker_rows, routing_legend,
@@ -670,6 +674,10 @@ class TelegramAdapter(BasePlatformAdapter):
         # getFile cap: 20MB on the public Bot API, 2GB on a local telegram-bot-api (base_url).
         self._max_doc_bytes: int = 2 * 1024 * 1024 * 1024 if extra.get("base_url") else 20 * 1024 * 1024
         self._model_picker_state: Dict[str, dict] = {}  # per-chat interactive picker state
+        # Monotonic id of the model listing a picker button was drawn from. Telegram keeps
+        # every inline keyboard tappable forever, so a selection payload names its listing
+        # and a tap from an older one is refused instead of resolving into the current list.
+        self._model_listing_seq = 0
         self._choice_picker_state: Dict[str, dict] = {}
         self._approval_state: Dict[int, str] = {}  # message_id → session_key
         self._slash_confirm_state: Dict[str, str] = {}  # confirm_id → session_key
@@ -4476,10 +4484,18 @@ class TelegramAdapter(BasePlatformAdapter):
         page_buttons, page_meta = self._format_choice_page(buttons, page, self._PROVIDER_PAGE_SIZE)
         return self._paged_keyboard(page_buttons, page_meta, "mpv", [InlineKeyboardButton("✗ Cancel", callback_data="mx")])
 
-    def _build_model_keyboard(self, models: list, page: int, bedrock: bool = True) -> tuple:
-        """Build paginated model buttons. Returns (keyboard, page_info_text)."""
+    def _build_model_keyboard(self, models: list, page: int, bedrock: bool = True,
+                              listing: int = 0, canonical: Optional[list] = None) -> tuple:
+        """Build paginated model buttons. Returns (keyboard, page_info_text).
+
+        ``canonical[i]`` is the position of ``models[i]`` in the listing's full
+        model list; the payload names that instead of a position in this scoped
+        slice, which the vendor step replaces on every drill-down and Back.
+        """
         page_models, page_meta = self._format_choice_page(models, page, self._MODEL_PAGE_SIZE)
         start = page_meta["start"]
+        if canonical is None:
+            canonical = picker_canonical_indices(len(models))
         buttons: list = []
         # Labels are computed over the FULL list so a model's label does not
         # change when the user pages; only this page's slice is rendered.
@@ -4488,7 +4504,7 @@ class TelegramAdapter(BasePlatformAdapter):
             abs_idx = start + i
             short = all_labels[abs_idx]
             buttons.append(
-                InlineKeyboardButton(short, callback_data=f"mm:{abs_idx}")
+                InlineKeyboardButton(short, callback_data=f"mm:{picker_selection_payload(listing, canonical[abs_idx])}")
             )
         return self._paged_keyboard(buttons, page_meta, "mg", self._picker_back_cancel_row())
 
@@ -4534,6 +4550,7 @@ class TelegramAdapter(BasePlatformAdapter):
         state["selected_vendor"] = ""
         models = state.get("full_model_list", [])
         state["model_list"] = models
+        state["canonical_indices"] = picker_canonical_indices(len(models))
         state["model_page"] = 0
         pname = state.get("selected_provider_name", "")
         # The per-vendor counts below are counts of the LISTED models, so the
@@ -4551,7 +4568,9 @@ class TelegramAdapter(BasePlatformAdapter):
         # Bedrock: elsewhere a ``<vendor>.`` segment is part of the name, not a
         # namespace the picker already named.
         is_bedrock = self._is_bedrock_provider(state.get("selected_provider", ""))
-        keyboard, page_info = self._build_model_keyboard(models, page, bedrock=is_bedrock)
+        keyboard, page_info = self._build_model_keyboard(
+            models, page, bedrock=is_bedrock, listing=int(state.get("listing", 0) or 0),
+            canonical=state.get("canonical_indices"))
         pname = state.get("selected_provider_name", "")
         # A bare label means "no routing namespace"; say so once in the body,
         # where it costs no button width, instead of prefixing every button.
@@ -4585,22 +4604,24 @@ class TelegramAdapter(BasePlatformAdapter):
             provider_label = state["current_provider"]
         await self._picker_edit(query, self._provider_list_text(state["current_model"], provider_label, provider_page_info), keyboard)
 
-    async def _picker_selection(self, query, state: dict, raw_idx: str) -> Optional[tuple]:
-        """Resolve ``mm:``/``mc:`` index → ``(idx, model_id, provider_slug, callback)``; answers + None on error."""
-        try:
-            idx = int(raw_idx)
-        except ValueError:
-            await query.answer(text="Invalid selection.")
-            return None
-        model_list = state.get("model_list", [])
-        if idx < 0 or idx >= len(model_list):
-            await query.answer(text="Invalid model index.")
+    async def _picker_selection(self, query, state: dict, raw: str) -> Optional[tuple]:
+        """Resolve an ``mm:``/``mc:`` payload → ``(payload, model_id, provider_slug, callback)``.
+
+        Resolution runs against the listing's FULL model list, which the vendor
+        step slices without reordering, so a button keeps the model it displayed
+        even once the user has navigated on. A payload from an older listing is
+        refused out loud instead: its index means nothing here (#94990 review).
+        """
+        model_id, refusal = picker_resolve_selection(
+            raw, state.get("listing"), state.get("full_model_list", []))
+        if model_id is None:
+            await query.answer(text=refusal)
             return None
         callback = state.get("on_model_selected")
         if not callback:
             await query.answer(text="Picker expired.")
             return None
-        return idx, model_list[idx], state.get("selected_provider", ""), callback
+        return raw, model_id, state.get("selected_provider", ""), callback
 
     async def _picker_switch(self, query, chat_id: str, model_id: str, provider_slug: str, callback) -> None:
         """Perform the model switch, render the result, and drop the picker state."""
@@ -4642,6 +4663,11 @@ class TelegramAdapter(BasePlatformAdapter):
             state["full_model_list"] = models
             state["selected_vendor"] = ""
             state["model_list"] = models
+            state["canonical_indices"] = picker_canonical_indices(len(models))
+            # A fresh listing: buttons drawn from any earlier one (an older ``/model``
+            # message, or this chat's previous provider) stop resolving here.
+            self._model_listing_seq += 1
+            state["listing"] = self._model_listing_seq
             # Bedrock advertises dozens of ``<geo>.<vendor>.<model>`` profiles at once;
             # a vendor step keeps a flat page of near-identical buttons scannable.
             # Gated on the provider so no other provider's flow changes, and on a
@@ -4659,6 +4685,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 return
             state["selected_vendor"] = vendor
             state["model_list"] = [full_models[i] for i in group["indices"]]
+            # The scoped slice is what gets rendered, but each button still names its
+            # position in ``full_model_list`` so the tap survives later navigation.
+            state["canonical_indices"] = list(group["indices"])
             await self._picker_show_models(query, state, 0)
         elif data.startswith("mg:"):  # model page navigation
             page = await self._parse_page(query, data[3:])
@@ -4672,13 +4701,13 @@ class TelegramAdapter(BasePlatformAdapter):
         elif data.startswith("mc:"):  # expensive model confirmed: perform the switch
             sel = await self._picker_selection(query, state, data[3:])
             if sel is not None:
-                _idx, model_id, provider_slug, callback = sel
+                _payload, model_id, provider_slug, callback = sel
                 await self._picker_switch(query, chat_id, model_id, provider_slug, callback)
         elif data.startswith("mm:"):  # model selected: warn if expensive, else perform the switch
             sel = await self._picker_selection(query, state, data[3:])
             if sel is None:
                 return
-            idx, model_id, provider_slug, callback = sel
+            payload, model_id, provider_slug, callback = sel
             try:
                 from hermes_cli.model_selection_guards import combined_selection_warning
                 # Pricing lookup may hit models.dev on a cache miss — keep it off the event loop.
@@ -4687,7 +4716,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 warning = None
             if warning is not None:
                 keyboard = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("Switch anyway", callback_data=f"mc:{idx}")], self._picker_back_cancel_row()])
+                    # The confirm button re-carries the payload, so the model the warning
+                    # described is the model the confirmation switches to.
+                    [InlineKeyboardButton("Switch anyway", callback_data=f"mc:{payload}")], self._picker_back_cancel_row()])
                 await query.edit_message_text(
                     text=self.format_message(f"⚠ *{warning.title}*\n\n{warning.message}"),
                     parse_mode=ParseMode.MARKDOWN_V2, reply_markup=keyboard)

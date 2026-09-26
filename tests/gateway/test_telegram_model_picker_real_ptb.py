@@ -66,26 +66,34 @@ def test_every_picker_keyboard_is_a_valid_ptb_keyboard(real_ptb):
     """
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
 
+    from plugins.platforms.telegram.model_picker_callbacks import parse_selection
     from plugins.platforms.telegram.model_picker_display import group_models_by_vendor
 
     keyboards = [adapter._build_vendor_keyboard(BEDROCK_IDS)]
     # Each vendor's pages must, together, offer a tap for every model it scopes:
-    # ``mm:<idx>`` indexes that vendor's own sub-list, so a model missing from
-    # every page is unreachable in the UI even though its ID is in the catalog.
+    # a model missing from every page is unreachable in the UI even though its ID
+    # is in the catalog. The payload names a canonical position in the FULL list,
+    # so reachability is measured there — that is the list a tap resolves against.
     for group in group_models_by_vendor(BEDROCK_IDS):
         scoped = [BEDROCK_IDS[i] for i in group["indices"]]
         reachable: set[int] = set()
         page = 0
         while True:
-            keyboard, _info = adapter._build_model_keyboard(scoped, page)
+            keyboard, _info = adapter._build_model_keyboard(
+                scoped, page, listing=1, canonical=list(group["indices"]))
             keyboards.append(keyboard)
             buttons = [b for row in keyboard.inline_keyboard for b in row]
-            reachable |= {int(str(b.callback_data)[3:]) for b in buttons
-                          if str(b.callback_data).startswith("mm:")}
+            for b in buttons:
+                if str(b.callback_data).startswith("mm:"):
+                    parsed = parse_selection(str(b.callback_data)[3:])
+                    assert parsed is not None, b.callback_data
+                    listing, index = parsed
+                    assert listing == 1, b.callback_data
+                    reachable.add(index)
             if not any(str(b.callback_data) == f"mg:{page + 1}" for b in buttons):
                 break
             page += 1
-        assert reachable == set(range(len(scoped))), f"{group['label']}: {sorted(reachable)}"
+        assert reachable == set(group["indices"]), f"{group['label']}: {sorted(reachable)}"
 
     for keyboard in keyboards:
         assert keyboard.inline_keyboard, "an empty keyboard is rejected by Telegram"
@@ -94,6 +102,7 @@ def test_every_picker_keyboard_is_a_valid_ptb_keyboard(real_ptb):
             for button in row:
                 assert button.text.strip(), f"blank button text in {keyboard.inline_keyboard}"
                 assert len(str(button.callback_data).encode()) <= 64, button.callback_data
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("slug", ["bedrock", "openai-codex"])
@@ -135,14 +144,14 @@ async def test_provider_scope_and_other_ids_survive_real_router(real_ptb, monkey
         query = await tap("mg:1")
         payload = query.edit_message_text.call_args.kwargs
         chosen = next(b for row in payload["reply_markup"].inline_keyboard for b in row
-                      if b.callback_data == "mm:8")
-        assert chosen.text == unknown[8]
+                      if b.text == unknown[8])
         await tap(chosen.callback_data)
         callback.assert_awaited_once_with("12345", unknown[8], slug)
     else:
         buttons = [b for row in payload["reply_markup"].inline_keyboard for b in row]
         assert not any(b.callback_data.startswith("mvd:") for b in buttons)
-        assert [b.text for b in buttons if b.callback_data.startswith("mm:")] == models[:8]
+        picks = [b for b in buttons if b.callback_data.startswith("mm:")]
+        assert [b.text for b in picks] == models[:8]
         assert "in-region" not in payload["text"]
-        await tap("mm:1")
+        await tap(picks[1].callback_data)
         callback.assert_awaited_once_with("12345", models[1], slug)

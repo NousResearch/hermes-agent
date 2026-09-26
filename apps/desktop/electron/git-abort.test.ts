@@ -158,4 +158,71 @@ describe('killChildOnAbort', () => {
 
     expect(kills).toEqual([])
   })
+
+  // Fix 5: onAbort runs inside controller.abort(), where a throw escapes to
+  // the caller and can wedge the probe's timeout callback.
+  it('does not let a throw from kill escape the abort listener', () => {
+    const child = {
+      kill() {
+        throw new Error('ESRCH')
+      },
+      once() {
+        return child
+      },
+      removeListener() {
+        return child
+      }
+    }
+
+    expect(() => killChildOnAbort(child, AbortSignal.abort(), 20)).not.toThrow()
+
+    const controller = new AbortController()
+
+    killChildOnAbort(child, controller.signal, 20)
+
+    expect(() => controller.abort()).not.toThrow()
+  })
+
+  // Fix 5: a child that closes the instant it is signalled needs no SIGKILL.
+  // The escalation timer is armed only when the child has not already closed.
+  it('does not arm the SIGKILL timer when the child closes during the SIGTERM', () => {
+    vi.useFakeTimers()
+
+    try {
+      const kills: Array<NodeJS.Signals | number | undefined> = []
+      const listeners = new Map<string, Array<() => void>>()
+
+      const child = {
+        kill(signal?: NodeJS.Signals | number) {
+          kills.push(signal)
+
+          for (const listener of [...(listeners.get('close') ?? [])]) {
+            listener()
+          }
+
+          return true
+        },
+        once(event: string, listener: () => void) {
+          listeners.set(event, [...(listeners.get(event) ?? []), listener])
+
+          return child
+        },
+        removeListener(event: string, _listener: () => void) {
+          listeners.delete(event)
+
+          return child
+        }
+      }
+
+      killChildOnAbort(child, AbortSignal.abort(), 20)
+
+      expect(kills).toEqual(['SIGTERM'])
+
+      vi.advanceTimersByTime(1_000)
+
+      expect(kills).toEqual(['SIGTERM'])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })

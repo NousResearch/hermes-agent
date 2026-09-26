@@ -39,8 +39,13 @@ export function killChildOnAbort(
   graceMs: number = GIT_KILL_GRACE_MS
 ): void {
   let escalation: ReturnType<typeof setTimeout> | null = null
+  // Set by teardown. Checked before every kill and inside the timer, so a child
+  // that is already gone is never signalled again (its pid may even be reused).
+  let closed = false
 
   const teardown = (): void => {
+    closed = true
+
     if (escalation) {
       clearTimeout(escalation)
       escalation = null
@@ -52,11 +57,36 @@ export function killChildOnAbort(
   }
 
   const onAbort = (): void => {
-    child.kill('SIGTERM')
+    if (closed) {
+      return
+    }
+
+    // This runs inside controller.abort(), where an escaped throw is an
+    // uncaught exception in whatever callback aborted (the probe's timeout).
+    // A kill that throws — an already-reaped pid, EPERM — must not escape.
+    try {
+      child.kill('SIGTERM')
+    } catch {
+      // Deliberately swallowed; the escalation below still gets its chance.
+    }
+
+    // A child that closed the instant it was signalled needs no SIGKILL.
+    if (closed) {
+      return
+    }
 
     escalation = setTimeout(() => {
       escalation = null
-      child.kill('SIGKILL')
+
+      if (closed) {
+        return
+      }
+
+      try {
+        child.kill('SIGKILL')
+      } catch {
+        // The timer must never throw either.
+      }
     }, graceMs)
   }
 

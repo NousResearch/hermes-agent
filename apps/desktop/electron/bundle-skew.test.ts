@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
-import { afterAll, describe, expect, it } from 'vitest'
+import { afterAll, describe, expect, it, vi } from 'vitest'
 
 import { createBundleSkewProbe, detectBundleSkew, isFallbackCommit, type RunGit, RUNTIME_PATHS } from './bundle-skew'
 
@@ -48,7 +48,11 @@ describe('isFallbackCommit', () => {
   it('matches the all-zero placeholder at any stamp length', () => {
     expect(isFallbackCommit('0'.repeat(40))).toBe(true)
     expect(isFallbackCommit('0'.repeat(7))).toBe(true)
+    // Fix 3: a SHA-256 repo has 64-character ids, so its placeholder is 64
+    // zeros. It is exactly as fake as the 40-zero one.
+    expect(isFallbackCommit('0'.repeat(64))).toBe(true)
     expect(isFallbackCommit('a'.repeat(40))).toBe(false)
+    expect(isFallbackCommit(`${'0'.repeat(63)}1`)).toBe(false)
   })
 })
 
@@ -205,6 +209,75 @@ describe('detectBundleSkew', () => {
     })
 
     expect(await detectBundleSkew(STAMP, git, REPO)).toEqual({
+      desktopCommitsBehind: 2,
+      outOfSync: true
+    })
+  })
+
+  // Fix 1: `head` fills a git argument, so it needs the same trust as the
+  // stamp. Only the literal 'HEAD' or a resolved object id may reach git; any
+  // other string could be read as a flag or an error message, so no process
+  // starts at all.
+  it('spawns no git for a head that is neither HEAD nor a resolved sha', async () => {
+    const { calls, git } = gitAnswering({
+      'merge-base': { code: 0 },
+      'rev-list': { stdout: '2\n' }
+    })
+
+    expect(await detectBundleSkew(STAMP, git, REPO, '--all')).toEqual({
+      desktopCommitsBehind: null,
+      outOfSync: false
+    })
+    expect(await detectBundleSkew(STAMP, git, REPO, 'main')).toEqual({
+      desktopCommitsBehind: null,
+      outOfSync: false
+    })
+    expect(await detectBundleSkew(STAMP, git, REPO, 'A'.repeat(40))).toEqual({
+      desktopCommitsBehind: null,
+      outOfSync: false
+    })
+    expect(await detectBundleSkew(STAMP, git, REPO, 'a'.repeat(39))).toEqual({
+      desktopCommitsBehind: null,
+      outOfSync: false
+    })
+    expect(calls).toEqual([])
+  })
+
+  it('accepts the literal HEAD and a resolved sha as the head argument', async () => {
+    const { calls, git } = gitAnswering({
+      'merge-base': { code: 0 },
+      'rev-list': { stdout: '2\n' }
+    })
+
+    const sha = 'c'.repeat(40)
+
+    expect(await detectBundleSkew(STAMP, git, REPO, 'HEAD')).toEqual({
+      desktopCommitsBehind: 2,
+      outOfSync: true
+    })
+    expect(await detectBundleSkew(STAMP, git, REPO, sha)).toEqual({
+      desktopCommitsBehind: 2,
+      outOfSync: true
+    })
+
+    expect(calls.filter(args => args[0] === 'merge-base')).toEqual([
+      ['merge-base', '--is-ancestor', STAMP.commit, 'HEAD'],
+      ['merge-base', '--is-ancestor', STAMP.commit, sha]
+    ])
+  })
+
+  // Fix 2: parseInt accepted '2junk' and reported a count git never produced.
+  // Only a pure digit string is a count; anything else is unknowable.
+  it('is quiet on a count with trailing junk and trusts a padded count', async () => {
+    expect(await detectBundleSkew(STAMP, gitCounting('2junk\n'), REPO)).toEqual({
+      desktopCommitsBehind: null,
+      outOfSync: false
+    })
+    expect(await detectBundleSkew(STAMP, gitCounting('-1\n'), REPO)).toEqual({
+      desktopCommitsBehind: null,
+      outOfSync: false
+    })
+    expect(await detectBundleSkew(STAMP, gitCounting(' 2 \n'), REPO)).toEqual({
       desktopCommitsBehind: 2,
       outOfSync: true
     })
@@ -679,6 +752,117 @@ describe('createBundleSkewProbe', () => {
     expect(await probe()).toEqual({ desktopCommitsBehind: 1, outOfSync: true })
 
     expect(calls.find(args => args[0] === 'merge-base')).toEqual(['merge-base', '--is-ancestor', STAMP.commit, head])
+  })
+
+  // Fix 2 on the probe path: a count that is not pure digits is not proof, so
+  // it is returned fail-quiet and never remembered. The next call asks git
+  // again instead of pinning the unparsable answer.
+  it('does not cache a rev-list count with trailing junk and asks git again', async () => {
+    const calls: string[][] = []
+    let count = '2junk\n'
+
+    const git: RunGit = async args => {
+      calls.push(args)
+
+      if (args[0] === 'rev-parse') {
+        return { code: 0, stderr: '', stdout: `false\n${'a'.repeat(40)}\n` }
+      }
+
+      if (args[0] === 'merge-base') {
+        return { code: 0, stderr: '', stdout: '' }
+      }
+
+      if (args[0] === 'rev-list') {
+        return { code: 0, stderr: '', stdout: count }
+      }
+
+      return { code: 1, stderr: '', stdout: '' }
+    }
+
+    const probe = createBundleSkewProbe({ stamp: STAMP, runGit: git, repoRoot: REPO })
+
+    expect(await probe()).toEqual(NOT_STALE)
+
+    count = '3\n'
+
+    expect(await probe()).toEqual({ desktopCommitsBehind: 3, outOfSync: true })
+    expect(spawnsOf(calls, 'rev-list')).toBe(2)
+  })
+
+  // Fix 4: a root change starts a new run, and the old run's git used to keep
+  // running for a tree nobody waits on. The superseded run's controller is
+  // aborted so its git child is killed; its caller still gets its own root's
+  // answer, and its late write still cannot touch the cache.
+  it('aborts a superseded run when the root changes mid-flight', async () => {
+    const pending: { resolve?: (value: { code: number; stderr: string; stdout: string }) => void } = {}
+    const seen: Array<{ cwd: string; signal?: AbortSignal }> = []
+    let root = '/repo-a'
+
+    const git: RunGit = async (args, options) => {
+      seen.push({ cwd: options.cwd, signal: options.signal })
+
+      if (args[0] === 'rev-parse') {
+        return { code: 0, stderr: '', stdout: `false\n${'a'.repeat(40)}\n` }
+      }
+
+      if (args[0] === 'merge-base') {
+        return { code: 0, stderr: '', stdout: '' }
+      }
+
+      if (args[0] === 'rev-list') {
+        if (options.cwd === '/repo-a') {
+          return new Promise(resolve => {
+            pending.resolve = resolve
+          })
+        }
+
+        return { code: 0, stderr: '', stdout: '4\n' }
+      }
+
+      return { code: 1, stderr: '', stdout: '' }
+    }
+
+    const probe = createBundleSkewProbe({ stamp: STAMP, runGit: git, repoRoot: () => root })
+
+    const first = probe()
+    await tick()
+
+    const oldSignal = seen.find(call => call.cwd === '/repo-a')?.signal
+
+    expect(oldSignal).toBeDefined()
+    expect(oldSignal?.aborted).toBe(false)
+
+    root = '/repo-b'
+
+    expect(await probe()).toEqual({ desktopCommitsBehind: 4, outOfSync: true })
+    expect(oldSignal?.aborted).toBe(true)
+
+    // The abandoned run still answers its own caller with its own root's count.
+    pending.resolve?.({ code: 0, stderr: '', stdout: '9\n' })
+    await tick()
+
+    expect(await first).toEqual({ desktopCommitsBehind: 9, outOfSync: true })
+  })
+
+  // Fix 5: the timeout callback runs inside setTimeout, where a throw escapes
+  // as an uncaught exception and leaves the probe's promise unsettled. The
+  // not-stale answer is resolved BEFORE the abort, so an abort that throws
+  // cannot stop the probe from answering.
+  it('settles not-stale at the timeout even when the abort throws', async () => {
+    const git: RunGit = () => new Promise(() => {})
+
+    const spy = vi.spyOn(AbortController.prototype, 'abort').mockImplementation(() => {
+      throw new Error('kill threw')
+    })
+
+    try {
+      const probe = createBundleSkewProbe({ stamp: STAMP, runGit: git, repoRoot: REPO, timeoutMs: 25 })
+
+      expect(await probe()).toEqual(NOT_STALE)
+      expect(spy).toHaveBeenCalled()
+    } finally {
+      spy.mockRestore()
+    }
   })
 })
 

@@ -45,10 +45,10 @@
  * (#99832).
  *
  * Fail-quiet by design: no stamp (dev runs), a fallback all-zero stamp
- * (non-git build), an unknown commit (stamp predates a shallow clone's
- * history), a stamp that is not an ancestor of HEAD, or any git failure all
- * report "not stale". This warning must never false-positive — it tells
- * users their install is torn.
+ * (non-git build, 40 or 64 zeros), an unknown commit (stamp predates a
+ * shallow clone's history), a stamp that is not an ancestor of HEAD, or any
+ * git failure all report "not stale". This warning must never false-positive —
+ * it tells users their install is torn.
  *
  * Pure + injectable so it is testable without booting Electron or git.
  */
@@ -116,12 +116,19 @@ const NOT_STALE: BundleSkewResult = { desktopCommitsBehind: null, outOfSync: fal
 
 /** Matches write-build-stamp.mjs's all-zero placeholder for non-git builds. */
 export function isFallbackCommit(commit: string): boolean {
-  return /^0{7,40}$/.test(commit)
+  // 7-40 covers the abbreviated-to-full SHA-1 range; 64 is the SHA-256
+  // placeholder a repository on that object format would write.
+  return /^(?:0{7,40}|0{64})$/.test(commit)
 }
 
 /** A resolved object id: 40 or 64 lowercase hex, never an error message. */
 function isResolvedSha(value: string): boolean {
   return /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(value)
+}
+
+/** The literal revision git may resolve itself, or a resolved object id. */
+function isTrustedHead(value: string): boolean {
+  return value === 'HEAD' || isResolvedSha(value)
 }
 
 export async function detectBundleSkew(
@@ -131,7 +138,9 @@ export async function detectBundleSkew(
   /**
    * The commit to measure against. The probe passes the sha it resolved and
    * keyed on; the default resolves the symbolic HEAD once per git call, which
-   * is only safe when nothing else can move HEAD mid-call.
+   * is only safe when nothing else can move HEAD mid-call. Only the literal
+   * 'HEAD' or a resolved object id is accepted — any other value returns
+   * not-stale without a spawn, because this string fills a git argument.
    */
   head = 'HEAD'
 ): Promise<BundleSkewResult> {
@@ -143,9 +152,12 @@ export async function detectBundleSkew(
  * drop to keep its public signature.
  *
  * A trustworthy answer is one git actually produced:
- *   - merge-base exited 0 (an ancestor) and rev-list exited 0 with a finite
- *     count — the number describes skew, and it stays true when the clone is
- *     deepened; or
+ *   - both git arguments were validated first — only a resolved object id may
+ *     fill the stamp slot, only 'HEAD' or a resolved object id the head slot,
+ *     so neither can be read as a flag or an error message; and
+ *   - merge-base exited 0 (an ancestor) and rev-list exited 0 with a count that
+ *     is pure digits — the number describes skew, and it stays true when the
+ *     clone is deepened; or
  *   - merge-base exited exactly 1 — "not an ancestor", the real, settled answer
  *     to the #92233 shape, worth reusing in a full clone. In a SHALLOW clone it
  *     is not settled: the history that would prove ancestry may simply not be
@@ -170,6 +182,14 @@ async function answerBundleSkew(
   // non-hex stamp could otherwise be read by git as a flag or an error message,
   // so it is rejected here before any git process starts.
   if (!isResolvedSha(stamp.commit)) {
+    return { cacheable: false, result: NOT_STALE }
+  }
+
+  // `head` fills a git argument too, so it gets the same trust: the literal
+  // 'HEAD' git resolves itself, or a resolved object id. Anything else — a
+  // branch name, a flag-like string, an error message, an abbreviated or
+  // uppercase id — never reaches a git argv, and no process starts.
+  if (!isTrustedHead(head)) {
     return { cacheable: false, result: NOT_STALE }
   }
 
@@ -212,7 +232,17 @@ async function answerBundleSkew(
       return { cacheable: false, result: NOT_STALE }
     }
 
-    const count = Number.parseInt(result.stdout.trim(), 10)
+    // `rev-list --count` prints one integer. `parseInt` alone accepted a
+    // leading integer followed by junk ('2junk' -> 2), which reports a count
+    // git never produced as if it were proof, so the digits are matched in
+    // full instead. Surrounding whitespace is git's, not a digit.
+    const trimmed = result.stdout.trim()
+
+    if (!/^\d+$/.test(trimmed)) {
+      return { cacheable: false, result: NOT_STALE }
+    }
+
+    const count = Number(trimmed)
 
     if (!Number.isFinite(count)) {
       return { cacheable: false, result: NOT_STALE }
@@ -245,6 +275,12 @@ export type BundleSkewProbe = () => Promise<BundleSkewResult>
 interface InFlightRun {
   promise: Promise<BundleSkewResult>
   root: string
+  /**
+   * The signal this run's git calls carry. A run replaced by one for another
+   * root is aborted through it, so its git child is killed instead of holding
+   * a core for a tree no caller is waiting on.
+   */
+  controller: AbortController
 }
 
 /**
@@ -260,7 +296,9 @@ interface InFlightRun {
  * the probe; a HEAD git cannot resolve, or resolves to something that is not a
  * sha, is the same "unknowable" the fail-quiet paths answer, and caches nothing
  * so the next call can read it. A root change starts a new run instead of
- * joining one that belongs to the old tree.
+ * joining one that belongs to the old tree, and aborts the superseded run's
+ * controller so its git child is killed rather than left working for a tree no
+ * caller waits on.
  */
 export function createBundleSkewProbe({
   stamp,
@@ -275,7 +313,7 @@ export function createBundleSkewProbe({
   // background, and must not write its late answer over a newer run's.
   let generation = 0
 
-  const run = async (cwd: string): Promise<BundleSkewResult> => {
+  const run = async (cwd: string, controller: AbortController): Promise<BundleSkewResult> => {
     if (!stamp?.commit || stamp.source === 'fallback' || isFallbackCommit(stamp.commit)) {
       return NOT_STALE
     }
@@ -287,7 +325,6 @@ export function createBundleSkewProbe({
       return NOT_STALE
     }
 
-    const controller = new AbortController()
     const signaled: RunGit = (args, options) => runGit(args, { ...options, signal: controller.signal })
     const myGeneration = ++generation
 
@@ -302,8 +339,18 @@ export function createBundleSkewProbe({
 
       timer = setTimeout(() => {
         timer = null
-        controller.abort()
+
+        // Resolve before aborting: abort runs its listeners synchronously, and
+        // a listener that throws (a kill on an already-reaped child) would
+        // otherwise escape this callback as an uncaught exception and leave the
+        // probe's promise unsettled forever.
         resolve(NOT_STALE)
+
+        try {
+          controller.abort()
+        } catch {
+          // A throwing abort listener must not wedge the timeout callback.
+        }
       }, timeoutMs)
     })
 
@@ -379,7 +426,17 @@ export function createBundleSkewProbe({
       return inFlight.promise
     }
 
-    const entry: InFlightRun = { promise: run(cwd), root: cwd }
+    // This run supersedes one for a different root. That run's caller still
+    // waits on it, but its git is doing work for a tree nobody else needs:
+    // abort its controller so the child is killed (SIGTERM, then SIGKILL, via
+    // killChildOnAbort) instead of holding a core for minutes. The generation
+    // guard already keeps its late answer out of the cache.
+    if (inFlight) {
+      inFlight.controller.abort()
+    }
+
+    const controller = new AbortController()
+    const entry: InFlightRun = { controller, promise: run(cwd, controller), root: cwd }
 
     entry.promise = entry.promise.finally(() => {
       if (inFlight === entry) {

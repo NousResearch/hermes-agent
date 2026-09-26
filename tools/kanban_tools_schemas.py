@@ -534,3 +534,41 @@ KANBAN_LINK_SCHEMA = _schema(
     },
     ["parent_id", "child_id"],
 )
+
+KANBAN_REASSIGN_SCHEMA = _schema(
+    "kanban_reassign",
+    (
+        "Reassign a Kanban task on THIS board to a different profile (or "
+        "unassign with an empty/omitted profile). Routing-only: refuses a "
+        "task that is currently 'running' unless 'reclaim' releases its "
+        "claim first (the \"this profile's model/run is broken\" path). "
+        "For coordinator/routing passes that need to redirect stuck or "
+        "misassigned cards without waiting on a human — same board only; "
+        "cross-board reassignment is refused."
+    ),
+    {
+        "task_id": _prop("string", "Task id to reassign."),
+        "assignee": _prop("string", "Profile to assign to. Omit or pass an empty string to unassign."),
+        "reclaim": {
+            "type": "boolean",
+            "description": "Release a stale 'running' claim before reassigning. Default false.",
+        },
+        "reason": _prop("string", "Optional short reason, recorded on the task event."),
+    },
+    ["task_id"],
+)
+
+KANBAN_ARCHIVE_SCHEMA = _schema(
+    "kanban_archive",
+    (
+        "Archive a stale/duplicate Kanban task on THIS board — the only "
+        "way to retire a card short of deleting it (archiving is "
+        "reversible; there is no delete tool). A 'running' task's worker "
+        "is terminated as part of the archive. Same board only; "
+        "cross-board archiving is refused."
+    ),
+    {
+        "task_id": _prop("string", "Task id to archive."),
+    },
+    ["task_id"],
+)

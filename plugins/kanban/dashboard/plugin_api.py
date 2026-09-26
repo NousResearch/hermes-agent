@@ -330,7 +330,10 @@ def get_board(
             "SELECT DISTINCT assignee FROM tasks WHERE assignee IS NOT NULL AND status != 'archived' ORDER BY assignee")]
         return {
             "columns": [{"name": name, "tasks": columns[name]} for name in columns], "tenants": tenants,
-            "assignees": assignees, "latest_event_id": int(latest_event_id), "now": int(time.time())}
+            "assignees": assignees, "latest_event_id": int(latest_event_id), "now": int(time.time()),
+            # Board health travels WITH the board so a starved queue cannot render
+            # like a quiet one: `state=starved` is the operator-visible difference.
+            "dispatch_health": kbd.board_health(conn, board=board).as_dict()}
 
 
 _read_board = coalesced_read(get_board)
@@ -352,6 +355,18 @@ async def get_board_endpoint(
         workflow_template_id=workflow_template_id,
         current_step_key=current_step_key,
     )
+
+
+@router.get("/health")
+def get_board_health(board: Optional[str] = _BOARD_Q):
+    """Board health on demand: the same tuple ``/board`` embeds, for a monitor
+    that must not page the whole board to ask whether the queue is moving.
+
+    Deliberately NOT coalesced: a stalled board has to be readable the moment it
+    stalls, not one cache window later.
+    """
+    with _board_conn(board) as (board, conn):
+        return {"board": board, **kbd.board_health(conn, board=board).as_dict()}
 
 
 # --- GET /tasks/:id ---------------------------------------------------------

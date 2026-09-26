@@ -80,12 +80,79 @@ _RESPAWN_GUARD_SUCCESS_WINDOW = 3600  # 1 hour
 DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS = 300  # 5 minutes
 
 # Within this window a GitHub PR URL in a comment blocks re-spawn.
+#
+# DO NOT SHORTEN THIS. A shorter window re-spawns a worker against the PR it
+# itself authored — the duplicate-work behaviour this guard exists to prevent.
+# The 2026-09-26 field incident showed the window was not the mechanism of
+# harm: three cards each cleared at their own 24h mark and the board-wide stall
+# was their overlap. The fix was the predicate below (a deliberate re-queue
+# lifts the guard) plus a board-health signal that distinguishes starved from
+# idle. There is deliberately no env/config override for it: the guard's policy
+# must stay evidenced per host, and a starvation must not be configurable away.
 _RESPAWN_GUARD_PR_WINDOW = 86400  # 24 hours
 
 _RESPAWN_GUARD_PR_URL_RE = re.compile(
     r"https?://github\.com/[^/\s]+/[^/\s]+/pull/\d+",
     re.IGNORECASE,
 )
+
+# The two respawn guards share ONE vocabulary for "somebody deliberately put
+# this card back in the lane": a done->ready drag (`status`), a parent-completion
+# re-promotion (`promoted`) and an operator/agent unblock (`unblocked`). Guard 3
+# has always honoured these; guard 4 now does too. Without it a card merely
+# NAMING somebody else's PR — a precondition, a parent's merge, the merge it
+# exists to verify — sat held for a full 24h, and the only lifts guard 4 had
+# (`assigned` / `changes_requested`) would have fabricated an ownership move or
+# a review verdict that never happened.
+_RESPAWN_GUARD_REQUEUE_KINDS = ("status", "promoted", "unblocked")
+
+# Crash recovery, NOT a decision. Guard 3 accepts it; guard 4 deliberately does
+# not — the worker that opened the PR is still not re-spawned against it. Both
+# guards read their vocabulary from this module, so the divergence is a decision
+# recorded in one place rather than drift between two SQL strings.
+_RESPAWN_GUARD_RECOVERY_KINDS = ("reclaimed",)
+
+# Guard 4's handoff kinds: an event naming the profile that must now work on
+# THAT PR — an operator reassign, a reviewer's changes_requested, a review
+# reopen.
+_RESPAWN_GUARD_HANDOFF_KINDS = ("assigned", "changes_requested", "review_reopened")
+
+# A hold EPISODE writes ONE `respawn_guarded` event, not one per tick. Guard 3
+# and the self-review guard already work this way; guard 4 did not, and the
+# signal became unreadable precisely because of its volume — 8837 `active_pr`
+# events across 24 cards all-time, 412 of them for a single card in one 6.9h
+# stall. Re-emit only when the reason changes or this interval elapses.
+_RESPAWN_GUARD_EVENT_REPEAT_SECONDS = 3600  # 1 hour
+
+# Events that END a hold episode: the card left the guarded state (spawned,
+# claimed, completed, released) or its lane decision changed. A card held across
+# N ticks therefore writes ONE event, and a card that leaves the queue and comes
+# back starts a fresh episode.
+_RESPAWN_GUARD_EPISODE_BREAK_KINDS = (
+    "spawned", "claimed", "completed", "blocked", "unblocked", "promoted",
+    "status", "assigned", "changes_requested", "review_reopened", "reclaimed",
+)
+
+# Consecutive ticks in which ready work exists and NOTHING spawnable could start
+# before the stall escalates to a card (matches the gateway/daemon health
+# window). The repeat interval, combined with the time-bucketed idempotency key
+# on the card, bounds a long stall to one escalation per board per interval.
+_STALL_ESCALATION_WINDOW = 6
+_STALL_ESCALATION_REPEAT_SECONDS = 3600  # 1 hour
+
+# Profile-name convention used to route an escalation: `<lane>-<role>`.
+# A lane's design-authority seat is `<lane>-stl`.
+_LANE_ROLE_SUFFIXES = ("-coder", "-worker", "-stl", "-sme", "-spec", "-lead")
+_LANE_SEAT_SUFFIX = "-stl"
+
+
+def _kind_clause(kinds: tuple[str, ...]) -> str:
+    """``IN (?, ?)`` placeholder list for a fixed tuple of event kinds.
+
+    Kinds come from module constants only (never from a caller), so the SQL text
+    is fixed while every value still binds as a parameter.
+    """
+    return "(" + ", ".join("?" for _ in kinds) + ")"
 
 
 @dataclass
@@ -158,11 +225,17 @@ def describe_suppression(results: Iterable[Optional["DispatchResult"]]) -> str:
     """One line naming why the tick(s) held ready work back, or ``""``.
 
     ``active_pr=1, recent_success=2, rate_limited=1, skipped_locked=1,
-    memory_pressure=critical`` — the respawn-guard reasons counted per task
-    plus the tick-level holds. Feeds the "dispatcher stuck" warnings of the
-    CLI daemon and the embedded gateway dispatcher, which otherwise report a
-    bare zero-spawn count while ``hermes kanban tail`` is the only place the
-    guard reason is written (#111910).
+    skipped_per_profile_capped=3, skipped_nonspawnable=12, skipped_unassigned=1,
+    memory_pressure=critical`` — the respawn-guard reasons counted per task plus
+    EVERY tick-level hold. Feeds the "dispatcher stuck" warnings of the CLI
+    daemon and the embedded gateway dispatcher, which otherwise report a bare
+    zero-spawn count while ``hermes kanban tail`` is the only place the guard
+    reason is written (#111910).
+
+    Naming every hold matters more than brevity: a line reading ``active_pr=3``
+    while 400 ready rows sit in ``skipped_per_profile_capped`` — or 12 in
+    ``skipped_nonspawnable`` — is not a report. It is how a starved board and a
+    correctly idle one came to read the same (2026-09-26).
     """
     counts: dict[str, int] = {}
     pressure: Optional[str] = None
@@ -175,6 +248,13 @@ def describe_suppression(results: Iterable[Optional["DispatchResult"]]) -> str:
             counts["rate_limited"] = counts.get("rate_limited", 0) + len(res.rate_limited)
         if res.skipped_locked:
             counts["skipped_locked"] = counts.get("skipped_locked", 0) + 1
+        for bucket, bucket_rows in (
+            ("skipped_per_profile_capped", res.skipped_per_profile_capped),
+            ("skipped_nonspawnable", res.skipped_nonspawnable),
+            ("skipped_unassigned", res.skipped_unassigned),
+        ):
+            if bucket_rows:
+                counts[bucket] = counts.get(bucket, 0) + len(bucket_rows)
         if res.memory_pressure:
             pressure = res.memory_pressure
     parts = [f"{k}={v}" for k, v in sorted(counts.items())]
@@ -1503,10 +1583,12 @@ def check_respawn_guard(
     (quota/auth pattern; the breaker still trips eventually), then for the
     ready lane only ``"recent_success"`` (completed run within the window, unless
     a re-queue event arrived after it — a deliberate re-run) and ``"active_pr"``
-    (PR URL in a recent comment; re-spawning risks a duplicate PR — unless a
-    handoff event followed the comment: the named profile must work on that
-    PR). The review lane skips the last two: they are the *inputs* to a review
-    handoff. Stale / dead claim locks are NOT a guard reason — the reclaim
+    (PR URL in a recent comment; re-spawning risks a duplicate PR — unless the
+    card was deliberately re-queued (``status`` / ``promoted`` / ``unblocked``)
+    or handed off (``assigned`` / ``changes_requested`` / ``review_reopened``)
+    after that comment: the named profile must work on that PR, or a human asked
+    for it again). The review lane skips the last two: they are the *inputs* to a
+    review handoff. Stale / dead claim locks are NOT a guard reason — the reclaim
     passes own those.
     """
     row = conn.execute(
@@ -1575,22 +1657,34 @@ def check_respawn_guard(
     ).fetchone()
     if recent_completed:
         completed_at = int(recent_completed["ended_at"] or 0)
+        requeue_kinds = _RESPAWN_GUARD_REQUEUE_KINDS + _RESPAWN_GUARD_RECOVERY_KINDS
         requeued_after = conn.execute(
             "SELECT 1 FROM task_events "
             "WHERE task_id = ? AND created_at >= ? "
-            "AND kind IN ('status', 'promoted', 'unblocked', 'reclaimed') "
+            f"AND kind IN {_kind_clause(requeue_kinds)} "
             "LIMIT 1",
-            (task_id, completed_at),
+            (task_id, completed_at, *requeue_kinds),
         ).fetchone()
         if not requeued_after:
             return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
-    #    Exception: a handoff AFTER the newest PR comment (operator reassign,
-    #    reviewer changes_requested, review reopen) names the profile that must
-    #    now work on THAT PR — a closer or the implementer finishing it, not a
-    #    duplicate implementation (#111910). A crash/reclaim is not a handoff,
-    #    so the worker that opened the PR is still not re-spawned against it.
+    #    Exceptions, and they are two DIFFERENT things:
+    #      * a deliberate re-queue AFTER the newest PR comment (`status`,
+    #        `promoted`, `unblocked`) — the queue owner asked for this card to
+    #        run again, so it outranks the duplicate-PR risk. Without this a card
+    #        that merely NAMES somebody else's PR (a precondition, a parent's
+    #        merge, the merge it exists to verify) sits held for the full window
+    #        and the only lifts left would fabricate an ownership move or a
+    #        review verdict that never happened.
+    #      * a handoff AFTER it (operator reassign, reviewer
+    #        changes_requested, review reopen) — the named profile must now work
+    #        on THAT PR (#111910).
+    #    `reclaimed` is deliberately NOT accepted here: crash recovery is not a
+    #    decision, so the worker that opened the PR is still not re-spawned
+    #    against it. (Guard 3 DOES accept it — a crash during the success window
+    #    would otherwise park that card forever.) That divergence is the
+    #    decision; both guards read their vocabulary from this module.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
     for c in conn.execute(
         "SELECT body, created_at FROM task_comments "
@@ -1600,15 +1694,21 @@ def check_respawn_guard(
         body = _kb._lossy_text(c["body"])
         if not (body and _RESPAWN_GUARD_PR_URL_RE.search(body)):
             continue
+        lift_kinds = _RESPAWN_GUARD_HANDOFF_KINDS + _RESPAWN_GUARD_REQUEUE_KINDS
         events = conn.execute(
             # Strictly after: a same-second tie stays guarded (fail closed).
             "SELECT kind, payload FROM task_events "
             "WHERE task_id = ? AND created_at > ? "
-            "AND kind IN ('assigned', 'changes_requested', 'review_reopened')",
-            (task_id, int(c["created_at"] or 0)),
+            f"AND kind IN {_kind_clause(lift_kinds)}",
+            (task_id, int(c["created_at"] or 0), *lift_kinds),
         ).fetchall()
-        if any(_is_handoff_event(e["kind"], e["payload"]) for e in events):
-            return None
+        for e in events:
+            # A re-queue needs no payload inspection: the event kind IS the
+            # decision ("run it again"), so there is nothing to fabricate.
+            if e["kind"] in _RESPAWN_GUARD_REQUEUE_KINDS:
+                return None
+            if _is_handoff_event(e["kind"], e["payload"]):
+                return None
         return "active_pr"
 
     return None
@@ -1628,6 +1728,52 @@ def _is_handoff_event(kind: str, payload: Optional[str]) -> bool:
         return False
     to = data.get("assignee")
     return bool(to) and "from" in data and data["from"] != to
+
+
+def _append_respawn_guard_event(conn: sqlite3.Connection, task_id: str, reason: str) -> bool:
+    """Record a ``respawn_guarded`` event for the CURRENT hold episode only.
+
+    Returns True when a row was written. The callers already hold the write txn.
+
+    The dispatcher evaluates the guard on every tick, so an unconditional write
+    turns a held card into an event firehose: 8837 ``active_pr`` events over 24
+    cards on one board, 412 of them for a single card in one 6.9h stall, which is
+    how a full-board starvation read as noise instead of an alert. One event per
+    episode is the readable contract, and it is what ``hermes kanban tail``
+    already shows for the ``recent_success`` / self-review guards.
+
+    A new event is written when:
+
+      * the card has no such event yet (first hold), or
+      * the reason changed (a different hold is now in force), or
+      * the card left the guarded state since the last event — an
+        ``_RESPAWN_GUARD_EPISODE_BREAK_KINDS`` event is newer, so this is a
+        fresh episode — or
+      * the re-notify interval elapsed, so a genuinely long stall keeps a
+        heartbeat an operator polling ``tail`` can still see.
+    """
+    now = int(time.time())
+    last = conn.execute(
+        "SELECT id, created_at, payload FROM task_events "
+        "WHERE task_id = ? AND kind = 'respawn_guarded' "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if last is not None:
+        data = _kb._json_or(last["payload"], {})
+        same_reason = isinstance(data, dict) and data.get("reason") == reason
+        if same_reason and (now - int(last["created_at"] or 0)) < _RESPAWN_GUARD_EVENT_REPEAT_SECONDS:
+            broke = conn.execute(
+                "SELECT 1 FROM task_events "
+                "WHERE task_id = ? AND id > ? "
+                f"AND kind IN {_kind_clause(_RESPAWN_GUARD_EPISODE_BREAK_KINDS)} "
+                "LIMIT 1",
+                (task_id, int(last["id"]), *_RESPAWN_GUARD_EPISODE_BREAK_KINDS),
+            ).fetchone()
+            if not broke:
+                return False
+    _kb._append_event(conn, task_id, "respawn_guarded", {"reason": reason})
+    return True
 
 
 def _profile_exists_fn() -> Optional[Callable[[str], bool]]:
@@ -1766,6 +1912,390 @@ def review_dispatch_enabled() -> bool:
         return bool((load_config() or {}).get("kanban", {}).get("review_dispatch", True))
     except Exception:
         return True
+
+
+# --- Board health: starved must not look like idle -------------------------
+#
+# On 2026-09-26 a board held 24 active-PR-ready cards with nothing running for
+# 6.9h after its last completion. Every surface read clean: the dispatcher
+# logged ``0 spawned. Last tick held back: active_pr=3`` beside another lane's
+# genuine warning, so a full stall looked exactly like a quiet board. The fix is
+# a health READ that names the difference, plus an escalation that acts on it
+# (never a longer list of WARNING lines in a log nobody is tailing).
+
+
+@dataclass
+class BoardHealth:
+    """The ``(ready_total, spawnable, suppressed_by_reason)`` board-health tuple.
+
+    ``ready_total``
+        Every ``ready`` row, including rows the dispatcher would never spawn.
+    ``spawnable``
+        The subset it could claim this tick: an assignee that resolves to a real
+        profile and no live claim lock.
+    ``suppressed_by_reason``
+        Of those, how many are held back and why (the respawn-guard vocabulary).
+    ``unavailable_by_reason``
+        Ready rows the queue never offers, named rather than dropped: no
+        assignee, an assignee that is not a profile (a control-plane lane pulls
+        those via ``claim_task``), a live claim lock, or the per-profile cap.
+    ``starved``
+        Spawnable rows exist and none of them can start. This — not an empty
+        board — is the condition that was invisible.
+    """
+
+    ready_total: int = 0
+    spawnable: int = 0
+    suppressed_by_reason: dict[str, int] = field(default_factory=dict)
+    unavailable_by_reason: dict[str, int] = field(default_factory=dict)
+    starved: bool = False
+
+    @property
+    def suppressed(self) -> int:
+        return sum(self.suppressed_by_reason.values())
+
+    @property
+    def startable(self) -> int:
+        """``spawnable`` minus the rows the per-profile cap defers."""
+        return max(0, self.spawnable - self.unavailable_by_reason.get("per_profile_capped", 0))
+
+    @property
+    def state(self) -> str:
+        """``starved`` / ``dispatchable`` / ``idle`` — the one-word verdict."""
+        if self.starved:
+            return "starved"
+        if self.startable > 0:
+            return "dispatchable"
+        return "idle"
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "state": self.state,
+            "starved": self.starved,
+            "ready_total": self.ready_total,
+            "spawnable": self.spawnable,
+            "startable": self.startable,
+            "suppressed": self.suppressed,
+            "suppressed_by_reason": dict(sorted(self.suppressed_by_reason.items())),
+            "unavailable_by_reason": dict(sorted(self.unavailable_by_reason.items())),
+        }
+
+    def describe(self) -> str:
+        """One line that distinguishes a starved board from a quiet one."""
+        parts = [
+            f"state={self.state}",
+            f"ready_total={self.ready_total}",
+            f"spawnable={self.spawnable}",
+            f"startable={self.startable}",
+            f"suppressed={self.suppressed}",
+        ]
+        for label, bucket in (("suppressed_by_reason", self.suppressed_by_reason),
+                              ("unavailable_by_reason", self.unavailable_by_reason)):
+            if bucket:
+                parts.append(label + "=" + ",".join(f"{k}:{v}" for k, v in sorted(bucket.items())))
+        return " ".join(parts)
+
+
+def _bump(bucket: dict[str, int], key: str) -> None:
+    bucket[key] = bucket.get(key, 0) + 1
+
+
+def board_health(conn: sqlite3.Connection, *, board: Optional[str] = None) -> BoardHealth:
+    """Live board-health read of the ready lane — see :class:`BoardHealth`.
+
+    Cheap enough for a CLI read and a dashboard poll: one scan of the ready
+    column plus one guard evaluation per spawnable row. Deliberately computed
+    from the ROWS, not from the last tick's ``DispatchResult``, because the
+    surfaces that must tell starved from idle include processes that never ran a
+    tick (``hermes kanban health``, the dashboard).
+
+    ``board`` is accepted for the caller's convenience and for an honest
+    ``board`` field in the escalation body; the connection is already the
+    board's.
+    """
+    health = BoardHealth()
+    rows = conn.execute(
+        "SELECT id, assignee, claim_lock FROM tasks WHERE status = 'ready'"
+    ).fetchall()
+    health.ready_total = len(rows)
+    if not rows:
+        return health
+
+    profile_exists = _profile_exists_fn()
+    cap = configured_max_in_progress()
+    running: dict[str, int] = {}
+    if isinstance(cap, int) and cap > 0:
+        for prow in conn.execute(
+            "SELECT assignee, COUNT(*) AS n FROM tasks "
+            "WHERE status = 'running' AND assignee IS NOT NULL GROUP BY assignee"
+        ):
+            running[prow["assignee"]] = int(prow["n"])
+
+    for row in rows:
+        assignee = row["assignee"]
+        if not assignee:
+            _bump(health.unavailable_by_reason, "unassigned")
+            continue
+        if profile_exists is not None and not profile_exists(assignee):
+            # Control-plane lanes pull these themselves via ``claim_task`` —
+            # correctly idle, not a stall.
+            _bump(health.unavailable_by_reason, "not_a_profile")
+            continue
+        if row["claim_lock"] is not None:
+            _bump(health.unavailable_by_reason, "claimed")
+            continue
+        health.spawnable += 1
+        if isinstance(cap, int) and cap > 0 and running.get(assignee, 0) >= cap:
+            _bump(health.unavailable_by_reason, "per_profile_capped")
+            continue
+        reason = check_respawn_guard(conn, row["id"], lane="ready")
+        if reason is not None:
+            _bump(health.suppressed_by_reason, reason)
+
+    # Every row that COULD start is held back: the board is starved, whatever
+    # the row count. One suppressed row and a hundred read identically.
+    health.starved = health.startable > 0 and health.suppressed == health.startable
+    return health
+
+
+def _kanban_config() -> dict:
+    """``config.yaml``'s ``kanban`` mapping, or ``{}`` when unreadable."""
+    try:
+        from hermes_cli.config import load_config
+        cfg = (load_config() or {}).get("kanban") or {}
+        return cfg if isinstance(cfg, dict) else {}
+    except Exception:
+        return {}
+
+
+def _lane_of(assignee: str) -> Optional[str]:
+    """The lane an assignee belongs to, by the ``<lane>-<role>`` profile
+    convention (``platform-coder`` → ``platform``).
+
+    ``None`` when the name carries no recognised role suffix: an ad-hoc profile
+    must never be silently binned into a lane that does not exist.
+    """
+    name = (assignee or "").strip().lower()
+    for suffix in _LANE_ROLE_SUFFIXES:
+        if name.endswith(suffix) and len(name) > len(suffix):
+            return name[: -len(suffix)]
+    return None
+
+
+def _stall_escalation_assignee(held_assignees: Iterable[str]) -> Optional[str]:
+    """Deterministic escalation seat for a starved ready queue.
+
+    The routing is a FUNCTION, never a judgement: the lane with the most held
+    rows decides, ties break lexicographically, and the lane's design-authority
+    seat is ``<lane>-stl``. A seat that this home does not actually have as a
+    profile falls through to ``kanban.orchestrator_profile`` and then
+    ``kanban.default_assignee`` — both already-configurable fleet seats, so no
+    new knob is introduced. Filing a card assigned to a profile the home does not
+    have would park it in ``skipped_nonspawnable`` forever: silent, which is the
+    failure mode this escalation exists to close. ``None`` means no routable seat
+    exists and the caller must shout in the log instead of filing.
+    """
+    per_lane: dict[str, int] = {}
+    for assignee in held_assignees:
+        lane = _lane_of(assignee)
+        if lane:
+            per_lane[lane] = per_lane.get(lane, 0) + 1
+    ranked = sorted(per_lane.items(), key=lambda pair: (-pair[1], pair[0]))
+    candidates = [f"{ranked[0][0]}{_LANE_SEAT_SUFFIX}"] if ranked else []
+    cfg = _kanban_config()
+    for key in ("orchestrator_profile", "default_assignee"):
+        value = str(cfg.get(key) or "").strip()
+        if value:
+            candidates.append(value)
+    profile_exists = _profile_exists_fn()
+    for name in candidates:
+        if profile_exists is None or profile_exists(name):
+            return name
+    return None
+
+
+def _stall_hold(result: "DispatchResult") -> Optional[dict[str, list[str]]]:
+    """Held task ids by reason when THIS tick had startable work and spawned
+    nothing, else ``None``.
+
+    A zero-spawn tick is not automatically a stall. ``skipped_locked`` (another
+    dispatcher is mid-tick), ``memory_pressure`` (deliberate backpressure) and a
+    ready queue that is only unassigned or non-profile rows (correctly idle) are
+    all healthy. A stall needs rows the dispatcher WOULD have spawned and did
+    not: a guard hold or the per-profile cap.
+    """
+    if result.spawned or result.skipped_locked or result.memory_pressure:
+        return None
+    held: dict[str, list[str]] = {}
+    for task_id, reason in result.respawn_guarded:
+        held.setdefault(reason, []).append(task_id)
+    if result.skipped_per_profile_capped:
+        held["per_profile_capped"] = [
+            task_id for task_id, _assignee, _current in result.skipped_per_profile_capped
+        ]
+    return held or None
+
+
+def _file_stall_escalation(
+    conn: sqlite3.Connection,
+    *,
+    board: Optional[str],
+    held: dict[str, list[str]],
+    ticks: int,
+    assignee: str,
+    health: BoardHealth,
+    now: float,
+) -> Optional[str]:
+    """File the stall-escalation card. Returns its task id, or ``None``.
+
+    Body and title are built from counts only: no prose a human has to interpret
+    and no inference, so the routing decision is reviewable after the fact. The
+    idempotency key is bucketed by ``_STALL_ESCALATION_REPEAT_SECONDS``, which
+    bounds a multi-day stall to one card per board per interval even if two
+    dispatchers race the same tick.
+    """
+    reason_counts = {reason: len(ids) for reason, ids in held.items()}
+    summary = ", ".join(f"{k}={v}" for k, v in sorted(reason_counts.items()))
+    held_ids = sorted(task_id for ids in held.values() for task_id in ids)
+    body = "\n".join([
+        f"Board {board or _kb.DEFAULT_BOARD!r}: the dispatcher has held its ready "
+        f"queue back for {ticks} consecutive ticks with nothing spawned.",
+        "",
+        f"health: {health.describe()}",
+        f"held_by_reason: {summary}",
+        f"held_tasks: {', '.join(held_ids[:40])}"
+        + (f" (+{len(held_ids) - 40} more)" if len(held_ids) > 40 else ""),
+        "",
+        "No worker started on any of those ticks, so the board is starved, not "
+        "idle — see `hermes kanban health` for the same read on demand.",
+        "The cause is per-card suppression (respawn guard / per-profile cap), "
+        "not profile health: every held row has a spawnable assignee.",
+        "",
+        "Deterministic routing: the held rows' lanes decide the seat, and the "
+        "seat this card is assigned to is the lane design authority for the "
+        "majority of them.",
+    ])
+    key = f"kanban-dispatch-stall:{board or _kb.DEFAULT_BOARD}:{int(now // _STALL_ESCALATION_REPEAT_SECONDS)}"
+    try:
+        task_id = _kb.create_task(
+            conn,
+            title=f"kanban: dispatcher stall on {board or _kb.DEFAULT_BOARD}"
+                  f" — {ticks} ticks with ready work held back ({summary})",
+            body=body,
+            assignee=assignee,
+            created_by="kanban-dispatcher",
+            board=board,
+            idempotency_key=key,
+            workspace_kind="scratch",
+        )
+    except TypeError:
+        # Older create_task without idempotency_key/workspace_kind: still file —
+        # a stall must not go unreported because of a signature drift.
+        task_id = _kb.create_task(
+            conn,
+            title=f"kanban: dispatcher stall on {board or _kb.DEFAULT_BOARD}"
+                  f" — {ticks} ticks with ready work held back ({summary})",
+            body=body,
+            assignee=assignee,
+            created_by="kanban-dispatcher",
+            board=board,
+        )
+    return task_id
+
+
+@dataclass
+class _StallTracker:
+    """Per-board consecutive-stall bookkeeping (process-local, like the
+    tick-hook bridge: two dispatcher processes on one board cannot both hold the
+    single-writer lock, and the idempotency key is the cross-process backstop)."""
+
+    consecutive: int = 0
+    last_escalation_at: float = 0.0
+    last_escalation_task: Optional[str] = None
+
+
+_stall_trackers: dict[Optional[str], _StallTracker] = {}
+
+
+def reset_stall_tracker(board: Optional[str] = None) -> None:
+    """Drop the process-local stall counter (used by tests and by ``--once``)."""
+    if board is None:
+        _stall_trackers.clear()
+    else:
+        _stall_trackers.pop(board, None)
+
+
+def observe_dispatch_tick(
+    conn: sqlite3.Connection,
+    result: "DispatchResult",
+    *,
+    board: Optional[str] = None,
+    dry_run: bool = False,
+) -> Optional[str]:
+    """Track consecutive stall ticks for one board and escalate deterministically.
+
+    Called by :func:`dispatch_once` AFTER the single-writer lock is released, so
+    filing a card can never extend the critical section. Returns the escalation
+    task id when this tick filed one.
+
+    Failing to file must never break a tick, so every filing error is logged and
+    swallowed — the noise is worth less than the queue.
+    """
+    if dry_run or result.skipped_locked:
+        return None
+    tracker = _stall_trackers.setdefault(board, _StallTracker())
+    held = _stall_hold(result)
+    if held is None:
+        tracker.consecutive = 0
+        return None
+    tracker.consecutive += 1
+    if tracker.consecutive < _STALL_ESCALATION_WINDOW:
+        return None
+    now = time.time()
+    if (now - tracker.last_escalation_at) < _STALL_ESCALATION_REPEAT_SECONDS:
+        return None
+    held_assignees: list[str] = []
+    held_ids = [task_id for ids in held.values() for task_id in ids]
+    if held_ids:
+        placeholders = ", ".join("?" for _ in held_ids)
+        for row in conn.execute(
+            f"SELECT assignee FROM tasks WHERE id IN ({placeholders})", tuple(held_ids)
+        ):
+            if row["assignee"]:
+                held_assignees.append(row["assignee"])
+    assignee = _stall_escalation_assignee(held_assignees)
+    health = board_health(conn, board=board)
+    tracker.last_escalation_at = now
+    if assignee is None:
+        # No routable seat for this home: say so loudly rather than filing a card
+        # that can never be spawned. This is the one path that stays a log line,
+        # and it names the misconfiguration instead of the symptom.
+        _kb._log.error(
+            "kanban dispatch: board %r starved for %d consecutive ticks (%s) and no "
+            "escalation seat resolves — set kanban.orchestrator_profile or "
+            "kanban.default_assignee to an existing profile",
+            board or _kb.DEFAULT_BOARD, tracker.consecutive, health.describe(),
+        )
+        return None
+    try:
+        task_id = _file_stall_escalation(
+            conn, board=board, held=held, ticks=tracker.consecutive,
+            assignee=assignee, health=health, now=now,
+        )
+    except Exception as exc:  # noqa: BLE001 — never break the tick over reporting
+        _kb._log.error(
+            "kanban dispatch: could not file the stall escalation for board %r (%s): %s",
+            board or _kb.DEFAULT_BOARD, health.describe(), exc,
+        )
+        return None
+    tracker.last_escalation_task = task_id
+    _kb._log.warning(
+        "kanban dispatch: board %r starved for %d consecutive ticks (%s); "
+        "escalated to %s as %s",
+        board or _kb.DEFAULT_BOARD, tracker.consecutive, health.describe(),
+        assignee, task_id,
+    )
+    return task_id
 
 
 # Memory-aware dispatch guard: an uncapped board once OOM'd a 1 GiB host. Two
@@ -1961,6 +2491,7 @@ def dispatch_once(
         # Must not lose the tick — fall through to an unguarded dispatch.
         result = _locked_tick()
         _kb._fire_dispatch_tick_hook(result, board=board, dry_run=dry_run)
+        observe_dispatch_tick(conn, result, board=board, dry_run=dry_run)
         return result
     with _kbc._dispatch_tick_lock(db_path) as held:
         if not held:
@@ -1972,6 +2503,11 @@ def dispatch_once(
     # Lock released. Fire the tick observer strictly OUTSIDE the critical
     # section: a slow subscriber must never stall a sibling dispatcher's tick.
     _kb._fire_dispatch_tick_hook(result, board=board, dry_run=dry_run)
+    # Board-health escalation also runs outside the lock: filing a card must
+    # never extend the single-writer critical section, and a starved board must
+    # escalate as a CARD (a routed, owned action) rather than one more WARNING
+    # line in a log nobody is tailing.
+    observe_dispatch_tick(conn, result, board=board, dry_run=dry_run)
     return result
 
 
@@ -2026,7 +2562,9 @@ def _dispatch_lane_task(
     guard_reason = check_respawn_guard(conn, task_id, lane=lane)
     if guard_reason is not None:
         result.respawn_guarded.append((task_id, guard_reason))
-        # Event so ``hermes kanban tail`` shows why the task looks stuck.
+        # Event so ``hermes kanban tail`` shows why the task looks stuck —
+        # written once per hold episode, not once per tick
+        # (:func:`_append_respawn_guard_event`).
         # Honour kanban.default_assignee: when the dispatcher hits an unassigned ready task and an
         # operator-configured fallback exists, persist the assignment and proceed. This removes the
         # dashboard footgun where a task created without an assignee parks in 'ready' forever even though
@@ -2035,7 +2573,7 @@ def _dispatch_lane_task(
         # owned by ``kanban.default_assignee``, not "unassigned but secretly routed".
         if not dry_run:
             with _kb.write_txn(conn):
-                _kb._append_event(conn, task_id, "respawn_guarded", {"reason": guard_reason})
+                _append_respawn_guard_event(conn, task_id, guard_reason)
         return False
 
     def _count_spawn(name: str) -> None:

@@ -165,8 +165,53 @@ def _unverified_targets(unverified) -> str:
 _STATE_BADGES = {"paused": ("[paused]", Colors.YELLOW), "completed": ("[completed]", Colors.BLUE)}
 
 
-def cron_list(show_all: bool = False):
-    """List all scheduled jobs."""
+def _job_json_entry(job: Dict[str, Any]) -> Dict[str, Any]:
+    """One stable-shape JSON object for a scheduled job.
+
+    Every key is always present (null when unset) so a consumer can index
+    without key-checking, and the values follow the same coalescing rules the
+    human renderer uses - in particular ``effective_job_state``, so a
+    half-paused record never renders as active.
+    """
+    from cron.jobs import effective_job_state
+
+    repeat_info = job.get("repeat") or {}
+    deliver = job.get("deliver") or ["local"]
+    if isinstance(deliver, str):
+        deliver = [deliver]
+    # An explicitly empty skills list is honoured; only a missing key falls back
+    # to the legacy singular ``skill``.
+    skills = job.get("skills")
+    if skills is None:
+        skills = [job["skill"]] if job.get("skill") else []
+    sched = job.get("schedule")
+    return {
+        "id": job.get("id"),
+        "name": job.get("name") or "",
+        "schedule": job.get("schedule_display") or (sched.get("value") if isinstance(sched, dict) else None),
+        "state": effective_job_state(job),
+        "enabled": bool(job.get("enabled", True)),
+        "repeat_times": repeat_info.get("times"),
+        "repeat_completed": repeat_info.get("completed", 0),
+        "next_run_at": job.get("next_run_at"),
+        "last_run_at": job.get("last_run_at"),
+        "last_status": job.get("last_status"),
+        "deliver": deliver,
+        "skills": skills,
+        "model": job.get("model"),
+        "provider": job.get("provider"),
+    }
+
+
+def cron_list(show_all: bool = False, json_output: bool = False):
+    """List all scheduled jobs.
+
+    ``json_output`` makes the listing machine-readable: a JSON array with one
+    stable-shape object per job, so fleet scripts and dashboards never have to
+    parse box-drawing prose, and an empty fleet prints ``[]``. The payload is
+    built from the same job set and the same state resolution as the human
+    renderer below, so the two can never disagree about which jobs exist.
+    """
     from cron.jobs import effective_job_state, list_jobs
     jobs = list_jobs(include_disabled=True)
     if not show_all:
@@ -174,6 +219,10 @@ def cron_list(show_all: bool = False):
             job for job in jobs
             if job.get("enabled", True) or effective_job_state(job) == "paused"
         ]
+
+    if json_output:
+        print(json.dumps([_job_json_entry(job) for job in jobs], indent=2, ensure_ascii=False))
+        return
 
     if not jobs:
         print(color("No scheduled jobs.\nCreate one with 'hermes cron create ...' "
@@ -880,7 +929,7 @@ def cron_notepad(args) -> int:
 
 # Late-bound lambdas keep module-level monkeypatching working; list/status/runs return None -> 0.
 _CRON_SUBCOMMANDS = {
-    "list": lambda a: cron_list(getattr(a, "all", False)) or 0,
+    "list": lambda a: cron_list(getattr(a, "all", False), json_output=getattr(a, "json_output", False)) or 0,
     "status": lambda a: cron_status() or 0,
     "doctor": lambda a: cron_doctor(),
     "tick": lambda a: cron_tick(),

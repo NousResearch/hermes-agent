@@ -113,8 +113,10 @@ def run_utterances(pcm_segments: List[np.ndarray], *, transcript: str = "heard",
                     break
                 if item is None:  # shutdown sentinel
                     break
-                if item:
-                    results.append(item)
+                from tools.voice_converse_loop import _Utterance
+                text = item.text if isinstance(item, _Utterance) else item
+                if text:
+                    results.append(text)
                     deadline_empty = 1.5  # once we've heard one, wait only briefly for more
         finally:
             session.stop()
@@ -152,6 +154,9 @@ def collect_session_events(pcm_segments: List[np.ndarray], *, quiet_interval: fl
                     continue
                 if item is None:
                     break
+                from tools.voice_converse_loop import _Utterance
+                if isinstance(item, _Utterance):
+                    item = item.text  # unwrap to the transcript str for the events contract
                 events.append(item)
                 if isinstance(item, str) and item:
                     break  # a real utterance — natural end of collection

@@ -553,6 +553,35 @@ def _run_driver(session, history, replies, quiet_interval=0.0):
     return sent
 
 
+def test_driver_uses_bundled_recorder_not_stale_session_slot(monkeypatch):
+    # Regression: the trace must be built from the recorder BOUND to the transcript, never a
+    # shared session slot the VAD worker may have overwritten with the next (empty) capture while
+    # the driver was backed up behind a long turn. Otherwise a real turn emits with no
+    # capture/STT spans and a mis-timed parent (the empty-turn artifact in Tempo).
+    from tools.voice_converse_loop import _Utterance
+
+    tracer = _patch_tracer(monkeypatch)
+    recA = vt.PhaseRecorder(session_mode=False)
+    with recA.phase("voice.capture", **{"endpoint.mode": "fixed", "tag": "A"}):
+        pass
+    with recA.phase("voice.stt", **{"stt.transcript_chars": 5}):
+        pass
+
+    session = _FakeConverseSession([])
+    session.transcripts = _queue.Queue()
+    session.transcripts.put(_Utterance("hello", recA))
+    session.transcripts.put(None)
+    # A mismatched newer recorder in the slot must be IGNORED (the old bug read this).
+    session.take_recorder = lambda: vt.PhaseRecorder(session_mode=False)
+
+    _run_driver(session, [], ["hi"])
+    names = [s.name for s in tracer.spans]
+    assert "voice.capture" in names and "voice.stt" in names  # from recA, not the empty slot
+    cap = next(s for s in tracer.spans if s.name == "voice.capture")
+    assert cap.attributes.get("tag") == "A"
+    assert "voice.agent" in names  # driver appended agent/TTS to the SAME (bound) recorder
+
+
 def test_drive_converse_turns_control_frame_ordering():
     session = _FakeConverseSession(["hello there."])
     history: list = []

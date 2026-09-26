@@ -81,7 +81,7 @@ class TestNoisyRoomSelfCalibrates:
     def _run(self, segments, *, timeout=4.0):
         import queue as _queue
 
-        from tools.voice_converse_loop import ConverseSession
+        from tools.voice_converse_loop import ConverseSession, _Utterance
         with mocked_stt("heard"):
             session = ConverseSession(np, input_rate=16000)
             session.start()
@@ -94,6 +94,8 @@ class TestNoisyRoomSelfCalibrates:
                         item = session.transcripts.get(timeout=timeout)
                         if item is None:
                             break
+                        if isinstance(item, _Utterance):
+                            item = item.text
                         if isinstance(item, str) and item:
                             got.append(item)
                             break

@@ -19,7 +19,9 @@ from hermes_cli.web_server_config import (
 from agent.model_metadata import is_local_endpoint
 from starlette.concurrency import run_in_threadpool
 from hermes_cli.web_models import ModelAssignment, MoaConfigPayload, MoaModelSlot
-from hermes_cli.web_routers._common import _CONFIG_MUTATION_LOCK, config_write_scope, http_failure
+from hermes_cli.web_routers._common import (
+    _CONFIG_MUTATION_LOCK, config_write_scope, http_failure, redacted_credential_preview,
+)
 
 _log = logging.getLogger("hermes_cli.web_server")
 router = APIRouter()
@@ -235,6 +237,37 @@ def get_auxiliary_models(profile: Optional[str] = None):
 
         model, provider = _main_model_fields(cfg.get("model", {}))
         return {"tasks": tasks, "main": {"provider": str(provider or ""), "model": str(model or "")}}
+
+
+@router.get("/api/model/fallback")
+def get_fallback_providers(profile: Optional[str] = None):
+    """Read-only view of the top-level ``fallback_providers`` failover chain (#122572).
+
+    ``{"chain": [{provider, model, base_url, key_env, api_key_preview}, ...]}`` in
+    config order - the Models page's display twin for the primary failover chain
+    (editing stays in config.yaml for now). Inline ``api_key`` values are masked to
+    a display-only preview: ``load_config()`` env-expands entries, so a raw
+    ``${MY_KEY}`` arrives here as a live secret and must never reach the wire.
+    ``key_env`` surfaces as the ``${VAR}`` reference instead."""
+    with http_failure("GET /api/model/fallback failed", 500, detail="Failed to read fallback chain"):
+        from hermes_cli.fallback_config import get_fallback_chain
+
+        cfg = _load_config_scoped(profile)
+        chain = []
+        for entry in get_fallback_chain(cfg):
+            inline_key = str(entry.get("api_key") or "").strip()
+            key_env = str(entry.get("key_env") or entry.get("api_key_env") or "").strip()
+            chain.append({
+                "provider": entry["provider"],
+                "model": entry["model"],
+                "base_url": str(entry.get("base_url") or ""),
+                "key_env": key_env,
+                "api_key_preview": (
+                    redacted_credential_preview(inline_key) if inline_key
+                    else f"${{{key_env}}}" if key_env else None
+                ),
+            })
+        return {"chain": chain}
 
 
 @router.get("/api/model/moa")

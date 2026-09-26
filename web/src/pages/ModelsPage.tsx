@@ -17,6 +17,7 @@ import { api } from "@/lib/api";
 import type {
   AuxiliaryModelsResponse,
   AuxiliaryTaskAssignment,
+  FallbackProvidersResponse,
   MoaConfigResponse,
   MoaModelSlot,
   ModelsAnalyticsModelEntry,
@@ -940,6 +941,9 @@ function ModelSettingsPanel({
   const [auxModalOpen, setAuxModalOpen] = useState(false);
   const [moaModalOpen, setMoaModalOpen] = useState(false);
   const [moa, setMoa] = useState<MoaConfigResponse | null>(null);
+  const [fallback, setFallback] = useState<FallbackProvidersResponse | null>(
+    null,
+  );
   const [picker, setPicker] = useState<PickerTarget | null>(null);
   const [pendingReloadModel, setPendingReloadModel] = useState<string | null>(
     null,
@@ -950,6 +954,11 @@ function ModelSettingsPanel({
 
   useEffect(() => {
     api.getMoaModels().then(setMoa).catch(() => setMoa(null));
+    // Read-only failover chain view (#122572); editing stays in config.yaml.
+    api
+      .getFallbackProviders()
+      .then(setFallback)
+      .catch(() => setFallback(null));
   }, [refreshKey]);
 
   const applyAssignment = async ({
@@ -1066,6 +1075,44 @@ function ModelSettingsPanel({
           >
             Configure
           </Button>
+        </div>
+
+        {/* Primary failover chain (#122572): read-only, in failover order. */}
+        <div className="min-w-0 bg-muted/20 border border-border/50 px-3 py-2">
+          <div className="flex items-center gap-2 mb-0.5">
+            <Zap className="h-3 w-3 text-text-tertiary" />
+            <span className="text-display text-xs font-medium tracking-wider">
+              Fallback chain
+            </span>
+            <span className="text-xs text-text-tertiary">
+              {fallback && fallback.chain.length > 0
+                ? `${fallback.chain.length} ${fallback.chain.length === 1 ? "entry" : "entries"} \u00b7 tried in order`
+                : "none configured"}
+            </span>
+          </div>
+          {fallback && fallback.chain.length > 0 && (
+            <ol className="mt-1 space-y-0.5">
+              {fallback.chain.map((entry, i) => (
+                <li
+                  key={`${entry.provider}:${entry.model}:${i}`}
+                  className="text-xs font-mono text-text-secondary [overflow-wrap:anywhere]"
+                >
+                  {i + 1}. {entry.provider}{" \u00b7 "}{entry.model}
+                  {entry.base_url && (
+                    <span className="text-text-tertiary">{" \u2192 "}{entry.base_url}</span>
+                  )}
+                  {entry.api_key_preview && (
+                    <span className="text-text-tertiary">{" \u00b7 key: "}{entry.api_key_preview}</span>
+                  )}
+                </li>
+              ))}
+            </ol>
+          )}
+          <p className="mt-1.5 text-[11px] text-text-tertiary">
+            Failover when the main model is down. Edit in config.yaml (
+            <span className="font-mono">fallback_providers</span>) or run{" "}
+            <span className="font-mono">hermes fallback</span>.
+          </p>
         </div>
 
         {picker && (

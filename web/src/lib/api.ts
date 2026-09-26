@@ -105,6 +105,8 @@ const PROFILE_SCOPED_PREFIXES = [
   "/api/model/auxiliary",
   "/api/model/moa",
   "/api/model/options",
+  // Read-only fallback_providers chain view (#122572) - profile-owned config.
+  "/api/model/fallback",
   // A named profile keeps its own pairing whitelist, and its gateway only
   // consults that one — approving into the global store would grant access
   // the running gateway never sees.
@@ -628,6 +630,10 @@ export const api = {
       appendProfileParam("/api/model/auxiliary", profile),
     ),
   getMoaModels: () => fetchJSON<MoaConfigResponse>("/api/model/moa"),
+  getFallbackProviders: (profile = getManagementProfile()) =>
+    fetchJSON<FallbackProvidersResponse>(
+      appendProfileParam("/api/model/fallback", profile),
+    ),
   saveMoaModels: (body: MoaConfigResponse) =>
     fetchJSON<MoaConfigResponse & { ok: boolean }>("/api/model/moa", {
       method: "PUT",
@@ -2582,6 +2588,21 @@ export interface AuxiliaryTaskAssignment {
 export interface AuxiliaryModelsResponse {
   tasks: AuxiliaryTaskAssignment[];
   main: { provider: string; model: string };
+}
+
+/** One entry of the top-level ``fallback_providers`` chain (#122572), in
+ *  failover order. Secrets are display-only: ``api_key_preview`` is either a
+ *  masked sentinel or a ``${ENV_VAR}`` reference, never the raw key. */
+export interface FallbackProviderEntry {
+  provider: string;
+  model: string;
+  base_url: string;
+  key_env: string;
+  api_key_preview: string | null;
+}
+
+export interface FallbackProvidersResponse {
+  chain: FallbackProviderEntry[];
 }
 
 export interface MoaModelSlot {

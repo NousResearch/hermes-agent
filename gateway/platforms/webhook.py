@@ -170,7 +170,49 @@ class WebhookAdapter(BasePlatformAdapter):
         self._host: Optional[str] = extra.get("host", DEFAULT_HOST) or None
         self._port: int = int(extra.get("port", DEFAULT_PORT))
         self._global_secret: str = extra.get("secret", "")
-        self._static_routes: Dict[str, dict] = extra.get("routes", {})
+        # Config-shape tolerance: a malformed `routes:` value must not crash the
+        # whole gateway at startup (every platform dies with it). The raw
+        # `dict(routes)` below raises a cryptic ValueError for list/null shapes;
+        # normalise instead, warn loudly, and only fail for unrecoverable shapes.
+        # See issue #31480 (silently-dropped config) and PR #83902 (config-shape
+        # coercion precedent): a config typo should degrade one platform, not
+        # take the process down.
+        routes_cfg = extra.get("routes", {})
+        if routes_cfg is None:  # bare `routes:` YAML key
+            routes_cfg = {}
+        if isinstance(routes_cfg, list):
+            normalized: Dict[str, dict] = {}
+            for entry in routes_cfg:
+                if not isinstance(entry, dict):
+                    raise ValueError(
+                        "[webhook] platforms.webhook.extra.routes: list entries must be "
+                        f"mappings, got {type(entry).__name__}: {entry!r}"
+                    )
+                name = (
+                    str(entry.get("path", "route")).strip("/").replace("/", "_") or "route"
+                )
+                base_name, suffix = name, 2
+                while name in normalized:
+                    name = f"{base_name}_{suffix}"
+                    suffix += 1
+                normalized[name] = dict(entry)
+            logger.warning(
+                "[webhook] platforms.webhook.extra.routes was a LIST; normalized to named "
+                "routes %s. Prefer the mapping form (routes: {name: {path: ...}}) or "
+                "'hermes webhook subscribe <name>'.",
+                sorted(normalized),
+            )
+            routes_cfg = normalized
+        if not isinstance(routes_cfg, dict):
+            raise ValueError(
+                "platforms.webhook.extra.routes must be a mapping of route name -> "
+                f"config, got {type(routes_cfg).__name__}")
+        bad_keys = [k for k, v in routes_cfg.items() if not isinstance(v, dict)]
+        if bad_keys:
+            raise ValueError(
+                "platforms.webhook.extra.routes entries must be mappings; "
+                f"non-mapping value(s): {sorted(map(str, bad_keys))}")
+        self._static_routes: Dict[str, dict] = routes_cfg
         self._dynamic_routes: Dict[str, dict] = {}
         self._dynamic_routes_mtime: float = 0.0
         self._routes: Dict[str, dict] = dict(self._static_routes)

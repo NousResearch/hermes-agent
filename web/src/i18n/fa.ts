@@ -556,6 +556,15 @@ export const fa = defineLocale({
       "~/projects/some-sdk  (با read_file / search_files خوانده می‌شود)",
     hubSearchPlaceholder: "جستجوی مرکز مهارت‌ها (GitHub، رسمی، جامعه)…",
     connectingHubs: "در حال اتصال به مرکزهای مهارت…",
+    hubDirLabel: "فایل یا پوشهٔ محلی",
+    hubBrowseEmpty:
+      "برای مرور مهارت‌های قابل نصب از منابع متصل، در مرکز بالا جستجو کنید.",
+    hubNoMatches: "مهارتی مطابق جستجو در مرکز یافت نشد.",
+    hubSourcesNote: "نتایج از همان منابع hermes skills search می‌آیند.",
+    scanPrompt:
+      "پیش از نصب، یک اسکن امنیتی برای بررسی الگوهای پرخطر این مهارت اجرا کنید.",
+    scanClean: "الگوی پرخطری یافت نشد",
+    scanFetching: "در حال واکشی، قرنطینه و اسکن…",
     enabledOf: "{enabled}/{total} فعال",
     all: "همه",
     categories: "دسته‌ها",
@@ -1270,6 +1279,39 @@ export const fa = defineLocale({
     portalNotLoggedIn: "وارد نشده",
     portalInferenceProvider: "ارائه‌دهندهٔ استنتاج: ",
     toolGatewayRouting: "مسیریابی دروازهٔ ابزار",
+    portalLoginHint: "ورود با hermes portal.",
+    sharedRestartTitle: "دروازهٔ مشترک راه‌اندازی دوباره شود؟",
+    sharedRestartConfirm: "راه‌اندازی همه",
+    updateConfirmTitle: "هرمس به‌روزرسانی شود؟",
+    updateConfirmLabel: "به‌روزرسانی الآن",
+    updateConfirmBehind:
+      "«hermes update» ({command}) اجرا می‌شود و {count} کامیت جدید دریافت می‌کند. پس از پایان به‌روزرسانی دروازه راه‌اندازی دوباره می‌شود؛ نشست فعلی تا آن موقع حافظهٔ پرامپت خود را نگه می‌دارد.",
+    updateConfirmPlain:
+      "«hermes update» ({command}) اجرا می‌شود و پس از پایان، دروازه راه‌اندازی دوباره می‌شود.",
+    memoryResetDescription:
+      "این کار فایل‌های حافظهٔ داخلی انتخاب‌شده را برای همیشه پاک می‌کند. قابل بازگشت نیست.",
+    credentialDeleteDescription:
+      "این کلید API مشترک حذف شود؟ عامل دیگر از طریق آن چرخش کلید نخواهد داشت.",
+    pruneDescription:
+      "مخزن سایهٔ نقاط بازگشت حذف شود؟ نقاط /rollback موجود از دست خواهند رفت.",
+    hookDeleteDescription:
+      "این هوک از پیکربندی حذف و رضایت آن لغو شود؟ از راه‌اندازی دوبارهٔ بعدی دیگر اجرا نمی‌شود.",
+    multiplexExplanation:
+      "هر پروفایل شما دروازهٔ خودش را اجرا می‌کند. یک دروازهٔ چندگانه همهٔ پروفایل‌ها را در یک فرآیند سرویس می‌کند.",
+    multiplexBlockedTitle: "ابتدا موانع زیر را برطرف کنید",
+    multiplexButton: "مهاجرت به یک دروازهٔ چندگانه",
+    memoryProviderMissing:
+      "ارائه‌دهندهٔ پیکربندی‌شده دیگر نصب نیست. به حافظهٔ داخلی برگردید یا ارائه‌دهندهٔ دیگری در «افزونه‌ها» پیکربندی کنید.",
+    noPooledCredentials:
+      "اعتبارنامهٔ مشترکی وجود ندارد. برای چرخش کلید، از بالا یکی اضافه کنید.",
+    addKey: "افزودن کلید",
+    chooseRestoreZip: "انتخاب زیپ بازیابی",
+    noArchiveSelected: "آرشیو پشتیبانی انتخاب نشده",
+    shareDebugReport: "اشتراک‌گذاری گزارش اشکال‌زدایی",
+    shareDebugDescription:
+      "اطلاعات سیستم و گزارش‌ها را در یک سرویس پیست عمومی بارگذاری می‌کند و پیوندهایی برای ارسال به تیم هرمس برمی‌گرداند. پیست‌ها پس از ۶ ساعت خودکار حذف می‌شوند.",
+    shareUploadFailures: "برخی گزارش‌ها بارگذاری نشدند: {errors}",
+    noHooksConfigured: "هیچ هوک پوسته‌ای پیکربندی نشده است.",
   },
 
   mcp: {

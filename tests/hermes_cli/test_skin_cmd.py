@@ -10,6 +10,7 @@ import pytest
 import hermes_yaml as yaml
 
 from hermes_cli import skin_cmd
+from hermes_cli.skin_engine import _BUILTIN_SKINS, load_skin
 from hermes_constants import get_hermes_home
 
 
@@ -53,6 +54,24 @@ def test_set_forks_a_builtin_without_inventing_a_background():
     # full palette carried over, and it became active.
     assert data["colors"].get("banner_title")
     assert (get_hermes_home() / "config.yaml").read_text().find("default-custom") != -1
+
+
+@pytest.mark.parametrize("builtin", sorted(_BUILTIN_SKINS))
+def test_set_forks_a_builtin_that_differs_only_in_the_one_key(builtin):
+    """The fork must render as the built-in except for the tweaked key: spinner, banner art and the
+    paired light/dark palettes included, and no paired palette may mask the new value."""
+    _activate(builtin)
+
+    assert skin_cmd._skin_set("ui_accent", "#00FFFF", None) == 0
+
+    base, fork = load_skin(builtin), load_skin(f"{builtin}-custom")
+    for field in ("spinner", "branding", "tool_prefix", "tool_emojis", "banner_logo", "banner_hero",
+                  "custom_css"):
+        assert getattr(fork, field) == getattr(base, field), field
+    assert fork.colors == {**base.colors, "ui_accent": "#00FFFF"}
+    for paired in ("light_colors", "dark_colors"):
+        overlay = {**fork.colors, **getattr(fork, paired)}  # how the TUI resolves a polarity
+        assert overlay == {**base.colors, **getattr(base, paired), "ui_accent": "#00FFFF"}, paired
 
 
 def test_set_rejects_non_hex():

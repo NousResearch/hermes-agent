@@ -1944,6 +1944,7 @@ class BasePlatformAdapter(ABC):
         # Post-delivery one-shots per session_key: bare callback (legacy) or ``(generation,
         # callback)`` so a stale run can't clear a fresher run's callback.
         self._post_delivery_callbacks: Dict[str, Any] = {}
+        self._post_delivery_callbacks_by_generation: Dict[Tuple[str, int], Callable] = {}
         self._expected_cancelled_tasks: set[asyncio.Task] = set()
         self._busy_session_handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]] = None
         # Owning multiplex profile (None on primary); see _session_key_profile.
@@ -3400,17 +3401,26 @@ class BasePlatformAdapter(ABC):
         fresher slot."""
         if not session_key or not callable(callback):
             return
-        existing = self._post_delivery_callbacks.get(session_key)
-        if existing is not None:
-            existing_gen, existing_cb = _split_post_delivery_entry(existing)
-            if existing_gen is not None and generation is not None and int(generation) < int(existing_gen):
+        owned = _lazy_attr(self, "_post_delivery_callbacks_by_generation", dict)
+        if generation is None:
+            existing = self._post_delivery_callbacks.get(session_key)
+        else:
+            generation = int(generation)
+            existing = owned.get((session_key, generation))
+            # An older turn can extend its existing lane while it unwinds, but cannot
+            # register a new stale callback after a newer generation owns the session.
+            if existing is None and any(
+                key == session_key and gen > generation for key, gen in owned
+            ):
                 return
-            # Same-or-newer generation: chain so both fire in registration order.
-            if callable(existing_cb) and (
-                existing_gen is None or generation is None or int(existing_gen) == int(generation)):
+        if existing is not None:
+            _, existing_cb = _split_post_delivery_entry(existing)
+            if callable(existing_cb):
                 callback = self._chain_callbacks(existing_cb, callback)
-        self._post_delivery_callbacks[session_key] = (
-            callback if generation is None else (int(generation), callback))
+        if generation is None:
+            self._post_delivery_callbacks[session_key] = callback
+        else:
+            owned[(session_key, generation)] = callback
 
     @staticmethod
     def _chain_callbacks(*callbacks: Callable) -> Callable[[], Awaitable[None]]:
@@ -3429,8 +3439,20 @@ class BasePlatformAdapter(ABC):
     def pop_post_delivery_callback(
         self, session_key: str, *, generation: int | None = None) -> Callable | None:
         """Pop a deferred callback, optionally requiring generation ownership."""
-        entry = self._post_delivery_callbacks.get(session_key) if session_key else None
+        if not session_key:
+            return None
+        owned = _lazy_attr(self, "_post_delivery_callbacks_by_generation", dict)
+        if generation is not None:
+            callback = owned.pop((session_key, int(generation)), None)
+            if callback is not None:
+                return callback if callable(callback) else None
+        entry = self._post_delivery_callbacks.get(session_key)
         if entry is None:
+            if generation is None:
+                keys = [key for key in owned if key[0] == session_key]
+                if len(keys) == 1:
+                    callback = owned.pop(keys[0])
+                    return callback if callable(callback) else None
             return None
         entry_generation, callback = _split_post_delivery_entry(entry)
         if generation is not None and (entry_generation is None or int(entry_generation) != int(generation)):
@@ -4419,12 +4441,11 @@ class BasePlatformAdapter(ABC):
             text_content=text_content, images=images, media_files=media_files,
             local_files=local_files, force_document_attachments=force_document, pre_extract=pre_extract)
 
-    async def _fire_post_delivery_callback(self, session_key: str, interrupt_event: asyncio.Event) -> None:
-        """Run the one-shot post-delivery callback (bounded, errors swallowed). The generation is
-        read HERE — stamped on the interrupt event DURING the handler await; an earlier snapshot
-        would let stale runs fire a fresher run's callbacks."""
-        _post_cb = self.pop_post_delivery_callback(
-            session_key, generation=getattr(interrupt_event, "_hermes_run_generation", None))
+    async def _fire_post_delivery_callback(
+        self, session_key: str, generation: int | None,
+    ) -> None:
+        """Run the one-shot callback for the generation captured after this handler returned."""
+        _post_cb = self.pop_post_delivery_callback(session_key, generation=generation)
         if callable(_post_cb):
             with contextlib.suppress(asyncio.TimeoutError, Exception):
                 _post_result = _post_cb()
@@ -4469,10 +4490,12 @@ class BasePlatformAdapter(ABC):
         self._active_sessions[session_key] = interrupt_event
         _thread_metadata = _thread_metadata_for_event(event)
         typing_task = self._start_typing_refresh(event, interrupt_event, _thread_metadata)
+        delivery_generation = None
         try:
             await self._run_processing_hook("on_processing_start", event)
             event._turn_marker_handoff = self.gateway_runner is not None  # it can release the marker
             response = await self._message_handler(event)
+            delivery_generation = getattr(interrupt_event, "_hermes_run_generation", None)
             # A muted diagnostic wake ran for the session; its reply is not presented. The
             # policy read binds the routed profile; delivery itself stays in the launch scope.
             with self._media_delivery_scope(event.source):
@@ -4569,7 +4592,7 @@ class BasePlatformAdapter(ABC):
             # Stop typing BEFORE the post-delivery callback: a stuck callback must not keep it
             # alive.
             await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_thread_metadata)
-            await self._fire_post_delivery_callback(session_key, interrupt_event)
+            await self._fire_post_delivery_callback(session_key, delivery_generation)
             # Callback work or a late refresh may have recreated typing — one final bounded stop.
             await self._stop_typing_refresh(
                 event.source.chat_id, None, metadata=_thread_metadata, stop_attempts=1)

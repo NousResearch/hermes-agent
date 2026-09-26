@@ -1,9 +1,18 @@
 import { act, cleanup, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { createClientSessionState } from '@/lib/chat-runtime'
 import { $sidebarShowArchived } from '@/store/layout'
 import { $changeEventsAvailable, $cronChangeTick, $sessionsChangeTick } from '@/store/live-sync'
+import { $onBattery } from '@/store/power'
 import { $activeSessionId } from '@/store/session'
+import {
+  $sessionStates,
+  clearAllSessionStates,
+  LIVE_TURN_EVENT_SILENCE_MS,
+  noteSessionEvent,
+  publishSessionState
+} from '@/store/session-states'
 import { loadArchivedSessions } from '@/store/sidebar-archive'
 
 import { useBackgroundSync } from './use-background-sync'
@@ -122,5 +131,92 @@ describe('useBackgroundSync profile-scoped session refresh', () => {
     })
 
     expect(loadArchivedSessions).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('useBackgroundSync keeps a quiet working turn live', () => {
+  // A long tool call emits no events; only the live-status poll says the turn
+  // is still running. Past the silence window plus any confirmation grace.
+  const PAST_SILENCE_MS = LIVE_TURN_EVENT_SILENCE_MS + 20_000
+
+  const working = async () => ({
+    sessions: [{ id: 'rt-quiet', last_active: Date.now() / 1000, session_key: 's-quiet', status: 'working' }]
+  })
+
+  function startQuietTurn() {
+    publishSessionState('rt-quiet', {
+      ...createClientSessionState('s-quiet'),
+      awaitingResponse: true,
+      busy: true,
+      sawAssistantPayload: true,
+      turnLive: true,
+      turnStartedAt: Date.now()
+    })
+    noteSessionEvent('rt-quiet')
+  }
+
+  // The silence settle marks the turn interrupted, which drops its later events.
+  const forceSettled = () => $sessionStates.get()['rt-quiet']?.interrupted === true
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    clearAllSessionStates()
+    $activeSessionId.set(null)
+    $changeEventsAvailable.set(true)
+    $onBattery.set(false)
+    $sessionsChangeTick.set(0)
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+    clearAllSessionStates()
+    $onBattery.set(false)
+    vi.useRealTimers()
+  })
+
+  it('while the window is not focused', async () => {
+    vi.spyOn(document, 'hasFocus').mockReturnValue(false)
+    startQuietTurn()
+    render('default', 'local', async () => undefined, working)
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(PAST_SILENCE_MS)
+    })
+
+    expect($sessionStates.get()['rt-quiet']?.busy).toBe(true)
+    expect(forceSettled()).toBe(false)
+  })
+
+  it('on battery, where the backstop poll is slower than the silence window', async () => {
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    $onBattery.set(true)
+    startQuietTurn()
+    render('default', 'local', async () => undefined, working)
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(PAST_SILENCE_MS)
+    })
+
+    expect($sessionStates.get()['rt-quiet']?.busy).toBe(true)
+    expect(forceSettled()).toBe(false)
+  })
+
+  it('but still settles it when the backend stops answering', async () => {
+    vi.spyOn(document, 'hasFocus').mockReturnValue(false)
+    startQuietTurn()
+    const request = vi.fn(working)
+    render('default', 'local', async () => undefined, request)
+    await act(async () => undefined)
+    request.mockImplementation(async () => {
+      throw new Error('gateway gone')
+    })
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(PAST_SILENCE_MS)
+    })
+
+    expect($sessionStates.get()['rt-quiet']?.busy).toBe(false)
+    expect(forceSettled()).toBe(true)
   })
 })

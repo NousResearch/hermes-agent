@@ -11,6 +11,14 @@ def _flag(parser, *names, help, **kw):
     parser.add_argument(*names, action="store_true", help=help, **kw)
 
 
+_DELIVER_HELP = (
+    "Delivery target: origin, local, telegram, discord, signal, platform:chat_id, "
+    "Slack workspace-qualified slack:team_id:channel_id[:thread_ts], or "
+    "bot-chat[:profile] (inject output into a local profile's canonical Bot Chat as a message "
+    "the bot responds to)"
+)
+
+
 def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     """Attach the ``cron`` subcommand (and its sub-actions) to ``subparsers``."""
     cron_parser = subparsers.add_parser(
@@ -26,10 +34,7 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     cron_create.add_argument(
         "prompt", nargs="?", help="Optional self-contained prompt or task instruction")
     cron_create.add_argument("--name", help="Optional human-friendly job name")
-    cron_create.add_argument("--deliver",
-        help="Delivery target: origin, local, telegram, discord, signal, "
-            "platform:chat_id, or bot-chat[:profile] (inject output into a "
-            "local profile's canonical Bot Chat as a message the bot responds to)")
+    cron_create.add_argument("--deliver", help=_DELIVER_HELP)
     cron_create.add_argument("--failure-deliver", dest="failure_deliver",
         help="Override target for FAILURE notices only (same grammar as "
             "--deliver). 'local' suppresses failure notices entirely; run "
@@ -93,7 +98,7 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     cron_edit.add_argument("--schedule", help="New schedule")
     cron_edit.add_argument("--prompt", help="New prompt/task instruction")
     cron_edit.add_argument("--name", help="New job name")
-    cron_edit.add_argument("--deliver", help="New delivery target")
+    cron_edit.add_argument("--deliver", help=_DELIVER_HELP)
     cron_edit.add_argument("--failure-deliver", dest="failure_deliver",
         help="Override target for failure notices (same grammar as --deliver; "
             "'local' suppresses; '' clears the override)")

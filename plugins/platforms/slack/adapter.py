@@ -1939,6 +1939,16 @@ class SlackAdapter(BasePlatformAdapter):
         return ""
 
     @staticmethod
+    def _metadata_workspace_pinned(metadata: Optional[Dict[str, Any]]) -> bool:
+        """Whether outbound metadata requires an exact workspace client."""
+        if not metadata:
+            return False
+        value = metadata.get("workspace_pinned")
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+        return bool(value)
+
+    @staticmethod
     def _workspace_event_id(team_id: str, event_id: str) -> str:
         """Scope Slack's workspace-local event/message ids for deduplication."""
         return f"{team_id}:{event_id}" if team_id else str(event_id)
@@ -1961,10 +1971,19 @@ class SlackAdapter(BasePlatformAdapter):
                 team_id = next(iter(team_clients))
         return str(team_id) if team_id else None
 
-    def _get_client(self, chat_id: str, team_id: Optional[str] = None) -> Any:
-        """Return the workspace-specific WebClient for a channel."""
-        if team_id and team_id in self._team_clients:
-            return self._team_clients[team_id]
+    def _get_client(
+        self, chat_id: str, team_id: Optional[str] = None, *, require_exact: bool = False,
+    ) -> Any:
+        """Return the workspace-specific client; explicit pins fail closed on a miss."""
+        if require_exact and not team_id:
+            raise ValueError("Slack workspace pin requires a non-empty team_id")
+        if team_id:
+            client = self._team_clients.get(team_id)
+            if client is not None:
+                return client
+            if require_exact:
+                raise ValueError(
+                    f"no Slack client for explicitly requested workspace {team_id}")
         team_id = self._channel_team.get(chat_id)
         if team_id and team_id in self._team_clients:
             return self._team_clients[team_id]
@@ -1972,13 +1991,22 @@ class SlackAdapter(BasePlatformAdapter):
 
     def _client_for(self, chat_id: str, metadata: Optional[Dict[str, Any]]) -> Any:
         """WebClient for ``chat_id``, workspace-scoped by outbound ``metadata``."""
-        return self._get_client(chat_id, team_id=self._metadata_team_id(metadata))
+        team_id = self._metadata_team_id(metadata)
+        if self._metadata_workspace_pinned(metadata):
+            return self._get_client(chat_id, team_id=team_id, require_exact=True)
+        return self._get_client(chat_id, team_id=team_id)
 
     async def _dm_target(self, chat_id: str, metadata: Optional[Dict[str, Any]]) -> str:
         """``_ensure_dm_conversation`` scoped by outbound ``metadata``."""
-        return await self._ensure_dm_conversation(chat_id, team_id=self._metadata_team_id(metadata))
+        team_id = self._metadata_team_id(metadata)
+        if self._metadata_workspace_pinned(metadata):
+            return await self._ensure_dm_conversation(
+                chat_id, team_id=team_id, require_exact=True)
+        return await self._ensure_dm_conversation(chat_id, team_id=team_id)
 
-    async def _ensure_dm_conversation(self, chat_id: str, team_id: Optional[str] = None) -> str:
+    async def _ensure_dm_conversation(
+        self, chat_id: str, team_id: Optional[str] = None, *, require_exact: bool = False,
+    ) -> str:
         """Resolve a bare user ID (U/W...) to a DM conversation ID via ``conversations.open``
         (``chat.postMessage``/``files_upload_v2`` reject user IDs); cached per (team, user). Returns
         ``chat_id`` unchanged when not applicable or on failure (downstream surfaces the error).
@@ -1995,7 +2023,8 @@ class SlackAdapter(BasePlatformAdapter):
         if cached:
             return cached
         try:
-            response = await self._get_client(cid, team_id=team_id).conversations_open(users=cid)
+            response = await self._get_client(
+                cid, team_id=team_id, require_exact=require_exact).conversations_open(users=cid)
             dm_id = ((response or {}).get("channel") or {}).get("id")
             if dm_id:
                 self._dm_conversation_cache[cache_key] = dm_id
@@ -2245,7 +2274,8 @@ class SlackAdapter(BasePlatformAdapter):
                 # stay stuck on "is thinking..." (#24117).
                 return SendResult(success=True)
             thread_ts = self._resolve_thread_ts(reply_to, metadata)
-            last_result = await self._post_chunks(chat_id, team_id, content, formatted, thread_ts)
+            last_result = await self._post_chunks(
+                chat_id, team_id, content, formatted, thread_ts, metadata=metadata)
             # Clear Slack Assistant status as soon as the final message is posted.
             if thread_ts:
                 await self.stop_typing(chat_id, metadata=metadata)
@@ -2273,7 +2303,8 @@ class SlackAdapter(BasePlatformAdapter):
                 retry_after=self._retry_after_from_exc(e) if _retryable else None)
 
     async def _post_chunks(
-        self, chat_id: str, team_id: str, content: str, formatted: str, thread_ts: Optional[str]
+        self, chat_id: str, team_id: str, content: str, formatted: str,
+        thread_ts: Optional[str], metadata: Optional[Dict[str, Any]] = None,
     ) -> Any:
         """``chat.postMessage`` each ``MAX_MESSAGE_LENGTH`` chunk; returns the last response.
         Block Kit only for single-chunk messages (a >39k response is pathological for the 50-block /
@@ -2293,7 +2324,11 @@ class SlackAdapter(BasePlatformAdapter):
                 kwargs["thread_ts"] = thread_ts
                 if broadcast and i == 0:
                     kwargs["reply_broadcast"] = True
-            client_fn = lambda: self._get_client(chat_id, team_id=team_id)  # noqa: E731
+            if self._metadata_workspace_pinned(metadata):
+                client_fn = lambda: self._get_client(  # noqa: E731
+                    chat_id, team_id=team_id, require_exact=True)
+            else:
+                client_fn = lambda: self._get_client(chat_id, team_id=team_id)  # noqa: E731
             last_result = await self._call_with_block_fallback(
                 client_fn, "chat_postMessage", kwargs, "send")
         return last_result
@@ -6510,6 +6545,42 @@ def _load_slack_bot_tokens(raw_token: str, *, quiet: bool) -> List[str]:
     return tokens
 
 
+async def _resolve_workspace_token(tokens: List[str], team_id: str) -> Optional[str]:
+    """Resolve the configured bot token for an explicit Slack workspace pin."""
+    try:
+        from hermes_constants import get_hermes_home
+        tokens_file = get_hermes_home() / "slack_tokens.json"
+        if tokens_file.exists():
+            saved = json.loads(tokens_file.read_text(encoding="utf-8-sig"))
+            entry = saved.get(team_id)
+            token = entry.get("token") if isinstance(entry, dict) else None
+            if token:
+                return str(token)
+    except Exception:
+        logger.debug("[Slack] Could not resolve workspace token from slack_tokens.json", exc_info=True)
+
+    try:
+        import aiohttp
+    except ImportError:
+        return None
+    try:
+        session_kwargs, request_kwargs = _standalone_proxy_kwargs()
+        async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=15), **session_kwargs) as session:
+            for token in tokens:
+                try:
+                    data = await _slack_json_post(
+                        session, token, "auth.test", {}, request_kwargs)
+                except Exception:
+                    logger.debug("[Slack] auth.test workspace probe failed", exc_info=True)
+                    continue
+                if data.get("ok") and str(data.get("team_id") or "") == team_id:
+                    return token
+    except Exception:
+        logger.debug("[Slack] Workspace token resolution failed", exc_info=True)
+    return None
+
+
 def _standalone_proxy_kwargs() -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """``(session_kwargs, request_kwargs)`` for aiohttp honoring the configured proxy."""
     from gateway.platforms.base import proxy_kwargs_for_aiohttp
@@ -6688,7 +6759,7 @@ def _standalone_format_mrkdwn(text: str) -> str:
 
 async def _standalone_send(
     pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False,
-    caption=None):
+    caption=None, team_id=None):
     """Out-of-process delivery (``standalone_sender_fn``) for cron/tool processes not co-located
     with the gateway: text via ``chat.postMessage`` (aiohttp), media via ``files_upload_v2``."""
     del force_document  # signature parity with other standalone senders
@@ -6700,6 +6771,13 @@ async def _standalone_send(
     if not tokens:
         return send_error("Slack send failed: SLACK_BOT_TOKEN not configured")
     token = tokens[0]
+    team_id = str(team_id or "").strip()
+    if team_id:
+        token = await _resolve_workspace_token(tokens, team_id)
+        if token is None:
+            return send_error(
+                f"Slack send failed: no configured bot token belongs to workspace {team_id}")
+    candidate_tokens = [token] if team_id else tokens
     # Slack rejects bare user IDs (U.../W...) with channel_not_found; open the DM first.
     # User-targeted delivery: chat.postMessage / files_upload_v2 reject bare user IDs (U.../W...) — resolve
     # to a DM conversation ID (D...) first via conversations.open so `deliver=slack:U…` cron jobs reach the
@@ -6707,7 +6785,7 @@ async def _standalone_send(
     chat_id = str(chat_id or "")
     if chat_id[:1] in ("U", "W"):
         resolved = None
-        for _tok in tokens:
+        for _tok in candidate_tokens:
             resolved = await _resolve_slack_user_dm(_tok, chat_id)
             if resolved is not None:
                 token = _tok
@@ -6738,7 +6816,7 @@ async def _standalone_send(
         async with aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
             payload = _standalone_post_kwargs(chat_id, formatted, unfurl_kwargs, thread_id)
-            for tok in tokens:
+            for tok in candidate_tokens:
                 data = await _slack_json_post(session, tok, "chat.postMessage", payload, _req_kw)
                 if data.get("ok"):
                     return {

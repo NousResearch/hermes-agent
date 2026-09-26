@@ -14,6 +14,7 @@ import contextlib
 import contextvars
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -119,8 +120,10 @@ def _cron_mirror_delivery_enabled(job: dict, cfg: Optional[dict] = None) -> bool
         return False
 
 
-def _target_matches_origin(origin: dict, platform_name: str, chat_id: str,
-                           thread_id: Optional[str]) -> bool:
+def _target_matches_origin(
+    origin: dict, platform_name: str, chat_id: str, thread_id: Optional[str],
+    scope_id: Optional[str] = None,
+) -> bool:
     """True when a delivery target is the job's own origin conversation. A pinned origin
     thread_id must match — a target without it is a different lane. Mirror eligibility for
     non-origin targets is decided by ``_target_mirror_eligible``."""
@@ -130,6 +133,11 @@ def _target_matches_origin(origin: dict, platform_name: str, chat_id: str,
         or str(origin.get("chat_id", "")) != str(chat_id)
     ):
         return False
+    if scope_id is not None:
+        origin_scope = (
+            origin.get("scope_id") or origin.get("slack_team_id") or origin.get("team_id"))
+        if str(origin_scope or "") != str(scope_id):
+            return False
     origin_thread = origin.get("thread_id")
     return origin_thread is None or str(origin_thread) == str(thread_id or "")
 
@@ -152,7 +160,8 @@ def _target_mirror_eligible(
     if origin_match is None:
         origin = _resolve_origin(job) or {}
         origin_match = _target_matches_origin(
-            origin, target.get("platform", ""), target.get("chat_id", ""), target.get("thread_id"))
+            origin, target.get("platform", ""), target.get("chat_id", ""),
+            target.get("thread_id"), target.get("scope_id"))
     if origin_match:
         return True
     resolved_from = target.get("_resolved_from")
@@ -605,6 +614,30 @@ def _home_target(platform_name: str, chat_id: str, resolved_from: Optional[str] 
     return target
 
 
+_SLACK_TEAM_ID_RE = re.compile(r"T[A-Z0-9]+")
+_SLACK_CHANNEL_ID_RE = re.compile(r"[CGD][A-Z0-9]+")
+
+
+def _parse_slack_workspace_ref(rest: str):
+    """Parse ``<team_id>:<channel_id>[:<thread_ts>]``; malformed pins raise."""
+    first, separator, remainder = str(rest or "").partition(":")
+    # ``E...`` is an enterprise-org ID, not a workspace team ID. Treat it as
+    # workspace-qualified-looking so it fails closed instead of falling through
+    # to the legacy ``slack:<channel>:<thread>`` parser.
+    if not separator or not first or first[0] not in {"T", "E"}:
+        return None
+    if _SLACK_TEAM_ID_RE.fullmatch(first) is None:
+        raise ValueError("invalid Slack workspace id")
+    channel_id, thread_separator, thread_id = remainder.partition(":")
+    if _SLACK_CHANNEL_ID_RE.fullmatch(channel_id) is None:
+        raise ValueError("invalid Slack conversation id")
+    if thread_separator and (
+        not thread_id or ":" in thread_id or any(ch.isspace() for ch in thread_id)
+    ):
+        raise ValueError("invalid Slack thread id")
+    return first, channel_id, thread_id or None
+
+
 def _resolve_single_delivery_target(
     job: dict, deliver_value: str, *, from_broadcast: bool = False
 ) -> Optional[dict]:
@@ -644,6 +677,24 @@ def _resolve_single_delivery_target(
     if ":" in deliver_value:
         platform_name, rest = deliver_value.split(":", 1)
         platform_key = platform_name.lower()
+        if platform_key == "slack":
+            try:
+                workspace_ref = _parse_slack_workspace_ref(rest)
+            except ValueError:
+                logger.warning(
+                    "Job '%s' has malformed workspace-qualified Slack target %r; skipping",
+                    job.get("name", job.get("id", "?")), deliver_value)
+                return None
+            if workspace_ref is not None:
+                scope_id, chat_id, thread_id = workspace_ref
+                return {
+                    "platform": platform_name,
+                    "chat_id": chat_id,
+                    "thread_id": thread_id,
+                    "scope_id": scope_id,
+                    "_workspace_pinned": True,
+                    "_resolved_from": "explicit",
+                }
         from tools.send_message_tool import prepare_send_message_platforms, resolve_send_target
         prepare_send_message_platforms()
         # pass_unresolved_references: no model in the loop to react; an unknown-to-directory target
@@ -1070,9 +1121,10 @@ def _delivery_lane_value(job: dict, *, for_failure: bool = False):
 
 def _resolve_delivery_targets(job: dict, *, for_failure: bool = False) -> List[dict]:
     """Resolve auto-delivery targets from comma-separated ``deliver``; ``all`` expands to every
-    platform with a home channel and combines with explicit targets. Dedup by (platform, chat_id,
-    thread_id). ``for_failure=True`` (failure summaries, interrupted-run notices, drift/preflight
-    alerts) resolves from ``failure_deliver`` INSTEAD when the job carries one —
+    platform with a home channel and combines with explicit targets. Dedup by workspace-aware
+    destination while preserving legacy unqualified targets. ``for_failure=True`` (failure
+    summaries, interrupted-run notices, drift/preflight alerts) resolves from ``failure_deliver``
+    INSTEAD when the job carries one —
     ``failure_deliver: local`` is the structural opt-out; absent, failures follow ``deliver``."""
     deliver = _normalize_deliver_value(_delivery_lane_value(job, for_failure=for_failure))
     if deliver == "local":
@@ -1089,8 +1141,26 @@ def _resolve_delivery_targets(job: dict, *, for_failure: bool = False) -> List[d
             target = _resolve_single_delivery_target(job, part, from_broadcast=from_broadcast)
             if not target:
                 continue
-            key = (target["platform"].lower(), str(target["chat_id"]), target.get("thread_id"))
+            key = (
+                target["platform"].lower(), str(target["chat_id"]), target.get("thread_id"),
+                target.get("scope_id"))
             kept = seen.get(key)
+            if kept is None:
+                base_key = key[:3]
+                target_is_origin = target.get("_resolved_from") in {
+                    "origin", "origin_fallback"}
+                for candidate_key, candidate in seen.items():
+                    if candidate_key[:3] != base_key:
+                        continue
+                    candidate_is_origin = candidate.get("_resolved_from") in {
+                        "origin", "origin_fallback"}
+                    if (
+                        key[3] is None and candidate_is_origin
+                    ) or (
+                        candidate_key[3] is None and target_is_origin
+                    ):
+                        kept = candidate
+                        break
             if kept is None:
                 seen[key] = target
                 targets.append(target)
@@ -1100,6 +1170,9 @@ def _resolve_delivery_targets(job: dict, *, for_failure: bool = False) -> List[d
                 > _MIRROR_PROVENANCE_RANK.get(str(kept.get("_resolved_from") or ""), 0)
             ):
                 kept["_resolved_from"] = target.get("_resolved_from")
+                if not kept.get("scope_id") and target.get("scope_id"):
+                    kept["scope_id"] = target.get("scope_id")
+                    seen[key] = kept
     return targets
 
 
@@ -1300,6 +1373,8 @@ class _TargetDelivery:
     platform_name: str
     chat_id: str
     thread_id: Optional[str]
+    scope_id: Optional[str]
+    workspace_pinned: bool
     transport: Any
     pconfig: Any
     runtime_adapter: Any
@@ -1324,6 +1399,8 @@ class _TargetDelivery:
 
     @property
     def where(self) -> str:
+        if self.scope_id:
+            return f"{self.platform_name}:{self.scope_id}:{self.chat_id}"
         return f"{self.platform_name}:{self.chat_id}"
 
 
@@ -1421,6 +1498,8 @@ def _live_route_metadata(t: _TargetDelivery) -> tuple[Optional[str], dict, dict]
     from gateway.delivery import _looks_like_int, looks_like_telegram_private_chat_id
     job = t.job
     thread_id = t.thread_id
+    route_metadata: dict[str, Any]
+    media_metadata: dict[str, Any]
     is_ambiguous_telegram_topic = (
         t.platform == Platform.TELEGRAM
         and thread_id is not None
@@ -1457,6 +1536,12 @@ def _live_route_metadata(t: _TargetDelivery) -> tuple[Optional[str], dict, dict]
     if t.origin_target and t.origin.get("scope_id"):
         route_metadata.setdefault("scope_id", str(t.origin["scope_id"]))
         media_metadata.setdefault("scope_id", str(t.origin["scope_id"]))
+    if t.platform == Platform.SLACK and t.scope_id:
+        for metadata in (route_metadata, media_metadata):
+            metadata["scope_id"] = str(t.scope_id)
+            metadata["slack_team_id"] = str(t.scope_id)
+            if t.workspace_pinned:
+                metadata["workspace_pinned"] = True
     return route_thread_id, route_metadata, media_metadata
 
 
@@ -1688,7 +1773,8 @@ def _standalone_send(
         # unstarted, and a wait_for wrapper created out here would be left never awaited.
         return await asyncio.wait_for(_send_to_platform(
             t.platform, t.pconfig, t.chat_id, content, thread_id=t.thread_id,
-            media_files=media_files), timeout=send_timeout)
+            media_files=media_files,
+            slack_team_id=t.scope_id if t.workspace_pinned else None), timeout=send_timeout)
 
     def _warned(msg: str) -> tuple[None, str]:
         logger.warning("Job '%s': %s", job["id"], msg)
@@ -1784,6 +1870,7 @@ def _prepare_target_delivery(
     platform_name = target["platform"]
     chat_id = target["chat_id"]
     thread_id = target.get("thread_id")
+    scope_id = target.get("scope_id")
 
     origin = _resolve_origin(job) or {}
     origin_thread = origin.get("thread_id")
@@ -1797,7 +1884,7 @@ def _prepare_target_delivery(
             job["id"], platform_name, chat_id, thread_id)
 
     # Mirror: origin, origin-less home fallback, user-written home, or explicit-target opt-in.
-    origin_target = _target_matches_origin(origin, platform_name, chat_id, thread_id)
+    origin_target = _target_matches_origin(origin, platform_name, chat_id, thread_id, scope_id)
     mirror_this_target = mirror_enabled and _target_mirror_eligible(
         job, target, global_mirror=mirror_enabled, origin_match=origin_target)
     # Resolved for ANY origin match (not just mirror-enabled): the in_channel seed needs it too.
@@ -1872,7 +1959,9 @@ def _prepare_target_delivery(
             thread_id = opened_thread_id
     return _TargetDelivery(
         job=job, platform=platform, platform_name=platform_name, chat_id=chat_id,
-        thread_id=thread_id, transport=transport, pconfig=pconfig, runtime_adapter=runtime_adapter,
+        thread_id=thread_id, scope_id=scope_id,
+        workspace_pinned=bool(target.get("_workspace_pinned")),
+        transport=transport, pconfig=pconfig, runtime_adapter=runtime_adapter,
         target_adapters=target_adapters, config=config, loop=loop, notify_delivery=notify_delivery,
         origin=origin, origin_target=origin_target, origin_user_id=origin_user_id,
         is_dm_target=is_dm_target, mirror_text=mirror_text, mirror_this_target=mirror_this_target,

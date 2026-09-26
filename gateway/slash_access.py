@@ -93,25 +93,18 @@ def policy_from_extra(extra: dict, scope: str) -> SlashAccessPolicy:
     return SlashAccessPolicy(enabled=bool(admin_ids), admin_user_ids=admin_ids, user_allowed_commands=cmds)
 
 
-def policy_for_source(gateway_config: Any, source: Any) -> SlashAccessPolicy:
-    """Resolve the slash-gating policy for a SessionSource.
+def policy_for_extra(extra: Any, source: Any) -> SlashAccessPolicy:
+    """Scope-resolve an already-resolved platform ``extra`` for *source*.
 
-    Disabled (allow-everything) when gateway_config/source is None, the platform has no
-    PlatformConfig, or no admin list is set for the scope. Gates slash commands only, never chat.
+    Split out of :func:`policy_for_source` so a caller that knows which profile actually serves
+    the source can supply that profile's ``extra`` directly. Under ``gateway.multiplex_profiles``
+    the runner's own ``GatewayConfig`` is the default profile's, so looking the platform up there
+    finds nothing for a platform configured only in a secondary profile (#121705).
     """
-    if gateway_config is None or source is None:
+    if source is None:
         return _DISABLED_POLICY
-    platforms = getattr(gateway_config, "platforms", None)
-    platform_config = None
-    if platforms is not None:
-        try:
-            platform_config = platforms.get(source.platform)
-        except Exception:
-            platform_config = None
-    # ``extra`` from a PlatformConfig-like object, or a bare dict as some test harnesses pass.
-    extra = getattr(platform_config, "extra", None)
     if not isinstance(extra, dict):
-        extra = platform_config if isinstance(platform_config, dict) else {}
+        extra = {}
     chat_type = getattr(source, "chat_type", None)
     normalized = str(chat_type).strip().lower() if chat_type is not None else ""
     if normalized:
@@ -126,7 +119,32 @@ def policy_for_source(gateway_config: Any, source: Any) -> SlashAccessPolicy:
     return dm_policy if dm_policy.enabled and not group_policy.enabled else group_policy
 
 
-__all__ = ["SlashAccessPolicy", "policy_from_extra", "policy_for_source"]
+def policy_for_source(gateway_config: Any, source: Any) -> SlashAccessPolicy:
+    """Resolve the slash-gating policy for a SessionSource from *gateway_config*.
+
+    Disabled (allow-everything) when gateway_config/source is None, the platform has no
+    PlatformConfig, or no admin list is set for the scope. Gates slash commands only, never chat.
+
+    Callers inside the gateway should prefer ``_slash_policy_for_source``, which resolves the
+    serving profile first; this reads whichever config it is handed.
+    """
+    if gateway_config is None or source is None:
+        return _DISABLED_POLICY
+    platforms = getattr(gateway_config, "platforms", None)
+    platform_config = None
+    if platforms is not None:
+        try:
+            platform_config = platforms.get(source.platform)
+        except Exception:
+            platform_config = None
+    # ``extra`` from a PlatformConfig-like object, or a bare dict as some test harnesses pass.
+    extra = getattr(platform_config, "extra", None)
+    if not isinstance(extra, dict):
+        extra = platform_config if isinstance(platform_config, dict) else {}
+    return policy_for_extra(extra, source)
+
+
+__all__ = ["SlashAccessPolicy", "policy_from_extra", "policy_for_extra", "policy_for_source"]
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

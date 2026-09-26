@@ -457,6 +457,31 @@ class GatewayAuthorizationMixin:
     def _adapter_extra_for_source(self, source) -> dict:
         return _adapter_config_extra(self._delivery_adapter_for(source))
 
+    def _slash_policy_for_source(self, source):
+        """Slash-gating policy for *source*, read from the profile that actually serves it.
+
+        ``policy_for_source(self.config, source)`` reads the runner's own ``GatewayConfig``,
+        which under ``gateway.multiplex_profiles`` is the DEFAULT profile's. A platform
+        configured only in a secondary profile has no ``PlatformConfig`` there, so the lookup
+        finds nothing and returns the disabled (allow-everything) policy: every allowlisted
+        user of that profile becomes unrestricted and can run ``/update``, ``/sethome`` and the
+        rest. Same family as the other multiplexed-command config reads (#121705).
+
+        ``_delivery_adapter_for`` already resolves the adapter that serves this source, and an
+        adapter carries the config of the profile it was built for, so its ``extra`` is the
+        authoritative one. Only a real mapping is trusted: ``policy_for_source`` guards
+        non-dict ``extra`` the same way, and falling back keeps single-profile behaviour and
+        any caller whose adapter exposes no usable config.
+        """
+        from gateway.slash_access import policy_for_extra, policy_for_source
+
+        adapter = self._delivery_adapter_for(source) if source is not None else None
+        if adapter is not None:
+            extra = _adapter_config_extra(adapter)
+            if isinstance(extra, dict):
+                return policy_for_extra(extra, source)
+        return policy_for_source(getattr(self, "config", None), source)
+
     def _own_policy_authorizes(self, source, user_id, is_group, adapter_profile) -> Optional[bool]:
         """Own-policy adapter verdict when no env allowlist exists; None = no verdict.
 

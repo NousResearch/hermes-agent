@@ -420,7 +420,13 @@ def _default_platform_hint(platform_key: str) -> str:
         except Exception:
             pass
     if platform_key == "telegram" and hint and _telegram_rich_messages_enabled():
-        hint = hint.rstrip() + " " + TELEGRAM_RICH_MESSAGES_HINT
+        # With rich_messages on, swap the base hint for the rich variant (no "no tables"
+        # steering) before appending the rich block, so the pair never contradicts itself.
+        hint = (
+            PLATFORM_HINTS.get("telegram_rich", hint).rstrip()
+            + " "
+            + TELEGRAM_RICH_MESSAGES_HINT
+        )
     return hint
 
 

@@ -589,6 +589,26 @@ def command_line_runs_inline_source(tokens: list[str]) -> bool:
     return inline_source_flag_index(tokens) is not None
 
 
+def _inline_source_flag_token_count(tokens: list[str]) -> int:
+    """Count ``-c`` interpreter flag tokens anywhere in *tokens* — standalone or clustered
+    (``-uc``). Mirrors ``inline_source_flag_index``'s cluster rule: an operand-taking letter
+    (``-X``/``-W``/``-Q``) ends the cluster, so ``-Xc`` is ``-X`` plus an attached option
+    value, never an inline-source flag. Long options and plain words never count."""
+    from hermes_state_holders import _PYTHON_SHORT_OPTIONS_WITH_OPERANDS
+
+    count = 0
+    for token in tokens:
+        if not token.startswith("-") or token.startswith("--") or token == "-":
+            continue
+        for letter in token[1:]:
+            if letter == "c":
+                count += 1
+                break
+            if letter in _PYTHON_SHORT_OPTIONS_WITH_OPERANDS:
+                break
+    return count
+
+
 _RELAUNCH_SYS_ARGV_RE = re.compile(r"sys\.argv\s*=\s*(\[[^\[\]]*\])")
 
 
@@ -657,7 +677,15 @@ def _subcommand_from_tokens(tokens: list[str]) -> "Optional[str]":
     for i, token in enumerate(filtered):
         if token == "gateway":
             # Bare `hermes gateway` defaults to `run`.
-            return filtered[i + 1] if i + 1 < len(filtered) else "run"
+            neighbor = filtered[i + 1] if i + 1 < len(filtered) else "run"
+            # A ``sys.argv = ['…', 'gateway', 'run']`` list embedded in TRAILING data (the
+            # #107002 restart watcher replaying a relaunch-shaped argv) re-tokenizes into a
+            # bare ``gateway`` whose neighbor is a list-literal fragment (``','``) — data
+            # residue, never a subcommand. Only a clean subcommand word counts; anything else
+            # keeps scanning so the every-suffix intent walk still reaches the suffix that IS
+            # the embedded command.
+            if re.fullmatch(r"[a-z][a-z0-9-]*", neighbor):
+                return neighbor
     return None
 
 
@@ -685,6 +713,16 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
     # via an in-source ``sys.argv = [<literal>]`` assignment, so the reconstructed argv — never
     # the lossy space-joined token stream — goes through the same tail.
     if command_line_runs_inline_source(cased_tokens):
+        # Exactly ONE inline-source flag token marks this process's own ``-c`` source. A second
+        # one means the command line also carries an interpreter invocation as DATA — the
+        # #107002 restart watcher can replay a captured gateway argv after its own source, and
+        # now that the relaunched form is recognised that argv can itself be relaunch-shaped
+        # (``_capture_gateway_argv`` → ``_spawn_gateway_restart_watcher``). An assignment in that
+        # embedded region names the CHILD the watcher will spawn, not this process's own argv;
+        # stay anonymous and let ``gateway_spawn_intent_subcommand`` recover the intent from
+        # the suffix.
+        if _inline_source_flag_token_count(cased_tokens) > 1:
+            return None
         relaunch_argv = _relaunch_argv_from_inline_source(command)
         if relaunch_argv is None:
             return None

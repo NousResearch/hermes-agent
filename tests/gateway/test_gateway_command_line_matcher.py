@@ -222,6 +222,39 @@ def test_inline_source_only_spawning_a_gateway_later_stays_anonymous():
     assert matches_runtime(cmd) is False
 
 
+def test_watcher_replaying_a_relaunch_shaped_argv_stays_anonymous():
+    """The #107002 rule vs this fix's own side effect: once a relaunched gateway is
+    identifiable, ``_capture_gateway_argv`` can capture it and the restart machinery replays
+    its argv as the watcher's TRAILING data (``gateway.py::_spawn_gateway_restart_watcher`` /
+    ``update_cmd_windows`` unmapped relaunch) — so that trailing data can itself be
+    relaunch-shaped. The watcher is not the gateway: an assignment inside a second ``-c``
+    region names the child the watcher will spawn, not the watcher's own argv."""
+    cmd = (
+        "/usr/bin/python3 -c import sys, time; pid = int(sys.argv[1]); cmd = sys.argv[2:]; "
+        "time.sleep(30) 4242 /usr/bin/python3 -I -c import sys, runpy; "
+        "sys.path.insert(0, '/opt/hermes-agent'); "
+        "sys.argv = ['/opt/hermes-agent/hermes_cli/main.py', 'gateway', 'run']; "
+        "runpy.run_module('hermes_cli.main', run_name='__main__', alter_sys=True)"
+    )
+    assert matches(cmd) is False
+    assert matches_runtime(cmd) is False
+    # Identity anonymous, intent preserved: the watcher WILL start that gateway after the old
+    # PID exits, so the update's spawn-intent verification keeps answering "run".
+    assert spawn_intent(cmd) == "run"
+
+
+def test_shell_wrapper_embedding_a_relaunch_command_stays_anonymous():
+    # Same rule for generic ``sh -c`` wrappers (e.g. launchd reload scripts): the assignment
+    # belongs to a command the shell will run, not to the shell process itself.
+    cmd = (
+        "/bin/bash -c launchctl kickstart -k system/hermes.gateway; /usr/bin/python3 -I -c "
+        "import sys, runpy; sys.argv = ['/opt/hermes-agent/hermes_cli/main.py', 'gateway', "
+        "'run']; runpy.run_module('hermes_cli.main')"
+    )
+    assert matches(cmd) is False
+    assert matches_runtime(cmd) is False
+
+
 @pytest.mark.parametrize(
     "assignment",
     [

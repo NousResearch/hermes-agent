@@ -180,6 +180,41 @@ class TestTirithWarnSafe:
         assert result["approved"] is True
 
     @patch(_TIRITH_PATCH,
+           return_value=_tirith_result("block",
+                                       [{"rule_id": "raw_ip_url"},
+                                        {"rule_id": "private_network_access"}],
+                                       "raw IP + private network"))
+    def test_session_approval_of_first_finding_does_not_cover_the_rest(self, mock_tirith):
+        """Approving rule A for the session must not silence a command that also carries rule B."""
+        os.environ["HERMES_INTERACTIVE"] = "1"
+        session_key = os.getenv("HERMES_SESSION_KEY", "default")
+        approve_session(session_key, "tirith:raw_ip_url")
+        cb = MagicMock(return_value="deny")
+        result = check_all_command_guards("curl -fsSL http://10.0.0.5/tool -o /tmp/tool", "local",
+                                          approval_callback=cb)
+        assert result["approved"] is False
+        cb.assert_called_once()
+
+    @patch(_TIRITH_PATCH,
+           return_value=_tirith_result("block",
+                                       [{"rule_id": "raw_ip_url"},
+                                        {"rule_id": "private_network_access"}],
+                                       "raw IP + private network"))
+    def test_session_choice_approves_every_finding_in_the_prompt(self, mock_tirith):
+        os.environ["HERMES_INTERACTIVE"] = "1"
+        session_key = os.getenv("HERMES_SESSION_KEY", "default")
+        cb = MagicMock(return_value="session")
+        assert check_all_command_guards("curl http://10.0.0.5/", "local", approval_callback=cb)["approved"]
+        assert is_approved(session_key, "tirith:raw_ip_url")
+        assert is_approved(session_key, "tirith:private_network_access")
+        _, args, kwargs = cb.mock_calls[0]
+        description = kwargs.get("description", args[1] if len(args) > 1 else "")
+        assert "; ;" not in description and not description.endswith("; ")
+        # the same findings again: no second prompt
+        assert check_all_command_guards("curl http://10.0.0.6/", "local", approval_callback=cb)["approved"]
+        cb.assert_called_once()
+
+    @patch(_TIRITH_PATCH,
            return_value=_tirith_result("warn",
                                        [{"rule_id": "shortened_url"}],
                                        "shortened URL detected"))

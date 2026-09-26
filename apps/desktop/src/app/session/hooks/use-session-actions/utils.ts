@@ -899,7 +899,21 @@ export function preserveLocalPendingTurnMessages(
         // and the authoritative row is an empty projection shell or a prefix.
         // #75825
         if (!localPendingSupersedes(message, authoritative)) {
-          continue
+          // A settled tool-round row with no answer text is only a projection
+          // shell, not a competing reply. Once the local stream has sealed its
+          // final answer, keep that richer body even though the authoritative
+          // shell itself is no longer live (#123047). Interim narration must
+          // never claim this slot: it is not the turn's final answer.
+          const authoritativeIsEmptyShell =
+            authoritative.role === 'assistant' &&
+            !authoritative.error &&
+            !textWithoutReferenceLines(chatMessageText(authoritative)).trim().length
+
+          const localFinalText = textWithoutReferenceLines(chatMessageText(message)).trim()
+
+          if (!(authoritativeIsEmptyShell && message.interim !== true && localFinalText.length > 0)) {
+            continue
+          }
         }
 
         replacements.set(authoritative.id, withAuthoritativeTurnState(message, authoritative))

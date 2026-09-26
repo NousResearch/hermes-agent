@@ -796,12 +796,19 @@ def _record_matches_live_gateway_pid(
     """True when a live PID still identifies as this gateway record. The live command line wins (a
     stale record's argv must not make a recycled PID count as a gateway; with ``expected_home`` it
     must also belong to that profile — or serve it as the host multiplexer); unreadable cmdline
-    (Windows/EACCES) -> persisted record."""
+    (Windows/EACCES) -> persisted record. The one argv shape rejected here that a live gateway
+    canonically runs is the bootstrap launcher's inline-source shim (``python -I -c <src> gateway
+    run``, #123151): with ``expected_home`` the host multiplexer record — PID + start time + the
+    live served set — salvages it, because a detached restart watcher is not that record's owner."""
     live_cmdline = _read_process_cmdline(pid)
     if not live_cmdline:
         return _record_looks_like_gateway(record)
     if not looks_like_gateway_runtime_command_line(live_cmdline):
-        return False
+        # Inline source is the restart-watcher shape the strict matcher exists to reject
+        # (#107002/#121635), but it is also how the bootstrap launcher runs the gateway itself.
+        # Only the host record can tell them apart, and only when a home is asked about: the
+        # record pins the owner's PID, and the watcher is not it.
+        return expected_home is not None and _host_gateway_serves_home(pid, expected_home)
     if expected_home is not None and _host_gateway_serves_home(pid, expected_home):
         return True
     return expected_home is None or _command_line_belongs_to_profile(live_cmdline, expected_home)

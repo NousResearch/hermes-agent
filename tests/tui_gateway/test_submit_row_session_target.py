@@ -147,6 +147,26 @@ def test_expanded_submit_row_is_rewritten_on_the_session_that_owns_it(monkeypatc
         db.close()
 
 
+def test_model_switch_marker_lands_in_the_live_session(monkeypatch, tmp_path):
+    """``_append_model_switch_marker`` writes a DURABLE ``role=user`` pivot under ``session_key`` while the
+    live agent writes to ``agent.session_id``. On a rotated session the notice is filed under a parent the
+    conversation no longer reads — the reporter's 130 stray ``model_switch`` rows. ``personality_switch``
+    is unaffected: it only ever touches ``session["history"]``, never the DB."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid, key, session, agent, child = _rotated_session(monkeypatch, db)
+    try:
+        server._append_model_switch_marker(session, model="test-model-2", provider="test-provider")
+        full = lambda k: [(r["role"], str(r["content"])) for r in  # noqa: E731
+                           db.get_messages_as_conversation(k, include_inactive=True)]
+        prefix = server._MODEL_SWITCH_MARKER_PREFIX
+        assert [r for r in full(child) if prefix in r[1]], f"marker not in the live session: {full(child)}"
+        assert not [r for r in full(key) if prefix in r[1]], (
+            f"marker filed under the rotated-away parent: {full(key)}")
+    finally:
+        server._sessions.pop(sid, None)
+        db.close()
+
+
 def test_unrotated_session_keeps_writing_to_session_key(monkeypatch, tmp_path):
     """The ordinary case is unchanged: no rotation, the row lands under session_key as before."""
     db = SessionDB(db_path=tmp_path / "state.db")

@@ -448,9 +448,6 @@ def _ensure_windows_gateway_venv_imports() -> None:
         if venv_key in seen:
             continue
         seen.add(venv_key)
-        # Only a venv built on this interpreter is ABI-safe to overlay.
-        if Path(sys.prefix).resolve() != resolved_venv:
-            continue
 
         site_packages = resolved_venv / "Lib" / "site-packages"
         if not site_packages.exists():

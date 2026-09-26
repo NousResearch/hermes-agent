@@ -20,6 +20,7 @@ import re
 from datetime import datetime
 from typing import Any, Dict, Optional
 
+from agent.retry_utils import min_reset_delay_from_message
 from hermes_time import now as _hermes_now, safe_strftime
 
 logger = logging.getLogger("cron.scheduler")
@@ -46,12 +47,26 @@ def hold_seconds_from_failure(exc: BaseException) -> Optional[float]:
     cur: Optional[BaseException] = exc
     while cur is not None and id(cur) not in seen:
         seen.add(id(cur))
+        text = str(cur)
         if isinstance(cur, AuthError) and is_rate_limited_auth_error(cur):
             hint = getattr(cur, "retry_after", None)
             if hint is None:
-                m = _RETRY_AFTER_RE.search(str(cur))
-                hint = float(m.group(1)) if m else None
+                # agent.retry_utils is the ONE grammar table for provider free text
+                # and it carries the "refills?"/"renews?" verbs plus the
+                # minimum-across-every-named-window rule. This module's own
+                # _RETRY_AFTER_RE ("retry after <N>s") does not match the wording
+                # providers actually use for a usage window — "Your usage window
+                # refills in 46 minutes" — so the hint was lost and the job failed on
+                # every cadence tick instead of being parked for the window.
+                hint = min_reset_delay_from_message(text)
             return float(hint) if hint is not None and float(hint) > 0 else None
+        if getattr(cur, "status_code", None) == 429:
+            # A mid-run 429 from the provider (not the pre-flight credential probe this
+            # module was originally scoped to) carries the same envelope. Park it for
+            # the window the provider named rather than re-firing into the wall.
+            secs = min_reset_delay_from_message(text)
+            if secs is not None and float(secs) > 0:
+                return float(secs)
         cur = cur.__cause__ or cur.__context__
     return None
 

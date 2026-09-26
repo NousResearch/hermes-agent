@@ -44,9 +44,9 @@ from tools.terminal_tool_lifecycle import (
     _evict_environment_for_task, cleanup_all_environments, ensure_task_env,
 )
 from tools.terminal_tool_config import (
-    _is_container_backend, _is_host_cwd, _is_mounted_host_cwd, _is_unusable_container_cwd, _parse_env_var,
-    coerce_ssh_remote_cwd,
-    _plugin_env_flag, _quiet, _safe_getcwd, _tenv, _tenv_bool,
+    _is_container_backend, _is_host_cwd, _is_mounted_host_cwd, _is_unusable_container_cwd,
+    _is_windows_drive_path, _parse_env_var, _plugin_env_flag, _quiet, _safe_getcwd, _tenv, _tenv_bool,
+    coerce_ssh_remote_cwd, translate_mounted_host_path,
 )
 from tools.terminal_tool_backends import (
     _REQUIREMENT_CHECKERS, _VERCEL_SANDBOX_DEFAULT_CWD, _check_plugin_requirements,
@@ -285,8 +285,8 @@ def _sanitize_cwd_for_live_env(env: Any, new_cwd: str) -> Optional[str]:
     file operations with an unrelated ``cd:`` error. Prefix-shaped host paths
     are already rejected on the creation paths. This write classifies the
     directory mounted at ``/workspace`` as unusable before that prefix
-    heuristic, then remaps the match to ``/workspace`` instead of storing the
-    host path. Non-container backends apply the override
+    heuristic, then remaps the match (or a child of it) to its container mount
+    instead of storing the host path. Non-container backends apply the override
     verbatim (ACP project-root switching must keep working).
     """
     env_type = getattr(env, "env_type", None)
@@ -299,8 +299,14 @@ def _sanitize_cwd_for_live_env(env: Any, new_cwd: str) -> Optional[str]:
     # every later file-tools exec would `cd` to it (exit 126).
     if not _is_unusable_container_cwd(new_cwd, mounted_host=mounted):
         return new_cwd
-    if _is_mounted_host_cwd(new_cwd, mounted):
-        return "/workspace"
+    if mounted:
+        # The bind may sit at a fallback mount when /workspace is claimed.
+        container_mount = getattr(env, "host_cwd_mount", None) or "/workspace"
+        if _is_mounted_host_cwd(new_cwd, mounted):
+            return container_mount
+        translated = translate_mounted_host_path(new_cwd, mounted, container_mount)
+        if translated:
+            return translated
     return None
 
 
@@ -555,7 +561,7 @@ def _lookup_active_env(effective_task_id: str, task_id: Optional[str]):
 
 
 def _resolve_task_host_cwd(config: Dict[str, Any], task_id: Optional[str]) -> Optional[str]:
-    """Host directory to bind-mount at ``/workspace`` for *task_id*'s container.
+    """Host directory to bind into *task_id*'s container.
 
     Single owner of the cwd-mount policy for every creation site. Shared-
     container mode: the ``TERMINAL_CWD``-derived ``config["host_cwd"]``.
@@ -565,6 +571,10 @@ def _resolve_task_host_cwd(config: Dict[str, Any], task_id: Optional[str]) -> Op
     fresh session's mount from it would leak the previous session's directory.
     Overrides tagged ``cwd_source: "process"`` are refused for the same reason;
     ``cwd_source: "session"`` or untagged (ACP/RL) overrides mount.
+    A Windows drive path is not a mount source while the cwd-to-/workspace flag
+    is off. A raw host override must stay out of ``docker run -w`` and fall
+    back to the sanitized config cwd. The Windows bind, including when
+    ``/workspace`` is already claimed, is the volume mount, not this override.
     """
     if config.get("env_type") != "docker" or not config.get("docker_mount_cwd_to_workspace"):
         return None
@@ -660,6 +670,21 @@ def _resolve_config_cwd(env_type: str, mount_docker_cwd: bool) -> tuple:
         ):
             host_cwd = candidate
             cwd = "/workspace"
+    elif env_type == "docker" and _is_windows_drive_path(cwd):
+        # A Windows workspace cannot exist inside the Linux container. Bind it
+        # even when docker_mount_cwd_to_workspace is off; the env retargets cwd
+        # to the mount (which may not be /workspace).
+        candidate = os.path.expanduser(cwd)
+        if os.name == "nt":
+            candidate = os.path.abspath(candidate)
+        if os.path.isdir(candidate):
+            host_cwd = candidate
+            cwd = candidate
+        else:
+            logger.info("Ignoring TERMINAL_CWD=%r for %s backend "
+                        "(host/relative path won't work in sandbox). Using %r instead.",
+                        cwd, env_type, default_cwd)
+            cwd = default_cwd
     elif _is_container_backend(env_type) and cwd and _is_unusable_container_cwd(cwd) and cwd != default_cwd:
         logger.info("Ignoring TERMINAL_CWD=%r for %s backend "
                     "(host/relative path won't work in sandbox). Using %r instead.",
@@ -827,6 +852,47 @@ def _resolve_notification_flag_conflict(*, notify_on_complete: bool, watch_patte
     return watch_patterns, ""
 
 
+def _rewrite_via_env_mount(path: str, env) -> str | None:
+    """Container path for *path* when *env* bind-mounted that host directory."""
+    if env is None or not path:
+        return None
+    host = getattr(env, "host_cwd", None)
+    mount = getattr(env, "host_cwd_mount", None)
+    if not isinstance(host, str) or not host or not mount:
+        return None
+    return translate_mounted_host_path(path, host, mount)
+
+
+def _mount_envs(env):
+    if env is not None:
+        return [env]
+    return list(_active_environments.values())
+
+
+def _container_visible_cwd(path: str, env_type: str | None, env=None) -> str:
+    if not path or not _is_container_backend(env_type or ""):
+        return path
+    for item in _mount_envs(env):
+        translated = _rewrite_via_env_mount(path, item)
+        if translated:
+            return translated
+    return path
+
+
+def _container_visible_default(default_cwd: str, env_type: str | None, env=None) -> str:
+    """Point a planner ``/workspace`` assumption at the mount that actually holds the host cwd."""
+    if not _is_container_backend(env_type or ""):
+        return default_cwd
+    for item in _mount_envs(env):
+        mount = getattr(item, "host_cwd_mount", None)
+        host = getattr(item, "host_cwd", None)
+        if not mount or not host or mount == default_cwd:
+            continue
+        if default_cwd == "/workspace" or _is_unusable_container_cwd(default_cwd):
+            return mount
+    return default_cwd
+
+
 def _resolve_command_cwd(
     *,
     workdir: Optional[str],
@@ -834,6 +900,7 @@ def _resolve_command_cwd(
     session_key: Optional[str] = None,
     env_type: Optional[str] = None,
     mounted_host: Optional[str] = None,
+    env=None,
 ) -> str:
     """cwd for a command: explicit ``workdir`` > the session's own cwd record >
     ``default_cwd``.
@@ -852,11 +919,14 @@ def _resolve_command_cwd(
     Same guard class as the env-creation sanitizers (#50636, #54447); this is the per-command sibling site.
     """
     if workdir:
-        return coerce_ssh_remote_cwd(workdir, env_type)
+        return coerce_ssh_remote_cwd(_container_visible_cwd(workdir, env_type, env), env_type)
     recorded = get_session_cwd(session_key)
     if recorded and _is_container_backend(env_type) and _is_unusable_container_cwd(
         recorded, mounted_host=mounted_host
     ):
+        visible = _container_visible_cwd(recorded, env_type, env)
+        if visible != recorded:
+            return visible
         if _is_mounted_host_cwd(recorded, mounted_host):
             logger.info(
                 "Remapping recorded session cwd %r for %s backend "
@@ -869,8 +939,8 @@ def _resolve_command_cwd(
             "(host/relative path won't work in sandbox). Using %r instead.",
             recorded, env_type, default_cwd,
         )
-        return default_cwd
-    return coerce_ssh_remote_cwd(recorded or default_cwd, env_type)
+        return _container_visible_default(default_cwd, env_type, env)
+    return recorded or coerce_ssh_remote_cwd(_container_visible_default(default_cwd, env_type, env), env_type)
 
 
 def _error_json(error: str, *, exit_code: int = -1, status: Optional[str] = None, **extra) -> str:
@@ -1168,6 +1238,7 @@ def _run_foreground(
             command_cwd = _resolve_command_cwd(
                 workdir=workdir, default_cwd=plan.cwd, session_key=session_key, env_type=env_type,
                 mounted_host=getattr(env, "host_cwd", None) or plan.host_cwd,
+                env=env,
             )
             # bounded_capture: model-facing output keeps a head/tail window
             # while streaming so a verbose command can't OOM the gateway;

@@ -59,6 +59,19 @@ def test_model_refusal_preserves_other_models_after_pool_reload(tmp_path, monkey
     assert reloaded.select(model="claude-available").id == first.id
     selected = reloaded.select(model=MODEL)
     assert (selected.id if selected else None) == ("key-1" if count > 1 else None)
+    if selected is not None:
+        # Exhaust the remaining model entitlement, not the remaining credential.
+        agent._credential_pool = reloaded
+        agent._credential_pool_entry_id = selected.id
+        agent.api_key = selected.runtime_api_key
+        assert recover_with_credential_pool(
+            agent, status_code=403, has_retried_429=False,
+            classified_reason=verdict.reason, error_context=extract_api_error_context(error),
+        ) == (False, False)
+        exhausted = load_pool("opencode-zen")
+        assert exhausted.select(model=MODEL) is None
+        assert exhausted.select(model="claude-available").id == first.id
+        assert all(entry.last_status is None for entry in exhausted.entries())
 
 
 @pytest.mark.parametrize("provider,message,status,expected", [

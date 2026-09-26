@@ -103,6 +103,51 @@ describe('useBackgroundQueueDrain', () => {
     await waitFor(() => expect(getQueuedPrompts('stored-session-a')).toHaveLength(0))
   })
 
+  it('submits a queued entry once when two idle windows both drain it', async () => {
+    // Web Locks are arbitrated across windows by the browser; jsdom has none.
+    // A FIFO mutex per lock name stands in for it.
+    const tails = new Map<string, Promise<unknown>>()
+
+    const request = (name: string, callback: () => Promise<unknown>) => {
+      const granted = (tails.get(name) ?? Promise.resolve()).then(callback)
+      tails.set(
+        name,
+        granted.catch(() => {})
+      )
+
+      return granted
+    }
+
+    Object.defineProperty(window.navigator, 'locks', { configurable: true, value: { request } })
+
+    try {
+      const runtimeMap = { current: new Map([['stored-session-a', 'rt-session-a']]) }
+      let accept!: (accepted: boolean) => void
+      const submitText = vi.fn(() => new Promise<boolean>(resolve => (accept = resolve)))
+
+      enqueueQueuedPrompt('stored-session-a', { text: 'send me once', attachments: [] })
+      clearAllSessionStates()
+
+      // Two windows, each viewing another chat, share session A's queue.
+      render(<Harness runtimeMap={runtimeMap} selectedStoredSessionId="stored-session-b" submitText={submitText} />)
+      render(<Harness runtimeMap={runtimeMap} selectedStoredSessionId="stored-session-c" submitText={submitText} />)
+
+      await waitFor(() => expect(submitText).toHaveBeenCalled())
+      await new Promise(resolve => window.setTimeout(resolve, 0))
+      await act(async () => accept(true))
+
+      await waitFor(() => expect(getQueuedPrompts('stored-session-a')).toHaveLength(0))
+      // Let the window that waited on the claim finish its turn at the queue.
+      await act(async () => {
+        await Promise.all(tails.values())
+      })
+
+      expect(submitText).toHaveBeenCalledTimes(1)
+    } finally {
+      delete (window.navigator as { locks?: unknown }).locks
+    }
+  })
+
   it('leaves the selected session queue to the mounted ChatBar drainer', async () => {
     const runtimeMap = { current: new Map([['stored-session-a', 'rt-session-a']]) }
     const submitText = vi.fn(async () => true)

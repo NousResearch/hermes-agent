@@ -19,7 +19,8 @@ import {
   removeQueuedPrompt,
   shouldAutoDrain,
   unparkQueuedPrompts,
-  updateQueuedPrompt
+  updateQueuedPrompt,
+  withQueueDrainClaim
 } from '@/store/composer-queue'
 import { notify } from '@/store/notifications'
 import { $sessionsLoading } from '@/store/session'
@@ -202,50 +203,55 @@ export function useComposerQueue({
   }, [activeQueueSessionKey, attachments, clearDraft, draftRef, scope.attachments])
 
   // All queue drain paths share one lock + send-then-remove sequence.
-  // `pickEntry` lets each caller choose head, by-id, or skip-edited.
+  // `pickEntry` lets each caller choose head, by-id, or skip-edited, from the
+  // queue as it stands inside the cross-window claim. Resolves null when there
+  // is nothing to send: another window already sent the picked entry.
   const runDrain = useCallback(
-    async (pickEntry: (entries: QueuedPromptEntry[]) => QueuedPromptEntry | undefined): Promise<boolean> => {
+    async (pickEntry: (entries: QueuedPromptEntry[]) => QueuedPromptEntry | undefined): Promise<boolean | null> => {
       if (drainingQueueRef.current || !activeQueueSessionKey) {
         return false
       }
 
       const drainQueueSessionKey = activeQueueSessionKey
       const drainRuntimeSessionId = sessionId ?? null
-      const entry = pickEntry(getQueuedPrompts(drainQueueSessionKey))
-
-      if (!entry) {
-        return false
-      }
 
       drainingQueueRef.current = true
 
       try {
-        const accepted = await Promise.resolve(
-          onSubmit(entry.text, {
-            attachments: entry.attachments,
-            ...(entry.displayText ? { displayText: entry.displayText } : {}),
-            ...(entry.displayKind ? { displayKind: entry.displayKind } : {}),
-            fromQueue: true,
-            sessionId: drainRuntimeSessionId,
-            storedSessionId: drainQueueSessionKey
-          })
-        )
+        return await withQueueDrainClaim(drainQueueSessionKey, async queue => {
+          const entry = pickEntry(queue)
 
-        if (accepted === false) {
-          return false
-        }
+          if (!entry) {
+            return null
+          }
 
-        drainFailuresRef.current.delete(entry.id)
-        // Submit now owns the blob: previews (optimistic bubble); do not revoke.
-        removeQueuedPrompt(drainQueueSessionKey, entry.id, { retainPreviewUrls: true })
-        resetBrowseState(drainRuntimeSessionId)
-        // A successful drain means the queue is flowing again — lift any park
-        // so the remaining entries follow. Manual drains (Enter on an empty
-        // composer, the per-row send arrow) are exactly the resume gestures a
-        // parked queue waits for; the auto path only reaches here unparked.
-        unparkQueuedPrompts(drainQueueSessionKey)
+          const accepted = await Promise.resolve(
+            onSubmit(entry.text, {
+              attachments: entry.attachments,
+              ...(entry.displayText ? { displayText: entry.displayText } : {}),
+              ...(entry.displayKind ? { displayKind: entry.displayKind } : {}),
+              fromQueue: true,
+              sessionId: drainRuntimeSessionId,
+              storedSessionId: drainQueueSessionKey
+            })
+          )
 
-        return true
+          if (accepted === false) {
+            return false
+          }
+
+          drainFailuresRef.current.delete(entry.id)
+          // Submit now owns the blob: previews (optimistic bubble); do not revoke.
+          removeQueuedPrompt(drainQueueSessionKey, entry.id, { retainPreviewUrls: true })
+          resetBrowseState(drainRuntimeSessionId)
+          // A successful drain means the queue is flowing again — lift any park
+          // so the remaining entries follow. Manual drains (Enter on an empty
+          // composer, the per-row send arrow) are exactly the resume gestures a
+          // parked queue waits for; the auto path only reaches here unparked.
+          unparkQueuedPrompts(drainQueueSessionKey)
+
+          return true
+        })
       } finally {
         drainingQueueRef.current = false
       }
@@ -262,7 +268,7 @@ export function useComposerQueue({
     [queueEditRef] // reads the edit id off a ref so the lock-holder always sees the latest
   )
 
-  const drainNextQueued = useCallback(() => runDrain(pickDrainHead), [pickDrainHead, runDrain])
+  const drainNextQueued = useCallback(async () => (await runDrain(pickDrainHead)) === true, [pickDrainHead, runDrain])
 
   const sendQueuedNow = useCallback(
     (id: string) => {
@@ -371,9 +377,11 @@ export function useComposerQueue({
       }
     }
 
-    void runDrain(() => entry)
+    // By id: inside the claim the head may already be gone — sent by another
+    // window — which is not a failed send.
+    void runDrain(entries => entries.find(e => e.id === entry.id))
       .then(sent => {
-        if (!sent) {
+        if (sent === false) {
           onFail()
         }
       })

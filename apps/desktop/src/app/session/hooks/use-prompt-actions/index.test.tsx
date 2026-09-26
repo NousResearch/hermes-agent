@@ -42,6 +42,9 @@ import { uploadComposerAttachment, usePromptActions } from '.'
 // never-settling in-flight promise from one test into the next.
 beforeEach(() => {
   clearSingleFlightSessionResumeState()
+  // Queue mutations build on the persisted map, not the atom — a queue an
+  // earlier test left in storage would otherwise sit ahead of this test's send.
+  window.localStorage.removeItem('hermes.desktop.composerQueue.v1')
   vi.mocked(getLatestSessionMessages).mockReset()
   vi.mocked(getLatestSessionMessages).mockImplementation(async () => ({ messages: [], session_id: 'session' }))
 })

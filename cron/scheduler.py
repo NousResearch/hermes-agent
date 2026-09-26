@@ -2730,13 +2730,14 @@ def run_one_job(
             logger.error("Job '%s': %s", job["id"], error)
             claim = job.get("fire_claim")
             owner = str(claim.get("by") or "") if isinstance(claim, dict) else ""
-            # The dispatch failure is a job failure like any other: it must open an
-            # incident and leave through the job's failure lane (#123401). Without
-            # this the outage is silent — no cron_incidents row, no ping — while
-            # executions.db keeps piling up failed rows.
-            delivery_error, delivery_outcome = _deliver_crash_failure(
-                job, error, adapters=adapters, loop=loop)
+            delivery_error = delivery_outcome = None
             try:
+                # The dispatch failure is a job failure like any other: it must open
+                # an incident and leave through the job's failure lane (#123401).
+                # Without this the outage is silent — no cron_incidents row, no
+                # ping — while executions.db keeps piling up failed rows.
+                delivery_error, delivery_outcome = _deliver_crash_failure(
+                    job, error, adapters=adapters, loop=loop)
                 mark_job_run(
                     job["id"],
                     False,

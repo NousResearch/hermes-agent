@@ -23,6 +23,63 @@ class TestHostHeaderValidator:
     """Unit test the _is_accepted_host helper directly — cheaper and
     more thorough than spinning up the full FastAPI app."""
 
+    def test_multi_host_frozenset_back_compat_single_str(self):
+        """_is_accepted_host accepts BOTH a bare str (legacy single-bind) and a
+        frozenset of bound hosts (dual-stack). Existing str callers are intact."""
+        from hermes_cli.web_server import _is_accepted_host
+
+        # str form still works
+        assert _is_accepted_host("127.0.0.1", "127.0.0.1")
+        assert not _is_accepted_host("evil.example", "127.0.0.1")
+        # frozenset form with one member is equivalent
+        assert _is_accepted_host("127.0.0.1", frozenset({"127.0.0.1"}))
+        assert not _is_accepted_host("evil.example", frozenset({"127.0.0.1"}))
+
+    def test_dual_stack_wildcard_accepts_either_family(self):
+        """Bound to both IPv4 + IPv6 wildcard: any Host targeting either is legit."""
+        from hermes_cli.web_server import _is_accepted_host
+
+        hosts = frozenset({"0.0.0.0", "::"})
+        assert _is_accepted_host("10.0.0.5", hosts)
+        assert _is_accepted_host("[::1]", hosts)
+        assert _is_accepted_host("[::1]:9119", hosts)
+
+    def test_dual_stack_loopback_accepts_any_loopback(self):
+        """Dual loopback bind (127.0.0.1 + ::1) accepts any loopback Host,
+        rejects non-loopback."""
+        from hermes_cli.web_server import _is_accepted_host
+
+        hosts = frozenset({"127.0.0.1", "::1"})
+        # NB: a bare "::1" Host value is rejected by the upstream parser as an
+        # ambiguous IPv6 authority (RFC Host headers bracket IPv6 literals);
+        # the canonical spelling is "[::1]" / "[::1]:port".
+        for target in ("127.0.0.1", "localhost", "[::1]", "[::1]:9119"):
+            assert _is_accepted_host(target, hosts)
+        assert not _is_accepted_host("10.0.0.5", hosts)
+        assert not _is_accepted_host("evil.example", hosts)
+
+    def test_mixed_loopback_public_accepts_either_bound_host(self):
+        """Mixed loopback + specific LAN bind: accept if Host matches ANY bound
+        host; reject anything else."""
+        from hermes_cli.web_server import _is_accepted_host
+
+        hosts = frozenset({"127.0.0.1", "192.168.1.100"})
+        assert _is_accepted_host("127.0.0.1", hosts)
+        assert _is_accepted_host("192.168.1.100", hosts)
+        assert _is_accepted_host("localhost", hosts)  # loopback alias
+        assert not _is_accepted_host("10.0.0.5", hosts)  # non-loopback, not bound
+
+    def test_explicit_multi_non_loopback_requires_exact_match(self):
+        """Two explicit non-loopback binds: only those exact hosts pass; a
+        loopback name must NOT sneak through when nothing loopback was bound."""
+        from hermes_cli.web_server import _is_accepted_host
+
+        hosts = frozenset({"10.0.0.5", "10.0.0.6"})
+        assert _is_accepted_host("10.0.0.5", hosts)
+        assert _is_accepted_host("10.0.0.6:9119", hosts)
+        assert not _is_accepted_host("10.0.0.7", hosts)
+        assert not _is_accepted_host("localhost", hosts)
+
 
 
     def test_zero_zero_bind_accepts_anything(self):

@@ -20,8 +20,6 @@ def test_committed_generation_blocks_the_legacy_venv_overlay(tmp_path, monkeypat
     (root / "gateway").mkdir(parents=True)
     legacy = root / "venv"
     (legacy / "Lib" / "site-packages").mkdir(parents=True)
-    (legacy / "pyvenv.cfg").write_text(
-        "home = C:\\py311\nuv = 0.5\nversion_info = 3.11.15\n", encoding="utf-8")
     generation = tmp_path / "gen"
     (generation / "Lib" / "site-packages").mkdir(parents=True)
 

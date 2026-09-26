@@ -14,7 +14,6 @@ in-tree venv.
 """
 
 import os
-import sys
 from pathlib import Path
 
 import pytest
@@ -22,17 +21,11 @@ import pytest
 pytestmark = pytest.mark.platforms("windows")
 
 
-def _write_venv(venv: Path, base: Path, *, version: str | None = None) -> Path:
+def _write_venv(venv: Path) -> Path:
     """A fake Windows venv with the ``Scripts/python.exe`` shim a cron child is handed."""
     (venv / "Lib" / "site-packages").mkdir(parents=True, exist_ok=True)
     (venv / "Scripts").mkdir(parents=True, exist_ok=True)
-    base.mkdir(parents=True, exist_ok=True)
     (venv / "Scripts" / "python.exe").write_text("", encoding="utf-8")
-    (base / "python.exe").write_text("", encoding="utf-8")
-    lines = [f"home = {base}", "uv = 0.11.14"]
-    if version:
-        lines.append(f"version_info = {version}")
-    (venv / "pyvenv.cfg").write_text("\n".join(lines) + "\n", encoding="utf-8")
     return venv
 
 
@@ -49,18 +42,16 @@ def test_managed_install_uses_the_committed_generation_not_the_in_tree_venv(
     """The committed generation wins; the leftover pre-PM venv never reaches the child."""
     from cron import scheduler_script as sched_script
 
-    stale = _write_venv(tmp_path / "repo" / "venv", tmp_path / "base")
-    committed = _write_venv(
-        tmp_path / "installs" / "gen" / "venv", tmp_path / "genbase",
-        version=f"{sys.version_info[0]}.{sys.version_info[1]}.7",
-    )
+    stale = _write_venv(tmp_path / "repo" / "venv")
+    committed = _write_venv(tmp_path / "installs" / "gen" / "venv")
     store = tmp_path / "store" / "python.exe"
     store.parent.mkdir(parents=True)
     store.write_text("", encoding="utf-8")
-    child = _write_venv(tmp_path / "child", tmp_path / "childbase")
+    child = _write_venv(tmp_path / "child")
 
     monkeypatch.setattr("hermes_cli._launchers.resolve_store_python", lambda _root: store)
     monkeypatch.setattr("pm.environments.committed_venv", lambda _root: committed)
+    # Base read selected_venv; pointing it at the stale venv is what makes this red there.
     monkeypatch.setattr("pm.environments.selected_venv", lambda _root: stale)
 
     interpreter, env_overlay = sched_script._windows_cron_python_invocation(

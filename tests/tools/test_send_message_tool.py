@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import sqlite3
 import os
 import sys
 from types import ModuleType, SimpleNamespace
@@ -391,6 +392,39 @@ class TestSendMessageTool:
             media_files=[(str(report.resolve()), False)], force_document=False,
         )
         assert _emit_result(raw, json_mode=True, quiet=True) != 0
+
+    def test_partial_send_with_dropped_media_books_no_ledger_row(self, tmp_path, monkeypatch):
+        """The outbound ledger row is booked on the FINAL success verdict, after the
+        #115908 partial-attachment downgrade: a send the caller's exit code does not
+        book as success must not appear as a delivered row either."""
+        monkeypatch.setenv("HERMES_MEDIA_DELIVERY_STRICT", "0")
+        config, _telegram_cfg = _make_config()
+        report = tmp_path / "report.pdf"
+        report.write_bytes(b"%PDF report")
+        missing = tmp_path / "missing.pdf"
+        import gateway.delivery_ledger as dl
+
+        (tmp_path / ".hermes").mkdir()
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})), \
+             patch("gateway.mirror.mirror_to_session", return_value=True), \
+             patch.object(dl, "_db_path", return_value=tmp_path / ".hermes" / "state.db"), \
+             patch.object(dl, "ledger_enabled", return_value=True):
+            raw = send_message_tool({
+                "action": "send",
+                "target": "telegram:12345",
+                "message": f"report\nMEDIA:{report}\nMEDIA:{missing}",
+            })
+
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert result["partial_success"] is True
+        with sqlite3.connect(tmp_path / ".hermes" / "state.db") as conn:
+            dl._initialize_schema(conn)  # a no-booking send may leave the table uncreated
+            rows = conn.execute("SELECT * FROM delivery_obligations").fetchall()
+        assert rows == []
 
     def test_top_level_send_failure_redacts_query_token(self):
         config, _telegram_cfg = _make_config()

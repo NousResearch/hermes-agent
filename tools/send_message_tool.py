@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 import os
+import uuid
 from functools import partial
 
 from agent.secret_scope import get_secret
@@ -285,6 +286,10 @@ def _handle_send(args):
                 result["partial_success"] = True
                 result["error"] = (f"Delivery incomplete: {len(media_dropped)} requested MEDIA attachment(s) "
                                    "dropped before delivery (see media_dropped)")
+            if result.get("success"):
+                # Book after the partial-attachment downgrade: only a delivery the caller's exit
+                # code books as success appears as a delivered row in the ledger.
+                _ledger_outbound_send(platform_name, chat_id, thread_id, mirror_text)
         if isinstance(result, dict) and media_dropped:
             result["media_dropped"] = media_dropped
         if isinstance(result, dict) and "error" in result:
@@ -427,6 +432,34 @@ def _mirror_sent_message(platform_name, chat_id, mirror_text, thread_id):
             user_id=get_session_env("HERMES_SESSION_USER_ID", "") or None))
     except Exception:
         return False
+
+
+def _ledger_outbound_send(platform_name, chat_id, thread_id, content):
+    """Best-effort delivered-row ledger for outbound-first sends (accounting only).
+
+    The gateway response path WALs its finals into the delivery ledger BEFORE sending
+    (``BasePlatformAdapter._record_delivery_obligation``) so a crash redelivers; sends that
+    originate outside a gateway turn — the ``hermes send`` CLI and the opt-in MCP server, the two
+    callers of this entrypoint (cron standalone sends and the kanban notifier dial
+    ``_send_to_platform``/``adapter.send`` directly and stay out of scope here) — had no ledger
+    trace at all, so anything reading
+    ``delivery_obligations`` silently missed them. Book the outcome AFTER the platform ACK as a
+    terminal 'delivered' row (``record_delivered_obligation``), so no redelivery semantics can
+    attach. Failures and partial sends are deliberately not booked: a 'failed' row IS
+    sweep-eligible, and granting outbound-first sends cross-process retry semantics is a design
+    decision, not a side effect. Never raises."""
+    try:
+        from gateway.delivery_ledger import (
+            compute_obligation_id, ledger_enabled, record_delivered_obligation)
+        if not ledger_enabled():
+            return
+        session_key = f"outbound:{platform_name}:{chat_id}" + (f":{thread_id}" if thread_id else "")
+        record_delivered_obligation(
+            obligation_id=compute_obligation_id(session_key, f"outbound-{uuid.uuid4().hex[:12]}", content),
+            session_key=session_key, platform=platform_name, chat_id=str(chat_id),
+            thread_id=thread_id, content=content)
+    except Exception:
+        logger.debug("outbound send ledger record failed", exc_info=True)
 
 
 def _weixin_env_pconfig():

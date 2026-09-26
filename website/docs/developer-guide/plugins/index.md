@@ -1096,8 +1096,54 @@ Each hook is documented in full on the **[Event Hooks reference](../../user-guid
 | `kanban_task_claimed` | A kanban task is claimed (dispatcher process, before the worker spawns) | `task_id: str, board: str \| None, assignee: str \| None, run_id: int \| None, profile_name: str` | ignored |
 | `kanban_task_completed` | A kanban task completes (worker process) | `task_id, board, assignee, run_id, profile_name, summary: str \| None` | ignored |
 | `kanban_task_blocked` | A kanban task is blocked (worker process) | `task_id, board, assignee, run_id, profile_name, reason: str \| None` | ignored |
+| [`pre_skill_create:guard`](/user-guide/features/hooks#pre_skill_create-guard) | Before create existence/policy guards | `name, content, category` | `block`, `handled` (absolute `path` required), or discoverable-root `redirect` |
+| [`pre_skill_create`](/user-guide/features/hooks#pre_skill_create) | After create guards, before write | `name, content, category` | `block`, `handled` (absolute `path` required), or discoverable-root `redirect` |
+| [`post_skill_create`](/user-guide/features/hooks#post_skill_create) | After an attempted create and success bookkeeping | `name, category, path, success, error` | ignored |
+| [`pre_skill_edit:guard`](/user-guide/features/hooks#pre_skill_edit-guard) | Before edit lookup/policy guards | `name, content` | `block` or `handled` |
+| [`pre_skill_edit`](/user-guide/features/hooks#pre_skill_edit) | After edit guards, before rewrite | `name, content, old_content` | `block` or `handled` |
+| [`post_skill_edit`](/user-guide/features/hooks#post_skill_edit) | After an attempted full rewrite | `name, path, success, error` | ignored |
+| [`pre_skill_patch:guard`](/user-guide/features/hooks#pre_skill_patch-guard) | Before patch lookup/policy guards | `name, old_string, new_string, file_path, replace_all` | `block` or `handled` |
+| [`pre_skill_patch`](/user-guide/features/hooks#pre_skill_patch) | After patch guards, before write | `name, old_string, new_string, file_path, replace_all` | `block` or `handled` |
+| [`post_skill_patch`](/user-guide/features/hooks#post_skill_patch) | After an attempted targeted patch | `name, file_path, replace_all, success, error` | ignored |
+| [`pre_skill_write_file:guard`](/user-guide/features/hooks#pre_skill_write_file-guard) | Before supporting-file lookup/policy guards | `name, file_path, file_content` | `block` or `handled` |
+| [`pre_skill_write_file`](/user-guide/features/hooks#pre_skill_write_file) | After write guards, before write | `name, file_path, file_content` | `block` or `handled` |
+| [`post_skill_write_file`](/user-guide/features/hooks#post_skill_write_file) | After an attempted supporting-file write | `name, file_path, success, error` | ignored |
+| [`pre_skill_remove_file:guard`](/user-guide/features/hooks#pre_skill_remove_file-guard) | Before removal lookup/policy guards | `name, file_path` | `block` or `handled` |
+| [`pre_skill_remove_file`](/user-guide/features/hooks#pre_skill_remove_file) | After removal guards, before unlink | `name, file_path` | `block` or `handled` |
+| [`post_skill_remove_file`](/user-guide/features/hooks#post_skill_remove_file) | After an attempted supporting-file removal | `name, file_path, success, error` | ignored |
+| [`pre_skill_delete:guard`](/user-guide/features/hooks#pre_skill_delete-guard) | Before delete lookup/policy guards | `name, absorbed_into` | `block` or `handled` |
+| [`pre_skill_delete`](/user-guide/features/hooks#pre_skill_delete) | After delete guards, before archive/delete | `name, absorbed_into` | `block` or `handled` |
+| [`post_skill_delete`](/user-guide/features/hooks#post_skill_delete) | After an attempted archive/delete | `name, absorbed_into, success, error` | ignored |
 
-Most hooks are fire-and-forget observers — their return values are ignored. The exceptions are `pre_llm_call`, which can inject context into the conversation, and `pre_tool_call`, which can return a block/approve directive.
+The skill-mutation family contains exactly **18 hooks**: six `:guard`, six
+policy-checked `pre`, and six `post` hooks. Most hooks are fire-and-forget
+observers — their return values are ignored. The exceptions are `pre_llm_call`,
+which can inject context into the conversation; `pre_tool_call`, which can
+return a block/approve directive; and the 12 Python-only skill mutation
+directive hooks, which can return `handled`, `block`, or (for create only)
+`redirect`.
+
+### Nested guard hooks (`:guard` suffix)
+
+Each skill lifecycle operation follows a nested-hook model:
+
+```
+:guard hook  →  guards (existence, org-mirror, review)  →  pre hook  →  execute
+```
+
+The **:guard hook** (e.g. `pre_skill_edit:guard`) fires **before** any guard
+checks.  Plugins use it to resolve or pre-process skill content independent
+of filesystem state — for example, a skill-graph resolver might intercept a
+name it knows about even when the skill directory doesn't exist yet locally.
+If no plugin registers the `:guard` hook, the default guard-first behaviour
+applies.
+
+The **pre hook** fires **after** guards pass — "the skill exists and is safe
+to modify."  Plugins use this to inspect or transform the operation knowing
+the basic safety checks are already satisfied.
+
+All `:guard` hooks accept the same kwargs as their pre-hook counterparts
+(except `old_content` which is unavailable at guard time).
 
 All callbacks should accept `**kwargs` for forward compatibility. If a hook callback crashes, it's logged and skipped. Other hooks and the agent continue normally.
 
@@ -1107,7 +1153,7 @@ The **API request hooks** are observers for the raw provider request, one level 
 
 ### `pre_llm_call` context injection
 
-This is the only hook whose return value matters. When a `pre_llm_call` callback returns a dict with a `"context"` key (or a plain string), Hermes injects that text into the **current turn's user message**. This is the mechanism for memory plugins, RAG integrations, guardrails, and any plugin that needs to provide the model with additional context.
+This is the only hook whose return value functions as context injection. When a `pre_llm_call` callback returns a dict with a `"context"` key (or a plain string), Hermes injects that text into the **current turn's user message**. This is the mechanism for memory plugins, RAG integrations, guardrails, and any plugin that needs to provide the model with additional context.
 
 #### Return format
 
@@ -1803,7 +1849,11 @@ hooks:
       tools: [terminal, patch, write_file]
 ```
 
-Supports all the same events as Python plugin hooks (`pre_tool_call`, `post_tool_call`, `pre_llm_call`, `post_llm_call`, `on_session_start`, `on_session_end`, `pre_gateway_dispatch`) plus structured JSON output for `pre_tool_call` blocking decisions.
+Supports the observer events from the Python plugin catalog plus structured
+JSON output for the shell directive families documented in the full guide. The
+12 `pre_skill_*` / `pre_skill_*:guard` mutation directives are intentionally
+Python-only and are rejected in shell-hook configuration; the six
+`post_skill_*` mutation observers remain available to shell hooks.
 
 **Full guide:** [Shell Hooks](../../user-guide/features/hooks.md#shell-hooks).
 

@@ -8,6 +8,7 @@ late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import re
 import signal
@@ -141,6 +142,13 @@ class DispatchResult:
     """``(task_id, reason)`` skipped by the respawn guard: ``"blocker_auth"``
     (quota/auth error — also auto-blocked), ``"recent_success"`` (completed run
     within guard window), ``"active_pr"`` (GitHub PR URL in a recent comment)."""
+    skill_preflight_held: list[tuple[str, str]] = field(default_factory=list)
+    """``(task_id, missing)`` ready/review rows held BEFORE claim: a required
+    skill (``task.skills``, plus ``sdlc-review`` on the review lane) cannot load
+    from the assignee profile's home. The card stays claimable — once the skill
+    is installed or re-enabled, the next tick spawns it with no retry budget
+    spent. NOT operator-actionable beyond installing the skill or removing it
+    from the card."""
     rate_limited: list[str] = field(default_factory=list)
     """Task ids whose workers bailed on a provider rate-limit / quota wall
     (EX_TEMPFAIL sentinel exit) and were released to ``ready`` WITHOUT counting
@@ -171,6 +179,8 @@ def describe_suppression(results: Iterable[Optional["DispatchResult"]]) -> str:
             continue
         for _task_id, reason in res.respawn_guarded:
             counts[reason] = counts.get(reason, 0) + 1
+        if res.skill_preflight_held:
+            counts["skill_preflight"] = counts.get("skill_preflight", 0) + len(res.skill_preflight_held)
         if res.rate_limited:
             counts["rate_limited"] = counts.get("rate_limited", 0) + len(res.rate_limited)
         if res.skipped_locked:
@@ -1988,6 +1998,62 @@ def _call_spawn_fn(spawn_fn, task: Task, workspace: str, board: Optional[str]) -
         return spawn_fn(task, workspace)
 
 
+def _required_skills_for_lane(task: Optional["Task"], lane: str) -> list[str]:
+    """Skills the lane's worker will be told to preload: the card's own list,
+    plus the review lane's forced ``sdlc-review`` (appended after claim today —
+    modelled here so the preflight sees what the worker argv will carry)."""
+    required = [s for s in ((task.skills if task else None) or ()) if s]
+    if lane == "review":
+        required = list(dict.fromkeys([*required, "sdlc-review"]))
+    return required
+
+
+def _unresolvable_required_skills(assignee: str, required: list[str]) -> list[str]:
+    """Required skills the assignee's profile home cannot load (absent or
+    disabled), resolved by the SAME loader the worker's ``--skills`` preload
+    runs — a preflight that disagreed with the worker would be worse than none.
+
+    Scoped to the profile home and its configured external skill dirs:
+    project-local skills resolve against the worker's workspace cwd, which does
+    not exist before claim, so a workspace-only skill stays the worker's to
+    report. Resolution failures also return ``[]`` (fail open): a broken
+    preflight must not strand ready cards; the worker's own error handling
+    remains the backstop.
+    """
+    if not required:
+        return []
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    from hermes_cli.profiles import resolve_profile_env
+    try:
+        profile_home = resolve_profile_env(assignee)
+    except Exception:
+        return []
+    token = set_hermes_home_override(profile_home)
+    try:
+        from agent.skill_commands import build_preloaded_skills_prompt
+        return list(build_preloaded_skills_prompt(required)[2])
+    except Exception:
+        return []
+    finally:
+        reset_hermes_home_override(token)
+
+
+def _append_skill_preflight_event(
+    conn: sqlite3.Connection, task_id: str, lane: str, missing: list[str],
+) -> None:
+    """Record one ``skill_preflight`` event per DISTINCT missing-set: a held
+    card re-checks every tick, and re-writing an unchanged verdict would spam
+    ``task_events`` the way ``respawn_guarded`` once did (#121651)."""
+    for event in reversed(_kb.list_events(conn, task_id)):
+        if event.kind != "skill_preflight":
+            continue
+        if (event.payload or {}).get("missing") == list(missing):
+            return
+        break  # only the latest verdict matters
+    _kb._append_event(conn, task_id, "skill_preflight", {"lane": lane, "missing": list(missing)})
+
+
 def _dispatch_lane_task(
     conn: sqlite3.Connection,
     row: sqlite3.Row,
@@ -2036,6 +2102,20 @@ def _dispatch_lane_task(
         if not dry_run:
             with _kb.write_txn(conn):
                 _kb._append_event(conn, task_id, "respawn_guarded", {"reason": guard_reason})
+        return False
+
+    # Skill preflight BEFORE the claim (#121652): a required skill the assignee
+    # profile cannot load used to surface only after claim — as a worker crash
+    # that spent a run, a slot and the card's retry budget, or as a silent
+    # partial load. Held cards stay claimable; installing or re-enabling the
+    # skill lets the next tick spawn them with nothing spent.
+    missing = _unresolvable_required_skills(
+        assignee, _required_skills_for_lane(_kb.get_task(conn, task_id), lane))
+    if missing:
+        result.skill_preflight_held.append((task_id, ", ".join(missing)))
+        if not dry_run:
+            with _kb.write_txn(conn):
+                _append_skill_preflight_event(conn, task_id, lane, missing)
         return False
 
     def _count_spawn(name: str) -> None:
@@ -2239,14 +2319,16 @@ def _any_spawnable_review(
 
     Unavailable profile metadata retains the historic fail-open behavior. A
     review row that :func:`_dispatch_lane_task` would refuse this tick — its
-    assignee already at the per-profile cap, or respawn-guarded — cannot
-    consume the reservation, so it must not withhold capacity from an
-    otherwise ready task (one such row would pin ``ready_budget`` to 0).
+    assignee already at the per-profile cap, respawn-guarded, or held by the
+    skill preflight — cannot consume the reservation, so it must not withhold
+    capacity from an otherwise ready task (one such row would pin
+    ``ready_budget`` to 0).
     """
     if not review_rows:
         return False
     profile_exists = _profile_exists_fn()
     running = per_profile_running or {}
+    skill_verdicts: dict[tuple[str, tuple[str, ...]], list[str]] = {}
     for row in review_rows:
         assignee = row["assignee"]
         if not assignee:
@@ -2255,8 +2337,16 @@ def _any_spawnable_review(
             continue
         if per_profile_cap is not None and running.get(assignee, 0) >= per_profile_cap:
             continue
-        if check_respawn_guard(conn, row["id"], lane="review") is None:
-            return True
+        if check_respawn_guard(conn, row["id"], lane="review") is not None:
+            continue
+        required = tuple(_required_skills_for_lane(_kb.get_task(conn, row["id"]), "review"))
+        verdict = skill_verdicts.get((assignee, required))
+        if verdict is None:
+            verdict = skill_verdicts[(assignee, required)] = \
+                _unresolvable_required_skills(assignee, list(required))
+        if verdict:
+            continue
+        return True
     return False
 
 

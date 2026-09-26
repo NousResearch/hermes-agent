@@ -345,6 +345,9 @@ export interface UiState {
   notice: Notice | null
   pasteCollapseLines: number
   pasteCollapseChars: number
+  // #121979: per-turn reasoning peek -- true only while the in-flight turn's
+  // peek toggle is on; ephemeral, reset when the turn settles.
+  reasoningPeek: boolean
 
   sections: SectionVisibility
   sessionTitle: string

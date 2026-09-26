@@ -139,6 +139,21 @@ const clear = (t: Timer): null => {
   return null
 }
 
+// #121979: peek reasoning is ephemeral -- strip turn reasoning from a segment
+// being committed to the transcript. MoA reference blocks stay put: they are
+// the mixture-of-agents process, not model reasoning (#64657).
+const withdrawPeekThinking = (msg: Msg): Msg => {
+  if (msg.isMoaReference || !msg.thinking) {
+    return msg
+  }
+
+  const next: Msg = { ...msg }
+  delete next.thinking
+  delete next.thinkingTokens
+
+  return next
+}
+
 class TurnController {
   bufRef = ''
   interrupted = false
@@ -155,6 +170,9 @@ class TurnController {
 
   private activeTools: ActiveTool[] = []
   private activeReasoningText = ''
+  // #121979: true once a reasoning delta passed the gate via the per-turn
+  // peek (not the sticky show_reasoning toggle) during the current turn.
+  private peekedThisTurn = false
   private reasoningSegmentIndex: null | number = null
   private interimBoundaryIndex: null | number = null
   private activityId = 0
@@ -293,6 +311,35 @@ class TurnController {
     }
   }
 
+  // #121979: should a reasoning tick be recorded this turn? Sticky
+  // show_reasoning always wins; otherwise the in-flight turn's peek toggle
+  // lets the tick through AND marks the turn so settle can withdraw it.
+  private acceptReasoning(): boolean {
+    const ui = getUiState()
+
+    if (ui.showReasoning) {
+      return true
+    }
+
+    if (ui.reasoningPeek) {
+      this.peekedThisTurn = true
+
+      return true
+    }
+
+    return false
+  }
+
+  // #121979: peek is per-turn -- clear the marker and the toggle at every turn
+  // end so the next generation needs a fresh toggle.
+  private endTurnPeek() {
+    this.peekedThisTurn = false
+
+    if (getUiState().reasoningPeek) {
+      patchUiState({ reasoningPeek: false })
+    }
+  }
+
   endReasoningPhase() {
     this.reasoningStreamingTimer = clear(this.reasoningStreamingTimer)
 
@@ -337,7 +384,10 @@ class TurnController {
 
     this.closeReasoningSegment()
 
-    const segments = this.segmentMessages
+    // #121979: peek reasoning must not outlive the turn it was peeked for.
+    const withdrawPeek = this.peekedThisTurn && !getUiState().showReasoning
+    const segments = withdrawPeek ? this.segmentMessages.map(withdrawPeekThinking) : this.segmentMessages
+    this.endTurnPeek()
     const partial = this.bufRef.trimStart()
     const tools = this.pendingSegmentTools
 
@@ -586,6 +636,7 @@ class TurnController {
     // (#61520), and interruptTurn, which preserves it as `partial`.
     this.idle()
     this.clearReasoning()
+    this.endTurnPeek()
     this.clearStatusTimer()
     this.pendingSegmentTools = []
     this.segmentMessages = []
@@ -659,10 +710,22 @@ class TurnController {
       return body === null || (!finalHasOwnDiffFence && !finalText.includes(body))
     })
 
+    // #121979: per-turn reasoning peek -- reasoning surfaced only for this
+    // in-flight turn is ephemeral: strip it from the committed segments and
+    // skip the final thinking block unless the sticky toggle is also on.
+    const withdrawPeek = this.peekedThisTurn && !getUiState().showReasoning
+    const committedSegments = withdrawPeek ? segments.map(withdrawPeekThinking) : segments
+
     const hasReasoningSegment =
       this.reasoningSegmentIndex !== null || segments.some(msg => Boolean(msg.thinking?.trim()))
 
-    const finalThinking = hasReasoningSegment ? '' : savedReasoning.trim()
+    let finalThinking = hasReasoningSegment ? '' : savedReasoning.trim()
+
+    if (withdrawPeek) {
+      finalThinking = ''
+    }
+
+    this.endTurnPeek()
 
     const finalDetails: Msg = {
       kind: 'trail',
@@ -678,7 +741,7 @@ class TurnController {
     // not between thinking/tools and final assistant text.
     const finalMessages: Msg[] = [
       ...archiveDoneTodos(),
-      ...segments,
+      ...committedSegments,
       ...(hasDetails(finalDetails) ? [finalDetails] : [])
     ]
 
@@ -764,7 +827,7 @@ class TurnController {
   }
 
   recordReasoningAvailable(text: string, force = false) {
-    if (this.interrupted || (!force && !getUiState().showReasoning)) {
+    if (this.interrupted || (!force && !this.acceptReasoning())) {
       return
     }
 
@@ -815,7 +878,7 @@ class TurnController {
   }
 
   recordReasoningDelta(text: string, force = false) {
-    if (this.interrupted || (!force && !getUiState().showReasoning)) {
+    if (this.interrupted || (!force && !this.acceptReasoning())) {
       return
     }
 
@@ -939,6 +1002,7 @@ class TurnController {
     this.interrupted = false
     this.lastStatusNote = ''
     this.activeReasoningText = ''
+    this.peekedThisTurn = false
     this.pendingSegmentTools = []
     this.protocolWarned = false
     this.reasoningSegmentIndex = null

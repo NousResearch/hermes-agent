@@ -52,6 +52,7 @@ export const MessageLine = memo(function MessageLine({
   msg,
   prev,
   reasoningActive = false,
+  reasoningPeek = false,
   sections,
   t,
   timestamps = false,
@@ -93,7 +94,12 @@ export const MessageLine = memo(function MessageLine({
   }
 
   if (msg.kind === 'trail' && (msg.tools?.length || tools.length || thinking)) {
-    return shouldShowThinkingTrail(msg, thinkingMode, toolsMode, activityMode) ? (
+    // #121979: while the in-flight turn's reasoning peek is on, its live
+    // reasoning segment renders even under hidden thinking sections -- the
+    // whole point is watching thinking that the sticky display hides.
+    const peekLive = reasoningPeek && msg.isLiveReasoning === true
+
+    return shouldShowThinkingTrail(msg, thinkingMode, toolsMode, activityMode) || peekLive ? (
       <Box flexDirection="column" marginTop={leadGap ? 1 : 0}>
         <ToolTrail
           commandOverride={detailsModeCommandOverride}
@@ -101,7 +107,7 @@ export const MessageLine = memo(function MessageLine({
           preferExpandedThinking={liveDetails}
           reasoning={thinking}
           reasoningActive={reasoningActive}
-          reasoningAlwaysVisible={msg.isMoaReference}
+          reasoningAlwaysVisible={msg.isMoaReference || peekLive}
           reasoningTokens={msg.thinkingTokens}
           sections={sections}
           t={t}
@@ -345,6 +351,9 @@ interface MessageLineProps {
   // the transcript or when spacing is irrelevant.
   prev?: Msg
   reasoningActive?: boolean
+  // #121979: per-turn reasoning peek -- forces the LIVE reasoning segment to
+  // render even when the thinking section resolves to hidden.
+  reasoningPeek?: boolean
   sections?: SectionVisibility
   t: Theme
   /** `display.timestamps` — dim [HH:MM] label on user/assistant rows. */

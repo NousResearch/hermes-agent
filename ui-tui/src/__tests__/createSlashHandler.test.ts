@@ -314,6 +314,22 @@ describe('createSlashHandler', () => {
     })
   })
 
+  it('toggles the per-turn reasoning peek locally without a config.set (#121979)', async () => {
+    patchUiState({ reasoningPeek: false, sections: { thinking: 'hidden' }, showReasoning: false, sid: 'sid-abc' })
+    const rpc = vi.fn(() => Promise.resolve(null))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/reasoning peek')).toBe(true)
+    expect(getUiState().reasoningPeek).toBe(true)
+
+    expect(createSlashHandler(ctx)('/reasoning peek')).toBe(true)
+    expect(getUiState().reasoningPeek).toBe(false)
+
+    // Peek is ephemeral and client-side -- the sticky toggle must be untouched.
+    expect(getUiState().showReasoning).toBe(false)
+    expect(rpc).not.toHaveBeenCalled()
+  })
+
   it('reads /reasoning status for the active session', () => {
     patchUiState({ sid: 'sid-abc' })
     const ctx = buildCtx()

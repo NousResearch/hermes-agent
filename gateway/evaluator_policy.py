@@ -66,7 +66,8 @@ class SubprocessEvaluatorPolicy:
             raise RuntimeError(f"evaluator policy invocation failed: {exc}") from exc
         if not isinstance(result, dict):
             raise RuntimeError("evaluator policy must return a JSON object")
-        if result.get("schema_version") != 1:
+        schema_version = result.get("schema_version")
+        if type(schema_version) is not int or schema_version != 1:
             raise RuntimeError("evaluator policy returned an unsupported schema_version")
         if result.get("request_id") != turn_id:
             raise RuntimeError("evaluator policy returned a mismatched request_id")

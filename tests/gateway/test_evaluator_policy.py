@@ -113,6 +113,26 @@ def test_subprocess_policy_rejects_unknown_schema(monkeypatch):
         policy(final_text="Answer includes evidence.", metadata={"turn_id": "turn-1"})
 
 
+def test_subprocess_policy_rejects_boolean_schema_version(monkeypatch):
+    # In Python, True == 1 and isinstance(True, int) is True, so a naive
+    # `!= 1` or `isinstance(x, int)` check silently accepts a JSON `true`
+    # schema_version. Reject anything that is not exactly the int 1.
+    policy = SubprocessEvaluatorPolicy(
+        [sys.executable, str(EVALUATOR_ADAPTER)],
+        policy=_policy(),
+        agent_configuration_id="hermes-test-v1",
+        evaluator_configuration_id="evaluator-test-v1",
+    )
+
+    class Completed:
+        returncode = 0
+        stdout = '{"schema_version": true, "request_id": "turn-1", "status": "passed", "allowed": true, "final_text": "ok"}'
+
+    monkeypatch.setattr("subprocess.run", lambda *args, **kwargs: Completed())
+    with pytest.raises(RuntimeError, match="unsupported schema_version"):
+        policy(final_text="Answer includes evidence.", metadata={"turn_id": "turn-1"})
+
+
 def test_subprocess_policy_requires_turn_identity():
     policy = SubprocessEvaluatorPolicy(
         [sys.executable, str(EVALUATOR_ADAPTER)],

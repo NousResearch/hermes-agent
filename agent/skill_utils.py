@@ -71,7 +71,8 @@ def is_excluded_skill_path(path, *, root: Optional[Path] = None) -> bool:
     """True if *path* should be skipped by skill scanners (VCS/dependency/cache
     dirs + support packages). Apply to every SKILL.md from a direct ``rglob``."""
     parts = PurePath(str(path)).parts
-    return any(part in EXCLUDED_SKILL_DIRS for part in parts) or is_skill_support_path(path, root=root)
+    excluded = excluded_skill_dirs()
+    return any(part in excluded for part in parts) or is_skill_support_path(path, root=root)
 
 
 def is_skill_support_path(path, *, root: Optional[Path] = None) -> bool:
@@ -354,14 +355,29 @@ def _config_str_list(raw) -> List[str]:
     return [e for e in (str(entry).strip() for entry in raw) if e]
 
 
+def excluded_skill_dirs() -> frozenset:
+    """``EXCLUDED_SKILL_DIRS`` plus the directory names listed in ``skills.excluded_dirs``."""
+    return EXCLUDED_SKILL_DIRS | frozenset(_config_str_list(_skills_cfg_get("excluded_dirs")))
+
+
+def get_extra_skills_dirs() -> List[Path]:
+    """Validated ``skills.extra_dirs``: additional WRITABLE skill roots, searched after the
+    local skills dir. Unlike ``external_dirs`` they are not classed read-only."""
+    return _config_skills_dirs("extra_dirs")
+
+
 def get_external_skills_dirs() -> List[Path]:
     """Validated, deduplicated ``skills.external_dirs`` (existing dirs only). Entries
     are ``~``/``${VAR}`` expanded, relative to HERMES_HOME; the local skills dir is skipped."""
+    return _config_skills_dirs("external_dirs")
+
+
+def _config_skills_dirs(key: str) -> List[Path]:
     config_path = get_config_path()
     if not config_path.exists():
         return []
     full_key = _config_cache_key(config_path)
-    cache_key = full_key
+    cache_key = full_key if key == "external_dirs" or full_key is None else (key, *full_key)
     cached = _EXTERNAL_DIRS_CACHE.get(cache_key) if cache_key is not None else None
     if cached is not None:
         return list(cached)  # copy so callers can't mutate the cache
@@ -370,7 +386,7 @@ def get_external_skills_dirs() -> List[Path]:
         return []
     local_skills = get_skills_dir().resolve()
     result: List[Path] = []
-    for entry in _config_str_list(skills_cfg.get("external_dirs")):
+    for entry in _config_str_list(skills_cfg.get(key)):
         p = _home_relative(_expand_path(entry)).resolve()
         if p == local_skills or p in result:
             continue
@@ -416,11 +432,12 @@ def display_skill_create_dir() -> str:
 
 
 def get_all_skills_dirs() -> List[Path]:
-    """Skill dirs: local ``~/.hermes/skills/`` first, then create_dir, then external.
-    Trusted project dirs are NOT included (higher precedence; see get_project_skills_dirs)."""
+    """Skill dirs: local ``~/.hermes/skills/`` first, then extra_dirs, then create_dir, then
+    external. Trusted project dirs are NOT included (higher precedence; see get_project_skills_dirs)."""
     dirs = [get_skills_dir()]
+    dirs.extend(d for d in get_extra_skills_dirs() if d not in dirs)
     create_dir = get_skill_create_dir()
-    if create_dir is not None and create_dir.is_dir():
+    if create_dir is not None and create_dir.is_dir() and create_dir not in dirs:
         dirs.append(create_dir)
     dirs.extend(d for d in get_external_skills_dirs() if d not in dirs)
     return dirs
@@ -603,7 +620,7 @@ def normalize_skill_lookup_name(identifier: str) -> str:
     except Exception:
         primary_root = get_skills_dir()
     trusted_roots = [primary_root]
-    for getter in (get_project_skills_dirs, get_external_skills_dirs):
+    for getter in (get_project_skills_dirs, get_all_skills_dirs):
         try:
             trusted_roots.extend(getter())
         except Exception:
@@ -613,9 +630,9 @@ def normalize_skill_lookup_name(identifier: str) -> str:
     # resolving first would turn that trusted path into one skill_view rejects.
     for root in trusted_roots:
         if identifier_path.is_relative_to(root):
-            return str(identifier_path.relative_to(root))
+            return identifier_path.relative_to(root).as_posix()
     try:
-        return str(identifier_path.resolve().relative_to(primary_root.resolve()))
+        return identifier_path.resolve().relative_to(primary_root.resolve()).as_posix()
     except Exception:
         logger.debug("Skill identifier %r is an absolute path outside trusted skills "
                      "roots — passing through unchanged (skill_view will reject it)", raw_identifier)
@@ -787,13 +804,14 @@ def iter_skill_index_files(skills_dir: Path, filename: str):
     active_org = read_active_org_id(skills_dir)
     org_root = os.path.join(skills_dir_str, ORG_MIRROR_DIR_NAME)
     matches: list[str] = []
+    excluded = excluded_skill_dirs()
     for root, dirs, files in os.walk(skills_dir_str, followlinks=True):
         has_skill_md = "SKILL.md" in files
         if root == skills_dir_str and ORG_MIRROR_DIR_NAME in dirs and active_org is None:
             dirs.remove(ORG_MIRROR_DIR_NAME)
         elif root == org_root:
             dirs[:] = [d for d in dirs if d == active_org]
-        dirs[:] = [d for d in dirs if d not in EXCLUDED_SKILL_DIRS and not (has_skill_md and d in SKILL_SUPPORT_DIRS)]
+        dirs[:] = [d for d in dirs if d not in excluded and not (has_skill_md and d in SKILL_SUPPORT_DIRS)]
         if filename in files:
             matches.append(os.path.join(root, filename))
     yield from map(Path, sorted(matches))

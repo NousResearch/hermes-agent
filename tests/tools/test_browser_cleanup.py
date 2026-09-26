@@ -160,6 +160,63 @@ class TestInactivityJanitorMultiplex:
         assert "t1" not in self.bt._active_sessions
         assert "t1" not in self.bt._session_owner_homes
 
+    def test_direct_cleanup_runs_under_owner_scope_in_multiplex(self, tmp_path, monkeypatch):
+        from unittest.mock import MagicMock
+
+        from agent import secret_scope
+        from hermes_constants import (
+            get_hermes_home, reset_hermes_home_override, set_hermes_home_override,
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("CAMOFOX_URL", raising=False)
+        monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+        p1 = tmp_path / "profiles" / "p1"
+        p1.mkdir(parents=True)
+        (p1 / ".env").write_text("CAMOFOX_URL=http://127.0.0.1:1\n")
+
+        # Multiplex on, then the caller scope is cleared: any unscoped credential
+        # read in teardown must fail closed / use the owner's values.
+        secret_scope.set_multiplex_active(True)
+        try:
+            home_tok = set_hermes_home_override(str(p1))
+            scope_tok = secret_scope.set_secret_scope(secret_scope.build_profile_secret_scope(p1))
+            try:
+                bt_lifecycle._update_session_activity("t1")
+                self.bt._active_sessions["t1"] = {
+                    "session_name": "s1",
+                    "bb_session_id": "bb-1",
+                }
+            finally:
+                secret_scope.reset_secret_scope(scope_tok)
+                reset_hermes_home_override(home_tok)
+
+            provider = MagicMock()
+            seen = {}
+
+            def fake_close(bb_session_id):
+                seen["home"] = str(get_hermes_home())
+                seen["url"] = secret_scope.get_secret("CAMOFOX_URL")
+                return True
+
+            provider.close_session.side_effect = fake_close
+
+            with (
+                patch("tools.browser_tool_session._run_browser_command", return_value={"success": True}),
+                patch("tools.browser_camofox._delete", return_value={}),
+                patch("tools.browser_tool_cloud._get_cloud_provider", return_value=provider),
+                patch("tools.browser_tool.os.path.exists", return_value=False),
+            ):
+                # Direct call — session-replacement / health / shutdown path, not the janitor.
+                bt_lifecycle._cleanup_single_browser_session("t1")
+
+            provider.close_session.assert_called_once_with("bb-1")
+            assert seen == {"home": str(p1), "url": "http://127.0.0.1:1"}
+            assert "t1" not in self.bt._active_sessions
+            assert "t1" not in self.bt._session_owner_homes
+        finally:
+            secret_scope.set_multiplex_active(False)
+
     def test_repeated_failures_force_reap_and_close_cloud_session(self):
         from unittest.mock import MagicMock
 

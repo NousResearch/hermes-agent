@@ -453,9 +453,68 @@ def browse_skills(page: int = 1, page_size: int = 20, source: str = "all") -> di
         "page": page, "total_pages": total_pages, "total": len(deduped)}
 
 
+def _try_local_skill_view(name: str, console: Optional[Console] = None) -> bool:
+    """Check if a skill name exists locally, read SKILL.md, display in Panel format.
+
+    Returns True when found and displayed, False when not found.
+    """
+    c = console or _console
+    from tools.skills_tool import _find_all_skills
+    all_skills = _find_all_skills(skip_disabled=True)
+    match = next((s for s in all_skills if s["name"] == name), None)
+    if match is None:
+        return False
+    from tools.skills_tool import SKILLS_DIR
+    category = match.get("category", "")
+    base_dir = (SKILLS_DIR / category / name) if category else (SKILLS_DIR / name)
+    skill_md_path = base_dir / "SKILL.md"
+    if not skill_md_path.exists():
+        return False
+    try:
+        skill_text = skill_md_path.read_text(encoding="utf-8").lstrip("\ufeff")
+    except (OSError, UnicodeDecodeError):
+        return False
+    import yaml
+    fm = _read_frontmatter(skill_text)
+    desc = fm.get("description", match.get("description", ""))
+    tags = fm.get("tags") or []
+    source_label = "local"
+    trust_label = "local"
+    info_lines = [f"[bold]Name:[/] {name}",
+                  f"[bold]Description:[/] {desc}",
+                  f"[bold]Source:[/] {source_label}",
+                  f"[bold]Trust:[/] {_trust_cell(trust_label, source_label)}"]
+    if tags:
+        info_lines.append(f"[bold]Tags:[/] {', '.join(tags) if isinstance(tags, list) else tags}")
+    info_lines.append(f"[bold]Location:[/] {base_dir}")
+    c.print()
+    c.print(Panel("\n".join(info_lines), title=f"Skill: {name}"))
+    # Show SKILL.md preview (first 50 lines)
+    lines = skill_text.split("\n")
+    preview_lines = lines[:50]
+    more = f"\n\n... ({len(lines) - 50} more lines)" if len(lines) > 50 else ""
+    preview = "\n".join(preview_lines) + more
+    c.print(Panel(preview, title="SKILL.md Preview", subtitle="[dim]Local skill — edit SKILL.md directly[/]"))
+    c.print()
+    return True
+
+
+def do_view(name: str, console: Optional[Console] = None) -> None:
+    """Display a local skill's details and SKILL.md content."""
+    c = console or _console
+    if not _try_local_skill_view(name, c):
+        _print_error(c, f"Skill '{name}' not found locally.")
+        c.print("[dim]Tip: Use [bold]hermes skills list[/] to see installed skills. "
+                "Use [bold]hermes skills inspect <identifier>[/] to preview hub skills.[/]\n")
+
+
 def do_inspect(identifier: str, console: Optional[Console] = None) -> None:
     """Preview a skill's SKILL.md content without installing."""
     c = console or _console
+    # When the identifier has no slash, check local skills first.
+    if "/" not in identifier:
+        if _try_local_skill_view(identifier, c):
+            return
     identifier, meta, bundle, _src = _resolve_identifier(identifier, _sources(), c)
     if not identifier:
         return
@@ -1350,6 +1409,7 @@ _CLI_ACTIONS = {
                                     skip_confirm=getattr(a, "yes", False),
                                     name_override=getattr(a, "name", "") or ""),
     "inspect": lambda a: do_inspect(a.identifier),
+    "view": lambda a: do_view(a.name),
     "list": lambda a: do_list(source_filter=a.source,
                               enabled_only=getattr(a, "enabled_only", False)),
     "check": lambda a: do_check(name=getattr(a, "name", None)),
@@ -1374,7 +1434,7 @@ def skills_command(args) -> None:
     """Router for `hermes skills <subcommand>` — called from hermes_cli/main.py."""
     handler = _CLI_ACTIONS.get(getattr(args, "skills_action", None))
     if handler is None:
-        _console.print("Usage: hermes skills [browse|search|install|inspect|list|list-modified|diff|check|update|audit|uninstall|reset|opt-out|opt-in|publish|snapshot|tap]\n")
+        _console.print("Usage: hermes skills [browse|search|install|inspect|view|list|list-modified|diff|check|update|audit|uninstall|reset|opt-out|opt-in|publish|snapshot|tap]\n")
         _console.print("Run 'hermes skills <command> --help' for details.\n")
         return
     handler(args)
@@ -1445,6 +1505,7 @@ _SLASH_ACTIONS = {
         force="--force" in args, skip_confirm=True, invalidate_cache="--now" in args,
         name_override=_opt_value(args, "--name", "", last=True), console=c),
     "inspect": lambda args, c: do_inspect(args[0], console=c),
+    "view": lambda args, c: do_view(args[0], console=c),
     "list": lambda args, c: do_list(
         source_filter=_opt_value(args, "--source", "all"),
         enabled_only="--enabled-only" in args or "--enabled" in args, console=c),
@@ -1475,6 +1536,7 @@ _SLASH_USAGE = {
     "search": ("[bold red]Usage:[/] /skills search <query> [--source skills-sh|github|official|nvidia|openai|anthropic|huggingface] [--limit N] [--json]\n",),
     "install": ("[bold red]Usage:[/] /skills install <identifier-or-url> [--name <name>] [--category <cat>] [--force] [--now]\n",),
     "inspect": ("[bold red]Usage:[/] /skills inspect <identifier>\n",),
+    "view": ("[bold red]Usage:[/] /skills view <name>\n",),
     "uninstall": ("[bold red]Usage:[/] /skills uninstall <name> [--now]\n",),
     "reset": (
         "[bold red]Usage:[/] /skills reset <name> [--restore] [--now]\n",
@@ -1515,6 +1577,7 @@ def _print_skills_help(console: Console) -> None:
         "  [cyan]search[/] <query>              Search registries for skills\n"
         "  [cyan]install[/] <identifier>        Install a skill (with security scan)\n"
         "  [cyan]inspect[/] <identifier>        Preview a skill without installing\n"
+        "  [cyan]view[/] <name>                 View an installed local skill\n"
         "  [cyan]list[/] [--source hub|builtin|local] [--enabled-only]\n"
         "       List installed skills; --enabled-only filters to the active profile's live set\n"
         "  [cyan]check[/] [name]                Check hub skills for upstream updates\n"

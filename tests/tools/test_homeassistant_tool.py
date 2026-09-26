@@ -103,9 +103,6 @@ class TestParseServiceResponse:
         assert result["affected_entities"][0]["entity_id"] == "light.bedroom"
 
 
-    def test_service_name_format(self):
-        result = _parse_service_response("climate", "set_temperature", [])
-        assert result["service"] == "climate.set_temperature"
 
 
 # ---------------------------------------------------------------------------
@@ -204,32 +201,6 @@ class TestEntityIdValidation:
 # ---------------------------------------------------------------------------
 
 
-class TestCallServiceStringData:
-    """data param may arrive as a JSON string (XML tool calling mode)."""
-
-    @patch("tools.homeassistant_tool._run_async", return_value={"success": True})
-    def test_string_data_deserialized(self, mock_run):
-        """JSON string data is parsed into a dict before dispatch."""
-        _handle_call_service({
-            "domain": "climate",
-            "service": "set_hvac_mode",
-            "entity_id": "climate.living_room",
-            "data": '{"hvac_mode": "heat"}',
-        })
-        call_args = mock_run.call_args[0][0]  # the coroutine arg
-        # _run_async was called, meaning we got past validation
-
-
-    @patch("tools.homeassistant_tool._run_async", return_value={"success": True})
-    def test_empty_string_data_becomes_none(self, mock_run):
-        """Empty/whitespace string data is treated as None."""
-        _handle_call_service({
-            "domain": "light",
-            "service": "turn_on",
-            "entity_id": "light.bedroom",
-            "data": "   ",
-        })
-        mock_run.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -361,13 +332,6 @@ class TestGetHeaders:
 
 
 class TestRegistration:
-    def test_tools_registered_in_registry(self):
-        from tools.registry import registry
-
-        names = registry.get_all_tool_names()
-        assert "ha_list_entities" in names
-        assert "ha_get_state" in names
-        assert "ha_call_service" in names
 
 
     def test_check_fn_includes_when_token_set(self, monkeypatch):

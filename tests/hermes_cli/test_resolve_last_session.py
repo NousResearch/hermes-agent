@@ -5,25 +5,6 @@ from __future__ import annotations
 from hermes_cli.main import _resolve_last_session
 
 
-class _FakeDB:
-    def __init__(self, rows):
-        self._rows = rows
-        self.closed = False
-
-    def search_sessions(self, source=None, limit=20, **_kw):
-        rows = [r for r in self._rows if r.get("source") == source] if source else list(self._rows)
-        rows.sort(
-            key=lambda r: float(r.get("last_active") or r.get("started_at") or 0),
-            reverse=True,
-        )
-        return rows[:limit]
-
-    def close(self):
-        self.closed = True
-
-
-
-
 def test_search_sessions_exposes_last_active_column(tmp_path, monkeypatch):
     # End-to-end: SessionDB must surface last_active and order by MRU.
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -67,37 +48,6 @@ def test_search_sessions_exposes_last_active_column(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 # cwd-scoped resume: -c prefers the last session in the current workspace.
 # ---------------------------------------------------------------------------
-
-
-class _WorkspaceAwareDB:
-    """Fake SessionDB whose ``search_sessions`` honors ``workspace_key`` the
-    same way the real ``_workspace_key_clause`` does: a row matches the key
-    when its ``git_repo_root`` equals it, or (no repo root recorded) when its
-    ``cwd`` is at or under it."""
-
-    def __init__(self, rows):
-        self._rows = rows
-        self.closed = False
-
-    def search_sessions(self, source=None, limit=20, workspace_key=None, **_kw):
-        rows = [r for r in self._rows if r.get("source") == source] if source else list(self._rows)
-        if workspace_key:
-            key = workspace_key.rstrip("/")
-            def _in_ws(r):
-                grr = (r.get("git_repo_root") or "").rstrip("/")
-                if grr:
-                    return grr == key
-                cwd = (r.get("cwd") or "").rstrip("/")
-                return cwd == key or cwd.startswith(key + "/")
-            rows = [r for r in rows if _in_ws(r)]
-        rows.sort(
-            key=lambda r: float(r.get("last_active") or r.get("started_at") or 0),
-            reverse=True,
-        )
-        return rows[:limit]
-
-    def close(self):
-        self.closed = True
 
 
 def test_resolve_last_session_real_db_prefers_workspace(monkeypatch, tmp_path):

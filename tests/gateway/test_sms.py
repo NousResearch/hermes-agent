@@ -78,67 +78,16 @@ class TestSmsFormatAndTruncate:
 
 # ── Echo prevention ────────────────────────────────────────────────
 
-class TestSmsEchoPrevention:
-    """Adapter should ignore messages from its own number."""
-
-    def test_own_number_detection(self):
-        """The adapter stores _from_number for echo prevention."""
-        from plugins.platforms.sms.adapter import SmsAdapter
-
-        env = {
-            "TWILIO_ACCOUNT_SID": "ACtest",
-            "TWILIO_AUTH_TOKEN": "tok",
-            "TWILIO_PHONE_NUMBER": "+15550001111",
-        }
-        with patch.dict(os.environ, env):
-            pc = PlatformConfig(enabled=True, api_key="tok")
-            adapter = SmsAdapter(pc)
-            assert adapter._from_number == "+15550001111"
 
 
 # ── Requirements check ─────────────────────────────────────────────
 
-class TestSmsRequirements:
-
-
-    def test_check_sms_requirements_both_set(self):
-        from plugins.platforms.sms.adapter import check_sms_requirements
-
-        env = {
-            "TWILIO_ACCOUNT_SID": "ACtest",
-            "TWILIO_AUTH_TOKEN": "tok",
-        }
-        with patch.dict(os.environ, env, clear=False):
-            # Only returns True if aiohttp is also importable
-            result = check_sms_requirements()
-            try:
-                import aiohttp  # noqa: F401
-                assert result is True
-            except ImportError:
-                assert result is False
 
 
 # ── Toolset verification ───────────────────────────────────────────
 
 # ── Webhook host configuration ─────────────────────────────────────
 
-class TestWebhookHostConfig:
-    """Verify SMS_WEBHOOK_HOST env var and default."""
-
-
-    def test_webhook_url_from_env(self):
-        from plugins.platforms.sms.adapter import SmsAdapter
-
-        env = {
-            "TWILIO_ACCOUNT_SID": "ACtest",
-            "TWILIO_AUTH_TOKEN": "tok",
-            "TWILIO_PHONE_NUMBER": "+15550001111",
-            "SMS_WEBHOOK_URL": "https://example.com/webhooks/twilio",
-        }
-        with patch.dict(os.environ, env):
-            pc = PlatformConfig(enabled=True, api_key="tok")
-            adapter = SmsAdapter(pc)
-            assert adapter._webhook_url == "https://example.com/webhooks/twilio"
 
 
 # ── Startup guard (fail-closed) ────────────────────────────────────

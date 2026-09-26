@@ -79,15 +79,14 @@ def _access_token_is_expiring(expires_at: object, skew_seconds: int) -> bool:
 
 def _read_user_token_override() -> Optional[str]:
     """Read the TOOL_GATEWAY_USER_TOKEN override through the secret scope. Scope verdict is authoritative
-    when installed (a scoped miss must NOT borrow the process env under multiplex); ``os.environ`` only when unscoped."""
-    try:
-        from agent.secret_scope import UnscopedSecretError, get_secret
+    when installed (a scoped miss must NOT borrow the process env under multiplex); ``os.environ`` only
+    when unscoped. Any non-UnscopedSecretError failure propagates -- a failed scoped read must never
+    silently borrow the ambient env."""
+    from agent.secret_scope import UnscopedSecretError, get_secret
 
-        try:
-            explicit = get_secret("TOOL_GATEWAY_USER_TOKEN")
-        except UnscopedSecretError:
-            explicit = os.getenv("TOOL_GATEWAY_USER_TOKEN")
-    except Exception:
+    try:
+        explicit = get_secret("TOOL_GATEWAY_USER_TOKEN")
+    except UnscopedSecretError:
         explicit = os.getenv("TOOL_GATEWAY_USER_TOKEN")
     return _clean(explicit)
 

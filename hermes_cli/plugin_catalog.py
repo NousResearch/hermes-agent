@@ -8,12 +8,13 @@ the human-merged approval gate; SHA bumps are new, re-reviewed PRs; ``removed.ya
 
 Live refresh: the docs build publishes the same data as ONE JSON document
 (``website/scripts/extract-plugins.py`` → ``/docs/api/plugin-catalog.json``, like the skills index), so
-an installed Hermes sees new entries and removals without updating. Any fetch failure falls back to the
-in-tree copy silently.
+an installed Hermes sees new entries and removals without updating. A fetch failure reuses the last valid
+cached copy regardless of age, then falls back to the in-tree copy when no valid cache exists.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import re
@@ -22,7 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import yaml
+import hermes_yaml as yaml
 
 logger = logging.getLogger(__name__)
 
@@ -32,8 +33,7 @@ CATALOG_TIERS = ("official", "community")
 CATALOG_CATEGORIES = ("desktop", "memory", "platform", "web", "tools", "voice", "automation", "models", "general")
 LIVE_CATALOG_URL = "https://hermes-agent.nousresearch.com/docs/api/plugin-catalog.json"
 LIVE_CATALOG_TTL_SECONDS = 6 * 60 * 60
-# Past this age an offline cache no longer supplies PINS (the in-tree catalog does); its removals
-# still count — a kill-list entry never expires.
+# Offline pins expire, but cached removals remain a permanent kill list.
 LIVE_CATALOG_MAX_STALE_SECONDS = 24 * 60 * 60
 LIVE_CATALOG_FAILURE_TTL_SECONDS = 60.0
 _REQUEST_TIMEOUT = 5.0
@@ -88,6 +88,8 @@ class PluginCatalogEntry:
     screenshots: List[str] = field(default_factory=list)  # GitHub-hosted https URLs; gallery on /docs/plugins/<name>
     readme: bool = False         # docs site renders the README from the pinned commit on the entry's page
     platforms: List[str] = field(default_factory=list)  # empty = all OSes
+    title: str = ""              # human name ("NVIDIA App"); empty = derived from ``name``
+    onboarding: bool = False     # curated: offered on the desktop onboarding card
     capabilities: CatalogCapabilities = field(default_factory=CatalogCapabilities)
 
     @property
@@ -103,7 +105,7 @@ class PluginCatalogEntry:
             "requires_hermes": self.requires_hermes,
             "subdir": self.subdir, "docs_url": self.docs_url, "version": self.version, "image": self.image,
             "screenshots": list(self.screenshots), "readme": self.readme,
-            "platforms": list(self.platforms),
+            "platforms": list(self.platforms), "title": self.title, "onboarding": self.onboarding,
             "capabilities": {
                 "provides_tools": list(caps.provides_tools), "provides_hooks": list(caps.provides_hooks),
                 "provides_middleware": list(caps.provides_middleware), "requires_env": list(caps.requires_env),
@@ -164,6 +166,7 @@ def entry_from_mapping(data: Any, label: str) -> Optional[PluginCatalogEntry]:
         subdir=str(data.get("subdir") or "").strip(), docs_url=str(data.get("docs_url") or "").strip(),
         version=version, image=image, screenshots=screenshots, readme=data.get("readme") is not False,
         platforms=_str_list(data.get("platforms")),
+        title=str(data.get("title") or "").strip(), onboarding=data.get("onboarding") is True,
         capabilities=CatalogCapabilities(
             provides_tools=_str_list(caps.get("provides_tools")), provides_hooks=_str_list(caps.get("provides_hooks")),
             provides_middleware=_str_list(caps.get("provides_middleware")),
@@ -173,7 +176,7 @@ def entry_from_mapping(data: Any, label: str) -> Optional[PluginCatalogEntry]:
 
 def _read_yaml(path: Path) -> Any:
     try:
-        return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        return yaml.safe_load(path.read_text(encoding="utf-8-sig")) or {}
     except Exception as exc:
         logger.warning("Plugin catalog: failed to read %s: %s", path, exc)
         return None
@@ -320,7 +323,7 @@ def _stale_live_cache(cache: Path) -> Optional[Dict[str, Any]]:
     try:
         if not cache.is_file():
             return None
-        data = json.loads(cache.read_text(encoding="utf-8"))
+        data = json.loads(cache.read_text(encoding="utf-8-sig"))
         if time.time() - cache.stat().st_mtime > LIVE_CATALOG_MAX_STALE_SECONDS:
             data = {**data, "entries": []}
         return data
@@ -338,7 +341,7 @@ def fetch_live_catalog(*, force: bool = False) -> Optional[Dict[str, Any]]:
     cache = _live_cache_path()
     try:
         if not force and cache.is_file() and time.time() - cache.stat().st_mtime < LIVE_CATALOG_TTL_SECONDS:
-            return json.loads(cache.read_text(encoding="utf-8"))
+            return json.loads(cache.read_text(encoding="utf-8-sig"))
     except Exception as exc:
         logger.debug("Plugin catalog: unreadable live cache %s: %s", cache, exc)
     if not force and time.time() < _live_fetch_failed_until:
@@ -382,7 +385,7 @@ def in_tree_catalog_time() -> Optional[float]:
         try:
             import subprocess
             out = subprocess.run(["git", "-C", str(root), "log", "-1", "--format=%ct", "--", "plugin-catalog"],
-                                 capture_output=True, text=True, timeout=10, stdin=subprocess.DEVNULL)
+                                 capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10, stdin=subprocess.DEVNULL)
             resolved = float(out.stdout.strip()) if out.returncode == 0 and out.stdout.strip() else None
         except Exception as exc:
             logger.debug("Plugin catalog: could not date the in-tree catalog: %s", exc)
@@ -434,8 +437,24 @@ def load_catalog_live() -> List[PluginCatalogEntry]:
     in_tree = {e.name: e for e in load_catalog()}
     live_t, tree_t = _live_generated_time(data), in_tree_catalog_time()
     tree_is_newer = (tree_t > live_t) if (live_t is not None and tree_t is not None) else None
-    return [in_tree[e.name] if e.name in in_tree and _prefer_in_tree_entry(in_tree[e.name], e, tree_is_newer) else e
+    raw_by_name = {str(raw.get("name")): raw for raw in data["entries"] if isinstance(raw, dict)}
+    return [in_tree[e.name] if e.name in in_tree and _prefer_in_tree_entry(in_tree[e.name], e, tree_is_newer)
+            else _with_curated_fields(e, in_tree.get(e.name), raw_by_name.get(e.name) or {})
             for e in entries]
+
+
+# Curated display fields a published doc older than the field does not carry. ``generated_at`` is the
+# docs build time, not the content time, so a rebuild of an older catalog outranks a checkout that added
+# the field; a doc that has the key (even ``false``) decides.
+_CURATED_FIELDS = ("onboarding", "title")
+
+
+def _with_curated_fields(live: PluginCatalogEntry, tree: Optional[PluginCatalogEntry], raw: Dict[str, Any]
+                         ) -> PluginCatalogEntry:
+    if tree is None or tree.sha != live.sha:
+        return live
+    missing = {key: getattr(tree, key) for key in _CURATED_FIELDS if key not in raw}
+    return dataclasses.replace(live, **missing) if missing else live
 
 
 def live_removed_list() -> List[RemovedEntry]:

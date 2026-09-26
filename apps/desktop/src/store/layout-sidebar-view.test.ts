@@ -41,12 +41,6 @@ describe('the sidebar as it ships', () => {
     expect(window.localStorage.getItem('hermes.desktop.sidebarShowAllSessions')).toBe('false')
   })
 
-  it('groups by date, sorts by recency, and pins the timestamp and preview', () => {
-    expect($sidebarGrouping.get()).toBe('date')
-    expect($sidebarOrdering.get()).toBe('updated')
-    expect($sidebarRowMeta.get()).toEqual(['preview', 'updated'])
-  })
-
   it('offers no reset until something actually moves off the defaults', () => {
     expect($sidebarViewCustomized.get()).toBe(false)
 

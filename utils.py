@@ -7,13 +7,14 @@ import os
 import shutil
 import stat
 import tempfile
+import threading
 import time
 from contextlib import suppress
 from pathlib import Path
 from typing import Any, Union
 from urllib.parse import urlparse
 
-import yaml
+import hermes_yaml as yaml
 
 logger = logging.getLogger(__name__)
 
@@ -399,31 +400,13 @@ def warn_if_credential_file_broadly_readable(path: Union[str, Path], *, label: s
     return True
 
 
-class IndentDumper(yaml.SafeDumper):
-    """PyYAML dumper that indents list items under mapping keys (2-space).
-
-    PyYAML emits "indentless" sequences while ruamel (:func:`atomic_roundtrip_yaml_update`)
-    indents them; mixing both in one ``config.yaml`` makes stricter parsers like ``js-yaml``
-    reject it, so every write path is forced to the same shape.
-
-    Forcing ``indentless=False`` aligns the two serializers so all write paths emit byte-identical layouts
-    (#31999).
-    """
-
-    def increase_indent(self, flow=False, indentless=False):  # noqa: ARG002
-        return super().increase_indent(flow, False)
-
-
 def atomic_yaml_write(path: Union[str, Path], data: Any, *, default_flow_style: bool = False, sort_keys: bool = False,
                       extra_content: str | None = None, create_mode: "int | None" = None) -> None:
     """Write YAML to *path* atomically (temp file + fsync + replace)."""
     path = Path(path)
 
     def _write(f) -> None:
-        # allow_unicode=True writes emoji/kaomoji as real UTF-8. Without it PyYAML emits astral
-        # chars as `\UXXXXXXXX` escapes inside `\`-continued double-quoted strings — a structure
-        # stricter parsers and hand-edits routinely break into unclosed quotes, corrupting the config.
-        yaml.dump(data, f, Dumper=IndentDumper, default_flow_style=default_flow_style, sort_keys=sort_keys, allow_unicode=True)
+        yaml.safe_dump(data, f, default_flow_style=default_flow_style, sort_keys=sort_keys)
         if extra_content:
             f.write(extra_content)
 
@@ -433,17 +416,9 @@ def atomic_yaml_write(path: Union[str, Path], data: Any, *, default_flow_style: 
 def _roundtrip_load(path: Path):
     """``(yaml_rt, CommentedMap)``: a ruamel round-trip loader keeping quotes/Unicode with 2-space
     indents, plus *path* loaded through it (empty map when missing/blank)."""
-    from ruamel.yaml import YAML
     from ruamel.yaml.comments import CommentedMap
 
-    yaml_rt = YAML(typ="rt")
-    yaml_rt.preserve_quotes = True
-    yaml_rt.allow_unicode = True
-    yaml_rt.default_flow_style = False
-    yaml_rt.indent(mapping=2, sequence=4, offset=2)
-    # PyYAML (every reader in the tree) tolerates duplicate keys (last wins); refusing them here
-    # would turn a file the CLI can read into one it cannot write.
-    yaml_rt.allow_duplicate_keys = True
+    yaml_rt = yaml.roundtrip_yaml()
     data = yaml_rt.load(path.read_text(encoding="utf-8")) if path.exists() else None
     return yaml_rt, data if isinstance(data, CommentedMap) else CommentedMap(data or {})
 
@@ -594,15 +569,32 @@ def safe_json_loads(text: str, default: Any = None) -> Any:
         return default
 
 
-# libyaml's CSafeLoader is ~8x faster than the pure-Python SafeLoader and a true drop-in for
-# ``safe_load`` (same restricted tag set); startup parses config.yaml and every plugin manifest,
-# so the slow path cost ~0.9 s of cold start.
-_fast_yaml_loader = getattr(yaml, "CSafeLoader", None) or yaml.SafeLoader
-
-
 def fast_safe_load(stream: Any) -> Any:
-    """``yaml.safe_load`` (same inputs, same result) using the libyaml C loader when available."""
-    return yaml.load(stream, Loader=_fast_yaml_loader)
+    """Use the shared safe reader (which selects ruamel's C parser when available)."""
+    return yaml.safe_load(stream)
+
+
+_YAML_FILE_CACHE: dict = {}
+_YAML_FILE_CACHE_LOCK = threading.Lock()
+
+
+def load_yaml_file_readonly(path: Union[str, Path]) -> Any:
+    """``fast_safe_load`` of a file, re-parsed only when its :func:`file_signature` changes.
+
+    Returns the cached object itself — callers must never mutate it. Parse errors propagate and
+    are not cached; a missing file raises ``FileNotFoundError`` like ``open`` does."""
+    path = Path(path)
+    sig = file_signature(path.stat())
+    key = str(path)
+    with _YAML_FILE_CACHE_LOCK:
+        cached = _YAML_FILE_CACHE.get(key)
+        if cached is not None and cached[0] == sig:
+            return cached[1]
+    with open(path, encoding="utf-8") as f:
+        data = fast_safe_load(f)
+    with _YAML_FILE_CACHE_LOCK:
+        _YAML_FILE_CACHE[key] = (sig, data)
+    return data
 
 
 def _env_number(key: str, default, cast):

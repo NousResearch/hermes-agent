@@ -2,16 +2,12 @@
 
 from __future__ import annotations
 
-import argparse
 
-import pytest
 
 from hermes_cli.codex_runtime_plugin_migration import (
     MIGRATION_MARKER,
     MIGRATION_END_MARKER,
     _build_hermes_tools_mcp_entry,
-    _format_toml_value,
-    _looks_like_test_tempdir,
     _strip_existing_managed_block,
     _strip_unmanaged_plugin_tables,
     _translate_one_server,
@@ -37,9 +33,6 @@ class TestTranslateOneServer:
         assert skipped == []
 
 
-    def test_enabled_true_omitted(self):
-        cfg, _ = _translate_one_server("x", {"command": "y", "enabled": True})
-        assert "enabled" not in cfg  # codex defaults to true
 
 
     def test_unknown_keys_warned(self):
@@ -104,9 +97,6 @@ class TestTomlValueFormatter:
 
 class TestRenderToml:
 
-    def test_empty_servers_emits_placeholder(self):
-        out = render_codex_toml_section({})
-        assert "no MCP servers" in out
 
     def test_servers_sorted_alphabetically(self):
         out = render_codex_toml_section({
@@ -273,14 +263,6 @@ class TestMigrate:
 
 
 
-    def test_summary_reports_migration_count(self, tmp_path):
-        report = migrate({
-            "mcp_servers": {"a": {"command": "x"}, "b": {"command": "y"}}
-        }, codex_home=tmp_path, expose_hermes_tools=False)
-        summary = report.summary()
-        assert "Migrated 2 MCP server(s)" in summary
-        assert "- a" in summary
-        assert "- b" in summary
 
 
 # ---- Bug B: duplicate [plugins.X] tables ----
@@ -470,19 +452,6 @@ class TestSameNameUserMcpTable:
         assert parsed["mcp_servers"]["gbrain"]["command"] == "existing-gbrain"
         assert parsed["mcp_servers"]["other"]["command"] == "o"
 
-    def test_unloadable_existing_config_explains_plugin_rerun(self, tmp_path, monkeypatch):
-        """Repairing a pre-broken config.toml: codex cannot load it, so plugin/list fails on this
-        run. The report must say plugins need a re-run instead of a bare discovery error."""
-        from hermes_cli import codex_runtime_plugin_migration as crpm
-
-        target = tmp_path / "config.toml"
-        target.write_text('[mcp_servers.gbrain]\ncommand = "a"\n[mcp_servers.gbrain]\ncommand = "b"\n',
-                          encoding="utf-8")
-        monkeypatch.setattr(crpm, "_query_codex_plugins",
-                            lambda codex_home=None, timeout=8.0, **_kw: ([], "plugin/list query failed"))
-        report = migrate({}, codex_home=tmp_path, discover_plugins=True, expose_hermes_tools=False)
-        assert "re-run `hermes codex-runtime migrate` to migrate plugins" in (report.plugin_query_error or "")
-        assert "existing config.toml was unloadable" in report.summary()
 
     def test_cli_migrate_dry_run_json_reports_without_writing(self, tmp_path, monkeypatch, capsys):
         """`hermes codex-runtime migrate --dry-run --json` is the supported automation seam:

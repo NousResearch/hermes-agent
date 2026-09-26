@@ -581,6 +581,9 @@ class TurnController {
   }
 
   recordError() {
+    // A failed turn discards the whole unsealed turn (flushed segments AND the
+    // streaming tail) — unlike recordMessageComplete, which must keep the tail
+    // (#61520), and interruptTurn, which preserves it as `partial`.
     this.idle()
     this.clearReasoning()
     this.clearStatusTimer()
@@ -604,7 +607,20 @@ class TurnController {
     // only when the gateway elected not to send any (#16391).
     // `text` is `str | JsonValue` on the wire (structured parts stay possible); only a string renders here.
     const wireText = typeof payload.text === 'string' ? payload.text : undefined
-    const rawText = (wireText ?? payload.rendered ?? this.bufRef).trimStart()
+    const completionText = wireText ?? payload.rendered
+    const rawText = (completionText ?? this.bufRef).trimStart()
+
+    // Text still in `this.bufRef` streamed after the last segment flush; `idle()`
+    // below would wipe it (#61520). Flush it as a segment only when the
+    // gateway's final text does not already carry it — otherwise the tail IS
+    // the answer and flushing would move the tool shelf/trail under it. Skipped
+    // when `completionText` is absent: `rawText` is then the buffer (#16391).
+    const tail = this.bufRef.trim()
+
+    if (tail && completionText != null && !completionText.includes(tail)) {
+      this.flushStreamingSegment()
+    }
+
     const split = splitReasoning(rawText)
     // Only dedupe segments AFTER the interim boundary — interim-sealed
     // segments are preserved even if the final text includes them.

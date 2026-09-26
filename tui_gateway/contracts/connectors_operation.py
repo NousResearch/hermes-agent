@@ -21,6 +21,9 @@ from .registry import event, method
 class ConnectionTargetKind(WireEnum):
     connector = "connector"
     mcp = "mcp"
+    # ``manage_catalog`` rows: a catalog plugin (may bring MCP tools and/or skills) or a skill.
+    plugin = "plugin"
+    skill = "skill"
 
 
 class ConnectionTargetAction(WireEnum):
@@ -71,6 +74,33 @@ class ConnectionTargetEnvField(Payload):
     prompt: str | None = None
 
 
+class CatalogTier(WireEnum):
+    official = "official"
+    community = "community"
+
+
+class CatalogAppState(WireEnum):
+    """The desktop app a catalog plugin drives, from its ``hermes_platform`` declaration."""
+
+    present = "present"
+    missing_app = "missing_app"
+    app_not_running = "app_not_running"
+    unknown = "unknown"
+
+
+class CatalogScanStatus(WireEnum):
+    passed = "passed"
+    warnings = "warnings"
+    failed = "failed"
+
+
+class CatalogScan(Payload):
+    """The catalog's security scan of the pinned commit; read-only on the card."""
+
+    status: CatalogScanStatus
+    summary: str
+
+
 class ConnectionOperationTarget(Payload):
     """``Target.snapshot``: the link minted up front rides here, never in the model result. ``extra``
     keys a leg records (``tools``, ``hint``) are typed here as they appear."""
@@ -90,6 +120,21 @@ class ConnectionOperationTarget(Payload):
     required_env: list[ConnectionTargetEnvField] | None = None
     tools: list[str] | None = None
     hint: str | None = None
+    # Catalog rows (kind ``plugin`` / ``skill``) only; field set agreed in CATALOG-ROW-CONTRACT.md.
+    display: str | None = None
+    description: str | None = None
+    tier: CatalogTier | None = None
+    platforms: list[str] | None = None
+    repo: str | None = None
+    sha: str | None = None
+    subdir: str | None = None
+    scan: CatalogScan | None = None
+    requirements: list[str] | None = None
+    has_desktop_half: bool | None = None
+    target_profile: str | None = None
+    app_state: CatalogAppState | None = None
+    # On an installed skill row: the qualified skill name the model can now load.
+    skill: str | None = None
 
 
 class ConnectionRequestPayload(Payload):

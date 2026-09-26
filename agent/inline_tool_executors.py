@@ -211,6 +211,17 @@ def _scope_in_connected_mcp_servers(agent, result: Any) -> None:
         agent.enabled_toolsets = [*enabled, *added]
 
 
+def _manage_catalog(agent, args: dict, ctx: InlineToolContext) -> Any:
+    # The card callback lives on the agent; only a desktop chat draws catalog rows.
+    from tools.connectors.catalog_tool import manage_catalog
+
+    return manage_catalog(
+        args, session_id=getattr(agent, "session_id", None), tool_call_id=ctx.tool_call_id,
+        connection_callback=getattr(agent, "connection_callback", None),
+        card_surface=getattr(agent, "platform", None) == "desktop",
+    )
+
+
 def _setup_mcp_shim(agent, args: dict, ctx: InlineToolContext) -> Any:
     # Replay shim for conversations whose cached prompt still names setup_mcp.
     # Not in _LEGACY_TOOL_ALIASES: inline tools bypass handle_function_call.
@@ -263,6 +274,7 @@ INLINE_TOOL_EXECUTORS: Dict[str, InlineToolExecutor] = {
         ("text", "text"), ("side", "side"), ("steps", "steps"), ("step_index", "step_index"),
     ),
     "manage_connections": _manage_connections,
+    "manage_catalog": _manage_catalog,
     "setup_mcp": _setup_mcp_shim,
     "delegate_task": lambda agent, args, ctx: agent._dispatch_delegate_task(args),
 }

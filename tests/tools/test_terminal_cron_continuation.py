@@ -28,25 +28,29 @@ def launch_context(tmp_path, monkeypatch):
         scope.exit()
 
 
-def launch(context, *, env_type="local", env=None, pty=False, notify=False, watch=None, opted=True):
+def launch(context, *, env_type="local", env=None, pty=False, notify=False, watch=None, opted=True, persist=False):
     registry, scope, identity, cwd = context
     return json.loads(spawn_background_process(
         command="printf 'transport done'", env=env, env_type=env_type,
         effective_task_id=scope.task_id, task_id=scope.task_id, session_key="",
         workdir=str(cwd), cwd=str(cwd), effective_pty=pty,
         notify_on_complete=notify, watch_patterns=watch, approval_note=None,
-        pty_disabled_reason=None, continuation=identity if opted else None))
+        pty_disabled_reason=None, continuation=identity if opted else None,
+        persist_on_release=persist))
 
 
+@pytest.mark.parametrize("persist", [False, True])
 @pytest.mark.parametrize("pty,notify,watch,opted", [
     (False, True, ["done"], True), (True, False, None, True),
     (False, True, None, False), (False, False, None, False),
 ])
-def test_local_pipe_and_pty_keep_interactive_notifications_off(launch_context, pty, notify, watch, opted):
+def test_local_pipe_and_pty_keep_interactive_notifications_off(launch_context, pty, notify, watch, opted, persist):
     registry, scope, identity, cwd = launch_context
-    data = launch(launch_context, pty=pty, notify=notify, watch=watch, opted=opted)
+    data = launch(launch_context, pty=pty, notify=notify, watch=watch, opted=opted, persist=persist)
     assert not data.get("error"), data
     session = registry.get(data["session_id"])
+    assert session.persist_on_release is persist
+    assert bool(data.get("persist_on_release")) is persist
     assert session._completion_event.wait(20)
     assert not session.notify_on_complete and not session.watch_patterns
     assert registry.completion_queue.empty() and not registry.pending_watchers
@@ -145,7 +149,8 @@ def test_checkpoint_recovery_preserves_cron_identity_and_does_not_enable_notific
     registry, scope, identity, cwd = launch_context
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
     session = processes.ProcessSession(id="proc_checkpoint", command="test child", pid=child.pid,
-        host_start_time=registry._safe_host_start_time(child.pid), cron_continuation=identity)
+        host_start_time=registry._safe_host_start_time(child.pid), cron_continuation=identity,
+        persist_on_release=True)
     registry._running[session.id] = session
     registry._write_checkpoint()
     recovered = processes.ProcessRegistry()
@@ -153,6 +158,7 @@ def test_checkpoint_recovery_preserves_cron_identity_and_does_not_enable_notific
         assert recovered.recover_from_checkpoint() == 1
         restored = recovered.get(session.id)
         assert restored.cron_continuation == identity
+        assert restored.persist_on_release
         assert not restored.notify_on_complete
         assert not recovered.pending_watchers
         # PID recovery cannot recreate stdout or the exit code. It must not wake

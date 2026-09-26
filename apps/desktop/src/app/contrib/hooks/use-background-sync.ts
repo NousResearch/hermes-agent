@@ -1,18 +1,23 @@
 import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
-import { graftRefreshedTailOntoBackfill } from '@/app/chat/transcript-backfill'
+import {
+  extendRefreshPageToOverlap,
+  graftRefreshedTailOntoBackfill,
+  olderPageReader
+} from '@/app/chat/transcript-backfill'
 import { preserveLocalPendingTurnMessages } from '@/app/session/hooks/use-session-actions/utils'
 import { getLatestSessionMessages, type ProfileScope } from '@/hermes'
 import { type ChatMessage, preserveLocalAssistantErrors, sealOpenToolParts, toChatMessages } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { sessionMessagesSignature } from '@/lib/session-signatures'
 import { latestSessionTodos } from '@/lib/todos'
+import { pendingSessionReplay } from '@/store/gateway'
 import { $sidebarShowArchived } from '@/store/layout'
-import { $changeEventsAvailable, $cronChangeTick, $sessionsChangeTick } from '@/store/live-sync'
+import { $changeEventsAvailable, $cronChangeTick, $projectsChangeTick, $sessionsChangeTick } from '@/store/live-sync'
 import { $onBattery, batteryPollInterval } from '@/store/power'
 import { refreshActiveProfile } from '@/store/profile'
-import { refreshProjectTree } from '@/store/projects'
+import { refreshProjects, refreshProjectTree } from '@/store/projects'
 import {
   $activeSessionId,
   $busy,
@@ -28,6 +33,7 @@ import {
   $sessionStates,
   $sessionTiles,
   confirmReconnectSettlesExcept,
+  noteSessionEvent,
   publishSessionState,
   SESSION_WATCHDOG_TIMEOUT_MS,
   setSessionStalled
@@ -126,6 +132,19 @@ function transcriptChangedDuringRead(before: ChatMessage[] | undefined, after: C
   return false
 }
 
+/** Zero persisted rows read over a populated runtime bound to the SAME stored
+ *  session. An empty page is not proof the transcript is empty — it is also
+ *  what a respawning backend (or a state.db read racing the change event)
+ *  returns. A runtime rebound to another stored id while the read was in
+ *  flight holds no evidence about the requested transcript. */
+function emptyPageOverPopulatedTranscript(
+  page: readonly unknown[],
+  current: ClientSessionState | undefined,
+  storedSessionId: string
+): boolean {
+  return page.length === 0 && Boolean(current?.messages.length) && current?.storedSessionId === storedSessionId
+}
+
 type TileTranscriptTarget = { ownerRoute?: SessionOwnerRoute; storedSessionId: string; runtimeId?: string }
 
 /** Signature key per tile — carries the owner route so two connections/profiles
@@ -209,24 +228,53 @@ export async function reconcileTileTranscripts({
     const profileScope = profileScopeForTranscriptSession(tile)
 
     const signatureKey = tileTranscriptSignatureKey(tile)
-    const messagesAtRequest = $sessionStates.get()[runtimeSessionId]?.messages
 
     try {
+      const replay = pendingSessionReplay(runtimeSessionId)
+
+      if (replay && !(await replay)) {
+        continue
+      }
+
+      if (
+        requestId !== requestSequenceRef.current ||
+        !tileStillPresent() ||
+        tileRuntimeOwnsLiveState(runtimeSessionId)
+      ) {
+        continue
+      }
+
+      const messagesAtRequest = $sessionStates.get()[runtimeSessionId]?.messages
       // Passive: a hidden tile's refresh must never cold-start its owner
       // backend or hold a pool slot (#103375); no warm backend = retry next tick.
       const latest = await getLatestSessionMessages(storedSessionId, profileScope, { passive: true })
+      const replayAtReturn = pendingSessionReplay(runtimeSessionId)
 
-      if (
+      if (replayAtReturn && !(await replayAtReturn)) {
+        continue
+      }
+
+      // Re-checked after every await: reads the fresh store each time.
+      const stale = () =>
         requestId !== requestSequenceRef.current ||
         tileRuntimeOwnsLiveState(runtimeSessionId) ||
         transcriptChangedDuringRead(messagesAtRequest, $sessionStates.get()[runtimeSessionId]?.messages) ||
         !tileStillPresent()
-      ) {
+
+      const current = $sessionStates.get()[runtimeSessionId]
+
+      if (stale()) {
         // Tile closed or superseded mid-read — discard AND prune its
         // signature so the map doesn't grow one entry per ever-opened tile
         // for the app's lifetime (#94255 review point 3).
         signatureRef.current.delete(signatureKey)
 
+        continue
+      }
+
+      // Same rule as the active pane below: a transient zero-row page must not
+      // blank a populated tile, and leaves no signature behind.
+      if (emptyPageOverPopulatedTranscript(latest.messages, current, storedSessionId)) {
         continue
       }
 
@@ -236,8 +284,19 @@ export async function reconcileTileTranscripts({
         continue
       }
 
+      const messages = await extendRefreshPageToOverlap(
+        toChatMessages(latest.messages),
+        current?.messages ?? [],
+        olderPageReader(storedSessionId, profileScope, latest)
+      )
+
+      if (stale()) {
+        signatureRef.current.delete(signatureKey)
+
+        continue
+      }
+
       signatureRef.current.set(signatureKey, signature)
-      const messages = toChatMessages(latest.messages)
 
       updateSessionState(
         runtimeSessionId,
@@ -274,6 +333,12 @@ export async function hydrateStoredSessionTranscript({
   storedProfile: ProfileScope
   updateSessionState: ActiveTranscriptRefreshDeps['updateSessionState']
 }): Promise<void> {
+  const replay = pendingSessionReplay(runtimeSessionId)
+
+  if (replay && !(await replay)) {
+    return
+  }
+
   const messagesAtRequest = $sessionStates.get()[runtimeSessionId]?.messages
 
   const superseded = () =>
@@ -281,12 +346,21 @@ export async function hydrateStoredSessionTranscript({
     transcriptChangedDuringRead(messagesAtRequest, $sessionStates.get()[runtimeSessionId]?.messages)
 
   for (let index = 0; index < Math.max(1, attempts); index += 1) {
+    if (index > 0) {
+      await new Promise(resolve => window.setTimeout(resolve, 250))
+    }
+
     if (superseded()) {
       return
     }
 
     try {
       const latest = await getLatestSessionMessages(storedSessionId, storedProfile)
+      const replayAtReturn = pendingSessionReplay(runtimeSessionId)
+
+      if (replayAtReturn && !(await replayAtReturn)) {
+        return
+      }
 
       // This fallback belongs to the completed turn, not any subsequent turn
       // that ran during the read or retry delay. Its todo restore is stale too.
@@ -294,7 +368,22 @@ export async function hydrateStoredSessionTranscript({
         return
       }
 
-      const messages = toChatMessages(latest.messages)
+      // A zero-row page over the populated turn is a transient read, not the
+      // answer.
+      if (emptyPageOverPopulatedTranscript(latest.messages, $sessionStates.get()[runtimeSessionId], storedSessionId)) {
+        continue
+      }
+
+      const messages = await extendRefreshPageToOverlap(
+        toChatMessages(latest.messages),
+        $sessionStates.get()[runtimeSessionId]?.messages ?? [],
+        olderPageReader(storedSessionId, storedProfile, latest)
+      )
+
+      if (superseded()) {
+        return
+      }
+
       updateSessionState(
         runtimeSessionId,
         state => ({
@@ -318,10 +407,6 @@ export async function hydrateStoredSessionTranscript({
       return
     } catch {
       // Best-effort fallback when live stream payloads are empty.
-    }
-
-    if (index < attempts - 1) {
-      await new Promise(resolve => window.setTimeout(resolve, 250))
     }
   }
 }
@@ -351,6 +436,22 @@ export async function reconcileActiveTranscript({
 
   const requestId = requestSequenceRef.current + 1
   requestSequenceRef.current = requestId
+  const replay = pendingSessionReplay(runtimeSessionId)
+
+  if (replay && !(await replay)) {
+    return
+  }
+
+  if (
+    requestId !== requestSequenceRef.current ||
+    busyRef.current ||
+    tileRuntimeOwnsLiveState(runtimeSessionId) ||
+    selectedStoredSessionIdRef.current !== storedSessionId ||
+    activeSessionIdRef.current !== runtimeSessionId
+  ) {
+    return
+  }
+
   // Busy at both endpoints can be false even though an entire turn streamed
   // while HTTP was in flight. Never let that older read replace newer text.
   const messagesAtRequest = $sessionStates.get()[runtimeSessionId]?.messages
@@ -359,15 +460,24 @@ export async function reconcileActiveTranscript({
     const profileScope: ProfileScope = profileScopeForTranscriptSession(stored)
 
     const latest = await getLatestSessionMessages(storedSessionId, profileScope)
+    const replayAtReturn = pendingSessionReplay(runtimeSessionId)
 
-    if (
+    if (replayAtReturn && !(await replayAtReturn)) {
+      return
+    }
+
+    // Re-checked after every await: reads the fresh store each time.
+    const stale = () =>
       requestId !== requestSequenceRef.current ||
       busyRef.current ||
       tileRuntimeOwnsLiveState(runtimeSessionId) ||
       transcriptChangedDuringRead(messagesAtRequest, $sessionStates.get()[runtimeSessionId]?.messages) ||
       selectedStoredSessionIdRef.current !== storedSessionId ||
       activeSessionIdRef.current !== runtimeSessionId
-    ) {
+
+    const current = $sessionStates.get()[runtimeSessionId]
+
+    if (stale()) {
       return
     }
 
@@ -381,14 +491,31 @@ export async function reconcileActiveTranscript({
         ])
       : `${stored.profile ?? 'default'}:${storedSessionId}`
 
+    // Same rule as the warm-activation guard (use-session-actions/index.ts):
+    // publishing the page would blank the thread and trip the routed loading
+    // branch. Bail before the signature write so the next usable page is not
+    // deduped away.
+    if (emptyPageOverPopulatedTranscript(latest.messages, current, storedSessionId)) {
+      return
+    }
+
     const signature = sessionMessagesSignature(latest.messages)
 
     if (signatureRef.current.get(signatureKey) === signature) {
       return
     }
 
+    const messages = await extendRefreshPageToOverlap(
+      toChatMessages(latest.messages),
+      current?.messages ?? [],
+      olderPageReader(storedSessionId, profileScope, latest)
+    )
+
+    if (stale()) {
+      return
+    }
+
     signatureRef.current.set(signatureKey, signature)
-    const messages = toChatMessages(latest.messages)
 
     updateSessionState(
       runtimeSessionId,
@@ -563,6 +690,13 @@ export function rehydrateLiveSessionStatuses(
       })
     }
 
+    if (working) {
+      // A poll that still lists the turn is an event. Reset the silence clock
+      // so a quiet tool call is not settled; a dead backend stops answering
+      // this poll and the clock runs out.
+      noteSessionEvent(runtimeSessionId)
+    }
+
     if (!working) {
       setSessionStalled(storedSessionId, false)
 
@@ -729,6 +863,7 @@ export function useBackgroundSync({
 }: BackgroundSyncParams): void {
   const changeEventsAvailable = useStore($changeEventsAvailable)
   const cronChangeTick = useStore($cronChangeTick)
+  const projectsChangeTick = useStore($projectsChangeTick)
   const activeTranscriptRefreshPendingRef = useRef<string | null>(null)
   const activeTranscriptReadRef = useRef<{ sessionKey: string; preservePending: boolean } | null>(null)
   // Tile reconcile state (#93942 slice 1): shared sequence guard + per-tile
@@ -1089,6 +1224,20 @@ export function useBackgroundSync({
       () => void refreshCronJobs()
     )
   }, [changeEventsAvailable, cronChangeTick, gatewayState, refreshCronJobs])
+
+  // Projects created or switched by CLI / agent tooling write projects.db without any
+  // state.db movement, so sessions.changed never fires and the Projects sidebar used to
+  // go stale until a manual refresh (#56757). The gateway's change watcher now
+  // broadcasts projects.changed when projects.db moves; this effect refetches the
+  // project list + tree on that tick.
+  useEffect(() => {
+    if (gatewayState !== 'open' || !changeEventsAvailable || projectsChangeTick === 0) {
+      return
+    }
+
+    void refreshProjects()
+    void refreshProjectTree()
+  }, [changeEventsAvailable, gatewayState, projectsChangeTick, refreshProjects, refreshProjectTree])
 
   // Preserve the pre-existing messaging behavior: refresh once when a
   // messaging transcript opens, then keep its visibility backstop. Desktop

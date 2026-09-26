@@ -1,5 +1,5 @@
 /**
- * The live connector catalog for a chat session, read once per mount.
+ * The live connector catalog for a chat session, read once per session and cached.
  *
  * The onboarding picker used to be a hardcoded list, and it drifted from the
  * deployed catalog: it offered apps the gateway does not carry and spelled
@@ -15,12 +15,13 @@
  * and the probe runs once they arrive, so the card never waits on a request
  * that was never sent.
  */
-import { useEffect, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 
 import { resolveSessionOwner } from '@/app/session/hooks/use-session-actions/utils'
 import { translateNow } from '@/i18n'
 import type { ConnectorRow } from '@/lib/connector-tools'
 import { isMissingRpcMethod, isOutOfSyncRpcParams } from '@/lib/gateway-rpc'
+import { queryClient } from '@/lib/query-client'
 import { requestGatewayForAgent } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
 import { $activeGatewayProfile } from '@/store/profile'
@@ -30,56 +31,58 @@ import { isSessionOwnerRoute } from '@/store/session-request-router'
 export type ConnectorCatalog =
   { status: 'loading' } | { status: 'ready'; rows: ConnectorRow[] } | { status: 'unavailable' }
 
+/** The picks card remounts on every transcript rebuild (each hidden submit, each turn end), so the read is
+ *  held in the query cache per session: a remount paints the rows it already has instead of flashing back to
+ *  the skeleton for another round trip. */
+async function readConnectorCatalog(storedId: string, runtimeId: string): Promise<ConnectorCatalog> {
+  try {
+    const scope = await resolveSessionOwner(storedId)
+    assertSessionOwnerResolved(scope, { method: 'connectors.list', sessionId: storedId })
+    const connectionId = isSessionOwnerRoute(scope) ? scope.connectionId : null
+    const profile = isSessionOwnerRoute(scope) ? scope.profile : scope || $activeGatewayProfile.get()
+
+    const response = await requestGatewayForAgent<{ available: boolean; connectors: ConnectorRow[] }>(
+      connectionId,
+      profile,
+      'connectors.list',
+      { owner: { session_id: runtimeId, type: 'session' } },
+      15000
+    )
+
+    return response.available ? { rows: response.connectors, status: 'ready' } : { status: 'unavailable' }
+  } catch (error) {
+    if (isMissingRpcMethod(error) || isOutOfSyncRpcParams(error instanceof Error ? error : String(error))) {
+      notifyError(error, translateNow('connectors.unavailable'), { id: 'connectors-rpc-out-of-sync' })
+    }
+
+    return { status: 'unavailable' }
+  }
+}
+
+const catalogKey = (storedId: null | string, runtimeId: null | string) =>
+  ['onboarding', 'connectors.list', storedId, runtimeId] as const
+
+/** Start the read when the guide session opens: cold, it takes several seconds, and the card that needs it is
+ *  two turns away. */
+export function prefetchConnectorCatalog(storedId: string, runtimeId: string): void {
+  void queryClient.prefetchQuery({
+    queryFn: () => readConnectorCatalog(storedId, runtimeId),
+    queryKey: catalogKey(storedId, runtimeId),
+    staleTime: Infinity
+  })
+}
+
 export function useConnectorCatalog(storedId: null | string, runtimeId: null | string): ConnectorCatalog {
-  const [catalog, setCatalog] = useState<ConnectorCatalog>(() =>
-    storedId && runtimeId ? { status: 'loading' } : { status: 'unavailable' }
-  )
+  const query = useQuery({
+    enabled: Boolean(storedId && runtimeId),
+    queryFn: () => readConnectorCatalog(storedId!, runtimeId!),
+    queryKey: catalogKey(storedId, runtimeId),
+    staleTime: Infinity
+  })
 
-  useEffect(() => {
-    if (!storedId || !runtimeId) {
-      setCatalog({ status: 'unavailable' })
+  if (!storedId || !runtimeId) {
+    return { status: 'unavailable' }
+  }
 
-      return
-    }
-
-    setCatalog({ status: 'loading' })
-    let cancelled = false
-    const ambientProfile = $activeGatewayProfile.get()
-
-    void resolveSessionOwner(storedId)
-      .then(scope => {
-        assertSessionOwnerResolved(scope, { method: 'connectors.list', sessionId: storedId })
-
-        const connectionId = isSessionOwnerRoute(scope) ? scope.connectionId : null
-        const profile = isSessionOwnerRoute(scope) ? scope.profile : scope || ambientProfile
-
-        return requestGatewayForAgent<{ available: boolean; connectors: ConnectorRow[] }>(
-          connectionId,
-          profile,
-          'connectors.list',
-          { owner: { session_id: runtimeId, type: 'session' } },
-          15000
-        )
-      })
-      .then(response => {
-        if (!cancelled) {
-          setCatalog(response.available ? { rows: response.connectors, status: 'ready' } : { status: 'unavailable' })
-        }
-      })
-      .catch(error => {
-        if (!cancelled) {
-          setCatalog({ status: 'unavailable' })
-
-          if (isMissingRpcMethod(error) || isOutOfSyncRpcParams(error)) {
-            notifyError(error, translateNow('connectors.unavailable'), { id: 'connectors-rpc-out-of-sync' })
-          }
-        }
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [storedId, runtimeId])
-
-  return catalog
+  return query.data ?? { status: 'loading' }
 }

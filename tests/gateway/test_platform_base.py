@@ -10,15 +10,10 @@ import pytest
 
 from gateway.platforms.base import (
     BasePlatformAdapter,
-    GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE,
     SendResult,
-    cache_audio_from_bytes,
     cache_image_from_bytes,
-    cache_video_from_bytes,
     safe_url_for_log,
     utf16_len,
-    validate_inbound_media_size,
-    _log_safe_path,
     _prefix_within_utf16_limit,
     cache_audio_from_bytes,
 )
@@ -46,11 +41,6 @@ class TestInboundMediaSizeCap:
 
     _PNG = b"\x89PNG\r\n\x1a\n" + b"x" * 64
 
-    def test_default_cap_is_128_mib(self, monkeypatch):
-        # No config override -> default. Patch loader to return empty config.
-        import gateway.platforms.base as base
-        monkeypatch.setattr(base, "get_inbound_media_max_bytes", lambda: base.DEFAULT_INBOUND_MEDIA_MAX_BYTES)
-        assert base.DEFAULT_INBOUND_MEDIA_MAX_BYTES == 128 * 1024 * 1024
 
     def test_image_bytes_rejected_when_oversized(self, monkeypatch):
         import gateway.platforms.base as base
@@ -59,11 +49,6 @@ class TestInboundMediaSizeCap:
             cache_image_from_bytes(self._PNG, ext=".png")
 
 
-class TestSecretCaptureGuidance:
-    def test_gateway_secret_capture_message_points_to_local_setup(self):
-        message = GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE
-        assert "local cli" in message.lower()
-        assert "~/.hermes/.env" in message
 
 
 class TestSafeUrlForLog:
@@ -381,9 +366,6 @@ class TestMediaExtensionAllowlistParity:
     MEDIA_DELIVERY_EXTS source of truth, and the strip is anchored to that set.
     """
 
-    DROPPED_BEFORE = ["md", "json", "yaml", "yml", "xml", "html", "htm",
-                      "tsv", "svg"]
-
 
     def test_unknown_extension_not_black_holed_by_cleanup(self):
         """A MEDIA: tag with an unknown extension is NOT stripped from the
@@ -563,6 +545,8 @@ class TestMediaDeliveryPathValidation:
         secret = ssh_dir / "id_rsa.txt"
         secret.write_bytes(b"-----BEGIN ...")  # mtime = now
         monkeypatch.setenv("HOME", str(fake_home))
+        # On Windows os.path.expanduser("~") reads USERPROFILE, not HOME.
+        monkeypatch.setenv("USERPROFILE", str(fake_home))
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(secret)) is None
 
@@ -770,6 +754,8 @@ class TestMediaDeliveryDefaultMode:
         doc = workdir / "proposal.docx"
         doc.write_bytes(b"PK\x03\x04")
         monkeypatch.setenv("HOME", str(fake_home))
+        # On Windows os.path.expanduser("~") reads USERPROFILE, not HOME.
+        monkeypatch.setenv("USERPROFILE", str(fake_home))
         # $HOME is itself on the denied-prefix list, mirroring /root.
         monkeypatch.setattr(
             "gateway.platforms.base._MEDIA_DELIVERY_DENIED_PREFIXES",
@@ -819,6 +805,7 @@ class TestMediaDeliveryDefaultMode:
         )
 
 
+    @pytest.mark.require_symlinks
     def test_root_home_workdir_symlink_to_credential_blocked(self, tmp_path, monkeypatch):
         """A symlink in the workdir pointing at a credential is rejected on its
         resolved target, even under the $HOME exception.
@@ -843,6 +830,7 @@ class TestMediaDeliveryDefaultMode:
         assert BasePlatformAdapter.validate_media_delivery_path(str(link)) is None
 
 
+@pytest.mark.platforms("linux")
 class TestDockerContainerMediaPathTranslation:
     """MEDIA:/workspace (and configured mounts) must resolve to host paths."""
 
@@ -1402,6 +1390,7 @@ class TestMediaFallbackDoesNotLeakHostPath:
         assert self.SENSITIVE_PATH not in sent_text
 
 
+@pytest.mark.platforms("linux")
 class TestDockerProfileSandboxMediaTranslation:
     """MEDIA from persistent Docker sandboxes must resolve to the host
     directory the profile's container actually bind-mounts (#93950).

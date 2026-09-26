@@ -427,7 +427,7 @@ const AssistantPreviewEmbeds: FC = () => {
   return (
     <div className="mt-3 flex flex-wrap gap-2">
       {previewTargets.map(target => (
-        <PreviewAttachment key={target} source="explicit-link" target={target} />
+        <PreviewAttachment key={target} target={target} />
       ))}
     </div>
   )

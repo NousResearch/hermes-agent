@@ -165,6 +165,10 @@ export const de: Translations = {
     failedToDeleteSelected: "Ausgewählte Sitzungen konnten nicht gelöscht werden",
     resumeInChat: "Im Chat fortsetzen",
     newChat: "Neuer Chat",
+    workspace: "Arbeitsbereich",
+    workspaceDefault: "Standard",
+    workspaceRescan: "Repositories neu scannen",
+    workspaceCustom: "Anderer Pfad…",
     previousPage: "Vorherige Seite",
     nextPage: "Nächste Seite",
     roles: {

@@ -2376,6 +2376,16 @@ def _resolve_runtime_with_fallback(resolve_kwargs: dict | None = None) -> _Runti
                 if fb_api_key := resolve_entry_api_key(entry):
                     fb_kwargs["explicit_api_key"] = fb_api_key
                 runtime = resolve_runtime_provider(**fb_kwargs)
+                from agent.fallback_cooldown import candidate_pool_exhausted
+                if candidate_pool_exhausted(
+                    fb_provider, fb_model, pool=runtime.get("credential_pool")
+                ):
+                    logging.getLogger(__name__).warning(
+                        "Fallback skip: %s/%s credential pool is exhausted "
+                        "(every entry in cooldown)",
+                        fb_provider, fb_model,
+                    )
+                    continue
                 # Named custom entries resolve to the bare "custom" billing class; keep the configured
                 # identity so the session/UI shows the provider name, matching the manual-switch path (#98739).
                 runtime["provider"] = effective_runtime_provider(entry, runtime)

@@ -608,7 +608,8 @@ class CLIModelSwitchMixin:
                     new_model=snapshot.get("model", ""), new_provider=snapshot.get("provider", ""),
                     api_key=snapshot.get("api_key", ""), base_url=snapshot.get("base_url", ""),
                     api_mode=snapshot.get("api_mode", ""),
-                    capabilities=snapshot.get("capabilities"))
+                    capabilities=snapshot.get("capabilities"),
+                    supersede_pre_agent_primary=False)
                 if "reasoning_config" in snapshot:
                     agent.reasoning_config = snapshot["reasoning_config"]
             except Exception as exc:

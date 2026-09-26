@@ -1936,20 +1936,11 @@ def _fallback_chain_exhausted(agent, reason: "FailoverReason | None") -> bool:
 
 
 def _candidate_pool_exhausted(agent, fb_provider: str, fb_model: str) -> bool:
-    """True when every credential the candidate would use sits in an exhaustion cooldown longer
-    than the retry loop's longest wait (the 600s Retry-After cap): switching to it only fails the
-    turn the same way the primary just did (#89401). A short throttle still gets its chance."""
-    pool = getattr(agent, "_credential_pool", None)
-    if pool is None or (getattr(pool, "provider", "") or "").strip().lower() != fb_provider:
-        try:
-            from agent.credential_pool import load_pool
-            pool = load_pool(fb_provider)
-        except Exception:
-            return False
-    if pool is None or not pool.has_credentials() or pool.has_available(model=fb_model):
-        return False
-    until = pool.next_available_at(model=fb_model)
-    return until is None or until - time.time() > 600
+    """Compatibility wrapper for the shared fallback-candidate cooldown policy."""
+    from agent.fallback_cooldown import candidate_pool_exhausted
+    return candidate_pool_exhausted(
+        fb_provider, fb_model, pool=getattr(agent, "_credential_pool", None)
+    )
 
 
 def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider: str, fb_model: str, unavailable: set) -> bool:

@@ -160,3 +160,47 @@ class TestRetrievalCount:
 
         assert provider._store.record_retrieval([first, second]) == 2
         assert provider._store.record_retrieval([]) == 0
+
+
+class TestCrossTargetCollapse:
+    """`facts.content` is UNIQUE across the whole table, so a sentence mirrored for two targets
+    is ONE row -- the first target's category wins, and `add_fact` returns that row untouched for
+    the second target. The consequence is sharper than "one row": removing the sentence for the
+    owning target removes it for every target, because there is only one row to remove.
+
+    `fact_id_for_content()` is scoped by category, so the asymmetry is real in both directions:
+    a remove for the NON-owning target cannot identify the row and is a no-op, even though that
+    target's fact is the one that vanished from the owner's remove.
+    """
+
+    sentence = "User prefers dark mode"
+
+    def test_two_targets_sharing_a_sentence_collapse_to_one_row(self, provider):
+        provider.on_memory_write("add", "user", self.sentence)
+        provider.on_memory_write("add", "memory", self.sentence)
+
+        rows = provider._store._conn.execute(
+            "SELECT content, category FROM facts WHERE content = ?", (self.sentence,)).fetchall()
+        assert len(rows) == 1
+        assert rows[0]["category"] == "user_pref"  # first writer's category wins
+        # The second target has no row of its own to address later.
+        assert provider._store.fact_id_for_content(self.sentence, "general") is None
+
+    def test_removing_the_owning_target_deletes_the_other_targets_fact(self, provider):
+        provider.on_memory_write("add", "user", self.sentence)
+        provider.on_memory_write("add", "memory", self.sentence)
+
+        provider.on_memory_write("remove", "user", self.sentence,
+                                 metadata={"previous_content": self.sentence})
+
+        assert stored_contents(provider) == []
+
+    def test_removing_the_non_owning_target_is_a_no_op(self, provider):
+        provider.on_memory_write("add", "user", self.sentence)
+        provider.on_memory_write("add", "memory", self.sentence)
+
+        provider.on_memory_write("remove", "memory", self.sentence,
+                                 metadata={"previous_content": self.sentence})
+
+        # The row is user_pref, the lookup is general: nothing to remove, so the sentence survives.
+        assert stored_contents(provider) == [self.sentence]

@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # Cap on a tool error body; only trims runaway interpolated exceptions (static msgs are ~115 chars).
 _MAX_TOOL_ERROR_CHARS = 2048
-_TOOL_ERROR_TRUNCATION_MARKER = "… [truncated]"
+# Elision uses agent.compression_marker.elide_text (non-imitable marker, #121572).
 # Logs keep more of the body than the model sees, but still a bounded amount.
 _MAX_LOGGED_ERROR_CHARS = 8192
 
@@ -36,7 +36,9 @@ def _bound_error_text(text: str) -> str:
     logger.debug(
         "tool error body truncated for context (%d chars): %s",
         len(text), text[:_MAX_LOGGED_ERROR_CHARS])
-    return text[:_MAX_TOOL_ERROR_CHARS] + _TOOL_ERROR_TRUNCATION_MARKER
+    from agent.compression_marker import elide_text
+
+    return elide_text(text, _MAX_TOOL_ERROR_CHARS)
 
 
 def _bound_json_error_result(result: str) -> str:

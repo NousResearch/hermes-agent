@@ -15,7 +15,7 @@ MAX_TODO_ITEMS = 256
 # Max single todo tool-result payload accepted during history hydration, so a forged
 # oversized result is dropped before parsing (AIAgent._hydrate_todo_store).
 MAX_TODO_RESULT_CHARS = 512_000
-_TRUNCATION_MARKER = "… [truncated]"
+# Elision uses agent.compression_marker.elide_text (non-imitable marker, #121572).
 # Persisted as ordinary message content; ContextCompressor keys on this stable header to
 # tell the synthetic post-compaction row from a real user message.
 TODO_INJECTION_HEADER = "[Your active task list was preserved across context compression]"
@@ -129,7 +129,9 @@ class TodoStore:
     def _cap_content(content: str) -> str:
         """Truncate to MAX_TODO_CONTENT_CHARS keeping the head (the actionable part) + marker."""
         if len(content) > MAX_TODO_CONTENT_CHARS:
-            return content[:MAX_TODO_CONTENT_CHARS - len(_TRUNCATION_MARKER)] + _TRUNCATION_MARKER
+            from agent.compression_marker import elide_text
+
+            return elide_text(content, MAX_TODO_CONTENT_CHARS)
         return content
 
     @staticmethod

@@ -195,5 +195,7 @@ def test_oversized_result_is_truncated(monkeypatch):
     result = ctx.call_mcp("big", "dump")
     assert result["ok"] is True
     assert result["truncated"] is True
-    assert len(result["result"]) <= PluginContext._MCP_RESULT_CHAR_CAP + 20
-    assert result["result"].endswith("… [truncated]")
+    # #121572: non-imitable marker (~225 chars with counts) rides past the cap.
+    assert len(result["result"]) <= PluginContext._MCP_RESULT_CHAR_CAP + 300
+    assert result["result"].endswith("\u27eb")
+    assert "HERMES-CONTEXT-COMPRESSION" in result["result"]

@@ -992,9 +992,9 @@ def _build_verbatim_user_section(turns: List[Dict[str, Any]]) -> str:
             break
         text = content.strip()
         if len(text) > _LEAN_USER_MESSAGE_MAX_CHARS:
-            text = text[:_LEAN_USER_MESSAGE_MAX_CHARS].rstrip() + " …[truncated]"
+            text = elide_text(text.rstrip(), _LEAN_USER_MESSAGE_MAX_CHARS)
         if len(text) > remaining:
-            text = text[:remaining].rstrip() + " …[truncated]"
+            text = elide_text(text.rstrip(), remaining)
         collected.append("> " + text.replace("\n", "\n> "))
         used += len(text)
     if not collected:

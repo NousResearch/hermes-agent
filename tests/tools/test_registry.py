@@ -163,8 +163,9 @@ class TestToolErrorBounding:
 
     def test_oversized_body_truncated(self):
         result = json.loads(tool_error("boom: " + "X" * 5000))
-        assert result["error"].endswith("… [truncated]")
-        assert len(result["error"]) <= _MAX_TOOL_ERROR_CHARS + len("… [truncated]")
+        assert result["error"].endswith("\u27eb")
+        assert "HERMES-CONTEXT-COMPRESSION" in result["error"]
+        assert len(result["error"]) <= _MAX_TOOL_ERROR_CHARS + 300
 
     def test_at_limit_not_truncated(self):
         msg = "Y" * _MAX_TOOL_ERROR_CHARS
@@ -212,8 +213,9 @@ class TestDispatchBoundsDirectErrorResults:
             "duration_seconds": 1.2,
         }, ensure_ascii=False))
         result = json.loads(reg.dispatch("direct", {}))
-        assert result["error"].endswith("… [truncated]")
-        assert len(result["error"]) <= _MAX_TOOL_ERROR_CHARS + len("… [truncated]")
+        assert result["error"].endswith("\u27eb")
+        assert "HERMES-CONTEXT-COMPRESSION" in result["error"]
+        assert len(result["error"]) <= _MAX_TOOL_ERROR_CHARS + 300
         assert result["status"] == "error"
         assert result["tool_calls_made"] == 3
         assert result["duration_seconds"] == 1.2
@@ -261,7 +263,7 @@ class TestDispatchExceptionLogging:
         for message in messages:
             assert len(message) < _MAX_LOGGED_ERROR_CHARS + 200
             assert body not in message
-        assert len(result["error"]) < _MAX_TOOL_ERROR_CHARS + 200
+        assert len(result["error"]) < _MAX_TOOL_ERROR_CHARS + 300
 
 
 class TestToolsetAvailability:

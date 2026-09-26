@@ -5462,9 +5462,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         else:
             prefix = f"{header}\n\n"
             suffix = tail
-        truncated_suffix = "\n... [truncated]"
         budget = max(0, self.MAX_MESSAGE_LENGTH - len(prefix) - len(suffix))
         if len(body) > budget:
+            from agent.compression_marker import marker_for
+
+            truncated_suffix = marker_for(omitted=len(body) - budget, total=len(body))
             body = body[: max(0, budget - len(truncated_suffix))] + truncated_suffix
         return f"{prefix}{body}{suffix}"
 

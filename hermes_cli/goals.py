@@ -688,7 +688,11 @@ def migrate_goal_to_session(old_session_id: str, new_session_id: str, *, reason:
 def _truncate(text: str, limit: int) -> str:
     if not text:
         return ""
-    return text if len(text) <= limit else text[:limit] + "… [truncated]"
+    if len(text) <= limit:
+        return text
+    from agent.compression_marker import elide_text
+
+    return elide_text(text, limit)
 
 
 def _pid_alive(pid: int) -> bool:

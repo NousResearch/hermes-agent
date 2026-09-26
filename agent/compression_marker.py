@@ -31,6 +31,29 @@ _COMPRESSION_MARKER_RE = re.compile(
 )
 
 
+def marker_for(omitted: int, total: int) -> str:
+    """Render just the non-imitable marker for ``omitted`` of ``total`` chars.
+
+    For length-capped channels (chat delivery limits) where the caller sizes the
+    head itself: ``head = text[:limit - len(marker)] + marker``.
+    """
+    return _COMPRESSION_MARKER_TEMPLATE.format(omitted=omitted, total=total)
+
+
+def elide_to_limit(text: str, limit: int) -> str:
+    """Elide ``text`` to at most ``limit`` chars total, hard cap respected.
+
+    Unlike :func:`elide_text` (fixed head + marker may overshoot), this sizes the
+    head around the marker so ``len(out) <= limit`` — for channel caps (LSP summary
+    budget, chat delivery limits) that must never be exceeded.
+    """
+    if len(text) <= limit:
+        return text
+    marker = marker_for(omitted=len(text) - limit, total=len(text))
+    head = max(0, limit - len(marker))
+    return text[:head] + marker_for(omitted=len(text) - head, total=len(text))
+
+
 def elide_text(text: str, head_chars: int, tail_chars: int = 0) -> str:
     """Elide ``text`` to ``head_chars`` (+ optional ``tail_chars``) with the non-imitable marker.
 

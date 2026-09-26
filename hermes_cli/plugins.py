@@ -546,7 +546,9 @@ class PluginContext:
             raw = "" if raw is None else str(raw)
         truncated = len(raw) > cls._MCP_RESULT_CHAR_CAP
         if truncated:
-            raw = raw[: cls._MCP_RESULT_CHAR_CAP] + "… [truncated]"
+            from agent.compression_marker import elide_text
+
+            raw = elide_text(raw, cls._MCP_RESULT_CHAR_CAP)
         try:
             parsed: Any = json.loads(raw)
         except (ValueError, TypeError):

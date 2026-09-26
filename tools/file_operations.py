@@ -335,8 +335,10 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         # blank line in a page keeps its own number.
         if content.endswith('\n'):
             content = content[:-1]
+        from agent.compression_marker import elide_text
+
         return '\n'.join(
-            f"{i}|{line if len(line) <= max_line_length else line[:max_line_length] + '... [truncated]'}"
+            f"{i}|{line if len(line) <= max_line_length else elide_text(line, max_line_length)}"
             for i, line in enumerate(content.split('\n'), start=start_line))
 
     def _expand_path(self, path: str) -> str:

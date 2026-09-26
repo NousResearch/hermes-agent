@@ -177,16 +177,18 @@ class TestTodoStoreBounds:
         store = TodoStore()
         store.write([{"id": "1", "content": "A" * 50001, "status": "pending"}])
         item = store.read()[0]
-        assert len(item["content"]) <= MAX_TODO_CONTENT_CHARS
-        assert item["content"].endswith("… [truncated]")
+        # #121572: non-imitable marker (~225 chars with counts) rides past the cap.
+        assert len(item["content"]) <= MAX_TODO_CONTENT_CHARS + 300
+        assert item["content"].endswith("\u27eb")
+        assert "HERMES-CONTEXT-COMPRESSION" in item["content"]
 
     def test_injection_block_is_bounded(self):
         from tools.todo_tool import MAX_TODO_CONTENT_CHARS
         store = TodoStore()
         store.write([{"id": "1", "content": "A" * 50001, "status": "pending"}])
         inj = store.format_for_injection()
-        # Before the fix this was ~50085 chars; now it tracks the cap.
-        assert len(inj) < MAX_TODO_CONTENT_CHARS + 200
+        # Before the fix this was ~50085 chars; now it tracks the cap (+ marker).
+        assert len(inj) < MAX_TODO_CONTENT_CHARS + 500
 
 
     def test_item_count_is_bounded(self):

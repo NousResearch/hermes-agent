@@ -150,7 +150,9 @@ def _status_detail(status: dict[str, Any]) -> str:
         parts.append(f"last command `{command}`")
     if summary:
         if len(summary) > 1200:
-            summary = summary[:1200].rstrip() + "\n... [truncated]"
+            from agent.compression_marker import elide_text
+
+            summary = elide_text(summary, 1200)
         parts.append(f"last output:\n{summary}")
     return "\n".join(parts)
 

@@ -88,7 +88,9 @@ class MCPServerHealthMixin:
                     except (TypeError, ValueError):
                         data = str(data)
                 if len(data) > 2000:  # cap payloads so a chatty server can't flood agent.log
-                    data = data[:2000] + "... [truncated]"
+                    from agent.compression_marker import elide_text
+
+                    data = elide_text(data, 2000)
                 logger_name = getattr(params, "logger", None)
                 origin = f"{self.name}/{logger_name}" if logger_name else self.name
                 logger.log(level, "MCP server log [%s]: %s", origin, data)

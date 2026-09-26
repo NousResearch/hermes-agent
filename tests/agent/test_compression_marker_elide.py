@@ -8,6 +8,7 @@ from agent.compression_marker import (
     _COMPRESSION_MARKER_PREFIX,
     _COMPRESSION_MARKER_RE,
     elide_text,
+    marker_for,
 )
 
 
@@ -30,8 +31,18 @@ def test_elide_text_short_passthrough():
     assert elide_text("short", 100) == "short"
 
 
+def test_marker_for_renders_counts():
+    marker = marker_for(omitted=900, total=1000)
+    assert marker.startswith(_COMPRESSION_MARKER_PREFIX)
+    assert marker.endswith("\u27eb")
+    assert _COMPRESSION_MARKER_RE.search(marker) is not None
+
+
 def test_no_bare_truncation_marker_in_code():
     root = pathlib.Path(__file__).resolve().parents[2]
+    # Every spelling of the generic marker (#121572 + review on #122388): the
+    # three-dot, Unicode-ellipsis, and spaced variants are all imitable.
+    variants = ("...[truncated]", "…[truncated]", "... [truncated]", "… [truncated]")
     bad: list[str] = []
     for p in sorted(root.rglob("*.py")):
         s = str(p)
@@ -45,6 +56,6 @@ def test_no_bare_truncation_marker_in_code():
             stripped = line.strip()
             if stripped.startswith("#"):
                 continue
-            if "...[truncated]" in line:
+            if any(v in line for v in variants):
                 bad.append(f"{p.relative_to(root)}:{i}")
     assert not bad, f"bare truncation markers remain: {bad[:20]}"

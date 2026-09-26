@@ -71,11 +71,10 @@ def report_for_file(
 
 
 def truncate(s: str, *, limit: int = MAX_TOTAL_CHARS) -> str:
-    """Hard-cap a formatted summary string."""
-    if len(s) <= limit:
-        return s
-    marker = "\n…[truncated]"
-    return s[: limit - len(marker)] + marker
+    """Hard-cap a formatted summary string (non-imitable elision marker, #121572)."""
+    from agent.compression_marker import elide_to_limit
+
+    return elide_to_limit(s, limit)
 
 
 __all__ = ["SEVERITY_NAMES", "DEFAULT_SEVERITIES", "MAX_PER_FILE", "format_diagnostic", "report_for_file", "truncate"]

@@ -227,7 +227,7 @@ class TestIndependentStoreWriteGates:
         )
 
         assert result["success"] is False
-        assert len(result["error"]) <= _MAX_TOOL_ERROR_CHARS + 32
+        assert len(result["error"]) <= _MAX_TOOL_ERROR_CHARS + 300
 
         short = json.loads(
             memory_tool(action="add", target="bogus", content="fact", store=store)

@@ -1,6 +1,6 @@
 """Configurable tool-output truncation limits (``tool_output`` in config.yaml):
 ``max_bytes`` (terminal output cap), ``max_lines`` (read_file pagination cap),
-``max_line_length`` (per-line cap before '... [truncated]'). Defaults equal the
+``max_line_length`` (per-line cap before elision). Defaults equal the
 constants once hardcoded in terminal_tool / file_operations and the reader never
 raises, so behaviour is unchanged when the section is absent or malformed."""
 

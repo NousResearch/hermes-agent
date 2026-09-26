@@ -181,7 +181,8 @@ def is_slot_keyed_cache_route(provider: Any, model: Any, base_url: Any = "") -> 
     prompt cache to the server picked by ``x-grok-conv-id`` / ``prompt_cache_key``: two divergent
     request streams under one key evict each other. Anthropic, DeepSeek and Gemini caches are
     content-addressed and OpenAI's ``prompt_cache_key`` only routes over a prefix match, so the
-    shared scope (#109964) stays a win there.
+    shared scope (#109964) stays a win there. Only the OpenRouter profile reads ``cache_scope_id``
+    for the sticky header; other aggregators fronting Grok change only the body key.
     """
     if str(provider or "").strip().lower() in {"xai", "xai-oauth"}:
         return True
@@ -196,16 +197,21 @@ def is_fork_cache_scope(scope: Any) -> bool:
 
 
 def _apply_fork_tag(agent: Any, scope: str) -> str:
-    """Derive ``<scope>::<tag>`` for a tagged cache-parity fork on a slot-keyed provider.
+    """Derive ``<scope>::<tag>`` for a tagged cache-parity fork on a slot-keyed provider, but only
+    after the fork's own compaction committed.
 
-    A same-model fork shares the parent's scope (#109964) so content-addressed caches serve it
-    warm. On xAI that key makes the fork's divergent stream evict the parent's conversation slot:
-    measured on grok-4.7 at ~160k context with a same-size fork, the parent's next call read
-    1,152 of 162k prompt tokens (2/2) vs 162,176 of 162k (2/2) with a derived key. Evaluated per
-    call (no DB), so a mid-run provider fallback re-evaluates.
+    A same-model fork shares the parent's scope (#109964): until it compacts, its requests are a
+    strict prefix extension of the parent's, so request #1 is a warm read and cannot evict. Once
+    its in-place compaction rewrites the transcript, on xAI the divergent stream evicts the
+    parent's conversation slot (grok-4.7, ~160k: the parent's next call read 1,152 of 162k prompt
+    tokens, 2/2, vs 162,176 with a derived key). ``compression_count`` is the fork's own counter
+    (rolled back on aborted attempts). Evaluated per call, so a provider fallback re-evaluates.
     """
     tag = getattr(agent, "_prompt_cache_fork_tag", None)
     if not scope or not isinstance(tag, str) or not tag:
+        return scope
+    compactions = getattr(getattr(agent, "context_compressor", None), "compression_count", 0)
+    if not isinstance(compactions, int) or compactions < 1:
         return scope
     if not is_slot_keyed_cache_route(
         getattr(agent, "provider", ""), getattr(agent, "model", ""), getattr(agent, "base_url", ""),

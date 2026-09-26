@@ -998,12 +998,6 @@ def build_cache_parity_fork(
     review_agent._end_session_on_close = False
     review_agent._session_db = None
     review_agent.session_id = agent.session_id
-    # Slot-keyed caches (xAI) must not see the fork under the parent's key: the fork's divergent
-    # stream evicts the parent's conversation slot. The resolver derives ``<scope>::<tag>`` for
-    # slot-keyed providers only; content-addressed ones keep the shared scope below.
-    review_agent._prompt_cache_fork_tag = (
-        "review" if write_origin == "background_review" else str(write_origin or "fork")
-    )
     # Same model only: share the warm cached system prompt (~26% cost cut; a rebuilt prompt misses
     # the byte-exact prefix key) and pin session_start so any re-render (compression, plugin
     # hooks) stays byte-identical.
@@ -1029,6 +1023,11 @@ def build_cache_parity_fork(
         inherited_scope = resolve_prompt_cache_scope_safe(agent)
         if inherited_scope:
             review_agent._inherited_cache_scope = inherited_scope
+        # Slot-keyed caches (xAI): once the review's OWN compaction rewrites its transcript, its
+        # divergent stream would evict the parent's server slot, so the resolver then derives
+        # ``<scope>::review``. /btw never tags: one prefix-extension call cannot diverge.
+        if write_origin == "background_review":
+            review_agent._prompt_cache_fork_tag = "review"
         # Same reason for the Portal ``conversation=`` tag: with no DB the fork's own
         # _conversation_root_id() falls back to the parent's PHYSICAL id, so after a compression
         # rotation the review's usage was attributed to a different conversation than its parent.

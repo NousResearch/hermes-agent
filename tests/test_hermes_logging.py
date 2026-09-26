@@ -281,6 +281,32 @@ class TestSetupLogging:
 
 
 
+    def test_component_log_rotation_follows_config(self, hermes_home):
+        """errors/gateway/gui logs feed logging.max_size_mb/backup_count.
+
+        setup_logging() computed cfg max_bytes/backups for agent.log only;
+        errors.log (2MB/2), gateway.log (5MB/3) and gui.log (10MB/5) were
+        hardcoded in handler_specs, so logging.max_size_mb/backup_count were
+        silently ignored for the three component logs.
+        """
+        import hermes_yaml as yaml
+        config = {"logging": {"max_size_mb": 1, "backup_count": 4}}
+        (hermes_home / "config.yaml").write_text(yaml.safe_dump(config))
+
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+
+        by_name = {}
+        for h in hermes_logging._queued_file_handlers:
+            if isinstance(h, RotatingFileHandler) and getattr(h, "baseFilename", None):
+                base = h.baseFilename.rsplit("/", 1)[-1]
+                if base not in by_name:
+                    by_name[base] = h
+        assert set(by_name) == {"agent.log", "errors.log"}, sorted(by_name)
+        for base in ("agent.log", "errors.log"):
+            h = by_name[base]
+            assert h.maxBytes == 1 * 1024 * 1024, (base, h.maxBytes)
+            assert h.backupCount == 4, (base, h.backupCount)
+
     def test_explicit_params_override_config(self, hermes_home):
         """Explicit function params take precedence over config.yaml."""
         import hermes_yaml as yaml

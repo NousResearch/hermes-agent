@@ -231,13 +231,92 @@ def _release_hosted_room_turn_slot(session: dict) -> None:
         _release_active_session_slot(session)
 
 
+def _is_canonical_bot_chat_or_mobile(session: dict | None) -> bool:
+    """true if session is canonical bot chat or mobile surface (cadu/ios)."""
+    if not session:
+        return False
+    source = str(_session_source(session) or "").strip().lower()
+    if source in ("ios", "mobile", "cadu"):
+        return True
+    try:
+        from tools.bot_mode_probe import BOT_CHAT_TITLE
+        hint = str(getattr(session.get("agent"), "_session_title_hint", "") or "").strip()
+        if hint == BOT_CHAT_TITLE:
+            return True
+        lookup_fn = globals().get("_session_lookup_key")
+        key = lookup_fn(session) if callable(lookup_fn) else str(session.get("session_key") or "")
+        if key and callable(fn := globals().get("_session_live_title")):
+            if fn(session, key) == BOT_CHAT_TITLE:
+                return True
+    except Exception:
+        pass
+    lease = session.get("active_session_lease")
+    meta = getattr(lease, "metadata", None) or {}
+    if meta.get("bot_live_delivery_consumer"):
+        surface = str(getattr(lease, "surface", "") or "").strip().lower()
+        if surface in ("ios", "mobile", "cadu"):
+            return True
+    return False
+
+
+def _release_detached_bot_chat_slot(session: dict | None, sid: str | None = None) -> bool:
+    """release active session slot for detached idle canonical bot chat or mobile sessions.
+
+    cadu/ios and canonical bot chat turns are discrete; holding the lease past a
+    disconnected turn or after disconnect leaves the canonical bot chat wedged with
+    SESSION_NOT_OWNED. ordinary desktop sessions keep their lease across turns.
+    """
+    if not session or not _is_canonical_bot_chat_or_mobile(session):
+        return False
+    with _session_resume_lock, _sessions_lock:
+        if sid is None:
+            for k, v in _sessions.items():
+                if v is session:
+                    sid = k
+                    break
+        if not sid or _sessions.get(sid) is not session:
+            return False
+        if session.get("queued_prompt") or session.get("queued_prompts"):
+            return False
+        if _session_has_active_delegations(sid, session):
+            return False
+        hl = session.get("history_lock")
+        with (hl if hl is not None else contextlib.nullcontext()):
+            if session.get("running"):
+                return False
+            # Reconnect and detach both take this leaf lock. Keep it through the lease pop so a live
+            # transport cannot attach after the dead-state check but before ownership is released.
+            with _session_transport_lock:
+                if not _transport_is_dead(session.get("transport")) or _session_has_live_transport(session):
+                    return False
+                lease = session.pop("active_session_lease", None)
+    if lease is None:
+        return False
+    meta = getattr(lease, "metadata", None) or {}
+    live_id = meta.get("live_session_id") or session.get("session_key") or sid
+    logger.info(
+        "releasing detached bot chat lease sid=%s live_session_id=%s decision=release_detached_idle_bot_chat",
+        sid,
+        live_id,
+    )
+    err = _lease_retry(3 if getattr(lease, "track_liveness", False) else 1, lease.release)
+    if err is not None:
+        logger.warning("failed to release detached bot chat lease: %s", err)
+        return False
+    return True
+
+
 def _own_live_lease_ids(*, exclude=None) -> set[str]:
-    """Snapshot leases still backed by this process's live session records (plus leases deferred past a
-    close for an unsettled isolated turn — still ours until the child settles)."""
+    """snapshot leases still backed by this process's live session records (plus leases deferred past a
+    close for an unsettled isolated turn - still ours until the child settles)."""
     with _sessions_lock:
-        return {str(lease.lease_id) for session in _sessions.values()
-                if (lease := session.get("active_session_lease")) is not None and lease is not exclude
-                } | set(_deferred_active_session_leases)
+        return {
+            str(lease.lease_id)
+            for session in _sessions.values()
+            if (lease := session.get("active_session_lease")) is not None
+            and lease is not exclude
+            and not getattr(lease, "released", False)
+        } | set(_deferred_active_session_leases)
 
 
 @contextlib.contextmanager
@@ -884,8 +963,18 @@ def _schedule_ws_orphan_reap(
         if reschedule_delay is not None:
             _schedule_ws_orphan_reap(sid, delay_s=reschedule_delay, _expected_timer=timer)
             return
-        if session is not None and session.get("_client_gone_interrupt_requested"):
-            logger.info("client_gone sid=%s action=reap", sid)
+        if session is not None:
+            lease = session.get("active_session_lease")
+            meta = getattr(lease, "metadata", None) or {}
+            live_id = meta.get("live_session_id") or session.get("_sid") or sid
+            if session.get("_client_gone_interrupt_requested"):
+                logger.info("client_gone sid=%s live_session_id=%s action=reap", sid, live_id)
+            else:
+                logger.info(
+                    "ws orphan reap sid=%s live_session_id=%s decision=reap_and_release_lease",
+                    sid,
+                    live_id,
+                )
         _teardown_popped_session(session, end_reason="ws_orphan_reap")
 
     with _sessions_lock:
@@ -912,6 +1001,7 @@ def _close_sessions_for_transport(transport, *, end_reason: str = "ws_disconnect
     close_on_disconnect / park-sentinel path, so a single-client disconnect behaves exactly as it always has."""
     clientless = _detach_transport_from_sessions(transport)
     reaped = detached = 0
+    to_release = []
     for sid, session in clientless:
         claimed_for_teardown = None
         should_schedule_reap = False
@@ -954,10 +1044,14 @@ def _close_sessions_for_transport(transport, *, end_reason: str = "ws_disconnect
                     # must not arm its first timer over a reconnect's newer detachment.
                     with contextlib.suppress(Exception):
                         _schedule_ws_orphan_reap(sid)
+                    if not current.get("running") and _is_canonical_bot_chat_or_mobile(current):
+                        to_release.append((sid, current))
         if claimed_for_teardown is not None:
             reaped += _teardown_popped_session(claimed_for_teardown, end_reason=end_reason)
         elif should_schedule_reap:
             detached += 1
+    for s_sid, s_session in to_release:
+        _release_detached_bot_chat_slot(s_session, s_sid)
     return reaped, detached
 
 

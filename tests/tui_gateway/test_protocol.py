@@ -1088,6 +1088,248 @@ def test_idle_reaper_rearms_missing_ws_orphan_timer(server, monkeypatch, tmp_pat
     assert [entry["session_id"] for entry in active_session_registry_snapshot(home)] == [sibling_sid]
 
 
+@pytest.mark.parametrize("orphan_grace", [0.0, 5.0])
+def test_ios_disconnect_releases_canonical_bot_chat_lease_after_completed_turn(
+    server, monkeypatch, tmp_path, orphan_grace
+):
+    """canonical bot chat lease on ios is released after disconnect and completed turn."""
+    import types
+    from hermes_cli.active_sessions import (
+        active_session_registry_snapshot,
+        try_acquire_active_session,
+    )
+
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    bot_sid = "ios-canonical-bot-chat"
+    running_sid = "ios-running-session"
+    desktop_sid = "desktop-session"
+
+    bot_lease, refusal = try_acquire_active_session(
+        session_id=bot_sid,
+        surface="ios",
+        config={},
+        registry_home=home,
+        metadata={"live_session_id": bot_sid, "bot_live_delivery_consumer": True},
+        track_liveness=True,
+    )
+    assert bot_lease is not None and refusal is None
+
+    running_lease, refusal = try_acquire_active_session(
+        session_id=running_sid,
+        surface="ios",
+        config={},
+        registry_home=home,
+        metadata={"live_session_id": running_sid, "bot_live_delivery_consumer": True},
+        track_liveness=True,
+    )
+    assert running_lease is not None and refusal is None
+
+    desktop_lease, refusal = try_acquire_active_session(
+        session_id=desktop_sid,
+        surface="desktop",
+        config={},
+        registry_home=home,
+        metadata={"live_session_id": desktop_sid, "bot_live_delivery_consumer": False},
+        track_liveness=True,
+    )
+    assert desktop_lease is not None and refusal is None
+
+    class mock_transport:
+        def __init__(self):
+            self.closed = False
+            self.frames = []
+
+        def write(self, obj):
+            self.frames.append(obj)
+            return True
+
+        def close(self):
+            self.closed = True
+
+    bot_transport = mock_transport()
+    running_transport = mock_transport()
+    desktop_transport = mock_transport()
+
+    class inline_thread:
+        def __init__(self, target=None, daemon=None, args=(), kwargs=None, name=None):
+            self._target, self._args, self._kwargs = target, args, kwargs or {}
+
+        def start(self):
+            if self._target is not None:
+                self._target(*self._args, **self._kwargs)
+
+        def is_alive(self):
+            return False
+
+        def join(self, timeout=None):
+            return None
+
+    monkeypatch.setattr(server.threading, "Thread", inline_thread)
+    monkeypatch.setattr(server, "_emit", lambda event_type, sid, payload=None: None)
+    monkeypatch.setattr(server, "_wire_callbacks", lambda sid: None)
+    monkeypatch.setattr(server, "_sync_agent_model_with_config", lambda sid, session: None)
+    monkeypatch.setattr(server, "_session_cwd", lambda session: str(tmp_path))
+    monkeypatch.setattr(server, "_register_session_cwd", lambda session: None)
+    monkeypatch.setattr(server, "_tts_stream_begin", lambda: None)
+    monkeypatch.setattr(server, "_sync_session_key_after_compress", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_get_usage", lambda agent: {})
+
+    def make_session(session_key, lease, transport, source="ios", running=False):
+        agent = types.SimpleNamespace(
+            session_id=f"agent-{session_key}",
+            run_conversation=lambda *a, **k: {"final_response": "done"},
+            clear_interrupt=lambda: None,
+        )
+        return {
+            "active_session_lease": lease,
+            "agent": agent,
+            "agent_error": None,
+            "attached_images": [],
+            "cols": 80,
+            "created_at": time.time(),
+            "history": [],
+            "history_lock": threading.RLock(),
+            "history_version": 0,
+            "image_counter": 0,
+            "inflight_turn": None,
+            "last_active": time.time(),
+            "running": running,
+            "session_key": session_key,
+            "show_reasoning": False,
+            "slash_worker": None,
+            "source": source,
+            "tool_progress_mode": "all",
+            "transport": transport,
+            "viewers": {transport: time.time()},
+        }
+
+    bot_session = make_session(bot_sid, bot_lease, bot_transport, source="ios", running=False)
+    running_session = make_session(running_sid, running_lease, running_transport, source="ios", running=True)
+    desktop_session = make_session(desktop_sid, desktop_lease, desktop_transport, source="desktop", running=False)
+
+    server._sessions.clear()
+    server._sessions.update({
+        bot_sid: bot_session,
+        running_sid: running_session,
+        desktop_sid: desktop_session,
+    })
+    server._pending_ws_reaps.clear()
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", orphan_grace)
+
+    # 1. idle bot chat disconnect: lease is immediately released at disconnect boundary
+    server._close_sessions_for_transport(bot_transport)
+
+    assert bot_lease.released is True
+    assert bot_session.get("active_session_lease") is None
+    assert bot_session["transport"] is server._detached_ws_transport
+
+    # fresh ui session can acquire canonical bot chat lease without waiting for orphan reap
+    fresh_lease, refusal = try_acquire_active_session(
+        session_id=bot_sid,
+        surface="ios",
+        config={},
+        registry_home=home,
+        metadata={"live_session_id": "fresh-cadu-ui", "bot_live_delivery_consumer": True},
+        track_liveness=True,
+    )
+    assert fresh_lease is not None and refusal is None
+    fresh_lease.release()
+
+    # 2. active turn disconnect: turn is in-flight, so lease remains protected
+    server._close_sessions_for_transport(running_transport)
+
+    assert running_lease.released is False
+    assert running_session.get("active_session_lease") is running_lease
+    assert running_session["transport"] is server._detached_ws_transport
+
+    blocked_lease, refusal = try_acquire_active_session(
+        session_id=running_sid,
+        surface="ios",
+        config={},
+        registry_home=home,
+        metadata={"live_session_id": "fresh-cadu-ui", "bot_live_delivery_consumer": True},
+        track_liveness=True,
+    )
+    assert blocked_lease is None
+    assert str(getattr(refusal, "reason", "")).lower() == "session_not_owned"
+
+    # 3. genuine turn completion: runs through real _run_prompt_submit and prompt_turn finally block
+    assert server._run_prompt_submit("rid-turn", running_sid, running_session, "resume turn") is True
+
+    assert running_session["running"] is False
+    assert running_lease.released is True
+    assert running_session.get("active_session_lease") is None
+
+    # fresh session can now acquire lease after completed turn
+    unblocked_lease, refusal = try_acquire_active_session(
+        session_id=running_sid,
+        surface="ios",
+        config={},
+        registry_home=home,
+        metadata={"live_session_id": "fresh-cadu-ui", "bot_live_delivery_consumer": True},
+        track_liveness=True,
+    )
+    assert unblocked_lease is not None and refusal is None
+    unblocked_lease.release()
+
+    # 4. desktop control: desktop session preserves lease on disconnect and turn completion
+    server._close_sessions_for_transport(desktop_transport)
+    assert desktop_lease.released is False
+    assert desktop_session.get("active_session_lease") is desktop_lease
+
+    assert server._run_prompt_submit("rid-desk", desktop_sid, desktop_session, "desktop turn") is True
+    assert desktop_lease.released is False
+    assert desktop_session.get("active_session_lease") is desktop_lease
+
+
+def test_detached_bot_chat_lease_release_holds_resume_lock(server, monkeypatch):
+    """reconnect cannot attach between the dead check and detached lease release."""
+    sid = "ios-detached-lock-order"
+    lock_state = {"held": False}
+
+    class tracking_resume_lock:
+        def __enter__(self):
+            lock_state["held"] = True
+
+        def __exit__(self, *_args):
+            lock_state["held"] = False
+
+    class lease:
+        released = False
+        enabled = True
+        track_liveness = False
+        metadata = {"live_session_id": sid, "bot_live_delivery_consumer": True}
+        surface = "ios"
+
+        def release(self):
+            self.released = True
+
+    current_lease = lease()
+
+    class tracking_session(dict):
+        def pop(self, key, *args):
+            if key == "active_session_lease":
+                assert lock_state["held"]
+            return super().pop(key, *args)
+
+    session = tracking_session(
+        active_session_lease=current_lease,
+        history_lock=threading.RLock(),
+        running=False,
+        session_key=sid,
+        source="ios",
+        transport=server._detached_ws_transport,
+    )
+    monkeypatch.setattr(server, "_session_resume_lock", tracking_resume_lock())
+    monkeypatch.setattr(server, "_sessions", {sid: session})
+    monkeypatch.setattr(server, "_session_has_active_delegations", lambda *args: False)
+
+    assert server._release_detached_bot_chat_slot(session, sid) is True
+    assert current_lease.released is True
+    assert session.get("active_session_lease") is None
+
+
 def test_sync_session_key_after_compress_reanchors_active_session_lease(
     server, monkeypatch, tmp_path
 ):

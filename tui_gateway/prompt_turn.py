@@ -1127,6 +1127,7 @@ def _run_prompt_submit(
                 if not st.error_retained:
                     _clear_inflight_turn(session)
                 _release_hosted_room_turn_slot(session)
+            _release_detached_bot_chat_slot(session, sid)
             # Closing bookend of "tui prompt accepted" — exactly one per accepted prompt.
             # agent.session_id is re-read because compression may have rotated it (an
             # accepted/finished pair whose id changed IS a rotation trace).

@@ -236,6 +236,18 @@ def _get_approval_mode() -> str:
     return _normalize_approval_mode(_get_approval_config().get("mode", "manual"))
 
 
+def _get_allow_permanent() -> bool:
+    """Read ``approvals.allow_permanent`` (default True): may an approval response grant the
+    permanent ("always") scope?
+
+    False removes the scope from every surface at once — the CLI prompt, gateway button
+    payloads, TUI/desktop and Runs API choice lists all render the scopes a gate advertises —
+    and :func:`tools.approval._persist_choice` refuses the permanent write, so a stale or custom
+    client answering "always" cannot permanently allowlist a dangerous-pattern key either.
+    """
+    return is_truthy_value(_get_approval_config().get("allow_permanent", True), default=True)
+
+
 def _get_approval_timeout() -> int:
     """Read ``approvals.timeout`` (default 300s: gateway push notifications may
     not be seen for minutes; 60s failed closed before Telegram taps landed).

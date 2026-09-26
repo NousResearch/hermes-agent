@@ -343,6 +343,25 @@ def check_telegram_requirements() -> bool:
 # Every char MarkdownV2 requires backslash-escaped outside code spans/fences.
 _MDV2_ESCAPE_RE = re.compile(r'([_*\[\]()~`>#\+\-=|{}.!\\])')
 
+# Stand-in for the '**' of an expandable opener while the inline steps run:
+# left in place, bold would pair it with the first '**' inside the quotation
+# (and italic its second '*' with the first '*'), and the opener would be gone
+# before the blockquote step ever saw it.
+_MDV2_QUOTE_OPENER = '\x00QO\x00'
+_MDV2_QUOTE_OPENER_RE = re.compile(r'^\*\*(>[^\n]*)$', re.MULTILINE)
+# A single quoted line: an optional expandable opener, one to three '>'
+# markers, then the quoted text. The space after the marker is OPTIONAL — a
+# sender who writes '>text' means the same thing as one who writes '> text',
+# and a line reduced to its marker is an empty line *inside* the quotation.
+_MDV2_QUOTE_LINE = rf'(?:{_MDV2_QUOTE_OPENER})?>{{1,3}} ?[^\n]*'
+_MDV2_QUOTE_LINE_RE = re.compile(rf'^((?:{_MDV2_QUOTE_OPENER})?>{{1,3}}) ?([^\n]*)$')
+# A quotation is a run of consecutive quoted lines. Telegram renders such a run
+# as one entity, so the converter has to see it as one block too.
+_MDV2_QUOTE_BLOCK_RE = re.compile(
+    rf'^({_MDV2_QUOTE_LINE}(?:\n{_MDV2_QUOTE_LINE})*)$',
+    re.MULTILINE,
+)
+
 
 def _escape_mdv2(text: str) -> str:
     """Escape Telegram MarkdownV2 special characters with a preceding backslash."""
@@ -5662,20 +5681,49 @@ class TelegramAdapter(BasePlatformAdapter):
             return _ph(f'*{_escape_mdv2(inner)}*')
 
         text = re.sub(r'^#{1,6}\s+(.+)$', _convert_header, text, flags=re.MULTILINE)
+        # 4b) Shield the '**' of an expandable opener from the inline steps below (see _MDV2_QUOTE_OPENER).
+        # An odd number of '**' on the rest of the line means the leading one is half of a bold pair
+        # ('**>90%** sure'): that line is left alone and converts exactly as it did before.
+        text = _MDV2_QUOTE_OPENER_RE.sub(
+            lambda m: m.group(0) if m.group(1).count('**') % 2 else _MDV2_QUOTE_OPENER + m.group(1), text)
         # 5) Bold **text** → *text*; 6) Italic *text* → _text_ ([^*\n]+ keeps matches on one line, or *
         # bullet lists corrupt); 7) Strikethrough ~~text~~ → ~text~; 8) Spoiler ||text|| kept as-is.
         text = re.sub(r'\*\*(.+?)\*\*', _ph_wrap('*', '*'), text)
         text = re.sub(r'\*([^*\n]+)\*', _ph_wrap('_', '_'), text)
         text = re.sub(r'~~(.+?)~~', _ph_wrap('~', '~'), text)
         text = re.sub(r'\|\|(.+?)\|\|', _ph_wrap('||', '||'), text)
-        # 9) Blockquotes: protect leading > from escaping; expandable quotes (**> starts, trailing || ends).
+        # 9) Blockquotes: protect leading > from escaping. A quotation is converted as a *block*, not line by
+        # line: Telegram renders a run of consecutive quoted lines as one entity, so an empty quoted line (a
+        # bare '>') has to stay part of the run instead of falling through to the generic escaper, and the
+        # expandable end marker '||' has to be recognised on the *last* line of the run — where Telegram
+        # expects it — not on the first. (MarkdownV2: **> opens an expandable quote, || closes it)
         def _convert_blockquote(m):
-            prefix, content = m.group(1), m.group(2)  # prefix: >, >>, >>>, **>, **>> …
-            if prefix.startswith('**') and content.endswith('||'):
-                return _ph(f'{prefix} {_escape_mdv2(content[:-2])}||')
-            return _ph(f'{prefix} {_escape_mdv2(content)}')
+            lines = m.group(1).split('\n')
+            parsed = [_MDV2_QUOTE_LINE_RE.match(line) for line in lines]
+            # The expandable markers are DECORATION, never content: '**' is dropped from every prefix that
+            # carries it and '||' from the end of the block, wherever the sender happened to put them and
+            # whether or not its counterpart is there. Only the quotation itself has to be written correctly;
+            # the markup is rebuilt below. Assumed consequence: a literal '||' ending a quotation is eaten
+            # along with them.
+            prefixes = [p.group(1).removeprefix(_MDV2_QUOTE_OPENER) for p in parsed]
+            contents = [p.group(2) for p in parsed]
+            # A run of bare '>' markers quotes nothing: leave it to the generic escaper, as before.
+            if not any(contents):
+                return m.group(1).replace(_MDV2_QUOTE_OPENER, '**')
+            expandable = _MDV2_QUOTE_OPENER in m.group(1)
+            tail = contents[-1].rstrip()
+            if tail.endswith('||'):
+                contents[-1] = tail[:-2]
+                expandable = True
+            rendered = '\n'.join(
+                f'{prefix} {_escape_mdv2(content)}' if content else prefix
+                for prefix, content in zip(prefixes, contents)
+            )
+            if expandable:
+                rendered = f'**{rendered}||'
+            return _ph(rendered)
 
-        text = re.sub(r'^((?:\*\*)?>{1,3}) (.+)$', _convert_blockquote, text, flags=re.MULTILINE)
+        text = _MDV2_QUOTE_BLOCK_RE.sub(_convert_blockquote, text)
         # 10) Escape remaining special characters in plain text
         text = _escape_mdv2(text)
         # 11) Restore placeholders in reverse insertion order so nested placeholders resolve.

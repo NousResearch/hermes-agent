@@ -193,6 +193,13 @@ DEFAULT_CONFIG = {
         "verify_guidance": True,
         # Max consecutive `pre_verify` "continue" nudges per turn (hooks can't trap the loop).
         "max_verify_nudges": 3,
+        # Fire `pre_verify` hooks on turns that edited no files. Default false
+        # keeps the historical code-editing-only scope. Enable when a hook
+        # implements a policy unrelated to file edits — for example a
+        # programmatic job runner that must not end a turn while the work it was
+        # launched for is still unfinished. `max_verify_nudges` still bounds the
+        # loop, and hooks still receive `changed_paths`.
+        "pre_verify_always": False,
         # Verification closure: after code edits in a workspace, refuse a final answer until fresh
         # verification evidence exists or the agent explains why it can't check (bounded loop,
         # passive ledger). False (default) because the nudges proved more noise than signal; true =

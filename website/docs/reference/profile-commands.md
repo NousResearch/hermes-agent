@@ -511,8 +511,9 @@ Hermes version doesn't satisfy the spec.
 `distribution_owned` is optional. If set, only those paths are updated;
 anything else in the profile stays user-owned. A directory of skills, such as
 `skills/` or a category like `skills/research/`, is merged per skill: the skills
-the distribution ships are replaced, and skills you added there stay. If
-omitted, the defaults above apply.
+the distribution ships are replaced, and skills you added there stay. A skill
+the author later drops from the distribution is left in place on update, as
+with top-level `skills/`. If omitted, the defaults above apply.
 
 ### Publishing a distribution
 

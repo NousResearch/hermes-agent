@@ -61,6 +61,42 @@ class TestLegacyMarkdownV2LinkDegrade:
         result = self._adapter().format_message("Open [settings](tg://settings).")
         assert "[settings](tg://settings)" in result
 
+    def test_explicitly_bracketed_numeric_citation_keeps_complete_marker_visible(self):
+        result = self._adapter().format_message(
+            "A grounded claim.[[3](https://example.com/source)]"
+        )
+        assert r"[\[3\]](https://example.com/source)" in result
+
+    def test_ordinary_numeric_commit_label_stays_an_ordinary_link(self):
+        result = self._adapter().format_message(
+            "Built from [1234567](https://github.com/acme/project/commit/1234567)."
+        )
+        assert r"[1234567](https://github.com/acme/project/commit/1234567)" in result
+        assert r"[\[1234567\]]" not in result
+
+    def test_link_with_title_keeps_its_url(self):
+        result = self._adapter().format_message(
+            'See [Docs](https://example.com/x "Title").'
+        )
+        assert "[Docs](https://example.com/x)" in result
+        assert "Title" not in result
+
+    def test_angle_bracket_destination_keeps_its_url(self):
+        result = self._adapter().format_message("See [Docs](<https://example.com/x>).")
+        assert "[Docs](https://example.com/x)" in result
+
+    def test_citation_with_title_does_not_put_the_title_in_the_url(self):
+        result = self._adapter().format_message(
+            'A grounded claim.[[3](https://example.com/source "Source")]'
+        )
+        assert r"[\[3\]](https://example.com/source)" in result
+        assert "Source" not in result
+
+    def test_citation_with_unsupported_target_degrades_to_its_number(self):
+        result = self._adapter().format_message("A claim.[[3](@session:default/abc)]")
+        assert "](" not in result
+        assert "@session:" not in result
+
 
 class TestRichMessageLinkDegrade:
     """_rich_message_payload feeds rich sends, final edits, and drafts."""
@@ -83,12 +119,35 @@ class TestRichMessageLinkDegrade:
         md = self._payload_markdown("See [Docs](https://example.com/x).")
         assert "[Docs](https://example.com/x)" in md
 
+    def test_explicitly_bracketed_numeric_citation_keeps_complete_marker_visible(self):
+        md = self._payload_markdown(
+            "A grounded claim.[[3](https://example.com/source)]"
+        )
+        assert r"A grounded claim.[\[3\]](https://example.com/source)" in md
+
+    def test_ordinary_numeric_pr_label_stays_an_ordinary_link(self):
+        md = self._payload_markdown(
+            "Reviewed in [97](https://github.com/acme/project/pull/97)."
+        )
+        assert r"[97](https://github.com/acme/project/pull/97)" in md
+        assert r"[\[97\]]" not in md
+
 
 class TestDegradeHelper:
     """The shared outbound scrub used by both delivery paths."""
 
     def test_text_without_brackets_untouched(self):
         assert _degrade_unsupported_markdown_links("plain text") == "plain text"
+
+    def test_explicitly_bracketed_numeric_citation_becomes_one_clickable_marker(self):
+        assert (
+            _degrade_unsupported_markdown_links("[[1](https://example.com/source)]")
+            == r"[\[1\]](https://example.com/source)"
+        )
+
+    def test_ordinary_numeric_link_does_not_become_a_citation_marker(self):
+        text = "[1234567](https://github.com/acme/project/commit/1234567)"
+        assert _degrade_unsupported_markdown_links(text) == text
 
     def test_empty_target_degrades(self):
         assert _degrade_unsupported_markdown_links("see [x]()") == "see x"

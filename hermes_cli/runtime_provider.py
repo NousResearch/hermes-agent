@@ -1129,7 +1129,28 @@ def resolve_runtime_with_fallback(config: Optional[Dict[str, Any]], *, requested
     ``model`` is the model the caller must send.
     """
     from hermes_cli.auth import AuthError, primary_failure_wording
+    from hermes_cli.fallback_config import get_fallback_chain
     try:
+        # A Nous singleton can still contain the valid JWT whose pool entry is
+        # billing-benched. Do not resurrect it ahead of a configured fallback.
+        # Explicit credentials/endpoints and the no-fallback path retain their
+        # existing behavior; this is a routing decision, not token revocation.
+        if (resolve_requested_provider(requested) == "nous"
+                and not explicit_api_key and not explicit_base_url
+                and get_fallback_chain(config)):
+            try:
+                pool = load_pool("nous")
+            except Exception:
+                # Match the normal resolver's pool-read fallback policy.
+                pool = None
+            if pool and pool.has_credentials() and not pool.has_available(model=target_model):
+                entries = pool.entries()
+                if entries and all(entry.last_status == "exhausted" and entry.failure_reason == "billing"
+                                   for entry in entries):
+                    raise AuthError(
+                        "Nous credentials are cooling down after a billing failure.",
+                        provider="nous", code="insufficient_credits",
+                    )
         return resolve_runtime_provider(requested=requested, target_model=target_model,
                                         explicit_base_url=explicit_base_url, explicit_api_key=explicit_api_key), None
     except AuthError as primary_exc:

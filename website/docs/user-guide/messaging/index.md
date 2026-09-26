@@ -564,7 +564,7 @@ display:
 | `all` | Running-output updates **and** the final status message with the output tail |
 | `result` | Only the final status message with the output tail (regardless of exit code) |
 | `error` | Only the final status message with the output tail when the exit code is non-zero |
-| `off` | No process watcher messages at all |
+| `off` | No process watcher messages at all. Also honored by the CLI, TUI and Desktop: background-process completions and heartbeats no longer wake the agent (subagent results still do) |
 
 You can also set this via environment variable:
 

@@ -450,6 +450,29 @@ describe('toChatMessages', () => {
     ])
   })
 
+  it('never paints a background-process heartbeat wake as a user bubble', () => {
+    // Current backends type the wake `display_kind: 'hidden'`; a row persisted by an older
+    // backend arrives untyped and must disappear the same way — the user never wrote it.
+    const legacyWake =
+      '[Background process proc_ea2cdb25d899 heartbeat #7 — still running after 7m2s (next in 60s; you will also be told when it exits).\nCommand: zsh -ic hgui\nOutput since last heartbeat:\n(no new output since the last heartbeat)]'
+    const messages = toChatMessages([
+      { role: 'user', content: 'start the dev server', timestamp: 1 },
+      { role: 'assistant', content: 'Started on slot 0.', timestamp: 2 },
+      { role: 'user', content: legacyWake, timestamp: 3 },
+      { role: 'assistant', content: 'Still running normally.', timestamp: 4 },
+      { role: 'user', content: legacyWake.replace('#7', '#8'), display_kind: 'hidden', timestamp: 5 },
+      { role: 'assistant', content: 'HMR rebuilt after the edit.', timestamp: 6 }
+    ])
+
+    expect(messages.map(message => message.role)).toEqual(['user', 'assistant', 'assistant', 'assistant'])
+    expect(messages.map(chatMessageText)).toEqual([
+      'start the dev server',
+      'Started on slot 0.',
+      'Still running normally.',
+      'HMR rebuilt after the edit.'
+    ])
+  })
+
   // Hermes closes a failed turn with an assistant-role row (agent/turn_failure_copy.py);
   // painted as the model's reply it read as the assistant refusing the request.
   it('renders the failed-turn boundary as a Hermes notice, not a model reply', () => {

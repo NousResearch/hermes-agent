@@ -17,6 +17,7 @@ import inspect
 import json
 import logging
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -914,25 +915,37 @@ def _linux_terminal_commands(command: str) -> list:
         for exe, flag in _LINUX_TERMINALS]
 
 
+def _spawn_profile_terminal(command: str) -> None:
+    """Launch *command* in a new OS terminal window. Blocking; run off the loop.
+
+    ``shutil.which`` rather than a ``which`` subprocess: probing the candidate list forked and
+    waited once per entry, ten times in the worst case, and it also needs a ``which`` binary
+    that minimal container images often omit.
+    """
+    if sys.platform.startswith("win"):
+        subprocess.Popen(["cmd.exe", "/c", "start", "", command])
+        return
+    if sys.platform == "darwin":
+        escaped = command.replace("\\", "\\\\").replace('"', '\\"')
+        subprocess.Popen(["osascript", "-e",
+                          f'tell application "Terminal"\nactivate\ndo script "{escaped}"\nend tell'])
+        return
+    for executable, popen_args in _linux_terminal_commands(command):
+        if shutil.which(executable):
+            subprocess.Popen(popen_args)
+            return
+    raise HTTPException(status_code=400, detail="No supported terminal emulator found")
+
+
 @router.post("/api/profiles/{name}/open-terminal")
 async def open_profile_terminal_endpoint(name: str):
     with _profile_errors("POST /api/profiles/%s/open-terminal failed", name):
         command = _profile_setup_command(name)
-
-        if sys.platform.startswith("win"):
-            subprocess.Popen(["cmd.exe", "/c", "start", "", command])
-        elif sys.platform == "darwin":
-            escaped = command.replace("\\", "\\\\").replace('"', '\\"')
-            subprocess.Popen(["osascript", "-e",
-                              f'tell application "Terminal"\nactivate\ndo script "{escaped}"\nend tell'])
-        else:
-            for executable, popen_args in _linux_terminal_commands(command):
-                if subprocess.call(["which", executable], stdout=subprocess.DEVNULL,
-                                   stderr=subprocess.DEVNULL) == 0:
-                    subprocess.Popen(popen_args)
-                    break
-            else:
-                raise HTTPException(status_code=400, detail="No supported terminal emulator found")
+        # Off the loop, like every other blocking handler in this router: this one is
+        # ``async def``, so FastAPI runs it ON the event loop (a sync ``def`` would get the
+        # threadpool). Spawning a terminal is process work, and while the loop is parked the
+        # process serves nothing else, including the /api/ws probes the desktop depends on.
+        await run_in_threadpool(_spawn_profile_terminal, command)
     return {"ok": True, "command": command}
 
 

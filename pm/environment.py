@@ -65,16 +65,20 @@ def classify_uv_failure(stage: str, returncode: int, output: str, *,
     failed → BuildFailure; anything else (fetch, tooling) → plain InstallError
     with the tail of the output. ``lockfile`` names the real lock a caller is
     validating, which a build snapshotted into a throwaway directory cannot
-    otherwise identify (#123171).
+    otherwise identify (#123171) — only attached when uv's own output actually
+    blames the lockfile, so a fetch or build failure never gets misread as one.
     """
-    where = f" against {lockfile}" if lockfile is not None else ""
-    cause = f"uv {stage} exited {returncode}{where}: {output.strip()[-600:]}"
     lowered = output.lower()
+    mentions_lock = "lockfile" in lowered
+    where = f" against {lockfile}" if lockfile is not None and mentions_lock else ""
+    cause = f"uv {stage} exited {returncode}{where}: {output.strip()[-600:]}"
+    remedy = (f"run `uv lock` in {lockfile.parent}, then retry"
+              if lockfile is not None and mentions_lock else "")
     if any(marker in lowered for marker in _RESOLVER_MARKERS):
-        return ResolutionConflict("venv", cause)
+        return ResolutionConflict("venv", cause, remedy)
     if any(marker in lowered for marker in _BUILD_MARKERS):
-        return BuildFailure("venv", cause)
-    return InstallError("venv", cause)
+        return BuildFailure("venv", cause, remedy)
+    return InstallError("venv", cause, remedy)
 
 
 def _project_name(source: Path) -> str:

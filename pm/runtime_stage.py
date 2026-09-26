@@ -22,7 +22,7 @@ def stage_runtime(uv: Path, python: Path, destination: Path, *,
     from pm.packages import uv_cache_dir
     from pm.runtime import runtime_environment
 
-    project = project or Path(__file__).resolve().parent
+    project = (project or Path(__file__).resolve().parent).resolve()
     destination = destination.absolute()
     env = runtime_environment()
     environment = PythonEnvironment(

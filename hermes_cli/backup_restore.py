@@ -18,6 +18,7 @@ import zipfile
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+from hermes_state_holders import read_only_db_uri
 from utils import (
     _preserve_file_mode, _preserve_file_owner, _restore_file_mode, _restore_file_owner, atomic_replace,
 )
@@ -116,7 +117,7 @@ def _safe_restore_db(src: Path, dst: Path) -> bool:
             dst_conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         except Exception:
             pass
-        src_conn = sqlite3.connect(f"{src.resolve().as_uri()}?mode=ro", uri=True)
+        src_conn = sqlite3.connect(read_only_db_uri(src), uri=True)
         try:
             src_conn.backup(dst_conn)
         finally:
@@ -390,7 +391,7 @@ def _count_session_rows(path: Path) -> Optional[Tuple[int, int]]:
     if not path.is_file():
         return None
     try:
-        conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+        conn = sqlite3.connect(read_only_db_uri(path), uri=True)
     except sqlite3.Error:
         return None
     try:

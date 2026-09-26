@@ -118,3 +118,56 @@ def test_runtime_status_running_pid_validates_live_gateway_record(monkeypatch):
     assert status_mod.get_runtime_status_running_pid(runtime) == 12345
 
 
+def _multiplex_records(*, root_live: bool):
+    """(profile_record, root_record): abandoned pre-multiplex per-profile file + root state."""
+    profile = {
+        "gateway_state": "running",
+        "pid": 4242,
+        "start_time": 111,
+        "updated_at": _iso_age(86400 * 14),  # mtime weeks old: abandoned, not a fresh crash
+        "active_agents": 0,
+    }
+    root = {
+        "gateway_state": "running",
+        "pid": 9999,
+        "start_time": 222,
+        "updated_at": _iso_age(5 if root_live else 3600),
+        "active_agents": 0,
+    }
+    return profile, root
+
+
+def _patch_multiplex(monkeypatch, profile, root):
+    from gateway import status as status_mod
+
+    def fake_read(path=None):
+        return root if path is not None else profile
+
+    monkeypatch.setattr("gateway.status.read_runtime_status", fake_read)
+    monkeypatch.setattr(status_mod, "_pid_exists", lambda pid: pid == 9999)
+    monkeypatch.setattr(
+        status_mod, "_get_process_start_time", lambda pid: 222 if pid == 9999 else None
+    )
+
+
+def test_runtime_health_lines_suppresses_stale_warning_when_root_multiplexer_live(
+    monkeypatch,
+):
+    """#122439: named profile served by a live root multiplexer must not warn about its
+    abandoned pre-multiplex per-profile file (dead pid + live-claiming state)."""
+    profile, root = _multiplex_records(root_live=True)
+    _patch_multiplex(monkeypatch, profile, root)
+
+    assert _stale_lines(_runtime_health_lines()) == []
+
+
+def test_runtime_health_lines_warns_when_root_multiplexer_not_live(monkeypatch):
+    """Without a live root gateway the per-profile dead-pid warning is still emitted."""
+    profile, root = _multiplex_records(root_live=False)
+    _patch_multiplex(monkeypatch, profile, root)
+
+    stale = _stale_lines(_runtime_health_lines())
+    assert len(stale) == 1, _runtime_health_lines()
+    assert "recorded process is gone" in stale[0]
+
+

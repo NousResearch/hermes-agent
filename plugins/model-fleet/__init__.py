@@ -56,6 +56,10 @@ _HELP = (
 # or stale cache can never change what a slug-addressed apply does.
 _CACHE: Dict[str, Any] = {}
 DEFAULT_MODEL_LIMIT = 25
+# A numbered pick is a two-step interaction; the cache only has to outlive the gap
+# between "/model-fleet" and "/model-fleet 3". Past this it is re-derived from live
+# data so a config change (e.g. model_allowlist) cannot be silently bypassed.
+CACHE_TTL_SECONDS = 900
 
 _SETTING_DEFAULTS: Dict[str, Any] = {
     "include_profiles": True,
@@ -106,19 +110,50 @@ def _hermes_home() -> Path:
 
 
 def _profile_selected(label: str, settings: Dict[str, Any]) -> bool:
+    """Both filters apply: the allowlist narrows, the blocklist always wins.
+
+    An early return on a non-empty allowlist silently ignored the blocklist, so
+    ``allowlist: [alpha, beta]`` + ``blocklist: [beta]`` still selected beta.
+    """
     allow = {str(n) for n in settings["profile_allowlist"]}
-    if allow:
-        return label in allow
-    block = {str(n) for n in settings["profile_blocklist"]}
-    return label not in block
+    if allow and label not in allow:
+        return False
+    return label not in {str(n) for n in settings["profile_blocklist"]}
+
+
+def _active_config_path() -> Path:
+    """``config.yaml`` of the home this invocation is scoped to."""
+    return _hermes_home() / "config.yaml"
+
+
+def _install_root() -> Path:
+    """The installation's real default home, independent of the caller's profile scope.
+
+    ``_hermes_home()`` is context-local: under named-profile dispatch it returns that
+    profile's home, so anchoring enumeration there made a fleet command from a
+    secondary profile look for ``<named>/profiles/`` and miss the actual default home
+    and its siblings. Walk up out of a profile home to the installation root.
+    """
+    from hermes_constants import named_profile_home
+
+    home = _hermes_home()
+    try:
+        # Resolves <root>/profiles/<name> back to <root>; None when home IS the root.
+        named = named_profile_home(home)
+    except Exception:
+        named = None
+    if named is not None:
+        return named.parent.parent
+    return home
 
 
 def _profile_homes(settings: Dict[str, Any]) -> List[Tuple[str, Path]]:
-    """[(label, home)] — the active profile always, named profiles when in scope."""
-    out: List[Tuple[str, Path]] = [("default", _hermes_home())]
+    """[(label, home)] — the real default home always, named profiles when in scope."""
+    root = _install_root()
+    out: List[Tuple[str, Path]] = [("default", root)]
     if not settings["include_profiles"]:
         return out
-    profiles_dir = _hermes_home() / "profiles"
+    profiles_dir = root / "profiles"
     if not profiles_dir.is_dir():
         return out
     for child in sorted(profiles_dir.iterdir()):
@@ -189,12 +224,38 @@ def _models_view(provider: str) -> str:
     return "\n".join(lines)
 
 
+def _cache_fresh(key: str, current_rows: Optional[List[dict]] = None) -> bool:
+    """True when the cached listing for *key* is still safe to resolve a number against.
+
+    Expired by age, and — when the caller supplies the freshly-derived rows — only
+    fresh if the cache still agrees with them, so a config change (e.g. a tightened
+    ``model_allowlist``) invalidates a pending numbered pick.
+    """
+    if not _CACHE.get(key):
+        return False
+    at = _CACHE.get("at")
+    if not isinstance(at, (int, float)) or (time.time() - at) > CACHE_TTL_SECONDS:
+        return False
+    if current_rows is not None:
+        cached_slugs = [str(r.get("slug", "")) for r in (_CACHE.get(key) or [])]
+        live_slugs = [str(r.get("slug", "")) for r in current_rows]
+        if cached_slugs != live_slugs:
+            return False
+    return True
+
+
 def _match_provider(rows: List[dict], token: str) -> Optional[dict]:
     token = str(token or "").strip()
     if not token:
         return None
     if token.isdigit():
-        pool = _CACHE.get("providers") or rows  # cold cache → live rows, same order
+        # Resolve a number against the CACHED listing only while that cache is fresh
+        # and was built from the same filter. Once stale, fall back to `rows`, which
+        # the caller has just re-derived from live data through model_allowlist —
+        # resolving against a stale snapshot could select a now-disallowed provider.
+        pool = _CACHE.get("providers") or []
+        if not _cache_fresh("providers", rows):
+            pool = rows
         idx = int(token) - 1
         return pool[idx] if 0 <= idx < len(pool) else None
     low = token.lower()
@@ -213,12 +274,17 @@ def _match_model(provider_row: dict, token: str) -> Optional[str]:
     if not token:
         return None
     if token.isdigit():
-        cached = _CACHE.get("models") or []
-        if _CACHE.get("provider") not in (None, str((provider_row or {}).get("slug"))):
-            cached = []  # cache belongs to another provider — use the live list
+        # Same staleness rule as providers: the cached list is only trusted while it is
+        # fresh AND belongs to the provider being resolved against.
+        cached: List[str] = []
+        if (_CACHE.get("models")
+                and _CACHE.get("provider") == str((provider_row or {}).get("slug"))
+                and _cache_fresh("models")):
+            cached = list(_CACHE.get("models") or [])
+        if cached and cached == list(models):
+            idx = int(token) - 1
+            return cached[idx] if 0 <= idx < len(cached) else None
         idx = int(token) - 1
-        if 0 <= idx < len(cached):
-            return cached[idx]
         return models[idx] if 0 <= idx < len(models) else None
     for model in models:
         if model.lower() == token.lower():
@@ -314,6 +380,12 @@ def _switch_result(provider: str, model: str):
 
 
 def _backup(path: Path, stamp: str) -> Optional[Path]:
+    """Copy *path* beside itself. Returns None on failure — callers decide the policy.
+
+    With ``backup: true`` a caller must ABORT rather than continue: proceeding without
+    the copy is how a config gets rewritten with no way back, which is strictly worse
+    than refusing the switch.
+    """
     try:
         bak = path.with_name(f"{path.name}.bak-{BACKUP_SUFFIX}-{stamp}")
         shutil.copy2(path, bak)
@@ -321,6 +393,49 @@ def _backup(path: Path, stamp: str) -> Optional[Path]:
     except OSError as exc:
         logger.warning("model-fleet: backup of %s failed: %s", path, exc)
         return None
+
+
+class BackupFailed(RuntimeError):
+    """A required backup could not be written; the apply must not proceed."""
+
+
+def _backup_or_abort(path: Path, stamp: str) -> str:
+    bak = _backup(path, stamp)
+    if bak is None:
+        raise BackupFailed(f"could not back up {path}")
+    return str(bak)
+
+
+def _resolve_in_profile(home: Path, provider: str, model: str):
+    """Resolve provider/model inside *home*'s own scope.
+
+    Returns ``(result, updates)`` for this profile, or ``None`` when the target does
+    not resolve there. Profiles are independent islands, so a slug can point at a
+    different endpoint in each one and each carries its own credentials; the caller's
+    already-resolved result must not be reused for a sibling profile.
+
+    ``set_hermes_home_override`` is context-local (it never touches ``os.environ``), so
+    scoping here cannot leak into the caller's home or another thread.
+    """
+    from hermes_cli.config import read_user_config_raw
+    from hermes_cli.model_switch import model_selection_config_updates
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    cfg_path = Path(home) / "config.yaml"
+    token = set_hermes_home_override(Path(home))
+    try:
+        from hermes_cli.model_switch import switch_model
+
+        result = switch_model(model, provider=provider)
+        if not getattr(result, "success", False):
+            return None
+        raw = read_user_config_raw(cfg_path) if cfg_path.is_file() else {}
+        return result, model_selection_config_updates(result, raw.get("model"))
+    except Exception as exc:
+        logger.debug("model-fleet: %s did not resolve in %s (%s)", model, home, exc)
+        return None
+    finally:
+        reset_hermes_home_override(token)
 
 
 def _apply_profiles(provider: str, model: str, result, settings: Dict[str, Any],
@@ -337,7 +452,16 @@ def _apply_profiles(provider: str, model: str, result, settings: Dict[str, Any],
         if not cfg_path.is_file():
             continue
         raw = read_user_config_raw(cfg_path)
-        updates = model_selection_config_updates(result, raw.get("model"))
+        # Resolve the route IN THIS PROFILE'S SCOPE. Profiles are independent islands:
+        # the same provider slug can mean a different endpoint here than in the profile
+        # the switch was resolved from, and only this profile's credentials are checked.
+        # Reusing the caller's result would write another profile's base_url/api_mode.
+        scoped = _resolve_in_profile(home, provider, model)
+        if scoped is None:
+            changed.append(f"{label}: SKIPPED — {provider}/{model} does not resolve here")
+            continue
+        result, scoped_updates = scoped
+        updates = scoped_updates
         delegation_updates: Dict[str, Any] = {"model": model, "provider": provider}
         current = raw.get("delegation") or {}
         if str(current.get("provider") or "") != provider:
@@ -353,10 +477,8 @@ def _apply_profiles(provider: str, model: str, result, settings: Dict[str, Any],
             # The active home's own config.yaml is already backed up in _apply_sync,
             # before persist_model_selection rewrote it. Re-copying here would clobber
             # that pre-change copy with post-change content (same stamp, same filename).
-            if cfg_path != _hermes_home() / "config.yaml":
-                bak = _backup(cfg_path, stamp)
-                if bak:
-                    backups.append(str(bak))
+            if cfg_path != _active_config_path():
+                backups.append(_backup_or_abort(cfg_path, stamp))
         for key, value in updates.items():
             atomic_roundtrip_yaml_update(cfg_path, f"model.{key}", value)
         for key, value in delegation_updates.items():
@@ -369,10 +491,15 @@ def _apply_crons(provider: str, model: str, settings: Dict[str, Any], stamp: str
                  dry_run: bool) -> Tuple[List[str], List[str], List[str]]:
     """Repoint agent-running cron jobs in every in-scope profile store.
 
-    Goes through ``cron.jobs`` (not a raw JSON write) so the cross-process jobs lock
-    and the shrink-merge guard still apply — a hand edit here can drop concurrent jobs.
+    Load, mutate and save happen inside ONE ``_jobs_lock()`` hold. Splitting them
+    (load under the lock, save under another) meant a scheduler tick that updated
+    ``next_run_at`` / ``fire_claim`` / completion state in between got overwritten with
+    the stale copy we read. ``save_jobs`` only re-inserts job IDs missing from the
+    payload; it does not merge newer fields for an ID that is present, so a
+    last-writer-wins save silently reverts live scheduler state. Same shape as core's
+    ``_with_job()``.
     """
-    from cron.jobs import load_jobs, save_jobs, use_cron_store
+    from cron.jobs import _jobs_lock, load_jobs, save_jobs, use_cron_store
 
     changed: List[str] = []
     skipped: List[str] = []
@@ -381,37 +508,39 @@ def _apply_crons(provider: str, model: str, settings: Dict[str, Any], stamp: str
         jobs_file = home / "cron" / "jobs.json"
         if not jobs_file.is_file():
             continue
+
+        def _repoint(jobs: List[dict], provider: str = provider, model: str = model) -> Tuple[int, int]:
+            touched = already = 0
+            for job in jobs:
+                if job.get("no_agent"):
+                    continue  # pure script job — no model in that loop
+                if job.get("provider") == provider and job.get("model") == model:
+                    already += 1
+                    continue
+                for key, value in (("provider", provider), ("model", model),
+                                   ("provider_snapshot", provider), ("model_snapshot", model)):
+                    job[key] = value
+                touched += 1
+            return touched, already
+
+        # Single locked transaction: the plan is computed from the same snapshot that
+        # gets written, so nothing the scheduler changed in between can be clobbered.
         try:
-            with use_cron_store(home):
+            with use_cron_store(home), _jobs_lock():
                 jobs = load_jobs()
+                touched, already = _repoint(jobs)
+                if touched and not dry_run and settings["backup"]:
+                    backups.append(_backup_or_abort(jobs_file, stamp))
+                if touched and not dry_run:
+                    save_jobs(jobs)
         except Exception as exc:
             skipped.append(f"cron/{label}: unreadable ({exc})")
             continue
-        touched = 0
-        already = 0
-        for job in jobs:
-            if job.get("no_agent"):
-                continue  # pure script job — no model in that loop
-            if job.get("provider") == provider and job.get("model") == model:
-                already += 1
-                continue
-            for key, value in (("provider", provider), ("model", model),
-                               ("provider_snapshot", provider), ("model_snapshot", model)):
-                job[key] = value
-            touched += 1
         if touched == 0:
             changed.append(f"cron/{label}: {already} agent job(s) already on {provider}/{model}")
             continue
         verb = "would repoint" if dry_run else "repointed"
-        if dry_run:
-            changed.append(f"cron/{label}: {verb} {touched} agent job(s) → {provider}/{model}")
-            continue
-        if settings["backup"]:
-            bak = _backup(jobs_file, stamp)
-            if bak:
-                backups.append(str(bak))
-        with use_cron_store(home):
-            save_jobs(jobs)
+        changed.append(f"cron/{label}: {verb} {touched} agent job(s) → {provider}/{model}")
         changed.append(f"cron/{label}: {verb} {touched} agent job(s) → {provider}/{model}")
     return changed, skipped, backups
 
@@ -440,9 +569,11 @@ def _apply_auxiliary(provider: str, model: str, settings: Dict[str, Any], stamp:
         return [f"auxiliary: would set {len(tasks)} task(s) → {provider}/{model}"], []
     backups: List[str] = []
     if settings["backup"]:
-        bak = _backup(cfg_path, stamp)
-        if bak:
-            backups.append(str(bak))
+        # Skip the active config: it is already backed up in _apply_sync before the
+        # first write. A second copy under the same stamp would overwrite that
+        # pre-change copy with a post-change one, making a restore a silent no-op.
+        if cfg_path != _active_config_path():
+            backups.append(_backup_or_abort(cfg_path, stamp))
     for task in tasks:
         atomic_roundtrip_yaml_update(cfg_path, f"auxiliary.{task}.provider", provider)
         atomic_roundtrip_yaml_update(cfg_path, f"auxiliary.{task}.model", model)
@@ -502,8 +633,8 @@ def _apply_sync(provider: str, model: str, dry_run: bool, with_auxiliary: bool) 
         # Reuse the resolved route without persisting it, so the preview matches the write.
         profile_changes, _ = _apply_profiles(provider, model, result, settings, stamp, True)
         cron_changes, cron_skipped, _ = _apply_crons(provider, model, settings, stamp, True)
-        aux_changes, aux_backups = _apply_auxiliary(provider, model, settings, stamp, False) if \
-            settings["include_auxiliary"] else ([], [])
+        aux_changes = (_apply_auxiliary(provider, model, settings, stamp, True)[0]
+                       if settings["include_auxiliary"] else [])
         lines = [f"**Dry run** — would set the install to `{provider}/{model}`", ""]
         lines += [f"- {c}" for c in profile_changes]
         lines += [f"- {c}" for c in cron_changes]
@@ -512,24 +643,38 @@ def _apply_sync(provider: str, model: str, dry_run: bool, with_auxiliary: bool) 
         lines += ["", "Re-run without `--dry-run` to apply."]
         return "\n".join(lines)
 
-    from hermes_cli.model_switch import persist_model_selection
+    # Back the active config up BEFORE anything writes to it. The active home is also
+    # enumerated as the "default" profile by _apply_profiles(), which would otherwise
+    # take a second copy under the same stamp AFTER persist_model_selection() and
+    # overwrite this pre-change copy — making a restore a silent no-op.
+    try:
+        backups: List[str] = []
+        if settings["backup"]:
+            active_cfg = _active_config_path()
+            if active_cfg.is_file():
+                backups.append(_backup_or_abort(active_cfg, stamp))
+    except BackupFailed as exc:
+        # Refuse rather than continue: without the copy there is no way back.
+        return f"**Switch aborted** for `{provider}/{model}`: {exc}. Nothing was written."
 
-    # NOTE: the active home is also the "default" profile, so _apply_profiles() below
-    # backs up this same config.yaml. It runs AFTER persist_model_selection(), so the
-    # backup would capture post-change content. Back up first, and keep only that copy:
-    # a same-stamp second copy would overwrite it and make a restore a silent no-op.
-    backups: List[str] = []
-    if settings["backup"]:
-        active_cfg = _hermes_home() / "config.yaml"
-        if active_cfg.is_file():
-            bak = _backup(active_cfg, stamp)
-            if bak:
-                backups.append(str(bak))
+    try:
+        return _commit(provider, model, result, settings, stamp, backups)
+    except BackupFailed as exc:
+        # A per-profile/cron/auxiliary target could not be backed up. The already-written
+        # files are restorable from the backups taken above; say so instead of failing
+        # silently, and name what to restore.
+        return (f"**Switch aborted partway** for `{provider}/{model}`: {exc}.\n"
+                "Restore from the backups listed below (or run with `backup: false` to "
+                f"skip them deliberately).\n{chr(10).join(f'- `{b}`' for b in backups)}")
+
+
+def _commit(provider: str, model: str, result, settings: Dict[str, Any], stamp: str,
+            backups: List[str]) -> str:
+    from hermes_cli.model_switch import persist_model_selection
 
     persist_model_selection(result)
     profile_changes, profile_backups = _apply_profiles(provider, model, result, settings, stamp, False)
     cron_changes, cron_skipped, cron_backups = _apply_crons(provider, model, settings, stamp, False)
-    aux_changes: List[str] = []
     aux_changes, aux_backups = _apply_auxiliary(provider, model, settings, stamp, False) if \
         settings["include_auxiliary"] else ([], [])
 

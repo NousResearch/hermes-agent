@@ -235,13 +235,11 @@ def get_auxiliary_models(profile: Optional[str] = None):
             })
 
         model, provider = _main_model_fields(cfg.get("model", {}))
-        agent_cfg = cfg.get("agent", {}) if isinstance(cfg.get("agent"), dict) else {}
-        main = {"provider": str(provider or ""), "model": str(model or ""),
-                "reasoning_effort": str(agent_cfg.get("reasoning_effort", "") or "")}
+        main = {"provider": str(provider or ""), "model": str(model or "")}
         dcfg = cfg.get("delegation", {}) if isinstance(cfg.get("delegation"), dict) else {}
         delegation = {
-            "provider": str(dcfg.get("provider", "") or main["provider"]),
-            "model": str(dcfg.get("model", "") or main["model"]),
+            "provider": str(dcfg.get("provider", "") or provider),
+            "model": str(dcfg.get("model", "") or model),
             # Empty is an explicit inheritance state, not the parent's rendered value.
             "reasoning_effort": str(dcfg.get("reasoning_effort", "") or ""),
             "max_iterations": int(dcfg.get("max_iterations", 250) or 250),
@@ -370,6 +368,8 @@ async def set_model_assignment(body: ModelAssignment, profile: Optional[str] = N
         raise HTTPException(status_code=400, detail="scope must be 'main', 'auxiliary', or 'delegation'")
     if scope == "delegation" and task:
         raise HTTPException(status_code=400, detail="task is not supported for delegation assignments")
+    if scope == "delegation" and api_key:
+        raise HTTPException(status_code=400, detail="API keys are not accepted for delegation; use the provider's configured credentials")
 
     with http_failure("POST /api/model/set failed", 500, detail="Failed to save model assignment"):
         # Expensive-model warning runs BEFORE the profile scope is entered: _profile_scope
@@ -408,10 +408,10 @@ async def set_model_assignment(body: ModelAssignment, profile: Optional[str] = N
                     else: delegation.pop("provider", None)
                     if model: delegation["model"] = model
                     else: delegation.pop("model", None)
-                    if base_url: delegation["base_url"] = base_url
-                    else: delegation.pop("base_url", None)
-                    if api_key: delegation["api_key"] = api_key
-                    else: delegation.pop("api_key", None)
+                    # Delegation uses the selected provider's existing credentials; endpoint
+                    # overrides are intentionally not supported by this dashboard panel.
+                    delegation.pop("base_url", None)
+                    delegation.pop("api_key", None)
                     save_config(cfg)
                     return {"ok": True, "scope": scope, "provider": provider, "model": model}
                 return _apply_model_assignment_sync(

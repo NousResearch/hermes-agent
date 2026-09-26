@@ -42,6 +42,7 @@ import { useI18n } from "@/i18n";
 import { PluginSlot } from "@/plugins";
 import { ModelPickerDialog } from "@/components/ModelPickerDialog";
 import { ModelReloadConfirm } from "@/components/ModelReloadConfirm";
+import { ReasoningEffortSelect } from "@/components/ReasoningEffortSelect";
 import { errorMessage } from "@/lib/api-error";
 
 const PERIODS = [
@@ -927,47 +928,6 @@ function MoaModelsModal({
     </div>,
     document.body,
   );
-}
-
-function ReasoningEffortSelect({ scope, refreshKey, profile, onSaved }: { scope: "main" | "delegation"; refreshKey: number; profile: string; onSaved(): void }) {
-  const [value, setValue] = useState("");
-  const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  useEffect(() => {
-    let active = true;
-    setLoading(true);
-    setError("");
-    api.getReasoningEffort(profile)
-      .then((data) => { if (active) setValue(scope === "main" ? data.main_raw : data.delegation_raw); })
-      .catch(() => { if (active) setError("Failed to load reasoning effort"); })
-      .finally(() => { if (active) setLoading(false); });
-    return () => { active = false; };
-  }, [scope, refreshKey, profile]);
-  const save = async (next: string) => {
-    const previous = value;
-    setValue(next);
-    setBusy(true);
-    setError("");
-    try {
-      const result = await api.setReasoningEffort(scope, next, profile);
-      if (!result.ok || result.scope !== scope || result.raw !== next) throw new Error("Saved value could not be verified");
-      onSaved();
-    } catch {
-      setValue(previous);
-      setError("Failed to save reasoning effort");
-    } finally {
-      setBusy(false);
-    }
-  };
-  return <div className="flex items-center gap-1">
-    <select aria-label={`${scope} reasoning effort`} value={value} disabled={loading || busy} onChange={(event) => void save(event.target.value)} className="border border-border bg-background px-1.5 py-1 text-xs">
-      <option value="">{scope === "delegation" ? "Inherit parent" : "Provider default"}</option>
-      {["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"].map((effort) => <option key={effort} value={effort}>{effort}</option>)}
-    </select>
-    {loading && <span role="status" className="text-xs text-text-tertiary">Loading…</span>}
-    {error && <span role="alert" className="text-xs text-red-500">{error}</span>}
-  </div>;
 }
 
 function ModelSettingsPanel({

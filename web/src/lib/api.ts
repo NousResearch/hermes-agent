@@ -2597,7 +2597,7 @@ export interface DelegationModelAssignment {
 
 export interface AuxiliaryModelsResponse {
   tasks: AuxiliaryTaskAssignment[];
-  main: { provider: string; model: string; reasoning_effort: string };
+  main: { provider: string; model: string };
   delegation: DelegationModelAssignment;
 }
 

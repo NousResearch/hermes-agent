@@ -139,6 +139,11 @@ def _run_dashboard_mcp_oauth(flow, cfg: dict) -> None:
                 previous_entry = None
                 try:
                     previous_entry = manager.remove(flow.server_name, hermes_home=flow.hermes_home)
+                    # Mirror `hermes mcp login`: force the OAuth flow even when the server
+                    # answers ``initialize`` with 200 and never challenges (dashboard
+                    # re-auth path, #89412) — the probe below rebuilds the provider, so
+                    # the one-shot flag makes its first response trigger OAuth.
+                    manager.set_force_oauth(flow.server_name)
                     tools = _probe_single_server(
                         flow.server_name, cfg, connect_timeout=login_connect_timeout(cfg)
                     )

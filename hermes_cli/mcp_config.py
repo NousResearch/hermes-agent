@@ -855,7 +855,13 @@ def _reauth_oauth_server(name: str, server_config: dict, *, flow: str | None = N
             # cannot be re-fetched (WAF-fronted split-host servers) it is the only thing that keeps
             # the announced authorize URL off the SDK's `{mcp-origin}/authorize` guess (#115329).
             from tools.mcp_oauth import HermesTokenStorage
-            get_manager().evict(name)
+            mgr = get_manager()
+            mgr.evict(name)
+            # Force the OAuth flow even when the server answers ``initialize`` with 200 and
+            # no challenge (gmailmcp.googleapis.com, Blynk — #53870): without this one-shot
+            # flag the SDK's reactive 401 branch never fires and login ends with
+            # "no OAuth token was obtained" despite the server supporting OAuth.
+            mgr.set_force_oauth(name)
             HermesTokenStorage(name).remove(keep_metadata=True)
     except Exception as exc:
         _warning(f"Could not clear existing OAuth state: {exc}")

@@ -48,3 +48,35 @@ def test_probe_timeout_names_server_and_knobs(monkeypatch):
     message = str(info.value)
     assert "hangsrv" in message and "timed out" in message
     assert "connect_timeout" in message and "oauth.timeout" in message
+
+
+def test_cli_login_marks_server_for_forced_oauth(monkeypatch, tmp_path):
+    """``_reauth_oauth_server`` (browser flow) sets the one-shot force flag after evicting the
+    cached provider: a server that answers ``initialize`` with 200 and never challenges would
+    otherwise finish the probe with no token (#53870, #89412)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    import hermes_cli.mcp_config as mc
+    import tools.mcp_oauth_manager as mgr_mod
+
+    forced = []
+    real_manager = mgr_mod.get_manager()
+
+    class _RecordingManager:
+        def evict(self, name, hermes_home=None):
+            return real_manager.evict(name, hermes_home=hermes_home)
+
+        def set_force_oauth(self, name):
+            forced.append(name)
+
+    monkeypatch.setattr(mgr_mod, "get_manager", lambda: _RecordingManager())
+    monkeypatch.setattr(mc, "_probe_single_server", lambda name, cfg, connect_timeout=None: [("t", "d")])
+    monkeypatch.setattr(mc, "_oauth_tokens_present", lambda name: True)
+
+    with contextlib.redirect_stdout(io.StringIO()):
+        ok = mc._reauth_oauth_server(
+            "gmail",
+            {"url": "https://gmailmcp.example.test/mcp/v1", "auth": "oauth"},
+        )
+
+    assert ok is True
+    assert forced == ["gmail"]

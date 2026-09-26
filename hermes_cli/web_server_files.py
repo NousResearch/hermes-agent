@@ -178,6 +178,22 @@ def _managed_response_meta(policy: ManagedFilesPolicy) -> Dict[str, Any]:
     return {"root": locked_root, "locked_root": locked_root, "can_change_path": policy.can_change_path}
 
 
+def _hosted_fs_path_allowed(root: Path, target: Path) -> bool:
+    from hermes_cli.web_routers.files import _is_sensitive_path
+
+    resolved = _canonical_path(target)
+    return (_path_is_under(root, resolved)
+            and not _is_sensitive_path(target) and not _is_sensitive_path(resolved))
+
+
+def _hosted_fs_read_guard(target: Path, request: Request) -> Path | None:
+    """Preview and Git reads share managed-file restrictions on locked deployments."""
+    root = _managed_files_policy(request, create_root=False).locked_root
+    if root is not None and not _hosted_fs_path_allowed(root, target):
+        raise HTTPException(status_code=403, detail="Path is outside the managed read boundary")
+    return root
+
+
 def _managed_file_entry(policy: ManagedFilesPolicy, target: Path) -> Dict[str, Any]:
     try:
         resolved = target.resolve()

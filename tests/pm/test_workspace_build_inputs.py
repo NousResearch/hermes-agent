@@ -79,6 +79,30 @@ def test_real_build_inputs_stay_in_generated_root(tmp_path, monkeypatch):
     assert not (core / "uv.lock").exists()
 
 
+def test_core_snapshot_keeps_a_packages_own_uv_lock(tmp_path):
+    core = tmp_path / "core"
+    core.mkdir()
+    (core / "pyproject.toml").write_text(
+        '[project]\nname="core"\nversion="1"\nrequires-python=">=3.11"\n'
+        '[tool.setuptools.packages.find]\ninclude=["pkg*"]\n',
+        encoding="utf-8",
+    )
+    (core / "pkg").mkdir()
+    (core / "pkg/__init__.py").write_text("", encoding="utf-8")
+    (core / "pkg/pyproject.toml").write_text(
+        '[project]\nname="pkg-runtime"\n', encoding="utf-8"
+    )
+    (core / "pkg/uv.lock").write_bytes(b"runtime lock bytes")
+    (core / "uv.lock").write_bytes(b"root lock bytes")
+    staged = tmp_path / "staged"
+    workspace._copy_core_inputs(core, staged)
+    assert (staged / "pkg/pyproject.toml").is_file()
+    assert (staged / "pkg/uv.lock").read_bytes() == b"runtime lock bytes"
+    assert not (staged / "uv.lock").exists(), (
+        "the workspace root lock is seeded by the caller, not snapshotted"
+    )
+
+
 def test_repair_replays_saved_in_tree_build_backend(tmp_path):
     import os
     import tomllib

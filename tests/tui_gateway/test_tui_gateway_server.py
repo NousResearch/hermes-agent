@@ -1263,6 +1263,34 @@ def test_workspace_move_still_guards_bad_dir_for_local_profile(monkeypatch, tmp_
     assert resp["error"]["code"] == 4017
 
 
+def test_ssh_named_profile_cwd_beats_launch_terminal_cwd(monkeypatch, tmp_path):
+    """A named SSH profile's terminal.cwd is on the remote. The desktop must use
+    it even when that path does not exist on this host and the process
+    TERMINAL_CWD still names the launch profile."""
+    remote = "/home/kali"
+    launch = "/home/ubuntu/hermes_sync"
+    assert not os.path.isdir(remote)
+    home = tmp_path / "hunter"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "terminal:\n  backend: ssh\n  cwd: /home/kali\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("TERMINAL_ENV", "ssh")
+    monkeypatch.setenv("TERMINAL_CWD", launch)
+    monkeypatch.setattr(server, "_profile_home", lambda name: home if name == "hunter" else None)
+
+    assert server._completion_cwd(
+        {"profile": "hunter", "cwd": launch, "cwd_explicit": False}
+    ) == remote
+    assert server._terminal_task_cwd(
+        {"cwd": launch, "explicit_cwd": False, "profile_home": str(home)}
+    ) == remote
+    assert server._terminal_task_cwd(
+        {"cwd": "/opt/picked", "explicit_cwd": True, "profile_home": str(home)}
+    ) == "/opt/picked"
+
+
 class _ChunkyStdout:
     def __init__(self):
         self.parts: list[str] = []

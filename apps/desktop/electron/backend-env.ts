@@ -193,7 +193,32 @@ function buildDesktopBackendEnv({ currentEnv = process.env, platform = process.p
   const key = pathEnvKey(currentEnv, platform)
   const saneEntries = platform === 'win32' ? [] : POSIX_SANE_PATH_ENTRIES
 
+  const homeEnv: NodeJS.ProcessEnv = {}
+
+  if (platform === 'win32') {
+    const value = (name: string): string | undefined =>
+      currentEnv?.[Object.keys(currentEnv || {}).find(key => key.toUpperCase() === name) ?? name]
+
+    // Unlike Node's OS-backed homedir(), Python's Path.home() needs these
+    // environment variables. Registry-only GUI launches omit them (#122384).
+    // Preserve explicit paths (including drive/path pairs) and only backfill a
+    // missing profile; never infer the account home from HERMES_HOME.
+    if (!value('USERPROFILE') && !(value('HOMEDRIVE') && value('HOMEPATH'))) {
+      try {
+        const home = os.homedir()
+
+        if (path.win32.isAbsolute(home)) {
+          const key = Object.keys(currentEnv || {}).find(key => key.toUpperCase() === 'USERPROFILE') ?? 'USERPROFILE'
+          homeEnv[key] = home
+        }
+      } catch {
+        // A failed OS lookup must retain the existing probe/fallback behavior.
+      }
+    }
+  }
+
   return {
+    ...homeEnv,
     PYTHONPATH: '',
     PYTHONHOME: '',
     // Force PEP 540 UTF-8 mode in the spawned Python backend so its stdio and

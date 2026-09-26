@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-import { test } from 'vitest'
+import { test, vi } from 'vitest'
 
 import {
   appendUniquePathEntries,
@@ -102,6 +102,42 @@ test('pathEnvKey finds the platform-cased PATH key', () => {
   assert.equal(pathEnvKey({ PATH: 'x' }, 'win32'), 'PATH')
   assert.equal(pathEnvKey({}, 'win32'), 'PATH')
   assert.equal(pathEnvKey({ Path: 'x' }, 'darwin'), 'PATH')
+})
+
+test('Windows home backfill preserves explicit case-insensitive paths and drive pairs', () => {
+  const homedir = vi.spyOn(os, 'homedir').mockReturnValue('C:\\Users\\fixture')
+
+  try {
+    for (const currentEnv of [{ UserProfile: 'D:\\chosen' }, { homedrive: 'D:', homepath: '\\chosen' }]) {
+      const env = buildDesktopBackendEnv({ currentEnv, platform: 'win32' })
+      assert.equal(env.USERPROFILE, undefined)
+      assert.equal(homedir.mock.calls.length, 0)
+    }
+
+    const currentEnv = { UserProfile: '', HERMES_HOME: 'E:\\profiles\\work' }
+    const env = buildDesktopBackendEnv({ currentEnv, platform: 'win32' })
+    assert.equal(env.UserProfile, 'C:\\Users\\fixture')
+    assert.equal(env.USERPROFILE, undefined)
+    assert.equal(currentEnv.UserProfile, '')
+  } finally {
+    homedir.mockRestore()
+  }
+})
+
+test('home lookup failure or empty result retains fallback; POSIX never requests Windows home', () => {
+  const homedir = vi.spyOn(os, 'homedir').mockImplementation(() => {
+    throw new Error('unavailable')
+  })
+
+  try {
+    assert.equal(buildDesktopBackendEnv({ currentEnv: {}, platform: 'linux' }).USERPROFILE, undefined)
+    assert.equal(homedir.mock.calls.length, 0)
+    assert.equal(buildDesktopBackendEnv({ currentEnv: {}, platform: 'win32' }).USERPROFILE, undefined)
+    homedir.mockReturnValue('')
+    assert.equal(buildDesktopBackendEnv({ currentEnv: {}, platform: 'win32' }).USERPROFILE, undefined)
+  } finally {
+    homedir.mockRestore()
+  }
 })
 
 test('appendUniquePathEntries flattens, dedupes, and preserves first occurrence', () => {

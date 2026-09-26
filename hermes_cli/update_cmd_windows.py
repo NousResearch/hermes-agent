@@ -1260,6 +1260,22 @@ def _verify_relaunched_gateways_alive(token: dict, profiles: dict, unmapped: lis
         gateway_windows._write_start_attestation(ready_pids, "post-update relaunch")
 
 
+def _windows_gateway_already_live() -> bool:
+    """True when a Hermes gateway is already running (best-effort; never raises).
+
+    Used to decide whether a REPEAT resume may re-verify instead of re-spawning: ``gateway run
+    --replace`` on a healthy gateway tears it down, so a second relaunch is strictly worse than
+    verifying the process the first attempt already produced.
+    """
+    try:
+        from hermes_cli.gateway import find_gateway_pids
+
+        return bool(list(find_gateway_pids(all_profiles=True)))
+    except Exception:
+        logger.debug("Could not re-check Windows gateway liveness before re-verification", exc_info=True)
+        return False
+
+
 def _resume_windows_gateways_after_update(token: dict | None) -> None:
     """Restart Windows profile gateways previously paused for update."""
     from hermes_cli.update_cmd import _m
@@ -1291,6 +1307,22 @@ def _resume_windows_gateways_after_update(token: dict | None) -> None:
         _cold_start_attested_profiles(token)
         token["resume_needed"] = False
         return
+    # Re-entrancy guard (#update-verification): a failed verification leaves ``resume_needed`` set, so
+    # this same resume runs again from the recovery call sites (the completion worker's ``finally``,
+    # then the original parent's ``atexit``). Re-running the relaunch hands ``gateway run --replace``
+    # to the gateway the PREVIOUS attempt already brought up, killing a healthy process and re-arming
+    # the very race that failed the first time — one transient liveness miss became a guaranteed
+    # "Hermes couldn't finish updating" (exit 1) on an otherwise successful update. Once a relaunch
+    # has been attempted and something is live, only re-verify.
+    if token.get("relaunch_attempted") and _windows_gateway_already_live():
+        _verify_relaunched_gateways_alive(token, profiles, unmapped)
+        token["relaunched_profiles"] = sorted(str(profile) for profile in profiles)
+        if profiles:
+            print(f"\n  ✓ Restarting Windows gateway profile(s): {', '.join(sorted(str(p) for p in profiles))}")
+        _cold_start_attested_profiles(token)
+        token["resume_needed"] = False
+        return
+    token["relaunch_attempted"] = True
     relaunched, unmapped_relaunched = _relaunch_paused_gateways(token, profiles, unmapped)
     if relaunched or unmapped_relaunched:
         _verify_relaunched_gateways_alive(token, profiles, unmapped)

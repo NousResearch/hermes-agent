@@ -1054,6 +1054,21 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: b
     # console all descendants inherit and nothing flashes (#54220/#56747). The spec helper
     # normalizes the interpreter and captures a stable cwd + env overlay (HERMES_HOME,
     # VIRTUAL_ENV, PYTHONPATH) so the respawn doesn't depend on the watcher's cwd. No-op on POSIX.
+    # The Desktop starts the gateway through ``bin/hermes.cmd``, so a captured/replayed argv is often
+    # ``python -I -c <bootstrap source> gateway run --replace`` — an inline-source command line every
+    # identity matcher refuses by design (#107002). Respawning it VERBATIM produced a gateway that our
+    # own liveness probes could not see: ``hermes update``'s post-relaunch poll then reported "no
+    # stable gateway process appeared" and failed the whole update (exit 1) on a healthy install, and
+    # the replayed env mixed a foreign venv into the respawn (compiled deps failed to import). Fold
+    # the launcher wrapper into the canonical ``-m hermes_cli.main`` form the matchers accept — the
+    # same form the installed ``Hermes_Gateway.cmd`` launcher uses.
+    if sys.platform == "win32":
+        with contextlib.suppress(Exception):
+            from gateway.status import hermes_cli_launcher_argv
+            _canonical = hermes_cli_launcher_argv([t.strip("\"'").replace("\\", "/") for t in run_argv])
+            if _canonical is not None:
+                run_argv = [run_argv[0], "-m", *_canonical]
+
     respawn_cwd = ""
     # See gateway_windows.windowless_gateway_restart_spec. See #54220, #56747.
     respawn_env_overlay: dict[str, str] = {}

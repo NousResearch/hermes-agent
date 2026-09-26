@@ -36,6 +36,7 @@ from prompt_toolkit.layout.processors import (
 from prompt_toolkit.styles import Style as PTStyle
 from prompt_toolkit.widgets import TextArea
 from typing import Optional
+from utils import file_signature
 
 from hermes_cli.cli_footer_split import FooterSplit
 

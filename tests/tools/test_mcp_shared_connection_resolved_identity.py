@@ -202,3 +202,45 @@ def test_profile_whose_runtime_file_names_another_endpoint_does_not_adopt(two_pr
         declaration.unregister("svc")
 
     assert adoptable == {"default": True, "worker": False}
+
+
+def test_published_identity_describes_the_endpoint_the_live_session_connected_to(monkeypatch):
+    """The runtime file rotates from endpoint A to B on every read: the identity published with
+    the live session must describe the endpoint the transport actually connected with."""
+    from tools import mcp_tool, mcp_tool_transport
+    from tools.mcp_tool import MCPServerTask
+    from tools.mcp_tool_registration import _resolved_identity
+
+    endpoints = iter([("http://127.0.0.1:4101", {"Authorization": "Bearer token-a"}),
+                      ("http://127.0.0.1:4102", {"Authorization": "Bearer token-b"})])
+    last: list = []
+
+    def rotating(_name):
+        last[:] = [next(endpoints, last[0] if last else None)]
+        return last[0]
+
+    monkeypatch.setattr(mcp_tool_transport, "_live_endpoint", rotating)
+    monkeypatch.setattr(mcp_tool, "_MCP_HTTP_AVAILABLE", True)
+    monkeypatch.setattr(mcp_tool, "_MCP_NEW_HTTP", True)
+    live: dict = {}
+
+    class _Task(MCPServerTask):
+        async def _prepare_run(self, config):
+            self._config = config
+            return True
+
+        def _streamable_http_transport(self, url, headers, *_rest):
+            live["url"] = url
+            return None
+
+        async def _serve_transport(self, _transport, _label, _timeout):
+            live["published"] = self._resolved_identity
+            self._shutdown_event.set()
+            return "shutdown"
+
+    config = {"url": "http://127.0.0.1:9/mcp"}
+    asyncio.run(asyncio.wait_for(_Task("svc").run(config), timeout=5))
+
+    monkeypatch.setattr(mcp_tool_transport, "_live_endpoint", lambda _name: last[0])
+    assert live["url"] == last[0][0]
+    assert live["published"] == _resolved_identity("svc", config)

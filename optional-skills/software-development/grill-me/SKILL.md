@@ -1,6 +1,6 @@
 ---
 name: grill-me
-description: "Adversarial plan interview before implementation."
+description: Use when a plan needs an adversarial interview first.
 version: 2.0.0
 author: "Rafael Zendron (rafaumeu) + Matt Pocock (mattpocock/skills, grilling) + Hermes Agent"
 license: MIT

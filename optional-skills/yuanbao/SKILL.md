@@ -1,6 +1,6 @@
 ---
 name: yuanbao
-description: "Yuanbao (元宝) groups: @mention users, query info/members."
+description: Use when working with Yuanbao groups or members.
 version: 1.0.0
 author: Teknium (teknium1), Hermes Agent
 license: MIT

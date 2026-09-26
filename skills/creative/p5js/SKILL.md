@@ -1,6 +1,6 @@
 ---
 name: p5js
-description: "p5.js sketches: gen art, shaders, interactive, 3D."
+description: Use when building p5.js sketches, art, or 3D visuals.
 version: 1.0.0
 author: SHL0MS, Hermes Agent
 license: MIT

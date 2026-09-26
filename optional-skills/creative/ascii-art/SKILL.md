@@ -1,6 +1,6 @@
 ---
 name: ascii-art
-description: "ASCII art: pyfiglet, cowsay, boxes, image-to-ascii."
+description: Use when you need ASCII art from text or images.
 version: 4.0.0
 author: 0xbyt4, Hermes Agent
 license: MIT

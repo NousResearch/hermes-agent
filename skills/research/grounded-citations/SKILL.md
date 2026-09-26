@@ -1,6 +1,6 @@
 ---
 name: grounded-citations
-description: "Ground answers and documents in cited, verifiable sources."
+description: Use when answers or documents need cited sources.
 version: 1.2.0
 author: Hermes Agent + Teknium
 license: MIT

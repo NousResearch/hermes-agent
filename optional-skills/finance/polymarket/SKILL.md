@@ -1,6 +1,6 @@
 ---
 name: polymarket
-description: "Query Polymarket: markets, prices, orderbooks, history."
+description: Use when querying Polymarket markets, prices, or history.
 version: 1.0.0
 author: Hermes Agent + Teknium
 license: MIT

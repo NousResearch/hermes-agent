@@ -1,6 +1,6 @@
 ---
 name: xlsx
-description: Create, read, edit Excel .xlsx workbooks and CSVs.
+description: Use when reading or writing .xlsx workbooks and CSVs.
 version: 1.1.0
 author: Nous Research
 license: MIT

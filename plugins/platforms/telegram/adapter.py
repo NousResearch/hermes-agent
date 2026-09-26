@@ -393,6 +393,25 @@ def _rich_normalize_linebreaks(text: str) -> str:
     return ''.join(out)
 
 
+# Code regions no rich-payload rewrite may touch: the fenced/table regions above, plus inline code
+# spans, which the linebreak pass never had to care about (they hold no newlines) but math rewrites do.
+_RICH_CODE_REGION_RE = re.compile(
+    _RICH_PROTECTED_REGION_RE.pattern + r'|(?:(`+)[^\n]*?\1)',
+    re.MULTILINE)
+
+
+def _rich_outside_code(text: str, transform):
+    """Apply *transform* only to the parts of *text* that are not code or table regions."""
+    out: list[str] = []
+    pos = 0
+    for m in _RICH_CODE_REGION_RE.finditer(text):
+        out.append(transform(text[pos:m.start()]))
+        out.append(m.group(0))  # code kept verbatim
+        pos = m.end()
+    out.append(transform(text[pos:]))
+    return ''.join(out)
+
+
 # Internal safety bounds (not user knobs): no reconnect/teardown path may hang on a dead CLOSE-WAIT
 # socket PTB's polling task is blocked on in epoll.
 _UPDATER_STOP_TIMEOUT = 15.0  # `await updater.stop()`, applied identically at every site
@@ -1404,22 +1423,29 @@ class TelegramAdapter(BasePlatformAdapter):
         if "$$" in content:
             return True
         # Bare $...$ stays out on purpose: it collides with currency (#66746).
-        # \[ \] and \( \) never appear in prose, so they are safe to act on.
-        return bool(self._RICH_DISPLAY_MATH_RE.search(content)
-                    or self._RICH_INLINE_MATH_RE.search(content))
+        # \[ \] and \( \) never appear in prose, so they are safe to act on — outside code, where
+        # the same delimiters are a LaTeX sample being shown, not math to render.
+        prose = _RICH_CODE_REGION_RE.sub("", content)
+        return bool(self._RICH_DISPLAY_MATH_RE.search(prose)
+                    or self._RICH_INLINE_MATH_RE.search(prose))
 
     def _rich_math_to_dollar_delimiters(self, content: str) -> str:
         """Rewrite \\[ \\] and \\( \\) math into the $-delimited form Telegram parses.
 
         Only runs on content already bound for the rich path, so it cannot pull new
-        messages into rich delivery or change what the MarkdownV2 path sends.
+        messages into rich delivery or change what the MarkdownV2 path sends. Code and
+        table regions are skipped: a fenced ``print("\\(x\\)")`` must survive verbatim.
         """
         if not content:
             return content
-        content = self._RICH_DISPLAY_MATH_RE.sub(
-            lambda m: "$$" + m.group(0)[2:-2].strip() + "$$", content)
-        return self._RICH_INLINE_MATH_RE.sub(
-            lambda m: "$" + m.group(0)[2:-2].strip() + "$", content)
+
+        def rewrite(chunk: str) -> str:
+            chunk = self._RICH_DISPLAY_MATH_RE.sub(
+                lambda m: "$$" + m.group(0)[2:-2].strip() + "$$", chunk)
+            return self._RICH_INLINE_MATH_RE.sub(
+                lambda m: "$" + m.group(0)[2:-2].strip() + "$", chunk)
+
+        return _rich_outside_code(content, rewrite)
 
     def _rich_delivery_enabled(self) -> bool:
         """Whether rich delivery is allowed (``rich_messages`` opt-in)."""

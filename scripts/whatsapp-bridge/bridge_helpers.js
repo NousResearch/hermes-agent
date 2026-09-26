@@ -564,6 +564,9 @@ export async function extractBridgeEvent({
     messageId: msg.key.id,
     chatId,
     senderId,
+    // Ownership side of the key: Baileys needs it on any reaction key, or a self-chat /
+    // owner-forwarded message is reacted to on the wrong side.
+    fromMe: !!msg.key.fromMe,
     senderName: msg.pushName || senderNumber,
     chatName: isGroup ? (chatId.split('@')[0]) : (msg.pushName || senderNumber),
     isGroup,

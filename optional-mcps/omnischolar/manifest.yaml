@@ -1,0 +1,60 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: omnischolar
+description: Search literature, read Zotero, inspect citations, and query materials data.
+source: https://github.com/luffysolution-svg/omnischolar
+
+transport:
+  type: stdio
+  command: "uvx"
+  args:
+    - "--from"
+    - "luffysolution-omnischolar==0.1.0"
+    - "omnischolar"
+    - "mcp"
+
+auth:
+  type: none
+
+tools:
+  default_enabled:
+    - omnischolar_status
+    - omnischolar_capabilities
+    - research_sources
+    - literature_search
+    - literature_get
+    - literature_graph
+    - journal_metrics
+    - zotero_collections
+    - zotero_search
+    - zotero_item
+    - ai4scholar_credits
+    - materials_capabilities
+    - materials_search
+    - materials_route_search
+    - materials_get
+    - materials_advanced
+    - chemical_sources
+    - chemical_search
+    - chemical_get
+    - omnischolar_image_models
+    - omnischolar_image_service
+
+suggest:
+  keywords:
+    - omnischolar
+    - literature search
+    - zotero
+    - materials project
+    - scientific research
+
+post_install: |
+  Public literature sources work without credentials. Zotero access is local
+  and read-only. Optional services are configured through OmniScholar's config
+  file and environment variables; see the upstream README before enabling
+  external uploads or paid tools.
+
+  The default tool selection excludes file-writing, upload, and paid tools.
+  Re-run `hermes mcp configure omnischolar` to opt into them.

@@ -3,6 +3,24 @@
 import json
 import re
 import sqlite3
+
+# Local-env workaround (#124077 tests): the checkout's venv python3 is a
+# symlink into <home>/hermes-agent/.hermes-runtime/..., so stdlib zoneinfo's
+# first import (sysconfig._safe_realpath(sys.executable)) trips the real-home
+# IO guard after it installs. Importing here — during collection, before any
+# autouse guard fixture — caches the module. CI pythons are not symlinked into
+# the home, so this is a no-op there.
+import zoneinfo  # noqa: F401
+
+# Same family of local-env workaround: pydantic's plugin discovery scans ALL
+# distributions on first model construction via importlib.metadata — under the
+# IO guard that scan hits the venv site-packages inside the real home. Pre-warm
+# the plugin loader here (during collection, before any autouse guard fixture)
+# so the scan happens exactly once, outside the guard. CI pythons do not live
+# under the home, so this is a no-op there.
+from pydantic.plugin import _loader as _pydantic_plugin_loader  # noqa: E402
+_pydantic_plugin_loader.get_plugins()  # noqa: E402  (warm the scan cache)
+
 import pytest
 import time
 from unittest.mock import patch, MagicMock
@@ -3584,3 +3602,62 @@ class TestSanitizeToolPairsWhitespace:
         tool_call_ids = [m.get("tool_call_id") for m in out if m.get("role") == "tool"]
         assert "call_orphan" not in tool_call_ids, "genuinely orphaned result must be removed"
         assert " call_orphan " not in tool_call_ids, "original whitespace form must also be gone"
+
+
+class TestSummaryFailureClassification124077:
+    """#124077: a Codex stream-guard stall raises TimeoutError whose message
+    contains 'stalled' (not 'timeout'); it must classify as a timeout (retry
+    ladder + deterministic fallback) instead of a terminal network failure
+    that aborts compression and lets the gateway wipe the session."""
+
+    def _make_compressor(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            return ContextCompressor(model="test", quiet_mode=True)
+
+    def test_classify_codex_stall_is_timeout_not_streaming_closed(self):
+        from agent.context_compressor import _classify_summary_failure
+        kind = _classify_summary_failure(TimeoutError(
+            "Codex auxiliary Responses stream stalled: no new output for 60.0s (67.7s elapsed)"))
+        assert kind.timeout is True
+        assert kind.streaming_closed is False
+
+    def test_classify_plain_connection_error_stays_streaming_closed(self):
+        from agent.context_compressor import _classify_summary_failure
+        kind = _classify_summary_failure(ConnectionError("Connection error."))
+        assert kind.timeout is False
+        assert kind.streaming_closed is True
+
+    def test_classify_timed_out_message_is_timeout(self):
+        from agent.context_compressor import _classify_summary_failure
+        kind = _classify_summary_failure(RuntimeError("request timed out after 120s"))
+        assert kind.timeout is True
+        assert kind.streaming_closed is False
+
+    def test_codex_stall_does_not_flag_terminal_network_failure(self):
+        """Integration: the stalled-summary path must NOT arm the terminal
+        network-failure abort (which kills the session on compression
+        exhaustion); it takes the retry-ladder cooldown instead."""
+        c = self._classify_compressor_with_stall()
+        assert c._last_summary_network_failure is False
+        assert c._last_summary_auth_failure is False
+
+    def _classify_compressor_with_stall(self):
+        c = self._classify_make()
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=TimeoutError(
+                "Codex auxiliary Responses stream stalled: no new output for 60.0s (67.7s elapsed)"),
+        ):
+            c._generate_summary(self._msgs())
+        return c
+
+    def _classify_make(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            return ContextCompressor(model="test", quiet_mode=True)
+
+    def _msgs(self):
+        return [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "msg 1"},
+            {"role": "assistant", "content": "msg 2"},
+        ]

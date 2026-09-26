@@ -1818,6 +1818,7 @@ def _try_get_session(db, key: str) -> dict:
     return {}
 
 
+@_profile_scoped
 @_session_method("session.status")
 def _(rid, params: dict, session: dict) -> dict:
     from hermes_cli.status_report import build_status_fields, status_lines

@@ -55,3 +55,23 @@ it('does not let settled interim narration replace the empty authoritative shell
 
   expect(merged).toEqual(next)
 })
+
+
+it('does not let a settled structural-only local row replace the authoritative shell', () => {
+  const previous = [
+    message('user-live', 'user', [textPart('check the model')]),
+    message('assistant-stream-tool-only', 'assistant', [tool('call-local')], {
+      interim: false,
+      pending: false
+    })
+  ]
+
+  const next = [
+    message('user-stored', 'user', [textPart('check the model')], { rowId: 196700 }),
+    message('assistant-shell', 'assistant', [tool('call-stored')], { pending: false, rowId: 196701 })
+  ]
+
+  const merged = preserveLocalPendingTurnMessages(next, previous)
+
+  expect(merged).toEqual(next)
+})

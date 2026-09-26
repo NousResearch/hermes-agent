@@ -31,7 +31,13 @@ import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/p
 import { $reactionsEnabled, setReactionsEnabled } from '@/store/reactions-enabled'
 import { $reasoningCollapsedByDefault, setReasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
 import { $sessionListDensity, type SessionListDensity, setSessionListDensity } from '@/store/session-list-density'
-import { $tabStripDefault, setTabStripDefault, type TabStripDefault } from '@/store/tabstrip-prefs'
+import {
+  $tabStripDefault,
+  $tabStripWrap,
+  setTabStripDefault,
+  setTabStripWrap,
+  type TabStripDefault
+} from '@/store/tabstrip-prefs'
 import { $textDirection, setTextDirection, TEXT_DIRECTIONS, type TextDirection } from '@/store/text-direction'
 import { $hideThreadTimeline, setHideThreadTimeline } from '@/store/thread-timeline'
 import { $spentTipCount, $tipsEnabled, resetTips, setTipsEnabled } from '@/store/tips'
@@ -426,6 +432,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
   const sessionListDensity = useStore($sessionListDensity)
   const tabStripDefault = useStore($tabStripDefault)
   const titlebarAppActionsSide = useStore($titlebarAppActionsSide)
+  const tabStripWrap = useStore($tabStripWrap)
   const zoomPercent = useStore($zoomPercent)
   const embedMode = useStore($embedMode)
   const embedAllowed = useStore($embedAllowed)
@@ -771,6 +778,13 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
               <MinimizeToTraySetting />
             </div>
           )}
+
+          <ToggleRow
+            checked={tabStripWrap}
+            description={a.tabStripWrapDesc}
+            label={a.tabStripWrapTitle}
+            onChange={setTabStripWrap}
+          />
 
           {/* Linux has neither half of this setting (see TRANSLUCENCY_SUPPORTED),
               so the row is absent there rather than offering a dead lever. */}

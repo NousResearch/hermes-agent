@@ -282,8 +282,14 @@ _CLOUD_PLACEHOLDER_MARKERS = frozenset({"Mobile Documents", "CloudStorage"})
 # argument text. Deliberately conservative: no `awk` (system()), no `sed` (`s///e`), no
 # `echo`/`printf` (routinely piped into a shell), no `mysql` (`\\!` and `system` escapes).
 _DATA_SINK_EXECUTABLES = frozenset(
-    {"grep", "egrep", "fgrep", "rg", "ag", "ack", "journalctl", "sqlite3", "psql"}
+    {"grep", "egrep", "fgrep", "rg", "ag", "ack", "journalctl", "sqlite3", "psql",
+     # Print-only: their arguments are written out, never executed (`echo "... gateway restart"`).
+     "echo", "printf"}
 )
+# ``git <verb>`` whose arguments are a MESSAGE, never executed: a commit/tag/stash message that
+# documents a lifecycle command is data. The verb must directly follow ``git`` -- global options
+# (``-c core.pager=...``, ``-C``) can carry executed text, so they disable masking.
+_GIT_MESSAGE_VERBS = frozenset({"commit", "tag", "stash", "notes", "revert", "merge", "cherry-pick"})
 # Argument shapes that smuggle execution back INTO a data sink (command/process substitution, psql
 # `\!`). Any hit disables masking for the whole segment — fail closed to the plain regex verdict.
 _UNSAFE_DATA_ARG_MARKERS = ("`", "$(", "<(", ">(", "\\!")
@@ -710,6 +716,15 @@ def contains_launchctl_submit_command(command: str) -> bool:
     return False
 
 
+def _is_data_sink_segment(segment: list[str], index: int) -> bool:
+    """True when the segment's command treats every argument as data (search pattern, printed
+    text, VCS message) rather than something it executes."""
+    name = Path(segment[index]).name
+    if name in _DATA_SINK_EXECUTABLES:
+        return True
+    return name == "git" and index + 1 < len(segment) and segment[index + 1] in _GIT_MESSAGE_VERBS
+
+
 def _mask_data_sink_arguments(text: str) -> str:
     """Replace data-sink executables' arguments with a neutral placeholder.
 
@@ -721,20 +736,28 @@ def _mask_data_sink_arguments(text: str) -> str:
     """
     lines_out: list[str] = []
     changed = False
-    for line in text.splitlines() or [text]:
+    # Logical lines: a quoted newline (a multi-line commit message) is data, not a separator.
+    # A logical line shlex rejects falls back to its physical lines, as before.
+    pending = list(_split_logical_lines(text) or [text])
+    while pending:
+        line = pending.pop(0)
         if _PIPE_TO_INTERPRETER.search(line):
             lines_out.append(line)
             continue
         try:
             tokens = _shlex_tokens(line)
         except ValueError:
-            lines_out.append(line)
+            physical = line.splitlines()
+            if len(physical) > 1:
+                pending[:0] = physical
+            else:
+                lines_out.append(line)
             continue
 
         rebuilt: list[str] = []
         for segment in _split_segments(tokens, keep_controls=True):
             index = _command_token_index(segment)
-            if index is not None and Path(segment[index]).name in _DATA_SINK_EXECUTABLES:
+            if index is not None and _is_data_sink_segment(segment, index):
                 arguments = segment[index + 1 :]
                 if not any(
                     _DOT_COMMAND_ARGUMENT.match(argument)

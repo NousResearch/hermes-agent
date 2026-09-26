@@ -142,9 +142,18 @@ class DispatchResult:
     (quota/auth error — also auto-blocked), ``"recent_success"`` (completed run
     within guard window), ``"active_pr"`` (GitHub PR URL in a recent comment)."""
     rate_limited: list[str] = field(default_factory=list)
-    """Task ids whose workers bailed on a provider rate-limit / quota wall
-    (EX_TEMPFAIL sentinel exit) and were released to ``ready`` WITHOUT counting
-    a failure — a long quota window must never trip the circuit breaker."""
+    """Task ids released to ``ready``/``review`` WITHOUT counting a failure:
+    workers that bailed on a provider rate-limit / quota wall (EX_TEMPFAIL
+    sentinel exit), plus pinned cards whose pre-claim probe hit the same
+    transient wall (#122703) — a long quota window must never trip the
+    circuit breaker."""
+    preclaim_probe_failed: list[str] = field(default_factory=list)
+    """Task ids whose model/provider pin failed the pre-claim probe (#122703),
+    so the just-taken claim was released instead of burning a worker
+    lifecycle on a doomed run. Static-layer failures (unknown provider,
+    credentialless resolve) ride the spawn-failure path (counter, breaker);
+    live-layer failures (one-shot child exit — the quota-wall shape) ride
+    the rate-limit channel above."""
     skipped_locked: bool = False
     """True when another process held the board's dispatch lock: this tick did
     no DB writes; the lock holder is making progress on the same board."""
@@ -1988,6 +1997,268 @@ def _call_spawn_fn(spawn_fn, task: Task, workspace: str, board: Optional[str]) -
         return spawn_fn(task, workspace)
 
 
+# --- Pre-claim model/provider probe (#122703) --------------------------------
+#
+# A card that pins ``model_override``/``provider_override`` can be unreachable
+# (unknown provider, quota-walled 403, missing credential). On main the first
+# evidence is the worker dying at startup — as a clean rc=0 exit AFTER the
+# claim was consumed, indistinguishable from success at the dispatch layer.
+# The probe below resolves the pin the way the worker would, right after the
+# claim is taken but BEFORE the worker lifecycle is spent; a failed probe
+# releases the claim through a channel matched to the failure class: static
+# resolve failures (unknown provider, credentialless) are deterministic and
+# ride the spawn-failure path (counter, breaker, ``spawn_failed`` event chain
+# all inherited, no new state machine); live one-shot child failures — the
+# quota-wall / upstream-403 shape — are transient and ride the worker's
+# rate-limit semantics (no failure counted, run closed ``rate_limited``,
+# retries spaced by the rate-limit cooldown), the pre-claim twin of the
+# EX_TEMPFAIL exit in ``_classify_dead_worker_exit``.
+#
+# The probe is deliberately bounded and skippable so it can never read as a
+# new tax on the open path: it runs ONLY for pinned cards, static resolution
+# is local (no network), the live one-shot layer has a short timeout, and
+# ``HERMES_KANBAN_PRECLAIM_PROBE=0`` reverts to upstream behavior entirely.
+
+# ``HERMES_KANBAN_PRECLAIM_PROBE``: ``0`` disables the probe (upstream
+# behavior); ``1``..``600`` sets the live one-shot child timeout in seconds;
+# unset/other = enabled with the default timeout below.
+PRECLAIM_PROBE_DEFAULT_TIMEOUT_SECONDS = 15
+PRECLAIM_PROBE_MAX_TIMEOUT_SECONDS = 600
+PRECLAIM_PROBE_PROMPT = "Reply with exactly: PROBE_OK"
+
+# In-process cache of probe verdicts, keyed by the full pin (model, provider,
+# profile home). A dead pin shared by a fan-out of cards is resolved once per
+# process instead of re-probed per claim. Only SUCCESS verdicts are cached:
+# any failure — live or static — re-probes on the next claim, so a config fix
+# (installed credential, added env var, ``gcloud auth`` login) takes effect on
+# the very next tick without a dispatcher restart.
+_preclaim_probe_cache: "dict[tuple[Optional[str], Optional[str], str], tuple[bool, str, str]]" = {}
+_PRECLAIM_PROBE_CACHE_MAX = 512
+
+
+def _preclaim_probe_timeout() -> int:
+    """Probe timeout from ``HERMES_KANBAN_PRECLAIM_PROBE``; 0 = disabled."""
+    raw = (os.environ.get("HERMES_KANBAN_PRECLAIM_PROBE") or "").strip()
+    if not raw:
+        return PRECLAIM_PROBE_DEFAULT_TIMEOUT_SECONDS
+    try:
+        value = int(raw)
+    except ValueError:
+        return PRECLAIM_PROBE_DEFAULT_TIMEOUT_SECONDS
+    if value == 0:
+        return 0
+    return max(1, min(value, PRECLAIM_PROBE_MAX_TIMEOUT_SECONDS))
+
+
+def _profile_reachable(
+    task_id: str, model_override: Optional[str], provider_override: Optional[str],
+    profile_home: Optional[str], timeout_seconds: int,
+) -> tuple[bool, str, str]:
+    """Resolve the card's pin the way the worker would, before the run is spent.
+
+    Returns ``(ok, reason, layer)``; ``layer`` is ``"static"`` or ``"live"``
+    on a failure (``""`` otherwise) so the release can match the failure
+    class. Two layers, both bounded. Layer 1 runs ``resolve_runtime_provider``
+    in this process under the assignee profile's home (context-local override,
+    restored after) — that alone catches unknown provider names and
+    credentialless resolves locally, without touching the network. Layer 2
+    fires the real one-shot child (``hermes -z``) only when layer 1 resolves
+    but the pin may still be walled upstream (403 / quota): a non-zero exit
+    means the pin is dead the same way the worker would have died. Any
+    inconclusive outcome (timeout, spawn OSError) fails OPEN — the claim
+    proceeds — because the probe must never become a new way to lose a
+    healthy card.
+    """
+    del task_id  # kept in the signature for log readability at call sites
+    from hermes_constants import (
+        set_hermes_home_override,
+        reset_hermes_home_override,
+    )
+
+    # Layer 1 — static resolve under the profile's own home.
+    token = None
+    if profile_home:
+        token = set_hermes_home_override(str(profile_home))
+    try:
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        from hermes_cli.auth import AuthError
+
+        try:
+            runtime = resolve_runtime_provider(
+                requested=provider_override or None,
+                target_model=model_override or None,
+            )
+        except Exception as exc:
+            # Unknown-provider typos (``code="invalid_provider"``) and any
+            # other resolve failure are construction-fatal and deterministic:
+            # the worker would die here on every attempt. Other ``AuthError``
+            # shapes are credential STATE, not config — a benched pool key or
+            # a pending ADC login lifts on its own (runtime_provider.py
+            # raises those with no ``code``) — so they ride the live channel,
+            # transient by the same definition as the one-shot child layer.
+            if isinstance(exc, AuthError) and getattr(exc, "code", None) is None:
+                return False, f"preclaim probe: pin credentials not resolvable yet: {exc}", "live"
+            return False, f"preclaim probe: pin resolve failed: {exc}", "static"
+    finally:
+        if token is not None:
+            reset_hermes_home_override(token)
+    # Layer 2 must judge the pin, not the profile default: a card with only
+    # ``model_override`` set (no provider pin) rides the profile's own config,
+    # which the profile's normal runs already prove.
+    resolved_provider = runtime.get("provider") or ""
+    if not provider_override and resolved_provider in ("", "custom", "auto"):
+        return True, "", ""
+
+    # Layer 2 — real one-shot child, sealed for tests via HERMES_BIN.
+    del runtime
+    argv: list[str]
+    env_bin = os.environ.get("HERMES_BIN", "").strip()
+    if env_bin:
+        argv = [env_bin]
+    else:
+        import importlib.util
+        if importlib.util.find_spec("hermes_cli") is not None:
+            argv = [sys.executable, "-m", "hermes_cli.main"]
+        else:
+            import shutil
+            found = shutil.which("hermes")
+            if not found:
+                return True, "", ""  # inconclusive: fail open
+            argv = [found]
+    cmd = [*argv, "-z", PRECLAIM_PROBE_PROMPT]
+    if model_override:
+        cmd.extend(["-m", model_override])
+    if provider_override:
+        cmd.extend(["--provider", provider_override])
+
+    env = dict(os.environ)
+    if profile_home:
+        env["HERMES_HOME"] = profile_home
+    try:
+        proc = subprocess.run(
+            cmd,
+            # The prompt rides the ``-z`` argument; stdin stays DEVNULL so the
+            # child can never block on the dispatcher's inherited stdin.
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            env=env,
+        )
+    except subprocess.TimeoutExpired:
+        return True, "", ""  # inconclusive: fail open
+    except OSError:
+        return True, "", ""  # inconclusive: fail open
+    if proc.returncode == 0:
+        return True, "", ""
+    tail = (proc.stderr or proc.stdout or "").strip().splitlines()
+    reason = tail[-1][:300] if tail else f"exit code {proc.returncode}"
+    return False, f"preclaim probe: one-shot child failed: {reason}", "live"
+
+
+def _preclaim_probe_verdict(
+    task_id: str, claimed: "Task", profile_home: Optional[str],
+) -> tuple[bool, str, str]:
+    """Cached ``(ok, reason, layer)`` for the card's pin; ``(True, "", "")``
+    = proceed. Only SUCCESS verdicts are cached: a cached failure would pin
+    the card to a stale verdict across config fixes until a dispatcher
+    restart (reviewer finding 2) — failures re-probe per claim, and Layer 1
+    is local/in-process, so the re-probe is cheap.
+    """
+    timeout_seconds = _preclaim_probe_timeout()
+    if timeout_seconds <= 0:
+        return True, "", ""
+    pin_key = (
+        claimed.model_override or None,
+        claimed.provider_override or None,
+        profile_home or "",
+    )
+    cached = _preclaim_probe_cache.get(pin_key)
+    if cached is not None:
+        return cached
+    verdict = _profile_reachable(
+        claimed.id, pin_key[0], pin_key[1], profile_home or None, timeout_seconds,
+    )
+    ok, _reason, layer = verdict
+    if ok:
+        if len(_preclaim_probe_cache) >= _PRECLAIM_PROBE_CACHE_MAX:
+            _preclaim_probe_cache.clear()
+        _preclaim_probe_cache[pin_key] = verdict
+    return verdict
+
+
+def _release_preclaim_probe_failure(
+    conn: sqlite3.Connection, claimed: "Task", reason: str, *,
+    layer: str, failure_limit: int, result: "DispatchResult",
+) -> None:
+    """Release a claim whose pin failed the probe, matched to the failure class.
+
+    ``layer="live"`` (the one-shot child exited non-zero — the quota-wall /
+    upstream-403 shape): transient, rides the worker's rate-limit semantics
+    (mirrors the ``rate_limited`` branch of ``_classify_dead_worker_exit``) —
+    the claim is released with the run closed as ``rate_limited``,
+    ``consecutive_failures`` is NOT touched, and ``check_respawn_guard``
+    spaces the retry through the rate-limit cooldown. A long quota window
+    self-heals and can never trip the breaker or park the card on the
+    stamped quota text (``rate_limit_cooldown`` precedes ``blocker_auth``).
+
+    ``layer="static"`` (unknown provider (``code="invalid_provider"``),
+    credentialless resolve, any non-``AuthError`` construction failure):
+    deterministic — a retry cannot heal it — so it rides the existing
+    spawn-failure path: counter + breaker inherited, ``spawn_failed`` event
+    on the chain. A code-less ``AuthError`` (benched key, pending ADC login)
+    is credential STATE and never lands here — it rides ``live`` above.
+
+    Both append a ``preclaim_probe_failed`` event so ``hermes kanban tail``
+    shows why the card went back."""
+    if layer == "live":
+        retry_status = _kb._retry_status_for_run(conn, claimed.id)
+        with _kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status = ?, claim_lock = NULL, "
+                "claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL, "
+                "last_failure_error = ? "
+                "WHERE id = ? AND status = 'running'",
+                (retry_status, reason[:500], claimed.id),
+            )
+            _kb._end_run(
+                conn, claimed.id,
+                outcome="rate_limited", status="rate_limited",
+                error=reason[:500],
+                metadata={"preclaim_probe": True, "retry_status": retry_status},
+            )
+            _kb._append_event(
+                conn, claimed.id, "preclaim_probe_failed",
+                {"error": reason, "rate_limited": True},
+            )
+        result.preclaim_probe_failed.append(claimed.id)
+        result.rate_limited.append(claimed.id)
+        _kb._log.warning(
+            "kanban dispatcher: claim of %s released (rate-limit semantics, no failure "
+            "counted), pin probe hit a transient wall: %s",
+            claimed.id, reason,
+        )
+        return
+    if _record_task_failure(
+        conn, claimed.id, reason,
+        outcome="spawn_failed", failure_limit=failure_limit, release_claim=True, end_run=True,
+    ):
+        result.auto_blocked.append(claimed.id)
+    result.preclaim_probe_failed.append(claimed.id)
+    try:
+        with _kb.write_txn(conn):
+            _kb._append_event(conn, claimed.id, "preclaim_probe_failed", {"error": reason})
+    except Exception:
+        _kb._log.debug(
+            "kanban dispatch: failed to append preclaim_probe_failed event for %s",
+            claimed.id, exc_info=True,
+        )
+    _kb._log.warning(
+        "kanban dispatcher: claim of %s released, model/provider pin is unreachable: %s",
+        claimed.id, reason,
+    )
+
+
 def _dispatch_lane_task(
     conn: sqlite3.Connection,
     row: sqlite3.Row,
@@ -2052,6 +2323,46 @@ def _dispatch_lane_task(
     claimed = claim(conn, task_id, ttl_seconds=ttl_seconds)
     if claimed is None:
         return False
+    # Pre-claim probe (#122703): the card pins a model/provider. On main the
+    # first evidence of a dead pin is the worker dying at startup — a clean
+    # rc=0 exit AFTER this claim was consumed. Resolve the pin the way the
+    # worker would, NOW, and release the claim when it is unreachable.
+    # Skippable via HERMES_KANBAN_PRECLAIM_PROBE=0. The probe is a pre-flight
+    # optimization, never a new way to lose a healthy card — or to kill the
+    # whole dispatch tick: any exception in the probe machinery itself fails
+    # OPEN and the claim proceeds to spawn exactly as on main.
+    if (claimed.model_override or claimed.provider_override) and _preclaim_probe_timeout() > 0:
+        ok, probe_reason, probe_layer = True, "", ""
+        try:
+            profile_home: Optional[str] = None
+            try:
+                from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
+
+                profile_home = resolve_profile_env(normalize_profile_name(assignee))
+            except FileNotFoundError:
+                profile_home = None
+            except Exception:
+                # The resolver crashing is not evidence about the pin. Skip the
+                # probe entirely and let the worker's own startup produce the
+                # honest verdict — probing under the default home would judge
+                # the pin against the WRONG credential set.
+                _kb._log.warning(
+                    "kanban dispatcher: profile home resolution failed for %s; skipping preclaim probe (fail-open)",
+                    claimed.id, exc_info=True,
+                )
+            else:
+                ok, probe_reason, probe_layer = _preclaim_probe_verdict(task_id, claimed, profile_home)
+        except Exception:
+            _kb._log.warning(
+                "kanban dispatcher: preclaim probe raised for %s; failing open (claim proceeds)",
+                claimed.id, exc_info=True,
+            )
+            ok, probe_reason, probe_layer = True, "", ""
+        if not ok:
+            _release_preclaim_probe_failure(
+                conn, claimed, probe_reason, layer=probe_layer, failure_limit=failure_limit, result=result,
+            )
+            return False
     try:
         resolved_branch_name = None
         if claimed.workspace_kind == "worktree":

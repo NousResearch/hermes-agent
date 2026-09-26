@@ -2038,8 +2038,14 @@ def _(rid, params: dict) -> dict:
 
 # ── session.branch ───────────────────────────────────────────────────
 def _visible_branch_history(messages) -> list:
-    """user/assistant rows with visible text, as FULL copies (reasoning + timeline-marker tags survive)."""
-    return [dict(message) for message in messages or []
+    """user/assistant rows with visible text, as FULL copies (reasoning + timeline-marker tags survive) minus
+    the parent's row identity: the child's copies get their own row ids, and a parent ``_row_id`` left on the
+    child's live history makes the first turn adopt those copies as foreign turns (the model gets the
+    conversation twice)."""
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+
+    row_identity = {"_row_id", "row_id", _DB_PERSISTED_MARKER}
+    return [{key: value for key, value in message.items() if key not in row_identity} for message in messages or []
             if isinstance(message, dict) and message.get("role") in {"user", "assistant"}
             and _coerce_message_text(message.get("content")).strip()]
 

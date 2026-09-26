@@ -50,6 +50,27 @@ KANBAN_TERMINAL_TIMEOUT_GRACE_SECONDS = 30
 # (two default dispatch ticks).
 TERMINAL_WORKER_REAP_GRACE_SECONDS = 120
 
+# After max_runtime elapses, skip the kill for this long if the worker still
+# has a fresh comment or non-bootstrap workspace write (probe/complete in flight).
+TIMEOUT_PROGRESS_GRACE_SECONDS = 60
+
+# Heartbeat-only workers (auto-heartbeat every 60s) are not progress. Reclaim
+# a running card with no comments and no real workspace writes after this long.
+PROGRESS_STALL_SECONDS = 900
+
+# Git/worktree materialize stamps many files at spawn; ignore that window when
+# deciding whether a run produced anything.
+_WORKSPACE_MATERIALIZE_SECONDS = 60
+_WORKSPACE_WALK_FILE_CAP = 300
+_SKIP_DIR_NAMES = frozenset({
+    ".git", "node_modules", "__pycache__", ".pytest_cache", ".husky", ".venv",
+    "dist", "build", ".tox", ".mypy_cache", ".ruff_cache",
+})
+_BOOTSTRAP_FILE_NAMES = frozenset({
+    "tsconfig.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock",
+    ".ds_store", "placeholder.txt", ".gitignore", "package.json",
+})
+
 # ---------------------------------------------------------------------------
 # Respawn guard constants
 # ---------------------------------------------------------------------------
@@ -137,6 +158,8 @@ class DispatchResult:
     """Task ids whose workers exceeded ``max_runtime_seconds``."""
     stale: list[str] = field(default_factory=list)
     """Task ids reclaimed for no heartbeat within ``dispatch_stale_timeout_seconds``."""
+    progress_stalled: list[str] = field(default_factory=list)
+    """Task ids blocked because a live heartbeat had no comments or workspace writes."""
     respawn_guarded: list[tuple[str, str]] = field(default_factory=list)
     """``(task_id, reason)`` skipped by the respawn guard: ``"blocker_auth"``
     (quota/auth error — also auto-blocked), ``"recent_success"`` (completed run
@@ -645,6 +668,84 @@ def heartbeat_worker(
     return True
 
 
+def _is_bootstrap_progress_path(path: Path) -> bool:
+    name = path.name.lower()
+    return name in _BOOTSTRAP_FILE_NAMES or name.endswith((".pyc", ".pyo"))
+
+
+def newest_workspace_progress_mtime(root: Optional[str]) -> Optional[float]:
+    """Newest mtime of a non-bootstrap file under a scratch/worktree path."""
+    if not root:
+        return None
+    try:
+        base = Path(root).expanduser()
+        if not base.is_dir():
+            return None
+    except OSError:
+        return None
+    newest: Optional[float] = None
+    seen = 0
+    stack = [base]
+    while stack and seen < _WORKSPACE_WALK_FILE_CAP:
+        current = stack.pop()
+        try:
+            with os.scandir(current) as entries:
+                for entry in entries:
+                    if seen >= _WORKSPACE_WALK_FILE_CAP:
+                        break
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            if entry.name not in _SKIP_DIR_NAMES:
+                                stack.append(Path(entry.path))
+                            continue
+                        if _is_bootstrap_progress_path(Path(entry.name)):
+                            continue
+                        seen += 1
+                        mtime = entry.stat(follow_symlinks=False).st_mtime
+                    except OSError:
+                        continue
+                    if newest is None or mtime > newest:
+                        newest = mtime
+        except OSError:
+            continue
+    return newest
+
+
+def _task_workspace_root(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
+    row = conn.execute(
+        "SELECT workspace_kind, workspace_path FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if not row or not row["workspace_path"]:
+        return None
+    kind = row["workspace_kind"] or "scratch"
+    # Shared checkouts can be huge; do not walk them on every dispatch tick.
+    if kind == "dir":
+        return None
+    return row["workspace_path"]
+
+
+def _task_has_progress_since(conn: sqlite3.Connection, task_id: str, since_ts: int) -> bool:
+    """True if a comment or non-bootstrap workspace write landed at/after since_ts."""
+    if conn.execute(
+        "SELECT 1 FROM task_comments WHERE task_id = ? AND created_at >= ? LIMIT 1",
+        (task_id, int(since_ts)),
+    ).fetchone():
+        return True
+    mtime = newest_workspace_progress_mtime(_task_workspace_root(conn, task_id))
+    return mtime is not None and mtime >= since_ts
+
+
+def _run_is_empty(conn: sqlite3.Connection, task_id: str, run_started_at: int, now: int) -> bool:
+    """True when this attempt produced no comments and no post-materialize writes."""
+    elapsed = int(now) - int(run_started_at)
+    if elapsed <= _WORKSPACE_MATERIALIZE_SECONDS:
+        return False
+    return not _task_has_progress_since(
+        conn, task_id, int(run_started_at) + _WORKSPACE_MATERIALIZE_SECONDS,
+    )
+
+
 def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str]:
     """Terminate workers whose per-task ``max_runtime_seconds`` has elapsed.
 
@@ -677,9 +778,15 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
         limit = int(row["max_runtime_seconds"])
         if elapsed < limit:
             continue
+        tid = row["id"]
+        if elapsed < limit + TIMEOUT_PROGRESS_GRACE_SECONDS and _task_has_progress_since(
+            conn, tid, now - TIMEOUT_PROGRESS_GRACE_SECONDS,
+        ):
+            # Worker is still writing/commenting past the cap; give one grace
+            # window (DB 0.1 / 6.1 finished the artifact then got SIGTERM).
+            continue
 
         pid = int(row["worker_pid"])
-        tid = row["id"]
         started_at = _kb._row_get(row, "worker_started_at")
         if started_at == UNVERIFIED_WORKER_FINGERPRINT and _kb._pid_alive(pid):
             # Fingerprint capture failed at spawn: we cannot prove this live PID is our worker, so
@@ -701,6 +808,10 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
                 killed = _sigkill(kill, pid)
 
         error = f"elapsed {int(elapsed)}s > limit {limit}s"
+        review_run = _kb._retry_status_for_run(conn, tid) == "review"
+        empty = (not review_run) and _run_is_empty(
+            conn, tid, int(row["active_started_at"]), now,
+        )
         with _kb.write_txn(conn):
             retry_status = _kb._retry_status_for_run(conn, tid)
             cur = conn.execute(
@@ -718,6 +829,7 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
                     "limit_seconds": limit,
                     "sigkill": killed,
                     "retry_status": retry_status,
+                    "empty_run": empty,
                 }
                 run_id = _kb._end_run(
                     conn, tid, outcome="timed_out", status="timed_out",
@@ -729,13 +841,17 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
         # own. If the breaker trips this flips the task to ``blocked`` and emits
         # ``gave_up`` on top of the ``timed_out`` already emitted.
         if cur.rowcount == 1:
+            extra = {"pid": pid, "sigkill": killed, "retry_status": retry_status, "empty_run": empty}
+            if empty:
+                extra["empty_timeout"] = True
             _record_task_failure(
                 conn, tid,
-                error=error,
+                error=error if not empty else error + " (empty run: no comments or workspace writes)",
                 outcome="timed_out",
+                force_trip=empty,
                 release_claim=False,
                 end_run=False,
-                event_payload_extra={"pid": pid, "sigkill": killed, "retry_status": retry_status},
+                event_payload_extra=extra,
             )
     return timed_out
 
@@ -840,6 +956,94 @@ def detect_stale_running(
             reclaimed.append(tid)
 
     return reclaimed
+
+
+def detect_progress_stall(conn: sqlite3.Connection, *, signal_fn=None) -> list[str]:
+    """Block running workers whose heartbeat is live but the run produced nothing.
+
+    Auto-heartbeat every 60s kept 5.5-B 'alive' for two empty hours. A stall is
+    elapsed >= ``PROGRESS_STALL_SECONDS`` with no comment and no non-bootstrap
+    workspace write after the materialize window. Host-local only. Empty stalls
+    trip the breaker immediately (``force_trip``) so the next tick does not
+    spawn a second blank hour.
+    """
+    stalled: list[str] = []
+    now = int(time.time())
+    host_prefix = _kb._host_prefix()
+    rows = conn.execute(
+        "SELECT t.id, t.worker_pid, t.worker_started_at, t.claim_lock, "
+        "       COALESCE(r.started_at, t.started_at) AS active_started_at "
+        "FROM tasks t "
+        "LEFT JOIN task_runs r ON r.id = t.current_run_id "
+        "WHERE t.status = 'running' "
+        "  AND COALESCE(r.started_at, t.started_at) IS NOT NULL "
+        "  AND t.worker_pid IS NOT NULL"
+    ).fetchall()
+    for row in rows:
+        lock = row["claim_lock"] or ""
+        if not lock.startswith(host_prefix):
+            continue
+        started = int(row["active_started_at"])
+        elapsed = now - started
+        if elapsed < PROGRESS_STALL_SECONDS:
+            continue
+        if _kb._retry_status_for_run(conn, row["id"]) == "review":
+            continue
+        if not _run_is_empty(conn, row["id"], started, now):
+            continue
+        tid = row["id"]
+        pid = int(row["worker_pid"])
+        started_at = _kb._row_get(row, "worker_started_at")
+        if started_at == UNVERIFIED_WORKER_FINGERPRINT and _kb._pid_alive(pid):
+            continue
+        killed = False
+        kill = _kill_fn(signal_fn)
+        if kill is not None and not (_kb._pid_alive(pid) and _pid_recycled(pid, started_at)):
+            with contextlib.suppress(ProcessLookupError, OSError):
+                kill(pid, signal.SIGTERM)
+            _poll_worker_exit(pid, started_at)
+            if _worker_alive(pid, started_at):
+                killed = _sigkill(kill, pid)
+        error = (
+            f"no comments or workspace writes after {int(elapsed)}s "
+            f"(progress stall {PROGRESS_STALL_SECONDS}s)"
+        )
+        with _kb.write_txn(conn):
+            retry_status = _kb._retry_status_for_run(conn, tid)
+            cur = conn.execute(
+                "UPDATE tasks SET status = ?, claim_lock = NULL, "
+                "claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL, "
+                "last_heartbeat_at = NULL "
+                "WHERE id = ? AND status = 'running' "
+                "  AND worker_pid = ? AND claim_lock IS ?",
+                (retry_status, tid, pid, row["claim_lock"]),
+            )
+            if cur.rowcount != 1:
+                continue
+            payload = {
+                "pid": pid,
+                "elapsed_seconds": int(elapsed),
+                "stall_seconds": PROGRESS_STALL_SECONDS,
+                "sigkill": killed,
+                "retry_status": retry_status,
+                "empty_run": True,
+            }
+            run_id = _kb._end_run(
+                conn, tid, outcome="stalled", status="stalled",
+                error=error, metadata=payload,
+            )
+            _kb._append_event(conn, tid, "progress_stalled", payload, run_id=run_id)
+            stalled.append(tid)
+        _record_task_failure(
+            conn, tid,
+            error=error,
+            outcome="stalled",
+            force_trip=True,
+            release_claim=False,
+            end_run=False,
+            event_payload_extra={"pid": pid, "sigkill": killed, "empty_run": True},
+        )
+    return stalled
 
 
 def reconcile_orphaned_running(conn: sqlite3.Connection) -> list[str]:
@@ -2149,6 +2353,7 @@ def _run_reclaim_phase(
     if reconcile_orphans:
         result.reconciled_orphans = reconcile_orphaned_running(conn)
     result.stale = detect_stale_running(conn, stale_timeout_seconds=stale_timeout_seconds)
+    result.progress_stalled = detect_progress_stall(conn)
     result.crashed = detect_crashed_workers(conn, board=board)
     # Side-channel attributes (see detect_crashed_workers); rate-limited tasks
     # went back to ``ready`` and the respawn guard defers them until quota clears.

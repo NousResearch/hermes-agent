@@ -474,6 +474,15 @@ def _refuse_symlinked_containers(src: Path, dest: Path, rel: Tuple[str, ...]) ->
             _refuse_symlinked_containers(child, dest / child.name, parts)
 
 
+def _merges_per_root(src: Path, rel_parts: Tuple[str, ...]) -> bool:
+    """An owned top-level dir, or an owned category (``skills/research/``) holding only
+    roots, is merged per authored root instead of replaced whole, so skills the installer
+    added to it (``hermes skills install`` and agent-created skills land in
+    ``skills/<category>/``) survive. The pre-write symlink guard and the copy loop both
+    use this, so the guard covers exactly what the copy merges."""
+    return src.is_dir() and (len(rel_parts) == 1 or _is_container(src))
+
+
 def _refuse_symlinked_targets(target: Path, entries) -> None:
     """Refuse before the first write. The per-entry check in ``_real_dir`` fires mid-loop,
     after earlier entries were already replaced and before the manifest is rewritten,
@@ -486,7 +495,7 @@ def _refuse_symlinked_targets(target: Path, entries) -> None:
         for part in rel_parts[:depth]:
             path = path / part
             _refuse_symlink(path)
-        if src.is_dir() and (len(rel_parts) == 1 or _is_container(src)):
+        if _merges_per_root(src, rel_parts):
             _refuse_symlinked_containers(src, path, rel_parts)
 
 
@@ -498,9 +507,8 @@ def _copy_dist_payload(staged: Path, target: Path, manifest: DistributionManifes
     as ``.env.EXAMPLE`` so it never shadows a real ``.env``.
 
     A top-level owned directory, and an owned category holding only roots, is merged per
-    authored root. ``cron/jobs.json`` is
-    special: it is one multi-record runtime store, so shipped definitions merge by job id
-    instead of replacing the file."""
+    authored root. ``cron/jobs.json`` is special: it is one multi-record runtime store, so
+    shipped definitions merge by job id instead of replacing the file."""
     target.mkdir(parents=True, exist_ok=True)
     entries = list(_owned_entries(staged, manifest))
     _refuse_symlinked_targets(target, entries)
@@ -523,13 +531,7 @@ def _copy_dist_payload(staged: Path, target: Path, manifest: DistributionManifes
                 continue
             if name == "config.yaml" and preserve_config and (target / "config.yaml").exists():
                 continue
-            if src.is_dir():
-                _merge_dir(src, _real_dir(target, rel_parts), rel_parts)
-                continue
-        elif _is_container(src):
-            # An owned category (``skills/research/``) holds skill roots, not files: merge it per
-            # root like a top-level dir, so skills the installer added to it (``hermes skills
-            # install`` and agent-created skills land in ``skills/<category>/``) survive.
+        if _merges_per_root(src, rel_parts):
             _merge_dir(src, _real_dir(target, rel_parts), rel_parts)
             continue
         _replace_entry(src, _real_dir(target, rel_parts[:-1]) / rel_parts[-1])

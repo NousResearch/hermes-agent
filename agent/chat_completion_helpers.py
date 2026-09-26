@@ -129,11 +129,21 @@ class ProviderStreamError(Exception):
 
 
 def _status_code_from_value(value: Any) -> Optional[int]:
-    if isinstance(value, int) and 100 <= value < 600:
+    """Numeric HTTP *error* status (400-599) from a stream field/comment, else None.
+
+    A code below 400 is not an HTTP error status. Relays that commit HTTP-200 and then
+    emit ``{"error": {"code": 200, "message": "Server disconnected…"}}`` would otherwise
+    stamp the error with a phantom 200, and error_classifier._by_transport gates its
+    disconnect handling on ``not c.status_code`` — so the error classified as unknown
+    instead of timeout/context_overflow. The structured-body sibling
+    ``error_classifier._status_code_from_body`` was narrowed to 400-599 for the same
+    reason (#121270); this is the string-parsing text-SSE path it points at.
+    """
+    if isinstance(value, int) and not isinstance(value, bool) and 400 <= value < 600:
         return value
     if not isinstance(value, str):
         return None
-    match = re.search(r"(?:HTTP_STATUS/)?\b([1-5]\d\d)\b", value, re.IGNORECASE)
+    match = re.search(r"(?:HTTP_STATUS/)?\b([45]\d\d)\b", value, re.IGNORECASE)
     return int(match.group(1)) if match else None
 
 

@@ -26,7 +26,7 @@ def external_worker_stderr_tail(path: Path) -> str:
     Returns an empty string when nothing was captured.
     """
     try:
-        text = path.read_text(encoding="utf-8", errors="replace").strip()
+        text = path.read_text(encoding="utf-8-sig", errors="replace").strip()
     except OSError:
         return ""
     if not text:

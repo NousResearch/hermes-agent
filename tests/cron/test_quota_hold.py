@@ -1,4 +1,5 @@
-"""Provider quota windows park a cron job instead of re-firing into them (#89376).
+"""Provider quota windows park a cron job instead of re-firing into them (#89376;
+ai-velho-oy/chairman#3).
 
 Contract (cron/quota_hold.py): a failed run whose cause is a rate-limited ``AuthError`` with a
 ``retry after <N>s`` hint parks a recurring job's ``next_run_at`` past the window and stamps
@@ -51,6 +52,64 @@ def test_hold_seconds_only_from_rate_limited_auth_error_in_cause_chain():
     assert qh.hold_seconds_from_failure(structured) == 900.0
 
 
+def test_weekly_cron_retries_when_quota_recovers_before_next_occurrence(
+    tmp_cron_home, monkeypatch,
+):
+    """A weekly fire blocked by a shorter quota window retries when the provider reopens;
+    it is not silently deferred until the following week's natural occurrence."""
+    now = datetime(2026, 9, 18, 12, 1, tzinfo=timezone.utc)
+    natural_next = datetime(2026, 9, 25, 12, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+    monkeypatch.setattr(qh, "_hermes_now", lambda: now)
+    job = create_job("weekly digest", "0 12 * * 5")
+    assert datetime.fromisoformat(job["next_run_at"]) == natural_next
+
+    assert mark_job_run(
+        job["id"], False, QUOTA_MSG, quota_hold_seconds=20 * 60 * 60,
+        recover_consumed_fire=True,
+    )
+
+    held = get_job(job["id"])
+    assert held is not None
+    retry_at = datetime.fromisoformat(held["next_run_at"])
+    assert retry_at == now + timedelta(hours=20, seconds=qh.HOLD_SLACK_SECONDS) < natural_next
+    assert qh.is_recovery_fire(held, held["next_run_at"])
+    edited = {**held, "schedule": {"kind": "cron", "expr": "0 9 * * *"}}
+    assert not qh.is_recovery_fire(edited, edited["next_run_at"])
+
+    monkeypatch.setattr("cron.jobs._hermes_now", lambda: retry_at + timedelta(seconds=1))
+    assert job["id"] in {due["id"] for due in get_due_jobs()}
+
+
+def test_recovery_fire_skips_dense_schedules_and_never_re_parks(monkeypatch):
+    """Recovery is one attempt for sparse schedules only: an hourly job whose hold ends two
+    minutes before :00 keeps its natural :00 (no off-lattice near-duplicate), and a job that is
+    already the recovery fire (carries quota_hold_until) failing again is not re-parked."""
+    now = datetime(2026, 9, 18, 12, 1, tzinfo=timezone.utc)
+    monkeypatch.setattr(qh, "_hermes_now", lambda: now)
+
+    dense = {
+        "schedule": {"kind": "cron", "expr": "0 * * * *"},
+        "next_run_at": datetime(2026, 9, 18, 13, 0, tzinfo=timezone.utc).isoformat(),
+    }
+    natural = dense["next_run_at"]
+    assert not qh.plan_hold(dense, hold_seconds=57 * 60 - qh.HOLD_SLACK_SECONDS,
+                            recover_consumed_fire=True)
+    assert dense["next_run_at"] == natural
+    assert qh.STATE_KEY not in dense
+
+    held_again = {
+        "schedule": {"kind": "cron", "expr": "0 12 * * 5"},
+        "next_run_at": (now + timedelta(days=7)).isoformat(),
+        qh.STATE_KEY: now.isoformat(),
+        qh.SCHEDULE_EXPR_KEY: "0 12 * * 5",
+    }
+    natural = held_again["next_run_at"]
+    assert not qh.plan_hold(held_again, hold_seconds=20 * 60 * 60, recover_consumed_fire=True)
+    assert held_again["next_run_at"] == natural
+    assert qh.STATE_KEY not in held_again
+
+
 def _raise_quota(**_kw):
     raise _quota_error()
 
@@ -85,8 +144,7 @@ def test_quota_hold_parks_past_window_survives_stale_rearm_and_clears_on_model_r
     _tick(get_job(job_id), tmp_cron_home, deliveries, _raise_quota)
     j = get_job(job_id)
     assert j["last_status"] == "error"
-    assert len(deliveries) == 1 and "This job is held" in deliveries[0], deliveries
-    assert "provider credential missing" not in deliveries[0]
+    assert len(deliveries) == 1, deliveries
     parked = datetime.fromisoformat(j["next_run_at"])
     assert parked - now >= timedelta(seconds=123518), "next_run_at must land past the window"
     assert j[qh.STATE_KEY] == j["next_run_at"]

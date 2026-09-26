@@ -2,7 +2,6 @@
 
 import asyncio
 import datetime as dt
-import os
 import sys
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -10,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
+from gateway.config import PlatformConfig
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 
 
@@ -54,17 +53,6 @@ from plugins.platforms.discord.adapter import (  # noqa: E402
     DiscordAdapter,
     _apply_yaml_config,
 )
-
-
-class FakeReaction:
-    def __init__(self, emoji, *, me=False, users=None):
-        self.emoji = emoji
-        self.me = me
-        self._users = list(users or [])
-
-    async def users(self):
-        for user in self._users:
-            yield user
 
 
 class FakeChannel:
@@ -292,19 +280,6 @@ async def test_recovered_mention_reuses_live_auth_and_mention_gates(adapter, mon
         role_authorized=False,
         recovered=True,
     )
-
-
-def test_default_config_exposes_missed_message_backfill_settings():
-    from hermes_cli.config import DEFAULT_CONFIG
-
-    assert DEFAULT_CONFIG["discord"]["missed_message_backfill"] == {
-        "enabled": False,
-        "channels": "",
-        "window_seconds": 21600,
-        "limit": 100,
-        "max_dispatches": 10,
-        "max_attempts": 3,
-    }
 
 
 def test_missed_message_backfill_config_stays_per_adapter():

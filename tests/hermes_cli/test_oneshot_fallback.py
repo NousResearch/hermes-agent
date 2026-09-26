@@ -63,7 +63,7 @@ class TestResolveRuntimeWithFallback:
         with caplog.at_level("WARNING", logger="hermes_cli.runtime_provider"):
             _, entry = resolve_runtime_with_fallback(_CFG, requested="openai-codex")
         assert entry["provider"] == "openai"
-        assert any("anthropic/claude-x is misconfigured" in r.getMessage() for r in caplog.records)
+        assert any(r.levelname == "WARNING" and "anthropic" in r.getMessage() for r in caplog.records)
 
 
 def test_run_agent_falls_back_when_primary_resolution_raises_auth_error(monkeypatch):

@@ -487,6 +487,7 @@ class _TurnRun:
     thinking_started: bool = False
     history: list = dataclasses.field(default_factory=list)
     history_version: int = 0
+    compression_count: int | None = None
     run_kwargs: Any = None
     error_retained: bool = False
     error_detail: str = ""
@@ -541,6 +542,54 @@ def _adopt_out_of_band_turns(session: dict) -> None:
         session["history_version"] = version + 1
 
 
+def _install_has_prior_sessions(session: dict) -> bool:
+    """True when this install already has session rows beyond the current one.
+
+    Mirrors ``gateway.session.SessionStore.has_any_sessions`` (the messaging
+    first-contact gate): ``_run_prompt_submit`` persists the session's own row
+    before the turn runs (``_ensure_session_db_row``), so a fresh install on
+    its first-ever message holds exactly one row.
+    """
+    try:
+        with _session_db(session) as db:
+            return db is not None and db.session_count_ge(2)
+    except Exception:
+        logger.debug("session count probe failed for first-contact check", exc_info=True)
+        return False
+
+
+def _stage_first_contact_onboarding_note(session: dict, agent, history_empty: bool) -> None:
+    """Stage the install's first-message onboarding note for THIS turn (#82750).
+
+    The messaging gateway appends the consent-gated profile-build directive to
+    the very first message ever (``_hmwa_first_contact_notes``); the
+    TUI/Desktop surface never did, so a fresh install's first Desktop chat
+    skipped the opt-in profile flow entirely. Stage the same note through
+    ``agent._gateway_turn_context_notes`` — consumed by
+    ``agent.turn_context`` on the user message — never the ephemeral system
+    prompt, which must stay byte-stable for the conversation (prompt-cache
+    invariant). Fires at most once per install: the directive path persists
+    ``onboarding.seen.profile_build_offered`` before the turn runs.
+    """
+    try:
+        from agent.onboarding import first_contact_turn_note
+        from hermes_cli.config import load_config as _load_onboarding_config
+        from hermes_constants import get_hermes_home
+
+        note = first_contact_turn_note(
+            _load_onboarding_config() or {},
+            get_hermes_home() / "config.yaml",
+            session_history_empty=history_empty,
+            install_has_prior_sessions=_install_has_prior_sessions(session),
+        )
+        if not note:
+            return
+        prior = getattr(agent, "_gateway_turn_context_notes", "") or ""
+        agent._gateway_turn_context_notes = f"{prior}\n\n{note}" if prior else note
+    except Exception:
+        logger.debug("first-contact onboarding note failed", exc_info=True)
+
+
 def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images: list[str]):
     """Bind scopes, sync the agent, snapshot history, build the run message; returns
     ``(prompt, run_message, cols, streamer)`` or None when @-expansion was refused.
@@ -581,6 +630,9 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
     with session["history_lock"]:
         st.history = list(session["history"])
         st.history_version = int(session.get("history_version", 0))
+    # Install-first-message onboarding (#82750): gateway parity for the TUI/Desktop
+    # surface — no-op unless this is the install's very first message ever.
+    _stage_first_contact_onboarding_note(session, agent, not st.history)
     cwd = _session_cwd(session)
     _register_session_cwd(session)
     cols = session.get("cols", 80)
@@ -623,6 +675,7 @@ def _invoke_agent(
     """Wire the streaming callbacks and run the conversation into ``st.result``.
     ``text`` is the turn's raw submit, matched against the row staged by prompt.submit."""
     agent = st.agent
+    st.compression_count = getattr(getattr(agent, "context_compressor", None), "compression_count", None)
     # Bot Chat mirrors gateway.stream_consumer: deltas are withheld while the streamed buffer
     # could still resolve to a silence marker ("NO"->"NO_REPLY"), so a bare marker is never
     # shown and then retracted (the client keeps streamed text when message.complete is "").
@@ -754,6 +807,53 @@ def _absorb_turn_result(
     return status_note
 
 
+def _persisted_turn_receipt(st: _TurnRun, raw: Any, status: str) -> dict | None:
+    """Report committed row addresses, never a text/timestamp search for a matching turn.
+
+    The agent's persistence cursor is re-anchored during compaction. A partial receipt can
+    address its surviving rows, but cannot retire a client's entire streamed turn. Full coverage
+    additionally requires the unchanged pre-turn prefix and no redirected user boundary.
+    """
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+
+    messages = st.result.get("messages")
+    start = getattr(st.agent, "_persist_user_message_idx", None)
+    if (not isinstance(messages, list) or type(start) is not int or not 0 <= start < len(messages)
+            or messages[start].get("role") != "user"):
+        return None
+
+    def committed_id(message):
+        row_id = message.get("_row_id")
+        return row_id if message.get(_DB_PERSISTED_MARKER) and type(row_id) is int and row_id > 0 else None
+
+    tail = messages[start:]
+    anchor_id = committed_id(tail[0])
+    if any(before is tail[0] or (anchor_id is not None and anchor_id == committed_id(before))
+           for before in st.history):
+        return None  # preflight returned the old transcript, not a new turn
+    row_ids = [rid for message in tail if (rid := committed_id(message)) is not None]
+    if not row_ids:
+        return None
+    receipt = {"row_ids": row_ids, "complete": False}
+    if (user_row_id := committed_id(tail[0])) is not None:
+        receipt["user_row_id"] = user_row_id
+    last = tail[-1]
+    # Equality only verifies the structurally selected final row's body: it never selects an identity.
+    if (status == "complete" and last.get("role") == "assistant" and not last.get("tool_calls")
+            and last.get("content") == raw and (final_id := committed_id(last)) is not None):
+        receipt["final_assistant_row_id"] = final_id
+    prefix_unchanged = start == len(st.history) and all(
+        committed_id(before) is not None and committed_id(before) == committed_id(after)
+        for before, after in zip(st.history, messages[:start]))
+    receipt["complete"] = bool(
+        prefix_unchanged and type(st.compression_count) is int
+        and st.compression_count == getattr(getattr(st.agent, "context_compressor", None), "compression_count", None)
+        and len(row_ids) == len(tail)
+        and sum(message.get("role") == "user" for message in tail) == 1
+        and "final_assistant_row_id" in receipt)
+    return receipt
+
+
 def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None, cols: int):
     """``(payload, raw, status)`` for message.complete; retains/clears the inflight turn and
     settles the hosted-room terminal receipt."""
@@ -773,12 +873,18 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
     if _is_bot_mode_session(session):
         raw = _bot_mode_delivery_text(raw, successful=status == "complete")
     payload = {"text": raw, "usage": _get_usage(agent), "status": status}
+    if receipt := _persisted_turn_receipt(st, raw, status):
+        payload["persisted_turn"] = receipt
     if last_reasoning:
         payload["reasoning"] = last_reasoning
     if status_note:
         payload["warning"] = status_note
     if result.get("response_previewed"):
         payload["response_previewed"] = True
+    # transform_llm_output may rewrite the final after streaming: the renderer must treat
+    # this payload as the authoritative replacement even without a prefix relationship.
+    if result.get("response_transformed"):
+        payload["response_transformed"] = True
     # Structured billing-wall descriptor: the client renders recovery without re-parsing text.
     if _billing_block := result.get("billing_block"):
         payload["billing"] = _billing_block

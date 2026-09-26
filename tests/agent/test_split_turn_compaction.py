@@ -216,3 +216,86 @@ def test_a_tail_that_fits_the_budget_still_anchors_the_active_request() -> None:
     assert any(
         m.get("content") == _ACTIVE_REQUEST for m in messages[cut:]
     )
+
+
+def test_active_request_survives_repeated_compaction_and_restart(tmp_path) -> None:
+    # Fallback compaction (no LLM summary) + SQLite reload between cycles:
+    # the active request must be recognized from persisted content alone.
+    from agent.context_compressor import _INFLIGHT_TASK_REPLAY_HEADER, _SUMMARY_END_MARKER
+    from agent.conversation_compression import _ensure_compressed_has_user_turn
+    from hermes_state import SessionDB
+
+    db_path = tmp_path / "state.db"
+    db = SessionDB(db_path=db_path)
+    session_id = "active-turn-restart"
+    db.create_session(session_id, "test")
+    messages = _oversized_active_turn()
+    try:
+        for cycle in range(3):
+            if cycle:
+                for index in range(10 * cycle, 10 * (cycle + 1)):
+                    messages.extend(_tool_group(index))
+            original = messages
+            compressor = _make_compressor()
+            with patch.object(compressor, "_generate_summary", return_value=None):
+                messages = compressor.compress(original, current_tokens=90_000, force=True)
+            _ensure_compressed_has_user_turn(original, messages)
+            assert len(messages) < len(original)
+            _assert_tool_pairs_are_complete(messages)
+            # Historical summaries may quote the request. Count only actionable
+            # text after their boundary, not those explicitly historical quotes.
+            user_content = "\n".join(
+                str(m.get("content")).rsplit(_SUMMARY_END_MARKER, 1)[-1]
+                for m in messages if m["role"] == "user"
+            )
+            assert user_content.count(_ACTIVE_REQUEST) == 1
+            assert user_content.count(_INFLIGHT_TASK_REPLAY_HEADER) == 1
+            assert user_content.rfind(_ACTIVE_REQUEST) > user_content.rfind(_SUMMARY_END_MARKER)
+            db.archive_and_compact(session_id, messages)
+            db.close()
+            db = SessionDB(db_path=db_path)
+            messages = db.get_messages_as_conversation(session_id)
+    finally:
+        db.close()
+
+    # Only a replay after the LAST end marker is live: a carrier merged into a
+    # newer summary's prior context is history, and a leftover flag is not content.
+    from agent.context_compressor import (
+        SUMMARY_PREFIX,
+        _MERGED_PRIOR_CONTEXT_HEADER,
+        _MERGED_SUMMARY_DELIMITER,
+    )
+
+    old = f"{SUMMARY_PREFIX}\nold\n\n{_SUMMARY_END_MARKER}\n\n{_INFLIGHT_TASK_REPLAY_HEADER}\ndo X"
+    tail_merged = (
+        f"{_MERGED_PRIOR_CONTEXT_HEADER}\n{old}\n\n{_MERGED_SUMMARY_DELIMITER}\n\n"
+        f"{SUMMARY_PREFIX}\nnew\n\n{_SUMMARY_END_MARKER}"
+    )
+    detect = ContextCompressor._has_merged_inflight_replay
+    assert detect({"role": "user", "content": old})
+    assert not detect({"role": "user", "content": tail_merged})
+    assert not detect({"role": "user", "content": "hi", "_inflight_replay_merged": True})
+
+
+@pytest.mark.parametrize(
+    "payload, can_split",
+    [
+        ([{"type": "audio", "source": {"data": "AA=="}}], False),
+        ([{"type": "text", "text": _ACTIVE_REQUEST}], True),
+    ],
+    ids=["audio", "text-parts"],
+)
+def test_split_requires_a_request_that_can_be_restated_as_text(payload, can_split):
+    compressor = _make_compressor()
+    messages = _oversized_active_turn()
+    messages[3]["content"] = payload
+    cut = compressor._find_tail_cut_by_tokens(messages, compressor._protect_head_size(messages))
+    assert (cut > 3) is can_split
+    with patch.object(compressor, "_generate_summary", return_value=None):
+        compressed = compressor.compress(messages, current_tokens=90_000, force=True)
+    if can_split:
+        assert len(compressed) < len(messages)
+        assert any(_ACTIVE_REQUEST in str(m.get("content")) for m in compressed)
+    else:
+        assert any(m.get("content") == payload for m in compressed)
+    _assert_tool_pairs_are_complete(compressed)

@@ -23,17 +23,19 @@ import { useI18n } from '@/i18n'
 import { messagePaintWeight } from '@/lib/render-weight'
 import { cn } from '@/lib/utils'
 import {
+  COMPOSER_CLEARANCE_SLOT,
   getThreadScrollPosition,
   onScrollToBottomRequest,
   onThreadEditClose,
   onThreadEditOpen,
+  onThreadPageScrollRequest,
   planThreadScrollRestore,
   publishThreadAtBottom,
+  readThreadScrollResizeMetrics,
   resetPublishedThreadScroll,
   saveThreadScrollPosition,
   shouldReapplyFrozenThreadScrollOffset,
   THREAD_SCROLL_BOTTOM,
-  type ThreadScrollRestoreResizeMetrics,
   type ThreadScrollState,
   threadScrollStateFromMetrics,
   threadScrollStorageKey,
@@ -589,6 +591,11 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   const windowCommitRef = useRef<string | null>(null)
   const jumpRestoreRef = useRef<(() => void) | null>(null)
   const isRunning = useAuiState(s => s.thread.isRunning)
+  // Read by the resize-pin callback so a turn boundary doesn't rebuild its
+  // scroll listener and ResizeObserver.
+  const isRunningRef = useRef(isRunning)
+  isRunningRef.current = isRunning
+  const clearanceRef = useRef<HTMLDivElement>(null)
   // Session the settle loop last armed for, so a re-arm within the same load
   // is distinguishable from a switch to a different transcript.
   const settleKeyRef = useRef(sessionKey)
@@ -836,12 +843,49 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       return
     }
 
+    // use-stick-to-bottom follows a content resize on the next animation frame,
+    // so a busy streamed turn can grow the content before that callback runs:
+    // the viewport paints at the stale scrollTop, visibly drifting up before
+    // the re-pin (#118482). The RO leg closes that frame, synchronously before
+    // paint.
+    const resizeMetrics = () => readThreadScrollResizeMetrics(el, clearanceRef.current)
+
+    // ponytail: previous-metrics precision is load-bearing — the predicate must
+    // see the frame BEFORE the growth, so a scroll event (which also writes it)
+    // can't leave a stale gap that makes a mid-stream resize look like growth.
+    let previousResizeMetrics = resizeMetrics()
+
     const update = () => {
+      previousResizeMetrics = resizeMetrics()
+      liveScrollStateRef.current = threadScrollStateFromMetrics(el)
+    }
+
+    const onResize = () => {
+      const nextResizeMetrics = resizeMetrics()
+
+      // Same transcript-only metric as the restore loop: a composer-only resize
+      // (every keystroke) grows the clearance spacer, not the rows, so it is
+      // distinguishable from streamed content. The pre-growth metrics hold the
+      // reader's position, so a reader who scrolled up is never yanked back
+      // (#108941); use-stick-to-bottom stays the single scroll owner otherwise.
+      // An open inline edit holds the viewport (beginEditHold), so its growing
+      // bubble is never followed.
+      if (
+        isRunningRef.current &&
+        !el.hasAttribute('data-editing') &&
+        shouldReapplyFrozenThreadScrollOffset(THREAD_SCROLL_BOTTOM, true, previousResizeMetrics, nextResizeMetrics) &&
+        threadScrollStateFromMetrics({ ...previousResizeMetrics, scrollTop: el.scrollTop }).kind === 'bottom' &&
+        !hasTranscriptTextSelection(el)
+      ) {
+        el.scrollTop = threadScrollTargetTop(THREAD_SCROLL_BOTTOM, nextResizeMetrics)
+      }
+
+      previousResizeMetrics = nextResizeMetrics
       liveScrollStateRef.current = threadScrollStateFromMetrics(el)
     }
 
     el.addEventListener('scroll', update, { passive: true })
-    const observer = new ResizeObserver(update)
+    const observer = new ResizeObserver(onResize)
     observer.observe(content)
 
     return () => {
@@ -1056,15 +1100,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     // restored target through those resizes until input or a live run takes over.
     // Bottom needs the same protection: the library follows on the next frame,
     // but a switch in this frame would otherwise persist the temporary gap.
-    const restoreResizeMetrics = (): ThreadScrollRestoreResizeMetrics => {
-      const clearance = contentRef.current?.querySelector('[data-slot="aui_composer-clearance"]')
-
-      return {
-        clearanceHeight: clearance instanceof HTMLElement ? clearance.clientHeight : 0,
-        clientHeight: el.clientHeight,
-        scrollHeight: el.scrollHeight
-      }
-    }
+    const restoreResizeMetrics = () => readThreadScrollResizeMetrics(el, clearanceRef.current)
 
     let lastRestoreMetrics = restoreResizeMetrics()
 
@@ -1290,6 +1326,52 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     }
   })
 
+  // Page the focused transcript explicitly. Browser-default PageUp/PageDown
+  // targets whichever ancestor happens to own focus, which is unreliable in
+  // the nested desktop layout. Keep the movement here with the thread's sole
+  // scroll owner, and key the request so split/kept-alive threads stay put.
+  useEffect(
+    () =>
+      onThreadPageScrollRequest(direction => {
+        const el = scrollRef.current
+
+        if (!el) {
+          return
+        }
+
+        // A no-op PageDown at the bottom must not escape sticky follow: the
+        // browser will clamp the write and emit no scroll event to re-lock it.
+        if (direction > 0 && threadScrollStateFromMetrics(el).kind === 'bottom') {
+          return
+        }
+
+        cancelRestoreRef.current?.()
+        stopScroll()
+
+        // At the clamped top there will be no native scroll event to trigger
+        // the existing automatic "Show earlier" path. Treat PageUp there like
+        // an upward wheel notch before moving the viewport.
+        if (
+          direction < 0 &&
+          shouldAutoShowEarlier({
+            action: resolveShowEarlierAction(hiddenCount, olderAvailable),
+            isAtBottom,
+            loadSettled: loadSettledRef.current,
+            restorePending: restoreFromBottomRef.current != null,
+            scrollTop: el.scrollTop,
+            wheelDeltaY: direction
+          })
+        ) {
+          showEarlier()
+
+          return
+        }
+
+        el.scrollTop += direction * el.clientHeight
+      }, sessionKey ?? null),
+    [hiddenCount, isAtBottom, olderAvailable, scrollRef, sessionKey, showEarlier, stopScroll]
+  )
+
   // Scroll/wheel at the top edge pages older turns through the same showEarlier
   // path as the button. Wheel is required because browsers emit no `scroll`
   // once scrollTop is already 0 — exactly where the reader who wants more is.
@@ -1489,7 +1571,8 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
             <div
               aria-hidden="true"
               className="shrink-0"
-              data-slot="aui_composer-clearance"
+              data-slot={COMPOSER_CLEARANCE_SLOT}
+              ref={clearanceRef}
               style={{ height: 'var(--thread-last-message-clearance)' }}
             />
           )}

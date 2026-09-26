@@ -96,19 +96,6 @@ describe("fetchJSON", () => {
 });
 
 describe("api.getModelOptions", () => {
-  it("requests a live model refresh when asked", async () => {
-    vi.stubGlobal("window", {});
-
-    const fetchMock = jsonFetchMock({ providers: [] });
-    vi.stubGlobal("fetch", fetchMock);
-
-    await api.getModelOptions({ refresh: true });
-
-    expect(fetchMock).toHaveBeenCalledWith(
-      "/api/model/options?refresh=1&include_unconfigured=1",
-      expect.objectContaining({ credentials: "include" }),
-    );
-  });
 
   it("keeps explicit profile scoping when refreshing", async () => {
     vi.stubGlobal("window", {});

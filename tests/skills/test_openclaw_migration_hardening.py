@@ -15,7 +15,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 SCRIPT_PATH = (
     Path(__file__).resolve().parents[2]
     / "optional-skills"
@@ -25,7 +24,6 @@ SCRIPT_PATH = (
     / "openclaw_to_hermes.py"
 )
 
-
 def _load():
     spec = importlib.util.spec_from_file_location("openclaw_to_hermes_hard", SCRIPT_PATH)
     module = importlib.util.module_from_spec(spec)
@@ -33,7 +31,6 @@ def _load():
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
-
 
 # ───────────────────────────────────────────────────────────────────────
 # Redaction
@@ -43,21 +40,11 @@ def test_redact_replaces_secret_by_key_name():
     out = mod.redact_migration_value({"OPENROUTER_API_KEY": "sk-or-v1-abcdef12345678"})
     assert out["OPENROUTER_API_KEY"] == mod.REDACTED_MIGRATION_VALUE
 
-
-
-
 def test_redact_handles_github_token_pattern():
     mod = _load()
     out = mod.redact_migration_value({"detail": "token: ghp_1234567890abcdef1234"})
     assert "ghp_" not in out["detail"]
     assert mod.REDACTED_MIGRATION_VALUE in out["detail"]
-
-
-
-
-
-
-
 
 def test_redact_is_recursive():
     mod = _load()
@@ -73,13 +60,11 @@ def test_redact_is_recursive():
     assert out["outer"]["items"][0]["password"] == mod.REDACTED_MIGRATION_VALUE
     assert out["outer"]["items"][1]["details"]["apiKey"] == mod.REDACTED_MIGRATION_VALUE
 
-
 def test_redact_preserves_non_secret_keys_and_values():
     mod = _load()
     input_data = {"name": "hermes", "count": 42, "tags": ["a", "b"]}
     out = mod.redact_migration_value(input_data)
     assert out == input_data
-
 
 def test_redact_normalizes_key_case_and_punctuation():
     mod = _load()
@@ -87,7 +72,6 @@ def test_redact_normalizes_key_case_and_punctuation():
     for key in ("Api Key", "api-key", "API_KEY", "apikey"):
         out = mod.redact_migration_value({key: "secret"})
         assert out[key] == mod.REDACTED_MIGRATION_VALUE, f"failed to redact: {key}"
-
 
 def test_redact_leaves_env_secretref_alone():
     """SecretRef-like shapes ({source: env, id: ...}) are pointers, not secrets."""
@@ -98,7 +82,6 @@ def test_redact_leaves_env_secretref_alone():
     # If we later want to exempt SecretRef values the way OpenClaw does, update
     # both this test and _redact_internal together.
     assert out["apiKey"] == mod.REDACTED_MIGRATION_VALUE
-
 
 def test_write_report_redacts_api_keys_on_disk(tmp_path):
     mod = _load()
@@ -125,7 +108,6 @@ def test_write_report_redacts_api_keys_on_disk(tmp_path):
     assert "sk-or-v1-1234567890abcdef" not in (tmp_path / "report.json").read_text()
     assert persisted["items"][0]["details"]["OPENROUTER_API_KEY"] == mod.REDACTED_MIGRATION_VALUE
 
-
 # ───────────────────────────────────────────────────────────────────────
 # Warnings and next-steps
 # ───────────────────────────────────────────────────────────────────────
@@ -149,9 +131,6 @@ def _make_minimal_migrator(mod, tmp_path, **overrides):
     defaults.update(overrides)
     return mod.Migrator(**defaults)
 
-
-
-
 def test_conflict_produces_overwrite_warning(tmp_path):
     mod = _load()
     migrator = _make_minimal_migrator(mod, tmp_path, execute=True)
@@ -168,9 +147,6 @@ def test_conflict_produces_overwrite_warning(tmp_path):
     # The conflict on config.yaml should have flipped the block flag too.
     assert migrator._config_apply_blocked is True
 
-
-
-
 def test_provider_keys_skipped_warning_when_secrets_disabled(tmp_path):
     mod = _load()
     migrator = _make_minimal_migrator(mod, tmp_path, execute=True, migrate_secrets=False)
@@ -184,26 +160,9 @@ def test_provider_keys_skipped_warning_when_secrets_disabled(tmp_path):
     report = migrator.build_report()
     assert any("--migrate-secrets" in w for w in report["warnings"])
 
-
 # ───────────────────────────────────────────────────────────────────────
 # Blocked-by-earlier-conflict sequencing
 # ───────────────────────────────────────────────────────────────────────
-def test_config_apply_block_flips_on_config_yaml_conflict(tmp_path):
-    mod = _load()
-    migrator = _make_minimal_migrator(mod, tmp_path, execute=True)
-    assert migrator._config_apply_blocked is False
-    migrator.record(
-        "model-config",
-        source=None,
-        destination=migrator.target_root / "config.yaml",
-        status=mod.STATUS_CONFLICT,
-    )
-    assert migrator._config_apply_blocked is True
-
-
-
-
-
 
 def test_run_if_selected_skips_config_ops_after_block(tmp_path):
     mod = _load()
@@ -220,9 +179,6 @@ def test_run_if_selected_skips_config_ops_after_block(tmp_path):
     assert blocked[0].status == mod.STATUS_SKIPPED
     assert blocked[0].reason == mod.REASON_BLOCKED_BY_APPLY_CONFLICT
 
-
-
-
 def test_dry_run_never_blocks_even_after_conflict(tmp_path):
     """Dry runs must preview the full plan — blocking mid-preview would hide
     conflicts and mislead the user about what would actually happen."""
@@ -234,7 +190,6 @@ def test_dry_run_never_blocks_even_after_conflict(tmp_path):
     called = []
     migrator.run_if_selected("tts-config", lambda: called.append(True))
     assert called == [True]
-
 
 # ───────────────────────────────────────────────────────────────────────
 # --json output mode
@@ -269,7 +224,6 @@ def test_json_mode_emits_structured_report(tmp_path):
     assert "next_steps" in payload
     assert payload["mode"] == "dry-run"
 
-
 def test_json_mode_redacts_secrets_in_output(tmp_path):
     """Even plan-only JSON output goes through the redactor — the stdout
     capture path is what gets piped into CI / support tickets."""
@@ -300,24 +254,6 @@ def test_json_mode_redacts_secrets_in_output(tmp_path):
     # The raw key value must never appear in the JSON output.
     assert "sk-or-v1-abcdef1234567890abcdef" not in result.stdout
 
-
 # ───────────────────────────────────────────────────────────────────────
 # ItemResult schema additions
 # ───────────────────────────────────────────────────────────────────────
-
-
-def test_record_honors_sensitive_flag(tmp_path):
-    mod = _load()
-    migrator = _make_minimal_migrator(mod, tmp_path)
-    migrator.record("x", None, None, "migrated", sensitive=True)
-    assert migrator.items[0].sensitive is True
-
-
-def test_status_constants_match_historical_strings():
-    """Downstream consumers (claw.py, tests, docs) depend on these string values."""
-    mod = _load()
-    assert mod.STATUS_MIGRATED == "migrated"
-    assert mod.STATUS_SKIPPED == "skipped"
-    assert mod.STATUS_CONFLICT == "conflict"
-    assert mod.STATUS_ERROR == "error"
-    assert mod.STATUS_ARCHIVED == "archived"

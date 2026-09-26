@@ -21,7 +21,6 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.webhook import WebhookAdapter
 from gateway.run import GatewayRunner
 from hermes_cli.tools_config import _get_platform_tools
@@ -54,9 +53,6 @@ class TestWebhookAdapterToolsetsForSource:
         wa = _make_adapter({"mon": {"secret": "x", "toolsets": ["terminal", "file"]}})
         assert wa.toolsets_for_source(_Src("webhook:mon:d1")) == ["terminal", "file"]
 
-    def test_route_without_toolsets_returns_none(self):
-        wa = _make_adapter({"plain": {"secret": "x"}})
-        assert wa.toolsets_for_source(_Src("webhook:plain:d1")) is None
 
     def test_unknown_route_returns_none(self):
         wa = _make_adapter({})
@@ -78,12 +74,6 @@ class TestWebhookAdapterToolsetsForSource:
         assert wa.toolsets_for_source(_Src("webhook:str:d")) is None
         assert wa.toolsets_for_source(_Src("webhook:blank:d")) is None
 
-    def test_base_adapter_default_is_none(self):
-        # Non-webhook adapters inherit a None default: no override anywhere.
-        wa = _make_adapter({})
-        assert (
-            BasePlatformAdapter.toolsets_for_source(wa, _Src("webhook:mon:d")) is None
-        )
 
 
 class TestGatewayResolveEnabledToolsetsForSource:

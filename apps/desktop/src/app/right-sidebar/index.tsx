@@ -13,6 +13,7 @@ import { cn } from '@/lib/utils'
 import { $panesFlipped } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { openPreview } from '@/store/preview'
+import { openFolderAsProject } from '@/store/projects'
 import { $currentCwd, $selectedStoredSessionId, $workspaceCwdOwner } from '@/store/session'
 
 import { SidebarPanelLabel } from '../shell/sidebar-label'
@@ -69,7 +70,7 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder }: RightSide
         throw new Error(r.couldNotPreview(path))
       }
 
-      openPreview(preview, 'file-browser')
+      openPreview(preview)
     } catch (error) {
       notifyError(error, r.previewUnavailable)
     }
@@ -149,10 +150,22 @@ function FilesystemTab({
   const { t } = useI18n()
   const r = t.rightSidebar
 
-  // No working directory (a bare/detached chat) → no tree, just a terse hint.
-  // Switching workspace is a project/worktree action, never a raw folder picker.
+  // No working directory (a bare/detached chat) → no tree, but keep a way back
+  // into a folder (#53004): the projects paradigm removed the old folder picker,
+  // which stranded global sessions on a dead-end "No project open" pane. The
+  // affordance is the project-shaped one — ⌘O's open-folder-as-project flow,
+  // which upserts/enters the project and anchors a fresh session at the picked
+  // folder — entirely decoupled from $currentCwd.
   if (!hasWorkspace) {
-    return <PaneEmptyState label={r.noProjectOpen} />
+    return (
+      <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-4 text-center">
+        <SidebarPanelLabel className="pl-0 text-(--ui-text-quaternary)">{r.noProjectOpen}</SidebarPanelLabel>
+        <Button className="h-7 gap-1.5 text-xs" onClick={() => void openFolderAsProject()} size="sm" variant="outline">
+          <Codicon name="folder-opened" size="0.8125rem" />
+          {r.openFolder}
+        </Button>
+      </div>
+    )
   }
 
   return (

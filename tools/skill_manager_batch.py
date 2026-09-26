@@ -2,6 +2,7 @@
 (``skill_manage``/``_find_skill``/``_skill_gate_bypass``) is reached lazily
 through ``tools.skill_manager_tool`` so that module owns it."""
 
+from contextlib import suppress
 import json
 import logging
 import os
@@ -86,6 +87,7 @@ def _op_shape_error(action: str, args: dict):
 def _validate_batch_ops(operations, default_name, tool_error):
     """Shape checks with no side effects. Returns (names, None) or (None, error_json)."""
     from tools.skill_manager_guards import _background_review_preflight
+    from tools.skill_manager_tool import _validate_category
     def fail(i, msg):
         return None, tool_error(f"operations[{i}]{msg}", success=False)
     names = []
@@ -103,6 +105,10 @@ def _validate_batch_ops(operations, default_name, tool_error):
         # op[1] would first apply op[0] and then roll the whole batch back.
         if (shape_err := _op_shape_error(act, op)) is not None:
             return fail(i, f" ({act} on '{nm}'): {shape_err}")
+        # create's category is resolved to a target dir before the snapshot: reject a bad one here
+        # so it returns a JSON error (not a TypeError) and never leaks the snapshot tempdir.
+        if act == "create" and (cat_err := _validate_category(op.get("category"))) is not None:
+            return fail(i, f" ({act} on '{nm}'): {cat_err}")
         names.append(nm)
         if act == "create" and nm in names[:-1]:
             return fail(i, f": create for '{nm}' must precede that skill's other ops.")
@@ -129,9 +135,17 @@ def _validate_batch_ops(operations, default_name, tool_error):
     return names, None
 
 
-def _snapshot_skills(names, snap_root, find_skill):
-    """Copy every touched skill aside. Returns (snapshots, None) or (None, error_text)."""
-    snapshots = {}  # skill name -> (pre_dir or None, snapshot_dir or None, link_target or None)
+def _snapshot_skills(names, snap_root, find_skill, create_targets):
+    """Copy every touched skill aside. Returns (snapshots, None) or (None, error_text).
+
+    ``create_targets`` maps a name with no skill yet to the dir its ``create`` op will use.
+    An EMPTY pre-existing dir there has no SKILL.md to snapshot, yet create adopts it (see
+    ``_create_skill``): record that it pre-dated the batch so rollback never rmtree()s it.
+
+    An entry also carries the pre-state's SHAPE (``link_target``): a farm entry installed as a
+    per-skill symlink into a shared tree is restored as a symlink, and rollback cannot tell
+    that from the copy alone."""
+    snapshots = {}  # skill name -> (pre_dir, snapshot_dir, link_target, dir_pre_existed)
     for nm in dict.fromkeys(names):  # ordered unique
         pre = find_skill(nm)
         pre_dir = Path(pre["path"]) if pre else None
@@ -151,11 +165,13 @@ def _snapshot_skills(names, snap_root, find_skill):
                 shutil.copytree(pre_dir, snap)
             except Exception as exc:  # noqa: BLE001 — no snapshot, no atomicity
                 return None, f"Could not snapshot '{nm}' for atomic batch: {exc}"
-        snapshots[nm] = (pre_dir, snap, link_target)
+        target = create_targets.get(nm) if pre is None else None
+        snapshots[nm] = (pre_dir, snap, link_target, target is not None and target.is_dir())
     return snapshots, None
 
 
-def _restore_snapshot(pre_dir, snap, post_dir, link_target=None) -> None:
+def _restore_snapshot(pre_dir, snap, post_dir, link_target=None, dir_pre_existed=False,
+                      written=()) -> None:
     if link_target is not None:
         # Pre-state was a per-skill SYMLINK into a shared tree: restore it AS a
         # symlink to that same target. Never copytree the snapshot over the
@@ -170,8 +186,25 @@ def _restore_snapshot(pre_dir, snap, post_dir, link_target=None) -> None:
         return
     post_exists = post_dir is not None and post_dir.is_dir()
     if snap is None:
-        if post_exists:  # Batch created this skill: remove the partial result.
+        if not post_exists:
+            return
+        if not dir_pre_existed:  # Batch created this skill: remove the partial result.
             shutil.rmtree(post_dir)
+            return
+        # The dir predates the batch (adopted empty leftover): unlink exactly the files the
+        # batch wrote there, then rmdir() the now-empty dirs up to and including the skill dir.
+        # rmdir() fails on anything left, so a file that landed out-of-band survives.
+        for rel in ("SKILL.md", *written):
+            target = post_dir / rel
+            with suppress(OSError):
+                target.unlink()
+            for parent in target.parents:
+                if parent == post_dir or not parent.is_relative_to(post_dir):
+                    break
+                with suppress(OSError):
+                    parent.rmdir()
+        with suppress(OSError):
+            post_dir.rmdir()
         return
     if not post_exists:
         shutil.copytree(snap, pre_dir)
@@ -191,18 +224,25 @@ def _restore_snapshot(pre_dir, snap, post_dir, link_target=None) -> None:
     shutil.rmtree(aside, ignore_errors=True)
 
 
-def _rollback(snapshots, find_skill):
-    """Restore every snapshot. Returns (note, failed)."""
+def _rollback(snapshots, find_skill, results):
+    """Restore every snapshot. ``results`` are the ops applied so far (their name/file_path
+    tell an adopted dir's rollback which files were the batch's). Returns (note, failed)."""
     notes = []
-    for nm, (pre_dir, snap, link_target) in snapshots.items():
+    for nm, (pre_dir, snap, link_target, dir_pre_existed) in snapshots.items():
+        written = [posixpath.normpath(r["file_path"].lstrip("/")) for r in results
+                   if r["name"] == nm and r["action"] == "write_file" and r["file_path"]]
         try:
             post = find_skill(nm)
             _restore_snapshot(pre_dir, snap, Path(post["path"]) if post else None,
-                              link_target=link_target)
+                              link_target=link_target, dir_pre_existed=dir_pre_existed,
+                              written=written)
         except Exception as exc:  # noqa: BLE001
             notes.append(f"ROLLBACK FAILED for '{nm}' ({exc})"
                          + (f"; snapshot preserved at '{snap}'" if snap is not None else ""))
     return ("; ".join(notes) if notes else "all touched skills rolled back"), bool(notes)
+
+
+_ADVISORY_KEYS = ("lint_warnings", "lint_hint", "org_sharing")
 
 
 def _skill_manage_batch(operations, default_name: str = None, task_id: str = None,
@@ -244,7 +284,9 @@ def _skill_manage_batch(operations, default_name: str = None, task_id: str = Non
     # between the snapshot and a rollback would be silently reverted.
     with _smt._skill_mutation_locks(names):
         snap_root = Path(tempfile.mkdtemp(prefix="skill_batch_"))
-        snapshots, snap_err = _snapshot_skills(names, snap_root, _smt._find_skill)
+        create_targets = {names[i]: _smt._resolve_skill_dir(names[i], op.get("category"))
+                          for i, op in enumerate(operations) if op.get("action") == "create"}
+        snapshots, snap_err = _snapshot_skills(names, snap_root, _smt._find_skill, create_targets)
         if snap_err is not None:
             shutil.rmtree(snap_root, ignore_errors=True)
             return tool_error(snap_err, success=False)
@@ -261,7 +303,7 @@ def _skill_manage_batch(operations, default_name: str = None, task_id: str = Non
                 except Exception:  # noqa: BLE001
                     parsed = {"success": False, "error": "unparseable op result"}
                 if not parsed.get("success"):
-                    note, rollback_failed = _rollback(snapshots, _smt._find_skill)
+                    note, rollback_failed = _rollback(snapshots, _smt._find_skill, results)
                     fail = {  # key order is wire-visible
                         "success": False,
                         "error": (f"operations[{i}] ({op['action']} on '{names[i]}') failed: "
@@ -273,8 +315,12 @@ def _skill_manage_batch(operations, default_name: str = None, task_id: str = Non
                         if k not in ("success", "error") and v is not None:
                             fail.setdefault(k, v)
                     return json.dumps(fail, ensure_ascii=False)
-                results.append({"name": names[i], "action": op["action"],
-                                "file_path": op.get("file_path"), "success": True})
+                entry = {"name": names[i], "action": op["action"],
+                         "file_path": op.get("file_path"), "success": True}
+                # Advisory payloads (linter findings, org-sharing note) ride on the op result; the
+                # compact success row otherwise hides them and the model never sees a finding.
+                entry.update({k: parsed[k] for k in _ADVISORY_KEYS if parsed.get(k) is not None})
+                results.append(entry)
         finally:
             _smt._skill_gate_bypass.reset(token)
             if rollback_failed:

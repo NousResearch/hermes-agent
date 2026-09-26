@@ -445,6 +445,15 @@ def _parse_pre_tool_call(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     for verb, _, _, payload in _PRE_TOOL_DIALECTS:
         if data.get(verb) == "modify" and isinstance(data.get(payload), dict):
             return {"action": "modify", "args": data[payload]}
+    # Hermes-only escalation to the human-approval gate (#92553). Claude-Code's ``decision:
+    # approve`` means auto-ALLOW, so it is deliberately not mapped onto this.
+    if data.get("action") == "approve":
+        directive: Dict[str, Any] = {"action": "approve"}
+        for key in ("message", "rule_key"):
+            value = data.get(key)
+            if isinstance(value, str) and value.strip():
+                directive[key] = value.strip()
+        return directive
     return None
 
 
@@ -488,7 +497,7 @@ def allowlist_path() -> Path:
 def load_allowlist() -> Dict[str, Any]:
     """Return the parsed allowlist, or an empty skeleton if absent."""
     try:
-        raw = json.loads(allowlist_path().read_text(encoding="utf-8"))
+        raw = json.loads(allowlist_path().read_text(encoding="utf-8-sig"))
     except (json.JSONDecodeError, OSError):
         raw = None
     if not isinstance(raw, dict):
@@ -522,7 +531,7 @@ def _locked_update_approvals() -> Iterator[Dict[str, Any]]:
         if fcntl is None:  # pragma: no cover — non-POSIX fallback
             stack.enter_context(_allowlist_write_lock)
         else:
-            lock_fh = stack.enter_context(open(p.with_suffix(p.suffix + ".lock"), "a+", encoding="utf-8"))
+            lock_fh = stack.enter_context(open(p.with_suffix(p.suffix + ".lock"), "a+", encoding="utf-8"))  # windows-footgun: ok (write/append mode, not a read)
             fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
             stack.callback(_flock_unlock, lock_fh)
         data = load_allowlist()

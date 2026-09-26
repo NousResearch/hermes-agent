@@ -4,7 +4,14 @@ import { extractImageRefs } from '@/lib/embedded-images'
 import { dedupeGeneratedImageEchoesInParts } from '@/lib/generated-images'
 import type { MessageReaction, SessionMessage } from '@/types/hermes'
 
-import { assistantTextPart, chatMessageText, dedupeRepeatedTextInParts, reasoningPart, textPart } from './parts'
+import {
+  assistantTextPart,
+  chatMessageText,
+  dedupeRepeatedTextInParts,
+  reasoningPart,
+  renderMediaTags,
+  textPart
+} from './parts'
 import {
   applyStoredToolResult,
   applyStoredToolResultToParts,
@@ -26,28 +33,31 @@ const DISCORD_TRIGGERING_NOTE_RE =
   /(^|\n)\[Triggering message id: `[^`\n]*` — use as `message_id` for reply\/react\/pin via the discord tools\.\]\n*/
 
 /**
- * Reply text from a Responses-API `codex_message_items` sidecar (#68321), for rows
- * whose `content` persisted empty. `commentary` / `analysis` items are mid-turn
- * narration the backend routes to the reasoning channel
- * (codex_responses_adapter `_OutputScan._message`); the remaining phases are the reply.
+ * Backend history projection authorizes/sanitizes public commentary before it
+ * reaches Desktop. Raw Responses sidecars are used only for final-answer fallback;
+ * phase=analysis and raw phase=commentary are never promoted to assistant text.
  */
-function codexMessageItemText(message: SessionMessage): string {
+function codexMessageItemText(message: SessionMessage): { commentary: string[]; reply: string } {
   let items = message.codex_message_items
+
+  const commentary = Array.isArray(message.display_commentary)
+    ? message.display_commentary.filter((part): part is string => typeof part === 'string' && Boolean(part.trim()))
+    : []
+
+  const replies: string[] = []
 
   // REST carries SQLite JSON text; RPC history carries the decoded list.
   if (typeof items === 'string') {
     try {
       items = JSON.parse(items)
     } catch {
-      return ''
+      return { commentary, reply: '' }
     }
   }
 
   if (!Array.isArray(items)) {
-    return ''
+    return { commentary, reply: '' }
   }
-
-  const texts: string[] = []
 
   for (const item of items) {
     if (!item || typeof item !== 'object' || Array.isArray(item)) {
@@ -60,37 +70,34 @@ function codexMessageItemText(message: SessionMessage): string {
       continue
     }
 
-    if (record.phase === 'commentary' || record.phase === 'analysis') {
+    const phase = typeof record.phase === 'string' ? record.phase.trim().toLowerCase() : ''
+
+    if (phase === 'analysis' || phase === 'commentary' || !Array.isArray(record.content)) {
       continue
     }
 
-    const content = record.content
+    const chunks: string[] = []
 
-    if (!Array.isArray(content)) {
-      continue
-    }
-
-    for (const part of content) {
+    for (const part of record.content) {
       if (!part || typeof part !== 'object' || Array.isArray(part)) {
         continue
       }
 
       const partRecord = part as Record<string, unknown>
-      const partType = partRecord.type
 
-      if (partType !== 'output_text' && partType !== 'text') {
-        continue
+      if ((partRecord.type === 'output_text' || partRecord.type === 'text') && typeof partRecord.text === 'string') {
+        chunks.push(partRecord.text)
       }
+    }
 
-      const text = partRecord.text
+    const text = chunks.join('')
 
-      if (typeof text === 'string' && text.length > 0) {
-        texts.push(text)
-      }
+    if (text) {
+      replies.push(text)
     }
   }
 
-  return texts.join('')
+  return { commentary, reply: replies.join('') }
 }
 
 function displayContentForMessage(role: SessionMessage['role'], content: unknown): string {
@@ -282,6 +289,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     }
 
     active.parts = [...active.parts, ...parts]
+    active.durableComplete = false
     active.timestamp = earliestTimestamp(active.timestamp, timestamp, ...parts.map(part => part.timestamp))
     absorbRows(active, pendingToolRows)
 
@@ -298,6 +306,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
         id: `${pendingToolTimestamp || Date.now()}-${index}-tools`,
         role: 'assistant',
         parts: pendingToolParts,
+        durableComplete: false,
         ...(pendingToolRows > 1 ? { serverRowSpan: pendingToolRows } : {}),
         timestamp: pendingToolTimestamp
       })
@@ -344,7 +353,9 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       message.display_kind === 'async_delegation_complete' ||
       message.display_kind === 'process_complete' ||
       message.display_kind === 'auto_continue' ||
-      message.display_kind === 'personality_switch'
+      message.display_kind === 'personality_switch' ||
+      // Hermes closing a failed turn, not the model speaking.
+      message.display_kind === 'failed_turn'
         ? 'system'
         : message.role
 
@@ -360,38 +371,60 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     const extractedAttachmentRefs = imageRefExtraction?.refs.length ? imageRefExtraction.refs : undefined
 
     const parts: ChatMessagePart[] = []
+    const rowId = message.row_id ?? (typeof message.id === 'number' ? message.id : undefined)
+    const sourceHasTools = Array.isArray(message.tool_calls) && message.tool_calls.length > 0
+    const durableComplete = sourceHasTools ? false : rowId !== undefined ? true : undefined
 
-    const reasoning =
+    const codexText =
+      displayRole === 'assistant' && message.display_kind !== 'hidden' ? codexMessageItemText(message) : null
+
+    const commentary = codexText?.commentary ?? []
+
+    const rawReasoning =
       message.reasoning ||
       message.reasoning_content ||
       (typeof message.reasoning_details === 'string' ? message.reasoning_details : '')
+
+    const reasoning = message.display_reasoning !== undefined ? message.display_reasoning : rawReasoning
 
     if (reasoning && message.role === 'assistant') {
       parts.push(reasoningPart(reasoning, message.timestamp))
     }
 
-    if (displayContent) {
-      parts.push(
-        displayRole === 'assistant'
-          ? assistantTextPart(displayContent, message.timestamp)
-          : textPart(displayContent, message.timestamp)
-      )
+    const reply = message.display_content !== undefined ? displayContent : displayContent || codexText?.reply
+    // Some providers also persist the joined commentary as canonical content.
+    // Keep that authoritative copy once, without treating unrelated final text
+    // as a reason to discard the earlier public messages.
+    const normalized = (value: string) => renderMediaTags(value).replace(/\s+/g, ' ').trim()
+
+    const commentaryIsReply = Boolean(
+      reply && commentary.length && normalized(commentary.join('\n\n')) === normalized(reply)
+    )
+
+    if (!commentaryIsReply) {
+      parts.push(...commentary.map(text => assistantTextPart(text, message.timestamp)))
     }
 
-    // Reply text can live only in the sidecar alongside reasoning or tool parts.
-    // Those parts are not a substitute for the answer; canonical content still wins.
-    if (message.role === 'assistant' && message.display_kind !== 'hidden' && !displayContent) {
-      const codexText = codexMessageItemText(message)
-
-      if (codexText) {
-        parts.push(assistantTextPart(codexText, message.timestamp))
-      }
+    if (reply) {
+      parts.push(
+        displayRole === 'assistant' ? assistantTextPart(reply, message.timestamp) : textPart(reply, message.timestamp)
+      )
     }
 
     if (message.role === 'assistant' && Array.isArray(message.tool_calls)) {
       parts.push(
-        ...message.tool_calls.map((call, callIndex) => toolPartFromStoredCall(call, callIndex, message.timestamp))
+        ...message.tool_calls.map((call, callIndex) =>
+          toolPartFromStoredCall(call, callIndex, message.timestamp, message.tool_call_labels)
+        )
       )
+    }
+
+    if (rowId !== undefined) {
+      for (const part of parts) {
+        if (part.type === 'text') {
+          part.sourceRowId = rowId
+        }
+      }
     }
 
     if (!parts.length && !extractedAttachmentRefs?.length) {
@@ -436,6 +469,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
 
       if (activeAssistant && (currentHasToolCall || activeHasToolCall)) {
         activeAssistant.parts = [...activeAssistant.parts, ...parts]
+        activeAssistant.durableComplete = durableComplete
         activeAssistant.timestamp = earliestTimestamp(
           activeAssistant.timestamp,
           message.timestamp,
@@ -453,12 +487,11 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     // Gateway resume names the durable row id `row_id`; the REST transcript
     // prefetch ships the same messages.id as a numeric `id`. Either one lets
     // reactions address this exact row later.
-    const rowId = message.row_id ?? (typeof message.id === 'number' ? message.id : undefined)
-
     result.push({
       id: `${message.timestamp || Date.now()}-${index}-${displayRole}`,
       role: displayRole,
       parts,
+      ...(message.role === 'assistant' && durableComplete !== undefined ? { durableComplete } : {}),
       ...(message.display_kind === 'async_delegation_complete' || message.display_kind === 'process_complete'
         ? { asyncResult: asyncResultBody(displayContentForMessage(message.role, message.content || content)) }
         : {}),

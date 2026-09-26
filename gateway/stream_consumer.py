@@ -574,13 +574,23 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                 if self._should_edit(tick) and (
                     self._accumulated or (self._use_native_streaming and self._tool_progress_active)
                 ):
+                    # Seal first: it clears the message id, so a remainder still over the limit
+                    # is split again below. A plain first send would let the adapter split it and
+                    # adopt only the LAST chunk as the preview; the next seal then overwrites that
+                    # chunk with the head of the whole remainder (duplicated + lost text, #25349).
+                    await self._seal_overflow_heads()
                     # Overflow split.  Native streaming bypasses this: the adapter
                     # truncates against the stream protocol's own limit.
                     if not self._use_native_streaming and self._first_send_overflows():
                         if await self._split_first_send(tick):
                             return
-                        continue
-                    await self._seal_overflow_heads()
+                        if self._first_send_overflows():
+                            # A head send failed: keep the full text for the fallback final, and
+                            # skip the boundary reset below that would clear it.
+                            self._signal_flush(tick.flush_event)
+                            continue
+                    # The split tail goes out now, so a commentary or tool boundary drained in
+                    # this tick still lands after it instead of being dropped.
                     await self._push_update(tick)
 
                 if tick.got_done:
@@ -611,8 +621,10 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
     def _resolve_length_budget(self) -> "tuple[Callable[[str], int], int]":
         """Per-chat length function (relay adapters differ per chat, e.g. utf16) + budget.
         isinstance gate: MagicMock auto-attributes aren't callables; test doubles use len."""
-        len_fn = (self.adapter.message_len_fn_for_chat(self.chat_id)
-                  if isinstance(self.adapter, _BasePlatformAdapter) else len)
+        # Shares the guarded ladder with the fallback path: a git pull while the gateway
+        # runs can pair new consumer code with an old in-memory adapter lacking
+        # message_len_fn_for_chat (#72628), which then falls back to message_len_fn.
+        len_fn, _ = self._fallback_len_budget()
         return len_fn, max(500, self._raw_message_limit() - len_fn(self.cfg.cursor) - 100)
 
     async def _start_transports(self) -> None:
@@ -755,7 +767,11 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             reply_to = new_id
 
         if heads_delivered:
-            self._accumulated = chunks[-1]
+            # truncate_message suffixes multi-chunk output with " (n/n)"; the tail is the LIVE
+            # preview later deltas extend, so a kept indicator ends up embedded mid-reply.
+            tail = chunks[-1]
+            indicator = f" ({len(chunks)}/{len(chunks)})"
+            self._accumulated = tail[: -len(indicator)] if tail.endswith(indicator) else tail
             # Flag BEFORE the tail send: fresh-final replaces every tracked preview
             # with one message, which is only valid while the active message holds
             # the whole answer — deleting sealed heads drops delivered text.
@@ -778,11 +794,6 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         if tick.got_segment_break:
             self._fallback_final_send = False
             self._fallback_prefix = ""
-            if not self._accumulated:
-                return False
-        # Early `continue` skips the bottom-of-loop flush signal.
-        if tick.got_flush:
-            self._signal_flush(tick.flush_event)
         return False
 
     def _overflows(self) -> bool:
@@ -917,9 +928,10 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         continuation goes out once via _send_fallback_final."""
         if self._cumulative_transport():
             return
-        # If the segment-break edit didn't land (flood control / fallback mode),
-        # _accumulated holds unseen pre-boundary text — flush it before the reset.
-        if (self._accumulated and not tick.update_visible and self._message_id
+        # If the segment-break edit or send didn't land (flood control / fallback mode, or a
+        # failed first send of a split tail with no message id yet), _accumulated holds unseen
+        # pre-boundary text — flush it before the reset clears it.
+        if (self._accumulated and not tick.update_visible
                 and self._message_id != "__no_edit__"):
             await self._flush_segment_tail_on_edit_failure()
         self._reset_segment_state(preserve_no_edit=True)

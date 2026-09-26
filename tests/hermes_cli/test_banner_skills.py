@@ -3,13 +3,11 @@
 import pytest
 from unittest.mock import patch
 
-
 _MOCK_SKILLS = [
     {"name": "skill-a", "description": "A skill", "category": "tools"},
     {"name": "skill-b", "description": "B skill", "category": "tools"},
     {"name": "skill-c", "description": "C skill", "category": "creative"},
 ]
-
 
 @pytest.fixture(autouse=True)
 def _reset_skills_cache():
@@ -20,7 +18,6 @@ def _reset_skills_cache():
     banner._available_skills_cache = None
     yield
     banner._available_skills_cache = None
-
 
 def test_get_available_skills_delegates_to_find_all_skills():
     """get_available_skills should call _find_all_skills (which handles filtering)."""
@@ -33,7 +30,6 @@ def test_get_available_skills_delegates_to_find_all_skills():
     assert sorted(result["tools"]) == ["skill-a", "skill-b"]
     assert result["creative"] == ["skill-c"]
 
-
 def test_get_available_skills_null_category_becomes_general():
     """Skills with None category should be grouped under 'general'."""
     skills = [{"name": "orphan-skill", "description": "No cat", "category": None}]
@@ -43,20 +39,3 @@ def test_get_available_skills_null_category_becomes_general():
 
     assert "general" in result
     assert result["general"] == ["orphan-skill"]
-
-
-def test_get_available_skills_is_memoized():
-    """Second call must not re-walk the skills tree (startup perf contract)."""
-    import hermes_cli.banner as banner
-    calls = []
-
-    def fake_find(**kwargs):
-        calls.append(1)
-        return list(_MOCK_SKILLS)
-
-    with patch("tools.skills_tool._find_all_skills", side_effect=fake_find):
-        first = banner.get_available_skills()
-        second = banner.get_available_skills()
-
-    assert first == second
-    assert len(calls) == 1

@@ -1776,6 +1776,23 @@ class TestProfileArg:
         legacy = ["/usr/bin/osascript", "-e", f'do shell script "exec {argv[0]} gateway run"']
         assert status.looks_like_gateway_command_line(" ".join(legacy)) is False
 
+    def test_launchd_wrapper_is_gated_on_local_network_macos(self, tmp_path, monkeypatch):
+        """macOS <15 has no Local Network Privacy: no platform-binary wrapper, and no idle-sleep
+        assertion held for nothing (hackzyl's A/B, #123633). Unknown versions keep the wrapper —
+        launchd is macOS-only, so the conservative default cannot hurt a wrong host."""
+        from hermes_cli import gateway_launchd
+
+        command = ["/venv/bin/python", "-m", "hermes_cli.main", "gateway", "run"]
+        for version, wrapped in (("26.3", True), ("15.0", True), ("14.7", False), ("", True)):
+            monkeypatch.setattr(gateway_launchd.platform, "mac_ver",
+                                lambda v=version: (v, ("", "", ""), ""))
+            program_args = gateway_launchd.launchd_program_arguments(
+                command, tmp_path / "gateway.log", tmp_path / "gateway.error.log")
+            prefix = ["/usr/bin/caffeinate", "/bin/sh", "-c"] if wrapped else ["/bin/sh", "-c"]
+            assert program_args[:len(prefix)] == prefix, (version, program_args)
+            exec_, *argv = shlex.split(program_args[-1])
+            assert exec_ == "exec" and argv[:1] == command[:1], program_args[-1]
+
     def test_launchd_plist_path_uses_real_user_home_not_profile_home(self, tmp_path, monkeypatch):
         profile_dir = tmp_path / ".hermes" / "profiles" / "orcha"
         profile_dir.mkdir(parents=True)

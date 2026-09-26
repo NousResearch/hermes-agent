@@ -10,6 +10,7 @@ from pathlib import Path
 import contextlib
 import json
 import os
+import platform
 import shlex
 import subprocess
 import sys
@@ -213,6 +214,23 @@ def _gateway_run_command() -> list[str]:
                            python=_gw().get_python_path())
 
 
+def _needs_local_network_wrapper() -> bool:
+    """True on macOS releases whose Local Network Privacy needs the platform-binary wrapper (#71206).
+
+    LNP shipped in macOS 15; below it the wrapper buys nothing while caffeinate would still hold a
+    ``PreventUserIdleSystemSleep`` assertion for the child's lifetime, so the job execs directly.
+    An empty/unknown ``mac_ver`` (Linux CI, unexpected format) keeps the wrapper: launchd itself is
+    macOS-only, so there is no wrong host to hurt and existing behavior stays put.
+    """
+    version = platform.mac_ver()[0]
+    if not version:
+        return True
+    try:
+        return int(version.split(".")[0]) >= 15
+    except ValueError:
+        return True
+
+
 def launchd_program_arguments(command: list[str], stdout_log: Path, stderr_log: Path) -> list[str]:
     """launchd ``ProgramArguments`` that run ``command`` with a Local Network identity macOS accepts (#71206).
 
@@ -228,13 +246,17 @@ def launchd_program_arguments(command: list[str], stdout_log: Path, stderr_log: 
     whereas caffeinate waits on its child without AppleScript; caffeinate also propagates the
     child's exit status, so ``KeepAlive``/``SuccessfulExit`` semantics are preserved. caffeinate
     holds a ``PreventUserIdleSystemSleep`` assertion for the child's lifetime (display sleep is
-    not affected) — an always-on gateway staying awake is the intended service posture. The shell
+    not affected) — an always-on gateway staying awake is the intended service posture — and on
+    macOS <15, where Local Network Privacy does not exist, no wrapper is used at all
+    (``_needs_local_network_wrapper``). The shell
     redirection keeps both streams in the files the plist's ``StandardOutPath``/``StandardErrorPath``
     name (those keys stay: they are where the wrapper's own output lands — caffeinate produces
     none); ``exec`` keeps the gateway a direct child in the job's process group, so
     ``launchctl bootout`` / ``kickstart -k`` still deliver SIGTERM to it.
     """
     shell = f"exec {shlex.join(command)} >> {shlex.quote(str(stdout_log))} 2>> {shlex.quote(str(stderr_log))}"
+    if not _needs_local_network_wrapper():
+        return ["/bin/sh", "-c", shell]
     return ["/usr/bin/caffeinate", "/bin/sh", "-c", shell]
 
 

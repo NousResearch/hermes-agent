@@ -228,6 +228,33 @@ def test_save_platform_tools_preserves_mcp_server_names():
     assert "terminal" not in saved_toolsets
 
 
+@pytest.mark.parametrize(
+    ("action", "initial", "expected"),
+    [
+        ("enable", ["memory"], {"memory", "browser"}),
+        ("disable", ["memory", "browser"], {"memory"}),
+    ],
+)
+def test_toolset_command_persists_selection_without_platform_runtime_tools(
+    action, initial, expected
+):
+    from hermes_cli.config import load_config, save_config
+    from hermes_cli.tools_config_mcp import tools_disable_enable_command
+
+    manual_mcp = "custom-mcp-server"
+    save_config({"platform_toolsets": {"feishu": [*initial, manual_mcp]}})
+
+    tools_disable_enable_command(
+        SimpleNamespace(tools_action=action, platform="feishu", names=["browser"])
+    )
+
+    reloaded = load_config()
+    assert set(reloaded["platform_toolsets"]["feishu"]) == expected | {manual_mcp}
+    runtime = _get_platform_tools(reloaded, "feishu", include_default_mcp_servers=False)
+    assert {"feishu_doc", "feishu_drive"} <= runtime
+    assert ("browser" in runtime) == (action == "enable")
+
+
 
 
 

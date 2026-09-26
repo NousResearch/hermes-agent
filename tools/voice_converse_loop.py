@@ -187,6 +187,21 @@ class QuietTick:
         self.quiet_seconds = quiet_seconds
 
 
+class _Utterance:
+    """One captured+transcribed utterance on the transcripts queue: the text PLUS the phase
+    recorder that belongs to THAT capture. Binding the recorder to its transcript (rather than a
+    shared session slot) is what keeps the trace correct when the driver runs backed up behind a
+    long turn while the VAD worker has already begun capturing the next utterance — otherwise the
+    driver would pick up the next utterance's (empty, in-progress) recorder and emit a turn with
+    no capture/STT spans. ``recorder`` may be None (tracing off)."""
+
+    __slots__ = ("text", "recorder")
+
+    def __init__(self, text: str, recorder: Any) -> None:
+        self.text = text
+        self.recorder = recorder
+
+
 class ConverseSession:
     """Drives the reused VAD → STT loop against a :class:`_NetworkMicStream`.
 
@@ -354,8 +369,11 @@ class ConverseSession:
                     except Exception:  # noqa: BLE001 - callback must not kill the loop
                         _log.debug("converse on_trip callback failed", exc_info=True)
                 transcript = self._capture_and_transcribe()
+                # Grab THIS capture's recorder on the worker thread (race-free) and bundle it with
+                # the transcript, so the driver always finishes the right utterance's trace.
+                recorder = self.take_recorder()
                 if transcript:
-                    self.transcripts.put(transcript)
+                    self.transcripts.put(_Utterance(transcript, recorder))
         except Exception:  # noqa: BLE001 - a loop crash must not wedge the socket
             _log.warning("converse VAD loop failed", exc_info=True)
         finally:
@@ -771,12 +789,14 @@ async def drive_converse_turns(
         if isinstance(item, QuietTick):
             await send_json({"type": "quiet", "quiet_seconds": item.quiet_seconds})
             continue
-        transcript = item
+        # A real utterance carries its own capture/STT phase recorder (bound to the transcript so a
+        # backed-up driver never mis-attributes it); a bare str (test fakes) has no recorder.
+        if isinstance(item, _Utterance):
+            transcript, recorder = item.text, item.recorder
+        else:
+            transcript, recorder = item, None
         if not transcript:
             continue
-        # The capture + STT phase timings for this utterance (inert if OTLP tracing is off). The
-        # driver appends the agent/TTS phases below and emits the whole turn as one trace.
-        recorder = session.take_recorder()
         await send_json({"type": "transcript", "text": transcript})
         # Session mode: a spoken stop phrase ("goodbye"/"stop"/…) ends the exchange —
         # tell the client and skip the agent turn (the client decides to re-arm/sleep).

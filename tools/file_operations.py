@@ -149,7 +149,7 @@ NOT_REGULAR_SENTINEL = "__hermes_not_regular__"
 # signal that ``_probe_regular_file`` carries in ``exit 1`` travels in-band.
 MISSING_SENTINEL = "__hermes_missing__"
 
-# Echoed by the lexists probe (``path_exists``, ``move_file``'s error wording) when anything is at the path.
+# Echoed by ``move_file``'s error wording when anything is at the destination.
 EXISTS_SENTINEL = "__hermes_exists__"
 
 _READ_SENTINEL_PREFIX = "__HERMES_RF_"
@@ -1289,18 +1289,6 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         if result.exit_code != 0:
             return WriteResult(error=f"Failed to delete {path}: {(result.stdout or '').strip() or 'unknown error'}")
         return WriteResult()
-
-    def path_exists(self, path: str) -> Optional[bool]:
-        """``lexists`` on the backend: True for a file, directory or symlink (dangling
-        included — ``-e`` follows links, hence ``-L``); None when the probe did not run.
-        V4A Move asks this because a ``read_file_raw`` error is not absence: it also
-        refuses binaries, non-UTF-8 text and directories."""
-        arg = self._escape_shell_arg(self._expand_path(path))
-        output = self._exec(f"if [ -e {arg} ] || [ -L {arg} ]; then echo {EXISTS_SENTINEL}; "
-                            f"else echo {MISSING_SENTINEL}; fi").stdout or ""
-        if EXISTS_SENTINEL in output:
-            return True
-        return False if MISSING_SENTINEL in output else None
 
     def move_file(self, src: str, dst: str) -> WriteResult:
         src = self._expand_path(src)

@@ -2,10 +2,6 @@
 
 from types import SimpleNamespace
 
-import pytest
-
-from tools.environments.local import LocalEnvironment
-from tools.file_operations import ShellFileOperations
 from tools.patch_parser import (
     OperationType,
     apply_v4a_operations,
@@ -990,34 +986,3 @@ class TestV4ABomRoundTrip:
             self.BOM.encode("utf-8")
         ), "BOM was injected on a plain file"
         assert b"print('world')" in raw
-
-
-class TestMoveOntoUnreadableDestination:
-    """Move's destination guard asks the backend whether ANYTHING is at the path.
-    Regression: it inferred absence from a read error, and ``read_file_raw`` also
-    refuses binaries, non-UTF-8 text and directories, so those validated as free,
-    the patch's other ops applied, and the Move clobbered the destination."""
-
-    @pytest.mark.parametrize("kind", ["binary", "shift_jis", "directory"])
-    def test_whole_patch_rejected_before_any_write(self, tmp_path, kind):
-        good, src, dst = tmp_path / "good.txt", tmp_path / "notes.txt", tmp_path / "dst"
-        good.write_text("old\n")
-        src.write_text("scratch\n")
-        precious = {"binary": b"SQLite format 3\x00\x10\x00\x01\x01",
-                    "shift_jis": "議事録\n".encode("shift_jis"),
-                    "directory": b"old: precious\n"}[kind]
-        if kind == "directory":  # mv would land the source on dst/notes.txt
-            dst.mkdir()
-        guarded = dst / "notes.txt" if kind == "directory" else dst
-        guarded.write_bytes(precious)
-        file_ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)), cwd=str(tmp_path))
-
-        result = file_ops.patch_v4a(
-            f"*** Begin Patch\n*** Update File: {good}\n@@\n-old\n+new\n"
-            f"*** Move File: {src} -> {dst}\n*** End Patch\n")
-
-        assert result.success is False
-        assert "no files were modified" in (result.error or "")
-        assert good.read_text() == "old\n"
-        assert src.read_text() == "scratch\n"
-        assert guarded.read_bytes() == precious

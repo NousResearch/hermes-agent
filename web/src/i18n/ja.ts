@@ -781,4 +781,18 @@ export const ja: Translations = {
     logTruncated: "（最後の 100 KB を表示中 — 完全なログは ",
     logAt: "）",
   },
+  // ── Chat: mobile clipboard paste ──
+  chat: {
+    paste: {
+      button: "貼り付け",
+      confirmPrompt: "{preview} をターミナルに貼り付けますか？複数行の貼り付けは 1 行ずつ送信されます。",
+      failures: {
+        insecureContext: "平文 HTTP 接続では貼り付けを利用できません。ターミナルを長押しして「貼り付け」を選ぶか、HTTPS でダッシュボードを開いてください。",
+        permissionDenied: "クリップボードへのアクセスが拒否されました。代わりにターミナルを長押しして「貼り付け」を選んでください。",
+        unsupported: "このブラウザーはクリップボード API を提供していません。代わりにターミナルを長押しして「貼り付け」を選んでください。",
+        notConnected: "チャットが接続されていません — 貼り付けは送信されませんでした。再接続してやり直してください。",
+        tooLarge: "クリップボードの内容が大きすぎて貼り付けられません。より小さい範囲をコピーしてください。",
+      },
+    },
+  },
 };

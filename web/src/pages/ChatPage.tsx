@@ -25,7 +25,7 @@ import "@xterm/xterm/css/xterm.css";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Typography } from "@nous-research/ui/ui/components/typography/index";
 import { cn } from "@/lib/utils";
-import { Copy, PanelRight, RotateCcw, X } from "lucide-react";
+import { ClipboardPaste, Copy, PanelRight, RotateCcw, X } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate, useSearchParams } from "react-router";
@@ -66,6 +66,13 @@ import {
   normalizePtyMobileInput,
   shouldTreatInputAsMobileReplacement,
 } from "@/lib/pty-mobile-input";
+import {
+  DEFAULT_PASTE_MAX_CHARS,
+  runPtyClipboardPaste,
+  type PasteDeps,
+  type PasteFailure,
+  type PasteRequest,
+} from "@/lib/pty-clipboard-paste";
 import { computeKeyboardInset, keyboardRevealScrollDelta } from "@/lib/keyboard-inset";
 import {
   resolvePtyKeyboardShortcut,
@@ -368,6 +375,26 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       ? window.matchMedia("(max-width: 1023px)").matches
       : false,
   );
+  // Coarse pointer is the real input capability, not a UA sniff: the UA regex
+  // used for the IME heuristics further down misfires on iPadOS in desktop
+  // mode and on Android tablets with a mouse attached. This gates the paste
+  // affordance (FR-7).
+  const [coarsePointer, setCoarsePointer] = useState(() =>
+    typeof window !== "undefined" && typeof window.matchMedia === "function"
+      ? window.matchMedia("(pointer: coarse)").matches
+      : false,
+  );
+  // A multi-line paste awaiting the user's confirmation (FR-8). Held here so
+  // the prompt survives re-renders without the terminal effect re-running.
+  const [pendingPaste, setPendingPaste] = useState<{
+    preview: string;
+    text: string;
+  } | null>(null);
+  // Filled in by the PTY effect, which owns the terminal/socket refs and the
+  // image-attach pipeline; the paste control only calls through it.
+  const mobilePasteRef = useRef<
+    ((request?: PasteRequest) => Promise<void>) | null
+  >(null);
 
   const { theme } = useTheme();
   const terminalBg = theme.terminalBackground ?? DEFAULT_TERMINAL_BACKGROUND;
@@ -484,6 +511,18 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     return () => mql.removeEventListener("change", sync);
   }, []);
 
+  // Pointer capability can change at runtime (a mouse attached to a tablet,
+  // a hybrid laptop flipped into tablet mode), so track the query rather than
+  // reading it once at mount.
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const mql = window.matchMedia("(pointer: coarse)");
+    const sync = () => setCoarsePointer(mql.matches);
+    sync();
+    mql.addEventListener("change", sync);
+    return () => mql.removeEventListener("change", sync);
+  }, []);
+
   useEffect(() => {
     if (!mobilePanelOpen) return;
     const onKey = (e: KeyboardEvent) => {
@@ -556,6 +595,24 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     copyResetRef.current = setTimeout(() => setCopyState("idle"), 1500);
     termRef.current?.focus();
   };
+
+  // The two answers to a `needs-confirmation` outcome. Both go back through
+  // the same effect-owned callback, so the confirm path re-uses the exact
+  // guarded sender / term.paste wiring the first attempt did (FR-8).
+  const confirmPendingPaste = useCallback(() => {
+    const pending = pendingPaste;
+    setPendingPaste(null);
+    if (pending) {
+      void mobilePasteRef.current?.({
+        confirmation: "confirm",
+        pendingText: pending.text,
+      });
+    }
+  }, [pendingPaste]);
+  const cancelPendingPaste = useCallback(() => {
+    setPendingPaste(null);
+    void mobilePasteRef.current?.({ confirmation: "cancel" });
+  }, []);
 
   useEffect(() => {
     // Don't spawn the chat PTY (and the TUI/agent bootstrap it triggers)
@@ -709,6 +766,75 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         await driveImageAttach(paths);
       })().catch(reportImageUploadError);
     };
+    // ── Mobile paste affordance (PRD v2 / TRD §3) ───────────────────────
+    // A one-tap paste for coarse-pointer devices. This is the affordance, not
+    // a second paste engine: the helper decides the route (image vs text,
+    // single- vs multi-line) and every side effect is injected below, so the
+    // decision logic stays unit-testable and both PRD v1 regressions —
+    // `term.write` on the paste path, and a raw socket send that skips
+    // `shouldBlockPtyInput` — cannot come back.
+    const readClipboardImageFiles = async (): Promise<File[]> => {
+      const read = navigator.clipboard?.read;
+      if (typeof read !== "function") return [];
+      const items = await read.call(navigator.clipboard);
+      const files: File[] = [];
+      for (const item of items) {
+        const type = item.types.find((t) => t.startsWith("image/"));
+        if (!type) continue;
+        const blob = await item.getType(type);
+        const ext = type.split("/")[1]?.split("+")[0] || "png";
+        files.push(new File([blob], `clipboard.${ext}`, { type }));
+      }
+      return files;
+    };
+    // The helper reads images once; the files it reports are attached through
+    // the same upload → `/image` pipeline the Ctrl+V / drop paths use, so the
+    // image route stays byte-for-byte the one already reviewed.
+    let pendingImageFiles: File[] = [];
+    const pasteDeps: PasteDeps = {
+      // FR-2: the xterm *input* path. `term.write` is the output direction and
+      // would fake a local echo on top of the TUI's own echo.
+      pasteText: (text) => termRef.current?.paste(text),
+      // FR-3: the guarded sender — a reconnecting socket never gets bytes.
+      sendBytes: (bytes) =>
+        sendPtyShortcutSequence(wsRef.current, ptyStateRef.current, bytes),
+      isSecureContext: window.isSecureContext,
+      maxChars: DEFAULT_PASTE_MAX_CHARS,
+    };
+    if (typeof navigator.clipboard?.read === "function") {
+      pasteDeps.readImages = async () => {
+        pendingImageFiles = await readClipboardImageFiles();
+        return pendingImageFiles;
+      };
+    }
+    if (typeof navigator.clipboard?.readText === "function") {
+      pasteDeps.readText = () => navigator.clipboard.readText();
+    }
+    // Table-driven so every `PasteFailure` reason has copy and none can end in
+    // a silent no-op (FR-9). The text lands in the banner below.
+    const pasteFailureText: Record<PasteFailure, string> = {
+      "insecure-context": t.chat.paste.failures.insecureContext,
+      "permission-denied": t.chat.paste.failures.permissionDenied,
+      "unsupported-api": t.chat.paste.failures.unsupported,
+      "socket-closed": t.chat.paste.failures.notConnected,
+      "too-large": t.chat.paste.failures.tooLarge,
+    };
+    const handleMobilePaste = async (request: PasteRequest = {}) => {
+      const outcome = await runPtyClipboardPaste(pasteDeps, request);
+      if (outcome.kind === "sent-image") {
+        if (pendingImageFiles.length) uploadAndAttachImages(pendingImageFiles);
+        return;
+      }
+      if (outcome.kind === "needs-confirmation") {
+        setPendingPaste({ preview: outcome.preview, text: outcome.text });
+        return;
+      }
+      if (outcome.kind === "unsupported" || outcome.kind === "blocked") {
+        setBanner(pasteFailureText[outcome.reason]);
+      }
+      // `empty` and `cancelled` are deliberately banner-free.
+    };
+    mobilePasteRef.current = handleMobilePaste;
     const handleBrowserPaste = (ev: ClipboardEvent) => {
       const files = imageFilesFromTransfer(ev.clipboardData);
       if (!files.length) return;
@@ -1608,6 +1734,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       term.textarea?.removeEventListener("focus", onTerminalFocus);
       keyboardInsetSyncRef.current = null;
       keyboardInsetResetRef.current = null;
+      mobilePasteRef.current = null;
       const wrap = termWrap;
       if (wrap) wrap.style.paddingBottom = "";
       ro.disconnect();
@@ -1930,6 +2057,31 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         </div>
       )}
 
+      {/* FR-8: a multi-line paste submits each line, so show the user what is
+          about to reach the agent terminal before it does. Same strip styling
+          as the banner above — the terminal pane stays usable either way. */}
+      {pendingPaste && (
+        <div
+          role="alert"
+          className="flex flex-wrap items-start gap-2 border border-warning/50 bg-warning/10 text-warning px-3 py-2 text-xs tracking-wide"
+        >
+          <span className="min-w-0 flex-1 whitespace-pre-wrap break-words">
+            {t.chat.paste.confirmPrompt.replace(
+              "{preview}",
+              pendingPaste.preview,
+            )}
+          </span>
+          <div className="flex shrink-0 flex-wrap gap-2">
+            <Button size="sm" outlined onClick={confirmPendingPaste}>
+              {t.common.confirm}
+            </Button>
+            <Button size="sm" ghost onClick={cancelPendingPaste}>
+              {t.common.cancel}
+            </Button>
+          </div>
+        </div>
+      )}
+
       <div className="flex min-h-0 flex-1 flex-col gap-2 lg:flex-row lg:gap-3">
         <div
           ref={termWrapRef}
@@ -2050,6 +2202,33 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               </span>
             </span>
           </Button>
+
+          {/* FR-7: coarse pointer AND the chat tab is the active route. The
+              label is a plain word, not an emoji — emoji render
+              inconsistently across the platforms this targets. */}
+          {coarsePointer && isActive && (
+            <Button
+              ghost
+              onClick={() => void mobilePasteRef.current?.()}
+              title={t.chat.paste.button}
+              aria-label={t.chat.paste.button}
+              className={cn(
+                "absolute z-10",
+                "normal-case tracking-normal font-normal",
+                "rounded border border-current/30",
+                "bg-black/20",
+                "opacity-70 hover:opacity-100 hover:border-current/60",
+                "transition-opacity duration-150",
+                "bottom-2 left-2 px-2 py-1 text-xs sm:bottom-3 sm:left-3 sm:px-2.5 sm:py-1.5",
+              )}
+              style={{ color: terminalFg }}
+            >
+              <span className="inline-flex items-center gap-1.5">
+                <ClipboardPaste className="h-3 w-3 shrink-0" />
+                <span className="tracking-wide">{t.chat.paste.button}</span>
+              </span>
+            </Button>
+          )}
 
           {chatPanelCollapsed && (
             <Button

@@ -781,4 +781,18 @@ export const ko: Translations = {
     logTruncated: "(마지막 100 KB 표시 중 — 전체 로그 위치: ",
     logAt: ")",
   },
+  // ── Chat: mobile clipboard paste ──
+  chat: {
+    paste: {
+      button: "붙여넣기",
+      confirmPrompt: "터미널에 {preview}을(를) 붙여넣을까요? 여러 줄 붙여넣기는 줄 단위로 전송됩니다.",
+      failures: {
+        insecureContext: "일반 HTTP 연결에서는 붙여넣기를 사용할 수 없습니다. 터미널을 길게 눌러 붙여넣기를 선택하거나 HTTPS로 대시보드를 여십시오.",
+        permissionDenied: "클립보드 접근이 거부되었습니다. 대신 터미널을 길게 눌러 붙여넣기를 선택하십시오.",
+        unsupported: "이 브라우저는 클립보드 API를 제공하지 않습니다. 대신 터미널을 길게 눌러 붙여넣기를 선택하십시오.",
+        notConnected: "채팅이 연결되지 않았습니다 — 붙여넣기가 전송되지 않았습니다. 다시 연결한 뒤 시도하십시오.",
+        tooLarge: "클립보드 내용이 너무 커서 붙여넣을 수 없습니다. 더 작은 부분을 복사하십시오.",
+      },
+    },
+  },
 };

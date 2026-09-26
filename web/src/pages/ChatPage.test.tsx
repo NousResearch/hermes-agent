@@ -129,6 +129,23 @@ vi.mock("@/i18n", () => ({
         modelToolsSheetSubtitle: "Tools",
         modelToolsSheetTitle: "Model",
       },
+      common: {
+        cancel: "Cancel",
+        confirm: "Confirm",
+      },
+      chat: {
+        paste: {
+          button: "Paste",
+          confirmPrompt: "Paste {preview} into the terminal?",
+          failures: {
+            insecureContext: "Paste needs a secure context.",
+            permissionDenied: "Clipboard access was denied.",
+            unsupported: "Clipboard API unavailable.",
+            notConnected: "Chat is not connected.",
+            tooLarge: "Clipboard contents are too large.",
+          },
+        },
+      },
     },
   }),
 }));
@@ -700,5 +717,40 @@ describe("ChatPage PTY ticket connect deadline", () => {
     // force-close a wedged handshake — the two must not both fire.
     await advance(PTY_TICKET_TIMEOUT_MS);
     expect(apiMocks.buildWsUrl).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("ChatPage mobile paste affordance", () => {
+  function stubPointerCoarse(coarse: boolean) {
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      addEventListener() {},
+      matches: query.includes("pointer: coarse") ? coarse : false,
+      media: query,
+      removeEventListener() {},
+    }));
+  }
+
+  async function renderChat() {
+    const { default: ChatPage } = await import("./ChatPage");
+    await render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <ChatPage isActive />
+      </MemoryRouter>,
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+  }
+
+  it("shows the paste control on a coarse pointer", async () => {
+    stubPointerCoarse(true);
+    await renderChat();
+    expect(container.querySelector('[aria-label="Paste"]')).not.toBeNull();
+  });
+
+  it("omits the paste control for a fine pointer", async () => {
+    stubPointerCoarse(false);
+    await renderChat();
+    expect(container.querySelector('[aria-label="Paste"]')).toBeNull();
   });
 });

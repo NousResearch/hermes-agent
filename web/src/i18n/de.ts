@@ -781,4 +781,18 @@ export const de: Translations = {
     logTruncated: "(zeige die letzten 100 KB — vollständiges Log unter ",
     logAt: ")",
   },
+  // ── Chat: mobile clipboard paste ──
+  chat: {
+    paste: {
+      button: "Einfügen",
+      confirmPrompt: "„{preview}“ in das Terminal einfügen? Ein mehrzeiliger Einfügevorgang wird Zeile für Zeile abgeschickt.",
+      failures: {
+        insecureContext: "Einfügen ist über eine einfache HTTP-Verbindung nicht verfügbar. Halte das Terminal gedrückt und wähle „Einfügen“, oder öffne das Dashboard über HTTPS.",
+        permissionDenied: "Der Zugriff auf die Zwischenablage wurde verweigert. Halte stattdessen das Terminal gedrückt und wähle „Einfügen“.",
+        unsupported: "Dieser Browser stellt die Clipboard-API nicht bereit. Halte stattdessen das Terminal gedrückt und wähle „Einfügen“.",
+        notConnected: "Chat ist nicht verbunden — der Einfügevorgang wurde nicht gesendet. Verbinde dich erneut und versuche es noch einmal.",
+        tooLarge: "Der Inhalt der Zwischenablage ist zu groß zum Einfügen. Kopiere einen kleineren Abschnitt.",
+      },
+    },
+  },
 };

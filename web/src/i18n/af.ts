@@ -782,4 +782,18 @@ export const af: Translations = {
     logTruncated: "(toon laaste 100 KB — volledige log by ",
     logAt: ")",
   },
+  // ── Chat: mobile clipboard paste ──
+  chat: {
+    paste: {
+      button: "Plak",
+      confirmPrompt: "Plak {preview} in die terminaal? ’n Meerreëlige plak word reël vir reël gestuur.",
+      failures: {
+        insecureContext: "Plak is nie beskikbaar oor ’n gewone HTTP-verbinding nie. Hou die terminaal ingedruk en kies Plak, of maak die paneel oor HTTPS oop.",
+        permissionDenied: "Toegang tot die knipbord is geweier. Hou eerder die terminaal ingedruk en kies Plak.",
+        unsupported: "Hierdie blaaier stel nie die knipbord-API beskikbaar nie. Hou eerder die terminaal ingedruk en kies Plak.",
+        notConnected: "Klets is nie gekoppel nie — die plak is nie gestuur nie. Herkoppel en probeer weer.",
+        tooLarge: "Knipbordinhoud is te groot om te plak. Kopieer ’n kleiner gedeelte.",
+      },
+    },
+  },
 };

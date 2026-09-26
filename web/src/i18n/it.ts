@@ -781,4 +781,18 @@ export const it: Translations = {
     logTruncated: "(mostrando ultimi 100 KB — log completo in ",
     logAt: ")",
   },
+  // ── Chat: mobile clipboard paste ──
+  chat: {
+    paste: {
+      button: "Incolla",
+      confirmPrompt: "Incollare {preview} nel terminale? Un incolla su più righe viene inviato riga per riga.",
+      failures: {
+        insecureContext: "L’incolla non è disponibile su una connessione HTTP semplice. Tieni premuto sul terminale e scegli Incolla, oppure apri la dashboard in HTTPS.",
+        permissionDenied: "L’accesso agli appunti è stato negato. Tieni premuto sul terminale e scegli Incolla.",
+        unsupported: "Questo browser non espone l’API degli appunti. Tieni premuto sul terminale e scegli Incolla.",
+        notConnected: "La chat non è connessa — l’incolla non è stato inviato. Riconnettiti e riprova.",
+        tooLarge: "Il contenuto degli appunti è troppo grande per essere incollato. Copia una sezione più piccola.",
+      },
+    },
+  },
 };

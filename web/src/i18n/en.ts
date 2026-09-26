@@ -918,4 +918,18 @@ export const en: Translations = {
       confirmManyTitle: "Delete {n} tasks?",
     },
   },
+  // ── Chat: mobile clipboard paste ──
+  chat: {
+    paste: {
+      button: "Paste",
+      confirmPrompt: "Paste {preview} into the terminal? A multi-line paste is submitted line by line.",
+      failures: {
+        insecureContext: "Paste is unavailable over a plain-HTTP connection. Long-press the terminal and choose Paste, or open the dashboard over HTTPS.",
+        permissionDenied: "Clipboard access was denied. Long-press the terminal and choose Paste instead.",
+        unsupported: "This browser does not expose the clipboard API. Long-press the terminal and choose Paste instead.",
+        notConnected: "Chat is not connected — the paste was not sent. Reconnect and try again.",
+        tooLarge: "Clipboard contents are too large to paste. Copy a smaller section.",
+      },
+    },
+  },
 };

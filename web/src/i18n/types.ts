@@ -909,4 +909,24 @@ export interface Translations {
       confirmManyTitle?: string;
     };
   };
+
+  // ── Chat: mobile clipboard paste ──
+  chat: {
+    paste: {
+      /** Coarse-pointer paste control label. Plain text — no emoji: they
+       *  render inconsistently across the platforms this targets. */
+      button: string;
+      /** Confirmation prompt for a multi-line paste (FR-8).
+       *  "{preview}" = the truncated clipboard text. */
+      confirmPrompt: string;
+      /** One message per `PasteFailure` reason (FR-9) — never a silent no-op. */
+      failures: {
+        insecureContext: string;
+        permissionDenied: string;
+        unsupported: string;
+        notConnected: string;
+        tooLarge: string;
+      };
+    };
+  };
 }

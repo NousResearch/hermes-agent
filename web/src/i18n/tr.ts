@@ -782,4 +782,18 @@ export const tr: Translations = {
     logTruncated: "(son 100 KB gösteriliyor — tam günlük şurada: ",
     logAt: ")",
   },
+  // ── Chat: mobile clipboard paste ──
+  chat: {
+    paste: {
+      button: "Yapıştır",
+      confirmPrompt: "Terminale {preview} yapıştırılsın mı? Çok satırlı yapıştırma satır satır gönderilir.",
+      failures: {
+        insecureContext: "Düz HTTP bağlantısında yapıştırma kullanılamaz. Terminale uzun basıp Yapıştır’ı seçin veya panoyu HTTPS üzerinden açın.",
+        permissionDenied: "Pano erişimi reddedildi. Bunun yerine terminale uzun basıp Yapıştır’ı seçin.",
+        unsupported: "Bu tarayıcı pano API’sini sunmuyor. Bunun yerine terminale uzun basıp Yapıştır’ı seçin.",
+        notConnected: "Sohbet bağlı değil — yapıştırma gönderilmedi. Yeniden bağlanıp tekrar deneyin.",
+        tooLarge: "Pano içeriği yapıştırmak için çok büyük. Daha küçük bir bölümü kopyalayın.",
+      },
+    },
+  },
 };

@@ -4381,6 +4381,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         if not cls._is_context_summary_message(message):
             return message.copy()
         content = message.get("content")
+        carries_calls = message.get("role") == "assistant" and bool(message.get("tool_calls"))
 
         def _unwrapped(new_content: Any) -> Dict[str, Any]:
             unwrapped = {**message, "content": new_content}
@@ -4396,7 +4397,7 @@ Write only the summary body. Do not include any preamble or prefix."""
                 prior = content.split(_SUMMARY_END_MARKER, 1)[1].lstrip()
             else:
                 prior = ""
-            return _unwrapped(prior) if prior else None
+            return _unwrapped(prior) if prior or carries_calls else None
         if isinstance(content, list):
             prior_blocks: list[Any] = []
             found_delimiter = False
@@ -4417,8 +4418,8 @@ Write only the summary body. Do not include any preamble or prefix."""
                         remainder = text.split(_SUMMARY_END_MARKER, 1)[1].lstrip()
                         legacy_blocks = [_with_part_text(item, remainder)] if remainder else []
                         legacy_blocks += [later.copy() if isinstance(later, dict) else later for later in content[index + 1:]]
-                        return _unwrapped(legacy_blocks) if legacy_blocks else None
-                return None
+                        return _unwrapped(legacy_blocks) if legacy_blocks or carries_calls else None
+                return _unwrapped([]) if carries_calls else None
 
             # Strip the PRIOR CONTEXT header from the first block that carries it.
             for index, item in enumerate(prior_blocks):
@@ -4430,8 +4431,8 @@ Write only the summary body. Do not include any preamble or prefix."""
                     else:
                         prior_blocks.pop(index)
                     break
-            return _unwrapped(prior_blocks) if prior_blocks else None
-        return None
+            return _unwrapped(prior_blocks) if prior_blocks or carries_calls else None
+        return _unwrapped(content) if carries_calls else None
 
     @staticmethod
     def _get_tool_call_id(tc) -> str:
@@ -4981,9 +4982,11 @@ Write only the summary body. Do not include any preamble or prefix."""
 
         window = [_window_row(idx, msg) for idx, msg in enumerate(messages[compress_start:summary_idx], start=compress_start)]
         window.append(_window_row(summary_idx, messages[summary_idx]))
-        scan.turns_to_summarize = [row for row in window if row is not None] + messages[summary_idx + 1:compress_end]
         if summary_idx >= compress_end:
-            scan.tail_start = summary_idx + 1
+            # The recovered carrier belongs to the summary window, so its tool
+            # results must follow it there rather than becoming orphaned tail rows.
+            scan.tail_start = self._align_boundary_forward(messages, summary_idx + 1)
+        scan.turns_to_summarize = [row for row in window if row is not None] + messages[summary_idx + 1:scan.tail_start]
         return scan
 
     def _begin_compress_attempt(self, current_tokens: Optional[int], force: bool) -> Dict[str, Any]:

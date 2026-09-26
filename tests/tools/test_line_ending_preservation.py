@@ -111,6 +111,83 @@ class TestPatchCRLFPreservation:
         )
         assert raw == b"def foo():\r\n    x = 1\r\n    return x\r\n"
 
+    def test_patch_whole_line_block_with_trailing_newline_on_crlf(self, hermes_home, tmp_path):
+        """Regression for #124166: models copy whole lines, so old_string ends
+        with a newline. On a CRLF file the raw text can never contain that
+        bare-LF block, and the line-based strategies split the trailing
+        newline into a phantom empty line — the edit was refused with a
+        "Did you mean" hint quoting the very lines that were sent."""
+        from tools.file_tools import _handle_patch
+
+        target = tmp_path / "a.py"
+        target.write_bytes(b"def load():\r\n    cfg = read()\r\n    validate(cfg)\r\n    return cfg\r\n")
+
+        result = _handle_patch(
+            {
+                "mode": "replace",
+                "path": str(target),
+                "old_string": "    cfg = read()\n    validate(cfg)\n",
+                "new_string": "    cfg = read(strict=True)\n    validate(cfg)\n",
+            },
+            task_id="crlf_patch_4",
+        )
+        d = json.loads(result)
+        assert not d.get("error"), d
+
+        raw = target.read_bytes()
+        assert raw == b"def load():\r\n    cfg = read(strict=True)\r\n    validate(cfg)\r\n    return cfg\r\n"
+
+    def test_patch_replace_all_on_crlf_reaches_every_copy(self, hermes_home, tmp_path):
+        """Regression for #124166: the phantom-empty-line window only matched
+        where a blank line followed the block, so replace_all silently changed
+        some copies and still reported success."""
+        from tools.file_tools import _handle_patch
+
+        target = tmp_path / "b.ini"
+        target.write_bytes(b"debug = true\r\nport = 1\r\ndebug = true\r\n\r\nhost = x\r\ndebug = true\r\nend = 1\r\n")
+
+        result = _handle_patch(
+            {
+                "mode": "replace",
+                "path": str(target),
+                "replace_all": True,
+                "old_string": "debug = true\n",
+                "new_string": "debug = false\n",
+            },
+            task_id="crlf_patch_5",
+        )
+        d = json.loads(result)
+        assert not d.get("error"), d
+
+        raw = target.read_bytes()
+        assert raw.count(b"debug = false") == 3
+        assert raw.count(b"debug = true") == 0
+        assert _bare_lf_count(raw) == 0
+
+    def test_patch_ambiguous_whole_line_block_on_crlf_is_refused(self, hermes_home, tmp_path):
+        """Regression for #124166: an old_string appearing twice is refused on
+        an LF file ("Found 2 matches"); on a CRLF file the phantom-empty-line
+        window matched only one copy and edited it silently."""
+        from tools.file_tools import _handle_patch
+
+        target = tmp_path / "c.py"
+        target.write_bytes(b"retries = 3\r\nconnect()\r\n\r\nretries = 3\r\n\r\nrun()\r\n")
+
+        result = _handle_patch(
+            {
+                "mode": "replace",
+                "path": str(target),
+                "old_string": "retries = 3\n",
+                "new_string": "retries = 5\n",
+            },
+            task_id="crlf_patch_6",
+        )
+        d = json.loads(result)
+        assert "Found 2 matches" in d.get("error", ""), d
+
+        raw = target.read_bytes()
+        assert raw == b"retries = 3\r\nconnect()\r\n\r\nretries = 3\r\n\r\nrun()\r\n"
+
 
 class TestWriteFileCRLFPreservation:
     def test_overwrite_crlf_file_with_lf_content_preserves_crlf(

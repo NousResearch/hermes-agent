@@ -27,6 +27,19 @@ jobs:
       - name: Check i18n locale key parity
         run: node scripts/check_i18n_parity.mjs --all
 
+      # Hardcoded-string gate for the web dashboard. Dependency-free
+      # (stdlib-only Node), so it fails in seconds before any setup step.
+      # Fails when a user-facing English string appears in web/src outside
+      # the i18n catalogs (raw toasts, confirm dialogs, label/placeholder/
+      # aria attribute literals, JSX text nodes, label-map entries, or
+      # template literals with hardcoded static residue). Known pre-existing
+      # findings are recorded in scripts/i18n-hardcoded-allowlist.json;
+      # re-baseline ONLY for genuinely non-user-facing strings (proper
+      # nouns, technical tokens) via --update-allowlist — prefer fixing by
+      # wiring through useI18n().
+      - name: Check i18n hardcoded strings (web)
+        run: node scripts/check_i18n_hardcoded.mjs
+
       # Guide walkthrough sync gate. Dependency-free (stdlib-only Python,
       # preinstalled on the runner), so it also fails in seconds before any
       # setup step. Fails when the first-run walkthrough captions in the

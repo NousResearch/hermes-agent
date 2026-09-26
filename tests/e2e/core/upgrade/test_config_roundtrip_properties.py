@@ -21,10 +21,6 @@ A seeded property / matrix layer over every surface that writes ``config.yaml`` 
 
 Generators are ``random.Random(seed)`` over a fixed seed list (hypothesis is not a dependency);
 every assertion message carries the seed / case so a failure is reproducible with ``-k``.
-
-Cells for a live gap are merge-order safe: they XFAIL only while they fail with that gap's own
-message (``tests/e2e/core/_pending_fixes.known_failure``), fail loudly on anything else, and pass as
-plain tests once the fix lands.
 """
 
 from __future__ import annotations
@@ -49,7 +45,6 @@ from typing import Any, Callable, Iterable
 import pytest
 import hermes_yaml as yaml
 
-from tests.e2e.core._pending_fixes import known_failure
 from tests.e2e.core.upgrade._helpers import WORKTREE, isolated_env
 
 import hermes_cli.config as C
@@ -622,27 +617,53 @@ def test_p2_real_cli_env_setting_changes_exactly_one_env_line_and_no_config_byte
     assert "TELEGRAM_HOME_CHANNEL=4242" in _read(env_file).splitlines()
 
 
-@pytest.mark.parametrize("key", ["DEEPSEEK_API_KEY", "TELEGRAM_HOME_CHANNEL"])
-def test_p2_env_lock_refusal_is_not_reported_as_success(key, tmp_path):
-    """exit 0 ⇔ the write happened; a refused key leaves .env AND config.yaml byte-identical."""
+@pytest.mark.parametrize("command", ["set", "unset"])
+def test_p2_real_cli_managed_env_refusal_is_non_mutating(command, tmp_path):
+    """A managed bare env setting exits 1 without touching any user store."""
     managed = tmp_path / "managed"
     managed.mkdir()
-    (managed / ".env").write_text("DEEPSEEK_API_KEY=sk-admin\nTELEGRAM_HOME_CHANNEL=111\n", encoding="utf-8")
-    env = isolated_env(tmp_path / "cli", pythonpath=WORKTREE, extra={"HERMES_MANAGED_DIR": str(managed)})
-    hh = Path(env["HERMES_HOME"])
-    (hh / ".env").write_text("DEEPSEEK_API_KEY=sk-old\nTELEGRAM_HOME_CHANNEL=5\n", encoding="utf-8")
-    cfg_text = "model:\n  default: deepseek-chat\n  api_key: sk-old\n"
-    _write_file(hh / "config.yaml", cfg_text)
-    env_before = _read(hh / ".env")
-    r = _cli(env, "config", "set", key, "c18-new")
-    wrote = _read(hh / ".env") != env_before
-    with known_failure(r"^`config set \w+` exit=0 but \.env unchanged|^a refused env write still rewrote config\.yaml",
-                       "#119928 (fix PR #119929): when the managed-scope .env pins a key, `hermes config set` "
-                       "prints the refusal, then '✓ Set', exits 0, and the credential route still rewrites config.yaml"):
-        assert (r.returncode == 0) == wrote, (
-            f"`config set {key}` exit={r.returncode} but .env {'changed' if wrote else 'unchanged'}:\n{r.stdout}{r.stderr}")
-        if not wrote:
-            assert _read(hh / "config.yaml") == cfg_text, "a refused env write still rewrote config.yaml"
+    managed_env = managed / ".env"
+    managed_env.write_text(
+        "# administrator-owned\nTELEGRAM_HOME_CHANNEL=111\n", encoding="utf-8"
+    )
+    env = isolated_env(
+        tmp_path / "cli", pythonpath=WORKTREE, extra={"HERMES_MANAGED_DIR": str(managed)}
+    )
+    home = Path(env["HERMES_HOME"])
+    user_env = home / ".env"
+    config_path = home / "config.yaml"
+    auth_path = home / "auth.json"
+    user_env.write_text(
+        "# user-owned\nTELEGRAM_HOME_CHANNEL=5\nC18_KEEP=unchanged\n",
+        encoding="utf-8",
+    )
+    _write_file(
+        config_path,
+        "model:\n  default: deepseek-chat\n"
+        "TELEGRAM_HOME_CHANNEL: '5'  # stale duplicate\n",
+    )
+    _write_file(
+        auth_path,
+        json.dumps({"credential_pool": {"telegram": []}, "suppressed_sources": {}}, indent=2) + "\n",
+    )
+    stores = {
+        path: path.read_bytes()
+        for path in (managed_env, user_env, config_path, auth_path)
+    }
+    argv = (
+        ("config", "set", "TELEGRAM_HOME_CHANNEL", "999")
+        if command == "set"
+        else ("config", "unset", "TELEGRAM_HOME_CHANNEL")
+    )
+
+    result = _cli(env, *argv)
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    lock_action = "set" if command == "set" else "remove"
+    success_action = "Set" if command == "set" else "Unset"
+    assert f"Cannot {lock_action} TELEGRAM_HOME_CHANNEL" in result.stderr
+    assert f"✓ {success_action} TELEGRAM_HOME_CHANNEL" not in result.stdout + result.stderr
+    assert {path: path.read_bytes() for path in stores} == stores
 
 
 # ── real tui_gateway stdio JSON-RPC process ──────────────────────────────────

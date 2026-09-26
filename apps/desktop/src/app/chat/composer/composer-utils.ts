@@ -98,6 +98,10 @@ export const isSkillItem = (item: Unstable_TriggerItem) => slashChipKindForItem(
 /** A `/` query is at its arg stage once it's past the command name. */
 export const slashArgStage = (query: string) => query.includes(' ')
 
+/** Empty slash-argument results are never a reason to mount the popover. */
+export const isEmptySlashArgumentStage = (trigger: TriggerState | null, hasItems: boolean) =>
+  trigger?.kind === '/' && slashArgStage(trigger.query) && !hasItems
+
 /** The `/command` token of a slash query (`personality x` → `/personality`). */
 export const slashCommandToken = (query: string) => `/${query.split(/\s+/, 1)[0]?.toLowerCase() ?? ''}`
 

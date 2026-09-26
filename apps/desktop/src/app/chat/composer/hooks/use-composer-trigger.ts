@@ -6,6 +6,7 @@ import { desktopSlashCommandArgumentMode } from '@/lib/desktop-slash-commands'
 
 import {
   COMPLETION_ACTIONS,
+  isEmptySlashArgumentStage,
   isSkillItem,
   slashArgStage,
   slashChipKindForItem,
@@ -231,7 +232,7 @@ export function useComposerTrigger({
   // Suppress the "No matches" empty state once a slash command is past its name:
   // a no-arg command has nothing to offer, and a fully-typed arg commits on
   // Space/Tab — neither should dead-end on a popover.
-  const argStageEmpty = trigger?.kind === '/' && slashArgStage(trigger.query) && !triggerLoading && !triggerItems.length
+  const argStageEmpty = isEmptySlashArgumentStage(trigger, triggerItems.length > 0)
 
   const slashArgumentMode =
     trigger?.kind === '/' && slashArgStage(trigger.query)

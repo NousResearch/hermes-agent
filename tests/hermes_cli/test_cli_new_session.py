@@ -768,6 +768,27 @@ def test_new_session_restores_credential_only_switch(
     assert len(cli.agent.switch_calls) == 1
 
 
+def test_new_session_keeps_unchanged_callable_credential(monkeypatch):
+    """Bearer-token callbacks survive runtime resolution and /new unchanged."""
+    token_provider = lambda: "test-token"
+    cli = _make_cli(model="startup-model-x", provider="openrouter",
+                    api_key=token_provider)
+    route = (cli.model, cli.provider, cli.base_url)
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **kw: {"api_key": token_provider, "base_url": cli.base_url,
+                      "provider": cli.provider, "api_mode": cli.api_mode})
+    assert cli._ensure_runtime_credentials()
+    assert cli.api_key is token_provider
+    old_session_id = cli.session_id
+    with patch.object(_model_switch_mod, "switch_model") as switch:
+        cli.new_session()
+    switch.assert_not_called()
+    assert cli.session_id != old_session_id
+    assert (cli.model, cli.provider, cli.base_url) == route
+    assert cli.api_key is token_provider
+
+
 def test_startup_direct_alias_endpoint_survives_boundary(_offline_route, monkeypatch):
     alias_url = "http://127.0.0.1:9999/v1"
     yaml_text = (

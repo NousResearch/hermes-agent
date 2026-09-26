@@ -59,6 +59,18 @@ def _dim_notice(cli, msg: str, quiet: bool) -> None:
         cli._console_print(f"[dim]{_escape(msg)}[/dim]")
 
 
+def _credential_fingerprint(value):
+    """Hash string secrets; compare token callbacks/objects by process identity."""
+    from hashlib import sha256
+
+    try:
+        if value is None or isinstance(value, str):
+            return sha256(str.encode("" if value is None else value, errors="surrogatepass")).digest()
+    except Exception:
+        pass  # Fingerprinting must never prevent a new session.
+    return ("obj", id(value))
+
+
 def _reset_model_to_session_baseline(cli, silent: bool) -> None:
     """/new is a full boundary: restore the startup selection (``--model`` /
     ``--provider`` when the process was launched with them, else config.yaml)
@@ -72,11 +84,9 @@ def _reset_model_to_session_baseline(cli, silent: bool) -> None:
     _startup_provider = getattr(cli, "_startup_provider", None)
     _startup_input = getattr(cli, "_startup_model_input", None)
     _startup_base_url = getattr(cli, "_startup_base_url", None)
-    from hashlib import sha256
-
     _credential_unchanged = not (_startup_model or _startup_input) or (
         getattr(cli, "_startup_api_key_fingerprint", None)
-        == sha256((getattr(cli, "api_key", None) or "").encode()).digest())
+        == _credential_fingerprint(getattr(cli, "api_key", None)))
     if (_credential_unchanged and _startup_model
             and _startup_model == getattr(cli, "model", None)
             and (not _startup_provider or _startup_provider == getattr(cli, "provider", None))

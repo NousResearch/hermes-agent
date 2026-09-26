@@ -1642,7 +1642,7 @@ export const frOverrides = {
         "Retirer tous les ensembles d'outils activés ? Cela désactive la mémoire, le terminal, la recherche web, la délégation et la plupart des autres outils jusqu'à leur réactivation.",
       keepAwakeTitle: "Garder l'ordinateur éveillé",
       keepAwakeDesc:
-        "Empêcher cette machine de se mettre en veille pendant les exécutions longues ou nocturnes. L'écran peut toujours s'obscurcir.",
+        "Empêcher cette machine de se mettre en veille pendant l'exécution d'un agent ; la mise en veille normale reprend une fois l'exécution terminée. L'écran peut toujours s'obscurcir.",
       disableF12Title: 'Désactiver les outils de développement avec F12',
       disableF12Desc:
         "Empêcher F12 d'ouvrir les outils de développement. Ctrl+Maj+I (ou Cmd+Option+I sur Mac) continue de fonctionner.",

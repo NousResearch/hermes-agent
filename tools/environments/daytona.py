@@ -162,7 +162,7 @@ class DaytonaEnvironment(BaseEnvironment):
 
         def exec_fn() -> tuple[str, int]:
             command = cmd_string
-            if stdin_data is not None:
+            if stdin_data:  # empty stdin == no stdin, as on base (heredoc skipped it)
                 with lock:
                     if state["cancelled"]:
                         return ("", 130)

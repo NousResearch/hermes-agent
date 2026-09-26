@@ -478,6 +478,47 @@ class TestAgentCannotSetModelPin:
         assert stored["name"] == "renamed"
 
 
+@pytest.mark.parametrize("clear_value", [None, ""])
+def test_registered_handler_persists_and_clears_max_turns(tmp_path, clear_value):
+    from cron import jobs
+    from tools.registry import registry
+
+    with jobs.use_cron_store(tmp_path):
+        created = json.loads(registry.dispatch("cronjob_manage", {
+            "action": "create", "prompt": "Check progress", "schedule": "every 1h",
+            "max_turns": 10,
+        }))
+        assert created["success"] is True, created
+        job_id = created["job_id"]
+        assert jobs.get_job(job_id)["max_turns"] == 10
+
+        for fields, expected in [
+            ({"max_turns": 20}, 20),
+            ({"name": "renamed"}, 20),
+            ({"max_turns": clear_value}, None),
+        ]:
+            updated = json.loads(registry.dispatch("cronjob_manage", {
+                "action": "update", "job_id": job_id, **fields,
+            }))
+            assert updated["success"] is True, updated
+            assert jobs.get_job(job_id).get("max_turns") == expected
+
+
+def test_programmatic_cronjob_max_iterations_alias(tmp_path):
+    from cron import jobs
+
+    with jobs.use_cron_store(tmp_path):
+        created = json.loads(cronjob(
+            action="create", prompt="Check progress", schedule="every 1h", max_iterations=10,
+        ))
+        assert created["success"] is True, created
+        job_id = created["job_id"]
+        assert jobs.get_job(job_id)["max_turns"] == 10
+        updated = json.loads(cronjob(action="update", job_id=job_id, max_iterations=20))
+        assert updated["success"] is True, updated
+        assert jobs.get_job(job_id)["max_turns"] == 20
+
+
 class TestRegisteredHandlerForwardsAttachToSession:
     """#84802 — schema + cronjob() already accept attach_to_session, but the
     registry adapter must forward it or create silently drops the field and

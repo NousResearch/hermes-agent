@@ -369,18 +369,28 @@ class VercelSandboxEnvironment(BaseEnvironment):
                     if state["cancelled"]:
                         return ("", 130)
                 remote_stdin = self._staged_stdin_path()
-                _retry_vercel_call(
-                    "stdin upload",
-                    lambda: sandbox.write_files([{
-                        "path": remote_stdin,
-                        "content": stdin_data.encode("utf-8", "surrogateescape"),
-                        "mode": 0o600,
-                    }]),
-                    attempts=_WRITE_RETRY_ATTEMPTS,
-                )
-                command = self._redirect_stdin_from_file(cmd_string, remote_stdin)
                 with lock:
+                    # Record the path BEFORE uploading. write_files can write the
+                    # payload and then fail its ack, and _retry_vercel_call re-issues
+                    # the write up to _WRITE_RETRY_ATTEMPTS times before giving up.
+                    # Nothing dispatches a shell in that case, so nothing else will
+                    # blank the file. Nothing but scrub_staged() can.
                     state["staged"] = remote_stdin
+                try:
+                    _retry_vercel_call(
+                        "stdin upload",
+                        lambda: sandbox.write_files([{
+                            "path": remote_stdin,
+                            "content": stdin_data.encode("utf-8", "surrogateescape"),
+                            "mode": 0o600,
+                        }]),
+                        attempts=_WRITE_RETRY_ATTEMPTS,
+                    )
+                except Exception:
+                    with lock:
+                        scrub_staged()
+                    raise
+                command = self._redirect_stdin_from_file(cmd_string, remote_stdin)
             with lock:
                 if state["cancelled"]:
                     # cancel() may have run mid-upload, before ``staged`` was set.

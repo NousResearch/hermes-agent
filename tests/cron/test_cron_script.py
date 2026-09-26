@@ -313,7 +313,9 @@ class TestRunJobScript:
         inherited overlay makes foreign-interpreter children import the store's 3.14 extension
         modules first (#123440). No committed store → the caller's interpreter passes through
         untouched (pre-PM venvs, source checkouts), as does a store whose venv python
-        vanished (half-migrated install must not crash the scheduler)."""
+        vanished (half-migrated install must not crash the scheduler) or whose committed
+        selection record is broken (``selected_venv`` raises → degrade, not propagate — the
+        call site runs before ``_run_job_script``'s ``try``)."""
         from cron import scheduler_script
 
         venv = tmp_path / "selected-venv" / "bin"
@@ -332,6 +334,17 @@ class TestRunJobScript:
         )
 
         venv_python.unlink()
+        assert scheduler_script._posix_cron_python_invocation(sys.executable) == (
+            sys.executable,
+            {},
+        )
+
+        def _broken_selection(repo):
+            raise RuntimeError(
+                "dependency environment is missing or outside this install"
+            )
+
+        monkeypatch.setattr("pm.environments.selected_venv", _broken_selection)
         assert scheduler_script._posix_cron_python_invocation(sys.executable) == (
             sys.executable,
             {},
@@ -398,7 +411,11 @@ class TestRunJobScript:
         deps = dependency_site(fake_venv)
         deps.mkdir(parents=True)
         (deps / "probe_pkg.py").write_text("VALUE = 42\n", encoding="utf-8")
-        # Editable-style repo exposure, as a real PM venv carries for the checkout.
+        # Editable-style repo exposure, as a real PM venv carries for the checkout. Caveat:
+        # a real generation venv gets its repo pointer from uv's editable install of the
+        # generated workspace (not a hand-written .pth), and sealed-payload installs prune
+        # editable .pth files outright because the payload wires the repo snapshot itself
+        # (pm/environment.py prune_site_pth) — do not generalize this .pth shape to payloads.
         repo = Path(__file__).resolve().parents[2]
         (deps / "zz_repo.pth").write_text(f"{repo}\n", encoding="utf-8")
 

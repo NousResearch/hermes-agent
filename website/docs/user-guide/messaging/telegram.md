@@ -905,6 +905,12 @@ gateway:
 
 When this flag is on, Hermes still generates an internal session title (used by `hermes sessions`, the TUI, etc.) but never edits the Telegram topic name. Useful when you organise topics by hand under BotFather Threaded Mode and don't want every first reply to overwrite the title.
 
+### Topic icons and short names via plugins
+
+Telegram forum topics carry an icon from a fixed catalog of ~110 custom-emoji stickers (`getForumTopicIconStickers`); by default an auto-titled topic shows the first letter of its name. Right before the rename, the gateway fires the [`pre_topic_rename`](../features/hooks.md#pre_topic_rename) plugin hook with the title and a catalog fetcher; a plugin answering `{"icon_custom_emoji_id": ...}` gets the icon set in the same `editForumTopic` call, and one answering `{"name": ...}` replaces the platform-facing topic name (the session title Hermes stores is untouched — useful because a collapsed Telegram sidebar shows only ~12 characters of a 3-7 word title). Without a plugin nothing changes; a failing plugin only costs the decoration, never the rename.
+
+[`hermes-telegram-topic-icons`](https://github.com/wwwolf21/hermes-telegram-topic-icons) is a ready-made picker: one auxiliary call chooses the catalog glyph that best matches the title and a 2-4 word name with the key noun first, with a per-chat recency ring so neighbouring topics do not repeat. Operator-declared `dm_topics` keep their configured `icon_custom_emoji_id` — the hook never fires for them, and `disable_topic_auto_rename: true` disables it too.
+
 ### `/new` inside a topic
 
 Resets the current topic's session (new session ID, fresh history) without touching other topics. Hermes replies with a reminder that for parallel work, creating another topic (via **All Messages**) is usually what you want.
@@ -1336,6 +1342,12 @@ Unlike Discord (where reactions are additive), Telegram's Bot API replaces all b
 :::tip
 If the bot doesn't have permission to add reactions in a group, the reaction calls fail silently and message processing continues normally.
 :::
+
+## Custom Emoji in Replies
+
+Telegram MarkdownV2 renders `![😀](tg://emoji?id=<custom_emoji_id>)` as a custom (Premium) emoji. The adapter passes this form through unescaped, so a plugin (`transform_llm_output`) or the model itself can embed custom emoji in replies — for example a provider logo badge keyed on the model that answered. Any other `![alt](url)` stays plain text (the `!` is escaped as before).
+
+The Bot API only shows custom emoji in messages sent by a bot whose owner has Telegram Premium; without it the fallback unicode emoji inside the brackets is shown instead.
 
 ## Per-Channel Prompts
 

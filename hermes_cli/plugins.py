@@ -155,6 +155,14 @@ VALID_HOOKS: Set[str] = {
     # provider, model, language, prompt, source. Return None or a dict mutating prompt/language/
     # model (registration order, last-writer-wins; file_path is read-only).
     "pre_transcription",
+    # pre_topic_rename: BEFORE the gateway renames a forum topic / thread with an auto-generated
+    # session title (today: Telegram DM topics, gateway/run_topics.py). Kwargs: platform, chat_id,
+    # thread_id, session_id, title, fetch_icon_catalog (async callable returning the platform's
+    # icon catalog, or None). Return None or {"name": str, "icon_custom_emoji_id": str} (both
+    # optional; "name" is the platform-facing topic name only — the session title is untouched);
+    # last non-empty wins per key. Icon pickers and sidebar-length names live in plugins so the
+    # core carries no catalog, prompt or taste.
+    "pre_topic_rename",
     # Kanban task observers (hermes_cli.kanban_db), fired AFTER the DB commit so a slow plugin never
     # holds the SQLite write lock; returns ignored. claimed fires in the DISPATCHER right before
     # spawn; completed/blocked fire in the WORKER (or whichever process drove it). Kwargs: task_id,

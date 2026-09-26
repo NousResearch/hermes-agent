@@ -452,6 +452,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `post_tool_call` | Observer | After blocked, error, or successful result; return ignored. | `tool_name`, `args`, `result`, `task_id`, `session_id`, `tool_call_id`, `turn_id`, `api_request_id`, `duration_ms`, `status`, `error_type`, `error_message`, `middleware_trace` | Result/error text may contain arbitrary tool or user content and secrets. |
 | `transform_tool_result` | Transform | After `post_tool_call`, before conversation append; first string replaces the result. | `tool_name`, `args`, `result`, `task_id`, `session_id`, `tool_call_id`, `turn_id`, `api_request_id`, `duration_ms`, `status`, `error_type`, `error_message` | Exposes the full model-bound result and arguments. |
 | `transform_terminal_output` | Transform | After bounded foreground process capture, before final output limiting; first string replaces output. | `command`, `output`, `returncode`, `task_id`, `env_type` | Command/output may contain credentials. |
+| `pre_topic_rename` | Transform | Fired by the gateway right before it renames a forum topic / thread with an auto-generated session title (Telegram DM topics today). Lets a plugin attach a platform icon and/or hand the platform a shorter topic name (`{"name", "icon_custom_emoji_id"}`, both optional; the session title itself is untouched); last non-empty result wins per key. | `platform`, `chat_id`, `thread_id`, `session_id`, `title`, `fetch_icon_catalog` | Rename happens with or without the plugin; a failing plugin only costs the decoration. |
 | `pre_transcription` | Transform | Fired by the STT dispatcher after provider resolution and before any backend (built-in, command-type, or plugin-registered) is invoked; dict results are applied in registration order, last-writer-wins per field (`prompt`, `language`, `model`; `file_path` is read-only). | `file_path`, `provider`, `model`, `language`, `prompt`, `source` | The final prompt is uploaded to the configured STT provider with the audio — keep secrets out of hook returns. |
 | `pre_llm_call` | Directive/control | Once per turn before the loop; all valid string/`{"context": ...}` returns are joined and injected into the user message. | `session_id`, `task_id`, `turn_id`, `user_message`, `conversation_history`, `is_first_turn`, `model`, `platform`, `parent_session_id`, `sender_id` | Full user message and conversation history. |
 | `post_llm_call` | Observer | Successful, non-interrupted turn finalization; return ignored. | `session_id`, `task_id`, `turn_id`, `user_message`, `assistant_response`, `conversation_history`, `model`, `platform` | Full prompt, response, and history. |
@@ -1447,6 +1448,40 @@ def on_member_activity(room_id, member_id, turn_id, kind, payload, **kwargs):
 def register(ctx):
     ctx.register_hook("on_room_member_activity", on_member_activity)
 ```
+
+---
+
+### `pre_topic_rename`
+
+Fires in the gateway (`gateway/run_topics.py`) **after** the auxiliary titler has produced a session title and **before** the forum topic is renamed to it. Today only Telegram DM topics ([Threaded Mode](../messaging/telegram.md#threaded-mode-dm-topics)) fire it. Lets a plugin shape the topic — pick an icon from the platform's catalog and/or hand the platform a shorter name than the 3-7 word session title (a collapsed Telegram sidebar shows ~12 characters) — without the core carrying a catalog, a prompt or any taste about which glyph or wording fits which title. The session title itself (`hermes sessions`, TUI) is never changed by this hook.
+
+**Callback signature:**
+
+```python
+async def my_callback(
+    platform: str,
+    chat_id: str,
+    thread_id: str,
+    session_id: str,
+    title: str,
+    fetch_icon_catalog,
+    **kwargs,
+) -> dict | None:
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `platform` | `str` | Platform name (`telegram`). |
+| `chat_id`, `thread_id` | `str` | The topic being renamed. Read-only coordinates; the hook grants no adapter handle. |
+| `session_id` | `str` | Hermes session bound to the topic. |
+| `title` | `str` | The sanitized title the topic is about to receive. |
+| `fetch_icon_catalog` | `async callable \| None` | Returns the platform's fixed icon catalog (Telegram: `getForumTopicIconStickers`, objects with `emoji` and `custom_emoji_id`). `None` when the adapter has no catalog. |
+
+**Return value:** a dict with any of `"name"` (platform-facing topic name; goes through the same sanitizer as the title) and `"icon_custom_emoji_id"` (set alongside the rename), or `None`. When several plugins answer, the last non-empty value wins per key. Anything the platform rejects (an id outside the catalog, an over-long name) fails the rename call, which the gateway logs at DEBUG and drops — so validate against the catalog and the platform's length limit before returning.
+
+**Use cases:** semantic topic icons (LLM picks the best catalog glyph for the title), sidebar-length topic names (2-4 word core of the title, key noun first), per-project icon conventions, colour-coding by session tag.
+
+The gateway awaits the hook on its event loop; keep blocking work (an auxiliary LLM call) in `asyncio.to_thread`. A reference implementation lives in [`hermes-telegram-topic-icons`](https://github.com/wwwolf21/hermes-telegram-topic-icons).
 
 ---
 

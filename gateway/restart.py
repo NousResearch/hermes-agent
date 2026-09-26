@@ -356,11 +356,15 @@ def resolve_systemd_timeout_stop_sec(
 
 
 def resolve_restart_exit_wait_budget(
-    drain_timeout: float, after_turn_timeout: float, cron_drain_timeout: float = 0.0, *, headroom: float = 15.0,
+    drain_timeout: float, after_turn_timeout: float, cron_drain_timeout: float, *, headroom: float = 15.0,
 ) -> float:
-    """Observer budget for in-band deferral, the full stop envelope, and replacement startup.
+    """Seconds a CLI waits for the gateway PID to exit after SIGUSR1: the in-band after-turn
+    deferral, then the longest supervisor stop envelope — the one systemd's ``TimeoutStopSec`` is
+    sized from (cron drain + cleanup reserve, supervisor headroom, floor; #94759) — then
+    observer ``headroom``.
 
-    The stop envelope includes cron cleanup reserve, supervisor headroom and the floor;
-    deferral precedes it, while observer headroom follows it. Cron zero opts out.
+    A non-finite drain means "wait indefinitely", not a crash in the integer envelope.
     """
+    if not all(math.isfinite(_seconds(value)) for value in (drain_timeout, cron_drain_timeout)):
+        return math.inf
     return _seconds(after_turn_timeout) + resolve_systemd_timeout_stop_sec(drain_timeout, cron_drain_timeout) + _seconds(headroom)

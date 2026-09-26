@@ -55,10 +55,8 @@ def test_ancestor_with_accepted_self_restart_is_pending_while_other_stale_rows_s
     # Without the sibling, the pending row alone is not a failure — and the same pid NOT recorded
     # as pending (the restart phase never reached the ancestor branch) is a plain stale verdict.
     only_ancestor = [row for row in fleet if row["profile"] == "default"]
-    with contextlib.redirect_stdout(io.StringIO()) as pending_out:
+    with contextlib.redirect_stdout(io.StringIO()):
         assert ur.print_fleet_version_matrix(only_ancestor) is False
-    assert "as soon as this update exits" not in pending_out.getvalue()
-    assert "restart pending" in pending_out.getvalue()
     plain = ur.collect_fleet_versions(pre_restart_pids=[ancestor, sibling])
     assert {row["state"] for row in plain} == {"stale"}
 

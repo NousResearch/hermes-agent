@@ -99,3 +99,51 @@ def test_preserves_primary_routes(nous_login, monkeypatch, mode):
     assert runtime["provider"] == "nous"
     assert fallback is None
 
+
+@pytest.mark.parametrize("mode", ["benched", "healthy", "expired", "no_fallback", "explicit_key", "explicit_endpoint", "fallback_error"])
+def test_interactive_cli_billing_startup(nous_login, monkeypatch, mode):
+    from cli import HermesCLI
+
+    pool, token = nous_login
+    if mode != "healthy":
+        pool.mark_exhausted_and_rotate(status_code=402, failure_reason="billing")
+    stamp = load_pool("nous").entries()[0].last_status_at
+    if mode == "expired":
+        now = time.time()
+        monkeypatch.setattr(time, "time", lambda: now + 3700)
+    # Exercise the real CLI credential/fallback methods without starting the
+    # interactive renderer, MCP discovery or an inference client.
+    shell = object.__new__(HermesCLI)
+    shell.requested_provider = shell.provider = "nous"
+    shell.model = "fixture-primary"
+    shell._explicit_api_key = token if mode == "explicit_key" else None
+    shell._explicit_base_url = "http://127.0.0.1:9/v1" if mode == "explicit_endpoint" else None
+    shell._fallback_model = [] if mode == "no_fallback" else fallback_config()["fallback_providers"]
+    if mode == "fallback_error":
+        shell._fallback_model = [{"provider": "custom", "model": "fixture-model"}]
+    shell.api_key = token
+    shell.base_url = "https://inference-api.nousresearch.com/v1"
+    shell.api_mode = "chat_completions"
+    shell.acp_command = None
+    shell.acp_args = []
+    shell.agent = None
+    shell.tool_progress_mode = "off"
+    shell._explicit_reasoning_config = {"effort": "low"}
+    shell.reasoning_config = shell._explicit_reasoning_config
+    shell._maybe_print_free_tier_available_notice = lambda: None
+    ready = shell._ensure_runtime_credentials()
+    if mode == "fallback_error":
+        assert ready is False
+        assert (shell.requested_provider, shell.model) == ("nous", "fixture-primary")
+    else:
+        assert ready is True
+        expected = ("custom", "fixture-model") if mode == "benched" else ("nous", "fixture-primary")
+        assert (shell.provider, shell.model) == expected
+        assert shell.requested_provider == expected[0]
+        if mode == "benched":
+            assert shell.api_key == "fixture-key"
+            assert shell.base_url == "http://127.0.0.1:9/v1"
+        assert shell.reasoning_config == {"effort": "low"}
+    if mode != "expired":
+        assert load_pool("nous").entries()[0].last_status_at == stamp
+

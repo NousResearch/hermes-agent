@@ -166,10 +166,19 @@ class DaytonaEnvironment(BaseEnvironment):
                     if state["cancelled"]:
                         return ("", 130)
                 remote_stdin = self._staged_stdin_path()
-                sandbox.fs.upload_file(stdin_data.encode("utf-8", "surrogateescape"), remote_stdin)
                 with lock:
+                    # Record the path BEFORE uploading: an upload that writes the
+                    # payload and then raises, or a failing chmod, still leaves a
+                    # secret-bearing file on a persistent sandbox with no shell
+                    # dispatched to unlink it. Nothing but scrub_staged() can.
                     state["staged"] = remote_stdin
-                sandbox.fs.set_file_permissions(remote_stdin, mode="600")
+                try:
+                    sandbox.fs.upload_file(stdin_data.encode("utf-8", "surrogateescape"), remote_stdin)
+                    sandbox.fs.set_file_permissions(remote_stdin, mode="600")
+                except Exception:
+                    with lock:
+                        scrub_staged()
+                    raise
                 command = self._redirect_stdin_from_file(cmd_string, remote_stdin)
             shell_cmd = f"bash {'-l ' if login else ''}-c {shlex.quote(command)}"
             with lock:

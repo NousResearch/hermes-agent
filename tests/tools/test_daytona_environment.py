@@ -316,3 +316,62 @@ class TestSyncSafety:
         assert "; touch" not in mkdir_cmd.replace(
             "'/root/.hermes/skills/evil; touch /tmp/daytona-owned'", ""
         )
+
+
+# ---------------------------------------------------------------------------
+# Staged-stdin scrubbing on pre-dispatch SDK failure
+# ---------------------------------------------------------------------------
+
+class TestStagedStdinScrub:
+    """A staged payload must not survive an SDK error between upload and dispatch.
+
+    The staged file carries secret-bearing stdin (sudo passwords) onto a
+    persistent sandbox. Only the dispatched shell's own ``rm -f`` unlinks it,
+    so a pre-dispatch SDK error has to clean up itself.
+    """
+
+    def _run(self, make_env, fail_at=None):
+        env = make_env()
+        sb = env._sandbox
+        fs = sb.fs
+        fs.upload_file.side_effect = None
+        fs.set_file_permissions.side_effect = None
+        fs.delete_file.side_effect = None
+
+        if fail_at == "upload":
+            fs.upload_file.side_effect = RuntimeError("upload failed after writing payload")
+        elif fail_at == "chmod":
+            fs.set_file_permissions.side_effect = RuntimeError("chmod failed")
+
+        # Construction already issued setup execs; isolate the call under test.
+        sb.process.exec.reset_mock()
+
+        handle = env._run_bash("cat", stdin_data="SUDO_PASSWORD", timeout=5)
+        handle.wait(timeout=10)
+        return sb, handle
+
+    @pytest.mark.parametrize("fail_at", ["upload", "chmod"])
+    def test_pre_dispatch_sdk_error_scrubs_staged_payload(self, make_env, fail_at):
+        sb, handle = self._run(make_env, fail_at)
+
+        # The payload path was removed by us, since no shell will ever unlink it.
+        sb.fs.delete_file.assert_called_once()
+        assert ".hermes-stdin-" in sb.fs.delete_file.call_args[0][0]
+        # The original failure still surfaces to the caller, and nothing was
+        # dispatched to the sandbox.
+        assert handle.returncode == 1
+        sb.process.exec.assert_not_called()
+
+    def test_dispatched_payload_is_not_deleted_by_us(self, make_env):
+        """The success path still hands cleanup to the user shell's ``rm -f``.
+
+        Deleting here would race the shell that is about to redirect from the
+        file. Regression guard: the fix must not over-scrub.
+        """
+        sb, handle = self._run(make_env)
+
+        assert handle.returncode == 0
+        assert sb.process.exec.call_count == 1
+        dispatched_cmd = sb.process.exec.call_args[0][0]
+        assert "rm -f --" in dispatched_cmd
+        sb.fs.delete_file.assert_not_called()

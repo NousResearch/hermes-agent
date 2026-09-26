@@ -264,6 +264,7 @@ hermes skills uninstall <skill-name>
 | Skill | Description |
 |-------|-------------|
 | [**reddit-reading**](../user-guide/skills/optional/social-media/social-media-reddit-reading.md) | Read Reddit: subreddits, search, threads, users. No browser. |
+| [**simplepost**](../user-guide/skills/optional/social-media/social-media-simplepost.md) | Publish, schedule, and manage social posts safely. |
 
 ## software-development
 

@@ -31,7 +31,9 @@ class TurnContext:
     # mutable single-element containers (shared with the outer body)
     last_progress_msg: list = field(default_factory=lambda: [None])
     last_tool: list = field(default_factory=lambda: [None])
-    last_was_terminal_block: list = field(default_factory=lambda: [False])
+    # Name of the previous fenced progress block's tool. Consecutive blocks
+    # from the same tool omit the repeated header.
+    last_code_block_tool: list = field(default_factory=lambda: [None])
     repeat_count: list = field(default_factory=lambda: [0])
     long_tool_hint_fired: list = field(default_factory=lambda: [False])
     agent_holder: list = field(default_factory=lambda: [None])

@@ -2444,7 +2444,7 @@ class TestFormatMessage:
         from gateway.run_turn_runner import TurnRunner
 
         args = {"target": target, "pattern": pattern}
-        ctx = SimpleNamespace(source=None, progress_mode="all", last_was_terminal_block=[False])
+        ctx = SimpleNamespace(source=None, progress_mode="all", last_code_block_tool=[None])
         runner = SimpleNamespace(_delivery_adapter_for=lambda source: adapter)
         message = TurnRunner(runner, ctx)._progress_build_message("search_files", pattern, args)
         client = adapter._app.client

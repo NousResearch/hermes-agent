@@ -286,6 +286,19 @@ Hermes lists a provider only if it has a working credential. Check **Keys** in t
 
 Expected. The dashboard writes `config.yaml`, which new sessions read. The currently-open chat is a live agent process — it keeps whatever model it was spawned with. Use `/model <name>` inside the chat to hot-swap that specific session.
 
+### Why do my new desktop chats use a different model than Settings → Model?
+
+The desktop composer picker is **sticky UI state**: a model picked there is remembered locally (per device, per profile) and follows across new chats and app restarts, instead of snapping back to the profile default — the pill shows a small accent dot with a "pinned by you" tooltip while this is active. The pick is a *per-session override* shipped with `session.create`; it is never written to the profile default in `config.yaml`.
+
+Two consequences trip users up:
+
+- **Changing the default elsewhere does not clear the pin.** Editing `config.yaml` or running `hermes model` in a terminal writes the new default, but the app's pinned pick wins for every new chat. The only way back to the default today is saving the model once in **Settings → Model** inside the app (which unpins the composer), or picking the default model again in the composer.
+- **The pin carries the provider, too.** With several custom providers serving the same model IDs (e.g. multiple API keys for one vendor), the pinned selection silently decides which endpoint — and which credential — new chats bill.
+
+If you want a one-off model change for the *current* chat only, use `/model <name> --provider <provider>` inside the chat instead of the composer picker: slash-command switches are session-scoped and do not set the sticky pin.
+
+See #62055 and #107544 for the tracked work on unpin affordances.
+
 ### Auxiliary override "didn't take effect"
 
 Three things to check:

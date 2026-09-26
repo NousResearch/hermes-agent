@@ -792,6 +792,60 @@ def test_flush_sanitized_archived_row_does_not_append_duplicate(tmp_path):
     assert messages[-1]["_db_persisted"] is True
 
 
+def test_flush_sanitized_archived_user_and_tool_rows_do_not_append_duplicates(tmp_path):
+    """Sanitizer rewrites retain durable identity for every persisted transcript role."""
+    from agent.message_sanitization import _sanitize_messages_surrogates
+
+    agent = _make_agent()
+    db_path = tmp_path / "state.db"
+    session_id = "sess-sanitized-archived-non-assistant-rows"
+    db = _attach_real_session_db(agent, db_path, session_id)
+    messages = [
+        {"role": "user", "content": "prompt \ud800 tail"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {"name": "terminal", "arguments": "{}"},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call-1",
+            "name": "terminal",
+            "content": "result \ud800 tail",
+        },
+    ]
+    agent._flush_messages_to_session_db(messages)
+    durable_ids = {message["role"]: message["_row_id"] for message in messages}
+    durable_timestamps = {message["role"]: message["timestamp"] for message in messages}
+
+    db.archive_and_compact(
+        session_id,
+        compacted_messages=[{"role": "user", "content": "prior turns summarized"}],
+    )
+    assert _sanitize_messages_surrogates(messages) is True
+    agent._db_flush_scan_prefix = None
+
+    assert agent._flush_messages_to_session_db(messages) is True
+
+    all_rows = db.get_messages(session_id, include_inactive=True)
+    for role, expected_content in (("user", "prompt \ufffd tail"), ("tool", "result \ufffd tail")):
+        matching = [row for row in all_rows if row.get("role") == role and row.get("content") == expected_content]
+        assert len(matching) == 1
+        assert matching[0]["id"] == durable_ids[role]
+        assert matching[0]["timestamp"] == durable_timestamps[role]
+        assert matching[0]["active"] in (0, False)
+        assert matching[0]["compacted"] in (1, True)
+        live = next(message for message in messages if message["role"] == role)
+        assert live["_row_id"] == durable_ids[role]
+        assert live["_db_persisted"] is True
+
+
 def test_flush_ascii_repair_updates_archived_row_without_resurrecting_it(tmp_path):
     """A changed archived payload is updated in place while its active/compacted state is preserved."""
     from agent.message_sanitization import _sanitize_messages_non_ascii

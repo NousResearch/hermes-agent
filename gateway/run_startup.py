@@ -808,6 +808,16 @@ class GatewayStartupMixin:
         return service
 
     async def _ensure_hosted_room_worker(self):
+        # Bind the heavyweight import chain on the loop thread before delegating:
+        # importing tui_gateway.server runs methods_connectors.register() at import
+        # time, which pulls in the tools.connectors package. Doing that inside
+        # to_thread races with concurrent startup imports on the loop thread and
+        # deadlocks the import lock (_frozen_importlib._DeadlockError, #123347).
+        # Same-thread imports are sequential under the event loop, so warming the
+        # cache here leaves the worker thread with already-imported attribute access.
+        # ponytail: caller-thread warm-up; fold into a startup pre-import list if more workers need it.
+        import tui_gateway.server  # noqa: F401
+        from tui_gateway import methods_groups  # noqa: F401
         return await asyncio.to_thread(self._start_hosted_room_worker_sync)
 
     async def _hosted_room_worker_watcher(self, interval: float = 1.0) -> None:

@@ -50,6 +50,7 @@ from hermes_cli.doctor_tools import (
 from hermes_cli.doctor_state import (
     _check_checkpoint_store,
     _check_directory_structure,
+    _check_legacy_uv_shadow,
     _check_memory_provider,
     _check_profiles,
     _check_skills_hub,
@@ -115,6 +116,7 @@ DOCTOR_CHECKS = (
     ('Plugin import paths (removed Sep 14, 2026)', _check_plugin_compat), ('Auth Providers', _check_auth_providers),
     ('Directory Structure', _check_directory_structure), (None, _check_state_db), (None, _check_checkpoint_store),
     (None, _check_gateway_supervision), (None, _check_command_installation),
+    (None, _check_legacy_uv_shadow),
     ('External Tools', _check_git_and_rg), (None, _check_terminal_backend), (None, _check_node_and_browser),
     (None, _check_npm_audit), ('API Connectivity', _check_api_connectivity),
     ('Tool Availability', _check_tool_availability), ('Skills Hub', _check_skills_hub),

@@ -240,6 +240,54 @@ def _check_directory_structure(should_fix: bool, f: Finding) -> None:
             check_info(f"{fname} not created yet (will be created when the agent first writes a memory)")
 
 
+@doctor_check()
+def _check_legacy_uv_shadow(should_fix: bool, f: Finding) -> None:
+    """Report (and with ``--fix`` delete) pre-PM ``uv``/``uvx`` in ``$HERMES_HOME/bin``.
+
+    PM stages uv in its own store and keeps it off PATH on purpose
+    (``Uv.on_path`` is False), so a Hermes install should contribute no ``uv``
+    to any shell — yet ``$HERMES_HOME/bin`` is prepended to the User PATH on
+    Windows and appended to the agent terminal's PATH everywhere, so a
+    leftover from an older installer is the ``uv`` every invocation on the box
+    resolves: the user's own uv is shadowed and the winner is a version
+    nothing maintains (#101269). Only the ``uv`` family goes; the directory
+    holds the ``hermes`` launchers and the user's own scripts.
+
+    Deletion waits for PM's store to carry its own uv, for the same reason
+    ``update_cmd_maint._purge_legacy_managed_uv`` does: until then this binary
+    is the only uv the install has, and removing it would trade a stale
+    toolchain for none (removal waits until a private target exists).
+    """
+    import pm
+    from hermes_cli.doctor import HERMES_HOME, _DHH
+    from hermes_cli.uninstall import LEGACY_MANAGED_UV_NAMES, remove_legacy_managed_uv
+
+    _section("Legacy uv binaries")
+    leftover = [name for name in LEGACY_MANAGED_UV_NAMES if (HERMES_HOME / "bin" / name).is_file()]
+    if not leftover:
+        return check_ok(f"No pre-PM uv binaries in {_DHH}/bin")
+    if should_fix:
+        if not pm.is_installed("uv"):
+            return _fail_and_issue(
+                f"Pre-PM uv binaries in {_DHH}/bin shadow your own uv",
+                f"({', '.join(leftover)})",
+                "PM's store has no uv yet, so these are this install's only uv — "
+                "run `hermes update` (it installs uv into PM's store, then clears these), "
+                "then re-run `hermes doctor --fix`",
+                f.issues,
+            )
+        removed = remove_legacy_managed_uv(HERMES_HOME)
+        check_ok(f"Removed {len(removed)} pre-PM uv binary/binaries from {_DHH}/bin", f"({', '.join(leftover)})")
+        f.fixed += len(removed)
+        return
+    _fail_and_issue(
+        f"Pre-PM uv binaries in {_DHH}/bin shadow your own uv",
+        f"({', '.join(leftover)})",
+        f"Remove the pre-PM uv binaries from {_DHH}/bin — 'hermes doctor --fix' or 'hermes update' does it",
+        f.issues,
+    )
+
+
 # Cache-root entries at least this big that no pruner covers get a doctor warning.
 _UNPRUNED_CACHE_WARN_BYTES = 1 << 30
 _PRUNED_CACHE_DIRS = frozenset({"scratch", "terminal"})

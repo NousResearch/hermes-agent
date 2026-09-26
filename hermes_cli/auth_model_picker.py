@@ -150,6 +150,18 @@ class _ModelPickerRows:
         return title
 
 
+def chat_model_picker_labels(
+    models: List[str],
+    pricing: Optional[Dict[str, Dict[str, str]]],
+    *,
+    current_model: str = "",
+    sale_chrome: bool = False,
+) -> List[str]:
+    """Same $/Mtok + sale chrome as standalone `hermes model`, for in-chat /model."""
+    rows = _ModelPickerRows(list(models), pricing, current_model=current_model, sale_chrome=sale_chrome)
+    return [rows.label(mid) for mid in models]
+
+
 def _prompt_model_selection(
     model_ids: List[str], current_model: str = "",
     pricing: Optional[Dict[str, Dict[str, str]]] = None,

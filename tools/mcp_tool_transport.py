@@ -529,7 +529,10 @@ class MCPServerTransportMixin:
                               "mcp.client.streamable_http is not available. "
                               "Upgrade the mcp package to get HTTP support.")
         url = config["url"]
-        headers = dict(config.get("headers") or {})
+        # Headers are kept raw in the stored config (see _load_mcp_config /
+        # #97107) so a rotated ${ENV} token is re-resolved on every
+        # (re)connect rather than frozen at config-load.
+        headers = _config._resolve_headers_with_env(config)
         live = _live_endpoint(self.name)
         if live is not None:
             url, live_headers = live

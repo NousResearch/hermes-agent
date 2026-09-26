@@ -254,6 +254,7 @@ class TestRemoteSharedHostLockdown(unittest.TestCase):
         # The kernel path runs first and fails open here (no PID), so both the
         # kernel.env and sandbox.env ships are recorded. Neither token may
         # appear in any executed command.
+        ships, tokens = {}, {}
         for env_name in ("kernel.env", "sandbox.env"):
             env_ship = next((c for c in ship_mock.call_args_list
                              if c.args[1].endswith(env_name)), None)
@@ -264,6 +265,7 @@ class TestRemoteSharedHostLockdown(unittest.TestCase):
             self.assertTrue(token)
             self.assertFalse(any(token in c for c in commands),
                              f"{env_name} token appeared in a remote command line")
+            ships[env_name], tokens[env_name] = env_ship, token
         run_cmd = next(c for c in commands if "python3 script.py" in c)
         self.assertNotIn("HERMES_RPC_TOKEN=", run_cmd)
         if sys.platform == "win32":
@@ -275,8 +277,8 @@ class TestRemoteSharedHostLockdown(unittest.TestCase):
         import tempfile
         mkdir_cmd = next(c for c in commands
                          if "mkdir -p" in c and "hermes_exec_" in c)
-        sandbox = next(c.args[1] for c in ship_mock.call_args_list
-                       if c.args[1].endswith("sandbox.env")).rsplit("/", 1)[0]
+        env_ship, token = ships["sandbox.env"], tokens["sandbox.env"]
+        sandbox = env_ship.args[1].rsplit("/", 1)[0]
         root = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, root, True)
         local = root + sandbox
@@ -285,11 +287,6 @@ class TestRemoteSharedHostLockdown(unittest.TestCase):
         self.assertEqual(sh(mkdir_cmd).returncode, 0)
         for d in (local, f"{local}/rpc"):
             self.assertEqual(os.stat(d).st_mode & 0o777, 0o700, d)
-        env_ship = next(c for c in ship_mock.call_args_list
-                        if c.args[1].endswith("sandbox.env"))
-        token = next(l for l in env_ship.args[2].splitlines()
-                     if l.startswith("HERMES_RPC_TOKEN="))
-        token = token.split("=", 1)[1].strip("'\"")
         with open(f"{local}/sandbox.env", "w") as fh:
             fh.write(env_ship.args[2])
         with open(f"{local}/script.py", "w") as fh:

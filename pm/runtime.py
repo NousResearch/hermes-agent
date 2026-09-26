@@ -96,7 +96,8 @@ def _validate(python: Path, env: dict[str, str]) -> str:
         checked = subprocess.run(
             [str(python), "-I", "-B", "-c",
              "import packaging, tomli_w, truststore; from ruamel.yaml import YAML"],
-            env=env, capture_output=True, text=True, timeout=30,
+            env=env, capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=30,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return str(exc)

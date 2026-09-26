@@ -589,6 +589,8 @@ class Npm(BinaryPackage):
                 ],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=900,
                 env=npm_env(Path(cache)),
             )

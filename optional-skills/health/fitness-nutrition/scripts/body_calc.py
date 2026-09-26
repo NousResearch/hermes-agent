@@ -15,7 +15,25 @@ import sys
 import math
 
 
+class CalculatorInputError(ValueError):
+    """Raised when calculator input is outside the supported domain."""
+
+
+def require_positive(name, value):
+    if not math.isfinite(value) or value <= 0:
+        raise CalculatorInputError(f"{name} must be greater than zero")
+
+
+def require_sex(sex):
+    normalized = sex.upper()
+    if normalized not in {"M", "F"}:
+        raise CalculatorInputError("sex must be M or F")
+    return normalized
+
+
 def bmi(weight_kg, height_cm):
+    require_positive("weight", weight_kg)
+    require_positive("height", height_cm)
     h = height_cm / 100
     val = weight_kg / (h * h)
     if val < 18.5:
@@ -36,7 +54,14 @@ def bmi(weight_kg, height_cm):
 
 
 def tdee(weight_kg, height_cm, age, sex, activity):
-    if sex.upper() == "M":
+    require_positive("weight", weight_kg)
+    require_positive("height", height_cm)
+    require_positive("age", age)
+    sex = require_sex(sex)
+    if activity not in {1, 2, 3, 4, 5}:
+        raise CalculatorInputError("activity must be between 1 and 5")
+
+    if sex == "M":
         bmr = 10 * weight_kg + 6.25 * height_cm - 5 * age + 5
     else:
         bmr = 10 * weight_kg + 6.25 * height_cm - 5 * age - 161
@@ -49,7 +74,7 @@ def tdee(weight_kg, height_cm, age, sex, activity):
         5: ("Extremely active (athlete + physical job)", 1.9),
     }
 
-    label, mult = multipliers.get(activity, ("Moderate", 1.55))
+    label, mult = multipliers[activity]
     total = bmr * mult
 
     print(f"BMR (Mifflin-St Jeor): {bmr:.0f} kcal/day")
@@ -66,9 +91,9 @@ def tdee(weight_kg, height_cm, age, sex, activity):
 
 
 def one_rep_max(weight, reps):
-    if reps < 1:
-        print("Error: reps must be at least 1.")
-        sys.exit(1)
+    require_positive("weight", weight)
+    if not 1 <= reps <= 10:
+        raise CalculatorInputError("reps must be between 1 and 10")
     if reps == 1:
         print(f"1RM = {weight:.1f} (actual single)")
         return
@@ -94,6 +119,7 @@ def one_rep_max(weight, reps):
 
 
 def macros(tdee_kcal, goal):
+    require_positive("TDEE", tdee_kcal)
     goal = goal.lower()
     if goal in {"cut", "lose", "deficit"}:
         cals = tdee_kcal - 500
@@ -103,10 +129,15 @@ def macros(tdee_kcal, goal):
         cals = tdee_kcal + 400
         p, f, c = 0.30, 0.25, 0.45
         label = "Lean Bulk (+400 kcal)"
-    else:
+    elif goal in {"maintain", "maintenance"}:
         cals = tdee_kcal
         p, f, c = 0.30, 0.30, 0.40
         label = "Maintenance"
+    else:
+        raise CalculatorInputError("goal must be cut, maintain, or bulk")
+
+    if cals <= 0:
+        raise CalculatorInputError("calorie target must be greater than zero")
 
     prot_g = cals * p / 4
     fat_g = cals * f / 9
@@ -124,16 +155,29 @@ def macros(tdee_kcal, goal):
 
 
 def bodyfat(sex, neck_cm, waist_cm, hip_cm, height_cm):
-    sex = sex.upper()
+    sex = require_sex(sex)
+    require_positive("neck", neck_cm)
+    require_positive("waist", waist_cm)
+    require_positive("height", height_cm)
+    if sex == "F":
+        require_positive("hip", hip_cm)
+    neck_in = neck_cm / 2.54
+    waist_in = waist_cm / 2.54
+    hip_in = hip_cm / 2.54
+    height_in = height_cm / 2.54
     if sex == "M":
         if waist_cm <= neck_cm:
-            print("Error: waist must be larger than neck."); sys.exit(1)
-        bf = 86.010 * math.log10(waist_cm - neck_cm) - 70.041 * math.log10(height_cm) + 36.76
+            raise CalculatorInputError("waist must be larger than neck")
+        bf = 86.010 * math.log10(waist_in - neck_in) - 70.041 * math.log10(height_in) + 36.76
     else:
-        if (waist_cm + hip_cm) <= neck_cm:
-            print("Error: waist + hip must be larger than neck."); sys.exit(1)
-        bf = 163.205 * math.log10(waist_cm + hip_cm - neck_cm) - 97.684 * math.log10(height_cm) - 78.387
-
+        if waist_in + hip_in <= neck_in:
+            raise CalculatorInputError("waist + hip must be larger than neck")
+        bf = (163.205 * math.log10(waist_in + hip_in - neck_in)
+              - 97.684 * math.log10(height_in) - 78.387)
+    if not 0 < bf < 100:
+        raise CalculatorInputError(
+            "measurements produce an invalid body-fat estimate"
+        )
     print(f"Estimated body fat: {bf:.1f}%")
 
     if sex == "M":
@@ -201,9 +245,9 @@ def main():
             print(f"Unknown command: {cmd}")
             usage()
 
-    except (IndexError, ValueError) as e:
-        print(f"Error: {e}")
-        usage()
+    except (CalculatorInputError, IndexError, ValueError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(2)
 
 
 if __name__ == "__main__":

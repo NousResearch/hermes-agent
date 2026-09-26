@@ -378,7 +378,15 @@ def relaunch_command(
     else:
         # distlib .exe launchers are executable zip files with __main__, not
         # importable modules named '__main__'. run_path handles both shapes.
-        body = f"runpy.run_path({str(Path(argv[0]).absolute())!r}, run_name='__main__')"
+        script = Path(argv[0]).absolute()
+        # `python script.py` puts the script's directory on sys.path[0]. The
+        # re-entered child runs isolated (-I implies -P), and run_path does not
+        # restore that directory either, so a script importing a module beside
+        # itself died with ModuleNotFoundError.
+        body = (
+            f"sys.path.insert(1, {str(script.parent)!r}); "
+            f"runpy.run_path({str(script)!r}, run_name='__main__')"
+        )
     return [str(python), *options, "-I", "-c", prefix + body]
 
 

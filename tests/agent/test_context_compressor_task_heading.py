@@ -35,3 +35,43 @@ def test_grounding_collapses_alias_and_duplicate_task_sections():
     assert headings[1:] == ["## Goal", "## Constraints & Preferences"]
     assert "fresh ask" in grounded
     assert "stale" not in grounded
+
+def _summary_prompt(*, previous_summary: str = "", tail_mode: str = "lean") -> str:
+    compressor = ContextCompressor.__new__(ContextCompressor)
+    compressor.tail_mode = tail_mode
+    compressor._previous_summary = previous_summary
+    source = "USER: " + ("Keep this deployment constraint and its rationale. " * 20)
+    return compressor._build_summary_prompt(source, 800, "deployment safety", "", True)
+
+
+def test_summary_model_does_not_copy_long_latest_user_input():
+    for tail_mode in ("lean", "legacy"):
+        for previous_summary in ("", "## Historical Task\nolder checkpoint"):
+            prompt = _summary_prompt(previous_summary=previous_summary, tail_mode=tail_mode)
+            assert "do not copy long passages from it" in prompt
+            assert "input verbatim — the exact words" not in prompt
+            # Do not weaken unrelated preservation contracts: long safety constraints were
+            # not part of #124078's measured trigger and are not source-grounded afterward.
+            assert "MUST be quoted VERBATIM" in prompt
+
+
+def test_grounding_restores_latest_user_words_after_summary_generation():
+    latest_request = (
+        "Please keep this exact deployment constraint: never modify production data "
+        "until the dry-run output has been reviewed. " * 7
+    ).strip()
+    generated = (
+        f"{HISTORICAL_TASK_HEADING}\nUser asked for a deployment check\n\n"
+        "## Goal\nValidate deployment safety"
+    )
+
+    grounded = ContextCompressor._ground_historical_task_snapshot.__func__(
+        ContextCompressor,
+        generated,
+        [{"role": "user", "content": latest_request}],
+    )
+
+    assert latest_request in grounded
+    assert "User asked for a deployment check" not in grounded
+    assert "## Goal\nValidate deployment safety" in grounded
+

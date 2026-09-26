@@ -198,7 +198,13 @@ def resolve_manifest_winners(manifests: List[PluginManifest]) -> Dict[str, Plugi
     ``~/.hermes/plugins/<name>`` is the documented way to override a bundled plugin, and is logged. A flat
     user/project manifest that claims a bundled key from a *differently named* directory is an impostor, not
     an override (``impostor_dir/plugin.yaml`` with ``name: kanban``): it is skipped with a warning so
-    ``hermes plugins enable kanban`` never activates unrelated code under the bundled name."""
+    ``hermes plugins enable kanban`` never activates unrelated code under the bundled name.
+
+    Same-source collisions (two user plugins, or two project plugins) are NOT a documented override — a
+    hand-made backup like ``foo.bak-<ts>/`` that declares the same manifest name would otherwise shadow the
+    live copy silently (``scan_directory`` iterates ``sorted()``, so the backup sorts last and wins). The
+    well-named side (directory name == key) wins; otherwise last-in-order is kept — but it is never silent
+    (#121078): a WARNING names both paths and which one was kept."""
     winners: Dict[str, PluginManifest] = {}
     for manifest in manifests:
         key = manifest_key(manifest)
@@ -215,6 +221,24 @@ def resolve_manifest_winners(manifests: List[PluginManifest]) -> Dict[str, Plugi
                 continue
             logger.info("Plugin '%s' at %s (%s) shadows the bundled copy at %s", key, manifest.path,
                         manifest.source, shadowed.path)
+            winners[key] = manifest
+            continue
+        if shadowed is not None and shadowed.source == manifest.source:
+            # Same-source collision. Prefer the manifest whose directory name equals the key (the
+            # well-named shape); the differently-named side is the backup/impostor shape. When neither
+            # (or both) is well-named, keep last-in-order — but surface it, don't swallow it.
+            own_dir = Path(manifest.path).name if manifest.path else ""
+            shadowed_dir = Path(shadowed.path).name if shadowed.path else ""
+            if shadowed_dir == key and own_dir != key:
+                winner, loser = shadowed, manifest
+            else:
+                winner, loser = manifest, shadowed
+            logger.warning(
+                "Plugin '%s': two %s manifests collide on the registry key — keeping %s, ignoring %s",
+                key, manifest.source, winner.path, loser.path,
+            )
+            winners[key] = winner
+            continue
         winners[key] = manifest
     return winners
 

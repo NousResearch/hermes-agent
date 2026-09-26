@@ -930,6 +930,8 @@ export const en: Translations = {
         notConnected: "Chat is not connected — the paste was not sent. Reconnect and try again.",
         tooLarge: "Clipboard contents are too large to paste. Copy a smaller section.",
       },
+      imageUploadFailed: "Image upload failed: {message}",
+      imageNotConnected: "Image uploaded, but chat is not connected — try again.",
     },
   },
 };

@@ -724,6 +724,8 @@ export const ar = defineLocale({
         notConnected: "الدردشة غير متصلة — لم يُرسَل اللصق. أعد الاتصال وحاول مرة أخرى.",
         tooLarge: "محتوى الحافظة كبير جدًا للصق. انسخ جزءًا أصغر.",
       },
+      imageUploadFailed: "فشل رفع الصورة: {message}",
+      imageNotConnected: "تم رفع الصورة، لكن الدردشة غير متصلة — حاول مرة أخرى.",
     },
   },
 });

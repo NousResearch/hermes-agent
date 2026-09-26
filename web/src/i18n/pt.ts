@@ -795,6 +795,8 @@ export const pt: Translations = {
         notConnected: "O chat não está ligado — a colagem não foi enviada. Volte a ligar e tente novamente.",
         tooLarge: "O conteúdo da área de transferência é demasiado grande para colar. Copie uma secção mais pequena.",
       },
+      imageUploadFailed: "Falha no carregamento da imagem: {message}",
+      imageNotConnected: "Imagem carregada, mas a conversa não está ligada — tente novamente.",
     },
   },
 };

@@ -793,6 +793,8 @@ export const ja: Translations = {
         notConnected: "チャットが接続されていません — 貼り付けは送信されませんでした。再接続してやり直してください。",
         tooLarge: "クリップボードの内容が大きすぎて貼り付けられません。より小さい範囲をコピーしてください。",
       },
+      imageUploadFailed: "画像のアップロードに失敗しました: {message}",
+      imageNotConnected: "画像はアップロードされましたが、チャットが未接続です — もう一度お試しください。",
     },
   },
 };

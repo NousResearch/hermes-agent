@@ -794,6 +794,8 @@ export const fr: Translations = {
         notConnected: "Le chat n’est pas connecté — le collage n’a pas été envoyé. Reconnectez-vous et réessayez.",
         tooLarge: "Le contenu du presse-papiers est trop volumineux pour être collé. Copiez une section plus petite.",
       },
+      imageUploadFailed: "Échec de l’envoi de l’image : {message}",
+      imageNotConnected: "Image envoyée, mais le chat n’est pas connecté — réessayez.",
     },
   },
 };

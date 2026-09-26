@@ -793,6 +793,8 @@ export const zhHant: Translations = {
         notConnected: "聊天未連線——貼上未送出。請重新連線後再試。",
         tooLarge: "剪貼簿內容過大，無法貼上。請複製較小的片段。",
       },
+      imageUploadFailed: "圖片上傳失敗：{message}",
+      imageNotConnected: "圖片已上傳，但聊天尚未連線 — 請再試一次。",
     },
   },
 };

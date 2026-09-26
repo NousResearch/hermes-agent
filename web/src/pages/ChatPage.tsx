@@ -68,6 +68,8 @@ import {
 } from "@/lib/pty-mobile-input";
 import {
   DEFAULT_PASTE_MAX_CHARS,
+  formatImageUploadError,
+  formatPasteConfirmation,
   runPtyClipboardPaste,
   type PasteDeps,
   type PasteFailure,
@@ -601,14 +603,20 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // guarded sender / term.paste wiring the first attempt did (FR-8).
   const confirmPendingPaste = useCallback(() => {
     const pending = pendingPaste;
-    setPendingPaste(null);
-    if (pending) {
-      void mobilePasteRef.current?.({
-        confirmation: "confirm",
-        pendingText: pending.text,
-      });
+    if (!pending) return;
+    const send = mobilePasteRef.current;
+    if (!send) {
+      // The PTY effect tore down between the prompt appearing and the user
+      // answering (`hasActivated` went false, or `channel` changed). Clearing
+      // `pendingPaste` here would discard the paste with no message at all,
+      // so say why (FR-9: no silent no-op).
+      setPendingPaste(null);
+      setBanner(t.chat.paste.failures.notConnected);
+      return;
     }
-  }, [pendingPaste]);
+    setPendingPaste(null);
+    void send({ confirmation: "confirm", pendingText: pending.text });
+  }, [pendingPaste, t]);
   const cancelPendingPaste = useCallback(() => {
     setPendingPaste(null);
     void mobilePasteRef.current?.({ confirmation: "cancel" });
@@ -733,22 +741,40 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     const reportImageUploadError = (err: unknown) => {
       const message = err instanceof Error ? err.message : String(err);
       console.warn("[dashboard chat] image upload failed:", message);
-      setBanner(`Image upload failed: ${message}`);
+      setBanner(formatImageUploadError(t.chat.paste.imageUploadFailed, message));
+    };
+    // Both sends consult the reconnect gate, not just `readyState`. During a
+    // reconnect the socket is still `OPEN` while the reconnect logic already
+    // considers it unusable (NS-591 half-open mobile socket), so a
+    // `readyState`-only check wrote `/image <path>` + `\r` into a socket that
+    // swallowed them — silently, with no banner. `shouldBlockPtyInput` is the
+    // same guard the text route goes through, so both routes now agree.
+    const imageAttachRefused = () => {
+      setBanner(t.chat.paste.imageNotConnected);
     };
     const driveImageAttach = async (paths: string[]) => {
       for (const path of paths) {
         if (imageUploadDisposed) return;
         const ws = wsRef.current;
-        if (!ws || ws.readyState !== WebSocket.OPEN) {
-          setBanner(
-            "Image uploaded, but chat is not connected — try again.",
-          );
+        if (
+          !ws ||
+          ws.readyState !== WebSocket.OPEN ||
+          shouldBlockPtyInput(ptyStateRef.current)
+        ) {
+          imageAttachRefused();
           return;
         }
         ws.send(`/image ${path}`);
         await new Promise<void>((resolve) => window.setTimeout(resolve, 100));
         const s = wsRef.current;
-        if (!s || s.readyState !== WebSocket.OPEN) return;
+        if (
+          !s ||
+          s.readyState !== WebSocket.OPEN ||
+          shouldBlockPtyInput(ptyStateRef.current)
+        ) {
+          imageAttachRefused();
+          return;
+        }
         s.send("\r");
         await pasteDelay();
       }
@@ -2066,8 +2092,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           className="flex flex-wrap items-start gap-2 border border-warning/50 bg-warning/10 text-warning px-3 py-2 text-xs tracking-wide"
         >
           <span className="min-w-0 flex-1 whitespace-pre-wrap break-words">
-            {t.chat.paste.confirmPrompt.replace(
-              "{preview}",
+            {formatPasteConfirmation(
+              t.chat.paste.confirmPrompt,
               pendingPaste.preview,
             )}
           </span>

@@ -76,6 +76,41 @@ export function pastePreview(
 }
 
 /**
+ * Interpolate a UI template with untrusted content, LITERALLY.
+ *
+ * `String.prototype.replace` expands `$&`, `` $` ``, `$'`, `$$` and `$n` when
+ * the replacement is a **string**. Every value passed here is untrusted —
+ * clipboard text (B1) or a filesystem error message — so a string replacement
+ * renders something the user never pasted: the FR-8 confirmation can be
+ * defaced into a plausible-looking but different string while the full
+ * original payload still reaches the agent terminal. A replacer *function*
+ * disables the substitution patterns.
+ */
+function interpolate(
+  template: string,
+  token: "{preview}" | "{message}",
+  value: string,
+): string {
+  return template.split(token).join(value);
+}
+
+/** Render the FR-8 multi-line confirmation prompt. */
+export function formatPasteConfirmation(
+  template: string,
+  preview: string,
+): string {
+  return interpolate(template, "{preview}", preview);
+}
+
+/** Render the image-upload failure banner (message may carry `$` patterns). */
+export function formatImageUploadError(
+  template: string,
+  message: string,
+): string {
+  return interpolate(template, "{message}", message);
+}
+
+/**
  * Pre-flight the PTY gate.
  *
  * The gate is only reachable through the guarded sender, so this is a
@@ -140,7 +175,17 @@ export async function runPtyClipboardPaste(
   }
 
   const files = await readClipboardImages(deps);
-  if (files.length) return { kind: "sent-image", count: files.length };
+  if (files.length) {
+    // The image route also ends in bytes on the socket (`/image <path>` then
+    // `\r`), so it answers to the same gate as the text route. Without this
+    // the module reported `sent-image` for a socket the caller would refuse
+    // one line later — the NS-591 half-open case, where `readyState` is still
+    // OPEN during a reconnect and the send would be swallowed silently.
+    if (!ptyInputAllowed(deps)) {
+      return { kind: "blocked", reason: "socket-closed" };
+    }
+    return { kind: "sent-image", count: files.length };
+  }
 
   if (!deps.readText) {
     return {

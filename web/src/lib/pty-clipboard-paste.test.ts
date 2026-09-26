@@ -4,6 +4,8 @@ import { sendPtyShortcutSequence } from "./pty-keyboard-shortcuts";
 import {
   DEFAULT_PASTE_MAX_CHARS,
   PASTE_PREVIEW_MAX_CHARS,
+  formatImageUploadError,
+  formatPasteConfirmation,
   pastePreview,
   runPtyClipboardPaste,
   type PasteDeps,
@@ -142,6 +144,51 @@ describe("runPtyClipboardPaste image path", () => {
     expect(readText).not.toHaveBeenCalled();
   });
 
+  it("reports blocked for an image clipboard when the guarded sender refuses the socket", async () => {
+    // B2 regression: the image branch used to return `sent-image` before ever
+    // reaching the PTY gate, so the caller went on to write `/image <path>`
+    // plus `\r` into a socket the reconnect logic considers unusable (NS-591
+    // half-open mobile socket) — silently, with no banner. The image route
+    // must be gated exactly like the text route.
+    const { deps, pasteText, sendBytes } = makeDeps({
+      readImages: async () => [clipboardFile()],
+      sendBytes: () => false,
+    });
+
+    const outcome = await runPtyClipboardPaste(deps);
+
+    expect(outcome).toEqual({ kind: "blocked", reason: "socket-closed" });
+    expect(pasteText).not.toHaveBeenCalled();
+    // The pre-flight still runs, so the caller never reaches the raw sends.
+    expect(sendBytes).toHaveBeenCalledWith("");
+  });
+
+  it("blocks an image clipboard through the real reconnect guard while an open socket passes", async () => {
+    const ws = { readyState: 1 as const, send: vi.fn() };
+
+    const blocked = makeDeps({
+      readImages: async () => [clipboardFile()],
+      sendBytes: (bytes) => sendPtyShortcutSequence(ws, "reconnecting", bytes),
+    });
+    expect(await runPtyClipboardPaste(blocked.deps)).toEqual({
+      kind: "blocked",
+      reason: "socket-closed",
+    });
+    // readyState is still OPEN during a reconnect — this is the exact window
+    // the `readyState`-only guard let through.
+    expect(ws.readyState).toBe(1);
+    expect(ws.send).not.toHaveBeenCalled();
+
+    const open = makeDeps({
+      readImages: async () => [clipboardFile()],
+      sendBytes: (bytes) => sendPtyShortcutSequence(ws, "open", bytes),
+    });
+    expect(await runPtyClipboardPaste(open.deps)).toEqual({
+      kind: "sent-image",
+      count: 1,
+    });
+  });
+
   it("falls back to text when the image reader rejects", async () => {
     const { deps, pasteText } = makeDeps({
       readImages: async () => {
@@ -277,3 +324,67 @@ describe("pastePreview", () => {
     expect(long.endsWith("…")).toBe(true);
   });
 });
+
+// Security-relevant (B1): the FR-8 confirmation is the only thing between a
+// crafted clipboard and the agent terminal, so the rendered preview MUST be
+// byte-identical to the payload that `confirm` sends. `String.replace` with a
+// *string* replacement expands `$&`, `` $` ``, `$'` and `$$`, which silently
+// renders a different string than the one that executes.
+describe("formatPasteConfirmation", () => {
+  const template =
+    "Paste {preview} into the terminal? A multi-line paste is submitted line by line.";
+
+  it.each([
+    ["$&", "matched"],
+    ["$`", "head"],
+    ["$'", "tail"],
+    ["$$", "dollar"],
+    ["$1", "capture"],
+  ])("renders a preview containing %s verbatim", (token) => {
+    const preview = `rm -rf /\n${token}`;
+    const rendered = formatPasteConfirmation(template, preview);
+
+    expect(rendered).toContain(preview);
+    // And nothing but the template's own literal text surrounds it.
+    expect(rendered).toBe(
+      template.split("{preview}").join(preview),
+    );
+  });
+
+  it("does not duplicate the prompt when the preview ends with $'", () => {
+    const rendered = formatPasteConfirmation(template, "x\n$'y");
+
+    expect(rendered).toBe(`Paste x\n$'y into the terminal? A multi-line paste is submitted line by line.`);
+    // `$'` used to splice the WHOLE prompt in again, which reads as a
+    // rendering bug and trains the user to skim past the confirmation.
+    expect(rendered.split("into the terminal?").length - 1).toBe(1);
+    expect(rendered.split("x\n$'y").length - 1).toBe(1);
+  });
+
+  it("fills every placeholder, so a duplicated token can never leak to the user", () => {
+    expect(formatPasteConfirmation("a {preview} b {preview} c", "X")).toBe(
+      "a X b X c",
+    );
+    expect(formatPasteConfirmation("no placeholder", "X")).toBe(
+      "no placeholder",
+    );
+  });
+
+  it("renders an empty preview without throwing", () => {
+    expect(formatPasteConfirmation(template, "")).toBe(
+      template.replace("{preview}", ""),
+    );
+  });
+});
+
+describe("formatImageUploadError", () => {
+  it("renders the failure message verbatim, $-patterns included", () => {
+    const template = "Image upload failed: {message}";
+    const message = "EACCES: $& $` $' $$ /tmp/shots";
+
+    expect(formatImageUploadError(template, message)).toBe(
+      `Image upload failed: ${message}`,
+    );
+  });
+});
+

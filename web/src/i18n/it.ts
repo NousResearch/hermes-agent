@@ -793,6 +793,8 @@ export const it: Translations = {
         notConnected: "La chat non è connessa — l’incolla non è stato inviato. Riconnettiti e riprova.",
         tooLarge: "Il contenuto degli appunti è troppo grande per essere incollato. Copia una sezione più piccola.",
       },
+      imageUploadFailed: "Caricamento immagine non riuscito: {message}",
+      imageNotConnected: "Immagine caricata, ma la chat non è connessa — riprova.",
     },
   },
 };

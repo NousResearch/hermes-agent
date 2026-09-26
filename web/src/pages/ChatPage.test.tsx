@@ -144,6 +144,8 @@ vi.mock("@/i18n", () => ({
             notConnected: "Chat is not connected.",
             tooLarge: "Clipboard contents are too large.",
           },
+          imageUploadFailed: "Image upload failed: {message}",
+          imageNotConnected: "Image uploaded, but chat is not connected.",
         },
       },
     },

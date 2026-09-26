@@ -793,6 +793,8 @@ export const ko: Translations = {
         notConnected: "채팅이 연결되지 않았습니다 — 붙여넣기가 전송되지 않았습니다. 다시 연결한 뒤 시도하십시오.",
         tooLarge: "클립보드 내용이 너무 커서 붙여넣을 수 없습니다. 더 작은 부분을 복사하십시오.",
       },
+      imageUploadFailed: "이미지 업로드에 실패했습니다: {message}",
+      imageNotConnected: "이미지는 업로드되었지만 채팅이 연결되지 않았습니다 — 다시 시도하십시오.",
     },
   },
 };

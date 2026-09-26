@@ -789,6 +789,8 @@ export const zh: Translations = {
         notConnected: "聊天未连接——粘贴未发送。请重新连接后重试。",
         tooLarge: "剪贴板内容过大，无法粘贴。请复制较小的片段。",
       },
+      imageUploadFailed: "图片上传失败：{message}",
+      imageNotConnected: "图片已上传，但聊天未连接 — 请重试。",
     },
   },
 };

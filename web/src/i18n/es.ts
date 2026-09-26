@@ -794,6 +794,8 @@ export const es: Translations = {
         notConnected: "El chat no está conectado: no se envió el pegado. Vuelve a conectar e inténtalo de nuevo.",
         tooLarge: "El contenido del portapapeles es demasiado grande para pegarlo. Copia una sección más pequeña.",
       },
+      imageUploadFailed: "Error al subir la imagen: {message}",
+      imageNotConnected: "Imagen subida, pero el chat no está conectado: inténtalo de nuevo.",
     },
   },
 };

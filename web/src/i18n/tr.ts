@@ -794,6 +794,8 @@ export const tr: Translations = {
         notConnected: "Sohbet bağlı değil — yapıştırma gönderilmedi. Yeniden bağlanıp tekrar deneyin.",
         tooLarge: "Pano içeriği yapıştırmak için çok büyük. Daha küçük bir bölümü kopyalayın.",
       },
+      imageUploadFailed: "Görsel yüklenemedi: {message}",
+      imageNotConnected: "Görsel yüklendi, ancak sohbet bağlı değil — tekrar deneyin.",
     },
   },
 };

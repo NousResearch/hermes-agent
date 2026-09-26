@@ -794,6 +794,8 @@ export const af: Translations = {
         notConnected: "Klets is nie gekoppel nie — die plak is nie gestuur nie. Herkoppel en probeer weer.",
         tooLarge: "Knipbordinhoud is te groot om te plak. Kopieer ’n kleiner gedeelte.",
       },
+      imageUploadFailed: "Beeldopdrag het nie: {message}",
+      imageNotConnected: "Beeld is opgelaai, maar die klets is nie verbind nie nie — probeer weer.",
     },
   },
 };

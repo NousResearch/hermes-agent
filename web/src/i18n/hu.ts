@@ -794,6 +794,8 @@ export const hu: Translations = {
         notConnected: "A csevegés nincs csatlakoztatva — a beillesztés nem lett elküldve. Csatlakozz újra, és próbáld megint.",
         tooLarge: "A vágólap tartalma túl nagy a beillesztéshez. Másolj kisebb részt.",
       },
+      imageUploadFailed: "Képfeltöltés nem sikerült: {message}",
+      imageNotConnected: "A kép feltöltve, de a csevegés nincs csatlakoztatva — próbáld újra.",
     },
   },
 };

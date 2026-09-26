@@ -802,6 +802,8 @@ export const ga: Translations = {
         notConnected: "Níl an comhrá ceangailte — níor seoladh an greamú. Athcheangail agus triail arís.",
         tooLarge: "Tá inneachar an ghearrthaisce ró-mhór le greamú. Cóipeáil cuid níos lú.",
       },
+      imageUploadFailed: "Theip ar an íomhá a uaslódáil: {message}",
+      imageNotConnected: "Íomhá uaslódáilte, ach níl an comhrá ceangailte — bain triail eile as arís.",
     },
   },
 };

@@ -793,6 +793,8 @@ export const de: Translations = {
         notConnected: "Chat ist nicht verbunden — der Einfügevorgang wurde nicht gesendet. Verbinde dich erneut und versuche es noch einmal.",
         tooLarge: "Der Inhalt der Zwischenablage ist zu groß zum Einfügen. Kopiere einen kleineren Abschnitt.",
       },
+      imageUploadFailed: "Bild-Upload fehlgeschlagen: {message}",
+      imageNotConnected: "Bild hochgeladen, aber der Chat ist nicht verbunden — erneut versuchen.",
     },
   },
 };

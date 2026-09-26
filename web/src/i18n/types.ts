@@ -927,6 +927,13 @@ export interface Translations {
         notConnected: string;
         tooLarge: string;
       };
+      /** Image-attach failures. "{message}" = the upload error, rendered
+       *  literally (it may contain `$` substitution patterns). */
+      imageUploadFailed: string;
+      /** The image uploaded, but the PTY gate refused to carry the
+       *  `/image` command — a reconnecting socket stays `readyState` OPEN, so
+       *  this is the only signal the user gets. */
+      imageNotConnected: string;
     };
   };
 }

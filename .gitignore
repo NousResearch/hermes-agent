@@ -133,6 +133,8 @@ mini-swe-agent/
 
 # Nix
 .direnv/
+# Machine-specific direnv overrides sourced by .envrc
+.envrc.local
 .nix-stamps/
 result
 website/static/api/skills-index.json

@@ -273,7 +273,10 @@ _LOGIN_CONTROL_INSPECTION_JS_TEMPLATE = """(() => {
     const labels = element.labels ? Array.from(element.labels, (l) => l.textContent || "") : [];
     const ariaText = (element.getAttribute("aria-labelledby") || "")
       .split(/\\s+/).filter(Boolean)
-      .map((id) => { const n = document.getElementById(id); return n ? (n.textContent || "") : ""; })
+      // a flat ``getElementById`` on the document cannot see into a shadow root either, so
+      // resolving against the control's own root keeps a shadow-discovered control from
+      // arriving unlabelled (and keeps the flat-document behaviour for light-DOM controls).
+      .map((id) => { const n = (element.getRootNode() || document).getElementById(id); return n ? (n.textContent || "") : ""; })
       .join(" ");
     const resolvedFormIndex = element.form ? forms.indexOf(element.form) : -1;
     return [{

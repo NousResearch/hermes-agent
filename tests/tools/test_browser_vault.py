@@ -16,7 +16,9 @@ from __future__ import annotations
 import json
 import re
 import os
+import shutil
 import stat
+import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -58,6 +60,74 @@ def _add_login(store, origin="https://example.com", password="s3cret-pw"):
             "origin": origin,
         },
     )
+
+
+# Minimal fake DOM executed by node for behaviour-level tests of the inspection JS
+# template: ``querySelectorAll``/``getElementById`` deliberately never cross a shadow
+# boundary (matching real engines), and each element reports the root it belongs to.
+_SHADOW_ARIA_HARNESS_JS = """function makeRoot() {
+  const root = { children: [] };
+  root.querySelectorAll = (sel) => {
+    const wantAll = sel.trim() === "*";
+    const tags = sel.split(",").map((s) => s.trim().toUpperCase()).filter((t) => t && t !== "*");
+    const out = [];
+    (function walk(nodes) {
+      for (const n of nodes) {
+        if (wantAll || tags.includes(n.tagName)) out.push(n);
+        walk(n.children);
+      }
+    })(root.children);
+    return out;
+  };
+  root.getElementById = (id) => {
+    let hit = null;
+    (function walk(nodes) {
+      for (const n of nodes) {
+        if (n.id === id) hit = n;
+        walk(n.children);
+      }
+    })(root.children);
+    return hit;
+  };
+  return root;
+}
+function makeEl(tag, root, attrs, text) {
+  attrs = attrs || {};
+  text = text || "";
+  return {
+    tagName: tag.toUpperCase(),
+    children: [],
+    shadowRoot: null,
+    labels: null,
+    form: null,
+    disabled: false,
+    readOnly: false,
+    get id() { return attrs.id || ""; },
+    get name() { return attrs.name || ""; },
+    get type() { return attrs.type || ""; },
+    get autocomplete() { return attrs.autocomplete || ""; },
+    get maxLength() { return attrs.maxLength ? Number(attrs.maxLength) : -1; },
+    get textContent() { return text; },
+    getAttribute(n) { return attrs[n] !== undefined ? String(attrs[n]) : null; },
+    setAttribute(n, v) { attrs[n] = String(v); },
+    getClientRects() { return [{}]; },
+    getRootNode() { return root; },
+  };
+}
+function getComputedStyle() { return { display: "block", visibility: "visible" }; }
+const document = makeRoot();
+const host = makeEl("div", document);
+const lightLabel = makeEl("label", document, { id: "ll" }, "Light User");
+const lightInput = makeEl("input", document, { name: "user", type: "text", "aria-labelledby": "ll" });
+document.children.push(host, lightLabel, lightInput);
+const shadow = makeRoot();
+host.shadowRoot = shadow;
+const shadowLabel = makeEl("label", shadow, { id: "sl" }, "Shadow User");
+const shadowInput = makeEl("input", shadow, { name: "shadowuser", type: "text", "aria-labelledby": "sl" });
+shadow.children.push(shadowLabel, shadowInput);
+const result = __INSPECTION__;
+console.log(result);
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -265,6 +335,10 @@ class TestClassifier:
         # the flat single-layer queries are gone — both for controls and for forms
         assert 'Array.from(document.querySelectorAll("input, select"))' not in js
         assert "Array.from(document.forms)" not in js
+        # id references (aria-labelledby) resolve against the control's own root, not the flat
+        # document — the label of a shadow-discovered control usually lives in the same root
+        assert "document.getElementById(" not in js
+        assert "element.getRootNode() || document" in js
 
     def test_fill_js_resolves_and_strips_stamps_across_shadow_roots(self):
         # The fill resolves the inspection's stamps wherever they live, including inside open
@@ -279,6 +353,25 @@ class TestClassifier:
         assert "document.querySelector('[data-hermes-vault-slot=" not in js
         assert "const stripStamps = (root) =>" in js and "stripStamps(document)" in js
         assert 'document.querySelectorAll("[data-hermes-vault-slot]")' not in js
+
+    def test_inspection_js_resolves_aria_labelledby_inside_shadow_roots(self):
+        # Follow-up to the shadow walk (review on #122561): a control the inspection now
+        # discovers still classified as unlabelled when its ``aria-labelledby`` target
+        # lives in the same shadow root, because a flat ``getElementById`` cannot see
+        # into one either — the control was found and then silently dropped one step
+        # later. Executed (not shape-asserted) against a minimal fake DOM in node: the
+        # shadow control must arrive with its label, and the light-DOM path must keep
+        # the flat behaviour.
+        node = shutil.which("node")
+        if not node:
+            pytest.skip("node not available to execute the inspection JS")
+        js = build_inspection_js("n0nc3")
+        script = _SHADOW_ARIA_HARNESS_JS.replace("__INSPECTION__", js)
+        proc = subprocess.run([node, "-e", script], capture_output=True, text=True)
+        assert proc.returncode == 0, proc.stderr
+        controls = {c["name"].strip(): c for c in json.loads(proc.stdout)}
+        assert "Shadow User" in controls["shadowuser"]["label"]
+        assert "Light User" in controls["user"]["label"]
 
 
 # ---------------------------------------------------------------------------

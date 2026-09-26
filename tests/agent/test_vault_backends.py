@@ -14,6 +14,8 @@ from __future__ import annotations
 import json
 import os
 import stat
+import threading
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -306,6 +308,56 @@ def test_managed_session_removal_invalidates_cached_token(fake_bw, tmp_path):
     from agent.vault_backends.base import UnlockRequired
     with pytest.raises(UnlockRequired):
         backend.resolve_password("bw:abc")
+    assert len(log.read_text(encoding="utf-8").splitlines()) == 1
+
+
+def test_lock_during_managed_session_read_cannot_restore_token(fake_bw, tmp_path, monkeypatch):
+    exe, _log = fake_bw
+    session = tmp_path / "managed-session"
+    session.write_text("SESSION-TOKEN-123\n", encoding="utf-8")
+    session.chmod(0o600)
+    backend = BitwardenLoginBackend({"binary_path": str(exe), "session_file": str(session)})
+    read_started = threading.Event()
+    continue_read = threading.Event()
+    original_read = Path.read_text
+
+    def paused_read(path, *args, **kwargs):
+        if path == session:
+            read_started.set()
+            assert continue_read.wait(5), "test failed to resume session read"
+        return original_read(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", paused_read)
+    result = []
+    worker = threading.Thread(target=lambda: result.append(backend.is_unlocked()))
+    worker.start()
+    try:
+        assert read_started.wait(5), "session read did not start"
+        unlock_mod.lock("bitwarden")
+    finally:
+        continue_read.set()
+        worker.join(timeout=5)
+    assert not worker.is_alive()
+    assert result == [False]
+    assert not unlock_mod.is_unlocked("bitwarden")
+
+
+def test_invalid_utf8_managed_session_is_locked_and_drops_cached_token(fake_bw, tmp_path):
+    exe, log = fake_bw
+    session = tmp_path / "managed-session"
+    session.write_text("SESSION-TOKEN-123\n", encoding="utf-8")
+    session.chmod(0o600)
+    backend = BitwardenLoginBackend({"binary_path": str(exe), "session_file": str(session)})
+    assert backend.list_items()[0].id == "bw:abc"
+    session.write_bytes(b"\xff\xfe")
+    assert not backend.is_unlocked()
+    assert not unlock_mod.is_unlocked("bitwarden")
+    from tools.browser_vault_tool import browser_vault_list
+
+    with patch("agent.vault_backends.enabled_backends", return_value=[backend]):
+        result = json.loads(browser_vault_list())
+    assert result["items"] == []
+    assert result["locked"][0]["backend"] == "bitwarden"
     assert len(log.read_text(encoding="utf-8").splitlines()) == 1
 
 

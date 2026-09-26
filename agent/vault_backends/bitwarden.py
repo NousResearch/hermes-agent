@@ -61,13 +61,16 @@ class BitwardenLoginBackend(LoginBackend):
         if not session_file:
             return _unlock.is_unlocked(self.name)
         path = Path(session_file)
+        # A Lock acknowledged during disk I/O must invalidate this read, just as it
+        # invalidates an in-flight interactive `bw unlock` child.
+        generation = _unlock.begin_unlock(self.name)
         try:
             if os.name == "posix" and stat.S_IMODE(path.stat().st_mode) & 0o077:
                 logger.warning("Bitwarden session_file must not be group/world-accessible")
                 _unlock.lock(self.name)
                 return False
             token = path.read_text(encoding="utf-8").strip()
-        except OSError as exc:
+        except (OSError, UnicodeDecodeError) as exc:
             logger.warning("Could not read managed Bitwarden session file: %s", exc)
             _unlock.lock(self.name)
             return False
@@ -76,7 +79,7 @@ class BitwardenLoginBackend(LoginBackend):
             return False
         if _unlock.get_session_token(self.name) == token:
             return True
-        return _unlock.store_session_token(self.name, token)
+        return _unlock.store_session_token(self.name, token, generation)
 
     def unlock(self, master_password: str) -> None:
         # bw refuses a piped password ("Master password is required"); its non-interactive contract is

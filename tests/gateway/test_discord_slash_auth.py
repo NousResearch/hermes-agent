@@ -11,77 +11,15 @@ These tests pin the security-correct behavior so the bypass cannot regress.
 
 import asyncio
 import logging
-import sys
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
 from gateway.config import PlatformConfig
 
 
-# ---------------------------------------------------------------------------
-# Discord module mock — borrowed from test_discord_slash_commands.py so this
-# file runs on machines without discord.py installed.
-# ---------------------------------------------------------------------------
-
-
-def _ensure_discord_mock():
-    if "discord" in sys.modules and hasattr(sys.modules["discord"], "__file__"):
-        return  # real discord installed
-
-    if sys.modules.get("discord") is None:
-        discord_mod = MagicMock()
-        discord_mod.Intents.default.return_value = MagicMock()
-        discord_mod.DMChannel = type("DMChannel", (), {})
-        discord_mod.Thread = type("Thread", (), {})
-        discord_mod.ForumChannel = type("ForumChannel", (), {})
-        discord_mod.Interaction = object
-
-        class _FakePermissions:
-            def __init__(self, value=0, **_):
-                self.value = value
-
-        discord_mod.Permissions = _FakePermissions
-
-        class _FakeGroup:
-            def __init__(self, *, name, description, parent=None):
-                self.name = name
-                self.description = description
-                self.parent = parent
-                self._children: dict[str, object] = {}
-                if parent is not None:
-                    parent.add_command(self)
-
-            def add_command(self, cmd):
-                self._children[cmd.name] = cmd
-
-        class _FakeCommand:
-            def __init__(self, *, name, description, callback, parent=None):
-                self.name = name
-                self.description = description
-                self.callback = callback
-                self.parent = parent
-                self.default_permissions = None
-
-        discord_mod.app_commands = SimpleNamespace(
-            describe=lambda **kwargs: (lambda fn: fn),
-            choices=lambda **kwargs: (lambda fn: fn),
-            autocomplete=lambda **kwargs: (lambda fn: fn),
-            Choice=lambda **kwargs: SimpleNamespace(**kwargs),
-            Group=_FakeGroup,
-            Command=_FakeCommand,
-        )
-
-        ext_mod = MagicMock()
-        commands_mod = MagicMock()
-        commands_mod.Bot = MagicMock
-        ext_mod.commands = commands_mod
-
-        sys.modules["discord"] = discord_mod
-        sys.modules.setdefault("discord.ext", ext_mod)
-        sys.modules.setdefault("discord.ext.commands", commands_mod)
-
+from tests.discord_mock import ensure_discord_module as _ensure_discord_mock
 
 _ensure_discord_mock()
 
@@ -325,7 +263,6 @@ def test_visibility_hide_tolerates_unsetable_command(adapter, caplog):
 
 
 # os import for test_visibility_hide_off_by_default_is_noop
-import os  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -548,5 +485,4 @@ async def test_skill_handler_known_and_unknown_produce_same_rejection(
     )
     assert known_args == unknown_args
     assert known_kwargs == unknown_kwargs
-
 

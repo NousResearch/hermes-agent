@@ -8,24 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-
-def _ensure_discord_mock():
-    if "discord" in sys.modules and hasattr(sys.modules["discord"], "__file__"):
-        return
-    discord_mod = types.ModuleType("discord")
-    discord_mod.Intents = MagicMock()
-    discord_mod.Intents.default.return_value = MagicMock()
-    discord_mod.DMChannel = type("DMChannel", (), {})
-    discord_mod.Thread = type("Thread", (), {})
-    discord_mod.ForumChannel = type("ForumChannel", (), {})
-    discord_mod.Interaction = object
-    ext_mod = MagicMock()
-    commands_mod = MagicMock()
-    commands_mod.Bot = MagicMock
-    ext_mod.commands = commands_mod
-    sys.modules.setdefault("discord", discord_mod)
-    sys.modules.setdefault("discord.ext", ext_mod)
-    sys.modules.setdefault("discord.ext.commands", commands_mod)
+from tests.discord_mock import ensure_discord_module as _ensure_discord_mock
 
 
 import gateway.run as gateway_run
@@ -139,5 +122,4 @@ async def test_retry_preserves_channel_prompt(monkeypatch):
     assert result == "ok"
     retried_event = runner._handle_message.await_args.args[0]
     assert retried_event.channel_prompt == "Channel prompt"
-
 

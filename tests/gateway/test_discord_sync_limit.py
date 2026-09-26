@@ -1,28 +1,18 @@
 """Test Discord slash command sync respects the 100-command hard limit."""
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
-import sys
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from gateway.config import PlatformConfig
 
 
-def _ensure_discord_mock():
-    if "discord" in sys.modules and hasattr(sys.modules["discord"], "__file__"):
-        return
-    if sys.modules.get("discord") is None:
-        discord_mod = MagicMock()
-        discord_mod.Intents.default.return_value = MagicMock()
-        sys.modules["discord"] = discord_mod
-        sys.modules["discord.ext"] = MagicMock()
-        sys.modules["discord.ext.commands"] = MagicMock()
-
+from tests.discord_mock import ensure_discord_module as _ensure_discord_mock
 
 _ensure_discord_mock()
 
-from plugins.platforms.discord.adapter import DiscordAdapter
+from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
 
 
 class _FakeTreeCommand:

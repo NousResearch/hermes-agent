@@ -9,33 +9,15 @@ with a short notice.
 
 from __future__ import annotations
 
-import sys
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
 from gateway.config import PlatformConfig
 
 
-def _ensure_discord_mock():
-    if "discord" in sys.modules and hasattr(sys.modules["discord"], "__file__"):
-        return
-    discord_mod = MagicMock()
-    discord_mod.Intents.default.return_value = MagicMock()
-    discord_mod.Client = MagicMock
-    discord_mod.File = MagicMock
-    discord_mod.DMChannel = type("DMChannel", (), {})
-    discord_mod.Thread = type("Thread", (), {})
-    discord_mod.ForumChannel = type("ForumChannel", (), {})
-    ext_mod = MagicMock()
-    commands_mod = MagicMock()
-    commands_mod.Bot = MagicMock
-    ext_mod.commands = commands_mod
-    sys.modules.setdefault("discord", discord_mod)
-    sys.modules.setdefault("discord.ext", ext_mod)
-    sys.modules.setdefault("discord.ext.commands", commands_mod)
-
+from tests.discord_mock import ensure_discord_module as _ensure_discord_mock
 
 _ensure_discord_mock()
 

@@ -828,9 +828,15 @@ class GatewaySlashCommandsMixin(
         prompt = event.get_command_args().strip()
         if not prompt:
             return t("gateway.background.usage")
+        source = await asyncio.to_thread(self._normalize_source_for_session_key, event.source)
+        # A lobby message cannot be used as a reply anchor inside a recovered DM topic.
+        changed_topic = source.thread_id != event.source.thread_id
+        if changed_topic:
+            source = dataclasses.replace(source, message_id=None)
         task_id = f"bg_{datetime.now().strftime('%H%M%S')}_{os.urandom(3).hex()}"
         self._track_background_task(self._run_background_task(
-            prompt, event.source, task_id, event_message_id=self._reply_anchor_for_event(event),
+            prompt, source, task_id,
+            event_message_id=None if changed_topic else self._reply_anchor_for_event(event),
             # Forward image/audio attachments so the background agent can see them.
             media_urls=list(event.media_urls or []), media_types=list(event.media_types or [])))
         return t("gateway.background.started", preview=_preview(prompt), task_id=task_id)

@@ -4,6 +4,7 @@ Tests the _handle_background_command handler (run a prompt in a separate
 background session) across gateway messenger platforms.
 """
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -51,6 +52,30 @@ def _make_runner():
 # ---------------------------------------------------------------------------
 # _handle_background_command
 # ---------------------------------------------------------------------------
+
+
+class TestHandleBackgroundCommand:
+    @pytest.mark.asyncio
+    async def test_recovered_dm_topic_drops_lobby_reply_anchor(self):
+        """Background replies use the recovered topic without replying to a lobby message."""
+        runner = _make_runner()
+        event = _make_event(text="/background check this")
+        event.source.message_id = "lobby-message"
+        event.message_id = "lobby-message"
+        task = AsyncMock()
+        with patch.object(runner, "_recover_telegram_topic_thread_id", return_value="42"), \
+             patch.object(runner, "_run_background_task", new=task):
+            await runner._handle_background_command(event)
+            await asyncio.gather(*runner._background_tasks)
+
+        _, source, _ = task.await_args.args
+        assert source.thread_id == "42"
+        assert task.await_args.kwargs["event_message_id"] is None
+        assert source.message_id is None
+        metadata = runner._thread_metadata_for_source(source, task.await_args.kwargs["event_message_id"])
+        assert metadata["direct_messages_topic_id"] == "42"
+        assert "telegram_reply_to_message_id" not in metadata
+
 
 # ---------------------------------------------------------------------------
 # _run_background_task

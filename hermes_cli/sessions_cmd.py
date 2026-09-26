@@ -294,15 +294,19 @@ def _cmd_list(db, args):
     _title = lambda s, n: (s.get("title") or "—")[:n]  # noqa: E731
     _preview = lambda s, n: s.get("preview", "")[:n]  # noqa: E731
     _ago = lambda s: _relative_time(s.get("last_active"), session_id=s["id"])  # noqa: E731
+
+    def _src(s):  # current routing platform; "<created>→<current>" when provenance diverged (#56439)
+        created = s.get("created_source") or ""
+        return f"{created}→{s['source']}" if created and created != s["source"] else s["source"]
     layouts = {  # (has_ws, has_titles): header, rule width, row formatter
         (True, True): (f"{'Title':<28} {'Workspace':<18} {'Last Active':<13} {'ID'}", 110,
                        lambda s: f"{_title(s, 26):<28} {_ws(s):<18} {_ago(s):<13} {s['id']}"),
-        (True, False): (f"{'Preview':<38} {'Workspace':<18} {'Last Active':<13} {'Src':<6} {'ID'}", 100,
-                        lambda s: f"{_preview(s, 36):<38} {_ws(s):<18} {_ago(s):<13} {s['source']:<6} {s['id']}"),
+        (True, False): (f"{'Preview':<38} {'Workspace':<18} {'Last Active':<13} {'Src':<16} {'ID'}", 110,
+                        lambda s: f"{_preview(s, 36):<38} {_ws(s):<18} {_ago(s):<13} {_src(s):<16} {s['id']}"),
         (False, True): (f"{'Title':<32} {'Preview':<40} {'Last Active':<13} {'ID'}", 110,
                         lambda s: f"{_title(s, 30):<32} {_preview(s, 38):<40} {_ago(s):<13} {s['id']}"),
-        (False, False): (f"{'Preview':<50} {'Last Active':<13} {'Src':<6} {'ID'}", 95,
-                         lambda s: f"{_preview(s, 48):<50} {_ago(s):<13} {s['source']:<6} {s['id']}"),
+        (False, False): (f"{'Preview':<50} {'Last Active':<13} {'Src':<16} {'ID'}", 105,
+                         lambda s: f"{_preview(s, 48):<50} {_ago(s):<13} {_src(s):<16} {s['id']}"),
     }
     header, rule, fmt = layouts[(has_ws, has_titles)]
     print(header + "\n" + "─" * rule)

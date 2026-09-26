@@ -351,6 +351,7 @@ CREATE TABLE IF NOT EXISTS system_prompts (
 CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
     source TEXT NOT NULL,
+    created_source TEXT,
     user_id TEXT,
     session_key TEXT,
     chat_id TEXT,

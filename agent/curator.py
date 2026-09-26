@@ -486,19 +486,25 @@ def _needle_in_path_component(needle: str, path: str) -> bool:
     return any(part and part.rsplit(".", 1)[0].replace("-", "_") == norm_needle for part in path.replace("\\", "/").split("/"))
 
 
-def _skill_manage_args(tc: Any, *, raw_fallback: bool) -> Optional[Dict[str, Any]]:
-    """Parsed arguments of a ``skill_manage`` tool call (JSON string or dict), or None to skip. With *raw_fallback*,
-    a malformed string yields ``{"_raw": raw}`` so substring matching still catches the common case."""
+def _skill_manage_args(tc: Any, *, raw_fallback: bool) -> List[Dict[str, Any]]:
+    """Per-op arguments of a ``skill_manage`` tool call (JSON string or dict); [] to skip. The advertised
+    ``operations`` array yields one entry per op (a nameless op inherits the call's ``name``, as the batch
+    does); a legacy flat call is one entry. With *raw_fallback*, a malformed string yields
+    ``[{"_raw": raw}]`` so substring matching still catches the common case."""
     if not isinstance(tc, dict) or tc.get("name") != "skill_manage":
-        return None
-    raw = tc.get("arguments") or ""
-    if not isinstance(raw, str):
-        return raw if isinstance(raw, dict) else None
-    try:
-        args = json.loads(raw)
-    except Exception:
-        return {"_raw": raw} if raw_fallback else None
-    return args if isinstance(args, dict) else None
+        return []
+    args = tc.get("arguments") or ""
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except Exception:
+            return [{"_raw": args}] if raw_fallback else []
+    if not isinstance(args, dict):
+        return []
+    ops = args.get("operations")
+    if not isinstance(ops, list):
+        return [args]
+    return [{**op, "name": op.get("name") or args.get("name")} for op in ops if isinstance(op, dict)]
 
 
 def _find_reference(args: Dict[str, Any], needles: Set[str]) -> Optional[str]:
@@ -521,7 +527,7 @@ def _classify_removed_skills(
     Returns ``{"consolidated": [{name, into, evidence}], "pruned": [{name}]}``."""
     consolidated: List[Dict[str, Any]] = []
     pruned: List[Dict[str, Any]] = []
-    parsed_calls = [a for a in (_skill_manage_args(tc, raw_fallback=True) for tc in tool_calls or []) if a is not None]
+    parsed_calls = [a for tc in tool_calls or [] for a in _skill_manage_args(tc, raw_fallback=True)]
     destinations = set(after_names) | set(added or [])
     for name in filter(None, removed):
         needles = {name, name.replace("-", "_"), name.replace("_", "-")}
@@ -570,8 +576,8 @@ def _extract_absorbed_into_declarations(tool_calls: List[Dict[str, Any]]) -> Dic
     signal (beats YAML parsing and substring heuristics). Returns ``{name: {"into": umbrella | "", "declared": True}}``;
     ``into == ""`` is an explicit prune. Deletes omitting ``absorbed_into`` are absent so the caller falls back to heuristic/YAML (older runs)."""
     out: Dict[str, Dict[str, Any]] = {}
-    for args in (_skill_manage_args(tc, raw_fallback=False) for tc in tool_calls or []):
-        if args is not None and args.get("action") == "delete":
+    for args in (a for tc in tool_calls or [] for a in _skill_manage_args(tc, raw_fallback=False)):
+        if args.get("action") == "delete":
             name, target = args.get("name"), args.get("absorbed_into")
             if isinstance(name, str) and name.strip() and isinstance(target, str):
                 out[name.strip()] = {"into": target.strip(), "declared": True}

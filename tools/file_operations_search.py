@@ -4,6 +4,7 @@
 (no I/O).
 """
 
+import contextlib
 import os
 import posixpath
 import re
@@ -371,7 +372,11 @@ class SearchMixin:
                 exit_code = 124
                 break
         if proc.poll() is None:
-            _kill_process_group_posix(proc)  # native lane is POSIX-only (gate above)
+            # rg can exit between the poll and the kill; on macOS ``getpgid`` then
+            # raises ESRCH for the not-yet-reaped pid. The child is gone either
+            # way, so the bounded output below is the answer, not an error.
+            with contextlib.suppress(ProcessLookupError):
+                _kill_process_group_posix(proc)  # native lane is POSIX-only (gate above)
         proc.wait()
         drainer.join()
         proc.stdout.close()

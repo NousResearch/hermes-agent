@@ -1369,7 +1369,9 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
               {roomClarifies.length
                 ? b.group.waitingForAnswer
                 : room.turn
-                  ? b.group.memberThinking(displayName(room.turn, botRosterMeta(room.turn, allMeta)))
+                  ? room.turnPreview
+                    ? b.group.memberWorkingOn(displayName(room.turn, botRosterMeta(room.turn, allMeta)), room.turnPreview)
+                    : b.group.memberThinking(displayName(room.turn, botRosterMeta(room.turn, allMeta)))
                   : b.group.roomWorking}
             </div>
           ) : null}

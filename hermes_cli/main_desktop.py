@@ -409,6 +409,32 @@ def _electron_dir(project_root: Path) -> Path:
     return project_root / "node_modules" / "electron"
 
 
+def _runs_from(proc, release_dir: Path) -> bool:
+    """True when *proc*'s executable lives inside *release_dir* (False when it cannot be read)."""
+    try:
+        return release_dir in Path(proc.exe()).resolve().parents
+    except Exception:
+        return False
+
+
+def _desktop_ancestor_in(desktop_dir: Path) -> Optional[int]:
+    """PID of a Desktop from this build's ``release`` tree that is one of OUR ancestors, else None.
+
+    That Desktop is running this process (its backend's launch-time update tail, or a
+    `hermes update` it spawned). On Windows it holds the exe lock the promotion rename
+    needs, and it cannot be stopped without killing this process first. Never raises."""
+    try:
+        import psutil
+        release_dir = (desktop_dir / "release").resolve()
+        ancestors = list(psutil.Process(os.getpid()).parents())
+    except Exception:
+        return None
+    for parent in ancestors:
+        if _runs_from(parent, release_dir):
+            return int(parent.pid)
+    return None
+
+
 def _stop_desktop_processes_locking_build(desktop_dir: Path, *, also_posix: bool = False) -> list[int]:
     """Terminate a running desktop app whose exe lives INSIDE this build's ``release`` tree.
 
@@ -428,13 +454,17 @@ def _stop_desktop_processes_locking_build(desktop_dir: Path, *, also_posix: bool
         return []
 
     me = os.getpid()
-    # On POSIX, never stop a Desktop that is one of OUR ancestors. A
-    # historical Desktop (v2026.7.1 Linux in-app update) runs `hermes update`
-    # as a child with piped stdout/stderr and owns the post-update rebuild and
-    # relaunch. Killing it breaks those pipes (EPIPE fails the update) and
-    # leaves nobody to relaunch. It also outlives the swap safely because it
-    # relaunches itself afterwards. Windows keeps stopping it: there, the exe
-    # lock would make the rename fail anyway.
+    # Never stop a Desktop that is one of OUR ancestors, on any platform: this
+    # process lives in its tree. A historical Desktop (v2026.7.1 Linux in-app
+    # update) runs `hermes update` as a child with piped stdout/stderr and owns
+    # the post-update rebuild and relaunch. Killing it breaks those pipes (EPIPE
+    # fails the update) and leaves nobody to relaunch. On Windows the same holds
+    # for the launch-time tail a Desktop's own backend runs
+    # (venv_sync._finish_source_update): stopping that Desktop took the whole
+    # tree down with it before the tail could clear its markers, so every
+    # launch repeated it (#123499). The exe lock that stop was meant to free
+    # cannot be freed by the process that holds it alive; build_prepared_desktop
+    # skips that doomed build instead (_desktop_ancestor_in).
     #
     # Spare that Desktop's whole process tree, not just its main process. Its
     # zygote, renderer, GPU and network-service helpers run the same release
@@ -443,23 +473,18 @@ def _stop_desktop_processes_locking_build(desktop_dir: Path, *, also_posix: bool
     # quit, so it outlives the update forever. (That is the v2026.7.1 Linux
     # in-app update E2E: the receipt succeeds and then the app hangs.)
     spared: set[int] = set()
-    if sys.platform != "win32":
-        try:
-            ancestors = list(psutil.Process(me).parents())
-        except Exception:
-            ancestors = []
-        for parent in ancestors:
-            spared.add(parent.pid)
-            try:
-                parent_exe = Path(parent.exe()).resolve()
-            except Exception:
-                continue
-            # Only a Desktop ancestor's descendants. Every process descends from
-            # init, so sparing all ancestors' trees would spare everything.
-            if release_dir not in parent_exe.parents:
-                continue
-            with contextlib.suppress(Exception):
-                spared.update(child.pid for child in parent.children(recursive=True))
+    try:
+        ancestors = list(psutil.Process(me).parents())
+    except Exception:
+        ancestors = []
+    for parent in ancestors:
+        spared.add(parent.pid)
+        # Only a Desktop ancestor's descendants. Every process descends from
+        # init, so sparing all ancestors' trees would spare everything.
+        if not _runs_from(parent, release_dir):
+            continue
+        with contextlib.suppress(Exception):
+            spared.update(child.pid for child in parent.children(recursive=True))
     victims = []
     try:
         proc_iter = psutil.process_iter(["pid", "exe"])
@@ -1249,6 +1274,16 @@ def build_prepared_desktop(desktop_dir: Path, *, source_mode: bool, npm: str, en
     """Build prepared desktop sources, then publish the verified staged app."""
     from pm.progress import run_contained
 
+    if not source_mode and sys.platform == "win32" and (ancestor := _desktop_ancestor_in(desktop_dir)):
+        # The Desktop running this build holds the exe lock the promotion rename needs,
+        # and stopping it would kill this process first (#123499). Packing would only
+        # produce a build that cannot be installed; leave the app as it is. Its content
+        # stamp stays stale, so `hermes desktop` run outside the app rebuilds it
+        # (_desktop_build_needed), and the in-app update completes with desktop=True.
+        print(f"  ⚠ Skipped rebuilding the desktop app: this update is running inside it (pid {ancestor}),")
+        print("    and Windows locks a running app's files. Quit Hermes Desktop and run `hermes desktop`")
+        print("    from a terminal, or use Update now in Settings → About, to rebuild and reopen it.")
+        return None
     build_label = "source build" if source_mode else "packaged app"
     build_env = dict(env)
     if sys.platform == "win32":
@@ -1486,7 +1521,8 @@ def cmd_gui(args: argparse.Namespace):
                                         explicit=force_build or getattr(args, "build_only", False))
             built = build_prepared_desktop(desktop_dir, source_mode=source_mode, npm=npm, env=build_env)
             if not source_mode:
-                packaged_executable = built
+                # None only when the build was skipped under its own Desktop: reopen the app it kept.
+                packaged_executable = built or packaged_executable
         else:
             build_label = "source build" if source_mode else "packaged app"
             desktop_launch_notice(f"✓ Desktop {build_label} is up to date (content stamp matches)", source_mode=source_mode)

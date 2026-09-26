@@ -14,6 +14,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from urllib.error import HTTPError
 from urllib.request import urlopen
 
 import pytest
@@ -35,18 +36,29 @@ requires_posix_handoff = pytest.mark.skipif(
 @pytest.fixture
 def progress(tmp_path):
     """The real loopback server, over a status file the test drives."""
+    yield from _start_server(tmp_path, icon_path=None)
+
+
+@pytest.fixture
+def progress_with_icon(tmp_path):
+    """The real loopback server, with a favicon wired up like posix.sh does."""
+    icon = tmp_path / "favicon.ico"
+    icon.write_bytes(b"\x00\x01fake-icon-bytes\x02\x03")
+    yield from _start_server(tmp_path, icon_path=icon)
+
+
+def _start_server(tmp_path, icon_path):
     status = tmp_path / "hermes-update-status"
-    proc = subprocess.Popen(
-        [
-            sys.executable,
-            str(SHIM_DIR / "serve-ui.py"),
-            str(SHIM_DIR / "ui.html"),
-            str(status),
-            str(time.time()),
-        ],
-        stdout=subprocess.PIPE,
-        text=True,
-    )
+    args = [
+        sys.executable,
+        str(SHIM_DIR / "serve-ui.py"),
+        str(SHIM_DIR / "ui.html"),
+        str(status),
+        str(time.time()),
+    ]
+    if icon_path is not None:
+        args.append(str(icon_path))
+    proc = subprocess.Popen(args, stdout=subprocess.PIPE, text=True)
     try:
         port = int(proc.stdout.readline().strip())
 
@@ -60,6 +72,9 @@ def progress(tmp_path):
             def poll(self) -> dict:
                 with urlopen(f"http://127.0.0.1:{port}/progress", timeout=5) as r:
                     return json.loads(r.read())
+
+            def get(self, path: str):
+                return urlopen(f"http://127.0.0.1:{port}{path}", timeout=5)
 
         yield Progress()
     finally:
@@ -108,6 +123,23 @@ def test_unreadable_status_still_serves_a_running_state(progress):
 
     assert served["status"] == "running"
     assert served["elapsed_seconds"] >= 0
+
+
+def test_favicon_served_when_icon_path_given(progress_with_icon):
+    """The chromeless app window is identifiable, not a generic default icon."""
+    with progress_with_icon.get("/favicon.ico") as r:
+        assert r.status == 200
+        assert r.headers["Content-Type"] == "image/x-icon"
+        assert r.read() == b"\x00\x01fake-icon-bytes\x02\x03"
+
+
+def test_favicon_missing_when_no_icon_path_given(progress):
+    """No icon arg (old checkouts, missing asset) degrades to no favicon --
+    never a crash, matching every other optional shim input."""
+    with pytest.raises(HTTPError) as excinfo:
+        progress.get("/favicon.ico")
+
+    assert excinfo.value.code == 404
 
 
 # ── posix.sh: the stages it publishes at its own gates ─────────────────────

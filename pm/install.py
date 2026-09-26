@@ -526,7 +526,34 @@ def _runtime_state_matches(fact: dict, stamp: str, *, project_root: Path | None 
     recorded = fact.get("environment")
     if recorded is not None and (not isinstance(recorded, str) or Path(recorded).resolve() != environment):
         return False
-    return (environment / "pyvenv.cfg").is_file()
+    return (environment / "pyvenv.cfg").is_file() and _environment_python_matches_pin(
+        environment, project_root
+    )
+
+
+def _environment_python_matches_pin(
+    environment: Path, project_root: Path | None
+) -> bool:
+    """Whether the selected environment runs the Python the project pins.
+
+    The dependency stamp does not move when a commit only bumps the pinned
+    interpreter, so a venv still built on the previous Python would otherwise
+    read as current and keep importing wheels compiled for the new one.
+    """
+    import re
+
+    from pm.environments import venv_python_version
+
+    root = paths.repo_root() if project_root is None else Path(project_root).absolute()
+    try:
+        pinned = (root / ".python-version").read_text(encoding="utf-8-sig").strip()
+    except OSError:
+        return True
+    match = re.fullmatch(r"(\d+)\.(\d+)(?:\.\d+)?", pinned)
+    if not match:
+        return True
+    running = venv_python_version(environment)
+    return running == (int(match.group(1)), int(match.group(2)))
 
 
 def _member_inputs(plugins: PluginInput | None) -> dict:

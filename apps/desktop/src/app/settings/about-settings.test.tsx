@@ -11,6 +11,7 @@ import {
   $updateStatus,
   checkBackendUpdates,
   checkUpdates,
+  hasMultipleUpdateTargets,
   refreshDesktopVersion,
   startActiveUpdate,
   type UpdateApplyState
@@ -45,9 +46,11 @@ vi.mock('@/store/updates', async (): Promise<Record<string, unknown>> => {
     $backendUpdateStatus: atom<DesktopUpdateStatus | null>(null),
     $updateApply: atom<UpdateApplyState>(idle),
     $updateChecking: atom<boolean>(false),
+    $updateEverything: atom<{ running: boolean }>({ running: false }),
     $updateStatus: atom<DesktopUpdateStatus | null>(null),
     checkBackendUpdates: vi.fn<() => Promise<DesktopUpdateStatus | null>>().mockResolvedValue(null),
     checkUpdates: vi.fn<() => Promise<DesktopUpdateStatus | null>>().mockResolvedValue(null),
+    hasMultipleUpdateTargets: vi.fn<() => boolean>().mockReturnValue(false),
     refreshDesktopVersion: vi.fn<() => Promise<DesktopVersionInfo | null>>().mockResolvedValue(null),
     openUpdateOverlayFor: vi.fn(),
     openUpdatesWindow: vi.fn(),
@@ -130,6 +133,33 @@ describe('AboutSettings', (): void => {
     expect(screen.getAllByRole('button', { name: en.updates.checkNow })).toHaveLength(1)
     fireEvent.click(screen.getByRole('button', { name: en.updates.updateNow }))
     expect(startActiveUpdate).toHaveBeenCalledWith('backend')
+  })
+
+  it('offers a chained "Update everything" action once there is more than one update target', (): void => {
+    $connection.set(connection('remote'))
+    vi.mocked(hasMultipleUpdateTargets).mockReturnValue(true)
+
+    // Nothing to update on either target: no unified action to offer.
+    render(<AboutSettings />)
+    expect(screen.queryByRole('button', { name: en.updates.updateEverything })).toBeNull()
+    cleanup()
+
+    // The backend has an update waiting: the chained action appears alongside
+    // the two target-scoped cards, and clicking it defers to the same
+    // multi-target flow the command palette already uses (no explicit target).
+    $backendUpdateStatus.set({ supported: true, behind: 2 })
+    render(<AboutSettings />)
+    const button = screen.getByRole('button', { name: en.updates.updateEverything })
+    fireEvent.click(button)
+    expect(startActiveUpdate).toHaveBeenCalledWith()
+    cleanup()
+
+    // A single-target install (no remote backend, no connection registry)
+    // never offers it, even with an update pending.
+    vi.mocked(hasMultipleUpdateTargets).mockReturnValue(false)
+    $connection.set(connection('local'))
+    render(<AboutSettings />)
+    expect(screen.queryByRole('button', { name: en.updates.updateEverything })).toBeNull()
   })
 
   it('forces a fresh check only for the card the user checks', async (): Promise<void> => {

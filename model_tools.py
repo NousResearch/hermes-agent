@@ -882,8 +882,8 @@ def handle_function_call(
     task_id isolates terminal/browser sessions; user_task feeds browser_snapshot.
     enabled_tools picks execute_code's sandbox tools (default: the process-global
     ``_last_resolved_tool_names``). skip_pre_tool_call_hook: caller already fired
-    it (single-fire contract). enabled/disabled_toolsets scope the Tool Search
-    bridge catalog to this session's grant (None = unrestricted).
+    it (single-fire contract). enabled/disabled_toolsets scope this session's tool
+    grant — bridge and direct calls alike (None = unrestricted).
     """
     function_args = coerce_tool_args(function_name, function_args)
     if not isinstance(function_args, dict):
@@ -936,6 +936,17 @@ def handle_function_call(
     try:
         if function_name in _AGENT_LOOP_TOOLS:
             return tool_error(f"{function_name} must be handled by the agent loop")
+
+        # Session toolset scope binds direct calls exactly like the Tool Search
+        # bridge: a scoped session (e.g. a gateway platform without the terminal
+        # toolset) must not execute tools outside its grant even when the model
+        # emits the call directly instead of via tool_call (#121089). Dynamic
+        # connector names carry their own scope path above and at dispatch.
+        if (enabled_toolsets is not None or disabled_toolsets) and not is_connector_name(function_name):
+            if function_name not in _select_tool_names(enabled_toolsets, disabled_toolsets, quiet_mode=True):
+                return _emit(tool_error(
+                    f"'{function_name}' is not available in this session. "
+                    "Use tool_search to find tools you can call."))
 
         function_args, blocked = _pre_dispatch_guards(function_name, function_args, skip_pre_tool_call_hook, ids, trace)
         if blocked is not None:

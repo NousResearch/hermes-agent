@@ -98,7 +98,7 @@ class GatewayAgentCacheMixin:
     def _agent_config_signature(
         model: str, runtime: dict, enabled_toolsets: list, ephemeral_prompt: str,
         cache_keys: dict | None = None, user_id: str | None = None, user_id_alt: str | None = None,
-        skip_context_files: bool = False,
+        skip_context_files: bool = False, disabled_toolsets: list | None = None,
     ) -> str:
         """Stable key from agent config: change → cached AIAgent rebuilt; unchanged → reused (frozen
         prompt + schemas for cache hits). ``user_id`` / ``user_id_alt`` participate because Honcho
@@ -113,6 +113,12 @@ class GatewayAgentCacheMixin:
         causing the second user's messages to be attributed to the first user's resolved Honcho peer. This
         broke #27371's per-user-peer contract in multi-user gateways. Per-user agent rebuilds in shared
         threads trade prompt-cache warmth for correct memory attribution.
+
+        ``disabled_toolsets`` participates for the same reason ``enabled_toolsets`` does: ``AIAgent``
+        freezes its tool surface and its own toolset fields at construction, so a grant that narrowed
+        only through the disabled list (``agent.disabled_toolsets`` in config) must rebuild the agent
+        rather than reuse the one cached under the wider grant — otherwise the disabled tool stays
+        admitted for the life of the session (#121089).
         """
         import hashlib, json as _j
         # Fingerprint the FULL credential, not a short prefix: OAuth/JWT-style tokens often share a
@@ -126,6 +132,7 @@ class GatewayAgentCacheMixin:
                 runtime.get("requested_provider", ""), runtime.get("api_mode", ""),
                 sorted((runtime.get("capabilities") or {}).items()),
                 sorted(enabled_toolsets) if enabled_toolsets else [],
+                sorted(disabled_toolsets) if disabled_toolsets else [],
                 # reasoning_config excluded — set per-message on the cached agent; no prompt/tool effect.
                 ephemeral_prompt or "",
                 sorted((cache_keys or {}).items()),

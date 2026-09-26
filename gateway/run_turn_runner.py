@@ -1139,6 +1139,7 @@ class TurnRunner:
             user_id=getattr(ctx.source, "user_id", None),
             user_id_alt=getattr(ctx.source, "user_id_alt", None),
             skip_context_files=skip_context_files,
+            disabled_toolsets=ctx.disabled_toolsets,
         )
         cache_lock = getattr(runner, "_agent_cache_lock", None)
         cache = getattr(runner, "_agent_cache", None)

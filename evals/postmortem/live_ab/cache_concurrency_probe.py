@@ -35,6 +35,7 @@ import collections
 import hashlib
 import json
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -98,8 +99,15 @@ class _Ctx:
     def __exit__(self, *a): return self.mgr.__exit__(*a)
     def __getattr__(self, n): return getattr(self.mgr, n)
 
+def _sha(obj):
+    return hashlib.sha256(json.dumps(obj, sort_keys=True, default=str).encode()).hexdigest()[:10]
+
 def patched_stream(self, **kw):
     msgs = kw.get("messages") or []
+    first = (msgs[0].get("content") if msgs else None) or ""
+    ftxt = first if isinstance(first, str) else "".join(b.get("text", "") for b in first if isinstance(b, dict))
+    m = re.search(r"\[probe-session (\d+)\]", ftxt)
+    sys_sha, tools_sha, msg_shas = _sha(kw.get("system")), _sha(kw.get("tools")), [_sha(x) for x in msgs]
     rec = dict(worker=int(m.group(1)) if m else None, call=len(msgs), t_start=time.time(), model=kw.get("model"),
                n_msgs=len(msgs), system_sha=sys_sha, tools_sha=tools_sha, msg_shas=msg_shas)
     if SETTLE_S > 0 and len(msgs) > 1:

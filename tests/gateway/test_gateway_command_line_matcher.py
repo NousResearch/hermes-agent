@@ -165,3 +165,57 @@ def test_accepts_atomic_desktop_gateway():
     assert matches_runtime(ATOMIC_DESKTOP) is True
 
 
+# The installation's OWN published launcher (``hermes_cli._launchers.runtime_command``):
+# ``python -I -c <bootstrap source> gateway run``. The bootstrap source IS the install's identity —
+# it clears the ambient interpreter environment, puts the checkout on ``sys.path`` and loads
+# ``hermes_bootstrap`` (which selects and leases a dependency generation). ``hermes update``'s
+# self-relaunch respawns exactly this argv, so rejecting every inline source rejected the install's
+# own gateway: the updater deleted ``gateway.pid`` for a process that was alive, reported "no stable
+# gateway process appeared", aborted the update, and left a gateway ``gateway stop --all`` could not
+# stop. #107002 only ever meant the restart WATCHER, whose source carries neither marker.
+def _install_launcher_source() -> str:
+    from pathlib import Path
+
+    from hermes_cli._launchers import runtime_command
+
+    argv = runtime_command(Path(__file__).resolve().parents[2], ["gateway", "run"])
+    return argv[argv.index("-c") + 1]
+
+
+def test_accepts_the_installations_own_published_launcher():
+    src = _install_launcher_source()
+    assert matches(f'python -I -c "{src}" gateway run') is True
+    assert matches_runtime(f'python -I -c "{src}" gateway run --replace') is True
+    # profile selector anywhere in argv, and the bare `gateway` that defaults to run
+    assert matches(f'python -I -c "{src}" --profile work gateway run') is True
+    assert matches(f'python -I -c "{src}" gateway') is True
+
+
+def test_installations_own_launcher_wrapping_a_sibling_subcommand_is_not_a_gateway():
+    src = _install_launcher_source()
+    assert matches(f'python -I -c "{src}" gateway status') is False
+    assert matches(f'python -I -c "{src}" --profile x dashboard') is False
+
+
+def test_accepts_the_launcher_as_a_live_process_readback():
+    """A live process is read back through psutil, which joins argv with spaces: the inline source
+    arrives UNQUOTED and re-tokenized on its own spaces (the real launcher is ~29 tokens), so the
+    token after ``-c`` is just ``import``. Matching markers against that single token never fires."""
+    src = _install_launcher_source()
+    assert matches_runtime(f"python -I -c {src} gateway run --replace") is True
+
+
+# Both markers are required, so an unrelated inline source that merely mentions one of them stays
+# rejected — the launcher is identified by its whole source, not a keyword.
+INLINE_SOURCE_WITH_ONE_MARKER = [
+    'python -c "import hermes_bootstrap" 14980 python -m hermes_cli.main gateway run',
+    'python -c "import runpy; runpy.run_module(\'x\')" 14980 python -m hermes_cli.main gateway run',
+]
+
+
+@pytest.mark.parametrize("cmd", INLINE_SOURCE_WITH_ONE_MARKER)
+def test_partial_launcher_markers_do_not_manufacture_a_gateway(cmd):
+    assert matches(cmd) is False
+    assert matches_runtime(cmd) is False
+
+

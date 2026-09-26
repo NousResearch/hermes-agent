@@ -588,6 +588,58 @@ def command_line_runs_inline_source(tokens: list[str]) -> bool:
     return inline_source_flag_index(tokens) is not None
 
 
+#: Source markers unique to the installation's OWN published launcher bootstrap
+#: (``hermes_cli._launchers.runtime_command``, and the distlib shim it publishes): the source clears
+#: the ambient interpreter environment, puts the checkout on ``sys.path``, imports ``hermes_bootstrap``
+#: (which selects and leases a dependency generation) and then runs a module through ``runpy``.
+_LAUNCHER_BOOTSTRAP_MARKERS = ("hermes_bootstrap", "runpy.run_module")
+
+
+def inline_source_is_installation_launcher(tokens: list[str], flag_index: int) -> bool:
+    """True when the inline source behind ``-c`` is this installation's OWN published launcher.
+
+    ``_launchers.runtime_command`` is the form the install *publishes* for its own runtime — store
+    Python owns the ABI and ``hermes_bootstrap`` selects the dependency generation at child start, so
+    no ambient PYTHONPATH/selected generation is captured in the command. The launcher's subcommand
+    argv trails the source literal; nothing before ``-c`` says what it will run.
+
+    The source is matched against the whole post-``-c`` region, not one token: a live process read
+    back through psutil joins argv with spaces and the inline source is re-tokenized on its own
+    spaces (``python -I -c import os, sys, runpy; …`` arrives as ~29 tokens), so looking only at the
+    token after ``-c`` sees the word ``import``.
+
+    Every OTHER inline source keeps the #107002 verdict: the detached restart watcher
+    (``gateway._spawn_gateway_restart_watcher``) carries a real gateway argv as its own data, so it
+    must never be read as a gateway. Its source contains neither marker, and ALL markers are
+    required, so merely mentioning one in a source is not enough.
+    """
+    if flag_index + 1 >= len(tokens):
+        return False
+    region = " ".join(tokens[flag_index + 1:])
+    return all(marker in region for marker in _LAUNCHER_BOOTSTRAP_MARKERS)
+
+
+def _gateway_subcommand_in_tokens(tokens: list[str]) -> str | None:
+    """``gateway`` lifecycle subcommand from already-lowercased argv tokens, or None.
+
+    ``--profile``/``-p`` selectors are stripped anywhere in argv, since ``_apply_profile_override``
+    removes them before argparse. A bare ``hermes gateway`` defaults to ``run``.
+    """
+    filtered: list[str] = []
+    skip_next = False
+    for token in tokens:
+        if skip_next:
+            skip_next = False
+        elif token in ("--profile", "-p"):
+            skip_next = True
+        elif not token.startswith(("--profile=", "-p=")):
+            filtered.append(token)
+    for i, token in enumerate(filtered):
+        if token == "gateway":
+            return filtered[i + 1] if i + 1 < len(filtered) else "run"
+    return None
+
+
 def _gateway_command_subcommand(command: str | None) -> str | None:
     """Hermes gateway lifecycle subcommand from a command line, or None. No loose substring matches
     (``"gateway" in cmdline`` also matched ``gateway status`` / ``python -m tui_gateway``): needs a
@@ -609,12 +661,22 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
     # ``python -c <src> … -m hermes_cli.main gateway run``: the trailing argv belongs to the program
     # the inline source will spawn later, not to this process (#107002). Case-preserving tokens:
     # the operand-taking ``-X``/``-W``/``-Q`` must not be conflated with ``-q``/``-b``.
-    if command_line_runs_inline_source(cased_tokens):
+    inline_flag_index = inline_source_flag_index(cased_tokens)
+    if inline_flag_index is not None and not inline_source_is_installation_launcher(cased_tokens, inline_flag_index):
         return None
     # The launchd job's osascript wrapper (gateway_launchd.launchd_program_arguments) carries the gateway argv
     # inside one AppleScript string; the gateway itself is its child and is matched on its own command line.
     if basenames[0] == "osascript":
         return None
+    # The installation's OWN published launcher (``_launchers.runtime_command``): its bootstrap markers
+    # prove it runs this checkout, so the subcommand is the one its trailing argv carries. Without this,
+    # ``hermes update``'s self-relaunch (``gateway._gateway_run_args_for_profile`` -> ``runtime_command``)
+    # produced a LIVE gateway the matcher rejected: the updater then deleted ``gateway.pid``, reported
+    # "not verified alive"/"no stable gateway process", aborted the update, and left a gateway that
+    # ``gateway stop --all`` could not stop. #107002 only ever meant the restart WATCHER, whose source
+    # carries neither marker.
+    if inline_flag_index is not None:
+        return _gateway_subcommand_in_tokens(tokens[inline_flag_index + 2:])
     # Gateway-dedicated entrypoints carry no subcommand to inspect.
     if any(t == "gateway/run.py" or t.endswith("/gateway/run.py") for t in tokens):
         return "run"
@@ -632,20 +694,7 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
     ):
         return None
     # Drop --profile X / -p X / --profile=X / -p=X (consumes a VALUE of "gateway" too).
-    filtered: list[str] = []
-    skip_next = False
-    for token in tokens:
-        if skip_next:
-            skip_next = False
-        elif token in ("--profile", "-p"):
-            skip_next = True
-        elif not token.startswith(("--profile=", "-p=")):
-            filtered.append(token)
-    for i, token in enumerate(filtered):
-        if token == "gateway":
-            # Bare `hermes gateway` defaults to `run`.
-            return filtered[i + 1] if i + 1 < len(filtered) else "run"
-    return None
+    return _gateway_subcommand_in_tokens(tokens)
 
 
 def gateway_spawn_intent_subcommand(command: str | None) -> str | None:

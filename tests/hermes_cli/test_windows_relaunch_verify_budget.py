@@ -1,15 +1,20 @@
 """Post-update gateway relaunch verification: watcher identity and liveness budget (#107002).
 
-Two invariants, both host-independent (the platform enters as DATA, never by faking ``sys.platform``):
+Three invariants, all host-independent (the platform enters as DATA, never by faking ``sys.platform``):
 
 1. The detached restart watcher ``hermes_cli.gateway._spawn_gateway_restart_watcher`` actually
    spawns must not be classified as a running gateway. Its argv carries the gateway command it
    will spawn LATER, so an argv-substring identity read vouches for the watcher itself.
 2. ``hermes update``'s post-relaunch liveness poll must not expire before the watchers it is
    verifying are even scheduled to respawn.
+3. The respawn argv that relaunch arms — and the gateway it produces, read back from the live
+   process — must satisfy the very identity matcher the poll verifies with. When the two
+   disagreed, a successful relaunch was reported as "no stable gateway process appeared".
 """
 
 from __future__ import annotations
+
+import subprocess
 
 import pytest
 
@@ -21,6 +26,7 @@ from hermes_cli.gateway import GATEWAY_RESTART_WATCHER_TIMEOUT_S
 from hermes_cli.update_cmd_windows import (
     _hermes_holder_subcommand, _pending_relaunch_pids, _relaunch_verify_timeout_s,
 )
+
 
 
 def _spawned_watcher_cmdline(monkeypatch) -> str:
@@ -73,3 +79,31 @@ def test_verify_budget_covers_the_watchers_own_wait_when_the_old_pid_is_still_al
     # reports "no stable gateway process appeared" before the relaunch could have happened.
     assert pending > GATEWAY_RESTART_WATCHER_TIMEOUT_S
     assert settled < pending
+
+
+def test_the_relaunch_this_poll_verifies_is_recognised_as_a_gateway():
+    """The respawn argv the relaunch arms must satisfy the very matcher the poll verifies with.
+
+    ``launch_detached_profile_gateway_restart`` builds that argv through
+    ``gateway._gateway_run_args_for_profile`` -> ``_launchers.runtime_command``, i.e. an inline
+    ``-c`` bootstrap, and the poll then asks the identity matcher whether a gateway is running. The
+    two used to disagree: the matcher refused every inline source (#107002's rule, aimed at the
+    restart WATCHER), so a relaunch that succeeded was reported as "no stable gateway process
+    appeared" and the update aborted with a live gateway on disk and no ``gateway.pid``.
+    """
+    from hermes_cli.gateway import _gateway_run_args_for_profile
+
+    argv = _gateway_run_args_for_profile("default")
+    cmdline = subprocess.list2cmdline([str(part) for part in argv])
+    assert looks_like_gateway_command_line(cmdline) is True
+    assert looks_like_gateway_runtime_command_line(cmdline) is True
+
+
+def test_the_relaunched_gateway_is_still_recognised_when_read_back_from_the_live_process():
+    """Same argv, read the way the poll reads a live process (psutil joins argv on spaces, so the
+    inline source loses its quotes and re-tokenizes). Guarding only the rendered string missed the
+    real regression: the rendered form passed while the RUNNING gateway was still unrecognised."""
+    from hermes_cli.gateway import _gateway_run_args_for_profile
+
+    live_readback = " ".join(str(part) for part in _gateway_run_args_for_profile("default"))
+    assert looks_like_gateway_command_line(live_readback) is True

@@ -30,9 +30,15 @@ def _completion_cwd(params: dict | None = None) -> str:
     # cannot tell the two apart, so the desktop ships the flag alongside the path.
     client_cwd = params.get("cwd")
     if not params.get("cwd_explicit") and client_cwd:
-        profile_cwd = _profile_configured_cwd(_profile_home(params.get("profile")))
+        profile_home = _profile_home(params.get("profile"))
+        profile_cwd = _profile_configured_cwd(profile_home)
         if profile_cwd:
             return profile_cwd
+        # SSH cwd usually does not exist on the desktop host, so the isdir
+        # check above drops it and the launch profile's workspace wins.
+        remote_cwd = _declared_remote_profile_cwd(profile_home)
+        if remote_cwd:
+            return remote_cwd
     # A session bound to another profile resolves its workspace from THAT profile's config before the launch profile's
     # env var; the dashboard's in-memory gateway does NOT inherit the PTY child's bridged TERMINAL_CWD, so a configured
     # terminal.cwd is read directly.
@@ -52,6 +58,10 @@ def _completion_cwd(params: dict | None = None) -> str:
             return resolved
         if os.path.isdir(resolved):
             return resolved
+    if not params.get("cwd_explicit"):
+        remote_cwd = _declared_remote_profile_cwd(_profile_home(params.get("profile")))
+        if remote_cwd:
+            return remote_cwd
     return os.getcwd()
 
 
@@ -62,6 +72,48 @@ def _workdir_terminal_cfg(key: str) -> str:
         if isinstance(terminal_cfg, dict):
             return str(terminal_cfg.get(key) or "").strip()
     return ""
+
+
+_REMOTE_CWD_PLACEHOLDERS = {".", "./", "auto", "cwd"}
+
+
+def _profile_terminal_section(profile_home) -> dict:
+    """``terminal:`` from a profile's own config.yaml, or {}."""
+    if not profile_home:
+        return {}
+    with contextlib.suppress(Exception):
+        from pathlib import Path
+
+        from hermes_cli.config_effective import load_user_config_effective
+
+        path = Path(profile_home) / "config.yaml"
+        if not path.is_file():
+            return {}
+        cfg = load_user_config_effective(path)
+        terminal = cfg.get("terminal") if isinstance(cfg, dict) else None
+        return terminal if isinstance(terminal, dict) else {}
+    return {}
+
+
+def _declared_remote_profile_cwd(profile_home) -> str | None:
+    """A non-local profile's ``terminal.cwd``, kept when the path is not on this host.
+
+    ``_profile_configured_cwd`` requires ``os.path.isdir``. An SSH working
+    directory lives on the remote, so that check drops it and the desktop
+    keeps using the launch profile's ``TERMINAL_CWD``.
+    """
+    terminal = _profile_terminal_section(profile_home)
+    if not terminal:
+        return None
+    backend = str(terminal.get("backend") or "").strip().lower() or _effective_terminal_backend()
+    if not backend or backend == "local":
+        return None
+    raw = str(terminal.get("cwd") or "").strip()
+    if not raw or raw in _REMOTE_CWD_PLACEHOLDERS:
+        return None
+    if raw == "~" or raw.startswith("~/") or os.path.isabs(raw):
+        return raw
+    return None
 
 
 def _terminal_task_cwd(session: dict | None) -> str:
@@ -79,6 +131,12 @@ def _terminal_task_cwd_with_source(session: dict | None) -> tuple[str, str]:
         # THIS session's explicit workspace beats the LAST session's env var.
         if session and session.get("explicit_cwd") and session.get("cwd"):
             return str(session["cwd"]), "session"
+        # Process TERMINAL_CWD is the launch profile. A named SSH profile's
+        # terminal.cwd is on the remote and must not lose to that env var.
+        if backend == "ssh":
+            remote_cwd = _declared_remote_profile_cwd((session or {}).get("profile_home"))
+            if remote_cwd:
+                return remote_cwd, "session"
         raw = os.environ.get("TERMINAL_CWD", "").strip() or _workdir_terminal_cfg("cwd")
         if raw and raw not in {".", "auto", "cwd"}:
             return raw, "process"

@@ -965,7 +965,11 @@ def _(rid, params: dict) -> dict:
         _resume_follow_tip(ctx)
         if (resp := _resume_guard(ctx)) is not None:
             return resp
-        ctx.profile_resume_cwd = _str_param(ctx.found, "cwd") or _profile_configured_cwd(ctx.profile_home)
+        ctx.profile_resume_cwd = (
+            _str_param(ctx.found, "cwd")
+            or _profile_configured_cwd(ctx.profile_home)
+            or _declared_remote_profile_cwd(ctx.profile_home)
+        )
         # Fast path: reuse a session live IN THIS PROFILE (never another profile's runtime).
         with _session_resume_lock:
             live = _find_live_session_by_key(ctx.target, ctx.profile_home)

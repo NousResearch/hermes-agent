@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import re
 import urllib.request
 from contextlib import contextmanager
@@ -356,8 +357,13 @@ def npm_dist_tags(name: str) -> dict:
     return _get_json(f"https://registry.npmjs.org/-/package/{name}/dist-tags")
 
 
-def node_latest_versions() -> list[str]:
-    """Newest-first node versions from nodejs.org's index (strip the 'v')."""
+def node_latest_versions(target: str | None = None, *, host_target: str | None = None) -> list[str]:
+    """Newest-first Node versions, excluding releases unsupported by the host.
+
+    Node 24 raised the official macOS deployment target to 13.5.  Keep the
+    older macOS path on the Node 22 LTS line, but only when resolving the
+    native host target; cross-target staging must retain the normal catalogue.
+    """
     out = []
     for entry in _get_json("https://nodejs.org/dist/index.json"):
         v = entry.get("version", "")
@@ -365,6 +371,17 @@ def node_latest_versions() -> list[str]:
             v = v[1:]
         if re.fullmatch(r"\d+\.\d+\.\d+", v):
             out.append(v)
+    if target != host_target or not target or not target.startswith("darwin-"):
+        return out
+    # mac_ver() returns its documented default tuple on non-macOS hosts;
+    # only malformed version strings need to fall back to the full catalogue.
+    mac_version = platform.mac_ver()[0]
+    try:
+        major, minor = (int(part) for part in mac_version.split(".", 2)[:2])
+    except (ValueError, TypeError):
+        return out
+    if (major, minor) < (13, 5):
+        out = [version for version in out if int(version.split(".", 1)[0]) <= 22]
     return out
 
 

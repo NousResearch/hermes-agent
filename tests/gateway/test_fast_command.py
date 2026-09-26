@@ -130,6 +130,22 @@ def test_turn_route_injects_priority_processing_without_changing_runtime():
 
 
 @pytest.mark.asyncio
+async def test_handle_fast_command_uses_session_model_override(monkeypatch):
+    runner = _make_runner()
+    event = _make_event("/fast fast")
+    session_key = runner._session_key_for_source(event.source)
+    runner._session_model_overrides[session_key] = {"model": "gpt-5.4"}
+
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+    monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda config=None: "sol")
+
+    response = await runner._handle_fast_command(event)
+
+    assert "FAST" in response
+    assert runner._service_tier == "priority"
+
+
+@pytest.mark.asyncio
 async def test_handle_fast_command_global_flag_persists_config(monkeypatch, tmp_path):
     runner = _make_runner()
 

@@ -706,6 +706,81 @@ describe('closeAllOpenSessionTiles persists Bot Mode Close All (#94137)', () => 
   })
 })
 
+describe('session tile ownership buckets', () => {
+  const TILES_KEY = 'hermes.desktop.sessionTiles.v2'
+
+  const storedTiles = (): Record<string, Array<{ storedSessionId: string }>> => {
+    const raw = window.localStorage.getItem(TILES_KEY)
+
+    return raw ? (JSON.parse(raw) as Record<string, Array<{ storedSessionId: string }>>) : {}
+  }
+
+  // The tile buckets are module-private and other suites leave persisted
+  // entries behind, so each test re-imports a FRESH session-states module
+  // (empty tilesByProfile + empty storage) — the same isolation the browser
+  // gets between app launches.
+  type SessionStates = typeof SessionStatesModule
+  let mod: SessionStates
+  let activeGatewayProfile: { set: (name: string) => void }
+  beforeEach(async () => {
+    window.localStorage.clear()
+    vi.resetModules()
+    mod = await import('@/store/session-states')
+    const profile = await import('@/store/profile')
+    activeGatewayProfile = profile.$activeGatewayProfile
+    activeGatewayProfile.set('default')
+    mod.$sessionTiles.set([])
+  })
+  afterEach(() => {
+    window.localStorage.clear()
+    $activeGatewayProfile.set('default')
+    $layoutTree.set(null)
+    $selectedStoredSessionId.set(null)
+    $sessionTiles.set([])
+  })
+
+  it('files a tile under its OWNING profile, not the profile active at write time', () => {
+    // Regression: a redapple tab saved while `mobil` was foreground landed in
+    // mobil's bucket and stayed there, so it resurfaced whenever the user
+    // switched to mobil — the "random old tabs come back" report. The row
+    // already carried its owner; the bucket just ignored it.
+    activeGatewayProfile.set('mobil')
+    mod.openSessionTile('redapple-session', 'right', undefined, undefined, {
+      ownerRoute: { connectionId: 'local', mode: 'local' as const, profile: 'redapple' },
+      workspaceMode: 'sessions' as const
+    })
+
+    expect(storedTiles()).toHaveProperty('redapple')
+    expect(storedTiles()).not.toHaveProperty('mobil')
+  })
+
+  it('keeps each profile in its own bucket across a profile swap', () => {
+    activeGatewayProfile.set('redapple')
+    mod.openSessionTile('redapple-session', 'right', undefined, undefined, {
+      ownerRoute: { connectionId: 'local', mode: 'local' as const, profile: 'redapple' },
+      workspaceMode: 'sessions' as const
+    })
+
+    activeGatewayProfile.set('mobil')
+    mod.openSessionTile('mobil-session', 'right', undefined, undefined, {
+      ownerRoute: { connectionId: 'local', mode: 'local' as const, profile: 'mobil' },
+      workspaceMode: 'sessions' as const
+    })
+
+    // Both survive: the mobil publish must not evict redapple's persisted tab.
+    expect(Object.keys(storedTiles()).sort()).toEqual(['mobil', 'redapple'])
+  })
+
+  it('buckets an owner-less tile by the foreground profile', () => {
+    // A draft or a legacy row has no owner to go on; the foreground bucket is
+    // the only honest answer, and guessing an owner would strand the tab.
+    activeGatewayProfile.set('mobil')
+    mod.openSessionTile('ownerless-session')
+
+    expect(storedTiles()).toHaveProperty('mobil')
+  })
+})
+
 describe('dropTilesForProfile', () => {
   const TILES_KEY = 'hermes.desktop.sessionTiles.v2'
   const BOTS_BUCKET = '__bots_workspace__'

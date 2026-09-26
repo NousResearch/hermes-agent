@@ -2292,7 +2292,7 @@ export function useSessionActions({
           let painted = !fallbackError && viewMessagesForReconcile().length > 0
 
           if (!painted) {
-            const stored = await fetchStoredTranscriptAcrossBackends(storedSessionId).catch(() => null)
+            const stored = await fetchStoredTranscriptAcrossBackends(storedSessionId, sessionProfile).catch(() => null)
 
             if (!isCurrentResume()) {
               return

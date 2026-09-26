@@ -371,7 +371,12 @@ export function useSessionTileDelegate({
             )
           },
           async () => {
-            const stored = (await prefetchPromise) ?? (await fetchStoredTranscriptAcrossBackends(storedSessionId))
+            const stored =
+              (await prefetchPromise) ??
+              (await fetchStoredTranscriptAcrossBackends(
+                storedSessionId,
+                restScope && typeof restScope === 'object' ? restScope.profile : restScope
+              ))
 
             if (!stored) {
               throw new Error('stored transcript unavailable on every reachable backend')

@@ -180,6 +180,24 @@ class TestStringContentSidecarDelivery:
             ctx = _build(agent)
         assert "api_content" not in ctx.messages[ctx.current_turn_user_idx]
 
+    def test_changed_native_memory_rides_sidecar_without_rebuilding_system_prompt(self):
+        agent = _FakeAgent()
+        agent._memory_store = types.SimpleNamespace(
+            consume_freshness_context=lambda: "[Native memory refreshed]\ncurrent fact"
+        )
+        frozen_prompt = agent._cached_system_prompt
+
+        with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
+            ctx = _build(agent)
+
+        msg = ctx.messages[ctx.current_turn_user_idx]
+        assert msg["content"] == "hello"
+        assert msg["api_content"] == (
+            "hello\n\n[Native memory refreshed]\ncurrent fact"
+        )
+        assert ctx.active_system_prompt == frozen_prompt
+        assert agent._cached_system_prompt == frozen_prompt
+
 
 class TestMultimodalFallback:
     def test_notes_appended_as_text_part_on_list_content(self):

@@ -544,15 +544,28 @@ def foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
             holders.append((-1, f"open-file scan failed: {exc}"))
         return holders
 
+    holders.extend(_psutil_foreign_holders(watched))
+    return holders
+
+
+def _psutil_foreign_holders(watched: Set[str]) -> List[Tuple[int, str]]:
+    """Interpret psutil's open-file scan without treating unavailable as empty."""
     if psutil is None:
         return [(-1, "open-file scan unavailable")]
+    holders: List[Tuple[int, str]] = []
     try:
         for process in psutil.process_iter(["pid", "open_files"]):
             info = process.info
             pid = int(info["pid"])
             if pid == os.getpid():
                 continue
-            for opened in info.get("open_files") or ():
+            open_files = info.get("open_files")
+            if open_files is None:
+                # psutil reports AccessDenied/unsupported attributes as None (or omits
+                # them); neither proves this process has no descriptor on the store.
+                holders.append((pid, "uninspectable holder: open_files unavailable"))
+                continue
+            for opened in open_files:
                 path = getattr(opened, "path", "")
                 if path and canonical_sqlite_path(os.path.realpath(path)) in watched:
                     holders.append((pid, path))

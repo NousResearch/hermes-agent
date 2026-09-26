@@ -138,7 +138,13 @@ def _stage_session_file_attachment(
     """Make a desktop file attachment available to the gateway agent: ``(stored_path, uploaded)``.
     Inside the workspace -> as-is; gateway-visible but outside -> copied into ``attachments/``
     (bind-mounted into container backends so ``@file:`` resolves in the sandbox); not on the
-    gateway -> ``data_url`` bytes decoded into ``attachments/``."""
+    gateway -> ``data_url`` bytes decoded into ``attachments/``.
+
+    A Desktop large paste is prompt text in transit, not a user file: it stays under a
+    ``composer-pastes/`` root, the one outside-cwd root ``@file:`` expansion admits, so its
+    contents are inlined before inference. Under ``attachments/`` the guard refused it and the
+    model saw only an out-of-workspace path it had to open itself."""
+    from agent.context_references import COMPOSER_PASTES_DIRNAME, composer_paste_name
     workspace = Path(_session_cwd(session)).resolve()
     resolved = None
     if raw_path:
@@ -154,11 +160,20 @@ def _stage_session_file_attachment(
                 path_token, _remainder = _split_path_input(raw_path)
                 found = _resolve_attachment_path(path_token)
                 resolved = Path(found).resolve() if found is not None else None
+    # Judged by the gateway-visible path, or for an upload by the client's own path.
+    paste_name = composer_paste_name(resolved if resolved is not None else raw_path or "")
     if resolved is not None:
         try:
             resolved.relative_to(workspace)
             return resolved, False
         except ValueError:
+            # The turn's expansion admits the session profile's and the global root's paste dirs
+            # (attach runs before prompt.submit binds the profile, so name both explicitly).
+            from hermes_constants import get_default_hermes_root
+            paste_roots = (_session_home_dir(session, COMPOSER_PASTES_DIRNAME),
+                           get_default_hermes_root() / COMPOSER_PASTES_DIRNAME)
+            if paste_name and any(resolved.is_relative_to(root.resolve()) for root in paste_roots):
+                return resolved, False
             payload = resolved.read_bytes()
             filename = resolved.name
     else:
@@ -172,8 +187,9 @@ def _stage_session_file_attachment(
                 data_url, r"^data:[^;,]*(?:;[^;,=]+=[^;,]+)*;base64,(.*)$", _re.DOTALL | _re.I)
         except (ValueError, _binascii.Error) as exc:
             raise ValueError("invalid data_url payload") from exc
-        filename = _sanitize_attachment_name(name or Path(str(raw_path or "")).name)
-    root = _session_home_dir(session, "attachments")
+        # A paste's display label ("Pasted content (12 KB)") is not a file name; keep the paste's own.
+        filename = paste_name or _sanitize_attachment_name(name or Path(str(raw_path or "")).name)
+    root = _session_home_dir(session, COMPOSER_PASTES_DIRNAME if paste_name else "attachments")
     root.mkdir(parents=True, exist_ok=True)
     filename = _sanitize_attachment_name(filename)
     target = root / filename
@@ -184,6 +200,9 @@ def _stage_session_file_attachment(
         while (target := root / f"{stem}-{counter}{suffix}").exists():
             counter += 1
     target.write_bytes(payload)
+    if paste_name:
+        logger.info("TRANSPORT_ARTIFACT_MATERIALIZED: pasted content staged as %s (%d bytes)",
+                    target.name, len(payload))
     return target.resolve(), True
 
 

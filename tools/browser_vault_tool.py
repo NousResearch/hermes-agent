@@ -14,7 +14,7 @@ tools):
   resolved locally, the page origin must EXACTLY match the item's bound
   origin (pre-checked AND re-asserted synchronously inside the fill script),
   the field is chosen by the ported login-control classifier, injection runs
-  exclusively over the supervisor CDP WebSocket (never argv), and the tool
+  over the supervisor CDP WebSocket or pinned Camofox REST session (never argv), and the tool
   result reports only ``{filled_fields, kind, origin, success}`` — the
   password never appears in tool results, logs, or the session DB, and its
   exact bytes are registered with the browser-result redaction boundary so
@@ -30,6 +30,8 @@ import json
 import secrets
 import logging
 from typing import Any, Dict, Optional
+
+from tools import browser_vault_camofox as _camofox_vault
 
 logger = logging.getLogger(__name__)
 
@@ -56,11 +58,14 @@ def _check_vault_available() -> bool:
 def _eval_js(task_id: str, expression: str) -> Dict[str, Any]:
     """Evaluate NON-SECRET JS on the current page (inspection, origin reads).
 
-    Prefers the supervisor's persistent CDP WebSocket, falls back to the
+    Camofox uses the operation's pinned REST session. Other backends prefer
+    the supervisor's persistent CDP WebSocket, falling back to the
     agent-browser CLI ``eval`` command. Never use this for expressions that
     embed secret values — the fallback places the expression in subprocess
     argv. Use :func:`_eval_js_secret` for secret-bearing expressions.
     """
+    if _camofox_vault.selected():
+        return _camofox_vault.evaluate(task_id, expression)
     try:
         from tools.browser_supervisor import SUPERVISOR_REGISTRY
 
@@ -116,8 +121,8 @@ def _ensure_supervisor(task_id: str):
         return None
 
 
-def _eval_js_secret(task_id: str, expression: str) -> Dict[str, Any]:
-    """Evaluate a SECRET-BEARING JS expression. Supervisor CDP-WS only.
+def _eval_js_secret(task_id: str, expression: str, *, max_filled: int = 1) -> Dict[str, Any]:
+    """Evaluate SECRET-BEARING JS over pinned Camofox REST or supervisor CDP-WS.
 
     Fails closed: there is deliberately NO fallback to the agent-browser CLI
     ``eval`` path, because that places the expression — and therefore the
@@ -125,6 +130,8 @@ def _eval_js_secret(task_id: str, expression: str) -> Dict[str, Any]:
     When no supervisor session is available the caller gets a typed refusal
     (``error_type='supervisor_required'``) and nothing is written.
     """
+    if _camofox_vault.selected():
+        return _camofox_vault.evaluate(task_id, expression, max_filled=max_filled)
     try:
         supervisor = _ensure_supervisor(task_id)
     except Exception as exc:
@@ -203,6 +210,8 @@ def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[str]:
     """Point the supervisor's page session at the open tab on ``origin`` that holds a ``kind`` form
     (browser_exec sessions open their own tabs, so the tab the supervisor attached to first is rarely the
     login page). Returns the origin when a tab was focused, else None (caller falls back to the current page)."""
+    if _camofox_vault.selected():
+        return None  # Camofox uses the task's current tab, not CDP tab discovery.
     try:
         supervisor = _ensure_supervisor(task_id)
     except Exception:
@@ -288,6 +297,7 @@ def browser_vault_unlock(backend_name: str) -> str:
     return json.dumps({"success": True, "backend": backend.name})
 
 
+@_camofox_vault.operation
 def browser_vault_save_login(label: str = "", task_id: Optional[str] = None) -> str:
     """Ask the user (masked prompt on their surface) for the login of the CURRENT page, store it in the local
     vault bound to that origin, and fill the password at once. The values never enter the conversation."""
@@ -332,6 +342,7 @@ _TAB_PROBES["otp"] = ("!!document.querySelector('input[autocomplete=one-time-cod
                       "input[id*=otp i], input[id*=code i], input[name*=totp i], input[aria-label*=code i]')")
 
 
+@_camofox_vault.operation
 def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) -> str:
     """Second factor: fill the one-time code the CURRENT page asks for. If the saved login (``handle``) has an
     authenticator seed, the code is minted server-side and nobody is asked; otherwise the user is prompted on
@@ -364,6 +375,16 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
     source = "user"
     backend = backend_for_handle(handle) if handle else None
     if backend is not None:
+        # A saved authenticator code is a credential for the saved origins,
+        # not for whichever unrelated site currently displays an OTP input.
+        try:
+            meta = backend.get_meta(handle)
+        except Exception:
+            return json.dumps({"success": False, "error": "Could not verify the saved login's origin."})
+        allowed = (list(meta.allowed_origins) or [meta.origin]) if meta is not None else []
+        if origin not in allowed:
+            return json.dumps({"success": False, "error_type": "origin_mismatch",
+                               "error": "Refused: the code page does not match the saved login's bound origins."})
         try:
             code = backend.resolve_otp(handle)
         except Exception:
@@ -383,7 +404,7 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
 
     register_vault_redaction_value(code)
     fills = build_otp_fills(otp_controls, code)
-    result = _eval_js_secret(effective_task_id, build_fill_js(fills, expected_origin=origin, nonce=nonce))
+    result = _eval_js_secret(effective_task_id, build_fill_js(fills, expected_origin=origin, nonce=nonce), max_filled=len(fills))
     del code
     if not result.get("success"):
         return json.dumps({"success": False, "error": str(result.get("error") or "fill failed")[:200]})
@@ -397,13 +418,14 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
                        "next": "Submit the form (many sites auto-submit when the last digit lands)."})
 
 
+@_camofox_vault.operation
 def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
     """Fill the current page's password field from a vault handle.
 
     Password-only: the identifier is agent-visible metadata (see
     browser_vault_list) and is typed by the agent via normal input tools.
     The password is resolved server-side and injected via in-page JS over
-    the supervisor CDP WebSocket; the result reports only counts/metadata.
+    selected private browser transport; the result reports only counts/metadata.
     """
     from agent.redact import register_vault_redaction_value
     from agent.vault_login_classifier import (
@@ -527,7 +549,7 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
 
     try:
         fill_result = _eval_js_secret(
-            effective_task_id, build_fill_js(fills, expected_origin=page_origin, nonce=nonce)
+            effective_task_id, build_fill_js(fills, expected_origin=page_origin, nonce=nonce), max_filled=len(fills)
         )
     except Exception as exc:
         # Strip any secret material from exception text before surfacing.

@@ -86,8 +86,42 @@ cannot spend. Address fills need no confirmation.
 
 Items live encrypted under `~/.hermes/vault/` (Fernet key + vault file, both
 `0600`), scoped to the profile. Labels, site origins and login identifiers are
-visible metadata; passwords and card values never leave the vault except into
-the page.
+visible metadata; passwords and card values are released only through the
+private browser transport into the page. A remote browser server necessarily
+receives them (see the trust boundary below).
+
+## Browser support and Camofox
+
+Vault tools use the selected browser backend, never a second hidden browser:
+
+- **Supervised Chromium / CDP sessions**, including Browser Use sessions with
+  a supervisor, fill over the direct CDP WebSocket. Without that channel, secret
+  fills refuse rather than put a credential in a command-line argument.
+- **Camofox** uses its authenticated `/tabs/{id}/evaluate` endpoint. Navigate
+  through Hermes first: the vault requires the existing task tab and does not
+  create or adopt a tab itself. The tab, server, user identity and authentication
+  are pinned across origin inspection, user prompts and filling, including the
+  nested fill after saving a login. A missing tab, unavailable evaluation endpoint
+  or transport failure refuses; there is no Chromium/CDP fallback.
+
+For Camofox, configure `CAMOFOX_API_KEY` and use **HTTPS with certificate
+verification**, or **HTTP on a numeric loopback address** such as
+`http://127.0.0.1:9377` for a local server or SSH tunnel. Plain HTTP requires a
+numeric loopback host; `localhost` and other DNS names do not qualify.
+URL-embedded credentials and redirects are refused. Vault requests ignore ambient proxy and `.netrc` settings so a
+loopback connection cannot silently send credentials through another host.
+Passwords, cards, addresses, save-login prompts and verification-code entry use
+this same transport. Saved authenticator codes are restricted to the login's
+saved origins; user-entered codes are bound to the page inspected before prompting.
+
+**Trust the browser server as you would the browser itself.** Camofox receives
+the secret-bearing expression in an in-memory JSON request. Its operator,
+plugins, request-body logging, browser tracing/recording and debugging tools can
+observe it. Use a server and plugins you trust, and disable secret-bearing
+request logging and traces. Hermes catches page-evaluation exceptions before
+Camofox can log their text, discards raw transport errors, and accepts only a
+bounded fill count or a known refusal from a secret evaluation. This does not
+hide credentials from the server or from the destination page.
 
 ## Headless sessions
 
@@ -111,9 +145,11 @@ vault:
 
 **Does:** the password never enters the model's context through Hermes: not in
 tool results, logs, the session database, or the CLI arguments of any process.
-Fills happen over the supervised browser session's direct CDP socket and are
-refused unless the page origin exactly matches the saved origin, checked again
-inside the page immediately before the write.
+Fills happen over the supervised browser session's direct CDP socket or the
+pinned Camofox transport described above. They are refused unless the page
+origin exactly matches the saved origin, checked again inside the page
+immediately before the write. Nonce-stamped controls bind each write to its
+own inspection; a changed tab/document or restamped control cannot retarget it.
 
 **Does not:** protect against the page itself. Once a password is typed into a
 site, that site (and any script it runs) has it, exactly as when you type it

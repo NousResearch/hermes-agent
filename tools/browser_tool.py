@@ -865,7 +865,8 @@ def _tool_response(result: Dict[str, Any], ok: Dict[str, Any], default_error: st
 def _camofox(func_name: str, *args):
     """Call ``tools.browser_camofox.<func_name>(*args)`` (Camofox mode delegation)."""
     import importlib
-    return getattr(importlib.import_module("tools.browser_camofox"), func_name)(*args)
+    result = getattr(importlib.import_module("tools.browser_camofox"), func_name)(*args)
+    return _dumps(_snapshot._redact_browser_output(json.loads(result)))
 
 
 def _guarded_action(task_id: Optional[str], action: str, command: str, args: list, ok: Dict[str, Any], err: str) -> str:
@@ -1134,7 +1135,7 @@ def _camofox_eval(expression: str, task_id: Optional[str] = None) -> str:
         if any(code in str(e) for code in ("404", "405", "501")):  # server without eval support
             return json.dumps(_err("JavaScript evaluation is not supported by this Camofox server. "
                                    "Use browser_snapshot or browser_vision to inspect page state."))
-        return tool_error(str(e), success=False)
+        return tool_error(_snapshot._redact_browser_output(str(e)), success=False)
 
 
 def _maybe_start_recording(task_id: str):

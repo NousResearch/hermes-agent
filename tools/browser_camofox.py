@@ -235,8 +235,12 @@ def _rewrite_loopback_url_for_camofox(url: str) -> tuple[str, Optional[Dict[str,
 
 
 # ---- Session management ----
-_sessions: Dict[str, Dict[str, Any]] = {}  # task_id -> {"user_id": str, "tab_id": str|None, ...}
+_sessions: Dict[tuple[str, str, str], Dict[str, Any]] = {}  # (profile home, server, raw task_id) -> session
 _sessions_lock = threading.Lock()
+
+
+def _session_key(task_id: Optional[str]) -> tuple[str, str, str]:
+    return hermes_home_key(), get_camofox_url(), task_id or "default"
 
 
 def _adopt_existing_tab(session: Dict[str, Any]) -> Dict[str, Any]:
@@ -263,9 +267,10 @@ def _get_session(task_id: Optional[str]) -> Dict[str, Any]:
     (CAMOFOX_USER_ID / config) → profile-scoped identity when managed persistence
     is on → random ephemeral userId."""
     task_id = task_id or "default"
+    key = _session_key(task_id)
     with _sessions_lock:
-        if task_id in _sessions:
-            return _adopt_existing_tab(_sessions[task_id])
+        if key in _sessions:
+            return _adopt_existing_tab(_sessions[key])
         camofox_cfg = _get_camofox_config()
         identity = _camofox_identity_override(task_id, camofox_cfg)
         if identity is None and _managed_persistence_enabled(camofox_cfg):
@@ -277,7 +282,7 @@ def _get_session(task_id: Optional[str]) -> Dict[str, Any]:
             managed, adopt = True, _flag("CAMOFOX_ADOPT_EXISTING_TAB", camofox_cfg, "adopt_existing_tab")
         session = {"user_id": identity["user_id"], "tab_id": None, "session_key": identity["session_key"],
                    "managed": managed, "adopt_existing_tab": adopt}
-        _sessions[task_id] = session
+        _sessions[key] = session
         return _adopt_existing_tab(session)
 
 
@@ -293,7 +298,7 @@ def _ensure_tab(task_id: Optional[str], url: str = "about:blank") -> Dict[str, A
 def _drop_session(task_id: Optional[str]) -> Optional[Dict[str, Any]]:
     """Remove and return session info."""
     with _sessions_lock:
-        return _sessions.pop(task_id or "default", None)
+        return _sessions.pop(_session_key(task_id), None)
 
 
 def camofox_soft_cleanup(task_id: Optional[str] = None) -> bool:
@@ -344,7 +349,10 @@ def _user_params(session: Dict[str, Any]) -> Dict[str, str]:
 
 
 def _snapshot_data(session: Dict[str, Any]) -> dict:
-    return _get(_tab_path(session, "snapshot"), params=_user_params(session))
+    from tools.browser_tool_snapshot import _redact_browser_output
+    # Redact before truncation can persist a full snapshot to the cache as well
+    # as before snapshot/image/vision consumers return page text to the model.
+    return _redact_browser_output(_get(_tab_path(session, "snapshot"), params=_user_params(session)))
 
 
 def _parse_snapshot_images(snapshot: str) -> list[Dict[str, str]]:

@@ -251,7 +251,7 @@ function SubagentTree({ tree }: { tree: SubagentNode[] }) {
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-hidden">
       <p className="shrink-0 text-[0.7rem] text-muted-foreground/70">{summary.join(' · ')}</p>
-      <div className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain pr-1">
+      <div className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain pe-1">
         <div className="flex min-w-0 flex-col gap-6">
           {groups.map(group => (
             <DelegationGroup group={group} key={group.id} nowMs={nowMs} />
@@ -311,7 +311,7 @@ function StreamLine({
         {active ? (
           <GlyphSpinner
             ariaLabel={t.agents.streaming}
-            className="ml-1 inline-block size-2.5 align-middle text-muted-foreground/70"
+            className="ms-1 inline-block size-2.5 align-middle text-muted-foreground/70"
             spinner="breathe"
           />
         ) : null}
@@ -349,7 +349,7 @@ export function SubagentRow({ node, depth = 0, nowMs }: { node: SubagentNode; de
   ].filter(Boolean)
 
   return (
-    <div className={cn('grid min-w-0 max-w-full gap-2', depth > 0 && 'pl-4')} data-slot="tool-block" ref={enterRef}>
+    <div className={cn('grid min-w-0 max-w-full gap-2', depth > 0 && 'ps-4')} data-slot="tool-block" ref={enterRef}>
       <button
         aria-expanded={open}
         className="group flex w-full min-w-0 items-start gap-2.5 text-left"
@@ -376,7 +376,7 @@ export function SubagentRow({ node, depth = 0, nowMs }: { node: SubagentNode; de
       </button>
 
       {visibleRows.length > 0 ? (
-        <div className="grid min-w-0 gap-1 pl-6" data-selectable-text="true">
+        <div className="grid min-w-0 gap-1 ps-6" data-selectable-text="true">
           {visibleRows.map((entry, i) => (
             <StreamLine
               active={running && i === visibleRows.length - 1}
@@ -390,7 +390,7 @@ export function SubagentRow({ node, depth = 0, nowMs }: { node: SubagentNode; de
       ) : null}
 
       {open && fileLines.length > 0 ? (
-        <div className="grid min-w-0 gap-0.5 pl-6" data-selectable-text="true">
+        <div className="grid min-w-0 gap-0.5 ps-6" data-selectable-text="true">
           <p className="text-[0.58rem] font-medium tracking-wider text-muted-foreground/60 uppercase">
             {t.agents.files}
           </p>
@@ -408,7 +408,7 @@ export function SubagentRow({ node, depth = 0, nowMs }: { node: SubagentNode; de
       ) : null}
 
       {node.children.length > 0 ? (
-        <div className="grid min-w-0 gap-3 pl-6">
+        <div className="grid min-w-0 gap-3 ps-6">
           {node.children.map(child => (
             <SubagentRow depth={depth + 1} key={child.id} node={child} nowMs={nowMs} />
           ))}

@@ -227,7 +227,7 @@ function IdleView({
   // honest view names that path. Only this mechanism gets it.
   if (status.mechanism === 'app-installer' && status.error && !status.updateAvailable) {
     return (
-      <div className="grid gap-4 px-6 pb-6 pt-1 pr-8">
+      <div className="grid gap-4 px-6 pb-6 pt-1 pe-8">
         <VersionHero
           renderHeading={heading => (
             <DialogTitle className="text-lg font-semibold tracking-tight">{heading}</DialogTitle>
@@ -253,7 +253,7 @@ function IdleView({
   // check/retry actions (its "Check now" covers the old Try-again button).
   if (!status.supported || status.error || !updateAvailable) {
     return (
-      <div className="grid gap-4 px-6 pb-6 pt-1 pr-8">
+      <div className="grid gap-4 px-6 pb-6 pt-1 pe-8">
         <VersionHero
           renderHeading={heading => (
             <DialogTitle className="text-lg font-semibold tracking-tight">{heading}</DialogTitle>
@@ -296,7 +296,7 @@ function IdleView({
   })
 
   return (
-    <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
+    <div className="grid gap-5 px-6 pb-6 pt-7 pe-8">
       <div className="flex flex-col items-center gap-3 text-center">
         <BrandMark className="size-16" />
 
@@ -367,7 +367,7 @@ function ManualView({
   // message + a Done button, not a copy-a-command box.
   if (!command) {
     return (
-      <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
+      <div className="grid gap-5 px-6 pb-6 pt-7 pe-8">
         <div className="flex flex-col items-center gap-3 text-center">
           <Terminal className="size-8 text-primary" />
 
@@ -385,7 +385,7 @@ function ManualView({
   }
 
   return (
-    <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
+    <div className="grid gap-5 px-6 pb-6 pt-7 pe-8">
       <div className="flex flex-col items-center gap-3 text-center">
         <Terminal className="size-8 text-primary" />
 
@@ -440,7 +440,7 @@ function GuiSkewView({ message, onDone }: { message?: string; onDone: () => void
   const u = t.updates
 
   return (
-    <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
+    <div className="grid gap-5 px-6 pb-6 pt-7 pe-8">
       <div className="flex flex-col items-center gap-3 text-center">
         <AlertCircle className="size-8 text-amber-500" />
 
@@ -522,7 +522,7 @@ function ErrorView({ message, onDismiss, onRetry }: { message: string; onDismiss
 
   return (
     <ErrorState
-      className="px-6 pb-6 pt-7 pr-8"
+      className="px-6 pb-6 pt-7 pe-8"
       description={
         <DialogDescription className="max-w-prose text-center text-sm leading-5 text-muted-foreground">
           {message || u.errorBody}
@@ -552,7 +552,7 @@ function CenteredStatus({
   title: string
 }) {
   return (
-    <div className="grid gap-4 px-6 pb-6 pt-8 pr-8">
+    <div className="grid gap-4 px-6 pb-6 pt-8 pe-8">
       <div className="flex flex-col items-center gap-3 text-center">
         {icon}
 

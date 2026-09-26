@@ -134,7 +134,7 @@ function ToolDetail({ hints, tool }: { hints: ReturnType<typeof hintTags>; tool:
   const { t } = useI18n()
 
   return (
-    <div className="grid gap-1 pb-2.5 pl-[3.625rem] pr-3.5">
+    <div className="grid gap-1 pb-2.5 ps-[3.625rem] pe-3.5">
       <p className="max-w-[60ch] text-[0.7rem] leading-relaxed text-(--ui-text-secondary)">{tool.description}</p>
       {hints.length > MAX_ROW_HINTS ? (
         <p className="text-[0.65rem] text-(--ui-text-quaternary)">

@@ -115,6 +115,10 @@ export function I18nProvider({
     localeRef.current = locale
     setRuntimeI18nLocale(locale)
     applyDocumentLocale(locale)
+    // Keep the native macOS application menu in the user's language. Main
+    // ignores locales it has no copy for, and unknown locales fall back to
+    // the English menu template.
+    window.hermesDesktop?.setMenuLocale?.(locale)
   }, [locale])
 
   // eslint-disable-next-line no-restricted-syntax -- scope-local request generation and user intent, not an atom mirror

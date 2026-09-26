@@ -80,7 +80,7 @@ export function ComboboxInput({
             aria-controls={expanded ? listId : undefined}
             aria-expanded={expanded}
             aria-label={ariaLabel}
-            className="w-full pr-7"
+            className="w-full pe-7"
             disabled={disabled}
             onChange={e => {
               onChange(e.target.value)

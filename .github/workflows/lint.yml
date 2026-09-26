@@ -168,6 +168,13 @@ jobs:
       - name: Require portable Bash shebangs
         run: python scripts/check_bash_shebangs.py
 
+      # RTL guard on apps/desktop: the Persian locale mirrors the renderer, so
+      # physical direction classes (pl/pr/ml/mr) pad the wrong edge and
+      # rtl:/ltr: variants hardcode one direction's overrides. Everything must
+      # use logical classes (ps/pe/ms/me). See scripts/check_desktop_rtl_classes.py.
+      - name: Forbid physical-direction classes in apps/desktop
+        run: python scripts/check_desktop_rtl_classes.py --all
+
       # The Sep 2026 decomposition kept old import paths alive for external plugins
       # (PLUGIN-COMPAT blocks, see COMPAT_MANIFEST.md). They are removed on schedule by
       # reverting one commit, so in-tree code must never depend on them.

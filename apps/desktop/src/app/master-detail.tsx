@@ -283,7 +283,7 @@ export function DetailPane({
       </div>
       <header className="flex h-9 shrink-0 items-center gap-2 px-3">
         <span className="min-w-0 truncate text-xs font-medium text-foreground">{title}</span>
-        <div className="ml-auto flex shrink-0 items-center gap-1.5">
+        <div className="ms-auto flex shrink-0 items-center gap-1.5">
           {actions}
           <Tip label={collapsed ? t.common.expand : t.common.collapse}>
             <Button
@@ -315,7 +315,7 @@ export function DetailPane({
 // left, overflow kebab on the right.
 export function ListStrip({ left, right }: { left?: ReactNode; right?: ReactNode }) {
   return (
-    <div className="mb-1 flex h-6 shrink-0 items-center justify-between gap-2 pl-2 pr-1">
+    <div className="mb-1 flex h-6 shrink-0 items-center justify-between gap-2 ps-2 pe-1">
       <div className="flex min-w-0 items-center gap-1.5">{left}</div>
       <div className="flex shrink-0 items-center gap-1.5">{right}</div>
     </div>
@@ -475,7 +475,7 @@ export function CapRow({
       id={rowId}
     >
       <RowButton
-        className="flex h-full min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md pl-2 pr-1.5 text-left"
+        className="flex h-full min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md ps-2 pe-1.5 text-left"
         onClick={onSelect}
       >
         <span className="min-w-0 flex-1">
@@ -500,12 +500,12 @@ export function CapRow({
         )}
       </RowButton>
       {action != null ? (
-        <span className="mr-1.5 flex shrink-0 items-center">{action}</span>
+        <span className="me-1.5 flex shrink-0 items-center">{action}</span>
       ) : (
         <Switch
           aria-label={toggleLabel ?? title}
           checked={enabled}
-          className={cn('mr-1.5 shrink-0 cursor-pointer', !enabled && 'opacity-60')}
+          className={cn('me-1.5 shrink-0 cursor-pointer', !enabled && 'opacity-60')}
           disabled={busy}
           onCheckedChange={onToggle}
           size="xs"

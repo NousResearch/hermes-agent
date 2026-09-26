@@ -38,13 +38,6 @@ const MEMORY_PROVIDER_BUILTIN = "__hermes_memory_builtin__";
 
 type MemoryFormValue = string | boolean | number;
 
-const MEMORY_STATUS_LABEL: Record<MemoryProviderInfo["status"], string> = {
-  ready: "ready",
-  needs_config: "needs setup",
-  unavailable: "unavailable",
-  missing: "missing",
-};
-
 const MEMORY_STATUS_TONE: Record<MemoryProviderInfo["status"], "success" | "warning" | "destructive" | "secondary"> = {
   ready: "success",
   needs_config: "warning",
@@ -80,9 +73,12 @@ function SetupCommandBlock({ code, label }: { code: string; label: string }) {
   );
 }
 
-function setupResultLabel(status: string) {
-  if (status === "already_installed") return "already installed";
-  if (status === "no_declared_steps") return "no declared setup";
+function setupResultLabel(
+  status: string,
+  labels: { alreadyInstalled: string; noDeclaredSteps: string },
+) {
+  if (status === "already_installed") return labels.alreadyInstalled;
+  if (status === "no_declared_steps") return labels.noDeclaredSteps;
   return status.replace(/_/g, " ");
 }
 
@@ -96,11 +92,12 @@ function setupResultClass(status: string) {
 }
 
 function MemoryProviderSetupResults({ results }: { results: MemoryProviderSetupResult[] }) {
+  const { t } = useI18n();
   if (!results.length) return null;
 
   return (
     <div className="grid gap-2 border border-border bg-background/20 p-3">
-      <p className="text-muted-foreground">Setup results</p>
+      <p className="text-muted-foreground">{t.pluginsPage.setupResultsHeading}</p>
       {results.map((result, index) => {
         const detail = result.stderr || result.stdout;
         return (
@@ -112,7 +109,10 @@ function MemoryProviderSetupResults({ results }: { results: MemoryProviderSetupR
                   setupResultClass(result.status),
                 )}
               >
-                {setupResultLabel(result.status)}
+                {setupResultLabel(result.status, {
+                  alreadyInstalled: t.pluginsPage.statusAlreadyInstalled,
+                  noDeclaredSteps: t.pluginsPage.statusNoDeclaredSteps,
+                })}
               </span>
               <span className="text-muted-foreground">
                 {result.name}
@@ -147,6 +147,7 @@ function MemoryProviderSetupHint({
   provider: MemoryProviderInfo;
   results: MemoryProviderSetupResult[] | null;
 }) {
+  const { t } = useI18n();
   const setup = provider.setup;
   const hasDetails = setupHasDetails(setup);
   const hasInstallableSteps = setupHasInstallableSteps(setup);
@@ -164,7 +165,7 @@ function MemoryProviderSetupHint({
   if (!hasDetails || !setup) {
     return (
       <p className="border border-destructive/50 px-3 py-2 text-xs text-destructive">
-        This provider is installed but unavailable. It may need local dependencies or a manual setup step before Hermes can activate it.
+        {t.pluginsPage.providerUnavailableHint}
       </p>
     );
   }
@@ -247,7 +248,7 @@ function MemoryProviderSetupHint({
       {setup.required_env.length && needsDependencySetup ? (
         <div className="grid gap-2">
           <p className="text-muted-foreground">
-            Required environment values. Fill the matching fields below, or set them in the Hermes environment.
+            {t.pluginsPage.requiredEnvHint}
           </p>
           <div className="flex flex-wrap gap-2">
             {setup.required_env.map((envKey) => (
@@ -324,8 +325,11 @@ export default function PluginsPage() {
     const provider = memorySel === MEMORY_PROVIDER_BUILTIN ? "" : memorySel;
     let cancelled = false;
 
-    void Promise.resolve().then(() => {
-      if (cancelled) return;
+    // Await-first: every setState below runs in a promise continuation, never
+    // synchronously inside the effect body (react-hooks/set-state-in-effect).
+    async function loadMemoryConfig() {
+      // Leading await = the boundary; the effect body itself stays synchronous.
+      await Promise.resolve();
       setSecretVisible({});
       setMemorySetupResults(null);
 
@@ -337,28 +341,25 @@ export default function PluginsPage() {
       }
 
       setMemoryConfigBusy(true);
-      api
-        .getMemoryProviderConfig(provider)
-        .then((config) => {
-          if (cancelled) return;
-          setMemoryConfig(config);
-          setMemoryValues(
-            Object.fromEntries(
-              config.fields.map((field) => [field.key, fieldInitialValue(field)]),
-            ),
-          );
-        })
-        .catch((e) => {
-          if (!cancelled) {
-            setMemoryConfig(null);
-            setMemoryValues({});
-            showToast(e instanceof Error ? e.message : "Failed to load provider config", "error");
-          }
-        })
-        .finally(() => {
-          if (!cancelled) setMemoryConfigBusy(false);
-        });
-    });
+      try {
+        const config = await api.getMemoryProviderConfig(provider);
+        if (cancelled) return;
+        setMemoryConfig(config);
+        setMemoryValues(
+          Object.fromEntries(
+            config.fields.map((field) => [field.key, fieldInitialValue(field)]),
+          ),
+        );
+      } catch (e) {
+        if (cancelled) return;
+        setMemoryConfig(null);
+        setMemoryValues({});
+        showToast(e instanceof Error ? e.message : "Failed to load provider config", "error");
+      } finally {
+        if (!cancelled) setMemoryConfigBusy(false);
+      }
+    }
+    void loadMemoryConfig();
 
     return () => {
       cancelled = true;
@@ -378,14 +379,23 @@ export default function PluginsPage() {
         force: installForce,
         enable: installEnable,
       });
-      showToast(`${r.plugin_name ?? id} installed`, "success");
+      showToast(
+        t.pluginsPage.installedToast.replace(
+          "{name}",
+          r.plugin_name ?? id,
+        ),
+        "success",
+      );
       if ((r.warnings?.length ?? 0) > 0) showToast(r.warnings!.join(" "), "error");
       if ((r.missing_env?.length ?? 0) > 0)
         showToast(`${t.pluginsPage.missingEnvWarn} ${r.missing_env!.join(", ")}`, "error");
       setInstallId("");
       await loadHub();
     } catch (e) {
-      showToast(e instanceof Error ? e.message : "Install failed", "error");
+      showToast(
+        e instanceof Error ? e.message : t.pluginsPage.setupFailedFallback,
+        "error",
+      );
     } finally {
       setInstallBusy(false);
     }
@@ -401,12 +411,21 @@ export default function PluginsPage() {
         force: entry.installed,
         enable: false,
       });
-      showToast(`${r.plugin_name ?? entry.name} installed`, "success");
+      showToast(
+        t.pluginsPage.installedToast.replace(
+          "{name}",
+          r.plugin_name ?? entry.name,
+        ),
+        "success",
+      );
       if ((r.missing_env?.length ?? 0) > 0)
         showToast(`${t.pluginsPage.missingEnvWarn} ${r.missing_env!.join(", ")}`, "error");
       await Promise.all([loadHub(), loadCatalog()]);
     } catch (e) {
-      showToast(e instanceof Error ? e.message : "Install failed", "error");
+      showToast(
+        e instanceof Error ? e.message : t.pluginsPage.setupFailedFallback,
+        "error",
+      );
     } finally {
       setCatalogBusy(null);
     }
@@ -488,13 +507,22 @@ export default function PluginsPage() {
       const failed = result.results.filter((row) => row.status === "failed");
       if (failed.length) {
         const names = Array.from(new Set(failed.map((row) => row.name))).join(", ");
-        showToast(`Provider setup failed: ${names || provider}. See setup results below.`, "error");
+        showToast(
+          t.pluginsPage.providerSetupFailed.replace(
+            "{names}",
+            names || provider,
+          ),
+          "error",
+        );
       } else {
-        showToast("Provider setup finished", "success");
+        showToast(t.pluginsPage.providerSetupDone, "success");
       }
       await loadHub(provider);
     } catch (e) {
-      showToast(e instanceof Error ? e.message : "Provider setup failed", "error");
+      showToast(
+        e instanceof Error ? e.message : t.pluginsPage.providerSetupError,
+        "error",
+      );
     } finally {
       setMemorySetupBusy(false);
     }
@@ -569,7 +597,7 @@ export default function PluginsPage() {
             <CardHeader>
               <CardTitle>{t.pluginsPage.providersHeading}</CardTitle>
               <p className="text-xs tracking-[0.08em] text-text-tertiary">
-                Configure memory providers and runtime context engine selection.
+                {t.pluginsPage.providersSubheading}
               </p>
             </CardHeader>
 
@@ -581,7 +609,13 @@ export default function PluginsPage() {
                       <Label htmlFor="mem-provider">{t.pluginsPage.memoryProviderLabel}</Label>
                       {selectedMemoryName && selectedMemoryInfo && (
                         <Badge tone={MEMORY_STATUS_TONE[selectedMemoryInfo.status]}>
-                          {MEMORY_STATUS_LABEL[selectedMemoryInfo.status]}
+                          {selectedMemoryInfo.status === "ready"
+                            ? t.pluginsPage.memoryStatusReady
+                            : selectedMemoryInfo.status === "needs_config"
+                              ? t.pluginsPage.memoryStatusNeedsConfig
+                              : selectedMemoryInfo.status === "unavailable"
+                                ? t.pluginsPage.memoryStatusUnavailable
+                                : t.pluginsPage.memoryStatusMissing}
                         </Badge>
                       )}
                       {selectedMemoryName && selectedMemoryName === providers.memory_provider && (
@@ -612,8 +646,8 @@ export default function PluginsPage() {
 
                   {!selectedMemoryName && (
                     <p className="text-xs text-muted-foreground">
-                      Hermes will use the built-in MEMORY.md and USER.md files.
-                    </p>
+                {t.pluginsPage.builtinMemoryNote}
+              </p>
                   )}
 
                   {activeMemoryInfo?.status === "missing" && (
@@ -639,20 +673,20 @@ export default function PluginsPage() {
 
                   {selectedMemoryName && selectedMemoryInfo?.status === "needs_config" && (
                     <p className="border border-warning/50 px-3 py-2 text-xs text-warning">
-                      Provider dependencies are installed. Add the required credentials or self-hosted URL below, then save the provider.
-                    </p>
+                  {t.pluginsPage.providerNeedsConfigNote}
+              </p>
                   )}
 
                   {selectedMemoryName && memoryConfigBusy && (
                     <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                      <Spinner /> Loading provider settings…
+                      <Spinner /> {t.pluginsPage.loadingProviderSettings}
                     </div>
                   )}
 
                   {selectedMemoryName && !memoryConfigBusy && visibleMemoryFields.length === 0 && (
                     <p className="text-xs text-muted-foreground">
-                      This provider does not expose dashboard settings.
-                    </p>
+                {t.pluginsPage.providerNoSettingsNote}
+              </p>
                   )}
 
                   {selectedMemoryName && !memoryConfigBusy && visibleMemoryFields.length > 0 && (
@@ -769,7 +803,7 @@ export default function PluginsPage() {
                     onClick={() => void onSaveMemoryProvider()}
                     prefix={memoryBusy ? <Spinner /> : undefined}
                   >
-                    Save memory provider
+                    {t.pluginsPage.saveMemoryProvider}
                   </Button>
                 </div>
 
@@ -800,7 +834,7 @@ export default function PluginsPage() {
                     onClick={() => void onSaveContextEngine()}
                     prefix={contextBusy ? <Spinner /> : undefined}
                   >
-                    Save context engine
+                    {t.pluginsPage.saveContextEngine}
                   </Button>
                 </div>
               </div>
@@ -826,7 +860,7 @@ export default function PluginsPage() {
               <Input
                 className="font-mono-ui lowercase"
                 id="install-url"
-                placeholder="owner/repo, owner/repo/subdir, or https://..."
+                placeholder={t.pluginsPage.installUrlPlaceholder}
                 spellCheck={false}
                 value={installId}
                 onChange={(e) => setInstallId(e.target.value)}
@@ -985,7 +1019,7 @@ export default function PluginsPage() {
                   {!m.tab?.hidden ? (
 
 
-                    <Link className="ml-3 inline-flex items-center gap-1 underline" to={m.tab.path}>
+                    <Link className="ms-3 inline-flex items-center gap-1 underline" to={m.tab.path}>
 
 
                       <ExternalLink className="h-3 w-3 opacity-65" />
@@ -1264,7 +1298,7 @@ function PluginRowCard(props: PluginRowCardProps) {
           setConfirmRemove(false);
           void setRuntimeLoading(row.name, async () => {
             await api.removeAgentPlugin(row.name);
-            showToast(`${row.name} removed`, "success");
+            showToast(t.pluginsPage.removedToast.replace("{name}", row.name), "success");
           });
         }}
         title={t.pluginsPage.removeConfirm}
@@ -1289,10 +1323,12 @@ function CatalogEntryCard(props: CatalogEntryCardProps) {
 
   const caps = entry.capabilities;
   const chips: string[] = [];
-  if (caps.provides_tools.length) chips.push(`${caps.provides_tools.length} tools`);
-  if (caps.provides_hooks.length) chips.push(`${caps.provides_hooks.length} hooks`);
+  if (caps.provides_tools.length)
+    chips.push(t.pluginsPage.catalogToolsChip.replace("{count}", String(caps.provides_tools.length)));
+  if (caps.provides_hooks.length)
+    chips.push(t.pluginsPage.catalogHooksChip.replace("{count}", String(caps.provides_hooks.length)));
   if (caps.provides_middleware.length)
-    chips.push(`${caps.provides_middleware.length} middleware`);
+    chips.push(t.pluginsPage.catalogMiddlewareChip.replace("{count}", String(caps.provides_middleware.length)));
   if (caps.requires_env.length) chips.push(`env: ${caps.requires_env.join(", ")}`);
 
   const isRemoved = removed !== null;

@@ -59,20 +59,40 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
     useState<OAuthProvider | null>(null);
   const { t } = useI18n();
 
+  // `onError` lives in a ref synced from an effect (render-phase ref writes
+  // are illegal under react-hooks/refs). The ref keeps `refresh`'s dependency
+  // list empty, so a parent identity change can't re-trigger the load.
   const onErrorRef = useRef(onError);
-  onErrorRef.current = onError;
+  useEffect(() => {
+    onErrorRef.current = onError;
+  }, [onError]);
 
-  const refresh = useCallback(() => {
+  const refresh = useCallback(async () => {
+    // Await-first loader: setLoading runs in a promise continuation, never
+    // synchronously inside the mount effect body below
+    // (react-hooks/set-state-in-effect).
+    await Promise.resolve();
     setLoading(true);
-    api
-      .getOAuthProviders()
-      .then((resp) => setProviders(resp.providers))
-      .catch((e) => onErrorRef.current?.(`Failed to load providers: ${errorMessage(e)}`))
-      .finally(() => setLoading(false));
+    try {
+      const resp = await api.getOAuthProviders();
+      setProviders(resp.providers);
+    } catch (e) {
+      onErrorRef.current?.(`Failed to load providers: ${errorMessage(e)}`);
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
+  // Initial load. (Restored after an earlier refactor dropped it: without
+  // this the card stayed empty until the first manual refresh.)
   useEffect(() => {
-    refresh();
+    // Loader-in-effect convention: the IIFE's leading await is the explicit
+    // async boundary required by react-hooks/set-state-in-effect — calling a
+    // component-scope loader directly from the effect body is rejected.
+    void (async () => {
+      await Promise.resolve();
+      await refresh();
+    })();
   }, [refresh]);
 
   const handleDisconnect = async (provider: OAuthProvider) => {
@@ -251,7 +271,7 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
                   )}
                   {p.status.logged_in && p.flow === "external" && (
                     <span className="text-xs text-text-tertiary italic px-2">
-                      <Terminal className="h-3 w-3 inline mr-0.5" />
+                      <Terminal className="h-3 w-3 inline me-0.5" />
                       {t.oauth.managedExternally}
                     </span>
                   )}

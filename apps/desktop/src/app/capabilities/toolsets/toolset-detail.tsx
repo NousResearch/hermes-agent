@@ -46,7 +46,7 @@ export function ToolsetDetail({
             <ToolChip key={name}>
               {name}
               {(toolCalls[name] ?? 0) > 0 && (
-                <span className="ml-1 text-(--ui-text-quaternary)">×{compactNumber(toolCalls[name])}</span>
+                <span className="ms-1 text-(--ui-text-quaternary)">×{compactNumber(toolCalls[name])}</span>
               )}
             </ToolChip>
           ))}

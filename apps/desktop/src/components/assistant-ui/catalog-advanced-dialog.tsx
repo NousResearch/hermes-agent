@@ -271,7 +271,7 @@ function InstallControls(props: InstallControlsProps) {
           <Checkbox checked={props.agentHalf} onCheckedChange={value => props.onAgentHalfChange(value === true)} />
           <span className="font-medium text-foreground">{props.m.agentLabel}</span>
         </label>
-        <label className="grid gap-1 pl-7">
+        <label className="grid gap-1 ps-7">
           <span className={cn(CAPTION, 'text-foreground')}>{props.m.profileLabel}</span>
           {props.profileSelect}
         </label>

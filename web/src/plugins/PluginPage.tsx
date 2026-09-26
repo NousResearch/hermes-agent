@@ -26,6 +26,10 @@ export function PluginPage({ name }: { name: string }) {
   );
 
   if (Component) {
+    // Plugin components are registered at runtime by external bundles and are
+    // stable per `name` — this is a lookup, not component creation during
+    // render. `useSyncExternalStore` returns the registered component.
+    // eslint-disable-next-line react-hooks/static-components
     return <Component />;
   }
 

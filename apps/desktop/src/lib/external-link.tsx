@@ -286,7 +286,7 @@ interface ExternalLinkProps extends Omit<ComponentProps<'a'>, 'href' | 'target'>
 }
 
 export function ExternalLinkIcon({ className }: { className?: string }) {
-  return <ArrowUpRight aria-hidden className={cn('ml-1 inline size-[0.78em] align-[-0.08em] opacity-70', className)} />
+  return <ArrowUpRight aria-hidden className={cn('ms-1 inline size-[0.78em] align-[-0.08em] opacity-70', className)} />
 }
 
 // Brand mark for a known host, sized in `em` so it tracks the surrounding text
@@ -301,7 +301,7 @@ export function LinkBrandIcon({ className, href }: { className?: string; href: s
   const Icon = resolveBrandIcon(shortHostLabel(href))
 
   return Icon ? (
-    <Icon aria-hidden className={cn('mr-1 inline size-[0.85em] align-[-0.12em] opacity-80', className)} title="" />
+    <Icon aria-hidden className={cn('me-1 inline size-[0.85em] align-[-0.12em] opacity-80', className)} title="" />
   ) : null
 }
 

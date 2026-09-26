@@ -213,7 +213,7 @@ function CardFooter({ arc, task }: { arc: ArcState | null; task: KanbanTask }) {
           </span>
         </Tip>
       )}
-      <div className="ml-auto flex min-w-0 shrink items-center gap-2">
+      <div className="ms-auto flex min-w-0 shrink items-center gap-2">
         {typeof task.priority === 'number' && task.priority > 0 && <PriorityGlyph priority={task.priority} />}
         {task.progress && task.progress.total > 0 && (
           <Meta icon="checklist">
@@ -454,7 +454,7 @@ function Column({
         <span className="text-[0.625rem] tabular-nums text-(--ui-text-quaternary)">{column.tasks.length}</span>
         <button
           aria-label={k.collapse(label)}
-          className="ml-auto grid size-5 place-items-center rounded text-(--ui-text-tertiary) opacity-0 transition-opacity hover:bg-(--chrome-action-hover) hover:text-foreground focus-visible:opacity-100 group-hover/col:opacity-100"
+          className="ms-auto grid size-5 place-items-center rounded text-(--ui-text-tertiary) opacity-0 transition-opacity hover:bg-(--chrome-action-hover) hover:text-foreground focus-visible:opacity-100 group-hover/col:opacity-100"
           onClick={onToggle}
           type="button"
         >
@@ -679,7 +679,7 @@ function NewTaskDialog({
         <DialogHeader>
           <DialogTitle>{target ? k.newTaskIn(columnLabel(k, target)) : k.newTask}</DialogTitle>
         </DialogHeader>
-        <div className="flex max-h-[min(72vh,44rem)] flex-col gap-3 overflow-y-auto pr-0.5">
+        <div className="flex max-h-[min(72vh,44rem)] flex-col gap-3 overflow-y-auto pe-0.5">
           <Input
             autoFocus
             onChange={event => setTitle(event.target.value)}
@@ -787,7 +787,7 @@ function NewTaskDialog({
           {error && <span className="text-[0.75rem] text-destructive">{error}</span>}
         </div>
         <DialogFooter>
-          <div className="mr-auto flex items-center gap-1 text-[0.75rem] text-(--ui-text-tertiary)">
+          <div className="me-auto flex items-center gap-1 text-[0.75rem] text-(--ui-text-tertiary)">
             {estimate?.ok ? (
               <>
                 <Tip label={estimate.rationale || k.roughEstimate}>
@@ -888,7 +888,7 @@ function FilterMenu({
   const active = Boolean(assignee || tenant || archived)
   const lanesByProfile = useValue($lanesByProfile)
 
-  const check = (on: boolean) => (on ? <Codicon className="ml-auto" name="check" size="0.8rem" /> : null)
+  const check = (on: boolean) => (on ? <Codicon className="ms-auto" name="check" size="0.8rem" /> : null)
 
   return (
     <DropdownMenu>
@@ -1010,8 +1010,8 @@ function SelectionBar({
   return (
     <div className="pointer-events-none absolute inset-x-0 bottom-4 z-10 flex justify-center px-4">
       {/* Flat overlay: stroke + elevated surface do the separating, no shadow. */}
-      <div className="pointer-events-auto flex items-center gap-1 rounded-lg border border-(--ui-stroke-secondary) bg-(--ui-bg-elevated) py-1 pr-1 pl-3">
-        <span className="mr-1 text-xs tabular-nums text-(--ui-text-secondary)">{k.nSelected(selected.size)}</span>
+      <div className="pointer-events-auto flex items-center gap-1 rounded-lg border border-(--ui-stroke-secondary) bg-(--ui-bg-elevated) py-1 pe-1 ps-3">
+        <span className="me-1 text-xs tabular-nums text-(--ui-text-secondary)">{k.nSelected(selected.size)}</span>
 
         <DropdownMenu onOpenChange={open => setMenu(open ? 'move' : null)} open={menu === 'move'}>
           <DropdownMenuTrigger asChild>
@@ -1347,7 +1347,7 @@ export function KanbanBoardPage() {
           />
         )}
         <SearchField aria-label={k.filterCards} onChange={setSearch} placeholder={k.filterCards} value={search} />
-        <div className="ml-auto flex items-center gap-1">
+        <div className="ms-auto flex items-center gap-1">
           <Tip label={k.orchestrationSettings}>
             <Button
               aria-label={k.orchestrationSettings}

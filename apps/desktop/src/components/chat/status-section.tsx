@@ -38,7 +38,7 @@ export function StatusSection({
 
   return (
     <div data-slot="status-section">
-      <div className="status-section-header flex items-center gap-1 pr-1">
+      <div className="status-section-header flex items-center gap-1 pe-1">
         <button
           aria-expanded={!collapsed}
           className="status-section-trigger flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1 text-left text-xs font-normal text-muted-foreground/92 transition-colors hover:text-foreground/90"

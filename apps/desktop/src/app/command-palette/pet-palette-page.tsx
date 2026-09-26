@@ -138,7 +138,7 @@ export function PetPalettePage({ search, onGenerate }: PetPalettePageProps) {
                   {pet.installed ? ` · ${copy.installed}` : ''}
                 </span>
               </span>
-              <span className="ml-auto flex shrink-0 items-center text-[0.6875rem] text-muted-foreground">
+              <span className="ms-auto flex shrink-0 items-center text-[0.6875rem] text-muted-foreground">
                 {isBusy ? (
                   <Loader2 className="size-3 animate-spin" />
                 ) : isActive ? (

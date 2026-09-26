@@ -313,10 +313,10 @@ const MD_TAG_CLASSES = {
   h3: 'mb-2 mt-4 text-xl font-semibold leading-snug first:mt-0',
   h4: 'mb-2 mt-3 text-base font-semibold leading-snug first:mt-0',
   p: 'mb-4 leading-relaxed text-foreground last:mb-0',
-  ul: 'mb-4 list-disc pl-6 marker:text-muted-foreground/70 last:mb-0',
-  ol: 'mb-4 list-decimal pl-6 marker:text-muted-foreground/70 last:mb-0',
+  ul: 'mb-4 list-disc ps-6 marker:text-muted-foreground/70 last:mb-0',
+  ol: 'mb-4 list-decimal ps-6 marker:text-muted-foreground/70 last:mb-0',
   li: 'mt-1 leading-relaxed',
-  blockquote: 'mb-4 border-l-2 border-border pl-3 text-muted-foreground italic last:mb-0',
+  blockquote: 'mb-4 border-l-2 border-border ps-3 text-muted-foreground italic last:mb-0',
   pre: 'mb-4 overflow-hidden rounded-lg border border-border bg-card font-mono text-xs leading-relaxed last:mb-0 [&_pre]:m-0 [&_pre]:overflow-x-auto [&_pre]:bg-transparent! [&_pre]:p-3 [&_pre]:font-mono',
   hr: 'my-6 border-border',
   th: 'px-3 py-2 text-left text-sm font-semibold text-foreground',
@@ -698,7 +698,7 @@ export function SourceView({ filePath, language, text }: { filePath?: string; la
                 return (
                   <div
                     className={cn(
-                      'h-5 w-9 pr-2 leading-5 tabular-nums transition-colors',
+                      'h-5 w-9 pe-2 leading-5 tabular-nums transition-colors',
                       filePath && 'cursor-pointer',
                       selected
                         ? 'bg-amber-200/45 text-amber-900 dark:bg-amber-300/20 dark:text-amber-100'

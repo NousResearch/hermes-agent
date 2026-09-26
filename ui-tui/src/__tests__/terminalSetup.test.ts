@@ -31,10 +31,13 @@ describe('terminalSetup helpers', () => {
   })
 
   it('computes VS Code style config dirs cross-platform', () => {
-    expect(getVSCodeStyleConfigDir('Code', 'darwin', {} as NodeJS.ProcessEnv, '/home/me')).toBe(
+    // join() renders with the host OS separator; assert on a normalized form
+    // so the expectation holds on Windows runners too.
+    const norm = (p: null | string) => p?.split(/[\\/]/).join('/')
+    expect(norm(getVSCodeStyleConfigDir('Code', 'darwin', {} as NodeJS.ProcessEnv, '/home/me'))).toBe(
       '/home/me/Library/Application Support/Code/User'
     )
-    expect(getVSCodeStyleConfigDir('Code', 'linux', {} as NodeJS.ProcessEnv, '/home/me')).toBe(
+    expect(norm(getVSCodeStyleConfigDir('Code', 'linux', {} as NodeJS.ProcessEnv, '/home/me'))).toBe(
       '/home/me/.config/Code/User'
     )
     expect(

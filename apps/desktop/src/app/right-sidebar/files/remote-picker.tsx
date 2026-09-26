@@ -245,7 +245,7 @@ export function RemoteFolderPicker() {
                     <Codicon name={creating ? 'loading' : 'check'} size="0.875rem" spinning={creating} />
                   </Button>
                 </div>
-                {newFolderError && <div className="mt-1 pl-6 text-xs text-destructive">{newFolderError}</div>}
+                {newFolderError && <div className="mt-1 ps-6 text-xs text-destructive">{newFolderError}</div>}
               </div>
             )}
             {loading ? (

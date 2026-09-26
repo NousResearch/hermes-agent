@@ -62,11 +62,11 @@ export function DisclosureRow({
         )}
       </button>
       {action && (
-        <span className="ml-auto flex h-(--conversation-line-height) shrink-0 items-center self-start pl-1.5">
+        <span className="ms-auto flex h-(--conversation-line-height) shrink-0 items-center self-start ps-1.5">
           {action}
         </span>
       )}
-      {trailing && <span className="flex h-(--conversation-line-height) shrink-0 items-center pl-1.5">{trailing}</span>}
+      {trailing && <span className="flex h-(--conversation-line-height) shrink-0 items-center ps-1.5">{trailing}</span>}
     </div>
   )
 }

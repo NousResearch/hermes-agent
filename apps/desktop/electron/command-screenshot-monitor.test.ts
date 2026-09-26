@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { type SpawnOptions } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
+import { resolve } from 'node:path'
 
 import { test, vi } from 'vitest'
 
@@ -36,10 +37,12 @@ test('launches the unpacked helper without prompting and delivers only validated
     value => statuses.push(value)
   )
   assert.equal(spawn.mock.calls.length, 1)
+  // Expected helper path computed with the host path API: resolve() anchors the
+  // virtual /Applications path on the current drive on win32; what the test
+  // pins is the .asar → .asar.unpacked rewrite plus spawn args/options.
   assert.deepEqual(spawn.mock.calls[0], [
-    '/Applications/Hermes.app/Contents/Resources/app.asar.unpacked/dist/native/command-screenshot-monitor',
-    [],
-    { stdio: ['pipe', 'pipe', 'ignore'], shell: false, detached: false, windowsHide: true }
+    resolve('/Applications/Hermes.app/Contents/Resources/app.asar', '../app.asar.unpacked/dist/native/command-screenshot-monitor'),
+    [], { stdio: ['pipe', 'pipe', 'ignore'], shell: false, detached: false, windowsHide: true },
   ])
   child.stdout.write('{"type":"capture","windowId":2,"width":100,"height":200}\n')
   assert.deepEqual(captures, []) // No capture until readiness is established.
@@ -55,7 +58,7 @@ test('launches the unpacked helper without prompting and delivers only validated
   assert.equal(child.kill.mock.calls[0]?.[0], 'SIGTERM')
   assert.equal(child.stdout.listenerCount('data'), 0)
   assert.deepEqual(statuses.at(-1), { type: 'stopped' })
-  assert.equal(resolveCommandScreenshotMonitorPath('/tmp/dev'), '/tmp/dev/dist/native/command-screenshot-monitor')
+  assert.equal(resolveCommandScreenshotMonitorPath('/tmp/dev'), resolve('/tmp/dev', 'dist/native/command-screenshot-monitor'))
 })
 
 test('bounds startup and termination, preserves permission failures, and isolates restarts', () => {

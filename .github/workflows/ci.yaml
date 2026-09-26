@@ -189,6 +189,14 @@ jobs:
     if: ${{ needs.detect.outputs.python_prod == 'true' || needs.detect.outputs.frontend == 'true' }}
     uses: ./.github/workflows/e2e-desktop-core.yml
 
+  web-rtl-snapshots:
+    name: Web RTL Snapshots
+    needs: detect
+    # Frontend lane: visual RTL regression for the dashboard under locale=fa.
+    # Diffs never fail the PR — they surface as artifacts (see the workflow).
+    if: needs.detect.outputs.frontend == 'true'
+    uses: ./.github/workflows/web-rtl-snapshots.yml
+
   docs-site:
     name: Docs Site
     needs: detect

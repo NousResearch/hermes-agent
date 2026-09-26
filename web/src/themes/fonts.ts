@@ -95,6 +95,17 @@ export const FONT_CHOICES: FontChoice[] = [
     stack: `"DM Sans", ${SYSTEM_SANS}`,
     fontUrl: GF("DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700"),
   },
+  {
+    // Persian / Arabic script — the default webfont for RTL locales (fa, ar)
+    // so Persian text renders with proper letterforms instead of system
+    // fallbacks. System stacks render Persian acceptably, but Vazirmatn's
+    // humanist letterforms and full Persian glyph coverage read far better.
+    id: "vazirmatn",
+    label: "Vazirmatn (فارسی)",
+    category: "sans",
+    stack: `"Vazirmatn", ${SYSTEM_SANS}`,
+    fontUrl: GF("Vazirmatn:wght@400;500;600;700"),
+  },
 
   // ── Serif ─────────────────────────────────────────────────────────────
   {

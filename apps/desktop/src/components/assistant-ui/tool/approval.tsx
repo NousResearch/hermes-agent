@@ -330,7 +330,7 @@ const ApprovalCard: FC<ApprovalCardProps> = ({ request, total, position, stack }
         <Codicon name="terminal" size="0.875rem" />
         <span>{showsDescription ? copy.commandDetails : copy.command}</span>
         {total > 1 && (
-          <span className="ml-auto text-[0.6875rem] tabular-nums text-(--ui-text-tertiary)">
+          <span className="ms-auto text-[0.6875rem] tabular-nums text-(--ui-text-tertiary)">
             {position} / {total}
           </span>
         )}

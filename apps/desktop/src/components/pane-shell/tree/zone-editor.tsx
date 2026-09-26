@@ -587,7 +587,7 @@ export function ZoneEditor() {
           {t.common.cancel}
         </Button>
         {!treeExpressible && <span className="text-xs text-muted-foreground/80">{t.zones.notExpressible}</span>}
-        <span className="ml-auto text-xs text-muted-foreground/60">{t.zones.zoneCount(zones.length)}</span>
+        <span className="ms-auto text-xs text-muted-foreground/60">{t.zones.zoneCount(zones.length)}</span>
       </div>
     </div>
   )

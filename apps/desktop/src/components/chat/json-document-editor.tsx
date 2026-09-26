@@ -55,7 +55,7 @@ export function JsonDocumentEditor({
         {header ? (
           <span className="flex min-w-0 items-center gap-1.5 text-[0.68rem] text-(--ui-text-tertiary)">{header}</span>
         ) : null}
-        <div className="ml-auto flex items-center gap-1">
+        <div className="ms-auto flex items-center gap-1">
           <Tip label={t.common.formatJson}>
             <Button
               aria-label={t.common.formatJson}

@@ -16,6 +16,7 @@ import { Switch } from "@nous-research/ui/ui/components/switch";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { cn, themedBody } from "@/lib/utils";
+import { useI18n } from "@/i18n";
 
 interface Props {
   /** The toolset whose backends are being configured. */
@@ -35,6 +36,7 @@ interface Props {
  * post-setup install hook (npm/pip/binary) with a live log tail.
  */
 export function ToolsetConfigDrawer({ toolset, profile, onClose, onChanged }: Props) {
+  const { t } = useI18n();
   const { toast, showToast } = useToast();
   const [config, setConfig] = useState<ToolsetConfig | null>(null);
   const [loading, setLoading] = useState(true);
@@ -229,16 +231,16 @@ export function ToolsetConfigDrawer({ toolset, profile, onClose, onChanged }: Pr
         <Button
           ghost
           size="xs"
-          className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
+          className="absolute end-2 top-2 text-muted-foreground hover:text-foreground"
           onClick={onClose}
-          aria-label="Close"
+          aria-label={t.actions.close}
         >
           <X />
         </Button>
 
         {/* Header — toolset identity + enable toggle */}
         <header className="p-5 pb-3 border-b border-border">
-          <div className="flex items-center gap-3 pr-8">
+          <div className="flex items-center gap-3 pe-8">
             <span className="font-mondwest text-display text-base tracking-wider">
               {labelText}
             </span>
@@ -308,7 +310,7 @@ export function ToolsetConfigDrawer({ toolset, profile, onClose, onChanged }: Pr
                     </div>
                     {isActive ? (
                       <Badge tone="success" className="text-xs shrink-0">
-                        <Check className="h-3 w-3 mr-0.5" /> Selected
+                        <Check className="h-3 w-3 me-0.5" /> Selected
                       </Badge>
                     ) : (
                       <Button

@@ -824,7 +824,7 @@ function ClarifyToolSinglePending({
           ) : (
             <>
               {copy.continueLabel}
-              <span aria-hidden className="ml-0.5 text-[0.625rem] opacity-70">
+              <span aria-hidden className="ms-0.5 text-[0.625rem] opacity-70">
                 ⏎
               </span>
             </>
@@ -1218,7 +1218,7 @@ function ClarifyToolBatchPending({
           ) : (
             <>
               {copy.confirmAndContinueLabel}
-              <span aria-hidden className="ml-0.5 text-[0.625rem] opacity-70">
+              <span aria-hidden className="ms-0.5 text-[0.625rem] opacity-70">
                 ⏎
               </span>
             </>

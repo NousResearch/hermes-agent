@@ -223,7 +223,7 @@ export function StatusMenu({
             <DropdownMenuItem key={name} onSelect={() => onMove(name)}>
               <span className="size-2 rounded-full" style={{ backgroundColor: columnMeta(name).tone }} />
               {columnLabel(k, name)}
-              {name === status && <Codicon className="ml-auto" name="check" size="0.8rem" />}
+              {name === status && <Codicon className="ms-auto" name="check" size="0.8rem" />}
             </DropdownMenuItem>
           ))}
       </DropdownMenuContent>

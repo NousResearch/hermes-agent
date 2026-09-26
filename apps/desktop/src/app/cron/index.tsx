@@ -841,7 +841,7 @@ function CronJobDetail({ busy, c, job, onEdit, onOpenSession, onPauseResume, onT
                 {c.lastRunFailed} {lastErrorSummary(job.last_error)}
               </span>
             </div>
-            <div className="flex items-center gap-0.5 pl-4">
+            <div className="flex items-center gap-0.5 ps-4">
               <PanelAction disabled={busy} icon="edit" onClick={onEdit}>
                 {c.editJob}
               </PanelAction>

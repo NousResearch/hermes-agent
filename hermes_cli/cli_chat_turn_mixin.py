@@ -21,6 +21,17 @@ from typing import Optional
 from hermes_cli.cli_agent_setup_mixin import _retire_agent
 
 
+def _unstreamed_final_suffix(response: str, streamed: str, result: Optional[dict]) -> str:
+    """Return a canonical final suffix that the live CLI stream did not render."""
+    if not isinstance(response, str) or not isinstance(streamed, str) or not response or not streamed:
+        return ""
+    if result and any(result.get(key) for key in (
+        "failed", "partial", "interrupted", "response_previewed", "response_transformed",
+    )):
+        return ""
+    return response[len(streamed):] if response.startswith(streamed) else ""
+
+
 class CLIChatTurnMixin:
     """chat() and its per-turn phase helpers."""
 
@@ -484,6 +495,17 @@ class CLIChatTurnMixin:
             cleanup_stale_async_clients()
         except Exception:
             pass
+        # A stale writer may lose the live sink while its provider stream keeps
+        # assembling the canonical response. If the displayed text is an exact
+        # prefix, append only the missing tail before closing the box (#122575).
+        if turn.result:
+            missing_suffix = _unstreamed_final_suffix(
+                turn.result.get("final_response", ""),
+                getattr(self, "_streamed_text_this_segment", ""),
+                turn.result,
+            )
+            if missing_suffix:
+                self._stream_delta(missing_suffix)
         self._flush_stream()
         if turn.use_streaming_tts and turn.text_queue is not None:
             turn.text_queue.put(None)  # end-of-text sentinel

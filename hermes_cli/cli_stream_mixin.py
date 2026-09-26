@@ -448,9 +448,11 @@ class CLIStreamMixin:
             fill = w - 2 - HermesCLI._status_bar_display_width(label)
             _cprint(f"\n{_ACCENT}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
 
-        # Turn-level record of what actually reached the screen; survives _reset_stream_state at
-        # tool-call boundaries so an interrupted reply isn't re-rendered as a Panel (#65666).
+        # Turn-level record survives tool-call boundaries for interrupted-response dedup (#65666).
+        # Segment-level text resets at each boundary so final-response reconciliation compares only
+        # against the currently open response, not earlier interim/tool-loop prose (#122575).
         self._streamed_text_this_turn = getattr(self, "_streamed_text_this_turn", "") + text
+        self._streamed_text_this_segment = getattr(self, "_streamed_text_this_segment", "") + text
         self._stream_buf += text
         while "\n" in self._stream_buf:
             line, self._stream_buf = self._stream_buf.split("\n", 1)
@@ -535,6 +537,7 @@ class CLIStreamMixin:
         self._stream_table_buf = []
         self._in_stream_table = False
         self._stream_box_live = False
+        self._streamed_text_this_segment = ""
 
     def _slow_command_status(self, command: str) -> str:
         """Return a user-facing status message for slower slash commands."""

@@ -2936,7 +2936,8 @@ class _StreamingCall(StreamingWaitMonitor):
         )
 
     def _fire_first_delta(self):
-        if not self.first_delta_fired["done"] and self.on_first_delta:
+        if (not self.first_delta_fired["done"] and self.on_first_delta
+                and self._writer_still_current("Streaming")):
             self.first_delta_fired["done"] = True
             self._quiet(self.on_first_delta)
 
@@ -2957,14 +2958,15 @@ class _StreamingCall(StreamingWaitMonitor):
 
     def _emit_tool_started(self, name: str) -> None:
         self._fire_first_delta()
-        self.agent._fire_tool_gen_started(name)
+        if self._writer_still_current("Streaming"):
+            self.agent._fire_tool_gen_started(name)
 
     def _route_suppressed_text(self, text: str) -> None:
         """Tool-call turns suppress content streaming (no chatty preamble), but
         reasoning tags inside it must still reach the display: route through
         the delta callback for tag extraction (the CLI drops non-reasoning text
         once the stream box is closed)."""
-        if self.agent.stream_delta_callback:
+        if self.agent.stream_delta_callback and self._writer_still_current("Streaming"):
             self._quiet(lambda: (self.agent.stream_delta_callback(text), self.agent._record_streamed_assistant_text(text)))
 
     def _new_diag(self) -> dict:
@@ -3060,6 +3062,7 @@ class _StreamingCall(StreamingWaitMonitor):
         self.agent._stream_diag_capture_response(self.clients.diag, response)
         self.agent._check_openrouter_cache_status(response)
         self._writer_token = claim_stream_writer(self.agent)
+        self._writer_superseded_logged = False
         self._reabort_if_cancelled(response)
 
     def _reabort_if_cancelled(self, response: Any) -> None:
@@ -3097,21 +3100,29 @@ class _StreamingCall(StreamingWaitMonitor):
                 return True
         if not self._stream_attempt_is_active(stream_attempt_id):
             return False
-        if not self._writer_still_current("Streaming"):
-            return False
+        # Writer supersession only revokes the live sink. Keep consuming the
+        # provider stream so the canonical response still reaches its terminal
+        # frame; the sink callbacks below fence stale writers (#122575).
         # Stamp BEFORE Relay processes the chunk so the watchdog can't cancel
         # a live stream mid-interceptor.
         self.last_chunk_time["t"] = time.time()
         return True
 
     def _writer_still_current(self, label: str) -> bool:
-        """Single-writer fence: False (with a warning) once a newer stream claimed the writer slot."""
+        """True while this attempt owns the live delta sink.
+
+        Supersession fences presentation only. Provider consumption continues so
+        the response assembler cannot turn a complete upstream answer into a
+        locally truncated one (#122575).
+        """
         token = self._writer_token
         if token is None or stream_writer_is_current(self.agent, token):
             return True
-        logger.warning(
-            "%s attempt superseded by a newer stream; stopping consumption to preserve the "
-            "single-writer invariant (model=%s).", label, self.api_kwargs.get("model", "unknown"))
+        if not getattr(self, "_writer_superseded_logged", False):
+            self._writer_superseded_logged = True
+            logger.warning(
+                "%s attempt superseded by a newer stream; suppressing its live deltas while "
+                "consuming to completion (model=%s).", label, self.api_kwargs.get("model", "unknown"))
         return False
 
     def _call_chat_completions(self, stream_attempt_id: int):

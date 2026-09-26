@@ -25,8 +25,12 @@ from agent.vault_store import VaultItemMeta, normalize_origin
 logger = logging.getLogger(__name__)
 
 _TIMEOUT = 30.0
-_ENV_KEEP = ("PATH", "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "SystemRoot",
-             "TMPDIR", "TMP", "TEMP", "XDG_CONFIG_HOME", "BITWARDENCLI_APPDATA_DIR")
+_ENV_KEEP = (
+    "PATH", "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "SystemRoot",
+    "TMPDIR", "TMP", "TEMP", "XDG_CONFIG_HOME", "BITWARDENCLI_APPDATA_DIR",
+    "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE",
+)
+
 
 
 class BitwardenLoginBackend(LoginBackend):

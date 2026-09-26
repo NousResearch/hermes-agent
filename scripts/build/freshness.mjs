@@ -53,6 +53,7 @@ export function sourceHash(source, product) {
     return (!name.startsWith('scripts/') && parts.some(part => generated.has(part)))
       || (product === 'tui' && (parts.includes('__tests__') || /\.(test|spec)(-d)?\.[cm]?[jt]sx?$/.test(name)))
       || parts.some(part => part.startsWith('.dist-') || part.startsWith('.staging-') || part === '__pycache__')
+      || name.endsWith('.DS_Store')
       || name.endsWith('.tsbuildinfo') || name.endsWith('.pyc')
   })
 }

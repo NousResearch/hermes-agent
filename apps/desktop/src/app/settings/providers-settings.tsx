@@ -260,7 +260,10 @@ function ConnectedProviderRow({
 
   return (
     <div className="group grid grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-[6px] transition-colors hover:bg-(--ui-control-hover-background)">
-      <RowButton className="min-w-0 px-3 py-2.5 text-left" onClick={() => onSelect(provider)}>
+      <RowButton
+        className="min-w-0 px-3 py-2.5 text-left"
+        onClick={() => (terminalDisconnect ? onTerminalDisconnect(provider) : onSelect(provider))}
+      >
         <div className="flex min-w-0 items-center gap-2">
           <span className="truncate text-[length:var(--conversation-text-font-size)] font-semibold">{title}</span>
           <span className="inline-flex shrink-0 items-center gap-1 bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
@@ -276,7 +279,19 @@ function ConnectedProviderRow({
         )}
       </RowButton>
       <div className="flex items-center gap-1 pr-2">
-        <Trail className="size-4 text-muted-foreground transition group-hover:text-foreground" />
+        {terminalDisconnect ? (
+          <Button
+            aria-label={`${copy.disconnect} ${title} in terminal`}
+            onClick={() => onTerminalDisconnect(provider)}
+            size="icon-xs"
+            type="button"
+            variant="ghost"
+          >
+            <Terminal className="size-4" />
+          </Button>
+        ) : (
+          <Trail className="size-4 text-muted-foreground transition group-hover:text-foreground" />
+        )}
         {canDisconnect && (
           <Button
             aria-label={`${t.common.remove} ${title}`}
@@ -423,7 +438,7 @@ export function ProvidersSettings({
     runInTerminal(command)
     notify({
       kind: 'info',
-      title: t.settings.providers.removedTitle,
+      title: t.settings.providers.disconnect,
       message: t.settings.providers.removeTerminalRunning(name)
     })
   }
@@ -444,7 +459,14 @@ export function ProvidersSettings({
     setDisconnecting(provider.id)
 
     try {
-      await disconnectOAuthProvider(provider.id, scopeProfile)
+      const result = await disconnectOAuthProvider(provider.id, scopeProfile)
+
+      if (!result?.ok) {
+        notifyError(new Error('No stored credentials were removed'), t.settings.providers.failedRemove(name))
+
+        return
+      }
+
       notify({
         durationMs: 3_000,
         kind: 'success',

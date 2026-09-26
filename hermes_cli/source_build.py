@@ -19,7 +19,7 @@ def source_product_current(project_root: Path, product: str, out: Path) -> bool:
         result = subprocess.run(
             [node, str(project_root / "scripts/build/freshness.mjs"),
              "--source", str(project_root), "--product", product, "--out", str(out)],
-            cwd=project_root, env=env, capture_output=True, text=True, check=True,
+            cwd=project_root, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", check=True,
         )
         return result.stdout.strip() == "true"
     except (OSError, subprocess.SubprocessError):

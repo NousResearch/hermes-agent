@@ -362,6 +362,21 @@ describe('ModelSettings', () => {
     )
   })
 
+  it('keeps config-backed settings usable when live model metadata times out (#63214)', async () => {
+    getGlobalModelInfo.mockRejectedValueOnce(new Error('Model metadata request timed out'))
+
+    renderModelSettings()
+
+    // Auxiliary assignments are a config-file read: they must still render
+    // instead of the whole page waiting on the hung metadata probe.
+    expect((await screen.findAllByRole('button', { name: 'Set to main' })).length).toBeGreaterThan(0)
+    // The failure surfaces in the load banner rather than skeletons forever.
+    await waitFor(() => expect(screen.getByText('Model metadata request timed out')).toBeTruthy())
+    // The main-model selector still resolves from the config-backed auxiliary
+    // read, so the page is interactive, not just an error shell.
+    await waitFor(() => expect(screen.getAllByRole('combobox')[0].textContent).toContain('Nous'))
+  })
+
   it('carries the user-defined endpoint when an aux slot is set to a local main model', async () => {
     getGlobalModelOptions.mockResolvedValueOnce({
       providers: [

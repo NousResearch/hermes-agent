@@ -737,6 +737,7 @@ describe('PluginsTab catalog UX', () => {
     const card = screen
       .getAllByRole('article')
       .find(article => within(article).queryByRole('button', { name: 'demo-weather' }))!
+
     const toggle = within(card).getByRole('switch', { name: 'demo-weather' })
     expect(toggle.getAttribute('aria-checked')).toBe('true')
     fireEvent.click(toggle)

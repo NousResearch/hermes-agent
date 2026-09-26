@@ -183,10 +183,7 @@ interface PreservedRun {
   rows: ChatMessage[]
 }
 
-function mergeStoredAssistantErrors(
-  nextMessages: ChatMessage[],
-  currentMessages: ChatMessage[]
-): ChatMessage[] {
+function mergeStoredAssistantErrors(nextMessages: ChatMessage[], currentMessages: ChatMessage[]): ChatMessage[] {
   const localById = new Map(currentMessages.map(message => [message.id, message]))
 
   return nextMessages.map(message => {

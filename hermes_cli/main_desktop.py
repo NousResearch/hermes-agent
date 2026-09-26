@@ -555,7 +555,7 @@ def _desktop_macos_has_valid_real_signature(app: Path) -> bool:
         return False
     try:
         info = subprocess.run(
-            [codesign, "-dv", str(app)], check=False, capture_output=True, text=True)
+            [codesign, "-dv", str(app)], check=False, capture_output=True, text=True, encoding="utf-8", errors="replace")
         output = f"{info.stdout}\n{info.stderr}"
         if info.returncode != 0 or "TeamIdentifier=" not in output or "TeamIdentifier=not set" in output:
             return False
@@ -636,7 +636,7 @@ def _macos_legacy_adhoc_resign(codesign: str, app: Path) -> bool:
     prompt is recoverable, deletion is not)."""
     try:
         result = subprocess.run(
-            [codesign, "--force", "--deep", "--sign", "-", str(app)], check=False, capture_output=True, text=True
+            [codesign, "--force", "--deep", "--sign", "-", str(app)], check=False, capture_output=True, text=True, encoding="utf-8", errors="replace"
         )
         if result.returncode != 0:
             print(
@@ -644,7 +644,7 @@ def _macos_legacy_adhoc_resign(codesign: str, app: Path) -> bool:
                 "leaving safeStorage keychain item untouched)"
             )
             return False
-        if _codesign_verify(codesign, app, check=False, text=True).returncode != 0:
+        if _codesign_verify(codesign, app, check=False, text=True, encoding="utf-8", errors="replace").returncode != 0:
             print(
                 "  (warning: legacy ad-hoc re-sign did not pass strict verification; "
                 "leaving safeStorage keychain item untouched)"
@@ -713,7 +713,7 @@ def _macos_codesigning_identity_valid(security: str, identity: str) -> bool:
     shows untrusted certs codesign refuses. Idempotency probe + postcondition. Never raises."""
     try:
         result = subprocess.run(
-            [security, "find-identity", "-v", "-p", "codesigning"], capture_output=True, text=True, check=False,
+            [security, "find-identity", "-v", "-p", "codesigning"], capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
         )
     except Exception:
         return False
@@ -762,7 +762,7 @@ def _macos_create_signing_identity(
                     "-P", "hermeslocal",
                     "-T", codesign, "-T", "/usr/bin/codesign_allocate",
                 ],
-                capture_output=True, text=True, check=False)
+                capture_output=True, text=True, encoding="utf-8", errors="replace", check=False)
 
         _export_p12([])
         imported = _import_p12()
@@ -781,7 +781,7 @@ def _macos_create_signing_identity(
         # command exists to front-load.
         trusted = subprocess.run(
             [security, "add-trusted-cert", "-r", "trustRoot", "-p", "codeSign", "-k", keychain, str(crt)],
-            capture_output=True, text=True, check=False)
+            capture_output=True, text=True, encoding="utf-8", errors="replace", check=False)
         if trusted.returncode != 0:
             print(
                 "  (could not trust the certificate for code signing: "
@@ -1228,6 +1228,22 @@ def _promote_staged_desktop_app(
     return packaged_executable
 
 
+def _diagnose_esbuild_ignore_scripts(output: Optional[str]) -> None:
+    """Print an actionable hint when a desktop build failed because esbuild's platform
+    binary was never staged (`ignore-scripts=true` skips esbuild's postinstall, so the
+    ``@esbuild/<platform>`` optional dependency is absent) — #53082. Best-effort: only
+    adds context, never masks the original error."""
+    text = output or ""
+    if not ("@esbuild/" in text and "could not be found" in text) and "ignore-scripts" not in text:
+        return
+    print("  ⚠ This looks like esbuild's native binary is missing — commonly caused by")
+    print("    `ignore-scripts=true` in your npm config, which skips esbuild's postinstall")
+    print("    that stages the @esbuild/<platform> package.")
+    print("    Fix: run `npm config get ignore-scripts` — if true, either set it to false")
+    print("    (`npm config set ignore-scripts false`), then reinstall: `npm ci` in the repo root,")
+    print("    or stage the binary directly: `node node_modules/esbuild/install.js` in apps/desktop.")
+
+
 def build_prepared_desktop(desktop_dir: Path, *, source_mode: bool, npm: str, env: dict,
                            icons: Path | None = None) -> Optional[Path]:
     """Build prepared desktop sources, then publish the verified staged app."""
@@ -1264,6 +1280,9 @@ def build_prepared_desktop(desktop_dir: Path, *, source_mode: bool, npm: str, en
             _promote_staged_desktop_app(desktop_dir, staging_dir) if staging_dir is not None else None
         )
         return packaged_executable
+    except subprocess.CalledProcessError as exc:
+        _diagnose_esbuild_ignore_scripts(exc.output)
+        raise
     finally:
         if staging_dir is not None:
             _discard_desktop_staging(staging_dir)
@@ -1364,6 +1383,40 @@ def _packaged_desktop_launch_command(packaged_executable: Path) -> list[str]:
     return launch_command
 
 
+def _site_packages_install_kind(project_root: Path) -> Optional[str]:
+    """The package manager owning a non-editable install at *project_root*, or None.
+
+    A package-manager install (Homebrew, pip, distro packaging) places this
+    code in a ``site-packages``/``dist-packages`` tree. Such a tree ships no
+    ``apps/desktop`` source, so the build ladder below can never run — the
+    caller must not treat it like a broken checkout. A Homebrew formula lives
+    under a ``Cellar`` directory; any other site-packages owner is reported
+    generically as pip.
+    """
+    parts = Path(project_root).parts
+    if "site-packages" in parts or "dist-packages" in parts:
+        return "homebrew" if "Cellar" in parts else "pip"
+    return None
+
+
+def _launch_installed_macos_desktop_app() -> bool:
+    """Launch a separately installed ``/Applications/Hermes.app``, if present.
+
+    Returns True only when the app bundle exists and a detached launch was
+    started — the caller then exits without touching the build ladder.
+    """
+    if sys.platform != "darwin":
+        return False
+    executable = Path("/Applications/Hermes.app/Contents/MacOS/Hermes")
+    if not executable.is_file():
+        return False
+    from hermes_cli.bundled_app import launch_detached
+
+    pid = launch_detached([str(executable)], cwd=executable.parent)
+    print(f"→ Launched the installed Hermes Desktop app: {executable} (pid {pid})")
+    return True
+
+
 def cmd_gui(args: argparse.Namespace):
     """Build and launch the native Electron desktop GUI."""
     from hermes_cli.main import PROJECT_ROOT
@@ -1377,7 +1430,21 @@ def cmd_gui(args: argparse.Namespace):
 
     bundled = is_bundled_payload(PROJECT_ROOT)
     if not bundled and not (desktop_dir / "package.json").exists():
+        # A package-manager install (Homebrew, pip, ...) ships no desktop
+        # source tree, so building here is impossible by construction (#61056).
+        # Prefer the separately installed desktop app; otherwise explain the
+        # packaging shape instead of the generic missing-source error.
+        install_kind = _site_packages_install_kind(PROJECT_ROOT)
+        if install_kind is not None and _launch_installed_macos_desktop_app():
+            sys.exit(0)
         print(f"Desktop GUI source not found at: {desktop_dir}")
+        if install_kind == "homebrew":
+            print(
+                "  This Hermes came from Homebrew, which does not ship the desktop app's\n"
+                "  source tree, so it cannot be built from this install.\n"
+                "  Install the desktop app from https://hermes-agent.nousresearch.com,\n"
+                "  or run `hermes desktop` from a source checkout."
+            )
         sys.exit(1)
 
     with contextlib.suppress(Exception):
@@ -1482,10 +1549,60 @@ def cmd_gui(args: argparse.Namespace):
     if deferred_entry is not None:
         env = deferred_entry.child_env(env)
         pass_fds = deferred_entry.pass_fds
-    with desktop_console_output(source_mode=source_mode) as streams:
-        launch_result = subprocess.run(
-            launch_command, cwd=desktop_dir, env=env, check=False, pass_fds=pass_fds, **streams
+    if not source_mode and sys.platform == "win32":
+        # Windows: detach the packaged Desktop from the parent console + process
+        # group, then return immediately (#58275). A console-inheriting
+        # subprocess.run dies with the launching shell (CTRL_CLOSE_EVENT fans
+        # out to the process group) and floods the parent terminal — under
+        # cp936, mojibake — with Electron/Node stdout. Mirrors the bundled
+        # launcher (_launch_bundled_desktop) and gateway_windows._spawn_detached.
+        # macOS/Linux keep the foreground run below: those launches are
+        # expected to stay attached to the terminal, and the desktop_console
+        # drain is a Windows-only concern.
+        from hermes_cli._subprocess_compat import (
+            windows_detach_flags,
+            windows_detach_flags_without_breakaway,
         )
+
+        popen_kwargs = dict(
+            cwd=desktop_dir,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+        )
+        try:
+            subprocess.Popen(launch_command, creationflags=windows_detach_flags(), **popen_kwargs)
+        except OSError as exc:
+            # Only recover from a denied job breakaway (the parent's job object
+            # lacks JOB_OBJECT_LIMIT_BREAKAWAY_OK), which surfaces as
+            # ERROR_ACCESS_DENIED (winerror == 5). Re-raise every other spawn
+            # failure (bad argv/env, missing exe) so it stays a clear, single
+            # error instead of being masked by a doomed second attempt.
+            if getattr(exc, "winerror", None) != 5:
+                raise
+            subprocess.Popen(
+                launch_command,
+                creationflags=windows_detach_flags_without_breakaway(),
+                **popen_kwargs,
+            )
+        if deferred_entry is not None:
+            deferred_entry.finish()
+        desktop_launch_notice("✓ Hermes Desktop launched in a detached window; you can close this shell.")
+        sys.exit(0)
+    with desktop_console_output(source_mode=source_mode) as streams:
+        try:
+            launch_result = subprocess.run(
+                launch_command, cwd=desktop_dir, env=env, check=False, pass_fds=pass_fds, **streams
+            )
+        except KeyboardInterrupt:
+            # Ctrl-C in the terminal the launcher is attached to is the user
+            # closing the Desktop, not a launcher crash. Exit cleanly instead
+            # of dumping a KeyboardInterrupt traceback from subprocess.run
+            # (#59848).
+            print("\n✓ Hermes Desktop closed.")
+            sys.exit(0)
     if deferred_entry is not None:
         deferred_entry.finish()
     sys.exit(launch_result.returncode)

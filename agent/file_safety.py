@@ -255,6 +255,15 @@ def _classify_write_denial(path: str) -> Optional[str]:
         return "nt_namespace"
     homes, resolved = _homes_and_resolved(path)
 
+    # The runtime's own interpreter/venv is never agent-writable (an overwrite
+    # bricks the next start exactly like a delete, #58748) — and this must fire
+    # BEFORE the approval-gated allow so ~/.ssh-style gating cannot re-open it.
+    from agent.runtime_self_protection import is_protected_path
+
+    runtime_hit = is_protected_path(path)
+    if runtime_hit:
+        return "credential"
+
     # Approval-gated paths are allowed at this layer so interactive tools can
     # prompt; checked first so the ``.ssh/`` prefix deny doesn't swallow them.
     if any(resolved in build_write_approval_paths(home) for home in homes):

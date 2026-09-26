@@ -79,6 +79,7 @@ function ScopedSkillsTab({
     if (mutationBusy.current || installedPending || installedError || targets.length === 0) {
       return
     }
+
     mutationBusy.current = true
     setBusy(true)
     let done = 0
@@ -90,8 +91,10 @@ function ScopedSkillsTab({
         if (!mounted.current) {
           break
         }
+
         const previous =
           queryClient.getQueryData<SkillInfo[]>(skillsQueryKey(profile))?.find(skill => skill.name === row.name) ?? row
+
         setSkills(current => current?.map(skill => (skill.name === row.name ? { ...skill, enabled } : skill)))
 
         try {
@@ -147,6 +150,7 @@ function ScopedSkillsTab({
     if (saving.current || skillEditor?.name === name) {
       return
     }
+
     const request = ++editorRequest.current
 
     try {
@@ -155,6 +159,7 @@ function ScopedSkillsTab({
       if (!mounted.current || request !== editorRequest.current) {
         return
       }
+
       setSkillEditor({ name })
       setSkillDraft(node.content)
     } catch (err) {
@@ -173,6 +178,7 @@ function ScopedSkillsTab({
     if (!skillEditor || saving.current) {
       return
     }
+
     const editor = skillEditor
     const request = editorRequest.current
     saving.current = true
@@ -184,6 +190,7 @@ function ScopedSkillsTab({
       if (!result.ok) {
         throw new Error(result.message)
       }
+
       void queryClient.invalidateQueries({ queryKey: ['skill-content', editor.name, profileScopeKey(profile)] })
       void queryClient.invalidateQueries({ queryKey: skillsQueryKey(profile), exact: true })
       invalidateSlashCompletions()
@@ -191,11 +198,13 @@ function ScopedSkillsTab({
       if (!mounted.current) {
         return
       }
+
       notify({ kind: 'success', title: t.skills.skillUpdated, message: t.skills.appliesToNewSessions(editor.name) })
 
       if (request === editorRequest.current) {
         setSkillEditor(null)
       }
+
       onRefresh()
     } catch (err) {
       if (mounted.current) {

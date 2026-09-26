@@ -1098,9 +1098,10 @@ class LlamaCppVulkan(LlamaCpp):
 class LlamaCppHip(LlamaCpp):
     name = "llamacpp-hip"
     backend = "hip"
+    # Upstream renamed the ROCm archives to 10.0 at b10767 (cff184438e).
     assets = {
-        "win32-x64": "win-rocm-7.14-x64",
-        "linux-x64": "ubuntu-rocm-7.14-x64",
+        "win32-x64": "win-rocm-10.0-x64",
+        "linux-x64": "ubuntu-rocm-10.0-x64",
     }
 
 

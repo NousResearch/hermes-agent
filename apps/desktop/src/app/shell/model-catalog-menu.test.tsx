@@ -99,6 +99,49 @@ describe('the current row effort', () => {
   })
 })
 
+describe('the reasoning-effort badge (#51833)', () => {
+  it('renders the effort as its own bordered chip beside the name, never inside it', async () => {
+    renderMenu({ effort: 'high', model: 'gemini-2.5-flash', provider: 'google' })
+
+    // The effort chip renders exactly "High" in its own element…
+    const badge = await screen.findByText('High')
+
+    expect(badge.textContent).toBe('High')
+    expect(badge.className).toContain('border')
+    expect(badge.className).toContain('rounded-sm')
+
+    // …as a SIBLING of the truncating model-name span, so it can never read as
+    // part of a differently-named model.
+    const nameSpan = badge.previousElementSibling
+
+    expect(nameSpan?.className).toContain('truncate')
+    expect(nameSpan?.contains(badge)).toBe(false)
+    expect(nameSpan?.textContent?.toLowerCase()).toContain('gemini 2.5 flash')
+  })
+
+  it('drops the effort badge entirely when the model has no reasoning support', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          name: 'Google',
+          slug: 'google',
+          models: ['gemini-2.5-flash'],
+          capabilities: { 'gemini-2.5-flash': { fast: false, reasoning: false } }
+        }
+      ]
+    })
+
+    renderMenu({ effort: 'high', model: 'gemini-2.5-flash', provider: 'google' })
+
+    await screen.findByText(/Gemini 2\.5 Flash/i)
+
+    await waitFor(() => {
+      expect(screen.queryByText('High')).toBeNull()
+      expect(screen.queryByText('Med')).toBeNull()
+    })
+  })
+})
+
 // A minimal controller — these tests are about the CATALOG's own behaviour
 // (what it lists, what it offers), not about what any host does with a pick.
 function renderMenu(current: Partial<ModelMenuController['current']> = {}) {

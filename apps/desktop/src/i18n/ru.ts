@@ -245,6 +245,10 @@ export const ru = defineLocale({
     backendOutOfDateTitle: 'Устаревший бэкенд',
     backendOutOfDateMessage:
       'Ваш бэкенд Hermes старше этой сборки приложения и может работать некорректно. Обновите их, чтобы они совпали.',
+    desktopOutOfDateTitle: 'Устаревшее приложение',
+    desktopOutOfDateMessage:
+      'Это приложение Hermes старше подключённого бэкенда и может работать некорректно. Обновите приложение, чтобы они совпали.',
+    updateDesktopApp: 'Обновить приложение',
     installMethodUnsupportedTitle: 'Неподдерживаемый способ установки',
     updateHermes: 'Обновить Hermes',
     updateReadyTitle: 'Обновление готово',
@@ -390,6 +394,8 @@ export const ru = defineLocale({
       'session.focusSearch': 'Поиск по сеансам',
       'session.togglePin': 'Закрепить / открепить текущий сеанс',
       'session.archive': 'В архив текущий сеанс',
+      'conversation.scrollPageUp': 'Прокрутить диалог на страницу вверх',
+      'conversation.scrollPageDown': 'Прокрутить диалог на страницу вниз',
       'workspace.newWorktree': 'Новый worktree',
       'workspace.openFolder': 'Открыть папку как проект',
       'composer.focus': 'Сфокусировать композер',
@@ -3172,7 +3178,8 @@ export const ru = defineLocale({
       copyFailure: 'Не удалось скопировать критерий в буфер обмена',
       continuationFailed: 'Не удалось отправить продолжение цели',
       continuationQueued: 'Цель возобновлена — продолжение поставлено в очередь до конца текущего хода',
-      continuationBusy: 'Цель возобновлена — сессия занята; сначала остановите текущий ответ (кнопка Stop или Esc), чтобы продолжить',
+      continuationBusy:
+        'Цель возобновлена — сессия занята; сначала остановите текущий ответ (кнопка Stop или Esc), чтобы продолжить',
       controlUnavailable: msg => `Управление сессией недоступно: ${msg}`,
       dismissError: 'Скрыть ошибку',
       add: 'Добавить'
@@ -3227,7 +3234,8 @@ export const ru = defineLocale({
   },
   updates: {
     discontinuedTitle: 'Эта сборка Hermes больше не поддерживается',
-    discontinuedBody: 'Эта сборка Hermes больше не поддерживается и может перестать работать — удалите её. Ваши данные останутся на диске.',
+    discontinuedBody:
+      'Эта сборка Hermes больше не поддерживается и может перестать работать — удалите её. Ваши данные останутся на диске.',
     channels: { stable: 'Стабильный', canary: 'Тестовый' },
     bundleSwapPending: 'Перезапустите, чтобы завершить обновление',
     bundleSwapPendingDesc:
@@ -3267,9 +3275,12 @@ export const ru = defineLocale({
     maybeLater: 'Возможно позже',
     moreChanges: count => `+ ещё ${count} ${RU_NOUN(count, 'изменение', 'изменения', 'изменений')} включено.`,
     manualTitle: 'Обновление из терминала',
+    manualUnavailableTitle: 'Обновление здесь недоступно',
     manualBody:
       'Hermes установлен из командной строки, поэтому обновления тоже выполняются там. Вставьте это в терминал:',
     manualPickedUp: 'Hermes подхватит новую версию при следующем запуске.',
+    manualBodyBackend: 'Бэкенд Hermes управляется вне этого приложения. Выполните это на сервере, где он размещён:',
+    manualPickedUpBackend: 'Бэкенд загрузит новую версию после завершения обновления.',
     guiSkewTitle: 'Обновите desktop-приложение',
     guiSkewBody:
       'Бэкенд обновлён, но пакет этого desktop-приложения не изменился. Обновите или переустановите desktop-приложение Hermes (ваш AppImage / .deb / .rpm), чтобы версии совпали.',

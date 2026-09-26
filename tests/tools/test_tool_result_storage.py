@@ -99,13 +99,13 @@ class TestWriteToSandbox:
         [
             ("pipe", 512, False),      # short write: bytes lost
             ("pipe", 171, False),      # pipe backends must be exact
-            ("heredoc", 171, True),    # heredoc appends exactly one newline
+            ("heredoc", 171, False),   # heredoc stdin is byte-exact too; a +1 is a loss, not the old newline
             ("host", 3, False),        # host spillover: os.stat says only 3 bytes landed
             ("host", None, True),      # host spillover: real write, real stat
         ],
     )
     def test_size_probe_decides_lossless(self, stdin_mode, probed, ok):
-        """An archive that is not byte-exact (modulo the heredoc newline) is discarded — never
+        """An archive that is not byte-exact is discarded — never
         referenced to the model (port of lobehub/lobehub#18258). Multibyte content pins the
         comparison to UTF-8 bytes (170 here, 130 chars), on both the sandbox and host paths."""
         import os

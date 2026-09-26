@@ -22,10 +22,21 @@ def _normalize_completion_path(path_part: str) -> str:
 
 def _completion_cwd(params: dict | None = None) -> str:
     params = params or {}
+    # Provenance for the client-sent ``cwd`` (#52589): the desktop seeds a new chat's cwd
+    # from its app-global workspace (the launch profile's configured directory or the
+    # project scope) when the user did NOT pick one. That inherited default must NOT
+    # override a NAMED profile's own ``terminal.cwd`` — only a deliberate per-session
+    # workspace pick (``cwd_explicit``) wins over the profile config. Path equality
+    # cannot tell the two apart, so the desktop ships the flag alongside the path.
+    client_cwd = params.get("cwd")
+    if not params.get("cwd_explicit") and client_cwd:
+        profile_cwd = _profile_configured_cwd(_profile_home(params.get("profile")))
+        if profile_cwd:
+            return profile_cwd
     # A session bound to another profile resolves its workspace from THAT profile's config before the launch profile's
     # env var; the dashboard's in-memory gateway does NOT inherit the PTY child's bridged TERMINAL_CWD, so a configured
     # terminal.cwd is read directly.
-    raw = (params.get("cwd") or _sessions.get(params.get("session_id") or "", {}).get("cwd")
+    raw = (client_cwd or _sessions.get(params.get("session_id") or "", {}).get("cwd")
            or _profile_configured_cwd(_profile_home(params.get("profile"))) or _launch_configured_cwd()
            or os.environ.get("TERMINAL_CWD") or os.getcwd())
     with contextlib.suppress(Exception):
@@ -345,6 +356,33 @@ def _persist_branch_seed(session: dict) -> None:
             _workdir_reraise_disk_full(exc, "branch seed persist failed")
 
 
+def _write_submit_user_row(session: dict, text: Any, display_kind: str | None) -> dict | None:
+    """Write the submitted user turn to the transcript and RETURN the durable dict (stamped
+    ``_DB_PERSISTED_MARKER``/``_row_id``) WITHOUT slotting it on the session. The write half of
+    :func:`_persist_submit_user_row`, shared by the busy-queue accept (which attaches the dict to
+    the queue envelope, never the shared session slot a possibly-still-staged in-flight turn owns).
+    Returns None when nothing was written (no key / non-text / store unavailable / failed write)."""
+    key = session.get("session_key")
+    if not key or not isinstance(text, str) or not text.strip():
+        return None
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+    from agent.message_metadata import stamp_message_timestamp
+    staged = stamp_message_timestamp({"role": "user", "content": text})
+    if display_kind:
+        staged["display_kind"] = display_kind
+    with _session_db(session) as db:
+        if db is None:
+            return None
+        try:
+            staged["_row_id"] = db.append_message(
+                key, "user", content=text, display_kind=display_kind, timestamp=staged["timestamp"])
+        except Exception as exc:
+            _workdir_reraise_disk_full(exc, "submit-time user row persist failed")
+            return None
+    staged[_DB_PERSISTED_MARKER] = True
+    return staged
+
+
 def _persist_submit_user_row(session: dict, text: Any, display_kind: str | None) -> None:
     """Write the submitted user turn at send time, before the agent build and turn: the agent's own
     crash persist only runs once the build finished, so quitting a frozen app during a slow first build
@@ -353,25 +391,8 @@ def _persist_submit_user_row(session: dict, text: Any, display_kind: str | None)
     ``_stage_turn_user_message`` and the flush writes no second row. A failed write stages nothing:
     the turn's crash persist then writes the row as before."""
     session.pop("_submit_user_row", None)  # a failed/unsupported write must not acknowledge an older send
-    key = session.get("session_key")
-    if not key or not isinstance(text, str) or not text.strip():
-        return
-    from agent.context_compressor import _DB_PERSISTED_MARKER
-    from agent.message_metadata import stamp_message_timestamp
-    staged = stamp_message_timestamp({"role": "user", "content": text})
-    if display_kind:
-        staged["display_kind"] = display_kind
-    with _session_db(session) as db:
-        if db is None:
-            return
-        try:
-            staged["_row_id"] = db.append_message(
-                key, "user", content=text, display_kind=display_kind, timestamp=staged["timestamp"])
-        except Exception as exc:
-            _workdir_reraise_disk_full(exc, "submit-time user row persist failed")
-            return
-    staged[_DB_PERSISTED_MARKER] = True
-    session["_submit_user_row"] = staged
+    if (staged := _write_submit_user_row(session, text, display_kind)) is not None:
+        session["_submit_user_row"] = staged
 
 
 def _adopt_submit_user_row(session: dict, agent, persist_user_message: Any, text: Any) -> None:

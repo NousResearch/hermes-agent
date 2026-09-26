@@ -323,7 +323,17 @@ async def test_post_turn_watch_drain_all_injects_from_queued_event_origin(monkey
 
 
 @pytest.mark.asyncio
-async def test_inject_watch_notification_carries_message_id_reply_anchor(monkeypatch, tmp_path):
+async def test_inject_watch_notification_drops_stale_trigger_reply_anchor(monkeypatch, tmp_path):
+    """Regression for #52694: the synthetic watch event must not reuse the triggering
+    message id as its reply anchor.
+
+    The id names the message that STARTED the process; by the time the process exits the
+    user has often moved on, and a reply quoting that id answers a stale message (a finished
+    background job visibly replying to an old Discord DM message from another topic).
+    Routing stays on the persisted origin — Telegram DM-topic lanes route anchor-less
+    synthetic sends through the topic's message_thread_id (#87051) — and the original id
+    survives only as event metadata for debugging.
+    """
     from gateway.session import SessionSource
 
     runner = _build_runner(monkeypatch, tmp_path, "all")
@@ -336,6 +346,7 @@ async def test_inject_watch_notification_carries_message_id_reply_anchor(monkeyp
             thread_id="24296",
             user_id="1",
             user_name="Fabio",
+            message_id="777",  # persisted origin: an equally stale triggering id
         )
     )
 
@@ -349,8 +360,17 @@ async def test_inject_watch_notification_carries_message_id_reply_anchor(monkeyp
 
     adapter.handle_message.assert_awaited_once()
     synth_event = adapter.handle_message.await_args.args[0]
-    assert synth_event.message_id == "777"
+    assert synth_event.internal is True
+    # No stale anchor on the event OR the restored origin it routes through.
+    assert synth_event.message_id is None
+    assert synth_event.source.message_id is None
+    # Routing provenance is untouched: the notification still lands in the origin topic.
     assert synth_event.source.thread_id == "24296"
+    # The derived final-reply anchor is empty on every platform branch.
+    from gateway.platforms.base import _reply_anchor_for_event
+    assert _reply_anchor_for_event(synth_event) is None
+    # The original id survives for debugging only.
+    assert synth_event.metadata["original_trigger_message_id"] == "777"
 
 
 @pytest.mark.asyncio

@@ -208,7 +208,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "minimax-oauth": ["MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.7-highspeed"],
     "minimax-cn": list(_MINIMAX_MODELS),
     "anthropic": [
-        "claude-fable-5.1", "claude-fable-5", "claude-opus-5", "claude-sonnet-5",
+        "claude-fable-5.1", "claude-fable-5", "claude-opus-5-5", "claude-opus-5", "claude-sonnet-5",
         "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6",
         "claude-sonnet-4-6", "claude-opus-4-5-20251101", "claude-sonnet-4-5-20250929",
         "claude-opus-4-20250514", "claude-sonnet-4-20250514", "claude-haiku-4-5-20251001",
@@ -272,7 +272,9 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     # Static fallback when live discovery (ListFoundationModels + ListInferenceProfiles) is
     # unavailable. Inference-profile IDs (us.*) because most models require them.
     "bedrock": [
-        "us.anthropic.claude-sonnet-5", "us.anthropic.claude-sonnet-4-6", "us.anthropic.claude-opus-4-6-v1",
+        # [0] is the provider default (get_default_model_for_provider) — keep the cheaper Sonnet there.
+        "us.anthropic.claude-sonnet-5", "us.anthropic.claude-opus-5-5", "us.anthropic.claude-sonnet-4-6",
+        "us.anthropic.claude-opus-4-6-v1",
         "us.anthropic.claude-haiku-4-5-20251001-v1:0", "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
         "openai.gpt-5.5", "openai.gpt-5.6-sol", "openai.gpt-5.6-terra", "openai.gpt-5.6-luna",
         "us.amazon.nova-pro-v1:0", "us.amazon.nova-lite-v1:0", "us.amazon.nova-micro-v1:0", "deepseek.v3.2",
@@ -500,6 +502,11 @@ _PROVIDER_ALIASES = dict((
     ("lm_studio", "lmstudio"), ("chatgpt", "openai-codex"), ("chatgpt-codex", "openai-codex"),
     ("ollama", "custom"),  # bare "ollama" = local; use "ollama-cloud" for cloud
     ("ollama_cloud", "ollama-cloud"),
+    # Local OpenAI-compatible servers route through the generic "custom" provider
+    # (parity with hermes_cli.auth and hermes_cli.providers). Issue #62213. The llamacpp
+    # aliases stay unmapped: they are the managed local runtime's picker id, and the model
+    # validator must reach its staged-library branch before the custom one.
+    ("local", "custom"), ("vllm", "custom"),
 ))
 
 

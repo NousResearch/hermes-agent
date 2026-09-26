@@ -154,6 +154,8 @@ user: next message
 
 Failed turns still surface as errors; Hermes does not hide failures just because the text resembles a silence token.
 
+On a message from a person, a bare silence token is replaced by a short notice, because a message that needed a reply must not vanish. Internal wakes such as background-process notifications may stay silent, and so may a message the platform adapter reports as not addressed to the bot. Slack reports this for messages that open by @mentioning someone else and for unmentioned top-level messages that start a new thread in a free-response channel; other platforms always get the notice.
+
 ## Quick Setup
 
 The easiest way to configure messaging platforms is the interactive wizard:

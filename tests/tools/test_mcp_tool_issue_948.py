@@ -108,6 +108,87 @@ def test_resolve_stdio_command_falls_back_to_usr_local_bin():
     assert env["PATH"].split(os.pathsep)[0] == os.path.dirname(target)
 
 
+# ---------------------------------------------------------------------------
+# #37589: Desktop/launchd processes inherit a minimal PATH on macOS that does
+# not include ~/.local/bin, /opt/homebrew/bin, or /usr/local/bin. The resolver
+# must locate bare uv/uvx (the dominant Python MCP-server runtime) under those
+# locations instead of failing with ENOENT at execvp.
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_stdio_command_finds_uvx_in_user_local_bin(tmp_path, monkeypatch):
+    """uv's official installer drops uv/uvx at ``~/.local/bin/uvx`` on macOS and
+    Linux. The resolver must pick it up when the GUI PATH doesn't include that
+    directory (#37589)."""
+    local_bin = tmp_path / ".local" / "bin"
+    local_bin.mkdir(parents=True)
+    uvx_path = local_bin / "uvx"
+    uvx_path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    uvx_path.chmod(0o755)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    with patch("tools.mcp_tool_config.shutil.which", return_value=None):
+        command, env = _resolve_stdio_command("uvx", {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin"})
+
+    assert command == str(uvx_path)
+    # The resolver prepended the chosen bin so uvx's sibling `uv` and its
+    # shebang-resolved children resolve in the same directory.
+    assert env["PATH"].split(os.pathsep)[0] == str(local_bin)
+
+
+def test_resolve_stdio_command_uv_fallback_order(tmp_path, monkeypatch):
+    """Bare uv/uvx probe the well-known install dirs in uv's install order:
+    managed ``<HERMES_HOME>/bin`` first, then ``~/.local/bin``, then Homebrew
+    (Apple Silicon, then Intel/from-source)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("HOME", str(tmp_path / "user"))
+    monkeypatch.setattr("tools.mcp_tool_config.os.path.expanduser", lambda p: p.replace("~", str(tmp_path / "user")) if p.startswith("~") else p)
+
+    candidates = [
+        os.path.join(str(tmp_path / "hermes"), "bin", "uvx"),
+        os.path.join(str(tmp_path / "user"), ".local", "bin", "uvx"),
+        os.path.join(os.sep, "opt", "homebrew", "bin", "uvx"),
+        os.path.join(os.sep, "usr", "local", "bin", "uvx"),
+    ]
+    seen = []
+
+    def _fake_access(path, mode):
+        assert mode == os.X_OK
+        seen.append(path)
+        return path == candidates[-1]  # only /usr/local/bin exists
+
+    with patch("tools.mcp_tool_config.shutil.which", return_value=None), \
+         patch("tools.mcp_tool_config.os.path.isfile", return_value=True), \
+         patch("tools.mcp_tool_config.os.access", side_effect=_fake_access):
+        command, _env = _resolve_stdio_command("uvx", {"PATH": "/usr/bin"})
+
+    assert seen == candidates  # every dir probed, in install order
+    assert command == candidates[-1]
+
+
+def test_resolve_stdio_command_uvx_unchanged_when_already_on_path():
+    """A shutil.which hit still takes precedence — don't double-resolve a working
+    bare command on the child's own PATH into something else."""
+    resolved_path = "/some/custom/bin/uvx"
+    with patch("tools.mcp_tool_config.shutil.which", return_value=resolved_path):
+        command, _env = _resolve_stdio_command("uvx", {"PATH": "/usr/bin"})
+
+    assert command == resolved_path
+
+
+def test_resolve_stdio_command_skips_unknown_commands():
+    """Bare command names outside the npx/npm/node/uv/uvx launcher set must NOT
+    be matched against the fallback paths — that would rewrite ``command:
+    my-tool`` into a coincidentally-named file at /opt/homebrew/bin/my-tool."""
+    with patch("tools.mcp_tool_config.shutil.which", return_value=None), \
+         patch("tools.mcp_tool_config.os.path.isfile", return_value=True), \
+         patch("tools.mcp_tool_config.os.access", return_value=True):
+        command, _env = _resolve_stdio_command("my-tool", {"PATH": "/usr/bin:/bin"})
+
+    assert command == "my-tool"
+
+
 def test_resolve_stdio_command_absent_path_is_a_miss(tmp_path, monkeypatch):
     """A server env without PATH must not resolve commands against the PARENT's PATH:
     the child would be spawned without it and the lookup would pass on an env the

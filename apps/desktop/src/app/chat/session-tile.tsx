@@ -131,7 +131,10 @@ export function tileBackendIdentityChanged(
 
 export function unbindTilesForBackendIdentityChange<
   T extends { error?: string; ownerRoute?: { connectionId?: string }; runtimeId?: string }
->(tiles: readonly T[], activeConnection: { connectionId?: string | null; mode?: string | null } | null | undefined): T[] {
+>(
+  tiles: readonly T[],
+  activeConnection: { connectionId?: string | null; mode?: string | null } | null | undefined
+): T[] {
   let changed = false
 
   const next = tiles.map(tile => {
@@ -526,6 +529,7 @@ export function SessionTilePane({ storedSessionId }: { storedSessionId: string }
         const durableSession = await resolveStoredSession(storedSessionId, ownerRoute).catch(() => undefined)
         const current = $sessionTiles.get().find(candidate => candidate.storedSessionId === storedSessionId)
         const identityChanged = tileBackendIdentityChanged(ownerRoute?.connectionId, $connection.get())
+
         const error = sessionTileResumeFailure(
           message,
           Boolean(durableSession),

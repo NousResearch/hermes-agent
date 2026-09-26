@@ -492,6 +492,10 @@ export const esOverrides = {
     backendOutOfDateTitle: 'Backend desactualizado',
     backendOutOfDateMessage:
       'Tu backend de Hermes es más antiguo que esta compilación de escritorio y puede no funcionar correctamente. Actualízalo para alinearlos.',
+    desktopOutOfDateTitle: 'Aplicación de Hermes desactualizada',
+    desktopOutOfDateMessage:
+      'Esta aplicación de Hermes es más antigua que el backend al que está conectada y puede no funcionar correctamente. Actualiza la aplicación para alinearlos.',
+    updateDesktopApp: 'Actualizar aplicación',
     installMethodUnsupportedTitle: 'Método de instalación no compatible',
     updateHermes: 'Actualizar Hermes',
     updateReadyTitle: 'Actualización lista',
@@ -4435,7 +4439,8 @@ export const esOverrides = {
       copyFailure: 'No se pudo copiar el criterio al portapapeles',
       continuationFailed: 'No se pudo enviar la continuación del objetivo',
       continuationQueued: 'Objetivo reanudado: la continuación queda en cola hasta que termine el turno actual',
-      continuationBusy: 'Objetivo reanudado: la sesión está ocupada; detén primero la respuesta actual (botón Stop o Esc) para continuar',
+      continuationBusy:
+        'Objetivo reanudado: la sesión está ocupada; detén primero la respuesta actual (botón Stop o Esc) para continuar',
       controlUnavailable: (msg: string) => `Controles de sesión no disponibles: ${msg}`,
       dismissError: 'Descartar error',
       add: 'Añadir'
@@ -4491,19 +4496,25 @@ export const esOverrides = {
   },
   updates: {
     discontinuedTitle: 'Esta versión de Hermes ya no tiene soporte',
-    discontinuedBody: 'Esta versión de Hermes ya no tiene soporte y podría dejar de funcionar; desinstálala. Tus datos permanecen en el disco.',
+    discontinuedBody:
+      'Esta versión de Hermes ya no tiene soporte y podría dejar de funcionar; desinstálala. Tus datos permanecen en el disco.',
     channels: { stable: 'Estable', canary: 'Canary' },
     appName: 'Hermes',
     availableBodyRelease: tag => `La versión ${tag} está lista para instalarse.`,
     releaseAvailable: tag => `La versión ${tag} está disponible.`,
     checkingShort: 'Comprobando…',
-    availableBodyAppInstaller: 'Hay una nueva versión de Hermes. Hermes se cerrará, Windows terminará la actualización y Hermes volverá a abrirse automáticamente.',
-    applyingBodyAppInstaller: 'Hermes se cerrará y Windows terminará la actualización. Hermes volverá a abrirse al finalizar; no tienes que hacer nada.',
-    applyingCloseAppInstaller: 'Esta ventana se cerrará; Windows terminará la actualización y Hermes volverá a abrirse automáticamente.',
+    availableBodyAppInstaller:
+      'Hay una nueva versión de Hermes. Hermes se cerrará, Windows terminará la actualización y Hermes volverá a abrirse automáticamente.',
+    applyingBodyAppInstaller:
+      'Hermes se cerrará y Windows terminará la actualización. Hermes volverá a abrirse al finalizar; no tienes que hacer nada.',
+    applyingCloseAppInstaller:
+      'Esta ventana se cerrará; Windows terminará la actualización y Hermes volverá a abrirse automáticamente.',
     checkUnknownTitleAppInstaller: 'No se pudieron buscar actualizaciones',
-    checkUnknownBodyAppInstaller: 'Windows no pudo buscar actualizaciones ahora. También se instalan automáticamente al reiniciar Hermes.',
+    checkUnknownBodyAppInstaller:
+      'Windows no pudo buscar actualizaciones ahora. También se instalan automáticamente al reiniciar Hermes.',
     versionDetailsTitle: 'Detalles de la versión',
-    versionDetailsBody: 'Esta instalación se administra fuera de la app. Actualízala de la misma forma en que la instalaste.',
+    versionDetailsBody:
+      'Esta instalación se administra fuera de la app. Actualízala de la misma forma en que la instalaste.',
     versionDetailsVersion: 'Versión',
     versionDetailsCommit: 'Commit',
     versionDetailsBuildOrigin: 'Origen de la compilación',
@@ -4525,11 +4536,11 @@ export const esOverrides = {
     versionUnavailable: 'Versión no disponible',
     bundleOutOfSync: 'La compilación de la app está desactualizada',
     bundleOutOfSyncDesc:
-        'El entorno de ejecución de Hermes se actualizó, pero la app de escritorio sigue siendo una compilación anterior: faltarán funciones nuevas de la interfaz (como el modo Bot) hasta que se actualice. Ejecuta la actualización de abajo para recompilar la app. Si eso no elimina este aviso, reinstala desde el instalador de escritorio más reciente.',
+      'El entorno de ejecución de Hermes se actualizó, pero la app de escritorio sigue siendo una compilación anterior: faltarán funciones nuevas de la interfaz (como el modo Bot) hasta que se actualice. Ejecuta la actualización de abajo para recompilar la app. Si eso no elimina este aviso, reinstala desde el instalador de escritorio más reciente.',
     bundleOutOfSyncAction: 'Obtener el instalador',
     bundleSwapPending: 'Reinicia para terminar la actualización',
     bundleSwapPendingDesc:
-        'La app actualizada ya está instalada; Hermes solo necesita reiniciarse para cargarla. Los chats y los ajustes no se tocan.',
+      'La app actualizada ya está instalada; Hermes solo necesita reiniciarse para cargarla. Los chats y los ajustes no se tocan.',
     bundleSwapPendingAction: 'Reiniciar Hermes',
     checkNow: 'Comprobar ahora',
     seeWhatsNew: 'Ver novedades',
@@ -4539,7 +4550,7 @@ export const esOverrides = {
     cantReach: 'No pudimos contactar con el servidor de actualizaciones.',
     tapCheck: 'Pulsa "Comprobar ahora" para buscar actualizaciones.',
     updateReady: count =>
-        `Hay una actualización lista (${count} ${count === 1 ? 'cambio incluido' : 'cambios incluidos'}).`,
+      `Hay una actualización lista (${count} ${count === 1 ? 'cambio incluido' : 'cambios incluidos'}).`,
     updateReadyUnknown: 'Hay una nueva actualización lista.',
     lastChecked: age => `Última comprobación ${age}`,
     justNowSuffix: ' · ahora mismo',
@@ -4586,9 +4597,12 @@ export const esOverrides = {
     maybeLater: 'Quizá más tarde',
     moreChanges: count => `+ ${count} ${count === 1 ? 'cambio incluido' : 'cambios incluidos'}.`,
     manualTitle: 'Actualizar desde la terminal',
+    manualUnavailableTitle: 'No se puede actualizar desde aquí',
     manualBody:
       'Instalaste Hermes desde la línea de comandos, así que las actualizaciones también se ejecutan ahí. Pega esto en tu terminal:',
     manualPickedUp: 'Hermes usará la nueva versión la próxima vez que lo abras.',
+    manualBodyBackend: 'El backend de Hermes se gestiona fuera de esta app. Ejecuta esto en el servidor que lo aloja:',
+    manualPickedUpBackend: 'El backend cargará la nueva versión cuando termine la actualización.',
     guiSkewTitle: 'Actualiza la aplicación de escritorio',
     guiSkewBody:
       'El backend se actualizó, pero el paquete de esta aplicación de escritorio no cambió. Actualiza o reinstala la aplicación de escritorio de Hermes (tu AppImage / .deb / .rpm) para que coincidan.',
@@ -4783,6 +4797,7 @@ export const esOverrides = {
     replaceCurrent: 'Reemplazar valor actual',
     pasteApiKey: 'Pegar clave API',
     localApiKeyPlaceholder: 'Clave API (opcional; solo si tu endpoint la requiere)',
+    localModelNamePlaceholder: 'Nombre del modelo (p. ej. command-a-plus-05-2026)',
     couldNotSave: 'No se pudo guardar la credencial.',
     connecting: 'Conectando',
     update: 'Actualizar',

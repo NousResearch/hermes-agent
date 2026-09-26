@@ -203,7 +203,7 @@ def _nvidia_vram() -> tuple[int, int] | None:
         out = subprocess.run(
             [exe, "--query-gpu=memory.total,memory.free",
              "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, timeout=10)
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
         if out.returncode != 0 or not out.stdout.strip():
             return None
         total_mib, free_mib = (int(x) for x in out.stdout.strip().splitlines()[0].split(","))
@@ -258,7 +258,7 @@ def _engine_device_pool() -> "tuple[int, bool | None] | None":
             return None
         exe = engine.binary
         out = subprocess.run([str(exe), "--list-devices"], capture_output=True,
-                             text=True, timeout=30, cwd=str(exe.parent))
+                             text=True, encoding="utf-8", errors="replace", timeout=30, cwd=str(exe.parent))
         if out.returncode != 0:
             return None
         for line in (out.stdout + out.stderr).splitlines():

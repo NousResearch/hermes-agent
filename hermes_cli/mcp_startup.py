@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import sys
 import threading
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from contextvars import copy_context
-from typing import Dict, Optional, Set
+from typing import Dict, Iterator, Optional, Set
 
 from hermes_constants import hermes_home_key
 
@@ -158,6 +159,27 @@ def _resolve_discovery_timeout(explicit: "float | None", *, single_query: bool =
         return default
 
 
+# GIL budget for discovery: the discovery thread does bursty CPU work (mcp/pydantic imports,
+# JSON-RPC schema parsing, tool registration) that, at the default 5 ms switch interval, rides
+# the GIL convoy effect and can starve concurrent threads — the agent-build thread and the main
+# event loop — for tens of seconds (#60371: "agent initialization timed out" after a serve
+# restart, _wait_agent(30s) error 5032). While discovery runs we drop the switch interval so its
+# CPU bursts are sliced finely enough that waiters stay responsive, then restore it.
+_DISCOVERY_SWITCH_INTERVAL_S = 0.0005
+
+
+@contextmanager
+def _discovery_gil_budget() -> Iterator[None]:
+    """Temporarily lower the interpreter switch interval so discovery's CPU work can't
+    monopolize the GIL against concurrent threads (see _DISCOVERY_SWITCH_INTERVAL_S)."""
+    prev = sys.getswitchinterval()
+    sys.setswitchinterval(_DISCOVERY_SWITCH_INTERVAL_S)
+    try:
+        yield
+    finally:
+        sys.setswitchinterval(prev)
+
+
 def _discover_mcp_tools_without_interactive_oauth() -> None:
     """Run MCP discovery without letting OAuth read from the user's stdin."""
     try:
@@ -165,7 +187,7 @@ def _discover_mcp_tools_without_interactive_oauth() -> None:
     except Exception:
         suppress_interactive_oauth = nullcontext
 
-    with suppress_interactive_oauth():
+    with _discovery_gil_budget(), suppress_interactive_oauth():
         from tools.mcp_tool_discovery import discover_mcp_tools
 
         # Only pass the kwarg when a filter is set: many tests (and any

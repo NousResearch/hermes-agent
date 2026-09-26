@@ -14,10 +14,10 @@ import { sessionMessagesSignature } from '@/lib/session-signatures'
 import { latestSessionTodos } from '@/lib/todos'
 import { pendingSessionReplay } from '@/store/gateway'
 import { $sidebarShowArchived } from '@/store/layout'
-import { $changeEventsAvailable, $cronChangeTick, $sessionsChangeTick } from '@/store/live-sync'
+import { $changeEventsAvailable, $cronChangeTick, $projectsChangeTick, $sessionsChangeTick } from '@/store/live-sync'
 import { $onBattery, batteryPollInterval } from '@/store/power'
 import { refreshActiveProfile } from '@/store/profile'
-import { refreshProjectTree } from '@/store/projects'
+import { refreshProjects, refreshProjectTree } from '@/store/projects'
 import {
   $activeSessionId,
   $busy,
@@ -863,6 +863,7 @@ export function useBackgroundSync({
 }: BackgroundSyncParams): void {
   const changeEventsAvailable = useStore($changeEventsAvailable)
   const cronChangeTick = useStore($cronChangeTick)
+  const projectsChangeTick = useStore($projectsChangeTick)
   const activeTranscriptRefreshPendingRef = useRef<string | null>(null)
   const activeTranscriptReadRef = useRef<{ sessionKey: string; preservePending: boolean } | null>(null)
   // Tile reconcile state (#93942 slice 1): shared sequence guard + per-tile
@@ -1223,6 +1224,20 @@ export function useBackgroundSync({
       () => void refreshCronJobs()
     )
   }, [changeEventsAvailable, cronChangeTick, gatewayState, refreshCronJobs])
+
+  // Projects created or switched by CLI / agent tooling write projects.db without any
+  // state.db movement, so sessions.changed never fires and the Projects sidebar used to
+  // go stale until a manual refresh (#56757). The gateway's change watcher now
+  // broadcasts projects.changed when projects.db moves; this effect refetches the
+  // project list + tree on that tick.
+  useEffect(() => {
+    if (gatewayState !== 'open' || !changeEventsAvailable || projectsChangeTick === 0) {
+      return
+    }
+
+    void refreshProjects()
+    void refreshProjectTree()
+  }, [changeEventsAvailable, gatewayState, projectsChangeTick, refreshProjects, refreshProjectTree])
 
   // Preserve the pre-existing messaging behavior: refresh once when a
   // messaging transcript opens, then keep its visibility backstop. Desktop

@@ -21,7 +21,13 @@ import { $connection } from '@/store/session'
 import { setAppearance } from '@/store/translucency'
 
 import { $accentOverride } from './accent-override'
-import { $backendThemes, $pendingSkinApply, localDisplaySkinName, localDisplaySkinProfile } from './backend-sync'
+import {
+  $backendCustomCSS,
+  $backendThemes,
+  $pendingSkinApply,
+  localDisplaySkinName,
+  localDisplaySkinProfile
+} from './backend-sync'
 import { $chatFontFamily, resolveChatFontFamily } from './chat-font'
 import { harmonize, readableInk } from './color'
 import { BUILTIN_THEME_LIST, DEFAULT_SKIN_NAME, DEFAULT_TYPOGRAPHY, nousTheme } from './presets'
@@ -95,13 +101,14 @@ export const modePref = profilePref(PROFILE_MODES_KEY, MODE_KEY, normalizeMode)
 // into. A desktop-side pick remains the source of truth, and switching to a
 // different profile cannot borrow a skin from this machine's initial profile.
 const readBootProfileKey = () => normalizeProfileKey(storedString(LAST_PROFILE_KEY))
-const BOOT_PROFILE_KEY = typeof window === 'undefined' ? 'default' : localDisplaySkinProfile ?? readBootProfileKey()
+const BOOT_PROFILE_KEY = typeof window === 'undefined' ? 'default' : (localDisplaySkinProfile ?? readBootProfileKey())
 
 // Provider state keeps the raw pick so a name nothing resolves YET (a backend
 // skin the gateway hasn't seeded on this launch) isn't flattened to the default
 // for the rest of the session — it paints as soon as the registry can resolve it.
 const storedSkin = (profile: string): string =>
-  skinPref.stored(profile) ?? (profile === BOOT_PROFILE_KEY ? localDisplaySkinName ?? DEFAULT_SKIN_NAME : DEFAULT_SKIN_NAME)
+  skinPref.stored(profile) ??
+  (profile === BOOT_PROFILE_KEY ? (localDisplaySkinName ?? DEFAULT_SKIN_NAME) : DEFAULT_SKIN_NAME)
 
 /** Everything a peer window could change that this one has to repaint for. */
 const APPEARANCE_KEYS = new Set([SKIN_KEY, PROFILE_SKINS_KEY, MODE_KEY, PROFILE_MODES_KEY])
@@ -167,7 +174,12 @@ function deriveTheme(skinName: string, mode: 'light' | 'dark'): DesktopTheme {
     name: `${skinName}-${mode}`,
     label: `${seed.label} ${mode === 'light' ? 'Light' : 'Dark'}`,
     description: `${seed.label} ${mode} palette`,
-    colors: getBaseColors(skinName, mode)
+    colors: getBaseColors(skinName, mode),
+    // A backend skin named `default`/`mono`/… keeps the desktop's own palette
+    // (never shadowed — see ingestBackendSkin), but its customCSS is carried
+    // separately in $backendCustomCSS. The seed's own customCSS (non-built-in
+    // backend skins) wins when both exist.
+    customCSS: seed.customCSS ?? $backendCustomCSS.get()[skinName]
   }
 }
 
@@ -316,6 +328,28 @@ function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark', chatFontFamily 
     document.head.appendChild(link)
     INJECTED_FONT_URLS.add(typo.fontUrl)
   }
+
+  // Inject / clear customCSS from the skin (mirrors web/src/themes/context.tsx).
+  // A theme carries the optional customCSS field; we inject/remove a single
+  // <style> tag to keep the DOM clean and avoid stale rules on switch.
+  const cssId = 'hermes-desktop-custom-css'
+  let cssEl = document.getElementById(cssId) as HTMLStyleElement | null
+  const customCSS = theme.customCSS?.trim()
+
+  if (!customCSS) {
+    if (cssEl) {
+      cssEl.remove()
+    }
+  } else {
+    if (!cssEl) {
+      cssEl = document.createElement('style')
+      cssEl.id = cssId
+      cssEl.dataset.hermesSkinCSS = 'true'
+      document.head.appendChild(cssEl)
+    }
+
+    cssEl.textContent = customCSS
+  }
 }
 
 // Pin Electron's nativeTheme to the app's mode so the NATIVE window chrome
@@ -394,6 +428,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   // grid, and `/skin` without a reload.
   const userThemes = useStore($userThemes)
   const backendThemes = useStore($backendThemes)
+  const backendCustomCSS = useStore($backendCustomCSS)
   const registryVersion = useStore($registryVersion)
 
   const availableThemes = useMemo(
@@ -469,9 +504,10 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     () => deriveTheme(paintedName, paintedMode),
     // deriveTheme resolves its seed through the merged registry, so the theme
     // stores are its reactivity too — an in-place palette edit of the ACTIVE
-    // skin (live theme authoring) must repaint, not just a name switch.
+    // skin (live theme authoring) must repaint, not just a name switch. The
+    // backend CSS store matters the same way for built-in-named user skins.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [paintedName, paintedMode, userThemes, backendThemes, registryVersion]
+    [paintedName, paintedMode, userThemes, backendThemes, backendCustomCSS, registryVersion]
   )
 
   // Dev-only accent retint. `null` (always, in production) returns the theme

@@ -237,6 +237,9 @@ export const zhHant = defineLocale({
     copyDetailFailed: '無法複製通知詳情',
     backendOutOfDateTitle: '後端版本過舊',
     backendOutOfDateMessage: '您的 Hermes 後端早於目前的桌面版本，可能無法正常運作。請更新以保持一致。',
+    desktopOutOfDateTitle: '應用程式版本過舊',
+    desktopOutOfDateMessage: '此 Hermes 應用程式早於所連接的後端，可能無法正常運作。請更新應用程式以保持一致。',
+    updateDesktopApp: '更新應用程式',
     installMethodUnsupportedTitle: '不受支援的安裝方式',
     updateHermes: '更新 Hermes',
     updateReadyTitle: '有可用更新',
@@ -419,7 +422,8 @@ export const zhHant = defineLocale({
     plugins: {
       openFolder: '開啟桌面外掛資料夾',
       installModal: {
-        installUncertain: 'Hermes 已停止等待安裝結果，但外掛可能仍在安裝中。請關閉此視窗，重新掃描外掛清單後再嘗試安裝。',
+        installUncertain:
+          'Hermes 已停止等待安裝結果，但外掛可能仍在安裝中。請關閉此視窗，重新掃描外掛清單後再嘗試安裝。',
         installFromGit: '從 Git 安裝',
         reviewRepository: '檢查儲存庫',
         repoPlaceholder: 'https://github.com/owner/repo',
@@ -3243,8 +3247,11 @@ export const zhHant = defineLocale({
     maybeLater: '稍後再說',
     moreChanges: count => `另有 ${count} 項變更。`,
     manualTitle: '從終端機更新',
+    manualUnavailableTitle: '無法從這裡更新',
     manualBody: '您是從命令列安裝的 Hermes，因此更新也需要在那裡執行。請將此指令貼到終端機：',
+    manualBodyBackend: 'Hermes 後端由本應用程式之外管理。請在託管它的伺服器上執行此指令：',
     manualPickedUp: '下次啟動 Hermes 時會使用新版本。',
+    manualPickedUpBackend: '後端會在更新完成後載入新版本。',
     guiSkewTitle: '請更新桌面應用程式',
     guiSkewBody:
       '後端已更新，但此桌面應用程式套件未變更。請更新或重新安裝 Hermes 桌面應用程式（你的 AppImage / .deb / .rpm）以保持一致。',

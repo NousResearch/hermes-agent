@@ -232,12 +232,18 @@ def _prepend_tool_paths(env: dict[str, str]) -> dict[str, str]:
 class _SlashWorker:
     """Persistent HermesCLI subprocess for slash commands."""
 
-    def __init__(self, session_key: str, model: str, profile_home: str | None = None):
+    def __init__(self, session_key: str, model: str, profile_home: str | None = None,
+                 provider: str | None = None):
         self._lock = threading.Lock()
         self._seq = 0
         self.stderr_tail: list[str] = []
         self.stdout_queue: queue.Queue[dict | None] = queue.Queue()
-        argv = [sys.executable, "-m", "tui_gateway.slash_worker", "--session-key", session_key] + (["--model", model] if model else [])
+        # ``--provider`` pins the child to the parent agent's virtual provider: without it the
+        # worker re-resolves provider from config, so a MoA session (provider=moa, model=<preset>)
+        # dispatched its preset NAME to the configured real provider and 402/503'd (#57283).
+        argv = [sys.executable, "-m", "tui_gateway.slash_worker", "--session-key", session_key] \
+            + (["--model", model] if model else []) \
+            + (["--provider", provider] if provider else [])
         self._closed = False
         from hermes_cli._subprocess_compat import windows_hide_flags
         # slash_worker runs the Hermes agent → needs provider credentials. Tier-1 secrets
@@ -1864,12 +1870,22 @@ def _gui_surface_toolsets(platform: str) -> set[str]:
 def _with_session_toolsets(selection, platform: str | None) -> list[str]:
     """*selection* plus what the session carries whatever its config says (the client surface's
     toolsets when *platform* is given; the ones its PROFILE's role reserves, from the backend-written
-    profile.yaml under the session's home override), minus toolsets reserved for another role."""
+    profile.yaml under the session's home override), minus toolsets reserved for another role.
+
+    The fold-in happens after ``_get_platform_tools`` already subtracted ``agent.disabled_toolsets``,
+    so the same subtraction is applied to the fold-in itself — otherwise ``disabled_toolsets:
+    [project]`` is a no-op on desktop/TUI, the only surfaces where the client toolsets exist
+    (#54433). ``desktop_ui`` is kept regardless: it is the client's own control surface, not a
+    model toolset."""
     from toolsets import profile_role_toolsets
     granted, denied = profile_role_toolsets()
     surface = _gui_surface_toolsets(platform) if platform is not None else set()
     kept = [name for name in selection if name not in denied]
-    return [*kept, *sorted((surface | granted) - set(kept))]
+    fold_in = (surface | granted) - set(kept)
+    disabled = set(_load_disabled_toolsets() or [])
+    if disabled:
+        fold_in -= disabled - {"desktop_ui"}
+    return [*kept, *sorted(fold_in)]
 
 
 def _tui_notice(text: str) -> None:
@@ -2013,7 +2029,8 @@ def _restart_slash_worker(sid: str, session: dict):
         worker.close()
     try:
         new_worker = _SlashWorker(session["session_key"], getattr(session.get("agent"), "model", _resolve_model()),
-                                  profile_home=session.get("profile_home"))
+                                  profile_home=session.get("profile_home"),
+                                  provider=getattr(session.get("agent"), "provider", None) or None)
     except Exception:
         session["slash_worker"] = None
         return
@@ -2107,8 +2124,10 @@ def _current_profile_name() -> str:
 
 
 # Monotonic GUI<->backend contract version: the desktop refuses a backend reporting less (or none) with a
-# one-click "update to align" prompt; bump whenever the desktop's backend contract changes. v2 file.attach;
-# v3 approvals.mode RPCs + session.info reconciliation; v4 session.create fast=false = explicit normal tier;
+# one-click "update to align" prompt. The desktop also warns in the reverse direction: a backend reporting
+# MORE than the GUI's required value means the GUI build predates this backend (e.g. a long-running app
+# across a backend update) and should be updated. Bump whenever the desktop's backend contract changes.
+# v2 file.attach; v3 approvals.mode RPCs + session.info reconciliation; v4 session.create fast=false = explicit normal tier;
 # v5 ws_max_size >16 MiB file.attach frames; v6 plugins.manage rows carry the canonical registry key;
 # v7 blocking prompts are JSON-RPC server->client requests (`srq-<n>` frames, `open_requests` replay) — a v6
 # backend still emits `<kind>.request` notifications the renderer no longer listens for.
@@ -2160,6 +2179,23 @@ def _live_session_identity(session: dict) -> tuple[str, str]:
     return str(model), str(provider or "")
 
 
+def _fast_tier_applies(agent, model: str, provider: str, *, route_known: bool) -> bool:
+    """Whether a priority tier reaches this session's route. Every request builder asks the same gate, so a
+    profile-wide ``service_tier: fast`` sends nothing to a local server or a proxy, and the session must not
+    report Fast there either. ``route_known`` is False while a switch is pending: the agent's base URL still
+    belongs to the old route."""
+    from hermes_cli.models import resolve_fast_mode_overrides
+    base_url = None
+    if route_known and agent is not None:
+        if getattr(agent, "api_mode", None) == "anthropic_messages":
+            base_url = getattr(agent, "_anthropic_base_url", None)
+        base_url = base_url or getattr(agent, "base_url", None)
+    try:
+        return resolve_fast_mode_overrides(model, provider=provider or None, base_url=base_url) is not None
+    except Exception:
+        return False
+
+
 def _session_info(agent, session: dict | None = None) -> dict:
     if session is None:
         session = next((c for c in _sessions.values() if c.get("agent") is agent), None)
@@ -2205,7 +2241,9 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "model": model,
         "provider": pending_provider or provider,
         "reasoning_effort": reasoning_effort, "reasoning_effort_wire": reasoning_effort_wire,
-        "service_tier": service_tier, "fast": service_tier == "priority",
+        "service_tier": service_tier,
+        "fast": service_tier == "priority" and _fast_tier_applies(agent, model, pending_provider or provider,
+                                                                  route_known=not pending_provider),
         "yolo": yolo, "approval_mode": approval_mode,
         "tools": dict(mirror.get("tools") or {}) if isinstance(mirror.get("tools"), dict) else {},
         "skills": dict(mirror.get("skills") or {}) if isinstance(mirror.get("skills"), dict) else {},
@@ -3330,8 +3368,8 @@ def _skill_usage_lookup():
     "hub" / "bundled" / "local" (``/api/skills`` ``provenance``, "local" spelled "agent"). Failure → 0 / "local"."""
     try:
         from tools.skill_usage import (
-            _read_bundled_manifest_names, _read_hub_installed_names, activity_count, load_usage)
-        records, bundled, hub = load_usage(), _read_bundled_manifest_names(), _read_hub_installed_names()
+            _read_bundled_names, _read_hub_installed_names, activity_count, load_usage)
+        records, bundled, hub = load_usage(), _read_bundled_names(), _read_hub_installed_names()
     except Exception as e:
         logger.debug("skill usage lookup unavailable: %s", e)
         return (lambda _name: 0), (lambda _name: "local")

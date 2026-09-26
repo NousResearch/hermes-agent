@@ -30,6 +30,8 @@ Honcho is integrated into the [Memory Providers](./memory-providers.md) system. 
 
 **Multi-agent profiles**: When multiple Hermes instances talk to the same user (e.g., a coding assistant and a personal assistant), Honcho maintains separate "peer" profiles. Each peer sees only its own observations and conclusions, preventing cross-contamination of context.
 
+**Provider-owned user profile writes**: When Honcho is the active memory provider, generic `memory(action="add", target="user", content="...")` calls are stored as Honcho conclusions. The model does not need to know about `honcho_conclude` for ordinary "remember this about me" requests. If Honcho cannot persist the conclusion, Hermes returns a clear tool error instead of writing a fake local USER.md success.
+
 ## Setup
 
 ```bash

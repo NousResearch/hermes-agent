@@ -13,10 +13,12 @@ import logging
 import re
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor, wait
+from dataclasses import replace as dataclass_replace
 from functools import partial
 from typing import Any, Callable, Dict, List, Optional
 
-from agent.memory_provider import MemoryProvider, PRE_COMPRESS_CHECKPOINT_API_VERSION, ctx_bound, spawn_context_thread
+from agent.memory_provider import (MemoryProvider, MemoryWriteIntent, MemoryWriteResult,
+                                   PRE_COMPRESS_CHECKPOINT_API_VERSION, ctx_bound, spawn_context_thread)
 from agent.skill_commands import extract_user_instruction_from_skill_message
 from tools.hook_output_spill import get_spill_config, spill_if_oversized
 from tools.registry import tool_error
@@ -838,6 +840,30 @@ class MemoryManager:
                 self.on_memory_write(action, target, str(op.get("content") or op.get("new_text") or ""), metadata=metadata)
             except Exception as e:
                 logger.debug("notify_memory_tool_write failed for op %s: %s", action, e)
+
+    def claim_memory_write(self, intent: MemoryWriteIntent) -> Optional[MemoryProvider]:
+        """Find the active external owner; a broken claim check fails closed."""
+        for provider in self._providers:
+            if provider.name == "builtin":
+                continue
+            wants = getattr(provider, "wants_memory_write", None)
+            if callable(wants) and wants(intent):
+                return provider
+        return None
+
+    @staticmethod
+    def handle_claimed_memory_write(provider: MemoryProvider, intent: MemoryWriteIntent) -> MemoryWriteResult:
+        try:
+            result = provider.handle_memory_write(intent)
+            if not isinstance(result, MemoryWriteResult) or not result.handled:
+                raise RuntimeError("claimed provider returned no committed result")
+            if not result.provider:
+                result = dataclass_replace(result, provider=provider.name)
+            return result
+        except Exception as exc:
+            logger.warning("Memory provider '%s' write failed: %s", provider.name, exc)
+            return MemoryWriteResult(handled=True, provider=provider.name,
+                                     error=f"{provider.name} memory write failed: {exc}")
 
     def on_delegation(self, task: str, result: str, *, child_session_id: str = "", **kwargs) -> None:
         self._each_provider(

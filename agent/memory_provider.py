@@ -12,10 +12,40 @@ import logging
 import re
 import threading
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class MemoryWriteIntent:
+    """One generic memory tool request offered to an external provider."""
+
+    action: str
+    target: str
+    content: str = ""
+    old_text: str = ""
+    operations: List[Dict[str, Any]] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class MemoryWriteResult:
+    handled: bool
+    success: bool = False
+    provider: str = ""
+    message: str = ""
+    error: str = ""
+
+    def to_tool_payload(self, intent: MemoryWriteIntent) -> Dict[str, Any]:
+        payload = {"success": self.success, "target": intent.target, "action": intent.action,
+                   "provider": self.provider}
+        if self.message:
+            payload["message"] = self.message
+        if self.error:
+            payload["error"] = self.error
+        return payload
 
 
 def ctx_bound(fn: Callable[..., Any]) -> Callable[..., Any]:
@@ -190,6 +220,23 @@ class MemoryProvider(ABC):
     def save_config(self, values: Dict[str, Any], hermes_home: str) -> None:
         """Write non-secret setup ``values`` to the provider's native config. Plugins MUST either
         override this or use only env vars (every schema field carrying ``env_var``)."""
+
+    def wants_memory_write(self, intent: MemoryWriteIntent) -> bool:
+        """Claim ownership of a generic write before the built-in store changes."""
+        return False
+
+    def preflight_memory_write(self, intent: MemoryWriteIntent) -> Optional[MemoryWriteResult]:
+        """Return an immediate refusal when an operation cannot be offered for approval."""
+        return None
+
+    def handle_memory_write(self, intent: MemoryWriteIntent) -> MemoryWriteResult:
+        """Commit a claimed write synchronously; failures must be explicit."""
+        return MemoryWriteResult(handled=True, provider=self.name,
+                                 error="Provider does not implement claimed memory writes.")
+
+    def memory_write_replay_context(self) -> Dict[str, Any]:
+        """Serializable identity needed to replay an approved write in a fresh process."""
+        return {}
 
     def on_memory_write(self, action: str, target: str, content: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         """Mirror a built-in memory-tool write (``action``: add | replace | remove; ``target``:

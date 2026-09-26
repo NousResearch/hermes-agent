@@ -34,10 +34,10 @@ When a memory provider is active, Hermes automatically:
 2. **Prefetches relevant memories** before each turn (background, non-blocking)
 3. **Syncs conversation turns** to the provider after each response
 4. **Extracts memories on session end** (for providers that support it)
-5. **Mirrors built-in memory writes** to the external provider
+5. **Offers generic memory writes** to providers that claim ownership, and mirrors unclaimed committed local writes
 6. **Adds provider-specific tools** so the agent can search, store, and manage memories
 
-The built-in memory (MEMORY.md / USER.md) continues to work exactly as before. The external provider is additive.
+The built-in memory remains available for unclaimed writes. A claimed write is committed by its provider and does not also create a local USER.md entry. If that provider fails, Hermes returns an error without local fallback. Honcho currently claims single user-profile adds; generic user-profile replace, remove, and atomic batches are refused because Honcho cannot perform them with the same entry and atomicity semantics.
 
 ## Available Providers
 

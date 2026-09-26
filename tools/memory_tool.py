@@ -93,6 +93,12 @@ def _gate_or_stage(store: "MemoryStore", summary: str, detail: str, payload: Dic
         return None
     if decision.blocked:
         return tool_error(decision.message, success=False)
+    if payload.get("provider"):
+        if destructive_ops(payload):
+            return tool_error("Provider-owned replace/remove writes need provider-specific review; this approval cannot safely pin their targets.", success=False)
+        context = payload.get("provider_context")
+        if not isinstance(context, dict) or not context.get("session_id") or not isinstance(context.get("kwargs"), dict):
+            return tool_error("Provider-owned memory write cannot be staged without replayable session identity.", success=False)
     if (unmatched := _pin_matched_entries(store, payload)) is not None:
         return unmatched
     record = wa.stage_write(wa.MEMORY, payload, summary=f"{summary}: {detail[:120]}", origin=wa.current_origin())
@@ -122,15 +128,18 @@ def _batch_op_line(op: Dict[str, Any]) -> str:
 
 
 def _apply_write_gate(store: "MemoryStore", action: str, target: str, content: Optional[str],
-                      old_text: Optional[str], operations: Optional[List[Dict[str, Any]]] = None) -> Optional[str]:
+                      old_text: Optional[str], operations: Optional[List[Dict[str, Any]]] = None,
+                      provider_pending: Optional[Dict[str, Any]] = None) -> Optional[str]:
     """Gate one mutating op, or (``operations`` set) a whole batch as a single unit."""
     label = "user profile" if target == "user" else "memory"
     if operations is not None:
         return _gate_or_stage(store, f"apply {len(operations)} op(s) to {label}",
                               "\n".join(_batch_op_line(op) for op in operations),
-                              {"action": "batch", "target": target, "operations": operations})
+                              {"action": "batch", "target": target, "operations": operations,
+                               **(provider_pending or {})})
     return _gate_or_stage(store, *_STORE_ACTIONS[action][1](label, content, old_text),
-                          {"action": action, "target": target, "content": content, "old_text": old_text})
+                          {"action": action, "target": target, "content": content, "old_text": old_text,
+                           **(provider_pending or {})})
 
 
 def _validate_single_op(store, action, target, content, old_text) -> Optional[str]:
@@ -164,7 +173,7 @@ def destructive_ops(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 
 def _background_delete_gate(store, action, operations, target="memory", content=None,
-                            old_text=None) -> Optional[str]:
+                            old_text=None, provider_pending=None) -> Optional[str]:
     """Fail-closed operation gate for unattended background-review forks (#105921): ``add``
     stays available (it is all any review prompt asks for), while ``replace``/``remove`` —
     single or inside a batch — are never applied unattended. The op is staged in the pending
@@ -178,8 +187,11 @@ def _background_delete_gate(store, action, operations, target="memory", content=
     payload = ({"action": "batch", "target": target, "operations": operations}
                if operations is not None else
                {"action": action, "target": target, "content": content, "old_text": old_text})
+    payload.update(provider_pending or {})
     if not destructive_ops(payload):
         return None
+    if provider_pending:
+        return tool_error("Background review cannot stage provider-owned replace/remove writes without pinned provider targets.", success=False)
     detail = ("; ".join(_batch_op_line(op) for op in operations) if operations is not None
               else _batch_op_line({"action": action, "content": content, "old_text": old_text}))
     try:
@@ -206,7 +218,8 @@ def _background_delete_gate(store, action, operations, target="memory", content=
 
 def memory_tool(action: str = None, target: str = "memory", content: str = None, old_text: str = None,
                 new_text: str = None, operations: Optional[List[Dict[str, Any]]] = None,
-                store: Optional[MemoryStore] = None) -> str:
+                store: Optional[MemoryStore] = None, provider_manager=None,
+                provider_metadata: Optional[Dict[str, Any]] = None) -> str:
     """Tool entry point; returns a JSON string. Single op (action + content/old_text)
     or batch (``operations``, atomic against the final budget). ``new_text``
     aliases ``content`` -- for 'replace' both mean the COMPLETE new entry (the
@@ -220,24 +233,57 @@ def memory_tool(action: str = None, target: str = "memory", content: str = None,
     target_error = _memory_target_error(store, target)
     if target_error is not None:
         return json.dumps(target_error)
+    if operations and not isinstance(operations, list):
+        return tool_error("operations must be a list of {action, content?, old_text?} objects.", success=False)
+    from agent.memory_provider import MemoryWriteIntent
+    intent = MemoryWriteIntent(action="batch" if operations else (action or ""), target=target,
+                               content=content or "", old_text=old_text or "",
+                               operations=operations or [], metadata=provider_metadata or {})
+    owner = None
+    if provider_manager and (operations or action in _STORE_ACTIONS):
+        try:
+            owner = provider_manager.claim_memory_write(intent)
+        except Exception as exc:
+            return tool_error(f"Memory provider ownership check failed: {exc}", success=False)
+    if owner:
+        try:
+            preflight = getattr(owner, "preflight_memory_write", None)
+            refused = preflight(intent) if callable(preflight) else None
+            if refused is not None:
+                if not refused.handled or refused.success:
+                    raise RuntimeError("invalid provider preflight result")
+                return json.dumps(refused.to_tool_payload(intent), ensure_ascii=False)
+            pending = {"provider": owner.name, "provider_context": owner.memory_write_replay_context(),
+                       "provider_metadata": intent.metadata}
+        except Exception as exc:
+            return tool_error(f"Memory provider preflight failed: {exc}", success=False)
+    else:
+        pending = None
+    def commit_provider():
+        if owner is None:
+            return None
+        result = provider_manager.handle_claimed_memory_write(owner, intent)
+        return json.dumps(result.to_tool_payload(intent), ensure_ascii=False)
     if operations:
-        if not isinstance(operations, list):
-            return tool_error("operations must be a list of {action, content?, old_text?} objects.", success=False)
-        denied = _background_delete_gate(store, action, operations, target)
+        denied = _background_delete_gate(store, action, operations, target, provider_pending=pending)
         if denied is not None:
             return denied
         # Approval gate: stages (background/gateway) or prompts inline (CLI); off by default.
-        gate_result = _apply_write_gate(store, "batch", target, None, None, operations)
+        gate_result = _apply_write_gate(store, "batch", target, None, None, operations, pending)
         if gate_result is not None:
             return gate_result
+        if owner:
+            return commit_provider()
         return json.dumps(store.apply_batch(target, operations), ensure_ascii=False)
     if action not in _STORE_ACTIONS:
         return tool_error(f"Unknown action '{action}'. Use: add, replace, remove", success=False)
     invalid = (_validate_single_op(store, action, target, content, old_text)
-               or _background_delete_gate(store, action, None, target, content, old_text)
-               or _apply_write_gate(store, action, target, content, old_text))
+               or _background_delete_gate(store, action, None, target, content, old_text, pending)
+               or _apply_write_gate(store, action, target, content, old_text, provider_pending=pending))
     if invalid is not None:
         return invalid
+    if owner:
+        return commit_provider()
     return json.dumps(_STORE_ACTIONS[action][0](store, target, content, old_text), ensure_ascii=False)
 
 
@@ -291,6 +337,8 @@ def apply_memory_pending(payload: Dict[str, Any], store: "MemoryStore") -> Dict[
     target_error = _memory_target_error(store, target)
     if target_error is not None:
         return target_error
+    if payload.get("provider"):
+        return _replay_provider_memory_pending(payload)
     if any(not op.get("matched_entry") for op in destructive_ops(payload)):
         return {"success": False, "error": "This destructive pending write predates entry pinning and cannot be "
                                            "verified; nothing was applied. Reject it and recreate the change."}
@@ -302,18 +350,58 @@ def apply_memory_pending(payload: Dict[str, Any], store: "MemoryStore") -> Dict[
                                      payload.get("matched_entry"))
 
 
+def _replay_provider_memory_pending(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Replay a claimed approval with the original identity; never fall back locally."""
+    from agent.memory_provider import MemoryWriteIntent, is_core_memory_provider
+    from hermes_cli.config import load_config_readonly
+    from plugins.memory import load_memory_provider
+
+    name = payload.get("provider")
+    configured = (load_config_readonly().get("memory") or {}).get("provider", "")
+    if is_core_memory_provider(configured) or configured != name:
+        return {"success": False, "error": "The active memory provider changed; the approved write was not applied."}
+    context = payload.get("provider_context")
+    if not isinstance(context, dict) or not isinstance(context.get("session_id"), str) or not context["session_id"]:
+        return {"success": False, "error": "The pending provider write has no verifiable session identity."}
+    kwargs = context.get("kwargs")
+    if not isinstance(kwargs, dict):
+        return {"success": False, "error": "The pending provider write has invalid session identity."}
+    provider = load_memory_provider(name)
+    if provider is None or not provider.is_available():
+        return {"success": False, "error": f"Memory provider '{name}' is unavailable; approved write was not applied."}
+    try:
+        provider.initialize(context["session_id"], **kwargs)
+        expected_key = context.get("session_key")
+        if expected_key and provider.memory_write_replay_context().get("session_key") != expected_key:
+            return {"success": False, "error": "The memory provider session changed; the approved write was not applied."}
+        from agent.memory_manager import MemoryManager
+        intent = MemoryWriteIntent(action=payload.get("action") or "", target=payload.get("target") or "memory",
+                                   content=payload.get("content") or "", old_text=payload.get("old_text") or "",
+                                   operations=payload.get("operations") or [],
+                                   metadata=payload.get("provider_metadata") or {})
+        if not provider.wants_memory_write(intent):
+            return {"success": False, "error": f"Memory provider '{name}' no longer claims this write."}
+        return MemoryManager.handle_claimed_memory_write(provider, intent).to_tool_payload(intent)
+    finally:
+        try:
+            provider.shutdown()
+        except Exception:
+            logger.warning("Memory provider shutdown failed after approval replay", exc_info=True)
+
+
 MEMORY_SCHEMA = {
     "name": "memory",
     "description": (
         "Save durable facts to persistent memory that survive across sessions. Memory is "
         "injected into every future turn, so keep entries compact and high-signal.\n\n"
-        "HOW: make ALL your changes in ONE call via an 'operations' array (each item: "
+        "HOW: for built-in local memory, make ALL your changes in ONE call via an 'operations' array (each item: "
         "{action, content?, old_text?}). The batch applies atomically and the char limit is "
         "checked only on the FINAL result — so a single call can remove/replace stale entries "
         "to free room AND add new ones, even when an add alone would overflow. The response "
         "reports current/limit chars and confirms completion; one batch call finishes the "
         "update, so don't repeat it. Use the bare action/content/old_text fields only for a "
-        "single lone change.\n\n"
+        "single lone change. An external provider may claim user-profile writes and may not "
+        "support this atomic batch shape; follow its tool error or use its own edit tools.\n\n"
         "WHEN: only for facts that apply to EVERY session regardless of task: who the user "
         "is, stable environment facts, standing conventions with no task home. Anything "
         "learned while doing a task (procedures, pitfalls, and the user's preferences and "

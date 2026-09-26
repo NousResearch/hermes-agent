@@ -145,10 +145,14 @@ def _memory(agent, args: dict, ctx: InlineToolContext) -> Any:
             ("old_text", "old_text"), ("new_text", "new_text"), ("operations", "operations"),
         ),
         store=agent._memory_store,
+        provider_manager=agent._memory_manager,
+        provider_metadata=(agent._build_memory_write_metadata(
+            task_id=ctx.effective_task_id, tool_call_id=ctx.tool_call_id,
+        ) if agent._memory_manager else None),
     )
     # Mirror built-in memory writes to external providers; gating lives in
     # MemoryManager.notify_memory_tool_write.
-    if agent._memory_manager:
+    if agent._memory_manager and not (isinstance(result, str) and _provider_owned_memory_result(result)):
         agent._memory_manager.notify_memory_tool_write(
             result,
             args,
@@ -158,6 +162,13 @@ def _memory(agent, args: dict, ctx: InlineToolContext) -> Any:
             ),
         )
     return result
+
+
+def _provider_owned_memory_result(result: str) -> bool:
+    try:
+        return bool(json.loads(result).get("provider"))
+    except (ValueError, TypeError, AttributeError):
+        return False
 
 
 _read_preview = _callback_tool(

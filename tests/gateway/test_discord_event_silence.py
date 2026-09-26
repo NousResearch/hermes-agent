@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from tests.gateway.test_discord_connect import _ensure_discord_mock  # noqa: E402
+from tests.discord_mock import ensure_discord_module as _ensure_discord_mock
 
 _ensure_discord_mock()
 

@@ -63,7 +63,7 @@ def test_heartbeat_carries_only_new_output_and_stops_at_exit(tmp_path, monkeypat
                            timeout=2.5)
 
 
-def test_terminal_dispatch_heartbeat_implies_notify_and_refuses_foreground(monkeypatch):
+def test_terminal_dispatch_heartbeat_implies_notify_and_drops_foreground_heartbeat(monkeypatch):
     from tools import terminal_tool as tt
 
     captured = {}
@@ -74,8 +74,13 @@ def test_terminal_dispatch_heartbeat_implies_notify_and_refuses_foreground(monke
 
     monkeypatch.setattr(tt, "terminal_tool", fake_terminal_tool)
     dispatch = tt._handle_terminal
+    # Foreground has nothing to heartbeat (the result returns inline), so the
+    # value is normalized away instead of refusing the call (#119196).
     fg = json.loads(dispatch({"command": "sleep 1", "heartbeat": 120}))
-    assert fg.get("error") and "background" in fg["error"]
+    assert "error" not in fg or not fg["error"]
+    assert captured["heartbeat"] == 0
+    assert captured["notify_on_complete"] is False
+    assert captured["watch_patterns"] is None
 
     bg = json.loads(dispatch({"command": "sleep 1", "background": True, "heartbeat": 120}))
     assert "error" not in bg or not bg["error"]

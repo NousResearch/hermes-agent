@@ -1420,8 +1420,9 @@ TERMINAL_SCHEMA = {
             },
             "heartbeat": {
                 "type": "integer",
-                "minimum": 60,
-                "description": "With background=true: also notify every N seconds (min 60) with the output since the last notice. For long jobs you must react to mid-run (merge trains, full suites); implies notify=true."
+                "minimum": 0,
+                "default": 0,
+                "description": "With background=true: also notify every N seconds (0 or omitted = disabled; enabled values are clamped to a 60-second floor) with the output since the last notice. For long jobs you must react to mid-run (merge trains, full suites); implies notify=true. A foreground call returns its result directly, so it has no heartbeat — send 0 or omit it there."
             },
             "persist_on_release": {
                 "type": "boolean",
@@ -1450,20 +1451,32 @@ def _handle_terminal(args, **kw):
         )
     # `notify` is the advertised interface (true → notify_on_complete,
     # [...] → watch_patterns); the legacy args stay accepted, explicit
-    # `notify` wins. Background-only modifiers on a foreground call fail
-    # with the corrected call instead of being silently ignored.
+    # `notify` wins. Notification *intent* on a foreground call fails with the
+    # corrected call instead of being silently ignored; `heartbeat` carries no
+    # foreground meaning at all, so it is normalized away rather than refused.
     notify = args.get("notify")
     notify_on_complete = args.get("notify_on_complete", False)
     watch_patterns = args.get("watch_patterns")
     heartbeat = args.get("heartbeat") or 0
     persist_on_release = bool(args.get("persist_on_release", False))
     if not isinstance(heartbeat, int) or isinstance(heartbeat, bool) or heartbeat < 0:
-        return tool_error("heartbeat must be a whole number of seconds (min 60).")
+        return tool_error(
+            "heartbeat must be a non-negative whole number of seconds (background "
+            "heartbeats are clamped to a 60-second floor)."
+        )
     if not args.get("background", False):
-        if notify or watch_patterns or notify_on_complete or heartbeat:
+        # A provider that materializes every advertised property fills the whole
+        # schema on an ordinary foreground call — historically heartbeat=60, the
+        # only number the schema allowed. Rejecting that shape bounced the call
+        # back into the model's retry loop, and the error's `background=true`
+        # hint converted short commands into notification floods (#119196). A
+        # foreground result returns inline: there is nothing to heartbeat, so
+        # drop the field and run the command once.
+        heartbeat = 0
+        if notify or watch_patterns or notify_on_complete:
             return tool_error(
-                "notify/heartbeat only apply to background commands (foreground "
-                "results return directly). Either drop them, or run as "
+                "notify only applies to background commands (foreground "
+                "results return directly). Either drop it, or run as "
                 "terminal(command=..., background=true, notify=...)."
             )
         if args.get("pty", False):

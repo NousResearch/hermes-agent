@@ -887,6 +887,33 @@ class GatewayNotificationsMixin:
                     continue
                 yield profile, platform, platform_cfg, home, transport
 
+    def _lifecycle_notice_transports(self):
+        """``(profile, platform, platform_cfg, owed, dest, transport)`` for the startup lifecycle notice.
+
+        ``dest`` is where the notice goes: the platform's ``gateway_notice_channel`` when set, else
+        its home channel. ``owed`` is what the planned-restart marker accounts for — the home
+        channel, even when the notice is redirected, so a redirected notice still discharges the
+        marker (#112109). A notice channel needs no home channel: such a platform owes the marker
+        nothing, and is keyed by its destination.
+        """
+        for profile, platform, platform_cfg, home, transport in self._served_home_channel_transports():
+            yield profile, platform, platform_cfg, home, self._gateway_notice_channel(platform, platform_cfg) or home, transport
+        served = [(None, self.config, self.adapters)] + [
+            (profile, profile_cfg, (getattr(self, "_profile_adapters", None) or {}).get(profile) or {})
+            for profile, profile_cfg in (getattr(self, "_profile_configs", None) or {}).items()
+        ]
+        for profile, config, adapters in served:
+            for platform, platform_cfg in config.platforms.items():
+                if platform_cfg.home_channel and platform_cfg.home_channel.chat_id:
+                    continue  # already yielded above, with its home channel
+                dest = self._gateway_notice_channel(platform, platform_cfg)
+                if not dest or not dest.chat_id:
+                    continue
+                transport = _safe_delivery_transport(platform, config, adapters, profile=profile)
+                if transport is None:
+                    continue
+                yield profile, platform, platform_cfg, dest, dest, transport
+
     async def _send_home_channel_message(self, platform, home, transport, message: str, failure_fmt: str) -> bool:
         """Best-effort send to one home channel; True on success, failures logged with ``failure_fmt``."""
         from gateway.run import _non_conversational_metadata
@@ -989,33 +1016,35 @@ class GatewayNotificationsMixin:
         free_tier_line = self._free_tier_startup_line()
         if free_tier_line:
             message = f"{message}\n{free_tier_line}"
-        targets = list(self._served_home_channel_transports())
+        # Lifecycle broadcast: ``dest`` is the notice channel when one is set, else the home
+        # channel; ``owed`` is the home the planned-restart marker accounts for (see below).
+        targets = list(self._lifecycle_notice_transports())
         # A chat already notified for ANOTHER profile is not notified again.
         notified_chats = {
-            _delivery_target_key(platform.value, home.chat_id, home.thread_id)
-            for profile, platform, _cfg, home, _transport in targets
-            if _served_notice_target_key(profile, platform.value, home.chat_id, home.thread_id) in skipped
+            _delivery_target_key(platform.value, dest.chat_id, dest.thread_id)
+            for profile, platform, _cfg, owed, dest, _transport in targets
+            if _served_notice_target_key(profile, platform.value, owed.chat_id, owed.thread_id) in skipped
         }
-        for profile, platform, platform_cfg, home, transport in targets:
+        for profile, platform, platform_cfg, owed, dest, transport in targets:
             if not platform_cfg.gateway_restart_notification:
                 logger.info(
                     "Home-channel startup notification suppressed: %s has gateway_restart_notification=false",
                     platform.value,
                 )
                 continue
-            target = _served_notice_target_key(profile, platform.value, home.chat_id, home.thread_id)
+            target = _served_notice_target_key(profile, platform.value, owed.chat_id, owed.thread_id)
             if target in skipped or target in delivered:
                 continue
-            chat = _delivery_target_key(platform.value, home.chat_id, home.thread_id)
+            chat = _delivery_target_key(platform.value, dest.chat_id, dest.thread_id)
             if chat in notified_chats:
                 delivered.add(target)
                 continue
             if await self._send_home_channel_message(
-                platform, home, transport, message, "Home-channel startup notification failed for %s:%s: %s",
+                platform, dest, transport, message, "Home-channel startup notification failed for %s:%s: %s",
             ):
                 notified_chats.add(chat)
                 delivered.add(target)
-                logger.info("Sent home-channel startup notification to %s:%s", platform.value, home.chat_id)
+                logger.info("Sent home-channel startup notification to %s:%s", platform.value, dest.chat_id)
         return delivered
 
     async def _send_session_db_warning_notifications(self) -> None:

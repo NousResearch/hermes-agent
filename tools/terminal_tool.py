@@ -992,22 +992,36 @@ def _mutation_target_spans(segment: str):
             add(token, redirection.group("prefix"))
         index += 1
 
+    mutation_executables = {
+        "wipefs", "blkdiscard", "sgdisk", "shred", "dd", "diskutil",
+        "cp", "mv", "install", "tee",
+    }
     for start, _end, raw_word in _iter_shell_command_word_spans(segment):
         executable = os.path.basename(
             _deobfuscate_shell_word_for_detection(raw_word)
         ).lower()
-        is_mkfs = executable in {"mke2fs", "mkswap", "mkfs"} or (
-            executable.startswith("mkfs.") or executable.startswith("newfs_")
-        )
-        if executable not in {
-            "wipefs", "blkdiscard", "sgdisk", "shred", "dd", "diskutil",
-            "cp", "mv", "install", "tee",
-        } and not is_mkfs:
-            continue
-
         command_tokens = _shell_tokens_with_spans(segment, start)
         if command_tokens is None:
             raise _GuardTargetIndeterminate("malformed mutation command")
+
+        # The command-position scanner deliberately yields a multicall carrier such as
+        # busybox/toybox rather than guessing which applet follows it. For device-target
+        # projection, peel the direct applet so its mutation operand is resolved through
+        # the same backend identity floor as the standalone executable.
+        if executable in {"busybox", "toybox"}:
+            if len(command_tokens) < 2 or command_tokens[1][0].startswith("-"):
+                continue
+            command_tokens = command_tokens[1:]
+            executable = os.path.basename(
+                _deobfuscate_shell_word_for_detection(command_tokens[0][0])
+            ).lower()
+
+        is_mkfs = executable in {"mke2fs", "mkswap", "mkfs"} or (
+            executable.startswith("mkfs.") or executable.startswith("newfs_")
+        )
+        if executable not in mutation_executables and not is_mkfs:
+            continue
+
         args = command_tokens[1:]
         values = [token[0] for token in args]
 

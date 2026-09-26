@@ -508,23 +508,23 @@ describe('useComposerSubmit busy-turn routing', () => {
     clearQueuedPrompts('stored-session')
   })
 
-  it('falls back to the redirect when steer mode has no hidden-steer carrier', () => {
-    const { hook, onSteer } = renderSubmitHook({
+  it('falls back to the queue when steer mode has no hidden-steer carrier', () => {
+    const { hook, onSteer, queueCurrentDraft } = renderSubmitHook({
       busy: true,
       busyInputMode: 'steer',
       text: 'carrier missing',
       withSteerHidden: false
     })
 
-    // A surface that wires no `onSteerHidden` cannot steer, so the words take
-    // the redirect path rather than being silently dropped.
-    onSteer.mockResolvedValue(true)
-
+    // A surface that wires no `onSteerHidden` cannot honor non-cancelling
+    // steering. Preserve the configured contract by queueing instead of
+    // silently interrupting the live turn through `onSteer`.
     act(() => {
       hook.result.current.submitDraft()
     })
 
-    expect(onSteer).toHaveBeenCalledWith('carrier missing')
+    expect(queueCurrentDraft).toHaveBeenCalledTimes(1)
+    expect(onSteer).not.toHaveBeenCalled()
   })
 
   it('queues the words when the redirect RPC throws', async () => {

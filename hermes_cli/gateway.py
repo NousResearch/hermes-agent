@@ -3561,14 +3561,11 @@ def _get_cron_drain_timeout() -> float:
 def _get_restart_exit_wait_budget() -> float:
     """CLI wait for gateway exit after SIGUSR1 / self-restart (#77184)."""
     return resolve_restart_exit_wait_budget(
-        # TimeoutStopSec must cover the full stop budget, not just restart_drain_timeout. Cron work can
-        # legally wait cron_drain_timeout plus cleanup reserve before interrupt/teardown, and systemd
-        # SIGKILLs if the unit's deadline is shorter (#94759). 30s of post-drain headroom is preserved on
-        # top, with a 60s floor.
         _get_restart_drain_timeout(),
         _agent_timeout_setting(
             "HERMES_RESTART_AFTER_TURN_TIMEOUT", "restart_after_turn_timeout", parse_restart_after_turn_timeout
         ),
+        _get_cron_drain_timeout(),
     )
 
 

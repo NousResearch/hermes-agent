@@ -355,7 +355,9 @@ def resolve_systemd_timeout_stop_sec(
     return int(max(_seconds(floor_s), max(drain, cron_budget) + _seconds(headroom_s)))
 
 
-def resolve_restart_exit_wait_budget(drain_timeout: float, after_turn_timeout: float, *, headroom: float = 15.0) -> float:
+def resolve_restart_exit_wait_budget(
+    drain_timeout: float, after_turn_timeout: float, cron_drain_timeout: float = 0.0, *, headroom: float = 15.0,
+) -> float:
     """Seconds a CLI should wait for the gateway PID to exit after SIGUSR1: in-band restart may
-    defer ``stop()`` until turns finish, then spend ``drain_timeout`` inside it — cover both."""
-    return _seconds(drain_timeout) + _seconds(after_turn_timeout) + _seconds(headroom)
+    defer ``stop()`` until turns finish, then spend the longer chat or cron drain inside it."""
+    return max(_seconds(drain_timeout), _seconds(cron_drain_timeout)) + _seconds(after_turn_timeout) + _seconds(headroom)

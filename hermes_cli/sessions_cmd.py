@@ -52,11 +52,22 @@ def _not_found(session_id) -> int:
 
 def _print_dry_run_preview(candidates, filters) -> None:
     from hermes_cli.session_filters import describe_filters
-    print(f"Would export {len(candidates)} session(s) ({describe_filters(filters)}).")
+    description = describe_filters(filters) if filters is not None else "selected session"
+    print(f"Would export {len(candidates)} session(s) ({description}).")
     for row in candidates[:100]:
         print(f"  {row.get('id')}  {row.get('source', '')}")
     if len(candidates) > 100:
         print_truncated(len(candidates) - 100)
+
+
+def _preview_single_export(db, session_id) -> None:
+    """Resolve a selected session without rendering or exporting its transcript."""
+    resolved = db.resolve_session_id(session_id)
+    session = db.get_session(resolved) if resolved else None
+    if not session:
+        _not_found(session_id)
+        return
+    _print_dry_run_preview([session], None)
 
 
 _FILTER_ARGS = (
@@ -341,6 +352,8 @@ def _cmd_export(db, args):
         def _one(session_id):
             return _redact(db.export_session(session_id, include_compacted=shown))
         if args.session_id:
+            if args.dry_run:
+                return _preview_single_export(db, args.session_id)
             resolved = db.resolve_session_id(args.session_id)
             data = _one(resolved) if resolved else None
             if not data:
@@ -420,6 +433,8 @@ def _export_trace(db, args, filters):
         if not session_id:
             print("No session found to export. Pass --session-id.")
             return
+    if session_id and args.dry_run:
+        return _preview_single_export(db, session_id)
     if session_id and not db.resolve_session_id(session_id):
         _not_found(session_id)
         return
@@ -500,6 +515,8 @@ def _export_markdown(db, args, filters, redact):
         return
     lineage_is_logical = getattr(args, "lineage", "single") == "logical"
     if args.session_id:
+        if args.dry_run:
+            return _preview_single_export(db, args.session_id)
         return _export_markdown_single(db, args, _export_one, output_dir, lineage_is_logical)
     if not filters:
         print("Refusing bulk export without a filter. Pass --session-id or "

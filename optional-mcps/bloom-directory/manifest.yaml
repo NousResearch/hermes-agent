@@ -1,0 +1,84 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: bloom-directory
+description: |
+  An indie AI catalog that grows with you — curated for being human.
+
+  Bloom pairs with Hermes' persistent memory to build a shared
+  understanding of what actually helps you. Your Hermes agent knows the
+  context of your life; Bloom knows the indie apps that fit.
+
+  Human-centered indie AI: lifestyle, wellness, habits, creativity,
+  money mindset. Every backing you make deepens a portable identity
+  at bloomprotocol.ai/agents/<your-handle> that persists across every
+  MCP-capable client — but only Hermes has the long-term memory to
+  make it compound over time.
+
+source: https://bloomprotocol.ai/skill.md
+
+# Bloom ships a stateless streamable-HTTP MCP server at the URL below.
+# The Bloom API only ever asks for a public handle (2-30 chars,
+# alphanumeric) via MCP elicitation — no email, no OAuth, no PII flows
+# through the protocol. Handles are portable public receipts anyone can
+# cite at bloomprotocol.ai/agents/<handle>.
+transport:
+  type: http
+  url: https://bloomprotocol.ai/api/mcp
+
+auth:
+  type: none
+
+# Tool selection at install time:
+# Five tools total. list_projects + recommend_for_me are read-only. The
+# three write tools (sign_up_project, support_project, remember_my_taste)
+# all elicit a Bloom handle from the user before writing anything — safe
+# for install-time enable. No mutating tool touches user PII or external
+# systems beyond bloomprotocol.ai.
+#
+# The install-time checklist starts with everything pre-checked so users
+# get the full memory-native Identity loop (recommend → back → remember)
+# on first try. Anyone who wants only browsing can uncheck the writes.
+tools: {}
+
+post_install: |
+  Bloom exposes five MCP tools:
+
+    list_projects        — Browse the catalog by category (read-only)
+    recommend_for_me     — Personalised ranking from chat signals +
+                            past taste (READS the context Hermes
+                            accumulates about the user)
+    sign_up_project      — Private follow (email-style, no PII required)
+    support_project      — Public backing under a Bloom handle
+    remember_my_taste    — Record backed/skipped so future recs are
+                            smarter (WRITES to the shared identity)
+
+  Categories: lifestyle · wellness · habits · creativity · money-mind.
+
+  Why Bloom + Hermes uniquely fit:
+
+  Hermes accumulates context across sessions. Bloom curates apps matched
+  to that context. Together they create a discovery loop no other
+  MCP-capable client × directory pairing offers:
+
+    Session 1: User talks to Hermes about anxiety + sleep problems
+                 → Hermes → recommend_for_me(context) → Bloom returns
+                   Wysa + Endel + Mindsera with personalised whyFits
+                 → User backs Mindsera → Hermes calls support_project
+                   and remember_my_taste(backed)
+
+    Session 5 (three weeks later): User mentions money guilt
+                 → Hermes remembers user is journaling-oriented,
+                   skipped Wysa last time
+                 → recommend_for_me returns MoodWallet (reflective
+                   money mindset) — NOT Vera (numbers-heavy, doesn't
+                   fit the user's taste pattern)
+
+  The user's Bloom handle also works in Claude Code, Codex, OpenClaw —
+  same identity everywhere. But only Hermes has the persistent memory
+  to keep the loop compounding.
+
+  Docs + full skill spec: https://bloomprotocol.ai/skill.md
+  Public metrics:         https://bloomprotocol.ai/stats
+  llms.txt positioning:   https://bloomprotocol.ai/llms.txt

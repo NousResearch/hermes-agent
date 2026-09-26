@@ -317,6 +317,7 @@ def _behavior_fields(look: _HostLookup, explicitly_configured: bool) -> dict[str
         "reasoning_heuristic": look.flag("reasoningHeuristic", default=True),
         "reasoning_level_cap": look.pick("reasoningLevelCap") or "high",
         "message_max_chars": look.parsed("messageMaxChars", int, 25000),
+        "turn_max_chars": look.parsed("turnMaxChars", int, 8000),
         "dialectic_max_input_chars": look.parsed("dialecticMaxInputChars", int, 10000),
         "recall_mode": _normalize_choice(look.pick("recallMode") or "hybrid", _RECALL_MODES),
         "recall_sync": look.flag("recallSync", default=False),
@@ -373,6 +374,8 @@ class HonchoClientConfig:
     reasoning_level_cap: str = "high"
     # Honcho API limits (Honcho cloud: 25000 / 10000) — configurable for self-hosts
     message_max_chars: int = 25000
+    # What a single user TURN may contribute to memory (attachments already stubbed). 0 = off.
+    turn_max_chars: int = 8000
     dialectic_max_input_chars: int = 10000
     # "hybrid" (context + tools) | "context" (no tools) | "tools" (no auto context)
     recall_mode: str = "hybrid"

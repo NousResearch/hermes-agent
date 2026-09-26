@@ -294,8 +294,9 @@ _NO_GIT_REVISION_DIRS = frozenset({"desktop", "skills", "sidecar", "node_modules
 
 def _revision_owned_without_git(rel: Path) -> bool:
     """True for plugin code/control surfaces an update must never resurrect from the old tree."""
+    from tools.plugin_guard import CODE_FILE_EXTENSIONS
     return (
-        rel.suffix == ".py"
+        rel.suffix.lower() in CODE_FILE_EXTENSIONS
         or rel.as_posix() in _NO_GIT_REVISION_FILES
         or bool(rel.parts and rel.parts[0] in _NO_GIT_REVISION_DIRS)
     )

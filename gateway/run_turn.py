@@ -1420,11 +1420,8 @@ class GatewayTurnMixin:
         if history:
             return
         if not await self.async_session_store.has_any_sessions():
-            _intro_note = (
-                "[System note: This is the user's very first message ever. "
-                "Briefly introduce yourself and mention that /help shows available commands. "
-                "Keep the introduction concise -- one or two sentences max.]"
-            )
+            from agent.onboarding import PLAIN_INTRO_NOTE
+            _intro_note = PLAIN_INTRO_NOTE
             # onboarding.profile_build == "ask" (default) and not yet offered: swap the plain intro for
             # a consent-gated profile-build directive. Fires at most once.
             try:

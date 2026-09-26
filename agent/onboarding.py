@@ -121,8 +121,13 @@ def profile_build_mode(config: Mapping[str, Any]) -> str:
 
 PLAIN_INTRO_NOTE = (
     "[System note: This is the user's very first message ever. "
-    "Briefly introduce yourself and mention that /help shows available commands. "
-    "Keep the introduction concise -- one or two sentences max.]"
+    "If this message is itself a real request or task, DO THE TASK FIRST -- call "
+    "whatever tools it needs -- and only then, in the same reply, add one brief "
+    "closing sentence introducing yourself and mentioning that /help shows available "
+    "commands. Never let this note replace or skip work the user actually asked for. "
+    "If the message truly carries no request (e.g. just a greeting), briefly "
+    "introduce yourself and mention that /help shows available commands, in one or "
+    "two sentences.]"
 )
 
 

@@ -1345,6 +1345,7 @@ def _record_task_failure(
     end_run: bool = False,
     event_payload_extra: Optional[dict] = None,
     infrastructure: bool = False,
+    expected_run_id: Optional[int] = None,
 ) -> bool:
     """Record a non-success outcome and maybe trip the circuit breaker; every
     non-success path funnels through here so ``consecutive_failures`` stays
@@ -1363,6 +1364,13 @@ def _record_task_failure(
     with ``infrastructure: true`` but ``consecutive_failures`` is left alone and
     the breaker never trips; the card stays retryable and
     :func:`check_respawn_guard` spaces the retries.
+
+    ``expected_run_id``: the caller is a worker reporting on ITS OWN run, not
+    the dispatcher. The failure is booked only while that run is still the
+    card's live ``running`` run; otherwise it is a no-op returning False. A
+    worker can outlive its run -- it completed, handed off to review, or was
+    reclaimed -- and must never close a successor's run (a reviewer's), move
+    the card, or charge its breaker.
     """
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
@@ -1373,6 +1381,10 @@ def _record_task_failure(
             "FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
         if row is None:
+            return False
+        if expected_run_id is not None and (
+            row["status"] != "running" or row["current_run_id"] != expected_run_id
+        ):
             return False
         retry_status = (
             _kb._retry_status_for_run(conn, task_id, row["current_run_id"])

@@ -716,9 +716,23 @@ def launch_model_seed(source_cfg: dict) -> dict:
     return seed
 
 
+def launch_skills_disabled_seed(source_cfg: dict) -> dict:
+    """The ``skills:`` block a fresh profile inherits: the launch profile's
+    globally-disabled skills stay disabled instead of silently re-enabling
+    (issue #119088). ``{}`` when nothing is disabled — the fresh profile then
+    owns no ``skills`` section, as before."""
+    from hermes_cli.skills_config import get_disabled_skills
+    disabled = get_disabled_skills(source_cfg)
+    if not disabled:
+        return {}
+    return {"disabled": sorted(disabled)}
+
+
 def _seed_model_config(profile_dir: Path) -> None:
     """Copy (not link) the active profile's model block into a fresh profile so it is usable;
-    profiles stay independent islands afterwards."""
+    profiles stay independent islands afterwards. The launch profile's globally-disabled
+    skills ride along in the same write (issue #119088): without them a fresh profile
+    re-enables skills the user turned off globally and owns no ``skills`` section."""
     config_path = profile_dir / "config.yaml"
     if config_path.exists():
         return
@@ -726,7 +740,11 @@ def _seed_model_config(profile_dir: Path) -> None:
         from hermes_constants import get_hermes_home
         from hermes_cli.config import atomic_config_write, read_user_config_raw
         source = get_hermes_home() / "config.yaml"
-        seed = launch_model_seed(read_user_config_raw(source)) if source.is_file() else {}
+        source_cfg = read_user_config_raw(source) if source.is_file() else {}
+        seed = launch_model_seed(source_cfg)
+        skills_seed = launch_skills_disabled_seed(source_cfg)
+        if skills_seed:
+            seed = {**seed, "skills": skills_seed}
         if seed:
             atomic_config_write(config_path, seed)
 
@@ -1252,7 +1270,8 @@ def _clone_all_into(source_dir: Path, profile_dir: Path, canon: str) -> None:
 
 def _bootstrap_profile_dir(profile_dir: Path, source_dir: Optional[Path],
                            sync_imports: bool = False) -> None:
-    """Fresh layout: bootstrap dirs, then either seed a model block (no source) or clone
+    """Fresh layout: bootstrap dirs, then either seed a model block plus the inherited
+    skills.disabled (no source) or clone
     config files, installed skills (the dashboard's "clone from default" must keep bundled
     AND user-installed skills), and memory/identity files from *source_dir*.
 

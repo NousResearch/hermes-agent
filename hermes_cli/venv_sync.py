@@ -10,6 +10,7 @@ import argparse
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 from hermes_cli.steward import UPDATE_MECHANISMS
@@ -211,6 +212,73 @@ def refuse_foreign_owned_venv(project_root: Path) -> None:
             )
 
 
+_HERMES_LAUNCHER_NAMES = frozenset({
+    "hermes", "hermes.exe",
+    "hermes-agent", "hermes-agent.exe",
+    "hermes-acp", "hermes-acp.exe",
+    "tui-gateway", "tui-gateway.exe",
+})
+
+_HERMES_MODULE_PREFIXES = (
+    "hermes_cli",
+    "tui_gateway",
+    "acp_adapter",
+    "agent",
+    "pm",
+    "run_agent",
+)
+
+
+def is_hermes_entry(project_root: Path, argv: list[str] | None = None) -> bool:
+    """True when the current process was launched as a Hermes entry point.
+
+    External consumers (e.g. hermes-webui) that import Hermes modules as a
+    library must not be re-executed or trigger source update syncs (#122160).
+    """
+    if argv is None:
+        argv = sys.argv
+    if not argv:
+        return False
+    entry = argv[0]
+    if not entry or entry == "-c":
+        return False
+
+    root_resolved = Path(project_root).resolve()
+
+    # 1. Known console script launcher executable name (case-insensitive on Windows)
+    entry_name = Path(entry).name.lower()
+    if entry_name in _HERMES_LAUNCHER_NAMES or Path(entry).stem.lower() in {
+        "hermes", "hermes-agent", "hermes-acp", "tui-gateway",
+    }:
+        return True
+
+    # 2. Module execution: `python -m <module>`
+    main_module = sys.modules.get("__main__")
+    spec = getattr(main_module, "__spec__", None)
+    if spec and spec.name:
+        spec_name = spec.name
+        if spec_name in _HERMES_MODULE_PREFIXES or any(
+            spec_name.startswith(f"{prefix}.") for prefix in _HERMES_MODULE_PREFIXES
+        ):
+            return True
+        if spec.origin:
+            try:
+                if Path(spec.origin).resolve().is_relative_to(root_resolved):
+                    return True
+            except (ValueError, OSError):
+                pass
+
+    # 3. Direct script invocation: path resolves inside project root
+    try:
+        entry_path = Path(entry).resolve()
+        if entry_path.is_relative_to(root_resolved):
+            return True
+    except (ValueError, OSError):
+        pass
+
+    return False
+
+
 def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     """Finish a self-managed source update before importing app dependencies.
 
@@ -370,7 +438,16 @@ def relaunch_command(
         if option in ("-W", "-X") and index < len(original):
             options.append(original[index])
             index += 1
-    prefix = f"import sys, runpy; sys.path.insert(0, {str(root)!r}); sys.argv = {argv!r}; "
+    extra_paths: list[str] = []
+    if argv[0] != "-c" and not (module and module != "__main__"):
+        try:
+            entry_parent = Path(argv[0]).resolve().parent
+            if entry_parent != root.resolve() and entry_parent.is_dir():
+                extra_paths.append(str(entry_parent))
+        except (ValueError, OSError):
+            pass
+    path_inserts = "".join(f"sys.path.insert(0, {p!r}); " for p in reversed([str(root), *extra_paths]))
+    prefix = f"import sys, runpy; {path_inserts}sys.argv = {argv!r}; "
     if argv[0] == "-c":
         body = f"exec({original[index + 1]!r})"
     elif module and module != "__main__":

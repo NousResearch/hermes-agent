@@ -975,9 +975,42 @@ _PROTOCOL_VIOLATION_ERROR = (
 
 
 _EXIT_SUMMARY_MARKER = "Resume this session with:"
-# Rich panel/rule chrome around the rendered response, and the CLI's own preamble lines.
+# The footer the CLI prints under the marker. Together they form one exit-summary block.
+_EXIT_SUMMARY_CHROME_PREFIXES = (
+    "hermes --resume", "hermes -c", "Session:", "Title:", "Duration:", "Messages:",
+)
+# Rich panel/rule chrome around the rendered response, and the CLI's own preamble lines
+# (repeated at the head of every attempt in the append-mode log, so they crowd a 400-char tail).
 _LOG_CHROME = re.compile(r"[─━═╭╮╰╯│┃┌┐└┘]+|☤\s*Hermes")
-_LOG_NOISE_PREFIXES = ("session_id:", "Query:", "Initializing agent")
+_LOG_NOISE_PREFIXES = (
+    "session_id:", "Query:", "Initializing agent", "Warning: Unknown toolsets:",
+)
+
+
+def _strip_exit_summary_blocks(raw: str) -> str:
+    """Drop every CLI exit-summary block (the marker line and the footer under it).
+
+    The per-task log is APPEND-mode across attempts, so a later attempt's output sits
+    *below* an earlier attempt's summary. Truncating at the marker — what this used to
+    do — therefore threw away exactly the newest text and reported the PREVIOUS
+    attempt's prose as this crash's last output: t_2c12aac4 crashed 4x on
+    ``Error: Unknown skill(s): sdlc-review`` and every run's ``error`` field carried the
+    byte-identical tail of an older comment instead, sending triage after a load spike
+    that did not exist. Removing the blocks keeps the newest output at the end.
+    """
+    kept: list[str] = []
+    in_summary = False
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(_EXIT_SUMMARY_MARKER):
+            in_summary = True
+            continue
+        if in_summary:
+            if not stripped or stripped.startswith(_EXIT_SUMMARY_CHROME_PREFIXES):
+                continue
+            in_summary = False
+        kept.append(line)
+    return "\n".join(kept)
 
 
 def _worker_final_output(task_id: str, board: Optional[str] = None) -> str:
@@ -988,8 +1021,9 @@ def _worker_final_output(task_id: str, board: Optional[str] = None) -> str:
     reason is usually sitting there: the model's own explanation of why it could
     not comply (#88603), or the rendered provider error (#46593). The reap used to
     discard it in favour of a canned message on every retry. Trims the CLI exit
-    summary, rule lines and the ``session_id:`` trailer; returns "" (never raises)
-    on a missing/empty log.
+    summaries (all of them — the log is append-mode, see
+    ``_strip_exit_summary_blocks``), the rule lines and the ``session_id:``
+    trailer; returns "" (never raises) on a missing/empty log.
 
     ``board`` must come from the dispatching tick: ambient current-board resolution
     is wrong for every board but the one the dispatcher thread happens to call
@@ -1002,9 +1036,7 @@ def _worker_final_output(task_id: str, board: Optional[str] = None) -> str:
     if not raw:
         return ""
     raw = _EXIT_TRAILER_RE.sub("", raw)
-    cut = raw.rfind(_EXIT_SUMMARY_MARKER)
-    if cut != -1:
-        raw = raw[:cut]
+    raw = _strip_exit_summary_blocks(raw)
     lines = []
     for ln in raw.splitlines():
         ln = _LOG_CHROME.sub("", ln).strip()

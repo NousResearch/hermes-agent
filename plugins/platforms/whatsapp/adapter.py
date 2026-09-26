@@ -313,7 +313,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._configure_text_batch_delays()
 
     def _bridge_url(self, path: str) -> str:
-        return f"http://127.0.0.1:{self._bridge_port}/{path}"
+        return f"http://{_BRIDGE_HOST}:{self._bridge_port}/{path}"
 
     def _bridge_req(self, method: str, path: str, timeout: float, **kwargs):
         """``session.<method>`` context manager for a bridge endpoint (caller must ``async with``)."""
@@ -914,6 +914,11 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
 # ── Plugin glue: register(ctx) plus the hooks for gateway/run.py, gateway/config.py, hermes_cli/gateway.py, send_message_tool.py.
 
+# Loopback literal, never "localhost": on macOS "localhost" resolves to ::1 FIRST, so any other
+# process bound to the same port on IPv6 (a dev server, a container runtime) answers instead of the
+# bridge and the request dies as aiohttp "Server disconnected" (#whatsapp-share-server-disconnected).
+_BRIDGE_HOST = "127.0.0.1"
+
 _WA_EXT_MEDIA_TYPE = {
     **dict.fromkeys((".jpg", ".jpeg", ".png", ".webp", ".gif"), "image"),
     **dict.fromkeys((".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"), "video"),
@@ -957,7 +962,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
         async with aiohttp.ClientSession() as session:
             if pending_mentions:
                 async with session.get(
-                    f"http://localhost:{bridge_port}/health",
+                    f"http://{_BRIDGE_HOST}:{bridge_port}/health",
                     timeout=aiohttp.ClientTimeout(total=5),
                 ) as resp:
                     health = await resp.json() if resp.status == 200 else {}
@@ -968,7 +973,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
 
             async def _post(path, payload, total, error_label=None):
                 """``(messageId, None)`` on 200, else ``(None, error_dict)`` (body read only when labelled)."""
-                url = f"http://localhost:{bridge_port}/{path}"
+                url = f"http://{_BRIDGE_HOST}:{bridge_port}/{path}"
                 async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=total)) as resp:
                     if resp.status == 200:
                         return (await resp.json()).get("messageId"), None

@@ -8,6 +8,7 @@ import contextlib
 import contextvars
 import logging
 import os
+import re
 import threading
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
@@ -41,6 +42,26 @@ from agent.interrupt_compat import request_hard_interrupt
 from tools.approval_context import reset_hermes_interactive_context, set_hermes_interactive_context
 
 logger = logging.getLogger(__name__)
+
+_SKILL_INVOCATION_RE = re.compile(r'^\[IMPORTANT: The user has invoked the "([^"]+)" (skill(?: bundle)?),')
+
+
+def _display_user_text_for_persistence(user_text: str) -> str:
+    """Return user-facing prompt text for session previews and titles."""
+    try:
+        from agent.skill_commands import extract_user_instruction_from_skill_message
+    except Exception:
+        return user_text or "[Image attachment]"
+
+    clean_text = extract_user_instruction_from_skill_message(user_text)
+    if clean_text:
+        return clean_text
+
+    match = _SKILL_INVOCATION_RE.match(user_text or "")
+    if match:
+        return f"{match.group(1)} {match.group(2)}"
+
+    return user_text or "[Image attachment]"
 
 # Runs the synchronous AIAgent off the event loop.
 _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="acp-agent")
@@ -804,7 +825,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             try:
                 return agent.run_conversation(
                     user_message=user_content, conversation_history=state.history, task_id=session_id,
-                    persist_user_message=user_text or "[Image attachment]",
+                    persist_user_message=_display_user_text_for_persistence(user_text),
                 )
             except Exception as e:
                 logger.exception("Agent error in session %s", session_id)

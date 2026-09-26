@@ -109,3 +109,22 @@ def test_slash_kanban_gc_retention_bounds(board, days, expected):
     with kbc.connect_closing() as conn:
         assert _event_rows(conn, tid) > 0
     assert log.exists()
+
+
+def test_cmd_gc_never_removes_the_workspaces_root_itself(board):
+    # A scratch task whose workspace_path is the managed root itself (reachable via
+    # kanban_create) must never make gc wipe every other task's scratch dir.
+    root = kb.workspaces_root()
+    sibling = root / "t_other"
+    sibling.mkdir(parents=True)
+    (sibling / "work.txt").write_text("another task's scratch")
+    with kbc.connect_closing() as conn:
+        tid = kb.create_task(conn, title="archived scratch")
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status='archived', workspace_kind='scratch', "
+                "workspace_path=? WHERE id=?",
+                (str(root), tid),
+            )
+    assert kanban_ops._cmd_gc(_args()) == 0
+    assert (sibling / "work.txt").exists()

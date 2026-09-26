@@ -134,6 +134,42 @@ class TestGatewayHistoryBuildForwardsSidecar:
         assert agent_history[0]["api_content"] == "hi\n\nCTX"
 
 
+def test_gateway_replay_preserves_durable_rows_across_real_db_flush(tmp_path):
+    """#123462: replayed durable rows stay durable while a new row persists once."""
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+    from agent.session_persistence import SessionPersistenceMixin
+    from gateway.run import _build_gateway_agent_history
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        session_id = "gateway-replay-marker"
+        db.create_session(session_id, "telegram", model="test/model")
+        db.append_message(session_id=session_id, role="user", content="first")
+        db.append_message(session_id=session_id, role="assistant", content="reply")
+
+        loaded = db.get_messages_as_conversation(session_id)
+        assert all(message.get(_DB_PERSISTED_MARKER) for message in loaded)
+
+        replayed, _ = _build_gateway_agent_history(loaded)
+        assert all(message.get(_DB_PERSISTED_MARKER) for message in replayed)
+
+        agent = SessionPersistenceMixin()
+        agent.session_id = session_id
+        agent._session_db = db
+        agent._session_db_created = True
+        agent._last_flushed_db_idx = 0
+        agent._flushed_db_message_ids = None
+        agent._db_flush_scan_prefix = None
+        agent._persist_user_message_idx = None
+        agent._pending_cli_user_message = None
+        agent._flush_messages_to_session_db(replayed + [{"role": "user", "content": "new"}])
+
+        persisted = db.get_messages_as_conversation(session_id)
+        assert [message["content"] for message in persisted] == ["first", "reply", "new"]
+    finally:
+        db.close()
+
 
 def test_gateway_history_keeps_sidecar_only_assistant_row():
     """A reasoning-only clean stop persists content="" with the promoted reply in ``api_content``

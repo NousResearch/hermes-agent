@@ -1129,6 +1129,14 @@ def _build_replay_entry(
     providers.
     """
     entry: Dict[str, Any] = {"role": role, "content": content}
+    # Born-durable rows stay durable through replay (#92231 -> #121462): a
+    # marker-only flush (codex projected flush, incremental persist with no
+    # history arg) must skip this entry, or the whole block is re-appended
+    # after a compaction + cache-invalidation rehydration. Replay rewrites
+    # are view-only; the durable row they derive from must not be rewritten.
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+    if msg.get(_DB_PERSISTED_MARKER):
+        entry[_DB_PERSISTED_MARKER] = True
     # api_content sidecar keeps the request prefix byte-stable — ONLY if this pipeline did not rewrite
     # content. The caller renders timestamps AFTER this check so a stamp alone never drops the sidecar.
     _sidecar = msg.get("api_content")

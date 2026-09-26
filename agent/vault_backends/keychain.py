@@ -78,6 +78,12 @@ _SEC_TIMEOUT = 30.0
 # rc codes that mean "keychain locked / authorization refused" for secret reads:
 # 36 = user interaction not allowed (background session), 152 = locked keychain.
 _LOCKED_RCS = (36, 152)
+
+
+class _SecTimeout(RuntimeError):
+    """``security`` did not return within ``_SEC_TIMEOUT`` — inside a GUI login session that is
+    what a locked keychain looks like: the binary hands the unlock to SecurityAgent and blocks on
+    the dialog instead of failing with rc 152."""
 _INET_MAX_PASSWORD = 4096
 
 # Attended-mode unlock lease (process-level so fresh per-call backend instances all
@@ -352,7 +358,7 @@ class MacOSKeychainLoginBackend(LoginBackend):
                 capture_output=True, stdin=subprocess.DEVNULL, text=True, encoding="utf-8",
                 errors="replace", timeout=_SEC_TIMEOUT, env=self._env())
         except subprocess.TimeoutExpired as exc:
-            raise RuntimeError(f"keychain operation timed out after {_SEC_TIMEOUT:.0f}s") from exc
+            raise _SecTimeout(f"keychain operation timed out after {_SEC_TIMEOUT:.0f}s") from exc
         except OSError as exc:
             raise RuntimeError(f"failed to invoke security: {exc}") from exc
 
@@ -380,18 +386,37 @@ class MacOSKeychainLoginBackend(LoginBackend):
             _register_exit_relock(str(self._file()))
         return ok
 
+    def _drop_lease(self) -> None:
+        """Clear the attended lease so the surface re-prompts authoritatively."""
+        lease = self._lease()
+        lease["unlocked"] = False
+        lease["generation"] = int(lease.get("generation", 0)) + 1
+
     def _run_unlocked(self, fn, *args) -> subprocess.CompletedProcess:
-        """Run one ``security`` call; on a locked rc, heal in sidecar mode or raise
-        ``UnlockRequired`` for the surface, then retry ONCE."""
-        proc = fn(*args)
-        if proc.returncode not in _LOCKED_RCS:
-            return proc
-        if self.needs_unlock or not self._auto_unlock():
-            # attended mode: clear the lease so the surface re-prompts authoritatively
-            self._lease()["unlocked"] = False
-            self._lease()["generation"] = int(self._lease()["generation"]) + 1
+        """Run one secret-bearing ``security`` call without ever reaching a SecurityAgent dialog.
+
+        A locked keychain does not reliably fail with rc 152: inside a GUI login session
+        ``security`` hands the unlock to SecurityAgent and blocks on the dialog for the whole
+        timeout (the macOS CI runner did exactly that; a laptop waking from sleep with the
+        lock-on-sleep setting would too). So the lock state is settled BEFORE the call:
+        sidecar mode feeds the password over the pty first (idempotent on an open keychain),
+        attended mode refuses without a live lease. A locked rc or a timeout afterwards means
+        the OS re-locked underneath us — drop the lease and let the surface re-prompt.
+        """
+        if self.needs_unlock:
+            if self._lease().get("unlocked") is not True:
+                raise UnlockRequired(self)
+        elif not self._auto_unlock():
             raise UnlockRequired(self)
-        return fn(*args)
+        try:
+            proc = fn(*args)
+        except _SecTimeout:
+            self._drop_lease()
+            raise UnlockRequired(self) from None
+        if proc.returncode in _LOCKED_RCS:
+            self._drop_lease()
+            raise UnlockRequired(self)
+        return proc
 
     def _lease(self) -> Dict[str, Any]:
         return _LEASES.setdefault(str(self._file()),

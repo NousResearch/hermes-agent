@@ -170,7 +170,7 @@ sys.exit(2)
 
 def _state(tmp_path):
     p = tmp_path / "state.json"
-    p.write_text(json.dumps({"unlocked": True, "password": "", "items": []}))
+    p.write_text(json.dumps({"unlocked": True, "password": "masterpw", "items": []}))
     return p
 
 
@@ -272,18 +272,18 @@ def test_list_items_missing_file_is_empty(tmp_path):
 
 def test_resolve_password_extracts_and_unescapes(fake_security):
     _seed_state(fake_security, items=[dict(_ITEM, password='a"b\\c')])
-    backend = _backend(fake_security.tmp)
+    backend = _backend(fake_security.tmp, with_sidecar=True)
     assert backend.resolve_password("kc:example.org|jane@example.com") == 'a"b\\c'
 
 
 def test_resolve_password_missing_item_raises_vault_error(fake_security):
-    backend = _backend(fake_security.tmp)
+    backend = _backend(fake_security.tmp, with_sidecar=True)
     with pytest.raises(VaultError):
         backend.resolve_password("kc:example.org|nobody")
 
 
 def test_resolve_password_malformed_handle_raises(fake_security):
-    backend = _backend(fake_security.tmp)
+    backend = _backend(fake_security.tmp, with_sidecar=True)
     with pytest.raises(VaultError):
         backend.resolve_password("kc:novalue")
 
@@ -310,6 +310,35 @@ def test_locked_with_sidecar_self_heals(fake_security):
     assert unlock_calls
     assert all("masterpw" not in c for c in unlock_calls)
     assert json.loads(fake_security.state_path.read_text())["unlocked"] is True
+
+
+def test_locked_state_is_settled_before_security_runs(fake_security, monkeypatch):
+    """A locked keychain does not reliably return rc 152: in a GUI login session `security`
+    blocks on a SecurityAgent dialog (the macOS CI runner hung for the full timeout). So the
+    backend never issues a secret-bearing call it cannot know will complete: attended mode
+    refuses without a lease and spawns nothing; sidecar mode unlocks over the pty FIRST; a
+    timeout on a call that did run drops the lease and re-prompts instead of a raw error."""
+    _seed_state(fake_security, unlocked=False, password="masterpw", items=[dict(_ITEM)])
+    attended = _backend(fake_security.tmp)
+    with pytest.raises(UnlockRequired):
+        attended.resolve_password("kc:example.org|jane@example.com")
+    assert all(c[0] != "find-internet-password" for c in fake_security.calls)
+
+    sidecar = _backend(fake_security.tmp, with_sidecar=True)
+    assert sidecar.resolve_password("kc:example.org|jane@example.com") == "pwOne"
+    ops = [c[0] for c in fake_security.calls if c[0] in ("unlock-keychain", "find-internet-password")]
+    assert ops.index("unlock-keychain") < ops.index("find-internet-password")
+
+    attended.unlock("masterpw")
+    assert attended.is_unlocked() is True
+
+    def hang(self, *args, cwd=None):
+        raise kc_mod._SecTimeout("keychain operation timed out after 30s")
+
+    monkeypatch.setattr(MacOSKeychainLoginBackend, "_sec", hang)
+    with pytest.raises(UnlockRequired):
+        attended.resolve_password("kc:example.org|jane@example.com")
+    assert attended.is_unlocked() is False
 
 
 def test_attended_unlock_then_resolve(fake_security):
@@ -550,9 +579,14 @@ def test_keychain_prompt_mode_real_binary(tmp_path):
 
     backend = MacOSKeychainLoginBackend({"file": str(kc_path)})
     assert backend.needs_unlock is True
+    # Attended mode never issues a secret-bearing call without a lease (a locked keychain
+    # would block on the SecurityAgent dialog in a GUI session), even right after create.
+    with pytest.raises(UnlockRequired):
+        backend.add_item("example.org", "bob@example.org", "s3cret", origin="https://example.org")
+    backend.unlock(master)
     handle = backend.add_item("example.org", "bob@example.org", "s3cret",
                               origin="https://example.org")
-    backend._sec("lock-keychain", str(kc_path))
+    backend.release()  # session release: physical lock + lease dropped
     assert backend.is_unlocked() is False
     # No sidecar → a locked read refuses instead of prompting on its own.
     with pytest.raises(UnlockRequired):

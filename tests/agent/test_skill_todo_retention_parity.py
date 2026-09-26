@@ -3,20 +3,17 @@
 Compaction re-injects the todo list verbatim (``TODO_INJECTION_HEADER`` +
 ``TodoStore.format_for_injection``) while skill instructions are pruned down
 to ``[SKILL_PRUNED: ...]`` markers. The imperative crosses the boundary; the
-policy that governed it does not. These tests pin the coupling fix: when the
-compressed transcript carries prune markers AND a todo snapshot is being
-re-injected, the snapshot block must also carry an explicit instruction to
-reload those skills before acting on the preserved tasks.
+policy that governed it does not. The notice must preserve that safety warning
+WITHOUT listing every historical skill as a mandatory reload.
 
 Invariants covered:
 
-* the notice names every pruned skill with its exact ``skill_view`` call;
+* the notice asks for selective recovery, not every historical skill;
 * skill guidance recovery now survives at least as well as the todo snapshot
   (same message, same strip lifecycle);
 * the notice rides AFTER ``TODO_INJECTION_HEADER`` so the stale-snapshot
   strip removes both together — repeated boundaries never accumulate;
-* deterministic and bounded — same input, same bytes; marker cap shared with
-  the summary re-injection path;
+* deterministic and bounded — same input, same bytes regardless of marker count;
 * absent when nothing was pruned (zero recurring cost for clean sessions).
 """
 
@@ -85,7 +82,7 @@ def _msgs(n=20):
 class TestPrunedSkillReloadNotice:
     """Unit contract of the notice builder."""
 
-    def test_names_every_pruned_skill_with_reload_call(self):
+    def test_selective_notice_does_not_list_historical_skills(self):
         summary = (
             "[CONTEXT COMPACTION] summary\n\n## Pruned Skills\n"
             + _skill_pruned_marker("hodle-design-system")
@@ -96,10 +93,11 @@ class TestPrunedSkillReloadNotice:
             [{"role": "user", "content": summary}]
         )
         assert notice.startswith(_PRUNED_SKILL_RELOAD_NOTICE_HEADER)
-        assert "skill_view(name='hodle-design-system')" in notice
-        assert "skill_view(name='frontend-design')" in notice
+        assert "only the skills required for the current task" in notice
+        assert "hodle-design-system" not in notice
+        assert "frontend-design" not in notice
 
-    def test_collects_markers_from_pruned_tool_rows_in_tail(self):
+    def test_detects_pruned_tool_rows_in_tail_without_listing_names(self):
         # A pruned skill_view row that survived inside the protected tail
         # carries the marker in tool-role content.
         rows = [
@@ -113,9 +111,10 @@ class TestPrunedSkillReloadNotice:
             },
         ]
         notice = _pruned_skill_reload_notice(rows)
-        assert "skill_view(name='big-skill')" in notice
+        assert "only the skills required for the current task" in notice
+        assert "big-skill" not in notice
 
-    def test_deduplicates_and_preserves_first_seen_order(self):
+    def test_multiple_markers_do_not_inflate_notice(self):
         marker_a = _skill_pruned_marker("alpha")
         marker_b = _skill_pruned_marker("beta")
         rows = [
@@ -123,8 +122,9 @@ class TestPrunedSkillReloadNotice:
             {"role": "tool", "content": marker_a},
         ]
         notice = _pruned_skill_reload_notice(rows)
-        assert notice.count("skill_view(name='alpha')") == 1
-        assert notice.index("alpha") < notice.index("beta")
+        assert "alpha" not in notice
+        assert "beta" not in notice
+        assert "skill_view(name=" not in notice
 
     def test_empty_when_nothing_pruned(self):
         rows = [
@@ -133,13 +133,14 @@ class TestPrunedSkillReloadNotice:
         ]
         assert _pruned_skill_reload_notice(rows) == ""
 
-    def test_bounded_by_shared_marker_cap(self):
+    def test_bounded_regardless_of_marker_count(self):
         text = "\n".join(
             _skill_pruned_marker(f"skill-{i}")
             for i in range(_MAX_PRUNED_SKILL_MARKERS + 15)
         )
         notice = _pruned_skill_reload_notice([{"role": "user", "content": text}])
-        assert notice.count("skill_view(name=") == _MAX_PRUNED_SKILL_MARKERS
+        assert len(notice) < 500
+        assert "skill_view(name=" not in notice
 
 
     def test_notice_does_not_feed_the_marker_extractor(self):
@@ -192,7 +193,8 @@ class TestSkillGuidanceSurvivesWithTodos:
         # Parity: the same message that preserved the imperative carries the
         # policy-recovery instruction.
         assert _PRUNED_SKILL_RELOAD_NOTICE_HEADER in tail_text
-        assert "skill_view(name='hodle-design-system')" in tail_text
+        assert "only the skills required for the current task" in tail_text
+        assert "skill_view(name='hodle-design-system')" not in tail_text
         # Ordering: header first (the synthetic-row classifier keys on it),
         # notice after, inside the same strip window.
         assert tail_text.index(TODO_INJECTION_HEADER) < tail_text.index(
@@ -314,5 +316,6 @@ class TestNoticeStripLifecycle:
         assert "stale task" not in tail_text
         assert "stale-skill" not in tail_text
         assert "fresh task" in tail_text
-        assert "skill_view(name='hodle-design-system')" in tail_text
+        assert "only the skills required for the current task" in tail_text
+        assert "skill_view(name='hodle-design-system')" not in tail_text
         assert "keep this human text" in tail_text

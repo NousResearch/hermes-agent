@@ -605,8 +605,17 @@ def salvage_grown_transcript(
             and len(content) > _SALVAGE_SUMMARY_MAX_CHARS
             and _looks_like_compaction_summary(msg, content)
         ):
-            msg["content"] = (content[:_SALVAGE_SUMMARY_MAX_CHARS].rstrip()
-                              + "\n…[summary truncated so compaction can shrink]\n\n" + _SUMMARY_END_MARKER)
+            trimmed = (content[:_SALVAGE_SUMMARY_MAX_CHARS].rstrip()
+                       + "\n…[summary truncated so compaction can shrink]")
+            # The pruned-skill block normally sits at the END of the summary.
+            # Retain its recovery markers even when salvage caps the summary;
+            # the task-scoped TODO notice intentionally no longer lists every
+            # historical skill or its reload call. These are recovery pointers,
+            # not an instruction to reload all of them.
+            names = _extract_pruned_skill_names(content)[:_MAX_PRUNED_SKILL_MARKERS]
+            if names:
+                trimmed = _reinject_pruned_skill_markers(trimmed, names)
+            msg["content"] = trimmed + "\n\n" + _SUMMARY_END_MARKER
     _prune_stale_reasoning_replay(out)
     if estimate_messages_tokens_rough(out) >= budget:
         _salvage_reduce_todo_snapshot(out)

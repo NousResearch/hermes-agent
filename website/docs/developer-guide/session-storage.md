@@ -112,6 +112,62 @@ not universal exactly-once delivery, content deduplication, or a schema migratio
 Historical rows are not rewritten; unmarked historical inputs cannot establish
 ownership for a redelivered event.
 
+## Selective owned-payload erasure
+
+Memory extensions can remove explicitly selected transcript payloads without
+replacing the conversation. `SessionDB.get_message_redaction_snapshot(session_id,
+message_ids, mode='payload')` returns exact row IDs, payload digests and the mode,
+including archived rows. `mode='api_content'` clears only the model-facing API
+payload while preserving the original human question and its metadata.
+`redact_message_payloads(session_id, expected_rows)` verifies these preimages and
+the existing turn/compression leases in its write transaction. It removes selected
+content, API sidecars, reasoning, provider message items and content-bearing display metadata;
+function tool-call IDs/names and neutral arguments/results preserve replay pairing.
+Unrelated rows, native row IDs, routing, counters and task identity are retained.
+Native accepted-input and delegation-delivery dedupe markers also survive, so an
+erased delivery cannot be replayed as a new input.
+Existing FTS triggers update the indexes. Content-derived display hashes are
+invalidated normally. A digest-only marker makes the same selection idempotent.
+
+In a running gateway, use `await gateway.redact_native_message_payloads(session_key,
+session_id, expected_rows)` on its event loop. The routing key selects the owning
+profile. This trusted internal API does not authorize a sender or discover source
+lineage: the extension must authenticate the request and select source and derived
+answer rows from its own provenance. It returns `pending` for active work or
+existing queued/spooled transcript copies, leaving those copies untouched for
+normal recovery. Only the shared compression conversation participates in that
+lease check; independent forks, delegates and reset children require their own
+explicit owned-row selection and do not block this operation. The extension
+retains its existing erasure event for reconciliation;
+the runtime creates no erasure queue. A changed preimage raises `ValueError`.
+
+`status="redacted"` means the selected database payloads and this gateway's affected
+cached transcript buffers have settled. Cancellation waits for an already-started
+mutation and lease cleanup. Cache eviction preserves session tool resources and
+unrelated cached agents. A compression-conversation counter in existing `state_meta` makes an
+idle CLI or other native client reload its transcript at the next durable turn
+admission, even without lease contention. Unchanged sessions retain their prompt
+cache. This deliberate cache break follows explicit erasure, not routine memory updates.
+
+Two lifecycle notifications expose the settled boundaries. `on_native_turn_settled`
+receives `session_id`, `task_id`, `turn_id`, and `platform` after an entered native
+turn releases its durable lease, including failure and interruption. It excludes
+rejected admission and persistence-disabled forks. A gateway still owns its local
+turn lease at that point; `on_gateway_turn_settled` subsequently receives
+`session_id`, `session_key`, `run_generation`, and `gateway` after actual local
+release. The gateway observer schedules asynchronous reconciliation on its existing
+loop; it must not synchronously wait for that loop. Hook delivery is a reconciliation
+opportunity, not an erasure receipt: pending writers must still pass the API's checks.
+Hook lookup and scheduled work use the owning profile. A standalone gateway
+re-enters its launch profile even when a hosted profile's context is present.
+
+The caller must also reconcile known source-linked descendants, source files,
+curated notes, summaries, JSON/JSONL transcripts, request dumps and backups. This
+API does not discover paraphrases, alter provider-hosted threads, erase forensic
+SQLite/filesystem remnants, or declare all copies forgotten. A standalone DB call
+likewise does not clear another process's idle in-memory buffers immediately;
+the revision prevents their reuse on its next native turn.
+
 ## Architecture Overview
 
 ```

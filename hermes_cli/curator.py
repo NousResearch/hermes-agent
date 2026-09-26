@@ -423,7 +423,7 @@ def _cmd_purge(args) -> int:
     import shutil
     import time
     from hermes_cli.config import cfg_get, load_config
-    from tools import skill_ledger
+    from tools import skill_ledger, skill_usage
     from tools.skill_usage import _archive_dir
     ttl_days = getattr(args, "days", None)
     if ttl_days is None:
@@ -438,8 +438,16 @@ def _cmd_purge(args) -> int:
         print("curator: no archive directory — nothing to purge.")
         return 0
     cutoff = time.time() - ttl_days * 86400
+
+    def _archived_ts(p: Path) -> float:
+        # Prefer the usage record's archived_at: archives made before archive_skill stamped the
+        # dir mtime still carry the skill's last-edit mtime and would be purged at once.
+        rec = skill_usage.get_record(p.name)
+        at = skill_usage._parse_iso_timestamp(rec.get("archived_at")) if rec.get("state") == skill_usage.STATE_ARCHIVED else None
+        return at.timestamp() if at else p.stat().st_mtime
+
     candidates = sorted(
-        p for p in archive_root.iterdir() if p.is_dir() and p.stat().st_mtime < cutoff)
+        p for p in archive_root.iterdir() if p.is_dir() and _archived_ts(p) < cutoff)
     if not candidates:
         print(f"curator: no archived skills older than {ttl_days}d.")
         return 0

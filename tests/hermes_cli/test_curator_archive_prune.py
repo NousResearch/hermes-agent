@@ -59,6 +59,31 @@ def test_purge_ages_an_archive_from_when_it_was_archived(tmp_path, monkeypatch):
     assert (tmp_path / "skills" / ".archive" / "old-helper" / "SKILL.md").is_file()
 
 
+def test_purge_prefers_recorded_archived_at_over_a_stale_dir_mtime(tmp_path, monkeypatch):
+    """An archive made before the mtime stamp keeps an old dir mtime; its usage record's
+    archived_at (today) is what the TTL counts from."""
+    import os
+    import time
+
+    import hermes_cli.curator as curator_cli
+    from tools import skill_usage
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    skill_dir = tmp_path / "skills" / "legacy"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: legacy\ndescription: x\n---\n# body\n", encoding="utf-8")
+    skill_usage.record_created("legacy", agent_created=True)
+    ok, msg = skill_usage.archive_skill("legacy")
+    assert ok, msg
+    archived = tmp_path / "skills" / ".archive" / "legacy"
+    long_ago = time.time() - 100 * 86400
+    os.utime(archived, (long_ago, long_ago))
+
+    assert curator_cli._cmd_purge(_ns(days=30, dry_run=False, yes=True)) == 0
+    assert (archived / "SKILL.md").is_file()
+
+
 # ─── prune ──────────────────────────────────────────────────────────────────
 
 

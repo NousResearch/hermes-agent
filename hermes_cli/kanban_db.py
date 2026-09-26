@@ -561,6 +561,7 @@ def _explicit_board_intent_pinned() -> bool:
 
 def _board_path(
     env_var: Optional[str], board: Optional[str], default_parts: tuple[str, ...], leaf: str,
+    *, allow_env_override: bool = True,
 ) -> Path:
     """Shared resolver. An explicit ``board=`` argument — or the scoped
     ``--board`` context (:func:`scoped_current_board`) — outranks the ``env_var``
@@ -570,8 +571,10 @@ def _board_path(
     watcher / dispatcher ticks) and dispatched or delegated workers keep
     resolving through the pin. Without explicit intent the ``env_var`` override
     pins the file, else legacy ``<root>/<default_parts>`` for the ``default``
-    board, else ``board_dir(slug)/leaf``."""
-    pin = os.environ.get(env_var, "").strip() if env_var else ""
+    board, else ``board_dir(slug)/leaf``. ``allow_env_override=False`` skips the
+    env pin entirely so cross-board read surfaces (``boards list``) can address
+    each board's own file even inside a dispatched worker's shell (#123733)."""
+    pin = os.environ.get(env_var, "").strip() if (env_var and allow_env_override) else ""
     slug = _explicit_board_slug(board)
     if pin and (slug is None or _explicit_board_intent_pinned()):
         return Path(pin).expanduser()
@@ -582,10 +585,11 @@ def _board_path(
     return board_dir(slug) / leaf
 
 
-def kanban_db_path(board: Optional[str] = None) -> Path:
+def kanban_db_path(board: Optional[str] = None, *, allow_env_override: bool = True) -> Path:
     """``kanban.db`` path: ``HERMES_KANBAN_DB`` pins it (injected into workers);
-    ``default`` -> ``<root>/kanban.db`` (back-compat), else the board dir."""
-    return _board_path("HERMES_KANBAN_DB", board, ("kanban.db",), "kanban.db")
+    ``default`` -> ``<root>/kanban.db`` (back-compat), else the board dir.
+    ``allow_env_override=False`` ignores the pin for cross-board reads."""
+    return _board_path("HERMES_KANBAN_DB", board, ("kanban.db",), "kanban.db", allow_env_override=allow_env_override)
 
 
 def workspaces_root(board: Optional[str] = None) -> Path:

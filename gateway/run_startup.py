@@ -58,12 +58,89 @@ class GatewayStartupMixin:
     def _serving_state(self) -> str:
         return "degraded" if self._startup_parked_platforms else "running"
 
+    def _prior_life_verdict(self):
+        """Classify how the PREVIOUS gateway life ended.  Cached per boot; never raises."""
+        cached = getattr(self, "_prior_life_verdict_cache", None)
+        if cached is not None:
+            return cached
+        from gateway.restart_notice import (
+            PriorLifeVerdict, classify_prior_life, read_last_event_loop_blocked_site,
+        )
+
+        home = getattr(self, "_restart_notice_home", None)
+        try:
+            from gateway.lifecycle_ledger import _read_json, get_lifecycle_sentinel_path
+
+            sentinel = getattr(self, "_restart_notice_sentinel", None)
+            if sentinel is None:
+                sentinel = _read_json(get_lifecycle_sentinel_path(home))
+            site = getattr(self, "_restart_notice_site", None)
+            if site is None:
+                site = read_last_event_loop_blocked_site(home)
+            verdict = classify_prior_life(sentinel, site=site)
+        except Exception:
+            logger.debug("Prior-life verdict unavailable", exc_info=True)
+            verdict = PriorLifeVerdict(unclean=False)
+        self._prior_life_verdict_cache = verdict
+        return verdict
+
+    async def _maybe_notify_unclean_restart(
+        self, adapter: BasePlatformAdapter, event: MessageEvent, session_key: str,
+        resume_reason: Optional[str],
+    ) -> None:
+        """Post ONE short notice explaining an UNCLEAN restart, before the resumed turn runs.
+
+        The graceful drain path already tells live sessions "Gateway restarting" on the way down.
+        An ``os._exit`` from the loop-liveness watchdog (exit 75), a SIGKILL, or a host death runs
+        no drain, so the FIRST moment anything can speak is here — on the next boot, before the
+        resumed turn produces a reply that would otherwise arrive minutes late with no explanation.
+        Strictly best-effort: every failure is logged and swallowed so the resumed turn always runs.
+        """
+        try:
+            from gateway.restart_notice import (
+                UNCLEAN_NOTICE_RESUME_REASONS, claim_restart_notice, format_restart_notice,
+            )
+
+            if resume_reason not in UNCLEAN_NOTICE_RESUME_REASONS:
+                return
+            verdict = self._prior_life_verdict()
+            message = format_restart_notice(verdict)
+            if not message:
+                return
+            # Idempotent per (boot, session): a re-scheduled resume or a crash loop must not spam.
+            # The claim persists via an atomic rename, so it goes OFF-LOOP — a blocking
+            # ``atomic_json_write`` on the loop thread is the exact class of stall that causes the
+            # watchdog ``os._exit`` this notice exists to explain.
+            _home = getattr(self, "_restart_notice_home", None)
+            if not await asyncio.to_thread(
+                claim_restart_notice, verdict.boot_id, session_key, _home
+            ):
+                return
+        except Exception:
+            logger.debug("Unclean-restart notice classification failed for %s", session_key, exc_info=True)
+            return
+        try:
+            source = getattr(event, "source", None)
+            if source is not None:
+                metadata = self._thread_metadata_for_target(
+                    source.platform, source.chat_id, getattr(source, "thread_id", None),
+                    chat_type=getattr(source, "chat_type", None), adapter=adapter,
+                )
+                await adapter.send(str(source.chat_id), message, metadata=metadata)
+        except Exception as exc:
+            # Never let a transport failure eat the resumed turn.
+            logger.warning("Failed to deliver unclean-restart notice to %s: %s", session_key, exc)
+
     async def _run_startup_resume_event(
         self, adapter: BasePlatformAdapter, event: MessageEvent, session_key: str,
+        resume_reason: Optional[str] = None,
     ) -> None:
         """Dispatch one synthetic startup resume and wait for its agent turn (inbound stays queued
         until it finishes, else a user message can race it)."""
         from gateway.run import _AGENT_PENDING_SENTINEL
+        # Explain an UNCLEAN prior death BEFORE the resumed turn runs — the only surface left when
+        # no drain ran (watchdog os._exit / SIGKILL).  Best-effort; never raises.
+        await self._maybe_notify_unclean_restart(adapter, event, session_key, resume_reason)
         try:
             await adapter.handle_message(event)
             session_tasks = getattr(adapter, "_session_tasks", {})
@@ -610,7 +687,9 @@ class GatewayStartupMixin:
             # Empty-text internal event: the _is_resume_pending branch prepends the reason-aware note.
             event = MessageEvent(text="", message_type=MessageType.TEXT, source=source, internal=True)
             task = self._retain_background_task(
-                asyncio.create_task(self._run_startup_resume_event(adapter, event, entry.session_key))
+                asyncio.create_task(self._run_startup_resume_event(
+                    adapter, event, entry.session_key, getattr(entry, "resume_reason", None),
+                ))
             )
             if getattr(self, "_startup_restore_in_progress", False):
                 tasks = getattr(self, "_startup_restore_tasks", None)

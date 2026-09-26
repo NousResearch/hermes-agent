@@ -11,6 +11,7 @@ import logging
 
 import pytest
 
+from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from hermes_cli import fallback_config
 from hermes_cli.fallback_config import get_fallback_chain
 
@@ -66,12 +67,57 @@ def test_correctly_placed_and_real_nested_keys_never_warn(caplog):
     assert caplog.text == ""
 
 
-def test_warning_does_not_repeat_per_call(caplog):
-    """get_fallback_chain runs per turn on some surfaces; the notice must not spam the log."""
-    config = {"model": {"fallback_providers": [NOUS_ENTRY]}}
+def test_warning_deduplicates_per_config_not_per_process(caplog):
+    """Repeated reads of one config stay quiet without silencing a later config."""
+    config_a = {"model": {"fallback_providers": [NOUS_ENTRY]}}
+    config_b = {
+        "model": {
+            "fallback_providers": [
+                {"provider": "openrouter", "model": "anthropic/claude-sonnet-4"}
+            ]
+        }
+    }
 
     with caplog.at_level(logging.WARNING, logger=fallback_config.__name__):
-        for _ in range(5):
-            get_fallback_chain(config)
+        get_fallback_chain(config_a)
+        get_fallback_chain(config_a)
+        get_fallback_chain(config_b)
+        get_fallback_chain(config_b)
 
-    assert caplog.text.count("model.fallback_providers") == 1
+    assert caplog.text.count("model.fallback_providers") == 2
+
+
+def test_warning_state_isolated_between_profiles(tmp_path, caplog):
+    """A warning in profile A must not consume the same warning for profile B."""
+    profile_a = tmp_path / "a"
+    profile_b = tmp_path / "b"
+    profile_a.mkdir()
+    profile_b.mkdir()
+    config = {"model": {"fallback_providers": [NOUS_ENTRY]}}
+
+    def resolve_twice(home):
+        token = set_hermes_home_override(home)
+        try:
+            get_fallback_chain(config)
+            get_fallback_chain(config)
+        finally:
+            reset_hermes_home_override(token)
+
+    with caplog.at_level(logging.WARNING, logger=fallback_config.__name__):
+        resolve_twice(profile_a)
+        resolve_twice(profile_b)
+        resolve_twice(profile_a)
+
+    assert caplog.text.count("model.fallback_providers") == 2
+
+
+def test_warning_returns_after_config_is_corrected_then_regresses(caplog):
+    """A hot-reload correction resets suppression for a later reintroduction."""
+    bad = {"model": {"fallback_providers": [NOUS_ENTRY]}}
+
+    with caplog.at_level(logging.WARNING, logger=fallback_config.__name__):
+        get_fallback_chain(bad)
+        get_fallback_chain({"model": {}})
+        get_fallback_chain(bad)
+
+    assert caplog.text.count("model.fallback_providers") == 2

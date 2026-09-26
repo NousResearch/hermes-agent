@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from hermes_constants import hermes_home_key
+
 logger = logging.getLogger(__name__)
 
 # Sections that never carry a fallback chain but read as though they should. The CLI reference
@@ -13,8 +15,29 @@ logger = logging.getLogger(__name__)
 # no loader looks. ``delegation.fallback_providers`` is deliberately absent: it IS a real key.
 _MISPLACED_FALLBACK_SECTIONS: tuple[str, ...] = ("model",)
 
-# Warn once per (section, key) per process: get_fallback_chain runs per turn on some surfaces.
-_warned_misplaced_fallback: set[tuple[str, str]] = set()
+# Keep only the active diagnostic fingerprint for each profile/config key. The gateway serves
+# multiple profiles in one process, while several callers reload config on every turn; profile
+# scope plus a non-secret route fingerprint avoids both cross-profile suppression and log spam.
+_warned_misplaced_fallback: dict[
+    tuple[str, str, str], tuple[tuple[str, str, str, str], ...]
+] = {}
+
+
+def _misplaced_fallback_fingerprint(raw: Any) -> tuple[tuple[str, str, str, str], ...]:
+    """Return non-secret route identity for diagnostic de-duplication."""
+    candidates = raw if isinstance(raw, list) else [raw]
+    fingerprint: list[tuple[str, str, str, str]] = []
+    for entry in candidates:
+        if isinstance(entry, dict):
+            fingerprint.append((
+                "entry",
+                str(entry.get("provider") or "").strip(),
+                str(entry.get("model") or "").strip(),
+                _normalized_base_url(entry.get("base_url")),
+            ))
+        else:
+            fingerprint.append((type(entry).__name__, "", "", ""))
+    return tuple(fingerprint)
 
 
 def _warn_misplaced_fallback_keys(config: dict[str, Any]) -> None:
@@ -25,17 +48,19 @@ def _warn_misplaced_fallback_keys(config: dict[str, Any]) -> None:
     so the primary's exhaustion kills the session with no fallback and no explanation. Entry
     values are never logged — fallback dicts may carry ``api_key``/``extra_headers``.
     """
+    profile_key = hermes_home_key()
     for section_name in _MISPLACED_FALLBACK_SECTIONS:
         section = config.get(section_name)
-        if not isinstance(section, dict):
-            continue
         for key in ("fallback_providers", "fallback_model"):
-            if not section.get(key):
+            marker = (profile_key, section_name, key)
+            raw = section.get(key) if isinstance(section, dict) else None
+            if not raw:
+                _warned_misplaced_fallback.pop(marker, None)
                 continue
-            marker = (section_name, key)
-            if marker in _warned_misplaced_fallback:
+            fingerprint = _misplaced_fallback_fingerprint(raw)
+            if _warned_misplaced_fallback.get(marker) == fingerprint:
                 continue
-            _warned_misplaced_fallback.add(marker)
+            _warned_misplaced_fallback[marker] = fingerprint
             logger.warning(
                 "'%s.%s' is not read by any loader and is IGNORED — the fallback chain is read "
                 "from the TOP-LEVEL '%s' in config.yaml. Move the list to the top level (or run "

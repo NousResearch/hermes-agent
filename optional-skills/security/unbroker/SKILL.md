@@ -139,11 +139,16 @@ For anything past a couple of brokers, run this as **map → reduce → act**, n
 - **Phase 1 - DISCOVER (read-only, parallel, idempotent).** Crawl *every* broker first and record a
   verdict for each (`found` / `not_found` / `indirect_exposure` / `blocked`). Scanning has no side
   effects, so it is safe to parallelize and retry. Getting the full exposure map *before* acting is
-  what unlocks cluster dedup and prioritization below. **Default: the parent drives `web_extract`
-  probes directly** - most people-search sites render name/phone/address results as static HTML that
-  `web_extract` reads in seconds. Escalate to `browser_*` only for the few JS-only sites, and to
-  `delegate_task` subagents only for genuinely *reasoning*-heavy work (large-scale namesake/relative
-  disambiguation). **Do NOT hand a browser-toolset subagent a big list of brokers to crawl** - in the
+  what unlocks cluster dedup and prioritization below. **Default: the parent drives the cheap scan
+  ladder directly** - use `web_extract` only when Hermes is configured with a real page-extraction
+  backend for arbitrary URLs. Hermes leaves the provider settings blank by default; DDGS is a
+  search-only provider, while extraction falls back to Firecrawl when that service is available.
+  When no extractor is configured/available, start with `web_search site:` probes and then escalate
+  to browser/operator checks. Most accessible
+  people-search pages are static HTML and are cheap when a content extractor is available, but a
+  search-only backend will not fetch the page body for you. Escalate to `browser_*` only for the few
+  JS-only sites, and to `delegate_task` subagents only for genuinely *reasoning*-heavy work
+  (large-scale namesake/relative disambiguation). **Do NOT hand a browser-toolset subagent a big list of brokers to crawl** - in the
   field this timed out repeatedly (600s, ~5-6 brokers each, no summary) because browser navigation is
   heavy; the ledger writes that survived came at 10x the cost of parent `web_extract`. A `blocked`
   (DataDome/Cloudflare/`antibot`) site is *not* a subagent job either: record `blocked` and requeue it
@@ -222,12 +227,18 @@ recording `found` and before any deletion.
 4. **Scanning (when `next` says so).** For `fanout_scan`: run `$PDD fanout <subject>` and **spawn one
    `delegate_task` subagent per `batch`, in parallel, passing that batch's ready-made `brief`** - do
    not scan all brokers yourself sequentially. For `scan_inline`: scan the few brokers yourself.
-   Either way, each broker gets **every** `search_vectors` entry via the `references/methods.md`
-   ladder (`web_extract` → `site:` probe → `browser_navigate` → `scrapling`), a 404 is INCONCLUSIVE
+   Either way, each broker gets **every** `search_vectors` entry via the capability-conditioned
+   `references/methods.md` ladder: use `web_extract` only with a real extraction backend, otherwise
+   start with a `site:` probe; escalate to `browser_navigate` and then `scrapling` only when those
+   capabilities are available and needed. A 404 is INCONCLUSIVE
    (not `not_found`), `blocked` is recorded when `antibot` is set and no stealth browser is available,
    and subject vs namesake/relative is confirmed before recording:
    `$PDD record <subject> <broker> <found|not_found|indirect_exposure|blocked> --found <bool> --evidence '{"listing_urls":[...]}'`.
-   The parent re-verifies key `found` claims from subagents before trusting them.
+   Every worker returns its intended state/evidence. **From the parent process**, run
+   `$PDD show <subject> <broker>` for every returned verdict and compare `state`, `found`, and
+   `evidence`; a worker's own readback may point at a different `PDD_DATA_DIR`/`HERMES_HOME` and is
+   not proof. Missing or mismatched parent records are failed writes and must not advance to opt-out.
+   The parent also re-verifies key `found` claims before trusting them.
 5. **Opt-outs (when `next` says so).** Actions come pre-ordered parents-first with `steps` from each
    broker record's own `optout.playbook` (field-verified; cluster parents like PeopleConnect,
    Whitepages, BeenVerified, Spokeo have exact, live-checked recipes). **Deletion usually beats

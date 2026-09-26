@@ -269,17 +269,15 @@ def _real_profile_cdp() -> tuple:
         # Reuse BEFORE writing anything. CRITICAL: the snapshot overlay (truncates/rewrites
         # Cookies / Login Data) must NOT run while a live copy-browser (maybe from a previous
         # hermes process) holds the user-data-dir open — that corrupts the databases.
+        #
+        # The reuse probe must never call agent-browser's `get cdp-url`: that command is not
+        # observational when the named session isn't already a running browser process — it
+        # LAUNCHES one (from possibly-stale persisted session state) and returns its endpoint,
+        # resurrecting a mock-keychain Chrome for Testing on the profile copy before the intended
+        # signed-browser launch ever runs (#98437). `_surviving_chrome_cdp` is a pure read of the
+        # copy dir's own DevToolsActivePort file plus a live /json/version check, so a miss here
+        # means "no live browser to reuse," not "launch one to find out."
         copy_dir = real_profile_copy_dir(browser)
-        existing = _agent_browser_get_cdp(_bt._REAL_PROFILE_SESSION)
-        if existing and _cdp_http_ready(existing) and _cdp_on_data_dir(existing, copy_dir):
-            _bt._real_profile_cdp_cache["cdp"] = existing
-            return existing, None
-        if existing:  # stale/wrong-dir session: close it so nothing holds the dir open
-            _agent_browser_close_session(_bt._REAL_PROFILE_SESSION)
-        # A Chrome from an earlier hermes process can still hold the copy dir after its attach
-        # daemon was reaped (that owner died). Re-attach to it rather than overlay a live profile;
-        # if the daemon cannot attach, fail closed — never snapshot over an open profile. Not ours
-        # to terminate (no Popen handle): it lives until the user closes it, by design.
         surviving = _surviving_chrome_cdp(copy_dir)
         if surviving:
             cdp, err = _attach_agent_browser_to_real_profile(int(surviving.rsplit(":", 1)[1]), copy_dir)
@@ -288,6 +286,9 @@ def _real_profile_cdp() -> tuple:
             _bt._real_profile_cdp_cache["cdp"] = cdp
             _bt.logger.info("real-profile: re-attached to surviving Chrome at %s (%s)", cdp, copy_dir)
             return cdp, None
+        # No live browser owns the dir. Best-effort close any stale agent-browser session bound
+        # to the name (a close, never a launch) so nothing conflicts before overlay+relaunch.
+        _agent_browser_close_session(_bt._REAL_PROFILE_SESSION)
 
         copy_dir, err = snapshot_real_profile(browser)
         if err or not copy_dir:

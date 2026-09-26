@@ -170,6 +170,38 @@ def test_catalog_prices_every_entry_for_this_machine(client):
         assert isinstance(row["downloaded"], bool)
 
 
+@pytest.mark.parametrize("backend, expected", [
+    ("auto", "qwen3.8-27b"), ("cuda", "qwen3.8-27b"),
+    ("vulkan", "qwen3.6-35b-a3b"), ("cpu", "qwen3.6-35b-a3b"),
+])
+def test_calibrated_catalog_and_quickstart_respect_backend(client, monkeypatch, backend, expected):
+    from hermes_cli.local_runtime import binaries, bootstrap, catalog, hardware
+    from hermes_cli.local_runtime.estimator import HardwareBudget
+    from hermes_cli.web_routers import local_models
+
+    budget = HardwareBudget(int(48 * (1 << 30) * .8), 48 << 30, 0, uma=True,
+                            gpu_name="NVIDIA RTX Spark N1X (5120-core Blackwell RTX GPU)", platform="win32")
+    monkeypatch.setattr(hardware, "probe_budget", lambda **kw: budget)
+    monkeypatch.setattr(catalog, "refresh_catalog_soon", lambda: None)
+    monkeypatch.setattr(bootstrap, "staged_model_ids", lambda: set())
+    monkeypatch.setattr(binaries, "installed_engine",
+                        lambda *args, **kwargs: binaries.Engine("cuda", "b10964", Path("unused")))
+    monkeypatch.setattr(local_models, "_load_config", lambda: {"local_runtime": {"backend": backend}})
+
+    def no_probe(*args, **kwargs):
+        raise AssertionError("recommendation must not launch a model or run another hardware probe")
+
+    monkeypatch.setattr(bootstrap, "_detect_gpu_vendor", no_probe)
+    monkeypatch.setattr(bootstrap, "ensure_local_runtime", no_probe)
+    response = client.get("/api/local-models/catalog")
+    assert response.status_code == 200
+    chosen = [row["id"] for row in response.json()["models"] if row["recommended"]]
+    assert chosen == [expected]
+    assert local_models._quickstart_target(local_models.QuickstartBody(), budget)[0].id == expected
+    explicit = local_models.QuickstartBody(model_id="qwen3.8-27b")
+    assert local_models._quickstart_target(explicit, budget)[0].id == "qwen3.8-27b"
+
+
 def test_catalog_never_hides_unaffordable_models(client, monkeypatch):
     """Unaffordable entries stay visible with a plain reason — hiding them
     is how users conclude the feature is broken."""

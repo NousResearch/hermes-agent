@@ -9,6 +9,7 @@ stripped PATH — gateway and service sessions don't inherit the interactive env
 from __future__ import annotations
 
 from contextlib import suppress
+import csv
 import logging
 import os
 import re
@@ -16,6 +17,7 @@ import shutil
 import subprocess
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 
 from hermes_cli.local_runtime.estimator import HardwareBudget
@@ -30,6 +32,9 @@ _GIB = 1 << 30
 # reality). Small cards give up window to this; spill mode is their path to big models.
 _MARGIN_FLOOR = 2 << 30
 _MARGIN_FRACTION = 0.09
+# Room left on top of what other programs hold when a model launches: a browser tab or a chat app
+# can take another GiB between launch and the next request.
+_LAUNCH_HEADROOM = 1 << 30
 # UMA headroom: on unified-memory machines the model shares physical memory with the OS and every
 # app, so budget from RAM minus this fraction.
 _UMA_HEADROOM_FRACTION = 0.20
@@ -194,20 +199,20 @@ def _nvidia_smi_path() -> str | None:
     return found
 
 
-def _nvidia_vram() -> tuple[int, int] | None:
-    """(total, free) MiB->bytes from nvidia-smi, or None."""
+def _nvidia_vram() -> tuple[int, int, str] | None:
+    """(total bytes, free bytes, name) from the same nvidia-smi query, or None."""
     exe = _nvidia_smi_path()
     if exe is None:
         return None
     with suppress(OSError, ValueError, subprocess.TimeoutExpired):
         out = subprocess.run(
-            [exe, "--query-gpu=memory.total,memory.free",
+            [exe, "--query-gpu=memory.total,memory.free,name",
              "--format=csv,noheader,nounits"],
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
         if out.returncode != 0 or not out.stdout.strip():
             return None
-        total_mib, free_mib = (int(x) for x in out.stdout.strip().splitlines()[0].split(","))
-        return total_mib << 20, free_mib << 20
+        total_mib, free_mib, name = next(csv.reader(out.stdout.strip().splitlines()))
+        return int(total_mib) << 20, int(free_mib) << 20, name.strip()
     return None
 
 
@@ -300,10 +305,10 @@ def _unified_pool_bytes(smi_total: int, ram_total: int) -> int | None:
     return None
 
 
-def _uma_budget(base: int, total: int) -> HardwareBudget:
+def _uma_budget(base: int, total: int, *, gpu_name: str = "") -> HardwareBudget:
     usable = max(0, int(base * (1 - _UMA_HEADROOM_FRACTION)))
     return HardwareBudget(usable_vram_bytes=usable, total_device_bytes=total,
-                          ram_available_bytes=0, uma=True)
+                          ram_available_bytes=0, uma=True, gpu_name=gpu_name, platform=sys.platform)
 
 
 def probe_budget(*, planning: bool = False) -> HardwareBudget:
@@ -337,16 +342,41 @@ def probe_budget(*, planning: bool = False) -> HardwareBudget:
             # measured soft cliff: decode collapses ~3.5x when concurrent demand hits it).
             live = (vram[1] + ram_avail) if vram else ram_avail
             base = min(unified, live)
-        return _uma_budget(base, unified)
+        return _uma_budget(base, unified, gpu_name=vram[2] if vram else "")
 
     if vram is None:
         # No NVIDIA device visible: Metal/Vulkan/CPU paths budget from RAM as UMA (Apple
         # Silicon) — conservative for discrete AMD until a vendor probe lands.
         return _uma_budget(ram_total if planning else ram_avail, ram_total)
 
-    total, free = vram
+    total, free, gpu_name = vram
     margin = max(_MARGIN_FLOOR, int(total * _MARGIN_FRACTION))
     return HardwareBudget(usable_vram_bytes=max(0, (total if planning else free) - margin),
                           total_device_bytes=total,
                           ram_available_bytes=ram_total if planning else ram_avail,
-                          uma=False)
+                          uma=False, gpu_name=gpu_name, platform=sys.platform)
+
+
+def launch_budget(capacity: HardwareBudget, *, own_bytes: int = 0) -> HardwareBudget | None:
+    """Capacity less what other programs hold on the card right now, or None when that can't apply.
+
+    Capacity assumes other programs hold no more than the fixed margin. Beside a heavier desktop the
+    capacity-sized window doesn't fit, and Windows pages part of the model to host memory without
+    an error: a 32 GiB card with 4.5-6.3 GiB held by other apps decoded at ~24 tok/s at the
+    capacity window, and at ~90 tok/s at a window sized from free memory.
+
+    ``own_bytes`` is what the managed server holds now and frees before the new instance loads.
+    A stopped server's memory reads as free by the time its process has exited (measured on
+    Windows: free memory was fully back at the first reading after exit). None for unified memory
+    (its live budget is already free memory) and when the device query fails, so callers keep the
+    capacity plan.
+    """
+    if capacity.uma:
+        return None
+    vram = _nvidia_vram()
+    if vram is None:
+        return None
+    total, free, _name = vram
+    others = max(0, total - free - max(0, own_bytes))
+    usable = min(capacity.usable_vram_bytes, max(0, total - others - _LAUNCH_HEADROOM))
+    return replace(capacity, usable_vram_bytes=usable)

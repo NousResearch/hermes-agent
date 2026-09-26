@@ -94,7 +94,7 @@ def test_no_probe_available_stays_discrete(monkeypatch):
 def _uma_machine(monkeypatch, *, view):
     _no_cache(monkeypatch)
     monkeypatch.setattr(hw, "_nvidia_vram",
-                        lambda: (UMA_SMI_TOTAL, 14848 << 20))
+                        lambda: (UMA_SMI_TOTAL, 14848 << 20, ""))
     monkeypatch.setattr(hw, "_ram_bytes",
                         lambda: (UMA_RAM, 32 * GIB))
     monkeypatch.setattr(hw, "_device_pool_view", lambda: view)
@@ -189,6 +189,31 @@ def test_smi_resolver_uses_wsl_driver_path_when_path_is_empty(monkeypatch):
     monkeypatch.setattr(hw.Path, "exists", lambda candidate: candidate == wsl_smi)
 
     assert hw._nvidia_smi_path() == str(wsl_smi)
+
+
+def test_memory_probe_carries_identity_without_another_process(monkeypatch):
+    from types import SimpleNamespace
+    import sys
+
+    calls = []
+    name = "NVIDIA RTX Spark N1X (5120-core Blackwell RTX GPU)"
+    monkeypatch.setattr(hw, "_nvidia_smi_path", lambda: "nvidia-smi")
+    monkeypatch.setattr(hw, "_ram_bytes", lambda: (64 * GIB, 22 * GIB))
+    monkeypatch.setattr(hw, "_device_pool_view", lambda: (UMA_POOL, True))
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        assert argv[0] == "nvidia-smi"
+        output = f"32704, 31423, {name}\n" if argv[1].endswith(",name") else "32704, 31423\n"
+        return SimpleNamespace(returncode=0, stdout=output)
+
+    monkeypatch.setattr(hw.subprocess, "run", run)
+    budget = hw.probe_budget(planning=True)
+    assert budget.gpu_name == name
+    assert budget.platform == sys.platform
+    assert budget.total_device_bytes == UMA_POOL
+    assert budget.usable_vram_bytes == int(UMA_POOL * .8)
+    assert len(calls) == 1
 
 
 # ── probe cache ──────────────────────────────────────────────

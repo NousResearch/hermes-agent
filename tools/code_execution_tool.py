@@ -635,20 +635,16 @@ def _execute_remote(code: str, task_id: Optional[str], enabled_tools: Optional[L
         # Session-kernel path: one persistent kernel per owner on the
         # run-to-completion transport. Spawn failure falls OPEN to the per-call
         # path below so a degraded remote host never blocks execution.
-        try:
-            # --- Session-kernel path (hermes-agent#96873) ------------------- Same always-on model as
-            # local: one persistent kernel per owner, rebuilt on the run-to-completion transport (detached
-            # runner + file cell protocol).
-            from tools.code_kernel_remote import execute_in_remote_kernel
-            kernel_result = execute_in_remote_kernel(
-                code, env=env, env_type=env_type, task_env_id=effective_task_id,
-                sandbox_tools=frozenset(sandbox_tools), timeout=timeout,
-                max_tool_calls=max_tool_calls, reset=bool(reset),
-                idle_exit=int(_cfg.get("kernel_idle_timeout", 1800)),
-            )
-        except Exception:
-            logger.warning("remote session-kernel path failed; falling back to per-call", exc_info=True)
-            kernel_result = None
+        # None means no cell was submitted. An exception can arrive AFTER execution,
+        # including a lost response to request publication or result cleanup; replaying
+        # through the per-call path would duplicate the cell's side effects.
+        from tools.code_kernel_remote import execute_in_remote_kernel
+        kernel_result = execute_in_remote_kernel(
+            code, env=env, env_type=env_type, task_env_id=effective_task_id,
+            sandbox_tools=frozenset(sandbox_tools), timeout=timeout,
+            max_tool_calls=max_tool_calls, reset=bool(reset),
+            idle_exit=int(_cfg.get("kernel_idle_timeout", 1800)),
+        )
         if kernel_result is not None:
             return _finish_remote_kernel_result(kernel_result, timeout=timeout, exec_start=exec_start)
         logger.info("remote session kernel unavailable on %s; using per-call path", env_type)

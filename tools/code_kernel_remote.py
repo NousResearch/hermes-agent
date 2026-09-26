@@ -332,6 +332,11 @@ def execute_in_remote_kernel(
         return _run_attached_cell(kernel, key, code, env=env, task_env_id=task_env_id,
                                   sandbox_tools=sandbox_tools, timeout=timeout, max_tool_calls=max_tool_calls,
                                   reused=reused, state_reset=state_reset, state_lost=state_lost)
+    except Exception:
+        # A transport exception cannot prove the cell stopped. Retire this kernel
+        # before reporting failure so the next call cannot reuse uncertain state.
+        _REGISTRY.discard(key, kernel)
+        raise
     finally:
         with _REGISTRY.lock:
             kernel.attached -= 1

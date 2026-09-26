@@ -15,6 +15,8 @@ import time
 import unittest
 from unittest.mock import patch
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from tools.code_kernel_remote import (
@@ -338,6 +340,48 @@ class TestDispatchIntegration(unittest.TestCase):
             result = json.loads(_execute_remote("print()", "t", ["read_file"]))
         self.assertEqual(result["status"], "success")
         self.assertIn("per-call ran", result["output"])
+
+
+@pytest.mark.parametrize("failure_at", ["submission", "result_cleanup"])
+def test_transport_failure_never_replays_an_admitted_cell(failure_at):
+    from tools.code_execution_tool import _execute_remote
+
+    submitted = []
+
+    def submit(command):
+        submitted.append(command)
+        if failure_at == "submission":
+            raise ConnectionError("lost response after request publication")
+        return {"output": "", "returncode": 0}
+
+    def remove_result(command):
+        raise ConnectionError("lost response after completed cell cleanup")
+
+    env = ScriptedEnv([
+        ("command -v python3", lambda c: {"output": "OK\n", "returncode": 0}),
+        ("mv ", submit),
+        ("rm -f /tmp/fixture-kernel/cells/cell_res_", remove_result),
+        *_spawn_ok_handlers([_cell(stdout="side effect completed\n")]),
+    ])
+    shutdown_all_remote_kernels()
+    try:
+        with patch("tools.code_execution_tool._load_config", return_value={"timeout": 10}), \
+             patch("tools.code_execution_tool._get_or_create_env", return_value=(env, "ssh")), \
+             patch("tools.code_execution_tool._ship_file_to_remote"), \
+             patch("tools.code_execution_tool._rpc_poll_loop"), \
+             patch("tools.code_execution_tool._run_remote_per_call", return_value='{"status":"success"}') as replay, \
+             patch("tools.code_kernel_remote._spawn_remote_kernel", return_value=RemoteKernel(
+                 env=env, env_type="ssh", kernel_dir="/tmp/fixture-kernel", pid="4242",
+                 rpc_token="fixture", owner="transport-test")):
+            result = json.loads(_execute_remote("perform_side_effect()", "transport-test", []))
+
+        assert len(submitted) == 1
+        assert result["status"] == "error", result
+        replay.assert_not_called()
+        assert not _REMOTE_KERNELS, "a kernel with an uncertain cell outcome must not be reused"
+        assert any("kill 4242" in command for command in env.commands)
+    finally:
+        shutdown_all_remote_kernels()
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+import unicodedata
 from typing import Any, Callable
 
 from plugins.memory.honcho.session_auth import HonchoAuthError
@@ -23,6 +24,42 @@ _PLANNING_HEAD_RE = re.compile(
     r"^(?:i need to create a thorough|the instruction says to focus on capturing key facts|first, let me review)",
     re.IGNORECASE,
 )
+
+
+def _word_tokens(text: str) -> set[str]:
+    """Complete runs of Unicode letters, numbers and combining marks after NFC casefolding.
+
+    Punctuation, spaces and underscores end a token, so ``rust`` never matches ``trust``. A
+    script written without spaces (``北京大学``) stays one token: no segmentation, no semantics.
+    """
+    tokens: set[str] = set()
+    run: list[str] = []
+    for char in unicodedata.normalize("NFC", text.casefold()):
+        if unicodedata.category(char)[0] in "LNM":
+            run.append(char)
+        elif run:
+            tokens.add("".join(run))
+            run = []
+    if run:
+        tokens.add("".join(run))
+    return tokens
+
+
+def _rerank_conclusions_by_query(query: str, rows: list[dict]) -> list[dict]:
+    """Order Honcho's returned page by how many distinct query tokens each row contains.
+
+    Only the page ``scope.query`` returned is reordered; a conclusion missing from it cannot
+    be recovered here. Ties, and a query without tokens, keep the server order.
+    """
+    terms = _word_tokens(query)
+    if not terms:
+        return rows
+
+    def score(row: dict) -> int:
+        content = row.get("content")
+        return len(terms & _word_tokens(content)) if isinstance(content, str) else 0
+
+    return sorted(rows, key=score, reverse=True)
 
 
 def usable_honcho_summary(text: object) -> str | None:
@@ -307,7 +344,12 @@ class SessionContextMixin:
         )
 
     def list_conclusions(self, session_key: str, query: str | None = None, peer: str = "user", limit: int = 20):
-        """List (or semantically search with ``query``) conclusions as {"id", "content"} dicts."""
+        """List (or search with ``query``) conclusions as {"id", "content"} dicts.
+
+        A ``query`` still uses Honcho ``scope.query``, then re-orders that page by whole-token
+        keyword overlap so a relevant older conclusion beats a recent miss. Conclusions the
+        server left out of the ``limit`` page are not recovered.
+        """
         def _list(session: Any) -> list[dict]:
             target_peer_id = self._resolve_peer_id(session, peer)
             if target_peer_id is None:
@@ -316,7 +358,8 @@ class SessionContextMixin:
             def _fetch() -> Any:
                 scope = self._conclusions_scope(session, target_peer_id)
                 return scope.query(query, top_k=limit) if query else scope.list(size=limit).items
-            return [{"id": c.id, "content": c.content} for c in self._authed_call("conclusion list", _fetch)]
+            rows = [{"id": c.id, "content": c.content} for c in self._authed_call("conclusion list", _fetch)]
+            return _rerank_conclusions_by_query(query, rows) if query else rows
         return self._guarded_session(session_key, _list, [], logging.DEBUG, "Honcho list_conclusions failed: %s")
 
     def set_peer_card(self, session_key: str, card: list[str], peer: str = "user") -> list[str] | None:

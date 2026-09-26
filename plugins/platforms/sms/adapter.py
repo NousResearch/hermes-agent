@@ -16,7 +16,6 @@ import base64
 import hashlib
 import hmac
 import logging
-import re
 import urllib.parse
 from typing import Any, Dict, Optional
 
@@ -187,8 +186,9 @@ class SmsAdapter(BasePlatformAdapter):
         return {"name": chat_id, "type": "dm"}
 
     def format_message(self, content: str) -> str:
-        """Strip markdown — SMS renders it as literal characters."""
-        return strip_markdown(content)
+        """Strip markdown — SMS renders it as literal characters. Link URLs are kept (as a
+        trailing bare line) since SMS auto-links bare URLs but cannot tap a dropped one."""
+        return strip_markdown(content, keep_link_targets=True)
 
     # -- Twilio signature validation -----------------------------------------
 
@@ -273,16 +273,6 @@ class SmsAdapter(BasePlatformAdapter):
 
 # -- Plugin registration (TWILIO_* env→PlatformConfig seeding stays in gateway/config.py)
 
-# Standalone-send markdown stripping: looser than helpers.strip_markdown (no
-# word-boundary guards on underscores, ``[a-z]*`` fence tags) — kept for parity.
-_SMS_MARKDOWN_SUBS = (
-    (re.compile(r"\*\*(.+?)\*\*", re.DOTALL), r"\1"), (re.compile(r"\*(.+?)\*", re.DOTALL), r"\1"),
-    (re.compile(r"__(.+?)__", re.DOTALL), r"\1"), (re.compile(r"_(.+?)_", re.DOTALL), r"\1"),
-    (re.compile(r"```[a-z]*\n?"), ""), (re.compile(r"`(.+?)`"), r"\1"),
-    (re.compile(r"^#{1,6}\s+", re.MULTILINE), ""), (re.compile(r"\[([^\]]+)\]\([^\)]+\)"), r"\1"),
-    (re.compile(r"\n{3,}"), "\n\n"))
-
-
 # ────────────────────────────────────────────────────────────────────────── Plugin migration glue (#41112 /
 # #3823) Added when the SMS (Twilio) adapter moved from gateway/platforms/sms.py into this bundled plugin.
 # register() exposes the platform via the registry, replacing the Platform.SMS elif in gateway/run.py, the
@@ -290,13 +280,6 @@ _SMS_MARKDOWN_SUBS = (
 # hermes_cli/gateway.py, and the _send_sms dispatch in tools/send_message_tool.py. TWILIO_*
 # env→PlatformConfig seeding stays in core.
 # ──────────────────────────────────────────────────────────────────────────
-def _strip_markdown_for_sms(message: str) -> str:
-    """Strip markdown — SMS renders it as literal characters."""
-    for pattern, repl in _SMS_MARKDOWN_SUBS:
-        message = pattern.sub(repl, message)
-    return message.strip()
-
-
 async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False):
     """Out-of-process SMS delivery via the Twilio REST API (standalone_sender_fn contract)."""
     auth_token = getattr(pconfig, "api_key", None) or _get_scoped_secret("TWILIO_AUTH_TOKEN", "")
@@ -306,7 +289,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
     from_number = _get_scoped_secret("TWILIO_PHONE_NUMBER", "")  # scoped like account_sid: never the default's number
     if not account_sid or not auth_token or not from_number:
         return send_error("SMS not configured (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER required)")
-    message = _strip_markdown_for_sms(message)
+    message = strip_markdown(message, keep_link_targets=True)
     try:
         from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
         _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(resolve_proxy_url())

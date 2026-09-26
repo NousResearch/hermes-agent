@@ -1382,6 +1382,49 @@ def _api_key_credentials(normalized: str) -> tuple[str, str]:
         return "", ""
 
 
+def _resolve_profile_probe_credentials(normalized: str, profile) -> tuple[str, str]:
+    """Resolve (api_key, base_url) for catalog probing across api_key and non-api_key profiles."""
+    if profile.auth_type == "api_key":
+        return _api_key_credentials(normalized)
+
+    api_key = ""
+    base_url = str(profile.base_url or "").strip()
+    try:
+        from agent.credential_pool import load_pool
+
+        pool = load_pool(normalized)
+        if pool and pool.has_credentials():
+            entry = pool.peek()
+            if entry:
+                api_key = (
+                    getattr(entry, "runtime_api_key", "")
+                    or getattr(entry, "access_token", "")
+                    or getattr(entry, "api_key", "")
+                    or ""
+                ).strip()
+                base_url = (
+                    getattr(entry, "runtime_base_url", "")
+                    or getattr(entry, "base_url", "")
+                    or base_url
+                ).strip()
+    except Exception:
+        pass
+
+    if not api_key and profile.env_vars:
+        try:
+            from hermes_cli.config import get_env_value_prefer_dotenv
+
+            for env_var in profile.env_vars:
+                val = get_env_value_prefer_dotenv(env_var)
+                if val:
+                    api_key = str(val).strip()
+                    break
+        except Exception:
+            pass
+
+    return api_key, base_url
+
+
 def _api_key_provider_live(normalized: str, force_refresh: bool) -> Optional[list[str]]:
     """Live /v1/models for a simple api-key provider (stepfun, gmi); None on any miss."""
     api_key, base_url = _api_key_credentials(normalized)
@@ -1525,8 +1568,18 @@ _OPENCODE_FREE_EXCLUDED_MODELS = frozenset(
 )
 
 
+def _has_custom_fetch_models(profile) -> bool:
+    """True when *profile* overrides or explicitly declares a custom catalog probe."""
+    from providers.base import ProviderProfile
+
+    flag = getattr(profile, "has_custom_fetch", None)
+    if flag is not None:
+        return bool(flag)
+    return type(profile).fetch_models is not ProviderProfile.fetch_models
+
+
 def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
-    """Generic live fetch for any provider registered in providers/ with ``auth_type="api_key"``.
+    """Generic live fetch for registered provider profiles.
 
     Live results are merged with the curated list so models the live endpoint omits still appear:
     curated-first by default so the newest curated models lead when the live API lags;
@@ -1541,8 +1594,6 @@ def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
         return None
     # external_process providers (ACP agent CLIs) have no api_key/base_url credentials: the
     # profile's fetch_models drives its own subprocess (kwargs are ignored per the base contract).
-    # Every non-api-key profile falls back to its own fallback_models (OAuth plugins have no
-    # static _PROVIDER_MODELS row), exactly as api_key plugins do below.
     if profile.auth_type == "external_process":
         try:
             live = profile.fetch_models()
@@ -1552,19 +1603,29 @@ def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
         # Same merge as setup (`_model_flow_plugin_provider`) so /model, the Desktop picker and
         # `hermes model` offer one list: live ids plus any pinned id the probe omitted.
         return merge_profile_catalog(normalized, profile, list(live) if live else None)
-    if not (profile.auth_type == "api_key" and profile.base_url):
+
+    # Check whether the profile implements or explicitly declares a custom fetch_models probe
+    has_custom_fetch = _has_custom_fetch_models(profile)
+
+    # Profiles without a custom fetch_models must be api_key providers with a declared base_url;
+    # non-api-key profiles without an override fall back to their fallback_models.
+    if not has_custom_fetch and not (profile.auth_type == "api_key" and profile.base_url):
         return list(profile.fallback_models) or None
-    api_key, base_url = _api_key_credentials(normalized)
+
+    api_key, base_url = _resolve_profile_probe_credentials(normalized, profile)
     return probe_profile_catalog(normalized, profile, api_key, base_url or profile.base_url or None)
 
 
 def probe_profile_catalog(normalized: str, profile, api_key: Optional[str], base_url: Optional[str]) -> Optional[list[str]]:
-    """``profile.fetch_models`` gated on a key (no key → no doomed probe) and merged with the curated
+    """``profile.fetch_models`` gated on a key (no key → no doomed probe for default impls) and merged with the curated
     list; a raising catalog override degrades like a None return — fallback_models, not an empty picker."""
     live = None
-    if api_key:
+    has_custom_fetch = _has_custom_fetch_models(profile)
+    # Call fetch_models if we have a key, OR if the profile implements its own fetch_models
+    # (which may manage its own token discovery or hit an unauthenticated/public catalog).
+    if api_key or has_custom_fetch:
         try:
-            live = profile.fetch_models(api_key=api_key, base_url=base_url)
+            live = profile.fetch_models(api_key=api_key or None, base_url=base_url)
         except Exception:
             live = None
     return merge_profile_catalog(normalized, profile, live)

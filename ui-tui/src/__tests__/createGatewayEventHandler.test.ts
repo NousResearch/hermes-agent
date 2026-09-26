@@ -14,6 +14,7 @@ import { turnController } from '../app/turnController.js'
 import { getTurnState, resetTurnState } from '../app/turnStore.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 import { ZERO } from '../domain/usage.js'
+import type { GatewayEvent } from '../gatewayTypes.js'
 import { estimateTokensRough } from '../lib/text.js'
 import type { Msg } from '../types.js'
 
@@ -2361,6 +2362,113 @@ describe('createGatewayEventHandler', () => {
       // Turn continues without finalizing or throwing
       expect(getUiState().busy).toBe(true)
       expect(appended).toHaveLength(0)
+    })
+  })
+  describe('cross-session event filtering', () => {
+    it.each([
+      ['foreign session', 'sess-active', 'sess-other'],
+      ['foreign session during the null-sid switch window', null, 'sess-other'],
+      ['explicit empty session id', 'sess-active', '']
+    ])('drops the %s transcript sequence', (_case, activeSid, eventSid) => {
+      const appended: Msg[] = []
+      const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+      patchUiState({ sid: activeSid })
+      onEvent({ payload: { text: 'leaked delta' }, session_id: eventSid, type: 'message.delta' } satisfies GatewayEvent)
+      onEvent({
+        payload: { text: 'leaked answer' },
+        session_id: eventSid,
+        type: 'message.complete'
+      } satisfies GatewayEvent)
+
+      expect(appended).toEqual([])
+    })
+
+    it('accepts the transcript sequence matching the active session', () => {
+      const appended: Msg[] = []
+      const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+      patchUiState({ sid: 'sess-active' })
+      onEvent({
+        payload: { text: 'current delta' },
+        session_id: 'sess-active',
+        type: 'message.delta'
+      } satisfies GatewayEvent)
+      onEvent({
+        payload: { text: 'current answer' },
+        session_id: 'sess-active',
+        type: 'message.complete'
+      } satisfies GatewayEvent)
+
+      expect(appended).toEqual([{ role: 'assistant', text: 'current answer' }])
+    })
+
+    it('accepts a truly unscoped transcript sequence', () => {
+      const appended: Msg[] = []
+      const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+      patchUiState({ sid: 'sess-active' })
+      onEvent({ payload: { text: 'unscoped delta' }, type: 'message.delta' } satisfies GatewayEvent)
+      onEvent({ payload: { text: 'unscoped answer' }, type: 'message.complete' } satisfies GatewayEvent)
+
+      expect(appended).toEqual([{ role: 'assistant', text: 'unscoped answer' }])
+    })
+
+    it('does not buffer a foreign session delta in the streaming segment', () => {
+      // message.delta only accumulates into the streaming buffer (never appends a
+      // message), so the appended[] assertion above cannot see a leaked delta that
+      // lands in turnController.bufRef and would surface on the NEXT flush.
+      const onEvent = createGatewayEventHandler(buildCtx([]))
+
+      patchUiState({ sid: 'sess-active' })
+      onEvent({ payload: { text: 'leaked delta' }, session_id: 'sess-other', type: 'message.delta' } satisfies GatewayEvent)
+      expect(turnController.bufRef).toBe('')
+
+      onEvent({ payload: { text: 'leaked delta 2' }, session_id: '', type: 'message.delta' } satisfies GatewayEvent)
+      expect(turnController.bufRef).toBe('')
+
+      // and inside the null-sid switch window, every session-scoped event drops
+      patchUiState({ sid: null })
+      onEvent({ payload: { text: 'leaked during switch' }, session_id: 'sess-other', type: 'message.delta' } satisfies GatewayEvent)
+      expect(turnController.bufRef).toBe('')
+
+      // An event with NO session_id key is unscoped by design (CLI-direct or
+      // global), not a leak — it still streams. Only a present-but-mismatched
+      // or empty one is filtered.
+      patchUiState({ sid: 'sess-active' })
+      onEvent({ payload: { text: ' unscoped ok' }, type: 'message.delta' } satisfies GatewayEvent)
+      expect(turnController.bufRef).toBe(' unscoped ok')
+    })
+
+    it('drops every session-scoped delta inside the null-sid switch window, including the target session', () => {
+      // The null-sid window is deliberately conservative: with no active session
+      // there is nothing to route a session-scoped event to, so all of them drop
+      // (own-session deltas included) rather than guess. The window is transient
+      // and the streaming buffer is flushed on switch, so nothing is lost that
+      // the resumed session will not re-send. Pinned here so a future "accept
+      // own-session deltas during the window" change is a conscious decision.
+      const onEvent = createGatewayEventHandler(buildCtx([]))
+
+      patchUiState({ sid: 'sess-active' })
+      onEvent({ payload: { text: 'mine' }, session_id: 'sess-active', type: 'message.delta' } satisfies GatewayEvent)
+      expect(turnController.bufRef).toBe('mine')
+
+      patchUiState({ sid: null })
+      onEvent({ payload: { text: ' stale' }, session_id: 'sess-active', type: 'message.delta' } satisfies GatewayEvent)
+      expect(turnController.bufRef).toBe('mine')
+    })
+
+    it('accepts an explicit empty session id for a global skin event', () => {
+      const onEvent = createGatewayEventHandler(buildCtx([]))
+
+      patchUiState({ sid: 'sess-active' })
+      onEvent({
+        payload: { branding: { agent_name: 'Event Contract Skin' } },
+        session_id: '',
+        type: 'skin.changed'
+      } satisfies GatewayEvent)
+
+      expect(getUiState().theme.brand.name).toBe('Event Contract Skin')
     })
   })
 })

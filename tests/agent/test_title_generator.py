@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 from agent.title_generator import (
     MAX_TITLE_INPUT_CHARS,
     _EXAMPLE_ECHO_REJECT,
+    _TITLE_RESPONSE_FORMAT,
     build_title_input,
     derive_title,
     generate_title,
@@ -101,6 +102,40 @@ class TestGenerateTitle:
             assert generate_title("question") == "Reasoning Off"
 
         assert captured_kwargs.get("reasoning_config") == {"enabled": False}
+
+    @pytest.mark.parametrize(
+        ("supported", "expects_response_format"),
+        [
+            (True, True),
+            (False, False),
+            (None, False),  # unknown capability: fail closed, never risk a provider 400
+        ],
+    )
+    def test_response_format_gated_on_route_support(self, supported, expects_response_format):
+        """``response_format: json_schema`` is only sent when the route advertises support.
+
+        DeepSeek rejects ``json_schema`` with HTTP 400; the title call then falls through the
+        fallback chain onto providers that wrap the answer in fenced JSON — the truncated
+        fragments behind #83903. Unknown capability is treated as unsupported: title parsing
+        already has JSON/prose fallbacks, while an optimistic response_format can fail the
+        whole aux request at the provider boundary.
+        """
+        captured_kwargs = {}
+
+        def mock_call_llm(**kwargs):
+            captured_kwargs.update(kwargs)
+            resp = MagicMock()
+            resp.choices = [MagicMock()]
+            resp.choices[0].message.content = '{"title": "Gated"}'
+            return resp
+
+        with patch("agent.title_generator.call_llm", side_effect=mock_call_llm):
+            assert generate_title("question", response_format_supported=supported) == "Gated"
+
+        if expects_response_format:
+            assert captured_kwargs["extra_body"] == {"response_format": _TITLE_RESPONSE_FORMAT}
+        else:
+            assert "extra_body" not in captured_kwargs
 
     @pytest.mark.parametrize(
         ("content", "expected"),

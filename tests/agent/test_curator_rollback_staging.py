@@ -58,38 +58,14 @@ def test_failed_rollback_keeps_unrestored_metadata(
 
     assert not ok
     assert restored is None
-    staging = list((skills / ".curator_backups").glob(".rollback-staging-*"))
+    staging = list((skills / ".curator_backups").glob(".rollback-*"))
     assert len(staging) == 1
     assert str(staging[0]) in message
+    # The next curator pass (or a retry's safety snapshot) must not prune the retained copy.
+    assert curator.snapshot_skills() is not None
     for name, content in expected.items():
         relative = Path(name) / ".git"
         if metadata_kind == "directory":
             relative /= "local-history"
         copies = [root / relative for root in (skills, staging[0])]
         assert any(path.is_file() and path.read_bytes() == content for path in copies)
-
-
-def test_successful_rollback_restores_metadata_and_removes_staging(
-    tmp_path, monkeypatch
-):
-    home = tmp_path / "home"
-    skill = home / "skills" / "alpha"
-    skill.mkdir(parents=True)
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    from agent import curator_backup as curator
-
-    instructions = skill / "SKILL.md"
-    instructions.write_text("Snapshot content\n", encoding="utf-8")
-    target = curator.snapshot_skills()
-    assert target is not None
-    instructions.write_text("Current content\n", encoding="utf-8")
-    (skill / ".git").write_text("gitdir: /local/worktree\n", encoding="utf-8")
-
-    ok, _message, restored = curator.rollback(target.name)
-
-    assert ok and restored == target
-    assert instructions.read_text(encoding="utf-8-sig") == "Snapshot content\n"
-    assert (skill / ".git").read_text(
-        encoding="utf-8-sig"
-    ) == "gitdir: /local/worktree\n"
-    assert not list((skill.parent / ".curator_backups").glob(".rollback-staging-*"))

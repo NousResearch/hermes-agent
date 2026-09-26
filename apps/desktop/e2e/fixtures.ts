@@ -30,7 +30,6 @@ import { _electron, type ElectronApplication, type Page } from '@playwright/test
 import { waitForChatReady } from '../../../tests-js/scripts/desktop-chat-smoke'
 import { writeEnvFile, writeMockProviderConfig } from '../../../tests-js/scripts/mock-provider-config'
 import { type MockServerOptions, startMockServer } from '../../../tests-js/scripts/mock-server'
-import { startMockServer } from '../../../tests-js/scripts/mock-server'
 
 import { resolveElectronBinary } from './electron-binary'
 import { installErrorBannerGuard } from './test'

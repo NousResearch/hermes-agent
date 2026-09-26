@@ -331,6 +331,45 @@ function nextPos(s: string, p: number) {
   return s.length
 }
 
+const COMBINING_MARK_RE = /\p{M}/u
+
+function prevCodePointPos(s: string, p: number): number {
+  const pos = Math.max(0, Math.min(p, s.length))
+
+  if (pos === 0) {
+    return 0
+  }
+
+  const last = pos - 1
+  const code = s.charCodeAt(last)
+
+  return code >= 0xdc00 && code <= 0xdfff && last > 0 ? last - 1 : last
+}
+
+/**
+ * Backspace keeps grapheme-cluster deletion except when the cursor is at the
+ * end immediately after a combining mark. In that case native text fields
+ * delete the trailing code point only, so Thai and other marked scripts do
+ * not lose their base character. `prevCodePointPos` preserves surrogate pairs.
+ */
+export function backspaceDelete(value: string, cursor: number): TextInsertResult {
+  if (cursor <= 0) {
+    return { cursor, value }
+  }
+
+  const codePointStart = prevCodePointPos(value, cursor)
+  const previousCodePoint = value.codePointAt(codePointStart)
+
+  const removeFrom =
+    cursor === value.length &&
+    previousCodePoint !== undefined &&
+    COMBINING_MARK_RE.test(String.fromCodePoint(previousCodePoint))
+      ? codePointStart
+      : prevPos(value, cursor)
+
+  return { cursor: removeFrom, value: value.slice(0, removeFrom) + value.slice(cursor) }
+}
+
 function wordLeft(s: string, p: number) {
   let i = snapPos(s, p) - 1
 
@@ -1577,9 +1616,7 @@ export function TextInput({
 
           return
         } else {
-          const t = prevPos(v, c)
-          v = v.slice(0, t) + v.slice(c)
-          c = t
+          ;({ cursor: c, value: v } = backspaceDelete(v, c))
         }
       } else if (delFwd && c < v.length) {
         if (isLineKillModifier(k)) {

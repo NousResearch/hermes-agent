@@ -1408,6 +1408,8 @@ def _apply_agent_section(agent, _agent_cfg):
         "environment_probe", "bot_mode_protocol",
     ):
         setattr(agent, f"_{_key}", bool(_agent_section.get(_key, True)))
+    from agent.prompt_overrides import normalize_overrides
+    agent._prompt_overrides = normalize_overrides(_agent_section.get("prompt_overrides", {}))
     # Warm the probe (~0.5s of subprocesses) off-thread so the first prompt build finds it cached.
     if agent._environment_probe:
         with suppress(Exception):

@@ -4372,6 +4372,7 @@ export const frOverrides = {
     goalWaiting: 'Objectif en attente',
     subagents: count => `${count} sous-agent${count === 1 ? '' : 's'}`,
     todos: (done, total) => `Tâches ${done}/${total}`,
+    previousTodos: (done, total) => `Tâches précédentes ${done}/${total}`,
     running: 'En cours',
     stop: 'Arrêter',
     dismiss: 'Rejeter',

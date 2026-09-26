@@ -18,6 +18,8 @@ import { $sessionStates } from './session-states'
  */
 export const $todosBySession = atom<Record<string, TodoItem[]>>({})
 export const $todoRevisionsBySession = atom<Record<string, number>>({})
+/** Last authoritative snapshot, separate from the transient live panel. */
+export const $retainedTodosBySession = atom<Record<string, TodoItem[]>>({})
 
 export const todoListActive = (todos: readonly TodoItem[]) =>
   todos.some(t => t.status === 'pending' || t.status === 'in_progress')
@@ -96,6 +98,17 @@ function acceptRevision(sid: string, revision?: null | number): boolean {
   return true
 }
 
+function retainSessionTodos(sid: string, todos: TodoItem[]) {
+  const current = $retainedTodosBySession.get()
+
+  if (todos.length) {
+    $retainedTodosBySession.set({ ...current, [sid]: todos })
+  } else if (sid in current) {
+    const { [sid]: _drop, ...rest } = current
+    $retainedTodosBySession.set(rest)
+  }
+}
+
 export function setSessionTodos(sid: string, todos: TodoItem[], revision?: null | number) {
   if (!sid) {
     return
@@ -103,6 +116,11 @@ export function setSessionTodos(sid: string, todos: TodoItem[], revision?: null 
 
   if (!acceptRevision(sid, revision)) {
     return
+  }
+
+  // An unversioned tool.start is optimistic, not a durable result.
+  if (revision != null) {
+    retainSessionTodos(sid, todos)
   }
 
   clearTimers.cancel(sid)
@@ -130,11 +148,25 @@ function dropSessionTodos(sid: string, forgetRevision: boolean) {
       const { [sid]: _drop, ...rest } = revisions
       $todoRevisionsBySession.set(rest)
     }
+
+    retainSessionTodos(sid, [])
   }
 }
 
 export function clearSessionTodos(sid: string) {
   dropSessionTodos(sid, true)
+}
+
+export function clearAllSessionTodos() {
+  const ids = new Set([
+    ...Object.keys($todosBySession.get()),
+    ...Object.keys($todoRevisionsBySession.get()),
+    ...Object.keys($retainedTodosBySession.get())
+  ])
+
+  for (const sid of ids) {
+    clearSessionTodos(sid)
+  }
 }
 
 // Drop a still-active todo list (any pending/in_progress item) — used at turn
@@ -176,6 +208,10 @@ export function restoreSessionTodosFromSnapshot(sid: string, snapshot: unknown, 
   if (visible !== null) {
     setSessionTodos(sid, visible, revision)
   } else if (acceptRevision(sid, revision)) {
+    if (revision != null) {
+      retainSessionTodos(sid, todos)
+    }
+
     dropSessionTodos(sid, false)
   }
 }

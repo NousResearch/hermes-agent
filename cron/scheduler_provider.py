@@ -295,7 +295,7 @@ def fire_overdue_jobs(
         return 0
 
     from cron.jobs import (
-        ONESHOT_GRACE_SECONDS, _elapsed_seconds, _ensure_aware, _hermes_now,
+        LATE_FIRE_KEY, ONESHOT_GRACE_SECONDS, _elapsed_seconds, _oneshot_catchup_seconds, _ensure_aware, _hermes_now,
         is_job_runnable, load_jobs,
     )
 
@@ -321,17 +321,19 @@ def fire_overdue_jobs(
         # One-shot jobs share the module-wide policy: more than ONESHOT_GRACE_SECONDS past their run time
         # means "will never fire" (create/update/resume/recovery and, since #89571, the due-scan all enforce
         # it). The misfire backstop must not resurrect them hours late after downtime — that's #93526.
+        # The window is the restart catch-up window (cron.oneshot_catchup_s), same as the due scan.
         schedule = job.get("schedule") or {}
-        if str(schedule.get("kind") or "") == "once" and overdue_seconds > ONESHOT_GRACE_SECONDS:
+        is_oneshot = str(schedule.get("kind") or "") == "once"
+        if is_oneshot and overdue_seconds > _oneshot_catchup_seconds():
             logger.warning(
                 "Misfire catch-up: one-shot job %s (%s) was due %s "
-                "(%.0f min overdue) — outside the %ss one-shot grace "
+                "(%.0f min overdue) — outside the %ss one-shot catch-up "
                 "window, not firing.",
                 job_id,
                 job.get("name") or "unnamed",
                 next_run_at,
                 overdue_seconds / 60,
-                ONESHOT_GRACE_SECONDS,
+                int(_oneshot_catchup_seconds()),
             )
             continue
         logger.warning(
@@ -347,6 +349,8 @@ def fire_overdue_jobs(
             claimed = provider.claim_fire(job_id)
             if claimed is None:
                 continue
+            if is_oneshot and isinstance(claimed, dict) and overdue_seconds > ONESHOT_GRACE_SECONDS:
+                claimed[LATE_FIRE_KEY] = int(overdue_seconds)
             threading.Thread(
                 target=provider.fire_claimed, args=(claimed,),
                 kwargs={"adapters": adapters, "loop": loop}, daemon=True,

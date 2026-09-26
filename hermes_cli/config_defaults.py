@@ -1833,6 +1833,10 @@ DEFAULT_CONFIG = {
         # save_job_output keeps the N most recent .md files per job; 0 or negative disables pruning
         # (for externally managed cleanup).
         "output_retention": 50,
+        # Restart catch-up window (seconds) for one-shots: a one-shot whose run time fell inside a
+        # gateway restart fires late (with a "fired late by N min" prompt note) when past due by at
+        # most this much; beyond it the job is removed with a loud MISSED notice. 0 = 120s grace.
+        "oneshot_catchup_s": 21600,
         # Timeout (seconds) for a no-agent cron script. Env: HERMES_CRON_SCRIPT_TIMEOUT. Keep in
         # sync with cron.scheduler._DEFAULT_SCRIPT_TIMEOUT.
         "script_timeout_seconds": 3600,

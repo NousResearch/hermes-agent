@@ -1088,6 +1088,15 @@ cron:
 
 Local (built-in ticker) deployments don't need this — the ticker already picks up past-due jobs on its next tick.
 
+### One-shots across a gateway restart
+
+A one-shot whose run time fell while the gateway was down (restart, deploy) fires late on the next tick, with a note prepended to its prompt saying how many minutes late it is. Only a one-shot past due by more than the catch-up window is removed without running; it then gets a loud `⚠️ MISSED` notice delivered to its `deliver:` target. Recurring jobs that missed ticks while the gateway was down run once on the next tick; missed ticks are not replayed.
+
+```yaml
+cron:
+  oneshot_catchup_s: 21600    # 6h; 0 keeps only the 120s grace
+```
+
 ## Schedule formats
 
 The agent's final response is automatically delivered to the job's `deliver:` target — the agent no longer fires messages itself, so the user-facing content simply goes in the final response. To deliver to **additional or different** targets, list multiple `deliver:` targets on the cron job (comma-separated, e.g. `deliver: "telegram,discord"`) rather than having the agent send them.

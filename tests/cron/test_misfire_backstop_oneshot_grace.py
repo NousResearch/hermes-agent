@@ -67,7 +67,7 @@ def _run_backstop(monkeypatch, jobs):
 class TestMisfireBackstopOneShotGrace:
     def test_stale_oneshot_beyond_grace_is_not_fired(self, monkeypatch):
         now = _hermes_now()
-        stale = _job("stale-once", "once", now - timedelta(hours=2))
+        stale = _job("stale-once", "once", now - timedelta(hours=7))
         provider, fired = _run_backstop(monkeypatch, [stale])
         assert fired == 0
         assert provider.claimed == []

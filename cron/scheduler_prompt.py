@@ -260,6 +260,11 @@ def _build_job_prompt(
     user_prompt = str(job.get("prompt") or "")
     if extra_prompt:
         user_prompt = f"{user_prompt}\n\n## Run Context\n{extra_prompt}"
+    # One-shot fired late by the restart catch-up: say so up front so the agent re-checks a
+    # time-sensitive action before taking it.
+    from cron.jobs import LATE_FIRE_KEY, late_fire_note
+    if job.get(LATE_FIRE_KEY):
+        user_prompt = f"{late_fire_note(job[LATE_FIRE_KEY])}\n\n{user_prompt}"
     prompt = user_prompt
     # Runtime DATA (script stdout, upstream output) legitimately quotes command-shape strings, so it
     # must not be scanned with the strict user-prompt set — see _scan_assembled_cron_prompt.

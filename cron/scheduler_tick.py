@@ -60,6 +60,7 @@ def _tick_admitted(
             _sched.logger.debug("Worktree maintenance dispatch failed: %s", _wt_exc)
 
         due_jobs = _sched.get_due_jobs()
+        _sched._deliver_missed_oneshot_notices(adapters=adapters, loop=loop)
         _sched._sweep_stale_inflight_for_tick(due_jobs)
 
         if not due_jobs:

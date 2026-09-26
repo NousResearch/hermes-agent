@@ -535,7 +535,7 @@ def _resolve_job_reasoning_config(job: dict, cfg: dict, model: str) -> dict | No
 
 
 from cron.jobs import (
-    _ensure_cron_dir, advance_next_runs, claim_dispatch, claim_job_for_fire, fire_claim_fence,
+    LATE_FIRE_KEY, _ensure_cron_dir, advance_next_runs, claim_dispatch, claim_job_for_fire, fire_claim_fence,
     clear_run_claim, get_due_jobs, heartbeat_fire_claim, heartbeat_run_claim, mark_job_run,
     save_job_output, self_removal_delivery_allowed, self_removal_delivery_scope, use_cron_store)
 from cron.executions import (
@@ -4051,7 +4051,31 @@ def _process_due_job(job: dict, adapters, loop, verbose: bool) -> bool:
     claimed_job = dict(claimed) if isinstance(claimed, dict) else dict(job)
     claimed_job["execution_id"] = job["execution_id"]
     claimed_job["_scheduled_instant"] = job.get("_scheduled_instant")
+    # The persisted record never carries the due scan's transient late-fire stamp; carry it across.
+    if job.get(LATE_FIRE_KEY):
+        claimed_job[LATE_FIRE_KEY] = job[LATE_FIRE_KEY]
     return run_one_job(claimed_job, adapters=adapters, loop=loop, verbose=verbose)
+
+
+def _deliver_missed_oneshot_notices(adapters=None, loop=None) -> int:
+    """Deliver queued MISSED notices for one-shots the due scan retired, framed as failures to the
+    job's own target so a one-shot that never ran is loud. Best-effort: errors are logged."""
+    from cron.jobs import drain_missed_oneshot_notices
+
+    delivered = 0
+    for notice in drain_missed_oneshot_notices():
+        job = notice.get("job") or {}
+        try:
+            err = _deliver_result(
+                job, notice.get("text") or "", adapters=adapters, loop=loop, for_failure=True)
+        except Exception as exc:
+            logger.error("Job '%s': MISSED one-shot notice delivery raised: %s", job.get("id", "?"), exc)
+            continue
+        if err:
+            logger.error("Job '%s': MISSED one-shot notice failed to deliver: %s", job.get("id", "?"), err)
+        else:
+            delivered += 1
+    return delivered
 
 
 def _submit_with_guard(job: dict, pool: concurrent.futures.ThreadPoolExecutor, process_job):

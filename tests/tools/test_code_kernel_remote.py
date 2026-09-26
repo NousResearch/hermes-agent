@@ -13,6 +13,8 @@ import os
 import sys
 import time
 import unittest
+
+import pytest
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -338,6 +340,53 @@ class TestDispatchIntegration(unittest.TestCase):
             result = json.loads(_execute_remote("print()", "t", ["read_file"]))
         self.assertEqual(result["status"], "success")
         self.assertIn("per-call ran", result["output"])
+
+
+@pytest.mark.platforms("posix")
+class TestRemotePerCallRpcE2E(RemoteKernelBase):
+    """Real-transport e2e for the file-RPC poller: LocalEnvironment runs real bash,
+    the shipped script writes its own req files into HERMES_RPC_DIR, and the host's
+    real _rpc_poll_loop answers them."""
+
+    def test_forged_and_dir_reqs_are_consumed_without_redispatch(self):
+        self._ship.stop()
+        self._poll.stop()
+        from tools.environments.local import LocalEnvironment
+        from tools.code_execution_tool import _run_remote_per_call
+        seen = []
+        with patch("model_tools.handle_function_call",
+                   lambda name, args, **kw: seen.append(name) or json.dumps({"ok": True})):
+            env = LocalEnvironment(cwd="/", timeout=90)
+            code = (
+                "import json, os, time\n"
+                "rpc = os.environ['HERMES_RPC_DIR']\n"
+                # A req_-named directory: passes the name filter, fails cat,
+                # and must be swept rather than spin the poller forever.
+                "os.mkdir(os.path.join(rpc, 'req_000099'))\n"
+                # A well-formed request with a forged non-integer body seq: the
+                # response must still land on res_<file seq>, exactly once.
+                "tmp = os.path.join(rpc, 'req_900001.tmp')\n"
+                "with open(tmp, 'w') as f:\n"
+                "    f.write(json.dumps({'seq': 'abc', 'token': os.environ['HERMES_RPC_TOKEN'],\n"
+                "                        'tool': 'read_file', 'args': {'path': 'x'}}))\n"
+                "os.rename(tmp, os.path.join(rpc, 'req_900001'))\n"
+                "res = os.path.join(rpc, 'res_900001')\n"
+                "deadline = time.time() + 15\n"
+                "while not os.path.exists(res) and time.time() < deadline:\n"
+                "    time.sleep(0.05)\n"
+                "print('RES:', os.path.exists(res))\n"
+                "time.sleep(1.0)  # extra poll cycles: re-dispatch would show up here\n"
+                "print('REQ_LEFT:', os.path.exists(os.path.join(rpc, 'req_900001')))\n"
+                "print('DIR_LEFT:', os.path.exists(os.path.join(rpc, 'req_000099')))\n"
+            )
+            out = json.loads(_run_remote_per_call(
+                env, "local", code, "t-e2e-rpc", frozenset({"read_file"}),
+                timeout=60, max_tool_calls=5, exec_start=time.monotonic()))
+        self.assertEqual(out["status"], "success", out)
+        self.assertEqual(seen, ["read_file"])   # dispatched exactly once
+        self.assertIn("RES: True", out["output"])
+        self.assertIn("REQ_LEFT: False", out["output"])
+        self.assertIn("DIR_LEFT: False", out["output"])
 
 
 if __name__ == "__main__":

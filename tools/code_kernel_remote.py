@@ -347,9 +347,9 @@ def _run_attached_cell(kernel: RemoteKernel, key: Tuple, code: str, *, env, task
     # a background thread the last cell leaked cannot smuggle a call into this authority window.
     q_rpc = shlex.quote(kernel.kernel_dir + '/rpc')
     try:
-        kernel.sh(f"rm -f {q_rpc}/req_* {q_rpc}/res_*", timeout=10)
-    except Exception:
-        pass
+        kernel.sh(f"rm -rf {q_rpc}/req_* {q_rpc}/res_*", timeout=10)
+    except Exception as exc:
+        logger.debug("Stale RPC sweep failed for kernel %s: %s", kernel.kernel_dir, exc)
     tool_call_counter, stop_event = [0], threading.Event()
     # Per-cell RPC thread carrying THIS call's approval/session context — the remote analogue
     # of CellAuthority: authority lives exactly as long as the cell's poll loop.

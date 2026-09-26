@@ -362,6 +362,7 @@ def _call(tool_name, args):
         json.dump({
             "tool": tool_name,
             "args": args,
+            # Informational only: the poller correlates responses by req filename.
             "seq": seq,
             "token": os.environ.get("HERMES_RPC_TOKEN", ""),
         }, f)

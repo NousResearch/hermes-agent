@@ -334,6 +334,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-dynamic-workflow',
                     'user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-grok',
                     'user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-honcho',
+                    'user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-multi-session-coordination',
                     'user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-openhands',
                   ],
                 },

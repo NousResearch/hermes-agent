@@ -812,10 +812,11 @@ async def export_session_endpoint(session_id: str, profile: Optional[str] = None
         try:
             yield _compact_json(session)[:-1] + ',"messages":['
             # Keyset pagination (id > last_seen): O(n) total over the
-            # transcript, vs OFFSET's O(n²) on huge sessions.
+            # transcript, vs OFFSET's O(n²) on huge sessions. Every row with its
+            # active/compacted flags, so re-importing restores compacted history as archived.
             last_id, first = 0, True
             while True:
-                messages = db.get_messages(sid, limit=500, after_id=last_id)
+                messages = db.get_messages(sid, limit=500, after_id=last_id, include_inactive=True)
                 for message in messages:
                     yield ("" if first else ",") + _compact_json(message)
                     first = False

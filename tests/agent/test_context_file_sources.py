@@ -99,3 +99,100 @@ def test_truncated_and_suppressed_statuses_follow_the_builder(project, monkeypat
     assert "evil identity text" in prompt and "[BLOCKED: SOUL.md" not in prompt and "[BLOCKED: AGENTS.md" in prompt
     assert any("SOUL.md" in line and "review the file" in line
                for line in render_context_file_lines(list(entries.values())))
+
+
+def test_an_identical_copy_further_down_the_chain_is_not_reported_loaded(project, tmp_path_factory):
+    """``_load_agents_md`` drops content it has already emitted (a copied or symlinked AGENTS.md),
+    so the duplicate is discovered and read but never reaches the prompt. Reporting it ``loaded``
+    overstated both the file count and the token budget shown by ``/context``."""
+    (project / "AGENTS.md").write_text("shared team rules")
+    sub = project / "pkg"
+    sub.mkdir()
+    (sub / "AGENTS.md").write_text("shared team rules")  # byte-identical copy
+    home = tmp_path_factory.mktemp("home")
+
+    sources = list_context_file_sources(cwd=str(sub), home_override=home, skip_soul=True)
+    prompt = build_context_files_prompt(cwd=str(sub), home_override=home, skip_soul=True)
+
+    statuses = {s["label"]: s["status"] for s in sources}
+    assert list(statuses.values()) == ["loaded", "duplicate"]
+    assert [s["loaded"] for s in sources] == [True, False]
+    # The prompt carries the content once; the manifest now agrees on how many sections it built.
+    assert prompt.count("shared team rules") == 1
+    assert sum(1 for s in sources if s["loaded"]) == prompt.count("## ")
+
+
+def test_a_distinct_file_further_down_the_chain_still_loads(project, tmp_path_factory):
+    """The guard is content identity, not position: a real per-package AGENTS.md is unaffected."""
+    (project / "AGENTS.md").write_text("root rules")
+    sub = project / "pkg"
+    sub.mkdir()
+    (sub / "AGENTS.md").write_text("package rules")
+    home = tmp_path_factory.mktemp("home")
+
+    sources = list_context_file_sources(cwd=str(sub), home_override=home, skip_soul=True)
+    prompt = build_context_files_prompt(cwd=str(sub), home_override=home, skip_soul=True)
+    assert all(s["status"] == "loaded" for s in sources)
+    for src in sources:
+        assert Path(src["path"]).read_text() in prompt
+
+
+def test_the_duplicate_guard_only_applies_within_the_winning_chain(project, tmp_path_factory):
+    """A whole chain beaten by a higher-priority type is ``shadowed`` — the accurate reason —
+    not ``duplicate``, even when two of its files are identical."""
+    (project / ".hermes.md").write_text("hermes wins")
+    (project / "AGENTS.md").write_text("same text")
+    sub = project / "pkg"
+    sub.mkdir()
+    (sub / "AGENTS.md").write_text("same text")
+    home = tmp_path_factory.mktemp("home")
+
+    statuses = [s["status"] for s in list_context_file_sources(
+        cwd=str(sub), home_override=home, skip_soul=True)]
+    assert statuses == ["loaded", "shadowed", "shadowed"]
+
+
+def test_identical_cursor_rules_are_not_deduplicated(project, tmp_path_factory):
+    """``_load_cursorrules`` concatenates every candidate without deduping, so the manifest
+    must not borrow the AGENTS.md rule — both copies really do reach the prompt."""
+    (project / ".cursor" / "rules").mkdir(parents=True)
+    (project / ".cursor" / "rules" / "a.mdc").write_text("duplicated rule")
+    (project / ".cursor" / "rules" / "b.mdc").write_text("duplicated rule")
+    home = tmp_path_factory.mktemp("home")
+
+    sources = list_context_file_sources(cwd=str(project), home_override=home, skip_soul=True)
+    prompt = build_context_files_prompt(cwd=str(project), home_override=home, skip_soul=True)
+    assert [s["status"] for s in sources] == ["loaded", "loaded"]
+    assert prompt.count("duplicated rule") == 2
+
+
+def test_a_duplicate_deeper_in_a_three_directory_chain_is_caught(project, tmp_path_factory):
+    """Dedupe is against everything already emitted, not just the immediately preceding file."""
+    (project / "AGENTS.md").write_text("X rules")
+    mid = project / "pkg"
+    mid.mkdir()
+    (mid / "AGENTS.md").write_text("middle rules")
+    deep = mid / "inner"
+    deep.mkdir()
+    (deep / "AGENTS.md").write_text("X rules")  # identical to the git-root file
+    home = tmp_path_factory.mktemp("home")
+
+    sources = list_context_file_sources(cwd=str(deep), home_override=home, skip_soul=True)
+    prompt = build_context_files_prompt(cwd=str(deep), home_override=home, skip_soul=True)
+    assert [s["status"] for s in sources] == ["loaded", "loaded", "duplicate"]
+    assert prompt.count("X rules") == 1
+    assert sum(1 for s in sources if s["loaded"]) == prompt.count("## ")
+
+
+def test_the_duplicate_status_renders_with_a_reason(project, tmp_path_factory):
+    """``/context`` shows why the file is not counted rather than an unexplained bullet."""
+    (project / "AGENTS.md").write_text("shared rules")
+    sub = project / "pkg"
+    sub.mkdir()
+    (sub / "AGENTS.md").write_text("shared rules")
+    home = tmp_path_factory.mktemp("home")
+
+    lines = render_context_file_lines(
+        list_context_file_sources(cwd=str(sub), home_override=home, skip_soul=True))
+    assert any("identical to an earlier file in the chain" in line for line in lines)
+    assert not any("•" in line for line in lines)  # no unmapped-status fallback glyph

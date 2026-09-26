@@ -3,6 +3,7 @@
 # venv-style activation for the Hermes dev environment (pm-managed tools).
 #
 #   source ./activate      (bash / zsh, repo root)
+#   source ./activate.fish (fish)
 #   .\activate.ps1         (PowerShell)
 #
 # Emits the composed pm env (PATH + tool vars) into the CURRENT shell, with

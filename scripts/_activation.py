@@ -1,12 +1,12 @@
 """Activation guard for repository scripts.
 
 Every script in this checkout assumes it runs under the PM-activated
-environment (``source ./activate`` on POSIX, ``. .\\activate.ps1`` on Windows),
-which is what puts the pinned interpreter and its dependency tree on
-``PATH``/``PYTHONPATH``. A script run with a bare system Python instead fails
-much later with a confusing ``ModuleNotFoundError``. Call
-:func:`require_activation` first and it fails immediately, naming the exact
-command for the caller's shell.
+environment (``source ./activate`` on bash/zsh, ``source ./activate.fish`` on
+fish, ``. .\\activate.ps1`` on Windows), which is what puts the pinned
+interpreter and its dependency tree on ``PATH``/``PYTHONPATH``. A script run
+with a bare system Python instead fails much later with a confusing
+``ModuleNotFoundError``. Call :func:`require_activation` first and it fails
+immediately, naming the exact command for the caller's shell.
 
 Import it by its bare name: ``scripts/`` is the running script's own directory,
 so it is on ``sys.path`` whether or not the shell is activated::
@@ -58,17 +58,23 @@ import sys
 
 ACTIVATION_ENV_VAR = "__HERMES_ACTIVATED"
 POSIX_COMMAND = "source ./activate"
+FISH_COMMAND = "source ./activate.fish"
 WINDOWS_COMMAND = ". .\\activate.ps1"
 
 
 def activation_command() -> str:
     """The exact command that activates this checkout in the caller's shell."""
+    shell = os.path.basename(os.environ.get("SHELL", ""))
     if os.name != "nt":
+        if shell == "fish":
+            return FISH_COMMAND
         return POSIX_COMMAND
     # A bash-family shell on Windows (Git Bash, MSYS, WSL interop) sources the
-    # POSIX script; only a native host gets the PowerShell one.
-    if os.environ.get("MSYSTEM") or os.path.basename(os.environ.get("SHELL", "")) in {"bash", "sh", "zsh"}:
+    # POSIX script; fish gets activate.fish; only a native host gets PowerShell.
+    if os.environ.get("MSYSTEM") or shell in {"bash", "sh", "zsh"}:
         return POSIX_COMMAND
+    if shell == "fish":
+        return FISH_COMMAND
     return WINDOWS_COMMAND
 
 

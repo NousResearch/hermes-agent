@@ -64,6 +64,13 @@ source ./activate
 hermes --version
 ```
 
+On fish:
+
+```fish
+source ./activate.fish
+hermes --version
+```
+
 On native Windows, use PowerShell:
 
 ```powershell

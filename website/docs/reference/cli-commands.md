@@ -1970,7 +1970,8 @@ hermes pm install chromium
 ```
 
 For source development, run the setup script once, then activate the installed
-environment with `source ./activate` or PowerShell `. .\activate.ps1`.
+environment with `source ./activate`, fish `source ./activate.fish`, or
+PowerShell `. .\activate.ps1`.
 Use `deactivate` to restore the previous shell environment. See the
 [developer workflow](./package-management.md#developer-workflow) for preparation,
 daily commands, dependency refresh, and test environments.

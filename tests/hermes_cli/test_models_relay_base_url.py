@@ -19,13 +19,13 @@ class _RecordingProfile:
         return ["relay-only-model"]
 
 
-@pytest.mark.parametrize("provider", ["openai-codex", "copilot", "nous", "opencode-zen"])
+@pytest.mark.parametrize("provider", ["openai-codex", "copilot", "nous", "opencode-zen", "openrouter"])
 def test_canonical_url_preserves_native_catalog_but_other_paths_stay_relays(monkeypatch, provider):
-    from hermes_cli.auth import PROVIDER_REGISTRY
     from hermes_cli.config import atomic_config_write
     from hermes_constants import get_hermes_home
+    from providers import get_provider_profile
 
-    canonical = PROVIDER_REGISTRY[provider].inference_base_url
+    canonical = get_provider_profile(provider).base_url
     config_path = get_hermes_home() / "config.yaml"
     calls = []
 
@@ -35,7 +35,11 @@ def test_canonical_url_preserves_native_catalog_but_other_paths_stay_relays(monk
 
     monkeypatch.setitem(models._PROVIDER_CATALOG_FETCHERS, provider, native_catalog)
     monkeypatch.setattr(models, "_relay_model_catalog", lambda *args: None)
-    for base_url, expected in [(canonical, [provider]), (canonical + "/relay", [])]:
+    scheme, rest = canonical.split("://", 1)
+    host, _, path = rest.partition("/")
+    # Same route spelled differently: scheme/host case, explicit default port, trailing slash.
+    shouted = f"{scheme.upper()}://{host.upper()}:443{'/' + path if path else ''}/"
+    for base_url, expected in [(canonical, [provider]), (shouted, [provider]), (canonical + "/relay", [])]:
         calls.clear()
         atomic_config_write(config_path, {"model": {"provider": provider, "base_url": base_url}})
         catalog = models.provider_model_ids(provider, force_refresh=True)

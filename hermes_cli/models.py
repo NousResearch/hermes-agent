@@ -27,6 +27,7 @@ from typing import Any, Optional, TYPE_CHECKING
 if TYPE_CHECKING:
     from typing import TypeGuard
 
+from hermes_cli.route_identity import normalize_route_base_url
 from hermes_cli.urllib_security import open_credentialed_url
 from hermes_cli.version_info import get_version_info
 from hermes_cli.models_catalog_static import (
@@ -1606,7 +1607,7 @@ def _configured_relay_base_url(provider: str) -> str:
     """``model.base_url`` when it points the *configured* provider at a relay/proxy, else "".
 
     Discovery must probe the same endpoint inference uses (#121387): when ``model.base_url``
-    differs from the registered endpoint, the vendor's canonical host is NOT the catalog to list.
+    differs from the provider's own endpoint, the vendor's canonical host is NOT the catalog to list.
     Mirrors the ``$OPENAI_BASE_URL`` -> ``model.base_url`` -> canonical precedence of
     ``_openai_discovery_base_url`` for every built-in provider, not just OpenAI.
     """
@@ -1618,17 +1619,25 @@ def _configured_relay_base_url(provider: str) -> str:
     if not cfg_provider or not provider:
         return ""
     try:
-        if normalize_provider(provider) != normalize_provider(cfg_provider):
+        normalized = normalize_provider(provider)
+        if normalized != normalize_provider(cfg_provider):
             return ""
     except Exception:
         return ""
     base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
-    from hermes_cli.auth import PROVIDER_REGISTRY
+    if not base_url:
+        return ""
+    # A base_url equal to the provider's own endpoint is not a relay (setup persists canonical
+    # URLs too): keep native discovery, which OAuth providers such as Codex need because the
+    # generic relay probe only speaks api_key. Profiles cover providers PROVIDER_REGISTRY lacks
+    # (OpenRouter).
+    try:
+        from providers import get_provider_profile
 
-    registered = PROVIDER_REGISTRY.get(normalize_provider(provider))
-    # Setup persists canonical URLs too. They still need the provider's native discovery
-    # (notably Codex OAuth); the generic relay probe only supports API-key providers.
-    if registered and base_url == registered.inference_base_url.rstrip("/"):
+        canonical = getattr(get_provider_profile(normalized), "base_url", "") or ""
+    except Exception:
+        return base_url  # lookup failed: stay a relay, never widening where credentials go
+    if canonical and normalize_route_base_url(base_url) == normalize_route_base_url(canonical):
         return ""
     return base_url
 

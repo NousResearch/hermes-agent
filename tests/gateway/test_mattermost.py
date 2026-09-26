@@ -395,6 +395,111 @@ class TestMattermostMentionBehavior:
 
 
 # ---------------------------------------------------------------------------
+# Thread-participant responses (respond_in_bot_threads)
+# ---------------------------------------------------------------------------
+
+BOT_ROOT = "root_of_bot_456"          # thread rooted by the bot
+STRANGER_ROOT = "root_stranger_123"   # stranger thread the bot once replied to
+UNKNOWN_ROOT = "root_unknown_789"     # stranger thread with no bot presence
+
+_THREADS = {
+    BOT_ROOT: {BOT_ROOT: {"id": BOT_ROOT, "user_id": "bot_user_id"}},
+    STRANGER_ROOT: {
+        STRANGER_ROOT: {"id": STRANGER_ROOT, "user_id": "someone_else"},
+        "reply_by_bot": {"id": "reply_by_bot", "user_id": "bot_user_id"},
+    },
+}
+
+
+class TestMattermostRespondInBotThreads:
+    def setup_method(self):
+        self.adapter = _make_adapter()
+        self.adapter._bot_user_id = "bot_user_id"
+        self.adapter._bot_username = "hermes-bot"
+        self.adapter.handle_message = AsyncMock()
+
+        async def fake_api_get(path):
+            if path.startswith("posts/") and path.endswith("/thread"):
+                pid = path[len("posts/"):-len("/thread")]
+                return {"posts": _THREADS.get(pid, {})}
+            return {}
+
+        self.adapter._api_get = AsyncMock(side_effect=fake_api_get)
+
+    def _make_event(self, message, channel_type="O", channel_id="chan_456",
+                    root_id="", post_id="post_thread_gate", user_id="user_123"):
+        post_data = {
+            "id": post_id,
+            "user_id": user_id,
+            "channel_id": channel_id,
+            "message": message,
+        }
+        if root_id:
+            post_data["root_id"] = root_id
+        return {
+            "event": "posted",
+            "data": {
+                "post": json.dumps(post_data),
+                "channel_type": channel_type,
+                "sender_name": "@alice",
+            },
+        }
+
+    @pytest.mark.asyncio
+    async def test_reply_in_bot_rooted_thread_responds_without_mention(self):
+        await self.adapter._handle_ws_event(self._make_event("hello", root_id=BOT_ROOT))
+        assert self.adapter.handle_message.called
+        assert self.adapter._api_get.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_reply_in_thread_bot_replied_to_responds_without_mention(self):
+        await self.adapter._handle_ws_event(self._make_event("hello", root_id=STRANGER_ROOT))
+        assert self.adapter.handle_message.called
+
+    @pytest.mark.asyncio
+    async def test_reply_in_stranger_thread_without_mention_ignored(self):
+        await self.adapter._handle_ws_event(self._make_event("hello", root_id=UNKNOWN_ROOT))
+        assert not self.adapter.handle_message.called
+
+    @pytest.mark.asyncio
+    async def test_opt_out_via_env_restores_strict_mention_gating(self):
+        with patch.dict(os.environ, {"MATTERMOST_RESPOND_IN_BOT_THREADS": "false"}):
+            await self.adapter._handle_ws_event(self._make_event("hello", root_id=BOT_ROOT))
+        assert not self.adapter.handle_message.called
+
+    @pytest.mark.asyncio
+    async def test_api_failure_degrades_to_mention_required(self):
+        async def failing_api_get(path):
+            return {}
+
+        self.adapter._api_get = AsyncMock(side_effect=failing_api_get)
+        await self.adapter._handle_ws_event(self._make_event("hello", root_id=BOT_ROOT))
+        assert not self.adapter.handle_message.called
+
+    @pytest.mark.asyncio
+    async def test_dm_bypasses_gate_and_never_calls_thread_api(self):
+        await self.adapter._handle_ws_event(self._make_event("hello", channel_type="D"))
+        assert self.adapter.handle_message.called
+        assert self.adapter._api_get.await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_top_level_post_still_requires_mention(self):
+        await self.adapter._handle_ws_event(self._make_event("hello"))
+        assert not self.adapter.handle_message.called
+        assert self.adapter._api_get.await_count == 0
+
+    def test_yaml_bridge_respond_in_bot_threads(self):
+        os.environ.pop("MATTERMOST_RESPOND_IN_BOT_THREADS", None)
+        from plugins.platforms.mattermost.adapter import _apply_yaml_config
+        result = _apply_yaml_config({}, {"respond_in_bot_threads": False})
+        try:
+            assert result["respond_in_bot_threads"] is False
+            assert os.environ["MATTERMOST_RESPOND_IN_BOT_THREADS"] == "false"
+        finally:
+            os.environ.pop("MATTERMOST_RESPOND_IN_BOT_THREADS", None)
+
+
+# ---------------------------------------------------------------------------
 # File upload (send_image)
 # ---------------------------------------------------------------------------
 

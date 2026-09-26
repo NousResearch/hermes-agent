@@ -25,6 +25,13 @@ from typing import Mapping
 from typing import Optional
 from typing import TYPE_CHECKING
 
+from hermes_cli.kanban_db_lanes import (
+    LaneModelOverride,
+    apply_lane_model_override,
+    expire_lane_model_overrides,
+    get_lane_model_override,
+    lane_successor_label,
+)
 from hermes_cli.quiet_single_query import KANBAN_WORKER_EXIT_TRAILER
 
 if TYPE_CHECKING:
@@ -152,6 +159,22 @@ class DispatchResult:
     """Memory pressure that restricted this tick: ``"critical"`` (no new
     workers), ``"elevated"`` (at most one), ``None`` (no restriction).
     Reclaim/promotion bookkeeping still ran; deferred tasks stay queued."""
+    spawn_route_sources: dict[str, str] = field(default_factory=dict)
+    """Where each spawned task's model route came from: ``card-override``,
+    ``lane-override(<n>s remaining)`` or ``profile-default``, so a tick log
+    says WHY a worker got the model it got instead of leaving the operator to
+    guess which layer won."""
+    spawn_routes: dict[str, str] = field(default_factory=dict)
+    """``provider/model`` for each spawned task whose route came from a card
+    or lane override. Profile-default spawns are absent: the route is the
+    profile's own config, resolved by the worker."""
+    expired_lane_models: list[tuple[str, str]] = field(default_factory=list)
+    """Lane-model overrides retired this tick as ``(lane, route)`` where
+    ``lane`` is the assignee or ``*`` for the board-wide row. Reported exactly
+    once: the rows are deleted when they expire."""
+    expired_lane_successors: dict[str, str] = field(default_factory=dict)
+    """What routes each expired lane (keyed like ``expired_lane_models``) for
+    the rest of this tick — ``profile default`` or a still-active lane."""
 
 
 def describe_suppression(results: Iterable[Optional["DispatchResult"]]) -> str:
@@ -2002,10 +2025,13 @@ def _dispatch_lane_task(
     spawn_fn,
     per_profile_cap: Optional[int],
     per_profile_running: dict[str, int],
+    lane_override_for: Optional[Callable[[Optional[str]], Optional[LaneModelOverride]]] = None,
+    tick_now: Optional[int] = None,
 ) -> bool:
     """Guard, claim, resolve the workspace and spawn one ready/review row.
     Returns True when a spawn slot was consumed (real or ``dry_run``); every
-    skip is recorded on ``result``.
+    skip is recorded on ``result``. ``lane_override_for`` resolves the active
+    lane-model override for an assignee (memoized per tick by the caller).
     """
     task_id = row["id"]
     # Non-profile assignees (control-plane lanes that pull via ``claim_task``)
@@ -2073,6 +2099,19 @@ def _dispatch_lane_task(
         # Force-load sdlc-review; the kanban lifecycle is already in every
         # worker's system prompt via KANBAN_GUIDANCE.
         claimed.skills = list(dict.fromkeys([*(claimed.skills or []), "sdlc-review"]))
+    # Route precedence at spawn, identical for the ready and review lanes:
+    # card pin > active lane override > profile default. The lane route is
+    # applied to the in-memory claimed Task only; persisting it onto the card
+    # would turn a time-boxed window into a permanent pin. Review spawns are
+    # included on purpose: a window that re-routes workers but leaves
+    # reviewers on a capped provider strands the lane that unblocks the rest.
+    route_source = None
+    if lane_override_for is not None:
+        route_source = apply_lane_model_override(
+            claimed, lane_override_for(claimed.assignee), now=tick_now,
+        )
+    if route_source is None:
+        route_source = "card-override" if claimed.model_override else "profile-default"
     try:
         pid = _call_spawn_fn(spawn_fn if spawn_fn is not None else _default_spawn, claimed, str(workspace), board)
         if pid:
@@ -2083,6 +2122,12 @@ def _dispatch_lane_task(
         # spawn would let a task that keeps timing out loop forever. Cleared
         # only on successful completion (complete_task).
         result.spawned.append((claimed.id, claimed.assignee or "", str(workspace)))
+        result.spawn_route_sources[claimed.id] = route_source
+        if claimed.model_override:
+            result.spawn_routes[claimed.id] = (
+                f"{claimed.provider_override}/{claimed.model_override}"
+                if claimed.provider_override else claimed.model_override
+            )
         _count_spawn(claimed.assignee)
         return True
     except Exception as exc:
@@ -2299,6 +2344,30 @@ def _dispatch_once_locked(
     the PID so later ticks catch crashes before the TTL. Cap semantics:
     :func:`_tick_spawn_budget`."""
     result = DispatchResult()
+    # Lane-model overrides: one clock read for the whole tick so every card
+    # sees the same TTL and a window cannot expire halfway through the pass.
+    tick_now = int(time.time())
+    if not dry_run:
+        # Retire elapsed windows first. The rows are deleted, so each expiry
+        # is reported exactly once; a dry run reports the board as-is.
+        result.expired_lane_models = [
+            (row.assignee or "*", row.route)
+            for row in expire_lane_model_overrides(conn, now=tick_now)
+        ]
+    lane_cache: dict[str, Optional[LaneModelOverride]] = {}
+
+    def lane_override_for(assignee: Optional[str]) -> Optional[LaneModelOverride]:
+        key = (assignee or "").strip()
+        if key not in lane_cache:
+            lane_cache[key] = get_lane_model_override(conn, assignee=key or None, now=tick_now)
+        return lane_cache[key]
+
+    for lane_key, _route in result.expired_lane_models:
+        # Same memoized lookup the spawns below use, so the log and the
+        # routes agree on what took over.
+        result.expired_lane_successors[lane_key] = lane_successor_label(
+            lane_override_for(None if lane_key == "*" else lane_key)
+        )
     _run_reclaim_phase(
         conn, result, stale_timeout_seconds=stale_timeout_seconds,
         failure_limit=failure_limit, reconcile_orphans=reconcile_orphans, board=board,
@@ -2347,6 +2416,7 @@ def _dispatch_once_locked(
         dry_run=dry_run, ttl_seconds=ttl_seconds, board=board,
         failure_limit=failure_limit, spawn_fn=spawn_fn,
         per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
+        lane_override_for=lane_override_for, tick_now=tick_now,
     )
     default_assignee = _resolve_default_assignee(default_assignee)
     spawned = 0

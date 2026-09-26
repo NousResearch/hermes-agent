@@ -24,7 +24,7 @@ import time
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Optional, Sequence
 
 from toolsets import get_toolset_names
 
@@ -1069,7 +1069,26 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     PRIMARY KEY (task_id, platform, chat_id, thread_id)
 );
 
+-- Board-level, time-boxed model routing. A row re-routes every spawn for its
+-- lane that does NOT carry its own per-card override, and expires on the
+-- dispatcher clock (``expires_at``), so a capacity workaround cannot become a
+-- standing default the way editing a profile's config.yaml does. ``assignee``
+-- '' is the board-wide lane (NULL can't be a PRIMARY KEY); a row naming an
+-- assignee wins over it for that profile. One row per lane, so re-setting a
+-- lane is an upsert.
+CREATE TABLE IF NOT EXISTS lane_model_overrides (
+    assignee         TEXT PRIMARY KEY,
+    provider         TEXT NOT NULL,
+    model            TEXT NOT NULL,
+    reasoning_effort TEXT,
+    reason           TEXT,
+    created_by       TEXT,
+    created_at       INTEGER NOT NULL,
+    expires_at       INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_tasks_status          ON tasks(status);
+CREATE INDEX IF NOT EXISTS idx_lane_model_expires   ON lane_model_overrides(expires_at);
 CREATE INDEX IF NOT EXISTS idx_links_child           ON task_links(child_id);
 CREATE INDEX IF NOT EXISTS idx_links_parent          ON task_links(parent_id);
 CREATE INDEX IF NOT EXISTS idx_comments_task         ON task_comments(task_id, created_at);
@@ -1604,14 +1623,32 @@ def _set_task_override(
     """Per-task override write: refuse archived tasks, record ``event_kind``,
     then fire the task-updated observer AFTER commit (RFC #58548)."""
     with write_txn(conn):
-        status = _task_status(conn, task_id)
-        if status is None:
+        if not _set_task_override_locked(
+            conn, task_id, sql, params, event_kind, payload, archived_msg=archived_msg,
+        ):
             return False
-        if status == "archived":
-            raise RuntimeError(f"{archived_msg} on archived task {task_id}")
-        conn.execute(sql, (*params, task_id))
-        _append_event(conn, task_id, event_kind, payload)
     notify_task_updated(conn, task_id, changed_fields)
+    return True
+
+
+def _set_task_override_locked(
+    conn: sqlite3.Connection, task_id: str, sql: str, params: tuple, event_kind: str, payload: dict,
+    *, archived_msg: str,
+) -> bool:
+    """Body of :func:`_set_task_override`. MUST already be inside ``write_txn``.
+
+    The status read happens inside the caller's transaction, so it is the row
+    state the UPDATE commits against. A batch that calls this per card
+    therefore cannot half-commit when another connection archives a selected
+    card after selection: the ``RuntimeError`` unwinds every card.
+    """
+    status = _task_status(conn, task_id)
+    if status is None:
+        return False
+    if status == "archived":
+        raise RuntimeError(f"{archived_msg} on archived task {task_id}")
+    conn.execute(sql, (*params, task_id))
+    _append_event(conn, task_id, event_kind, payload)
     return True
 
 
@@ -1625,6 +1662,89 @@ def set_reasoning_effort(conn: sqlite3.Connection, task_id: str, effort: Optiona
         "reasoning_effort_set", {"reasoning_effort": effort},
         ("reasoning_effort",), archived_msg="cannot set reasoning effort",
     )
+
+
+@dataclass
+class BatchRouteWrite:
+    """One card's requested model/provider change inside a batch.
+
+    ``require_statuses`` / ``require_assignees`` are the selection predicate
+    that chose the card, re-checked under the batch's writer lock (``None`` =
+    no constraint). A selector-chosen card (``skip_if_unmatched``) that
+    stopped matching is skipped and reported; an explicitly named card that
+    stopped matching aborts the whole batch, as it would have at selection
+    time — an operator naming five cards must not silently get four.
+    """
+
+    task_id: str
+    model: Optional[str] = None
+    provider: Optional[str] = None
+    require_statuses: Optional[frozenset] = None
+    require_assignees: Optional[frozenset] = None
+    skip_if_unmatched: bool = False
+
+
+def _batch_write_mismatch(conn: sqlite3.Connection, write: BatchRouteWrite) -> Optional[str]:
+    """Why ``write`` no longer matches its selection, or None. In-txn only."""
+    row = conn.execute(
+        "SELECT status, assignee FROM tasks WHERE id = ?", (write.task_id,),
+    ).fetchone()
+    if row is None:
+        return "no such task"
+    status = (row["status"] or "").lower()
+    if write.require_statuses is not None and status not in write.require_statuses:
+        return f"status is now {status}"
+    if write.require_assignees is not None and (row["assignee"] or "") not in write.require_assignees:
+        return f"assignee is now {row['assignee'] or '(none)'}"
+    return None
+
+
+def apply_batch_route_writes(
+    conn: sqlite3.Connection,
+    writes: Sequence[BatchRouteWrite],
+    *,
+    skipped: Optional[dict[str, str]] = None,
+) -> list[str]:
+    """Apply every model/provider override in ONE transaction, or none.
+
+    Calling :func:`set_model_override` in a loop commits each card
+    separately, so a card that changes state after selection (archived,
+    completed, reassigned by another connection) fails midway and leaves the
+    cards ahead of it committed — a split route the operator believed was one
+    action. Pre-validation cannot close that window; checking and writing
+    under one ``BEGIN IMMEDIATE`` can.
+
+    Arguments are validated for every card before the transaction opens.
+    Returns the ids written, in order. Selector-chosen cards that stopped
+    matching are left untouched and recorded in ``skipped`` (``id -> why``).
+    Raises ``ValueError`` (bad arguments) or ``RuntimeError`` (archived card,
+    or an explicit card that stopped matching) having written NOTHING.
+    Task-updated observers fire only after the whole batch commits.
+    """
+    prepared = [(w, *_validate_model_override(w.model, w.provider)) for w in writes]
+    written: list[str] = []
+    skipped_now: dict[str, str] = {}
+    with write_txn(conn):
+        for write, model, provider in prepared:
+            mismatch = _batch_write_mismatch(conn, write)
+            if mismatch is not None:
+                if not write.skip_if_unmatched:
+                    raise RuntimeError(f"{write.task_id}: {mismatch}; no cards were changed")
+                skipped_now[write.task_id] = mismatch
+                continue
+            if not _set_task_override_locked(
+                conn, write.task_id,
+                "UPDATE tasks SET model_override = ?, provider_override = ? WHERE id = ?",
+                (model, provider), "model_override_set", {"model": model, "provider": provider},
+                archived_msg="cannot set model override",
+            ):
+                raise RuntimeError(f"no such task: {write.task_id}; no cards were changed")
+            written.append(write.task_id)
+    if skipped is not None:
+        skipped.update(skipped_now)
+    for task_id in written:
+        notify_task_updated(conn, task_id, ("model_override", "provider_override"))
+    return written
 
 
 # --- Links ---
@@ -4220,10 +4340,31 @@ def board_stats(conn: sqlite3.Connection) -> dict:
         if oldest_row and oldest_row["ts"] is not None else None
     )
 
+    # Active lane overrides ride along so `kanban stats` — the first thing
+    # anyone reads when workers behave oddly — shows that spawns are being
+    # re-routed and for how much longer. A silent override is the failure
+    # mode the TTL exists to prevent.
+    from hermes_cli.kanban_db_lanes import list_lane_model_overrides
+
+    lane_overrides = [
+        {
+            "assignee": row.assignee,
+            "provider": row.provider,
+            "model": row.model,
+            "reasoning_effort": row.reasoning_effort,
+            "reason": row.reason,
+            "created_at": row.created_at,
+            "expires_at": row.expires_at,
+            "ttl_remaining_seconds": row.ttl_remaining(now),
+        }
+        for row in list_lane_model_overrides(conn, now=now)
+    ]
+
     return {
         "by_status": by_status,
         "by_assignee": by_assignee,
         "oldest_ready_age_seconds": oldest_ready_age,
+        "lane_model_overrides": lane_overrides,
         "now": now,
     }
 

@@ -265,6 +265,43 @@ def test_retry_of_a_failed_attempt_reserves_the_request_once():
     assert agent._review_input_tokens_reserved == projection
 
 
+def test_retry_of_an_invalid_response_reserves_the_request_once():
+    """A malformed HTTP-200 body (``validate_response_shape`` rejects it; no usage is folded)
+    re-attempts the SAME request without raising, so the retry loop never passes its error
+    handlers. The reservation must still be released before that re-attempt, else a request
+    projected above half the remaining budget is refused on its own retry."""
+    agent = _make_loop_agent()
+    agent._review_input_token_budget = 100_000
+
+    reserved_per_attempt = []
+
+    def _create(**_kwargs):
+        reserved_per_attempt.append(agent._review_input_tokens_reserved)
+        if len(reserved_per_attempt) == 1:
+            return None  # validate_response_shape -> "response is None"
+        return _final_response()
+
+    # retry_invalid_response imports the backoff sleep function-locally from agent.turn_recovery.
+    with patch("agent.turn_recovery.interruptible_backoff_sleep", return_value=None):
+        result = _run_with_responses(agent, _create, user_message="x" * 300_000)
+
+    create = agent.client.chat.completions.create
+    assert create.call_count == 2, (
+        f"expected the retry of the invalid response to be admitted, but {create.call_count} "
+        f"provider call(s) were made (reserved={agent._review_input_tokens_reserved}, "
+        f"budget={agent._review_input_token_budget})"
+    )
+    assert result["completed"] is True
+    projection = reserved_per_attempt[0]
+    assert (
+        agent._review_input_token_budget // 2
+        < projection
+        <= agent._review_input_token_budget
+    )
+    assert reserved_per_attempt == [projection, projection]
+    assert agent._review_input_tokens_reserved == projection
+
+
 def test_no_budget_attribute_leaves_tool_loop_unbounded():
     """Agents without ``_review_input_token_budget`` (every normal agent)
     are unaffected by the gate and consume all scripted responses."""

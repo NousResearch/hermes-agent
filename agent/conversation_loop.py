@@ -1562,6 +1562,11 @@ def _run_api_retry_loop(agent, s: _LoopState) -> Optional[Dict[str, Any]]:
                 return _rc.result
             if _rc.action == "break":
                 return None
+            if _rc.action == "continue":
+                # The same request is re-attempted without raising (malformed body, Codex
+                # soft-failure rotate, truncated tool call) and without folded usage:
+                # record_response_usage runs only after validation.
+                _release_review_input_request(agent, reserved_before_request)
         except InterruptedError:
             _release_review_input_request(agent, reserved_before_request)
             if _run_phase(handle_api_interrupt, agent, s).action == "break":

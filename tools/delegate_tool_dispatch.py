@@ -390,12 +390,27 @@ def _dispatch_unit(unit: _Batch, unit_id: Optional[str], slot_key: Optional[str]
         for c in child_agents:
             _signal_child_stop(c, "Async delegation cancelled")
 
+    def _runner():
+        try:
+            return _execute_and_aggregate(unit, honor_parent_interrupt=False)
+        finally:
+            for child in child_agents:
+                release_ownership = vars(child).get("_delegate_release_ownership")
+                if not callable(release_ownership):
+                    continue
+                try:
+                    released = release_ownership() is True
+                except Exception:
+                    released = False
+                if not released:
+                    _retain_parent_ownership(unit.parent_agent, [child])
+
     return dispatch_async_delegation_batch(
         # Call-wide goals: completion formatting indexes them by task_index.
         goals=[t["goal"] for t in unit.task_list], context=unit.context,
         toolsets=None,  # metadata for the completion block only; subagents inherit the parent's toolsets
         role=unit.top_role, model=unit.creds["model"],
-        runner=lambda: _execute_and_aggregate(unit, honor_parent_interrupt=False),
+        runner=_runner,
         interrupt_fn=_interrupt, delegation_id=unit_id, slot_key=slot_key,
         task_indexes=[i for (i, _, _) in unit.children] if len(unit.children) < len(unit.task_list) else None,
         # Persist locators before starting workers; live_paths omits failed writers and can be compressed.
@@ -404,6 +419,23 @@ def _dispatch_unit(unit: _Batch, unit_id: Optional[str], slot_key: Optional[str]
                           and unit.live_writers[i].path is not None},
         progress_fn=lambda: _batch_progress_token(child_agents), **routing,
     )
+
+
+def _retain_parent_ownership(parent_agent: Any, children: List[Any]) -> None:
+    """Keep incompletely cleaned children reachable for a later parent retry."""
+    active_children = getattr(parent_agent, "_active_children", None)
+    if active_children is None:
+        return
+    lock = getattr(parent_agent, "_active_children_lock", None)
+    if lock:
+        with lock:
+            for child in children:
+                if child not in active_children:
+                    active_children.append(child)
+        return
+    for child in children:
+        if child not in active_children:
+            active_children.append(child)
 
 def _restore_parent_cancellation(unit: _Batch) -> None:
     """Rejected children stay owned by the parent: re-attach them (``_attach_child`` replays a stop that

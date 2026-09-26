@@ -35,6 +35,15 @@ from tools.delegate_tool_config import (  # noqa: F401
     _subagent_auto_approve, _subagent_auto_deny,
 )
 from tools.delegate_tool_dispatch import _Batch, _announce_batch, _capture_origin, _run_batch
+from tools.delegate_tool_gemini import (
+    RoutingInitializationFailureChild as _RoutingInitializationFailureChild,
+    active_profile_name as _active_profile_name,
+    build_antigravity_delegate_child as _build_antigravity_delegate_child,
+    frontier_receipt_config as _frontier_receipt_config,
+    merge_child_route_metadata as _merge_child_route_metadata,
+    _replace_registered_child,
+    wrap_frontier_delegate_child as _wrap_frontier_delegate_child,
+)
 from tools.delegate_tool_progress import (  # noqa: F401
     DelegateEvent, SUBAGENT_FAILURE_STATUSES, _batch_prefix, _build_child_progress_callback,
     _build_child_system_prompt, _clean_error_text, _emit_parent_console, _quiet, _resolve_workspace_hint,
@@ -178,6 +187,7 @@ def _build_child_agent(
     routing_cfg: Optional[Dict[str, Any]] = None,
     # Legacy; accepted for wire compat but ignored (capability is depth-derived).
     role: str = "leaf",
+    emit_start_hook: bool = True,
 ):
     """Build (don't run) a child AIAgent on the main thread. override_* (from delegation config) replace parent
     inheritance so children can run on a different provider:model pair."""
@@ -286,15 +296,39 @@ def _build_child_agent(
     # spawn_requested now — the child may queue for seconds when the pool is
     # saturated — then the subagent_start lifecycle hook.
     _safe_progress(child_progress_cb, "subagent.spawn_requested", preview=goal)
-    with _quiet("subagent_start hook invocation failed", exc_info=True):
-        from hermes_cli.lifecycle import invoke_hook as _invoke_hook
-        _invoke_hook(
-            "subagent_start", parent_session_id=parent_sid,
-            parent_turn_id=getattr(parent_agent, "_current_turn_id", "") or "", parent_subagent_id=parent_subagent_id,
-            child_session_id=getattr(child, "session_id", None), child_subagent_id=subagent_id,
-            child_role=effective_role, child_goal=goal,
+    if emit_start_hook:
+        _invoke_subagent_start_hook(
+            child=child, parent_agent=parent_agent, task_index=task_index,
+            task_count=task_count, goal=goal,
         )
     return child
+
+
+def _invoke_subagent_start_hook(
+    *, child, parent_agent, task_index: int, task_count: int, goal: str
+) -> None:
+    """Publish one start event after the final routed child owns the lifecycle."""
+    del task_index, task_count
+    with _quiet("subagent_start hook invocation failed", exc_info=True):
+        from hermes_cli.lifecycle import invoke_hook as _invoke_hook
+        hook_kwargs = {
+            "parent_session_id": getattr(parent_agent, "session_id", None),
+            "parent_turn_id": getattr(parent_agent, "_current_turn_id", "") or "",
+            "parent_subagent_id": getattr(parent_agent, "_subagent_id", None),
+            "child_session_id": getattr(child, "session_id", None),
+            "child_subagent_id": getattr(child, "_subagent_id", None),
+            "child_role": getattr(child, "_delegate_role", None),
+            "child_goal": goal,
+        }
+        route_metadata = getattr(child, "_route_metadata", None)
+        if isinstance(route_metadata, dict):
+            for key in (
+                "worker_route", "worker_provider", "worker_model_requested",
+                "route_receipt_id", "fallback_used", "gemini_error_code",
+            ):
+                if key in route_metadata:
+                    hook_kwargs[key] = route_metadata[key]
+        _invoke_hook("subagent_start", **hook_kwargs)
 
 def _run_single_child(
     task_index: int, goal: str, child=None, parent_agent=None, *, owner_session_id: Optional[str] = None,
@@ -380,28 +414,136 @@ def _build_children(
         "routing_cfg": routing_cfg,
     }
     children = []
+    gemini_cfg_value = routing_cfg.get("gemini_routing")
+    gemini_cfg = gemini_cfg_value if isinstance(gemini_cfg_value, dict) else None
+    routing_enabled = bool(gemini_cfg is not None and gemini_cfg.get("enabled") is True)
+    frontier_receipt_cfg = _frontier_receipt_config(gemini_cfg)
+    active_profile = _active_profile_name()
     for i, t in enumerate(task_list):
         _task_schema = task_schemas[i] if i < len(task_schemas) else None
         _child_context = t.get("context")
         if _task_schema is not None:
             _child_context = append_output_contract(_child_context, _task_schema)
-        try:
-            child = _build_child_preserving_parent_tools(
-                task_index=i, goal=t["goal"], context=_child_context,
-                toolsets=None,  # always inherit the parent's toolsets
-                model=creds["model"], max_iterations=max_iterations, task_count=len(task_list),
-                parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **overrides,
+        effective_role = _normalize_role(t.get("role") or top_role)
+        route_decision = None
+        if gemini_cfg is not None:
+            from agent.delegation_route_policy import decide_delegation_route
+            route_decision = decide_delegation_route(
+                task=t, role=effective_role, profile=active_profile, config=gemini_cfg,
             )
+
+        fallback_child = None
+        should_build_sol = (
+            route_decision is None
+            or route_decision.route == "sol"
+            or bool(gemini_cfg and gemini_cfg.get("fallback_to_delegation_model", True))
+        )
+        try:
+            if should_build_sol:
+                fallback_child = _build_child_preserving_parent_tools(
+                    task_index=i, goal=t["goal"], context=_child_context,
+                    toolsets=None,  # always inherit the parent's toolsets
+                    model=creds["model"], max_iterations=max_iterations,
+                    task_count=len(task_list), parent_agent=parent_agent,
+                    role=effective_role,
+                    emit_start_hook=not (
+                        route_decision is not None and route_decision.route == "gemini"
+                    ),
+                    **overrides,
+                )
+                frontier_reason = (
+                    route_decision.reason
+                    if route_decision is not None
+                    else "Gemini routing unavailable or disabled; Frontier selected"
+                )
+                try:
+                    fallback_child = _wrap_frontier_delegate_child(
+                        child=fallback_child,
+                        parent_agent=parent_agent,
+                        task_index=i,
+                        task=t,
+                        routing_cfg=frontier_receipt_cfg,
+                        route_reason=frontier_reason,
+                    )
+                except ValueError:
+                    raise
+                except Exception:
+                    failed_child = _RoutingInitializationFailureChild(
+                        task_index=i,
+                        routing_cfg=frontier_receipt_cfg,
+                        route_reason=frontier_reason,
+                        route="sol",
+                        worker_provider=str(
+                            getattr(fallback_child, "provider", "") or "unknown"
+                        ),
+                        worker_model=str(
+                            getattr(fallback_child, "model", "") or "unknown"
+                        ),
+                        unstarted_child=fallback_child,
+                    )
+                    _replace_registered_child(
+                        parent_agent, fallback_child, failed_child
+                    )
+                    fallback_child = failed_child
         except ValueError as exc:
             return [], str(exc)
+
+        if route_decision is not None and route_decision.route == "gemini":
+            assert gemini_cfg is not None
+            try:
+                child = _build_antigravity_delegate_child(
+                    task_index=i, task=t, fallback_child=fallback_child,
+                    routing_cfg=gemini_cfg, route_reason=route_decision.reason,
+                    parent_agent=parent_agent,
+                )
+            except Exception:
+                if fallback_child is not None:
+                    child = fallback_child
+                    prepare_frontier_receipt = getattr(child, "prepare_receipt", None)
+                    frontier_receipt_id = (
+                        prepare_frontier_receipt()
+                        if callable(prepare_frontier_receipt)
+                        else None
+                    )
+                    setattr(child, "_route_metadata", {
+                        "route": "sol_after_receipt_error",
+                        "route_reason": route_decision.reason,
+                        "gemini_error_code": "receipt_initialization_failed",
+                        "worker_route": "sol",
+                        "worker_provider": getattr(child, "provider", "") or "",
+                        "worker_model_requested": getattr(child, "model", "") or "",
+                        "route_receipt_id": frontier_receipt_id,
+                        "fallback_used": True,
+                    })
+                else:
+                    child = _RoutingInitializationFailureChild(
+                        task_index=i, routing_cfg=gemini_cfg,
+                        route_reason=route_decision.reason,
+                    )
+            _invoke_subagent_start_hook(
+                child=child, parent_agent=parent_agent, task_index=i,
+                task_count=len(task_list), goal=t["goal"],
+            )
+        else:
+            child = fallback_child
+            if child is None:
+                raise RuntimeError("Sol delegation child was not constructed")
+            if routing_enabled and route_decision is not None:
+                setattr(child, "_route_metadata", {
+                    "route": "sol", "route_reason": route_decision.reason,
+                    "worker_route": "sol",
+                    "worker_provider": getattr(child, "provider", "") or "",
+                    "worker_model_requested": getattr(child, "model", "") or "",
+                    "route_receipt_id": None, "fallback_used": False,
+                })
         if _task_schema is not None:
             with _quiet("Could not attach output schema to child %d", i):
-                child._delegate_output_schema = _task_schema
+                setattr(child, "_delegate_output_schema", _task_schema)
         # Validated per-task images; absent on image-less tasks, which keep the text-only goal turn.
         _t_images = task_images[i] if task_images and i < len(task_images) else None
         if _t_images:
             with _quiet("Could not attach images to child %d", i):
-                child._delegate_images = _t_images
+                setattr(child, "_delegate_images", _t_images)
         # Tee progress events into the live transcript (wrapper keeps the
         # _flush contract and swallows writer failures).
         _writer = live_writers[i] if i < len(live_writers) else None
@@ -440,7 +582,10 @@ def _oneshot_spawn_budget(parent_agent: Any, requested: int) -> Optional[str]:
 def delegate_task(
     goal: Optional[str] = None, context: Optional[str] = None, tasks: Optional[List[Dict[str, Any]]] = None,
     max_iterations: Optional[int] = None, role: Optional[str] = None, background: Optional[bool] = None,
-    output_schema: Optional[Dict[str, Any]] = None, images: Optional[List[str]] = None, action: Optional[str] = None,
+    output_schema: Optional[Dict[str, Any]] = None, images: Optional[List[str]] = None,
+    route: Optional[str] = None, data_classification: Optional[str] = None,
+    run_kind: Optional[str] = None,
+    output_contract: Optional[str] = None, action: Optional[str] = None,
     subagent_id: Optional[str] = None, message: Optional[str] = None, parent_agent=None,
     credentials_cfg: Optional[Dict[str, Any]] = None,
 ) -> str:
@@ -498,7 +643,10 @@ def delegate_task(
         # spawn loudly (#80450).
         return tool_error(str(exc))
     max_children = _get_max_concurrent_children()
-    task_list, err = _normalize_task_list(goal, context, tasks, output_schema, top_role, max_children)
+    task_list, err = _normalize_task_list(
+        goal, context, tasks, output_schema, top_role, max_children,
+        route, data_classification, output_contract, run_kind,
+    )
     if not err:
         task_schemas, err = _coerce_task_schemas(task_list, output_schema)
     if not err:
@@ -663,6 +811,23 @@ DELEGATE_TASK_SCHEMA = {
                             "Background THIS child needs: file paths, error messages, constraints. Each child "
                             "sees only its own context — repeat shared background in every task that needs it.",
                         ),
+                        "route": _p(
+                            "string", "Optional routing preference for this task.",
+                            enum=["auto", "gemini", "sol"],
+                        ),
+                        "run_kind": _p(
+                            "string",
+                            "Typed receipt population for this call. Defaults to production.",
+                            enum=["production", "canary", "synthetic", "evaluation"],
+                        ),
+                        "data_classification": _p(
+                            "string",
+                            "Optional data classification. 'standard' is eligible; any other value is treated as restricted.",
+                        ),
+                        "output_contract": _p(
+                            "string", "Expected worker output contract.",
+                            enum=["text", "json"],
+                        ),
                         "output_schema": _p(
                             "object",
                             "Optional JSON Schema this child's final answer must validate against (told to the "
@@ -692,6 +857,26 @@ DELEGATE_TASK_SCHEMA = {
             },
             # `background` (bool) is also accepted — DEPRECATED, ignored: top-level
             # delegations always run in the background. Unadvertised; do not re-add.
+            "route": _p(
+                "string", "Optional routing preference for the legacy single-task form.",
+                enum=["auto", "gemini", "sol"],
+            ),
+            "run_kind": _p(
+                "string",
+                "Typed receipt population for the legacy single-task form. Defaults to production.",
+                enum=["production", "canary", "synthetic", "evaluation"],
+            ),
+            "data_classification": _p(
+                "string",
+                "Optional data classification. 'standard' is eligible; any other value is treated as restricted.",
+            ),
+            "output_contract": _p(
+                "string", "Expected worker output contract for the legacy single-task form.",
+                enum=["text", "json"],
+            ),
+            "output_schema": _p(
+                "object", "Optional JSON Schema for the legacy single-task form.",
+            ),
             "action": _p(
                 "string",
                 "Default 'spawn'. Live control of running children: "
@@ -742,6 +927,9 @@ registry.register(
         goal=args.get("goal"), context=args.get("context"), tasks=_strip_model_hidden_task_fields(args.get("tasks")),
         max_iterations=args.get("max_iterations"), role=args.get("role"),
         background=_model_background_value(args, kw.get("parent_agent")), output_schema=args.get("output_schema"),
+        route=args.get("route"), data_classification=args.get("data_classification"),
+        run_kind=args.get("run_kind"),
+        output_contract=args.get("output_contract"),
         images=args.get("images"), action=args.get("action"), subagent_id=args.get("subagent_id"), message=args.get("message"),
         parent_agent=kw.get("parent_agent"),
     ),

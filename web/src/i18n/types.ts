@@ -185,6 +185,8 @@ export interface Translations {
     searchPlaceholder: string;
     noSessions: string;
     noSessionsInFilter: string;
+    loadWhat?: string;
+    searchWhat?: string;
     noMatch: string;
     startConversation: string;
     noMessages: string;

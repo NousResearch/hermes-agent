@@ -516,6 +516,14 @@ def _dedup_stub_or_block(task_data: dict, dedup_key: tuple, path: str) -> str:
             # escalates to `repeated_exact_failure_block` over calls that never failed.
             **{GUARDRAIL_REFUSAL_KEY: True})
 
+    # CONTRACT with agent.tool_guardrails: this exact envelope
+    # (status="unchanged", dedup=True, content_returned=False) certifies that
+    # the file content is byte-unchanged since the referenced full read.
+    # tool_guardrails trusts it to continue a stall streak
+    # (STALL_GUARD_UNCHANGED_RESULT_TOOLS); if the dedup logic above ever
+    # stamps "unchanged" on content that actually differs, the stall guard
+    # stays silent where it used to catch changed results. Change this shape
+    # only together with tool_guardrails.
     return json.dumps({
         "status": "unchanged",
         "message": _READ_DEDUP_STATUS_MESSAGE,

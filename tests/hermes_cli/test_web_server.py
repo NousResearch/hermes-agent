@@ -3390,6 +3390,81 @@ class TestModelContextLength:
         assert result["model"]["default"] == "anthropic/claude-opus-4.6"
 
 
+class TestWebSafeIntRoundTrip:
+    """Regression for #123439: JSON ints beyond JS's safe range (2**53 - 1) lose
+    precision the moment a browser parses them, so a 19-digit platform id was
+    rounded and PERSISTED by a config round-trip. GET now emits such ints as
+    strings; PUT restores the canonical decimal form."""
+
+    _ID = 1532136816336044092
+
+    def _browser_view(self, payload: str):
+        """What a browser holds after ``JSON.parse``: every JSON number becomes
+        an IEEE-754 double (strings stay strings)."""
+        import math
+
+        def _as_double(value):
+            if isinstance(value, bool) or value is None:
+                return value
+            if isinstance(value, (int, float)):
+                f = float(value)
+                return int(f) if f.is_integer() and abs(f) < math.inf else f
+            if isinstance(value, dict):
+                return {k: _as_double(v) for k, v in value.items()}
+            if isinstance(value, list):
+                return [_as_double(v) for v in value]
+            return value
+
+        return _as_double(json.loads(payload))
+
+    def test_normalize_emits_big_ints_as_strings(self):
+        from hermes_cli.web_server_config import _normalize_config_for_web
+
+        result = _normalize_config_for_web({"discord": {"home_channel": self._ID}})
+        assert result["discord"]["home_channel"] == str(self._ID)
+
+    def test_normalize_leaves_safe_ints_and_strings_alone(self):
+        from hermes_cli.web_server_config import _normalize_config_for_web
+
+        result = _normalize_config_for_web({
+            "discord": {"home_channel": 12345},
+            "note": "1532136816336044092",
+        })
+        assert result["discord"]["home_channel"] == 12345
+        assert result["note"] == "1532136816336044092"
+
+    def test_round_trip_preserves_19_digit_id(self):
+        """Full server-side round trip with a simulated browser: the saved id
+        must equal the original, not the rounded double."""
+        from hermes_cli.web_server_config import (
+            _denormalize_config_from_web, _normalize_config_for_web,
+        )
+        from hermes_cli.config import _deep_merge, load_config, save_config
+
+        save_config({"discord": {"home_channel": self._ID}, "display": {"skin": "ares"}})
+
+        payload = json.dumps(_normalize_config_for_web(load_config()))
+        browser = self._browser_view(payload)
+        browser["display"]["skin"] = "default"  # edit an unrelated field
+        merged = _deep_merge(load_config(), _denormalize_config_from_web(browser))
+        assert merged["discord"]["home_channel"] == self._ID
+
+    def test_round_trip_survives_save(self):
+        """The corruption persisted through save_config; the fix must survive it too."""
+        from hermes_cli.web_server_config import (
+            _denormalize_config_from_web, _normalize_config_for_web,
+        )
+        from hermes_cli.config import _deep_merge, load_config, save_config
+
+        save_config({"discord": {"home_channel": self._ID}})
+        payload = json.dumps(_normalize_config_for_web(load_config()))
+        browser = self._browser_view(payload)
+        browser["display"] = {"skin": "mono"}
+        merged = _deep_merge(load_config(), _denormalize_config_from_web(browser))
+        save_config(merged)
+        assert load_config()["discord"]["home_channel"] == self._ID
+
+
 class TestDenormalizeProviderSwitch:
     """The flat Config-page Model field carries no provider info. When the
     model string changes to one served by a different provider, the saved

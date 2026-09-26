@@ -59,21 +59,25 @@ def _arm_rate_limit_cooldown(
     primary_provider = ((agent._primary_runtime or {}).get("provider") or "").strip().lower()
     if getattr(agent, "_fallback_activated", False) and not (primary_provider and current_provider == primary_provider):
         return None
-    backoff_count = getattr(agent, "_rate_limit_backoff_count", 0)
-    agent._rate_limit_backoff_count = backoff_count + 1
+    from agent.cooldown_manager import build_cooldown_key, get_cooldown_manager
+
+    # The primary runtime snapshot owns the credential identity.  In particular, a fallback
+    # chain can exhaust after ``agent.api_key`` has been rebound to a fallback credential; using
+    # the live key would persist a cooldown against the wrong provider credential and diverge
+    # from ``restore_primary_runtime``.
+    primary_runtime = getattr(agent, "_primary_runtime", None) or {}
+    primary_key = primary_runtime.get("api_key")
+    if primary_key is None:
+        primary_key = getattr(agent, "api_key", getattr(agent, "_api_key", None))
+    reason_text = reason.value if hasattr(reason, "value") else str(reason)
+    cooldown_key = build_cooldown_key(primary_provider or current_provider, primary_key, reason_text)
     provider_delay = _provider_reset_delay(reset_at)
-    if provider_delay is not None:
-        backoff_seconds = math.ceil(provider_delay)
-        source = "provider reset"
-    else:
-        backoff_seconds = min(60 * (2 ** backoff_count), 14400)
-        source = "exponential fallback"
-    agent._rate_limited_until = time.monotonic() + backoff_seconds
-    logging.info(
-        "Rate-limit backoff level %d: cooldown %d s (%.1f min, backoff#%d, %s)",
-        backoff_count, backoff_seconds, backoff_seconds / 60, backoff_count + 1, source,
+    cooldown_seconds = get_cooldown_manager().mark_failure(
+        cooldown_key,
+        "billing" if reason == FailoverReason.billing else "rate_limit",
+        cooldown_seconds=math.ceil(provider_delay) if provider_delay is not None else None,
     )
-    return backoff_seconds
+    return cooldown_seconds
 
 
 def _mark_entitlement_rejected_model(agent, api_error) -> bool:

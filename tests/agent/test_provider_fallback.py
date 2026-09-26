@@ -7,9 +7,22 @@ advancement through multiple providers.
 
 from unittest.mock import MagicMock, patch
 
+import pytest
 
 from agent.error_classifier import FailoverReason
 from run_agent import AIAgent
+
+
+@pytest.fixture(autouse=True)
+def _isolated_cooldown_manager():
+    from agent.cooldown_manager import CooldownManager, get_cooldown_manager, set_cooldown_manager
+
+    original = get_cooldown_manager()
+    set_cooldown_manager(CooldownManager(storage_path=False))
+    try:
+        yield
+    finally:
+        set_cooldown_manager(original)
 
 
 def _make_agent(fallback_model=None):
@@ -131,7 +144,6 @@ class TestFallbackChainAdvancement:
             assert agent._try_activate_fallback(FailoverReason.rate_limit) is True
             assert agent.model == "gpt-4o"
             assert agent._fallback_index == 2
-            assert agent._rate_limit_backoff_count == 1
 
     def test_skips_provider_that_raises_to_next(self):
         """If resolve_provider_client raises, skip to next in chain."""

@@ -36,11 +36,13 @@ const buildUiState = (): UiState => ({
   storedSid: null,
   statusBarFields: null,
   streaming: true,
+  tabTitleTemplate: '',
   timestamps: false,
   // Last session's resolved theme paints frame one (flash-free boot, like
   // the desktop's hermes-boot-* keys); DEFAULT_THEME only on first launch.
   theme: bootTheme ?? DEFAULT_THEME,
-  usage: ZERO
+  usage: ZERO,
+  windowTitleTemplate: ''
 })
 
 export const $uiState = atom<UiState>(buildUiState())

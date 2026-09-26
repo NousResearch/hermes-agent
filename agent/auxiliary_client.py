@@ -4539,6 +4539,27 @@ def _main_route_target(runtime: Dict[str, Any], task: Optional[str]) -> Tuple[st
     runtime_base_url = str(runtime.get("base_url") or "")
     runtime_api_key = runtime.get("api_key", "")
     runtime_api_mode = str(runtime.get("api_mode") or "")
+    # ``provider: auto`` inherits the main route, not the user-facing alias.  Cron and
+    # delegation resolve aliases before constructing their agents; auxiliary tasks must
+    # do the same or pass an alias such as ``zdr-flash`` to the provider wire unchanged.
+    try:
+        from hermes_cli.config import load_config_readonly
+        from hermes_cli.model_switch import resolve_startup_model_route
+        aliases = (load_config_readonly().get("model_aliases") or {})
+        is_configured_alias = any(
+            str(name).strip().lower() == main_model.lower() and isinstance(value, dict)
+            for name, value in aliases.items()
+        ) if isinstance(aliases, dict) else False
+        alias_route = (resolve_startup_model_route(main_model, current_provider=main_provider)
+                       if is_configured_alias else None)
+    except Exception:
+        logger.debug("Auxiliary %s: main alias resolution failed", task or "call", exc_info=True)
+        alias_route = None
+    if alias_route is not None:
+        main_model = alias_route.model
+        main_provider = alias_route.provider or main_provider
+        runtime_base_url = alias_route.base_url or runtime_base_url
+        runtime_api_key = alias_route.api_key or runtime_api_key
     # Latency-critical tasks (titling only) opt in to the provider's fast model. Opt-in only:
     # every settings surface defines "auto" as the main model.
     if _task_prefers_fast_model(task) and main_provider and main_provider not in {"auto", ""}:
@@ -5631,15 +5652,20 @@ def _vision_auto_route(
     async_mode: bool,
 ) -> Tuple[Optional[str], Optional[Any], Optional[str]]:
     """Auto-detect order: 1. main provider + model, 2. OpenRouter, 3. Nous Portal, 4. DeepInfra, 5. stop."""
-    main_provider = str(runtime.get("provider") or _read_main_provider())
-    main_model = str(runtime.get("model") or _read_main_model())
-    if main_provider.strip().lower() == "moa":
-        # MoA main_model is a preset NAME, not a wire model — unwrap to the preset's aggregator
-        # slot. The moa:// facade endpoint belongs to the virtual provider, not the real one.
-        _agg_provider, _agg_model = _resolve_moa_aggregator(main_model)
-        if _agg_provider and _agg_model:
-            main_provider, main_model = _agg_provider, _agg_model
-            runtime = dict(runtime, base_url="", api_key="", api_mode="")
+    # Share the main-route resolver with other ``provider: auto`` auxiliary tasks. In particular,
+    # a configured alias is not a provider wire-model: vision previously bypassed this resolver
+    # and sent aliases such as ``zdr-flash`` directly to OpenRouter.
+    main_provider, main_model, main_base_url, main_api_key, main_api_mode = _main_route_target(
+        runtime, "vision"
+    )
+    runtime = dict(
+        runtime,
+        provider=main_provider,
+        model=main_model,
+        base_url=main_base_url,
+        api_key=main_api_key,
+        api_mode=main_api_mode,
+    )
     if main_provider and main_provider not in {"auto", "", "moa"}:
         client, default_model = _vision_main_provider_client(main_provider, main_model, runtime, resolved_model, resolved_api_mode)
         if client is not None:

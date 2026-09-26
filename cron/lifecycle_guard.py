@@ -379,6 +379,68 @@ def _named_profile_is_current(named: str) -> bool:
     return bool(current) and named.strip().casefold() == current.strip().casefold()
 
 
+# --- sibling gateway service labels -----------------------------------------------------------
+# Branches B/C are anchored on ANY gateway label, but only THIS process's own launchd job / systemd
+# unit can SIGTERM it. A sibling profile's gateway (``ai.hermes.gateway-<profile>`` /
+# ``hermes-gateway-<profile>``) is a different process -- the same discrimination
+# ``_named_profile_is_current`` applies to ``hermes -p <profile> gateway restart``. Fail closed when
+# this process's identity is unknown, when a self label is named, or when a label could be built
+# at runtime ($VAR, backticks) or appears in any form that is not a full label.
+_FULL_GATEWAY_SERVICE_LABEL_RE = re.compile(
+    r"(?i)(?<![\w.\-])(ai\.hermes\.gateway(?:-[a-z0-9_\-]+)?|hermes-gateway(?:-[a-z0-9_\-]+)?)"
+    r"(?:\.(?:service|plist))?(?![\w.\-])")
+_PROCESS_KILLER_RE = re.compile(r"(?i)\b(?:p?kill|killall|taskkill|stop-process)\b")
+_SIBLING_LABEL_PLACEHOLDER = "sibling-service"
+
+
+def _self_gateway_service_names() -> frozenset[str]:
+    """Names this process is SUPERVISED under, from the supervisor itself: launchd's
+    ``XPC_SERVICE_NAME`` or the systemd unit in ``/proc/self/cgroup`` (when ``INVOCATION_ID`` is set).
+    Empty when neither proves a gateway service identity -- a HERMES_HOME-derived label may be a
+    hash name that no running service has, so it is never trusted (no exemption, fail closed)."""
+    names: set[str] = set()
+    xpc = (os.environ.get("XPC_SERVICE_NAME") or "").strip()
+    if xpc and _FULL_GATEWAY_SERVICE_LABEL_RE.fullmatch(xpc):
+        names.add(xpc.casefold())
+    if os.environ.get("INVOCATION_ID"):
+        try:
+            with open("/proc/self/cgroup", encoding="utf-8") as fh:
+                for unit in re.findall(r"([\w@.\-]+)\.service\b", fh.read()):
+                    if _FULL_GATEWAY_SERVICE_LABEL_RE.fullmatch(unit):
+                        names.update({unit.casefold(), f"{unit}.service".casefold()})
+        except OSError:
+            pass
+    return frozenset(names)
+
+
+def _gateway_profile_key(label: str) -> str:
+    """Profile a gateway service label belongs to: ``ai.hermes.gateway-x`` / ``hermes-gateway-x``
+    (``.service``/``.plist`` optional) -> ``x``; the default profile's labels -> ``""``."""
+    name = re.sub(r"(?i)\\.(?:service|plist)$", "", label.strip()).casefold()
+    for base in ("ai.hermes.gateway", "hermes-gateway"):
+        if name == base:
+            return ""
+        if name.startswith(base + "-"):
+            return name[len(base) + 1:]
+    return name
+
+
+def _mask_sibling_gateway_labels(text: str) -> str:
+    """Replace full gateway service labels with a neutral token when EVERY gateway label in *text*
+    names a sibling of this process; otherwise return *text* unchanged (fail closed)."""
+    if not _HERMES_GATEWAY_LABEL_RE.search(text) or "$" in text or "`" in text \
+            or _PROCESS_KILLER_RE.search(text):
+        return text
+    labels = list(_FULL_GATEWAY_SERVICE_LABEL_RE.finditer(text))
+    if not labels or len(labels) != len(_HERMES_GATEWAY_LABEL_RE.findall(text)):
+        return text
+    own = _self_gateway_service_names()
+    own_keys = {_gateway_profile_key(n) for n in own}
+    if not own or any(_gateway_profile_key(m.group(1)) in own_keys for m in labels):
+        return text
+    return _FULL_GATEWAY_SERVICE_LABEL_RE.sub(_SIBLING_LABEL_PLACEHOLDER, text)
+
+
 # --- direct string scans ----------------------------------------------------------------------
 
 def _contains_launchctl_gateway_lifecycle(normalized_text: str) -> bool:
@@ -417,7 +479,7 @@ def contains_gateway_lifecycle_command(text: str) -> bool:
     # restart" inside such a body is documentation, not a command this shell will execute.
     from tools.shell_heredoc import strip_inert_heredoc_bodies
 
-    text = strip_inert_heredoc_bodies(text)
+    text = _mask_sibling_gateway_labels(strip_inert_heredoc_bodies(text))
     normalized = _SHELL_LINE_CONTINUATION.sub(" ", text)
     if _GATEWAY_LIFECYCLE_PATTERN.search(normalized):
         return True

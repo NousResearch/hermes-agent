@@ -184,6 +184,7 @@ class WebhookAdapter(BasePlatformAdapter):
         self.gateway_runner = None  # set externally; needed for cross-platform delivery
         # Idempotency: TTL cache of recently processed delivery IDs.
         self._seen_deliveries: Dict[str, float] = {}
+        self._deliveries_inflight: set[str] = set()
         self._idempotency_ttl: int = 3600  # 1 hour
         self._seen_deliveries_next_prune_at: float = 0.0
         self._rate_counts: Dict[str, Deque[float]] = {}  # per-route hit timestamps in a fixed window
@@ -630,6 +631,21 @@ class WebhookAdapter(BasePlatformAdapter):
         delivery_id = headers.get("X-GitHub-Delivery", headers.get("svix-id", headers.get(
             "webhook-id", headers.get("X-Request-ID", str(int(time.time() * 1000))))))
         now = time.time()  # idempotency: skip duplicate deliveries (webhook retries)
+        if route_config.get("deliver_only"):
+            if delivery_id in self._deliveries_inflight:
+                return web.json_response({"status": "pending", "delivery_id": delivery_id}, status=409,
+                                         headers={"Retry-After": "15"})
+            if now - self._seen_deliveries.get(delivery_id, 0) < self._idempotency_ttl:
+                return web.json_response({"status": "delivered", "delivery_id": delivery_id}, status=200)
+            self._deliveries_inflight.add(delivery_id)
+            try:
+                response = await self._handle_deliver_only(prompt, payload, route_config, route_name, event_type,
+                                                          delivery_id, profile)
+                if response.status == 200:
+                    self._record_delivery_id(delivery_id, time.time())
+                return response
+            finally:
+                self._deliveries_inflight.discard(delivery_id)
         if not self._record_delivery_id(delivery_id, now):
             logger.info("[webhook] Skipping duplicate delivery %s", delivery_id)
             return web.json_response({"status": "duplicate", "delivery_id": delivery_id}, status=200)

@@ -156,6 +156,32 @@ class TestDeliverOnlyStatusCodes:
             data = await resp.json()
             # Generic error — no adapter-level detail leaks
             assert "rate limited" not in json.dumps(data)
+            mock_target.send.return_value = SendResult(success=True)
+            retry = await cli.post("/webhooks/r", json={}, headers={"X-GitHub-Delivery": "d-fail-1"})
+            assert retry.status == 200
+            assert mock_target.send.await_count == 2
+            again = await cli.post("/webhooks/r", json={}, headers={"X-GitHub-Delivery": "d-fail-1"})
+            assert again.status == 200 and mock_target.send.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_inflight_retry_is_not_delivery_confirmation(self):
+        adapter = _make_adapter({"r": {"secret": _INSECURE_NO_AUTH, "deliver": "telegram",
+                                       "deliver_only": True, "deliver_extra": {"chat_id": "c"}, "prompt": "hi"}})
+        target = _wire_mock_target(adapter)
+        started, release = asyncio.Event(), asyncio.Event()
+        async def send(*args, **kwargs):
+            started.set()
+            await release.wait()
+            return SendResult(success=True)
+        target.send.side_effect = send
+        async with TestClient(TestServer(_create_app(adapter))) as cli:
+            first = asyncio.create_task(cli.post("/webhooks/r", json={}, headers={"X-Request-ID": "same"}))
+            await started.wait()
+            duplicate = await cli.post("/webhooks/r", json={}, headers={"X-Request-ID": "same"})
+            assert duplicate.status == 409
+            release.set()
+            assert (await first).status == 200
+            assert target.send.await_count == 1
 
 
 # ===================================================================

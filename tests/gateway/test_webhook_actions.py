@@ -112,3 +112,24 @@ def test_restored_action_keeps_exact_session_and_sends_nothing(tmp_path, monkeyp
             for key in list(clarify._session_index):
                 clarify.clear_session(key)
     asyncio.run(bounded())
+
+
+def test_failed_discussion_delivery_retries_but_ambiguous_receipt_fails_closed(tmp_path, monkeypatch):
+    async def scenario():
+        owner, target, entry = owner_for(tmp_path)
+        monkeypatch.setattr(actions, "admit_internal_event", AsyncMock())
+        delivery = {"payload": {"discussion_action": {"eventId": "retry", "taskId": "parent", "cardId": "t_parent", "sourceSessionId": "native"}}}
+        target.send_clarify.return_value = SendResult(success=False)
+        assert not (await actions.deliver(owner,target,Platform.WHATSAPP,"byron",None,"Needs attention",delivery)).success
+        target.send_clarify.return_value = SendResult(success=True,message_id="poll-success")
+        assert (await actions.deliver(owner,target,Platform.WHATSAPP,"byron",None,"Needs attention",delivery)).success
+        assert target.send_clarify.await_count == 2
+        assert (await actions.deliver(owner,target,Platform.WHATSAPP,"byron",None,"Needs attention",delivery)).success
+        assert target.send_clarify.await_count == 2
+        await stop(owner,entry)
+        record = owner.gateway_runner.session_store.get_session_metadata(entry.session_key,actions.KEY)
+        record.update(deliveryConfirmed=False,deliveryOutcome="started")
+        owner.gateway_runner.session_store.set_session_metadata(entry.session_key,actions.KEY,record)
+        assert not (await actions.deliver(owner,target,Platform.WHATSAPP,"byron",None,"Needs attention",delivery)).success
+        assert target.send_clarify.await_count == 2
+    asyncio.run(asyncio.wait_for(scenario(),10))

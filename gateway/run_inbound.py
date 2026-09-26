@@ -1067,14 +1067,17 @@ class GatewayInboundMixin:
                     # so session_key is derived from source. Sync handlers run on the gateway pool
                     # (contextvars carried), never the loop thread: blocking I/O there starves the
                     # liveness watchdog and the process exits 75 mid-handler (#105279).
+                    from gateway.plugin_commands import invoke_plugin_command_handler
                     _plugin_context = build_session_context(source, self.config)
                     _plugin_context.session_key = self._session_key_for_source(source)
                     user_args = event.get_command_args().strip()
                     with self._session_env_scope(_plugin_context):
                         if asyncio.iscoroutinefunction(plugin_handler):
-                            result = await plugin_handler(user_args)
+                            result = await invoke_plugin_command_handler(plugin_handler, user_args, source)
                         else:
-                            result = await self._run_in_executor_with_context(plugin_handler, user_args)
+                            result = await self._run_in_executor_with_context(
+                                invoke_plugin_command_handler, plugin_handler, user_args, source,
+                            )
                             if asyncio.iscoroutine(result):
                                 result = await result
                     return True, str(result) if result else None, command

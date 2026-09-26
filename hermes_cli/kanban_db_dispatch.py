@@ -480,6 +480,16 @@ def _terminate_reclaimed_worker(
         return info
 
     info["termination_attempted"] = True
+    if signal_fn is None and _kb._IS_WINDOWS:
+        # os.kill there is TerminateProcess on ONE handle: the venv launcher's real
+        # worker and every tool / MCP child it started would survive the reclaim.
+        # Walk the tree while the root still exists; the fingerprint gates above
+        # are the identity guard kill_process_tree itself does not have.
+        from agent.deadline import kill_process_tree
+
+        info["sigkill"] = kill_process_tree(int(pid))
+        info["terminated"] = _poll_worker_exit(pid, started_at)
+        return info
     try:
         kill(int(pid), signal.SIGTERM)
     except ProcessLookupError:
@@ -687,18 +697,12 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
             _kb._log.warning("kanban: task %s worker pid %s exceeded max runtime but has no verified "
                              "identity; not signalled", tid, pid)
             continue
-        # SIGTERM then SIGKILL after 5 s grace; workers wanting a cleaner
-        # shutdown install their own SIGTERM handler. A recycled PID (fingerprint
-        # mismatch) is never signalled: the worker is already gone.
-        killed = False
-        kill = _kill_fn(signal_fn)
-        if kill is not None and not (_kb._pid_alive(pid) and _pid_recycled(pid, started_at)):
-            with contextlib.suppress(ProcessLookupError, OSError):
-                kill(pid, signal.SIGTERM)
-            # Short polling wait — no time.sleep on the write txn.
-            _poll_worker_exit(pid, started_at)
-            if _worker_alive(pid, started_at):
-                killed = _sigkill(kill, pid)
+        # Same termination as every reclaim path: SIGTERM, 5 s grace, SIGKILL (the
+        # whole tree on Windows); a recycled PID is never signalled.
+        termination = _terminate_reclaimed_worker(
+            pid, row["claim_lock"], signal_fn=signal_fn, started_at=started_at,
+        )
+        killed = bool(termination["sigkill"])
 
         error = f"elapsed {int(elapsed)}s > limit {limit}s"
         with _kb.write_txn(conn):

@@ -1394,3 +1394,87 @@ def test_dead_worker_reap_reads_the_log_of_the_dispatching_board(kanban_home):
         assert "no reassignment operation" in (task.last_failure_error or "")
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Windows reclaim / max-runtime termination walks the whole worker tree
+# ---------------------------------------------------------------------------
+
+_WORKER_TREE = r'''
+import json, subprocess, sys, time
+from pathlib import Path
+import psutil
+root, role = Path(sys.argv[1]), sys.argv[2]
+me = psutil.Process()
+(root / (role + ".tmp")).write_text(json.dumps({"pid": me.pid, "created": me.create_time()}))
+(root / (role + ".tmp")).replace(root / (role + ".json"))
+if role == "worker":
+    subprocess.Popen([sys.executable, __file__, str(root), "tool"])
+time.sleep(90)
+'''
+
+
+def _identity_alive(identity):
+    import psutil
+    try:
+        return psutil.Process(identity["pid"]).create_time() == identity["created"]
+    except psutil.NoSuchProcess:
+        return False
+
+
+def _eventually(predicate, timeout=10.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.05)
+    return bool(predicate())
+
+
+@pytest.mark.platforms("windows")
+@pytest.mark.parametrize("path", ["manual_reclaim", "max_runtime"])
+def test_windows_termination_ends_the_whole_worker_tree(kanban_home, tmp_path, path):
+    """os.kill on Windows is TerminateProcess on one handle, and the recorded pid
+    is the venv launcher: its real worker and that worker's tool children would
+    outlive the reclaim / timeout and keep running for a card they lost."""
+    import json
+    import subprocess
+    import sys
+
+    import psutil
+
+    script = tmp_path / "worker_tree.py"
+    script.write_text(_WORKER_TREE)
+    launcher = subprocess.Popen([sys.executable, str(script), str(tmp_path), "worker"])
+    identities = []
+    conn = kbc.connect()
+    try:
+        for role in ("worker", "tool"):
+            receipt = tmp_path / f"{role}.json"
+            assert _eventually(receipt.exists), f"missing {role} receipt"
+            identities.append(json.loads(receipt.read_text()))
+
+        tid = kb.create_task(conn, title="tree", assignee="a", max_runtime_seconds=1)
+        kb.claim_task(conn, tid)
+        kbd._set_worker_pid(conn, tid, launcher.pid)
+        if path == "manual_reclaim":
+            assert kb.reclaim_task(conn, tid) is True
+        else:
+            with kb.write_txn(conn):
+                conn.execute(
+                    "UPDATE task_runs SET started_at = ? "
+                    "WHERE id = (SELECT current_run_id FROM tasks WHERE id = ?)",
+                    (int(time.time()) - 30, tid),
+                )
+            assert kbd.enforce_max_runtime(conn) == [tid]
+
+        assert _eventually(lambda: not any(_identity_alive(i) for i in identities)), identities
+    finally:
+        conn.close()
+        # Only the identities this test created, including on a red run.
+        for identity in identities:
+            if _identity_alive(identity):
+                psutil.Process(identity["pid"]).kill()
+        if launcher.poll() is None:
+            launcher.kill()
+        launcher.wait(timeout=10)

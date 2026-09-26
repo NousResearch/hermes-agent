@@ -2372,7 +2372,7 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
     # Shared constant so compaction recognizers can identify this runtime nudge by its stable
     # content after SessionDB projection strips metadata flags.
     from agent.context_compressor import MAX_ITERATIONS_SUMMARY_REQUEST
-    append_message(messages, {"role": "user", "content": MAX_ITERATIONS_SUMMARY_REQUEST})
+    nudge = append_message(messages, {"role": "user", "content": MAX_ITERATIONS_SUMMARY_REQUEST})
 
     try:
         api_messages = _iteration_summary_api_messages(agent, messages)
@@ -2393,6 +2393,13 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 final_response = text
             break
 
+    except InterruptedError:
+        # Cancellation is not a summary failure: drop the unanswered nudge and let the
+        # finalizer end the turn as interrupted so the pending message is requeued.
+        summary_call_outcome = "cancelled"
+        if messages and messages[-1] is nudge:
+            messages.pop()
+        raise
     except Exception as e:
         logger.warning("Failed to get summary response: %s", e)
         from agent.turn_failure_copy import site_copy

@@ -727,6 +727,13 @@ class GatewayModelCommandsMixin:
         _model_cfg = {}
         with contextlib.suppress(Exception):  # fail-open on config read errors, like /model does
             _model_cfg = _load_gateway_config(config_path=self.config_path).get("model", {}) or {}
+        # ``model: <id>`` (string shorthand, accepted by gateway/run.py, cron, hermes_cli/main.py)
+        # keeps _model_cfg a str; normalize so .get() below doesn't raise (e7cc3836 did the same
+        # for the TUI auth fallback).
+        if isinstance(_model_cfg, str):
+            _model_cfg = {"default": _model_cfg}
+        elif not isinstance(_model_cfg, dict):
+            _model_cfg = {}
         _route = (
             _session_route.get("provider") or _model_cfg.get("provider"),
             _session_model or _model_cfg.get("default") or _model_cfg.get("model"),

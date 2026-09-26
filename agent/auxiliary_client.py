@@ -1154,9 +1154,18 @@ def _parse_codex_final_response(final: Any) -> Tuple[List[str], List[Any], Any]:
     if resp_usage:
         def _u(key: str) -> int:
             return getattr(resp_usage, key, 0) or (resp_usage.get(key, 0) if isinstance(resp_usage, dict) else 0)
+        input_details = _field(resp_usage, "input_tokens_details")
+        output_details = _field(resp_usage, "output_tokens_details")
+        # Keep both usage shapes, as the Anthropic adapter does: Chat-path consumers (session
+        # accounting, the MoA aggregator) read prompt_tokens + prompt_tokens_details, while the aux
+        # call hooks and MoA reference slots normalize by the route's own codex_responses mode.
         usage = SimpleNamespace(
             prompt_tokens=_u("input_tokens"), completion_tokens=_u("output_tokens"),
-            total_tokens=_u("total_tokens"))
+            total_tokens=_u("total_tokens"),
+            prompt_tokens_details=input_details, completion_tokens_details=output_details,
+            input_tokens=_u("input_tokens"), output_tokens=_u("output_tokens"),
+            input_tokens_details=input_details, output_tokens_details=output_details,
+        )
     return text_parts, tool_calls_raw, usage
 
 
@@ -1796,11 +1805,23 @@ class _AnthropicCompletionsAdapter:
         _nr = get_transport("anthropic_messages").normalize_response(response, strip_tool_prefix=self._is_oauth)
         usage = None
         if hasattr(response, "usage") and response.usage:
-            prompt_tokens = getattr(response.usage, "input_tokens", 0) or 0
+            fresh_input_tokens = getattr(response.usage, "input_tokens", 0) or 0
+            cache_read_tokens = getattr(response.usage, "cache_read_input_tokens", 0) or 0
+            cache_write_tokens = getattr(response.usage, "cache_creation_input_tokens", 0) or 0
             completion_tokens = getattr(response.usage, "output_tokens", 0) or 0
+            # Keep both usage shapes: consumers pick the normalizer by route, so native Anthropic
+            # accounting (provider="anthropic" / api_mode="anthropic_messages") reads the fresh
+            # input_tokens + cache_* fields, while the Chat path (MoA, other providers on this wire)
+            # reads an inclusive prompt_tokens and subtracts prompt_tokens_details.
+            prompt_tokens = fresh_input_tokens + cache_read_tokens + cache_write_tokens
             usage = SimpleNamespace(
                 prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
                 total_tokens=getattr(response.usage, "total_tokens", 0) or (prompt_tokens + completion_tokens),
+                prompt_tokens_details=SimpleNamespace(
+                    cached_tokens=cache_read_tokens, cache_write_tokens=cache_write_tokens,
+                ),
+                input_tokens=fresh_input_tokens, output_tokens=completion_tokens,
+                cache_read_input_tokens=cache_read_tokens, cache_creation_input_tokens=cache_write_tokens,
             )
         # ToolCall already duck-types as OpenAI shape via properties.
         choice = SimpleNamespace(

@@ -3,7 +3,7 @@ import ignore from 'ignore'
 import type { HermesReadDirEntry, HermesReadDirResult } from '@/global'
 import { desktopFsCacheKey, desktopGitRoot, readDesktopDir, readDesktopFileDataUrl } from '@/lib/desktop-fs'
 import { ALWAYS_EXCLUDED } from '@/lib/excluded-paths'
-import { cleanPath, comparisonPath } from '@/lib/path-compare'
+import { cleanPath, comparisonPath, isUnderPath } from '@/lib/path-compare'
 
 import { showsIgnoredFiles } from './prefs'
 
@@ -218,8 +218,32 @@ export function clearProjectDirCache(rootPath?: string) {
     return
   }
 
-  const key = `${desktopFsCacheKey()}:${cleanPath(rootPath)}`
-  gitRootCache.delete(key)
-  gitignoreCache.delete(key)
-  nestedRepoCache.delete(key)
+  // The caches are keyed `<connection>:<path>` on every path a listing pass
+  // touched — the listed directory (gitRootFor(dirPath)), its .gitignore chain
+  // (gitignoreFor over ancestorDirs), and the entries the ignore rules probe
+  // (isNestedRepoRoot) — all strict descendants of the root, never the root's
+  // own key alone. A refresh (use-project-tree) clears so the re-read probes
+  // underneath what is on screen, so evict every key at or under the root.
+  // Match on a path boundary via isUnderPath — `/repo` must not evict `/repo2`
+  // — and only within the current connection's cache keys.
+  const cachePrefix = `${desktopFsCacheKey()}:`
+  const inScope = (key: string) => key.startsWith(cachePrefix) && isUnderPath(rootPath, key.slice(cachePrefix.length))
+
+  for (const key of gitRootCache.keys()) {
+    if (inScope(key)) {
+      gitRootCache.delete(key)
+    }
+  }
+
+  for (const key of gitignoreCache.keys()) {
+    if (inScope(key)) {
+      gitignoreCache.delete(key)
+    }
+  }
+
+  for (const key of nestedRepoCache.keys()) {
+    if (inScope(key)) {
+      nestedRepoCache.delete(key)
+    }
+  }
 }

@@ -380,6 +380,13 @@ def _run_attached_cell(kernel: RemoteKernel, key: Tuple, code: str, *, env, task
     cell_status, cell_payload = "no-result", {}
     try:
         cell_status, cell_payload = _run_remote_cell(kernel, code, timeout)
+    except Exception:
+        # The request never reached the runner (the atomic ship failed), so the
+        # caller's per-call fallback runs the code exactly once. Kill the
+        # kernel as the timeout path does: leaving it registered would let the
+        # next call reuse a kernel whose state silently missed this cell.
+        _REGISTRY.discard(key, kernel)
+        raise
     finally:
         stop_event.set()
         rpc_thread.join(timeout=5)

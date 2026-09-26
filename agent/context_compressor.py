@@ -542,6 +542,31 @@ _INFLIGHT_TASK_REPLAY_HEADER = (
     "start over.]"
 )
 
+# One-shot notes the CLI prepends to a turn's API copy (model switch, skills
+# reload, speech interruption) ride along in the in-memory history — removing
+# them later would break the cached prompt prefix. But a compaction replay
+# re-delivers the task in a fresh context, where the note reads as if the
+# switch had just happened again, and it nests inside the replay header on
+# every later compaction (#124170). Strip a leading known note before
+# restating: the turn it was written for already consumed it.
+_INFLIGHT_NOTE_LEADS = (
+    "[Note: model was just switched from ",
+    "[Note: the user interrupted your previous spoken reply",
+    "[USER INITIATED SKILLS RELOAD:",
+)
+
+
+def _strip_leading_one_shot_note(text: str) -> str:
+    """Drop a leading one-shot CLI note (through its closing bracket) from an
+    in-flight task text; unknown text is returned unchanged."""
+    for lead in _INFLIGHT_NOTE_LEADS:
+        if text.startswith(lead):
+            end = text.find("]")
+            if end != -1:
+                return text[end + 1:].lstrip()
+            break
+    return text
+
 _SALVAGE_SUMMARY_MAX_CHARS = 8_000
 _SALVAGE_KEEP_RECENT_TOOLS = 2
 
@@ -4884,6 +4909,7 @@ Write only the summary body. Do not include any preamble or prefix."""
             # task that survives >1 cycle never stacks headers or drags the
             # old summary along.
             task_text = task_text.rsplit(_INFLIGHT_TASK_REPLAY_HEADER, 1)[1].strip()
+        task_text = _strip_leading_one_shot_note(task_text)
         if not task_text:
             return compressed
 

@@ -130,3 +130,50 @@ def test_refused_admission_exits_cleanly_instead_of_a_raw_traceback(home, monkey
         # Refusal publishes nothing: the recorded selection is untouched.
         expected = ({"hindsight"}, set()) if pending == "enabled" else (set(), {"hindsight"})
         assert _lists() == expected
+
+
+def test_cmd_enable_raise_on_refusal_restores_the_caller_message(home, monkeypatch):
+    """Non-CLI callers (tools_config_post_setup._post_setup_langfuse) catch the failure and
+    interpolate it; ``str(SystemExit(1))`` is just "1", which erases the reason. With
+    raise_on_refusal the AdmissionRefused keeps propagating so the message survives."""
+    from hermes_cli.plugins_admission import AdmissionRefused
+
+    def refuse(enabled, disabled, **_kwargs):
+        raise AdmissionRefused("[Errno 2] No such file or directory: '...workspace/pm/uv.lock'")
+
+    monkeypatch.setattr("hermes_cli.plugins_admission.admit_plugin_set_change", refuse)
+    _write_plugin(home / "plugins", "hindsight", "hindsight")
+
+    # The post-setup caller's exact except shape, verbatim.
+    captured = []
+    try:
+        plugins_cmd.cmd_enable("hindsight", raise_on_refusal=True)
+    except (Exception, SystemExit) as exc:
+        captured.append(f"Could not enable plugin automatically: {exc}")
+    assert captured == [
+        "Could not enable plugin automatically: "
+        "[Errno 2] No such file or directory: '...workspace/pm/uv.lock'"
+    ]
+
+
+def test_refusal_hint_distinguishes_dependency_conflict_from_plain_refusal(home, monkeypatch, capsys):
+    """`hermes pm install` cannot fix a DependencyConflict, so the two refusal shapes must keep
+    printing different remediation hints even though both exit the CLI the same way."""
+    from hermes_cli.plugins_admission import AdmissionRefused, DependencyConflict
+
+    _write_plugin(home / "plugins", "hindsight", "hindsight")
+    for exc_type, wants_pm_hint in ((AdmissionRefused, True), (DependencyConflict, False)):
+        def refuse(enabled, disabled, **_kwargs):
+            raise exc_type("cannot co-install")
+
+        monkeypatch.setattr("hermes_cli.plugins_admission.admit_plugin_set_change", refuse)
+        cfg = load_config()
+        cfg["plugins"] = {"enabled": [], "disabled": ["hindsight"]}
+        save_config(cfg)
+
+        with pytest.raises(SystemExit) as refused:
+            plugins_cmd.cmd_enable("hindsight")
+        assert refused.value.code == 1
+        out = capsys.readouterr().out
+        assert "cannot co-install" in out
+        assert ("hermes pm install" in out) is wants_pm_hint

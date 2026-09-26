@@ -606,12 +606,14 @@ def _resolve_plugin_key_and_source(name: str) -> Optional[tuple]:
     return leaf_matches[0] if len(leaf_matches) == 1 else None
 
 
-def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
+def cmd_enable(name: str, allow_tool_override: Optional[bool] = None, raise_on_refusal: bool = False) -> None:
     """Add a plugin to the enabled allow-list (and remove it from disabled).
 
     Non-bundled plugins request consent for declared capabilities. The legacy
     ``allow_tool_override`` grant changes only with an explicit True/False flag;
-    None leaves it unchanged. Bundled plugins are trusted.
+    None leaves it unchanged. Bundled plugins are trusted. With
+    ``raise_on_refusal`` a refused admission re-raises instead of exiting, for
+    in-tree callers that interpolate the reason into their own message.
     """
     from hermes_cli.relay_plugin_cutover import LEGACY_RELAY_PLUGIN_KEYS, RELAY_PLUGINS_CONFIG_ENV
     console = _console()
@@ -642,7 +644,11 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
         changed = _activate_key(key, enable=True, console=console)
     except AdmissionRefused:
         # The authority already printed the ✗ verdict and its remediation hint; exit non-zero
-        # instead of aborting the command with a raw traceback (#122832).
+        # instead of aborting the command with a raw traceback (#122832). str(SystemExit(1))
+        # is "1", so callers that interpolate the reason (post-setup langfuse) ask for the
+        # exception instead.
+        if raise_on_refusal:
+            raise
         sys.exit(1)
     if changed:
         from hermes_cli.plugins_activation import activate_plugin_now, activation_hint

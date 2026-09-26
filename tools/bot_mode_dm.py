@@ -738,11 +738,12 @@ def _persist_reply_when_done(proc_id: str, agent: Any) -> bool:
     return True
 
 
-def _wait_reply_main(reply_path: str, label: str, budget_seconds: str) -> int:
+def _wait_reply_main(reply_path: str, label: str, budget_seconds: str, ttl_seconds: str = "0") -> int:
     """The relay reply waiter (``tools/bot_relay.waiter_command``): block until the sender-side
     reply file exists, print it as the completion notification the sender wakes on, exit 1 on a
     delivery error or when the budget runs out. Stdlib only: this runs as a background process
-    from any bot turn, and the sender's completion notification is exactly its stdout."""
+    from any bot turn, and the sender's completion notification is exactly its stdout.
+    ``ttl_seconds`` is the envelope TTL at enqueue (``bot_mode.envelope_ttl_seconds``, 0 = never expires)."""
     try:
         deadline = time.time() + float(budget_seconds)
     except ValueError:
@@ -763,16 +764,49 @@ def _wait_reply_main(reply_path: str, label: str, budget_seconds: str) -> int:
             return 0
         # 250ms cadence: stat is cheap and a longer sleep is pure dead air.
         time.sleep(0.25)
+    if _withdraw_expired_envelope(reply_path, ttl_seconds):
+        print(f"No reply from {label} within {budget_seconds}s. No Desktop picked the message up before it "
+              "expired, so it was NOT delivered; resend it once that machine is reachable.")
+        return 1
+    if (Path(reply_path).parent.parent / "claimed" / Path(reply_path).name).exists():  # bot_relay.CLAIMED_DIR
+        # Past this budget the drain never re-offers a claimed envelope, so a reconnect cannot deliver it; only
+        # a delivery still queued in the claiming Desktop's per-target lane can, and nothing here can see or stop
+        # that one. Its fate is unknown: neither "wait for the reconnect" nor "NOT delivered" is true.
+        print(f"No reply from {label} within {budget_seconds}s. A Desktop picked the message up but never "
+              "reported a delivery, and it will not be retried; it may or may not have arrived, so check with "
+              "the recipient before resending.")
+        return 1
     print(f"No reply from {label} within {budget_seconds}s. The message may still be delivered when "
           "the Desktop reconnects; do not resend blindly.")
     return 1
+
+
+def _withdraw_expired_envelope(reply_path: str, ttl_seconds: str) -> bool:
+    """True when the envelope still sat unclaimed in the outbox past its TTL and this call removed it.
+
+    No Desktop drained this gateway (quit, asleep, offline), so the next drain would only refuse it as
+    ``queued_expired``, with no waiter left to hear it; telling the sender "do not resend" dropped the message
+    for good. The unlink races the drain's claim (a rename out of the outbox) atomically: once it succeeds no
+    Desktop can deliver the message, so "not delivered" is safe to say. A claimed envelope may still be
+    answered, and one within its TTL may still be picked up; both keep the old guidance."""
+    outbox = Path(reply_path).parent.parent / "outbox" / Path(reply_path).name  # bot_relay.OUTBOX_DIR
+    try:
+        ttl = float(ttl_seconds)
+        # Same age as the drain's ``_expire_if_stale``: ``created_at``, else the file's mtime.
+        created = float(json.loads(outbox.read_text(encoding="utf-8-sig")).get("created_at") or outbox.stat().st_mtime)
+        if ttl <= 0 or time.time() - created <= ttl:
+            return False
+        outbox.unlink()
+        return True
+    except (OSError, ValueError, TypeError, AttributeError):
+        return False
 
 
 def _delivery_main(args: list[str]) -> int:
     """Runner entry for the argv ``_delivery_command`` and ``bot_relay.waiter_command`` build.
     Malformed argv exits 2 without touching the DM file."""
     if args[:1] == ["--wait-reply"]:
-        return _wait_reply_main(*args[1:]) if len(args) == 4 else 2
+        return _wait_reply_main(*args[1:]) if len(args) in (4, 5) else 2
     if not args or args[0] != "--run-delivery":
         return 2
     rest, author = args[1:], None

@@ -13,6 +13,7 @@ from trajectory_compressor import (
     TrajectoryMetrics,
     AggregateMetrics,
     TrajectoryCompressor,
+    _effective_temperature_for_model,
 )
 
 

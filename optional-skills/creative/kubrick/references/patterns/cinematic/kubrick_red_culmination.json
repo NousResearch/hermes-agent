@@ -1,0 +1,23 @@
+{
+  "pattern_id": "kubrick_red_culmination",
+  "title": "Red as Culmination and Embodiment",
+  "version": "0.11.0",
+  "domain": "cinematic",
+  "source_tier": "SCHOLARLY",
+  "source_refs": [{"author": "Kubrick color-analysis tradition", "title": "Chromatic escalation and embodied culmination", "cultural_context": "cinema studies"}],
+  "observed_structure": ["red absent or peripheral early", "red gains material area", "red converges with irreversible action"],
+  "dramatic_operations": ["embody transformation", "culminate pressure", "mark irreversible choice"],
+  "transformation_grammars": ["chromatic accumulation", "coagulation"],
+  "cinematic_affordances": ["delayed red field", "material color transfer", "warm-light takeover", "red residue after action"],
+  "applicable_genres": ["drama", "horror", "thriller", "science fiction"],
+  "applicable_formats": ["feature", "pilot", "short", "single-frame"],
+  "cultural_scope": ["formal cinematic color progression"],
+  "misuse_risks": ["red equals danger", "unearned color symbolism", "oversaturation"],
+  "mutation_requirements": {"required": true, "variables": ["area", "material", "ownership", "light source", "residue"]},
+  "transferable_structure": "a color becomes consequential by accumulating across states and converging with action",
+  "non_transferable_surface": "copying specific red rooms or costumes",
+  "production_cost": {"location_dependency": 0.1, "prop_dependency": 0.3, "lighting_dependency": 0.6, "VFX_dependency": 0.1},
+  "lexicon_links": ["rubedo", "coagulation", "mars", "fire"],
+  "confidence": 0.8,
+  "source_status": "VALIDATED"
+}

@@ -1,0 +1,23 @@
+{
+  "pattern_id": "meme_template_role_mutation",
+  "title": "Meme Template / Role Mutation Under Reuse",
+  "version": "0.11.2",
+  "domain": "contemporary",
+  "source_tier": "SCHOLARLY",
+  "source_status": "VALIDATED",
+  "source_refs": [{"author":"Limor Shifman and digital-folklore scholarship","title":"Memes in Digital Culture and participatory template reuse","date":"2013-present","cultural_context":"Internet culture"}],
+  "observed_structure": ["a recognizable relational template is reused", "one role, caption function, or ownership condition changes", "the mutation comments on the template's prior circulation"],
+  "dramatic_operations": ["invert a familiar role", "compress social conflict", "show collective authorship changing meaning"],
+  "transformation_grammars": ["template-mutation", "repetition-with-role-reversal"],
+  "cinematic_affordances": ["repeated pose with changed initiator", "same frame geometry with different status relation", "interface repost chain altering ownership", "caption rhythm migrating into dialogue or blocking"],
+  "applicable_genres": ["satire", "comedy", "drama", "documentary"],
+  "applicable_formats": ["vertical video", "short", "episode", "single-frame"],
+  "cultural_scope": ["time-sensitive internet artifact; provenance and current usage context must be checked"],
+  "misuse_risks": ["stale trend chasing", "copyrighted template copying", "treating all repetition as meme logic"],
+  "mutation_requirements": {"required":true,"variables":["role assignment","caption function","ownership","platform context","audience recognition"]},
+  "transferable_structure": "a circulating template acquires new meaning when one relational role changes while enough structure remains recognizable",
+  "non_transferable_surface": "direct duplication of copyrighted meme images, celebrity likenesses, or platform-specific branding",
+  "production_cost": {"location_dependency":0.1,"prop_dependency":0.2,"lighting_dependency":0.1,"VFX_dependency":0.1},
+  "lexicon_links": ["egregore", "thoughtform", "eternal_return", "sigilization"],
+  "confidence": 0.79
+}

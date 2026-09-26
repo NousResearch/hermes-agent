@@ -1,0 +1,23 @@
+{
+  "pattern_id": "kubrick_red_culmination_state",
+  "title": "Red Culmination / Accumulated State Becomes Dominant",
+  "version": "0.11.4",
+  "domain": "cinematic",
+  "source_tier": "PRIMARY",
+  "source_status": "VALIDATED",
+  "source_refs": [{"author":"Stanley Kubrick","title":"Selected films: 2001, The Shining, Eyes Wide Shut","date":"1968-1999","cultural_context":"Kubrick filmography"}],
+  "observed_structure": ["red is initially absent, peripheral, or materially limited", "the color accumulates through recurring objects, spaces, or light", "red becomes dominant only when an existing process reaches consequence"],
+  "dramatic_operations": ["mark culmination rather than warning", "make accumulated pressure visible", "transfer a latent system into dominant material state"],
+  "transformation_grammars": ["peripheral-to-dominant color", "accumulation-to-culmination"],
+  "cinematic_affordances": ["small red elements recurring with increased area", "neutral palette displaced by one saturated field", "red transferred from object to architecture or light", "final recurrence tied to irreversible action"],
+  "applicable_genres": ["drama", "horror", "thriller", "science fiction", "satire"],
+  "applicable_formats": ["feature", "pilot", "short", "single-frame"],
+  "cultural_scope": ["film-derived color progression; color meaning remains project-specific"],
+  "misuse_risks": ["red equals danger", "saturation without prior recurrence", "copying Kubrick production design"],
+  "mutation_requirements": {"required":true,"variables":["initial carrier","surface area","saturation","ownership","culminating action"]},
+  "transferable_structure": "a color state grows through recurrence until it materially embodies an accumulated process",
+  "non_transferable_surface": "specific Kubrick sets, costumes, carpets, masks, or room designs",
+  "production_cost": {"location_dependency":0.2,"prop_dependency":0.5,"lighting_dependency":0.7,"VFX_dependency":0.1},
+  "lexicon_links": ["rubedo", "mars", "sulfur", "culmination"],
+  "confidence": 0.88
+}

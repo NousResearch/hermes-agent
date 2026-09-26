@@ -1,0 +1,23 @@
+{
+  "pattern_id": "kubrick_symmetry_empty_center",
+  "title": "Symmetry With an Empty Center",
+  "version": "0.11.0",
+  "domain": "cinematic",
+  "source_tier": "SCHOLARLY",
+  "source_refs": [{"author": "Kubrick formal-analysis tradition", "title": "Symmetry, centrality, and absent authority", "cultural_context": "20th-century cinema studies"}],
+  "observed_structure": ["bilateral balance", "central vacancy", "peripheral human occupation"],
+  "dramatic_operations": ["remove authority", "expose institutional void", "withhold resolution"],
+  "transformation_grammars": ["center removal", "symmetry fracture"],
+  "cinematic_affordances": ["one-point framing", "empty vanishing point", "balanced edge figures", "delayed center occupation"],
+  "applicable_genres": ["drama", "thriller", "science fiction", "satire"],
+  "applicable_formats": ["feature", "pilot", "short", "single-frame"],
+  "cultural_scope": ["formal cinematic composition"],
+  "misuse_risks": ["symmetry treated as automatic meaning", "decorative centered framing"],
+  "mutation_requirements": {"required": true, "variables": ["center occupancy", "axis integrity", "camera distance", "ownership"]},
+  "transferable_structure": "stable bilateral order becomes meaningful through absence or changed ownership of the center",
+  "non_transferable_surface": "recreating recognizable Kubrick corridors or costumes",
+  "production_cost": {"location_dependency": 0.5, "prop_dependency": 0.2, "lighting_dependency": 0.3, "VFX_dependency": 0.0},
+  "lexicon_links": ["mandala", "axis_mundi", "kenoma", "middle_pillar"],
+  "confidence": 0.78,
+  "source_status": "VALIDATED"
+}

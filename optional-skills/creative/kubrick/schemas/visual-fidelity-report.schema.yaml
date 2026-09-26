@@ -1,0 +1,52 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://kubrick.zero-state.dev/schemas/visual-fidelity-report.schema.yaml
+title: Kubrick Visual Fidelity Report
+type: object
+additionalProperties: false
+required: [schema_version, report_id, source_graph_id, frame_id, dimensions, overall_status, mismatches, correction_packet]
+properties:
+  schema_version: {const: 1.0.0}
+  report_id: {type: string, minLength: 1}
+  source_graph_id: {type: string, minLength: 1}
+  frame_id: {type: string, minLength: 1}
+  dimensions:
+    type: object
+    additionalProperties: false
+    required: [geometry, state, ownership, object, light, material, residue, convergence, continuity]
+    properties:
+      geometry: {$ref: '#/$defs/score'}
+      state: {$ref: '#/$defs/score'}
+      ownership: {$ref: '#/$defs/score'}
+      object: {$ref: '#/$defs/score'}
+      light: {$ref: '#/$defs/score'}
+      material: {$ref: '#/$defs/score'}
+      residue: {$ref: '#/$defs/score'}
+      convergence: {$ref: '#/$defs/score'}
+      continuity: {$ref: '#/$defs/score'}
+  overall_status: {enum: [PASS, REVISE, NOT_COMPUTABLE]}
+  mismatches:
+    type: array
+    items:
+      type: object
+      required: [dimension, code, expected, observed, severity]
+      properties:
+        dimension: {type: string}
+        code: {type: string}
+        expected: {}
+        observed: {}
+        severity: {enum: [low, medium, high, critical]}
+  correction_packet:
+    type: object
+    required: [preserve, change, prohibit]
+    properties:
+      preserve: {type: array, items: {type: string}}
+      change: {type: array, items: {type: string}}
+      prohibit: {type: array, items: {type: string}}
+$defs:
+  score:
+    type: object
+    required: [score, status]
+    properties:
+      score: {type: number, minimum: 0, maximum: 1}
+      status: {enum: [PASS, WARN, FAIL, NOT_COMPUTABLE]}
+      evidence: {type: array, items: {type: string}}

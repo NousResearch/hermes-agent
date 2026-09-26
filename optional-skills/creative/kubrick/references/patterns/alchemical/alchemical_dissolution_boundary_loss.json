@@ -1,0 +1,23 @@
+{
+  "pattern_id": "alchemical_dissolution_boundary_loss",
+  "title": "Dissolution / Boundary Loss",
+  "version": "0.11.0",
+  "domain": "alchemical",
+  "source_tier": "PRIMARY",
+  "source_status": "VALIDATED",
+  "source_refs": [{"author":"European alchemical tradition","title":"Dissolution operation","date":"early modern","cultural_context":"European alchemy"}],
+  "observed_structure": ["a stable boundary becomes permeable", "information, identity, or material crosses where it previously could not", "the scene preserves causal clarity while spatial or emotional separation weakens"],
+  "dramatic_operations": ["dissolve defensive separation", "contaminate a closed system", "make identity permeable"],
+  "transformation_grammars": ["dissolution", "containment-to-permeability"],
+  "cinematic_affordances": ["reflections crossing bodies and architecture", "sound bleeding across rooms", "softened edges after a hard visual baseline", "water, fog, glass, or layered exposure used as material behavior"],
+  "applicable_genres": ["drama", "horror", "romance", "science fiction"],
+  "applicable_formats": ["feature", "pilot", "short", "single-frame"],
+  "cultural_scope": ["European alchemical source; apply as observable permeability only"],
+  "misuse_risks": ["water equals emotion", "dream blur without causal function", "unmotivated visual softness"],
+  "mutation_requirements": {"required":true,"variables":["boundary type","direction of transfer","sound bleed","reflection ownership","degree of permeability"]},
+  "transferable_structure": "a formerly closed distinction becomes materially and behaviorally permeable",
+  "non_transferable_surface": "ritual vessels, occult diagrams, or decorative liquid symbolism",
+  "production_cost": {"location_dependency":0.3,"prop_dependency":0.3,"lighting_dependency":0.6,"VFX_dependency":0.3},
+  "lexicon_links": ["dissolution", "water", "alkahest"],
+  "confidence": 0.82
+}

@@ -4977,9 +4977,10 @@ Write only the summary body. Do not include any preamble or prefix."""
             cut_idx, _ = self._walk_tail_budget(messages, head_end, token_budget, min_tail, cut_at_break=True)
 
         fallback_cut = n - min_tail
-        # The newest row never leaves the tail. When it alone exceeds the ceiling the walk accepts nothing, and a cut
-        # at ``n`` summarised the pending tool round the model had not read (the split below then took the whole
-        # turn); aligning from ``n - 1`` keeps that group whole, as atomic groups may exceed the ceiling.
+        # The newest row never leaves the tail, whatever its role. When it alone exceeds the ceiling the walk accepts
+        # nothing, and a cut at ``n`` summarised e.g. the pending tool round the model had not read (the split below
+        # then took the whole turn); aligning from ``n - 1`` keeps that row's group whole, as atomic groups may
+        # exceed the ceiling.
         cut_idx = min(cut_idx, n - max(walk_floor, 1))
         # Small conversations: force a cut after the head so compression still removes something.
         if cut_idx <= head_end:

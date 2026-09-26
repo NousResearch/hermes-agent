@@ -913,6 +913,11 @@ def _gateway_run_args_for_profile(profile: str) -> list[str]:
     if profile != "default":
         args.extend(["--profile", profile])
     args.extend(["gateway", "run", "--replace"])
+    if is_windows():
+        # The restart watcher supplies PYTHONPATH, VIRTUAL_ENV and HERMES_HOME on Windows.
+        # An inline -c launcher is invisible to the strict live-gateway scanner, so the
+        # updater cannot verify its relaunch and may remove its PID metadata.
+        return [runtime_command(PROJECT_ROOT)[0], "-m", "hermes_cli.main", *args]
     return runtime_command(PROJECT_ROOT, args)
 
 

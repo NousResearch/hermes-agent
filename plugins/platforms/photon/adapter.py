@@ -1414,6 +1414,19 @@ class PhotonAdapter(BasePlatformAdapter):
         try:
             data = await self._sidecar_call(path, body)
         except PhotonSidecarError as e:
+            if e.error_class == "target_not_allowed":
+                # Plan limitation, not a transient fault: shared/free-tier
+                # projects may not initiate rich-link conversations with a
+                # never-contacted target (#97305). The message still lands as
+                # plain text via the caller's fallback (logged once there), and
+                # a successful outbound send warms the target up for future
+                # rich links.
+                logger.info(
+                    "[photon] target not warmed for rich-link previews "
+                    "(target_not_allowed) — sending as plain text; rich-link "
+                    "previews should work on future sends to this chat: %s",
+                    e.error,
+                )
             if structured:
                 return SendResult(success=False, error=str(e), retryable=e.retryable,
                                   raw_response={"error_class": e.error_class, "retryable": e.retryable})
@@ -1427,7 +1440,8 @@ class PhotonAdapter(BasePlatformAdapter):
                             markdown: bool = True) -> SendResult:
         rich_url = _richlink_candidate(text) if richlink else None
         if rich_url:
-            rich_result = await self._post_send("/send-richlink", {"spaceId": space_id, "url": rich_url})
+            rich_result = await self._post_send(
+                "/send-richlink", {"spaceId": space_id, "url": rich_url}, structured=True)
             if rich_result.success:
                 return rich_result
             logger.warning("[photon] rich-link send failed, falling back to plain text: %s", rich_result.error)

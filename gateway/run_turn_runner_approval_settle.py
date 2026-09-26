@@ -58,12 +58,21 @@ async def _post_timeout_notice(ctx, command: str, card_message_id: Optional[str]
 
     adapter = ctx._status_adapter
     notice = format_approval_timed_out_notice(timeout_s)
-    metadata = _interim_metadata(ctx._status_thread_metadata)
+    metadata = _interim_metadata({**(ctx._status_thread_metadata or {}), "notify": True})
     try:
-        # Plain markdown, not the card's platform markup: ``edit_message`` re-formats it itself.
-        if card_message_id and await _edit_card(adapter, ctx._status_chat_id, card_message_id, f"{notice}\n```\n{command}\n```"):
+        retire = getattr(type(adapter), "retire_exec_approval_card", None)
+        if card_message_id and callable(retire):
+            try:
+                await retire(adapter, ctx._status_chat_id, card_message_id)
+            except Exception:
+                logger.warning("Could not retire expired approval buttons", exc_info=True)
+            # Keep the original question visible. A separate notice must not erase evidence
+            # of the prompt or make a missing-button incident look like a user refusal.
+        elif card_message_id and await _edit_card(adapter, ctx._status_chat_id, card_message_id, f"{notice}\n```\n{command}\n```"):
             return
-        await adapter.send(ctx._status_chat_id, notice, metadata=metadata)
+        result = await adapter.send(ctx._status_chat_id, notice, metadata=metadata)
+        logger.info("Approval timeout notice: card_message_id=%s delivered=%s",
+                    card_message_id, bool(getattr(result, "success", False)))
     except Exception:
         logger.debug("Approval timeout notice failed", exc_info=True)
 

@@ -1,12 +1,12 @@
 name: smartmoney-cub
 repo: https://github.com/myc0576/hermes-smartmoney-cub
-sha: ccfb4d0cdfbc1c90c1ed65eba2bd48fd50b32e2d
+sha: 274cff6ee6ed25dfc69cf28b8718752208ab9d64
 description: Read-only trading-journal review for SmartMoney-Cub — validate a run envelope, freeze and replay a hashed evidence pack, grade a run, and inspect artifacts. Offline-first; no orders, no broker, no advice.
 maintainer: myc0576
 tier: community
 category: tools
 requires_hermes: '>=0.19'
-docs_url: https://github.com/myc0576/hermes-smartmoney-cub/blob/ccfb4d0cdfbc1c90c1ed65eba2bd48fd50b32e2d/README.md
+docs_url: https://github.com/myc0576/hermes-smartmoney-cub/blob/274cff6ee6ed25dfc69cf28b8718752208ab9d64/README.md
 version: "0.1.0"
 capabilities:
   provides_tools:

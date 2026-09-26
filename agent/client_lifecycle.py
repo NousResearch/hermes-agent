@@ -791,7 +791,7 @@ class ClientLifecycleMixin:
             return False
         try:
             from agent.vertex_adapter import get_vertex_config
-            token, base_url = get_vertex_config()
+            token, base_url = get_vertex_config(force_refresh=True)
         except Exception as exc:
             logger.debug("Vertex credential refresh failed: %s", exc)
             return False

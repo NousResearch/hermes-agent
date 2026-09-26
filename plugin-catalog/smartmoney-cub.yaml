@@ -1,0 +1,20 @@
+name: smartmoney-cub
+repo: https://github.com/myc0576/hermes-smartmoney-cub
+sha: ccfb4d0cdfbc1c90c1ed65eba2bd48fd50b32e2d
+description: 'Read-only trading-journal and review harness. Wraps the local smcub CLI as six review tools: smcub_doctor, smcub_validate_envelope, smcub_build_evidence_pack, smcub_replay_evidence_pack, smcub_evaluate_run, smcub_inspect_artifacts. Offline-first and read-only by construction: no orders, no cancels, no broker connection, no market data fetch, no financial advice, and no network calls of its own. Requires the harness on PATH (pip install smartmoney-cub-harness). Bundles a smartmoney-review skill that keeps review statuses such as ALERT/WATCH from being read as trading instructions. Disclosure - shells out to the user''s own local smcub CLI; the plugin itself opens no sockets, holds no credentials, and writes only inside the run directory the user names.'
+maintainer: myc0576
+tier: community
+category: tools
+docs_url: https://github.com/myc0576/hermes-smartmoney-cub#readme
+version: "0.1.0"
+capabilities:
+  provides_tools:
+  - smcub_doctor
+  - smcub_validate_envelope
+  - smcub_build_evidence_pack
+  - smcub_replay_evidence_pack
+  - smcub_evaluate_run
+  - smcub_inspect_artifacts
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

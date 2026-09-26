@@ -552,6 +552,11 @@ class PluginLoaderMixin:
         """Load validated portable components without importing Python code."""
         from hermes_cli.plugins import PluginContext
         lookup_key = manifest_key(manifest)
+        # Catalog-pinned installs have a "catalog" block in .install-metadata.json;
+        # the catalog key equals the manifest name with one pin per entry, so
+        # name-collision is impossible and the plugin-identity prefix can be dropped
+        # to keep mcp__<server>__<tool> names under the 64-char provider cap (#119307).
+        catalog_pinned = self._is_catalog_pinned(lookup_key)
         try:
             from hermes_cli.agent_plugins import load_agent_plugin
             package = load_agent_plugin(
@@ -569,7 +574,8 @@ class PluginLoaderMixin:
             registered: list[str] = []
             try:
                 for server_name, config in package.mcp_servers.items():
-                    internal_name = portable_mcp_server_name(lookup_key, server_name)
+                    internal_name = portable_mcp_server_name(lookup_key, server_name,
+                                                             catalog_pinned=catalog_pinned)
                     if internal_name in self._portable_mcp_servers:
                         logger.warning("Agent Plugin '%s' MCP server '%s' skipped: name already taken by plugin '%s'; rename one server",
                                        lookup_key, internal_name, self._portable_mcp_server_plugins.get(internal_name, "?"))
@@ -601,6 +607,21 @@ class PluginLoaderMixin:
             loaded.error = _load_error_text(exc)
             logger.warning("Agent Plugin '%s' disabled: %s", lookup_key, loaded.error)
         self._plugins[lookup_key] = loaded
+
+    @staticmethod
+    def _is_catalog_pinned(lookup_key: str) -> bool:
+        """True when *lookup_key* has a ``catalog`` block in ``.install-metadata.json``.
+
+        Catalog-pinned installs have exactly one reviewed pin per entry, so the
+        plugin-identity namespace can be omitted from the MCP server name
+        (see :func:`portable_mcp_server_name`).
+        """
+        try:
+            from hermes_cli.plugins_cmd import _read_install_metadata
+            entry = _read_install_metadata().get(lookup_key)
+            return isinstance(entry, dict) and isinstance(entry.get("catalog"), dict)
+        except Exception:
+            return False
 
     def _directory_module_name(self, manifest: PluginManifest) -> str:
         """Profile-safe import namespace for a directory plugin: the bare ``hermes_plugins.<slug>`` for the

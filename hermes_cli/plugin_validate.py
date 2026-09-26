@@ -618,4 +618,39 @@ def _validate_portable_plugin(report: ValidationReport, plugin_dir: Path) -> Val
         report.add(f"server availability: {server_name}", True, detail)
     _check_security_scan(report, plugin_dir)
     check_desktop_surface(report, plugin_dir)
+    # Lint hint: warn when MCP tool names would exceed the 64-char provider cap (#119307).
+    _check_portable_tool_name_lengths(report, package)
     return report
+
+
+def _check_portable_tool_name_lengths(report: ValidationReport, package: "AgentPluginPackage") -> None:
+    """Warn when ``mcp__<server>__<tool>`` would exceed 64 chars for any declared MCP server.
+
+    The check uses both the bare server name (catalog-pinned path) and the
+    ``agent-plugin-<slug>-<digest>_`` prefixed form (URL/--ref path) so
+    authors can see whether either path would clamp.
+    """
+    from tools.mcp_tool_schema import MCP_TOOL_NAME_PREFIX, _MCP_TOOL_NAME_MAX_LENGTH, sanitize_mcp_name_component
+    from hermes_cli.plugins_manifest import _portable_skill_namespace
+
+    for server_name, mcp_tool in getattr(package, "mcp_servers", {}).items():
+        for tool in getattr(mcp_tool, "tools", []) or []:
+            tool_name = getattr(tool, "name", "") or ""
+            if not tool_name:
+                continue
+            sanitized_tool = sanitize_mcp_name_component(tool_name)
+            # Catalog-pinned path (bare server name)
+            bare = f"{MCP_TOOL_NAME_PREFIX}{sanitize_mcp_name_component(server_name)}__{sanitized_tool}"
+            # URL/--ref path (with plugin-identity namespace)
+            ns = _portable_skill_namespace(package.manifest.get("name", ""))
+            prefixed = f"{MCP_TOOL_NAME_PREFIX}{ns}_{sanitize_mcp_name_component(server_name)}__{sanitized_tool}"
+            if len(bare) > _MCP_TOOL_NAME_MAX_LENGTH:
+                report.warnings.append(
+                    f"tool '{tool_name}' on server '{server_name}': "
+                    f"catalog-pinned name ({len(bare)} chars) exceeds {_MCP_TOOL_NAME_MAX_LENGTH}-char limit "
+                    f"and will be hash-clamped; consider shortening the server or tool name")
+            elif len(prefixed) > _MCP_TOOL_NAME_MAX_LENGTH:
+                report.warnings.append(
+                    f"tool '{tool_name}' on server '{server_name}': "
+                    f"URL/--ref name ({len(prefixed)} chars) exceeds {_MCP_TOOL_NAME_MAX_LENGTH}-char limit "
+                    f"and will be hash-clamped; consider shortening the server or tool name")

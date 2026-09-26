@@ -26,13 +26,15 @@ CHARS_PER_TOKEN = 4.0
 @dataclass
 class CatalogEntry:
     """One deferrable tool, in a form the bridge tools can search and serve."""
-
     name: str
     description: str
     schema: Dict[str, Any]  # the full {"type":"function", "function": {...}} entry
     source: str  # "mcp" | "plugin" | "other"
     source_name: str  # toolset name, e.g. "mcp-github" or "kanban"
     _tokens: List[str] = field(default_factory=list)  # pre-tokenized for BM25
+    # When the wire name was hash-clamped (>64 chars), this holds the original
+    # "server.tool" form so tool_search can surface it to the model (#119307).
+    original_name: str = ""
 
 
 _TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
@@ -101,6 +103,7 @@ def _classify_source(name: str) -> Tuple[str, str]:
 
 def build_catalog(tool_defs: List[Dict[str, Any]]) -> List[CatalogEntry]:
     """Build the deferred-tool catalog from the deferrable subset of tool-defs."""
+    from tools.mcp_tool_schema import mcp_tool_original_name
     catalog: List[CatalogEntry] = []
     for td in tool_defs:
         fn = _fn(td)
@@ -110,9 +113,11 @@ def build_catalog(tool_defs: List[Dict[str, Any]]) -> List[CatalogEntry]:
         source, source_name = _classify_source(name)
         # Index the human-facing label ("linear", not "mcp-linear").
         source_label = _listing_group_label(source_name) if source_name else ""
+        orig = mcp_tool_original_name(name) if name.startswith("mcp__") else ""
         catalog.append(CatalogEntry(
             name=name, description=fn.get("description", "") or "", schema=td, source=source,
-            source_name=source_name, _tokens=_tokenize(_entry_search_text(td, source_label))))
+            source_name=source_name, _tokens=_tokenize(_entry_search_text(td, source_label)),
+            original_name=orig or ""))
     return catalog
 
 

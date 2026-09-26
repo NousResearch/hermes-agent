@@ -68,15 +68,27 @@ def _portable_slug(key: str) -> str:
     return slug.strip("-_") or "plugin"
 
 
-def portable_mcp_server_name(key: str, server: str) -> str:
-    """Internal name of a portable plugin's MCP server: exactly the name its ``mcp.json`` gives it, the same
-    rule a user's own ``mcp_servers`` block in config.yaml follows. The plugin's skill namespace
-    (``agent-plugin-<slug>-<digest>``) is NOT prepended: it keeps plugin-data and skill names collision-free
-    without coordination, but here it cost ~40 chars of every ``mcp__<server>__<tool>`` name, which providers
-    cap at 64, so the tool verb was hash-clamped away. A duplicate is refused at load (native config first,
-    then first-loaded plugin) with a warning naming both owners; that beats hiding it behind a digest."""
-    del key  # one signature for loader and card; the plugin identity is deliberately not part of the name
-    return _portable_slug(server)
+def portable_mcp_server_name(key: str, server: str, *, catalog_pinned: bool = False) -> str:
+    """Internal name of a portable plugin's MCP server.
+
+    **Catalog-pinned** installs (``catalog_pinned=True``): the server name is
+    exactly the name from ``mcp.json``, slug-normalized.  The catalog key
+    equals the manifest name with one pin per entry, so collisions are
+    impossible and the plugin-identity prefix is unnecessary overhead that
+    pushed ``mcp__<server>__<tool>`` names past providers' 64-char cap (#119307).
+
+    **URL / ``--ref``** installs (``catalog_pinned=False``): the plugin's skill
+    namespace ``agent-plugin-<slug>-<digest>`` is prepended to disambiguate
+    two installs of the same source under different refs.  This costs ~40 chars
+    but name-collision is a real risk for unreviewed sources.
+
+    A duplicate within the same class is refused at load (native config first,
+    then first-loaded plugin) with a warning naming both owners.
+    """
+    if catalog_pinned:
+        return _portable_slug(server)
+    namespace = _portable_skill_namespace(key)
+    return f"{namespace}_{_portable_slug(server)}"
 
 
 def _display_author(value: object) -> str:

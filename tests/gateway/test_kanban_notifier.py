@@ -676,6 +676,23 @@ def test_block_loop_owner_input_keeps_decision_wording():
     assert "Which API key should this use?" in msg
 
 
+def test_superseded_block_is_not_an_infrastructure_diagnostic():
+    """A `superseded` block records that the card itself was replaced or
+    withdrawn — a bookkeeping close its owner asked for, like `needs_input`
+    and unlike `capability`/`transient`. Classified as infrastructure
+    attention it would ping as a fault, which is the reading the kind exists
+    to prevent."""
+    from types import SimpleNamespace
+
+    from gateway.kanban_watchers_notifier import diagnostic_event
+
+    def classify(kind):
+        return diagnostic_event(SimpleNamespace(kind="blocked", payload={"kind": kind}))
+
+    assert classify("superseded") is False
+    assert classify("capability") is True
+
+
 # ---------------------------------------------------------------------------
 # Handoffs that hand a decision back to the origin must wake it, not only ping
 # it: `review_requested` (implementation done, waiting for a reviewer) and

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 import tempfile
 import threading
 import time
@@ -262,6 +263,66 @@ class FileToolsIntegrationTests(unittest.TestCase):
         self.assertIn("sibling", err.lower())
         with open(p) as f:
             self.assertEqual(f.read(), "B wrote\n")
+
+
+    def test_kanban_worker_write_file_refuses_after_partial_read(self):
+        p = self._write_seed("partial.txt", "one\ntwo\nthree\n")
+        r = json.loads(read_file_tool(path=p, limit=1, task_id="agentK"))
+        self.assertTrue(r.get("truncated"), r)
+
+        old_task = os.environ.get("HERMES_KANBAN_TASK")
+        os.environ["HERMES_KANBAN_TASK"] = "t_agentK"
+        try:
+            w = json.loads(write_file_tool(path=p, content="one\n", task_id="agentK"))
+        finally:
+            if old_task is None:
+                os.environ.pop("HERMES_KANBAN_TASK", None)
+            else:
+                os.environ["HERMES_KANBAN_TASK"] = old_task
+
+        self.assertIn("error", w)
+        self.assertEqual(Path(p).read_text(), "one\ntwo\nthree\n")
+
+    def test_kanban_worker_write_file_refuses_after_default_truncated_read(self):
+        p = self._write_seed("default-partial.txt", "\n".join(str(i) for i in range(700)))
+
+        old_task = os.environ.get("HERMES_KANBAN_TASK")
+        os.environ["HERMES_KANBAN_TASK"] = "t_agentK"
+        try:
+            r = json.loads(read_file_tool(path=p, limit=500, task_id="agentK", default_limit_used=True))
+            w = json.loads(write_file_tool(path=p, content="short\n", task_id="agentK"))
+        finally:
+            if old_task is None:
+                os.environ.pop("HERMES_KANBAN_TASK", None)
+            else:
+                os.environ["HERMES_KANBAN_TASK"] = old_task
+
+        self.assertIn("error", r)
+        self.assertIn("default line limit", r["error"])
+        self.assertIn("truncated", r["error"])
+        self.assertIn("error", w)
+        self.assertEqual(Path(p).read_text(), "\n".join(str(i) for i in range(700)))
+
+    def test_kanban_worker_partial_read_block_survives_sibling_warning_priority(self):
+        p = self._write_seed("partial-and-sibling.txt", "one\ntwo\nthree\n")
+        r = json.loads(read_file_tool(path=p, limit=1, task_id="agentK"))
+        self.assertTrue(r.get("truncated"), r)
+        json.loads(read_file_tool(path=p, task_id="agentB"))
+        sibling = json.loads(write_file_tool(path=p, content="sibling\n", task_id="agentB"))
+        self.assertNotIn("error", sibling)
+
+        old_task = os.environ.get("HERMES_KANBAN_TASK")
+        os.environ["HERMES_KANBAN_TASK"] = "t_agentK"
+        try:
+            w = json.loads(write_file_tool(path=p, content="agent\n", task_id="agentK"))
+        finally:
+            if old_task is None:
+                os.environ.pop("HERMES_KANBAN_TASK", None)
+            else:
+                os.environ["HERMES_KANBAN_TASK"] = old_task
+
+        self.assertIn("error", w)
+        self.assertEqual(Path(p).read_text(), "sibling\n")
 
 
 

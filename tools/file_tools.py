@@ -595,7 +595,36 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
     return count
 
 
-def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, task_id: str = "default") -> str:
+def _kanban_default_truncated_read_error(
+    path: str,
+    *,
+    offset: int,
+    limit: int,
+    total_lines,
+    hint: str | None = None,
+) -> str:
+    if isinstance(total_lines, int) and total_lines <= 2000:
+        next_step = f"Call read_file again with offset=1 and limit={total_lines}."
+    else:
+        next_step = "Read the file in explicit pages with offset and limit before editing."
+    return json.dumps({
+        "error": (
+            "Kanban worker safety: read_file used its default line limit and "
+            "returned a truncated page. Do not treat this as complete source "
+            f"content. {next_step}"
+        ),
+        "path": path,
+        "truncated": True,
+        "content_returned": False,
+        "requested_offset": offset,
+        "requested_limit": limit,
+        "total_lines": total_lines,
+        "hint": hint,
+    }, ensure_ascii=False)
+
+
+def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, task_id: str = "default",
+                   *, default_limit_used: bool = False) -> str:
     """Read a file with pagination and line numbers.
 
     Guard order: NT/device-namespace prefix (raw string, no resolution) →
@@ -694,6 +723,11 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
             result.content = _apply_char_budget(
                 result_dict, result.content or "", offset,
                 result_dict.get("total_lines", "unknown"), max_chars)
+        if default_limit_used and os.environ.get("HERMES_KANBAN_TASK") and result_dict.get("truncated"):
+            file_state.record_read(task_id, resolved_str, partial=True)
+            return _kanban_default_truncated_read_error(
+                path, offset=offset, limit=limit,
+                total_lines=result_dict.get("total_lines", "unknown"), hint=result_dict.get("hint"))
         redacted = False
         if result.content:
             unredacted = result.content
@@ -1289,7 +1323,8 @@ SEARCH_FILES_SCHEMA = {
 
 def _handle_read_file(args, **kw):
     tid = kw.get("task_id") or "default"
-    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", DEFAULT_READ_LIMIT), task_id=tid)
+    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", DEFAULT_READ_LIMIT), task_id=tid,
+                          default_limit_used="limit" not in args)
 
 
 def _handle_write_file(args, **kw):

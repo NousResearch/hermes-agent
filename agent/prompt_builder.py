@@ -276,6 +276,8 @@ KANBAN_GUIDANCE = (
     "comment thread, and a pre-formatted `worker_context` you can treat as ground truth.\n"
     "2. **Work inside the workspace.** `cd $HERMES_KANBAN_WORKSPACE` before any file operations. The workspace is "
     "yours for this run. Don't modify files outside it unless the task explicitly asks.\n"
+    "If read_file reports a truncated default read, do not write or commit from that page; "
+    "read all explicit pages or use a targeted patch.\n"
     "3. **Heartbeat on long operations.** Call `kanban_heartbeat(note=...)` every few minutes during long subprocesses "
     "(training, encoding, crawling). Skip heartbeats for short tasks. **If your task may run longer than 1 hour, you "
     "MUST call `kanban_heartbeat` at least once an hour** — the dispatcher reclaims tasks running past "

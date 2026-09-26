@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Optional, Tuple
 from urllib.parse import urlparse
 
-from hermes_constants import OPENROUTER_BASE_URL, hermes_home_key, secure_parent_dir
+from hermes_constants import OPENROUTER_BASE_URL, get_store_home, hermes_home_key, secure_parent_dir
 from agent.credential_persistence import sanitize_borrowed_credential_payload
 from utils import atomic_json_write, env_float, file_signature, is_truthy_value  # noqa: F401  (env_float: agent.credential_pool reads auth_mod.env_float)
 from hermes_cli.auth_zai_kimi import (  # noqa: F401  re-exported
@@ -480,7 +480,7 @@ def _nonempty_str(value: Any) -> bool:
 # ── Auth Store — persistence layer for ~/.hermes/auth.json ──────────────────────────────────────────
 
 def _auth_file_path() -> Path:
-    path = get_hermes_home() / "auth.json"
+    path = get_store_home("auth") / "auth.json"
     # Seat belt: under pytest, refuse to touch the real user's auth store (tests that forgot to
     # monkeypatch HERMES_HOME or escaped the hermetic conftest). In production: one dict lookup.
     if (os.environ.get("PYTEST_CURRENT_TEST")

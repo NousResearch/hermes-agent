@@ -20,7 +20,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Dict, List, Optional
 
-from hermes_constants import get_hermes_home, hermes_home_key
+from hermes_constants import get_hermes_home, get_store_home, hermes_home_key
 from tools.daemon_pool import DaemonThreadPoolExecutor
 from tools.thread_context import propagate_context_to_thread
 
@@ -95,7 +95,7 @@ _STALL_FIELD_MAP = (("_stall_quiet_seconds", "stalled_after_quiet_seconds"),
 
 # ── Durable ledger (state.db / async_delegations) ───────────────────────────
 def _db_path():
-    return get_hermes_home() / "state.db"
+    return get_store_home("background_work") / "state.db"
 
 
 def _connect() -> sqlite3.Connection:

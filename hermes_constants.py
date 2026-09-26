@@ -9,13 +9,14 @@ import re
 import shutil
 import stat
 import sys
-from collections.abc import MutableMapping
+from collections.abc import Mapping, MutableMapping
 from contextvars import ContextVar, Token
 from pathlib import Path
 
 _profile_fallback_warned: bool = False
 _UNSET = object()
 _HERMES_HOME_OVERRIDE: ContextVar[str | object] = ContextVar("_HERMES_HOME_OVERRIDE", default=_UNSET)
+_STORE_HOME_OVERRIDE: ContextVar[Mapping[str, str]] = ContextVar("_STORE_HOME_OVERRIDE", default={})
 
 # TUI busy-indicator styles (CLI /indicator, TUI gateway config, /help registry).
 # Keep in sync with INDICATOR_STYLES / DEFAULT_INDICATOR_STYLE in ui-tui/src/app/interfaces.ts.
@@ -116,6 +117,21 @@ def get_hermes_home() -> Path:
     if not os.environ.get("HERMES_HOME", "").strip():
         _warn_profile_fallback_once()
     return get_process_hermes_home()
+
+
+def set_store_home_override(store: str, path: str | Path) -> Token:
+    """Context-locally home one named store (``"auth"``, ``"background_work"``) at ``path``."""
+    return _STORE_HOME_OVERRIDE.set({**_STORE_HOME_OVERRIDE.get(), store: str(path)})
+
+
+def reset_store_home_override(token: Token) -> None:
+    _STORE_HOME_OVERRIDE.reset(token)
+
+
+def get_store_home(store: str) -> Path:
+    """A named store's home: its context-local override, else ``get_hermes_home()``."""
+    override = _STORE_HOME_OVERRIDE.get().get(store)
+    return _expand_hermes_home(override) if override else get_hermes_home()
 
 
 # Resolved keys, keyed by the path string that was handed in. Path.resolve()

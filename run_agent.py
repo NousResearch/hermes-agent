@@ -908,12 +908,13 @@ class AIAgent(
             _quietly(lambda: self._memory_manager.shutdown_all())
         _notify_context_engine_session_end(self, messages)
 
-    def commit_memory_session(self, messages: list = None) -> None:
+    def commit_memory_session(self, messages: list = None, *, notify_context_engine: bool = True) -> None:
         """Flush end-of-session extraction on session_id rotation (/new, compression) without tearing providers
-        down."""
+        down. Set ``notify_context_engine=False`` when extraction does not end the active engine session."""
         if self._memory_manager:
             _quietly(lambda: self._memory_manager.on_session_end(messages or []))
-        _notify_context_engine_session_end(self, messages)
+        if notify_context_engine:
+            _notify_context_engine_session_end(self, messages)
 
     def _sync_external_memory_for_turn(self, *, original_user_message: Any, final_response: Any, interrupted: bool,
                                        messages: list | None = None) -> None:

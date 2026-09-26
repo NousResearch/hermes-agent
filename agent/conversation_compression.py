@@ -3692,7 +3692,10 @@ def _commit_compaction(
         try:
             # Memory extraction runs in BOTH modes: pre-compaction turns are summarized
             # away whether or not the id rotates.
-            agent.commit_memory_session(messages)
+            from agent.context_compressor import ContextCompressor
+            engine_end = getattr(type(agent.context_compressor), "on_session_end", None)
+            builtin_end = agent.context_compressor is None or engine_end is ContextCompressor.on_session_end
+            agent.commit_memory_session(messages, notify_context_engine=not in_place or builtin_end)
 
             # Pop _compaction_tail tags before the size estimate / rotation: they must not
             # inflate anti-growth or reach the provider. Track ids: salvage may subset list.

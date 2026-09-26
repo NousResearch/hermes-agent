@@ -448,7 +448,7 @@ def get_profiles_sessions(
                 limit=per_profile, offset=0, order_by_last_active=order == "recent",
                 # Same SQL-level blob skip as /api/sessions.
                 compact_rows=not full, include_pinned=True, **filters)
-            totals[name] = db.session_count(exclude_children=True, **filters)
+            totals[name] = db.session_count(exclude_children=True, exclude_hidden=True, **filters)
             merged.extend(_tag_rows(rows, name, now))
         _read_profile_db(name, home, errors, _read)
 

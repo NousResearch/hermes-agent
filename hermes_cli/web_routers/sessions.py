@@ -215,7 +215,7 @@ def get_sessions(
                 compact_rows=not full,
                 include_pinned=True,
                 **scope)
-            total = db.session_count(exclude_children=True, **scope)
+            total = db.session_count(exclude_children=True, exclude_hidden=True, **scope)
             now = time.time()
             row_profile = profile_name or _cron_default_profile()
             for s in sessions:

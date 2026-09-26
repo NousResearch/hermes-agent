@@ -844,6 +844,64 @@ describe('createBundleSkewProbe', () => {
     expect(await first).toEqual({ desktopCommitsBehind: 9, outOfSync: true })
   })
 
+  // Grok (non-blocking): the supersede path called controller.abort() outside
+  // a try/catch. An abort whose listener throws (a kill on an already-reaped
+  // child) rejects probe() and the replacement run for the new root never
+  // starts. The abort is best-effort; the new run must start regardless.
+  it('starts the new-root run even when the superseded run aborts with a throw', async () => {
+    const pending: { resolve?: (value: { code: number; stderr: string; stdout: string }) => void } = {}
+    const calls: Array<{ args: string[]; cwd: string }> = []
+    let root = '/repo-a'
+
+    const git: RunGit = async (args, options) => {
+      calls.push({ args, cwd: options.cwd })
+
+      if (args[0] === 'rev-parse') {
+        return { code: 0, stderr: '', stdout: `false\n${'a'.repeat(40)}\n` }
+      }
+
+      if (args[0] === 'merge-base') {
+        return { code: 0, stderr: '', stdout: '' }
+      }
+
+      if (args[0] === 'rev-list') {
+        if (options.cwd === '/repo-a') {
+          return new Promise(resolve => {
+            pending.resolve = resolve
+          })
+        }
+
+        return { code: 0, stderr: '', stdout: '4\n' }
+      }
+
+      return { code: 1, stderr: '', stdout: '' }
+    }
+
+    const probe = createBundleSkewProbe({ stamp: STAMP, runGit: git, repoRoot: () => root })
+
+    const spy = vi.spyOn(AbortController.prototype, 'abort').mockImplementation(() => {
+      throw new Error('kill threw')
+    })
+
+    try {
+      const first = probe()
+      await tick()
+
+      root = '/repo-b'
+
+      // The superseded run's abort throws; the new root's run still starts and
+      // answers for its own tree.
+      expect(await probe()).toEqual({ desktopCommitsBehind: 4, outOfSync: true })
+
+      pending.resolve?.({ code: 0, stderr: '', stdout: '9\n' })
+      await tick()
+
+      expect(await first).toEqual({ desktopCommitsBehind: 9, outOfSync: true })
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
   // Fix 5: the timeout callback runs inside setTimeout, where a throw escapes
   // as an uncaught exception and leaves the probe's promise unsettled. The
   // not-stale answer is resolved BEFORE the abort, so an abort that throws

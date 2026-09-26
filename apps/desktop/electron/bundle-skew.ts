@@ -432,7 +432,13 @@ export function createBundleSkewProbe({
     // killChildOnAbort) instead of holding a core for minutes. The generation
     // guard already keeps its late answer out of the cache.
     if (inFlight) {
-      inFlight.controller.abort()
+      try {
+        inFlight.controller.abort()
+      } catch {
+        // Best-effort: an abort listener that throws (a kill on an
+        // already-reaped child) must not reject this call or stop the run for
+        // the new root from starting.
+      }
     }
 
     const controller = new AbortController()

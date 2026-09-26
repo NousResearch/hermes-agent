@@ -19,6 +19,11 @@ export const GIT_KILL_GRACE_MS = 2_000
  * fits and a test can pass a fake that records signals and fires 'close'.
  */
 export interface AbortKillableChild {
+  /**
+   * The process id, set only once the spawn succeeded. Undefined means the
+   * spawn never happened (or failed before a process existed).
+   */
+  pid?: number
   kill(signal?: NodeJS.Signals | number): boolean
   once(event: string | symbol, listener: (...args: any[]) => void): unknown
   removeListener?(event: string | symbol, listener: (...args: any[]) => void): unknown
@@ -53,7 +58,21 @@ export function killChildOnAbort(
 
     signal.removeEventListener('abort', onAbort)
     child.removeListener?.('close', teardown)
-    child.removeListener?.('error', teardown)
+    child.removeListener?.('error', onError)
+  }
+
+  /**
+   * Node emits 'error' on two very different things: a spawn that failed, and
+   * a kill (SIGTERM/SIGKILL) that failed. Only the first proves the child is
+   * gone. After a failed kill the process may still be running, so tearing
+   * down here would cancel the SIGKILL escalation and leave a git alive. The
+   * pid is the test: a child that never spawned has none, so it is torn down;
+   * a spawned child keeps listening and 'close' stays the only proof of exit.
+   */
+  const onError = (): void => {
+    if (child.pid === undefined) {
+      teardown()
+    }
   }
 
   const onAbort = (): void => {
@@ -93,7 +112,7 @@ export function killChildOnAbort(
   // 'close', not 'exit', matches how runGit resolves: the stdio pipes must
   // drain, and a git that closed its pipes is one that will not need SIGKILL.
   child.once('close', teardown)
-  child.once('error', teardown)
+  child.once('error', onError)
 
   if (signal.aborted) {
     onAbort()

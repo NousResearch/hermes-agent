@@ -12,6 +12,9 @@ function fakeChild() {
   const removed: string[] = []
 
   const child = {
+    // Undefined until a test says otherwise: a real ChildProcess has a pid
+    // only once the spawn has happened.
+    pid: undefined as number | undefined,
     kill(signal?: NodeJS.Signals | number) {
       kills.push(signal)
 
@@ -153,6 +156,53 @@ describe('killChildOnAbort', () => {
 
     expect(listenerCount()).toBe(0)
     expect(removed).toContain('error')
+
+    signal.abort()
+
+    expect(kills).toEqual([])
+  })
+
+  // P2: Node emits 'error' both when a spawn fails and when a kill fails. A
+  // failed kill does NOT prove that the process exited, so a spawned child
+  // (pid set) that errors after SIGTERM must keep its SIGKILL escalation and
+  // keep listening for 'close', which is the only proof of exit.
+  it('keeps the SIGKILL escalation when a spawned child emits error after SIGTERM', () => {
+    vi.useFakeTimers()
+
+    try {
+      const { child, kills, emit } = fakeChild()
+      const controller = new AbortController()
+
+      child.pid = 4242
+
+      killChildOnAbort(child, controller.signal, 20)
+      controller.abort()
+
+      expect(kills).toEqual(['SIGTERM'])
+
+      emit('error')
+
+      vi.advanceTimersByTime(20)
+
+      expect(kills).toEqual(['SIGTERM', 'SIGKILL'])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // P2: 'error' proves the process is gone only when the spawn never happened.
+  // A child with no pid is torn down at once and no signal ever reaches it.
+  it('tears down a child that errors before it spawned (no pid)', () => {
+    const { child, kills, removed, emit } = fakeChild()
+    const { listenerCount, signal } = fakeSignal()
+
+    killChildOnAbort(child, signal as unknown as AbortSignal, 20)
+
+    emit('error')
+
+    expect(listenerCount()).toBe(0)
+    expect(removed).toContain('error')
+    expect(removed).toContain('close')
 
     signal.abort()
 

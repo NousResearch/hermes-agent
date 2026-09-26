@@ -2,8 +2,9 @@ import { MessageRepository } from '@assistant-ui/core/internal'
 import { renderHook } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 
-import type { ChatMessage } from '@/lib/chat-messages'
+import { toChatMessages, type ChatMessage } from '@/lib/chat-messages'
 import { syncRepositoryIncrementally } from '@/lib/incremental-external-store-runtime'
+import type { SessionMessage } from '@/types/hermes'
 
 import { useRuntimeMessageRepository } from './runtime-repository'
 
@@ -193,5 +194,40 @@ describe('useRuntimeMessageRepository', () => {
       'user-2',
       'assistant-2'
     ])
+  })
+
+  it('keeps persisted identities stable across hydration windows with an inverted timestamp', () => {
+    const rows: SessionMessage[] = Array.from({ length: 200 }, (_, offset) => {
+      const id = 271 + offset
+
+      return {
+        id,
+        role: id === 283 ? 'user' : id % 2 === 0 ? 'assistant' : 'user',
+        content: `row ${id}`,
+        timestamp: id === 284 ? 1_790_082_424 : 1_790_083_641 + offset,
+        ...(id === 283 ? { display_kind: 'model_switch' } : {})
+      }
+    })
+    const leading: SessionMessage = {
+      id: 270,
+      role: 'assistant',
+      content: 'leading row',
+      timestamp: 1_790_083_640
+    }
+
+    const firstWindow = toChatMessages(rows)
+    const shiftedWindow = toChatMessages([leading, ...rows]).slice(1)
+    const firstIds = new Map(firstWindow.map(message => [message.rowId, message.id]))
+
+    expect(shiftedWindow.map(message => message.id)).toEqual(
+      shiftedWindow.map(message => firstIds.get(message.rowId))
+    )
+
+    const { result } = renderHook(() => useRuntimeMessageRepository([...firstWindow, ...shiftedWindow]))
+    const repositoryIds = result.current.messages.map(item => item.message.id)
+
+    expect(repositoryIds).toHaveLength(firstWindow.length)
+    expect(repositoryIds.filter(id => id === 'row:284')).toHaveLength(1)
+    expect(repositoryIds.indexOf('row:284')).toBe(repositoryIds.indexOf('row:283') + 1)
   })
 })

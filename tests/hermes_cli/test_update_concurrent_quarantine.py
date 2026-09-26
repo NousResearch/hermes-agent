@@ -103,6 +103,7 @@ def test_pause_stops_launcher_after_worker_drain(
 ):
     """Capture the launcher identity while its worker is still inspectable."""
     import hermes_cli.gateway as gateway_mod
+    import hermes_cli.update_cmd_windows as update_cmd_windows
     import gateway.status as status_mod
 
     # The install venv is whatever hermes_constants.project_venv_dir resolves for the checkout (a
@@ -113,6 +114,8 @@ def test_pause_stops_launcher_after_worker_drain(
 
     profile_home = tmp_path / "profiles" / "default"
     profile_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(update_cmd_windows, "_gateway_process_home", lambda _pid: profile_home)
     # The PID file records the WORKER (even-numbered parent 400 is its launcher).
     worker_pid, launcher_pid = 500, 400
     profile_proc = SimpleNamespace(

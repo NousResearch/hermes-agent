@@ -1,7 +1,8 @@
 """Voice Mode -- push-to-talk recording and playback for the CLI.
 
 Capture via sounddevice, WAV via stdlib wave, STT via tools.transcription_tools,
-playback via sounddevice or system players. Optional deps: ``uv sync --extra voice``.
+playback via sounddevice or system players. Optional deps: the ``audio-io`` / ``stt-whisper``
+extras, installed through PM (``hermes tools`` configures speech-to-text).
 """
 
 import logging
@@ -42,7 +43,19 @@ _TEMP_DIR = os.path.join(tempfile.gettempdir(), "hermes_voice")
 # WSL, no PortAudio).
 
 def _import_audio():
-    """Lazy-import (sounddevice, numpy); raises ImportError/OSError when unavailable."""
+    """Lazy-import (sounddevice, numpy), enabling the ``audio-io`` extra through PM first.
+
+    Raises ImportError when the extra cannot be enabled here (lazy installs off, platform
+    gate, or installed-but-needs-restart) and OSError when PortAudio's shared library is
+    missing — pip can't fix that one, so it is reported separately.
+    """
+    import pm
+
+    if not pm.available("audio-io"):
+        try:
+            pm.ensure_import("audio-io")
+        except pm.InstallError as exc:
+            raise ImportError(str(exc)) from exc
     import sounddevice as sd
     import numpy as np
     return sd, np
@@ -90,6 +103,16 @@ def _unlink_quietly(path: Optional[str]) -> None:
             os.unlink(path)
 
 
+def _audio_unavailable_reason() -> str:
+    try:
+        _import_audio()
+    except ImportError as exc:
+        return _voice_capture_install_hint(exc)
+    except OSError:
+        return _portaudio_missing_message().splitlines()[0]
+    return ""
+
+
 def _audio_available() -> bool:
     try:
         _import_audio()
@@ -113,19 +136,13 @@ def _default_input_samplerate(sd) -> int:
 
 
 # ── Environment detection ──
-def _voice_capture_install_hint() -> str:
-    # sounddevice imports but PortAudio's shared library is missing — a pip install can't fix that; point at
-    # the system package instead of misreporting missing Python packages (#18432).
+def _voice_capture_install_hint(error: BaseException | None = None) -> str:
+    """Why audio capture is unavailable. ``_import_audio`` already tried to enable the
+    ``audio-io`` extra through PM, so the ImportError it raised IS the remediation."""
+    # On Termux PortAudio is a system package a pip install can't provide (#18432).
     if _is_termux_environment():
         return "pkg install python-numpy portaudio && python -m pip install sounddevice"
-    # Inside a venv a bare `pip install` may hit whichever Python the shell
-    # resolves first (macOS: often a Rosetta system Python) — use the venv's pip.
-    with suppress(Exception):
-        if sys.prefix != getattr(sys, "base_prefix", sys.prefix):
-            pip_in_venv = Path(sys.prefix) / "bin" / "pip"
-            if pip_in_venv.exists():
-                return f"{pip_in_venv} install sounddevice numpy"
-    return "pip install sounddevice numpy"
+    return str(error) if error else "audio-io extra unavailable"
 
 
 def _portaudio_missing_message() -> str:
@@ -252,9 +269,9 @@ def _probe_audio_libraries(warnings: List[str], notices: List[str], *, has_forwa
 
     try:
         sd, _ = _import_audio()
-    except ImportError:
+    except ImportError as exc:
         return outcome("Termux:API microphone recording available (sounddevice not required)",
-                       f"Audio libraries not installed ({_voice_capture_install_hint()})", import_failed=True)
+                       f"Audio libraries not installed ({_voice_capture_install_hint(exc)})", import_failed=True)
     except OSError:
         return outcome("Termux:API microphone recording available (PortAudio not required)",
                        _portaudio_missing_message(), import_failed=True)
@@ -717,10 +734,24 @@ class AudioRecorder(_RecorderBase):
             self._fire_silence_callback()
 
     def _ensure_stream(self) -> None:
-        """Create the InputStream once and keep it alive (between recordings the callback
-        discards chunks): re-opening an InputStream hangs on macOS CoreAudio."""
+        """Create the audio InputStream and keep it alive while usable.
+
+        The stream stays open for the lifetime of the recorder.  Between
+        recordings the callback simply discards audio chunks (``_recording``
+        is ``False``).  This avoids the CoreAudio bug where closing and
+        re-opening an ``InputStream`` hangs indefinitely on macOS. CoreAudio
+        can still deactivate the stream when another input stream opens; in
+        that case the dead object must be closed and rebuilt before capture.
+        """
         if self._stream is not None:
-            return
+            try:
+                if self._stream.active:
+                    return
+            except Exception:
+                logger.debug("Audio input stream liveness probe failed", exc_info=True)
+
+            logger.debug("Rebuilding inactive audio input stream")
+            self._close_stream_with_timeout()
         sd, np = _import_audio()
 
         def _callback(indata, frames, time_info, status):  # noqa: ARG001
@@ -759,9 +790,7 @@ class AudioRecorder(_RecorderBase):
         except OSError as e:
             raise RuntimeError(_portaudio_missing_message()) from e
         except ImportError as e:
-            raise RuntimeError(
-                "Voice mode requires sounddevice and numpy.\n"
-                f"Install with: {sys.executable} -m pip install sounddevice numpy") from e
+            raise RuntimeError(f"Voice mode requires sounddevice and numpy.\n{_voice_capture_install_hint(e)}") from e
         with self._lock:
             if self._recording:
                 return
@@ -786,6 +815,7 @@ class AudioRecorder(_RecorderBase):
         def _do_close():
             with suppress(Exception):
                 stream.stop()
+            with suppress(Exception):
                 stream.close()
 
         t = threading.Thread(target=_do_close, daemon=True)
@@ -1478,12 +1508,11 @@ def check_voice_requirements() -> Dict[str, Any]:
     details = [
         "Audio capture: OK (Termux:API microphone)" if termux_capture
         else "Audio capture: OK" if has_audio
-        else f"Audio capture: MISSING ({_voice_capture_install_hint()})",
+        else f"Audio capture: MISSING ({_audio_unavailable_reason()})",
         "STT provider: DISABLED in config (stt.enabled: false)" if not stt_enabled
         else f"STT provider: {stt_label}" if stt_label
-        else ("STT provider: MISSING (uv pip install faster-whisper — "
-              "`pip install faster-whisper` also works if pip is on PATH, "
-              "or set GROQ_API_KEY / VOICE_TOOLS_OPENAI_KEY)"),
+        else ("STT provider: MISSING (run `hermes tools` and configure "
+              "Speech-to-Text: Local Whisper or a cloud provider)"),
     ]
     details += [f"Environment: {w}" for w in env_check["warnings"]]
     details += [f"Environment: {n}" for n in env_check.get("notices", [])]

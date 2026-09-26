@@ -185,8 +185,8 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
     sessions_set_journal_mode.add_argument("--db", default=None, metavar="PATH",
         help="Convert another Hermes SQLite store (e.g. kanban.db) instead of the profile's state.db")
     _flag(sessions_set_journal_mode, "--force",
-        help="Windows only: proceed without the holder scan (which does not exist there) after stopping "
-            "every Hermes process yourself")
+        help="Proceed when the holder scan itself fails (cannot prove the store is quiet) after stopping every "
+            "Hermes process yourself; a process the scan does find is still refused")
 
     sessions_repair_routing = sessions_subparsers.add_parser(
         "repair-routing", help="Re-stamp gateway sessions that lost their routing identity",
@@ -223,6 +223,20 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
             "to that profile (a standalone gateway's own history, e.g. after multiplexing was "
             "switched on), 'move' them to the default store (a default chat that leaked in), or "
             "'report' (default) — the rows themselves cannot tell the two cases apart")
+
+
+    sessions_repair_prompts = sessions_subparsers.add_parser(
+        "repair-prompts", help="Report or clear stored system prompts degraded to a reduced-toolset build",
+        description="Repair session rows degraded by the pre-#122822 gateway hygiene/compress bug. "
+            "Automatic repair requires positive tools[] evidence; rows without a readable pin are "
+            "reported as unverifiable and never changed by a scan. Clearing a prompt makes the next "
+            "turn rebuild and persist healthy bytes. Reports without touching anything unless --apply "
+            "is given; a session_id is an explicit destructive override and can clear even a healthy prompt.")
+    _flag(sessions_repair_prompts, "--apply", help="Clear the verified prompts (default: report only)")
+    _flag(sessions_repair_prompts, "--json",
+        help="Machine-readable output; with --apply, apply without an interactive confirmation")
+    sessions_repair_prompts.add_argument("session_id", nargs="?", default=None,
+        help="Destructive override: clear this session even when its stored prompt is healthy")
 
     sessions_recover = sessions_subparsers.add_parser(
         "recover", help="Rebuild canonical session data into a separate clean database",

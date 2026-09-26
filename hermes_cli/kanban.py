@@ -199,21 +199,9 @@ def kanban_command(args: argparse.Namespace) -> int:
 # --- Handlers ---
 
 def _profile_author() -> str:
-    """Best-effort author name for an interactive CLI call.
-
-    Order (see :func:`hermes_cli.profiles.resolve_acting_profile_name`):
-    ``HERMES_PROFILE_NAME`` -> ``HERMES_PROFILE`` -> the bound session profile
-    (``HERMES_SESSION_PROFILE``) -> the profile id derived from the active ``HERMES_HOME``
-    -> ``"user"``. A caller-supplied ``--author`` always wins (checked before this call).
-    The session step is what a gateway-hosted ``hermes kanban comment`` needs: its
-    ``HERMES_HOME`` is the DEFAULT root, so the home-derived name alone said
-    ``default`` for every served profile.
-    """
-    try:
-        from hermes_cli.profiles import resolve_acting_profile_name
-        return resolve_acting_profile_name("user")
-    except Exception:
-        return "user"
+    """Best-effort author name for an interactive CLI call."""
+    from hermes_cli.profiles import current_profile_name
+    return current_profile_name("user") or "user"
 
 
 _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
@@ -352,7 +340,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
         return _err("kanban: --body and --body-file are mutually exclusive", 2)
     if body_file is not None:
         try:
-            body = sys.stdin.read() if body_file == "-" else Path(body_file).read_text(encoding="utf-8")
+            body = sys.stdin.read() if body_file == "-" else Path(body_file).read_text(encoding="utf-8-sig")
         except OSError as exc:
             return _err(f"kanban: --body-file: {exc}", 2)
 
@@ -1383,9 +1371,20 @@ def run_slash(rest: str) -> str:
     stdout/stderr. Shared by the interactive CLI and the gateway so formatting is identical."""
     import io
 
-    tokens = shlex.split(rest) if rest and rest.strip() else []
-    # Bare ``/kanban`` / ``help`` / ``-h``: curated short block, not argparse's full tree (garbage
-    # in a chat bubble). ``/kanban foo -h`` still works.
+    # Non-posix split (Windows) keeps backslashes as path separators but
+    # leaves quote characters in the tokens — strip a fully wrapping pair
+    # so `"my task"` reaches argparse as `my task`, not `"my task"`.
+    tokens = []
+    if rest and rest.strip():
+        for tok in shlex.split(rest, posix=os.name == "posix"):
+            if len(tok) >= 2 and tok[0] == tok[-1] and tok[0] in ("'", '"'):
+                tok = tok[1:-1]
+            tokens.append(tok)
+
+    # Bare ``/kanban`` or ``/kanban help`` / ``--help`` / ``-h`` / ``?``:
+    # show the curated short-help block instead of dumping argparse's full
+    # usage tree (which is enormous and reads as garbage in a chat
+    # bubble).  Per-subcommand help still works via ``/kanban foo -h``.
     if not tokens or tokens[0] in {"help", "--help", "-h", "?"}:
         return _SLASH_KANBAN_HELP
     # build_parser() needs a subparsers action to attach to: build a throwaway one and drive

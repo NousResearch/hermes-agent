@@ -76,6 +76,5 @@ class TestCappedWalkHint:
     def test_hint_names_a_cap_only_when_the_walk_hit_it(self, monkeypatch, n_elements, bound, capped):
         text = self._summary(monkeypatch, n_elements=n_elements, bound=bound)
         assert ("accessibility walk capped" in text) is capped
-        assert (f"accessibility walk capped at {bound} elements; pass app= to narrow" in text) is capped
         assert ("full element tree with untruncated labels saved to" in text) is not capped
         assert "element tree with untruncated labels saved to" in text

@@ -86,6 +86,7 @@ class CLIInitMixin:
         self._stream_buf = ""  # partial line buffer
         self._reasoning_preview_buf = ""  # coalesces tiny reasoning chunks
         self._stream_started = self._stream_box_opened = self._stream_box_live = False
+        self._streamed_text_this_turn = ""
         self._held_status_lines: list[str] = []  # agent status lines parked while a box streams
         # Possible markdown-table lines held until the block ends for wcwidth-aware re-padding.
         self._stream_table_buf: list[str] = []
@@ -186,10 +187,14 @@ class CLIInitMixin:
             or os.getenv("OPENROUTER_BASE_URL", "")
         ) or None
         # Key matches the resolved base_url; re-resolved by _ensure_runtime_credentials().
-        _keys = ("OPENROUTER_API_KEY", "OPENAI_API_KEY")
+        # This seed can reach /model before the first turn, so openrouter.ai never gets a real OpenAI key here.
+        _keys = [os.getenv("OPENROUTER_API_KEY"), os.getenv("OPENAI_API_KEY")]
         if not (self.base_url and base_url_host_matches(self.base_url, "openrouter.ai")):
             _keys = _keys[::-1]
-        self.api_key = api_key or os.getenv(_keys[0]) or os.getenv(_keys[1])
+        else:
+            from hermes_cli.auth import looks_like_openrouter_key
+            _keys[1] = _keys[1] if looks_like_openrouter_key(_keys[1]) else None
+        self.api_key = api_key or _keys[0] or _keys[1]
 
     def _init_turn_limits(self, max_turns, run_budget):
         """max_turns: CLI arg > config > env var > default; run budget: CLI flag > config."""

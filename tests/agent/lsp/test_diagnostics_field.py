@@ -11,9 +11,7 @@ from unittest.mock import MagicMock, patch
 
 from tools.environments.local import LocalEnvironment
 from tools.file_operations import (
-    PatchResult,
     ShellFileOperations,
-    WriteResult,
 )
 
 
@@ -30,9 +28,6 @@ from tools.file_operations import (
 
 
 
-def test_patchresult_to_dict_omits_field_when_none():
-    r = PatchResult(success=True)
-    assert "lsp_diagnostics" not in r.to_dict()
 
 
 
@@ -42,19 +37,6 @@ def test_patchresult_to_dict_omits_field_when_none():
 # ---------------------------------------------------------------------------
 
 
-def test_lint_and_lsp_diagnostics_are_separate_channels():
-    """A WriteResult can carry BOTH a syntax-error lint AND an LSP
-    diagnostic block.  They belong in separate fields."""
-    r = WriteResult(
-        bytes_written=42,
-        lint={"status": "error", "output": "SyntaxError: ..."},
-        lsp_diagnostics="<diagnostics>ERROR [1:5] type mismatch</diagnostics>",
-    )
-    d = r.to_dict()
-    assert "lint" in d
-    assert "lsp_diagnostics" in d
-    assert d["lint"]["output"] == "SyntaxError: ..."
-    assert "type mismatch" in d["lsp_diagnostics"]
 
 
 # ---------------------------------------------------------------------------

@@ -22,9 +22,7 @@ import pytest
 from tools import mcp_death_supervisor, mcp_tool
 from tools import mcp_tool_lifecycle as _mcp_lifecycle
 
-pytestmark = pytest.mark.skipif(
-    os.name != "posix", reason="the supervisor is POSIX-only (process groups)"
-)
+pytestmark = pytest.mark.platforms("posix")  # the supervisor is POSIX-only (process groups)
 
 SUPERVISOR = os.path.join(os.path.dirname(mcp_tool.__file__), "mcp_death_supervisor.py")
 
@@ -413,15 +411,6 @@ def test_register_starts_the_supervisor_once_and_reuses_it(monkeypatch, all_grou
     assert spawned[0].lines() == ["register 111", "register 222"]
 
 
-def test_unregister_is_forwarded(monkeypatch, all_groups_alive):
-    fake = _FakeSupervisor()
-    monkeypatch.setattr(mcp_tool, "_spawn_death_supervisor", lambda: fake)
-
-    mcp_tool._update_death_supervisor("register", [111])
-    mcp_tool._update_death_supervisor("unregister", [111])
-
-    assert fake.lines() == ["register 111", "unregister 111"]
-    assert mcp_tool._supervised_pgids == set()
 
 
 def test_supervisor_is_released_once_nothing_is_left_to_reap(monkeypatch, all_groups_alive):

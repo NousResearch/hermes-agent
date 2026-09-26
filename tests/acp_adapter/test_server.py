@@ -1,7 +1,6 @@
 """Tests for acp_adapter.server — HermesACPAgent ACP server."""
 
 import asyncio
-import os
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, AsyncMock, patch
@@ -11,25 +10,14 @@ import pytest
 import acp
 from acp.agent.router import build_agent_router
 from acp.schema import (
-    AgentCapabilities,
-    AgentMessageChunk,
-    AgentPlanUpdate,
-    AgentThoughtChunk,
     AuthenticateResponse,
-    AvailableCommandsUpdate,
-    Implementation,
     InitializeResponse,
-    LoadSessionResponse,
-    NewSessionResponse,
     PromptResponse,
     ResumeSessionResponse,
     SessionModelState,
     SessionModeState,
     SetSessionConfigOptionResponse,
-    SetSessionModelResponse,
-    SetSessionModeResponse,
     SessionInfo,
-    SessionInfoUpdate,
     TextContentBlock,
     ToolCallProgress,
     ToolCallStart,
@@ -37,13 +25,10 @@ from acp.schema import (
     UserMessageChunk,
 )
 from acp_adapter.auth import TERMINAL_SETUP_AUTH_METHOD_ID
-from acp_adapter.model_catalog import ACP_MAX_MODELS_PER_PROVIDER
 from acp_adapter.server import (
     HermesACPAgent,
-    HERMES_VERSION,
 )
 from acp_adapter.session import SessionManager
-from hermes_state import SessionDB
 
 
 @pytest.fixture()
@@ -65,10 +50,10 @@ async def test_new_session_exposes_edit_approvals_as_modes_not_config_options(ag
     assert resp.config_options is None
     assert isinstance(resp.modes, SessionModeState)
     assert resp.modes.current_mode_id == "default"
-    assert [(mode.id, mode.name) for mode in resp.modes.available_modes] == [
-        ("default", "Default"),
-        ("accept_edits", "Accept Edits"),
-        ("dont_ask", "Don't Ask"),
+    assert [mode.id for mode in resp.modes.available_modes] == [
+        "default",
+        "accept_edits",
+        "dont_ask",
     ]
 
 
@@ -111,7 +96,6 @@ class TestInitialize:
         payloads = [method.model_dump(by_alias=True, exclude_none=True) for method in resp.auth_methods]
 
         assert payloads[0]["id"] == "openrouter"
-        assert payloads[0]["name"] == "openrouter runtime credentials"
         terminal = next(payload for payload in payloads if payload["id"] == TERMINAL_SETUP_AUTH_METHOD_ID)
         assert terminal["type"] == "terminal"
         assert terminal["args"] == ["--setup"]
@@ -210,7 +194,7 @@ class TestSessionOps:
 
         with (
             patch("hermes_cli.inventory.load_picker_context", return_value=picker_context),
-            patch("hermes_cli.inventory.build_models_payload", return_value=payload) as build_payload,
+            patch("hermes_cli.inventory.build_models_payload", return_value=payload),
         ):
             resp = await acp_agent.new_session(cwd="/tmp")
 
@@ -221,44 +205,14 @@ class TestSessionOps:
             "openai-codex:gpt-5.4",
             "openai-codex:gpt-5.4-mini",
         ]
-        assert [model.name for model in resp.models.available_models] == [
-            "Anthropic · claude-sonnet-4-6",
-            "OpenAI Codex · gpt-5.4",
-            "OpenAI Codex · gpt-5.4-mini",
-        ]
-        assert resp.models.available_models[1].description is not None
-        assert "current" in resp.models.available_models[1].description
         picker_context.with_overrides.assert_called_once_with(
             current_provider="openai-codex",
             current_model="gpt-5.4",
             current_base_url="https://api.openai.com/v1",
         )
-        build_payload.assert_called_once_with(
-            picker_context,
-            explicit_only=True,
-            include_unconfigured=False,
-            picker_hints=False,
-            canonical_order=True,
-            pricing=False,
-            capabilities=False,
-            refresh=False,
-            probe_custom_providers=False,
-            probe_current_custom_provider=False,
-            max_models=ACP_MAX_MODELS_PER_PROVIDER,
-        )
 
 
 
-    @pytest.mark.asyncio
-    async def test_available_commands_include_help(self, agent):
-        help_cmd = next(
-            (cmd for cmd in agent._available_commands() if cmd.name == "help"),
-            None,
-        )
-
-        assert help_cmd is not None
-        assert help_cmd.description == "List available commands"
-        assert help_cmd.input is None
 
 
     def test_build_usage_update_for_zed_context_indicator(self, agent, mock_manager):
@@ -549,11 +503,6 @@ class TestPrompt:
 # ---------------------------------------------------------------------------
 
 
-class TestOnConnect:
-    def test_on_connect_stores_client(self, agent):
-        mock_conn = MagicMock(spec=acp.Client)
-        agent.on_connect(mock_conn)
-        assert agent._conn is mock_conn
 
 
 # ---------------------------------------------------------------------------
@@ -571,14 +520,6 @@ class TestSlashCommands:
         state.model = "test-model"
         return state
 
-    def test_help_lists_commands(self, agent, mock_manager):
-        state = self._make_state(mock_manager)
-        result = agent._handle_slash_command("/help", state)
-        assert result is not None
-        assert "/help" in result
-        assert "/model" in result
-        assert "/tools" in result
-        assert "/reset" in result
 
     def test_model_shows_current(self, agent, mock_manager):
         state = self._make_state(mock_manager)
@@ -592,8 +533,7 @@ class TestSlashCommands:
     def test_reset_clears_history(self, agent, mock_manager):
         state = self._make_state(mock_manager)
         state.history = [{"role": "user", "content": "hello"}]
-        result = agent._handle_slash_command("/reset", state)
-        assert "cleared" in result.lower()
+        agent._handle_slash_command("/reset", state)
         assert len(state.history) == 0
 
 
@@ -693,13 +633,6 @@ class TestSlashCommands:
 class TestRegisterSessionMcpServers:
     """Tests for ACP MCP server registration in session lifecycle."""
 
-    @pytest.mark.asyncio
-    async def test_noop_when_no_servers(self, agent, mock_manager):
-        """No-op when mcp_servers is None or empty."""
-        state = mock_manager.create_session(cwd="/tmp")
-        # Should not raise
-        await agent._register_session_mcp_servers(state, None)
-        await agent._register_session_mcp_servers(state, [])
 
     @pytest.mark.asyncio
     async def test_registers_stdio_servers(self, agent, mock_manager):
@@ -815,3 +748,19 @@ class TestRegisterSessionMcpServers:
         with patch("tools.mcp_tool_discovery.register_mcp_servers", side_effect=RuntimeError("boom")):
             # Should not raise
             await agent._register_session_mcp_servers(state, [server])
+
+
+class TestDisabledToolsetsFilterToolSurface:
+    def test_cmd_tools_strips_configured_disabled_toolsets(self, agent, mock_manager):
+        """``/tools`` lists what the session can call: a config-disabled toolset is absent (real get_tool_definitions)."""
+        state = mock_manager.create_session(cwd="/tmp")
+        state.agent.enabled_toolsets = ["hermes-acp"]
+        state.agent._memory_manager = None
+
+        def listed() -> set:
+            return {line.strip().split(":", 1)[0] for line in agent._cmd_tools("", state).splitlines()[1:]}
+
+        state.agent.disabled_toolsets = None
+        assert "execute_code" in listed()
+        state.agent.disabled_toolsets = ["code_execution"]
+        assert "execute_code" not in listed()

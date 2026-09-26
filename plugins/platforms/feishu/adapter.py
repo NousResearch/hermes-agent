@@ -18,6 +18,7 @@ Session keys prefer union_id (user_id_alt) over open_id (user_id) for stability.
 
 from __future__ import annotations
 
+from pm import install_hint
 import asyncio
 import collections
 import concurrent.futures
@@ -64,7 +65,8 @@ _LARK_SDK_IMPORTS = (
     ("lark_oapi.api.im.v1", (
         "CreateFileRequest", "CreateFileRequestBody", "CreateImageRequest", "CreateImageRequestBody",
         "CreateMessageRequest", "CreateMessageRequestBody", "GetChatRequest", "GetMessageRequest",
-        "GetMessageResourceRequest", "P2ImMessageMessageReadV1", "ReplyMessageRequest", "ReplyMessageRequestBody",
+        "DeleteMessageRequest", "GetMessageResourceRequest", "P2ImMessageMessageReadV1",
+        "ReplyMessageRequest", "ReplyMessageRequestBody",
         "UpdateMessageRequest", "UpdateMessageRequestBody",
     )),
     ("lark_oapi.core", ("AccessTokenType", "HttpMethod")),
@@ -1216,8 +1218,8 @@ def feishu_deps_present() -> bool:
     if FEISHU_AVAILABLE:
         return True
     try:
-        from tools.lazy_deps import is_available
-        return is_available("platform.feishu")
+        from pm.extras import available
+        return available("feishu")
     except Exception:  # pragma: no cover — defensive
         return False
 
@@ -1226,9 +1228,11 @@ def check_feishu_requirements() -> bool:
     """Ensure Feishu dependencies are installed without importing the SDK."""
     if FEISHU_AVAILABLE:
         return True
-    from tools.lazy_deps import ensure
+
+    from pm import ensure_import
+
     try:
-        ensure("platform.feishu", prompt=False)
+        ensure_import("feishu")
         return True
     except Exception:
         return False
@@ -1722,6 +1726,24 @@ class FeishuAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.error("[Feishu] Failed to edit message %s: %s", message_id, exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
+
+    async def delete_message(self, chat_id: str, message_id: str) -> bool:
+        """Delete a bot-posted message (used by stream-consumer preview cleanup)."""
+        if not self._client or not message_id:
+            return False
+        try:
+            request = self._build_delete_message_request(message_id)
+            response = await self._run_blocking(self._client.im.v1.message.delete, request)
+            if self._response_succeeded(response):
+                return True
+            logger.debug(
+                "[Feishu] Delete of message %s rejected: code=%s msg=%s",
+                message_id, getattr(response, "code", None), getattr(response, "msg", None),
+            )
+            return False
+        except Exception:
+            logger.debug("[Feishu] Failed to delete message %s", message_id, exc_info=True)
+            return False
 
     # Template attrs for the shared _format_exec_approval core. The card
     # header carries the title, so the text core starts at the code fence.
@@ -3044,7 +3066,7 @@ class FeishuAdapter(BasePlatformAdapter):
             ext = Path(cached_path).suffix.lower()
             if ext not in {".txt", ".md"} and media_type not in {"text/plain", "text/markdown"}:
                 return ""
-            content = Path(cached_path).read_text(encoding="utf-8")
+            content = Path(cached_path).read_text(encoding="utf-8-sig")
             display_name = self._display_name_from_cached_path(cached_path)
             return f"[Content of {display_name}]:\n{content}"
         except (OSError, UnicodeDecodeError):
@@ -3508,7 +3530,7 @@ class FeishuAdapter(BasePlatformAdapter):
     # --- Deduplication — seen message ID cache (persistent) ---
     def _load_seen_message_ids(self) -> None:
         try:
-            payload = json.loads(self._dedup_state_path.read_text(encoding="utf-8"))
+            payload = json.loads(self._dedup_state_path.read_text(encoding="utf-8-sig"))
         except FileNotFoundError:
             return
         except (OSError, json.JSONDecodeError):
@@ -3974,6 +3996,10 @@ class FeishuAdapter(BasePlatformAdapter):
         return _sdk_build(UpdateMessageRequest, message_id=message_id, request_body=request_body)
 
     @staticmethod
+    def _build_delete_message_request(message_id: str) -> Any:
+        return _sdk_build(DeleteMessageRequest, message_id=message_id)
+
+    @staticmethod
     def _build_create_message_body(*, receive_id: str, msg_type: str, content: str, uuid_value: str) -> Any:
         return _sdk_build(
             CreateMessageRequestBody, receive_id=receive_id, msg_type=msg_type, content=content, uuid=uuid_value,
@@ -4233,8 +4259,9 @@ def _qr_register_inner(*, initial_domain: str, timeout_seconds: int) -> Optional
         print(f"\n  Scan the QR code above, or open this URL directly:\n  {qr_url}")
     else:
         print(f"  Open this URL in Feishu / Lark on your phone:\n\n  {qr_url}\n")
-        from hermes_cli.managed_uv import pip_install_hint
-        print(f"  Tip: {pip_install_hint('qrcode')}  to display a scannable QR code here next time")
+        print("  Tip: from the Hermes environment, run: "
+              f"{install_hint('messaging')} "
+              "to display a scannable QR code here next time")
     print()
     result = _poll_registration(
         device_code=begin["device_code"], interval=begin["interval"],

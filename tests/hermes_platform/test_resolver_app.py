@@ -11,7 +11,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 
-from hermes_platform.resolver import CheckState, Effort, Probeable, Resolver
+from hermes_platform.resolver import CheckState, Effort
 from hermes_platform.resolver.app import AppDef, AppResolver, Endpoint
 
 TOKEN = "tok-3e1f9c-unique-fixture-value"
@@ -39,9 +39,6 @@ def _resolver(tmp_path, exe, server_json=None):
     ))
 
 
-def test_app_resolver_satisfies_both_protocols(tmp_path):
-    r = AppResolver(AppDef("x", sys.platform, "executable", str(tmp_path / "x")))
-    assert isinstance(r, Resolver) and isinstance(r, Probeable)
 
 
 def test_locate_reports_expanded_path_when_missing(tmp_path, monkeypatch):

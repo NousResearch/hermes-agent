@@ -34,6 +34,7 @@ load_config = late("load_config", "hermes_cli.config")
 _cron_profile_dicts = late("_cron_profile_dicts", "hermes_cli.web_server_cron")
 _cron_profile_home = late("_cron_profile_home", "hermes_cli.web_server_cron")
 _open_session_db_for_profile = late("_open_session_db_for_profile", "hermes_cli.web_server_sessions")
+_config_profile_scope = late("_config_profile_scope", "hermes_cli.web_server_profiles")
 
 def _job_not_found() -> HTTPException:
     return HTTPException(status_code=404, detail="Job not found")
@@ -106,16 +107,42 @@ def _list_cron_jobs_sync(profile: str = "all"):
     if requested.lower() != "all":
         return _call_cron_for_profile(requested, "list_jobs", True)
 
-    jobs: List[Dict[str, Any]] = []
+    # Aggregating across profiles can surface the SAME job id more than once —
+    # e.g. a job copied into a second profile's cron/jobs.json during profile
+    # creation. Deduplicate by id, deterministically preferring the default
+    # profile's copy over per-iteration order (#51721): collect all jobs first,
+    # then resolve duplicates by id with default-profile priority, rather than
+    # keeping whichever copy happened to be seen first during the profile loop.
+    all_jobs: List[Dict[str, Any]] = []
     for item in _cron_profile_dicts():
         name = str(item.get("name") or "")
         if not name:
             continue
         try:
-            jobs.extend(_call_cron_for_profile(name, "list_jobs", True))
+            all_jobs.extend(_call_cron_for_profile(name, "list_jobs", True))
         except Exception:
             _log.exception("Failed to list cron jobs for profile %s", name)
-    return jobs
+
+    by_id: Dict[str, Dict[str, Any]] = {}
+    unkeyed: List[Dict[str, Any]] = []
+    for job in all_jobs:
+        if not isinstance(job, dict):
+            continue
+        jid = job.get("id") or job.get("job_id")
+        # cron.jobs._normalize_job_record() fills a missing id with the literal
+        # sentinel string "unknown" — which is truthy, so a plain `if not jid`
+        # check would NOT catch it and two genuinely different id-less jobs from
+        # different profiles would collapse into one under this shared sentinel
+        # key. Treat the sentinel the same as no id: never deduplicated.
+        if not jid or jid == "unknown":
+            unkeyed.append(job)
+            continue
+        existing = by_id.get(jid)
+        if existing is None or (
+            job.get("is_default_profile") and not existing.get("is_default_profile")
+        ):
+            by_id[jid] = job
+    return list(by_id.values()) + unkeyed
 
 
 def _get_cron_job_sync(job_id: str, profile: Optional[str] = None):
@@ -250,15 +277,24 @@ async def create_cron_job(body: CronJobCreate, profile: Optional[str] = None):
 
 
 @router.get("/api/cron/delivery-targets")
-async def get_cron_delivery_targets():
+async def get_cron_delivery_targets(profile: Optional[str] = None):
     """Delivery targets for the cron dropdown: implicit ``local`` plus the
     configured gateway platforms (a platform without a cron home channel is
-    still listed with ``home_target_set: false`` so the UI can say so)."""
+    still listed with ``home_target_set: false`` so the UI can say so).
+
+    ``cron_delivery_targets()`` reads each platform's home channel through
+    ``get_secret``, which fails closed once this process hosts more than one
+    profile home (the dashboard/desktop ``serve`` backend flips multi-profile
+    hosting on the first ``?profile=`` request). The read must therefore run
+    inside the profile scope, exactly like the sibling cron routes — otherwise
+    the poll raises ``UnscopedSecretError`` on every tick and the dropdown
+    silently loses every configured platform."""
     targets = [{"id": "local", "name": "Local (save only)", "home_target_set": True, "home_env_var": None}]
     try:
         from cron.scheduler_delivery import cron_delivery_targets
 
-        targets.extend(cron_delivery_targets())
+        with _config_profile_scope(profile):
+            targets.extend(cron_delivery_targets())
     except Exception:
         _log.exception("GET /api/cron/delivery-targets failed")
     return {"targets": targets}
@@ -381,7 +417,7 @@ async def cron_fire_webhook(request: Request):
 
 
 @router.get("/api/cron/blueprints")
-async def list_cron_blueprints():
+async def list_cron_blueprints(profile: Optional[str] = None):
     """Blueprint catalog as form schemas; the ``deliver`` slot's options are
     rewritten from the actually configured gateway platforms."""
     try:
@@ -391,7 +427,8 @@ async def list_cron_blueprints():
         try:
             from cron.scheduler_delivery import cron_delivery_targets
 
-            platforms = [t["id"] for t in cron_delivery_targets() if t.get("id")]
+            with _config_profile_scope(profile):
+                platforms = [t["id"] for t in cron_delivery_targets() if t.get("id")]
             deliver_options = ["origin", "local", *platforms]
         except Exception:
             _log.debug("cron_delivery_targets unavailable; using static deliver options", exc_info=True)

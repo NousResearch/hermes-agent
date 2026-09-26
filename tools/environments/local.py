@@ -24,9 +24,6 @@ from tools.environments.local_env_policy import (  # noqa: F401 — _HERMES_PROV
     _ALWAYS_STRIP_KEYS, _HERMES_PROVIDER_ENV_BLOCKLIST, _HERMES_PROVIDER_ENV_FORCE_PREFIX,
     _is_hermes_internal_secret, _is_provider_env_blocklisted, _is_terminal_first_party_env,
     _matches_terminal_first_party_prefix, _plugin_terminal_env_strip_keys, strip_profile_gate_env)
-from tools.environments.local_gitbash_probe import (
-    _bash_probe_details_cache, _bash_starts, _git_bash_aslr_help,
-    _looks_like_msys_spawn_failure, _mandatory_aslr_enabled)
 from tools.environments.local_pythonpath import (
     _build_hermes_repo_root_aliases, _strip_hermes_owned_pythonpath_and_runtime_markers)
 
@@ -221,39 +218,70 @@ def _apply_profile_home(env: dict) -> None:
     apply_subprocess_home_env(env)
 
 
-def _export_session_profile_env(env: dict) -> None:
-    """Publish the SESSION's profile id as ``HERMES_PROFILE`` beside the profile-scoped
-    ``HERMES_HOME`` from :func:`_apply_profile_home`.
+def _export_served_profile_env(env: dict) -> None:
+    """Publish the identity this turn is acting as as ``HERMES_PROFILE``, beside the
+    profile-scoped ``HERMES_HOME`` from :func:`_apply_profile_home`.
 
-    Why: a child that has to *name* the profile it is acting for — ``hermes kanban
-    comment`` (author), ``hermes peer dm`` (``X-Hermes-Sender-Profile``), a repo script —
-    reads ``HERMES_PROFILE`` (see ``hermes_cli.profiles.resolve_acting_profile_name``).
-    The multiplexed gateway exports neither it nor a profile-scoped ``HERMES_HOME``: the
-    served profile lives in the per-session ContextVar, so such a child fell back to the
-    home-derived name — the gateway's DEFAULT root — and attributed the work to
-    ``default``. Bridge the bound session profile here; when only a home override exists
-    (``hermes -p X <cmd>``) derive the name from that home. A bound session profile wins
-    over an inherited ``HERMES_PROFILE`` (the turn's identity, not the process launch
-    profile); with no session profile bound the inherited value is left untouched, which
-    keeps the kanban dispatcher's ``HERMES_PROFILE`` pin on spawned workers.
+    Why: a child that has to *name* the profile it acts for — ``hermes kanban comment``
+    (author), ``hermes peer dm`` (``X-Hermes-Sender-Profile``), a repo script — reads
+    ``HERMES_PROFILE`` (see ``hermes_cli.profiles.current_profile_name``), and a child
+    process has NO bound home override: the parent's exported ``HERMES_HOME`` is its only
+    clue, so a served profile's child inherited the gateway's launch env and attributed its
+    work to ``default``. The parent can see what the child cannot — the identity bound for
+    the turn. Sources, in authority order:
+
+    1. the bound home override (:func:`_profile_runtime_scope` in the gateway): the profile
+       this process is acting FOR, and the same authority ``current_profile_name`` uses
+       in-process. It agrees with the ``HERMES_HOME`` pinned just above.
+    2. the bound session profile: a spawn surface that bound a session but no home. The
+       ContextVar wins over its ``os.environ`` mirror (cross-session leak guard).
+
+    Either one overrides an inherited ``HERMES_PROFILE`` — the turn's identity, not the
+    process launch profile. With NEITHER bound the inherited value is left untouched, which
+    keeps the kanban dispatcher's ``HERMES_PROFILE`` pin on the workers it spawns. A caller
+    that hands the child an explicit OTHER profile's home re-aligns this pin afterwards
+    (:func:`_align_pin_with_target_home`).
     """
+    profile = ""
     try:
-        from gateway.session_context import get_session_env
-        profile = (get_session_env("HERMES_SESSION_PROFILE", "") or "").strip()
+        from hermes_constants import get_hermes_home_override
+        if get_hermes_home_override():
+            from hermes_cli.profiles import get_active_profile_name
+            name = (get_active_profile_name() or "").strip()
+            # "custom" is a non-profile home (a plain HERMES_HOME path), not an identity.
+            profile = "" if name == "custom" else name
     except Exception:
         profile = ""
     if not profile:
         try:
-            from hermes_constants import get_hermes_home_override
-            if get_hermes_home_override():
-                from hermes_cli.profiles import get_active_profile_name
-                name = (get_active_profile_name() or "").strip()
-                # "custom" is a non-profile home (a plain HERMES_HOME path), not an identity.
-                profile = "" if name == "custom" else name
+            from gateway.session_context import get_session_env
+            profile = (get_session_env("HERMES_SESSION_PROFILE", "") or "").strip()
         except Exception:
             profile = ""
     if profile:
         env["HERMES_PROFILE"] = profile
+
+
+def _align_pin_with_target_home(env: dict, target_home: str) -> None:
+    """Drop a ``HERMES_PROFILE`` pin naming a profile other than the one *target_home* owns.
+
+    :func:`served_profile_child_env` hands the child an EXPLICIT home (``hermes -p X``, a
+    routed profile's gateway service, the host gateway on the default root). The child has no
+    bound override, so ``current_profile_name`` reads an env pin BEFORE that home: an identity
+    exported for the spawning session would label a process that acts under another profile.
+    Removal only, so the contract stays "never SETS ``HERMES_PROFILE``" — the child resolves
+    its own home.
+    """
+    pinned = (env.get("HERMES_PROFILE") or "").strip()
+    if not pinned:
+        return
+    try:
+        from hermes_constants import profile_name_for_home
+        target_name = (profile_name_for_home(target_home) or "").strip()
+    except Exception:
+        return
+    if target_name != pinned:
+        env.pop("HERMES_PROFILE", None)
 
 
 def _inject_session_context_env(env: dict) -> None:
@@ -314,7 +342,7 @@ def _finalize_child_env(env: dict) -> dict:
     Kanban scrub. Returns the (possibly new) dict."""
     _apply_profile_home(env)
     _inject_session_context_env(env)
-    _export_session_profile_env(env)
+    _export_served_profile_env(env)
     _strip_hermes_owned_pythonpath_and_runtime_markers(env)
     _apply_windows_msys_bash_env_defaults(env)
     from agent.delegation_context import delegated_child_subprocess_env
@@ -350,14 +378,19 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
                          _plugin_terminal_env_strip_keys(), lambda p: p)
 
 
-def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str]:
-    """Sanitized env for the **non-terminal** spawn surface (browser, ACP/CLI executors,
-    computer-use driver, TUI Node host). Tier 1 (``_ALWAYS_STRIP_KEYS``, plugin keys,
-    force-prefixed hints, dynamic internal secrets) is always removed; Tier 2 (the
-    provider/tool blocklist) unless ``inherit_credentials`` — pass that **only** for
-    children that legitimately need LLM credentials (user-blessed claude/codex/gemini
-    CLI, TUI Node host). Terminal/execute_code use ``_sanitize_subprocess_env``."""
-    env = _scrub_credentials(os.environ.copy(), inherit_credentials=inherit_credentials)
+def hermes_subprocess_env(
+    *, inherit_credentials: bool = False, base_env: dict[str, str] | None = None
+) -> dict[str, str]:
+    """Sanitize a non-terminal child's environment (no skill passthrough).
+
+    Bot, GitHub and remote-compute secrets never pass through; provider/tool
+    credentials pass only with ``inherit_credentials=True`` for children that
+    need them. Callers needing one other secret should add only that key back.
+    ``base_env`` lets an already curated environment use the same policy.
+    Terminal and execute_code spawns use the skill-aware sanitizer instead.
+    """
+    env = dict(base_env) if base_env is not None else os.environ.copy()
+    env = _scrub_credentials(env, inherit_credentials=inherit_credentials)
     env.setdefault("PYTHONUTF8", "1")  # Windows UTF-8 safety for spawned processes
     return _finalize_child_env(env)
 
@@ -427,6 +460,9 @@ def served_profile_child_env(
     target = str(target_home or get_hermes_home_override() or "")
     if target:
         env["HERMES_HOME"] = target
+        # The child acts under THIS home: an identity exported for the spawning session must
+        # not outrank it (a child has no bound override, so current_profile_name reads the pin first).
+        _align_pin_with_target_home(env, target)
         apply_scratch_tmp_env(env)  # TMPDIR follows the served home, like HOME does
         if _is_routed_home(target):
             strip_launch_profile_env(env, target)
@@ -445,11 +481,30 @@ def served_profile_child_env(
     return env
 
 
+def host_gateway_child_env(
+    base: "Mapping[str, str] | None" = None,
+) -> dict[str, str]:
+    """Child env for the host gateway: the default profile's secrets, never the launcher's.
+
+    ``served_profile_child_env`` — not ``os.environ.copy()``. A profile-scoped parent
+    (desktop, fleet restart, detached watcher) must not donate its dotenv to the
+    multiplexer that owns the primary adapter map.
+    """
+    from hermes_constants import get_default_hermes_root
+    return served_profile_child_env(
+        base=base, target_home=get_default_hermes_root(), inherit_credentials=True,
+    )
+
+
 def _is_routed_home(target_home: "str | Path") -> bool:
-    """True when ``target_home`` is not the process's own (launch) home."""
-    from hermes_constants import get_process_hermes_home
+    """True when ``target_home`` is not the process's own (launch) home.
+
+    Same launch-home identity as ``agent.secret_scope.serves_routed_profile()``: under a host that
+    mirrors the served profile into ``HERMES_HOME``, the live env var names the served home and the
+    launch residue would never be stripped from that profile's child env."""
+    from hermes_constants import get_routing_process_hermes_home
     try:
-        return Path(target_home).resolve() != get_process_hermes_home().resolve()
+        return Path(target_home).resolve() != get_routing_process_hermes_home().resolve()
     except OSError:
         return True
 
@@ -488,62 +543,19 @@ def strip_launch_profile_env(env: dict, target_home: "str | Path | None" = None)
 
 
 # --- Shell discovery ---
-def _windows_bash_candidates(custom: "str | None") -> list[str]:
-    """Ordered bash.exe candidates on Windows: HERMES_GIT_BASH_PATH, our portable Git
-    under %LOCALAPPDATA%\\hermes\\git (PortableGit ``bin`` and MinGit ``usr\\bin``),
-    known Git-for-Windows dirs, then PATH last — ``shutil.which`` may return WSL's
-    bash, which fails silently on Windows paths."""
-    getenv = os.environ.get
-    lad = getenv("LOCALAPPDATA", "")
-    roots = [
-        lad and os.path.join(lad, "hermes", "git", "bin"),
-        lad and os.path.join(lad, "hermes", "git", "usr", "bin"),
-        os.path.join(getenv("ProgramFiles", r"C:\Program Files"), "Git", "bin"),
-        os.path.join(getenv("ProgramFiles(x86)", r"C:\Program Files (x86)"), "Git", "bin"),
-        lad and os.path.join(lad, "Programs", "Git", "bin"),
-    ]
-    raw = [custom or "", *(os.path.join(r, "bash.exe") for r in roots if r)]
-    candidates = list(dict.fromkeys(c for c in raw if c and os.path.isfile(c)))
-    found = shutil.which("bash")
-    if found and found not in candidates:
-        # Skip WSL/system bash.exe (C:\Windows\System32\bash.exe or
-        # WindowsApps bash.exe) — it is a stub launcher, not a usable shell.
-        norm = os.path.normpath(found).lower()
-        if "system32" in norm or "windowsapps" in norm:
-            logger.debug("Skipping WSL/system bash.exe at %s", found)
-        else:
-            candidates.append(found)
-    return candidates
-
-
 def _find_bash() -> str:
-    """Find bash for command execution."""
-    if not _IS_WINDOWS:
-        return (shutil.which("bash")
-                or next((p for p in ("/usr/bin/bash", "/bin/bash") if os.path.isfile(p)), None)
-                or os.environ.get("SHELL") or "/bin/sh")
-    custom = os.environ.get("HERMES_GIT_BASH_PATH")
-    candidates = _windows_bash_candidates(custom)
-    # First candidate that can actually start wins: a stale HERMES_GIT_BASH_PATH
-    # pointing at a broken install must not beat a healthy portable Git.
-    for candidate in candidates:
-        if _bash_starts(candidate):
-            if candidate != custom and custom and os.path.isfile(custom):
-                logger.warning(
-                    "HERMES_GIT_BASH_PATH=%s fails to start; using %s instead", custom, candidate)
-            return candidate
-    if candidates:
-        probe_details = "\n".join(
-            detail for c in candidates if (detail := _bash_probe_details_cache.get(c)))
-        if _mandatory_aslr_enabled() is True or _looks_like_msys_spawn_failure(probe_details):
-            raise RuntimeError(_git_bash_aslr_help(candidates[0], probe_details))
-        # Unknown failure class: return the first path so the caller sees the
-        # real bash error instead of a less useful "not found".
-        return candidates[0]
+    """Resolve the shell Hermes runs commands with. Owned by pm (the store
+    is the authority on bundled bash); this is a thin wrapper over
+    pm.shell() for callers that need a bash binary."""
+    import pm.shell
+
+    bash = pm.shell.bash()
+    if bash:
+        return bash
     raise RuntimeError(
-        "Git Bash not found. Hermes Agent requires Git for Windows on Windows.\n"
-        "Install it from: https://git-scm.com/download/win\n"
-        "Or set HERMES_GIT_BASH_PATH to your bash.exe location.")
+        "No shell found. Hermes needs bash (Git for Windows on Windows). "
+        "Run `hermes pm install` or reinstall the bundle."
+    )
 
 
 _git_bash_bin_dirs_cache: "list[str] | None" = None
@@ -648,12 +660,32 @@ def _prepend_hermes_bin_dir(existing_path: str) -> str:
 
 
 def _managed_runtime_path_entries() -> list[str]:
-    """Existing Hermes-managed runtime dirs: ``$HERMES_HOME/node`` (+``/bin``) and
-    ``$HERMES_HOME/bin`` (managed ``uv``). Per call, not cached: home is
-    profile-scoped and a managed tree can appear mid-process."""
+    """Return existing Hermes-managed runtime dirs for the terminal subshell PATH.
+
+    The terminal tool spawns a subshell whose PATH is the agent process's PATH
+    plus ``_SANE_PATH``. Neither carries the runtimes Hermes installs for
+    itself, so on a machine where Hermes provisioned its own toolchain a
+    command the agent runs resolves a system copy instead — or nothing at all:
+
+    - the pm store's node/npm entries — installed to satisfy the desktop and
+      browser toolchain. ``tools/browser_tool.py`` already does this for its own
+      subprocesses; the agent's shell deserves the same.
+    - ``$HERMES_HOME/bin`` — the managed ``uv``. ``install.sh`` writes it there
+      and nothing has ever put that directory on PATH, so an install whose only
+      uv is the managed one looks uv-less to both the agent and the model.
+
+    Resolved per call rather than cached in a module constant because
+    ``get_hermes_home()`` is profile-scoped and a managed runtime can appear
+    mid-process (a lazy pm install, a first browser install).
+    """
     try:
-        from hermes_constants import get_hermes_home, iter_hermes_node_dirs
-        return [str(d) for d in (*iter_hermes_node_dirs(), get_hermes_home() / "bin") if d.is_dir()]
+        import pm
+        from hermes_constants import get_hermes_home
+
+        env = pm.env_for("npm", base_env={"PATH": ""})
+        managed = [Path(d) for d in env.get("PATH", "").split(os.pathsep) if d]
+        candidates = [*managed, get_hermes_home() / "bin"]
+        return [str(d) for d in candidates if d.is_dir()]
     except Exception:
         return []
 
@@ -911,6 +943,10 @@ class LocalEnvironment(BaseEnvironment):
         overrides work. Windows: ``%TEMP%`` often has spaces that break unquoted bash,
         so always the HERMES_HOME cache dir with forward slashes (bash- and Python-valid)."""
         if _IS_WINDOWS:
+            for key in ("TERMINAL_TEMP_DIR", "TMPDIR"):
+                candidate = self.env.get(key) or os.environ.get(key)
+                if candidate and os.path.isabs(candidate) and os.path.isdir(candidate):
+                    return Path(candidate).as_posix()
             cache_dir = (_default_terminal_temp_dir()
                          or Path(tempfile.gettempdir()) / "hermes_terminal")
             cache_dir.mkdir(parents=True, exist_ok=True)
@@ -994,6 +1030,17 @@ class LocalEnvironment(BaseEnvironment):
         except OSError:  # ProcessLookupError / PermissionError included
             with contextlib.suppress(Exception):
                 proc.kill()
+
+    def _force_kill_process(self, proc):
+        """SIGKILL the whole group with no TERM grace or wait: the caller os._exit()s next."""
+        if _IS_WINDOWS:  # already a forced tree kill
+            return self._kill_process(proc)
+        with contextlib.suppress(OSError):
+            pgid = getattr(proc, "_hermes_pgid", None) or os.getpgid(proc.pid)
+            if pgid != os.getpgrp():  # never our own group (see _kill_process_group_posix)
+                os.killpg(pgid, signal.SIGKILL)  # windows-footgun: ok — POSIX only (_IS_WINDOWS returned above)
+        with contextlib.suppress(OSError):
+            proc.kill()
 
     def _extract_cwd_from_output(self, result: dict):
         """Base semantics plus: Git Bash ``pwd -P`` emits MSYS form on Windows —

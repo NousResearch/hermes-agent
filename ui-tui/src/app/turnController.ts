@@ -122,6 +122,34 @@ const finalTail = (finalText: string, segments: Msg[]) => {
   return tail
 }
 
+const interruptedText = (partial: string) => (partial ? `${partial}\n\n*[interrupted]*` : '*[interrupted]*')
+
+// What interruptTurn sealed into the transcript: `text` is the bubble it
+// appended (null when it only wrote a sys note), `partial` the reply text in it.
+export interface SealedInterrupt {
+  partial: string
+  text: null | string
+}
+
+// The bubble fix for an honoured interrupt: Ctrl+C seals the reply the moment
+// the key lands, but the agent keeps streaming until it notices the interrupt,
+// and it persists (and replays next turn) everything it streamed. The
+// interrupted message.complete carries that persisted partial; when it extends
+// what was sealed, the transcript takes it so the screen matches state.db.
+export const lateInterruptedReply = (
+  sealed: null | SealedInterrupt,
+  payload: MessageCompletePayload
+): null | { from: null | string; to: string } => {
+  const persisted = typeof payload.text === 'string' ? payload.text.trim() : ''
+  const shown = sealed?.partial.trimEnd() ?? ''
+
+  if (!sealed || payload.status !== 'interrupted' || persisted.length <= shown.length || !persisted.startsWith(shown)) {
+    return null
+  }
+
+  return { from: sealed.text, to: interruptedText(persisted) }
+}
+
 export interface InterruptDeps {
   appendMessage: (msg: Msg) => void
   gw: { request: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T> }
@@ -142,6 +170,7 @@ const clear = (t: Timer): null => {
 class TurnController {
   bufRef = ''
   interrupted = false
+  sealedInterrupt: null | SealedInterrupt = null
   lastStatusNote = ''
   persistedToolLabels = new Set<string>()
   persistSpawnTree?: (subagents: SubagentProgress[], sessionId: null | string) => Promise<void>
@@ -358,13 +387,13 @@ class TurnController {
     // otherwise emit a sys note so the transcript always records that the
     // turn was cancelled, even when only prior `segments` were preserved.
     if (partial || tools.length) {
-      appendMessage({
-        role: 'assistant',
-        text: partial ? `${partial}\n\n*[interrupted]*` : '*[interrupted]*',
-        ...(tools.length && { tools })
-      })
+      const text = interruptedText(partial)
+
+      appendMessage({ role: 'assistant', text, ...(tools.length && { tools }) })
+      this.sealedInterrupt = { partial, text }
     } else {
       sys('interrupted')
+      this.sealedInterrupt = { partial: '', text: null }
     }
 
     this.clearStatusTimer()
@@ -581,6 +610,9 @@ class TurnController {
   }
 
   recordError() {
+    // A failed turn discards the whole unsealed turn (flushed segments AND the
+    // streaming tail) — unlike recordMessageComplete, which must keep the tail
+    // (#61520), and interruptTurn, which preserves it as `partial`.
     this.idle()
     this.clearReasoning()
     this.clearStatusTimer()
@@ -604,7 +636,20 @@ class TurnController {
     // only when the gateway elected not to send any (#16391).
     // `text` is `str | JsonValue` on the wire (structured parts stay possible); only a string renders here.
     const wireText = typeof payload.text === 'string' ? payload.text : undefined
-    const rawText = (wireText ?? payload.rendered ?? this.bufRef).trimStart()
+    const completionText = wireText ?? payload.rendered
+    const rawText = (completionText ?? this.bufRef).trimStart()
+
+    // Text still in `this.bufRef` streamed after the last segment flush; `idle()`
+    // below would wipe it (#61520). Flush it as a segment only when the
+    // gateway's final text does not already carry it — otherwise the tail IS
+    // the answer and flushing would move the tool shelf/trail under it. Skipped
+    // when `completionText` is absent: `rawText` is then the buffer (#16391).
+    const tail = this.bufRef.trim()
+
+    if (tail && completionText != null && !completionText.includes(tail)) {
+      this.flushStreamingSegment()
+    }
+
     const split = splitReasoning(rawText)
     // Only dedupe segments AFTER the interim boundary — interim-sealed
     // segments are preserved even if the final text includes them.
@@ -671,6 +716,7 @@ class TurnController {
     }
 
     const wasInterrupted = this.interrupted
+    const interruptedReply = wasInterrupted ? lateInterruptedReply(this.sealedInterrupt, payload) : null
 
     // Archive the turn's spawn tree to history BEFORE idle() drops subagents
     // from turnState.  Lets /replay and the overlay's history nav pull up
@@ -692,13 +738,14 @@ class TurnController {
     this.persistedToolLabels.clear()
     this.bufRef = ''
     this.interrupted = false
+    this.sealedInterrupt = null
     patchTurnState({ activity: [], outcome: '' })
 
     // Real turn end: surface any notice held back while busy. Done after
     // idle() flips busy=false so applyNotice() reaches the visible slot.
     this.flushPendingNotice()
 
-    return { finalMessages, finalText, wasInterrupted }
+    return { finalMessages, finalText, interruptedReply, wasInterrupted }
   }
 
   recordMessageDelta({ text }: { rendered?: string | null; text?: string }) {
@@ -921,6 +968,7 @@ class TurnController {
     this.idle()
     this.bufRef = ''
     this.interrupted = false
+    this.sealedInterrupt = null
     this.lastStatusNote = ''
     this.activeReasoningText = ''
     this.pendingSegmentTools = []
@@ -987,6 +1035,7 @@ class TurnController {
     this.turnTools = []
     this.toolTokenAcc = 0
     this.interrupted = false
+    this.sealedInterrupt = null
     this.persistedToolLabels.clear()
     // "Flash and yield" notices clear when a new turn starts: a usage-band heads-up
     // (credits.usage, 50/75/90%) and the one-time "grant spent" transition

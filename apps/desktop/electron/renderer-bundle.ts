@@ -74,6 +74,24 @@ export interface RendererBundleDeps {
   existsSync?: (file: string) => boolean
 }
 
+/** The readable `index.html` candidates, deduped, in order. Probed by reading, never by stat:
+ * statting a path inside app.asar goes through Electron's asar shim, which constructs the
+ * deprecated fs.Stats and prints DEP0180 on every packaged launch (#96857). */
+export function presentRendererIndexes(
+  candidates: readonly string[],
+  { readFileSync = fs.readFileSync }: RendererBundleDeps = {}
+): string[] {
+  return [...new Set(candidates)].filter(candidate => {
+    try {
+      readFileSync(candidate, 'utf8')
+
+      return true
+    } catch {
+      return false
+    }
+  })
+}
+
 /** Vite's build-time graph avoids opening megabytes of lazy chunks at startup.
  * Only trust a manifest paired with this index's entry and preload generation.
  * Old builds, malformed manifests and interrupted replacements retain the

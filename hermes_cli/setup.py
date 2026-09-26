@@ -94,7 +94,7 @@ def print_noninteractive_setup_guidance(reason: str | None = None) -> None:
           "  hermes config set model.provider custom",
           "  hermes config set model.base_url http://localhost:8080/v1",
           "  hermes config set model.default your-model-name", None,
-          "Or set OPENROUTER_API_KEY / OPENAI_API_KEY in your environment.",
+          "Or set OPENROUTER_API_KEY (OpenRouter) / OPENAI_API_KEY (OpenAI) in your environment.",
           "Run 'hermes setup' in an interactive terminal to use the full wizard.", None)
 
 
@@ -367,7 +367,9 @@ def _print_banner(*lines: str) -> None:
     print(color("└─────────────────────────────────────────────────────────┘", Colors.MAGENTA))
 
 
-# ── Section 1: Model & Provider Configuration ──
+# =============================================================================
+# Section 1: Model & Provider Configuration
+# =============================================================================
 
 
 def setup_model_provider(config: dict, *, quick: bool = False):
@@ -399,7 +401,18 @@ def setup_model_provider(config: dict, *, quick: bool = False):
     save_config(config)
 
 
-# ── Section 3: Agent Settings ──
+# =============================================================================
+# Section 1b: TTS Provider Configuration
+
+
+def _check_espeak_ng() -> bool:
+    """Check if espeak-ng is installed."""
+    return shutil.which("espeak-ng") is not None or shutil.which("espeak") is not None
+
+
+# =============================================================================
+# Section 3: Agent Settings
+# =============================================================================
 
 
 def _apply_default_agent_settings(config: dict):
@@ -408,12 +421,11 @@ def _apply_default_agent_settings(config: dict):
     # config.yaml is authoritative for max_turns (the gateway bridges it into HERMES_MAX_ITERATIONS);
     # a stale .env entry silently shadowing it caused the 60-vs-500 bug, so drop it.
     remove_env_value("HERMES_MAX_ITERATIONS")
-    config.setdefault("display", {})["tool_progress"] = "all"
     config.setdefault("compression", {})["enabled"] = True
     config["compression"]["threshold"] = 0.50
     save_config(config)
     print_success("Applied recommended defaults:")
-    _info("  Max iterations: 150", "  Tool progress: all", "  Compression threshold: 0.50",
+    _info("  Max iterations: 150", "  Compression threshold: 0.50",
           "  Run `hermes setup agent` later to customize.")
 
 
@@ -464,14 +476,19 @@ def setup_agent_settings(config: dict):
 
     # ── Tool Progress Display ──
     _info("", *_TOOL_PROGRESS_HELP)
-    current_mode = cfg_get(config, "display", "tool_progress", default="all")
-    mode = prompt("Tool progress mode", current_mode)
-    if mode.lower() in {"off", "new", "all", "verbose", "log"}:
+    # Unset = each platform keeps its own default (CLI all, Telegram/Slack off). Enter on an unset key must keep
+    # that: a global display.tool_progress beats every platform tier (#121230).
+    current_mode = cfg_get(config, "display", "tool_progress")
+    mode = prompt("Tool progress mode" if current_mode else "Tool progress mode (Enter keeps per-platform defaults)",
+                  current_mode)
+    if not mode and not current_mode:
+        print_info("Keeping each platform's default tool progress")
+    elif mode.lower() in {"off", "new", "all", "verbose", "log"}:
         config.setdefault("display", {})["tool_progress"] = mode.lower()
         save_config(config)
         print_success(f"Tool progress set to: {mode.lower()}")
     else:
-        print_warning(f"Unknown mode '{mode}', keeping '{current_mode}'")
+        print_warning(f"Unknown mode '{mode}', keeping '{current_mode or 'per-platform defaults'}'")
 
     # ── Context Compression ──
     print_header("Context Compression")

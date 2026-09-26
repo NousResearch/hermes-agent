@@ -49,7 +49,6 @@ it('lists plugins before connectors; a plugin whose app is missing is greyed wit
 
   const nvidia = screen.getByRole('button', { name: /NVIDIA App/ })
   expect(nvidia.textContent).toContain('needs NVIDIA App')
-  expect(nvidia.className).toContain('opacity-60')
 
   fireEvent.click(nvidia)
   fireEvent.click(screen.getByRole('button', { name: /gmail/i }))

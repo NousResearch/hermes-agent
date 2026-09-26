@@ -603,10 +603,14 @@ class PluginContext:
     def inject_message(
         self, content: str, role: str = "user", *, session_key: str | None = None,
     ) -> bool:
-        """Inject a message into a CLI or gateway conversation (new turn if idle, interrupt if running).
-        Gateway injection needs an existing ``session_key`` plus
-        ``plugins.entries.<plugin_id>.allow_gateway_injection``; ``True`` means the gateway accepted the
-        request for async dispatch, not that delivery completed."""
+        """Inject a message into a CLI, Ink TUI/desktop, or messaging-gateway conversation.
+
+        CLI uses the attached REPL queues. Ink TUI and desktop use a separate injector
+        from the messaging gateway and queue onto the live session named by ``session_key``
+        (the durable key, not the ephemeral UI session id). Non-CLI injection needs that
+        ``session_key`` plus ``plugins.entries.<plugin_id>.allow_gateway_injection``.
+        ``True`` means a host accepted the request, not that the turn completed.
+        """
         cli = self._manager._cli_ref
         msg = content if role == "user" else f"[{role}] {content}"
         if cli is not None:
@@ -621,6 +625,20 @@ class PluginContext:
                            "plugins.entries.%s.allow_gateway_injection: true to allow it",
                            self.plugin_id, self.plugin_id)
             return False
+        # TUI/desktop host is a different slot. It accepts only when it owns this
+        # session_key; a miss falls through so a co-resident messaging gateway
+        # still receives its own keys. An exception fails closed — do not also
+        # hand the same text to the gateway.
+        if self._manager.has_tui_message_injector:
+            try:
+                if self._manager.inject_tui_message(
+                    session_key=session_key, content=msg, plugin_id=self.plugin_id,
+                ):
+                    return True
+            except Exception:
+                logger.warning("inject_message: TUI scheduling failed for plugin %s", self.plugin_id,
+                               exc_info=True)
+                return False
         if not self._manager.has_gateway_message_injector:
             logger.warning("inject_message: no live gateway is available")
             return False
@@ -1164,14 +1182,19 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
     """Central manager that discovers, loads, and invokes plugins."""
 
     def __init__(self, scope_key: Optional[str] = None) -> None:
-        # Home is captured immutably: unload may run from another profile context, but every
-        # inverse must target the registration's original scope.
-        self.scope_key = scope_key or hermes_home_key()
+        # Capture the home immutably. Unload can run from a different ambient
+        # profile context, but every inverse must target the registration's
+        # original scope.  Normalize through hermes_home_key so the scope
+        # matches the key the registries store under (normcase on Windows).
+        self.scope_key = hermes_home_key(scope_key)
         self.home_path = Path(self.scope_key)
         self._discovery_lock = threading.RLock()
         self._discovered: bool = False
         self._cli_ref = None  # Set by CLI after plugin discovery
         self._gateway_message_injector: tuple[object, Callable] | None = None
+        # Ink TUI / desktop. Must not alias ``_gateway_message_injector``: a live
+        # messaging gateway and a TUI in one process would otherwise clobber each other.
+        self._tui_message_injector: tuple[object, Callable] | None = None
         self._context_engine = None  # Set by a plugin via register_context_engine()
         # Manager-local registries keyed by name (see the matching ``PluginContext.register_*``):
         # plugins, hooks, middleware, CLI + slash commands, prompt sections, skills (qualified name ->
@@ -1255,6 +1278,25 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
     def inject_gateway_message(self, **kwargs: Any) -> bool:
         """Submit a plugin-triggered turn to the live gateway."""
         registered = self._gateway_message_injector
+        return registered is not None and bool(registered[1](**kwargs))
+
+    @property
+    def has_tui_message_injector(self) -> bool:
+        """Return whether a live Ink TUI / desktop host can accept plugin-triggered turns."""
+        return self._tui_message_injector is not None
+
+    def set_tui_message_injector(self, owner: object, injector: Callable[..., bool]) -> None:
+        """Publish a live TUI/desktop injector. Does not touch the messaging-gateway slot."""
+        self._tui_message_injector = (owner, injector)
+
+    def clear_tui_message_injector(self, owner: object) -> None:
+        """Clear the TUI injector only when it still belongs to ``owner``."""
+        if self._tui_message_injector is not None and self._tui_message_injector[0] is owner:
+            self._tui_message_injector = None
+
+    def inject_tui_message(self, **kwargs: Any) -> bool:
+        """Submit a plugin-triggered turn to the live TUI/desktop host."""
+        registered = self._tui_message_injector
         return registered is not None and bool(registered[1](**kwargs))
 
     def discover_and_load(self, force: bool = False) -> None:
@@ -1562,6 +1604,12 @@ _plugin_manager: Optional[PluginManager] = None
 _plugin_managers_by_home: Dict[Path, PluginManager] = {}
 _plugin_managers_lock = threading.RLock()
 
+# Process-wide Ink TUI / desktop host. Not the messaging-gateway slot. Stamped onto
+# each profile's manager so a multiplexed desktop process does not drop injects
+# aimed at a non-launch profile. ``None`` until the TUI/desktop process installs it.
+_published_tui_message_injector: tuple[object, Callable] | None = None
+_published_tui_host_lock = threading.Lock()
+
 
 def _plugin_home_key() -> Path:
     """Resolved active Hermes home — the key for per-profile plugin managers (plugins capture the
@@ -1588,6 +1636,45 @@ def _clear_plugin_submodules(manager: Optional[PluginManager]) -> None:
                 _BARE_MODULE_SCOPE.pop(module_name, None)
 
 
+def _known_plugin_managers() -> list[PluginManager]:
+    with _plugin_managers_lock:
+        managers = list(dict.fromkeys(_plugin_managers_by_home.values()))
+        if _plugin_manager is not None and _plugin_manager not in managers:
+            managers.append(_plugin_manager)
+    return managers
+
+
+def publish_tui_message_host(owner: object, injector: Callable[..., bool]) -> None:
+    """Remember the process TUI/desktop host and stamp managers that already exist.
+
+    Does not call ``set_gateway_message_injector``.
+    """
+    global _published_tui_message_injector
+    with _published_tui_host_lock:
+        _published_tui_message_injector = (owner, injector)
+    for manager in _known_plugin_managers():
+        manager.set_tui_message_injector(owner, injector)
+
+
+def clear_published_tui_message_host(owner: object) -> None:
+    """Forget the process TUI host and clear it where this owner still holds the slot."""
+    global _published_tui_message_injector
+    with _published_tui_host_lock:
+        if (_published_tui_message_injector is not None
+                and _published_tui_message_injector[0] is owner):
+            _published_tui_message_injector = None
+    for manager in _known_plugin_managers():
+        manager.clear_tui_message_injector(owner)
+
+
+def _attach_published_tui_host(manager: PluginManager) -> None:
+    """Give a newly resolved manager the process TUI host, if one is installed and the slot is empty."""
+    with _published_tui_host_lock:
+        host = _published_tui_message_injector
+    if host is not None and manager._tui_message_injector is None:
+        manager._tui_message_injector = host
+
+
 def get_plugin_manager() -> PluginManager:
     """Return the plugin manager for the active Hermes profile/home (cached per resolved home; a
     profile switch gets its own manager and plugin submodules)."""
@@ -1598,18 +1685,20 @@ def get_plugin_manager() -> PluginManager:
         # keyed cache doesn't know about at all.
         if _plugin_manager is not None and _plugin_manager not in _plugin_managers_by_home.values():
             _plugin_managers_by_home[current_home] = _plugin_manager
-            return _plugin_manager
-        manager = _plugin_managers_by_home.get(current_home)
-        if manager is None:
-            manager = PluginManager(scope_key=hermes_home_key(current_home))
-            _plugin_managers_by_home[current_home] = manager
-        _plugin_manager = manager
-        return manager
+            manager = _plugin_manager
+        else:
+            manager = _plugin_managers_by_home.get(current_home)
+            if manager is None:
+                manager = PluginManager(scope_key=hermes_home_key(current_home))
+                _plugin_managers_by_home[current_home] = manager
+            _plugin_manager = manager
+    _attach_published_tui_host(manager)
+    return manager
 
 
 def _reset_plugin_managers_for_tests() -> None:
     """Test-only: drop every cached manager and its submodules for a fully clean slate."""
-    global _plugin_manager
+    global _plugin_manager, _published_tui_message_injector
     with _plugin_managers_lock:
         managers = list(dict.fromkeys(_plugin_managers_by_home.values()))
         if _plugin_manager is not None and _plugin_manager not in managers:
@@ -1622,6 +1711,8 @@ def _reset_plugin_managers_for_tests() -> None:
                 logger.debug("test plugin-manager unload failed", exc_info=True)
         _plugin_managers_by_home.clear()
         _plugin_manager = None
+    with _published_tui_host_lock:
+        _published_tui_message_injector = None
     # Dashboard-auth providers are persistent and survive a routine unload, so the clean-slate
     # reset must clear that process-global registry explicitly or a test's provider leaks.
     try:
@@ -1707,7 +1798,7 @@ def _nowait_plugin_set(cache_field: str, live: Callable[[PluginManager], "set[st
         return live(manager)
     if in_flight:
         with suppress(Exception):
-            blob = json.loads(_plugin_toolset_keys_cache_path().read_text(encoding="utf-8"))
+            blob = json.loads(_plugin_toolset_keys_cache_path().read_text(encoding="utf-8-sig"))
             values = blob.get(cache_field) if isinstance(blob, dict) else None
             if isinstance(values, list) and all(isinstance(v, str) for v in values):
                 return set(values)

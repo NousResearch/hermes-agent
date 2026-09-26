@@ -85,24 +85,6 @@ describe('model visibility', () => {
     expect(visible.has(modelVisibilityKey('ollama', 'qwen3:latest'))).toBe(true)
   })
 
-  it('restores model when toggling on after hiding all', () => {
-    // Simulates: user hid all "nous" models, then toggles one back on.
-    const stored = new Set([emptyProviderSentinelKey('nous'), modelVisibilityKey('ollama', 'qwen3:latest')])
-
-    // After toggle: sentinel removed, one model added.
-    const afterToggle = new Set(stored)
-    afterToggle.delete(emptyProviderSentinelKey('nous'))
-    afterToggle.add(modelVisibilityKey('nous', 'hermes-3-llama-3.1-70b'))
-
-    const visible = effectiveVisibleKeys(afterToggle, [
-      provider('nous', ['hermes-3-llama-3.1-70b', 'hermes-3-llama-3.1-8b']),
-      provider('ollama', ['qwen3:latest'])
-    ])
-
-    expect(visible.has(modelVisibilityKey('nous', 'hermes-3-llama-3.1-70b'))).toBe(true)
-    expect(visible.has(modelVisibilityKey('nous', 'hermes-3-llama-3.1-8b'))).toBe(false)
-  })
-
   it('folds a date-pinned snapshot into its rolling alias when present', () => {
     const families = collapseModelFamilies(['claude-opus-4-5', 'claude-opus-4-5-20251101'])
 

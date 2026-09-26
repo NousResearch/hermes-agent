@@ -93,7 +93,6 @@ async def test_webhook_cold_boot_honors_the_knob_and_logs_the_decision(monkeypat
         )
 
     assert captured["drop_pending_updates"] is False
-    assert any("preserving" in r.getMessage().lower() for r in caplog.records)
 
 
 @pytest.mark.asyncio

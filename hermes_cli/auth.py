@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+from pm import install_hint
 import json
 import logging
 import os
@@ -325,6 +326,19 @@ KNOWN_PROVIDER_KEY_PREFIXES: Dict[str, tuple] = {
 }
 
 
+def _matches_key_prefix(provider_id: str, val: str) -> bool:
+    """True when *val* starts with one of *provider_id*'s declared key prefixes (False when the
+    provider declares none)."""
+    return val.startswith(KNOWN_PROVIDER_KEY_PREFIXES.get(provider_id, ()))
+
+
+def looks_like_openrouter_key(value: Any) -> bool:
+    """True when *value* carries an OpenRouter key prefix. OPENAI_API_KEY is a legacy home for an
+    OpenRouter key, so only a value shaped like one may be read as an OpenRouter credential: a real
+    OpenAI key must never be auto-routed to, or sent to, openrouter.ai."""
+    return _matches_key_prefix("openrouter", str(value or "").strip())
+
+
 def _usable_declared_secret(provider_id: str, value: Any, source: str) -> Optional[str]:
     """*value* stripped when it is a usable, prefix-valid secret; None (after warning on a provable
     prefix mismatch, so it never shadows a later credential source) otherwise. Providers without a
@@ -333,7 +347,7 @@ def _usable_declared_secret(provider_id: str, value: Any, source: str) -> Option
     if not has_usable_secret(val):
         return None
     prefixes = KNOWN_PROVIDER_KEY_PREFIXES.get(provider_id)
-    if prefixes and not any(val.startswith(p) for p in prefixes):
+    if prefixes and not _matches_key_prefix(provider_id, val):
         logger.warning(
             "Ignoring %s for provider %r: value does not match the expected key "
             "prefix (%s). Falling back to the next credential source. Fix or "
@@ -522,7 +536,7 @@ def _load_global_auth_store() -> Dict[str, Any]:
     if os.environ.get("PYTEST_CURRENT_TEST") and os.environ.get("HOME"):
         real_root = Path(os.environ["HOME"]) / ".hermes" / "auth.json"
         try:
-            if global_path.resolve(strict=False) == real_root.resolve(strict=False):
+            if os.path.normcase(os.path.abspath(global_path)) == os.path.normcase(os.path.abspath(real_root)):
                 _global_auth_store_cache = None
                 return {}
         except Exception:
@@ -897,6 +911,67 @@ def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
 _POOL_STATUS_FIELDS = (
     "last_status", "last_status_at", "last_error_code", "last_error_reason", "last_error_message",
     "last_error_reset_at", "status_cleared_at")
+_POOL_TOKEN_GENERATION_FIELDS = (
+    "access_token", "refresh_token", "expires_at", "expires_at_ms", "expires_in", "obtained_at",
+    "last_refresh", "agent_key", "agent_key_expires_at", "agent_key_expires_in", "agent_key_id",
+    "agent_key_obtained_at", "agent_key_reused",
+    # Refresh-coupled metadata: a Nous refresh rewrites scope and the validated
+    # inference route together with the new pair, so they travel with it.
+    "scope", "inference_base_url",
+)
+
+
+def _credential_token_pair(row: Any) -> Tuple[Any, Any]:
+    if not isinstance(row, dict):
+        return (None, None)
+    return row.get("access_token"), row.get("refresh_token")
+
+
+def _token_pairs_by_id(rows: Iterable[Any]) -> Dict[str, Tuple[Any, Any]]:
+    """Token-generation base per row id, INCLUDING ``(None, None)`` for token-less rows.
+
+    A blank base is a known generation ("no pair when we last looked"), so a peer that
+    later lands a pair on that row is kept by ``_merge_pool_row_generation`` on every
+    flush alike; dropping blank bases would make the first and later flushes disagree."""
+    return {row_id: _credential_token_pair(row) for row_id, row in _entry_ids(rows).items()}
+
+
+def _merge_pool_row_generation(
+    entry: Dict[str, Any],
+    disk_entry: Optional[Dict[str, Any]],
+    provider_id: str,
+    *,
+    base_pair: Optional[Tuple[Any, Any]] = None,
+    status_cleared: bool = False,
+) -> Dict[str, Any]:
+    """Keep a newer on-disk token generation authoritative during stale writes.
+
+    Only a terminal auth verdict (``last_status == dead``) is scoped to the token pair
+    it was observed on; account-wide cooldowns (402 billing, 429 throttle) from the
+    stale writer still apply to the rotated pair and go through the ordinary recency
+    merge in ``_merge_disk_cooldown_state``."""
+    from agent.credential_pool import STATUS_DEAD
+
+    merge_disk = None if status_cleared else disk_entry
+    disk_pair = _credential_token_pair(disk_entry)
+    if base_pair is None or not any(disk_pair) or disk_pair == base_pair:
+        return _merge_disk_cooldown_state(entry, merge_disk, provider_id)
+
+    merged = dict(entry)
+
+    def _take_from_disk(fields: Iterable[str]) -> None:
+        # Absent-on-disk fields are popped, not set to None: a None would make the
+        # UPDATE-only root merge see a changed row and force a spurious save.
+        for field in fields:
+            if field in disk_entry:
+                merged[field] = disk_entry[field]
+            else:
+                merged.pop(field, None)
+
+    _take_from_disk(_POOL_TOKEN_GENERATION_FIELDS)
+    if not status_cleared and entry.get("last_status") == STATUS_DEAD:
+        _take_from_disk((*_POOL_STATUS_FIELDS, "failure_reason"))
+    return _merge_disk_cooldown_state(merged, merge_disk, provider_id)
 
 
 def _merge_disk_cooldown_state(
@@ -957,7 +1032,8 @@ def write_credential_pool(
     provider_id: str, entries: List[Dict[str, Any]], *,
     removed_ids: Optional[Iterable[str]] = None,
     status_cleared_ids: Optional[Iterable[str]] = None,
-) -> Path:
+    token_bases: Optional[Dict[str, Tuple[Any, Any]]] = None,
+) -> List[Dict[str, Any]]:
     """Persist one provider's credential pool under auth.json.
 
     Final disk-boundary sanitizer for borrowed credentials (callers may pass raw dicts). Entries on
@@ -967,6 +1043,7 @@ def write_credential_pool(
     recency merge, which would otherwise read their cleared ``last_status_at`` (None ->
     epoch 0) as a stale snapshot and copy a still-binding cooldown back."""
     removed = {rid for rid in (removed_ids or ()) if rid}
+    bases = token_bases or {}
     with _auth_store_lock():
         auth_store = _load_auth_store()
         pool = _store_section(auth_store, "credential_pool")
@@ -979,8 +1056,10 @@ def write_credential_pool(
         new_ids = set(_entry_ids(sanitized))
         status_cleared = {cid for cid in (status_cleared_ids or ()) if cid}
         merged: List[Dict[str, Any]] = [
-            _merge_disk_cooldown_state(
-                e, None if e.get("id") in status_cleared else existing_by_id.get(e.get("id")), provider_id,
+            _merge_pool_row_generation(
+                e, existing_by_id.get(e.get("id")), provider_id,
+                base_pair=bases.get(e.get("id")),
+                status_cleared=e.get("id") in status_cleared,
             )
             if isinstance(e, dict) else e
             for e in sanitized]
@@ -989,7 +1068,8 @@ def write_credential_pool(
             if disk_id and disk_id not in new_ids and disk_id not in removed:
                 merged.append(sanitize_borrowed_credential_payload(disk_entry, provider_id))
         pool[provider_id] = merged
-        return _save_auth_store(auth_store)
+        _save_auth_store(auth_store)
+        return merged
 
 
 def _suppressed_source_list(suppressed: Dict[str, Any], provider_id: str) -> Optional[List[str]]:
@@ -1279,7 +1359,7 @@ def _refuse_env_adoption_if_config_corrupt() -> None:
     silently adopt the PAID openrouter provider over whatever the broken config really names.
     Fires ONLY on the auto path and clears itself once the file parses again."""
     try:
-        from hermes_cli.config import get_active_config_parse_failure
+        from hermes_cli.config_read_errors import get_active_config_parse_failure
         err = get_active_config_parse_failure()
         if not err:
             return
@@ -1331,6 +1411,7 @@ _PROVIDER_ALIASES: Dict[str, str] = {
     "lmstudio": "lmstudio", "lm-studio": "lmstudio", "lm_studio": "lmstudio",
     "chatgpt": "openai-codex", "chatgpt-codex": "openai-codex",
     # Local server aliases — route through the generic custom provider
+    "local": "custom",
     "ollama": "custom", "ollama_cloud": "ollama-cloud",
     "vllm": "custom", "llamacpp": "custom",
     "llama.cpp": "custom", "llama-cpp": "custom"}
@@ -1374,14 +1455,19 @@ def _openrouter_auto_detected(scoped_key_env: Callable[[str], str]) -> bool:
     """True when an OpenRouter credential exists via env key or the credential pool (a key added via
     `hermes auth add openrouter` has no env var; without the pool check it is invisible to
     auto-detection and requests go out with no Authorization header)."""
-    if any(has_usable_secret(scoped_key_env(v)) for v in ("OPENAI_API_KEY", "OPENROUTER_API_KEY")):
+    if has_usable_secret(scoped_key_env("OPENROUTER_API_KEY")):
+        return True
+    # OPENAI_API_KEY counts only when it holds an OpenRouter-shaped key (legacy home); a real OpenAI
+    # key falls through to the ``openai-api`` registry row instead of being shipped to OpenRouter.
+    legacy_key = scoped_key_env("OPENAI_API_KEY")
+    if has_usable_secret(legacy_key) and looks_like_openrouter_key(legacy_key):
         return True
     try:
         # Auto-detect an OpenRouter credential added via `hermes auth add openrouter` (manual pool entry, no
         # env var). Without this, a key that only lives in the credential pool is invisible to
         # auto-detection — the user sees `hermes auth list` showing the credential while requests go out
         # with no Authorization header ("HTTP 401: Missing Authentication header"). The env-var check above
-        # only covers keys exported as OPENROUTER_API_KEY / OPENAI_API_KEY. See issue #42130.
+        # only covers OPENROUTER_API_KEY and an sk-or- key in OPENAI_API_KEY. See issue #42130.
         from agent.credential_pool import load_pool as _load_pool
         return bool(_load_pool("openrouter").has_credentials())
     except Exception as e:
@@ -1485,8 +1571,8 @@ def resolve_provider(
     """Determine which inference provider to use.
 
     "auto" priority (explicit intent beats a stale OAuth login): 1. CLI api_key/base_url ->
-    "openrouter"; 2. config.yaml ``model.provider``; 3. OPENAI_API_KEY / OPENROUTER_API_KEY ->
-    "openrouter"; 4. OpenRouter pool; 5. provider env keys; 6. auth.json ``active_provider``;
+    "openrouter"; 2. config.yaml ``model.provider``; 3. OPENROUTER_API_KEY (or an sk-or- key in
+    OPENAI_API_KEY) -> "openrouter"; 4. OpenRouter pool; 5. provider env keys; 6. auth.json ``active_provider``;
     7. Nous free tier when it is on and its identity exists (never created here);
     8. AWS Bedrock chain; 9. AuthError(no_provider_configured).
 
@@ -1880,10 +1966,15 @@ def get_codex_auth_status() -> Dict[str, Any]:
     """Status snapshot for Codex auth (pool first, then legacy provider state).
 
     Read-only by contract: status/doctor must never adopt, refresh or persist a credential (#68004)."""
-    return _pool_first_oauth_status(
+    status = _pool_first_oauth_status(
         "openai-codex", is_expiring=_codex_access_token_is_expiring, auth_mode="chatgpt",
         resolve=lambda: resolve_codex_runtime_credentials(read_only=True),
         on_pool_miss=_codex_pool_rate_limited_status)
+    if str(status.get("source") or "").startswith("pool:"):
+        # Pool rows keep the canonical URL; the chat route may send this key to model.base_url.
+        from hermes_cli.auth_codex import _codex_pool_route_base_url
+        status["base_url"] = _codex_pool_route_base_url(status.get("base_url"))
+    return status
 
 
 def get_xai_oauth_auth_status() -> Dict[str, Any]:
@@ -1957,7 +2048,7 @@ def _copilot_acp_auth_evidence() -> tuple[bool, Optional[str]]:
     try:
         cli_config = os.path.expanduser("~/.copilot/config.json")
         if os.path.isfile(cli_config):
-            with open(cli_config, "r", encoding="utf-8", errors="ignore") as fh:
+            with open(cli_config, "r", encoding="utf-8-sig", errors="ignore") as fh:
                 raw = "\n".join(
                     line for line in fh.read().splitlines() if not line.lstrip().startswith("//"))
             tokens = (json.loads(raw) if raw.strip() else {}).get("copilotTokens")
@@ -2089,9 +2180,9 @@ def _get_azure_foundry_auth_status() -> Dict[str, Any]:
                     "azure-identity is installed; live credential validation "
                     "is skipped here. Run `hermes doctor` to verify token acquisition."
                 ) if installed else (
-                    "azure-identity not installed. Install with: "
-                    "pip install azure-identity  (or rely on Hermes' "
-                    "lazy-install at first use)."))
+                    "azure-identity not installed. From the Hermes environment, run: "
+                    f"{install_hint('azure-identity')}. "
+                    "Then restart Hermes."))
         except Exception as exc:
             info["logged_in"] = False
             info["error"] = f"azure-identity check failed: {exc}"

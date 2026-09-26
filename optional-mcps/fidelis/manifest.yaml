@@ -1,0 +1,55 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: fidelis
+description: Local-first, zero-LLM memory recall (BM25 + dense + RRF) for Codex, Claude Code, and other agents.
+source: https://github.com/hermes-labs-ai/fidelis
+
+# Published to PyPI as `fidelis-memory` (the bare `fidelis` PyPI name belongs to
+# an unrelated project — see the package's own README). `uvx --from` fetches and
+# runs the pinned release without a local clone; the console-script entry point
+# inside the package is also named `fidelis`. No install: block needed — uvx IS
+# the install, same convention as npx-launched stdio servers elsewhere in this
+# catalog.
+transport:
+  type: stdio
+  command: uvx
+  args:
+    - "--from"
+    - "fidelis-memory==0.2.0"
+    - "fidelis"
+    - "mcp"
+    - "serve"
+
+# No credentials required: the four tools below only need a locally reachable
+# `fidelis-server` (see post_install) — no API key or OAuth token.
+auth:
+  type: none
+
+post_install: |
+  Fidelis exposes 4 read-only tools (fidelis_recall, fidelis_query,
+  fidelis_health, fidelis_orient), all enabled by default. Recall, query, and
+  orientation can return locally stored memories to the model in the current
+  Hermes session. Install them only where that matches your host and model
+  data-sharing policy, or prune them with `hermes mcp configure fidelis`.
+
+  MCP initialization and tool listing work without Ollama. Retrieval and
+  ingestion still require the separate local `fidelis-server` process
+  (default http://localhost:19420) and its local store/Ollama dependencies
+  (default http://localhost:11434, with `nomic-embed-text` pulled). This MCP
+  entry does not start or manage them. Without a reachable `fidelis-server`,
+  tool calls return an honest unavailable-service result instead of failing
+  the MCP connection.
+
+  One-time setup on the host running Hermes:
+    ollama serve &
+    ollama pull nomic-embed-text
+    python3 -m pip install "fidelis-memory==0.2.0"
+    fidelis init      # installs a launchd (macOS) / systemd --user (Linux)
+                       # background service for fidelis-server
+
+  Start a new Hermes session after both are up to use the tools.
+
+  Fidelis is marked pre-release by its maintainers (Hermes Labs); review its
+  README before relying on it for anything you can't afford to lose.

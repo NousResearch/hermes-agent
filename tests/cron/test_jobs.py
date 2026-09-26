@@ -1977,3 +1977,72 @@ class TestEnsureCronDirWidened:
         with pytest.raises(FileNotFoundError):
             jobs._ensure_cron_dir(scripts_dir)
         assert not deleted_home.exists()
+
+
+class TestRecurringToOneshotBudgetReset:
+    """#124222: a recurring job that already ran, re-armed as a one-shot via
+    update, must fire once at the new time — never be deleted as over-budget.
+    """
+
+    def test_update_resets_completed_for_recurring_to_oneshot(self, tmp_cron_dir):
+        from cron.jobs import create_job, mark_job_run, update_job
+
+        job = create_job(prompt="daily digest", schedule="every 1h")
+        assert job["repeat"]["times"] is None
+        mark_job_run(job["id"], success=True)
+
+        updated = update_job(job["id"], {"schedule": "in 5m"})
+        assert updated["schedule"]["kind"] == "once"
+        assert updated["repeat"]["times"] == 1
+        # The re-armed one-shot must get a fresh budget; keeping completed=1
+        # makes the due scan delete the job without ever firing it.
+        assert updated["repeat"]["completed"] == 0
+
+    def test_rearmed_oneshot_is_due_and_still_present(self, tmp_cron_dir, monkeypatch):
+        import cron.jobs as J
+        from datetime import timedelta
+
+        job = J.create_job(prompt="daily digest", schedule="every 1h")
+        J.mark_job_run(job["id"], success=True)
+        updated = J.update_job(job["id"], {"schedule": "in 5m"})
+        assert updated["repeat"]["completed"] == 0
+
+        later = J._hermes_now() + timedelta(minutes=5, seconds=10)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: later)
+        due = J.get_due_jobs()
+        assert [j["id"] for j in due] == [job["id"]]
+        assert J.get_job(job["id"]) is not None
+
+    def test_explicit_repeat_still_wins(self, tmp_cron_dir):
+        """An explicit repeat in the same update keeps overriding the default."""
+        from cron.jobs import create_job, mark_job_run, update_job
+
+        job = create_job(prompt="digest", schedule="every 1h")
+        mark_job_run(job["id"], success=True)
+        updated = update_job(job["id"], {"schedule": "in 5m", "repeat": 3})
+        assert updated["repeat"]["times"] == 3
+        # Explicit budget also implies a fresh completed counter for the new kind.
+        assert updated["repeat"]["completed"] == 0
+
+    def test_cronjob_tool_with_repeat_resets_completed(self, tmp_cron_dir, monkeypatch):
+        """The cronjob tool (and `hermes cron edit --repeat`, which routes here) copies the
+        STORED counter into the update; a flip to once must still start a fresh budget."""
+        import json
+        from datetime import timedelta
+
+        import cron.jobs as J
+        from tools.cronjob_tools import cronjob
+
+        job = J.create_job(prompt="water the plants", schedule="every 1h")
+        for _ in range(3):
+            J.mark_job_run(job["id"], success=True)
+        result = json.loads(cronjob(action="update", job_id=job["id"], schedule="in 5m", repeat=1))
+        assert result["success"], result
+        updated = J.get_job(job["id"])
+        assert updated is not None
+        assert updated["repeat"] == {"times": 1, "completed": 0}
+
+        later = J._hermes_now() + timedelta(minutes=5, seconds=10)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: later)
+        assert job["id"] in {j["id"] for j in J.get_due_jobs()}
+        assert J.get_job(job["id"]) is not None

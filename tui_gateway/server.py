@@ -1031,7 +1031,7 @@ def _start_session_services(sid: str, key: str, current: dict) -> None:
     with _sessions_lock:
         if (rec := _sessions.get(sid)) is not None:
             rec["_notif_stop"] = _start_notification_poller(sid, rec)
-    _notify_session_boundary("on_session_reset", key, _session_source(current))
+    _notify_session_boundary("on_session_reset", key, _session_source(current), session_key=key, new_session_id=sid)
 
 
 def _await_resume_history(sid: str, current: dict) -> bool:

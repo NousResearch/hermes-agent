@@ -600,6 +600,24 @@ class CLILoopsMixin:
             except Exception:
                 pass
 
+    def _maybe_fire_wake(self) -> None:
+        """Idle hook run from process_loop: fire an armed one-shot wake deadline (#122444)
+        so the loop re-enters without user input. One-shot: consumed on fire. Throttled
+        like the loop tick - the idle poll runs at ~10 Hz and every check reads the DB."""
+        now = time.time()
+        if now - getattr(self, "_last_wake_check", 0.0) < 2.0:
+            return
+        self._last_wake_check = now
+        try:
+            if not self._pending_input.empty():
+                return
+            from hermes_cli.wake import due_wake_prompt
+            prompt = due_wake_prompt(getattr(self, "session_id", "") or "", now)
+            if prompt:
+                self._pending_input.put(prompt)
+        except Exception as exc:
+            logging.debug("wake fire check failed: %s", exc)
+
     def _last_assistant_response_text(self) -> str:
         """Text of the most recent assistant message ("" when none); multimodal parts are flattened."""
         try:

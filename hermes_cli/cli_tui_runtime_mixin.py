@@ -54,6 +54,7 @@ class CLITuiRuntimeMixin:
             lambda: self._drain_process_notifications("cli-idle"),
             self._maybe_fire_loop_tick,
             self._maybe_resume_parked_goal,
+            self._maybe_fire_wake,
         ):
             with suppress(Exception):
                 step()

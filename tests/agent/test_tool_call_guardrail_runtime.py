@@ -184,6 +184,26 @@ def test_sequential_after_call_appends_guidance_to_tool_result_without_extra_mes
     assert "repeated_exact_failure_warning" in messages[0]["content"]
 
 
+def test_post_compaction_read_warning_guides_model_to_write():
+    agent = _make_agent("read_file")
+    args = {"path": "src/app.py"}
+    guardrails = getattr(agent, "_tool_guardrails")
+    guardrails.note_compaction()
+    guardrails.after_call("read_file", args, "same file contents", failed=False)
+
+    tc = _mock_tool_call("read_file", json.dumps(args), "c-reanchor")
+    msg = SimpleNamespace(content="", tool_calls=[tc])
+    messages = []
+
+    with patch("model_tools.handle_function_call", return_value="same file contents"):
+        agent._execute_tool_calls_sequential(msg, messages, "task-1")
+
+    content = messages[0]["content"]
+    assert "idempotent_no_progress_warning" in content
+    assert "proceed to the write/update step" in content
+    assert "change the query" not in content
+
+
 def test_same_tool_failure_warning_tells_model_to_recover_with_tools():
     agent = _make_agent("terminal")
     guardrails = getattr(agent, "_tool_guardrails")

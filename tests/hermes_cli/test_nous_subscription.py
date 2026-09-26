@@ -1,5 +1,6 @@
 """Tests for Nous subscription feature detection."""
 
+import os
 import shutil
 import sys
 
@@ -503,17 +504,27 @@ def test_has_agent_browser_import_failure_does_not_run_another_resolver(monkeypa
 
 
 class _FakePluginImageProvider(ImageGenProvider):
-    """Registry provider carrying one picker row plus one required env var."""
+    """Registry provider carrying one picker row plus one required env var.
 
-    def __init__(self, name: str, schema_name: str, key: str):
-        self._name, self._schema_name, self._key = name, schema_name, key
+    ``available`` models the backend's OWN predicate — the one the generation tool's ``check_fn``
+    calls — defaulting to ``None``, i.e. the realistic "my declared key is set" shape. Pass
+    ``True``/``False`` to make it diverge from the row's env vars (managed-gateway fallback,
+    ``key_env`` override), or an exception instance for a backend whose probe raises (missing SDK).
+    """
+
+    def __init__(self, name: str, schema_name: str, key: str, available: object = None):
+        self._name, self._schema_name, self._key, self._available = name, schema_name, key, available
 
     @property
     def name(self) -> str:
         return self._name
 
     def is_available(self) -> bool:
-        return True
+        if isinstance(self._available, BaseException):
+            raise self._available
+        if callable(self._available):
+            return bool(self._available())
+        return bool(self._available) if self._available is not None else bool(os.environ.get(self._key))
 
     def list_models(self):
         return []
@@ -535,15 +546,19 @@ class _FakePluginImageProvider(ImageGenProvider):
 class _FakePluginVideoProvider(VideoGenProvider):
     """Same shape for the video_gen registry."""
 
-    def __init__(self, name: str, schema_name: str, key: str):
-        self._name, self._schema_name, self._key = name, schema_name, key
+    def __init__(self, name: str, schema_name: str, key: str, available: object = None):
+        self._name, self._schema_name, self._key, self._available = name, schema_name, key, available
 
     @property
     def name(self) -> str:
         return self._name
 
     def is_available(self) -> bool:
-        return True
+        if isinstance(self._available, BaseException):
+            raise self._available
+        if callable(self._available):
+            return bool(self._available())
+        return bool(self._available) if self._available is not None else bool(os.environ.get(self._key))
 
     def list_models(self):
         return []
@@ -631,7 +646,7 @@ def test_plugin_backed_gen_backends_report_configured_with_their_own_name(monkey
 
 
 def test_plugin_backed_gen_backend_without_its_key_is_not_configured(monkeypatch, tmp_path):
-    """Readiness comes from the plugin's own env vars, not FAL's key."""
+    """Readiness comes from the plugin's own backend, not FAL's key."""
     _register_plugin_backend()
     _logged_out_env(monkeypatch, tmp_path)
 
@@ -641,6 +656,76 @@ def test_plugin_backed_gen_backend_without_its_key_is_not_configured(monkeypatch
     assert features.image_gen.active is False
     # …and the selected backend is still named, instead of being mislabelled "FAL".
     assert features.image_gen.current_provider == _PLUGIN_LABEL
+
+
+def test_ready_looking_row_is_not_advertised_when_the_backend_says_unavailable(monkeypatch, tmp_path):
+    """The row's declared env vars are the picker's question, not the tool's: a backend that
+    declares a key (set) but whose own ``is_available()`` says no must not be reported as
+    configured/active — the card would otherwise claim a backend the tool registry will not serve.
+    """
+    for registry, provider in (
+        (image_gen_registry, _FakePluginImageProvider("DivergentAI", "DivergentAI Vendor", "DIVERGENT_KEY", available=False)),
+        (video_gen_registry, _FakePluginVideoProvider("DivergentAI", "DivergentAI Vendor", "DIVERGENT_KEY", available=False)),
+    ):
+        registry.register_provider(provider)
+    _logged_out_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("DIVERGENT_KEY", "test-key")
+
+    for stored in ("divergentai", "DivergentAI"):
+        features = ns.get_nous_subscription_features(
+            {"image_gen": {"provider": stored}, "video_gen": {"provider": stored}}
+        )
+        for key in ("image_gen", "video_gen"):
+            feat = getattr(features, key)
+            assert feat.available is False, (key, stored)
+            assert feat.active is False, (key, stored)
+            # The row still matched, so the vendor is named — only the readiness is the runtime's.
+            assert feat.current_provider == "DivergentAI Vendor", (key, stored)
+
+
+def test_backend_available_through_an_undeclared_path_is_configured(monkeypatch, tmp_path):
+    """The mirror of the case above: a backend usable through something its row's env vars do not
+    describe (managed-gateway fallback, ``key_env`` override) must not read as "not configured"
+    while the tool registry will serve it."""
+    for registry, provider in (
+        (image_gen_registry, _FakePluginImageProvider("ManagedGen", "ManagedGen", "MANAGEDGEN_KEY", available=True)),
+        (video_gen_registry, _FakePluginVideoProvider("ManagedGen", "ManagedGen", "MANAGEDGEN_KEY", available=True)),
+    ):
+        registry.register_provider(provider)
+    _logged_out_env(monkeypatch, tmp_path)
+    monkeypatch.delenv("MANAGEDGEN_KEY", raising=False)
+
+    features = ns.get_nous_subscription_features(
+        {"image_gen": {"provider": "managedgen"}, "video_gen": {"provider": "managedgen"}}
+    )
+
+    for key in ("image_gen", "video_gen"):
+        feat = getattr(features, key)
+        assert feat.available is True, key
+        assert feat.active is True, key
+        assert feat.current_provider == "ManagedGen", key
+
+
+def test_backend_whose_availability_probe_raises_is_not_advertised(monkeypatch, tmp_path):
+    """A raising ``is_available()`` (e.g. a plugin whose SDK is not importable) is unavailable,
+    not an exception on the status path."""
+    for registry, provider in (
+        (image_gen_registry, _FakePluginImageProvider("RaiserAI", "RaiserAI", "RAISER_KEY", available=ImportError("no sdk"))),
+        (video_gen_registry, _FakePluginVideoProvider("RaiserAI", "RaiserAI", "RAISER_KEY", available=ImportError("no sdk"))),
+    ):
+        registry.register_provider(provider)
+    _logged_out_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("RAISER_KEY", "test-key")
+
+    features = ns.get_nous_subscription_features(
+        {"image_gen": {"provider": "raiserai"}, "video_gen": {"provider": "raiserai"}}
+    )
+
+    for key in ("image_gen", "video_gen"):
+        feat = getattr(features, key)
+        assert feat.available is False, key
+        assert feat.active is False, key
+        assert feat.current_provider == "RaiserAI", key
 
 
 def test_fal_and_managed_selections_keep_their_fal_path(monkeypatch, tmp_path):

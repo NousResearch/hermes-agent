@@ -32,6 +32,22 @@ KANBAN_LIST_DEFAULT_LIMIT = 50
 KANBAN_LIST_MAX_LIMIT = 200
 
 
+def _author_identity() -> str:
+    """Author for a board write made by this process.
+
+    ``kanban.review_profile`` from this home's config first — the identity this home declares
+    (see ``hermes_cli.kanban_author``) — then the persisted runtime identity
+    (:func:`_persisted_identity`: the bound ``HERMES_HOME`` override, then the
+    ``HERMES_PROFILE_NAME``/``HERMES_PROFILE`` pin, then the home-derived profile), whose generic
+    ``"worker"`` is the historical last resort. Never from caller args: comments are injected
+    into future workers' system prompts, so an ``args["author"]`` override let a worker forge a
+    directive from an authoritative-looking name (#19713).
+    """
+    from hermes_cli.kanban_author import home_author_profile
+
+    return home_author_profile() or _persisted_identity()
+
+
 # --- Gating ---
 
 def _profile_has_kanban_toolset() -> bool:
@@ -897,7 +913,7 @@ def _handle_comment(args: dict, **kw) -> str:
     _check(tid, "task_id is required (use the current task id if that's what "
                 "you mean — pulls from env but kept explicit here)")
     body = _redact(_require_text(args, "body"))
-    # Author comes from the worker's runtime identity (``_persisted_identity``), never
+    # Author comes from the worker's runtime identity (``_author_identity``), never
     # caller args: comments are injected into future workers' system prompts, so an
     # args["author"] override could forge a directive from ``hermes-system``.
     # Cross-task commenting stays unrestricted — it is the handoff channel between tasks.
@@ -905,7 +921,7 @@ def _handle_comment(args: dict, **kw) -> str:
     # ``**{author}** (timestamp): {body}`` — accepting an ``args["author"]`` override let a worker forge a
     # comment from an authoritative-looking name like ``hermes-system`` and poison the future-worker context
     # with what reads as a system directive. See #19713.
-    author = _persisted_identity()
+    author = _author_identity()
     with _board(args.get("board")) as (kb, conn):
         cid = kb.add_comment(conn, tid, author=author, body=str(body))
         return _ok(task_id=tid, comment_id=cid)
@@ -1084,7 +1100,7 @@ def _handle_create(args: dict, **kw) -> str:
             goal_mode=goal_mode, goal_max_turns=_opt_int(args.get("goal_max_turns")),
             completion_contract=args.get("completion_contract"),
             initial_status=str(args.get("initial_status") or "running"),
-            created_by=_persisted_identity(), session_id=session_id)
+            created_by=_author_identity(), session_id=session_id)
         landed = _fields(kb.get_task(conn, new_tid), _CREATED_FIELDS)
         wait = [e for e in kb.list_events(conn, new_tid) if e.kind == "dependency_wait"]
         gate = {"gated": True, "gated_by": wait[-1].payload["parent"]} if wait else {"gated": False}

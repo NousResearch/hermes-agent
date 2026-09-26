@@ -112,7 +112,9 @@ def _run_cli(*argv: str) -> int:
 
 
 
-def test_cli_specify_tenant_filter(kanban_home, capsys):
+def test_cli_specify_tenant_filter(kanban_home, capsys, monkeypatch):
+    # Author-attributing verbs read explicit signals only: run the CLI as a pinned profile.
+    monkeypatch.setenv("HERMES_PROFILE", "specifier")
     with kbc.connect() as conn:
         outside = kb.create_task(conn, title="outside", triage=True)
         inside = kb.create_task(

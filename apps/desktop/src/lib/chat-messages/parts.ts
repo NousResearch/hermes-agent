@@ -46,6 +46,7 @@ const MEDIA_DELIVERY_EXTS = [
   'txt',
   'md',
   'epub',
+  'tex',
   'xlsx',
   'xls',
   'ods',

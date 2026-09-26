@@ -59,6 +59,9 @@ def save_completed_result(session) -> None:
     try:
         from hermes_constants import assert_named_profile_home_live
         assert_named_profile_home_live(directory)
+        # A recovered session has no output or exit code; the producer's own receipt is the real one.
+        if session.detached and (directory / f"{session.id}.json").exists():
+            return
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         atomic_json_write(directory / f"{session.id}.json", record, mode=0o600)
         _result_paths()

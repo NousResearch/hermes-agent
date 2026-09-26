@@ -81,6 +81,22 @@ If `platforms.teams.extra.delivery_mode` is `graph`, the pipeline posts summarie
 | `ChannelMessage.Send` | Post messages into Teams channels on behalf of the app. |
 | `Chat.ReadWrite.All` | Post messages into 1:1 and group chats (only if you set `chat_id` as the delivery target). |
 
+### Required for Teams channel/group file delivery
+
+The Teams bot cannot attach binary files in channels or group chats (Bot Framework returns 400; FileConsent is 1:1 only). When Graph is configured, Hermes uploads the file into the conversation's SharePoint folder and posts a clickable link. Skip this table if you only use personal-chat FileConsent.
+
+| Permission | What it lets the app do |
+|------------|--------------------------|
+| `Files.ReadWrite.All` | Read the channel/chat `filesFolder`, PUT driveItem content (or create an upload session), create an organization view link, and download inbound SharePoint files (`uniqueId` / shares API). Application permission; **admin consent required**. |
+| `ChannelMessage.Read.Group` (RSC) or `ChannelMessage.Read.All` | `GET` a channel message when Bot Framework delivered only `text/html` (no `file.download.info`). RSC is already in the sideload template; `ChannelMessage.Read.All` is the tenant-wide Entra alternative. |
+| `ChatMessage.Read.Chat` (RSC) or `Chat.Read.All` | Same inbound GET for **group chats**. |
+
+`Files.ReadWrite.All` is tenant-wide. There is no narrower application permission that can upload into an arbitrary team's channel folder. Prefer a dedicated Graph app, restrict who can message the bot (`TEAMS_ALLOWED_USERS`), and do not grant this to an app that untrusted users can drive.
+
+You may reuse the Teams bot's Entra app: grant `Files.ReadWrite.All` on it, admin-consent, and either set `MSGRAPH_*` to the same values as `TEAMS_*` or omit `MSGRAPH_*` so the adapter falls back to the bot credentials.
+
+`Sites.ReadWrite.All` also covers filesFolder + upload, but is broader than needed; prefer `Files.ReadWrite.All`.
+
 ### Not recommended
 
 - `OnlineMeetings.ReadWrite.All` / `Chat.ReadWrite` without `.All` — broader than the pipeline needs.

@@ -15,14 +15,19 @@ import asyncio
 # ``os.environ`` from a cwd-discovered ``.env`` (#62935). Detect presence via find_spec only; bind symbols
 # in ``check_teams_requirements()`` behind a dotenv no-op.
 import importlib.util
+import dataclasses
+import inspect
 import json
 import logging
+import os
 import re
 import sys
+import uuid
 from collections import deque
 from contextlib import contextmanager, suppress
+from datetime import datetime, timezone
 from typing import Any, Dict, Iterator, Optional
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 try:
     from aiohttp import web
@@ -82,6 +87,78 @@ _ALLOWED_TEAMS_SERVICE_HOSTS = frozenset({"smba.trafficmanager.net", "smba.infra
 # hostile value cannot path-traverse out of ``/v3/conversations/<id>/activities``.
 _TEAMS_CONV_ID_RE = re.compile(r"^[A-Za-z0-9:@\-_.]+$")
 _BF_TOKEN_SCOPE = "https://api.botframework.com/.default"
+# File-consent cards (personal chats) — Bot Framework content types, not SDK imports.
+_CONTENT_TYPE_FILE_CONSENT = "application/vnd.microsoft.teams.card.file.consent"
+_CONTENT_TYPE_FILE_INFO = "application/vnd.microsoft.teams.card.file.info"
+_MAX_FILE_SEND_BYTES = 20 * 1024 * 1024
+_PENDING_UPLOAD_MAX = 32
+# Channel/group chats reject Bot Framework document attachments (400). Small text
+# files are inlined; anything else uploads via Graph into the team's SharePoint
+# folder (or FileConsent in a 1:1 DM).
+_INLINE_CHANNEL_TEXT_MAX_BYTES = 48 * 1024
+_INLINE_CHANNEL_TEXT_EXTS = frozenset({
+    ".txt", ".md", ".markdown", ".rst", ".csv", ".tsv",
+    ".json", ".jsonl", ".log",
+    ".yaml", ".yml", ".toml", ".ini",
+    ".py", ".rs", ".js", ".ts", ".tsx", ".jsx",
+    ".go", ".rb", ".sh",
+})
+_CHANNEL_FILE_GRAPH_NOT_CONFIGURED = (
+    "Can't attach this file in a Teams channel or group chat. FileConsent cards "
+    "work only in a 1:1 chat with the bot. Binary channel/group files upload via "
+    "Microsoft Graph to the team's SharePoint folder, but Graph is not configured. "
+    "Set MSGRAPH_TENANT_ID, MSGRAPH_CLIENT_ID, and MSGRAPH_CLIENT_SECRET (or grant "
+    "Files.ReadWrite.All to the Teams bot app and reuse TEAMS_*), then grant admin "
+    "consent. Meanwhile send the file in a 1:1 DM."
+)
+_CHANNEL_FILE_GRAPH_NO_TARGET = (
+    "Can't attach this file in a Teams channel or group chat: Hermes does not yet "
+    "know this channel's team id (needed for SharePoint). Send a message in the "
+    "channel first, or set TEAMS_TEAM_ID. FileConsent works in a 1:1 DM."
+)
+_CHANNEL_FILE_GRAPH_PERMISSIONS = (
+    "Can't attach this file in a Teams channel or group chat: Microsoft Graph "
+    "returned {status} ({detail}). The app needs admin-consented application "
+    "permission Files.ReadWrite.All. FileConsent still works in a 1:1 DM."
+)
+_CHANNEL_FILE_GRAPH_FAILED = (
+    "Can't attach this file in a Teams channel or group chat: {detail}. "
+    "FileConsent cards work only in a 1:1 chat with the bot."
+)
+# OneDrive upload session hosts for file-consent PUT (exact suffix; blocks lookalikes).
+_ONEDRIVE_UPLOAD_HOSTS = frozenset({
+    "sharepoint.com", "onedrive.com", "1drv.com", "office.com", "office365.com",
+})
+_ONEDRIVE_UPLOAD_SUFFIXES = (
+    ".sharepoint.com", ".sharepoint-df.com", ".onedrive.com", ".1drv.com",
+    ".office.com", ".office365.com",
+)
+# Teams reaction IDs the Bot Framework connector accepts. Unicode / Slack-style
+# aliases map here so send_message(action="react") and lifecycle 👀/✅/❌ work.
+_REACTION_TYPE_BY_ALIAS = {
+    "👍": "like", "+1": "like", "thumbsup": "like", "like": "like",
+    "❤️": "heart", "❤": "heart", "♥️": "heart", "heart": "heart",
+    "👀": "1f440_eyes", "eyes": "1f440_eyes", "1f440_eyes": "1f440_eyes",
+    "✅": "2705_whiteheavycheckmark", "white_check_mark": "2705_whiteheavycheckmark",
+    "2705_whiteheavycheckmark": "2705_whiteheavycheckmark",
+    "🚀": "launch", "rocket": "launch", "launch": "launch",
+    "📌": "1f4cc_pushpin", "pushpin": "1f4cc_pushpin", "1f4cc_pushpin": "1f4cc_pushpin",
+    "😆": "laugh", "😂": "laugh", "laugh": "laugh",
+    "😮": "surprised", "surprised": "surprised",
+    "😢": "sad", "sad": "sad",
+    "😠": "angry", "😡": "angry", "angry": "angry",
+    "❌": "angry", "x": "angry",
+}
+_REACTION_EMOJI_BY_TYPE = {
+    "like": "👍", "heart": "❤️", "1f440_eyes": "👀",
+    "2705_whiteheavycheckmark": "✅", "launch": "🚀", "1f4cc_pushpin": "📌",
+    "laugh": "😆", "surprised": "😮", "sad": "😢", "angry": "😠",
+}
+_REACTION_TYPE_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
+# Inline wait for HTTP 429 on activity updates; longer Retry-After fails the edit so
+# the stream consumer falls back to a single non-streaming send (Telegram flood pattern).
+_EDIT_FLOOD_INLINE_WAIT_CAP_SECS = 2.0
+_EDIT_CACHE_MAX = 64
 
 
 def _bf_token_request(tenant_id: str, client_id: str, client_secret: str) -> tuple[str, dict]:
@@ -113,6 +190,272 @@ def _validate_teams_service_url(raw: str) -> Optional[str]:
     if not raw or not _is_allowed_https_host(raw):
         return None
     return raw if raw.endswith("/") else raw + "/"
+
+
+def _to_teams_reaction_type(emoji: Optional[str]) -> Optional[str]:
+    """Map unicode / Slack-style alias / Teams reaction id → connector reaction type."""
+    raw = (emoji or "").strip().strip(":")
+    if not raw:
+        return None
+    mapped = _REACTION_TYPE_BY_ALIAS.get(raw) or _REACTION_TYPE_BY_ALIAS.get(raw.lower())
+    if mapped:
+        return mapped
+    if _REACTION_TYPE_RE.match(raw):
+        return raw
+    return None
+
+
+def _flat_conversation_id(chat_id: str) -> str:
+    """Strip Teams ``;messageid=`` so Bot Framework REST uses a flat conversation id.
+
+    Channel thread activities often arrive as ``19:…@thread.tacv2;messageid=123``.
+    ``conversations.activities.update`` / ``delete`` reject that suffix.
+    """
+    raw = str(chat_id or "").strip()
+    marker = ";messageid="
+    idx = raw.lower().find(marker)
+    return raw[:idx] if idx != -1 else raw
+
+
+def _bf_activity_url(service_url: str, conversation_id: str, activity_id: str) -> str:
+    """``/v3/conversations/{id}/activities/{id}`` on an allowlisted service URL."""
+    return (
+        f"{service_url}v3/conversations/{quote(conversation_id, safe=':@-_.')}"
+        f"/activities/{quote(activity_id, safe=':@-_.')}"
+    )
+
+
+def _http_status_from_exc(exc: BaseException) -> Optional[int]:
+    """Best-effort HTTP status on SDK / httpx errors."""
+    for attr in ("status_code", "status"):
+        val = getattr(exc, attr, None)
+        if isinstance(val, int):
+            return val
+    resp = getattr(exc, "response", None)
+    if resp is not None:
+        val = getattr(resp, "status_code", None) or getattr(resp, "status", None)
+        if isinstance(val, int):
+            return val
+    return None
+
+
+def _retry_after_seconds(source: Any) -> Optional[float]:
+    """Parse ``Retry-After`` from a response or exception, if present."""
+    headers = getattr(source, "headers", None)
+    if headers is None:
+        resp = getattr(source, "response", None)
+        headers = getattr(resp, "headers", None) if resp is not None else None
+    if not headers:
+        return None
+    try:
+        raw = headers.get("Retry-After") or headers.get("retry-after")
+    except Exception:
+        return None
+    if raw is None or raw == "":
+        return None
+    try:
+        return max(0.0, float(raw))
+    except (TypeError, ValueError):
+        return None
+
+
+def _activity_update_unsupported(exc: BaseException, status: Optional[int]) -> bool:
+    """True when the connector cannot update this activity (fallback to a plain send)."""
+    if status in (404, 405, 501):
+        return True
+    blob = str(exc).lower()
+    return any(s in blob for s in (
+        "method not allowed", "not supported", "cannot be updated",
+        "activity not found", "message not found",
+    ))
+
+
+def _reaction_to_emoji(reaction_type: Optional[str]) -> str:
+    """Teams reaction id → unicode (unknown ids pass through)."""
+    raw = (reaction_type or "").strip()
+    return _REACTION_EMOJI_BY_TYPE.get(raw, raw)
+
+
+def _is_allowed_onedrive_upload_url(url: str) -> bool:
+    """True if ``url`` is an https OneDrive/SharePoint upload session (file-consent PUT)."""
+    try:
+        parsed = urlparse(url)
+        if parsed.scheme != "https" or parsed.port not in (None, 443):
+            return False
+        host = (parsed.hostname or "").lower()
+        if host in _ONEDRIVE_UPLOAD_HOSTS:
+            return True
+        return any(host.endswith(suffix) for suffix in _ONEDRIVE_UPLOAD_SUFFIXES)
+    except Exception:
+        return False
+
+
+def _is_mock_object(value: Any) -> bool:
+    """True for unittest.mock stand-ins — never treat auto-attrs as real IDs/URLs."""
+    return type(value).__module__.startswith("unittest.mock")
+
+
+def _invoke_field(value: Any, *names: str) -> Any:
+    """Read a field from an SDK model or a dict (file-consent / attachments use both).
+
+    Accepts snake_case and camelCase names. Skips ``None``, blank strings, and
+    ``MagicMock`` auto-attributes so a dict payload or a test double cannot
+    shadow a real sibling field.
+    """
+    if isinstance(value, dict):
+        for name in names:
+            if name not in value:
+                continue
+            got = value[name]
+            if _usable_invoke_value(got):
+                return got
+        return None
+    if value is None:
+        return None
+    for name in names:
+        got = getattr(value, name, None)
+        if _usable_invoke_value(got):
+            return got
+    return None
+
+
+def _usable_invoke_value(got: Any) -> bool:
+    if got is None or _is_mock_object(got):
+        return False
+    if isinstance(got, str) and not got.strip():
+        return False
+    return True
+
+
+def _field_text(value: Any, *names: str) -> str:
+    got = _invoke_field(value, *names)
+    return got.strip() if isinstance(got, str) else ""
+
+
+def _activity_attachments(activity: Any) -> list:
+    raw = _invoke_field(activity, "attachments")
+    if isinstance(raw, list):
+        return raw
+    if isinstance(raw, tuple):
+        return list(raw)
+    return []
+
+
+def _attachment_content_dict(content: Any) -> dict:
+    """Normalize ``attachment.content`` (dict, SDK model, or mock) to a mapping."""
+    if isinstance(content, dict):
+        return content
+    if content is None or _is_mock_object(content):
+        return {}
+    dump = getattr(content, "model_dump", None)
+    if callable(dump):
+        for kwargs in ({"by_alias": True}, {}):
+            try:
+                dumped = dump(**kwargs) if kwargs else dump()
+            except TypeError:
+                continue
+            except Exception:
+                dumped = None
+            if isinstance(dumped, dict):
+                return dumped
+            break
+    raw = getattr(content, "__dict__", None)
+    return raw if isinstance(raw, dict) else {}
+
+
+def _is_anonymous_body_mirror(content_type: str, content_url: str, att_name: str) -> bool:
+    """Teams mirrors the message body as an unnamed text/html|text/plain with no URL.
+
+    A *named* ``text/plain`` (for example ``notes.txt``) is a real file, even
+    when the activity omitted ``contentUrl``.
+    """
+    if content_type.startswith("application/vnd.microsoft.card"):
+        return True
+    return content_type in ("text/html", "text/plain") and not content_url and not att_name
+
+
+def _attachments_are_html_only(attachments: list) -> bool:
+    """True when every Bot Framework attachment is a body/card mirror.
+
+    Channel/group file drops often look like this: caption in ``activity.text`` plus
+    a single unnamed ``text/html`` attachment — no ``file.download.info``.
+    """
+    if not attachments:
+        return False
+    for att in attachments:
+        content_url = _field_text(att, "content_url", "contentUrl")
+        content_type_raw = _invoke_field(att, "content_type", "contentType")
+        content_type = (
+            content_type_raw.lower().split(";")[0].strip()
+            if isinstance(content_type_raw, str) else ""
+        )
+        att_name = _field_text(att, "name")
+        if _is_anonymous_body_mirror(content_type, content_url, att_name):
+            continue
+        return False
+    return True
+
+
+def _normalize_consent_action(raw: Any) -> str:
+    """Normalize FileConsent action to accept/decline.
+
+    Prefer Enum.value; on Python 3.11 str(Action.ACCEPT) is 'Action.ACCEPT'.
+    """
+    if raw is None:
+        return ""
+    if hasattr(raw, "value"):
+        raw = raw.value
+    text = str(raw).strip().lower()
+    if text.startswith("action."):
+        text = text.split(".", 1)[-1]
+    return text
+
+
+def _consent_card_activity_id(activity: Any) -> Optional[str]:
+    """FileConsent invoke ``replyToId`` / ``reply_to_id`` is the message that holds the card."""
+    raw = _invoke_field(activity, "reply_to_id", "replyToId")
+    if not isinstance(raw, str):
+        return None
+    text = raw.strip()
+    if not text or not _TEAMS_CONV_ID_RE.match(text):
+        return None
+    return text
+
+
+def _is_inlineable_channel_document(path: str, file_name: Optional[str] = None) -> bool:
+    """True when a channel/group send can inline the file as a text message."""
+    import mimetypes
+    name = (file_name or os.path.basename(path) or "").lower()
+    if os.path.splitext(name)[1] in _INLINE_CHANNEL_TEXT_EXTS:
+        return True
+    mime, _ = mimetypes.guess_type(name or path)
+    return bool(mime and mime.split(";", 1)[0].strip().startswith("text/"))
+
+
+def _read_inline_channel_text(path: str, *, max_bytes: int = _INLINE_CHANNEL_TEXT_MAX_BYTES) -> Optional[str]:
+    """UTF-8 text at or under ``max_bytes``, else None (binary / too large / unreadable)."""
+    try:
+        if os.path.getsize(path) > max_bytes:
+            return None
+        with open(path, "rb") as fh:
+            data = fh.read(max_bytes + 1)
+    except OSError:
+        return None
+    if len(data) > max_bytes or b"\x00" in data:
+        return None
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+def _fence_channel_text(text: str, *, language: str = "") -> str:
+    """Wrap ``text`` in a markdown fence that cannot collide with its contents."""
+    fence = "```"
+    while fence in text:
+        fence += "`"
+    info = language if language and all(ch.isalnum() or ch in "-_+" for ch in language) else ""
+    return f"{fence}{info}\n{text}\n{fence}"
 
 
 class _AiohttpBridgeAdapter:
@@ -204,13 +547,15 @@ async def _standalone_send(
         (service_url is None, f"TEAMS_SERVICE_URL host is not on the Bot Framework allowlist; "
                               f"expected one of {sorted(_ALLOWED_TEAMS_SERVICE_HOSTS)}"),
         (not chat_id, "chat_id (conversation ID) is required"),
-        (not _TEAMS_CONV_ID_RE.match(chat_id or ""), "chat_id contains characters outside the Bot Framework conversation ID set"),
+        (not _TEAMS_CONV_ID_RE.match(_flat_conversation_id(chat_id or "")),
+         "chat_id contains characters outside the Bot Framework conversation ID set"),
         (not _TEAMS_CONV_ID_RE.match(tenant_id), "TEAMS_TENANT_ID contains characters outside the expected set"),
         (not AIOHTTP_AVAILABLE, "aiohttp not installed")):
         if failed:
             return send_error(f"Teams standalone send: {error}")
     token_url, token_form = _bf_token_request(tenant_id, client_id, client_secret)
-    activities_url = f"{service_url}v3/conversations/{chat_id}/activities"
+    conv_id = _flat_conversation_id(chat_id or "")
+    activities_url = f"{service_url}v3/conversations/{quote(conv_id, safe=':@-_.')}/activities"
     try:
         import aiohttp as _aiohttp
         # Per-request timeouts so a slow STS endpoint cannot starve the activity POST.
@@ -351,6 +696,14 @@ class TeamsAdapter(BasePlatformAdapter):
 
     MAX_MESSAGE_LENGTH = 28000  # Teams text message limit (~28 KB)
     splits_long_messages = True  # send() chunks via truncate_message()
+    # Edit-based streaming (send then conversations.activities.update). Not Slack-style
+    # native stream-is-the-message; do not flip this without a distinct Teams stream object.
+    draft_stream_is_message = False
+    # Processing-lifecycle reactions (👀 while working, ✅/❌ on complete). Unicode maps to
+    # Teams reaction ids in _REACTION_TYPE_BY_ALIAS.
+    _ACK_EMOJI = "👀"
+    _OK_EMOJI = "✅"
+    _FAIL_EMOJI = "❌"
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform("teams"))
@@ -369,9 +722,24 @@ class TeamsAdapter(BasePlatformAdapter):
         self._dedup = MessageDeduplicator(max_size=1000)
         # chat_id → ConversationReference so proactive cards use the right conversation type.
         self._conv_refs: Dict[str, Any] = {}
+        # chat_id → GraphFileTarget (team aadGroupId / channel id / group chat id) from inbound
+        # channelData. Tests inject ``_graph_client`` (client or False to disable).
+        self._graph_file_targets: Dict[str, Any] = {}
+        self._graph_client: Any = None
         self._require_mention: bool = self._parse_require_mention(config)
+        self._observe_unmentioned: bool = self._parse_observe_unmentioned(config)
         # Outbound activity ids (bounded) so require_mention can exempt replies to our own messages.
         self._sent_ids: deque = deque(maxlen=500)
+        # chat_id → last inbound activity id (send_message react default target).
+        self._last_inbound_by_chat: Dict[str, str] = {}
+        # (chat_id, message_id) → last reaction type this bot set (unreact without emoji).
+        self._bot_reactions: Dict[tuple, str] = {}
+        # file-consent acceptContext id → {name, bytes, mime} (bounded).
+        self._pending_uploads: Dict[str, Dict[str, Any]] = {}
+        self._pending_upload_ids: deque = deque()
+        # (chat_id, activity_id) → last edited text / saturated mid-stream preview.
+        self._last_edit_text: Dict[tuple, str] = {}
+        self._last_overflow_preview: Dict[tuple, str] = {}
 
     @staticmethod
     def _parse_require_mention(config) -> bool:
@@ -380,6 +748,20 @@ class TeamsAdapter(BasePlatformAdapter):
         group bot anyway, so the gate changes nothing until the app gains ChannelMessage.Read.Group /
         ChatMessage.Read.Chat and starts receiving every conversation message."""
         configured = _extra_or_secret(config.extra, "require_mention", "TEAMS_REQUIRE_MENTION", False)
+        if isinstance(configured, bool):
+            return configured
+        return str(configured).strip().lower() not in {"false", "0", "no", "off"}
+
+    @staticmethod
+    def _parse_observe_unmentioned(config) -> bool:
+        """TEAMS_OBSERVE_UNMENTIONED → ``observe_unmentioned`` in extra → true.
+
+        Only runs when ``require_mention`` would drop a channel/group message (RSC
+        delivers every post). Default on: without RSC those messages never arrive,
+        so the flag is a no-op until the app has ChannelMessage.Read.Group /
+        ChatMessage.Read.Chat. Set false to keep the old silent-drop behavior.
+        """
+        configured = _extra_or_secret(config.extra, "observe_unmentioned", "TEAMS_OBSERVE_UNMENTIONED", True)
         if isinstance(configured, bool):
             return configured
         return str(configured).strip().lower() not in {"false", "0", "no", "off"}
@@ -420,6 +802,18 @@ class TeamsAdapter(BasePlatformAdapter):
                 ctx: ActivityContext[AdaptiveCardInvokeActivity],
             ) -> InvokeResponse[AdaptiveCardActionMessageResponse]:
                 return await self._on_card_action(ctx)
+
+            on_reaction = getattr(self._app, "on_message_reaction", None)
+            if callable(on_reaction):
+                @on_reaction
+                async def _handle_reaction(ctx):
+                    await self._on_message_reaction(ctx)
+
+            on_file_consent = getattr(self._app, "on_file_consent", None)
+            if callable(on_file_consent):
+                @on_file_consent
+                async def _handle_file_consent(ctx):
+                    await self._on_file_consent(ctx)
 
             self._wire_plugin_handlers(self._app)
             await self._app.initialize()
@@ -504,15 +898,27 @@ class TeamsAdapter(BasePlatformAdapter):
         conv = activity.conversation
         conv_id = getattr(conv, "id", None)
         if conv_id:  # cache the conversation reference for proactive sends (approval cards, etc.)
-            self._conv_refs[conv_id] = ctx.conversation_ref
+            self._remember_conv_ref(str(conv_id), ctx.conversation_ref)
+            self._remember_graph_file_target(str(conv_id), activity)
         text = activity.text if hasattr(activity, "text") and activity.text else ""
-        if self._require_mention and getattr(conv, "conversation_type", None) != "personal":
+        conv_type = getattr(conv, "conversation_type", None)
+        addressed = True
+        if self._require_mention and conv_type != "personal":
             # RSC-delivered history: every channel/groupChat message arrives. Keep the ones that
-            # @mention the bot or reply to one of its own messages; drop the rest BEFORE the
-            # attachment loop so a gated post never downloads anything onto the host.
-            if not self._activity_mentions_bot(activity, bot_ids, text) and getattr(activity, "reply_to_id", None) not in self._sent_ids:
-                logger.debug("[teams] Dropping non-personal message without a bot mention (chat=%s, msg=%s)", conv_id, msg_id)
+            # @mention the bot or reply to one of its own messages; observe or drop the rest
+            # BEFORE the attachment loop so a gated post never downloads anything onto the host.
+            addressed = (
+                self._activity_mentions_bot(activity, bot_ids, text)
+                or getattr(activity, "reply_to_id", None) in self._sent_ids
+            )
+            if not addressed:
+                self._observe_unmentioned_activity(activity, text)
+                logger.debug(
+                    "[teams] %s non-personal message without a bot mention (chat=%s, msg=%s)",
+                    "Observed" if self._observe_unmentioned else "Dropping", conv_id, msg_id)
                 return
+        if conv_id and msg_id:
+            self._last_inbound_by_chat[str(conv_id)] = str(msg_id)
         if "<at>" in text:  # strip the <at>BotName</at> tags Teams prepends for @mentions
             text = re.sub(r"<at>[^<]*</at>\s*", "", text).strip()
         from_account = activity.from_
@@ -520,17 +926,34 @@ class TeamsAdapter(BasePlatformAdapter):
         source = self.build_source(
             chat_id=conv.id,
             chat_name=getattr(conv, "name", None) or "",
-            chat_type=_CHAT_TYPES.get(getattr(conv, "conversation_type", None) or "", "dm"),
+            chat_type=_CHAT_TYPES.get(conv_type or "", "dm"),
             user_id=str(user_id),
             user_name=getattr(from_account, "name", None) or "",
             guild_id=getattr(conv, "tenant_id", None) or self._tenant_id,
             message_id=msg_id)
-        media: list = [m for m in [await self._cache_attachment(a) for a in getattr(activity, "attachments", None) or []] if m]
+        graph_target = self._graph_file_target_for(str(conv_id)) if conv_id else None
+        raw_atts = _activity_attachments(activity)
+        media: list = [
+            m for m in [
+                await self._cache_attachment(a, graph_target=graph_target)
+                for a in raw_atts
+            ] if m
+        ]
+        if (
+            not media
+            and graph_target is not None
+            and msg_id
+            and _attachments_are_html_only(raw_atts)
+        ):
+            media = await self._cache_files_from_graph_message(graph_target, str(msg_id))
         media_kinds = [kind for _, _, kind in media]  # media items are (path, media_type, kind)
         msg_type = next((t for kind, t in _MEDIA_KIND_PRECEDENCE if kind in media_kinds), MessageType.TEXT)
-        await self.handle_message(MessageEvent(
+        event = MessageEvent(
             text=text, source=source, message_type=msg_type, message_id=msg_id,
-            media_urls=[path for path, _, _ in media], media_types=[mt for _, mt, _ in media]))
+            media_urls=[path for path, _, _ in media], media_types=[mt for _, mt, _ in media])
+        if addressed and self._require_mention and conv_type != "personal" and self._observe_unmentioned:
+            event = self._apply_teams_observe_attribution(event)
+        await self.handle_message(event)
 
     @staticmethod
     def _activity_mentions_bot(activity: Any, bot_ids: set, text: str) -> bool:
@@ -542,34 +965,147 @@ class TeamsAdapter(BasePlatformAdapter):
             return "<at>" in text
         return any(str(getattr(getattr(e, "mentioned", None), "id", "")) in bot_ids for e in mentions)
 
-    async def _cache_attachment(self, att: Any) -> Optional[tuple]:
+    _TEAMS_OBSERVED_CONTEXT_PROMPT = (
+        "You are handling a Microsoft Teams channel or group-chat message.\n"
+        "- observed Teams channel context may be provided in a separate context-only block "
+        "before the current message; it is not necessarily addressed to you.\n"
+        "- Treat only the current new message as a request explicitly directed at you, "
+        "and use observed context only when the current message asks for it."
+    )
+
+    def _observe_unmentioned_activity(self, activity: Any, text: str) -> None:
+        """Append gated channel/group chatter to the shared session; do not dispatch."""
+        if not self._observe_unmentioned:
+            return
+        store = getattr(self, "_session_store", None)
+        if not store:
+            return
+        from_account = getattr(activity, "from_", None)
+        user_name = getattr(from_account, "name", None) or ""
+        user_id = getattr(from_account, "aad_object_id", None) or getattr(from_account, "id", "") or "unknown"
+        body = re.sub(r"<at>[^<]*</at>\s*", "", text).strip() if "<at>" in (text or "") else (text or "")
+        attributed = f"[{user_name or user_id}] {body}".strip()
+        conv = getattr(activity, "conversation", None)
+        msg_id = getattr(activity, "id", None)
+        source = self.build_source(
+            chat_id=getattr(conv, "id", "") or "",
+            chat_name=getattr(conv, "name", None) or "",
+            chat_type=_CHAT_TYPES.get(getattr(conv, "conversation_type", None) or "", "group"),
+            user_id=None,
+            user_name=None,
+            guild_id=getattr(conv, "tenant_id", None) or self._tenant_id,
+            message_id=msg_id)
+        try:
+            session_entry = store.get_or_create_session(source)
+            entry = {
+                "role": "user",
+                "content": attributed,
+                "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+                "observed": True,
+            }
+            if msg_id:
+                entry["message_id"] = str(msg_id)
+            store.append_to_transcript(session_entry.session_id, entry)
+            logger.info(
+                "[teams] Channel message observed (no bot trigger): chat=%s from=%s",
+                getattr(conv, "id", "unknown"), user_id)
+        except Exception as exc:
+            logger.warning("[teams] Failed to observe unmentioned message: %s", exc)
+
+    def _apply_teams_observe_attribution(self, event: MessageEvent) -> MessageEvent:
+        """Shared session + channel_prompt marker so run.py wraps observed rows."""
+        observe_prompt = self._TEAMS_OBSERVED_CONTEXT_PROMPT
+        channel_prompt = (
+            f"{event.channel_prompt}\n\n{observe_prompt}" if event.channel_prompt else observe_prompt
+        )
+        if (event.text or "").startswith("/"):
+            return dataclasses.replace(event, channel_prompt=channel_prompt)
+        user_name = event.source.user_name or event.source.user_id or "unknown"
+        attributed = f"[{user_name}] {event.text or ''}".strip()
+        source = dataclasses.replace(event.source, user_id=None, user_name=None)
+        return dataclasses.replace(event, text=attributed, source=source, channel_prompt=channel_prompt)
+
+    async def _cache_attachment(self, att: Any, *, graph_target: Any = None) -> Optional[tuple]:
         """Download + cache one inbound attachment → ``(path, media_type, kind)`` or ``None``."""
-        content_url = getattr(att, "content_url", None)
-        content_type = (getattr(att, "content_type", None) or "").lower()
-        att_name = getattr(att, "name", None) or ""
-        # Skip non-file payloads: Teams mirrors the message body as a text/html attachment,
-        # and cards arrive as application/vnd.microsoft.card.*
-        if (content_type in ("text/html", "text/plain") and not content_url) or content_type.startswith("application/vnd.microsoft.card"):
+        content_url = _field_text(att, "content_url", "contentUrl")
+        content_type_raw = _invoke_field(att, "content_type", "contentType")
+        content_type = (
+            content_type_raw.lower().split(";")[0].strip()
+            if isinstance(content_type_raw, str) else ""
+        )
+        att_name = _field_text(att, "name")
+        content = _invoke_field(att, "content")
+        content_map = _attachment_content_dict(content)
+        if content_map:
+            content_keys: list[str] = sorted(str(k) for k in content_map.keys())
+        elif isinstance(content, str):
+            content_keys = ["<inline>"]
+        else:
+            content_keys = []
+        logger.info(
+            "[teams] Inbound attachment name=%r contentType=%s hasUrl=%s contentKeys=%s",
+            att_name, content_type or "-", bool(content_url), content_keys,
+        )
+        if _is_anonymous_body_mirror(content_type, content_url, att_name):
             return None
-        if content_type == "application/vnd.microsoft.teams.file.download.info":
-            # Consent-free download: content carries a pre-authed SharePoint downloadUrl + file type.
-            content = getattr(att, "content", None)
-            if not isinstance(content, dict):
-                content = getattr(content, "__dict__", None) or {}
-            download_url = content.get("downloadUrl") or content.get("download_url")
-            file_type = (content.get("fileType") or content.get("file_type") or "").lstrip(".")
-            if not download_url:
-                return None
-            filename = att_name or (f"document.{file_type}" if file_type else "document")
-            try:
-                data = await self._fetch_attachment_bytes(download_url)
-                cached = await cache_media_bytes_async(data, filename=filename, mime_type="")
-                if not cached:
-                    logger.warning("[teams] Unsupported document type for attachment '%s', skipping", filename)
+        is_file_info = content_type == "application/vnd.microsoft.teams.file.download.info"
+        download_url = _field_text(content_map, "downloadUrl", "download_url")
+        file_type = _field_text(content_map, "fileType", "file_type").lstrip(".")
+        filename = att_name or (f"document.{file_type}" if file_type else "document")
+        if is_file_info or (not content_url and content_map):
+            if is_file_info and not download_url:
+                logger.warning(
+                    "[teams] file.download.info attachment %r has no downloadUrl "
+                    "(contentKeys=%s)",
+                    filename, content_keys,
+                )
+                download_url = await self._resolve_inbound_download_url_via_graph(
+                    content_map, content_url=content_url, filename=filename,
+                    graph_target=graph_target,
+                )
+            if download_url:
+                try:
+                    data = await self._fetch_attachment_bytes(download_url)
+                    cached = await cache_media_bytes_async(data, filename=filename, mime_type="")
+                    if not cached:
+                        logger.warning(
+                            "[teams] Unsupported document type for attachment '%s', skipping",
+                            filename)
+                        return None
+                    return cached.path, cached.media_type, cached.kind
+                except Exception as e:
+                    logger.warning("[teams] Failed to cache file attachment '%s': %s", filename, e)
                     return None
-                return cached.path, cached.media_type, cached.kind
+            if is_file_info:
+                return None
+        if not content_url and att_name and isinstance(content, str) and content:
+            try:
+                cached = await cache_media_bytes_async(
+                    content.encode("utf-8"), filename=att_name, mime_type=content_type)
+                return (cached.path, cached.media_type, cached.kind) if cached else None
             except Exception as e:
-                logger.warning("[teams] Failed to cache file attachment '%s': %s", filename, e)
+                logger.warning(
+                    "[teams] Failed to cache inline attachment '%s' (%s): %s",
+                    att_name, content_type, e)
+                return None
+        if not content_url and att_name:
+            download_url = await self._resolve_inbound_download_url_via_graph(
+                content_map, content_url=content_url, filename=filename,
+                graph_target=graph_target,
+            )
+            if download_url:
+                try:
+                    data = await self._fetch_attachment_bytes(download_url)
+                    cached = await cache_media_bytes_async(
+                        data, filename=filename, mime_type=content_type)
+                    return (cached.path, cached.media_type, cached.kind) if cached else None
+                except Exception as e:
+                    logger.warning("[teams] Failed to cache attachment '%s' (%s): %s", filename, content_type, e)
+                    return None
+            logger.warning(
+                "[teams] Named attachment %r (%s) has no URL and Graph fallback did not resolve one",
+                filename, content_type or "-",
+            )
             return None
         if content_url and content_type.startswith("image/"):
             try:
@@ -598,6 +1134,102 @@ class TeamsAdapter(BasePlatformAdapter):
                 logger.warning("[teams] Failed to cache attachment '%s' (%s): %s", att_name or content_url, content_type, e)
         return None
 
+    async def _resolve_inbound_download_url_via_graph(
+        self,
+        content_map: dict,
+        *,
+        content_url: str,
+        filename: str,
+        graph_target: Any,
+    ) -> str:
+        """When channel activities omit downloadUrl, resolve one via Graph filesFolder/shares."""
+        from plugins.platforms.teams.graph_files import resolve_inbound_file_download_url
+        client = self._graph_client_for_files()
+        if client is None:
+            logger.warning(
+                "[teams] Inbound file %r has no downloadUrl and Graph is not configured; "
+                "the agent will not see this attachment. Grant Files.ReadWrite.All "
+                "(same MSGRAPH_*/TEAMS_* app as outbound channel uploads).",
+                filename,
+            )
+            return ""
+        try:
+            url = await resolve_inbound_file_download_url(
+                client,
+                target=graph_target,
+                content=content_map,
+                content_url=content_url,
+                filename=filename,
+            )
+        except Exception as e:
+            logger.warning("[teams] Graph inbound file lookup failed for %r: %s", filename, e)
+            return ""
+        if not url:
+            logger.warning(
+                "[teams] Graph inbound file lookup for %r returned no downloadUrl "
+                "(uniqueId/site info missing or filesFolder lookup failed)",
+                filename,
+            )
+        return url or ""
+
+    async def _cache_files_from_graph_message(self, graph_target: Any, message_id: str) -> list:
+        """Channel/group file drop: Bot Framework sent only text/html — GET the Graph message."""
+        from plugins.platforms.teams.graph_files import (
+            GRAPH_CHANNEL_MESSAGE_PERMISSION, GRAPH_CHANNEL_MESSAGE_RSC,
+            GRAPH_CHAT_MESSAGE_PERMISSION, GRAPH_CHAT_MESSAGE_RSC,
+            list_graph_message_file_refs,
+        )
+        from tools.microsoft_graph_client import MicrosoftGraphAPIError
+
+        client = self._graph_client_for_files()
+        if client is None:
+            logger.warning(
+                "[teams] Channel/group activity had only text/html attachments; Graph is not "
+                "configured so the agent cannot read the SharePoint file. Grant %s plus %s "
+                "(RSC) or %s (same MSGRAPH_*/TEAMS_* app as outbound uploads).",
+                "Files.ReadWrite.All", GRAPH_CHANNEL_MESSAGE_RSC, GRAPH_CHANNEL_MESSAGE_PERMISSION,
+            )
+            return []
+        try:
+            refs = await list_graph_message_file_refs(client, graph_target, message_id)
+        except MicrosoftGraphAPIError as e:
+            needed = (
+                f"{GRAPH_CHANNEL_MESSAGE_RSC} (RSC) or {GRAPH_CHANNEL_MESSAGE_PERMISSION}"
+                if getattr(graph_target, "team_id", "")
+                else f"{GRAPH_CHAT_MESSAGE_RSC} (RSC) or {GRAPH_CHAT_MESSAGE_PERMISSION}"
+            )
+            logger.warning(
+                "[teams] Graph GET message %s failed (%s). Inbound channel files need %s "
+                "and Files.ReadWrite.All to download. %s",
+                message_id, getattr(e, "status_code", "?"), needed, e,
+            )
+            return []
+        except Exception as e:
+            logger.warning("[teams] Graph GET message %s failed: %s", message_id, e)
+            return []
+        if not refs:
+            logger.info("[teams] Graph message %s has no file attachments", message_id)
+            return []
+        media: list = []
+        for ref in refs:
+            filename = ref.get("name") or "document"
+            download_url = await self._resolve_inbound_download_url_via_graph(
+                {"uniqueId": ref.get("uniqueId") or ""},
+                content_url=ref.get("contentUrl") or "",
+                filename=filename,
+                graph_target=graph_target,
+            )
+            if not download_url:
+                continue
+            try:
+                data = await self._fetch_attachment_bytes(download_url)
+                cached = await cache_media_bytes_async(data, filename=filename, mime_type="")
+                if cached:
+                    media.append((cached.path, cached.media_type, cached.kind))
+            except Exception as e:
+                logger.warning("[teams] Failed to cache Graph message file '%s': %s", filename, e)
+        return media
+
     async def _send_card(self, chat_id: str, card: "AdaptiveCard") -> "Any":
         """Send an AdaptiveCard, using a stored ConversationReference when available."""
         from microsoft_teams.api import MessageActivityInput
@@ -607,13 +1239,25 @@ class TeamsAdapter(BasePlatformAdapter):
 
     async def _send_via_conv_ref(self, chat_id: str, activity: Any, fallback: Any) -> Any:
         """Send ``activity`` through the cached ConversationReference, else ``App.send(fallback)``."""
-        conv_ref = self._conv_refs.get(chat_id)
+        conv_ref = self._conv_ref_for(chat_id)
         if conv_ref:
             result = await self._app.activity_sender.send(activity, conv_ref)
         else:
             result = await self._app.send(chat_id, fallback)
         self._remember_sent(result)
         return result
+
+    def _remember_conv_ref(self, chat_id: str, conv_ref: Any) -> None:
+        """Cache a conversation reference under the wire id and the flat Bot Framework id."""
+        if not chat_id:
+            return
+        self._conv_refs[chat_id] = conv_ref
+        flat = _flat_conversation_id(chat_id)
+        if flat != chat_id:
+            self._conv_refs[flat] = conv_ref
+
+    def _conv_ref_for(self, chat_id: str) -> Any:
+        return self._conv_refs.get(chat_id) or self._conv_refs.get(_flat_conversation_id(chat_id))
 
     def _remember_sent(self, result: Any) -> None:
         """Track an outbound activity id (bounded deque) for the require_mention reply exemption."""
@@ -725,13 +1369,92 @@ class TeamsAdapter(BasePlatformAdapter):
                 return SendResult(success=False, error=str(e), retryable=True)
         return SendResult(success=True, message_id=last_message_id)
 
+    async def edit_message(
+        self, chat_id: str, message_id: str, content: str, *, finalize: bool = False,
+    ) -> SendResult:
+        """Progressively update a bot activity (gateway send-then-edit streaming).
+
+        Mid-stream (``finalize=False``) truncates oversize text in place so the
+        edit target stays this activity. Identical payloads are skipped. HTTP 429
+        with a short Retry-After is waited inline; a longer wait or 404/405
+        returns ``success=False`` so the stream consumer falls back to a plain send.
+        ``draft_stream_is_message`` stays False: Teams has no native stream object.
+        """
+        if not self._app:
+            return SendResult(success=False, error="Teams app not initialized")
+        if not chat_id or not message_id:
+            return SendResult(success=False, error="missing conversation or activity id")
+        formatted = self.format_message(content)
+        key = (str(chat_id), str(message_id))
+        oversize = len(formatted) > self.MAX_MESSAGE_LENGTH
+        if oversize:
+            formatted = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)[0]
+            if not finalize and self._last_overflow_preview.get(key) == formatted:
+                return SendResult(success=True, message_id=str(message_id))
+            if not finalize:
+                self._remember_edit_cache(self._last_overflow_preview, key, formatted)
+        elif not finalize:
+            self._last_overflow_preview.pop(key, None)
+        if finalize:
+            self._last_overflow_preview.pop(key, None)
+        if not finalize and self._last_edit_text.get(key) == formatted:
+            return SendResult(success=True, message_id=str(message_id))
+        try:
+            await self._update_activity(str(chat_id), str(message_id), formatted)
+        except Exception as e:
+            return await self._on_edit_activity_error(
+                e, chat_id=str(chat_id), message_id=str(message_id), text=formatted)
+        self._remember_edit_cache(self._last_edit_text, key, formatted)
+        return SendResult(success=True, message_id=str(message_id))
+
+    def _remember_edit_cache(self, cache: Dict[tuple, str], key: tuple, text: str) -> None:
+        if key not in cache and len(cache) >= _EDIT_CACHE_MAX:
+            cache.pop(next(iter(cache)))
+        cache[key] = text
+
+    async def _on_edit_activity_error(
+        self, exc: BaseException, *, chat_id: str, message_id: str, text: str,
+    ) -> SendResult:
+        """Classify an activity-update failure: short 429 retry, unsupported → fallback send."""
+        status = _http_status_from_exc(exc)
+        retry_after = _retry_after_seconds(exc)
+        if status == 429 or retry_after is not None:
+            wait = float(retry_after) if retry_after is not None else 1.0
+            if wait <= _EDIT_FLOOD_INLINE_WAIT_CAP_SECS:
+                logger.debug("[teams] activity update 429, waiting %.1fs", wait)
+                await asyncio.sleep(wait)
+                try:
+                    await self._update_activity(chat_id, message_id, text)
+                    self._remember_edit_cache(
+                        self._last_edit_text, (chat_id, message_id), text)
+                    return SendResult(success=True, message_id=message_id)
+                except Exception as retry_err:
+                    logger.warning("[teams] activity update retry failed: %s", retry_err)
+                    return SendResult(
+                        success=False, error=str(retry_err), retryable=True,
+                        error_kind="rate_limited")
+            return SendResult(
+                success=False, error=str(exc), retryable=True, retry_after=wait,
+                error_kind="rate_limited")
+        if _activity_update_unsupported(exc, status):
+            logger.info("[teams] activity update unsupported (%s); stream will fall back to send",
+                        status or exc)
+            return SendResult(
+                success=False, error=str(exc),
+                error_kind="not_found" if status == 404 else None)
+        logger.warning("[teams] edit_message failed: %s", exc)
+        return SendResult(
+            success=False, error=str(exc),
+            retryable=status is None or status >= 500)
+
     async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         if self._app:
             with suppress(Exception):
                 await self._app.send(chat_id, TypingActivityInput())
 
     async def _send_media_attachment(
-        self, chat_id: str, source: str, default_mime: str, caption: Optional[str] = None, media_label: str = "media"
+        self, chat_id: str, source: str, default_mime: str, caption: Optional[str] = None,
+        media_label: str = "media", file_name: Optional[str] = None,
     ) -> SendResult:
         """Send any media file/URL as a Teams attachment (shared by send_image/video/voice/document).
         Remote ``http(s)://`` URLs are attached by reference; local paths (optional ``file://`` prefix)
@@ -746,12 +1469,15 @@ class TeamsAdapter(BasePlatformAdapter):
             if source.startswith(("http://", "https://")):
                 content_url = source
                 mime_type = mimetypes.guess_type(source.split("?")[0])[0] or default_mime
+                name = file_name or os.path.basename(source.split("?")[0]) or None
             else:
                 path = source.removeprefix("file://")
                 mime_type = mimetypes.guess_type(path)[0] or default_mime
+                name = file_name or os.path.basename(path) or None
                 with open(path, "rb") as f:
                     content_url = f"data:{mime_type};base64,{base64.b64encode(f.read()).decode()}"
-            activity = MessageActivityInput().add_attachments(Attachment(content_type=mime_type, content_url=content_url))
+            activity = MessageActivityInput().add_attachments(
+                Attachment(content_type=mime_type, content_url=content_url, name=name))
             if caption:
                 activity = activity.add_text(caption)
             result = await self._send_via_conv_ref(chat_id, activity, activity)
@@ -778,11 +1504,564 @@ class TeamsAdapter(BasePlatformAdapter):
 
     async def send_document(self, chat_id: str, file_path: str, caption: Optional[str] = None, file_name: Optional[str] = None,
                             reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, **kwargs) -> SendResult:
-        return await self._send_media_attachment(
-            chat_id, file_path, "application/octet-stream", caption=caption, media_label="document")
+        """Send a file. Personal chats use FileConsent; channel/group local files are
+        inlined when they are small text, otherwise uploaded via Graph/SharePoint
+        (Bot Framework document attachments 400 in channels). Remote URLs stay attachments."""
+        if file_path.startswith(("http://", "https://")):
+            return await self._send_media_attachment(
+                chat_id, file_path, "application/octet-stream", caption=caption,
+                media_label="document", file_name=file_name)
+        conv_type = self._conversation_type(chat_id)
+        if conv_type and conv_type != "personal":
+            return await self._send_channel_document(
+                chat_id, file_path, caption=caption, file_name=file_name)
+        return await self._send_file_consent(
+            chat_id, file_path, caption=caption, file_name=file_name)
+
+    async def _send_channel_document(
+        self, chat_id: str, file_path: str, *, caption: Optional[str] = None, file_name: Optional[str] = None,
+    ) -> SendResult:
+        """Channel/group file send: inline small text, else Graph → SharePoint link.
+
+        Never base64 document attachments (Bot Framework returns 400 in channels).
+        """
+        path = file_path.removeprefix("file://")
+        name = file_name or os.path.basename(path) or "file"
+        if _is_inlineable_channel_document(path, name):
+            text = _read_inline_channel_text(path)
+            if text is not None:
+                language = os.path.splitext(name)[1].lstrip(".").lower()
+                body = f"**{name}**\n\n{_fence_channel_text(text, language=language)}"
+                if caption:
+                    body = f"{caption}\n\n{body}"
+                return await self.send(chat_id, body)
+        return await self._send_channel_document_via_graph(
+            chat_id, path, caption=caption, file_name=name)
+
+    def _remember_graph_file_target(self, chat_id: str, activity: Any) -> None:
+        """Stash Graph team/channel/chat ids from inbound channelData for later uploads."""
+        from plugins.platforms.teams.graph_files import extract_graph_file_target
+        target = extract_graph_file_target(activity)
+        if target is not None:
+            self._graph_file_targets[chat_id] = target
+
+    def _graph_client_for_files(self) -> Any:
+        """Injected client, ``False`` to disable, or app-only Graph credentials."""
+        injected = self._graph_client
+        if injected is not None:
+            return None if injected is False else injected
+        from plugins.platforms.teams.graph_files import resolve_graph_credentials
+        from tools.microsoft_graph_auth import MicrosoftGraphTokenProvider
+        from tools.microsoft_graph_client import MicrosoftGraphClient
+        creds = resolve_graph_credentials(
+            teams_tenant_id=self._tenant_id or "",
+            teams_client_id=self._client_id or "",
+            teams_client_secret=self._client_secret or "",
+        )
+        if creds is None:
+            return None
+        return MicrosoftGraphClient(MicrosoftGraphTokenProvider(creds))
+
+    def _graph_file_target_for(self, chat_id: str) -> Any:
+        from plugins.platforms.teams.graph_files import resolve_graph_file_target
+        extra_team = str(
+            self._extra.get("team_id") or _get_scoped_secret("TEAMS_TEAM_ID", "") or ""
+        ).strip()
+        extra_channel = str(
+            self._extra.get("channel_id") or _get_scoped_secret("TEAMS_CHANNEL_ID", "") or ""
+        ).strip()
+        return resolve_graph_file_target(
+            chat_id,
+            conv_type=self._conversation_type(chat_id),
+            cached=self._graph_file_targets.get(chat_id),
+            extra_team_id=extra_team,
+            extra_channel_id=extra_channel,
+        )
+
+    async def _channel_file_failure(self, chat_id: str, name: str, note: str) -> SendResult:
+        text = f"`{name}` — {note}"
+        with suppress(Exception):
+            await self.send(chat_id, text)
+        return SendResult(success=False, error=text)
+
+    async def _send_channel_document_via_graph(
+        self, chat_id: str, path: str, *, caption: Optional[str] = None, file_name: str,
+    ) -> SendResult:
+        """Upload a binary (or oversized text) file via Graph and post a SharePoint link."""
+        import mimetypes
+        from plugins.platforms.teams.graph_files import (
+            GraphFileTargetError, GraphFileUploadError, markdown_file_link, upload_conversation_file,
+        )
+        from tools.microsoft_graph_auth import MicrosoftGraphAuthError, MicrosoftGraphConfigError
+        from tools.microsoft_graph_client import MicrosoftGraphAPIError, MicrosoftGraphClientError
+
+        try:
+            size = os.path.getsize(path)
+        except OSError as e:
+            return SendResult(success=False, error=f"Cannot read file: {e}")
+        if size > _MAX_FILE_SEND_BYTES:
+            return await self._channel_file_failure(
+                chat_id, file_name,
+                f"File exceeds Teams send limit ({_MAX_FILE_SEND_BYTES // (1024 * 1024)} MB). "
+                "FileConsent cards work only in a 1:1 chat with the bot.")
+        if size == 0:
+            return await self._channel_file_failure(
+                chat_id, file_name, "File is empty. FileConsent cards work only in a 1:1 chat with the bot.")
+        try:
+            with open(path, "rb") as fh:
+                data = fh.read()
+        except OSError as e:
+            return SendResult(success=False, error=f"Cannot read file: {e}")
+
+        client = self._graph_client_for_files()
+        if client is None:
+            return await self._channel_file_failure(chat_id, file_name, _CHANNEL_FILE_GRAPH_NOT_CONFIGURED)
+        target = self._graph_file_target_for(chat_id)
+        if target is None:
+            return await self._channel_file_failure(chat_id, file_name, _CHANNEL_FILE_GRAPH_NO_TARGET)
+        mime_type = mimetypes.guess_type(file_name or path)[0] or "application/octet-stream"
+        try:
+            uploaded = await upload_conversation_file(
+                client, target, file_name=file_name, data=data, content_type=mime_type)
+        except MicrosoftGraphConfigError:
+            return await self._channel_file_failure(chat_id, file_name, _CHANNEL_FILE_GRAPH_NOT_CONFIGURED)
+        except MicrosoftGraphAPIError as e:
+            detail = str(e)
+            if e.status_code in (401, 403):
+                note = _CHANNEL_FILE_GRAPH_PERMISSIONS.format(status=e.status_code, detail=detail)
+            else:
+                note = _CHANNEL_FILE_GRAPH_FAILED.format(detail=detail)
+            logger.warning("[teams] Graph channel file upload failed: %s", e)
+            return await self._channel_file_failure(chat_id, file_name, note)
+        except (MicrosoftGraphAuthError, MicrosoftGraphClientError, GraphFileUploadError, GraphFileTargetError) as e:
+            logger.warning("[teams] Graph channel file upload failed: %s", e)
+            return await self._channel_file_failure(
+                chat_id, file_name, _CHANNEL_FILE_GRAPH_FAILED.format(detail=str(e)))
+        except Exception as e:
+            logger.error("[teams] Graph channel file upload failed: %s", e, exc_info=True)
+            return await self._channel_file_failure(
+                chat_id, file_name, _CHANNEL_FILE_GRAPH_FAILED.format(detail=str(e)))
+
+        url = uploaded.link
+        body = f"**{uploaded.name}**\n{markdown_file_link(uploaded.name, url)}"
+        if caption:
+            body = f"{caption}\n\n{body}"
+        return await self.send(chat_id, body)
+
+    def _conversation_type(self, chat_id: str) -> Optional[str]:
+        """Cached conversation_type for ``chat_id``, or ``None`` when unseen this process."""
+        ref = self._conv_ref_for(chat_id)
+        conv = getattr(ref, "conversation", None)
+        cached_type = getattr(conv, "conversation_type", None) or getattr(conv, "conversationType", None)
+        if cached_type:
+            return cached_type
+        target = self._graph_file_targets.get(chat_id)
+        return getattr(target, "conversation_type", None)
 
     async def get_chat_info(self, chat_id: str) -> dict:
         return {"name": chat_id, "type": "unknown", "chat_id": chat_id}
+
+    # -- File consent (personal-chat native file send) --
+
+    def _remember_pending_upload(self, file_id: str, payload: Dict[str, Any]) -> None:
+        while len(self._pending_upload_ids) >= _PENDING_UPLOAD_MAX:
+            old = self._pending_upload_ids.popleft()
+            self._pending_uploads.pop(old, None)
+        self._pending_uploads[file_id] = payload
+        self._pending_upload_ids.append(file_id)
+
+    async def _send_file_consent(
+        self, chat_id: str, file_path: str, *, caption: Optional[str] = None, file_name: Optional[str] = None,
+    ) -> SendResult:
+        """Offer a FileConsentCard; the file lands in OneDrive after the user taps Accept."""
+        if not self._app:
+            return SendResult(success=False, error="Teams app not initialized")
+        path = file_path.removeprefix("file://")
+        try:
+            size = os.path.getsize(path)
+        except OSError as e:
+            return SendResult(success=False, error=f"Cannot read file: {e}")
+        if size > _MAX_FILE_SEND_BYTES:
+            return SendResult(
+                success=False,
+                error=f"File exceeds Teams send limit ({_MAX_FILE_SEND_BYTES // (1024 * 1024)} MB)")
+        try:
+            with open(path, "rb") as fh:
+                data = fh.read()
+        except OSError as e:
+            return SendResult(success=False, error=f"Cannot read file: {e}")
+        name = file_name or os.path.basename(path) or "file"
+        file_id = uuid.uuid4().hex
+        self._remember_pending_upload(file_id, {"name": name, "bytes": data})
+        try:
+            from microsoft_teams.api import Attachment, MessageActivityInput
+            activity = MessageActivityInput().add_attachments(Attachment(
+                content_type=_CONTENT_TYPE_FILE_CONSENT,
+                name=name,
+                content={
+                    "description": caption or name,
+                    "sizeInBytes": size,
+                    "acceptContext": {"file_id": file_id},
+                    "declineContext": {"file_id": file_id},
+                },
+            ))
+            if caption:
+                activity = activity.add_text(caption)
+            result = await self._send_via_conv_ref(chat_id, activity, activity)
+            return SendResult(success=True, message_id=getattr(result, "id", None))
+        except Exception as e:
+            self._pending_uploads.pop(file_id, None)
+            logger.error("[teams] send_document (file consent) failed: %s", e, exc_info=True)
+            return SendResult(success=False, error=str(e), retryable=True)
+
+    async def _on_file_consent(self, ctx) -> None:
+        """Handle ``fileConsent/invoke`` accept/decline from a FileConsentCard."""
+        activity = ctx.activity
+        value = getattr(activity, "value", None)
+        action = _normalize_consent_action(_invoke_field(value, "action"))
+        logger.info("[teams] file consent invoke action=%s", action or "(empty)")
+        context = _invoke_field(value, "context") or {}
+        file_id = _invoke_field(context, "file_id", "fileId") if context is not None else None
+        chat_id = getattr(getattr(activity, "conversation", None), "id", None)
+        card_id = _consent_card_activity_id(activity)
+        denied = self._card_action_denied(getattr(activity, "from_", None))
+        if denied:
+            logger.warning("[teams] file consent rejected: %s", denied)
+            await self._dismiss_consent_card(chat_id, card_id)
+            return
+        if action == "decline":
+            if file_id:
+                self._pending_uploads.pop(str(file_id), None)
+            if chat_id:
+                with suppress(Exception):
+                    await self.send(str(chat_id), "File upload declined.")
+            await self._dismiss_consent_card(chat_id, card_id)
+            return
+        if action != "accept":
+            return
+        upload_info = _invoke_field(value, "upload_info", "uploadInfo")
+        upload_url = _invoke_field(upload_info, "upload_url", "uploadUrl") if upload_info is not None else None
+        if not upload_url or not _is_allowed_onedrive_upload_url(str(upload_url)):
+            logger.warning("[teams] file consent accept with missing/unsafe upload URL")
+            return
+        from tools.url_safety import is_safe_url
+        if not is_safe_url(str(upload_url)):
+            logger.warning("[teams] file consent upload URL failed SSRF check")
+            return
+        pending = self._pending_uploads.pop(str(file_id), None) if file_id else None
+        if not pending:
+            if chat_id:
+                with suppress(Exception):
+                    await self.send(str(chat_id), "That file is no longer available to upload.")
+            await self._dismiss_consent_card(chat_id, card_id)
+            return
+        try:
+            await self._upload_consented_file(str(upload_url), pending["bytes"])
+            await self._send_file_info_card(str(chat_id), upload_info, pending["name"])
+        except Exception as e:
+            logger.error("[teams] file consent upload failed: %s", e, exc_info=True)
+            if chat_id:
+                with suppress(Exception):
+                    await self.send(str(chat_id), "File upload failed.")
+            await self._dismiss_consent_card(chat_id, card_id)
+            return
+        await self._dismiss_consent_card(chat_id, card_id)
+
+    async def _dismiss_consent_card(self, chat_id: Optional[str], activity_id: Optional[str]) -> None:
+        """Delete the FileConsentCard so Accept/Decline cannot be clicked again.
+
+        Uses ``api.conversations.activities(chat_id).delete`` — the same client as
+        streaming ``edit_message`` (``activities.update``). Failures are logged and
+        never fail the upload path.
+        """
+        if not chat_id or not activity_id:
+            return
+        try:
+            conv_id, ops = self._conversation_activity_ops(chat_id)
+            delete_fn = getattr(ops, "delete", None) if ops is not None else None
+            if callable(delete_fn):
+                result = delete_fn(str(activity_id))
+                if inspect.isawaitable(result):
+                    await result
+                return
+            await self._delete_activity_via_rest(conv_id, str(activity_id))
+        except Exception as e:
+            logger.debug("[teams] file consent card dismiss failed: %s", e)
+
+    def _conversation_activity_ops(self, chat_id: str) -> tuple[str, Any]:
+        """``(flat conversation id, SDK activities client or None)``."""
+        conv_id = _flat_conversation_id(chat_id)
+        api = getattr(self._app, "api", None) if self._app else None
+        conversations = getattr(api, "conversations", None) if api is not None else None
+        activities_fn = getattr(conversations, "activities", None) if conversations is not None else None
+        if not callable(activities_fn):
+            return conv_id, None
+        return conv_id, activities_fn(str(conv_id))
+
+    async def _update_activity(self, chat_id: str, activity_id: str, text: str) -> None:
+        """PUT the activity via the SDK client, else Bot Framework REST."""
+        conv_id, ops = self._conversation_activity_ops(chat_id)
+        if not _TEAMS_CONV_ID_RE.match(conv_id) or not _TEAMS_CONV_ID_RE.match(activity_id):
+            raise ValueError("conversation/activity id outside the Bot Framework charset")
+        update_fn = getattr(ops, "update", None) if ops is not None else None
+        if callable(update_fn):
+            from microsoft_teams.api import MessageActivityInput
+            activity = MessageActivityInput()
+            adder = getattr(activity, "add_text", None) or getattr(activity, "with_text", None)
+            if callable(adder):
+                activity = adder(text) or activity
+            with suppress(Exception):
+                activity.id = str(activity_id)
+            result = update_fn(str(activity_id), activity)
+            if inspect.isawaitable(result):
+                await result
+            return
+        await self._update_activity_via_rest(conv_id, activity_id, text)
+
+    async def _update_activity_via_rest(self, conversation_id: str, activity_id: str, text: str) -> None:
+        """PUT ``/v3/conversations/{id}/activities/{id}`` (ConversationActivityClient.update)."""
+        import httpx
+        conv_id = _flat_conversation_id(conversation_id)
+        if not _TEAMS_CONV_ID_RE.match(conv_id) or not _TEAMS_CONV_ID_RE.match(activity_id):
+            raise ValueError("conversation/activity id outside the Bot Framework charset")
+        token = await self._get_botframework_token()
+        url = _bf_activity_url(self._service_url_for(conversation_id), conv_id, activity_id)
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        payload = {"type": "message", "id": activity_id, "text": text, "textFormat": "markdown"}
+        async with httpx.AsyncClient(timeout=15.0, trust_env=gateway_trust_env()) as client:
+            response = await client.put(url, json=payload, headers=headers)
+            if response.status_code == 429:
+                raise httpx.HTTPStatusError(
+                    f"Teams activity update rate-limited ({response.status_code})",
+                    request=response.request, response=response)
+            response.raise_for_status()
+
+    async def _delete_activity_via_rest(self, chat_id: str, activity_id: str) -> None:
+        """DELETE ``/v3/conversations/{id}/activities/{id}`` (ConversationActivityClient.delete)."""
+        import httpx
+        conv_id = _flat_conversation_id(chat_id)
+        if not _TEAMS_CONV_ID_RE.match(conv_id) or not _TEAMS_CONV_ID_RE.match(activity_id):
+            raise ValueError("conversation/activity id outside the Bot Framework charset")
+        token = await self._get_botframework_token()
+        url = _bf_activity_url(self._service_url_for(chat_id), conv_id, activity_id)
+        headers = {"Authorization": f"Bearer {token}"}
+        async with httpx.AsyncClient(timeout=15.0, trust_env=gateway_trust_env()) as client:
+            response = await client.delete(url, headers=headers)
+            response.raise_for_status()
+
+    async def _upload_consented_file(self, upload_url: str, data: bytes) -> None:
+        """PUT file bytes into the OneDrive upload session Teams returned on accept."""
+        from tools.url_safety import create_ssrf_safe_async_client
+        from gateway.platforms.base import _ssrf_redirect_guard
+        size = len(data)
+        headers = {
+            "Content-Type": "application/octet-stream",
+            "Content-Length": str(size),
+            "Content-Range": f"bytes 0-{size - 1}/{size}",
+        }
+        async with create_ssrf_safe_async_client(
+            timeout=60.0, follow_redirects=True, event_hooks={"response": [_ssrf_redirect_guard]},
+        ) as client:
+            response = await client.put(upload_url, content=data, headers=headers)
+            response.raise_for_status()
+
+    async def _send_file_info_card(self, chat_id: str, upload_info: Any, fallback_name: str) -> None:
+        """Notify the user with a FileInfoCard after a successful consent upload."""
+        from microsoft_teams.api import Attachment, MessageActivityInput
+        name = _invoke_field(upload_info, "name") or fallback_name
+        content_url = _invoke_field(upload_info, "content_url", "contentUrl")
+        unique_id = _invoke_field(upload_info, "unique_id", "uniqueId")
+        file_type = _invoke_field(upload_info, "file_type", "fileType")
+        activity = MessageActivityInput().add_attachments(Attachment(
+            content_type=_CONTENT_TYPE_FILE_INFO,
+            name=name,
+            content_url=content_url,
+            content={"uniqueId": unique_id, "fileType": file_type},
+        ))
+        if name:
+            activity = activity.add_text(f"**{name}** uploaded.")
+        await self._send_via_conv_ref(chat_id, activity, activity)
+
+    # -- Reactions --
+
+    def _reactions_enabled(self) -> bool:
+        """Processing-lifecycle reactions: scoped ``TEAMS_REACTIONS`` → ``extra.reactions`` → on.
+
+        Agent-facing ``add_reaction`` / ``remove_reaction`` (send_message action=react) are
+        NOT gated — they are deliberate intents, same as Photon.
+        """
+        configured = _extra_or_secret(self.config.extra, "reactions", "TEAMS_REACTIONS", True)
+        if isinstance(configured, bool):
+            return configured
+        return str(configured).strip().lower() not in {"false", "0", "no", "off"}
+
+    def _service_url_for(self, chat_id: str) -> str:
+        """Bot Framework service URL for this conversation (conv-ref, else the allowlisted default)."""
+        ref = self._conv_ref_for(chat_id)
+        raw = getattr(ref, "service_url", None) or _DEFAULT_TEAMS_SERVICE_URL
+        return _validate_teams_service_url(str(raw)) or _DEFAULT_TEAMS_SERVICE_URL
+
+    async def _react(self, chat_id: str, message_id: str, reaction_type: str, *, remove: bool) -> bool:
+        """Add or remove a Teams reaction via the SDK client, else Bot Framework REST."""
+        conv_id = _flat_conversation_id(chat_id)
+        if not self._app or not conv_id or not message_id or not _REACTION_TYPE_RE.match(reaction_type):
+            return False
+        api = getattr(self._app, "api", None)
+        reactions = getattr(api, "reactions", None) if api is not None else None
+        method_name = "delete" if remove else "add"
+        sdk_fn = getattr(reactions, method_name, None)
+        try:
+            if callable(sdk_fn):
+                await sdk_fn(conv_id, message_id, reaction_type)
+            else:
+                await self._react_via_rest(conv_id, message_id, reaction_type, remove=remove)
+        except Exception as e:
+            logger.debug("[teams] reaction %s failed (%s): %s", method_name, reaction_type, e)
+            return False
+        key = (str(chat_id), str(message_id))
+        if remove:
+            if self._bot_reactions.get(key) == reaction_type:
+                self._bot_reactions.pop(key, None)
+        else:
+            self._bot_reactions[key] = reaction_type
+        return True
+
+    async def _react_via_rest(self, chat_id: str, message_id: str, reaction_type: str, *, remove: bool) -> None:
+        """PUT/DELETE ``/v3/conversations/{id}/activities/{id}/reactions/{type}`` (SDK ReactionClient)."""
+        import httpx
+        conv_id = _flat_conversation_id(chat_id)
+        if not _TEAMS_CONV_ID_RE.match(conv_id) or not _TEAMS_CONV_ID_RE.match(message_id):
+            raise ValueError("conversation/activity id outside the Bot Framework charset")
+        token = await self._get_botframework_token()
+        url = (
+            f"{_bf_activity_url(self._service_url_for(chat_id), conv_id, message_id)}"
+            f"/reactions/{quote(reaction_type, safe='')}"
+        )
+        headers = {"Authorization": f"Bearer {token}"}
+        async with httpx.AsyncClient(timeout=15.0, trust_env=gateway_trust_env()) as client:
+            response = await (client.delete(url, headers=headers) if remove else client.put(url, headers=headers))
+            response.raise_for_status()
+
+    async def _add_reaction(self, chat_id: str, message_id: str, emoji: str) -> bool:
+        """Lifecycle hook: add ``emoji`` (unicode or Teams id) on a message."""
+        rtype = _to_teams_reaction_type(emoji)
+        if not rtype:
+            return False
+        return await self._react(chat_id, message_id, rtype, remove=False)
+
+    async def _remove_reaction(self, chat_id: str, message_id: str, emoji: Optional[str] = None) -> bool:
+        """Lifecycle hook: remove a reaction. Bare call removes the in-progress 👀 (or last bot set)."""
+        rtype = _to_teams_reaction_type(emoji) if emoji else (
+            self._bot_reactions.get((str(chat_id), str(message_id)))
+            or _to_teams_reaction_type(self._ACK_EMOJI)
+        )
+        if not rtype:
+            return False
+        return await self._react(chat_id, message_id, rtype, remove=True)
+
+    async def on_processing_start(self, event: MessageEvent) -> None:
+        """👀 while the agent works (gated by TEAMS_REACTIONS)."""
+        if not self._reactions_enabled():
+            return
+        chat_id = getattr(event.source, "chat_id", None)
+        message_id = getattr(event, "message_id", None)
+        if chat_id and message_id:
+            await self._add_reaction(str(chat_id), str(message_id), self._ACK_EMOJI)
+
+    async def add_reaction(self, chat_id: str, emoji: str, message_id: Optional[str] = None) -> Dict[str, Any]:
+        """Agent-facing react (send_message action='react'); not gated by TEAMS_REACTIONS."""
+        target = message_id or self._last_inbound_by_chat.get(str(chat_id))
+        if not target:
+            return {"success": False, "error": "no message to react to — pass message_id (no "
+                    "inbound message seen in this chat since the gateway started)"}
+        rtype = _to_teams_reaction_type(emoji)
+        if not rtype:
+            return {"success": False, "error": f"unsupported Teams reaction {emoji!r}"}
+        if not await self._react(chat_id, target, rtype, remove=False):
+            return {"success": False, "error": "reaction failed (see gateway debug log)"}
+        return {"success": True, "message_id": target, "reaction": rtype}
+
+    async def remove_reaction(self, chat_id: str, message_id: Optional[str] = None,
+                              emoji: Optional[str] = None) -> Dict[str, Any]:
+        """Agent-facing unreact (send_message action='unreact')."""
+        target = message_id or self._last_inbound_by_chat.get(str(chat_id))
+        if not target:
+            return {"success": False, "error": "no message to unreact — pass message_id"}
+        if not await self._remove_reaction(chat_id, target, emoji):
+            return {"success": False, "error": "unreact failed (see gateway debug log)"}
+        return {"success": True, "message_id": target}
+
+    async def _on_message_reaction(self, ctx) -> None:
+        """Inbound ``messageReaction`` → gateway reaction hooks + platform-event envelope."""
+        activity = ctx.activity
+        recipient_id = getattr(getattr(activity, "recipient", None), "id", None)
+        bot_ids = {i for i in (self._app.id if self._app else None, recipient_id) if isinstance(i, str) and i}
+        bot_ids |= {f"28:{i}" for i in tuple(bot_ids) if not i.startswith("28:")}
+        from_account = getattr(activity, "from_", None)
+        user_id = getattr(from_account, "aad_object_id", None) or getattr(from_account, "id", "")
+        if str(user_id) in bot_ids or getattr(from_account, "id", None) in bot_ids:
+            return
+        conv = getattr(activity, "conversation", None)
+        conv_id = getattr(conv, "id", None)
+        message_id = getattr(activity, "reply_to_id", None) or getattr(activity, "id", None)
+        if not conv_id or not message_id:
+            return
+        added = list(getattr(activity, "reactions_added", None) or [])
+        removed = list(getattr(activity, "reactions_removed", None) or [])
+        source = self.build_source(
+            chat_id=str(conv_id),
+            chat_name=getattr(conv, "name", None) or "",
+            chat_type=_CHAT_TYPES.get(getattr(conv, "conversation_type", None) or "", "dm"),
+            user_id=str(user_id),
+            user_name=getattr(from_account, "name", None) or "",
+            guild_id=getattr(conv, "tenant_id", None) or self._tenant_id,
+            message_id=str(message_id))
+        for reaction, event_name in (
+            *((r, "reaction:added") for r in added),
+            *((r, "reaction:removed") for r in removed),
+        ):
+            rtype = getattr(reaction, "type", None) if not isinstance(reaction, dict) else reaction.get("type")
+            emoji = _reaction_to_emoji(str(rtype) if rtype else "")
+            if not emoji:
+                continue
+            await self._emit_reaction_event(
+                event_name, emoji, str(rtype or emoji), source, activity)
+
+    async def _emit_reaction_event(
+        self, event_name: str, emoji: str, reaction_type: str, source, raw_activity: Any,
+    ) -> None:
+        """Fan a reaction out to the gateway hook (Slack shape) and platform-event plugins."""
+        handler = getattr(self, "_reaction_handler", None)
+        if handler is not None:
+            try:
+                await handler({
+                    "platform": "teams", "event_name": event_name, "reaction": emoji,
+                    "user_id": source.user_id, "item_user_id": None,
+                    "channel_id": source.chat_id, "message_ts": source.message_id,
+                    "event_ts": getattr(raw_activity, "id", None), "raw_event": raw_activity,
+                    "reaction_type": reaction_type,
+                })
+            except Exception:
+                logger.debug("[teams] reaction hook forwarding failed", exc_info=True)
+        platform_handler = getattr(self, "_platform_event_handler", None)
+        if platform_handler is None:
+            return
+        try:
+            from hermes_cli.lifecycle import has_hook
+            if not has_hook("gateway_platform_event"):
+                return
+            envelope = {
+                "platform": "teams",
+                "event_type": "reaction",
+                "payload": {
+                    "emojis": [emoji], "chat_id": source.chat_id,
+                    "message_id": str(source.message_id or ""), "thread_id": None,
+                    "event_name": event_name, "reaction_type": reaction_type,
+                },
+            }
+            await platform_handler(envelope, source)
+        except Exception:
+            logger.debug("[teams] gateway_platform_event reaction dispatch failed", exc_info=True)
 
 
 _SETUP_CREDENTIALS = (

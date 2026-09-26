@@ -327,4 +327,57 @@ describe('disband', () => {
     expect('Build' in room.chat.$groupChats.get()).toBe(false)
     expect('Build' in durable(room)).toBe(false)
   })
+
+  it('interrupts the member mid-turn when the room is disbanded', async () => {
+    const room = await loadRoom()
+    const member = { name: 'research', title: '' }
+    room.chat.$groupChats.set({
+      Live: {
+        epoch: 3,
+        log: [{ at: 1, from: { kind: 'user', name: 'You' }, id: 'l1', text: 'kick off', thread: 't1' }],
+        running: true,
+        sessions: { 'thread:t1::research': 'live-research-sid' },
+        stranded: { research: { before: 1, thread: 't1', turn: 'tok-1' } },
+        turn: member,
+        watermarks: {}
+      }
+    } as unknown as Record<string, GroupChat>)
+
+    await room.view.disbandGroupChat('Live', [{ name: 'research' }])
+
+    // The in-flight turn dies with the room: the member on turn gets the same
+    // session.interrupt the room's Stop button issues.
+    const interrupts = room.gateway.rpcFor('session.interrupt')
+
+    expect(interrupts).toHaveLength(1)
+    expect(interrupts[0].params.session_id).toBe('live-research-sid')
+
+    // The tombstone also stamps the disband's epoch as a Stop, so a poll loop
+    // already inside the interrupted turn abandons it on its staleness check.
+    const tomb = room.chat.$groupChats.get().Live
+
+    expect(tomb.stoppedEpoch).toBe(4)
+    expect(tomb.epoch).toBe(4)
+    expect(tomb.tombstone).toBe(true)
+  })
+
+  it('disbands a mid-turn room without any interrupt when no session resolves', async () => {
+    const room = await loadRoom()
+    const member = { name: 'research', title: '' }
+    room.chat.$groupChats.set({
+      Live: {
+        epoch: 2,
+        log: [],
+        running: true,
+        sessions: {},
+        turn: member,
+        watermarks: {}
+      }
+    } as unknown as Record<string, GroupChat>)
+
+    await room.view.disbandGroupChat('Live', [{ name: 'research' }])
+
+    expect(room.gateway.rpcFor('session.interrupt')).toHaveLength(0)
+    expect(room.chat.$groupChats.get().Live.stoppedEpoch).toBe(3)
+  })
 })

@@ -366,8 +366,16 @@ supermemory = ["supermemory==3.50.0"]
 # mem0ai pulls qdrant-client → grpcio, which has no win_arm64 wheel — same
 # win32-arm64 gate as google-chat. mem0 is lazy-installed, so on arm64 the
 # provider is simply unavailable.
+# The OSS backends' SDKs ride here too: mem0ai leaves ollama (Ollama LLM /
+# embedder) and psycopg2 (pgvector) undeclared, and the pip_dep tags in
+# plugins/memory/mem0/_oss_providers.py are advisory only — without these
+# entries a runtime rebuild drops them and mem0ai's lazy-install input()
+# prompt reads EOF in the gateway (#122242). Same gate: the extra is
+# unavailable on win_arm64 either way, so the gate test stays consistent.
 mem0 = [
   "mem0ai==2.0.10; platform_machine != 'ARM64' or sys_platform != 'win32'",
+  "ollama==0.6.2; platform_machine != 'ARM64' or sys_platform != 'win32'",
+  "psycopg2-binary==2.9.13; platform_machine != 'ARM64' or sys_platform != 'win32'",
 ]
 # Image resize recovery for the vision tools. Pillow is now a CORE dependency
 # (see the main `dependencies` list above) since the byte/pixel shrink paths are on
@@ -741,6 +749,7 @@ modal = false
 nemo-relay = false
 neutts = "2026-07-22T14:54:23Z"
 numpy = false
+ollama = false
 openai = false
 opentelemetry-exporter-otlp-proto-http = false
 opentelemetry-sdk = false
@@ -751,6 +760,7 @@ pillow = false
 piper-tts = "2026-09-04T16:47:32Z"
 prompt-toolkit = false
 psutil = false
+psycopg2-binary = false
 pvporcupine = false
 pyasn1 = false
 pydantic = false

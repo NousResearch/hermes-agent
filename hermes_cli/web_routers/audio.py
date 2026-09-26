@@ -622,6 +622,8 @@ async def converse_ws(ws: "WebSocket") -> None:
             await ws.send_json({"type": "error", "error": "bad_start"})
             await ws.close(code=4400)
         return
+    import time as _time
+    server_recv_unix_ms = int(_time.time() * 1000)  # when the start frame arrived
 
     from tools.voice_converse_loop import parse_start_config
 
@@ -663,6 +665,9 @@ async def converse_ws(ws: "WebSocket") -> None:
         "type": "ready",
         "input": {"sample_rate": input_rate, "format": "pcm16", "block_ms": 30},
         "output": {"sample_rate": output_rate, "format": "pcm16"},
+        "session_id": session.session_id,
+        "server_recv_unix_ms": server_recv_unix_ms,
+        "server_send_unix_ms": int(_time.time() * 1000),
     })
 
     session.start()

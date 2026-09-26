@@ -590,8 +590,12 @@ def test_drive_converse_turns_control_frame_ordering():
     # transcript -> thinking -> speaking -> PCM bytes -> turn_done, in that exact order.
     types = [f.get("type") if isinstance(f, dict) else "bytes" for f in sent]
     assert types == ["transcript", "thinking", "speaking", "bytes", "turn_done"]
-    assert sent[0] == {"type": "transcript", "text": "hello there."}
+    assert sent[0]["type"] == "transcript" and sent[0]["text"] == "hello there."
     assert sent[3] == ("bytes", b"Hi back.")
+    # Every turn frame carries the same turn_id (correlation id, present even with tracing off).
+    turn_ids = {f["turn_id"] for f in sent if isinstance(f, dict) and "turn_id" in f}
+    assert len(turn_ids) == 1
+    assert sent[0]["turn_id"] and sent[-1]["turn_id"] == sent[0]["turn_id"]
     # The turn was recorded in history (user + assistant).
     assert history == [
         {"role": "user", "content": "hello there."},
@@ -654,9 +658,51 @@ def test_drive_converse_turns_stop_word_ends_exchange(monkeypatch):
 
     types = [f.get("type") if isinstance(f, dict) else "bytes" for f in sent]
     assert types == ["transcript", "stop_word"]
-    assert sent[1] == {"type": "stop_word", "text": "goodbye"}
+    assert sent[1]["type"] == "stop_word" and sent[1]["text"] == "goodbye"
     assert history == []  # the stop phrase never became a turn
     assert getattr(session, "turns_begun", 0) == 0  # a stop-word does not begin a turn
+
+
+def test_drive_converse_turns_times_out_hung_turn(monkeypatch):
+    # A hung agent turn (LLM call that never returns, no error) must not wedge the socket: the
+    # driver abandons it at the deadline and STILL emits an error + turn_done so the client
+    # returns to listening instead of "thinking" forever.
+    monkeypatch.setattr("tools.voice_converse_loop._resolve_turn_timeout", lambda: 0.3)
+    session = _FakeConverseSession(["are you there?"])
+    sent: list = []
+
+    async def _sj(o):
+        sent.append(o)
+
+    async def _sb(d):
+        sent.append(("bytes", d))
+
+    async def _hang(transcript, on_delta, *, interrupted):
+        await asyncio.Event().wait()  # never completes
+        return "", None
+
+    async def _main():
+        loop = asyncio.get_running_loop()
+        await drive_converse_turns(
+            session=session, synth=_EchoSynth(), cap=4000, loop=loop,
+            send_json=_sj, send_bytes=_sb, run_turn=_hang, history=[], quiet_interval=0.0)
+
+    asyncio.run(_main())
+    types = [f.get("type") if isinstance(f, dict) else "bytes" for f in sent]
+    assert "error" in types              # the hang surfaced as an error
+    assert types[-1] == "turn_done"      # and the turn ALWAYS ends
+
+
+def test_drive_converse_turns_flushes_queue_on_signoff():
+    # When the agent signs off (expects_more=False), utterances that queued behind the turn must
+    # be dropped, not run — otherwise their replies arrive after the client has slept.
+    session = _FakeConverseSession(["are we done?", "a queued leftover"])
+    sent = _run_driver(session, [], ["All set. Over and out."], quiet_interval=1.0)
+
+    transcripts = [f["text"] for f in sent if isinstance(f, dict) and f.get("type") == "transcript"]
+    assert transcripts == ["are we done?"]          # the leftover never became a turn
+    turn_dones = [f for f in sent if isinstance(f, dict) and f.get("type") == "turn_done"]
+    assert len(turn_dones) == 1 and turn_dones[0].get("expects_more") is False
 
 
 def test_voice_system_prompt_signoff_instruction():

@@ -157,6 +157,91 @@ def _get_tracer():
         return _tracer, _span_kind, _set_span_in_context
 
 
+def _format_traceparent(span) -> Optional[str]:
+    """W3C ``traceparent`` for a span: ``00-<trace_id:032x>-<span_id:016x>-<flags:02x>``. The
+    client roots its own turn span under this so both sides land in one trace."""
+    try:
+        ctx = span.get_span_context()
+        return f"00-{ctx.trace_id:032x}-{ctx.span_id:016x}-{int(ctx.trace_flags):02x}"
+    except Exception:  # noqa: BLE001
+        return None
+
+
+class TurnTrace:
+    """A LIVE ``voice.turn`` parent span whose ``traceparent`` is available immediately (so the
+    server can stamp it on the transcript/speaking/turn_done frames and the client's turn span
+    nests underneath). Capture/STT phases (already timed on the worker) are absorbed from the
+    bound recorder; agent/TTS phases are added as the driver learns them; :meth:`end` materializes
+    the children under the parent and closes it. A no-op stand-in (from :func:`start_turn` when
+    tracing is off) still carries a ``turn_id`` and a ``None`` ``traceparent``."""
+
+    def __init__(self, tracer, span_kind, set_ctx, parent, recorder, turn_id):
+        self._tracer, self._kind, self._set_ctx = tracer, span_kind, set_ctx
+        self._parent = parent
+        self._recorder = recorder or PhaseRecorder()
+        self.turn_id = turn_id
+        self.traceparent = _format_traceparent(parent) if parent is not None else None
+
+    def add_phase(self, name, start_ns, end_ns, **attrs):
+        self._recorder.add_phase(name, start_ns, end_ns, **attrs)
+
+    def set(self, **attrs):
+        self._recorder.set(**attrs)
+
+    def end(self, end_ns: Optional[int] = None) -> None:
+        if self._parent is None:
+            return
+        last = self._recorder.start_ns or time.time_ns()
+        try:
+            for k, v in self._recorder.turn_attrs.items():
+                pv = _primitive(v)
+                if pv is not None:
+                    self._parent.set_attribute(k, pv)
+            ctx = self._set_ctx(self._parent)
+            for ph in self._recorder.phases:
+                child = self._tracer.start_span(
+                    ph.name, context=ctx, kind=self._kind.INTERNAL, start_time=ph.start_ns)
+                try:
+                    for k, v in ph.attrs.items():
+                        pv = _primitive(v)
+                        if pv is not None:
+                            child.set_attribute(k, pv)
+                    for ev_name, ev_ts, ev_attrs in ph.events:
+                        safe = {k: _primitive(v) for k, v in ev_attrs.items()
+                                if _primitive(v) is not None}
+                        child.add_event(ev_name, safe, timestamp=ev_ts)
+                finally:
+                    child.end(end_time=ph.end_ns or ph.start_ns)
+                last = max(last, ph.end_ns or ph.start_ns)
+        except Exception as exc:  # noqa: BLE001
+            _log.debug("voice turn trace child build failed (%s)", exc, exc_info=True)
+        finally:
+            try:
+                self._parent.end(end_time=end_ns or self._recorder.end_ns or last)
+            except Exception:  # noqa: BLE001
+                _log.debug("voice turn parent end failed", exc_info=True)
+
+
+def start_turn(*, recorder: Optional["PhaseRecorder"] = None, turn_id: str,
+               **turn_attrs: Any) -> TurnTrace:
+    """Open a live ``voice.turn`` parent span rooted at the capture start (so the trace timeline
+    begins where the user began speaking), returning a :class:`TurnTrace`. When tracing is off the
+    returned trace is inert (``traceparent=None``) but still carries ``turn_id``. Never raises."""
+    tracer, span_kind, set_ctx = _get_tracer()
+    if tracer is None:
+        return TurnTrace(None, None, None, None, recorder, turn_id)
+    try:
+        start_ns = (recorder.start_ns if recorder and recorder.start_ns else time.time_ns())
+        parent = tracer.start_span("voice.turn", kind=span_kind.SERVER, start_time=start_ns)
+        tt = TurnTrace(tracer, span_kind, set_ctx, parent, recorder, turn_id)
+        for k, v in turn_attrs.items():
+            tt._recorder.set(**{k: v})
+        return tt
+    except Exception as exc:  # noqa: BLE001
+        _log.debug("voice start_turn failed (%s)", exc, exc_info=True)
+        return TurnTrace(None, None, None, None, recorder, turn_id)
+
+
 def emit_turn_trace(recorder: Optional["PhaseRecorder"]) -> None:
     """Materialize a recorder into a ``voice.turn`` span + one child span per recorded phase, with
     their explicit start/end times. No-op if there's nothing to emit or tracing is off. Never

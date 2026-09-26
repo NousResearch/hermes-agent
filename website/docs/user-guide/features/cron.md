@@ -836,6 +836,16 @@ cron:
 
 Or set the `HERMES_CRON_SCRIPT_TIMEOUT` environment variable. The resolution order is: env var → config.yaml → 3600s default.
 
+### Per-job ceiling
+
+The global value is a hard cap. Each job's script is additionally bounded by its **own** ceiling, which can only lower it:
+
+1. `timeout_s` on the job in `cron/jobs.json` (seconds), if set; otherwise
+2. the job's schedule interval — `every 15m` gets 900 s, a `*/5 * * * *` cron gets 300 s (60 s minimum) — so a wedged run can never outlive its own next fire; otherwise (one-shot jobs)
+3. the global `script_timeout_seconds`.
+
+On expiry the scheduler kills the script's whole process tree and logs `PHASE=cron_script_timeout job=<name> elapsed=<s> timeout=<s>`. A recurring script that legitimately needs longer than its interval should set `timeout_s` explicitly.
+
 Cron also bounds post-run session and agent-resource cleanup. This happens after the LLM turn returns, so it is separate from the inactivity timeout. The default is 10 seconds per cleanup operation. If a storage or client finalizer stops returning, the scheduler logs an error, releases the job's in-flight guard, and allows later runs to dispatch instead of skipping that job forever.
 
 ```yaml

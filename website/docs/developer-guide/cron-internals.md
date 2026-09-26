@@ -306,6 +306,8 @@ The script timeout defaults to 3600 seconds (1 hour). `_get_script_timeout()` re
 3. **Config** — `cron.script_timeout_seconds` in `config.yaml` (read via `load_config()`)
 4. **Default** — 3600 seconds (1 hour)
 
+`_job_script_kwargs(job)` then narrows it per job via `resolve_job_script_timeout()` in `cron/scheduler_script.py`: explicit `timeout_s` → schedule interval (`interval` minutes, or the width of the current `cron` slot; floor 60 s) → the global value. The per-job result is always clamped to the global cap, and applies to every script call site (`no_agent` jobs, pre-run scripts, `monitor_script`). A timeout logs `PHASE=cron_script_timeout job=<name> elapsed=<s> timeout=<s>`.
+
 This timeout bounds the **pre-run script only**, not the agent. Skill-based / LLM-driven jobs run on a separate *inactivity*-based budget (`HERMES_CRON_TIMEOUT`, default 600s of idle time, `0` = unlimited) — they can run for hours as long as they keep calling tools or streaming tokens, and are only killed after the configured idle period with no activity. Scripts are dispatched to a persistent thread pool (not held under the tick lock), so a long-running script does not block other due jobs from firing.
 
 On timeout or ownership cancellation, `cron.scheduler_script` uses the shared

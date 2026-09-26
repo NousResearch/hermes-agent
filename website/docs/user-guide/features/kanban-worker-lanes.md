@@ -30,7 +30,7 @@ The dispatcher matches `task.assignee` against either a Hermes profile name (the
 
 ### 2. A spawn mechanism
 
-For Hermes profile lanes, the dispatcher's `_default_spawn` runs `hermes -p <assignee> chat -q <prompt>` (or the equivalent module form when the `hermes` shim isn't on `$PATH`) inside the task's pinned workspace, with these env vars set:
+For Hermes profile lanes, the dispatcher's `_default_spawn` uses the current installation's source-aware launcher to run `hermes -p <assignee> chat -q <prompt>` inside the task's pinned workspace, with these env vars set:
 
 | Variable | Carries |
 |---|---|

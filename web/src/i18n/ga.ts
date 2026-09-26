@@ -206,6 +206,7 @@ export const ga: Translations = {
   },
 
   models: {
+    lastUsedModels: "Last 5 Models",
     modelsUsed: "Samhlacha úsáidte",
     estimatedCost: "Costas measta",
     tokens: "tokens",

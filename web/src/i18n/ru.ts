@@ -206,6 +206,7 @@ export const ru: Translations = {
   },
 
   models: {
+    lastUsedModels: "Последние 5 моделей",
     modelsUsed: "Использовано моделей",
     estimatedCost: "Оценка стоимости",
     tokens: "токены",

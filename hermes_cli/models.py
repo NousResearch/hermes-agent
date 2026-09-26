@@ -1948,6 +1948,25 @@ def update_provider_cache_entry(provider: str, models: list[str]) -> None:
         pass
 
 
+def update_custom_endpoint_cache_entry(
+    api_url: str, models: list[str], *, api_key: Any = None, api_mode: Optional[str] = None,
+    headers: Optional[dict[str, str]] = None, native_catalog: bool = False) -> None:
+    """Thread-safe single-entry update for parallel custom-endpoint prefetch workers: writes the
+    ``custom:<url>#<fp>`` row :func:`cached_fetch_api_models` reads, under the same lock as
+    :func:`update_provider_cache_entry` so concurrent fetches cannot clobber each other (or a
+    provider row written at the same moment). Best-effort, silent on any error."""
+    try:
+        normalized_url = str(api_url or "").strip().rstrip("/").lower()
+        if not normalized_url or not models:
+            return
+        fp = _custom_endpoint_fingerprint(api_key, api_mode, headers)
+        with _cache_write_lock:
+            _store_cache_entry(f"custom:{normalized_url}#{fp}",
+                               {**_cache_entry(fp, models), "native_catalog": native_catalog})
+    except Exception:
+        pass
+
+
 def _normalized_cache_slug(provider: Optional[str]) -> str:
     """``ollama`` stays a raw slug (its alias would canonicalize to ``custom``); everything else normalizes."""
     requested = str(provider or "").strip().lower()

@@ -218,10 +218,9 @@ def run_verify(
     A ``compose`` recipe refuses outright when the project already has running
     containers: ``docker compose build`` + ``up`` replaces them on an image-hash
     change, destroying any container-local state they carry -- this has caused a
-    real state-loss incident (#103567). The check is best-effort and read-only
-    (``docker compose ps``); when it cannot run at all, verify proceeds rather than
-    blocking on an unrelated environment gap, matching every other recipe kind's
-    behavior when its own tooling is unavailable."""
+    real state-loss incident (#103567). The check is read-only (``docker compose
+    ps``) and fail-closed on timeout or a non-zero result. Only a missing Docker
+    binary proceeds, because the following build would fail without mutating state."""
     root = Path(root)
     selected = tuple(phases) if phases else PHASE_ORDER + ("start",)
     result = VerifyResult(recipe_name=recipe.name)

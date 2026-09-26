@@ -25,7 +25,8 @@ from agent.i18n import t
 from gateway.config import Platform
 from gateway.restart import (
     DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT, GATEWAY_SERVICE_RESTART_EXIT_CODE,
-    effective_stop_drain_timeout, effective_stop_watchdog_delay, resolve_cron_drain_budget
+    effective_stop_drain_timeout, effective_stop_watchdog_delay, is_gateway_supervisor_process,
+    resolve_cron_drain_budget
 )
 from gateway.run_common import _UNSET
 from gateway.shutdown_watchdog import arm_shutdown_watchdog, resolve_shutdown_watchdog_delay
@@ -166,6 +167,18 @@ def _effective_watchdog_leash(runner: object) -> float:
     launchd's live ``ExitTimeOut`` minus the dump margin. Lives here (not in gateway.restart)
     because restart.py cannot import shutdown_watchdog without a cycle."""
     return effective_stop_watchdog_delay(runner, resolve_shutdown_watchdog_delay(effective_stop_drain_timeout(runner)))
+
+
+def _supervised_signal_restart(runner: Any) -> bool:
+    """True when an unplanned SIGTERM/SIGINT will be followed by a restart.
+
+    ``_signal_initiated_shutdown`` alone only says the signal was not a planned stop or takeover.
+    The process comes back only when a supervisor with a restart policy owns it (systemd,
+    launchd, s6, or ``--external-supervisor``: :func:`gateway.restart.is_gateway_supervisor_process`).
+    A signal outside that mode (a plain ``docker stop``, a shell-launched gateway, OS shutdown)
+    is a real stop, so it keeps the "shutting down" wording and writes no restart marker.
+    """
+    return bool(getattr(runner, "_signal_initiated_shutdown", False)) and is_gateway_supervisor_process()
 
 
 class GatewayShutdownMixin:
@@ -1024,7 +1037,8 @@ class GatewayShutdownMixin:
         Called at the start of stop() while adapters are connected; send failures never block shutdown.
         """
         restart_source = self._restart_command_source if self._restart_requested else None
-        msg = t("gateway.shutdown.notice_restart" if self._restart_requested else "gateway.shutdown.notice_shutdown")
+        will_restart = self._restart_requested or _supervised_signal_restart(self)
+        msg = t("gateway.shutdown.notice_restart" if will_restart else "gateway.shutdown.notice_shutdown")
         restart_key = None
         if restart_source is not None:
             with suppress(Exception):
@@ -2162,7 +2176,12 @@ class GatewayShutdownMixin:
         # Stuck-loop counter: sessions active across 3 consecutive restarts are auto-suspended next boot.
         if ctx.active_agents:
             self._increment_restart_failure_counts(set(ctx.active_agents.keys()))
-        if self._restart_requested and self._restart_command_source is None:
+        # A chat /restart (command source set) is acknowledged privately through .restart_notify.json.
+        # A source-less restart, including an unplanned signal under a supervisor that restarts us
+        # (_supervised_signal_restart), owes the home channels an "online" notice on the next boot.
+        # A planned `hermes gateway stop`, a takeover, or a signal with no restarting supervisor
+        # writes no marker.
+        if (self._restart_requested or _supervised_signal_restart(self)) and self._restart_command_source is None:
             with _log_suppressed(logging.DEBUG, "Failed to write planned restart notification marker: %s"):
                 atomic_json_write(
                     _planned_restart_notification_path(),

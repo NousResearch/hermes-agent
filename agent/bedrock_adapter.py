@@ -72,10 +72,13 @@ def scoped_aws_session_kwargs() -> Dict[str, str]:
         )
     return kwargs
 
-# Bedrock-hosted GPT-5.x models are served from the Bedrock Mantle OpenAI-compatible endpoint, not
-# Converse. Narrow allowlist so GPT-OSS models stay on the native path.
+# Bedrock-hosted GPT-5.5+ / GPT-6 models are served from the Bedrock Mantle OpenAI-compatible endpoint,
+# not Converse. Narrow allowlist so GPT-OSS models stay on the native path. Bare ids only: Mantle rejects
+# the us./global. inference-profile ids, which stay valid on Converse (#115916). GPT-6 ids are the ones
+# Mantle's /v1/models lists and answers on Responses (no gpt-6-terra there).
 BEDROCK_OPENAI_RESPONSES_MODEL_IDS: Tuple[str, ...] = (
     "openai.gpt-5.5", "openai.gpt-5.6-sol", "openai.gpt-5.6-terra", "openai.gpt-5.6-luna",
+    "openai.gpt-6-sol", "openai.gpt-6-luna",
 )
 _BEDROCK_OPENAI_HOST_RE = re.compile(r"^bedrock-mantle\.([a-z0-9-]+)\.api\.aws$", re.IGNORECASE)
 # Bedrock-hosted xAI Grok (any regional inference-profile prefix) rejects temperature/topP in Converse

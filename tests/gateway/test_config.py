@@ -984,6 +984,85 @@ class TestLoadGatewayConfig:
         load_gateway_config()
         assert os.environ.get("TELEGRAM_REQUIRE_MENTION") is None
 
+    def test_bridged_require_mention_with_telegram_block_flip_and_removal(self, tmp_path, monkeypatch):
+        """The telegram plugin hook runs before the core bridge: its top-level fallback write
+        must be bridge-tracked, or a reload after a flip or key removal leaves the first
+        bridged value pinned while the adapter keeps enforcing it."""
+        from gateway import config_loader
+        from gateway.config import Platform
+        from gateway.platform_registry import platform_registry as registry
+        from gateway.run_shutdown import GatewayShutdownMixin
+        from hermes_cli.plugins import discover_plugins
+        from plugins.platforms.telegram.adapter import TelegramAdapter
+
+        monkeypatch.setattr(config_loader, "_BRIDGED_ENV", {}, raising=False)
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("TELEGRAM_REQUIRE_MENTION", raising=False)
+
+        def write(text):
+            (hermes_home / "config.yaml").write_text(text, encoding="utf-8")
+
+        def telegram_gate():
+            config = load_gateway_config()
+            adapter = object.__new__(TelegramAdapter)
+            adapter.config = config.platforms[Platform.TELEGRAM]
+            return adapter._telegram_require_mention()
+
+        # The regression only bites when the telegram hook actually runs.
+        discover_plugins()
+        assert any(
+            e.name == "telegram" and e.apply_yaml_config_fn is not None
+            for e in registry.all_entries()
+        )
+
+        write("telegram:\n  bot_token: xyz\nrequire_mention: true\n")
+        assert telegram_gate() is True
+        assert os.environ.get("TELEGRAM_REQUIRE_MENTION") == "true"
+        assert "TELEGRAM_REQUIRE_MENTION" not in GatewayShutdownMixin._restart_watcher_env()
+
+        write("telegram:\n  bot_token: xyz\nrequire_mention: false\n")
+        assert telegram_gate() is False
+        assert os.environ.get("TELEGRAM_REQUIRE_MENTION") is None
+
+        write("telegram:\n  bot_token: xyz\nrequire_mention: true\n")
+        assert telegram_gate() is True
+        assert os.environ.get("TELEGRAM_REQUIRE_MENTION") == "true"
+
+        write("telegram:\n  bot_token: xyz\ngroup_sessions_per_user: true\n")
+        assert telegram_gate() is False
+        assert os.environ.get("TELEGRAM_REQUIRE_MENTION") is None
+
+    def test_bridged_require_mention_telegram_block_local_key_survives(self, tmp_path, monkeypatch):
+        """A telegram-block-local require_mention is the hook's own write: the core bridge
+        must leave it standing, and a reload after a block-local flip must follow it."""
+        from gateway import config_loader
+        from gateway.config import Platform
+        from plugins.platforms.telegram.adapter import TelegramAdapter
+
+        monkeypatch.setattr(config_loader, "_BRIDGED_ENV", {}, raising=False)
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("TELEGRAM_REQUIRE_MENTION", raising=False)
+
+        def write(text):
+            (hermes_home / "config.yaml").write_text(text, encoding="utf-8")
+
+        def telegram_gate():
+            config = load_gateway_config()
+            adapter = object.__new__(TelegramAdapter)
+            adapter.config = config.platforms[Platform.TELEGRAM]
+            return adapter._telegram_require_mention()
+
+        write("telegram:\n  bot_token: xyz\n  require_mention: true\n")
+        assert telegram_gate() is True
+        assert os.environ.get("TELEGRAM_REQUIRE_MENTION") == "true"
+
+        write("telegram:\n  bot_token: xyz\n  require_mention: false\n")
+        assert telegram_gate() is False
+
     def test_bridged_require_mention_signal_reload_and_operator_env(self, tmp_path, monkeypatch):
         """signal.require_mention tracks the same way, and an operator-set env var is never
         overwritten or dropped: env wins over YAML in both directions."""

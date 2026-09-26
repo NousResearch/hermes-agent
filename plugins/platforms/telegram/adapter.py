@@ -7213,7 +7213,7 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
     gateway/config.py::load_gateway_config().
     """
     import json as _json
-    from gateway.platforms._shared import yaml_env_setter
+    from gateway.platforms._shared import profile_scoped, yaml_env_setter
     extras: dict = {}
     # Under multiplex a secondary profile's settings must NOT hit the process-global env (first-writer-wins
     # would pin them for every profile, #72348); yaml_env_setter skips the write under its scope and the
@@ -7237,7 +7237,14 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
         extras.setdefault("disable_topic_auto_rename", telegram_cfg["disable_topic_auto_rename"])
     _effective_rm = telegram_cfg.get("require_mention", yaml_cfg.get("require_mention"))
     if _effective_rm is not None:
-        _set_env("TELEGRAM_REQUIRE_MENTION", str(_effective_rm).lower())
+        # Bridge-owned write, not yaml_env_setter: the core bridge in
+        # gateway/config_loader.py owns the top-level fallback case and must be able to
+        # retract this var on reload; an untracked write would shadow it forever. Still
+        # skipped under a multiplex secondary profile's scope, and an operator-set value
+        # is never overwritten.
+        from gateway.config_loader import _env_bridge_allowed, _write_bridged_env
+        if not profile_scoped() and _env_bridge_allowed("TELEGRAM_REQUIRE_MENTION"):
+            _write_bridged_env("TELEGRAM_REQUIRE_MENTION", str(_effective_rm).lower())
     if "mention_patterns" in telegram_cfg:
         _set_env("TELEGRAM_MENTION_PATTERNS", _json.dumps(telegram_cfg["mention_patterns"]))
     for key, env in (

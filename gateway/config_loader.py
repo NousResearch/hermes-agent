@@ -372,6 +372,7 @@ def bridge_core_env_settings(yaml_cfg: dict, platforms_data: dict) -> None:
             _write_bridged_env("GATEWAY_ALLOW_ALL_USERS", None)
     tl_require_mention = yaml_cfg.get("require_mention")
     tl_rm_applies = tl_require_mention is not None and "require_mention" not in (yaml_cfg.get("telegram") or {})
+    tl_block_owns_rm = "require_mention" in (yaml_cfg.get("telegram") or {})
     if tl_rm_applies:
         tg_plat = platforms_data.setdefault(Platform.TELEGRAM.value, {})
         tg_plat.setdefault("extra", {}).setdefault("require_mention", tl_require_mention)
@@ -381,10 +382,14 @@ def bridge_core_env_settings(yaml_cfg: dict, platforms_data: dict) -> None:
     # which only runs when a telegram config block exists — can't cover the no-telegram-block case
     # (#3979). Like GATEWAY_ALLOW_ALL_USERS the write is bridge-owned so a reload after a flip or
     # key removal clears it; a literal "false" is never exported (presence-based readers).
+    # The telegram hook's own write is bridge-tracked too, so the two writers share one
+    # ownership record instead of the hook shadowing the bridge.
     if not skip_env_bridge and _env_bridge_allowed("TELEGRAM_REQUIRE_MENTION"):
         if tl_rm_applies and str(tl_require_mention).lower() in {"true", "1", "yes"}:
             _write_bridged_env("TELEGRAM_REQUIRE_MENTION", "true")
-        else:
+        elif not tl_block_owns_rm:
+            # Retract only when core owns the var: a telegram-block-local key is the
+            # hook's tracked write and must stand on its own.
             _write_bridged_env("TELEGRAM_REQUIRE_MENTION", None)
 
     # Telegram settings → env vars / extra: migrated to the telegram plugin's apply_yaml_config_fn hook

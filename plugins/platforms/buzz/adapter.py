@@ -392,7 +392,14 @@ async def _exec_buzz(
     input_text: Optional[str] = None, timeout: float = _CLI_TIMEOUT,
 ) -> Tuple[int, str, str]:
     """Run the buzz CLI (argv, never a shell) -> ``(rc, stdout, stderr)``. Key travels via env only."""
-    env = os.environ.copy()
+    # Under multiplex, raw os.environ is the LAUNCH profile's (its .env residue
+    # and bridged TERMINAL_* settings) — a served secondary profile's buzz CLI
+    # invocation must not inherit it. served_profile_child_env drops that
+    # residue and pins the target home; inherit_credentials=False since the
+    # buzz CLI only needs the relay URL/key/auth tag set explicitly below, not
+    # the profile's own Hermes secrets.
+    from tools.environments.local import served_profile_child_env
+    env = served_profile_child_env(inherit_credentials=False)
     env["BUZZ_RELAY_URL"] = relay_url
     env["BUZZ_PRIVATE_KEY"] = private_key
     env.pop("BUZZ_AUTH_TAG", None)

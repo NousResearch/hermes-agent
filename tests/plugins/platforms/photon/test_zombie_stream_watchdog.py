@@ -9,9 +9,11 @@ The salvaged design has two layers:
 1. Sidecar (node): ``stream-staleness.mjs`` decision rules + a watchdog in
    ``index.mjs`` that tracks the iterator's last yield, probes only after a
    conservative silence threshold, and classifies degraded ONLY when a probe
-   proves connectivity while the stream is silent (never on silence alone,
-   never on an inconclusive probe). Degraded feeds the existing exit-75
-   restart path and the ``staleness`` block on ``/healthz``.
+   proves connectivity while the stream is silent AND an outbound send is
+   still awaiting its stream echo past a grace period (never on silence
+   alone, never on an inconclusive probe, never on silence+alive alone —
+   #124010). Degraded feeds the existing exit-75 restart path and the
+   ``staleness`` block on ``/healthz``.
 2. Adapter (python): ``_monitor_sidecar_health`` surfaces the new staleness
    fields; ``_probe_once`` has strict tri-state semantics (alive / hung /
    inconclusive).
@@ -122,32 +124,60 @@ def test_should_probe_requires_silence_past_threshold_and_cooldown() -> None:
     assert out["watchdogDisabledNegative"] is False
 
 def test_zombie_requires_probe_proven_connectivity_never_silence_alone() -> None:
-    """The core conservatism rule: shared lines can be quiet for hours, so a
-    zombie is declared only when the stream is silent past threshold AND a
-    probe PROVED the wire works (stream dead, channel alive)."""
+    """The core conservatism rule (#124010): shared lines can be quiet for
+    hours — and since v2026.9.24 the probe id is a valid UUID, so a quiet
+    healthy dedicated line ALSO sits at 'silent + probe alive' indefinitely.
+    A zombie is declared only when the stream is silent past threshold AND a
+    probe PROVED the wire works AND an outbound send is still awaiting its
+    stream echo (the iterator yields our own echoes, so a missing echo is the
+    only positive proof the stream itself is deaf)."""
     out = _run_staleness_harness(
         """
         const MIN10 = 10 * 60 * 1000;
         const alive = { alive: true };
         const inconclusive = { alive: false };
         const results = {
-          silentAndProbeAlive: isZombieSuspect(MIN10 * 2, MIN10, alive),
-          silentButProbeInconclusive: isZombieSuspect(MIN10 * 2, MIN10, inconclusive),
-          silentNoProbe: isZombieSuspect(MIN10 * 2, MIN10, null),
-          hoursOfSilenceInconclusive: isZombieSuspect(MIN10 * 36, MIN10, inconclusive),
-          notSilentEnough: isZombieSuspect(MIN10 - 1, MIN10, alive),
-          disabled: isZombieSuspect(MIN10 * 2, 0, alive),
+          silentAliveOverdueEcho: isZombieSuspect(MIN10 * 2, MIN10, alive, true),
+          silentAliveNoEcho: isZombieSuspect(MIN10 * 2, MIN10, alive, false),
+          silentAliveEchoDefaultsOff: isZombieSuspect(MIN10 * 2, MIN10, alive),
+          silentInconclusiveOverdueEcho: isZombieSuspect(MIN10 * 2, MIN10, inconclusive, true),
+          silentNoProbe: isZombieSuspect(MIN10 * 2, MIN10, null, true),
+          hoursSilenceAliveNoEcho: isZombieSuspect(MIN10 * 36, MIN10, alive, false),
+          notSilentEnough: isZombieSuspect(MIN10 - 1, MIN10, alive, true),
+          disabled: isZombieSuspect(MIN10 * 2, 0, alive, true),
         };
         process.stdout.write(JSON.stringify(results));
         """
     )
-    assert out["silentAndProbeAlive"] is True
-    # Silence alone — even 6 hours of it — is NEVER a zombie verdict.
-    assert out["silentButProbeInconclusive"] is False
+    assert out["silentAliveOverdueEcho"] is True
+    # Silence + alive probe, without echo evidence, is NEVER a zombie verdict.
+    assert out["silentAliveNoEcho"] is False
+    assert out["silentAliveEchoDefaultsOff"] is False
+    assert out["hoursSilenceAliveNoEcho"] is False
+    # An overdue echo with no proven connectivity is not evidence either.
+    assert out["silentInconclusiveOverdueEcho"] is False
     assert out["silentNoProbe"] is False
-    assert out["hoursOfSilenceInconclusive"] is False
     assert out["notSilentEnough"] is False
     assert out["disabled"] is False
+
+def test_quiet_dedicated_line_without_echo_evidence_is_not_a_zombie() -> None:
+    """Regression for #124010: a healthy but quiet dedicated line sits at
+    exactly 'silent past threshold + probe alive' for hours — with no outbound
+    send awaiting its stream echo that state is normal, not a half-open
+    stream, so the watchdog must leave it alone."""
+    out = _run_staleness_harness(
+        """
+        const MIN10 = 10 * 60 * 1000;
+        const alive = { alive: true };
+        const results = {
+          quietNoEchoEvidence: isZombieSuspect(MIN10 * 2, MIN10, alive, false),
+          quietOverdueEcho: isZombieSuspect(MIN10 * 2, MIN10, alive, true),
+        };
+        process.stdout.write(JSON.stringify(results));
+        """
+    )
+    assert out["quietNoEchoEvidence"] is False
+    assert out["quietOverdueEcho"] is True
 
 # -- Adapter surfacing of the new /healthz staleness fields ------------------
 

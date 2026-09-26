@@ -630,11 +630,22 @@ class A2AAdapter(BasePlatformAdapter):
                 if len(matches) != 1:
                     return "[profile did not report its session]", protocol.STATE_FAILED
                 session_id = matches[0]
-                updated = _state_db(profile,
-                    "UPDATE sessions SET title = ? WHERE id = ? AND source = 'a2a' RETURNING id",
-                    (session_title, session_id), "A2A: could not title forwarded session", commit=True)
-                if updated != session_id:
+                verified = _state_db(profile,
+                    "SELECT id FROM sessions WHERE id = ? AND source = 'a2a'",
+                    (session_id,), "A2A: could not verify forwarded session")
+                if verified != session_id:
                     return "[profile session could not be verified]", protocol.STATE_FAILED
+                # Use the session title API: user provenance outranks the child's
+                # asynchronous LLM auto-title, including when that writer races us.
+                from hermes_state import SessionDB
+                try:
+                    with SessionDB(Path(_profile_home(profile)) / "state.db") as db:
+                        titled = db.set_session_title(session_id, session_title)
+                except (OSError, ValueError, sqlite3.Error):
+                    logger.warning("A2A: could not title forwarded session", exc_info=True)
+                    return "[profile session could not be titled]", protocol.STATE_FAILED
+                if not titled:
+                    return "[profile session could not be titled]", protocol.STATE_FAILED
                 self._profile_sessions[key] = session_id
             return security.redact_outbound((proc.stdout or "").strip()), protocol.STATE_COMPLETED
 

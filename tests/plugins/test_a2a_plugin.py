@@ -1523,9 +1523,9 @@ class TestV1SpecRegressionFixes:
         profile_home.mkdir()
         db = profile_home / "state.db"
         import sqlite3
-        con = sqlite3.connect(db)
-        con.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT, started_at REAL, title TEXT)")
-        con.commit(); con.close()
+        from hermes_state import SessionDB
+        with SessionDB(db):
+            pass
 
         fakebin = tmp_path / "bin"
         fakebin.mkdir()
@@ -1561,9 +1561,10 @@ print('session_id: sess-1', file=sys.stderr)
         assert "--resume" not in argv_lines[0]
         assert argv_lines[1][argv_lines[1].index("--resume") + 1] == "sess-1"
         con = sqlite3.connect(db)
-        title = con.execute("SELECT title FROM sessions WHERE id='sess-1'").fetchone()[0]
+        title, source = con.execute("SELECT title, title_source FROM sessions WHERE id='sess-1'").fetchone()
         con.close()
         assert title.startswith("a2a-") and len(title) == len("a2a-") + 64
+        assert source == "user"
 
 
 # --------------------------------------------------------------------------

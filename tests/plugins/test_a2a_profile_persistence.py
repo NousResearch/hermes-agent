@@ -284,11 +284,24 @@ def test_forwarded_session_identity_survives_restart_without_peer_or_context_ali
             thread.join(timeout=60)
             assert not thread.is_alive()
             assert not errors, errors
+            if i == 0:
+                # Deterministically run the same title writer used by async
+                # auto-titling in a separate process. It must not replace the
+                # identity that a fresh listener needs for --resume.
+                code = ("from hermes_state import SessionDB; "
+                        "from pathlib import Path; "
+                        "db = SessionDB(Path(__import__('os').environ['HERMES_HOME']) / 'state.db'); "
+                        "row = db._read_one(\"SELECT id FROM sessions WHERE source = 'a2a'\", ()); "
+                        "print(db.set_auto_title(row['id'], 'Fake summary of the earlier conversation', source='llm')); "
+                        "print(db.get_session_title_source(row['id'])); db.close()")
+                auto_title = run_python(code, root, extra_env={"HERMES_HOME": str(target)})
+                assert auto_title.returncode == 0, auto_title.stderr
+                assert auto_title.stdout.strip().splitlines()[-2:] == ["False", "user"]
 
         assert len(model.main_requests()) == len(turns)
         with sqlite3.connect(target / "state.db") as db:
-            sessions = db.execute("SELECT id, title FROM sessions WHERE source = 'a2a'").fetchall()
-            by_title = {title: session_id for session_id, title in sessions}
+            sessions = db.execute("SELECT id, title, title_source FROM sessions WHERE source = 'a2a'").fetchall()
+            by_title = {title: session_id for session_id, title, _ in sessions}
             for peer, context in turns:
                 identity = ("receiver", "receiver", peer, context)
                 title = "a2a-" + hashlib.sha256(
@@ -302,8 +315,8 @@ def test_forwarded_session_identity_survives_restart_without_peer_or_context_ali
                 assert len(user_turns) == len(expected)
                 assert all(text in turn for text, turn in zip(expected, user_turns))
         assert len(sessions) == len(turns) - 1  # only peer-one's exact context continues
-        assert len({title for _, title in sessions}) == len(sessions)
-        assert all(title.startswith("a2a-") for _, title in sessions)
+        assert len({title for _, title, _ in sessions}) == len(sessions)
+        assert all(title.startswith("a2a-") and source == "user" for _, title, source in sessions)
         # Fresh process reads the receiver's durable transcript; launch profile stays clean.
         for context in contexts:
             code = ("from plugins.platforms.a2a.tools import a2a_history; "

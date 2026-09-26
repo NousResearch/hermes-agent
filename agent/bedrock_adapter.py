@@ -253,7 +253,7 @@ def configure_bedrock_openai_client_kwargs(client_kwargs: Dict[str, Any], *, tim
     bearer auth, the ``aws-sdk``/``no-key-required`` placeholders mean IAM chain auth."""
     base_url = str(client_kwargs.get("base_url") or "")
     api_key = client_kwargs.get("api_key")
-    if not is_bedrock_openai_base_url(base_url) or (
+    if not is_bedrock_openai_base_url(base_url) or callable(api_key) or (
         isinstance(api_key, str) and api_key.strip() and api_key not in {"aws-sdk", "no-key-required"}
     ):
         return client_kwargs

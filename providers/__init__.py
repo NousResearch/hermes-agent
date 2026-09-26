@@ -45,6 +45,7 @@ import time
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from providers.base import ProviderProfile
 
@@ -151,6 +152,39 @@ def provider_source(name: str) -> str | None:
     return _SOURCES.get(canonical)
 
 
+# ``has_named_custom_provider`` walks the provider registry (``_shadowed_by_builtin`` →
+# ``resolve_provider``, which formats an AuthError for unregistered names) and loads config
+# on every call — ~2.5 ms per miss (Enough1122's profile on #120901, 40-50x the old miss
+# path). This sits on the profile-miss path that ``model_metadata._strip_provider_prefix``
+# reaches per model/prefix, so it must not be paid per iteration. Memo per home keyed on
+# the config file's ``file_signature`` — the same invalidation signal ``load_config`` uses —
+# so an edit re-arms the next lookup, and multiplex homes never borrow each other's answers.
+_NAMED_CUSTOM_MEMO: dict[str, dict[str, bool]] = {}
+_NAMED_CUSTOM_MEMO_SIG: dict[str, Any] = {}
+_NAMED_CUSTOM_MEMO_NO_SIG = object()
+
+
+def _has_named_custom_provider(name: str, home: "Path | None", hkey: str) -> bool:
+    """``has_named_custom_provider`` memoized on the home's config file signature."""
+    from utils import file_signature
+
+    try:
+        sig = file_signature((home / "config.yaml").stat()) if home is not None else None
+    except OSError:
+        sig = None  # no readable config: nothing configured, stable until one appears
+    memo = _NAMED_CUSTOM_MEMO.get(hkey)
+    if memo is None or _NAMED_CUSTOM_MEMO_SIG.get(hkey, _NAMED_CUSTOM_MEMO_NO_SIG) != sig:
+        memo = {}
+        _NAMED_CUSTOM_MEMO[hkey] = memo
+        _NAMED_CUSTOM_MEMO_SIG[hkey] = sig
+    if name in memo:
+        return memo[name]
+    from hermes_cli.runtime_provider_custom import has_named_custom_provider
+
+    memo[name] = has_named_custom_provider(name)
+    return memo[name]
+
+
 def get_provider_profile(name: str) -> ProviderProfile | None:
     """Look up a provider profile by name or alias.
 
@@ -180,11 +214,10 @@ def get_provider_profile(name: str) -> ProviderProfile | None:
         profile = lookup("custom")
     # Bare named custom providers (not ``custom:<name>``) that are configured in
     # ``providers:`` / ``custom_providers:`` but lack an explicit profile entry
-    # also share the generic wire policy. Check via the runtime helper so this
-    # module never imports ``hermes_cli`` at module level.
+    # also share the generic wire policy. The helper is memoized (see
+    # ``_has_named_custom_provider``) so the miss path stays cheap for per-model loops.
     if profile is None and isinstance(name, str) and not is_custom_route:
-        from hermes_cli.runtime_provider_custom import has_named_custom_provider
-        if has_named_custom_provider(name):
+        if _has_named_custom_provider(name, home, key):
             profile = lookup("custom")
     return profile
 

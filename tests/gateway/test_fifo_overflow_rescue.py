@@ -187,7 +187,7 @@ class TestRescueOrphanedOverflow:
         session_key = "telegram:user:atomic"
         orphan = _text_event("orphan-1", "o1")
         incoming = _text_event("new-msg", "new1")
-        runner._adapter_for_source = lambda _source: adapter
+        runner._delivery_adapter_for = lambda _source: adapter
         runner._session_state(session_key).conversation.queued_events.append(orphan)
         admission = adapter.followup_admission_state(session_key)
         admission.lock = lock = _PausingRLock()

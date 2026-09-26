@@ -450,9 +450,10 @@ warning and falls back to `120000`.
 
 The bound applies only to the conversation replay. The review prompt, system
 prompt, and tool definitions still contribute to the provider request. A second
-setting, `max_input_tokens` (default and hard ceiling `600000`), caps the input
+setting, `max_input_tokens` (see "Capping review cost" below), caps the input
 tokens one automatic review may consume across its whole tool loop; like
-`max_replay_tokens` it can only be lowered, and explicit `/refine` is exempt.
+`max_replay_tokens` it can only be lowered, never lifted, and explicit `/refine`
+is exempt.
 
 ### Disabling automatic reviews (`enabled`)
 
@@ -472,21 +473,25 @@ With `enabled: false`, automatic post-turn forks do not spawn; manual
 
 The review loop replays the conversation on every provider request it makes,
 so a single review can multiply input tokens across its tool iterations.
-`max_input_tokens` caps the SUM of replayed input tokens for one review; the
-loop stops before crossing it. `<= 0` means unlimited.
+`max_input_tokens` caps the SUM of replayed input tokens for one automatic
+review; the loop stops before crossing it.
 
 ```yaml
 auxiliary:
   background_review:
-    max_input_tokens: 48000  # <= 0 = unlimited
+    max_input_tokens: 48000  # lower-only; 600000 is the hard ceiling
 ```
 
 When the key is unset, the budget is derived from the review model's resolved
 context window: 75% of the window, capped at 600,000 tokens — so it also binds
 on small local models (a 65,536-token model gets 49,152), where a fixed
 cloud-scale default would never bite. If the window cannot be resolved, a
-conservative 120,000-token fallback applies. Note the key lives under
-`auxiliary:`; a top-level `background_review:` block is not read.
+conservative 120,000-token fallback applies. `600000` is a hard ceiling for
+automatic reviews: a larger explicit value is clamped to it, and zero, negative,
+or non-numeric values fall back to the derived default instead of lifting the
+bound — automatic review input cannot be made unlimited (set `enabled: false`
+to stop automatic reviews instead; explicit `/refine` is not bounded). Note the
+key lives under `auxiliary:`; a top-level `background_review:` block is not read.
 
 Fork usage is persisted in `session_model_usage` with `task='background_review'`
 and a completion line is written to `agent.log`

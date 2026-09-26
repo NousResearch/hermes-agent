@@ -2344,7 +2344,7 @@ class GatewayTurnMixin:
         )
         delivery_carrier = event
         with suppress(Exception):
-            adapter = self._adapter_for_source(source)
+            adapter = self._delivery_adapter_for(source)
             delivery_carrier = (
                 getattr(adapter, "_active_sessions", {}).get(_quick_key) or event
             )

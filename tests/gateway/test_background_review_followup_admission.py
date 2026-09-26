@@ -39,6 +39,8 @@ def _wire_with_adapter(adapter, session_key: str = "session-key", overflow_probe
         _status_thread_metadata={},
         session_key=session_key,
         user_config={},
+        source=types.SimpleNamespace(platform="telegram"),
+        mute_notification_reply=False,
         _thinking_enabled=False,
         agent_holder=[None],
         tools_holder=[None],

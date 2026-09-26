@@ -271,6 +271,7 @@ from gateway.platforms.base import (
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from tools.url_safety import is_safe_url
+from .policy import ResolvedDiscordPolicy, resolve_scope_policy, validate_scope_policies
 from gateway.platforms._shared import (
     decode_json_list_literal as _decode_json_list_literal, env_is_connected as _env_is_connected,
     extra_or_secret as _extra_or_secret, platform_gate_env as _scoped_gate_env, send_error,
@@ -1445,9 +1446,22 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             return False, False
         if message.type not in {discord.MessageType.default, discord.MessageType.reply}:
             return False, False
+
+        scope_policy = self._scope_policy_for_message(message)
+        is_dm = isinstance(message.channel, discord.DMChannel) or getattr(message, "guild", None) is None
+        if not is_dm:
+            is_bot_author = bool(getattr(message.author, "bot", False))
+            if is_bot_author and scope_policy.allow_bots is False:
+                return False, False
+            if not is_bot_author and scope_policy.allow_humans is False:
+                return False, False
+            if scope_policy.require_mention is True and not self._self_is_raw_mentioned(message):
+                return False, False
         role_authorized = False
         if getattr(message.author, "bot", False):
             allow_bots = self._get_allow_bots()
+            if scope_policy.allow_bots is True:
+                allow_bots = "all"
             bot_tag_continuation = self._is_bot_tag_debounce_continuation(message)
             if allow_bots == "none":
                 return False, False
@@ -1490,7 +1504,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             if other_bots_mentioned and not raw_self_mention:
                 return False, False
             ignore_no_mention = _scoped_gate_env("DISCORD_IGNORE_NO_MENTION", "true").lower() in {"true", "1", "yes"}
-            if ignore_no_mention and not raw_self_mention and not other_bots_mentioned:
+            if (ignore_no_mention and scope_policy.require_mention is not False
+                    and not raw_self_mention and not other_bots_mentioned):
                 # A thread the bot joined is not someone else's conversation, and the other two
                 # ingress paths already exempt it: _dispatch_recovered_message() and
                 # _handle_message(). Admission runs on both and can veto what they admit, so
@@ -1513,6 +1528,23 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                             self.name, getattr(message, "id", "?"))
                         return False, False
         return True, role_authorized
+
+    def _scope_policy_for_message(self, message: Any) -> ResolvedDiscordPolicy:
+        guild = getattr(message, "guild", None)
+        if guild is None:
+            return ResolvedDiscordPolicy()
+        channel = getattr(message, "channel", None)
+        parent = self._get_parent_channel_id(channel)
+        return resolve_scope_policy(
+            self.config.extra.get("scope_policies"),
+            getattr(guild, "id", None), getattr(channel, "id", None), parent,
+        )
+
+    def _stamp_scope_trust(self, source: Any, *, guild_id: Any, channel_id: Any, parent_channel_id: Any = None) -> Any:
+        policy = resolve_scope_policy(self.config.extra.get("scope_policies"), guild_id, channel_id, parent_channel_id)
+        if policy.conversation_trust is not None:
+            setattr(source, "conversation_trust", policy.conversation_trust)
+        return source
 
     async def _dispatch_discord_message(self, message: Any) -> bool:
         """Apply Discord ingress policy and dispatch one live event."""
@@ -1542,13 +1574,17 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
     def _source_for_platform_event(
         self, *, chat_id: str, user_id: Optional[str], user_name: Optional[str],
         thread_id: Optional[str], guild_id: Optional[str], message_id: Optional[str] = None,
+        parent_chat_id: Optional[str] = None,
     ):
         """Build the SessionSource the gateway authorizes against; missing identity raises (fail closed)."""
         if not user_id or not chat_id:
             raise ValueError("gateway_platform_event requires actor and chat identities")
-        return self.build_source(
-            chat_id=chat_id, chat_type="thread" if thread_id else "group", user_id=user_id,
-            user_name=user_name, thread_id=thread_id, guild_id=guild_id, message_id=message_id,
+        return self._stamp_scope_trust(
+            self.build_source(
+                chat_id=chat_id, chat_type="thread" if thread_id else "group", user_id=user_id,
+                user_name=user_name, thread_id=thread_id, guild_id=guild_id, message_id=message_id,
+                parent_chat_id=parent_chat_id,
+            ), guild_id=guild_id, channel_id=chat_id, parent_channel_id=parent_chat_id,
         )
 
     async def _fire_platform_event(self, event: Dict[str, Any], source) -> None:
@@ -1604,6 +1640,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             chat_id=str(chat_id), user_id=str(getattr(author, "id", "") or "") or None,
             user_name=getattr(author, "display_name", None), thread_id=thread_id,
             guild_id=str(getattr(guild, "id", "")) if guild else None, message_id=str(message_id),
+            parent_chat_id=self._get_parent_channel_id(message.channel),
         )
 
     @staticmethod
@@ -1625,6 +1662,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             chat_id=str(thread_id), user_id=str(owner_id) if owner_id is not None else None,
             user_name=None, thread_id=str(thread_id),
             guild_id=str(getattr(guild, "id", "")) if guild else None,
+            parent_chat_id=str(parent_id) if parent_id is not None else None,
         )
 
     async def _on_platform_message_edit(self, before, after) -> None:
@@ -2328,7 +2366,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             channel_keys = self._discord_channel_keys(message, parent_id)
             free_channels = self._discord_free_response_channels()
             if (
-                self._discord_require_mention()
+                self._scope_policy_for_message(message).require_mention is not False
+                and self._discord_require_mention()
                 and "*" not in free_channels
                 and not (channel_keys & free_channels)
                 and not self._in_bot_thread(message)
@@ -4682,6 +4721,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             thread_id=thread_id, chat_topic=chat_topic,
             guild_id=self._interaction_guild_id(interaction), parent_chat_id=parent_id or None,
         )
+        source = self._stamp_scope_trust(
+            source, guild_id=self._interaction_guild_id(interaction),
+            channel_id=str(interaction.channel_id), parent_channel_id=parent_id or None,
+        )
         msg_type = MessageType.COMMAND if text.startswith("/") else MessageType.TEXT
         channel_id = str(interaction.channel_id)
         return MessageEvent(
@@ -4741,6 +4784,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             user_id=str(interaction.user.id), user_name=interaction.user.display_name,
             thread_id=thread_id, chat_topic=chat_topic,
             guild_id=self._interaction_guild_id(interaction), parent_chat_id=_parent_id or None,
+        )
+        source = self._stamp_scope_trust(
+            source, guild_id=self._interaction_guild_id(interaction),
+            channel_id=thread_id, parent_channel_id=_parent_id or None,
         )
         _skills = self._resolve_channel_skills(thread_id, _parent_id or None)
         _channel_prompt = self._resolve_channel_prompt(thread_id, _parent_id or None)
@@ -5976,7 +6023,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 logger.debug("[%s] Ignoring message in ignored channel: %s", self.name, channel_keys)
                 return False
             free_channels = self._discord_free_response_channels()
-            require_mention = self._discord_require_mention()
+            scope_policy = self._scope_policy_for_message(message)
+            require_mention = (
+                self._discord_require_mention()
+                if scope_policy.require_mention is None else scope_policy.require_mention
+            )
             # Voice-linked text channel is free-response while voice is active (exact channel only).
             voice_linked_ids = {str(ch_id) for ch_id in self._voice_text_channels.values()}
             current_channel_id = str(message.channel.id)
@@ -6081,6 +6132,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 getattr(auto_threaded_channel, "_hermes_auto_thread_initial_name", None)
                 or self._derive_auto_thread_name(message.content or "")
             ) if auto_threaded_channel is not None else None,
+        )
+        source = self._stamp_scope_trust(
+            source, guild_id=str(guild.id) if guild else None,
+            channel_id=str(effective_channel.id), parent_channel_id=parent_channel_id,
         )
         media_urls, media_types, media_text_inlined, pending_text_injection = await self._collect_attachment_media(
             all_attachments)
@@ -7262,6 +7317,9 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
             candidate_extra = discord_platform_cfg.get("extra")
             if isinstance(candidate_extra, dict):
                 platform_extra_cfg = candidate_extra
+    scope_policies_cfg = discord_cfg.get("scope_policies")
+    if scope_policies_cfg is not None:
+        seeded_extra["scope_policies"] = validate_scope_policies(scope_policies_cfg)
 
     def _gate(key: str, env_key: str, *, from_platform_extra: bool, lower: bool = False) -> None:
         value = discord_cfg[key] if key in discord_cfg else (platform_extra_cfg.get(key) if from_platform_extra else None)

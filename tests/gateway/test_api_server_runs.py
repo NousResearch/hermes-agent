@@ -28,7 +28,7 @@ from gateway.platforms.api_server import (
     cors_middleware,
     security_headers_middleware,
 )
-from gateway.platforms.api_server_runs import _RunStream
+from gateway.platforms.api_server_runs import _RunStream, _mark_run_event
 from tools import approval as approval_mod
 from tools import approval_gateway_wait
 
@@ -959,6 +959,43 @@ class TestSteerRun:
         assert payload["error"]["code"] == "run_not_accepting_steer"
 
     @pytest.mark.asyncio
+    async def test_steer_completing_during_body_read_returns_409(self, adapter):
+        """The run may settle while the handler awaits the request body.
+
+        The status gate runs before ``_read_json_body`` yields to the event loop, so
+        the executor thread can write the terminal status inside that window. The
+        late steer must be rejected — otherwise it buffers into an agent nobody
+        reads again and the follow-up run.steered event flips the settled run's
+        pollable status back to "running" forever.
+        """
+        app = _create_runs_app(adapter)
+        agent = MagicMock()
+        agent.steer.return_value = True
+        adapter._active_run_agents["run_123"] = agent
+        adapter._run_streams["run_123"] = _RunStream()
+        adapter._set_run_status("run_123", "running")
+        _claim_run(adapter, "run_123")
+
+        real_read = adapter._read_json_body
+
+        async def _settle_then_read(request):
+            # Executor-thread stand-in: the terminal write lands while the handler
+            # is suspended awaiting the body.
+            adapter._set_run_status(
+                "run_123", "completed", completed=True, last_event="run.completed")
+            return await real_read(request)
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_read_json_body", _settle_then_read):
+                resp = await cli.post("/v1/runs/run_123/steer", json={"input": "late"})
+            payload = await resp.json()
+
+        assert resp.status == 409
+        assert payload["error"]["code"] == "run_not_accepting_steer"
+        agent.steer.assert_not_called()
+        assert adapter._run_statuses["run_123"]["status"] == "completed"
+
+    @pytest.mark.asyncio
     async def test_steer_missing_input_returns_400(self, adapter):
         app = _create_runs_app(adapter)
         agent = MagicMock()
@@ -1102,6 +1139,36 @@ class TestSteerRun:
             resp = await cli.post("/v1/runs/run_any/steer", json={"input": "hello"})
 
         assert resp.status == 401
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("terminal_status", ["completed", "cancelled", "failed", "interrupted"])
+    async def test_control_event_never_resurrects_terminal_status(self, adapter, terminal_status):
+        """A control-plane event (steer/approval landing after the run settled) must
+        not flip the pollable run status back to "running": the run task already
+        returned, so no code path re-issues the terminal status and it would stick
+        forever. waiting_for_approval/stopping still resolve to "running" — that is
+        the resume path after approval.responded pops the approval payload."""
+        adapter._set_run_status("run_done", terminal_status, last_event=f"run.{terminal_status}")
+
+        _mark_run_event(adapter, "run_done", "run.steered", accepted=True)
+
+        assert adapter._run_statuses["run_done"]["status"] == terminal_status
+        assert adapter._run_statuses["run_done"]["last_event"] == "run.steered"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("transient_status", ["waiting_for_approval", "stopping", "running"])
+    async def test_control_event_keeps_resume_semantics_for_transient_statuses(
+        self, adapter, transient_status
+    ):
+        """Non-terminal statuses keep the historical "running" resolution so the
+        approval-responded resume path (pop the approval payload, back to running)
+        is unchanged."""
+        adapter._set_run_status("run_wait", transient_status, last_event="approval.request")
+
+        _mark_run_event(adapter, "run_wait", "approval.responded", choice="once")
+
+        assert adapter._run_statuses["run_wait"]["status"] == "running"
+        assert "approval" not in adapter._run_statuses["run_wait"]
 
 
 # ---------------------------------------------------------------------------

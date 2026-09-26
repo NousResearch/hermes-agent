@@ -2936,8 +2936,9 @@ def _adopt_grown_durable_parent(agent: Any, lease: _CompressionLease, messages: 
             lease.sid, len(messages), len(durable_parent),
         )
         return None
-    # Re-read after the flush so the adopted snapshot carries the just-persisted tail.
-    durable_parent = durable_loader(lease.db, lease.sid)
+    # Re-read after the flush with identity so summary projection can follow the
+    # current user row without confusing its index with the persistence cursor.
+    durable_parent = durable_loader(lease.db, lease.sid, include_row_ids=True)
     if not (isinstance(durable_parent, list) and len(durable_parent) > len(messages)):
         return None
     logger.info(
@@ -3689,6 +3690,7 @@ def _commit_compaction(
     new_system_prompt: str, system_message: str, compressed_user_turn_outcome: str,
     messages_before_compression: Optional[list], made_progress: bool, attempt: _Attempt,
     verbatim_tail: Optional[list] = None, carried_messages: Optional[list] = None,
+    summary_user_idx: Optional[int] = None,
 ) -> _CommitOutcome:
     """Persist the compacted transcript: memory extraction, anti-growth guard, then the
     in-place archive or the parent->child rotation.
@@ -3707,7 +3709,7 @@ def _commit_compaction(
         try:
             # Memory extraction runs in BOTH modes: pre-compaction turns are summarized
             # away whether or not the id rotates.
-            agent.commit_memory_session(messages)
+            agent.commit_memory_session(_summary_user_content(agent, messages, current_user_idx=summary_user_idx))
 
             # Pop _compaction_tail tags before the size estimate / rotation: they must not
             # inflate anti-growth or reach the provider. Track ids: salvage may subset list.
@@ -3856,6 +3858,31 @@ def _commit_compaction(
     )
 
 
+def _summary_user_content(agent: Any, messages: list, *, current_user_idx: Optional[int] = None) -> list:
+    """Project the current turn's clean transcript value for a compaction candidate only.
+
+    The live API prefix remains untouched until a real boundary commits. Use the caller's
+    existing persist override, not text matching: a user may legitimately quote a runtime note.
+    """
+    idx = current_user_idx if current_user_idx is not None else getattr(agent, "_persist_user_message_idx", None)
+    if not isinstance(idx, int) or not 0 <= idx < len(messages):
+        return messages
+    message = messages[idx]
+    if not isinstance(message, dict) or message.get("role") != "user":
+        return messages
+    from agent.session_persistence import _override_replaces_content, durable_user_row_content
+    content = message.get("content")
+    override = getattr(agent, "_persist_user_message_override", None)
+    if not _override_replaces_content(message, content, override):
+        return messages
+    clean, _ = durable_user_row_content(agent, message, content, None)
+    if clean == content and message.get("api_content", clean) == clean:
+        return messages
+    projected = copy.deepcopy(messages)
+    _replace_message_content(projected[idx], copy.deepcopy(clean))
+    return projected
+
+
 @dataclasses.dataclass
 class _SummaryPhase:
     """Outcome of the summary phase; ``abort_prompt`` set means hand ``messages`` back."""
@@ -3866,6 +3893,7 @@ class _SummaryPhase:
     approx_tokens: Optional[int] = None
     pre_msg_count: int = 0
     abort_prompt: Optional[str] = None
+    summary_user_idx: Optional[int] = None
 
 
 def _run_summary_phase(
@@ -3881,6 +3909,15 @@ def _run_summary_phase(
     _activity_heartbeat: Optional[_CompressionActivityHeartbeat] = None
     messages_before_compression = None
 
+    # Adoption moves the persistence cursor to the end. Keep the current user
+    # identity separately: the flush stamps its row id, which survives reloading.
+    summary_user_idx = getattr(agent, "_persist_user_message_idx", None)
+    current_user = (
+        messages[summary_user_idx]
+        if isinstance(summary_user_idx, int) and 0 <= summary_user_idx < len(messages)
+        else None
+    )
+
     def _stop_heartbeat(desc: str) -> None:
         nonlocal _activity_heartbeat
         if _activity_heartbeat is not None:
@@ -3893,13 +3930,28 @@ def _run_summary_phase(
             _adopted_parent = _adopt_grown_durable_parent(agent, lease, messages)
             if _adopted_parent is not None:
                 messages = _adopted_parent
+                # Rows in this adopted snapshot are summarized by this attempt,
+                # not a foreign tail to clone verbatim into the child. Appends
+                # after this snapshot remain above the ceiling and are preserved.
+                adopted_ids = [row.get("_row_id") for row in messages if isinstance(row, dict)]
+                if adopted_ids and all(isinstance(rid, int) for rid in adopted_ids):
+                    lease.watermark = max(adopted_ids)
+                row_id = current_user.get("_row_id") if isinstance(current_user, dict) else None
+                matches = [
+                    i for i, row in enumerate(messages)
+                    if isinstance(row_id, int) and isinstance(row, dict) and row.get("_row_id") == row_id
+                ]
+                # Unknown/ambiguous provenance must never rewrite another user's row.
+                summary_user_idx = matches[0] if len(matches) == 1 else len(messages)
                 pre_msg_count = len(messages)
                 # Estimate was for the stale snapshot; force re-derivation from adopted rows.
                 approx_tokens = 0
                 # Adopted list is fully durable: re-anchor persist idx at the end so the post-
                 # compression flush skips it; run_agent marker sync realigns _session_messages.
                 agent._persist_user_message_idx = len(messages)
-        memory_context = _pre_compress_memory_context(agent, messages, checkpoint_required)
+        summary_messages = _summary_user_content(agent, messages, current_user_idx=summary_user_idx)
+        summary_before = copy.deepcopy(summary_messages) if summary_messages is not messages else None
+        memory_context = _pre_compress_memory_context(agent, summary_messages, checkpoint_required)
         compress_fn, compress_kwargs = _resolve_compress_call(
             agent, approx_tokens=approx_tokens, focus_topic=focus_topic, force=force, memory_context=memory_context,
             bypass_cooldown=bypass_cooldown,
@@ -3909,9 +3961,16 @@ def _run_summary_phase(
             agent, commit_fence=commit_fence, emit_client_status=lease.status_emitted,
         ).start()
         compressed = _run_summary_dispatch(
-            agent, messages, compress_fn, compress_kwargs, commit_fence=commit_fence,
+            agent, summary_messages, compress_fn, compress_kwargs, commit_fence=commit_fence,
             attempt_generation=attempt.generation, hard_cancel_event=hard_cancel_event,
         )
+        # Removing an API-only prefix is not compression progress. Preserve the original
+        # wire bytes when an engine returns its input (including marker-only changes).
+        if summary_before is not None and (
+            compressed == summary_before
+            or _strip_marker_for_comparison(compressed) == _strip_marker_for_comparison(summary_before)
+        ):
+            compressed = messages_before_compression
     except AuxiliaryExplicitCancellation:
         try:
             attempt.restore_compressor(agent.context_compressor)
@@ -3947,6 +4006,7 @@ def _run_summary_phase(
     return _SummaryPhase(
         messages=messages, compressed=compressed, messages_before_compression=messages_before_compression,
         approx_tokens=approx_tokens, pre_msg_count=pre_msg_count,
+        summary_user_idx=summary_user_idx,
     )
 
 
@@ -4209,13 +4269,16 @@ def compress_context(
                 "active set (session=%s).", agent.session_id or "none",
             )
         _fold_todo_snapshot(agent, compressed)
-        compressed_user_turn_outcome = _ensure_compressed_has_user_turn(messages, compressed)
+        compressed_user_turn_outcome = _ensure_compressed_has_user_turn(
+            _summary_user_content(agent, messages, current_user_idx=phase.summary_user_idx), compressed,
+        )
         new_system_prompt = _rebuild_system_prompt_at_boundary(agent, system_message)
         commit = _commit_compaction(
             agent, messages, compressed, in_place=in_place, lease=lease, new_system_prompt=new_system_prompt,
             system_message=system_message, compressed_user_turn_outcome=compressed_user_turn_outcome,
             messages_before_compression=messages_before_compression, made_progress=_compression_made_progress,
             attempt=attempt, verbatim_tail=verbatim_tail,
+            summary_user_idx=phase.summary_user_idx,
             # The reinserted copy keeps the original's _row_id/timestamp (production flush stamps
             # both); carry exactly that one row so the commit rewinds the durable original instead
             # of archiving it compacted=1 next to a fresh twin (display would show it twice). The

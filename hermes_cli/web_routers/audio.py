@@ -174,6 +174,18 @@ async def get_voice_live_status(profile: Optional[str] = None):
     return {"ok": True, **result}
 
 
+@router.get("/api/audio/voice-live-grok/status")
+async def get_voice_live_grok_status(profile: Optional[str] = None):
+    """Grok-Live sibling of ``/api/audio/voice-live/status`` (SPEC §11): same flat shape via
+    ``resolve_grok_live_status()`` — which mode is selected and whether the xAI realtime
+    credential resolves (OAuth-first). Non-secret; a NEW parallel route, not a retrofit of the
+    gpt-live one, so the existing ``$voiceLiveStatus`` consumer contract is untouched."""
+    from tools.voice_live_grok import resolve_grok_live_status
+    with http_failure("Grok-Live status resolution failed", 500, "Grok-Live status failed"):
+        result = await _run_config_scoped(profile, resolve_grok_live_status)
+    return {"ok": True, **result}
+
+
 @router.post("/api/audio/voice-live/session")
 async def create_voice_live_session(payload: VoiceLiveSessionRequest, profile: Optional[str] = None):
     """Exchange the renderer's WebRTC SDP offer for a GPT-Live session answer.

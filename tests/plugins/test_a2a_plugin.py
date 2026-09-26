@@ -1295,9 +1295,14 @@ class TestMultiAgentRouting:
         route = adapter._route_for_request("/dev/", {"tenant": "research"})
         assert "error" in route
 
-    def test_forwarded_profile_task_completes_in_task_store(self, monkeypatch):
+    def test_forwarded_profile_task_completes_in_task_store(self, monkeypatch, tmp_path):
         from plugins.platforms.a2a.adapter import A2AAdapter
         from gateway.config import PlatformConfig
+        from hermes_cli import profiles
+        receiver = tmp_path / "dev"
+        receiver.mkdir()
+        monkeypatch.setattr(profiles, "profile_exists", lambda name: name == "dev")
+        monkeypatch.setattr(profiles, "get_profile_dir", lambda name: receiver)
 
         adapter = A2AAdapter(PlatformConfig(enabled=True, extra={
             "agents": {"dev": {"profile": "dev", "tenant": "dev"}}

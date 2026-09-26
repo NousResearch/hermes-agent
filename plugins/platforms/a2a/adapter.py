@@ -21,6 +21,7 @@ from collections import deque
 from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FuturesTimeout
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 from gateway.platforms.base import BasePlatformAdapter, SendResult
@@ -416,7 +417,9 @@ class A2AAdapter(BasePlatformAdapter):
                 tenants[tenant] = slug
             agents[slug] = {
                 "slug": slug, "path": "/" + path_segment, "tenant": tenant, "profile": profile or slug,
-                "local": bool(val.get("local")) or profile in ("", "default", self._active_profile),
+                # A local route enters this listener's gateway turn. A different profile
+                # must use the forwarded path even when misconfigured with local: true.
+                "local": profile == self._active_profile and val.get("local", True) is not False,
                 "name": str(val.get("name") or f"Hermes {slug}"),
                 "description": str(val.get("description") or f"Hermes profile '{profile or slug}' exposed over A2A."),
                 "advertised_toolsets": list(toolsets or []),
@@ -519,6 +522,20 @@ class A2AAdapter(BasePlatformAdapter):
     def _scope_for_agent(self, agent: Optional[dict]) -> tuple[str, str]:
         return tuple(str((agent or self._agents[""]).get(k) or "") for k in ("slug", "tenant"))
 
+    def _storage_home(self, agent: dict) -> Path:
+        """HTTP worker threads have no profile scope; resolve the actual execution owner."""
+        if agent.get("local", True):
+            return self._profile_home
+        profile = str(agent.get("profile") or agent.get("slug") or "").strip()
+        from hermes_cli.profiles import get_profile_dir, profile_exists
+        try:
+            if not profile_exists(profile):
+                raise ValueError("profile does not exist")
+            target = get_profile_dir(profile)
+        except ValueError:
+            raise ValueError(f"A2A target profile {profile!r} is unavailable")
+        return target
+
     def _forward_lock(self, key: tuple[str, str, str]) -> threading.Lock:
         with self._profile_session_locks_guard:
             return self._profile_session_locks.setdefault(key, threading.Lock())
@@ -546,16 +563,20 @@ class A2AAdapter(BasePlatformAdapter):
                                   f"{max_turns} turns. Start a new context or increase A2A_MAX_PINGPONG_TURNS.")
         if not text:
             return self._end_task(rec, protocol.STATE_REJECTED, "Empty task — nothing to do.")
+        try:
+            storage_home = self._storage_home(agent)
+        except ValueError as exc:
+            return self._end_task(rec, protocol.STATE_FAILED, str(exc))
         framed = security.wrap_inbound(peer, text)
-        security.audit("inbound", peer, task_id, text, home=self._profile_home)
-        protocol.persist_message(context_id, "user", text, task_id, home=self._profile_home)
+        security.audit("inbound", peer, task_id, text, home=storage_home)
+        protocol.persist_message(context_id, "user", text, task_id, home=storage_home)
         protocol.metrics.inbound_total += 1
         self._register_inline_push(task_id, params, agent=agent)
         if not agent.get("local", True):
             self._activate_task(task_id)
             try:
                 reply, state = self._forward_to_profile(agent, peer, context_id, framed)
-                self._record_outcome(task_id, context_id, peer, state, reply)
+                self._record_outcome(task_id, context_id, peer, state, reply, home=storage_home)
                 return protocol.build_task(task_id, context_id, state, reply, created_at=rec["created_iso"]), None
             finally:
                 self._pop_pending(task_id)
@@ -614,10 +635,11 @@ class A2AAdapter(BasePlatformAdapter):
             return security.redact_outbound((proc.stdout or "").strip()), protocol.STATE_COMPLETED
 
     def _record_outcome(self, task_id: str, context_id: str, peer: str, state: str, reply: str,
-                        started: Optional[float] = None) -> None:
+                        started: Optional[float] = None, *, home: Optional[Path] = None) -> None:
         """Persist + audit + count a finished task, mark it terminal, and fire its push callback."""
-        protocol.persist_message(context_id, "agent", reply, task_id, home=self._profile_home)
-        security.audit("outbound", peer, task_id, reply, home=self._profile_home)
+        storage_home = home if home is not None else self._profile_home
+        protocol.persist_message(context_id, "agent", reply, task_id, home=storage_home)
+        security.audit("outbound", peer, task_id, reply, home=storage_home)
         m = protocol.metrics
         if state in (protocol.STATE_COMPLETED, protocol.STATE_INPUT_REQUIRED):
             m.outbound_total, m.tasks_completed = m.outbound_total + 1, m.tasks_completed + 1

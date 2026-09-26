@@ -107,6 +107,16 @@ def test_explanation_persistence_locked_cause_says_busy_not_disk():
     assert "permission" not in lower
 
 
+def test_explanation_persistence_amplification_stops_retry_advice():
+    out = AIAgent._format_turn_completion_explanation(
+        "session_persistence_failed", "amplification"
+    ).lower()
+    assert "physical" in out and "backup" in out
+    assert "new session" in out and "not saved" in out
+    for wrong in ("doctor", "send it again", "temporarily", "disk", "database is locked"):
+        assert wrong not in out
+
+
 def test_explanation_persistence_compression_cause_is_specific():
     out = AIAgent._format_turn_completion_explanation(
         "session_persistence_failed", "compression"

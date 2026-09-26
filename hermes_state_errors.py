@@ -97,7 +97,7 @@ def is_disk_full_error(exc: BaseException | str | None) -> bool:
 
 # Every classify_persistence_error bucket; consumers enumerate this tuple.
 PERSISTENCE_ERROR_CAUSES = (
-    "locked", "compression", "compression_closed", "turn_lease", "corrupt", "fts_index",
+    "locked", "compression", "compression_closed", "turn_lease", "amplification", "corrupt", "fts_index",
     "replaced", "deleted_wal", "disk", "unknown",
 )
 
@@ -252,6 +252,7 @@ _PERSISTENCE_CAUSE_BY_TYPE = (
     (StateDbCorruptError, "corrupt"),
 )
 _PERSISTENCE_CAUSE_BY_PHRASE = (
+    (("storage amplification guard",), "amplification"),
     (("turn lease",), "turn_lease"),
     (("closed by compression",), "compression_closed"),
     (("being compressed", "compression lease"), "compression"),
@@ -267,7 +268,8 @@ def classify_persistence_error(exc_or_str) -> str:
     """Coarse cause bucket (PERSISTENCE_ERROR_CAUSES) so the user's guidance
     matches: "locked" = busy, retry; "disk" = full/read-only/permissions;
     "compression" = a live lease refused the write; "compression_closed" = adopt
-    the rotated session id; "turn_lease" = fencing, not storage; "corrupt" =
+    the rotated session id; "turn_lease" = fencing, not storage; "amplification"
+    = the physical transcript-row ceiling blocked a write; "corrupt" =
     file damage (repair path, not disk space); "fts_index" = SQLite scoped the
     corruption to the FTS index (the transcript store is not damaged); "replaced" =
     main-file replacement; "deleted_wal" = a retired sidecar generation requiring

@@ -159,6 +159,11 @@ _PERSISTENCE_CAUSE_EXPLANATIONS: Dict[str, str] = {
         "(or restart Hermes, which repairs the index on open), then "
         "send your message again."
     ),
+    "amplification": (
+        "the turn stopped because this session reached its physical transcript-row safety "
+        "limit. The blocked write was not saved. Start a new session. For controlled "
+        "recovery, make a verified backup before cleaning archived generations."
+    ),
     "disk": (
         "Hermes couldn't save this conversation to disk, so it stopped rather than lose "
         "your messages. The disk is probably full: free some space (or fix the permissions "

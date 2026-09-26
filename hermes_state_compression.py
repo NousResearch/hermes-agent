@@ -297,6 +297,11 @@ class SessionCompressionMixin:
                     f"{' AND id <= ?' if bounded else ''} ORDER BY id",
                     [parent_session_id, int(watermark), *([int(watermark_ceiling)] if bounded else [])])
                 if tail_ids:
+                    # The handoff used _insert_message_rows, but this raw clone
+                    # is an additional growth path in the same transaction.
+                    self._assert_session_storage_growth_safe(  # type: ignore[attr-defined]
+                        conn, child_session_id, len(tail_ids)
+                    )
                     self._clone_message_rows(conn, tail_ids, session_id=child_session_id)
                     total_messages += len(tail_ids)
                     total_tool_calls += tail_tool_calls

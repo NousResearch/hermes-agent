@@ -81,6 +81,13 @@ _STORAGE_FAILURES: dict[str, tuple[str, str, str]] = {
         "another Hermes process took over this session",
         "Wait for it to finish, then send your message again.",
     ),
+    "amplification": (
+        "storage_amplification",
+        "this session has reached its physical transcript-row safety limit",
+        "Start a new session. For controlled recovery, make a verified backup before cleaning "
+        "archived generations or temporarily run `hermes {profile_arg}config set "
+        "sessions.max_storage_messages 0`; restore the default after recovery.",
+    ),
     "unknown": (
         "storage_unavailable",
         "the session database could not be opened",

@@ -14,7 +14,7 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
@@ -26,7 +26,22 @@ from cron.constants import CLAIM_TTL_INACTIVITY_HEADROOM
 # that temporarily enter another profile cannot leak that profile's records into the import-time
 # home.
 EXECUTIONS_FILE: Optional[Path] = None
-MAX_TERMINAL_EXECUTIONS = 1000
+# Retention is a TIME floor, not a row count: a floor does not move with the write rate, so the
+# window cannot shrink under a failure storm — which is both when ``unknown`` (crash-truncated)
+# rows are produced and when they most need to be seen. Measured on a busy ledger (1001 rows, 196
+# pages): the newest 1000 terminal rows spanned only 17.10 h at a mixed rate of 1403.6 rows/day,
+# so ~29% of a day's rows were gone before the next look.
+TERMINAL_RETENTION_DAYS = 8.0  # A full week of history plus one check period.
+UNKNOWN_RETENTION_DAYS = 30.0  # Crash evidence, rare, kept a month so an operator returning
+# later still finds it. Not config-overridable.
+# Safety valve for the completed/failed population ONLY, and never the window's definition: those
+# rows are re-trimmed by count only when they exceed this. 1403.6 rows/day needs 1404 rows to
+# cover one day (the old cap of 1000 did not), and at the measured ~802 B/row file density 50000
+# rows is ~40 MB, so that population cannot run away with the disk. ``unknown`` rows are bounded
+# by their own floor instead, and non-terminal rows are never pruned. The window falls short of
+# its nominal span ONLY while this valve is active — under the old count-only rule that was the
+# normal case, now only a runaway writer gets there.
+MAX_TERMINAL_EXECUTIONS = 50000
 HANDOFF_ADOPTION_GRACE_SECONDS = 30.0
 # Floor for the live-owner stale-claim bound (#115692); see _live_owner_stale_after_seconds.
 LIVE_OWNER_STALE_CLAIM_FLOOR_SECONDS = 7200.0
@@ -90,6 +105,12 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_executions_occurrence "
         "ON executions(job_id, scheduled_instant) WHERE status='completed'"
+    )
+    # Serves both retention steps below — the time-floor range delete on finished_at and the
+    # safety-valve count — so neither has to scan the whole table on every terminal write.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_executions_terminal_finished "
+        "ON executions(status, finished_at)"
     )
 
 
@@ -171,14 +192,37 @@ def _claim_age_seconds(claimed_at: str) -> float:
 
 
 def _prune_unlocked(conn: sqlite3.Connection) -> None:
+    """Retention by time floor first, row-count safety valve second.
+
+    Time first because a floor is independent of the write rate: the window stays at its nominal
+    span under a failure storm, which is exactly when ``unknown`` rows appear and must survive
+    until the daily healthcheck reads them. The count cap is only a valve against runaway writes
+    filling the file; when it engages it can shorten the window, but it is no longer what defines
+    it. Non-terminal (claimed/running) rows are never pruned.
+    """
+    now = _hermes_now()
     conn.execute(
-        """DELETE FROM executions WHERE id IN (
-             SELECT id FROM executions
-             WHERE status IN ('completed','failed','unknown')
-             ORDER BY finished_at DESC, claimed_at DESC, id DESC LIMIT -1 OFFSET ?
-           )""",
-        (max(0, int(MAX_TERMINAL_EXECUTIONS)),),
+        """DELETE FROM executions
+           WHERE status IN ('completed','failed') AND finished_at < ?""",
+        ((now - timedelta(days=TERMINAL_RETENTION_DAYS)).isoformat(),),
     )
+    conn.execute(
+        "DELETE FROM executions WHERE status='unknown' AND finished_at < ?",
+        ((now - timedelta(days=UNKNOWN_RETENTION_DAYS)).isoformat(),),
+    )
+    cap = max(0, int(MAX_TERMINAL_EXECUTIONS))
+    remaining = conn.execute(
+        "SELECT COUNT(*) FROM executions WHERE status IN ('completed','failed')"
+    ).fetchone()[0]
+    if remaining > cap:
+        conn.execute(
+            """DELETE FROM executions WHERE id IN (
+                 SELECT id FROM executions
+                 WHERE status IN ('completed','failed')
+                 ORDER BY finished_at DESC, claimed_at DESC, id DESC LIMIT -1 OFFSET ?
+               )""",
+            (cap,),
+        )
 
 
 def create_execution(

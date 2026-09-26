@@ -168,6 +168,7 @@ def test_terminal_execution_cannot_be_rewritten(monkeypatch, tmp_path):
 def test_retention_bounds_terminal_history_but_preserves_inflight(monkeypatch, tmp_path):
     executions = _point_ledger(monkeypatch, tmp_path)
     monkeypatch.setattr(executions, "MAX_TERMINAL_EXECUTIONS", 3)
+    monkeypatch.setattr(executions, "TERMINAL_RETENTION_DAYS", 30)
     inflight = executions.create_execution("live", source="builtin")
     executions.mark_execution_running(inflight["id"])
     for index in range(8):
@@ -179,11 +180,94 @@ def test_retention_bounds_terminal_history_but_preserves_inflight(monkeypatch, t
     assert executions.latest_execution("live")["status"] == "running"
 
 
+def test_terminal_time_floor_defines_the_window(monkeypatch, tmp_path):
+    from datetime import timedelta
+
+    executions = _point_ledger(monkeypatch, tmp_path)
+    monkeypatch.setattr(executions, "TERMINAL_RETENTION_DAYS", 8.0)
+    monkeypatch.setattr(executions, "UNKNOWN_RETENTION_DAYS", 30.0)
+
+    def terminal(name, status, days_ago):
+        row = executions.create_execution(name, source="builtin")
+        executions.finish_execution(row["id"], success=True)
+        stamp = (executions._hermes_now() - timedelta(days=days_ago)).isoformat()
+        with executions._transaction() as conn:
+            conn.execute(
+                "UPDATE executions SET status=?, finished_at=? WHERE id=?",
+                (status, stamp, row["id"]),
+            )
+        return row["id"]
+
+    faded = terminal("faded-completed", "completed", 8.5)
+    kept_completed = terminal("kept-completed", "completed", 7.5)
+    kept_unknown = terminal("kept-unknown", "unknown", 7.5)
+    recent_unknown = terminal("recent-unknown", "unknown", 5.0)
+    stale_unknown = terminal("stale-unknown", "unknown", 31)
+    inflight = executions.create_execution("stale-claim", source="builtin")
+    executions.mark_execution_running(inflight["id"])
+    with executions._transaction() as conn:
+        conn.execute(
+            "UPDATE executions SET claimed_at=? WHERE id=?",
+            ((executions._hermes_now() - timedelta(days=40)).isoformat(), inflight["id"]),
+        )
+
+    with executions._transaction() as conn:
+        executions._prune_unlocked(conn)
+
+    assert executions.get_execution(faded) is None
+    assert executions.get_execution(kept_completed)["status"] == "completed"
+    assert executions.get_execution(kept_unknown)["status"] == "unknown"
+    assert executions.get_execution(recent_unknown)["status"] == "unknown"
+    assert executions.get_execution(stale_unknown) is None
+    assert executions.get_execution(inflight["id"])["status"] == "running"
+
+
+def test_count_safety_valve_spares_unknown_rows(monkeypatch, tmp_path):
+    executions = _point_ledger(monkeypatch, tmp_path)
+    monkeypatch.setattr(executions, "MAX_TERMINAL_EXECUTIONS", 2)
+    monkeypatch.setattr(executions, "TERMINAL_RETENTION_DAYS", 30)
+    monkeypatch.setattr(executions, "UNKNOWN_RETENTION_DAYS", 30)
+    for index in range(3):
+        row = executions.create_execution(f"done-{index}", source="builtin")
+        executions.finish_execution(row["id"], success=True)
+
+    for index in range(5):
+        row = executions.create_execution(f"unknown-{index}", source="builtin")
+        # Straight to ``unknown``, as recover_interrupted_executions does: the row never passes
+        # through a completed state the valve could count.
+        with executions._transaction() as conn:
+            conn.execute(
+                "UPDATE executions SET status='unknown', finished_at=? WHERE id=?",
+                (executions._hermes_now().isoformat(), row["id"]),
+            )
+
+    with executions._transaction() as conn:
+        executions._prune_unlocked(conn)
+
+    records = executions.list_executions(limit=100)
+    assert len([row for row in records if row["status"] == "completed"]) == 2
+    assert len([row for row in records if row["status"] == "unknown"]) == 5
+
+
+def test_retention_policy_relations_hold():
+    """The constants ARE the policy: pin the relations a reader depends on, not their values."""
+    import cron.executions as executions
+
+    # A weekly look must still find a full week, so the floor outlasts the period it serves.
+    assert executions.TERMINAL_RETENTION_DAYS > 7.0
+    # Crash evidence (``unknown``) is the rarest and slowest to act on: keep it the longest.
+    assert executions.UNKNOWN_RETENTION_DAYS > executions.TERMINAL_RETENTION_DAYS
+    # The valve is a runaway backstop, never the window: it must not sit at the count that used to
+    # define the window.
+    assert executions.MAX_TERMINAL_EXECUTIONS > 1000
+
+
 def test_recently_finished_long_running_execution_survives_retention(
     monkeypatch, tmp_path
 ):
     executions = _point_ledger(monkeypatch, tmp_path)
     monkeypatch.setattr(executions, "MAX_TERMINAL_EXECUTIONS", 1)
+    monkeypatch.setattr(executions, "TERMINAL_RETENTION_DAYS", 30)
     long_running = executions.create_execution("long-running", source="builtin")
     assert executions.mark_execution_running(long_running["id"]) is not None
     newer = executions.create_execution("newer", source="builtin")

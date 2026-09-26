@@ -2723,7 +2723,7 @@ def run_one_job(
     external_owner = os.environ.get("_HERMES_CRON_EXTERNAL_WORKER") == execution_id
     if not external_owner:
         try:
-            if _launch_external_cron_worker(job):
+            if _launch_external_cron_worker(job, adapters=adapters, loop=loop):
                 return True
         except Exception as handoff_error:
             error = f"Restart-safe cron worker dispatch failed: {handoff_error}"
@@ -3359,10 +3359,91 @@ def _run_one_job_body(
             reset_terminal_scope(_terminal_scope_token)
 
 
+def _record_killed_worker_run(
+    record: dict,
+    returncode: int,
+    *,
+    job_id: Optional[str] = None,
+    fire_owner: Optional[str] = None,
+    adapters=None,
+    loop=None,
+) -> None:
+    """Gateway-side job bookkeeping for an adopted worker that died without a terminal row.
+
+    The waiter just recovered the execution to ``unknown`` (#120328). Without this, the job
+    record keeps the previous run's values, no incident opens, nothing is delivered and nothing
+    is logged — every job-level surface says the scheduled run never happened. A worker that
+    terminalized itself (``completed``/``failed``) owns its own bookkeeping and is left alone.
+
+    Best-effort and fenced, so it never breaks the waiter's contract and never touches a
+    replacement claim: when the fire owner seen at launch no longer holds the claim (or the
+    claim is already consumed), this is a no-op. Idempotent for the same reason — the first
+    ``mark_job_run`` consumes the claim, so a repeat finds nothing to fence.
+    """
+    if not isinstance(record, dict) or record.get("status") != "unknown":
+        return
+    resolved_job_id = job_id or record.get("job_id")
+    base_error = str(
+        record.get("error")
+        or "Cron worker exited before a durable terminal state; "
+        "whether side effects ran is unknown."
+    )
+    error = f"{base_error} (cron worker exited with code {returncode})"
+    try:
+        if not resolved_job_id:
+            logger.error(
+                "Cron external worker %s died without terminalizing: %s",
+                record.get("id"), error)
+            return
+        logger.error("Job '%s': %s", resolved_job_id, error)
+        from cron.jobs import get_job
+        job = get_job(str(resolved_job_id))
+        if job is None:
+            return
+        claim = job.get("fire_claim")
+        live_owner = str(claim.get("by") or "") if isinstance(claim, dict) else ""
+        if fire_owner is not None:
+            if live_owner != fire_owner:
+                return  # superseded or already recorded; never touch a replacement run
+            if not fire_owner:
+                return  # launch carried no claim and none exists now; nothing to attribute
+            fence_owner: Optional[str] = fire_owner
+        else:
+            if not live_owner:
+                return
+            fence_owner = live_owner
+        incident_acked, failure_incident_id = _upsert_incident_for_failure(job, error)
+        delivery_outcome = "suppressed_acked" if incident_acked else "suppressed"
+        delivery_error: Optional[str] = None
+        if not incident_acked:
+            try:
+                delivery_error, delivery_outcome = _deliver_crash_failure(
+                    job, error, adapters=adapters, loop=loop)
+            except Exception as delivery_exc:
+                delivery_error, delivery_outcome = str(delivery_exc), "failed"
+        mark_kwargs: dict = (
+            {"delivery_error": delivery_error} if delivery_error else {}
+        )
+        marked = mark_job_run(
+            str(resolved_job_id), False, error,
+            expected_fire_owner=fence_owner, **mark_kwargs,
+        )
+        if marked and delivery_outcome in ("delivered", "not_configured"):
+            _mark_incident_alerted(failure_incident_id)
+    except Exception:
+        logger.error(
+            "Failed recording killed-worker run for job %s",
+            resolved_job_id, exc_info=True)
+
+
 def _wait_for_external_cron_worker_body(
     process: subprocess.Popen,
     *,
     execution_id: str,
+    job_id: Optional[str] = None,
+    fire_owner: Optional[str] = None,
+    adapters=None,
+    loop=None,
 ) -> bool:
     """Preserve ``run_one_job``'s synchronous contract after handoff.
 
@@ -3400,7 +3481,15 @@ def _wait_for_external_cron_worker_body(
         # exception through the pre-handoff dispatch-failure path, which
         # would falsely assert that no side effect could have happened.
         recover_interrupted_executions()
-        if _is_terminal():
+        try:
+            recovered = get_execution(execution_id)
+        except Exception:
+            recovered = None
+        if bool(recovered and recovered.get("status") in _TERMINAL_STATES):
+            _record_killed_worker_run(
+                recovered, returncode, job_id=job_id,
+                fire_owner=fire_owner, adapters=adapters, loop=loop,
+            )
             return True
         raise RuntimeError(
             "cron external worker exited before durable recovery could "
@@ -3413,11 +3502,15 @@ def _wait_for_external_cron_worker(
     *,
     execution_id: str,
     job_id: Optional[str] = None,
+    fire_owner: Optional[str] = None,
+    adapters=None,
+    loop=None,
     handoff_files: tuple[Path, ...] = (),
 ) -> bool:
     try:
         return _wait_for_external_cron_worker_body(
-            process, execution_id=execution_id
+            process, execution_id=execution_id, job_id=job_id,
+            fire_owner=fire_owner, adapters=adapters, loop=loop,
         )
     finally:
         if job_id is not None:
@@ -3432,7 +3525,7 @@ def _wait_for_external_cron_worker(
                 pass
 
 
-def _launch_external_cron_worker(job: dict) -> bool:
+def _launch_external_cron_worker(job: dict, *, adapters=None, loop=None) -> bool:
     """Launch *job* outside the managed gateway process when required.
 
     Returns ``False`` outside a managed systemd gateway (in-process path).  In
@@ -3443,6 +3536,11 @@ def _launch_external_cron_worker(job: dict) -> bool:
     """
     execution_id = str(job["execution_id"])
     job_id = str(job["id"])
+    _launch_claim = job.get("fire_claim")
+    fire_owner = (
+        str(_launch_claim.get("by") or "")
+        if isinstance(_launch_claim, dict) else ""
+    )
     handoff_dir = _get_hermes_home() / "cron" / "external-workers"
     payload_path = handoff_dir / f"{execution_id}.json"
     ack_path = handoff_dir / f"{execution_id}.ready"
@@ -3583,6 +3681,9 @@ def _launch_external_cron_worker(job: dict) -> bool:
                     process,
                     execution_id=execution_id,
                     job_id=job_id,
+                    fire_owner=fire_owner,
+                    adapters=adapters,
+                    loop=loop,
                     handoff_files=(payload_path, stderr_path),
                 )
             finally:
@@ -3600,6 +3701,9 @@ def _launch_external_cron_worker(job: dict) -> bool:
                     process,
                     execution_id=execution_id,
                     job_id=job_id,
+                    fire_owner=fire_owner,
+                    adapters=adapters,
+                    loop=loop,
                     handoff_files=(payload_path, stderr_path),
                 )
             logger.info(
@@ -3615,6 +3719,9 @@ def _launch_external_cron_worker(job: dict) -> bool:
                 process,
                 execution_id=execution_id,
                 job_id=job_id,
+                fire_owner=fire_owner,
+                adapters=adapters,
+                loop=loop,
                 handoff_files=(payload_path, stderr_path),
             )
         returncode = process.poll()
@@ -3654,6 +3761,9 @@ def _launch_external_cron_worker(job: dict) -> bool:
         process,
         execution_id=execution_id,
         job_id=job_id,
+        fire_owner=fire_owner,
+        adapters=adapters,
+        loop=loop,
         handoff_files=(payload_path, ack_path, stderr_path),
     )
 

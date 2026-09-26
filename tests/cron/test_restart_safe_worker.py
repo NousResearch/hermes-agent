@@ -657,9 +657,10 @@ def test_shared_run_path_hands_gateway_fire_to_external_worker(monkeypatch):
     monkeypatch.setattr(scheduler, "run_job", run)
     job = {"id": "job-1", "execution_id": "exec-1"}
 
-    assert scheduler.run_one_job(job, adapters={"discord": object()}) is True
+    adapters = {"discord": object()}
+    assert scheduler.run_one_job(job, adapters=adapters) is True
 
-    launch.assert_called_once_with(job)
+    launch.assert_called_once_with(job, adapters=adapters, loop=None)
     run.assert_not_called()
 
 
@@ -748,7 +749,7 @@ def test_gateway_tool_run_without_adapter_objects_hands_off(monkeypatch):
 
     created.assert_called_once_with("tool-job", source="direct", scheduled_instant=None)
     assert job["execution_id"] == "exec-tool"
-    launch.assert_called_once_with(job)
+    launch.assert_called_once_with(job, adapters=None, loop=None)
     run.assert_not_called()
 
 

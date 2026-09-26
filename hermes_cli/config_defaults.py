@@ -131,6 +131,17 @@ DEFAULT_CONFIG = {
             # drops from 3 to 1. Unknown pricing / missing usage leaves it untouched.
             "cost_threshold_usd": 0.25,
         },
+        # Additive per-session guardrail for runaway prompt/cost growth.
+        # Disabled by default for upstream-safe behaviour; operators can enable it in config.yaml.
+        # A hard breach latches after a successful provider response and pauses before the next paid call.
+        "session_budget_guardrail": {
+            "enabled": False,
+            "soft_prompt_tokens": 180_000,
+            "hard_prompt_tokens": 240_000,
+            "hard_consecutive_soft_hits": 3,
+            "hard_projected_cost_usd": 25.0,
+            "pause_and_ask": True,
+        },
         # Fast mode: "" / "normal" (off), "fast" (always), "auto" (first fast_auto_seconds of every
         # turn), "cold" (first turn of a session only).
         "service_tier": "",

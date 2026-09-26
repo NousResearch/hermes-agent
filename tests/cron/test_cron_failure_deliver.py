@@ -142,7 +142,7 @@ class TestFailureDeliverRouting:
         assert len(run_env["marked"]) == 1
         args, _kw = run_env["marked"][0]
         assert args[0] == "j2" and args[1] is False
-        assert "provider exploded" in args[2]
+        assert args[2].startswith("job_failed")
 
     def test_failure_deliver_explicit_target_wins_over_deliver(
         self, run_env, monkeypatch
@@ -214,7 +214,7 @@ class TestEscapedExceptionPath:
         # Failure is still recorded.
         assert len(run_env["marked"]) == 1
         args, _kw = run_env["marked"][0]
-        assert args[1] is False and "cannot import name X" in args[2]
+        assert args[1] is False and args[2] == "job_failed"
 
 
 class TestResolutionGrammar:

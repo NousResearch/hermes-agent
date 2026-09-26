@@ -122,7 +122,7 @@ def test_error_change_mints_new_incident(monkeypatch, tmp_path):
 # ── Redaction / classification ─────────────────────────────────────────────
 
 
-def test_redaction_applied_to_incident_error(monkeypatch, tmp_path):
+def test_incident_persists_only_closed_failure_label(monkeypatch, tmp_path):
     # agent.redact snapshots _REDACT_ENABLED from HERMES_REDACT_SECRETS at
     # module-import time. When another collected test module imports the
     # gateway/scheduler chain (e.g. test_codex_execution_paths.py), that
@@ -137,8 +137,9 @@ def test_redaction_applied_to_incident_error(monkeypatch, tmp_path):
     inc_id, _ = inc.upsert_incident("job-1", f"failed: {secret} boom")
 
     row = inc.get_incident(inc_id)
+    assert row["error"] == "job_failed"
     assert secret not in row["error"]
-    assert "boom" in row["error"]
+    assert "boom" not in row["error"]
 
 
 def test_error_truncated_to_bounded_length(monkeypatch, tmp_path):

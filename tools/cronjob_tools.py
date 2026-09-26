@@ -199,9 +199,11 @@ def _claim_for_manual_run(job_id: str, log_label: str):
         return None, {"claimed": False, "success": False, "error": reason}
     except Exception as e:
         logger.error("Failed to claim cron job %s for %s: %s", job_id, log_label, e)
+        from cron.failure_safety import public_cron_failure
+        safe_error = public_cron_failure(e)
         with contextlib.suppress(Exception):
-            mark_job_run(job_id, False, str(e))
-        return None, {"claimed": True, "success": False, "error": str(e)}
+            mark_job_run(job_id, False, safe_error)
+        return None, {"claimed": True, "success": False, "error": safe_error}
 
 
 def _execute_job_now(job: Dict[str, Any], extra_prompt: Optional[str] = None) -> Dict[str, Any]:
@@ -334,9 +336,11 @@ def _run_claimed_job(job: Dict[str, Any], extra_prompt: Optional[str] = None) ->
             # could erase a ticker-owned entry.
             with contextlib.suppress(Exception):
                 release_running_job(job_id)
+        from cron.failure_safety import public_cron_failure
+        safe_error = public_cron_failure(e, no_agent=bool(job.get("no_agent")))
         with contextlib.suppress(Exception):
-            mark_job_run(job_id, False, str(e), expected_fire_owner=fire_owner)
-        return {"claimed": True, "success": False, "error": str(e)}
+            mark_job_run(job_id, False, safe_error, expected_fire_owner=fire_owner)
+        return {"claimed": True, "success": False, "error": safe_error}
 
 
 def execute_job_for_event(
@@ -439,7 +443,9 @@ def _manual_run_completion(
     ]
     if refreshed.get("next_run_at"):
         lines.append(f"Next scheduled run: {refreshed['next_run_at']}")
-    excerpt = _latest_job_output_excerpt(job_id)
+    # Failed run output is the private diagnostic boundary and may contain arbitrary stderr,
+    # paths, or credentials. Never re-inject it into the parent conversation.
+    excerpt = _latest_job_output_excerpt(job_id) if res.get("success") else None
     if excerpt:
         lines += ["--- JOB OUTPUT ---", excerpt]
     return {

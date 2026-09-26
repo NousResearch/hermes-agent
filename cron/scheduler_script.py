@@ -419,14 +419,9 @@ def _run_job_script(
         stdout = (stdout_raw or "").strip()
         stderr = (stderr_raw or "").strip()
 
-        # Redact secrets before ANY return path.
-        try:
-            from agent.redact import redact_sensitive_text
-            stdout = redact_sensitive_text(stdout)
-            stderr = redact_sensitive_text(stderr)
-        except Exception as e:
-            logger.warning("Failed to redact sensitive text from output: %s", e)
-            stdout = stderr = "[REDACTED - redaction failed]"
+        # stdout/stderr are private diagnostics at this point.  The scheduler writes failures
+        # only to the owner-only run log and converts them to a closed label before persistence,
+        # API/tool output, or chat delivery.  Do not destroy the operator's local evidence here.
 
         if proc.returncode != 0:
             parts = [f"Script exited with code {proc.returncode}"]

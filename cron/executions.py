@@ -287,7 +287,11 @@ def finish_execution(
     """Write a terminal result once; terminal attempts cannot be rewritten."""
     now = _hermes_now().isoformat()
     status = "completed" if success else "failed"
-    detail = None if success else (str(error) if error else "unknown failure")
+    if success:
+        detail = None
+    else:
+        from cron.failure_safety import public_cron_failure
+        detail = public_cron_failure(error)
     with _transaction() as conn:
         cur = conn.execute(
             """UPDATE executions
@@ -403,7 +407,8 @@ def list_executions(
             + " ORDER BY claimed_at DESC, id DESC LIMIT ?",
             params,
         ).fetchall()
-    return [dict(row) for row in rows]
+    from cron.failure_safety import sanitize_execution_failure_fields
+    return [sanitize_execution_failure_fields(dict(row)) for row in rows]
 
 
 def get_execution(execution_id: str) -> Optional[Dict[str, Any]]:
@@ -413,7 +418,10 @@ def get_execution(execution_id: str) -> Optional[Dict[str, Any]]:
             "SELECT * FROM executions WHERE id=?",
             (str(execution_id),),
         ).fetchone()
-    return dict(row) if row is not None else None
+    if row is None:
+        return None
+    from cron.failure_safety import sanitize_execution_failure_fields
+    return sanitize_execution_failure_fields(dict(row))
 
 
 def latest_execution(job_id: str) -> Optional[Dict[str, Any]]:
@@ -436,4 +444,5 @@ def latest_executions(job_ids: List[str]) -> Dict[str, Dict[str, Any]]:
                             ORDER BY e2.claimed_at DESC, e2.id DESC LIMIT 1)""",
             clean,
         ).fetchall()
-    return {row["job_id"]: dict(row) for row in rows}
+    from cron.failure_safety import sanitize_execution_failure_fields
+    return {row["job_id"]: sanitize_execution_failure_fields(dict(row)) for row in rows}

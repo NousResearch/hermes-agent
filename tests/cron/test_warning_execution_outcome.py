@@ -52,8 +52,9 @@ def test_real_run_ledger_and_incident_match_actual_presentation(tmp_path, monkey
     saved = jobs.get_job(job["id"])
     assert saved["last_status"] == ("ok" if mode == "success" else "error")
     if mode != "success":
-        assert "isolated provider failure" in saved["last_error"]
+        assert saved["last_error"].startswith("job_failed")
         incident = next(i for i in incidents.list_incidents() if i["job_id"] == job["id"])
+        assert incident["error"] == "job_failed"
         assert incident["state"] == ("detected" if suppress else "alerted")
     if mode != "crash":
         outputs = list((tmp_path / "cron" / "output" / job["id"]).glob("*.md"))

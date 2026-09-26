@@ -749,6 +749,48 @@ class TestRegisterSessionMcpServers:
             # Should not raise
             await agent._register_session_mcp_servers(state, [server])
 
+    @pytest.mark.asyncio
+    async def test_partial_registration_failure_reaches_client(self, agent, mock_manager):
+        """A per-server connect failure is visible even when registration itself returns normally."""
+        from acp.schema import McpServerStdio
+
+        state = mock_manager.create_session(cwd="/tmp")
+        state.agent.enabled_toolsets = ["hermes-acp"]
+        state.agent.disabled_toolsets = None
+        state.agent.tools = []
+        state.agent.valid_tool_names = set()
+        agent._conn = MagicMock()
+        agent._conn.session_update = AsyncMock()
+        servers = [
+            McpServerStdio(name="healthy", command="healthy-mcp", args=[], env=[]),
+            McpServerStdio(name="broken", command="broken-mcp", args=[], env=[]),
+        ]
+
+        statuses = [
+            {"name": "healthy", "status": "connected", "connected": True, "tools": 1},
+            {
+                "name": "broken",
+                "status": "failed",
+                "connected": False,
+                "tools": 0,
+                "error": "Bearer super-secret refused",
+            },
+        ]
+        with (
+            patch("tools.mcp_tool_discovery.register_mcp_servers", return_value=["mcp_healthy_search"]),
+            patch("tools.mcp_tool_discovery.get_mcp_status", return_value=statuses),
+            patch("model_tools.get_tool_definitions", return_value=[]),
+        ):
+            await agent._register_session_mcp_servers(state, servers)
+
+        updates = [call.kwargs["update"] for call in agent._conn.session_update.await_args_list]
+        warnings = [
+            update.content.text
+            for update in updates
+            if getattr(update, "session_update", None) == "agent_message_chunk"
+        ]
+        assert warnings == ["MCP server 'broken' failed to connect: [REDACTED] refused"]
+
 
 class TestDisabledToolsetsFilterToolSurface:
     def test_cmd_tools_strips_configured_disabled_toolsets(self, agent, mock_manager):

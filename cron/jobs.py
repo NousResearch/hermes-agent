@@ -1385,10 +1385,11 @@ def load_jobs() -> List[Dict[str, Any]]:
         # whole tick and freeze every healthy sibling job, so skip it like the id-keyed map does.
         # Types only: the raw values are arbitrary file content and must not reach the logs.
         junk = [j for j in jobs if not isinstance(j, dict)]
-        logger.warning(
-            "Skipping %d non-object entr%s in jobs.json (types: %s)",
-            len(junk), "y" if len(junk) == 1 else "ies",
-            ", ".join(sorted({type(j).__name__ for j in junk})))
+        if getattr(_jobs_lock_state, "depth", 0):  # unlocked passes re-run below under the lock
+            logger.warning(
+                "Skipping %d non-object entr%s in jobs.json (types: %s)",
+                len(junk), "y" if len(junk) == 1 else "ies",
+                ", ".join(sorted({type(j).__name__ for j in junk})))
         jobs = [j for j in jobs if isinstance(j, dict)]
         repair = repair or "non-object entries dropped"
     # Persist even an empty result, or an all-junk store repeats the repair on every tick.

@@ -1011,6 +1011,46 @@ def _off_route_host(c: _Ctx) -> str:
 # default so the configured retry budget applies and no credential is benched.
 _403_TRANSIENT_CODES = frozenset({"upstream_unavailable"})
 
+# The relay wrapping its OWN upstream failure in a 403 (OpenCode Go/Console answer an
+# unparseable upstream body with HTTP 403 + ``error.code=server_error``) — on this route the
+# structured code is the signal and the prose is the relay's wrapper. Scoped per provider so a
+# coincidentally named code from another backend keeps its own verdict, as in
+# ``_PROVIDER_CODE_VERDICTS``; the slug is canonicalised through the provider registry first
+# (``_canonical_provider_slug``), never through a second alias table kept here.
+# Read LAST in ``_status_403``, so billing/credit exhaustion and WAF evidence still win.
+_403_TRANSIENT_CODES_BY_PROVIDER: Dict[str, frozenset] = {
+    "opencode-go": frozenset({"server_error"}),
+}
+
+
+def _canonical_provider_slug(slug: str) -> str:
+    """Canonical id for *slug*, asked of the provider registry instead of a local alias table.
+
+    The registry owns the alias set: ``plugins/model-providers/*`` declare their own ``aliases=``
+    (the opencode-go profile declares ``opencode_go``/``go``/``opencode-go-sub``) and
+    ``providers.get_provider_profile`` resolves name *and* aliases, so a copy of that list here
+    would drift from it silently. Falls back to ``hermes_cli.providers.normalize_provider`` — a
+    static table that covers ``go``/``opencode-go-sub`` but not every declared alias — and then to
+    the slug itself, so an unimportable registry degrades to the previous behaviour instead of
+    moving a verdict. Both imports are late on purpose: provider plugins reach this module, and
+    neither layer may import the other at module level.
+    """
+    try:
+        from providers import get_provider_profile
+
+        profile = get_provider_profile(slug)
+        if profile is not None:
+            return profile.name
+    except Exception as exc:  # pragma: no cover — a missing registry must not move a verdict
+        logger.debug("Provider registry lookup failed for %s: %s", slug, exc)
+    try:
+        from hermes_cli.providers import normalize_provider
+
+        return normalize_provider(slug)
+    except Exception as exc:  # pragma: no cover
+        logger.debug("Provider alias table unavailable for %s: %s", slug, exc)
+        return slug
+
 
 def _status_403(c: _Ctx) -> Verdict:
     if c.code in _403_TRANSIENT_CODES:
@@ -1025,6 +1065,11 @@ def _status_403(c: _Ctx) -> Verdict:
     # 403 and on established block/challenge markers; any other 403 stays auth.
     if any(p in c.msg for p in _UPSTREAM_BLOCKED_PATTERNS):
         return _V_UPSTREAM_BLOCKED
+    # Provider-scoped relay failure, last: nothing above claimed the body, so a structured
+    # "our upstream broke" code is the only evidence left and outranks the 403 auth default.
+    slug = _canonical_provider_slug(c.provider_slug)
+    if c.code in _403_TRANSIENT_CODES_BY_PROVIDER.get(slug, frozenset()):
+        return _V_OVERLOADED
     return _V_AUTH_FALLBACK
 
 

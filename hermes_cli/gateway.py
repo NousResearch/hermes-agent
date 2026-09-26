@@ -5249,9 +5249,6 @@ def _cmd_start(args):
     system = getattr(args, "system", False)
     start_all = getattr(args, "all", False)
     force = getattr(args, "force", False)
-    _guard_named_profile_under_multiplexer(force=force)
-    if not start_all and _dispatch_via_service_manager_if_s6("start"):
-        return
     if start_all:
         owner = None if force else _host_multiplexer_for_all_verb()
         if owner is not None:
@@ -5261,19 +5258,33 @@ def _cmd_start(args):
             print("  One gateway per host serves every profile; nothing to start.")
             _print_unfolded_gateway_note(owner)
             return
-        killed = kill_gateway_processes(all_profiles=True)
-        if killed:
-            print(f"✓ Killed {killed} stale gateway process(es) across all profiles")
-            _wait_for_gateway_exit(timeout=10.0, force_after=5.0)
-            _wait_for_api_server_port_free()
-
-    if _service_mgmt_blocked():
-        _no_backend_exit("start", "termux")
-    backend = _service_backend()
-    if backend is not None:
-        _service_call(backend, "start", system)
+        # `--all` names the ONE host gateway, regardless of which profile invoked the CLI.
+        # Bind the same service-manager scope used by migration so stale-owner cleanup, Windows
+        # task names/launchers, systemd/launchd identity files and raw HERMES_HOME readers all
+        # target the default root.
+        from hermes_cli.gateway_migrate import _home_env
+        from hermes_constants import get_default_hermes_root
+        start_scope = _home_env(get_default_hermes_root())
     else:
-        _handle_no_backend("start", wsl=True, s6=False)
+        _guard_named_profile_under_multiplexer(force=force)
+        if _dispatch_via_service_manager_if_s6("start"):
+            return
+        start_scope = contextlib.nullcontext()
+
+    with start_scope:
+        if start_all:
+            killed = kill_gateway_processes(all_profiles=True)
+            if killed:
+                print(f"✓ Killed {killed} stale gateway process(es) across all profiles")
+                _wait_for_gateway_exit(timeout=10.0, force_after=5.0)
+                _wait_for_api_server_port_free()
+        if _service_mgmt_blocked():
+            _no_backend_exit("start", "termux")
+        backend = _service_backend()
+        if backend is not None:
+            _service_call(backend, "start", system)
+        else:
+            _handle_no_backend("start", wsl=True, s6=False)
 
 
 def _cmd_stop(args):

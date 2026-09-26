@@ -92,7 +92,7 @@ def validate_platform_toolsets(
             if not isinstance(name, str) or not name:
                 continue
             if not is_valid_toolset(name):
-                hint = f" — did you mean '{default}'?" if default_valid else ""
+                hint = f" — did you mean '{default}'?" if (default_valid and default != name) else ""
                 warnings.append(f"platform '{platform}' references unknown toolset '{name}'{hint}")
             elif is_allowed_for_platform(name, str(platform)):
                 valid_count += 1

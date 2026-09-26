@@ -514,7 +514,8 @@ def _configurable_keys() -> Set[str]:
 
 
 def _platform_default_keys() -> Set[str]:
-    return {p["default_toolset"] for p in PLATFORMS.values()}
+    from hermes_cli.platforms import get_all_platforms
+    return {p.default_toolset for p in get_all_platforms().values()}
 
 
 def _explicit_toolsets(

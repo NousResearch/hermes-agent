@@ -156,6 +156,47 @@ def test_a_middle_page_renders_prev_counter_and_next(real_ptb):
 
 
 @pytest.mark.asyncio
+async def test_previous_adapter_keyboard_cannot_select_from_a_new_catalog(real_ptb, monkeypatch):
+    """A bot restart must not give an old model or confirmation tap a new meaning."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from hermes_cli import model_selection_guards
+
+    monkeypatch.setattr(model_selection_guards, "combined_selection_warning", lambda *a, **k: None)
+
+    async def tap(adapter, data):
+        query = SimpleNamespace(
+            data=data, message=SimpleNamespace(chat_id=12345), from_user=None,
+            answer=AsyncMock(), edit_message_text=AsyncMock())
+        await adapter._handle_callback_query(SimpleNamespace(callback_query=query), None)
+        return query
+
+    async def open_picker(model):
+        adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
+        callback = AsyncMock(return_value="switched")
+        adapter._model_picker_state["12345"] = {
+            "providers": [{"slug": "openai", "name": "OpenAI", "models": [model]}],
+            "current_model": model, "current_provider": "openai",
+            "on_model_selected": callback,
+        }
+        query = await tap(adapter, "mp:openai")
+        keyboard = query.edit_message_text.call_args.kwargs["reply_markup"]
+        button = next(b for row in keyboard.inline_keyboard for b in row
+                      if b.callback_data.startswith("mm:"))
+        assert len(button.callback_data.encode()) <= 64
+        return adapter, callback, button.callback_data
+
+    _old_adapter, _old_callback, old_payload = await open_picker("old-model")
+    current, callback, new_payload = await open_picker("different-model")
+    for payload in (old_payload, "mc:" + old_payload[3:]):
+        query = await tap(current, payload)
+        callback.assert_not_awaited()
+        assert query.answer.call_args.kwargs.get("text"), "stale taps need an explicit refusal"
+    await tap(current, new_payload)
+    callback.assert_awaited_once_with("12345", "different-model", "openai")
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("slug", ["bedrock", "openai-codex"])
 async def test_provider_scope_and_other_ids_survive_real_router(real_ptb, monkeypatch, slug):
     """Real PTB keyboards, real callback dispatch; only transport/switch are mocked."""

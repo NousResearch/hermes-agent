@@ -9,6 +9,7 @@ import logging
 import os
 import html as _html
 import re
+import secrets
 import time
 from contextvars import ContextVar
 from datetime import datetime, timezone
@@ -677,7 +678,9 @@ class TelegramAdapter(BasePlatformAdapter):
         # Monotonic id of the model listing a picker button was drawn from. Telegram keeps
         # every inline keyboard tappable forever, so a selection payload names its listing
         # and a tap from an older one is refused instead of resolving into the current list.
-        self._model_listing_seq = 0
+        # Old Telegram messages also survive adapter restarts: a zero-based counter
+        # would reuse their listing ids. A random 128-bit origin separates instances.
+        self._model_listing_seq = secrets.randbits(128)
         self._choice_picker_state: Dict[str, dict] = {}
         self._approval_state: Dict[int, str] = {}  # message_id → session_key
         self._slash_confirm_state: Dict[str, str] = {}  # confirm_id → session_key

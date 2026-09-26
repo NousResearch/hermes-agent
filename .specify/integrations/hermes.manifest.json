@@ -1,0 +1,12 @@
+{
+  "integration": "hermes",
+  "version": "1.0.1",
+  "installed_at": "2026-08-23T16:39:54.579190+00:00",
+  "files": {
+    ".specify/events.py": "c8986d3e06193f99197bd36f773e80a977678aa5baafb05f98af3c102c066211",
+    ".specify/init-options.json": "27f25ef3f24a4c814073959c419a038705567c10dac3fcbb1419079e2306c86e",
+    ".specify/integration.json": "f092dec00c1b337aaae7eba36ff788873e26b39239813919e0ff05205809670a",
+    ".specify/workflows/speckit/workflow.yml": "b9a2a3c3d1e5f022d0369be7c83802a656c64e2d95306a7870a1f59b90c0e307",
+    ".specify/workflows/workflow-registry.json": "4768618783daa6d33e9bf204231817787033660a39f626cb029a60580a6bea7c"
+  }
+}

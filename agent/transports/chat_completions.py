@@ -674,7 +674,15 @@ class ChatCompletionsTransport(ProviderTransport):
             return None
         details = getattr(usage, "prompt_tokens_details", None)
         cached = getattr(details, "cached_tokens", 0) or 0 if details else 0
+        # Anthropic-backed OpenAI-compatible bridges (claude-code-bridge,
+        # Yunwu and other Claude resellers) spell the write field
+        # `cache_creation_tokens` -- the OpenAI-shaped spelling of
+        # Anthropic's `cache_creation_input_tokens`. Without this
+        # fallback their cache writes are silently booked as UNCACHED
+        # input. Mirrors the fallback usage_pricing.py already uses.
         written = getattr(details, "cache_write_tokens", 0) or 0 if details else 0
+        if not written and details:
+            written = getattr(details, "cache_creation_tokens", 0) or 0
         cached = cached or getattr(usage, "prompt_cache_hit_tokens", 0) or 0  # DeepSeek native
         return {"cached_tokens": cached, "creation_tokens": written} if cached or written else None
 

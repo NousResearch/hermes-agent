@@ -243,6 +243,7 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 |---------|-------------|
 | `/start` | Platform-protocol command. Many chat platforms (Telegram, Discord, …) send `/start` automatically the first time a user opens a bot conversation. Hermes acknowledges the ping silently — no agent reply, no session burn — so first-contact handshakes don't waste a turn. You can also send it explicitly to confirm the gateway is reachable. |
 | `/new [name]` (alias: `/reset`) | Start a new session (fresh session ID + history). Optional `[name]` sets the initial session title. Append `now`, `--yes`, or `-y` to skip the confirmation modal — e.g. `/reset now`, `/new --yes my-experiment`. |
+| `/clear` | **Messaging surfaces only.** Chat has no screen to clear, so `/clear` resets the conversation session exactly like `/new` (same confirmation prompt, same busy-session interrupt). In the interactive CLI `/clear` keeps its terminal meaning (clear screen + new session). |
 | `/status` | Show session info, followed by a local **Session recap** block (recent turn counts, top tools used, files touched, latest prompt + reply). |
 | `/stop` | Kill all running background processes and interrupt the running agent. |
 | `/model [provider:model]` | Show or change the model. Supports provider switches (`/model zai:glm-5`), custom endpoints (`/model custom:model`), named custom providers (`/model custom:local:qwen`), auto-detect (`/model custom`), OpenRouter account presets (`/model @preset/<slug>` — account-scoped, skips the public model-listing check), and user-defined aliases (`/model fav`, `/model grok` — see [Custom model aliases](#custom-model-aliases)). Use `--global` to persist the change to config.yaml; a successful `--global` pick (typed or picker) also drops this chat's session-only override, so config.yaml alone decides the model after a gateway restart (a chat with a `channel_overrides` model keeps the override, since the channel setting would otherwise outrank config.yaml; the CLI/TUI deliberately keep their per-session pin so resume restores the model that chat used). **Note:** `/model` can only switch between already-configured providers. To add a new provider or set up API keys, use `hermes model` from your terminal (outside the chat session). **Cost note:** a mid-session model switch resets the prompt cache (the cache key includes the model), so the next message re-reads the whole conversation at full input price. |
@@ -324,7 +325,7 @@ The CLI prompts before running slash commands that throw away unsaved session st
 
 | Command | What it destroys |
 |---------|------------------|
-| `/clear` | Clears the screen and starts a fresh session — current session ID and in-memory history are gone. |
+| `/clear` | Clears the screen and starts a fresh session — current session ID and in-memory history are gone. In messaging chats `/clear` instead resets the session like `/new` (no screen to clear). |
 | `/new` / `/reset` | Starts a fresh session (new session ID + empty history). |
 | `/undo` | Removes the last user/assistant exchange from history. |
 | `/exit --delete` / `/quit --delete` | Exits **and** permanently deletes the current session's SQLite history and on-disk transcripts. |

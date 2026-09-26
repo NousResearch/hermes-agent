@@ -1375,20 +1375,29 @@ class GatewayInboundMixin:
             # One-shot restore (/moa, /model --once) must run on EVERY exit path (success,
             # exception, interrupt); the generation guard makes a displaced turn's finalizer a no-op.
             self._restore_pending_one_turn_model_override(_quick_key, _run_generation)
-            # SIGKILL/OOM skips finally, leaving the durable marker for the next unclean startup's
-            # recovery pass. A turn the adapter delivers hands its marker to that lifecycle, which
-            # clears it only once the reply is in the delivery ledger (else a kill in between
-            # left neither marker nor ledger row and the persisted reply was never sent).
-            if not getattr(event, "_turn_marker_handoff", False):
-                await self._clear_durable_active_turn(event)
-            # Release only this turn's generation. Eviction may immediately admit a replacement
-            # through the cold path; an unconditional release here would then clear the replacement
-            # sentinel/agent and lease. Reset/stop release their stale slot before installing a
-            # successor, preserving reset-zombie cleanup without granting gen-N successor authority.
-            self._release_running_agent_state(_quick_key, run_generation=_run_generation)
-            # Turn lease is keyed by (routing key, run generation) so this unwind can only free
-            # the lease its own turn acquired, never a newer turn's.
-            self._release_turn_lease(_quick_key, _run_generation)
+            try:
+                # SIGKILL/OOM skips finally, leaving the durable marker for the next unclean startup's
+                # recovery pass. A turn the adapter delivers hands its marker to that lifecycle, which
+                # clears it only once the reply is in the delivery ledger (else a kill in between
+                # left neither marker nor ledger row and the persisted reply was never sent).
+                if not getattr(event, "_turn_marker_handoff", False):
+                    await self._clear_durable_active_turn(event)
+            finally:
+                # A cancellation landing in the await above must not skip the releases below.
+                # _run_agent releases the running-agent slot when the agent returns. A /stop sent
+                # while this dispatch task is still finishing finds no running agent, answers "No
+                # active task to stop." and does not sweep the lease; the adapter then cancels this
+                # task. If the cancel lands in the marker clear (its state.db write), this turn's
+                # lease would stay held: later messages are rejected with "Another turn is still
+                # running…" and /stop keeps answering "No active task", until restart.
+                # Release only this turn's generation. Eviction may immediately admit a replacement
+                # through the cold path; an unconditional release here would then clear the replacement
+                # sentinel/agent and lease. Reset/stop release their stale slot before installing a
+                # successor, preserving reset-zombie cleanup without granting gen-N successor authority.
+                self._release_running_agent_state(_quick_key, run_generation=_run_generation)
+                # Turn lease is keyed by (routing key, run generation) so this unwind can only free
+                # the lease its own turn acquired, never a newer turn's.
+                self._release_turn_lease(_quick_key, _run_generation)
 
     def _restore_pending_one_turn_model_override(self, session_key: str, run_generation: int | None = None) -> None:
         """Restore the per-session model override captured by ``/model --once`` or ``/moa``.

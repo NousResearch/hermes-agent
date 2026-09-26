@@ -1214,12 +1214,37 @@ def _finalize_receipt(status: str, debug_message: str) -> None:
         finalize_update_receipt(status)
 
 
+def _run_no_pull_completion(git_cmd, completion_request: dict | None) -> None:
+    """Run the standard update completion for the CURRENT HEAD (--no-pull).
+
+    A pinned-source install (upstream main at a verified commit + local fixes) has no
+    hermes update path that finishes at its HEAD: every arm either moves the code
+    (fetch/merge/reset/checkout — including ``_reconcile_diverged_checkout``'s ``reset
+    --hard``, which would delete the local fixes) or exits 1 before the completion tail
+    (deps/venv sync, products, home maintenance, fleet restart). This runs only that
+    tail. The tree was never touched, so no stash or branch restore applies.
+    """
+    head_sha = _capture_head_sha(git_cmd, _m().PROJECT_ROOT) or ""
+    current_branch = _current_branch_name(git_cmd, check=True)
+    if completion_request is not None:
+        completion_request["expected_sha"] = head_sha
+        completion_request["completion_message"] = (
+            f"✓ Completed at {head_sha[:10]} ({current_branch}); no code was pulled.")
+    _complete_source_update(completion_request)
+
+
 def _finish_already_up_to_date(
-    git_cmd, branch: str, current_branch: str, _plan, *, gw_input_fn, completion_request: dict) -> None:
+    git_cmd, branch: str, current_branch: str, _plan, *, gw_input_fn, completion_request: dict,
+    no_pull: bool = False) -> None:
     """"Already up to date" path: restore stash/branch, repair the checkout, catch up the fleet.
-    ``sys.exit(1)`` when the repair is incomplete (after gateway exit code + partial receipt)."""
+    ``sys.exit(1)`` when the repair is incomplete (after gateway exit code + partial receipt).
+    ``no_pull`` (the --no-pull flag): the checkout was never touched, so the stash/branch
+    restores are skipped and the completion message says so."""
     # Restore stash and switch back if we moved. EXCEPTION: a parked branch verified clean +
     # fully merged stays on the target — re-parking on the stale branch recreates the incident.
+    if no_pull:
+        _run_no_pull_completion(git_cmd, completion_request)
+        return
     if _plan.auto_stash_ref is not None:
         _m()._restore_stashed_changes(
             git_cmd, _m().PROJECT_ROOT, _plan.auto_stash_ref, prompt_user=_plan.prompt_for_restore,
@@ -1297,6 +1322,22 @@ def _cmd_update_impl(args, gateway_mode: bool):
         had_desktop_app_before_update, gateway_mode)
     branch = _m()._resolve_update_branch(args)
     completion_request["branch"] = branch
+
+    # --no-pull: complete at the current HEAD without any git movement (#124382).
+    # Refuse a dirty tree exactly as the moving paths do; an autostash across a
+    # completion that never moves the tree would only hide uncommitted work.
+    if getattr(args, "no_pull", False):
+        status = _git_run(git_cmd, ["status", "--porcelain"], _m().PROJECT_ROOT)
+        if status.returncode != 0 or status.stdout.strip():
+            print("✗ --no-pull refused: the working tree has uncommitted changes.")
+            print(f"  Commit or stash them, then re-run: hermes update --no-pull")
+            _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
+            sys.exit(1)
+        _finish_already_up_to_date(
+            git_cmd, branch, _current_branch_name(git_cmd, check=True),
+            None, gw_input_fn=gw_input_fn, completion_request=completion_request, no_pull=True)
+        return
+
     target_ref = f"origin/{branch}"
     release_sha = None
     target_repository = None

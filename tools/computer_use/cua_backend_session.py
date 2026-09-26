@@ -17,8 +17,15 @@ from typing import Any, Dict, List, Optional
 from hermes_cli._subprocess_compat import windows_hide_flags
 from tools.computer_use import cua_backend_driver as _driver
 from tools.computer_use.cua_backend_parse import _extract_tool_result, _mcp_field, _tool_envelope
+from tools.mcp_tool_errors import _jsonrpc_matches
 
 logger = logging.getLogger("tools.computer_use.cua_backend")
+
+# MCP SDK JSON-RPC code for a send on a closed transport: ``mcp.shared.jsonrpc_dispatcher`` raises
+# ``MCPError(code=CONNECTION_CLOSED, message="Connection closed")`` for post-close sends *and* for blocked
+# waiters woken by EOF. Covers the daemon-restart/upgrade case, where the cached stdio channel dies that way.
+_JSONRPC_CONNECTION_CLOSED = -32000
+_CLOSED_TRANSPORT_MARKERS = ("connection closed", "transport is closed")
 
 
 class _AsyncBridge:
@@ -386,11 +393,21 @@ class _CuaDriverSession:
     # ── Error classification (instance-patchable seams; result-shape checks live at module level) ──
     @staticmethod
     def _is_closed_session_error(exc: Exception) -> bool:
-        """True for MCP/stdio failures that are recoverable by reconnecting."""
+        """True for MCP/stdio failures that are recoverable by reconnecting.
+
+        The anyio stream types below cover a channel that died mid-read; the JSON-RPC check covers the MCP
+        SDK's own closed-transport error, raised as a plain ``MCPError`` when a send lands on a closed channel
+        or an EOF wakes a blocked waiter. Restarting or upgrading the driver closes the cached stdio channel
+        that way — no anyio type is involved — so before this the session was never rebuilt and every later
+        ``computer_use`` call failed with ``Connection closed`` until the process restarted.
+        """
         name, module = exc.__class__.__name__, getattr(exc.__class__, "__module__", "")
-        return (name in {"ClosedResourceError", "BrokenResourceError", "EndOfStream"}
+        if (name in {"ClosedResourceError", "BrokenResourceError", "EndOfStream"}
                 or (module.startswith("anyio") and "Resource" in name)
-                or isinstance(exc, (BrokenPipeError, EOFError)))
+                or isinstance(exc, (BrokenPipeError, EOFError))):
+            return True
+        return _jsonrpc_matches(exc, (_JSONRPC_CONNECTION_CLOSED,), _CLOSED_TRANSPORT_MARKERS,
+                                code=getattr(exc, "code", None))
 
     @staticmethod
     def _is_transient_daemon_error(exc: Exception) -> bool:

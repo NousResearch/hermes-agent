@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Dict, Iterable, Optional, Set
 
@@ -15,6 +16,9 @@ from tools.tool_backend_helpers import (
     fal_key_is_configured, has_direct_modal_credentials, normalize_browser_cloud_provider, normalize_modal_mode,
     resolve_modal_backend_state, resolve_openai_audio_api_key
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 _DEFAULT_PLATFORM_TOOLSETS = {"cli": "hermes-cli"}
@@ -306,6 +310,13 @@ def _plugin_gen_backend(key: str, config: Dict[str, object], selected: Optional[
     installs: those keep their FAL_KEY / Portal handling. A plugin-backed vendor (``deepinfra`` …)
     declares its own registry row and env vars, so its readiness is the same value the Tools page
     reports for that row rather than FAL's key.
+
+    ``selected`` is already normalised by :func:`_selected_provider` (``read_selection`` semantics
+    lower-case the persisted value), while ``_plugin_provider_rows`` copies ``provider.name``
+    verbatim into the ``*_plugin_name`` marker and the image/video registries keep the default
+    ``normalize=str.strip`` (unlike ``tts_registry``'s ``lower_key``). The marker is therefore
+    normalised on this side too — comparing the two raw would silently drop every plugin whose id is
+    not already lower-case back to the FAL reading this function exists to remove.
     """
     if not selected or selected in ("nous", "fal"):
         return None
@@ -313,14 +324,18 @@ def _plugin_gen_backend(key: str, config: Dict[str, object], selected: Optional[
 
     marker = f"{key}_plugin_name"
     try:
-        row = next((r for r in _plugin_rows_for(key) if r.get(marker) == selected), None)
-    except Exception:  # registry missing / discovery failure -> keep the FAL/Portal reading
+        row = next((r for r in _plugin_rows_for(key) if _norm(r.get(marker)) == selected), None)
+    except Exception as exc:  # registry missing / discovery failure -> keep the FAL/Portal reading
+        logger.debug("%s: plugin registry rows unavailable (%s)", key, exc)
         return None
     if row is None:
         return None
     try:
         ready = provider_readiness_status(row, config) == "ready"
-    except Exception:
+    except Exception as exc:
+        # Fail closed: a row we cannot read must not advertise a backend as configured. Logged so a
+        # malformed third-party row is diagnosable instead of just invisible.
+        logger.debug("%s: provider_readiness_status failed for row %r (%s)", key, row.get("name"), exc)
         ready = False
     return ready, str(row.get("name") or selected)
 

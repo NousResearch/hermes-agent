@@ -569,11 +569,21 @@ _PLUGIN_LABEL = "DeepInfra Test"
 
 @pytest.fixture(autouse=True)
 def _clean_gen_registries():
-    image_gen_registry._reset_for_tests()
-    video_gen_registry._reset_for_tests()
+    """Isolate the two process-global gen registries, then put the real rows back.
+
+    ``_reset_for_tests()`` alone would clear the bundled registrations for the rest of the process —
+    benign under ``scripts/run_tests.sh`` (one subprocess per file) but a trap for anyone who later
+    runs this file in a shared session, so teardown restores the pre-test snapshot instead.
+    """
+    registries = (image_gen_registry, video_gen_registry)
+    saved = [(reg, dict(reg._providers), dict(reg._scoped_providers)) for reg in registries]
+    for reg in registries:
+        reg._reset_for_tests()
     yield
-    image_gen_registry._reset_for_tests()
-    video_gen_registry._reset_for_tests()
+    for reg, providers, scoped in saved:
+        reg._reset_for_tests()
+        reg._providers.update(providers)
+        reg._scoped_providers.update(scoped)
 
 
 def _register_plugin_backend():
@@ -660,3 +670,27 @@ def test_never_configured_gen_backends_stay_unconfigured(monkeypatch, tmp_path):
 
     assert features.image_gen.active is False
     assert features.video_gen.active is False
+
+
+def test_non_lowercase_plugin_backend_id_still_resolves(monkeypatch, tmp_path):
+    """A plugin whose registry id is not already lowercase must still match the stored selection.
+
+    ``_selected_provider()`` lowercases the persisted value (``read_selection`` semantics), while
+    ``_plugin_provider_rows()`` copies ``provider.name`` verbatim into the ``*_plugin_name`` marker
+    and the image/video registries keep the default ``normalize=str.strip`` (unlike
+    ``tts_registry``'s ``lower_key``). Comparing the two without normalising meant a mixed-case id
+    could never match, so the branch fell back to the FAL reading it exists to remove.
+    """
+    for registry, provider in (
+        (image_gen_registry, _FakePluginImageProvider("FooAI", "FooAI Vendor", "FOOAI_KEY")),
+        (video_gen_registry, _FakePluginVideoProvider("FooAI", "FooAI Vendor", "FOOAI_KEY")),
+    ):
+        registry.register_provider(provider)
+    _logged_out_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("FOOAI_KEY", "test-key")
+
+    for stored in ("FooAI", "fooai", "FOOAI"):
+        features = ns.get_nous_subscription_features({"image_gen": {"provider": stored}})
+        assert features.image_gen.available is True, stored
+        assert features.image_gen.active is True, stored
+        assert features.image_gen.current_provider == "FooAI Vendor", stored

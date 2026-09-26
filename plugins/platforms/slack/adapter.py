@@ -4961,7 +4961,9 @@ class SlackAdapter(BasePlatformAdapter):
 
         def _build() -> Tuple[str, list]:
             actions = [
-                self._button(label, self._EA_ACTION_IDS[choice], prompt.session_key, style=style)
+                self._button(label, self._EA_ACTION_IDS[choice],
+                             f"ea:{prompt.request_id}:{prompt.session_key}" if prompt.request_id
+                             else prompt.session_key, style=style)
                 for label, choice, style in prompt.actions]
             blocks = [
                 {"type": "section", "text": {"type": "mrkdwn", "text": prompt.text}},
@@ -5604,7 +5606,11 @@ class SlackAdapter(BasePlatformAdapter):
         started = await self._begin_interaction(ack, body, action, "approval")
         if started is None:
             return
-        team_id, action_id, session_key, message, msg_ts, channel_id, user_name, user_id = started
+        team_id, action_id, value, message, msg_ts, channel_id, user_name, user_id = started
+        request_id = None
+        session_key = value
+        if isinstance(value, str) and value.startswith("ea:"):
+            _, request_id, session_key = value.split(":", 2)
         choice = self._APPROVAL_CHOICES.get(action_id, "deny")
         # Double-click guard (atomic pop). Also accept the bare ts: the approval may
         # have been stored without a team id while the click carries one.
@@ -5617,7 +5623,9 @@ class SlackAdapter(BasePlatformAdapter):
         # timeout (count == 0) shows "expired", not "approved".
         try:
             from tools.approval import resolve_gateway_approval
-            count = resolve_gateway_approval(session_key, choice)
+            # Unbound cards (no request_id) fail closed instead of resolving FIFO.
+            count = (resolve_gateway_approval(session_key, choice, request_id=request_id)
+                     if request_id else 0)
             logger.info(
                 "Slack button resolved %d approval(s) for session %s (choice=%s, user=%s)", count,
                 session_key, choice, user_name)

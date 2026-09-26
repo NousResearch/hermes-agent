@@ -1104,6 +1104,25 @@ def _host_prefix() -> str:
     return f"{_claimer_id().split(':', 1)[0]}:"
 
 
+def _with_operator(
+    operator: Optional[str], payload: Optional[dict]
+) -> Optional[dict]:
+    """Return ``payload`` with an additive ``operator`` key (issue #82689).
+
+    Operator attribution on state-changing events must never change what
+    existing consumers see: callers that don't pass an operator get the
+    exact legacy payload back (unchanged rows/keys), while callers that do
+    get a copy with one extra ``operator`` key. The value is a surface-
+    prefixed identity string, e.g. ``cli:<user>@<host>``,
+    ``dashboard:<session>``, or ``dispatcher:<host:pid>``.
+    """
+    if not operator:
+        return payload
+    merged = dict(payload) if payload else {}
+    merged["operator"] = operator
+    return merged
+
+
 # --- Task creation / mutation ---
 
 def _validate_model_override(model: Optional[str], provider: Optional[str]) -> tuple[Optional[str], Optional[str]]:
@@ -1550,8 +1569,78 @@ def list_tasks(
     return [Task.from_row(r) for r in rows]
 
 
-def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) -> bool:
-    """Assign/reassign; raises RuntimeError while the task is running under a claim."""
+class StalePreconditionsError(Exception):
+    """A caller-supplied ``expect`` snapshot no longer matches the task row.
+
+    Deliberately not a ``RuntimeError``/``ValueError``: ``reassign_task``
+    swallows ``RuntimeError`` to report a still-running claim, and the
+    dashboard maps ``ValueError`` to 400 — a stale-board refusal must reach
+    the caller as the 409 it is.
+    """
+
+
+def _expect_mismatch(row, expect: Optional[dict]) -> Optional[str]:
+    """Why *row* no longer matches the caller's ``expect`` snapshot, else ``None``.
+
+    ``expect`` is a dry-run probe's ``preconditions`` dict echoed back on the
+    apply request (#82689). Unknown keys are ignored rather than treated as a
+    mismatch, and a falsy ``expect`` means "no preconditions supplied" —
+    legacy callers keep their apply-immediately behaviour.
+    """
+    if not expect or row is None:
+        return None
+    observed = {
+        "status": row["status"],
+        "claim_lock": row["claim_lock"],
+        "assignee": row["assignee"],
+    }
+    for key, want in expect.items():
+        if key not in observed:
+            continue
+        have = observed[key]
+        if (want is None) != (have is None) or (want is not None and have != want):
+            return (f"{key} changed since the probe "
+                    f"(probe saw {want!r}, row now has {have!r})")
+    return None
+
+
+def _require_expected_row(conn: sqlite3.Connection, task_id: str, expect: Optional[dict]) -> None:
+    """Refuse (``StalePreconditionsError``) when the row no longer matches ``expect``.
+
+    For mutators that cannot fold the comparison into one transaction — the
+    reclaim leg of ``reassign_task`` terminates a worker before its own
+    transaction opens, so the stale-board check has to land first. The plain
+    assign path does not use this: ``assign_task`` compares inside the same
+    transaction as its update.
+    """
+    if not expect:
+        return
+    row = conn.execute(
+        "SELECT status, claim_lock, assignee FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    mismatch = _expect_mismatch(row, expect)
+    if mismatch:
+        raise StalePreconditionsError(mismatch)
+
+
+def assign_task(
+    conn: sqlite3.Connection, task_id: str, profile: Optional[str],
+    *,
+    operator: Optional[str] = None,
+    expect: Optional[dict] = None,
+) -> bool:
+    """Assign/reassign; raises RuntimeError while the task is running under a claim.
+
+    ``operator`` is an optional surface-prefixed identity string recorded
+    additively on the ``assigned`` event payload (issue #82689) — e.g.
+    ``cli:<user>@<host>`` or ``dashboard:<session>``. Omitting it produces
+    the exact legacy payload (no new key), so old consumers are unaffected.
+
+    ``expect`` is the dry-run probe's ``preconditions`` snapshot. It is
+    compared against the row read *inside this transaction*, so a board that
+    moved between the probe and here is refused (``StalePreconditionsError``)
+    rather than silently overwritten.
+    """
     profile = _canonical_assignee(profile)
     with write_txn(conn):
         row = conn.execute(
@@ -1559,6 +1648,9 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
         ).fetchone()
         if not row:
             return False
+        mismatch = _expect_mismatch(row, expect)
+        if mismatch:
+            raise StalePreconditionsError(mismatch)
         if row["claim_lock"] is not None and row["status"] == "running":
             raise RuntimeError(
                 f"cannot reassign {task_id}: currently running (claimed). "
@@ -1575,7 +1667,8 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
         # ``from`` lets the respawn guard tell a real handoff (dev→closer) from
         # a no-op re-assign or an unassign, which must not lift ``active_pr``.
         _append_event(
-            conn, task_id, "assigned", {"assignee": profile, "from": row["assignee"]},
+            conn, task_id, "assigned",
+            _with_operator(operator, {"assignee": profile, "from": row["assignee"]}),
         )
     # Observer fires AFTER commit so subscribers see durable state.
     notify_task_updated(conn, task_id, ("assignee",))
@@ -2269,11 +2362,17 @@ def _claim_and_open_run(
 def claim_task(
     conn: sqlite3.Connection, task_id: str, *, ttl_seconds: Optional[int] = None,
     claimer: Optional[str] = None,
+    operator: Optional[str] = None,
 ) -> Optional[Task]:
     """Atomically transition ``ready -> running``.
 
     Returns the claimed ``Task`` on success, ``None`` if the task was
     already claimed (or is not in ``ready`` status).
+
+    ``operator`` is an optional surface-prefixed identity string recorded
+    additively on the ``claimed`` event payload (issue #82689); the
+    dispatcher passes ``dispatcher:<host:pid>``. Omitting it produces the
+    exact legacy payload.
     """
     now = int(time.time())
     lock = claimer or _claimer_id()
@@ -2293,7 +2392,10 @@ def claim_task(
         _reclaim_dangling_run(
             conn, task_id, statuses=("ready",), now=now, note="invariant recovery on re-claim",
         )
-        run_id = _claim_and_open_run(conn, task_id, "ready", lock, expires, now)
+        run_id = _claim_and_open_run(
+            conn, task_id, "ready", lock, expires, now,
+            event_extra={"operator": operator} if operator else None,
+        )
         if run_id is None:
             return None
         claimed = get_task(conn, task_id)
@@ -2304,10 +2406,17 @@ def claim_task(
 def claim_review_task(
     conn: sqlite3.Connection, task_id: str, *, ttl_seconds: Optional[int] = None,
     claimer: Optional[str] = None,
+    operator: Optional[str] = None,
 ) -> Optional[Task]:
     """Atomic ``review -> running`` (None when lost). Parents are re-checked
     (one may have reopened meanwhile) and a NEW run tracks the reviewer
-    separately from the implementer."""
+    separately from the implementer.
+
+    ``operator`` is an optional surface-prefixed identity string recorded
+    additively on the ``claimed`` event payload (issue #82689); the
+    dispatcher passes ``dispatcher:<host:pid>``. Omitting it produces the
+    exact legacy payload.
+    """
     now = int(time.time())
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
@@ -2324,7 +2433,11 @@ def claim_review_task(
                 )
             return None
         run_id = _claim_and_open_run(
-            conn, task_id, "review", lock, expires, now, event_extra={"source_status": "review"},
+            conn, task_id, "review", lock, expires, now,
+            event_extra={
+                "source_status": "review",
+                **({"operator": operator} if operator else {}),
+            },
         )
         if run_id is None:
             return None
@@ -2600,15 +2713,27 @@ def reclaim_task(
 def reassign_task(
     conn: sqlite3.Connection, task_id: str, profile: Optional[str], *, reclaim_first: bool = False,
     reason: Optional[str] = None,
+    operator: Optional[str] = None,
+    expect: Optional[dict] = None,
 ) -> bool:
     """Reassign (None unassigns); a running task is refused unless
-    ``reclaim_first`` releases its claim — the "this profile's model is broken" path."""
+    ``reclaim_first`` releases its claim — the "this profile's model is broken" path.
+
+    ``operator`` rides the ``assigned`` event payload additively (issue #82689).
+
+    ``expect`` guards the assignment (see ``assign_task``). With
+    ``reclaim_first`` it is checked against the *pre-reclaim* row before the
+    worker is terminated — the reclaim itself rewrites ``status``/
+    ``claim_lock``, so it consumes the snapshot rather than passing it on.
+    """
     if reclaim_first:
+        _require_expected_row(conn, task_id, expect)
         # Safe to call even if nothing to reclaim.
         reclaim_task(conn, task_id, reason=reason or "reassign")
+        expect = None  # consumed: the reclaim is the mutation the caller confirmed
     # assign_task handles its own txn + the still-running guard.
     try:
-        return assign_task(conn, task_id, profile)
+        return assign_task(conn, task_id, profile, operator=operator, expect=expect)
     except RuntimeError:
         # Task is still running and reclaim_first was False; caller
         # needs to decide whether to retry with reclaim.
@@ -2731,6 +2856,7 @@ def complete_task(
     summary: Optional[str] = None, metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None, expected_run_id: Optional[int] = None,
     fire_lifecycle_hook: bool = True, force: bool = False,
+    operator: Optional[str] = None,
 ) -> bool:
     """``running|ready|blocked|review -> done``; records ``result``.
 
@@ -2748,6 +2874,11 @@ def complete_task(
     or ``summary``, or a stripped result already stored on the card. Empty or
     whitespace-only evidence raises :class:`EmptyCompletionError` after an
     auditable event. Approving a card out of ``review`` stays exempt.
+
+    ``operator`` is an optional surface-prefixed identity string recorded
+    additively on the ``completed`` event payload (issue #82689) — e.g.
+    ``cli:<user>@<host>`` for a manual completion or ``worker:...`` from a
+    spawned worker. Omitting it produces the exact legacy payload.
     """
     now = int(time.time())
     # Cheap pre-check; re-checked inside the txn to close the parent-reopen race.
@@ -2819,7 +2950,10 @@ def complete_task(
             event_summary = _REVIEW_APPROVED_NOTE
         _append_event(
             conn, task_id, "completed",
-            _completed_event_payload(result, event_summary, verified_cards, metadata),
+            _with_operator(
+                operator,
+                _completed_event_payload(result, event_summary, verified_cards, metadata),
+            ),
             run_id=run_id,
         )
     _flag_phantom_prose_refs(conn, task_id, run_id, summary, result, verified_cards)

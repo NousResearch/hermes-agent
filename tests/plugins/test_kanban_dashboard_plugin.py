@@ -1068,3 +1068,246 @@ def test_touch_card_tap_opens_instead_of_dragging():
 # ---------------------------------------------------------------------------
 # Diagnostic severity colours follow the dashboard theme
 # ---------------------------------------------------------------------------
+
+
+# Assign confirmation probe (dry_run) + operator attribution (#82689)
+# ---------------------------------------------------------------------------
+
+
+def test_reassign_dry_run_probe_reports_without_mutating(client):
+    r = client.post("/api/plugins/kanban/tasks", json={"title": "probe me"})
+    assert r.status_code == 200, r.text
+    task_id = r.json()["task"]["id"]
+    assert r.json()["task"]["status"] == "ready"  # no parents -> ready
+
+    resp = client.post(
+        f"/api/plugins/kanban/tasks/{task_id}/reassign",
+        json={"profile": "ghost-profile", "dry_run": True},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["dry_run"] is True
+    assert body["task_id"] == task_id
+
+    probe = body["probe"]
+    assert probe["task_exists"] is True
+    assert probe["current_status"] == "ready"
+    assert probe["target_profile"] == "ghost-profile"
+    # Isolated HERMES_HOME has no profile dirs -> target doesn't exist, so
+    # the assignment would NOT hand the card to the dispatcher.
+    assert probe["target_profile_exists"] is False
+    assert probe["would_refuse"] is False
+    assert probe["would_reclaim"] is False
+    assert probe["dispatchable_after_assign"] is False
+    assert isinstance(probe["warnings"], list)
+
+    # Nothing was mutated: task still unassigned, no assigned event.
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, task_id).assignee is None
+        assert [
+            e for e in kb.list_events(conn, task_id) if e.kind == "assigned"
+        ] == []
+
+
+def test_reassign_dry_run_flags_running_claim(client):
+    """A running claim without reclaim_first must surface would_refuse."""
+    r = client.post("/api/plugins/kanban/tasks", json={"title": "busy"})
+    task_id = r.json()["task"]["id"]
+    with kbc.connect() as conn:
+        kb.claim_task(conn, task_id, claimer="box:1")
+
+    resp = client.post(
+        f"/api/plugins/kanban/tasks/{task_id}/reassign",
+        json={"profile": "builder", "dry_run": True},
+    )
+    probe = resp.json()["probe"]
+    assert probe["running"] is True
+    assert probe["claim_locked"] is True
+    assert probe["would_refuse"] is True
+    assert resp.json()["ok"] is False
+
+    # With reclaim_first the same probe flips to would_reclaim.
+    resp = client.post(
+        f"/api/plugins/kanban/tasks/{task_id}/reassign",
+        json={"profile": "builder", "reclaim_first": True, "dry_run": True},
+    )
+    probe = resp.json()["probe"]
+    assert probe["would_refuse"] is False
+    assert probe["would_reclaim"] is True
+
+
+def test_reassign_dry_run_missing_task_reports_not_found(client):
+    resp = client.post(
+        "/api/plugins/kanban/tasks/t_deadbeef/reassign",
+        json={"profile": "x", "dry_run": True},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is False
+    assert body["probe"]["task_exists"] is False
+    assert body["probe"]["would_refuse"] is True
+
+
+def test_patch_assign_dry_run_then_apply_stamps_operator(client):
+    """PATCH dry_run probes an assignee change; the real (default) PATCH
+    behavior is unchanged and stamps a dashboard: operator."""
+    r = client.post("/api/plugins/kanban/tasks", json={"title": "card"})
+    task_id = r.json()["task"]["id"]
+    url = f"/api/plugins/kanban/tasks/{task_id}"
+
+    # Probe: nothing mutates.
+    resp = client.patch(url, json={"assignee": "builder", "dry_run": True})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["dry_run"] is True and body["task_id"] == task_id
+    probe = body["probe"]
+    assert probe["target_profile"] == "builder"
+    assert probe["task_exists"] is True
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, task_id).assignee is None
+
+    # Real assign (default behavior unchanged) — event carries operator.
+    resp = client.patch(url, json={"assignee": "builder"})
+    assert resp.status_code == 200, resp.text
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, task_id).assignee == "builder"
+        assigned = [
+            e.payload for e in kb.list_events(conn, task_id)
+            if e.kind == "assigned"
+        ]
+    assert len(assigned) == 1
+    assert assigned[0]["operator"].startswith("dashboard:")
+    assert assigned[0]["assignee"] == "builder"
+
+
+def test_patch_dry_run_requires_pure_assignee_patch(client):
+    r = client.post("/api/plugins/kanban/tasks", json={"title": "card"})
+    task_id = r.json()["task"]["id"]
+    resp = client.patch(
+        f"/api/plugins/kanban/tasks/{task_id}",
+        json={"assignee": "builder", "status": "ready", "dry_run": True},
+    )
+    assert resp.status_code == 400
+    # And without an assignee there is nothing to probe.
+    resp = client.patch(
+        f"/api/plugins/kanban/tasks/{task_id}",
+        json={"dry_run": True},
+    )
+    assert resp.status_code == 400
+
+
+def test_patch_expect_preconditions_refuses_stale_board(client):
+    """Invariant: an apply request carrying the probe's ``preconditions`` is
+    refused with 409 when the row moved between probe and apply — the UI can
+    never silently apply a stale confirmation plan (#82689 probe→apply TOCTOU).
+    Red on base: the stale ``expect`` was ignored and the assign landed."""
+    r = client.post("/api/plugins/kanban/tasks", json={"title": "card"})
+    task_id = r.json()["task"]["id"]
+    url = f"/api/plugins/kanban/tasks/{task_id}"
+
+    resp = client.patch(url, json={"assignee": "builder", "dry_run": True})
+    pre = resp.json()["probe"]["preconditions"]
+    assert pre == {"status": "ready", "claim_lock": None, "assignee": None}
+
+    # The board moves underneath the confirmation: someone else assigns first.
+    assert client.patch(url, json={"assignee": "other"}).status_code == 200
+
+    resp = client.patch(url, json={"assignee": "builder", "expect": pre})
+    assert resp.status_code == 409, resp.text
+    assert "board moved since the dry-run probe" in resp.json()["detail"]
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, task_id).assignee == "other"  # apply was refused
+
+
+def test_patch_expect_preconditions_pass_when_board_unchanged(client):
+    """Invariant: echoing the probe's ``preconditions`` back on an unchanged
+    board applies normally — the guard only fires on a real mismatch."""
+    r = client.post("/api/plugins/kanban/tasks", json={"title": "card"})
+    task_id = r.json()["task"]["id"]
+    url = f"/api/plugins/kanban/tasks/{task_id}"
+
+    resp = client.patch(url, json={"assignee": "builder", "dry_run": True})
+    pre = resp.json()["probe"]["preconditions"]
+
+    resp = client.patch(url, json={"assignee": "builder", "expect": pre})
+    assert resp.status_code == 200, resp.text
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, task_id).assignee == "builder"
+
+
+def test_reassign_expect_preconditions_refuses_stale_board(client):
+    """Same stale-guard on the reassign endpoint: a moved board is a 409
+    before the reassign runs, not a stale apply."""
+    r = client.post("/api/plugins/kanban/tasks", json={"title": "card"})
+    task_id = r.json()["task"]["id"]
+    url = f"/api/plugins/kanban/tasks/{task_id}/reassign"
+
+    resp = client.post(url, json={"profile": "builder", "dry_run": True})
+    pre = resp.json()["probe"]["preconditions"]
+    assert pre["assignee"] is None
+
+    # Another surface assigns meanwhile; reassign_task itself would allow it.
+    assert client.patch(
+        f"/api/plugins/kanban/tasks/{task_id}", json={"assignee": "other"},
+    ).status_code == 200
+
+    resp = client.post(url, json={"profile": "builder", "expect": pre})
+    assert resp.status_code == 409, resp.text
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, task_id).assignee == "other"
+
+
+def test_assign_expect_is_checked_inside_the_write_transaction(client, monkeypatch):
+    """Invariant: the ``expect`` guard is atomic with the assignment, not a
+    pre-flight read. A competing assignment that lands after the request read
+    the row — but before the mutator's own transaction opened — must still be
+    refused with 409 (#82689 probe→apply TOCTOU).
+
+    Red before the fix: the endpoint compared ``expect`` first and only then
+    called the mutator, so a row that moved inside that window was overwritten
+    while the promise was a 409."""
+    r = client.post("/api/plugins/kanban/tasks", json={"title": "card"})
+    task_id = r.json()["task"]["id"]
+    url = f"/api/plugins/kanban/tasks/{task_id}"
+
+    resp = client.patch(url, json={"assignee": "builder", "dry_run": True})
+    pre = resp.json()["probe"]["preconditions"]
+
+    real_assign = kb.assign_task
+
+    def assign_after_competing_commit(*args, **kwargs):
+        # The competing surface writes in the window between the request's
+        # pre-flight read and the assignment's own transaction.
+        with kbc.connect() as other:
+            assert real_assign(other, task_id, "other")
+        return real_assign(*args, **kwargs)
+
+    monkeypatch.setattr(kb, "assign_task", assign_after_competing_commit)
+
+    resp = client.patch(url, json={"assignee": "builder", "expect": pre})
+    assert resp.status_code == 409, resp.text
+    assert "board moved since the dry-run probe" in resp.json()["detail"]
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, task_id).assignee == "other"
+
+
+def test_reassign_reclaim_consumes_the_pre_reclaim_snapshot(client):
+    """Invariant: with ``reclaim_first`` the reclaim rewrites status/claim_lock
+    itself, so the probe's snapshot is validated against the pre-reclaim row and
+    then consumed — a confirmed reclaim must not be refused by its own
+    mutation."""
+    r = client.post("/api/plugins/kanban/tasks", json={"title": "busy"})
+    task_id = r.json()["task"]["id"]
+    with kbc.connect() as conn:
+        kb.claim_task(conn, task_id, claimer="box:1")
+
+    url = f"/api/plugins/kanban/tasks/{task_id}/reassign"
+    resp = client.post(url, json={"profile": "builder", "reclaim_first": True, "dry_run": True})
+    pre = resp.json()["probe"]["preconditions"]
+    assert pre["claim_lock"] is not None  # the snapshot describes the claimed row
+
+    resp = client.post(url, json={"profile": "builder", "reclaim_first": True, "expect": pre})
+    assert resp.status_code == 200, resp.text
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, task_id).assignee == "builder"

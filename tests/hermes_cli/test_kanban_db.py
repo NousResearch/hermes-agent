@@ -2008,3 +2008,97 @@ def test_archive_non_running_task_does_not_attempt_termination(kanban_home):
             (t,),
         ).fetchone()
         assert row is None
+
+
+# ---------------------------------------------------------------------------
+# Operator attribution on state-changing events (issue #82689)
+# ---------------------------------------------------------------------------
+
+
+def _payloads_of_kind(conn: sqlite3.Connection, task_id: str, kind: str):
+    return [
+        e.payload for e in kb.list_events(conn, task_id) if e.kind == kind
+    ]
+
+
+def test_assign_event_operator_is_additive(kanban_home):
+    """operator= rides the ``assigned`` payload additively; a caller that
+    omits it must get the exact legacy payload (no new key), so old rows
+    and old consumers are unaffected (issue #82689)."""
+    with kbc.connect() as conn:
+        t_new = kb.create_task(conn, title="with operator")
+        assert kb.assign_task(
+            conn, t_new, "bob", operator="cli:amy@box"
+        ) is True
+        t_old = kb.create_task(conn, title="legacy caller")
+        assert kb.assign_task(conn, t_old, "carol") is True
+
+    assert _payloads_of_kind(conn, t_new, "assigned") == [
+        {"assignee": "bob", "from": None, "operator": "cli:amy@box"}
+    ]
+    # Backward compat: legacy payload shape (plus main's "from" handoff field)
+    # when no operator is given.
+    assert _payloads_of_kind(conn, t_old, "assigned") == [
+        {"assignee": "carol", "from": None}
+    ]
+
+
+def test_claim_and_complete_events_carry_operator(kanban_home):
+    """claimed / completed payloads gain ``operator`` only when the caller
+    passes one; the legacy key sets are untouched otherwise."""
+    with kbc.connect() as conn:
+        t = kb.create_task(conn, title="attributed")
+        claimed = kb.claim_task(
+            conn, t, claimer="box:1", operator="cli:a@b"
+        )
+        assert claimed is not None
+        assert kb.complete_task(
+            conn, t, result="done", operator="worker:b@box:2"
+        ) is True
+
+        t_legacy = kb.create_task(conn, title="legacy")
+        legacy_claim = kb.claim_task(conn, t_legacy)
+        assert legacy_claim is not None
+        assert kb.complete_task(conn, t_legacy, result="done") is True
+
+    claim_payloads = _payloads_of_kind(conn, t, "claimed")
+    done_payloads = _payloads_of_kind(conn, t, "completed")
+    assert len(claim_payloads) == 1 and len(done_payloads) == 1
+    assert claim_payloads[0]["operator"] == "cli:a@b"
+    assert set(claim_payloads[0]) == {"lock", "expires", "run_id", "operator"}
+    assert done_payloads[0]["operator"] == "worker:b@box:2"
+    assert set(done_payloads[0]) == {"result_len", "summary", "operator"}
+
+    # Legacy callers keep the exact legacy payloads.
+    legacy_claim_payloads = _payloads_of_kind(conn, t_legacy, "claimed")
+    legacy_done_payloads = _payloads_of_kind(conn, t_legacy, "completed")
+    assert set(legacy_claim_payloads[0]) == {"lock", "expires", "run_id"}
+    assert "operator" not in legacy_claim_payloads[0]
+    assert set(legacy_done_payloads[0]) == {"result_len", "summary"}
+
+
+def test_dispatcher_claim_stamps_dispatcher_operator(
+    kanban_home, all_assignees_spawnable, monkeypatch,
+):
+    """Auto-spawn claims must record dispatcher identity so forensics can
+    tell them apart from manual ``hermes kanban claim`` (issue #82689)."""
+    # Hermetic against in-file test order: earlier tests park fake Popen
+    # handles in the module-global live-worker registry, and the reclaim
+    # phase polls them. Give this dispatch a clean registry.
+    monkeypatch.setattr(kbd, "_live_worker_procs", {})
+    spawns: list[str] = []
+
+    def fake_spawn(task, workspace, board=None):
+        spawns.append(task.id)
+        return 42
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="auto-spawned", assignee="alice")
+        res = kbd.dispatch_once(conn, spawn_fn=fake_spawn)
+
+    assert res.spawned and spawns == [tid]
+    payloads = _payloads_of_kind(conn, tid, "claimed")
+    assert len(payloads) == 1
+    operator = payloads[0]["operator"]
+    assert operator == f"dispatcher:{kb._claimer_id()}"
+    assert operator.startswith("dispatcher:")

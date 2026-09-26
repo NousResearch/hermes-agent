@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_default_hermes_root, get_hermes_home
 
 logger = logging.getLogger(__name__)
 
@@ -115,11 +115,28 @@ _NEVER_TRACK_TOP_LEVEL = frozenset({
     "kanban"})
 
 
+def _under_profiles_root(path: Path) -> bool:
+    """True if *path* lives under the named-profiles root (``<hermes root>/profiles/...``).
+
+    A process bound to a profile runs with HERMES_HOME set to the profile home, so guards
+    keyed on the ACTIVE home's top level (``rel.parts[0]``) never see the ``profiles``
+    segment: ``<profile home>/scripts/test_x.py`` classifies as disposable "test" and
+    empty profile dirs get swept (#123632). Profile trees are user trees — anchor their
+    protection to the profiles root (``get_default_hermes_root()`` resolves the hermes
+    root even when HERMES_HOME itself is a profile), not to the active home."""
+    with contextlib.suppress(ValueError, OSError):
+        path.resolve().relative_to(get_default_hermes_root() / "profiles")
+        return True
+    return False
+
+
 def _is_protected_dir(p: Path) -> bool:
     """A tracked DIRECTORY that is HERMES_HOME itself or lives under a protected top-level tree
     (``cache/terminal`` holds terminal snapshots) is never rmtree'd; only its files age out."""
     if not p.is_dir():
         return False
+    if _under_profiles_root(p):  # profile top level is invisible to rel.parts[0]
+        return True
     with contextlib.suppress(ValueError, OSError):
         rel = p.resolve().relative_to(get_hermes_home())
         return not rel.parts or rel.parts[0] in _EMPTY_DIR_PROTECTED_TOP_LEVEL
@@ -235,8 +252,8 @@ def dry_run() -> Tuple[List[Dict], List[Dict]]:
     auto, prompt = [], []
     for item, p, age in _live_items(load_tracked(), datetime.now(timezone.utc)):
         cat = item["category"]
-        # Stale cron-output entries and protected dirs are skipped by quick(); omit them here too.
-        if (cat == "cron-output" and guess_category(p) != "cron-output") or _is_protected_dir(p):
+        # Stale cron-output/test entries and protected dirs are skipped by quick(); omit them here too.
+        if (cat in _STALE_SKIP_NOTE and guess_category(p) != cat) or _is_protected_dir(p):
             continue
         if _is_auto_delete(cat, age):
             auto.append(item)
@@ -290,6 +307,10 @@ def _sweep_empty_dirs(hermes_home: Path) -> int:
     """Remove empty dirs under HERMES_HOME without recursing into durable/heavy trees (a full
     rglob over a checkout+venv under HERMES_HOME can stall the gateway loop for minutes).
     Iterative post-order so parents emptied by child removal are caught."""
+    if _under_profiles_root(hermes_home):
+        # From inside a profile home the ``profiles`` top level is invisible (#123632); the
+        # root-mode sweep already treats the whole ``profiles/`` tree as out of scope.
+        return 0
     removed = 0
     stack: List[Tuple[Path, bool]] = [
         (top, False) for top in _subdirs(hermes_home, _EMPTY_DIR_PROTECTED_TOP_LEVEL | _EMPTY_DIR_SWEEP_PRUNE_DIRS)]
@@ -357,6 +378,8 @@ def _inside_git_worktree(path: Path) -> bool:
 def guess_category(path: Path) -> Optional[str]:
     """Category label for *path*, or None if we shouldn't track it (``post_tool_call`` hook)."""
     if not is_safe_path(path):
+        return None
+    if _under_profiles_root(path):  # profile trees are user trees (#123632)
         return None
     with contextlib.suppress(ValueError):  # not under HERMES_HOME (/tmp/hermes-*) — name rules only
         rel = path.resolve().relative_to(get_hermes_home())

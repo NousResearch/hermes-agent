@@ -462,6 +462,7 @@ export interface InputHandlerContext {
   gateway: GatewayServices
   terminal: {
     hasSelection: boolean
+    jumpToUserMessage: (direction: -1 | 1) => void
     scrollRef: RefObject<null | ScrollBoxHandle>
     scrollWithSelection: (delta: number) => void
     selection: SelectionApi

@@ -141,6 +141,21 @@ export function applyVoiceRecordResponse(
   }
 }
 
+export const messageNavigationDirection = (
+  key: {
+    downArrow: boolean
+    super?: boolean
+    upArrow: boolean
+  },
+  mac = isMac
+): -1 | 1 | null => {
+  if (!mac || key.super !== true) {
+    return null
+  }
+
+  return key.upArrow ? -1 : key.downArrow ? 1 : null
+}
+
 export function dismissSensitivePrompt(
   overlay: Pick<OverlayState, 'secret' | 'sudo' | 'vaultUnlock'>,
   rpc: GatewayRpc,
@@ -530,6 +545,12 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       if (!fallThroughForScroll) {
         return
       }
+    }
+
+    const messageDirection = messageNavigationDirection(key)
+
+    if (messageDirection !== null) {
+      return terminal.jumpToUserMessage(messageDirection)
     }
 
     if (cState.completions.length && cState.input && cState.historyIdx === null && (key.upArrow || key.downArrow)) {

@@ -7,6 +7,7 @@ import {
   composerHasDraft,
   dismissSensitivePrompt,
   handleIdleHotkeyExit,
+  messageNavigationDirection,
   resolveCtrlCComposerAction,
   shouldDetachEditedHistoryInput,
   shouldFallThroughForScroll
@@ -152,6 +153,18 @@ describe('applyVoiceRecordResponse', () => {
 
     expect(setRecording).toHaveBeenCalledWith(false)
     expect(setProcessing).toHaveBeenCalledWith(false)
+  })
+})
+
+describe('messageNavigationDirection', () => {
+  it('maps Cmd+Up and Cmd+Down to adjacent user turns on macOS', () => {
+    expect(messageNavigationDirection({ downArrow: false, super: true, upArrow: true }, true)).toBe(-1)
+    expect(messageNavigationDirection({ downArrow: true, super: true, upArrow: false }, true)).toBe(1)
+  })
+
+  it('does not claim unmodified arrow keys or non-macOS Super+Arrow', () => {
+    expect(messageNavigationDirection({ downArrow: false, super: false, upArrow: true }, true)).toBeNull()
+    expect(messageNavigationDirection({ downArrow: false, super: true, upArrow: true }, false)).toBeNull()
   })
 })
 

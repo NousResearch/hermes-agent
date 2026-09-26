@@ -140,6 +140,27 @@ def _unregister_env(task_id: str):
     return env
 
 
+# Attribute stamped onto env objects torn down by the idle reaper (issue
+# #114362): the reaper expires envs purely on last-activity (plus a
+# background-process refresh), so an env whose owning conversation is mid
+# provider-call can be reaped while a caller still holds the handle. The stamp
+# lets use-sites fail loudly instead of running against a dead sandbox.
+_REAPED_ENV_ATTR = "_hermes_reaped"
+
+
+def _mark_reaped(env):
+    """Stamp a torn-down env so later use fails loudly (best-effort)."""
+    try:
+        setattr(env, _REAPED_ENV_ATTR, True)
+    except Exception:
+        logger.debug("Could not stamp reaped env", exc_info=True)
+
+
+def is_reaped_env(env):
+    """True when env was torn down by the idle reaper (dead handle)."""
+    return getattr(env, _REAPED_ENV_ATTR, False) is True
+
+
 def _cleanup_inactive_envs(lifetime_seconds: int = 300):
     """Clean up environments that have been inactive for longer than lifetime_seconds."""
     from tools.terminal_tool import (
@@ -171,6 +192,7 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
         if env is not None:
             _clear_file_ops_cache(task_id)
             _teardown_env(env, task_id)
+            _mark_reaped(env)
 
 
 def get_active_env(task_id: str):

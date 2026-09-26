@@ -2083,7 +2083,10 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
     ``ready`` in the same tick and the card respawns forever. A plain
     (unified-budget) ``gave_up`` carries no marker and is judged by the counter,
     so raising ``failure_limit`` or ``assign_task`` to a fresh profile still
-    releases it; a task with no such event at all (direct DB edit) auto-recovers.
+    releases it; a task with no such event at all (direct DB edit) auto-recovers
+    here — ``recompute_ready`` additionally requires a recorded failure, so an
+    event-less blocked row is held by its caller even though this helper returns
+    ``False``.
     """
     row = conn.execute(
         "SELECT kind FROM task_events "
@@ -2135,13 +2138,15 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int = None) -> int:
     """Promote ``todo``/``blocked`` tasks whose parents are all done/archived;
     returns the count. Opens its own IMMEDIATE txn — call OUTSIDE any write txn.
 
-    ``blocked`` is skipped when sticky (explicit ``kanban_block``) or when
-    ``consecutive_failures`` reached the limit (else the breaker could never
-    trip). Limit order matches ``_record_task_failure``: ``max_retries`` >
-    ``failure_limit`` > ``DEFAULT_FAILURE_LIMIT``.
+    ``blocked`` is skipped when sticky (explicit ``kanban_block``), when the row
+    records no failure at all (``consecutive_failures < 1`` — an unattributed
+    park), or when ``consecutive_failures`` reached the limit (else the breaker
+    could never trip). Limit order matches ``_record_task_failure``:
+    ``max_retries`` > ``failure_limit`` > ``DEFAULT_FAILURE_LIMIT``.
 
     1. The most recent block event was a worker-initiated ``kanban_block`` — those stay blocked until an
-    explicit ``kanban_unblock`` (#28712).
+    explicit ``kanban_unblock`` (#28712) — or the block carries no recorded failure to attribute it to the
+    breaker (a direct status write, a legacy row, a lost ``blocked`` event): an unattributed park.
     """
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
@@ -2154,8 +2159,16 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int = None) -> int:
         for row in todo_rows:
             task_id = row["id"]
             cur_status = row["status"]
-            if cur_status == "blocked" and _has_sticky_block(conn, task_id):
-                # Explicit human-intervention block; only ``unblock_task`` may exit it.
+            failures = int(row["consecutive_failures"] or 0)
+            if cur_status == "blocked" and (
+                _has_sticky_block(conn, task_id) or failures < 1
+            ):
+                # A blocked row is auto-recoverable only when the block is
+                # provably the breaker's. Every supported route into ``blocked``
+                # records a failure (``_record_task_failure``) or emits a
+                # ``blocked`` event (``block_task``, ``create_task``); a row with
+                # neither is a human-gated or unattributed park — a direct status
+                # write, a legacy row, or a lost event — so no worker is handed it.
                 continue
             parents = conn.execute(
                 "SELECT t.status FROM tasks t "
@@ -2168,7 +2181,6 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int = None) -> int:
                     # At the breaker limit, no auto-recovery (else block ->
                     # recover -> respawn -> exhaust -> block forever). The
                     # counter is preserved so it accumulates across cycles.
-                    failures = int(row["consecutive_failures"] or 0)
                     task_limit = row["max_retries"]
                     effective_limit = (
                         int(task_limit) if task_limit is not None

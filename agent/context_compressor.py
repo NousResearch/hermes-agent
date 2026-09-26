@@ -749,7 +749,9 @@ def _classify_summary_failure(e: Exception) -> _SummaryFailureKind:
         # APIResponseValidationError "expecting value"; treat as transient.
         json_decode=isinstance(e, json.JSONDecodeError) or "expecting value" in err,
         # httpx premature-close errors are transient; treat like a timeout, not a 60s cooldown.
-        streaming_closed=_is_connection_error(e),
+        # Transient 408/5xx from the upstream summary route also count as network failures so
+        # compress() preserves the session instead of dropping context on temporary blips.
+        streaming_closed=_is_connection_error(e) or (isinstance(status, int) and status in {408, 500, 502, 503, 504}),
         # HTTP 200 with empty body from a degraded provider, plus the sibling "no usable response"
         # shapes from _validate_llm_response.
         empty_content=isinstance(e, RuntimeError) and any(

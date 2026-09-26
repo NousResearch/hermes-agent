@@ -429,14 +429,16 @@ async def bulk_delete_sessions_endpoint(body: BulkDeleteSessions):
 
     Per :meth:`SessionDB.delete_sessions`: unknown ids are skipped (``deleted``
     reports what really happened), children are orphaned, active/archived rows
-    ARE deleted (hand-picked), on-disk cleanup is left to the next prune.
+    ARE deleted (hand-picked), and each deleted row's on-disk artifacts go with it.
     """
     # Hard cap so a runaway selection can't lock the writer for long.
     if len(body.ids) > 500:
         raise HTTPException(status_code=400, detail="ids must contain at most 500 entries")
     profile = destructive_profile(body.profile, "POST /api/sessions/bulk-delete")
+    sessions_dir = _session_files_dir(profile)
     deleted = await asyncio.to_thread(
-        _with_db, profile, lambda db: db.delete_sessions(body.ids), read_only=False)
+        _with_db, profile, lambda db: db.delete_sessions(body.ids, sessions_dir=sessions_dir),
+        read_only=False)
     return {"ok": True, "deleted": deleted}
 
 

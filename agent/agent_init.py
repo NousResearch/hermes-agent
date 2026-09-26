@@ -1577,6 +1577,16 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
         codex_responses_native=responses_native,
         codex_responses_compact_threshold=compact_threshold,
         idle_compact_after_seconds=idle_compact_after_seconds,
+        # Compression mode: "auxiliary" (default) sends a fresh single-user-message
+        # summary prompt (zero KV prefix reuse). "cached_main_model" instead sends the
+        # summary to the MAIN model as the exact last-sent conversation prefix with one
+        # appended instruction, so the live KV slot is reused (near-zero prefill) on local
+        # llama.cpp / LM Studio servers. Unknown values fall back to "auxiliary".
+        compression_mode=(
+            str(cfg.get("mode", "auxiliary")).strip().lower()
+            if str(cfg.get("mode", "auxiliary")).strip().lower() in {"auxiliary", "cached_main_model"}
+            else "auxiliary"
+        ),
     )
 
 
@@ -1989,6 +1999,7 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
             proactive_prune_min_reclaim_tokens=cs.proactive_prune_min_reclaim,
             min_tail_user_messages=cs.min_tail_users, tail_mode=cs.tail_mode,
             custom_providers=_custom_providers,
+            compression_mode=cs.compression_mode,
         )
     _bind_session_state = getattr(agent.context_compressor, "bind_session_state", None)
     if callable(_bind_session_state):

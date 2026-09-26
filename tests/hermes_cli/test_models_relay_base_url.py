@@ -19,6 +19,30 @@ class _RecordingProfile:
         return ["relay-only-model"]
 
 
+@pytest.mark.parametrize("provider", ["openai-codex", "copilot", "nous", "opencode-zen"])
+def test_canonical_url_preserves_native_catalog_but_other_paths_stay_relays(monkeypatch, provider):
+    from hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_cli.config import atomic_config_write
+    from hermes_constants import get_hermes_home
+
+    canonical = PROVIDER_REGISTRY[provider].inference_base_url
+    config_path = get_hermes_home() / "config.yaml"
+    calls = []
+
+    def native_catalog(slug, force_refresh):
+        calls.append(slug)
+        return ["native-catalog-model"]
+
+    monkeypatch.setitem(models._PROVIDER_CATALOG_FETCHERS, provider, native_catalog)
+    monkeypatch.setattr(models, "_relay_model_catalog", lambda *args: None)
+    for base_url, expected in [(canonical, [provider]), (canonical + "/relay", [])]:
+        calls.clear()
+        atomic_config_write(config_path, {"model": {"provider": provider, "base_url": base_url}})
+        catalog = models.provider_model_ids(provider, force_refresh=True)
+        assert calls == expected
+        assert ("native-catalog-model" in catalog) == bool(expected)
+
+
 def test_relay_base_url_is_probed_for_configured_provider(monkeypatch):
     monkeypatch.setattr(
         models,

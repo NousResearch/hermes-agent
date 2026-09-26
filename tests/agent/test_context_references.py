@@ -647,3 +647,35 @@ async def test_composer_paste_outside_workspace_is_attached_but_sibling_dir_is_n
     assert "PASTED-BODY-MARKER" in result.message
     assert "LOOKALIKE-SECRET" not in result.message
     assert "outside the allowed workspace" in "\n".join(result.warnings)
+
+
+@pytest.mark.asyncio
+async def test_staged_file_attachment_outside_workspace_is_attached(tmp_path, monkeypatch):
+    """`file.attach` copies a file picked from outside the chat cwd into
+    <HERMES_HOME>/attachments and sends `@file:<abs path>`; the workspace guard must
+    admit that anchored root so the file's contents reach the model."""
+    from agent.context_references import preprocess_context_references_async
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    hermes_home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    staged = hermes_home / "attachments" / "scores.csv"
+    staged.parent.mkdir(parents=True)
+    staged.write_text("name,score\nATTACHED-BODY-MARKER,91\n", encoding="utf-8")
+    lookalike = hermes_home / "attachments-old" / "secret.txt"
+    lookalike.parent.mkdir(parents=True)
+    lookalike.write_text("LOOKALIKE-SECRET\n", encoding="utf-8")
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+
+    result = await preprocess_context_references_async(
+        f"see @file:{staged} and @file:{lookalike}",
+        cwd=workspace,
+        allowed_root=workspace,
+        context_length=100_000,
+    )
+
+    assert result.expanded
+    assert "ATTACHED-BODY-MARKER" in result.message
+    assert "LOOKALIKE-SECRET" not in result.message
+    assert "outside the allowed workspace" in "\n".join(result.warnings)

@@ -2513,6 +2513,11 @@ def _make_agent(
         with contextlib.suppress(Exception):
             importlib.import_module(_mod).wait_for_mcp_discovery()
     cfg = _load_cfg()
+    # Plugin toolsets are profile-local.  The build scope above must be active before discovery,
+    # otherwise admission consults the launch profile's manager/cache even when config came from
+    # the routed profile.
+    from hermes_cli.plugins import discover_plugins
+    discover_plugins()
     # Load hooks alongside the same profile config used to construct this agent.
     from agent.shell_hooks import register_from_config
     register_from_config(cfg)

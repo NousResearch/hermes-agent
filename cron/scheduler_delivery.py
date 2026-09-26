@@ -1270,6 +1270,17 @@ def _cron_delivery_notify_enabled(cfg: Optional[dict]) -> bool:
         return True
 
 
+def _cron_delivery_partial_ok(cfg: Optional[dict]) -> bool:
+    """Resolve ``cron.delivery.partial_ok`` (default False). Only an explicit ``True`` enables the
+    ``delivery_partial`` outcome; a missing/malformed section keeps today's all-or-nothing rule."""
+    try:
+        cron_cfg = (cfg or {}).get("cron")
+        delivery_cfg = cron_cfg.get("delivery") if isinstance(cron_cfg, dict) else None
+        return isinstance(delivery_cfg, dict) and delivery_cfg.get("partial_ok") is True
+    except Exception:
+        return False
+
+
 def _record_delivery_verification(job: dict, unverified_targets: list) -> None:
     """Persist ``last_delivery_unverified``: list of ``platform:chat_id`` targets acked with no
     evidence, or None, alongside queued Bot Chat receipts. Never raises (bookkeeping must not fail a
@@ -1289,6 +1300,12 @@ def _record_delivery_verification(job: dict, unverified_targets: list) -> None:
         update_job(job["id"], values)
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("Job '%s': could not record delivery verification: %s", job.get("id"), exc)
+
+
+def _target_where(platform_name: str, chat_id: str) -> str:
+    """Single label format for a non-Bot-Chat target, so a WARNING that names both delivered and
+    failed targets never mixes two shapes for the same kind of target."""
+    return f"{platform_name}:{chat_id}"
 
 
 @dataclass
@@ -1324,7 +1341,7 @@ class _TargetDelivery:
 
     @property
     def where(self) -> str:
-        return f"{self.platform_name}:{self.chat_id}"
+        return _target_where(self.platform_name, self.chat_id)
 
 
 def _note_target_error(job: dict, msg: str, errors: list) -> None:
@@ -1742,15 +1759,15 @@ def _standalone_send(
 
 def _deliver_standalone(
     t: _TargetDelivery, content: str, media_files: list, target_errors: list, delivery_errors: list,
-) -> None:
-    """Standalone fallback for a target the live lane did not deliver."""
+) -> bool:
+    """Standalone fallback for a target the live lane did not deliver. True once delivered."""
     job = t.job
     if t.is_relay:
         # Relay owns the destination and credential; a native retry could duplicate — fail closed.
         if not target_errors:
             target_errors.append(f"relay delivery to {t.where} failed")
         delivery_errors.extend(target_errors)
-        return
+        return False
     result, err = _standalone_send(t, content, media_files)
     if err is None and result and result.get("error"):
         # Not inside an except block — the error comes from the result dict, no traceback.
@@ -1759,7 +1776,7 @@ def _deliver_standalone(
     if err is not None:
         target_errors.append(err)
         delivery_errors.extend(target_errors)
-        return
+        return False
     # Standalone senders report per-file attachment failures in ``warnings`` while returning
     # success; surface them so a vanished attachment doesn't mark the run ok.
     for _w in (result.get("warnings") if isinstance(result, dict) else None) or []:
@@ -1772,6 +1789,7 @@ def _deliver_standalone(
         job, t.platform_name, t.chat_id, t.mirror_text, thread_id=t.thread_id,
         user_id=t.origin_user_id,
         enabled=t.mirror_this_target)
+    return True
 
 
 def _prepare_target_delivery(
@@ -1912,6 +1930,7 @@ def _deliver_result(
     ``failure_deliver`` override when present (NS-788). Returns None on success, else an error."""
     job.pop("_bot_chat_delivery_receipts", None)
     job.pop("_notification_all_targets_suppressed", None)
+    job.pop("_delivery_partial", None)
     targets = _resolve_delivery_targets(job, for_failure=for_failure)
     if not targets:
         _record_delivery_verification(job, [])
@@ -2009,6 +2028,11 @@ def _deliver_result(
 
     delivery_errors = []
     suppressed_targets = 0  # local: `job` is snapshotted into durable deferred records mid-loop
+    # Per-target tally for cron.delivery.partial_ok: targets that received the output (including
+    # Bot Chat admissions still queued) and targets that failed outright. Caveats on a target that
+    # did receive the output (dropped media, thread fallback) do not count as failed targets.
+    delivered_targets: list = []
+    failed_targets: list = []
     for target in targets:
         # A failure notice for a platform that hides warning notifications is a suppressed
         # disposition, not a send; requested (non-failure) results are never gated.
@@ -2020,14 +2044,20 @@ def _deliver_result(
         # Bot Chat owns admission; never concurrently resume a live owner's transcript.
         if target["platform"] == BOT_CHAT_PLATFORM:
             bot_chat_error = _deliver_to_bot_chat(job, content, target["chat_id"], for_failure=for_failure)
-            suppressed_targets += job.pop("_notification_all_targets_suppressed", False)
+            bot_chat_suppressed = job.pop("_notification_all_targets_suppressed", False)
+            suppressed_targets += bot_chat_suppressed
             if bot_chat_error:
                 receipt_target = f"bot-chat:{target['chat_id'] or '(own)'}"
                 receipt = job.get("_bot_chat_delivery_receipts", {}).get(receipt_target)
                 if not receipt or receipt["status"] not in ("queued", "claimed"):
                     delivery_errors.append(bot_chat_error)
+                    failed_targets.append(receipt_target)
+                else:
+                    delivered_targets.append(receipt_target)
                 if receipt and receipt["status"] == "ambiguous":
                     unverified_targets.append(bot_chat_error)
+            elif not bot_chat_suppressed:
+                delivered_targets.append(f"bot-chat:{target['chat_id'] or '(own)'}")
             continue
 
         t = _prepare_target_delivery(
@@ -2035,6 +2065,7 @@ def _deliver_result(
             notify_delivery=notify_delivery,
             mirror_enabled=mirror_enabled, mirror_text=mirror_text, delivery_errors=delivery_errors)
         if t is None:
+            failed_targets.append(_target_where(target["platform"], target["chat_id"]))
             continue
         target_errors: list = []
         delivered = t.live_adapter_ready and _deliver_via_live_adapter(
@@ -2043,8 +2074,9 @@ def _deliver_result(
             unverified_targets=unverified_targets,
         )
         if not delivered:
-            _deliver_standalone(
+            delivered = _deliver_standalone(
                 t, cleaned_delivery_content, media_files, target_errors, delivery_errors)
+        (delivered_targets if delivered else failed_targets).append(t.where)
 
     # Filter-time drops apply to every target; report them once. A run whose every target was
     # suppressed sent nothing, so there is no drop to report.
@@ -2053,6 +2085,13 @@ def _deliver_result(
     else:
         delivery_errors.extend(policy_drop_errors)
     _record_delivery_verification(job, unverified_targets)
+    if delivery_errors and delivered_targets and failed_targets and _cron_delivery_partial_ok(user_cfg):
+        # Opt-in: the output reached at least one target, so the run is recorded as partial
+        # rather than failed. The error string still names every failed target.
+        job["_delivery_partial"] = True
+        logger.warning(
+            "Job '%s': partial delivery: delivered to %s; failed: %s",
+            job["id"], ", ".join(delivered_targets), ", ".join(failed_targets))
     return "; ".join(delivery_errors) if delivery_errors else None
 
 

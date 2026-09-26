@@ -2811,10 +2811,12 @@ def _record_fire_ownership_lost(job_id: str, fire_owner: Optional[str], executio
 def _classify_delivery_outcome(
     *, delivery_error, should_deliver: bool, unresolved_origin: bool,
     normalized_deliver: str, incident_acked: bool, success: bool,
-    delivery_queued=None, notification_suppressed: bool = False,
+    delivery_queued=None, notification_suppressed: bool = False, delivery_partial: bool = False,
 ) -> str:
     if delivery_error:
-        return "failed"
+        # ``delivery_partial`` is only ever set under cron.delivery.partial_ok: at least one
+        # target received the output and another failed outright.
+        return "partial" if delivery_partial else "failed"
     if should_deliver and delivery_queued:
         return "queued"
     if notification_suppressed:
@@ -3078,6 +3080,9 @@ def _finish_completed_run(d: _RunDelivery, fire_owner: Optional[str], execution_
         mark_kwargs["recover_consumed_fire"] = bool(job.get("_scheduled_instant"))
     if d.success and not d.delivery_error and d.should_deliver and job.get("last_delivery_queued"):
         mark_kwargs["status"] = "delivery_queued"
+    delivery_partial = bool(d.delivery_error and job.get("_delivery_partial"))
+    if d.success and delivery_partial:
+        mark_kwargs["status"] = "delivery_partial"
     if fire_owner is not None:
         mark_kwargs["expected_fire_owner"] = fire_owner
     if d.blocked_config:
@@ -3094,6 +3099,7 @@ def _finish_completed_run(d: _RunDelivery, fire_owner: Optional[str], execution_
         delivery_error=d.delivery_error,
         delivery_queued=job.get("last_delivery_queued"),
         notification_suppressed=bool(job.get("_notification_all_targets_suppressed")),
+        delivery_partial=delivery_partial,
         should_deliver=d.should_deliver,
         unresolved_origin=d.unresolved_origin,
         # Read the lane the notice was actually routed through (failure_deliver on failure).
@@ -3101,7 +3107,7 @@ def _finish_completed_run(d: _RunDelivery, fire_owner: Optional[str], execution_
         incident_acked=d.incident_acked,
         success=d.success,
     )
-    if delivery_outcome in ("delivered", "not_configured") and not d.success:
+    if delivery_outcome in ("delivered", "partial", "not_configured") and not d.success:
         # Failure ping left the process (or had a configured target): mark the incident alerted.
         _mark_incident_alerted(d.failure_incident_id)
     finish_execution(
@@ -3141,8 +3147,9 @@ def _deliver_crash_failure(
         delivery_error=delivery_error, should_deliver=True, unresolved_origin=unresolved_origin,
         normalized_deliver=normalized_deliver, incident_acked=False, success=False,
         delivery_queued=job.get("last_delivery_queued"),
-        notification_suppressed=bool(job.get("_notification_all_targets_suppressed")))
-    if delivery_outcome in ("delivered", "not_configured"):
+        notification_suppressed=bool(job.get("_notification_all_targets_suppressed")),
+        delivery_partial=bool(delivery_error and job.get("_delivery_partial")))
+    if delivery_outcome in ("delivered", "partial", "not_configured"):
         _mark_incident_alerted(failure_incident_id)
     return delivery_error, delivery_outcome
 

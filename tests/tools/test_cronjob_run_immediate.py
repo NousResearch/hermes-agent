@@ -285,3 +285,22 @@ class TestManualRunReportsDeliveryFailure:
         assert res["claimed"] is True
         assert res["success"] is False
         assert "502" in res["error"]
+
+    def test_delivery_partial_status_is_success_and_names_failed_target(self):
+        """cron.delivery.partial_ok: the output reached a target, so the run succeeded; the
+        failed target still comes back in ``error``."""
+        refreshed = {
+            "id": "job-run-1",
+            "last_status": "delivery_partial",
+            "last_error": None,
+            "last_delivery_error": "delivery to email:a@example.com failed: refused",
+        }
+        with patch("tools.cronjob_tools.claim_job_for_fire",
+                   return_value={**_JOB, "fire_claim": {"by": "manual-owner"}}), \
+             patch("cron.scheduler.run_one_job", return_value=True), \
+             patch("tools.cronjob_tools.get_job", return_value=refreshed):
+            res = _execute_job_now(dict(_JOB))
+
+        assert res["claimed"] is True
+        assert res["success"] is True
+        assert "email:a@example.com" in res["error"]

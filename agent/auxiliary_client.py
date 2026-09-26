@@ -3765,7 +3765,7 @@ def _prepare_same_provider_retry(
         effective_provider or resolved_provider, retry_model or final_model, messages,
         temperature=temperature, max_tokens=max_tokens, tools=tools, timeout=effective_timeout,
         extra_body=effective_extra_body, reasoning_config=reasoning_config,
-        base_url=retry_base or resolved_base_url, task=task,
+        base_url=retry_base or resolved_base_url, task=task, api_mode=resolved_api_mode,
     )
     # Preserve per-request attribution headers (e.g. Copilot ``x-initiator``) so the retry keeps capability gating.
     if extra_headers:
@@ -4021,7 +4021,8 @@ def _fallback_request_kwargs(
     fb_kwargs = _build_call_kwargs(
         destination.provider, destination.model, fallback_messages,
         temperature=temperature, max_tokens=fallback_max_tokens, tools=fallback_tools, timeout=effective_timeout,
-        extra_body=fallback_extra_body, reasoning_config=reasoning_config, base_url=destination.base_url, task=task)
+        extra_body=fallback_extra_body, reasoning_config=reasoning_config, base_url=destination.base_url, task=task,
+        api_mode=destination.api_mode)
     return fb_kwargs
 
 
@@ -6633,11 +6634,15 @@ def _build_call_kwargs(
     extra_body: Optional[dict] = None, reasoning_config: Optional[dict] = None,
     base_url: Optional[str] = None, task: Optional[str] = None,
     no_progress_timeout: Optional[float] = None,
+    api_mode: Optional[str] = None,
 ) -> dict:
     """Build kwargs for .chat.completions.create() with model/provider adjustments.
     ``no_progress_timeout`` is a Codex-Responses-only extra (consumed by
     ``_CodexCompletionsAdapter.create``'s ``**kwargs`` catch-all); callers must only pass it
-    when the resolved client is a ``CodexAuxiliaryClient`` — real SDK clients don't accept it."""
+    when the resolved client is a ``CodexAuxiliaryClient`` — real SDK clients don't accept it.
+    ``api_mode`` is the transport the caller's resolution handed to the consumer
+    (``_maybe_wrap_anthropic``); when it is known and not ``anthropic_messages`` the private
+    ``_reasoning_config`` kwarg is dropped so a plain OpenAI SDK client never sees it."""
     kwargs: Dict[str, Any] = {"model": model, "messages": messages, "timeout": timeout}
     if no_progress_timeout is not None:
         kwargs["no_progress_timeout"] = no_progress_timeout
@@ -6695,6 +6700,14 @@ def _build_call_kwargs(
             or _endpoint_speaks_anthropic_messages(raw_base) or _is_anthropic_compat_endpoint(provider_norm, raw_base)
         ):
             kwargs["_reasoning_config"] = dict(reasoning_config)
+        # The attach heuristics above are declared-wire signals; the caller may have resolved a
+        # chat/completions transport anyway (a declared anthropic_messages provider demoted on a
+        # non-Anthropic base_url, #76836, or an explicit api_mode) and _wrap_transport then leaves
+        # the client unwrapped — the kwarg reaches chat.completions.create() and the SDK raises
+        # TypeError (#123194). Drop it on the resolved transport the consumer also saw; a
+        # non-Messages route still carries the reasoning shape via extra_body.reasoning above.
+        if api_mode and str(api_mode).strip().lower() != "anthropic_messages":
+            kwargs.pop("_reasoning_config", None)
     # Conversation affinity (OpenCode relay, opt-in custom-provider header) — same key as the main
     # turn so compression/title/vision calls stay on the conversation's warm backend.
     from agent.opencode_affinity import merge_session_affinity_headers
@@ -7357,7 +7370,7 @@ def _prepare_aux_request(
         request_provider, final_model, messages, temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,
         reasoning_config=reasoning_config, base_url=base_info or resolved_base_url, task=task,
-        no_progress_timeout=no_progress_timeout)
+        no_progress_timeout=no_progress_timeout, api_mode=resolved_api_mode)
     if extra_headers:
         kwargs["extra_headers"] = dict(extra_headers)
     # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)

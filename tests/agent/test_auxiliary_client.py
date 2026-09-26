@@ -3061,6 +3061,73 @@ class TestAnthropicAuxiliaryReasoningTranslation:
         )
         assert "_reasoning_config" not in openai_wire_kwargs
 
+    def test_private_reasoning_kwarg_dropped_on_resolved_chat_completions_route(self):
+        # minimax is an Anthropic-compat provider, so the attach heuristics fire even on its
+        # OpenAI-compatible /v1 route; when the caller's resolution handed the consumer a
+        # chat_completions transport (#76836 demotion, explicit api_mode), that client is left
+        # unwrapped and the private kwarg would TypeError on chat.completions.create() (#123194).
+        leak_kwargs = _build_call_kwargs(
+            "minimax",
+            "MiniMax-M3",
+            [{"role": "user", "content": "hi"}],
+            reasoning_config={"enabled": False},
+            base_url="https://api.minimax.io/v1",
+            api_mode="chat_completions",
+        )
+        assert "_reasoning_config" not in leak_kwargs
+        # An Anthropic-compat base_url cannot override an explicit non-Messages mode either.
+        relay_kwargs = _build_call_kwargs(
+            "custom",
+            "claude-fable-5",
+            [{"role": "user", "content": "hi"}],
+            reasoning_config={"enabled": True, "effort": "medium"},
+            base_url="https://example.test/anthropic/v1",
+            api_mode="chat_completions",
+        )
+        assert "_reasoning_config" not in relay_kwargs
+
+    def test_private_reasoning_kwarg_kept_on_resolved_anthropic_messages_route(self):
+        # The gate keys on the resolved transport, not on the attach heuristics: a route the
+        # consumer wraps (api_mode=anthropic_messages) must still receive the kwarg.
+        messages_kwargs = _build_call_kwargs(
+            "minimax",
+            "MiniMax-M3",
+            [{"role": "user", "content": "hi"}],
+            reasoning_config={"enabled": False},
+            base_url="https://api.minimax.io/anthropic",
+            api_mode="anthropic_messages",
+        )
+        assert messages_kwargs["_reasoning_config"] == {"enabled": False}
+        # Unknown resolved mode (callers that have not resolved it yet): the declared-wire
+        # decision stands, unchanged from before the gate.
+        unknown_kwargs = _build_call_kwargs(
+            "minimax",
+            "MiniMax-M3",
+            [{"role": "user", "content": "hi"}],
+            reasoning_config={"enabled": False},
+            base_url="https://api.minimax.io/anthropic",
+        )
+        assert unknown_kwargs["_reasoning_config"] == {"enabled": False}
+
+    def test_prepared_aux_request_matches_kwarg_to_client_transport(self, monkeypatch):
+        # Invariant through the real resolution path: _reasoning_config is attached exactly when
+        # the resolved client is wrapped. minimax at its OpenAI-compatible /v1 endpoint with an
+        # explicitly resolved chat_completions mode resolves to a plain OpenAI client.
+        import model_tools  # noqa: F401 — triggers provider discovery
+        from agent.auxiliary_client import _prepare_aux_request
+        from openai import OpenAI
+
+        monkeypatch.setenv("MINIMAX_API_KEY", "sk-test-" + "x" * 20)
+        prep = _prepare_aux_request(
+            "title_generation", provider="minimax", model="MiniMax-M3",
+            base_url="https://api.minimax.io/v1", api_key=None, main_runtime=None,
+            messages=[{"role": "user", "content": "hi"}], temperature=None, max_tokens=None,
+            tools=None, timeout=30.0, extra_body=None, reasoning_config={"enabled": False},
+            extra_headers=None, api_mode="chat_completions", route_info=None, async_mode=False,
+        )
+        assert isinstance(prep.client, OpenAI)
+        assert "_reasoning_config" not in prep.kwargs
+
     def test_anthropic_messages_profile_keeps_reasoning_reachable(self):
         # commandcode-anthropic: OpenAI-shaped URL, anthropic_messages api_mode, and a profile
         # class that overrides build_api_kwargs_extras (so the generic extra_body.reasoning

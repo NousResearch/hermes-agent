@@ -74,10 +74,11 @@ def _remove_user_plugin(plugins_dir: Path, name: str, target: Path) -> dict[str,
     entry = next((e for e in _pc()._discover_all_plugins() if Path(str(e[4])) == target), None)
     key = entry[5] if entry else target.name
     aliases = _pc()._plugin_aliases(key) | {target.name}
+    toolset_key = None
     if _pc()._read_manifest(target).get("provides_tools"):
-        _pc()._toggle_plugin_toolset(key, enable=False)
+        toolset_key = _pc()._get_plugin_toolset_key(key)
     _remove_plugin_core(target)
-    return {"ok": True, "name": name, **_pc()._forget_plugin_config(aliases)}
+    return {"ok": True, "name": name, **_pc()._forget_plugin_config(aliases, toolset_key=toolset_key)}
 
 
 def dashboard_remove_user_plugin(name: str) -> dict[str, Any]:

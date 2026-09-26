@@ -526,10 +526,10 @@ def _activate_key(key: str, *, enable: bool, console=None) -> bool:
     return True
 
 
-def _forget_plugin_config(aliases: set) -> dict[str, Any]:
+def _forget_plugin_config(aliases: set, *, toolset_key: Optional[str] = None) -> dict[str, Any]:
     """Drop every trace of a removed plugin (its :func:`_plugin_aliases`, taken BEFORE the tree went)
-    from config.yaml: allow/deny-list entries, ``plugins.entries.<id>`` grants and a ``memory.provider``
-    selection naming it. A later reinstall under the same name must start from the "Enable now?"
+    from config.yaml: toolset selection, allow/deny-list entries, ``plugins.entries.<id>`` grants and
+    a ``memory.provider`` selection naming it. A later reinstall under the same name must start from the "Enable now?"
     decision, not inherit a stale enable or grant (#54336); a dangling ``memory.provider`` would make
     the next agent init re-clone the plugin from the catalog, silently undoing the uninstall.
     Returns ``{"cleared_memory_provider": True}`` when the selection was reset."""
@@ -553,6 +553,16 @@ def _forget_plugin_config(aliases: set) -> dict[str, Any]:
     if isinstance(memory_cfg, dict) and str(memory_cfg.get("provider") or "").strip() in aliases:
         memory_cfg["provider"] = ""
         changed, result = True, {"cleared_memory_provider": True}
+    if toolset_key:
+        from hermes_cli.toolset_validation import parse_platform_toolsets_value
+        # Resolve the key before removal, but persist only after it succeeds;
+        # a failed removal must not disable tools in a retained installation.
+        platform_toolsets = _child_dict(config, "platform_toolsets")
+        for platform, raw in list(platform_toolsets.items()):
+            selected = parse_platform_toolsets_value(raw)
+            if selected is not None and toolset_key in selected:
+                platform_toolsets[platform] = [key for key in selected if key != toolset_key]
+                changed = True
     if changed:
         save_config(config)
     return result

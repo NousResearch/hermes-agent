@@ -108,6 +108,26 @@ _CONTEXT_VAR_RESOLVERS = {
     "workspaceFolderBasename": _workspace_basename, "pathSeparator": lambda: os.sep, "/": lambda: os.sep}
 
 
+def _managed_node_last(path_value: str) -> str:
+    """*path_value* with PM's node/npm store entries moved behind every other directory.
+
+    Hermes runs with PM's composed PATH, whose managed Node comes first. A stdio MCP server
+    inherits it, so an npm server whose native addons were built by the user's Node fails to
+    load (NODE_MODULE_VERSION mismatch) and is parked (#124264). Behind the user's directories
+    the user's Node wins again, and a host without one still finds the managed Node."""
+    try:
+        from pm.paths import store_root
+        root = os.path.normcase(os.path.realpath(str(store_root())))
+    except Exception:
+        return path_value
+    managed, rest = [], []
+    for entry in path_value.split(os.pathsep):
+        norm = os.path.normcase(os.path.realpath(entry)) if entry else ""
+        top = norm[len(root) + 1:].split(os.sep, 1)[0] if norm.startswith(root + os.sep) else ""
+        (managed if top.startswith(("node-", "npm-")) else rest).append(entry)
+    return os.pathsep.join(rest + managed) if managed else path_value
+
+
 def _build_safe_env(user_env: Optional[dict]) -> dict:
     """Filtered env for stdio subprocesses so API keys/tokens don't leak: the safe baseline
     keys, ``XDG_*``, vars injected by an external secret source (users configured that backend
@@ -117,6 +137,8 @@ def _build_safe_env(user_env: Optional[dict]) -> dict:
     env = {
         key: value for key, value in os.environ.items()
         if key in _SAFE_ENV_KEYS or key.upper() in _SAFE_ENV_KEYS_CASE_INSENSITIVE or key.startswith("XDG_")}
+    for key in [k for k in env if k.upper() == "PATH"]:
+        env[key] = _managed_node_last(env[key])  # before user_env: an explicit env.PATH stays as written
     # Source-tagged names are process-wide (any profile's hydration tags them) while os.environ
     # holds only the LAUNCH profile's values, so the value must come from the active profile's
     # secret scope; a profile that lacks the name gets nothing, never another profile's token.

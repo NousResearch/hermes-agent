@@ -1552,6 +1552,31 @@ class TestBuildSafeEnv:
         assert result["GITHUB_TOKEN"] == "profile-b"
         assert "NOTION_TOKEN" not in result
 
+    def test_managed_node_goes_behind_the_users_path(self, tmp_path):
+        """#124264: an npm server whose native addons the user's Node built must not start under
+        PM's Node, which Hermes's own PATH puts first; without a user Node it is still found."""
+        from tools.mcp_tool_config import _build_safe_env
+
+        store = tmp_path / "tools"
+        node, npm = str(store / "node-26.7.0-linux-x64" / "bin"), str(store / "npm-11.6.0-linux-x64" / "bin")
+        uv, user = str(store / "uv-0.9.0-linux-x64"), str(tmp_path / "usr" / "bin")
+        fake_env = {"PATH": os.pathsep.join([node, npm, uv, user]), "HERMES_RUNTIME_DIR": str(store)}
+        with patch.dict("os.environ", fake_env, clear=True):
+            result = _build_safe_env(None)
+
+        assert result["PATH"].split(os.pathsep) == [uv, user, node, npm]
+
+    def test_an_explicit_server_path_is_kept_as_written(self, tmp_path):
+        from tools.mcp_tool_config import _build_safe_env
+
+        store = tmp_path / "tools"
+        node = str(store / "node-26.7.0-linux-x64" / "bin")
+        configured = os.pathsep.join([node, str(tmp_path / "usr" / "bin")])
+        with patch.dict("os.environ", {"PATH": node, "HERMES_RUNTIME_DIR": str(store)}, clear=True):
+            result = _build_safe_env({"PATH": configured})
+
+        assert result["PATH"] == configured
+
     def test_windows_location_vars_passed_without_secrets(self):
         """Windows launcher tools need location vars, but secrets stay filtered."""
         from tools.mcp_tool_config import _build_safe_env

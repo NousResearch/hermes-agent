@@ -680,9 +680,19 @@ _make_read_resource_handler = _make_utility_handler(
 _make_list_prompts_handler = _make_utility_handler(
     "prompts/list", "list_prompts",
     lambda session, args, sn: _core._paginate_full_list(session.list_prompts, "prompts", sn), _render_prompt_list)
+def _prompt_arguments(arguments):
+    """Prompt arguments are string-valued on the wire, but the model sends numbers, booleans and
+    nulls for them (the prompt list gives names, not types), which the SDK rejects before the
+    request leaves. Non-strings become their JSON text; a null is an argument not given."""
+    if not isinstance(arguments, dict):
+        return arguments or {}
+    return {key: value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+            for key, value in arguments.items() if value is not None}
+
+
 _make_get_prompt_handler = _make_utility_handler(
     "prompts/get", "get_prompt",
-    lambda session, args, sn: session.get_prompt(args["name"], arguments=args.get("arguments", {})),
+    lambda session, args, sn: session.get_prompt(args["name"], arguments=_prompt_arguments(args.get("arguments"))),
     _render_get_prompt, required="name")
 
 

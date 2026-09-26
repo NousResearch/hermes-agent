@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs'
 import path from 'node:path'
 
 import { buildDesktopBackendEnv } from './backend-env'
-import { execProbe, PROBE_TIMEOUT_MS } from './backend-probes'
+import { execProbe, isTimeoutError, PROBE_TIMEOUT_MS } from './backend-probes'
 import { resolveInstallationLauncher } from './updater-process'
 
 export interface SourceBackend {
@@ -22,13 +22,41 @@ interface SourceOptions {
   env?: NodeJS.ProcessEnv
 }
 
+/** Human-readable probe failure for desktop.log; execProbe already classifies timeouts. */
+function probeFailureDetail(err: unknown): string {
+  const e = err as { code?: string | number; signal?: string | null }
+
+  // String codes are spawn failures (ENOENT, EACCES, ...), not exit codes.
+  if (typeof e?.code === 'string') {
+    return e.code === 'ENOENT'
+      ? 'launcher is missing or not executable (ENOENT)'
+      : `could not be launched (${e.code})`
+  }
+
+  const parts: string[] = []
+
+  if (typeof e?.code === 'number') {
+    parts.push(`exit code ${e.code}`)
+  }
+
+  if (e?.signal) {
+    parts.push(`signal ${e.signal}`)
+  }
+
+  return parts.length > 0 ? parts.join(' / ') : 'unknown failure'
+}
+
 /** Keep the validated command. PM owns interpreter and generation selection. */
 export async function resolveSourceInstallationBackend(
   root: string,
   args: string[],
-  options: SourceOptions & { hermesHome?: string } = {}
+  options: SourceOptions & { hermesHome?: string; log?: (message: string) => void } = {}
 ): Promise<SourceBackend | null> {
+  const log: (message: string) => void = options.log ?? (() => {})
+
   if (!existsSync(path.join(root, 'hermes_cli', 'main.py'))) {
+    log(`Active install root ${root} has no hermes_cli/main.py; nothing usable to launch there.`)
+
     return null
   }
 
@@ -36,6 +64,11 @@ export async function resolveSourceInstallationBackend(
   const launcher: string | null = resolveInstallationLauncher(root, isWindows, options.hermesHome)
 
   if (!launcher) {
+    log(
+      `No Hermes launcher found for install root ${root} (looked under ${path.join(root, '.hermes', 'bin')} ` +
+        'and the historical launcher locations); cannot verify the install.'
+    )
+
     return null
   }
 
@@ -52,7 +85,13 @@ export async function resolveSourceInstallationBackend(
       timeout: PROBE_TIMEOUT_MS,
       windowsHide: true
     })
-  } catch {
+  } catch (err) {
+    const reason: string = isTimeoutError(err)
+      ? `timed out after ${PROBE_TIMEOUT_MS}ms per attempt (the one cold-start retry included)`
+      : `failed (${probeFailureDetail(err)})`
+
+    log(`${launcher} --version probe ${reason}; treating the install at ${root} as unusable.`)
+
     return null
   }
 

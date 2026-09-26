@@ -121,6 +121,52 @@ def test_language_is_per_profile_under_multiplex(monkeypatch, tmp_path):
         i18n.reset_language_cache()
 
 
+def test_failed_config_read_is_not_memoised(monkeypatch):
+    """A FailedConfigRead fallback (config.yaml exists but a transient I/O error or a half-saved
+    edit made it unreadable) must not pin the language for the rest of the process --
+    the next call should see the real config once it reads successfully."""
+    from hermes_cli import config as config_module
+    from hermes_cli.config_read_errors import FailedConfigRead
+
+    i18n.reset_language_cache()
+    failed = FailedConfigRead(config_module.DEFAULT_CONFIG, error=OSError(24, "EMFILE"))
+    monkeypatch.setattr(config_module, "load_config_readonly", lambda: failed)
+    assert i18n._config_language() == "en"  # DEFAULT_CONFIG's display.language fallback
+
+    monkeypatch.setattr(
+        config_module, "load_config_readonly",
+        lambda: {"display": {"language": "tr"}},
+    )
+    assert i18n._config_language() == "tr"  # not frozen on the earlier failed read
+    i18n.reset_language_cache()
+
+
+def test_language_cache_stays_bounded_and_evicts_least_recently_used(monkeypatch):
+    """The per-home memo keeps the lru_cache(maxsize=8) bound it replaced: home overrides can come
+    from per-request callers, so the key space is not limited to the served profiles."""
+    from hermes_cli import config as config_module
+
+    reads: list[int] = []
+    monkeypatch.setattr(config_module, "load_config_readonly",
+                        lambda: reads.append(1) or {"display": {"language": "tr"}})
+    i18n.reset_language_cache()
+    try:
+        homes = [f"/homes/p{i}" for i in range(i18n._LANGUAGE_CACHE_MAX)]
+        for home in homes:
+            i18n._config_language_cached(home)
+        i18n._config_language_cached(homes[0])  # touch: p0 becomes most recent
+        i18n._config_language_cached("/homes/extra")  # evicts p1, the least recently used
+
+        assert len(i18n._language_cache) == i18n._LANGUAGE_CACHE_MAX
+        assert homes[0] in i18n._language_cache
+        assert homes[1] not in i18n._language_cache
+        before = len(reads)
+        i18n._config_language_cached(homes[0])
+        assert len(reads) == before  # still a hit, no re-read
+    finally:
+        i18n.reset_language_cache()
+
+
 # ---------------------------------------------------------------------------
 # t() semantics
 # ---------------------------------------------------------------------------

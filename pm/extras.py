@@ -49,6 +49,7 @@ ANCHORS: dict[str, str | tuple[str, ...]] = {
     "wecom": "defusedxml",
     "keychain": "keyring",
     "teams": "microsoft_teams.apps",
+    "sms": "aiohttp",
     "modal": "modal",
     "daytona": "daytona",
     "vercel": "vercel",
@@ -62,11 +63,13 @@ ANCHORS: dict[str, str | tuple[str, ...]] = {
     "documents": ("docx", "openpyxl", "pptx", "reportlab", "pypdf"),
     "documents-pdf": ("pdfplumber", "pypdfium2"),
     "computer-use": "mcp",
+    "mcp": "mcp",
     "trace-upload": "huggingface_hub",
     # Pillow resize recovery for vision tools (the `vision` extra is a no-op
     # back-compat alias — Pillow is core — but ensure_import("vision") must
     # still resolve an anchor so availability checks work).
     "vision": "PIL",
+    "uvloop": "uvloop",
 }
 
 

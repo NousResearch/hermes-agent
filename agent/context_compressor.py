@@ -3223,8 +3223,11 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         return demoted
 
     def _spared_pending_tool_round(self, messages: List[Dict[str, Any]]) -> range:
-        """Return the pending round only when it fits the input window's hard share."""
+        """Return the pending round, owning assistant(tool_calls) row included, only when it fits the input window's
+        hard share. The call's args are part of the unread round: the model reads its result next to them."""
         pending = _pending_tool_round(messages)
+        if pending and pending.start > 0 and messages[pending.start - 1].get("tool_calls"):
+            pending = range(pending.start - 1, pending.stop)
         input_window = self._effective_input_window(
             getattr(self, "context_length", 0) or 0, getattr(self, "max_tokens", None))
         hard_share = int(input_window * TAIL_MAX_CONTEXT_FRACTION)
@@ -3242,9 +3245,9 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         call_id_to_tool = _tool_calls_by_id(result)
         prune_boundary = self._prune_boundary(result, protect_tail_count, protect_tail_tokens)
         # The pending tool round is output the model asked for and has not read yet: a stub makes it re-run the
-        # call (side effects included) or answer blind. Passes 2 and 4 spare it unless it alone exceeds the tail's
-        # hard share of the input budget the threshold is computed from (the output reservation is not room the
-        # round can keep) — the #61932 single-200KB-read case, which must still give way.
+        # call (side effects included) or answer blind. Passes 2-4 spare it, call args included, unless it alone
+        # exceeds the tail's hard share of the input budget the threshold is computed from (the output reservation
+        # is not room the round can keep) — the #61932 single-200KB-read case, which must still give way.
         spared = self._spared_pending_tool_round(result)
         prune_boundary = min(prune_boundary, spared.start) if spared else prune_boundary
         pruned = self._dedupe_tool_results(result)

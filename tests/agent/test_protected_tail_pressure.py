@@ -273,11 +273,12 @@ def test_mid_turn_compaction_keeps_the_pending_tool_round_verbatim(steers):
             _terminal_result(f"old_{t}", f"o{t}", 70),
             {"role": "assistant", "content": f"node-o{t}-000 is the hottest."},
         ]
+    # The pending call's own args (well over pass 3's 500-char floor) belong to the unread round too.
+    long_command = "python3 probe.py lyra 1 " + " ".join(f"--node node-nb-{i:03d}" for i in range(120))
+    pending_calls = [_terminal_call("new_a", "python3 probe.py indus 3"), _terminal_call("new_b", long_command)]
     msgs += [
         {"role": "user", "content": "Run both probes and compare them."},
-        {"role": "assistant", "content": None, "tool_calls": [
-            _terminal_call("new_a", "python3 probe.py indus 3"), _terminal_call("new_b", "python3 probe.py lyra 1"),
-        ]},
+        {"role": "assistant", "content": None, "tool_calls": pending_calls},
         _terminal_result("new_a", "na", 70),
         # Last and bigger than the soft ceiling on its own, still well inside the hard window share.
         _terminal_result("new_b", "nb", 420),
@@ -293,6 +294,8 @@ def test_mid_turn_compaction_keeps_the_pending_tool_round_verbatim(steers):
     by_id = {m.get("tool_call_id"): m.get("content") for m in out if m.get("role") == "tool"}
     for call_id, content in pending.items():
         assert by_id.get(call_id) == content, f"pending result {call_id} was not kept verbatim: {by_id.get(call_id)!r:.120}"
+    owning = [m for m in out if m.get("role") == "assistant" and m.get("tool_calls")]
+    assert owning[-1]["tool_calls"] == pending_calls, "the pending round's tool-call args were truncated"
     # The budget still binds older rounds: the previous turn's result does not survive verbatim.
     assert by_id.get("old_12") != previous["content"]
 

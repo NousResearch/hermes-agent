@@ -619,6 +619,7 @@ def _action_create(a: Dict[str, Any]) -> str:
             reasoning_effort=a["reasoning_effort"],
             pinned=bool(a["pinned"]),
             failure_deliver=_resolve_cron_context_deliver(_normalize_deliver_param(a["failure_deliver"])),
+            max_turns=a.get("max_turns") if a.get("max_turns") is not None else a.get("max_iterations"),
             **({"paused": a["paused"], "paused_reason": a["paused_reason"]}
                if a["paused"] is not False or a["paused_reason"] is not None else {}))
     except CronSchedulerRegistrationError as exc:
@@ -845,6 +846,8 @@ def _update_run_fields(job: Dict[str, Any], a: Dict[str, Any], updates: Dict[str
         if job.get("state") != "paused":
             updates["state"] = "scheduled"
             updates["enabled"] = True
+    if a.get("max_turns") is not None or a.get("max_iterations") is not None:
+        updates["max_turns"] = a.get("max_turns") if a.get("max_turns") is not None else a.get("max_iterations")
     return None
 
 
@@ -926,7 +929,9 @@ def cronjob(
     session_id: Optional[str] = None,
     paused: bool = False,
     paused_reason: Optional[str] = None,
-    pinned: Optional[bool] = None) -> str:
+    pinned: Optional[bool] = None,
+    max_turns: Optional[int] = None,
+    max_iterations: Optional[int] = None) -> str:
     """Unified cron job management tool."""
     a = dict(locals())
     del a["task_id"]  # unused but kept for handler signature compatibility
@@ -1053,6 +1058,10 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
             "attach_to_session": {
                 "type": "boolean",
                 "description": "True = the job's delivery is CONTINUABLE — the user can reply and the agent has the brief in context (threads on thread-capable platforms, mirrored into the DM elsewhere). Use for conversational recurring jobs (briefings); leave unset for fire-and-forget alerts. Scope: the job's own conversation only — the origin chat, the home-channel fallback when deliver='origin' captured no origin (script-created jobs), a user-written bare platform target (deliver='slack' — that platform's home channel), or the job's single explicit platform:chat target (this flag is the only way to attach an explicit target). Broadcast targets are never attached; no effect when deliver='local'."
+            },
+            "max_turns": {
+                "type": "integer",
+                "description": "Optional maximum tool-calling iterations per run for this job (positive integer). Overrides global agent.max_turns. On update, '' or null clears."
             },
         },
         "required": ["action"]

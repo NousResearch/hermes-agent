@@ -2001,7 +2001,10 @@ def _run_agent_with_watchdog(
     return result
 
 
-def _final_response_from_result(result: dict, job_id: str, job_name: str, AIAgent) -> str:
+def _final_response_from_result(
+    result: dict, job_id: str, job_name: str, AIAgent,
+    execution_id: Optional[str] = None, limit: Any = None,
+) -> str:
     """Deliverable final response from a ``run_conversation`` result. Raises RuntimeError on
     `failed=True`/`completed=False`: the error text may sit in `final_response` and would otherwise
     be delivered as the reply with the job marked ok."""
@@ -2016,10 +2019,16 @@ def _final_response_from_result(result: dict, job_id: str, job_name: str, AIAgen
     if result.get("failed") is True or (result.get("completed") is False and not max_iteration_summary):
         raise RuntimeError(result.get("error") or final_response_text or "agent reported failure")
     if max_iteration_summary:
+        if limit is None:
+            match = re.search(r"max_iterations_reached\(\d+/(\d+)\)", turn_exit_reason)
+            if match:
+                limit = match.group(1)
+        limit_str = str(limit) if limit is not None else "unknown"
+        exec_str = str(execution_id) if execution_id else "unknown"
         logger.warning(
-            "Job '%s' reached the iteration limit but produced a final fallback response; "
-            "delivering the response instead of failing the cron run",
-            job_name)
+            "Job '%s' (execution %s) reached the iteration limit of %s but produced a final fallback response; "
+            "delivering the response and failing the cron run",
+            job_name, exec_str, limit_str)
 
     final_response = result.get("final_response", "") or ""
     # Repair model-mangled computer_use media paths before delivery (fail-open, as in gateway).
@@ -2372,7 +2381,11 @@ def _resolve_cron_agent_setup(job: dict, job_id: str, job_name: str, jc) -> _Cro
 
     # resolve_turn_limit() honors none/unlimited (sys.maxsize) and explicit 0 / null.
     from hermes_cli.config import resolve_turn_limit as _resolve_turn_limit
-    _mt = _cfg.get("agent", {}).get("max_turns")
+    _mt = job.get("max_turns")
+    if _mt is None:
+        _mt = job.get("max_iterations")
+    if _mt is None:
+        _mt = _cfg.get("agent", {}).get("max_turns")
     if _mt is None:
         _mt = _cfg.get("max_turns")
     setup.max_iterations = _resolve_turn_limit(_mt)
@@ -2527,7 +2540,13 @@ def run_job(
         result = _run_agent_with_watchdog(
             agent, prompt, job, job_id, job_name, scope.task_id, cancel_event,
             worker_state=_worker_state)
-        final_response = _final_response_from_result(result, job_id, job_name, AIAgent)
+        iter_limit = getattr(agent, "max_iterations", None) or setup.max_iterations
+        if iter_limit is None:
+            match = re.search(r"max_iterations_reached\(\d+/(\d+)\)", str(result.get("turn_exit_reason") or ""))
+            if match:
+                iter_limit = match.group(1)
+        final_response = _final_response_from_result(
+            result, job_id, job_name, AIAgent, execution_id=execution_id, limit=iter_limit)
         if (setup.fallback_notice and final_response.strip() and not _is_cron_silence_response(final_response)
                 and _cron_failure_marker_error(final_response) is None):
             # Pre-agent provider switch (#74349) rides with the delivered report; silence and the
@@ -2536,6 +2555,14 @@ def run_job(
         # Keep final_response clean for delivery logic (empty = no delivery).
         logged_response = final_response if final_response else "(No response generated)"
         output = _run_doc_header(job, job_name, job_id, prompt) + f"## Response\n\n{logged_response}\n"
+
+        if is_max_iteration_handoff(result):
+            limit_display = str(iter_limit) if iter_limit is not None else "unknown"
+            err_msg = f"Job reached iteration limit ({limit_display})"
+            output += f"\n**Execution status:** Failed ({err_msg})\n"
+            _audit.write(dict(result, response_silent=_is_cron_silence_response(final_response or "")), err_msg)
+            return False, output, final_response, err_msg
+
         logger.info("Job '%s' completed successfully", job_name)
         _audit.write(dict(result, response_silent=_is_cron_silence_response(final_response or "")), None)
         return True, output, final_response, None
@@ -2853,6 +2880,9 @@ def _compose_run_delivery(
             deliver_content = generic_failure_notice(
                 job.get("name") or job["id"], job["id"], err.strip().rstrip("."),
             ) + _failure_streak_nudge(job)
+        elif final_response and error and "iteration limit" in str(error).lower():
+            # Deliver the partial/fallback response produced before the iteration limit was reached.
+            deliver_content = final_response
         else:
             from cron.quota_hold import hold_notice
             deliver_content = (

@@ -1664,6 +1664,36 @@ def _normalize_reasoning_effort(value: Any) -> Optional[str]:
     return text
 
 
+def _normalize_turn_limit(value: Any) -> Optional[int]:
+    """Normalize a max_turns / max_iterations limit.
+    None or empty string -> None (fall back to config).
+    Positive integer -> int.
+    Zero, negative, non-integer, or bool -> ValueError.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            val = int(text)
+        except ValueError:
+            raise ValueError(f"Invalid max_turns value {value!r}: must be a positive integer.")
+    elif isinstance(value, bool):
+        raise ValueError(f"Invalid max_turns value {value!r}: must be a positive integer.")
+    elif isinstance(value, (int, float)):
+        if isinstance(value, float) and not value.is_integer():
+            raise ValueError(f"Invalid max_turns value {value!r}: must be a positive integer.")
+        val = int(value)
+    else:
+        raise ValueError(f"Invalid max_turns value {value!r}: must be a positive integer.")
+
+    if val <= 0:
+        raise ValueError(f"max_turns must be a positive integer (got {val}).")
+    return val
+
+
 # Normalizers for create_job (all fields) / update_job (present fields). Invalid values raise BEFORE
 # storing.
 _CREATE_FIELD_NORMALIZERS: Dict[str, Callable[[Any], Any]] = {
@@ -1678,12 +1708,14 @@ _CREATE_FIELD_NORMALIZERS: Dict[str, Callable[[Any], Any]] = {
     "no_agent": bool,
     "context_from": _normalize_context_from,
     "failure_deliver": _normalize_failure_deliver,
+    "max_turns": _normalize_turn_limit,
 }
 _UPDATE_FIELD_NORMALIZERS: Dict[str, Callable[[Any], Any]] = {
     "workdir": lambda v: None if v in {None, "", False} else _normalize_workdir(v),
     "monitor_script": _normalize_job_optional_text,
     "monitor_url": _normalize_job_optional_text,
     "reasoning_effort": _normalize_reasoning_effort,
+    "max_turns": _normalize_turn_limit,
 }
 
 
@@ -1754,6 +1786,8 @@ def create_job(
     paused: bool = False,
     paused_reason: Optional[str] = None,
     pinned: bool = False,
+    max_turns: Optional[int] = None,
+    max_iterations: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Create a new cron job and return the stored record.
 
@@ -1762,7 +1796,8 @@ def create_job(
     delivered verbatim, requires ``script``). context_from: job id(s) whose latest output is
     injected. workdir: absolute cwd for tools/scripts. monitor_script/monitor_url: cheap monitor
     source run FIRST each tick; unchanged output suppresses the agent run (mutually exclusive,
-    incompatible with ``no_agent``). reasoning_effort: per-job pin; capability NOT validated."""
+    incompatible with ``no_agent``). reasoning_effort: per-job pin; capability NOT validated.
+    max_turns: maximum tool-calling iterations per run for this job (positive integer)."""
     if not isinstance(paused, bool):
         raise ValueError("paused must be a boolean.")
     if paused_reason is not None and not isinstance(paused_reason, str):
@@ -1781,6 +1816,8 @@ def create_job(
     job_id = uuid.uuid4().hex[:12]
     now = _hermes_now().isoformat()
 
+    if max_turns is None and max_iterations is not None:
+        max_turns = max_iterations
     raw = locals()
     f = {key: norm(raw[key]) for key, norm in _CREATE_FIELD_NORMALIZERS.items()}
     normalized_skills = _normalize_skill_list(skill, skills)
@@ -1848,6 +1885,7 @@ def create_job(
     for key, value in (
         ("attach_to_session", normalized_attach), ("reasoning_effort", normalized_reasoning_effort),
         ("failure_deliver", f["failure_deliver"]),
+        ("max_turns", f["max_turns"]),
     ):
         if value is not None:
             job[key] = value
@@ -1944,6 +1982,10 @@ def _apply_pin_update(job: Dict[str, Any], updates: Dict[str, Any]) -> None:
 def _normalize_job_updates(job: Dict[str, Any], updates: Dict[str, Any]) -> None:
     """Normalize updates in place like create_job; invalid values raise BEFORE the merge. ``repeat``
     accepts the stored dict or a bare value (coerced, completed counter preserved)."""
+    if "max_iterations" in updates and "max_turns" not in updates:
+        updates["max_turns"] = updates.pop("max_iterations")
+    elif "max_iterations" in updates:
+        updates.pop("max_iterations")
     for key, norm in _UPDATE_FIELD_NORMALIZERS.items():
         if key in updates:
             updates[key] = norm(updates[key])
@@ -2057,6 +2099,8 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
             updated.pop("pending_slot", None)
         _fill_missing_next_run(updated)
         _reject_terminal_activation(job, updated, job_id)
+        if "max_turns" in updates and updates["max_turns"] is None:
+            updated.pop("max_turns", None)
         jobs[i] = updated
         save_jobs(jobs)
         return _normalize_job_record(updated)

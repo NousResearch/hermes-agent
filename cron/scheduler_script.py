@@ -136,25 +136,10 @@ def _windows_cron_python_invocation(python_exe: str) -> tuple[str, dict[str, str
     repo = Path(__file__).resolve().parents[1]
     managed_python = resolve_store_python(repo)
     if managed_python is not None:
-        # A packaged caller may hand us the old venv launcher; select bytes
-        # from the install record rather than interpreting relocated pyvenv.cfg.
-        #
-        # ``committed_venv``, not ``selected_venv``: with no generation recorded the
-        # latter falls back to ``base_venv`` and answers the leftover pre-PM
-        # ``<root>/venv``, which is built for whichever interpreter created it. Overlaying
-        # that on the managed store Python loads a cp311 ``pydantic_core`` on 3.14 and
-        # every script dies with ``No module named 'pydantic_core._pydantic_core'`` — the
-        # cron sibling of the gateway crash in #122183/#123650.
-        #
-        # With no generation committed this install has no tree of its own to offer
-        # (a corrupt facts.json still raises, as on main). Falling through to the uv
-        # overlay below is the answer: the handed venv keeps its own interpreter and its own site-packages.
-        # Returning the bare store Python here would be WORSE than main — a store Python
-        # with nothing committed is refused by ``_require_own_dependencies`` with
-        # "hermes pm repair", and a cron script has no hermes_bootstrap to refuse it
-        # cleanly, so it runs and dies on its first third-party import. It also hands
-        # ``_windows_cron_bootstrap_argv`` an overlay with no site-packages entry, which
-        # logs a WARNING on every spawn (#123668 review).
+        # Only the committed generation may overlay the store Python: ``selected_venv``
+        # falls back to the leftover pre-PM <root>/venv, a foreign ABI (#122183). With
+        # nothing committed, fall through so the handed venv keeps its own interpreter
+        # and site-packages (a bare store Python would die on its first import).
         environment = committed_venv(repo)
         if environment is not None:
             return str(managed_python), {"PYTHONPATH": os.pathsep.join(

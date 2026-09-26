@@ -119,7 +119,7 @@ _KNOWN_PROVIDER_KEYS = {
     "api_mode", "transport", "model", "default_model", "models", "models_discovered",
     "context_length", "rate_limit_delay", "request_timeout_seconds", "stale_timeout_seconds",
     "discover_models", "extra_body", "extra_headers", "capabilities", "ssl_ca_cert", "ssl_verify",
-    "catalog_provider", "session_affinity_header"}
+    "catalog_provider", "session_affinity_header", "preserve_thinking"}
 
 
 def _pick_provider_base_url(entry: Dict[str, Any], provider_key: str) -> str:
@@ -270,6 +270,12 @@ def _normalize_custom_provider_entry(
     _put("session_affinity_header", _stripped("session_affinity_header"))
     _put("ssl_ca_cert", _stripped("ssl_ca_cert"))
 
+    # Opt-in to keeping signed thinking blocks through this endpoint (#120723): a trusted
+    # proxy that re-signs on the way out wants them kept, not stripped. Strictly bool —
+    # any other value keeps the default strip behavior (fail-closed).
+    if entry.get("preserve_thinking") is True:
+        normalized["preserve_thinking"] = True
+
     ssl_verify = entry.get("ssl_verify")
     if isinstance(ssl_verify, bool):
         normalized["ssl_verify"] = ssl_verify
@@ -290,7 +296,8 @@ def _custom_provider_entry_to_provider_config(
     for field in (
         "name", "api_key", "key_env", "key_cmd", "models", "models_discovered", "context_length",
         "rate_limit_delay", "discover_models", "extra_body", "extra_headers",
-        "session_affinity_header", "ssl_ca_cert", "ssl_verify", "catalog_provider"):
+        "session_affinity_header", "ssl_ca_cert", "ssl_verify", "catalog_provider",
+        "preserve_thinking"):
         if field in normalized:
             provider_entry[field] = normalized[field]
     if "model" in normalized:
@@ -406,6 +413,26 @@ def get_custom_provider_api_mode(
             if isinstance(value, str) and value.strip():
                 return _canonical_api_mode(value)
     return ""
+
+
+def get_custom_provider_preserve_thinking(
+    base_url: str,
+    custom_providers: Optional[List[Dict[str, Any]]] = None,
+    config: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """Whether the first route-matching entry opts in to keeping signed thinking blocks.
+
+    Complement of the third-party thinking-strip (#120723): a trusted proxy that re-signs
+    Anthropic thinking blocks on the way out declares ``preserve_thinking: true`` so the
+    adapter keeps them instead of stripping them. Strictly ``true`` opts in; absent,
+    ``false``, or any non-bool value keeps the default strip behavior (fail-closed).
+    """
+    for entry in _entries_for_route(base_url, custom_providers, config):
+        if entry.get("preserve_thinking") is True:
+            return True
+        if "preserve_thinking" in entry:
+            return False
+    return False
 
 
 def _route_model_cfg(entry: Dict[str, Any], model: str) -> Optional[Dict[str, Any]]:

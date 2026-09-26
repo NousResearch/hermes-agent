@@ -21,6 +21,12 @@ import uuid
 from pathlib import Path
 
 _IS_WINDOWS = platform.system() == "Windows"
+try:
+    import msvcrt
+    import _winapi
+except ImportError:
+    msvcrt = None
+    _winapi = None
 # systemd transient scopes exist only on Linux; gate every scope-path branch on this
 # (not merely "not Windows") so macOS and other POSIX platforms never touch systemd.
 # See #70716.
@@ -1220,19 +1226,12 @@ class ProcessRegistry(ProcessCheckpointMixin):
         spawn_via_env()). ``use_pty`` requests a pseudo-terminal via ptyprocess/pywinpty
         for interactive CLIs, falling back to a plain pipe when unavailable or failing.
         ``persist_on_release`` keeps the process out of agent-lifecycle kill sweeps (#41225)."""
-        # Bash parses ``A && B &`` as ``(A && B) &`` — a subshell that holds our stdout
-        # pipe open forever when B is a long-running server. The rewriter turns it into
-        # ``A && { B & }``. Lazy import: terminal_tool imports this module.
-        # Guard against the `A && B &` subshell-wait trap (issue #68915).
-        from tools.terminal_tool_sudo import _rewrite_compound_background as _rewrite_bg
-
-        safe_command = _rewrite_bg(command)
         session = self._new_session(command, task_id, owner_task_id, session_key, _resolve_safe_cwd(cwd or os.getcwd()),
                                     persist_on_release=persist_on_release)
         pty_scope_attempted = False
         if use_pty:
             try:
-                return self._spawn_local_pty(session, safe_command, env_vars)
+                return self._spawn_local_pty(session, command, env_vars)
             except ImportError:
                 logger.warning("ptyprocess not installed, falling back to pipe mode")
             except Exception as e:
@@ -1248,7 +1247,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
         # Pipe path (non-PTY or PTY fallback).
         _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
         unit_suffix = f"{session.id}-pipe-fallback" if pty_scope_attempted else session.id
-        spawn_argv = self._scope_argv(session, safe_command, unit_suffix, "Local")
+        spawn_argv = self._scope_argv(session, command, unit_suffix, "Local")
         spawn_env = self._spawn_env(env_vars)
         if session.systemd_unit:
             spawn_env = systemd_user_bus_env(spawn_env)
@@ -1332,7 +1331,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
             f"rc=$?; printf '%s\\n' \"$rc\" > {q(exit_path)} ) & "
             f"echo $! > {q(pid_path)} && cat {q(pid_path)}")
         try:
-            result = env.execute(bg_command, timeout=timeout, rewrite_compound_background=False)
+            result = env.execute(bg_command, timeout=timeout)
             output = result.get("output", "").strip()
             session.pid = next((int(ln) for ln in map(str.strip, output.splitlines()) if ln.isdigit()), None)
             # No PID from the wrapper (syntax error, broken redirect): a failed launch,
@@ -1361,10 +1360,11 @@ class ProcessRegistry(ProcessCheckpointMixin):
         end so EOF never arrives while it lives, which would park this thread and never
         fire ``notify_on_complete``; on POSIX we ``select()`` and stop draining shortly
         after the direct child exits (mirrors ``environments/base.py::_wait_for_process``).
-        Windows pipes lack select(), so the lazy ``_reconcile_local_exit`` is the net.
-
-        Windows pipes don't support select(); the blocking path is kept there and the lazy reconcile in
-        poll()/wait() remains the safety net. See #68915, #8340.
+        Windows pipes lack select(), so the same loop runs on ``PeekNamedPipe``:
+        read only when bytes are available, otherwise check the direct child and stop
+        after the same short idle grace (``environments/base_output.py::_drain_fd_windows``
+        is the foreground twin). Streams without a real OS fd still use the
+        blocking fallback. See #68915, #8340.
         """
         # ``bash -lic`` without a tty writes its startup warnings one write() per line, so the
         # reader can wake between them; strip leading noise from every chunk until the
@@ -1401,14 +1401,24 @@ class ProcessRegistry(ProcessCheckpointMixin):
             # select() needs a real OS fd; mocked streams (tests, adapters) may lack
             # fileno() and use the blocking read instead.
             try:
-                fd = stdout.fileno() if raw_read is not None and not _IS_WINDOWS else None
+                fd = stdout.fileno() if raw_read is not None else None
             except Exception:
                 fd = None
             if not (isinstance(fd, int) and fd >= 0):
                 fd = None
+            # select() cannot poll pipe fds on Windows; PeekNamedPipe reports buffered bytes without
+            # blocking. No usable handle -> the blocking fallback below (fd None).
+            peek_handle = None
+            if fd is not None and _IS_WINDOWS:
+                if msvcrt is not None and _winapi is not None:
+                    with suppress(OSError):
+                        peek_handle = msvcrt.get_osfhandle(fd)
+                fd = None
             if fd is not None:
                 import select as _select
                 session._reader_selectable = True
+            elif peek_handle is not None:
+                session._reader_selectable = True   # peek loop honors _reader_finish_requested (see below)
             idle_after_exit = 0
             while True:
                 if fd is not None:
@@ -1424,6 +1434,23 @@ class ProcessRegistry(ProcessCheckpointMixin):
                         # grandchild's pipe.
                         if proc.poll() is not None:
                             # See #68915.
+                            idle_after_exit += 1
+                        if idle_after_exit >= 3:
+                            break
+                        continue
+                elif peek_handle is not None:
+                    try:
+                        n_avail = _winapi.PeekNamedPipe(peek_handle)[0]
+                        if n_avail == 0:
+                            time.sleep(0.2)          # select()'s bounded wait
+                            n_avail = _winapi.PeekNamedPipe(peek_handle)[0]
+                    except (OSError, ValueError):    # BrokenPipeError is an OSError: all writers closed, buffer drained
+                        break
+                    if n_avail == 0:
+                        if session._reader_finish_requested.is_set():
+                            break
+                        # Same idle grace as the select() branch: direct child gone and pipe idle.
+                        if proc.poll() is not None:
                             idle_after_exit += 1
                         if idle_after_exit >= 3:
                             break
@@ -1945,8 +1972,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
             return  # Direct child still running — reader block is legitimate.
         reader = session._reader_thread
         if (
-            not _IS_WINDOWS
-            and session._reader_selectable
+            session._reader_selectable
             and reader is not None
             and reader.is_alive()
         ):
@@ -1954,7 +1980,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
             # finish avoids a competing TextIOWrapper read here racing the
             # reader, publishing an empty owner-stamped result, then closing
             # the pipe before the buffered tail is ingested. It wakes within
-            # the reader's bounded select interval (or after one final chunk).
+            # the reader's bounded select()/PeekNamedPipe interval (or after one final chunk).
             session._reader_finish_requested.set()
             with session._lock:
                 session.mark_exited(rc)

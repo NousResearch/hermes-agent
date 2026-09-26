@@ -95,7 +95,7 @@ const _MEDIA_PATH_ANCHORED = `(?:~/|/|[A-Za-z]:[/\\\\])\\S+?(?:[^\\S\\n]+\\S+?)*
 const _MEDIA_PATH_BARE = '[^\\s`"]+'
 
 const MEDIA_LINE_RE = new RegExp(
-  `(^|\\n)[\\t ]*[\`"']?MEDIA:\\s*(?<line>\`[^\`\\n]+\`|"[^"\\n]+"|'[^'\\n]+'|${_MEDIA_PATH_ANCHORED}|${_MEDIA_PATH_BARE})[\`"']?[\\t ]*(\\n|$)`,
+  `(^|\\n)[\\t ]*[\`"']?MEDIA:\\s*(?<line>\`[^\`\\n]+\`|"[^"\\n]+"|'[^'\\n]+'|${_MEDIA_PATH_ANCHORED}|${_MEDIA_PATH_BARE})[\`"']?[\\t ]*(?=\\n|$)`,
   'g'
 )
 
@@ -125,12 +125,21 @@ function mediaLink(value: string): string {
   return `[${mediaDisplayLabel(path)}](${mediaMarkdownHref(path)})`
 }
 
+function mediaBlock(lead: string, value: string, padAfter: boolean): string {
+  return `${lead ? `${lead}\n` : ''}${mediaLink(value)}${padAfter ? '\n' : ''}`
+}
+
+function nextLineIsMedia(rest: string): boolean {
+  return /^\n[\t ]*[`"']?MEDIA:\s*/.test(rest)
+}
+
 export function renderMediaTags(text: string): string {
   return text
-    .replace(
-      MEDIA_LINE_RE,
-      (_match, lead: string, value: string, trailer: string) => `${lead}${mediaLink(value)}${trailer}`
-    )
+    .replace(MEDIA_LINE_RE, (match: string, lead: string, value: string, offset: number, source: string) => {
+      const rest = source.slice(offset + match.length)
+
+      return mediaBlock(lead, value, Boolean(rest) && !nextLineIsMedia(rest))
+    })
     .replace(MEDIA_TAG_RE, (_match, value: string) => mediaLink(value))
 }
 

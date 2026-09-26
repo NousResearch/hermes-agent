@@ -27,7 +27,19 @@ describe('renderMediaTags with interior spaces', () => {
     }
 
     expect(chatMessageText({ id: 'a', parts, role: 'assistant' })).toBe(
-      'ready\n[File: report.pdf](#media:%2Ftmp%2FAI%20Brain%2Freport.pdf)\nall done'
+      'ready\n\n[File: report.pdf](#media:%2Ftmp%2FAI%20Brain%2Freport.pdf)\n\nall done'
+    )
+  })
+
+  it('separates standalone MEDIA lines from following caption prose', () => {
+    expect(renderMediaTags('MEDIA:/tmp/first.png\n**01 · ORDER-A · green** — caption')).toBe(
+      '[Image: first.png](#media:%2Ftmp%2Ffirst.png)\n\n**01 · ORDER-A · green** — caption'
+    )
+    expect(renderMediaTags('Intro\nMEDIA:/tmp/first.png\nMEDIA:/tmp/second.png\nCaption')).toBe(
+      'Intro\n\n[Image: first.png](#media:%2Ftmp%2Ffirst.png)\n\n[Image: second.png](#media:%2Ftmp%2Fsecond.png)\n\nCaption'
+    )
+    expect(renderMediaTags('Here is MEDIA:/tmp/first.png inline')).toBe(
+      'Here is [Image: first.png](#media:%2Ftmp%2Ffirst.png) inline'
     )
   })
 })

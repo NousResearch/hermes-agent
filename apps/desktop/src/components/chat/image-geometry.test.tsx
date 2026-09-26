@@ -115,6 +115,21 @@ it.each(cases)('reserves $kind frames through cold decode, warm return and failu
   }
 })
 
+it('keeps a caption after a MEDIA image in a separate markdown block', async () => {
+  const path = '/geometry/caption.svg'
+  const mounted = render(<MessageTextContent text={`MEDIA:${path}\n**01 · ORDER-A · green** — the caption`} />)
+  const mediaParagraph = frame(mounted.container).closest('p')
+  const captionParagraph = [...mounted.container.querySelectorAll('p')].find(p => p.textContent?.includes('ORDER-A'))
+
+  expect(mediaParagraph).not.toBeNull()
+  expect(captionParagraph).not.toBeUndefined()
+  expect(captionParagraph).not.toBe(mediaParagraph)
+  expect(mediaParagraph?.textContent).not.toContain('ORDER-A')
+
+  await decode(mounted.container)
+  expect(frame(mounted.container).closest('p')).toBe(mediaParagraph)
+})
+
 it('keeps the pending generated-image frame when its result arrives', async () => {
   const path = '/geometry/pending.svg'
   const mounted = render(<GeneratedImage aspectRatio="square" />)

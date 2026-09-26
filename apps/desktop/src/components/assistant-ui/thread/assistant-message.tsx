@@ -592,12 +592,12 @@ const SwitchProviderAction: FC<{ label: string }> = ({ label }) => {
   )
 }
 
-// Settings → Keys deep link for a rejected API key: `?tab=keys` plus
-// `&key=<ENV>` when the descriptor names the env var (keys-settings.tsx
-// scrolls to and expands that row). Older backends omit `api_key_env`; the
-// tab alone is still the right place.
+// Settings → Providers → API keys deep link for a rejected API key, plus
+// `&key=<ENV>` when the descriptor names the env var (providers-settings.tsx
+// scrolls to and expands that provider). Older backends omit `api_key_env`;
+// the API-keys list alone is still the right place.
 const updateApiKeyRoute = (surface: ErrorSurface | undefined) => {
-  const params = new URLSearchParams({ tab: 'keys' })
+  const params = new URLSearchParams({ tab: 'providers', pview: 'keys' })
 
   if (surface?.apiKeyEnv) {
     params.set('key', surface.apiKeyEnv)

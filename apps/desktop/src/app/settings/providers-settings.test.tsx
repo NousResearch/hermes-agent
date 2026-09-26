@@ -1,5 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { atom } from 'nanostores'
+import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ConfirmHost } from '@/components/confirm-host'
@@ -272,6 +273,25 @@ describe('ProvidersSettings', () => {
       fireEvent.change(search, { target: { value: 'nonesuch-xyz' } })
     })
     expect(await screen.findByText('No providers match your search.')).toBeTruthy()
+  })
+
+  it('expands and scrolls to the provider named by a ?key= deep link', async () => {
+    Element.prototype.scrollIntoView = vi.fn()
+    getEnvVars.mockResolvedValue({
+      ACME_API_KEY: keyVar({ description: 'Acme blurb', provider: 'acme', provider_label: 'Acme' }),
+      ZEBRA_API_KEY: keyVar({ description: 'Zebra blurb', provider: 'zebra', provider_label: 'Zebra' })
+    })
+    listOAuthProviders.mockResolvedValue({ providers: [] })
+
+    render(
+      <MemoryRouter initialEntries={['/settings?tab=providers&pview=keys&key=ZEBRA_API_KEY']}>
+        <ProvidersSettings onClose={vi.fn()} onViewChange={vi.fn()} view="keys" />
+      </MemoryRouter>
+    )
+
+    expect(await screen.findByText('Zebra blurb')).toBeTruthy()
+    expect(screen.queryByText('Acme blurb')).toBeNull()
+    await waitFor(() => expect(Element.prototype.scrollIntoView).toHaveBeenCalled())
   })
 
   it('offers a Local / custom endpoint entry in the API-keys tab that opens the custom-endpoint flow', async () => {

@@ -96,7 +96,20 @@ def _surface(layer: str, code: str, retryable: bool, provider: str = "", model: 
         # and how to name the account it re-opens.
         surface["auth_kind"] = auth_kind(provider)
         surface["provider_label"] = _provider_label(provider)
+        if surface["auth_kind"] == "api_key" and (env_var := _api_key_env(provider)):
+            surface["api_key_env"] = env_var
     return surface
+
+
+def _api_key_env(provider: str) -> str:
+    """The env var holding ``provider``'s API key, so the client can open that row."""
+    try:
+        from hermes_cli.provider_catalog import provider_catalog_by_slug
+
+        descriptor = provider_catalog_by_slug().get(provider.strip().lower())
+        return descriptor.api_key_env_vars[0] if descriptor and descriptor.api_key_env_vars else ""
+    except Exception:  # pragma: no cover — advisory only
+        return ""
 
 
 def _provider_label(provider: str) -> str:

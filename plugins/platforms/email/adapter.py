@@ -839,7 +839,7 @@ def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""
     ctx.register_platform(
         name="email", label="Email", adapter_factory=EmailAdapter, check_fn=check_email_requirements, is_connected=_is_connected,
-        required_env=["EMAIL_ADDRESS", "EMAIL_PASSWORD", "EMAIL_SMTP_HOST"],
+        required_env=["EMAIL_ADDRESS", "EMAIL_PASSWORD", "EMAIL_IMAP_HOST", "EMAIL_SMTP_HOST"],
         install_hint="Email uses the Python stdlib (smtplib/imaplib) — no extra deps", allowed_users_env="EMAIL_ALLOWED_USERS",
         allow_all_env="EMAIL_ALLOW_ALL_USERS", cron_deliver_env_var="EMAIL_HOME_ADDRESS", standalone_sender_fn=_standalone_send,
         max_message_length=50_000, pii_safe=True, emoji="📧", allow_update_command=True)

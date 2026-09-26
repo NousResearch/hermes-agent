@@ -1161,15 +1161,21 @@ def write_pid_file() -> None:
     _clear_running_pid_cache()
 
 
-def _write_json_excl(path: Path, record: dict[str, Any]) -> None:
+def _write_json_excl(path: Path, record: dict[str, Any]) -> os.stat_result:
     """Create ``path`` with O_CREAT|O_EXCL and dump ``record``; unlinks on a failed write."""
     fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    created_stat = os.fstat(fd)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             json.dump(record, handle)
     except Exception:
-        _unlink_quietly(path)
+        try:
+            if os.path.samestat(created_stat, path.stat()):
+                path.unlink(missing_ok=True)
+        except OSError:
+            pass
         raise
+    return created_stat
 
 
 def _apply_set_fields(target: dict[str, Any], fields) -> None:
@@ -1670,8 +1676,13 @@ def acquire_scoped_lock(
             os.replace(lock_path, tombstone)
             _unlink_quietly(tombstone)
     try:
-        _write_json_excl(lock_path, record)
+        created_stat = _write_json_excl(lock_path, record)
     except FileExistsError:
+        return False, _read_json_file(lock_path)
+    try:
+        if not os.path.samestat(created_stat, lock_path.stat()):
+            return False, _read_json_file(lock_path)
+    except OSError:
         return False, _read_json_file(lock_path)
     return True, None
 

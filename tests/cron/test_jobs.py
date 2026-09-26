@@ -438,6 +438,31 @@ class TestJobCRUD:
         with pytest.raises(ValueError, match="Invalid repeat"):
             update_job(job["id"], {"repeat": "banana"})
 
+    def test_null_repeat_completed_counts_as_zero(self, tmp_cron_dir):
+        """A hand-edited "completed": null must not kill mark_job_run (None += 1) or be
+        carried forward by update_job."""
+        import json
+        from cron.jobs import JOBS_FILE, get_job, mark_job_run, update_job
+
+        job = create_job(prompt="t", schedule="every 1h", repeat=3)
+
+        def set_completed(value):
+            payload = json.loads(JOBS_FILE.read_text(encoding="utf-8"))
+            payload["jobs"][0]["repeat"]["completed"] = value
+            JOBS_FILE.write_text(json.dumps(payload), encoding="utf-8")
+
+        set_completed(None)
+        mark_job_run(job["id"], success=True)
+        assert get_job(job["id"])["repeat"]["completed"] == 1
+        set_completed(None)
+        assert update_job(job["id"], {"repeat": {"times": 5}})["repeat"]["completed"] == 0
+        # Other hand-edited shapes: a string would crash ("2" + 1), a float would render "2.0/5".
+        for value, expected in (("2", 3), (1.0, 2), ("junk", 1)):
+            set_completed(value)
+            mark_job_run(job["id"], success=True)
+            completed = get_job(job["id"])["repeat"]["completed"]
+            assert completed == expected and type(completed) is int
+
     def test_oneshot_turned_recurring_becomes_forever(self, tmp_cron_dir):
         """A one-shot budget must not survive a schedule change to a recurring kind.
 
@@ -1717,6 +1742,60 @@ class TestJobsJsonIdKeyedMap:
         on_disk = json.loads(JOBS_FILE.read_text(encoding="utf-8"))
         assert isinstance(on_disk["jobs"], list)
         assert [j["id"] for j in on_disk["jobs"]] == ["goodjob1"]
+
+    def test_non_dict_list_entries_do_not_stop_healthy_jobs_firing(
+        self, tmp_cron_dir, caplog, monkeypatch
+    ):
+        """A junk entry in the canonical list shape must not abort the due scan for its
+        healthy siblings (it used to raise on every tick, so no job fired); a lock-free
+        reader's repair must not save its stale snapshot over a writer that landed after it
+        parsed the file; an all-junk list or a scalar jobs field must be repaired on disk too,
+        without logging raw values."""
+        import json
+        import cron.jobs as jobs_mod
+        from cron.jobs import JOBS_FILE, load_jobs, update_job
+
+        job = create_job(prompt="keep me", schedule="every 1h", name="survivor")
+
+        def add_junk():
+            payload = json.loads(JOBS_FILE.read_text(encoding="utf-8"))
+            payload["jobs"][0]["next_run_at"] = (_hermes_now() - timedelta(seconds=5)).isoformat()
+            payload["jobs"] += [None, "i am not a job", 42]
+            JOBS_FILE.write_text(json.dumps(payload), encoding="utf-8")
+
+        add_junk()
+        real_parse = jobs_mod._parse_jobs_file
+        raced = []
+
+        def parse_then_race(path):
+            parsed = real_parse(path)
+            if not raced:
+                raced.append(True)
+                update_job(job["id"], {"name": "raced"})
+            return parsed
+
+        monkeypatch.setattr(jobs_mod, "_parse_jobs_file", parse_then_race)
+        assert [j["id"] for j in list_jobs(include_disabled=True)] == [job["id"]]
+        monkeypatch.setattr(jobs_mod, "_parse_jobs_file", real_parse)
+        on_disk = json.loads(JOBS_FILE.read_text(encoding="utf-8"))["jobs"]
+        assert [(j["id"], j["name"]) for j in on_disk] == [(job["id"], "raced")]
+
+        add_junk()
+        assert [j["id"] for j in get_due_jobs()] == [job["id"]]
+        on_disk = json.loads(JOBS_FILE.read_text(encoding="utf-8"))
+        assert [j["id"] for j in on_disk["jobs"]] == [job["id"]]
+
+        for bad, detail in (([None, "***", 42], "Skipping 3 non-object"),
+                            (None, "Replacing invalid"), ("not-a-list", "Replacing invalid")):
+            JOBS_FILE.write_text(json.dumps({"jobs": bad}), encoding="utf-8")
+            caplog.clear()
+            with caplog.at_level("WARNING", logger="cron.jobs"):
+                assert load_jobs() == []  # unlocked: re-runs under the lock, which logs
+            assert json.loads(JOBS_FILE.read_text(encoding="utf-8"))["jobs"] == []
+            msgs = [r.getMessage() for r in caplog.records]
+            assert sum(detail in m for m in msgs) == 1, msgs
+            assert sum("Auto-repaired" in m for m in msgs) == 1, msgs
+            assert "***" not in caplog.text
 
 
 

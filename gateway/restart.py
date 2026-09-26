@@ -358,6 +358,9 @@ def resolve_systemd_timeout_stop_sec(
 def resolve_restart_exit_wait_budget(
     drain_timeout: float, after_turn_timeout: float, cron_drain_timeout: float = 0.0, *, headroom: float = 15.0,
 ) -> float:
-    """Seconds a CLI should wait for the gateway PID to exit after SIGUSR1: in-band restart may
-    defer ``stop()`` until turns finish, then spend the longer chat or cron drain inside it."""
-    return max(_seconds(drain_timeout), _seconds(cron_drain_timeout)) + _seconds(after_turn_timeout) + _seconds(headroom)
+    """Observer budget for in-band deferral, the full stop envelope, and replacement startup.
+
+    The stop envelope includes cron cleanup reserve, supervisor headroom and the floor;
+    deferral precedes it, while observer headroom follows it. Cron zero opts out.
+    """
+    return _seconds(after_turn_timeout) + resolve_systemd_timeout_stop_sec(drain_timeout, cron_drain_timeout) + _seconds(headroom)

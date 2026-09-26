@@ -420,6 +420,11 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     None values, child inherits everything. ``request_overrides`` is honored on every branch. Raises ValueError
     with a user-facing message."""
     values = {k: str(cfg.get(k) or "").strip() or None for k in ("model", "provider", "base_url", "api_key")}
+    if not values["api_key"]:
+        key_env = str(cfg.get("key_env") or "").strip() or str(cfg.get("api_key_env") or "").strip()
+        if key_env:
+            from hermes_cli.config import get_env_value_prefer_dotenv
+            values["api_key"] = (get_env_value_prefer_dotenv(key_env) or "").strip() or None
     values["api_mode"] = str(cfg.get("api_mode") or "").strip().lower() or None
     explicit_request_overrides = cfg.get("request_overrides") if isinstance(cfg.get("request_overrides"), dict) else None
     is_native_sdk_provider = (values["provider"] or "").strip().lower() in _NATIVE_SDK_PROVIDERS

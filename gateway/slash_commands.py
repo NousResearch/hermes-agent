@@ -426,41 +426,63 @@ class GatewaySlashCommandsMixin(
         """Handle /stop command - interrupt a running agent.  A truly hung agent (blocked thread
         never checking _interrupt_requested) is caught by the early intercept in _handle_message();
         this handler runs via normal dispatch or as a fallback, and force-cleans the session lock in
-        all cases.  The session is preserved so the user can continue."""
+        all cases.  The session is preserved so the user can continue.
+
+        ``/stop @bot`` (#123928) stops only that bot's run in this chat; a bare ``/stop`` keeps
+        stopping every run in the chat."""
         from gateway.run import _AGENT_PENDING_SENTINEL, _INTERRUPT_REASON_STOP
         source = event.source
         session_entry = await self.async_session_store.get_or_create_session(source)
         session_key = session_entry.session_key
+
+        # Per-bot stop (#123928): a leading @bot token scopes the stop to that bot's profile
+        # namespace. Profile ids are lowercase on disk, so the match is case-insensitive; any
+        # other (or no) argument keeps the historical room-wide behavior. Name resolution is the
+        # key namespace itself — ponytail: no roster/registry lookup; add one when display names
+        # diverge from profile ids.
+        target_ns: Optional[str] = None
+        args = (event.get_command_args() or "").strip()
+        if args.lstrip()[:1] == "@":
+            first = args.split(None, 1)[0].lstrip("@").rstrip(",.;:!?")
+            if first:
+                from gateway.session import _session_key_namespace
+                target_ns = _session_key_namespace(first.lower())
+        own_is_target = target_ns is None or session_key.startswith(target_ns + ":")
 
         async def _stop(key: str, invalidation_reason: str) -> None:
             await self._interrupt_and_clear_session(
                 key, source, interrupt_reason=_INTERRUPT_REASON_STOP,
                 invalidation_reason=invalidation_reason)
         agent = self._running_agents.get(session_key)
-        if agent is _AGENT_PENDING_SENTINEL:  # force-clean the sentinel so the session is unlocked
+        if agent is _AGENT_PENDING_SENTINEL and own_is_target:  # force-clean the sentinel so the session is unlocked
             await _stop(session_key, "stop_command_pending")
             logger.info("STOP (pending) for session %s — sentinel cleared", session_key)
             return EphemeralReply(t("gateway.stop.stopped_pending"))
-        if agent:  # force-clean the session lock so a truly hung agent doesn't keep it forever
+        if agent and own_is_target:  # force-clean the session lock so a truly hung agent doesn't keep it forever
             await _stop(session_key, "stop_command_handler")
             return EphemeralReply(t("gateway.stop.stopped"))
 
-        # No run under the caller's own key: a live turn in THIS chat may still carry a differently
-        # shaped key. One scan feeds both tiers; the chat tier is a superset of the thread-sibling
-        # tier (a sibling needs the caller's own thread slot, which satisfies the chat predicate), so
-        # it is the set to act on — acting on the sibling subset alone would reply "Stopped" while a
-        # same-thread run under a differently shaped key kept going. See `_chat_scoped_run_keys` for
-        # the shapes and isolation bounds; both tiers are authorization-gated.
-        runs = self._same_chat_runs(source, session_key)
-        sibling_keys = self._sibling_thread_run_keys(source, runs)
+        # No run under the caller's own key (or the stop targets another bot): a live turn in
+        # THIS chat may still carry a differently shaped key. One scan feeds both tiers; the chat
+        # tier is a superset of the thread-sibling tier (a sibling needs the caller's own thread
+        # slot, which satisfies the chat predicate), so it is the set to act on — acting on the
+        # sibling subset alone would reply "Stopped" while a same-thread run under a differently
+        # shaped key kept going. See `_chat_scoped_run_keys` for the shapes and isolation bounds;
+        # both tiers are authorization-gated. A targeted stop scans the target bot's namespace, so
+        # the caller's own and every other bot's runs are never matched.
+        runs = self._same_chat_runs(source, session_key, namespace=target_ns)
         fallback_keys = self._chat_scoped_run_keys(source, runs)
-        # Reason is per-stop, not per-key: a stop that only ever had thread siblings keeps its own
-        # label for hook consumers, anything wider is a chat-scope stop.
-        reason = (
-            "stop_command_thread_sibling"
-            if fallback_keys == sibling_keys
-            else "stop_command_chat_scope"
-        )
+        if target_ns is None:
+            sibling_keys = self._sibling_thread_run_keys(source, runs)
+            # Reason is per-stop, not per-key: a stop that only ever had thread siblings keeps
+            # its own label for hook consumers, anything wider is a chat-scope stop.
+            reason = (
+                "stop_command_thread_sibling"
+                if fallback_keys == sibling_keys
+                else "stop_command_chat_scope"
+            )
+        else:
+            reason = "stop_command_targeted"
         if fallback_keys and self._is_user_authorized_for_source(source):
             for fallback_key in fallback_keys:
                 await _stop(fallback_key, reason)
@@ -470,8 +492,9 @@ class GatewaySlashCommandsMixin(
 
         # No running agent anywhere for this scope. Background delegations the session dispatched in an
         # earlier turn still count as "active": stop them; each returns as an interrupted completion.
+        # A stop targeted at another bot never touches the caller's own delegations.
         from tools.async_delegation import interrupt_for_session
-        if interrupt_for_session(session_key=session_key, reason="stop_command",
+        if own_is_target and interrupt_for_session(session_key=session_key, reason="stop_command",
                                  parent_session_id=str(getattr(session_entry, "session_id", "") or "")):
             return EphemeralReply(t("gateway.stop.stopped"))
         # A platform status indicator can still be stuck —

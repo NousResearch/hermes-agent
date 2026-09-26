@@ -1120,14 +1120,18 @@ class GatewayBusySessionMixin:
             )
         return f"⛔ /{canonical_cmd} is admin-only here. {suffix}"
 
-    def _same_chat_runs(self, source: SessionSource, own_key: str) -> List[Tuple[str, str, str]]:
+    def _same_chat_runs(
+        self, source: SessionSource, own_key: str, namespace: Optional[str] = None,
+    ) -> List[Tuple[str, str, str]]:
         """``(key, chat_type, tail)`` for every OTHER running turn in the caller's chat (``tail`` is
         the key text after the chat id, ``""`` when the key ends there).
 
         The namespace comes from ``own_key`` — the session store's own answer, so a named-profile
-        stop matches that profile's runs and never a literal. ``_snapshot_running_agents`` already
-        drops the pending sentinel (a session still being set up has no agent). Callers gate on
-        authorization; ``own_key`` is excluded. Both tiers share one call.
+        stop matches that profile's runs and never a literal — unless ``namespace`` overrides it
+        (``/stop @bot`` scans the target bot's ``agent:<profile>`` head, not the caller's).
+        ``_snapshot_running_agents`` already drops the pending sentinel (a session still being set
+        up has no agent). Callers gate on authorization; ``own_key`` is excluded. Both tiers share
+        one call.
         """
         chat_id = str(getattr(source, "chat_id", None) or "")
         if not chat_id:
@@ -1136,7 +1140,7 @@ class GatewayBusySessionMixin:
             # Match the same text build_session_key keyed: WhatsApp DM chat ids are canonicalised
             # there, so a raw JID/LID alias would never line up with the stored key.
             chat_id = canonical_whatsapp_identifier(chat_id) or chat_id
-        namespace = ":".join(own_key.split(":", 2)[:2])
+        namespace = namespace or ":".join(own_key.split(":", 2)[:2])
         prefix = f"{namespace}:{source.platform.value}:"
         scope_id = str(getattr(source, "scope_id", None) or "") or None
         runs = []

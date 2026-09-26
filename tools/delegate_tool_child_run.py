@@ -506,8 +506,15 @@ def _validate_child_output_schema(
         logger.warning("Subagent %d schema-retry turn failed: %s", task_index, _retry_exc)
     if isinstance(_retry_result, dict):
         _retry_text = _retry_result.get("final_response") or ""
-        if _retry_text.strip():
+        # A retry turn that failed or was stopped returns its error / "Operation interrupted" text as
+        # final_response; letting that replace the first answer discards the child's real work. Keep
+        # the first answer and its verdict unless the retry produced an answer of its own.
+        _retry_answered = bool(_retry_text.strip()) and not (
+            _retry_result.get("failed") or _retry_result.get("error") or _retry_result.get("interrupted")
+        )
+        if _retry_answered:
             result["final_response"] = _retry_text
+            _schema_valid, _schema_errors = validate_output(_retry_text, _output_schema)
         try:
             result["api_calls"] = int(result.get("api_calls", 0) or 0) + int(_retry_result.get("api_calls", 0) or 0)
         except (TypeError, ValueError):
@@ -515,7 +522,6 @@ def _validate_child_output_schema(
         _retry_messages = _retry_result.get("messages")
         if isinstance(_retry_messages, list) and isinstance(result.get("messages"), list):
             result["messages"] = result["messages"] + _retry_messages
-        _schema_valid, _schema_errors = validate_output(_retry_text, _output_schema)
     return _SchemaOutcome(_output_schema, _schema_valid, _schema_errors, 1)
 
 def _build_tool_trace(messages: Any) -> list[Dict[str, Any]]:

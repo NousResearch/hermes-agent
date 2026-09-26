@@ -20,7 +20,9 @@ def resolve_skin() -> dict:
             "light_colors": skin.light_colors, "dark_colors": skin.dark_colors,
             "branding": skin.branding, "banner_logo": skin.banner_logo,
             "banner_hero": skin.banner_hero, "tool_prefix": skin.tool_prefix,
-            "help_header": (skin.branding or {}).get("help_header", "")}
+            "help_header": (skin.branding or {}).get("help_header", ""),
+            # Raw user CSS for the desktop GUI's <style> tag (32 KiB cap in the skin engine).
+            "customCSS": skin.custom_css}
     except Exception:
         return {}
 

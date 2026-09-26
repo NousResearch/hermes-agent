@@ -905,7 +905,24 @@ class DockerEnvironment(BaseEnvironment):
     _NO_CONTAINER_PATTERNS = ("No such container", "is not running", "no such container")
 
     def _is_container_gone(self, output: str) -> bool:
+        """Only a pre-filter: the output is the user's command's too, and ``service x status``
+        or any script can print "is not running". :meth:`_container_confirmed_gone` decides."""
         return any(p in output for p in self._NO_CONTAINER_PATTERNS)
+
+    def _container_confirmed_gone(self) -> bool:
+        """Ask the daemon, because recovery re-runs the command: trusting the output alone ran a
+        command that printed "is not running" twice and rebuilt the session snapshot. A probe the
+        daemon cannot answer is not a confirmation, so a live container is never re-bootstrapped."""
+        if not self._container_id:
+            return True
+        result = _docker_query(
+            [self._docker_exe, "inspect", "--format", "{{.State.Running}}", self._container_id], timeout=10,
+            fail="container liveness probe failed: %s — skipping recovery")
+        if result is None:
+            return False
+        if result.returncode != 0:
+            return "no such" in (result.stderr or "").lower()
+        return result.stdout.strip().lower() != "true"
 
     def _recreate_container(self) -> bool:
         """Recreate a container removed out-of-band: label-based reuse first (another process
@@ -961,8 +978,9 @@ class DockerEnvironment(BaseEnvironment):
         result = super().execute(command, cwd, **kwargs)
         if (
             result.get("returncode", 0) != 0
-            and self._is_container_gone(result.get("output", ""))
             and self._persist_across_processes
+            and self._is_container_gone(result.get("output", ""))
+            and self._container_confirmed_gone()
             and self._recreate_container()):
             result = super().execute(command, cwd, **kwargs)
         return result

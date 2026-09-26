@@ -45,6 +45,7 @@ from hermes_cli.auth import (
     _same_path,
     _save_auth_store,
     _save_provider_state,
+    _coerce_credential_priority,
     _store_provider_state,
     read_credential_pool,
     write_credential_pool,
@@ -242,6 +243,7 @@ class PooledCredential:
     def __post_init__(self):
         if self.extra is None:
             self.extra = {}
+        self.priority = _coerce_credential_priority(self.priority)
         self.auth_type = _normalize_pool_auth_type(self.provider, self.access_token, self.auth_type)
 
     def __getattr__(self, name: str):
@@ -3042,6 +3044,12 @@ def load_pool(provider: str) -> CredentialPool:
         active_pool = _load_auth_store().get("credential_pool")
         active_entries = active_pool.get(provider) if isinstance(active_pool, dict) else None
         changed |= bool(active_entries)
+    # Rows written by hand or by older builds may carry a string/None priority;
+    # rewrite them as ints so later sorts never compare str with int.
+    changed |= any(
+        isinstance(payload, dict) and not isinstance(payload.get("priority", 0), int)
+        for payload in raw_entries
+    )
 
     if provider.startswith(CUSTOM_POOL_PREFIX):
         custom_changed, custom_sources = _seed_custom_pool(provider, entries)

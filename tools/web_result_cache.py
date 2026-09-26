@@ -11,6 +11,7 @@ import hashlib
 import json
 import logging
 import re
+import secrets
 import threading
 import time
 from contextlib import suppress
@@ -175,19 +176,40 @@ def _load_index() -> dict:
         return {}
 
 
-def _save_index(index: dict) -> None:
+def _fetched_at(entry) -> float:
+    try:
+        return float(entry.get("fetched_at", 0))
+    except Exception:  # noqa: BLE001 — a malformed row sorts oldest
+        return 0.0
+
+
+def _save_index(index: dict, superseded: Optional[dict] = None) -> None:
     if (d := _cache_dir()) is None:
         return
     path = d / _INDEX_FILENAME
+    # Expired rows can only miss, and past the cap the oldest go; a dropped row's .cache.md goes with it,
+    # because the index is the only way back to that file (dropping just the row leaked it forever).
+    horizon = time.time() - ttl_seconds()
+    kept = {k: v for k, v in index.items() if isinstance(v, dict) and _fetched_at(v) > horizon}
+    if len(kept) > _INDEX_MAX_ENTRIES:
+        kept = dict(sorted(kept.items(), key=lambda kv: _fetched_at(kv[1]), reverse=True)[:_INDEX_MAX_ENTRIES])
     try:
-        if len(index) > _INDEX_MAX_ENTRIES:
-            newest = sorted(index.items(), key=lambda kv: kv[1].get("fetched_at", 0), reverse=True)
-            index = dict(newest[:_INDEX_MAX_ENTRIES])
         # CLI, gateway, cron, and subagents all write this index; the replace is atomic, so the worst case
         # under concurrent writers is a lost insert, never a truncated index.
-        atomic_json_write(path, index, indent=None)
+        atomic_json_write(path, kept, indent=None)
     except Exception as exc:  # noqa: BLE001
         logger.debug("Failed to save web extract cache index: %s", exc)
+        return
+    root = d.resolve()
+    dropped = [entry for key, entry in index.items() if key not in kept] + [superseded]
+    for entry in dropped:
+        if not isinstance(entry, dict):
+            continue
+        with suppress(Exception):
+            file_path = Path(entry["file"]).resolve()
+            # The index is plain JSON on disk: never let a tampered row delete outside cache/web.
+            if root in file_path.parents and file_path.name.endswith(".cache.md"):
+                file_path.unlink(missing_ok=True)
 
 
 def _url_digest(url: str, format: Optional[str], provider: str = "") -> str:
@@ -201,14 +223,16 @@ def _entry_file_path(url: str, format: Optional[str], provider: str) -> Optional
     (keyed on URL alone), which html/markdown or two providers' copies of one URL would overwrite.
 
     The truncate-store file keeps its role for read_file paging; these files exist only for cache reuse and
-    carry the full key in their name. See #94618.
+    carry the full key in their name. See #94618. Each write gets a new name: _save_index unlinks a dropped
+    row's file after its index write, with no lock shared across processes, so a reused name would let that
+    stale unlink delete the file of a row another process has just committed for the same key.
     """
     if (d := _cache_dir()) is None:
         return None
     slug = "page"
     with suppress(Exception):
         slug = _host_slug(url)
-    return d / f"{slug}-{_url_digest(url, format, provider)}.cache.md"
+    return d / f"{slug}-{_url_digest(url, format, provider)}-{secrets.token_hex(4)}.cache.md"
 
 
 def _host_matches_pattern(host: str, pattern: str) -> bool:
@@ -294,10 +318,12 @@ def extract_cache_put(
         write_text_exclusive(file_path, content, private=False, overwrite=True)
         with _index_lock:
             index = _load_index()
-            index[_url_digest(url, format, provider)] = {
+            digest = _url_digest(url, format, provider)
+            superseded = index.get(digest)
+            index[digest] = {
                 "url": url, "file": str(file_path), "title": title or "", "fetched_at": time.time(),
             }
-            _save_index(index)
+            _save_index(index, superseded)
     except Exception as exc:  # noqa: BLE001 — cache writes are best-effort
         logger.debug("Failed to cache web extract for %s: %s", url, exc)
 

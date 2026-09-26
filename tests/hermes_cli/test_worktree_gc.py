@@ -40,7 +40,15 @@ def _git(args, cwd, env=None):
 
 
 @pytest.fixture
-def repo(tmp_path, monkeypatch):
+def isolated_git_config(tmp_path, monkeypatch):
+    """Real git verdicts must not inherit signing, hooks, or aliases from the host."""
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+
+
+@pytest.fixture
+def repo(tmp_path, monkeypatch, isolated_git_config):
     """origin (bare) + clone with .worktrees/, HOME redirected for archives."""
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     (tmp_path / "home").mkdir()
@@ -62,7 +70,7 @@ def repo(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def local_repo(tmp_path, monkeypatch):
+def local_repo(tmp_path, monkeypatch, isolated_git_config):
     """``git init`` repo with NO remote at all (the #111895 shape), HOME redirected."""
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     (tmp_path / "home").mkdir()

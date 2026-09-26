@@ -40,6 +40,7 @@ _OWN_POLICY_PLATFORMS = [
     Platform.WEIXIN,
     Platform.YUANBAO,
     Platform.QQBOT,
+    Platform.SIGNAL,
     Platform.WHATSAPP,
 ]
 
@@ -52,6 +53,11 @@ def _clear_auth_env(monkeypatch) -> None:
         "QQ_ALLOWED_USERS",
         "QQ_GROUP_ALLOWED_USERS",
         "WHATSAPP_ALLOWED_USERS",
+        "SIGNAL_ALLOWED_USERS",
+        "SIGNAL_GROUP_ALLOWED_USERS",
+        "SIGNAL_DM_POLICY",
+        "SIGNAL_DM_ALLOW_FROM",
+        "SIGNAL_GROUP_POLICY",
         "TELEGRAM_ALLOWED_USERS",
         "GATEWAY_ALLOWED_USERS",
         "GATEWAY_ALLOW_ALL_USERS",
@@ -60,6 +66,7 @@ def _clear_auth_env(monkeypatch) -> None:
         "YUANBAO_ALLOW_ALL_USERS",
         "QQ_ALLOW_ALL_USERS",
         "WHATSAPP_ALLOW_ALL_USERS",
+        "SIGNAL_ALLOW_ALL_USERS",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -112,6 +119,7 @@ def test_base_adapter_defaults_to_not_owning_access_policy():
         ("gateway.platforms.weixin", "WeixinAdapter"),
         ("gateway.platforms.yuanbao", "YuanbaoAdapter"),
         ("gateway.platforms.qqbot.adapter", "QQAdapter"),
+        ("gateway.platforms.signal", "SignalAdapter"),
         ("plugins.platforms.whatsapp.adapter", "WhatsAppAdapter"),
     ],
 )

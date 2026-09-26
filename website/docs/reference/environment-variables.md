@@ -416,6 +416,9 @@ These are set automatically by the Docker terminal backend when `proxy.enabled: 
 | `SIGNAL_ACCOUNT` | Bot phone number in E.164 format |
 | `SIGNAL_ALLOWED_USERS` | Comma-separated E.164 phone numbers or UUIDs |
 | `SIGNAL_GROUP_ALLOWED_USERS` | Comma-separated group IDs, or `*` for all groups |
+| `SIGNAL_DM_POLICY` | Signal DM intake policy: `open` (default without an allowlist), `allowlist`, `disabled`, or `pairing`; `open` still requires `SIGNAL_ALLOW_ALL_USERS=true` |
+| `SIGNAL_DM_ALLOW_FROM` | Comma-separated senders allowed to DM when `dm_policy: allowlist` (defaults to `SIGNAL_ALLOWED_USERS`) |
+| `SIGNAL_GROUP_POLICY` | Signal group intake policy: `allowlist` (default when `SIGNAL_GROUP_ALLOWED_USERS` is set), `open`, or `disabled` (default without one) |
 | `SIGNAL_HOME_CHANNEL_NAME` | Display name for the Signal home channel |
 | `SIGNAL_IGNORE_STORIES` | Ignore Signal stories/status updates |
 | `SIGNAL_ALLOW_ALL_USERS` | Allow all Signal users without an allowlist |

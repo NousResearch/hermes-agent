@@ -123,23 +123,50 @@ sudo hermes gateway install --system   # Linux only: boot-time system service
 
 ## Access Control
 
+Signal uses the same config-driven access policy as the other platforms
+(`dm_policy` / `group_policy` / `allow_from` / `group_allow_from`), enforced
+inside the adapter **before** a message reaches the gateway. Values come from
+`platforms.signal` in `config.yaml`, falling back to the `SIGNAL_*` env vars.
+
 ### DM Access
 
-DM access follows the same pattern as all other Hermes platforms:
+| `dm_policy` | Behavior |
+|-------------|----------|
+| `open` (default when no DM allowlist is configured) | Delegated to the gateway: `SIGNAL_ALLOWED_USERS`, otherwise DM pairing. Open access still requires an explicit `SIGNAL_ALLOW_ALL_USERS=true` / `GATEWAY_ALLOW_ALL_USERS=true` opt-in. |
+| `allowlist` (default when a DM allowlist IS configured) | DMs are dropped at intake unless the sender is in `SIGNAL_DM_ALLOW_FROM` (falling back to `SIGNAL_ALLOWED_USERS`). Group members can keep posting in allowlisted groups without being able to DM the bot. |
+| `disabled` | Every DM is dropped — group-only bot. |
+| `pairing` | Unknown senders reach the pairing handshake; a pairing approval alone is not access. |
 
-1. **`SIGNAL_ALLOWED_USERS` set** → only those users can message
-2. **No allowlist set** → unknown users get a DM pairing code (approve via `hermes pairing approve signal CODE`)
-3. **`SIGNAL_ALLOW_ALL_USERS=true`** → anyone can message (use with caution)
+```yaml
+platforms:
+  signal:
+    dm_policy: allowlist
+    allow_from: ["+15550001111"]        # DM-only list
+```
+
+```bash
+# ... or via .env
+SIGNAL_DM_POLICY=allowlist
+SIGNAL_DM_ALLOW_FROM=+15550001111
+```
 
 ### Group Access
 
-Group access is controlled by the `SIGNAL_GROUP_ALLOWED_USERS` env var:
+| `group_policy` | Behavior |
+|----------------|----------|
+| `allowlist` (default when `SIGNAL_GROUP_ALLOWED_USERS` lists group IDs) | Only the listed groups are monitored |
+| `open` (default when the list is `*`) | The bot responds in any group it is a member of |
+| `disabled` (default with no group allowlist) | All group messages are ignored |
 
-| Configuration | Behavior |
-|---------------|----------|
-| Not set (default) | All group messages are ignored. The bot only responds to DMs. |
-| Set with group IDs | Only listed groups are monitored (e.g., `groupId1,groupId2`). |
-| Set to `*` | The bot responds in any group it's a member of. |
+```yaml
+platforms:
+  signal:
+    group_policy: allowlist
+    group_allow_from: ["<groupId>"]
+```
+
+A group-only install pairs `dm_policy: disabled` with a group allowlist: the
+bot answers in the listed groups and drops every DM without replying.
 
 ---
 

@@ -96,7 +96,7 @@ def test_compression_tip_adoption_applies_the_identity_check(db):
     assert _adopt("model-a", "prov-a")._cached_system_prompt == stale
 
 
-def _turn_agent(db, model: str, provider: str) -> MagicMock:
+def _turn_agent(db, model: str, provider: str, prose: str = "") -> MagicMock:
     """A fresh per-turn agent (the gateway shape) whose rebuild renders the real trailer."""
     from agent.system_prompt import _timestamp_line
 
@@ -115,14 +115,14 @@ def _turn_agent(db, model: str, provider: str) -> MagicMock:
     agent._surface_switch_note = ""
     agent._gateway_turn_context_notes = ""
     agent.enabled_toolsets = agent.disabled_toolsets = None
-    agent._build_system_prompt = MagicMock(side_effect=lambda _sm: f"You are Hermes Agent.\n\n{_timestamp_line(agent)}")
+    agent._build_system_prompt = MagicMock(side_effect=lambda _sm: f"You are Hermes Agent.\n\n{prose}{_timestamp_line(agent)}")
     return agent
 
 
-def _run_turn(db, model: str, provider: str) -> MagicMock:
+def _run_turn(db, model: str, provider: str, prose: str = "") -> MagicMock:
     from agent.conversation_loop import _restore_or_build_system_prompt
 
-    agent = _turn_agent(db, model, provider)
+    agent = _turn_agent(db, model, provider, prose)
     _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
     return agent
 
@@ -149,6 +149,27 @@ def test_emptied_live_identity_rebuilds_once_then_reuses(db, live_model, live_pr
     assert rebuilt == first._cached_system_prompt != stale
 
     second = _run_turn(db, live_model, live_provider)
+    second._build_system_prompt.assert_not_called()
+    assert second._cached_system_prompt == rebuilt
+
+
+@pytest.mark.parametrize(
+    ("live_model", "live_provider"),
+    [("x-ai/grok-4.5", ""), ("", "nous")],
+    ids=["provider_empty", "model_empty"],
+)
+def test_identity_lines_in_memory_prose_never_count_as_the_trailer(db, live_model, live_provider):
+    """Memory/context prose sits before the trailer and may hold its own ``Provider:``/``Model:``
+    lines. With the live value empty the trailer omits that line; the prose line must not stand in
+    for it, or every turn would read a mismatch and rebuild (a prompt-cache miss per turn)."""
+    prose = "MEMORY\nProvider: openrouter\nModel: some/other-model\n\n"
+    db.create_session(SESSION_ID, source="discord", model="x-ai/grok-4.5")
+    db.update_system_prompt(SESSION_ID, _stored_prompt("x-ai/grok-4.5", "nous"))
+
+    _run_turn(db, live_model, live_provider, prose)._build_system_prompt.assert_called_once()
+    rebuilt = db.get_session(SESSION_ID)["system_prompt"]
+
+    second = _run_turn(db, live_model, live_provider, prose)
     second._build_system_prompt.assert_not_called()
     assert second._cached_system_prompt == rebuilt
 

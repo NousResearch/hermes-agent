@@ -222,7 +222,9 @@ class Python(_BionicDebArm, BinaryPackage, DebPackage):
 
     name = "python"
     optional = True
-    probe_version = False
+    # The launcher trusts this entry once facts commit. Check that the native
+    # loader can run it before selecting it; cross-target stages stay file-only.
+    probe_version = True
     binary_rel = {"win32": "python.exe", "posix": "bin/python3"}
     # The staged .deb's main binary: DebPackage.verify checks it.
     main_bin_rel = "bin/python3.14"

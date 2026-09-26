@@ -5395,8 +5395,9 @@ class SlackAdapter(BasePlatformAdapter):
         session_key: str, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Clarify prompt as Block Kit buttons: one ``hermes_clarify_choice_<idx>`` per option
         (value ``clarify_id|idx``) plus "✏️ Other…" (``hermes_clarify_other``), which flips the
-        entry into text-capture mode for the gateway's text-intercept. No choices → base impl."""
-        if not choices:
+        entry into text-capture mode for the gateway's text-intercept. No choices, or
+        ``extra.clarify_buttons: false`` (buttons truncate long options) → base numbered text."""
+        if not choices or not self._extra_flag("clarify_buttons", default=True):
             return await super().send_clarify(
                 chat_id=chat_id, question=question, choices=choices, clarify_id=clarify_id,
                 session_key=session_key, metadata=metadata)

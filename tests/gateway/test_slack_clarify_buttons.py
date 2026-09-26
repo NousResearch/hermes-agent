@@ -135,6 +135,26 @@ class TestSlackSendClarify:
 
 
     @pytest.mark.asyncio
+    async def test_clarify_buttons_false_sends_full_numbered_text(self):
+        from tools import clarify_gateway as cm
+        adapter = _make_adapter()
+        adapter.config.extra["clarify_buttons"] = False
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_postMessage = AsyncMock(return_value={"ts": "9.9"})
+        long_choice = "Reschedule the visit to next Tuesday and notify the property manager " * 3
+        cm.register("cid-num", "sk-num", "Which option?", ["Keep", long_choice])
+
+        result = await adapter.send_clarify(
+            chat_id="C1", question="Which option?", choices=["Keep", long_choice],
+            clarify_id="cid-num", session_key="sk-num")
+
+        assert result.success is True
+        kwargs = mock_client.chat_postMessage.call_args[1]
+        assert not any(b.get("type") == "actions" for b in kwargs.get("blocks") or [])
+        assert f"2. {long_choice}" in kwargs["text"]
+        assert cm._entries["cid-num"].awaiting_text is True
+
+    @pytest.mark.asyncio
     async def test_mrkdwn_escapes_question(self):
         adapter = _make_adapter()
         mock_client = adapter._team_clients["T1"]

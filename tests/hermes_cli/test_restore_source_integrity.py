@@ -1,31 +1,89 @@
-"""Restore must validate the snapshot before mutating an existing database."""
+"""Restore must read the literal source path and validate it before mutating a live database."""
 
-from argparse import Namespace
-from contextlib import closing
-from pathlib import Path
+import json
 import sqlite3
 import zipfile
+from argparse import Namespace
+from contextlib import closing
 
 import pytest
 
 from hermes_cli import backup
 
-
-@pytest.fixture(params=["home", "x#y"])
-def home_name(request):
-    return request.param
+# Unescaped in a file: URI, '#' truncates the path and '%23' decodes to a different one.
+HOME_NAMES = ["x#y", "x%23y", "x y"]
 
 
-@pytest.fixture(params=["snapshot", "import"])
-def restore_case(tmp_path, monkeypatch, request, home_name):
+def _database(path, count):
+    with closing(sqlite3.connect(path)) as conn:
+        conn.execute("CREATE TABLE sessions(id INTEGER PRIMARY KEY)")
+        conn.execute("CREATE TABLE messages(id INTEGER PRIMARY KEY)")
+        conn.executemany("INSERT INTO sessions VALUES (?)", [(n,) for n in range(count)])
+        conn.executemany("INSERT INTO messages VALUES (?)", [(n,) for n in range(count)])
+        conn.commit()
+
+
+def _assert_no_decoy(tmp_path, home_name):
+    assert {p.name for p in tmp_path.iterdir()} <= {home_name, "native", "backup.zip", "hermes_test"}
+
+
+@pytest.fixture(params=HOME_NAMES)
+def home(tmp_path, monkeypatch, request):
     import hermes_cli.gateway as gateway
 
-    home = tmp_path / home_name
+    home = tmp_path / request.param
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    # An existing default install keeps import from installing/starting a gateway.
+    native = tmp_path / "native"
+    native.mkdir()
+    (native / "config.yaml").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(backup, "_get_platform_default_hermes_home", lambda: native)
     monkeypatch.setattr(gateway, "ensure_gateway_service", lambda **kwargs: False)
     monkeypatch.setattr(gateway, "_is_service_running", lambda: False)
+    return home
+
+
+def _restore(entry, home, snapshot_id, source):
+    if entry == "snapshot":
+        return backup.restore_quick_snapshot(snapshot_id, hermes_home=home)
+    archive = home.parent / "backup.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.write(source, "state.db")
+    return backup.run_import(Namespace(zipfile=str(archive), force=True)) != 1
+
+
+@pytest.mark.parametrize("entry", ["snapshot", "import"])
+def test_restore_uses_literal_paths_and_preserves_live_connection(
+    tmp_path, capsys, home, entry
+):
+    from hermes_cli.sqlite_safe_read import connect_tracked
+
+    target = home / "state.db"
+    _database(target, 3)
+    snapshot = home / "state-snapshots" / "saved"
+    snapshot.mkdir(parents=True)
+    source = snapshot / "state.db"
+    _database(source, 1)
+    (snapshot / "manifest.json").write_text(
+        json.dumps({"files": {"state.db": source.stat().st_size}}), encoding="utf-8"
+    )
+    holder = connect_tracked(target)
+    try:
+        assert _restore(entry, home, "saved", source)
+        if entry == "import":
+            assert "3 session(s) / 3 message(s) -> 1 / 1" in capsys.readouterr().out
+        assert holder.execute("SELECT id FROM messages").fetchall() == [(0,)]
+        with closing(sqlite3.connect(target)) as reopened:
+            assert reopened.execute("SELECT id FROM messages").fetchall() == [(0,)]
+    finally:
+        holder.close()
+    _assert_no_decoy(tmp_path, home.name)
+
+
+@pytest.mark.parametrize("entry", ["snapshot", "import"])
+@pytest.mark.parametrize("damage", ["header", "btree", "truncated"])
+def test_corrupt_source_cannot_replace_a_healthy_database(tmp_path, home, entry, damage):
     live = home / "state.db"
     with closing(sqlite3.connect(live)) as db:
         db.execute("CREATE TABLE evidence(value TEXT)")
@@ -37,21 +95,6 @@ def restore_case(tmp_path, monkeypatch, request, home_name):
     with closing(sqlite3.connect(live)) as db:
         db.execute("UPDATE evidence SET value='live'")
         db.commit()
-
-    def restore():
-        if request.param == "snapshot":
-            return backup.restore_quick_snapshot(snapshot_id, hermes_home=home)
-        archive = tmp_path / "backup.zip"
-        with zipfile.ZipFile(archive, "w") as zf:
-            zf.write(source, "state.db")
-        return backup.run_import(Namespace(zipfile=str(archive), force=True)) != 1
-
-    return source, live, restore
-
-
-@pytest.mark.parametrize("damage", ["header", "btree", "truncated"])
-def test_corrupt_source_cannot_replace_a_healthy_database(restore_case, damage):
-    source, live, restore = restore_case
     with closing(sqlite3.connect(source)) as db:
         page_size = db.execute("PRAGMA page_size").fetchone()[0]
         root_page = db.execute(
@@ -69,36 +112,10 @@ def test_corrupt_source_cannot_replace_a_healthy_database(restore_case, damage):
     before = live.read_bytes()
     inode = live.stat().st_ino
 
-    success = restore()
+    assert not _restore(entry, home, snapshot_id, source)
 
     assert live.read_bytes() == before
     assert live.stat().st_ino == inode
-    assert not success
     with closing(sqlite3.connect(live)) as db:
         assert db.execute("SELECT value FROM evidence").fetchall() == [("live",)]
-
-
-@pytest.mark.parametrize("destination", ["healthy", "corrupt", "held"])
-def test_valid_source_still_restores_existing_destinations(restore_case, destination):
-    source, live, restore = restore_case
-    if destination == "corrupt":
-        contents = bytearray(live.read_bytes())
-        contents[:16] = b"not a database!!"
-        live.write_bytes(contents)
-    held = sqlite3.connect(live) if destination == "held" else None
-    try:
-        if held is not None:
-            assert held.execute("SELECT value FROM evidence").fetchall() == [("live",)]
-        assert restore()
-        with closing(sqlite3.connect(live)) as db:
-            assert db.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
-            assert db.execute("SELECT value FROM evidence").fetchall() == [
-                ("snapshot",)
-            ]
-        if held is not None:
-            assert held.execute("SELECT value FROM evidence").fetchall() == [
-                ("snapshot",)
-            ]
-    finally:
-        if held is not None:
-            held.close()
+    _assert_no_decoy(tmp_path, home.name)

@@ -413,6 +413,14 @@ def _fmt_changes_requested(ev, n) -> tuple:
     return msg, None, reason_text
 
 
+def _fmt_blocked(ev, n) -> tuple:
+    # The push ping keeps its historical unredacted 160-char clip. The wake synth gets the
+    # redacted reason: non-push (api_server) wakes deliver ONLY the synth, so without it the
+    # woken session never learns why the task stopped.
+    n.wake_block_detail = _safe_review_reason(_payload(ev, "reason")) or n.wake_block_detail
+    return f"⏸ {n.head} blocked{_clip(ev, 'reason', ': {}', 160)}", None, None
+
+
 def _fmt_block_loop_detected(ev, n) -> tuple:
     """Re-blocked for the same cause past the limit and routed to `triage`.
 
@@ -430,6 +438,7 @@ def _fmt_block_loop_detected(ev, n) -> tuple:
         f"{'needs a human decision' if decision else 'for orchestration attention'}"
         f"{_clip(ev, 'recurrences', ' (blocked {}x for the same cause)', 200)}{_clip(ev, 'reason', ': {}', 160)}"
     )
+    n.wake_block_detail = _safe_review_reason(_payload(ev, "reason")) or n.wake_block_detail
     return msg, None, None
 
 
@@ -458,7 +467,7 @@ def _fmt_timed_out(ev, n) -> tuple:
 # never wake the creator.
 _EVENT_FORMATTERS: dict[str, Callable[[Any, "_KanbanNotification"], tuple]] = {
     "completed": _fmt_completed,
-    "blocked": lambda ev, n: (f"⏸ {n.head} blocked{_clip(ev, 'reason', ': {}', 160)}", None, None),
+    "blocked": _fmt_blocked,
     "gave_up": _fmt_gave_up,
     "crashed": lambda ev, n: (
         f"✖ {n.head} — its worker stopped unexpectedly; it will be retried automatically.", None, None,
@@ -505,7 +514,7 @@ class _KanbanNotification:
         self.send_passive = mode != "wake"
         # Worker handoff carried into the synthetic wake turn so the woken
         # creator doesn't re-decompose work already on the board.
-        self.wake_handoff = self.wake_review_detail = self.session_key = self.synth = ""
+        self.wake_handoff = self.wake_review_detail = self.wake_block_detail = self.session_key = self.synth = ""
         self.plat: Any = None
         self.adapter: Any = None
         self.is_push_adapter = True
@@ -585,6 +594,8 @@ class _KanbanNotification:
             synth += "\n" + t("gateway.kanban.wake.handoff", summary=self.wake_handoff)
         if self.wake_review_detail:
             synth += "\n" + t("gateway.kanban.wake.review_detail", reason=self.wake_review_detail)
+        if self.wake_block_detail and self.wake_kinds & {"blocked", "block_loop_detected"}:
+            synth += "\n" + t("gateway.kanban.wake.block_detail", reason=self.wake_block_detail)
         self.synth = synth + "\n\n" + t("gateway.kanban.wake.guidance")
 
     def _log_woke(self) -> None:
@@ -769,7 +780,7 @@ class _KanbanNotification:
                 if not events:
                     continue
                 self.d = {**self.d, "events": events}
-                self.wake_handoff = self.wake_review_detail = ""
+                self.wake_handoff = self.wake_review_detail = self.wake_block_detail = ""
                 for ev in events:
                     self.format_event(ev)
                 self.build_wake_text()

@@ -508,15 +508,20 @@ def _register_connected_into_current_scope(servers: dict) -> int:
                    if scope in scopes and _key_name(key) not in servers}
         # Only a name another profile holds a connection for reaches a cross-profile comparison.
         foreign = {_key_name(key) for key in _core._servers if _key_scope(key) != scope}
-    profile_servers = _config._load_mcp_config() if omitted else {}
-
     # Resolving what this profile would connect with does PATH lookups, secret-scope reads and
     # live-endpoint probes: do it only for names that can be compared across profiles, once each,
     # before taking the global registry lock. A foreign key that appears after the snapshot has
-    # no digest here and is refused until the next pass.
-    judged = {**{name: profile_servers.get(name) for name in omitted}, **servers}
-    resolved_ids = {name: _adopter_identity_digest(name, config) for name, config in judged.items()
-                    if name in foreign and config is not None and mcp_server_enabled(config)}
+    # no digest here and is refused until the next pass. A routed profile reconciles after
+    # ``discover_mcp_tools`` released its temporary owner scope (#113746), so the config load and
+    # the resolution bind THIS profile's own secret scope; unscoped, a source-tagged secret read
+    # would refuse a share whose values are equal.
+    from tools.mcp_tool_discovery import _owner_secret_scope
+    with _owner_secret_scope():
+        profile_servers = _config._load_mcp_config() if omitted else {}
+        judged = {**{name: profile_servers.get(name) for name in omitted}, **servers}
+        resolved_ids = {name: _adopter_identity_digest(name, config)
+                        for name, config in judged.items()
+                        if name in foreign and config is not None and mcp_server_enabled(config)}
 
     with _core._lock:
         stale = []

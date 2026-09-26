@@ -1,10 +1,11 @@
 """
-Hermes MCP Server — expose messaging conversations as MCP tools (`hermes mcp serve`).
+Hermes MCP Server — expose messaging conversations, memory, skills, and
+credentials as MCP tools (`hermes mcp serve`).
 
 A stdio MCP server letting any MCP client (Claude Code, Cursor, Codex, ...) list
-conversations, read history, send messages, poll live events, and manage approvals.
-Matches OpenClaw's 9-tool channel bridge surface plus the Hermes-specific
-channels_list. Client config: {"mcpServers": {"hermes": {"command": "hermes", "args": ["mcp", "serve"]}}}
+conversations, read history, send messages, poll live events, manage approvals,
+search memory stores, list installed skills, and look up credential labels.
+Client config: {"mcpServers": {"hermes": {"command": "hermes", "args": ["mcp", "serve"]}}}
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import json
 import logging
 import os
 import re
+import subprocess
 import sys
 import threading
 import time
@@ -455,6 +457,129 @@ def _platform_matches(wanted: Optional[str], actual: str) -> bool:
     return not wanted or actual.lower() == wanted.lower()
 
 
+# --- Memory & credential helpers --------------------------------------------
+
+def _get_memory_roots() -> dict[str, Path]:
+    """Known Hermes memory store roots: name -> resolved Path.
+
+    Returns only roots that exist on this machine.
+    """
+    home = _hermes_home()
+    roots: dict[str, Path] = {
+        "memories": home / "memories",
+        "skills": home / "skills",
+    }
+    # User-level vaults — exist only when installed
+    for name, p in (
+        ("vault", Path.home() / "HermesVault"),
+        ("memex", Path.home() / "workspace" / "MeMex-LIVE" / "wiki"),
+    ):
+        if p.exists():
+            roots[name] = p
+    return {k: v.resolve() for k, v in roots.items() if v.exists()}
+
+
+def _resolve_memory_path(path: str, base: str = "memories") -> Optional[Path]:
+    """Resolve *path* within a named memory store.
+
+    Returns the resolved Path if it's inside an allowed root, None otherwise
+    (prevents path-traversal escapes).
+    """
+    roots = _get_memory_roots()
+    root = roots.get(base)
+    if not root:
+        return None
+    candidate = (root / path).resolve()
+    try:
+        candidate.relative_to(root)
+        return candidate
+    except ValueError:
+        return None
+
+
+def _safe_path_inside(path: Path, root: Path) -> bool:
+    """True when *path* resolves inside *root* (path-traversal guard)."""
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def _mask_value(value: str) -> str:
+    """Mask a credential value — reveal at most 4 chars total, 0 exposed for very short values."""
+    if len(value) == 0:
+        return "****"
+    if len(value) <= 4:
+        return "****"  # Don't expose any chars for very short tokens
+    if len(value) <= 8:
+        return value[-2:]  # Expose only last 2 chars (vs 4 before)
+    return value[:2] + "*" * (len(value) - 4) + value[-2:]
+
+
+def _find_credentials_file() -> Optional[Path]:
+    """Locate the credentials master vault file."""
+    candidates = [
+        _hermes_home() / "credentials-master-vault.md",
+        Path.home() / "HermesVault" / "00_Meta" / "credentials-master-vault.md",
+    ]
+    for p in candidates:
+        if p.exists():
+            return p
+    return None
+
+
+def _load_skill_frontmatter(skill_dir: Path) -> dict:
+    """Extract the YAML frontmatter ``name`` and ``description`` from a skill's SKILL.md."""
+    skill_file = skill_dir / "SKILL.md"
+    if not skill_file.exists():
+        return {"name": skill_dir.name, "description": ""}
+    try:
+        text = skill_file.read_text(encoding="utf-8", errors="replace")
+        if not text.startswith("---"):
+            return {"name": skill_dir.name, "description": ""}
+        end = text.find("---", 3)
+        if end == -1:
+            return {"name": skill_dir.name, "description": ""}
+        front = text[3:end]
+        name = ""
+        desc = ""
+        for line in front.splitlines():
+            if line.startswith("name:"):
+                name = line.split(":", 1)[1].strip().strip('"').strip("'")
+            elif line.startswith("description:"):
+                desc = line.split(":", 1)[1].strip().strip('"').strip("'")
+        return {"name": name or skill_dir.name, "description": desc}
+    except Exception:
+        return {"name": skill_dir.name, "description": ""}
+
+
+def _run_grep(pattern: str, root: Path) -> str:
+    """Run ripgrep (rg) across *root*, falling back to grep -r."""
+    root_str = str(root)
+    try:
+        result = subprocess.run(
+            ["rg", "-n", "--no-heading", pattern, root_str],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode == 0:
+            return result.stdout
+        return ""  # no matches
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    # Fallback to grep -r
+    try:
+        result = subprocess.run(
+            ["grep", "-r", "-n", pattern, root_str],
+            capture_output=True, text=True, timeout=30,
+        )
+        return result.stdout if result.returncode == 0 else ""
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return ""
+
+
+# --- Tool handlers -----------------------------------------------------------
+
 class _ToolHandlers:
     """The MCP tool handlers; each method named in _TOOL_NAMES is registered as one tool.
 
@@ -680,12 +805,174 @@ class _ToolHandlers:
             return json.dumps({"error": f"Invalid decision: {decision}. Must be allow-once, allow-always, or deny"})
         return json.dumps(self.bridge.respond_to_approval(id, decision), indent=2)
 
+    def memory_read(self, path: str, base: str = "memories") -> str:
+        """Read content from a Hermes memory store.
+
+        Returns the contents of a file in Hermes memory — memories,
+        skills, vault, or memex stores. Path traversal is prevented.
+
+        Args:
+            path: Relative file path within the store (e.g. 'MEMORY.md' or 'skills/hermes-agent/SKILL.md')
+            base: Store name: 'memories', 'skills', 'vault', or 'memex'
+        """
+        resolved = _resolve_memory_path(path, base)
+        if not resolved:
+            return json.dumps({"error": f"Path '{path}' not found or outside allowed store '{base}'"})
+        if not resolved.is_file():
+            return json.dumps({"error": f"Not a file: {path}"})
+        try:
+            content = resolved.read_text(encoding="utf-8", errors="replace")
+            max_chars = 50000
+            if len(content) > max_chars:
+                content = content[:max_chars] + f"\n\n[...truncated at {max_chars} chars]"
+            return json.dumps({"path": str(resolved), "content": content, "bytes": len(content)}, indent=2)
+        except Exception as e:
+            return json.dumps({"error": f"Failed to read: {e}"})
+
+    def memory_search(self, pattern: str, base: str = "memories") -> str:
+        """Search a Hermes memory store for a text pattern.
+
+        Uses ripgrep (or grep) to find matching lines across files
+        in the selected store. Useful for finding remembered facts,
+        installed skills, or credential labels.
+
+        Args:
+            pattern: Text or regex pattern to search for
+            base: Store name: 'memories', 'skills', 'vault', or 'memex'
+        """
+        roots = _get_memory_roots()
+        root = roots.get(base)
+        if not root:
+            return json.dumps({"error": f"Store '{base}' not found. Available: {list(roots.keys())}"})
+        output = _run_grep(pattern, root)
+        return json.dumps({
+            "base": base, "pattern": pattern,
+            "matches": output[:50000], "match_count": len([l for l in output.splitlines() if l.strip()]),
+        }, indent=2)
+
+    def memory_write(self, filename: str, content: str) -> str:
+        """Write content to the Hermes memory inbox.
+
+        Creates a note file in the HermesVault inbox (or ~/.hermes/memories/)
+        with the given filename and content. Useful for saving findings
+        or notes that your agent should remember across sessions.
+
+        Args:
+            filename: Name for the note file (e.g. 'my-finding.md')
+            content: Text content to write
+        """
+        # Prefer HermesVault inbox, fall back to memories/
+        vault_inbox = Path.home() / "HermesVault" / "inbox"
+        if vault_inbox.exists():
+            write_dir = vault_inbox
+        else:
+            write_dir = _hermes_home() / "memories"
+            write_dir.mkdir(parents=True, exist_ok=True)
+        # Sanitize filename to prevent path traversal
+        safe_name = Path(filename).name
+        target = write_dir / safe_name
+        try:
+            target.write_text(content, encoding="utf-8")
+            return json.dumps({"path": str(target), "bytes": len(content), "status": "written"}, indent=2)
+        except Exception as e:
+            return json.dumps({"error": f"Failed to write: {e}"})
+
+    def credentials_lookup(self, label: str) -> str:
+        """Look up credential labels from the master vault.
+
+        Searches the credentials-master-vault.md file for lines matching
+        the given label. All secret values are MASKED — only the first
+        and last characters are visible. No raw credentials are ever
+        returned to the client.
+
+        Args:
+            label: Search term to find matching credential entries
+        """
+        cred_file = _find_credentials_file()
+        if not cred_file:
+            return json.dumps({"error": "Credentials vault not found"})
+        try:
+            text = cred_file.read_text(encoding="utf-8", errors="replace")
+            lines = text.splitlines()
+            # Find matching lines — be generous: match any line containing the label
+            matches = [l for l in lines if label.lower() in l.lower()]
+            if not matches:
+                # Show nearby labels as suggestions
+                all_labels = [l.strip() for l in lines if "=" in l or ":" in l or "#" in l]
+                hints = [l for l in all_labels if label.lower() in l.lower()[:80]][:10]
+                return json.dumps({
+                    "label": label, "matches": [],
+                    "note": "No exact match found",
+                    "nearby": hints if hints else [],
+                }, indent=2)
+            # Mask credential values (anything after = or :)
+            masked = []
+            for line in matches:
+                masked_line = line
+                idx = max(line.find("="), line.find(":"))
+                if idx > -1:
+                    key = line[:idx].strip()
+                    val = line[idx + 1:].strip().strip('"').strip("'")
+                    masked_val = _mask_value(val)
+                    masked_line = f"{key} = {masked_val}"
+                masked.append(masked_line)
+            return json.dumps({
+                "label": label, "match_count": len(matches),
+                "source": str(cred_file), "matches": masked,
+            }, indent=2)
+        except Exception as e:
+            return json.dumps({"error": f"Failed to read vault: {e}"})
+
+    def skills_list(self, name: Optional[str] = None) -> str:
+        """List installed Hermes skills, or read one skill's full content.
+
+        Returns skill names and descriptions from their SKILL.md
+        frontmatter. When a skill name is provided, returns the full
+        content of that skill's SKILL.md file.
+
+        Args:
+            name: Optional skill name to read (omit to list all skills)
+        """
+        skills_dir = _hermes_home() / "skills"
+        if not skills_dir.exists():
+            return json.dumps({"error": "No skills directory found"})
+        if name:
+            # Read a specific skill
+            candidates = list(skills_dir.rglob(f"{name}/SKILL.md"))
+            if not candidates:
+                # Try direct path
+                skill_path = skills_dir / name / "SKILL.md"
+                if not skill_path.exists():
+                    return json.dumps({"error": f"Skill '{name}' not found. List all skills with skills_list()"})
+                candidates = [skill_path]
+            try:
+                content = candidates[0].read_text(encoding="utf-8", errors="replace")
+                return json.dumps({"name": name, "content": content, "bytes": len(content)}, indent=2)
+            except Exception as e:
+                return json.dumps({"error": f"Failed to read skill '{name}': {e}"})
+        # List all skills
+        entries = []
+        for cat_dir in sorted(skills_dir.iterdir()):
+            if not cat_dir.is_dir() or cat_dir.name.startswith("."):
+                continue
+            for skill_dir in sorted(cat_dir.iterdir()):
+                if not skill_dir.is_dir():
+                    continue
+                meta = _load_skill_frontmatter(skill_dir)
+                entries.append({
+                    "name": meta["name"], "description": meta["description"],
+                    "path": str(skill_dir.relative_to(skills_dir)),
+                })
+        return json.dumps({"count": len(entries), "skills": entries}, indent=2)
+
 
 # Registration order == list_tools order (wire format).
 _TOOL_NAMES = (
     "conversations_list", "conversation_get", "messages_read", "attachments_fetch",
     "events_poll", "events_wait", "messages_send", "channels_list",
     "permissions_list_open", "permissions_respond",
+    "memory_read", "memory_search", "memory_write",
+    "credentials_lookup", "skills_list",
 )
 
 
@@ -694,9 +981,12 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "MCPServer"
     if not _MCP_SERVER_AVAILABLE:
         raise ImportError(f"MCP server requires the 'mcp' package. Install with: {sys.executable} -m pip install 'mcp'")
     mcp = MCPServer("hermes", instructions=(
-        "Hermes Agent messaging bridge. Use these tools to interact with "
-        "conversations across Telegram, Discord, Slack, WhatsApp, Signal, "
-        "Matrix, and other connected platforms."
+        "Hermes Agent — MCP bridge to your agent's conversations, memory, skills, "
+        "and credential labels. Use conversations_list/messages_read/messages_send "
+        "to interact across Telegram, Discord, Slack, and other connected platforms. "
+        "Use memory_read/memory_search/memory_write to read and write Hermes memory "
+        "stores. Use skills_list to discover installed skills. Use "
+        "credentials_lookup to find credential labels (values are masked)."
     ))
     handlers = _ToolHandlers(event_bridge or EventBridge())
     for name in _TOOL_NAMES:

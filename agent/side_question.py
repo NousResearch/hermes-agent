@@ -2,10 +2,16 @@
 touching it (no synthetic turns, no role-alternation risk, no prompt-cache invalidation).
 
 Preferred path: a detached cache-parity fork of the live parent ``AIAgent`` replays its
-snapshot verbatim against the warm prefix cache (tools denied at dispatch, persistence
-detached, usage attributed to the parent). Fallback (no live parent, e.g. gateway evicted
-the agent): a rendered transcript through :func:`agent.oneshot.run_oneshot`.
+snapshot verbatim against the warm prefix cache (only READ-ONLY tools allowed at dispatch,
+persistence detached, usage attributed to the parent). Fallback (no live parent, e.g. gateway
+evicted the agent): a rendered transcript through :func:`agent.oneshot.run_oneshot`.
 ``auxiliary.side_question.provider``/``.model`` route the fork elsewhere with a compact digest.
+
+The read-only tool grant follows Perplexity Computer's Side Chat (``/btw``, Sep 2026): a side
+question runs on a snapshot of the task and "can read task files or search the web without
+changing the main task". Before, every tool was denied, so "find the passage in the file that
+supports this" or "what does the docs page say about X" could only be answered from whatever
+happened to be quoted in the transcript.
 """
 
 import logging
@@ -18,8 +24,20 @@ logger = logging.getLogger(__name__)
 # Free-form auxiliary task name (auxiliary.side_question.*), main-model-first.
 SIDE_QUESTION_TASK = "side_question"
 
-# Fork path: the model may waste an iteration on a (denied) tool call first.
-_FORK_MAX_ITERATIONS = 3
+# Fork path: budget for a short read → answer loop (search, extract/read, answer), plus one
+# wasted iteration on a denied write tool.
+_FORK_MAX_ITERATIONS = 6
+
+# Tools a side question may call on the fork. Every one is a pure read: no filesystem writes,
+# no processes, no messages, no memory/skill mutation. Enforced at DISPATCH by the thread-scoped
+# whitelist (``hermes_cli.plugins._get_pre_tool_call_directive_details``), so the advertised
+# ``tools[]`` stays byte-identical to the parent's and the warm prefix cache still hits.
+SIDE_QUESTION_READ_TOOLS = frozenset({
+    "read_file", "search_files",          # task files
+    "web_search", "web_extract",          # the web
+    "session_search",                     # earlier sessions
+    "skill_view", "skills_list",          # installed skill docs
+})
 
 # Fallback one-shot path: per-message and total character budgets.
 _PER_MESSAGE_CHAR_CAP = 2000
@@ -28,9 +46,10 @@ _TRANSCRIPT_CHAR_BUDGET = 24000
 _FORK_PROMPT = (
     "The user asked a quick SIDE question with /btw while the main work continues in the original "
     "session.\nRules:\n- Answer ONLY the side question, using the conversation above as context. Do not continue, "
-    "redo, or critique the main task.\n- Do NOT call any tools — they are disabled for this side question. Answer "
-    "directly in text.\n- If the conversation does not contain enough information to answer, say so plainly instead "
-    "of guessing.\n- Be concise and direct."
+    "redo, or critique the main task.\n- You may LOOK things up: read_file / search_files for files the task touched, "
+    "web_search / web_extract for the web, session_search for earlier sessions, skill_view / skills_list for skill "
+    "docs. Every other tool is denied here — never write, run, edit, send, or change anything.\n- If neither the "
+    "conversation nor a quick lookup answers it, say so plainly instead of guessing.\n- Be concise and direct."
 )
 
 _ONESHOT_INSTRUCTIONS = (
@@ -102,8 +121,9 @@ def _side_question_task_config() -> Dict[str, Any]:
 def _answer_via_fork(parent_agent: Any, question: str, history: Optional[List[Dict[str, Any]]]) -> str:
     """Answer via a cache-parity fork of ``parent_agent`` on the calling thread.
 
-    An empty thread-scoped tool whitelist denies every tool call at dispatch: ``tools[]``
-    stays byte-identical for cache parity, but the side question can never mutate anything.
+    The thread-scoped whitelist admits only :data:`SIDE_QUESTION_READ_TOOLS` at dispatch:
+    ``tools[]`` stays byte-identical for cache parity, the side question can look things up,
+    and it can never mutate anything.
     """
     from agent.background_review import (
         _digest_history, _record_review_usage_to_parent, _snapshot_review_usage, build_cache_parity_fork,
@@ -113,9 +133,10 @@ def _answer_via_fork(parent_agent: Any, question: str, history: Optional[List[Di
     fork, _rt, routed = build_cache_parity_fork(parent_agent, _side_question_task_config(),
                                                 max_iterations=_FORK_MAX_ITERATIONS, write_origin="side_question")
     try:
-        set_thread_tool_whitelist(set(), deny_msg_fmt=(
-            "Side question (/btw) denied tool call: {tool_name}. "
-            "Tools are disabled here — answer directly from the conversation context."))
+        set_thread_tool_whitelist(set(SIDE_QUESTION_READ_TOOLS), deny_msg_fmt=(
+            "Side question (/btw) denied tool call: {tool_name}. Only read-only lookups are allowed here "
+            "(" + ", ".join(sorted(SIDE_QUESTION_READ_TOOLS)) + "). Do not retry {tool_name}; answer from "
+            "the conversation and what you could read."))
         snapshot = trim_snapshot_for_fork(history)
         result = fork.run_conversation(user_message=f"{_FORK_PROMPT}\n\nSide question: {question}",
                                        conversation_history=_digest_history(snapshot) if routed else snapshot)

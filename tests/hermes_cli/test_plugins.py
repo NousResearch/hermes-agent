@@ -2074,6 +2074,30 @@ class TestThreadToolWhitelist:
         finally:
             clear_thread_tool_whitelist()
 
+    def test_whitelist_propagates_through_context_wrapped_worker(self):
+        from hermes_cli.plugins import (
+            set_thread_tool_whitelist,
+            clear_thread_tool_whitelist,
+        )
+        from tools.thread_context import propagate_context_to_thread
+
+        set_thread_tool_whitelist({"memory"})
+        try:
+            result = {}
+
+            def worker():
+                result["msg"] = get_pre_tool_call_block_message("terminal", {})
+
+            t = threading.Thread(target=propagate_context_to_thread(worker))
+            t.start()
+            t.join(timeout=2)
+            assert not t.is_alive()
+            assert result["msg"] == (
+                "Tool 'terminal' denied: not in this thread's tool whitelist"
+            )
+        finally:
+            clear_thread_tool_whitelist()
+
 
 # ── TestPluginContext ──────────────────────────────────────────────────────
 

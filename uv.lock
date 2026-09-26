@@ -91,6 +91,7 @@ daytona = false
 uvicorn = false
 nemo-relay = false
 requests = false
+resvg-py = false
 httplib2 = false
 httpx = false
 piper-tts = "2026-09-04T16:47:32Z"

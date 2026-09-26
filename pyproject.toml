@@ -764,6 +764,7 @@ python-telegram-bot = false
 pyyaml = false
 qrcode = false
 requests = false
+resvg-py = false
 rich = false
 ruamel-yaml = false
 ruff = false

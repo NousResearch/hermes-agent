@@ -625,6 +625,14 @@ async function normalizeEvent(space, message) {
   try {
     const msgSpace = message.space || {};
     const ts = message.timestamp;
+    const content = await normalizeContent(message.content);
+    const bundle = message.balloonBundleId;
+    // Preserve only this SDK-owned Apple extension identity, never custom payload fields.
+    if (message.direction === "inbound" && content.type === "custom"
+        && typeof bundle === "string" && bundle.trim() === bundle
+        && /^com\.apple\.messages\.MSMessageExtensionBalloonPlugin:\d{10}:com\.apple\.findmy\.FindMyMessagesApp$/.test(bundle)) {
+      content.appleFindMyShare = true;
+    }
     return {
       messageId: message.id ?? null,
       platform: message.platform || space.__platform || "iMessage",
@@ -635,7 +643,7 @@ async function normalizeEvent(space, message) {
         phone: space.phone ?? msgSpace.phone ?? null,
       },
       sender: { id: message.sender ? message.sender.id : null },
-      content: await normalizeContent(message.content),
+      content,
       timestamp:
         ts instanceof Date ? ts.toISOString() : ts ? String(ts) : null,
     };

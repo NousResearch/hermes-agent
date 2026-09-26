@@ -617,10 +617,9 @@ class OpenAICompatRoutesMixin:
         limited = self._concurrency_limited_response()
         if limited is not None:
             return limited
-        try:
-            body = await request.json()
-        except Exception:
-            return _error_response("Invalid JSON in request body", 400)
+        body, body_err = await self._read_json_body(request)
+        if body_err is not None:
+            return body_err
         from gateway.platforms.api_server import _request_relay_metadata
         relay_metadata = _request_relay_metadata(body)
         messages = body.get("messages")
@@ -633,6 +632,8 @@ class OpenAICompatRoutesMixin:
         system_prompt = None
         conversation_messages: List[Dict[str, str]] = []
         for idx, msg in enumerate(messages):
+            if not isinstance(msg, dict):
+                return _invalid_request(f"messages[{idx}] must be an object")
             role = msg.get("role", "")
             raw_content = msg.get("content", "")
             if role == "system":
@@ -1013,10 +1014,9 @@ class OpenAICompatRoutesMixin:
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
             return key_err
-        try:
-            body = await request.json()
-        except Exception:
-            return _invalid_request("Invalid JSON in request body")
+        body, body_err = await self._read_json_body(request)
+        if body_err is not None:
+            return body_err
         from gateway.platforms.api_server import _request_relay_metadata
         relay_metadata = _request_relay_metadata(body)
         raw_input = body.get("input")

@@ -971,12 +971,13 @@ Subscriptions persist to `~/.hermes/webhook_subscriptions.json` and are hot-relo
 ## `hermes doctor`
 
 ```bash
-hermes doctor [--fix]
+hermes doctor [--fix] [--live]
 ```
 
 | Option | Description |
 |--------|-------------|
 | `--fix` | Attempt automatic repairs where possible. |
+| `--live` | Opt-in, makes real network calls: one bounded, read-only probe per configured tool backend (Firecrawl, FAL, browser, MCP, TTS/STT), and a `/v1/models` read for the primary model and every `fallback_providers` entry, using the credential the runtime would send. A model the provider provably does not serve fails; an endpoint that cannot be read warns. |
 
 Exit status: `0` when the report lists no unresolved problems, `1` when at least one remains (including problems `--fix` could not repair), so a health gate or CI step can trust `hermes doctor` as a check.
 

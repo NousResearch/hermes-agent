@@ -286,6 +286,8 @@ def setup_terminal_backend(config: dict):
     _setup.print_header("Terminal Backend")
     _setup._info("Choose where Hermes runs shell commands and code.",
                  "This affects tool execution, file access, and isolation.",
+                 "The agent itself (model calls, memory, messaging gateway) keeps running on this machine;",
+                 "cloud backends like Modal only run its commands. Hermes Cloud hosts the agent itself.",
                  f"   Guide: {_setup._DOCS_BASE}/user-guide/configuration#terminal-backend-configuration", None)
     current_backend = _setup.cfg_get(config, "terminal", "backend", default="local")
     backends = list(_BUILTIN_TERMINAL_BACKENDS)

@@ -222,6 +222,8 @@ Before that stash step, Hermes also restores tracked `package-lock.json` diffs l
 
 Hermes supports seven terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox (direct or via the Nous-managed gateway), a Daytona workspace, a Vercel Sandbox, or a Singularity/Apptainer container.
 
+The backend only moves the agent's **commands**. The agent itself — model calls, memory, sessions, the messaging gateway — keeps running wherever you launched Hermes, so picking Modal or Daytona does not host the agent in the cloud. For a hosted agent, use [Hermes Cloud](https://portal.nousresearch.com/cloud) or run Hermes on your own server.
+
 ```yaml
 terminal:
   backend: local    # local | docker | ssh | modal | daytona | vercel_sandbox | singularity

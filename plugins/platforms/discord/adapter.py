@@ -2759,13 +2759,18 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         self._with_discord_recovery_db(_op)
 
     def _get_discord_command_sync_policy(self) -> str:
-        raw = _scoped_gate_env("DISCORD_COMMAND_SYNC_POLICY", "safe").lower()
-        if raw in _DISCORD_COMMAND_SYNC_POLICIES:
-            return raw
-        if raw:
+        # env keeps legacy precedence (the documented workaround surface); a config.yaml
+        # ``command_sync_policy`` reaches ``extra`` via the YAML bridge / from_dict promote (#123629).
+        raw = self._gate_raw("command_sync_policy", "DISCORD_COMMAND_SYNC_POLICY")
+        if raw is False:  # YAML 1.1 parses a bare ``off`` as False (same trap as reply_to_mode)
+            raw = "off"
+        policy = str(raw if raw is not None else "safe").strip().lower()
+        if policy in _DISCORD_COMMAND_SYNC_POLICIES:
+            return policy
+        if policy:
             logger.warning(
                 "[%s] Invalid DISCORD_COMMAND_SYNC_POLICY=%r; falling back to 'safe'", self.name,
-                raw,
+                policy,
             )
         return "safe"
 
@@ -7275,6 +7280,9 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     _gate("allowed_roles", "DISCORD_ALLOWED_ROLES", from_platform_extra=True)
     _gate("allow_all_users", "DISCORD_ALLOW_ALL_USERS", from_platform_extra=True, lower=True)
     _gate("allow_bots", "DISCORD_ALLOW_BOTS", from_platform_extra=True, lower=True)
+    # Slash-command sync mode: the documented `hermes config set discord.command_sync_policy` key
+    # had no reader (env-only resolution left the YAML value silently ignored, #123629).
+    _gate("command_sync_policy", "DISCORD_COMMAND_SYNC_POLICY", from_platform_extra=True, lower=True)
     approval_mentions_cfg = (
         discord_cfg["approval_mentions"] if "approval_mentions" in discord_cfg
         else platform_extra_cfg.get("approval_mentions")

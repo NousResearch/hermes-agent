@@ -13,6 +13,7 @@ import re
 import threading
 import uuid
 from typing import Any, Callable, Dict, List, Optional
+from urllib.parse import urlparse
 
 from plugins.web._common import document as _page, page_error as _page_error, search_fail, search_ok, web_hit as _row
 
@@ -47,6 +48,57 @@ def _is_rate_limitish(message: str) -> bool:
     return any(marker in (message or "").lower() for marker in _RATE_LIMIT_MARKERS)
 
 
+def _is_vendor_blocked(message: str) -> bool:
+    """True for a vendor-level HTTP 403 block, such as an IP-reputation denial."""
+    return bool(re.search(r"\b403\b", message or ""))
+
+
+_VENDOR_ENDPOINT_HOSTS = {
+    "exa": "mcp.exa.ai",
+    "parallel": "search.parallel.ai",
+    "firecrawl": "api.firecrawl.dev",
+    "keenable": "api.keenable.ai",
+}
+_ERROR_URL_RE = re.compile(
+    r"\bfor url(?::\s*|\s+['\"])(?P<url>https?://[^'\"\s]+)", re.IGNORECASE
+)
+
+
+def _error_url(message: str) -> Optional[str]:
+    """Extract the request URL emitted by HTTP client exceptions, when present."""
+    match = _ERROR_URL_RE.search(message or "")
+    return match.group("url").rstrip(".,;:)]}") if match else None
+
+
+def _is_retryable_vendor_failure(
+    vendor: str,
+    message: str,
+    *,
+    target_url: Optional[str] = None,
+    provider_origin: bool = False,
+) -> bool:
+    """Return whether a rate-limit/403 failure came from *vendor*, not a target page.
+
+    Per-URL extraction entries name the requested target separately from the
+    provider endpoint.  A status code alone therefore cannot advance the ring:
+    it must be associated with the vendor endpoint when a URL is available.
+    """
+    rate_limited = _is_rate_limitish(message)
+    if not (rate_limited or _is_vendor_blocked(message)):
+        return False
+    request_url = _error_url(message)
+    if request_url:
+        return urlparse(request_url).hostname == _VENDOR_ENDPOINT_HOSTS[vendor]
+    if rate_limited:
+        # Existing adapters surface some provider quota responses without the
+        # endpoint URL; retain their long-standing failover behavior.
+        return True
+    # Search failures without an HTTP request URL already originate from the
+    # selected provider.  Extract failures need their structured transport
+    # marker to make the same claim; target-page entries remain fail-open.
+    return target_url is None or provider_origin
+
+
 def _fail_msg(vendor: str, kind: str, exc: Any, *, other_backends: bool = True) -> str:
     label, env_key, site = _VENDOR_HINTS[vendor]
     alt = " or another web backend via `hermes tools`" if other_backends else ""
@@ -70,7 +122,9 @@ def _per_url(urls: List[str], fetch: Callable[[str], Dict[str, Any]], vendor: st
         try:
             return fetch(url)
         except catch as exc:  # noqa: BLE001 — per-URL error entry
-            return _page_error(url, _fail_msg(vendor, "extract", exc, other_backends=hint))
+            result = _page_error(url, _fail_msg(vendor, "extract", exc, other_backends=hint))
+            result["_keyless_vendor_error"] = vendor
+            return result
 
     return [_one(u) for u in urls]
 
@@ -358,47 +412,62 @@ def _ring_order(name: str) -> List[str]:
 _ALL_PAID_MSG = "All keyless web providers are pinned to paid tiers."
 
 
-def _walk_ring(name: str, kind: str, call, throttled) -> tuple:
-    """Call each vendor from :func:`_ring_order` until a result is not ``throttled``.
-    Returns ``(order, vendor, result, exhausted)``; ``order`` is empty (result None)
-    when every vendor is pinned paid."""
+def _walk_ring(name: str, kind: str, call, retryable) -> tuple:
+    """Call each vendor from :func:`_ring_order` until a result is not ``retryable``.
+    Returns ``(order, vendor, result, exhausted, failures)``; ``order`` is empty
+    (result None) when every vendor is pinned paid."""
     order = _ring_order(name)
     vendor, result = None, None
+    failures = []
     for i, vendor in enumerate(order):
         result = call(vendor)
-        if not throttled(result):
-            return order, vendor, result, False
+        if not retryable(vendor, result):
+            return order, vendor, result, False, failures
+        failures.append(result)
         if i + 1 < len(order):
-            logger.info("keyless %s %s throttled; failing over to %s", vendor, kind, order[i + 1])
-    return order, vendor, result, True
+            logger.info("keyless %s %s unavailable; failing over to %s", vendor, kind, order[i + 1])
+    return order, vendor, result, True, failures
 
 
 def search_with_failover(name: str, query: str, limit: int = 5) -> Dict[str, Any]:
-    """Rate-limit-shaped errors advance to the next vendor, other errors stop the walk
-    (a malformed query fails everywhere). ``data.served_by`` is set when the serving
-    vendor differs from *name*."""
+    """Rate limits and HTTP 403 vendor blocks advance to the next vendor; malformed
+    responses stop the walk. ``data.served_by`` is set when the serving vendor differs
+    from *name*."""
 
-    def _throttled(result: Dict[str, Any]) -> bool:
-        return not result.get("success") and _is_rate_limitish(result.get("error", ""))
+    def _retryable(vendor: str, result: Dict[str, Any]) -> bool:
+        error = result.get("error", "")
+        return not result.get("success") and _is_retryable_vendor_failure(vendor, error)
 
-    order, vendor, result, exhausted = _walk_ring(name, "search", lambda v: _KEYLESS_SEARCHERS[v](query, limit), _throttled)
+    order, vendor, result, exhausted, failures = _walk_ring(name, "search", lambda v: _KEYLESS_SEARCHERS[v](query, limit), _retryable)
     if not order:
         return search_fail(_ALL_PAID_MSG)
     if exhausted:
-        result["error"] = f"{result.get('error', '')} (all keyless vendors throttled: {', '.join(order)})"
+        state = "throttled" if all(_is_rate_limitish(r.get("error", "")) for r in failures) else "unavailable"
+        result["error"] = f"{result.get('error', '')} (all keyless vendors {state}: {', '.join(order)})"
     elif result.get("success") and vendor != name:
         result.setdefault("data", {})["served_by"] = vendor
     return result
 
 
 def extract_with_failover(name: str, urls: List[str]) -> List[Dict[str, Any]]:
-    """Fails over only when EVERY url in a batch is rate-limit-shaped (partial failures
-    are page problems, returned as-is)."""
+    """Fails over only when EVERY URL is rate-limited or HTTP 403 blocked; partial
+    failures and malformed responses are returned as-is."""
 
-    def _all_throttled(results: List[Dict[str, Any]]) -> bool:
-        return bool(results) and all(r.get("error", "") and _is_rate_limitish(r.get("error", "")) for r in results)
+    def _all_retryable(vendor: str, results: List[Dict[str, Any]]) -> bool:
+        return bool(results) and all(
+            r.get("error", "")
+            and _is_retryable_vendor_failure(
+                vendor,
+                r["error"],
+                target_url=r.get("url"),
+                provider_origin=r.get("_keyless_vendor_error") == vendor,
+            )
+            for r in results
+        )
 
-    order, _vendor, results, _exhausted = _walk_ring(name, "extract", lambda v: _KEYLESS_EXTRACTORS[v](list(urls)), _all_throttled)
+    order, _vendor, results, _exhausted, _failures = _walk_ring(name, "extract", lambda v: _KEYLESS_EXTRACTORS[v](list(urls)), _all_retryable)
     if not order:
         return [_page_error(u, _ALL_PAID_MSG) for u in urls]
+    for result in results:
+        result.pop("_keyless_vendor_error", None)
     return results

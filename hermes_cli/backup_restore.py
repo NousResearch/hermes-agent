@@ -162,8 +162,10 @@ def _safe_restore_db(src: Path, dst: Path) -> bool:
         logger.warning("SQLite safe restore stalled for %s -> %s: %s", src, dst, exc)
         if dst_conn is not None:
             dst_conn.close()
-        # A busy destination is live. Never run the unlink+move fallback:
-        # even a same-process untracked SQLite handle may own the write lock.
+        # The destination is provably locked by a live writer, so the page-copy
+        # route above is the correct one and there is nothing to gain by
+        # retrying through unlink+move: the fallback has its own holder scan
+        # and would fail closed here anyway. Return the stall as a failure.
         return False
     except Exception as exc:
         logger.warning("SQLite safe restore failed for %s -> %s: %s", src, dst, exc)

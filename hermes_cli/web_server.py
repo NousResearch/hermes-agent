@@ -644,7 +644,29 @@ async def _plugin_api_runtime_gate(request: Request, call_next):
         blocked = plugin_name in disabled_set or (source == "user" and plugin_name not in enabled_set)
         if blocked and source in ("user", "bundled"):
             return JSONResponse(status_code=404, content={"detail": "Plugin not found"})
-    return await call_next(request)
+    if not plugin_name:
+        return await call_next(request)
+    return await _plugin_api_scoped_call(request, call_next)
+
+
+async def _plugin_api_scoped_call(request: Request, call_next):
+    """Run a plugin route body inside the requested profile's scope (#120310).
+
+    Third-party routers mounted by ``_mount_plugin_api_routes`` declare no
+    ``?profile=`` of their own, so without this their credential reads fail
+    closed under multi-profile hosting (``UnscopedSecretError``, swallowed by
+    the plugin no-data contract). Same scope every other dashboard body uses:
+    :func:`hermes_cli.web_server_profiles._config_profile_scope`.
+    """
+    from hermes_cli.web_server_profiles import _config_profile_scope
+
+    try:
+        with _config_profile_scope(request.query_params.get("profile")):
+            return await call_next(request)
+    except HTTPException as exc:
+        # Scope entry rejects unknown profiles; middleware sits outside the
+        # router's exception handlers, so render the status explicitly.
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
 
 @app.middleware("http")

@@ -33,10 +33,10 @@ def _kbn():
 # "status" covers dashboard drag-drop and `_set_status_direct()`.
 # ``review_requested`` wakes the origin like a block but is not one;
 # the task is not archived so later review cycles keep notifying.
-TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked", "block_loop_detected", "review_requested", "changes_requested")
+TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "protocol_violation", "timed_out", "status", "archived", "unblocked", "block_loop_detected", "review_requested", "changes_requested")
 # Kinds that hand a decision back to the origin, which must take a turn.
 # status/archived/unblocked are bookkeeping.
-_WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked", "review_requested", "changes_requested", "block_loop_detected")
+_WAKE_KINDS = ("completed", "gave_up", "crashed", "protocol_violation", "timed_out", "blocked", "review_requested", "changes_requested", "block_loop_detected")
 
 
 def diagnostic_event(ev) -> bool:
@@ -453,6 +453,25 @@ def _fmt_timed_out(ev, n) -> tuple:
     return f"⏱ {n.head} ran past {span} and was stopped; it will be retried automatically.", None, None
 
 
+def _fmt_crashed(ev, n) -> tuple:
+    """Crash alert that distinguishes protocol violation (rc=0, no terminal
+    call — overwhelmingly a network/connection dead-end) from pid-killed
+    (signal — resource layer) and nonzero-exit (task code)."""
+    payload = ev.payload or {}
+    protocol_violation = bool(payload.get("protocol_violation"))
+    exit_kind = payload.get("exit_kind")
+    exit_code = payload.get("exit_code")
+    if protocol_violation or exit_code == 0:
+        hint = "exited rc=0 without calling kanban_complete/block — check network/connection (protocol violation)"
+    elif exit_kind == "signaled":
+        hint = f"worker killed (signal {exit_code}) — check memory/CPU/process limits"
+    elif exit_kind == "nonzero_exit":
+        hint = f"worker exited with code {exit_code}"
+    else:
+        hint = "worker crashed (pid gone)"
+    return f"✖ {n.head} {hint}; dispatcher will retry with backoff", None, None
+
+
 # archived / unblocked are claimed (so the cursor advances past them) but
 # intentionally silent (no formatter), and excluded from _WAKE_KINDS so they
 # never wake the creator.
@@ -460,9 +479,8 @@ _EVENT_FORMATTERS: dict[str, Callable[[Any, "_KanbanNotification"], tuple]] = {
     "completed": _fmt_completed,
     "blocked": lambda ev, n: (f"⏸ {n.head} blocked{_clip(ev, 'reason', ': {}', 160)}", None, None),
     "gave_up": _fmt_gave_up,
-    "crashed": lambda ev, n: (
-        f"✖ {n.head} — its worker stopped unexpectedly; it will be retried automatically.", None, None,
-    ),
+    "crashed": _fmt_crashed,
+    "protocol_violation": _fmt_crashed,
     "timed_out": _fmt_timed_out,
     "status": lambda ev, n: (f"🔄 {n.head} → {_payload(ev, 'status') or ''}", None, None),
     "review_requested": _fmt_review_requested,

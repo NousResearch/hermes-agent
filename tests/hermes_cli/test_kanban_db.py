@@ -602,6 +602,195 @@ def test_infrastructure_spawn_refusal_never_charges_the_card(
         ).fetchone()[0] == 1
 
 
+# ---------------------------------------------------------------------------
+# Crash backoff: a task whose last run crashed is respawned with exponential
+# backoff (base * 2 ** (crashes - 1), capped) instead of on the very next
+# tick, so a systemic outage (09-10 incident) can't storm the dispatcher.
+# Disabled (0) restores the old next-tick behavior.
+# ---------------------------------------------------------------------------
+
+
+def _seed_crashed_runs(conn, tid, n: int, ended_at: int) -> None:
+    """Insert ``n`` closed crashed runs (newest first) ending at ``ended_at``."""
+    for i in range(n):
+        conn.execute(
+            "INSERT INTO task_runs (task_id, profile, status, outcome, "
+            "started_at, ended_at) VALUES (?, 'w', 'crashed', 'crashed', "
+            "?, ?)",
+            (tid, ended_at - i, ended_at),
+        )
+    conn.commit()
+
+
+def test_crash_backoff_defers_within_window(kanban_home, monkeypatch):
+    """A task whose latest run crashed is guarded with ``crash_backoff`` until
+    the exponential window (base=60s, crashes=1 → 60s) elapses."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_BACKOFF_SECONDS", "60")
+    now = 5_000_000
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="crash-guard", assignee="a")
+        _seed_crashed_runs(conn, tid, 1, now)
+
+        # Inside the 60s window → deferred with the crash-specific reason.
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 30)
+        assert kbd.check_respawn_guard(conn, tid) == "crash_backoff"
+
+        # After the window → allowed, and NOT trapped by blocker_auth.
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 61)
+        assert kbd.check_respawn_guard(conn, tid) is None
+
+
+def test_crash_backoff_escalates_exponentially_and_caps(kanban_home, monkeypatch):
+    """3 consecutive crashes → 240s; backoff caps at the configured max."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_BACKOFF_SECONDS", "60")
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_BACKOFF_MAX_SECONDS", "600")
+    now = 5_000_000
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="crash-esc", assignee="a")
+        # 3 consecutive crashed runs → delay = 60 * 2 ** (3-1) = 240s.
+        _seed_crashed_runs(conn, tid, 3, now)
+
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 200)
+        assert kbd.check_respawn_guard(conn, tid) == "crash_backoff"
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 241)
+        assert kbd.check_respawn_guard(conn, tid) is None
+
+        # 6 consecutive crashed runs → min(60 * 2 ** 5, 600) = 600 (capped).
+        tid2 = kb.create_task(conn, title="crash-cap", assignee="a")
+        _seed_crashed_runs(conn, tid2, 6, now)
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 599)
+        assert kbd.check_respawn_guard(conn, tid2) == "crash_backoff"
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 601)
+        assert kbd.check_respawn_guard(conn, tid2) is None
+
+
+def test_crash_backoff_break_streak_and_disabled(kanban_home, monkeypatch):
+    """A completed run between crashes resets the exponent (new 60s); backoff
+    disabled (0) respawns on the next tick."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_BACKOFF_SECONDS", "60")
+    now = 5_000_000
+
+    with kbc.connect() as conn:
+        # crashed(now) → completed(now-4000) → crashed(now-4100): trailing
+        # streak = 1 (60s), and the mid completed run is OUTSIDE the 3600s
+        # recent-success window so it won't trip ``recent_success``.
+        tid = kb.create_task(conn, title="crash-reset", assignee="a")
+        _seed_crashed_runs(conn, tid, 1, now)
+        conn.execute(
+            "INSERT INTO task_runs (task_id, profile, status, outcome, "
+            "started_at, ended_at) VALUES (?, 'w', 'completed', 'completed', "
+            "?, ?)",
+            (tid, now - 4000, now - 3900),
+        )
+        conn.execute(
+            "INSERT INTO task_runs (task_id, profile, status, outcome, "
+            "started_at, ended_at) VALUES (?, 'w', 'crashed', 'crashed', "
+            "?, ?)",
+            (tid, now - 4100, now - 4000),
+        )
+        conn.commit()
+
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 100)
+        # 100s > 60s → allowed; the mid completed run broke the streak.
+        assert kbd.check_respawn_guard(conn, tid) is None
+
+        # Backoff disabled: crashed run + no elapsed check → allowed immediately.
+        monkeypatch.setenv("HERMES_KANBAN_CRASH_BACKOFF_SECONDS", "0")
+        tid2 = kb.create_task(conn, title="crash-off", assignee="a")
+        _seed_crashed_runs(conn, tid2, 3, now)
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 1)
+        assert kbd.check_respawn_guard(conn, tid2) is None
+
+
+def test_crash_backoff_does_not_defer_rate_limited_or_completed(
+    kanban_home, monkeypatch,
+):
+    """A rate_limited or completed latest run never triggers crash backoff."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_BACKOFF_SECONDS", "60")
+    # Disable the rate-limit cooldown so the test exercises the crash-backoff
+    # check (a rate_limited latest run is handled by the cooldown branch).
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "0")
+    now = 5_000_000
+
+    with kbc.connect() as conn:
+        # rate_limited latest run (with prior crash streak) → no backoff.
+        tid = kb.create_task(conn, title="rl-no-backoff", assignee="a")
+        _seed_crashed_runs(conn, tid, 3, now - 1000)
+        conn.execute(
+            "INSERT INTO task_runs (task_id, profile, status, outcome, "
+            "started_at, ended_at) VALUES (?, 'w', 'rate_limited', "
+            "'rate_limited', ?, ?)",
+            (tid, now - 1, now),
+        )
+        conn.commit()
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 1)
+        assert kbd.check_respawn_guard(conn, tid) is None
+
+        # completed latest run → no backoff (normal dispatch). Placed outside
+        # the 3600s recent-success window so it doesn't trip ``recent_success``.
+        tid2 = kb.create_task(conn, title="done-no-backoff", assignee="a")
+        _seed_crashed_runs(conn, tid2, 3, now - 5000)
+        conn.execute(
+            "INSERT INTO task_runs (task_id, profile, status, outcome, "
+            "started_at, ended_at) VALUES (?, 'w', 'completed', 'completed', "
+            "?, ?)",
+            (tid2, now - 4000, now - 3900),
+        )
+        conn.commit()
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 1)
+        assert kbd.check_respawn_guard(conn, tid2) is None
+
+
+def test_crash_backoff_applies_after_real_protocol_violation(
+    kanban_home, monkeypatch,
+):
+    """End-to-end: a real clean-exit protocol violation (via the crash reaper)
+    closes a crashed run, and the respawn guard then defers with
+    ``crash_backoff`` until the window elapses."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_BACKOFF_SECONDS", "60")
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="real-crash", assignee="a")
+
+        # Drive a real protocol-violation reaper pass (rc=0, no terminal call).
+        from tests.hermes_cli.test_kanban_core_functionality import (
+            _drive_protocol_violation,
+        )
+
+        crashed = _drive_protocol_violation(conn, tid, 991_100)
+        assert tid in crashed
+
+        # The run was recorded as crashed with the protocol_violation marker.
+        outcomes = [
+            r["outcome"] for r in conn.execute(
+                "SELECT outcome FROM task_runs WHERE task_id=?", (tid,),
+            ).fetchall()
+        ]
+        assert outcomes == ["crashed"]
+
+        # Guard defers within the 60s window, allows after it. Capture the
+        # real clock first — patching _kb.time.time patches the shared time
+        # module, so the lambda must not re-import it.
+        real_time = time.time
+        monkeypatch.setattr(_kb.time, "time", lambda: real_time() + 30)
+        assert kbd.check_respawn_guard(conn, tid) == "crash_backoff"
+        monkeypatch.setattr(_kb.time, "time", lambda: real_time() + 61)
+        assert kbd.check_respawn_guard(conn, tid) is None
+
+
 
 
 
@@ -862,7 +1051,8 @@ def test_review_bound_handoff_preserves_declared_artifacts(kanban_home):
         assert run_id is not None
         assert kb.request_review(
             conn, t, summary="ready for review",
-            metadata={"artifacts": [str(artifact)]}, expected_run_id=run_id)
+            metadata={"artifacts": [str(artifact)]}, expected_run_id=run_id,
+            reviewer="reviewer")
         handoff = [e for e in kb.list_events(conn, t) if e.kind == "review_requested"][-1]
         assert kb.complete_task(conn, t, summary="approved")
         attachments = kb.list_attachments(conn, t)
@@ -887,7 +1077,7 @@ def test_request_review_rollback_discards_staged_copies(kanban_home):
         artifact.write_bytes(b"{}")
         kb.claim_task(conn, t)
         run_id = kb.get_task(conn, t).current_run_id
-        kwargs = dict(summary="ready", metadata={"artifacts": [str(artifact)]}, expected_run_id=run_id)
+        kwargs = dict(summary="ready", metadata={"artifacts": [str(artifact)]}, expected_run_id=run_id, reviewer="reviewer")
 
         def _boom(*_a, **_k):
             raise RuntimeError("run bookkeeping failed")

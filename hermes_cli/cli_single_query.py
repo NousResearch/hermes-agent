@@ -177,6 +177,56 @@ def _single_query_exit_code(result, *, credentials_rate_limited: bool = False) -
     return 1
 
 
+def _mark_kanban_worker_partial(result) -> None:
+    """Tag the current kanban run as ``worker_partial`` when the turn ended without a
+    terminal kanban call (output-truncation / context-exhaustion path).
+
+    A kanban worker whose model output hit the length limit (``partial_result`` with
+    ``completed=False``) exits rc=0 — indistinguishable from a worker that finished work
+    but skipped the paperwork. That ambiguity is what produced the review-lane hangs
+    (09-14 run1057/1025: 'Response truncated due to output length limit' as the last
+    assistant message, no terminal tool call). This stamps the run metadata *while the
+    worker is still alive*, so the dispatcher's ``_reclaim_dead_workers`` (which only runs
+    once the PID is dead) can read it with zero race and route the correct corrective
+    message to the retry worker. Best-effort: any failure here must never crash the worker.
+
+    ``HERMES_KANBAN_RUN_ID`` identifies the active run; ``HERMES_KANBAN_DB`` pins the
+    board DB. The UPDATE is guarded by ``ended_at IS NULL`` so it only ever touches the
+    live run, never a closed one.
+    """
+    task_id = (os.environ.get("HERMES_KANBAN_TASK") or "").strip()
+    run_id_raw = (os.environ.get("HERMES_KANBAN_RUN_ID") or "").strip()
+    if not (task_id and run_id_raw.isdigit()):
+        return
+    try:
+        from hermes_cli import kanban_db as _kb
+        from hermes_cli import kanban_db_connect as _kbc
+
+        conn = _kbc.connect()  # resolves HERMES_KANBAN_DB / board env
+        try:
+            with _kb.write_txn(conn):
+                row = conn.execute(
+                    "SELECT metadata FROM task_runs WHERE id = ? AND ended_at IS NULL",
+                    (int(run_id_raw),),
+                ).fetchone()
+                if row is None:
+                    return
+                merged = dict(_kb._json_dict(row["metadata"]))
+                merged["worker_partial"] = True
+                merged["worker_partial_reason"] = (
+                    "model output truncated / context exhausted — turn ended without "
+                    "a terminal kanban call (kanban_complete/block/request_review)"
+                )
+                conn.execute(
+                    "UPDATE task_runs SET metadata = ? WHERE id = ? AND ended_at IS NULL",
+                    (_kb._json_or_null(merged), int(run_id_raw)),
+                )
+        finally:
+            conn.close()
+    except Exception as _partial_exc:  # pragma: no cover - defensive; never crash worker
+        logger.debug("mark-kanban-partial failed: %s", _partial_exc)
+
+
 def _run_quiet_single_query(cli, effective_query, emitter=None):
     """Quiet (-Q) one-shot turn: run, print the response (stderr for errors/session_id), then sys.exit with the automation exit code.
     With a ``StreamJsonEmitter`` the final answer and the exit line become the terminal ``result`` JSONL record instead.
@@ -282,6 +332,20 @@ def _run_quiet_single_query(cli, effective_query, emitter=None):
 
     if emitter is None:
         print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
+
+    # Kanban workers whose turn ended *incomplete* (output-truncated / context-exhausted)
+    # exit rc=0 with no terminal kanban call — the protocol-violation path that stranded
+    # review-lane tasks (09-14 run1057/1025). Stamp the run metadata now (worker still
+    # alive, dispatcher has not reclaimed yet) so the dispatcher can distinguish
+    # "truncated, never got to the terminal call" from "finished work, skipped paperwork"
+    # and route the correct corrective guidance to the retry worker.
+    if (
+        os.environ.get("HERMES_KANBAN_TASK")
+        and isinstance(result, dict)
+        and not result.get("completed")
+        and (result.get("partial") or result.get("failed"))
+    ):
+        _mark_kanban_worker_partial(result)
 
     _exit_code = _single_query_exit_code(result)
     if emitter is not None:

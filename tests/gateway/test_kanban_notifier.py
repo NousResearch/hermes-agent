@@ -1,5 +1,6 @@
 import asyncio
 
+import pytest
 
 from gateway.config import Platform
 from gateway.kanban_watchers_common import (
@@ -324,7 +325,7 @@ def test_notifier_redelivers_same_kind_on_dispatch_cycle(tmp_path, monkeypatch):
 
     # First crash delivered.
     assert len(adapter.sent) == 1
-    assert "stopped unexpectedly" in adapter.sent[0]["text"].lower()
+    assert "crashed" in adapter.sent[0]["text"].lower()
 
     # Subscription survives — the cursor advanced past event #1, but the
     # row is still there.
@@ -352,7 +353,7 @@ def test_notifier_redelivers_same_kind_on_dispatch_cycle(tmp_path, monkeypatch):
         f"Second crashed event should also notify; got {len(adapter.sent)} "
         f"deliveries (texts: {[d['text'] for d in adapter.sent]})"
     )
-    assert "stopped unexpectedly" in adapter.sent[1]["text"].lower()
+    assert "crashed" in adapter.sent[1]["text"].lower()
 
 
 def test_notifier_subscription_survives_done_reopen_until_archive(
@@ -624,6 +625,105 @@ def test_notifier_delivers_block_loop_detected_triage_ping(tmp_path, monkeypatch
     assert remaining == []
 
 
+@pytest.mark.parametrize(
+    "kind,payload,expected",
+    [
+        # rc=0 without a terminal call → network/connection hint.
+        (
+            "crashed",
+            {"pid": 111, "exit_kind": "clean_exit", "exit_code": 0},
+            "rc=0 without calling kanban_complete",
+        ),
+        # Dedicated protocol_violation kind (clean-exit reclaim) → same hint.
+        (
+            "protocol_violation",
+            {"pid": 222, "exit_code": 0, "protocol_violation": True},
+            "rc=0 without calling kanban_complete",
+        ),
+        # Signaled → resource hint.
+        (
+            "crashed",
+            {"pid": 333, "exit_kind": "signaled", "exit_code": 9},
+            "worker killed (signal 9)",
+        ),
+        # Nonzero exit → task code hint.
+        (
+            "crashed",
+            {"pid": 444, "exit_kind": "nonzero_exit", "exit_code": 3},
+            "worker exited with code 3",
+        ),
+        # No payload → generic.
+        (
+            "crashed",
+            {},
+            "worker crashed (pid gone)",
+        ),
+    ],
+)
+def test_notifier_crash_alert_distinguishes_cause(
+    tmp_path, monkeypatch, kind, payload, expected,
+):
+    """A crash notification must tell the operator WHY the worker died:
+    rc=0 protocol violation (network/connection) vs pid killed (resources)."""
+    db_path = tmp_path / f"crash-{kind}-{id(payload)}.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="crashy", assignee="worker")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
+        kb._append_event(conn, tid, kind, payload)
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1, f"{kind} must produce a notification"
+    text = adapter.sent[0]["text"]
+    assert tid in text
+    assert expected in text, f"expected crash hint {expected!r} in {text!r}"
+    # Every variant tells the operator the dispatcher will retry with backoff.
+    assert "backoff" in text
+
+
+def test_notifier_protocol_violation_is_deliverable_terminal_kind(
+    tmp_path, monkeypatch,
+):
+    """A ``protocol_violation`` event must be claimed and delivered (it was
+    missing from TERMINAL_KINDS before, so rc=0 crashes never alerted)."""
+    import gateway.kanban_watchers_notifier as kwn
+
+    assert "protocol_violation" in kwn.TERMINAL_KINDS
+
+    db_path = tmp_path / "pv.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="pv task", assignee="worker")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
+        kb._append_event(
+            conn, tid, "protocol_violation",
+            {"pid": 555, "exit_code": 0, "protocol_violation": True},
+        )
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1, "protocol_violation must be delivered"
+    text = adapter.sent[0]["text"]
+    assert "rc=0 without calling kanban_complete" in text
+
+
 # ---------------------------------------------------------------------------
 # #111125 — a repeated-block circuit breaker establishes that orchestration
 # attention is needed, NOT that a human decision exists. The formatter must
@@ -796,3 +896,48 @@ def test_review_requested_does_not_wake_a_notify_only_subscription(
     assert adapter.handled == [], (
         "notify-only subscriptions must not be woken by a review handoff"
     )
+
+
+def test_protocol_violation_wakes_the_origin_session(tmp_path, monkeypatch):
+    """rc=0 protocol violations (clean exit, no terminal call) must wake the
+    origin just like ``crashed``: the worker is gone without a decision, and
+    the network/connection dead-end that caused it needs an operator's eye.
+    It was missing from _WAKE_KINDS, so the most common crash shape never
+    woke anyone."""
+    import gateway.kanban_watchers_notifier as kwn
+
+    assert "protocol_violation" in kwn._WAKE_KINDS
+
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "pv-wake.db"))
+    kb.init_db()
+
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="pv wakes origin",
+            assignee="worker",
+            session_id="agent:main:telegram:dm:chat-1",
+        )
+        kbn.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="chat-1",
+            chat_type="dm",
+            delivery_mode="notify+wake",
+        )
+        kb._append_event(
+            conn, tid, "protocol_violation",
+            {"pid": 666, "exit_code": 0, "protocol_violation": True},
+        )
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1, "protocol_violation must still ping"
+    assert tid in _wake_text(adapter), "protocol_violation must wake the origin"
+    assert "rc=0 without calling kanban_complete" in adapter.sent[0]["text"]

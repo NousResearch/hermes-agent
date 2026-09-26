@@ -1632,7 +1632,10 @@ def _validate_switch(st: _Switch) -> Optional[ModelSwitchResult]:
     validate_as = st.target_provider
     if not validate_as.lower().startswith("custom"):
         pdef = resolve_provider_full(validate_as, st.user_providers, st.custom_providers)
-        if pdef is not None and pdef.source == "user-config":
+        # A settings-only ``providers.<slug>`` block (no endpoint of its own) is not a
+        # user-defined endpoint: only a block declaring a base_url takes the custom
+        # validation branch (#120020; mirrors ``_lap_lmstudio_row``'s endpoint test).
+        if pdef is not None and pdef.source == "user-config" and (pdef.base_url or ""):
             validate_as = f"custom:{validate_as}"
     try:
         validation = validate_requested_model(

@@ -57,6 +57,33 @@ LINE_BOT_INFO_URL = "https://api.line.me/v2/bot/info"
 LINE_PER_BUBBLE_CHARS = 5000  # LINE hard limit
 LINE_SAFE_BUBBLE_CHARS = 4500  # conservative chunking limit
 LINE_MAX_MESSAGES_PER_CALL = 5
+# LINE budgets the message-bubble text at 5000 *characters* but counts them as UTF-16 code units.
+# Astral-plane emoji (😀, 🎉, 🚀, etc.) take 2 UTF-16 units but ``len()`` counts them as 1, so
+# naive ``len(text) <= 5000`` lets an over-budget string through and the LINE API rejects the
+# whole batch.  Apply the same UTF-16 measurement to every LINE-bound field below (#54993).
+def _utf16_len(text: str) -> int:
+    """Number of UTF-16 code units in ``text`` — mirrors LINE's character budget."""
+    return text.encode("utf-16-le").__len__() // 2 if text else 0
+
+
+def _utf16_truncate(text: str, max_units: int, suffix: str = "") -> str:
+    """Trim ``text`` to at most ``max_units`` UTF-16 code units, appending ``suffix`` if a cut happened.
+
+    The ``suffix`` is counted against ``max_units`` so the final string always fits the budget.
+    Returns ``text`` unchanged when it already fits.
+    """
+    if not text:
+        return text
+    if _utf16_len(text) <= max_units:
+        return text
+    if suffix and _utf16_len(suffix) >= max_units:
+        # Pathological: suffix itself is too long.  Cut the suffix too.
+        return _utf16_truncate(text, max_units, suffix="")
+    budget = max_units - _utf16_len(suffix)
+    encoded = text.encode("utf-16-le")
+    truncated_bytes = encoded[: budget * 2]
+    truncated = truncated_bytes.decode("utf-16-le", errors="ignore")
+    return truncated + suffix
 LINE_REPLY_TOKEN_TTL_SECONDS = 50  # below LINE's ~60s
 WEBHOOK_BODY_MAX_BYTES = 1_048_576  # 1 MiB — webhooks are tiny JSON
 DEFAULT_WEBHOOK_PORT = 8646
@@ -112,23 +139,33 @@ def strip_markdown_preserving_urls(text: str) -> str:
 
 
 def split_for_line(text: str, max_chars: int = LINE_SAFE_BUBBLE_CHARS) -> List[str]:
-    """Split into ≤5 LINE bubbles at paragraph/line/word breaks; overflow is ellipsised."""
-    if not text or len(text) <= max_chars:
+    """Split into ≤5 LINE bubbles at paragraph/line/word breaks; overflow is ellipsised.
+
+    All length checks and slices here count UTF-16 code units (LINE's budget), not Python
+    code points — see ``_utf16_len`` / ``_utf16_truncate`` (#54993).  For break-finding
+    we still work in Python-character units because paragraph/line/word boundaries are
+    Unicode properties, not encoding artefacts; the final per-bubble overflow is then
+    re-trimmed to the UTF-16 budget.
+    """
+    if not text or _utf16_len(text) <= max_chars:
         return [text] if text else []
     chunks: List[str] = []
     remaining = text
-    while remaining and len(chunks) < LINE_MAX_MESSAGES_PER_CALL and len(remaining) > max_chars:
+    while remaining and len(chunks) < LINE_MAX_MESSAGES_PER_CALL and _utf16_len(remaining) > max_chars:
         # Prefer paragraph, then line, then word breaks past the half-way mark; else a hard cut.
+        # ``max_chars`` here is a UTF-16 budget; ``rfind`` walks Python characters, so we work in a
+        # conservative upper bound (``max_chars`` Python chars is well below the UTF-16 ceiling for
+        # non-emoji-heavy text and only slightly above for emoji-heavy text).
         cuts = [remaining.rfind(sep, 0, max_chars) for sep in ("\n\n", "\n", " ")]
         cut = next((c for c in cuts if c >= int(max_chars * 0.5)), cuts[-1])
         if cut <= 0:
             cut = max_chars
-        chunks.append(remaining[:cut].rstrip())
+        chunks.append(_utf16_truncate(remaining[:cut].rstrip(), max_chars))
         remaining = remaining[cut:].lstrip()
     if remaining and len(chunks) < LINE_MAX_MESSAGES_PER_CALL:
-        chunks.append(remaining)
+        chunks.append(_utf16_truncate(remaining, max_chars))
     elif remaining:  # budget exhausted → ellipsis on the last bubble
-        chunks[-1] = chunks[-1][: max_chars - 1].rstrip() + "…"
+        chunks[-1] = _utf16_truncate(chunks[-1], max_chars - 1, suffix="…")
     return chunks
 
 
@@ -277,7 +314,7 @@ class _LineClient:
 
 def _text_message(text: str) -> Dict[str, Any]:
     """Build a LINE text message object, capped to per-bubble max."""
-    return {"type": "text", "text": text if len(text) <= LINE_PER_BUBBLE_CHARS else text[: LINE_PER_BUBBLE_CHARS - 1] + "…"}
+    return {"type": "text", "text": _utf16_truncate(text, LINE_PER_BUBBLE_CHARS, suffix="…")}
 
 
 def _text_messages(content: str) -> List[Dict[str, Any]]:
@@ -290,15 +327,15 @@ def build_postback_button_message(text: str, button_label: str, request_id: str)
     """Slow-LLM postback bubble. Template Buttons stay tappable from history (Quick
     Reply chips vanish on the next message). LINE limits: text ≤160, altText ≤400.
 
-    See #18153.
+    See #18153.  All budgets are measured in UTF-16 code units (#54993).
     """
-    truncated = text if len(text) <= 160 else text[:157] + "..."
-    alt = text if len(text) <= 400 else text[:397] + "..."
+    truncated = _utf16_truncate(text, 160, suffix="...")
+    alt = _utf16_truncate(text, 400, suffix="...")
     action = {
         "type": "postback",
-        "label": button_label[:20] or "Get answer",
+        "label": _utf16_truncate(button_label, 20) or "Get answer",
         "data": json.dumps({"action": "show_response", "request_id": request_id}),
-        "displayText": button_label[:300] or "Get answer"}
+        "displayText": _utf16_truncate(button_label, 300) or "Get answer"}
     return {"type": "template", "altText": alt, "template": {"type": "buttons", "text": truncated, "actions": [action]}}
 
 

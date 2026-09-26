@@ -359,6 +359,44 @@ class TestPostbackButtonShape:
         data = json.loads(actions[0]["data"])
         assert data == {"action": "show_response", "request_id": "rid-1"}
 
+    def test_postback_button_truncates_to_utf16_budget(self):
+        """#54993: LINE budgets the button ``text`` at 160 and ``altText`` at 400 UTF-16 code units.
+        An astral-plane emoji (e.g. ``😀``) counts as 2 UTF-16 units but ``len()`` counts it as 1, so a
+        naive ``text[:157] + '...'`` truncates the wrong boundary and lets the over-budget string
+        through.  ``build_postback_button_message`` must measure with ``_utf16_len`` and cut at the
+        UTF-16 boundary, including the appended ``...`` suffix.
+        """
+        # 19 'b' + emoji = 21 UTF-16 units; budget is 160.
+        over_button_text = "b" * 19 + "😀"
+        # 399 'a' + emoji = 401 UTF-16 units; budget is 400.
+        over_alt_text = "a" * 399 + "😀"
+
+        msg = build_postback_button_message(text=over_alt_text, button_label=over_button_text, request_id="rid-2")
+
+        # Both ``text`` and ``altText`` must respect the UTF-16 budget.
+        from plugins.platforms.line.adapter import _utf16_len
+        assert _utf16_len(msg["template"]["text"]) <= 160, msg["template"]["text"]
+        assert _utf16_len(msg["altText"]) <= 400, msg["altText"]
+        # The action label budget is 20 UTF-16 units; a 19-char 'b' + emoji label is 21, must be trimmed.
+        assert _utf16_len(msg["template"]["actions"][0]["label"]) <= 20
+        # displayText budget is 300 UTF-16 units; same input fits (21 < 300), but verify it didn't grow.
+        assert _utf16_len(msg["template"]["actions"][0]["displayText"]) <= 300
+
+    def test_split_for_line_caps_each_chunk_at_utf16_budget(self):
+        """#54993: ``split_for_line`` must guarantee each chunk is within the UTF-16 budget even when
+        a single emoji-heavy paragraph would push a Python-``len`` slice over."""
+        from plugins.platforms.line.adapter import _utf16_len, LINE_SAFE_BUBBLE_CHARS
+
+        # Build a paragraph of 100 (b + emoji) pairs = 100 ASCII + 100 emoji = 300 UTF-16 units;
+        # with budget 250 (well below 300), we expect the splitter to cut.
+        paragraph = "b" + "😀"  # 3 UTF-16 units per pair
+        long_text = (paragraph * 100) + "\n\n" + (paragraph * 100)
+        chunks = split_for_line(long_text, max_chars=250)
+        assert chunks, "splitter should produce at least one chunk"
+        assert all(_utf16_len(c) <= LINE_SAFE_BUBBLE_CHARS for c in chunks), chunks
+        # All chunks (except possibly the last with ellipsis) must respect the budget.
+        assert len(chunks) <= 5, "LINE allows at most 5 bubbles per call"
+
 
 class TestCheckRequirements:
 

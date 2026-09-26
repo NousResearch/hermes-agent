@@ -97,6 +97,11 @@ async def _shutdown_abandoned_app(app) -> None:
         await app.shutdown()
     except Exception:
         logger.debug("Abandoned Telegram app.shutdown() failed", exc_info=True)
+    await _close_app_requests(app)
+
+
+async def _close_app_requests(app) -> None:
+    """Close the bot's request transports directly; a no-op for ones ``app.shutdown()`` already closed."""
     bot = getattr(app, "bot", None)
     for request in (getattr(bot, "_request", None) if bot is not None else None) or ():
         shutdown = getattr(request, "shutdown", None)
@@ -153,6 +158,8 @@ from plugins.platforms.telegram.telegram_entities import expand_link_entities
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
 from plugins.platforms.telegram.telegram_network import (
     SEED_FALLBACK_IPS, TelegramFallbackTransport, discover_fallback_ips, parse_fallback_ip_env, tcp_keepalive_socket_options)
+from plugins.platforms.telegram.telegram_abandoned_init import (
+    await_abandoned_initialize_owners, retain_abandoned_initialize)
 from utils import env_float, env_int
 
 _TELEGRAM_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
@@ -611,6 +618,8 @@ class TelegramAdapter(BasePlatformAdapter):
         self._polling_heartbeat_task: Optional[asyncio.Task] = None
         self._bot_identity_refresh_task: Optional[asyncio.Task] = None
         self._post_connect_task: Optional[asyncio.Task] = None  # command menu + DM topics, off the connect path
+        # Cleanup owners of cancelled initialize() calls; not _background_tasks, which teardown cancels.
+        self._abandoned_initialize_owners: Set[asyncio.Task] = set()
         self._polling_conflict_count = self._polling_network_error_count = self._polling_generation = 0
         self._polling_conflict_recovery_generation: Optional[int] = None
         self._polling_progress_event = asyncio.Event()
@@ -3084,9 +3093,15 @@ class TelegramAdapter(BasePlatformAdapter):
                 logger.warning("[%s] Connecting to Telegram (attempt %d/%d)…", self.name, _attempt + 1, _max_connect)
                 # On timeout the (possibly shielded) initialize() task is abandoned; release the half-built
                 # app's httpx client so it isn't leaked across the ladder.
-                await _await_with_thread_deadline(
-                    self._app.initialize(), timeout=_init_timeout, on_abandon=lambda app=self._app: _shutdown_abandoned_app(app),
-                    label="telegram-init")
+                init_task = asyncio.ensure_future(self._app.initialize())
+                try:
+                    await _await_with_thread_deadline(
+                        init_task, timeout=_init_timeout, on_abandon=lambda app=self._app: _shutdown_abandoned_app(app),
+                        label="telegram-init")
+                except asyncio.CancelledError:
+                    # Our caller was cancelled: the deadline helper abandons the child with no cleanup.
+                    retain_abandoned_initialize(self, init_task, self._app)
+                    raise
                 break
             except asyncio.TimeoutError:
                 rebuild_app = True
@@ -3451,6 +3466,7 @@ class TelegramAdapter(BasePlatformAdapter):
         with contextlib.suppress(Exception):
             await self._await_disconnect_step(self._set_status_indicator(online=False), _DISCONNECT_STEP_TIMEOUT, "status-indicator update")
         await self._await_disconnect_step(self._cancel_pending_delivery_tasks(), _DISCONNECT_STEP_TIMEOUT, "pending-delivery cancel")
+        await await_abandoned_initialize_owners(self, _DISCONNECT_STEP_TIMEOUT)
         if self._app:
             try:
                 # Bounded: a CLOSE-WAIT socket can wedge updater.stop() forever; fall through on timeout.
@@ -3465,6 +3481,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 if self._app.running:
                     await self._await_disconnect_step(self._app.stop(), _DISCONNECT_STEP_TIMEOUT, "app.stop()")
                 await self._await_disconnect_step(self._app.shutdown(), _DISCONNECT_STEP_TIMEOUT, "app.shutdown()")
+                # app.shutdown() no-ops for an app whose initialize() never finished (the last attempt of
+                # an exhausted retry ladder) and leaves its httpx pools open.
+                await self._await_disconnect_step(_close_app_requests(self._app), _DISCONNECT_STEP_TIMEOUT, "request shutdown")
             except Exception as e:
                 logger.warning("[%s] Error during Telegram disconnect: %s", self.name, _redact_telegram_error_text(e))
         self._app = None

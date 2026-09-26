@@ -857,9 +857,15 @@ class BatchRunner:
         self._print_summary(results, total_tool_stats, total_reasoning_stats, kept, batch_files_found, start_time)
 
 
-def _split_csv(value: Optional[str]) -> Optional[List[str]]:
-    """Comma-separated CLI string to a list of stripped items; ``None`` when empty."""
-    return [p.strip() for p in value.split(",")] if value else None
+def _split_csv(value: Any) -> Optional[List[str]]:
+    """Comma-separated CLI value to a list of stripped items; ``None`` when empty.
+
+    fire literal-evaluates flags: an unquoted ``a,b`` already arrives as a tuple, while
+    ``a, ,b`` stays a string, so blank items are dropped rather than sent as provider ""."""
+    if not value:
+        return None
+    items = value if isinstance(value, (list, tuple)) else str(value).split(",")
+    return [s for s in (str(p).strip() for p in items) if s] or None
 
 
 def main(
@@ -987,7 +993,7 @@ def main(
         runner = BatchRunner(
             dataset_file=dataset_file,
             batch_size=batch_size,
-            run_name=run_name,
+            run_name=str(run_name),  # fire turns a numeric name (20260926) into an int
             distribution=distribution,
             max_iterations=max_turns,
             base_url=base_url,

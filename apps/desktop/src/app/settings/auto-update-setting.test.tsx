@@ -39,7 +39,7 @@ describe('AutoUpdateSetting', () => {
   })
 
   it('renders an off-by-default switch with the explanation', async () => {
-    installBridge({ enabled: false, supported: true, lastAttempt: null })
+    installBridge({ enabled: false, supported: true, sessionScope: 'login', lastAttempt: null })
     render(<AutoUpdateSetting />)
 
     const toggle = await screen.findByRole('switch', { name: u.title })
@@ -49,7 +49,7 @@ describe('AutoUpdateSetting', () => {
   })
 
   it('persists the choice through the Electron bridge', async () => {
-    const auto = installBridge({ enabled: false, supported: true, lastAttempt: null })
+    const auto = installBridge({ enabled: false, supported: true, sessionScope: 'login', lastAttempt: null })
     render(<AutoUpdateSetting />)
 
     fireEvent.click(await screen.findByRole('switch', { name: u.title }))
@@ -62,6 +62,7 @@ describe('AutoUpdateSetting', () => {
     installBridge({
       enabled: true,
       supported: true,
+      sessionScope: 'login',
       lastAttempt: { sessionKey: 'k', at: Date.now(), outcome: 'up-to-date' }
     })
     render(<AutoUpdateSetting />)
@@ -69,8 +70,18 @@ describe('AutoUpdateSetting', () => {
     expect(await screen.findByText(u.last(u.outcomes['up-to-date'], en.updates.justNow))).toBeTruthy()
   })
 
+  it('says "after this computer starts" where the OS only exposes boot sessions', async () => {
+    installBridge({ enabled: false, supported: true, sessionScope: 'boot', lastAttempt: null })
+    render(<AutoUpdateSetting />)
+
+    await screen.findByRole('switch', { name: u.title })
+
+    expect(screen.getByText(u.descBootScoped)).toBeTruthy()
+    expect(screen.queryByText(u.desc)).toBeNull()
+  })
+
   it('is disabled with a platform note where unsupported', async () => {
-    installBridge({ enabled: false, supported: false, lastAttempt: null })
+    installBridge({ enabled: false, supported: false, sessionScope: 'boot', lastAttempt: null })
     render(<AutoUpdateSetting />)
 
     const toggle = await screen.findByRole('switch', { name: u.title })

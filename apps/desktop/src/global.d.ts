@@ -873,6 +873,8 @@ export interface DesktopAutoUpdateAttempt {
 export interface DesktopAutoUpdateView {
   enabled: boolean
   supported: boolean
+  /** `login` = key changes on logout/login; `boot` = only on reboot (Linux without logind, fallbacks). */
+  sessionScope: 'login' | 'boot'
   lastAttempt: DesktopAutoUpdateAttempt | null
 }
 

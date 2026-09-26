@@ -3594,6 +3594,7 @@ export interface Translations {
     autoUpdate: {
       title: string
       desc: string
+      descBootScoped: string
       unsupported: string
       saveFailed: string
       deferredTitle: string

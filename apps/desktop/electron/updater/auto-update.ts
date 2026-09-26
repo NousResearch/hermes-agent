@@ -329,6 +329,16 @@ export function autoUpdatePlatformSupported(platform: NodeJS.Platform): boolean 
 }
 
 /**
+ * What a session key actually distinguishes. `login` keys change on every
+ * logout/login; `boot` keys (Linux without logind's XDG_SESSION_ID, or any
+ * fallback) only change on reboot — the UI says so instead of promising
+ * "after you log in" on a system where that is not what happens.
+ */
+export function autoUpdateSessionScope(sessionKey: string): 'login' | 'boot' {
+  return sessionKey.startsWith('darwin:loginwindow:') || /^linux:[^:]+:session:/.test(sessionKey) ? 'login' : 'boot'
+}
+
+/**
  * Decide whether this launch may run the automatic update. Returns the next
  * state to persist alongside the decision: a `run` consumes the session up
  * front (so a crash or the post-update relaunch never repeats it); a `defer`

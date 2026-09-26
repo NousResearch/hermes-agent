@@ -1026,8 +1026,20 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
     author = _profile_author() if reason else None
     suffix = f": {reason}" if reason else ""
     with kbc.connect_closing() as conn:
+        def ok_msg(tid):
+            # Post-check (E64): block_kind/block_recurrences deliberately
+            # survive the unblock (kanban_db.unblock_task — resetting them is
+            # the amnesia behind the unblock<->re-block loop; only complete
+            # clears them). Surface the retention so it stays auditable.
+            landed = kb.get_task(conn, tid)
+            kind = landed.block_kind if landed else None
+            if landed is not None and kind and landed.status not in ("blocked", "scheduled"):
+                return (f"Unblocked {tid}{suffix}\n"
+                        f"NOTE: unblocked with block_kind={kind} retained — "
+                        f"clear it via kanban complete if the cause no longer applies")
+            return f"Unblocked {tid}{suffix}"
         op = _commented(conn, reason, author, "UNBLOCK", lambda tid: kb.unblock_task(conn, tid))
-        return _bulk_apply(ids, op, lambda tid: f"Unblocked {tid}{suffix}",
+        return _bulk_apply(ids, op, ok_msg,
                            lambda tid: f"cannot unblock {tid} (not blocked/scheduled?)")
 
 

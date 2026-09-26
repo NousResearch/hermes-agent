@@ -86,6 +86,103 @@ def test_block_loop_detected_event_emitted(kanban_home: Path) -> None:
         assert payload.get("kind") == "capability"
 
 
+def test_block_kind_survives_unblock_and_breaker_escapes_via_complete(
+    kanban_home: Path,
+) -> None:
+    """Full breaker invariant (E64, kanban_db.py L6584): ``block_kind``/
+    ``block_recurrences`` deliberately survive ``unblock_task`` — resetting
+    them there is the amnesia that let a cron-unblock <-> re-block loop run
+    unbounded; only ``complete_task`` clears them. So block -> unblock must
+    keep the kind (recurrence intact), a same-cause re-block must count the
+    recurrence and park in triage at ``BLOCK_RECURRENCE_LIMIT``, and the only
+    exit from the breaker is a real completion: after that a fresh block
+    starts from recurrence 1 again. The test pins the deliberate breaker
+    behavior, not the ideal (no-kind) state.
+    """
+    with kbc.connect_closing() as conn:
+        tid = _running_task(conn)
+
+        # Block with a typed cause, then unblock: the kind and the recurrence
+        # counter MUST survive (anti-amnesia), and the card re-enters the pool.
+        kb.block_task(conn, tid, reason="waiting on JP", kind="needs_input")
+        blocked = kb.get_task(conn, tid)
+        assert blocked is not None and blocked.block_kind == "needs_input"
+        assert kb.unblock_task(conn, tid)
+        survived = kb.get_task(conn, tid)
+        assert survived is not None
+        assert survived.status == "ready"
+        assert survived.block_kind == "needs_input", (
+            "block_kind must survive the unblock (kanban_db.py L6584: "
+            "deliberate anti-amnesia for the unblock-loop breaker)"
+        )
+        assert survived.block_recurrences == 1
+
+        # Same-cause re-block after the unblock: recurrence increments and at
+        # BLOCK_RECURRENCE_LIMIT the breaker routes to triage for a human.
+        _make_running_again(conn, tid)
+        kb.block_task(conn, tid, reason="waiting on JP", kind="needs_input")
+        triaged = kb.get_task(conn, tid)
+        assert triaged is not None
+        assert triaged.status == "triage"
+        assert triaged.block_kind == "needs_input"
+        assert triaged.block_recurrences == kb.BLOCK_RECURRENCE_LIMIT
+
+        # Triage is breaker-parked: block and unblock both refuse. The ONLY
+        # exit is the canonical human route (complete_task clears the loop
+        # memory — kanban_db.py L6584); from triage that is `kanban specify`
+        # (triage -> todo, parent-free flip to ready) then `kanban complete`.
+        assert not kb.block_task(conn, tid, reason="x", kind="needs_input")
+        assert not kb.unblock_task(conn, tid)
+        assert kb.specify_triage_task(conn, tid, author="jp") is True
+        specified = kb.get_task(conn, tid)
+        assert specified is not None and specified.status == "ready"
+        assert kb.complete_task(conn, tid, result="cause resolved by hand")
+        cleared = kb.get_task(conn, tid)
+        assert cleared is not None
+        assert cleared.status == "done"
+        assert cleared.block_kind is None
+        assert cleared.block_recurrences == 0
+
+        # Post-completion the card is a fresh citizen: a new block starts
+        # from recurrence 1 (no breaker memory), landing back in blocked.
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (tid,))
+        assert kb.claim_task(conn, tid, claimer="worker") is not None
+        kb.block_task(conn, tid, reason="new cause", kind="needs_input")
+        fresh = kb.get_task(conn, tid)
+        assert fresh is not None
+        assert fresh.status == "blocked"
+        assert fresh.block_kind == "needs_input"
+        assert fresh.block_recurrences == 1
+
+
+def test_unblock_cli_surfaces_retained_block_kind(
+    kanban_home: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """E64 post-check: the CLI ``unblock`` output must make the deliberate
+    retention auditable — when the card lands outside blocked/scheduled with a
+    ``block_kind`` still set, the command says so and points at ``complete``
+    as the only legal clearer. A clean unblock (no kind retained) keeps the
+    plain message."""
+    monkeypatch.setattr(kanban_cli, "_profile_author", lambda: "tester")
+    with kbc.connect_closing() as conn:
+        tid = _running_task(conn)
+        kb.block_task(conn, tid, reason="needs a human", kind="capability")
+        args = argparse.Namespace(reason=None, task_ids=[tid])
+        assert kanban_cli._cmd_unblock(args) == 0
+        out = capsys.readouterr().out
+        assert f"Unblocked {tid}" in out
+        assert "block_kind=capability retained" in out
+        assert "kanban complete" in out
+
+        clean = _running_task(conn, title="clean")
+        kb.block_task(conn, clean, reason="generic", kind=None)
+        assert kanban_cli._cmd_unblock(argparse.Namespace(reason=None, task_ids=[clean])) == 0
+        out2 = capsys.readouterr().out
+        assert f"Unblocked {clean}" in out2
+        assert "retained" not in out2
+
+
 # ---------------------------------------------------------------------------
 # Dependency routing
 # ---------------------------------------------------------------------------

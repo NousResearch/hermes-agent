@@ -374,6 +374,7 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
     # ``conversation_history``: ``session["history"]`` and ``_session_messages`` alias the SAME list after a turn, so
     # the flush would treat every message as durable and skip it — data loss when finalize is the sole persist path.
     if hasattr(agent, "_persist_session") and (snapshot := getattr(agent, "_session_messages", None)):
+        _rewrite_interrupt_notice(snapshot)
         with contextlib.suppress(Exception):
             agent._persist_session(snapshot)
     # interrupted=True so crash-recovery plugins can flush state (mirrors cli.py atexit). The end-of-session
@@ -724,6 +725,32 @@ def _cancel_ws_orphan_reap(sid: str) -> None:
     if timer is not None:
         with contextlib.suppress(Exception):
             timer.cancel()
+
+
+# A turn interrupted while waiting for the model is persisted with the kernel's own diagnostic line as
+# the assistant content ("Operation interrupted: waiting for model response (x.xs elapsed)."). Every
+# live render path suppresses that line, but ``_finalize_session`` writes the transcript straight to
+# the session store, so a client that reconnects later (or re-reads history) sees the internal
+# wording and reads it as if the turn had been abandoned. Only that text is rewritten — roles, order
+# and tool rows are untouched.
+INTERRUPT_NOTICE_TEXT = (
+    "⏸️ The previous turn was interrupted before the model answered (server restart or chat "
+    "disconnection). Nothing was completed — send the request again and it will be picked up."
+)
+
+
+def _rewrite_interrupt_notice(messages) -> None:
+    """Replace the kernel's waiting-for-model diagnostic with a plain-language notice."""
+    try:
+        from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX as _prefix
+    except Exception:
+        return
+    for _m in messages or []:
+        if not isinstance(_m, dict) or _m.get("role") != "assistant":
+            continue
+        _c = _m.get("content")
+        if isinstance(_c, str) and _c.strip().startswith(_prefix):
+            _m["content"] = INTERRUPT_NOTICE_TEXT
 
 
 def _reattach_refusal(rid, sid: str, session: dict) -> dict | None:

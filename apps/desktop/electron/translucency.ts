@@ -11,7 +11,13 @@
  * then fail to bundle.
  */
 
-import { glassActive, type TranslucencyState, windowOpacityFor } from '../../shared/src/translucency'
+import {
+  backgroundMaterialFor,
+  glassActive,
+  type TranslucencyState,
+  windowOpacityFor,
+  type WindowsBackgroundMaterial
+} from '../../shared/src/translucency'
 
 export {
   backgroundMaterialFor,
@@ -71,6 +77,23 @@ export {
  */
 export function windowBackingOptions(state: TranslucencyState, themedColor: string): { backgroundColor?: string } {
   return glassActive(state) ? {} : { backgroundColor: themedColor }
+}
+
+/**
+ * Return the native Windows backdrop only when glass is actually active.
+ * Electron treats even the `none` backdrop as a translucent-window opt-in,
+ * which disables native maximize and resize commands on Windows. This
+ * construction-time omission is different from the runtime reset path, which
+ * explicitly sends `none` when clearing an already-created window.
+ */
+export function windowBackgroundMaterialOptions(
+  state: TranslucencyState,
+  isWindows: boolean,
+  glassSupported: boolean
+): { backgroundMaterial?: WindowsBackgroundMaterial } {
+  return isWindows && glassSupported && glassActive(state)
+    ? { backgroundMaterial: backgroundMaterialFor(state) }
+    : {}
 }
 
 /**

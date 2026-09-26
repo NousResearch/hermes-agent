@@ -43,18 +43,21 @@ def cache_archive(root, lock, target, files):
     lock.save()
 
 
-def test_unexecutable_python_never_replaces_selected_interpreter(python_store):
+@pytest.mark.parametrize("previously_selected", [False, True])
+def test_unexecutable_python_never_replaces_selected_interpreter(python_store, previously_selected):
     root, lock = python_store
     target = current_target()
     package = Python()
     previous = root / "previous-python"
     old_binary = package.binary(previous, target)
-    old_binary.parent.mkdir(parents=True)
-    old_binary.write_bytes(b"previous selected interpreter")
+    if previously_selected:
+        old_binary.parent.mkdir(parents=True)
+        old_binary.write_bytes(b"previous selected interpreter")
     facts = Facts(root / "facts.json")
-    facts.record("python", "previous", previous.name, {}, root,
-                 target=target, artifacts=["a" * 64], digest=tree_digest(previous))
-    before = facts.path.read_bytes()
+    if previously_selected:
+        facts.record("python", "previous", previous.name, {}, root,
+                     target=target, artifacts=["a" * 64], digest=tree_digest(previous))
+    before = facts.path.read_bytes() if facts.path.exists() else None
     relative = package.binary(Path("."), target).as_posix()
     cache_archive(root, lock, target, {relative: b"not executable on this host", "keep.txt": b"keep layout"})
 
@@ -62,8 +65,14 @@ def test_unexecutable_python_never_replaces_selected_interpreter(python_store):
     with pytest.raises(InstallError, match="staged entry failed verification"):
         ensure("python", explicit=True)
 
-    assert facts.path.read_bytes() == before
-    assert old_binary.read_bytes() == b"previous selected interpreter"
+    if before is None:
+        assert not facts.path.exists()
+    else:
+        assert facts.path.read_bytes() == before
+    if previously_selected:
+        assert old_binary.read_bytes() == b"previous selected interpreter"
+    else:
+        assert not previous.exists()
     assert not (root / package.store_entry("candidate", target)).exists()
 
 

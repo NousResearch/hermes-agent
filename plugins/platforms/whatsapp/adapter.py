@@ -625,6 +625,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if not content or not content.strip():
             return SendResult(success=True, message_id=None)
         chat_id = to_whatsapp_jid(chat_id)
+        chunks: list[str] = []
+        delivered: list[Optional[str]] = []  # one entry per confirmed chunk (the bridge may omit an id)
         try:
             chunks = self.truncate_message(self.format_message(content), self._outgoing_chunk_limit())
             sent_message_ids: list[str] = []
@@ -635,8 +637,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     payload["replyTo"] = reply_to  # Reply-to on the first chunk only.
                 result = await self._post_bridge_message("send", payload, timeout=30)
                 if not result.success:
-                    return SendResult(success=False, error=result.error)
+                    return self._with_partial_send(
+                        SendResult(success=False, error=result.error), chunks[idx:], delivered, tail_certain=False)
                 last_message_id = result.message_id
+                delivered.append(last_message_id)
                 if last_message_id:
                     sent_message_ids.append(str(last_message_id))
                 if len(chunks) > 1:
@@ -644,7 +648,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return SendResult(success=True, message_id=last_message_id, continuation_message_ids=tuple(sent_message_ids[:-1]),
                               raw_response={"message_ids": sent_message_ids})
         except Exception as e:
-            return SendResult(success=False, error=str(e))
+            return self._with_partial_send(
+                SendResult(success=False, error=str(e)), chunks[len(delivered):], delivered, tail_certain=False)
 
     @_needs_bridge
     async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False) -> SendResult:

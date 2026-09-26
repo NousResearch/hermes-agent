@@ -3578,7 +3578,7 @@ class BasePlatformAdapter(ABC):
             return await self._resume_partial_send(chat_id, previous, reply_to=reply_to, metadata=metadata)
 
         result = await _send(content)
-        if result.success or self._send_retry_is_final(result):
+        if result.success or self._send_retry_is_final(result) or self._partial_tail_uncertain(result):
             return result
         error_str = result.error or ""
         # A rate-limited / flood-capped send is transient: it should back off
@@ -3630,7 +3630,7 @@ class BasePlatformAdapter(ABC):
                     logger.info("[%s] Send succeeded on retry %d", self.name, attempt)
                     return result
                 error_str = result.error or ""
-                if self._send_retry_is_final(result):
+                if self._send_retry_is_final(result) or self._partial_tail_uncertain(result):
                     return result
                 if result.retry_after is not None:
                     server_retry_after = result.retry_after
@@ -3697,6 +3697,12 @@ class BasePlatformAdapter(ABC):
         head must never be sent again."""
         raw = getattr(result, "raw_response", None)
         return isinstance(raw, dict) and bool(raw.get("partial_overflow"))
+
+    @classmethod
+    def _partial_tail_uncertain(cls, result: "SendResult") -> bool:
+        """A partial delivery whose remainder may already have landed (no ``undelivered_chunks``): no
+        retry can resume it and the plain-text fallback would repeat the head, so it is returned as-is."""
+        return cls._is_partial_delivery(result) and not result.raw_response.get("undelivered_chunks")
 
     @staticmethod
     def _with_partial_send(

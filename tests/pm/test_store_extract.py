@@ -42,6 +42,23 @@ def test_symlinks_escaping_the_destination_are_rejected(tmp_path, linkname):
         extract(archive, tmp_path / "out")
     assert not (tmp_path / "out" / "python/bin/evil").is_symlink()
 
+def test_interpreter_without_pep706_filters_is_refused_with_a_remedy(tmp_path, monkeypatch):
+    """3.11.0-3.11.3 (and 3.10 < .12) lack tarfile.data_filter / extractall(filter=).
+    An update bootstrapped from such a venv must fail with the installer remedy,
+    not a bare TypeError, and must never extract unfiltered."""
+    from pm.package import InstallError
+
+    archive = _tar(tmp_path, [("python/bin/python3", None)])
+    monkeypatch.delattr(tarfile, "data_filter")
+    dest = tmp_path / "out"
+    with pytest.raises(InstallError) as excinfo:
+        extract(archive, dest)
+    message = str(excinfo.value)
+    assert "tarfile.data_filter" in message and "3.11.4+" in message
+    assert "re-run the installer" in message
+    assert not (dest / "python/bin/python3").exists()
+
+
 def test_git_tar_ignores_msys_mount_table_link(tmp_path):
     from pm.packages import Git
 

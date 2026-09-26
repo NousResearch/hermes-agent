@@ -29,6 +29,7 @@ _config_profile_scope = late("_config_profile_scope", "hermes_cli.web_server_pro
 _profile_scope = late("_profile_scope", "hermes_cli.web_server_profiles")
 load_config = late("load_config", "hermes_cli.config")
 save_config = late("save_config", "hermes_cli.config")
+require_readable_config_before_write = late("require_readable_config_before_write", "hermes_cli.config")
 
 
 _EMPTY_MODEL_INFO: dict = {
@@ -272,14 +273,14 @@ def _preset_dict(preset) -> dict:
 def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
     """Persist the Mixture-of-Agents provider/model slots."""
     with http_failure("PUT /api/model/moa failed", 500, detail="Failed to save MoA config"):
+        from hermes_cli import config as config_mod
         from hermes_cli.moa_config import normalize_moa_config, validate_moa_payload
 
-        # load→mutate→save runs on a worker thread (sync-def endpoint); the
-        # desktop's debounced PUT /api/config autosave races it, so the whole
-        # span holds _CONFIG_MUTATION_LOCK or one of the two saves is dropped.
-        with config_write_scope(body.profile or profile):
-            cfg = load_config()
-            if body.presets:
+        # Serialize the full RMW with dashboard autosaves and with non-HTTP
+        # save_config callers, which only hold the config module's reentrant lock.
+        with config_write_scope(body.profile or profile), config_mod._CONFIG_LOCK:
+            legacy_flat_update = not body.presets
+            if not legacy_flat_update:
                 raw = {
                     "default_preset": body.default_preset,
                     "active_preset": body.active_preset,
@@ -296,15 +297,48 @@ def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
             problems = validate_moa_payload(raw)
             if problems:
                 raise HTTPException(status_code=422, detail="Invalid MoA config: " + "; ".join(problems))
+
+            # Read the raw profile file because the effective config contains defaults and
+            # ``merge_existing=True`` deep-merges dicts, which resurrects omitted preset names.
+            # Keep unknown MoA keys and sibling sections by rebuilding only the MoA section on
+            # the raw document, while treating the submitted named map as authoritative.
+            # Strict read: the merge below builds a new dict and would discard the
+            # failed-read marker, allowing a transient fallback to replace the file.
+            raw_cfg = require_readable_config_before_write()
+            existing_moa = raw_cfg.get("moa")
+            if isinstance(existing_moa, dict) and "privacy_filter" in existing_moa:
+                # ``privacy_filter`` is emitted by the normalizer but is not declared by
+                # MoaConfigPayload; an editor round-trip must not reset it.
+                raw["privacy_filter"] = existing_moa["privacy_filter"]
             normalized = normalize_moa_config(raw)
-            # Merge, don't overwrite: hand-edited keys not in MoaConfigPayload (save_traces, trace_dir) survive.
-            # See issue #58819. Write ONLY the moa section (merge_existing deep-merges it over the
-            # on-disk raw file): saving the whole default-expanded ``cfg`` snapshot re-persisted
-            # every other section too, so a Desktop MoA autosave could wipe a chain another
-            # surface wrote meanwhile (#89184, ``fallback_providers: []``).
-            moa_section = dict(cfg.get("moa") or {})
-            moa_section.update(normalized)
-            save_config({"moa": moa_section}, merge_existing=True)
+            if legacy_flat_update and isinstance(existing_moa, dict):
+                existing_presets = existing_moa.get("presets")
+                existing_default = existing_moa.get("default_preset")
+                if isinstance(existing_presets, dict):
+                    if isinstance(existing_default, str) and existing_default in existing_presets:
+                        # Older clients update the flat default preset; keep the existing
+                        # default name and any valid active selection from the stored map.
+                        synthesized_default = normalized.get("default_preset")
+                        if (
+                            isinstance(synthesized_default, str)
+                            and synthesized_default in normalized["presets"]
+                        ):
+                            normalized["presets"][existing_default] = normalized["presets"].pop(
+                                synthesized_default
+                            )
+                            normalized["default_preset"] = existing_default
+                    existing_active = existing_moa.get("active_preset")
+                    if isinstance(existing_active, str) and existing_active in existing_presets:
+                        normalized["active_preset"] = existing_active
+            updated = config_mod._merge_partial_save(raw_cfg, {"moa": normalized})
+            if not legacy_flat_update:
+                # ``_merge_partial_save`` retains undeclared metadata on surviving presets;
+                # filter after that merge so omitted names are authoritative deletions.
+                merged_presets = updated["moa"]["presets"]
+                updated["moa"]["presets"] = {
+                    name: merged_presets[name] for name in normalized["presets"]
+                }
+            save_config(updated)
             return {"ok": True, **normalized}
 
 

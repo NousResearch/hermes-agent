@@ -731,6 +731,43 @@ def test_plain_startup_restores_endpoint_after_session_alias(
     assert cli.agent.switch_calls[-1]["api_key"] == cli.api_key
 
 
+@pytest.mark.parametrize("alias_startup", [True, False])
+def test_new_session_restores_credential_only_switch(
+        _offline_route, monkeypatch, alias_startup):
+    """Real /model --session may change just the key, not the route triple."""
+    provider = "custom" if alias_startup else "openrouter"
+    url = "https://relay.example/v1" if alias_startup else _OPENROUTER_URL
+    monkeypatch.setenv("OPENROUTER_API_KEY", "startup-key")
+    aliases = "model_aliases:\n" + "".join(
+        f"  {name}:\n    model: startup-model-x\n    provider: {provider}\n"
+        f"    base_url: {url}\n    api_key: {key}\n"
+        for name, key in (
+            (("startuprelay", "startup-key"), ("sessionrelay", "session-key"))
+            if alias_startup else (("sessionrelay", "session-key"),)))
+    cli = _make_startup_cli(
+        monkeypatch,
+        config_yaml=("model:\n  default: config-default-model\n  provider: openrouter\n"
+                     f"  base_url: {_OPENROUTER_URL}\n" + aliases),
+        model_cfg={"default": "config-default-model", "provider": "openrouter",
+                   "base_url": _OPENROUTER_URL},
+        model="startuprelay" if alias_startup else "startup-model-x",
+        **({} if alias_startup else {"provider": provider}))
+    startup = (cli.model, cli.provider, cli.base_url, cli.api_key)
+    assert startup == ("startup-model-x", provider, url, "startup-key")
+    cli._handle_model_switch("/model sessionrelay --session")
+    assert (cli.model, cli.provider, cli.base_url, cli.api_key) == (
+        *startup[:3], "session-key")
+    cli.agent = _RecordingAgent()
+    cli.new_session(silent=True)
+    assert (cli.model, cli.provider, cli.base_url, cli.api_key) == startup
+    assert cli._explicit_api_key == "startup-key"
+    assert cli.agent.switch_calls[-1]["api_key"] == "startup-key"
+    with patch("cli._cprint") as notice:
+        cli.new_session()
+    assert not any("model reset" in str(call) for call in notice.call_args_list)
+    assert len(cli.agent.switch_calls) == 1
+
+
 def test_startup_direct_alias_endpoint_survives_boundary(_offline_route, monkeypatch):
     alias_url = "http://127.0.0.1:9999/v1"
     yaml_text = (

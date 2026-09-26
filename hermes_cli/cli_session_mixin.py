@@ -72,7 +72,13 @@ def _reset_model_to_session_baseline(cli, silent: bool) -> None:
     _startup_provider = getattr(cli, "_startup_provider", None)
     _startup_input = getattr(cli, "_startup_model_input", None)
     _startup_base_url = getattr(cli, "_startup_base_url", None)
-    if (_startup_model and _startup_model == getattr(cli, "model", None)
+    from hashlib import sha256
+
+    _credential_unchanged = not (_startup_model or _startup_input) or (
+        getattr(cli, "_startup_api_key_fingerprint", None)
+        == sha256((getattr(cli, "api_key", None) or "").encode()).digest())
+    if (_credential_unchanged and _startup_model
+            and _startup_model == getattr(cli, "model", None)
             and (not _startup_provider or _startup_provider == getattr(cli, "provider", None))
             and (not _startup_base_url
                  or _startup_base_url == (getattr(cli, "base_url", None) or ""))):
@@ -97,7 +103,7 @@ def _reset_model_to_session_baseline(cli, silent: bool) -> None:
         _desired_provider = _startup_provider or _config_provider
     # Whole-route comparison: provider-only or endpoint-only drift must switch.
     if not _desired_model or (
-            _desired_model == getattr(cli, "model", None)
+            _credential_unchanged and _desired_model == getattr(cli, "model", None)
             and (not _desired_provider or _desired_provider == getattr(cli, "provider", None))
             and (not _startup_base_url
                  or _startup_base_url == (getattr(cli, "base_url", None) or ""))):
@@ -117,11 +123,14 @@ def _reset_model_to_session_baseline(cli, silent: bool) -> None:
             custom_providers=CLI_CONFIG.get("custom_providers"))
         if not r.success:
             return
-        if (_startup_base_url
-                and (not _startup_input or getattr(cli, "_startup_provider_input", None))
+        if ((not _startup_input or getattr(cli, "_startup_provider_input", None))
                 and _startup_model and r.new_model == _startup_model
                 and _startup_provider and r.target_provider == _startup_provider
-                and _startup_base_url != (r.base_url or "")):
+                and ((_startup_base_url and _startup_base_url != (r.base_url or ""))
+                     or (not _startup_input and not _credential_unchanged
+                         and r.api_key == cli.api_key))):
+            # Plain startup credential drift also needs fresh resolution:
+            # reverse alias lookup may otherwise select the session alias again.
             # Plain --base-url or alias + mismatched explicit --provider: the
             # switch pipeline cannot always recover the startup endpoint.
             # Restore it only with a credential freshly resolved FOR it
@@ -137,8 +146,8 @@ def _reset_model_to_session_baseline(cli, silent: bool) -> None:
                     explicit_base_url=_startup_base_url) or {}
             except Exception:
                 _startup_rt = {}
-            if _startup_rt.get("api_key"):
-                r.base_url = _startup_base_url
+            if _startup_rt.get("api_key") and (_startup_base_url or _startup_rt.get("base_url")):
+                r.base_url = _startup_base_url or _startup_rt["base_url"]
                 r.api_key = _startup_rt["api_key"]
                 if _startup_rt.get("api_mode"):
                     r.api_mode = _startup_rt["api_mode"]
@@ -146,6 +155,11 @@ def _reset_model_to_session_baseline(cli, silent: bool) -> None:
                 logger.debug(
                     "Could not re-resolve the credential for startup host %s; keeping %s route",
                     _startup_host, r.target_provider)
+        # Lazy startup resolution may differ from the constructor fingerprint.
+        # Do not announce a reset when re-resolution found the same live route.
+        _route_changed = (
+            r.new_model, r.target_provider, r.base_url or "", r.api_key or "", r.api_mode or ""
+        ) != (cli.model, cli.provider, cli.base_url or "", cli.api_key or "", cli.api_mode or "")
         if cli.agent:
             cli.agent.switch_model(
                 new_model=r.new_model, new_provider=r.target_provider, api_key=r.api_key,
@@ -162,7 +176,7 @@ def _reset_model_to_session_baseline(cli, silent: bool) -> None:
             cli.base_url = r.base_url
         if r.api_mode:
             cli.api_mode = r.api_mode
-        if not silent:
+        if not silent and _route_changed:
             _restored_startup = bool(_startup_input or _startup_model) and r.new_model == _startup_model
             _kind = "startup selection" if _restored_startup else "config default"
             _cprint(f"  (model reset to {_kind}: {r.new_model})")

@@ -205,6 +205,12 @@ class CLIInitMixin:
         # Contract: these constructor args ARE the launch selection (cli.py passes
         # the --model/--provider flags; no internal caller passes a temporary
         # model here — resume guards explicit -m via _explicit_model_override).
+        from hashlib import sha256
+
+        # Compare credential identity without retaining another copy of the secret.
+        self._startup_api_key_fingerprint = (
+            sha256((self._explicit_api_key or self.api_key or "").encode()).digest()
+            if model or provider else None)
         if model or provider:
             self._startup_model = self.model or None
             self._startup_provider = self.requested_provider or None

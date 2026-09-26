@@ -108,10 +108,32 @@ _CONTEXT_VAR_RESOLVERS = {
     "workspaceFolderBasename": _workspace_basename, "pathSeparator": lambda: os.sep, "/": lambda: os.sep}
 
 
+def _stringify_env_value(value: Any) -> str:
+    """Coerce one configured ``env`` value to the string form a process environment can hold.
+
+    YAML scalars are not strings: ``MS365_MCP_USE_KEYTAR: 0`` parses as int, ``SOME_FLAG: false``
+    as bool, and a bare port/timeout as int. ``os.environ`` and the MCP SDK's
+    ``StdioServerParameters.env`` (pydantic ``dict[str, str]``) both REJECT them, and the SDK
+    rejects them *before* the child is spawned, so the server silently connects as zero tools with
+    only an opaque ``Input should be a valid string`` error. Booleans map to the lowercase
+    ``true``/``false`` a shell-written config would use; ``None`` (an empty YAML value) maps to the
+    empty string rather than Python's ``None``. Same coercion ``agent/lsp/manager.py`` applies to
+    LSP server envs."""
+    if isinstance(value, bool):  # before int: bool is an int subclass
+        return "true" if value else "false"
+    if value is None:
+        return ""
+    return str(value)
+
+
 def _build_safe_env(user_env: Optional[dict]) -> dict:
     """Filtered env for stdio subprocesses so API keys/tokens don't leak: the safe baseline
     keys, ``XDG_*``, vars injected by an external secret source (users configured that backend
-    precisely so subprocesses can consume them), plus the server config's own ``env``."""
+    precisely so subprocesses can consume them), plus the server config's own ``env``.
+
+    Every value leaves here as a string: the child env is a process environment (and the MCP SDK's
+    ``StdioServerParameters`` validates ``dict[str, str]``), so a YAML scalar the user did not quote
+    (``KEY: 0``, ``KEY: false``) is coerced instead of failing the whole server to spawn."""
     from agent.secret_scope import get_secret
     from hermes_cli.env_loader import secret_source_names
     env = {
@@ -130,7 +152,15 @@ def _build_safe_env(user_env: Optional[dict]) -> dict:
     if user_env:
         env.update(user_env)
     from agent.delegation_context import delegated_child_subprocess_env
-    return delegated_child_subprocess_env(env)
+    env = delegated_child_subprocess_env(env)
+    # Last, so the config's own ``env`` (merged above) is covered too: this dict goes straight into
+    # StdioServerParameters(env=...), which takes strings only.
+    coerced = {key: value for key, value in env.items()
+               if not isinstance(key, str) or not isinstance(value, str)}
+    if coerced:
+        logger.debug("MCP stdio env: coerced non-string value(s) %s to their string form",
+                     sorted(coerced))
+    return {str(key): _stringify_env_value(value) for key, value in env.items()}
 
 
 def _which_with_config_pathext(command: str, path_arg, env: dict):

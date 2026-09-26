@@ -110,6 +110,63 @@ on with `streaming.enabled: true` in `config.yaml`. WeCom's per-platform
 global switch is on; set it to `false` to keep single-shot delivery on WeCom.
 :::
 
+## Interactive Cards (DM only)
+
+The adapter renders three interactive surfaces as native WeCom **template cards**
+(`card_type: button_interaction`). Cards are **DM-only by design**: WeCom's
+template-card contract is single-chat only, so group chats keep the plain-text
+flows (approval stays `/approve`, `/model` falls back to the text listing).
+When a user taps a card button, WeCom pushes a `template_card_event` over the
+same WebSocket; the adapter authorizes the sender against the DM allowlist
+before acting, and updates the card in place via `aibot_respond_update_msg`
+inside WeCom's 5-second reply window.
+
+### Exec approval cards
+
+Dangerous-command approvals (`send_exec_approval`) render as a card with one
+button per choice — Allow Once / Allow Session / Always Allow / Deny (the smart
+deny variant offers only Allow Once and Deny). The tap resolves through the
+same `tools.approval.resolve_gateway_approval` path as the text `/approve`
+flow, so approvals work exactly as before, just with buttons. The card is
+replaced by a text_notice confirming the outcome after the tap.
+
+### Slash-command confirmations
+
+`/new`, `/reset`, and `/undo` are gated by `approvals.destructive_slash_confirm`
+and arrive as a three-button card (Once / Always / Cancel) instead of the plain
+text prompt with its `/approve` fallback. Taps resolve through
+`tools.slash_confirm.resolve`, the same entry the text path uses. Without this
+the gateway falls back to text for any adapter that does not implement
+`send_slash_confirm` — which is how those prompts reached WeCom before.
+
+Button labels are deliberately short CJK forms (仅一次 / 永久 / 取消 and
+仅一次 / 本会话 / 永久 / 拒绝 for approvals): WeCom packs buttons three per row
+inside a fixed-width card, so a button renders roughly three CJK characters and
+the gateway's own descriptive labels ("Always Approve") would be clipped into
+indistinguishable stubs. If the card cannot be sent, the adapter falls back to
+the plain-text prompt and reports that delivery as the outcome, so the gateway
+does not send the same prompt twice.
+
+### Model picker cards
+
+`/model` with no arguments renders a model picker card: a provider page first,
+then that provider's models. Picking a model switches immediately; the card
+flips to a "switching…" notice and the result is delivered as a follow-up
+markdown message.
+
+Both pages use a **dropdown** (`button_selection`) rather than a row of name
+buttons. WeCom packs button text into rows of three inside a fixed-width card,
+so a name on a three-per-row line renders about six ASCII characters and the
+client ellipsises the rest ("Alibaba Token Plan (China)" → "Aliba…"); a
+dropdown's options get the full row width instead, so the names stay readable.
+
+A dropdown holds at most 10 options (a protocol cap), so longer lists page via
+上页 / 下页 buttons. Option labels are trimmed to ~20 characters — the docs'
+"≤10 字" counted in CJK width — and a trailing date stamp is dropped first
+(`deepseek-v4-flash-0731` → `deepseek-v4-flash`). The model page keeps the
+active model preselected, so one tap on 切换 applies what the dropdown shows.
+To jump straight to a model that is not in the list, type `/model <name>`.
+
 ## Configuration Options
 
 Set these in `config.yaml` under `platforms.wecom.extra`:

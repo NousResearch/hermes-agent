@@ -13,7 +13,7 @@ Run with:  python -m pytest tests/test_code_execution.py -v
 """
 
 import pytest
-# pytestmark removed — tests run fine (61 pass, ~99s)
+# pytestmark removed: tests run fine (61 pass, ~99s)
 
 import json
 import os
@@ -102,7 +102,7 @@ class TestInterruptedOutput(unittest.TestCase):
 
         self.assertEqual(
             _format_interrupted_output("partial output"),
-            "partial output\n[execution interrupted — superseded by a new live turn]",
+            "partial output\n[execution interrupted - superseded by a new live turn]",
         )
 
 
@@ -197,7 +197,7 @@ class TestExecuteCodeRemoteTempDir(unittest.TestCase):
 
         self.assertEqual(result["status"], "success")
         run_cmd = next(cmd for cmd, _, _ in env.commands if "python3 script.py" in cmd)
-        # The TZ value must be shell-quoted — it should NOT contain unescaped semicolons
+        # The TZ value must be shell-quoted: it should NOT contain unescaped semicolons
         self.assertNotIn("TZ=US/Eastern; echo PWNED", run_cmd,
                          "TZ value with shell metacharacters must not appear unquoted")
         # shlex.quote wraps values containing special characters in single quotes
@@ -462,7 +462,7 @@ class TestStubSchemaDrift(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestBuildExecuteCodeSchema(unittest.TestCase):
-    """Tests for build_execute_code_schema — the dynamic schema generator."""
+    """Tests for build_execute_code_schema - the dynamic schema generator."""
 
     def test_default_includes_all_tools(self):
         schema = build_execute_code_schema()
@@ -514,7 +514,7 @@ class TestEnvVarFiltering(unittest.TestCase):
                  patch("tools.code_execution_tool._load_config",
                        return_value={"timeout": 10, "max_tool_calls": 50}):
                 # reset=True: a session kernel's env is frozen at spawn, so
-                # env-building rules are only observable on a FRESH kernel —
+                # env-building rules are only observable on a FRESH kernel:
                 # a reused one would (correctly) show the env from whenever
                 # it was first spawned, not this test's os.environ tweaks.
                 raw = execute_code(code, task_id="test-env",
@@ -775,6 +775,7 @@ class TestHeadTailTruncation(unittest.TestCase):
         self.assertIn("TAIL", body)
 
 
+@pytest.mark.platforms("posix")
 class TestRpcTokenAuthorization(unittest.TestCase):
     """The per-session RPC token must gate socket dispatch (fail-closed).
 
@@ -783,6 +784,22 @@ class TestRpcTokenAuthorization(unittest.TestCase):
     the tool is dispatched, while a request carrying the correct token
     round-trips normally.
     """
+
+    class _OneShotListener:
+        """Minimal object exposing the .accept()/.settimeout() the loop uses."""
+
+        def __init__(self, conn):
+            self._conn = conn
+            self._served = False
+
+        def settimeout(self, _t):
+            pass
+
+        def accept(self):
+            if self._served:
+                raise socket.timeout()
+            self._served = True
+            return self._conn, ("peer", 0)
 
     def _drive_server(self, rpc_token, requests):
         """Run _rpc_server_loop against a real AF_UNIX socketpair.
@@ -796,23 +813,7 @@ class TestRpcTokenAuthorization(unittest.TestCase):
         # can hand to accept() by wrapping it in a tiny listener shim.
         srv, cli = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
 
-        class _OneShotListener:
-            """Minimal object exposing the .accept()/.settimeout() the loop uses."""
-
-            def __init__(self, conn):
-                self._conn = conn
-                self._served = False
-
-            def settimeout(self, _t):
-                pass
-
-            def accept(self):
-                if self._served:
-                    raise socket.timeout()
-                self._served = True
-                return self._conn, ("peer", 0)
-
-        listener = _OneShotListener(srv)
+        listener = self._OneShotListener(srv)
         stop_event = threading.Event()
         tool_call_log = []
         tool_call_counter = [0]
@@ -859,6 +860,30 @@ class TestRpcTokenAuthorization(unittest.TestCase):
             t.join(timeout=5)
         return responses
 
+    def _start_raw_server(self, rpc_token="secret-token"):
+        """Start _rpc_server_loop on a real socketpair; returns the pieces the
+        test drives (client socket, server thread, stop_event, dispatch log)."""
+        from tools.code_execution_rpc import _rpc_server_loop
+
+        srv, cli = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+
+        stop_event = threading.Event()
+        tool_call_log = []
+        dispatched = []
+
+        def _dispatch(tool_name, tool_args):
+            dispatched.append(tool_name)
+            return _mock_handle_function_call(tool_name, tool_args)
+
+        t = threading.Thread(
+            target=_rpc_server_loop, daemon=True,
+            args=(self._OneShotListener(srv), "test-task", tool_call_log, [0], 10,
+                  frozenset({"terminal"}), stop_event, rpc_token),
+            kwargs={"dispatch": _dispatch},
+        )
+        t.start()
+        return cli, srv, t, stop_event, tool_call_log, dispatched
+
     def test_missing_token_rejected(self):
         """A request with no token is rejected as Unauthorized."""
         resp = self._drive_server(
@@ -867,6 +892,169 @@ class TestRpcTokenAuthorization(unittest.TestCase):
         self.assertEqual(len(resp), 1)
         self.assertIn("Unauthorized", resp[0].get("error", ""))
 
+    @staticmethod
+    def _read_line(cli):
+        buf = b""
+        while b"\n" not in buf:
+            chunk = cli.recv(65536)
+            if not chunk:
+                raise AssertionError("connection closed without a response")
+            buf += chunk
+        return json.loads(buf.split(b"\n", 1)[0].decode())
+
+    def test_oversized_request_rejected_and_connection_closed(self):
+        """A peer streaming a newline-free request past the cap is rejected and
+        the connection is dropped: the pre-auth buffer is bounded. The socket
+        is loopback TCP on Windows, reachable by any local process."""
+        from tools.code_execution_rpc import MAX_RPC_MESSAGE_BYTES
+        cli, srv, t, stop_event, tool_call_log, dispatched = self._start_raw_server()
+        try:
+            cli.settimeout(15)
+            cli.sendall(b"x" * (MAX_RPC_MESSAGE_BYTES + 1))
+            resp = self._read_line(cli)
+            self.assertIn("size limit", resp.get("error", ""))
+            self.assertIn("10 MiB", resp["error"])
+            # A line that never terminates cannot be resynced: conn drops.
+            self.assertEqual(cli.recv(65536), b"")
+            self.assertEqual(dispatched, [])
+            self.assertEqual(tool_call_log, [])
+        finally:
+            stop_event.set()
+            cli.close()
+            srv.close()
+            t.join(timeout=10)
+        self.assertFalse(t.is_alive(), "server loop must exit after the oversized request")
+
+    def test_oversized_terminated_line_resyncs_and_connection_survives(self):
+        """A complete request line past the cap gets the size-limit error and
+        the connection keeps serving: the server resyncs after its newline."""
+        with patch("tools.code_execution_rpc.MAX_RPC_MESSAGE_BYTES", 256):
+            cli, srv, t, stop_event, _, dispatched = self._start_raw_server()
+            try:
+                cli.settimeout(15)
+                cli.sendall(b"x" * 257 + b"\n")
+                resp = self._read_line(cli)
+                self.assertIn("size limit", resp.get("error", ""))
+                self.assertEqual(dispatched, [])
+                cli.sendall((json.dumps(
+                    {"tool": "terminal", "args": {"command": "echo hi"},
+                     "token": "secret-token"}) + "\n").encode())
+                self._read_line(cli)
+                self.assertEqual(dispatched, ["terminal"])
+            finally:
+                stop_event.set()
+                cli.close()
+                srv.close()
+                t.join(timeout=10)
+
+    def test_request_at_exact_cap_boundary(self):
+        """Boundary pin: a line of exactly the cap is processed; one byte over
+        is rejected. A `>` to `>=` flip must go red here."""
+        with patch("tools.code_execution_rpc.MAX_RPC_MESSAGE_BYTES", 128):
+            cli, srv, t, stop_event, _, _ = self._start_raw_server()
+            try:
+                cli.settimeout(15)
+                cli.sendall(b"x" * 128 + b"\n")
+                resp = self._read_line(cli)
+                self.assertIn("Invalid RPC request", resp.get("error", ""))
+                cli.sendall(b"x" * 129 + b"\n")
+                resp = self._read_line(cli)
+                self.assertIn("size limit", resp.get("error", ""))
+            finally:
+                stop_event.set()
+                cli.close()
+                srv.close()
+                t.join(timeout=10)
+
+    def test_non_dict_request_rejected_and_connection_survives(self):
+        """Valid JSON that is not an object must not crash the serving loop;
+        the same connection keeps working afterwards."""
+        cli, srv, t, stop_event, _, dispatched = self._start_raw_server()
+        try:
+            cli.settimeout(15)
+            cli.sendall(b"[1]\n")
+            resp = self._read_line(cli)
+            self.assertIn("Invalid RPC request", resp.get("error", ""))
+            cli.sendall((json.dumps(
+                {"tool": "terminal", "args": {"command": "echo hi"},
+                 "token": "secret-token"}) + "\n").encode())
+            self._read_line(cli)
+            self.assertEqual(dispatched, ["terminal"])
+        finally:
+            stop_event.set()
+            cli.close()
+            srv.close()
+            t.join(timeout=10)
+        self.assertFalse(t.is_alive())
+
+    def test_stop_event_releases_held_connection(self):
+        """A connected peer that stops sending must not pin the server thread
+        past teardown: stop_event is checked between short recv timeouts. One
+        valid exchange first proves the server is inside the conn loop."""
+        cli, srv, t, stop_event, _, _ = self._start_raw_server()
+        try:
+            cli.settimeout(15)
+            cli.sendall((json.dumps(
+                {"tool": "terminal", "args": {"command": "echo hi"},
+                 "token": "secret-token"}) + "\n").encode())
+            self._read_line(cli)
+            stop_event.set()
+            t.join(timeout=10)
+            # Assert before cleanup: closing the client would unblock recv and
+            # mask a thread that ignored stop_event.
+            self.assertFalse(t.is_alive(), "server loop must exit on stop_event even with a held connection")
+        finally:
+            cli.close()
+            srv.close()
+            t.join(timeout=10)
+
+    def test_silent_connection_reaped_at_idle_timeout(self):
+        """A peer that connects and goes silent must be reaped when the idle
+        deadline elapses, with no help from stop_event. The deadline is armed
+        once before the loop and resets only on received bytes: arming it on
+        every iteration would let the short recv polls re-arm it forever, so
+        this test patches the poll short and the idle window to a few seconds.
+        On the re-arming bug the server thread would still be alive here."""
+        with patch("tools.code_execution_rpc._RPC_IDLE_S", 3.0), \
+             patch("tools.code_execution_rpc._RPC_RECV_POLL_S", 0.1):
+            cli, srv, t, stop_event, _, _ = self._start_raw_server()
+            try:
+                # The client connects and sends nothing: the server loop must
+                # exit on its own at the idle deadline.
+                t.join(timeout=15)
+                self.assertFalse(t.is_alive(),
+                    "server loop must exit when a silent peer idles past the deadline")
+                # The server closed the connection: the client reads EOF.
+                cli.settimeout(5)
+                self.assertEqual(cli.recv(65536), b"")
+            finally:
+                stop_event.set()
+                cli.close()
+                srv.close()
+                t.join(timeout=10)
+
+    def test_idle_deadline_resets_on_received_bytes(self):
+        """Wire activity keeps the connection alive: bytes received reset the
+        idle deadline, so an active peer is not reaped while talking."""
+        with patch("tools.code_execution_rpc._RPC_IDLE_S", 3.0), \
+             patch("tools.code_execution_rpc._RPC_RECV_POLL_S", 0.1):
+            cli, srv, t, stop_event, _, dispatched = self._start_raw_server()
+            try:
+                cli.settimeout(15)
+                for _ in range(6):
+                    cli.sendall((json.dumps(
+                        {"tool": "terminal", "args": {"command": "echo hi"},
+                         "token": "secret-token"}) + "\n").encode())
+                    self._read_line(cli)
+                    time.sleep(0.8)  # still inside the 3s idle window
+                self.assertTrue(t.is_alive(),
+                    "server loop must stay alive while the peer keeps sending")
+                self.assertEqual(dispatched, ["terminal"] * 6)
+            finally:
+                stop_event.set()
+                cli.close()
+                srv.close()
+                t.join(timeout=10)
 
 
 

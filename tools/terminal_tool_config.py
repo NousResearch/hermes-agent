@@ -116,6 +116,13 @@ def coerce_ssh_remote_cwd(cwd: str | None, env_type: str | None) -> str | None:
     text = cwd.strip()
     if not text or text.startswith("~"):
         return text or "~"
+    # A host path can never be the SSH target's cwd: `cd` into it exits 126 and a
+    # file tool probing through this environment (read_file, search_files, patch)
+    # silently returns empty. Windows drive paths reach here from a Desktop session
+    # on a Windows host (the app pins TERMINAL_CWD to its own working directory).
+    # Same guard class as the container cwd sanitizers above.
+    if (text[:1].isalpha() and text[1:2] == ":") or not posixpath.isabs(text):
+        return "~"
     from hermes_constants import get_real_home, get_subprocess_home
 
     home = get_subprocess_home()

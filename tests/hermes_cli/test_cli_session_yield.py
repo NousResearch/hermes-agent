@@ -4,6 +4,8 @@ active-session slot to another surface without ending the session (#124073).
 The issue: a chat resumed into ``hermes chat --resume`` fenced every other
 surface out of the session for the life of the CLI process; the only exit was
 quitting the CLI (losing the chat for the surface that created it).
+
+Regression tests for the PR: https://github.com/NousResearch/hermes-agent/pull/124112
 """
 
 from __future__ import annotations

@@ -490,6 +490,9 @@ class ToolsetToggle(BaseModel):
 class ToolsetGroupToggle(BaseModel):
     group: str
     enabled: bool
+    # The desktop renders a curated subset of each group; when provided, only
+    # these members are toggled (validated against the group's effective set).
+    names: Optional[List[str]] = None
     profile: Optional[str] = None
 
 class ToolsetProviderSelect(BaseModel):

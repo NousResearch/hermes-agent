@@ -296,6 +296,16 @@ async def toggle_toolset_group(body: ToolsetGroupToggle, profile: Optional[str] 
     names = sorted(
         ts_key for ts_key, _, _ in _get_effective_configurable_toolsets()
         if _toolset_group(ts_key) == body.group)
+    if body.names is not None:
+        # The desktop renders a curated subset of the group; toggle exactly the
+        # rows it shows — never members that screen gives no row to undo.
+        requested = {str(n) for n in body.names}
+        unknown = sorted(requested - set(names))
+        if unknown:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Toolsets not in group {body.group}: {', '.join(unknown)}")
+        names = sorted(requested)
     if not names:
         raise HTTPException(status_code=400, detail=f"Unknown toolset group: {body.group}")
     scope_profile = body.profile or profile

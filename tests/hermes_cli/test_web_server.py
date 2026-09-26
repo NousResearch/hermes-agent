@@ -3141,6 +3141,36 @@ class TestNewEndpoints:
         assert "my-mcp-server" in saved
         assert "web" not in saved
 
+    def test_toggle_toolset_group_writes_only_requested_names(self):
+        """Regression: the desktop renders a CURATED subset of each group, so the
+        bulk write must touch exactly the rows the client shows. A header
+        displaying 3 integrations rows used to silently write 6 — hiding
+        discord/discord_admin/yuanbao with no row left to re-enable them."""
+        from hermes_cli.config import load_config, save_config
+
+        config = load_config()
+        config.setdefault("platform_toolsets", {}).setdefault("discord", []).extend(
+            ["discord", "discord_admin"])
+        config["platform_toolsets"].setdefault("cli", []).append("yuanbao")
+        save_config(config)
+
+        shown = ["cronjob", "homeassistant", "spotify"]
+        resp = self.client.put(
+            "/api/tools/toolsets/bulk",
+            json={"group": "integrations", "enabled": False, "names": shown})
+        assert resp.status_code == 200
+        assert set(resp.json()["names"]) == set(shown)
+
+        after = {t["name"]: t["enabled"] for t in self.client.get("/api/tools/toolsets").json()}
+        assert not any(after[n] for n in shown)
+        assert after["discord"] and after["discord_admin"] and after["yuanbao"]
+
+    def test_toggle_toolset_group_rejects_names_outside_group(self):
+        resp = self.client.put(
+            "/api/tools/toolsets/bulk",
+            json={"group": "web", "enabled": False, "names": ["web", "memory"]})
+        assert resp.status_code == 400
+
     def test_get_toolset_config_returns_provider_matrix(self):
         """GET .../config returns provider rows with structured env_vars."""
         resp = self.client.get("/api/tools/toolsets/tts/config")

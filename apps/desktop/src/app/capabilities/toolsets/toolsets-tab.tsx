@@ -192,7 +192,12 @@ export function ToolsetsTab({ profile, query, toolsets }: ToolsetsTabProps) {
     setBulkBusy(true)
 
     try {
-      const result = await setToolsetGroupEnabled(group, enabled, profile)
+      const result = await setToolsetGroupEnabled(
+        group,
+        enabled,
+        profile,
+        bulkToolsets.filter(ts => (ts.group ?? 'other') === group).map(ts => ts.name)
+      )
       const names = new Set(result.names)
       setToolsets(cur => cur?.map(r => (names.has(r.name) ? { ...r, enabled, available: enabled } : r)) ?? cur)
       notify({ kind: 'success', title: t.skills.bulkUpdated(result.names.length), message: '' })

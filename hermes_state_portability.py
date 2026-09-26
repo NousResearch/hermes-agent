@@ -276,21 +276,23 @@ class SessionPortabilityMixin:
 
     # ── Export ─────────────────────────────────────────────────────────────
 
-    def _with_messages(self, session: Dict[str, Any]) -> Dict[str, Any]:
-        messages = self.get_messages(session["id"])
+    def _with_messages(self, session: Dict[str, Any], include_compacted: bool = False) -> Dict[str, Any]:
+        messages = self.get_messages(session["id"], include_compacted=include_compacted)
         return {**session, "messages": messages, "timings": _export_timings(messages, session["id"])}
 
-    def export_session(self, session_id: str) -> Optional[Dict[str, Any]]:
-        """Export a single session with all its messages as a dict."""
+    def export_session(self, session_id: str, include_compacted: bool = False) -> Optional[Dict[str, Any]]:
+        """Export a single session with all its messages as a dict. ``include_compacted`` adds the turns
+        in-place compaction archived (the history the user still sees); it stays off for payloads that go
+        back through :meth:`import_sessions`, which would insert those turns as live context."""
         session = self.get_session(session_id)
-        return self._with_messages(session) if session else None
+        return self._with_messages(session, include_compacted) if session else None
 
-    def export_session_lineage(self, session_id: str) -> Optional[Dict[str, Any]]:
-        """Export a compression lineage as one logical session dict."""
+    def export_session_lineage(self, session_id: str, include_compacted: bool = False) -> Optional[Dict[str, Any]]:
+        """Export a compression lineage as one logical session dict (``include_compacted`` as in :meth:`export_session`)."""
         lineage_ids = self.get_compression_lineage(session_id)
         if not lineage_ids:
             return None
-        segments = [seg for seg in map(self.export_session, lineage_ids) if seg]
+        segments = [seg for seg in (self.export_session(sid, include_compacted) for sid in lineage_ids) if seg]
         if not segments:
             return None
         messages = [msg for seg in segments for msg in (seg.get("messages") or [])]
@@ -300,9 +302,12 @@ class SessionPortabilityMixin:
             "messages": messages, "timings": _export_timings(messages, session_id),
         }
 
-    def export_all(self, source: str = None) -> List[Dict[str, Any]]:
-        """Export all sessions (with messages) as dicts, e.g. for JSONL backup."""
+    def export_all(self, source: str = None, include_compacted: bool = False) -> List[Dict[str, Any]]:
+        """Export all sessions (with messages) as dicts, e.g. for JSONL backup (``include_compacted`` as in
+        :meth:`export_session`; that display read dedupes per session, so it skips the batched read)."""
         sessions = self.search_sessions(source=source, limit=100000)
+        if include_compacted:
+            return [self._with_messages(session, True) for session in sessions]
         messages_by_session = {session["id"]: [] for session in sessions}
         session_ids = list(messages_by_session)
         # Stay below SQLite's legacy 999-variable limit while replacing the per-session N+1 reads.

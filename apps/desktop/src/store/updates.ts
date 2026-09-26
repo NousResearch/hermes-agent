@@ -5,14 +5,15 @@
 
 import { atom } from 'nanostores'
 
+import { connectionScoped, profileScoped } from '@/api/client'
 import type {
   DesktopUpdateApplyOptions,
   DesktopUpdateApplyResult,
-  DesktopUpdateBlocker,
   DesktopUpdateProgress,
   DesktopUpdateStage,
   DesktopUpdateStatus,
-  DesktopVersionInfo
+  DesktopVersionInfo,
+  HermesConnection
 } from '@/global'
 import { checkHermesUpdate, getActionStatus, updateHermes } from '@/hermes'
 import { translateNow } from '@/i18n'
@@ -20,9 +21,13 @@ import { persistString, storedString } from '@/lib/storage'
 import { $connectionsRegistry, refreshConnectionsRegistry } from '@/store/connections'
 import { reconnectGateway } from '@/store/gateway-reconnect'
 import { dismissNotification, notify } from '@/store/notifications'
-import { onboardingSurfaceActive } from '@/store/onboarding-presence'
 import { $connection } from '@/store/session'
 import type { BackendUpdateCheckResponse } from '@/types/hermes'
+
+/** Keyed per retired-channel revision: a new retirement (or a revision bump on
+ *  the same channel) re-shows the notice, a plain re-check never does. */
+const DISCONTINUED_DISMISS_KEY = 'hermes:discontinued-notice-dismissed-for'
+const DISCONTINUED_TOAST_ID = 'desktop-build-discontinued'
 
 export interface UpdateApplyState {
   applying: boolean
@@ -33,8 +38,7 @@ export interface UpdateApplyState {
   /** When the stage is 'manual': the exact command the user should run
    *  (CLI install with no staged updater). */
   command: string | null
-  /** Structured update blockers used by the safe close-and-update confirmation. */
-  blockers?: readonly DesktopUpdateBlocker[] | null
+
   log: readonly { stage: DesktopUpdateStage; message: string; at: number }[]
 }
 
@@ -64,7 +68,7 @@ export const $updateOverlayTarget = atom<UpdateTarget>('client')
 
 export const setUpdateOverlayOpen = (open: boolean) => $updateOverlayOpen.set(open)
 
-export const openUpdateOverlayFor = (target: UpdateTarget) => {
+export const openUpdateOverlayFor = (target: UpdateTarget): void => {
   $updateOverlayTarget.set(target)
   $updateOverlayOpen.set(true)
   void (target === 'backend' ? checkBackendUpdates({ force: true }) : checkUpdates({ force: true }))
@@ -95,24 +99,30 @@ function isUpdateToastSnoozed(): boolean {
 
 // Must match tui_gateway's DESKTOP_BACKEND_CONTRACT that this build was written
 // against. The backend reports its own value in session runtime info; a lower
-// value (or none — a pre-GUI checkout) means GUI<->backend skew.
+// value (or none — a pre-GUI checkout) means the backend is older than this
+// GUI, a higher value means this GUI is older than the backend. Both
+// directions are GUI<->backend skew and both warn — an old GUI silently
+// driving a newer backend is just as broken as the reverse, it only fails
+// further from the cause.
 // v2: requires the file.attach RPC (remote-gateway non-image file upload).
 // v3: requires approvals.mode config RPCs and session.info reconciliation.
 // v4: requires explicit Fast-off session creation and session-scoped Fast edits.
 // v5: requires raised WebSocket frame size for large one-shot file.attach.
 // v6: requires key-addressed plugins.manage rows (keyless rows render
-//     read-only in Capabilities → Plugins).
+//     read-only in Settings → Plugins).
 // v7: requires JSON-RPC server->client requests for every blocking prompt
 //     (approval/clarify/sudo/secret/vault/MCP setup); a v6 backend's
 //     `<kind>.request` notifications would never render a card.
-export const REQUIRED_BACKEND_CONTRACT = 7
+export const REQUIRED_BACKEND_CONTRACT = 8
 const SKEW_TOAST_ID = 'backend-contract-skew'
+const GUI_SKEW_TOAST_ID = 'gui-contract-skew'
 // The contract check runs on every session.resume (applyRuntimeInfo), so
 // without a snooze the warning re-popped on every thread the user opened, even
 // right after they closed it. Mirror the update toast: persist a cooldown when
-// the user dismisses it. It still reminds again after the window if the backend
-// is still behind, and clears immediately once the backend catches up.
+// the user dismisses it. It still reminds again after the window if the skew
+// persists, and clears immediately once the two sides align.
 const SKEW_TOAST_SNOOZE_KEY = 'hermes:backend-skew-toast-snooze-until'
+const GUI_SKEW_TOAST_SNOOZE_KEY = 'hermes:gui-skew-toast-snooze-until'
 const SKEW_TOAST_COOLDOWN_MS = 24 * 60 * 60 * 1000
 
 function snoozeSkewToast(): void {
@@ -121,6 +131,16 @@ function snoozeSkewToast(): void {
 
 function isSkewToastSnoozed(): boolean {
   const until = Number(storedString(SKEW_TOAST_SNOOZE_KEY) || 0)
+
+  return Number.isFinite(until) && Date.now() < until
+}
+
+function snoozeGuiSkewToast(): void {
+  persistString(GUI_SKEW_TOAST_SNOOZE_KEY, String(Date.now() + SKEW_TOAST_COOLDOWN_MS))
+}
+
+function isGuiSkewToastSnoozed(): boolean {
+  const until = Number(storedString(GUI_SKEW_TOAST_SNOOZE_KEY) || 0)
 
   return Number.isFinite(until) && Date.now() < until
 }
@@ -144,43 +164,80 @@ function isInstallMethodToastSnoozed(): boolean {
 }
 
 /**
- * Guard against a desktop GUI talking to a backend that predates its contract
- * (e.g. a bb/gui-built app pointed at a `main` checkout). Rather than failing
- * cryptically downstream, surface a warning with a one-click align that runs
- * the normal update flow (which self-heals to the right branch).
+ * Guard against GUI<->backend contract skew in either direction. A backend
+ * that predates this GUI's contract (e.g. a bb/gui-built app pointed at a
+ * `main` checkout) gets a "backend out of date" warning with a one-click
+ * align that runs the normal backend update flow. A backend *ahead* of this
+ * GUI's contract (typically a long-running app that survived a backend
+ * update without relaunching) gets the reverse "app out of date" warning
+ * pointing at the client update flow. Without the reverse check an old GUI
+ * silently drives a newer backend and fails cryptically downstream.
  *
- * Runs on every session open; closing the toast snoozes it for a cooldown so it
+ * Runs on every session open; closing a toast snoozes it for a cooldown so it
  * doesn't nag on every thread switch.
  */
 export function reportBackendContract(contract: number | undefined): void {
-  if ((contract ?? 0) >= REQUIRED_BACKEND_CONTRACT) {
+  const reported = contract ?? 0
+
+  if (reported >= REQUIRED_BACKEND_CONTRACT) {
     dismissNotification(SKEW_TOAST_ID)
     // Backend caught up — forget any prior snooze so a future regression warns
     // immediately rather than staying silent for the rest of the window.
     persistString(SKEW_TOAST_SNOOZE_KEY, null)
+  }
+
+  if (reported <= REQUIRED_BACKEND_CONTRACT) {
+    dismissNotification(GUI_SKEW_TOAST_ID)
+    // GUI caught up (or the backend rolled back) — same reset for the reverse
+    // direction.
+    persistString(GUI_SKEW_TOAST_SNOOZE_KEY, null)
+  }
+
+  if (reported < REQUIRED_BACKEND_CONTRACT) {
+    if (isSkewToastSnoozed()) {
+      return
+    }
+
+    notify({
+      action: {
+        label: translateNow('notifications.updateHermes'),
+        onClick: () => {
+          snoozeSkewToast()
+          void applyBackendUpdate()
+        }
+      },
+      durationMs: 0,
+      id: SKEW_TOAST_ID,
+      kind: 'warning',
+      message: translateNow('notifications.backendOutOfDateMessage'),
+      onDismiss: () => snoozeSkewToast(),
+      title: translateNow('notifications.backendOutOfDateTitle')
+    })
 
     return
   }
 
-  if (isSkewToastSnoozed()) {
-    return
-  }
+  if (reported > REQUIRED_BACKEND_CONTRACT) {
+    if (isGuiSkewToastSnoozed()) {
+      return
+    }
 
-  notify({
-    action: {
-      label: translateNow('notifications.updateHermes'),
-      onClick: () => {
-        snoozeSkewToast()
-        void applyBackendUpdate()
-      }
-    },
-    durationMs: 0,
-    id: SKEW_TOAST_ID,
-    kind: 'warning',
-    message: translateNow('notifications.backendOutOfDateMessage'),
-    onDismiss: () => snoozeSkewToast(),
-    title: translateNow('notifications.backendOutOfDateTitle')
-  })
+    notify({
+      action: {
+        label: translateNow('notifications.updateDesktopApp'),
+        onClick: () => {
+          snoozeGuiSkewToast()
+          openUpdateOverlayFor('client')
+        }
+      },
+      durationMs: 0,
+      id: GUI_SKEW_TOAST_ID,
+      kind: 'warning',
+      message: translateNow('notifications.desktopOutOfDateMessage'),
+      onDismiss: () => snoozeGuiSkewToast(),
+      title: translateNow('notifications.desktopOutOfDateTitle')
+    })
+  }
 }
 
 export function reportInstallMethodWarning(message: string | undefined): void {
@@ -215,21 +272,27 @@ export function reportInstallMethodWarning(message: string | undefined): void {
  * showed the user a machine they weren't told about, with no way back.
  */
 export function maybeNotifyUpdateAvailable(status: DesktopUpdateStatus | null, target: UpdateTarget = 'client') {
-  if (!status || status.supported === false || status.error || !status.targetSha) {
+  // Either signal means "update ready": behind > 0 (git checkout) or
+  // updateAvailable (shallow clone, App Installer feed).
+  if (!status || status.supported === false || status.error) {
     return
   }
 
-  // A toast would interrupt the cinematic or guided chat. Drop this poll's
-  // offer: the poller checks again later and normal snooze handling still
-  // applies, so there is no need to queue a notification.
-  if (onboardingSurfaceActive()) {
+  // The package update owner reports availability without a commit SHA.
+  // Git checks must still identify their target commit; a native macOS
+  // (electron-updater) check names its target by release tag instead.
+  const hasTargetIdentity: boolean =
+    Boolean(status.targetSha) ||
+    Boolean(status.latestTag) ||
+    status.mechanism === 'app-installer' ||
+    status.mechanism === 'microsoft-store'
+
+  if (!hasTargetIdentity) {
     return
   }
 
   const behind = typeof status.behind === 'number' ? status.behind : null
 
-  // behind === null means "update available, exact count unknown" (shallow
-  // clone). That still deserves the toast — just with count-free copy.
   if ((behind ?? 0) <= 0 && !status.updateAvailable) {
     return
   }
@@ -255,11 +318,53 @@ export function maybeNotifyUpdateAvailable(status: DesktopUpdateStatus | null, t
     id: UPDATE_TOAST_ID,
     kind: 'info',
     message:
-      behind !== null && behind > 0
-        ? translateNow('notifications.updateReadyMessage', behind)
-        : translateNow('notifications.updateReadyMessageUnknown'),
+      status.mechanism === 'app-installer'
+        ? translateNow('notifications.updateReadyMessageAppInstaller')
+        : behind !== null && behind > 0
+          ? translateNow('notifications.updateReadyMessage', behind)
+          : translateNow('notifications.updateReadyMessageUnknown'),
     onDismiss: () => snoozeUpdateToast(),
     title: translateNow('notifications.updateReadyTitle')
+  })
+}
+
+/** Which retired-channel revision the discontinued notice was dismissed for. */
+function discontinuedDismissKey(retirement: NonNullable<DesktopUpdateStatus['retirement']>): string {
+  return `${retirement.destination}@${retirement.version}`
+}
+
+/** Persist the dismissal so plain re-checks never nag; a new retirement re-shows. */
+export function dismissDiscontinuedNotice(retirement: NonNullable<DesktopUpdateStatus['retirement']>): void {
+  persistString(DISCONTINUED_DISMISS_KEY, discontinuedDismissKey(retirement))
+  dismissNotification(DISCONTINUED_TOAST_ID)
+}
+
+/**
+ * The discontinued retirement tier surfaces as a warning toast on check — no
+ * download is ever offered. Suppressed once dismissed for this channel
+ * revision; a fresh retirement re-notifies.
+ */
+function maybeNotifyDiscontinued(retirement: NonNullable<DesktopUpdateStatus['retirement']>): void {
+  if (retirement.state !== 'discontinued') {
+    return
+  }
+
+  if (storedString(DISCONTINUED_DISMISS_KEY) === discontinuedDismissKey(retirement)) {
+    return
+  }
+
+  notify({
+    action: {
+      label: translateNow('notifications.seeWhatsNew'),
+      onClick: () => openUpdateOverlayFor('client')
+    },
+    durationMs: 0,
+    icon: 'warning',
+    id: DISCONTINUED_TOAST_ID,
+    kind: 'warning',
+    message: translateNow('updates.discontinuedBody'),
+    onDismiss: () => dismissDiscontinuedNotice(retirement),
+    title: translateNow('updates.discontinuedTitle')
   })
 }
 
@@ -350,11 +455,7 @@ export function requestActiveUpdate(): void {
   openUpdateOverlayFor(target)
 }
 
-/** Re-read the running app's version from the Electron main process and
- *  publish it on `$desktopVersion`. Called when the About panel mounts, the
- *  update flow finishes, and the window regains focus, so the About text
- *  stays in sync with the just-installed binary instead of frozen at the
- *  value captured at first-load. */
+/** Refresh the active gateway version and the desktop's build metadata. */
 export async function refreshDesktopVersion(): Promise<DesktopVersionInfo | null> {
   if (typeof window === 'undefined') {
     return null
@@ -366,7 +467,12 @@ export async function refreshDesktopVersion(): Promise<DesktopVersionInfo | null
   // mid-reload, or the bridge not yet ready on first paint) would surface
   // as an unhandled promise rejection in the renderer. Swallow it.
   try {
-    const next = await window.hermesDesktop?.getVersion?.()
+    const connection = $connection.get()
+    const next = await window.hermesDesktop?.getVersion?.({ ...connectionScoped(), ...profileScoped() })
+
+    if ($connection.get() !== connection) {
+      return null
+    }
 
     if (next) {
       $desktopVersion.set(next)
@@ -397,20 +503,31 @@ function mapBackendCheck(res: BackendUpdateCheckResponse): DesktopUpdateStatus {
   }
 }
 
-/**
- * `force` bypasses every cache (Electron's 24h on-disk cache, the backend's
- * `.update_check`). Only user-initiated checks pass it — the menu item,
- * Settings "Check now", opening the overlay. The background poller never does:
- * each forced check is a real GitHub round trip from every running client.
- */
+/** Only explicit user checks and post-update refreshes bypass the caches. */
 export interface UpdateCheckOptions {
   force?: boolean
 }
 
+// Key of the connection that wants the next check once the in-flight one
+// (if any) clears — set when a check is requested while another is already
+// running for a different target, so that target isn't silently dropped.
+let backendCheckPendingKey: string | undefined
+
 export async function checkBackendUpdates({
   force = false
 }: UpdateCheckOptions = {}): Promise<DesktopUpdateStatus | null> {
-  if (!isRemoteMode() || $backendUpdateChecking.get()) {
+  if (!isRemoteMode()) {
+    return $backendUpdateStatus.get()
+  }
+
+  // Bind this request to the connection active when it started. Switching
+  // remote targets mid-request must not let a slower, now-stale response
+  // (for the connection we've since left) overwrite the newer one.
+  const requestKey = connectionKey($connection.get())
+
+  if ($backendUpdateChecking.get()) {
+    backendCheckPendingKey = requestKey
+
     return $backendUpdateStatus.get()
   }
 
@@ -418,8 +535,11 @@ export async function checkBackendUpdates({
 
   try {
     const status = mapBackendCheck(await checkHermesUpdate(force))
-    $backendUpdateStatus.set(status)
-    maybeNotifyUpdateAvailable(status, 'backend')
+
+    if (connectionKey($connection.get()) === requestKey) {
+      $backendUpdateStatus.set(status)
+      maybeNotifyUpdateAvailable(status, 'backend')
+    }
 
     return status
   } catch (error) {
@@ -430,11 +550,24 @@ export async function checkBackendUpdates({
       fetchedAt: Date.now()
     }
 
-    $backendUpdateStatus.set(fallback)
+    if (connectionKey($connection.get()) === requestKey) {
+      $backendUpdateStatus.set(fallback)
+    }
 
     return fallback
   } finally {
     $backendUpdateChecking.set(false)
+
+    const pendingKey = backendCheckPendingKey
+
+    backendCheckPendingKey = undefined
+
+    // Someone asked for a check for a different (still-active) target while
+    // this one was in flight — run it now instead of leaving that target
+    // showing whatever this request happened to return.
+    if (pendingKey && pendingKey !== requestKey && pendingKey === connectionKey($connection.get())) {
+      void checkBackendUpdates()
+    }
   }
 }
 
@@ -450,6 +583,11 @@ export async function checkUpdates({ force = false }: UpdateCheckOptions = {}): 
   try {
     const status = await bridge.check({ force })
     $updateStatus.set(status)
+
+    if (status.retirement) {
+      maybeNotifyDiscontinued(status.retirement)
+    }
+
     maybeNotifyUpdateAvailable(status, 'client')
     void refreshDesktopVersion()
 
@@ -474,6 +612,12 @@ export async function checkUpdates({ force = false }: UpdateCheckOptions = {}): 
 }
 
 export async function applyUpdates(opts: DesktopUpdateApplyOptions = {}): Promise<DesktopUpdateApplyResult> {
+  if ($updateStatus.get()?.retirement) {
+    openUpdateOverlayFor('client')
+
+    return { ok: false, error: 'retirement-blocked' }
+  }
+
   const bridge = window.hermesDesktop?.updates
 
   if (!bridge) {
@@ -494,7 +638,7 @@ export async function applyUpdates(opts: DesktopUpdateApplyOptions = {}): Promis
         ...IDLE,
         applying: false,
         stage: 'manual',
-        message: result.command ?? 'hermes update',
+        message: result.message ?? result.command ?? 'hermes update',
         command: result.command ?? 'hermes update'
       })
 
@@ -545,6 +689,11 @@ export async function applyUpdates(opts: DesktopUpdateApplyOptions = {}): Promis
         // rather than stranding them on an un-closeable spinner.
         setUpdateOverlayOpen(false)
         resetUpdateApplyState()
+
+        if (result.updateAvailable === false) {
+          return result
+        }
+
         notify({
           durationMs: 8000,
           id: UPDATE_TOAST_ID,
@@ -562,8 +711,7 @@ export async function applyUpdates(opts: DesktopUpdateApplyOptions = {}): Promis
           applying: false,
           stage: 'error',
           error: result?.error ?? 'apply-failed',
-          message: result?.message ?? translateNow('updates.errorBody'),
-          blockers: result?.blockers ?? null
+          message: result?.message ?? translateNow('updates.errorBody')
         })
       }
     }
@@ -703,10 +851,13 @@ async function runBackendUpdate(): Promise<DesktopUpdateApplyResult> {
 
     if (!started.ok) {
       const message = (started as { message?: string }).message || translateNow('updates.applyStatus.notAvailable')
-      const command = (started as { update_command?: string }).update_command || 'hermes update'
+      // An empty update_command is the backend saying "there is no command to
+      // run here" (managed container, commit build) — render the message-only
+      // view. Only a field absent from an older backend falls back.
+      const command = ((started as { update_command?: string | null }).update_command ?? 'hermes update') || null
       $backendUpdateApply.set({ ...IDLE, applying: false, stage: 'manual', message, command })
 
-      return { ok: false, error: 'manual', manual: true, message, command }
+      return { ok: false, error: 'manual', manual: true, message, command: command ?? undefined }
     }
 
     $backendUpdateApply.set({
@@ -846,7 +997,7 @@ async function maybeNudgeClientAfterBackendUpdate(): Promise<void> {
     return
   }
 
-  const status = (await checkUpdates({ force: true }).catch(() => null)) ?? $updateStatus.get()
+  const status = (await checkUpdates({ force: true }).catch((): null => null)) ?? $updateStatus.get()
 
   if (!status || status.error || (!status.updateAvailable && (status.behind ?? 0) <= 0)) {
     return
@@ -969,7 +1120,7 @@ async function runEverythingUpdate(): Promise<void> {
     //    leave the app stale — the exact failure this flow exists to prevent.
     //    `checkUpdates()` resolves with an error-status rather than rejecting,
     //    so fall back to the pre-flow snapshot when the live check can't answer.
-    const freshClientStatus = await checkUpdates({ force: true }).catch(() => null)
+    const freshClientStatus = await checkUpdates({ force: true }).catch((): null => null)
     const clientStatus = freshClientStatus?.error ? cachedClientStatus : (freshClientStatus ?? cachedClientStatus)
 
     if ((clientStatus?.behind ?? 0) > 0 || clientStatus?.updateAvailable) {
@@ -1009,14 +1160,23 @@ function ingestProgress(payload: DesktopUpdateProgress): void {
 let pollerStarted = false
 let backgroundTimer: ReturnType<typeof setInterval> | null = null
 let connectionUnsub: (() => void) | null = null
-let lastConnectionMode: string | undefined
+let lastConnectionKey: string | undefined
 
-// Passive checks run at most once per day per client. The main process and the
-// backend each keep a 24h cache, so a tick or focus that lands inside the window
-// is answered locally — the interval just decides how often we ask.
+// mode alone can't tell two remote backends apart — switching directly from
+// remote profile A to remote profile B leaves mode === 'remote' both times.
+// Key on the actual backend target so a target change re-checks even when
+// the mode doesn't. Pooled profiles share a baseUrl, so the profile joins
+// the key: the update check is profile-scoped (per-profile overrides can
+// pin a different channel/branch).
+function connectionKey(conn: HermesConnection | null): string {
+  if (conn?.mode !== 'remote') {
+    return String(conn?.mode)
+  }
+
+  return conn.profile ? `remote:${conn.baseUrl}:${conn.profile}` : `remote:${conn.baseUrl}`
+}
+
 export const BACKGROUND_UPDATE_CHECK_MS = 24 * 60 * 60 * 1000
-// Focus re-checks are bounded by the same day-long cadence, tracked here so a
-// user who alt-tabs every minute never turns focus into a poll.
 const FOCUS_RECHECK_KEY = 'hermes.updates.last-passive-check'
 
 function passiveCheckDue(now: number): boolean {
@@ -1050,13 +1210,16 @@ export function startUpdatePoller(): void {
 
   // The poller starts at mount, before the gateway connects — so the first
   // backend check above sees mode≠remote and no-ops. Re-check once the
-  // connection resolves to remote.
-  connectionUnsub = $connection.subscribe(conn => {
-    if (conn?.mode === lastConnectionMode) {
+  // connection resolves to remote, and again whenever the remote target
+  // itself changes (switching between two remote profiles).
+  connectionUnsub = $connection.subscribe((conn: HermesConnection | null): void => {
+    const key = connectionKey(conn)
+
+    if (key === lastConnectionKey) {
       return
     }
 
-    lastConnectionMode = conn?.mode
+    lastConnectionKey = key
 
     if (conn?.mode === 'remote') {
       void checkBackendUpdates()
@@ -1075,12 +1238,12 @@ export function stopUpdatePoller(): void {
 
   connectionUnsub?.()
   connectionUnsub = null
-  lastConnectionMode = undefined
+  lastConnectionKey = undefined
   window.removeEventListener('focus', onFocus)
   pollerStarted = false
 }
 
-function onFocus() {
+function onFocus(): void {
   void refreshDesktopVersion()
 
   if (passiveCheckDue(Date.now())) {

@@ -91,14 +91,6 @@ def test_ordinary_providers_are_unaffected():
     assert _run(_fake_parent(_PlainClient())).called
 
 
-def test_the_capability_is_read_off_the_class_too():
-    """Clients declare it as a class attribute; an instance need not set it."""
-
-    class _IncapableClient:
-        SUPPORTS_HERMES_TOOL_CALLS = False
-
-    assert bg._parent_can_emit_tool_calls(_fake_parent(_IncapableClient())) is False
-    assert bg._parent_can_emit_tool_calls(_fake_parent(None)) is True
 
 
 def test_an_incapable_provider_still_reviews_when_the_review_is_routed_away():

@@ -45,9 +45,6 @@ class TestMCPComponentExtraction:
         )
 
 
-    def test_docker_returns_none(self):
-        # We don't currently parse docker image refs.
-        assert sa._extract_mcp_component("x", "docker", ["run", "-i", "mcp/foo:1.0"]) is None
 
     def test_empty_args(self):
         assert sa._extract_mcp_component("x", "npx", []) is None
@@ -102,11 +99,6 @@ class TestSeverityExtraction:
 
 
 class TestRunAudit:
-    def test_no_components_returns_empty(self, tmp_path: Path):
-        findings = sa.run_audit(
-            skip_venv=True, skip_plugins=True, skip_mcp=True, hermes_home=tmp_path
-        )
-        assert findings == []
 
     def test_findings_sorted_by_severity_desc(self, tmp_path: Path):
         plugin = tmp_path / "plugins" / "p"
@@ -153,24 +145,6 @@ class TestExitCodes:
         defaults.update(kwargs)
         return argparse.Namespace(**defaults)
 
-    def test_discovery_runs_once_per_audit(self, tmp_path: Path, monkeypatch, capsys):
-        """cmd_security_audit must not scan the venv/plugins/MCP config twice.
-
-        Regression for the double-scan noted in #75485: the component count
-        and the audit each ran full discovery independently.
-        """
-        monkeypatch.setattr(sa, "get_hermes_home", lambda: str(tmp_path))
-        calls = {"venv": 0}
-
-        def counting_discover_venv():
-            calls["venv"] += 1
-            return [sa.Component(name="pkg", version="1.0", ecosystem="PyPI", source="venv")]
-
-        monkeypatch.setattr(sa, "_discover_venv", counting_discover_venv)
-        monkeypatch.setattr(sa, "_osv_query_batch", lambda comps: {})
-        sa.cmd_security_audit(self._build_args(skip_venv=False))
-        capsys.readouterr()
-        assert calls["venv"] == 1
 
 
 

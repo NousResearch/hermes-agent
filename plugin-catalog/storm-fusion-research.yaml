@@ -1,0 +1,16 @@
+name: storm-fusion-research
+repo: https://github.com/bmtrnavsky/storm-fusion-research-pipeline
+sha: 76e322bede3d039632672b833422f0146dce15d6
+description: "Human-gated perspective-panel research. One question, several seats, one judge, one human. Solo, native subagent panel, or per-seat MoA/Fusion fanout via the storm_run_panel tool. Disclosure — every seat/judge call runs through Hermes's plugin LLM lane on your own credentials; with llm.allow_provider_override / allow_model_override enabled the agent picks provider and model per seat and spend follows that choice. The human gates are skill instructions to the agent, not enforced by the tool."
+maintainer: bmtrnavsky
+tier: community
+category: tools
+version: "0.4.0"
+requires_hermes: '>=0.21'
+docs_url: https://github.com/bmtrnavsky/storm-fusion-research-pipeline#readme
+image: https://raw.githubusercontent.com/bmtrnavsky/storm-fusion-research-pipeline/76e322bede3d039632672b833422f0146dce15d6/docs/social-preview.png
+capabilities:
+  provides_tools: [storm_run_panel]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

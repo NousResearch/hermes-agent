@@ -10,19 +10,16 @@
  * real executable, and the electron npm shim would re-spawn out of our
  * control).
  *
- * Usage (from the scratch dir where the driver installed @playwright/test):
+ * Usage (current CI checkout with locked driver dependencies):
  *   node launch-from-spec.mjs --spec /path/launch-spec.json \
  *     [--result $HERMES_HOME/.hermes-update-result.json] \
  *     [--expect-sha <sha> --repo-dir <install dir>] [--no-update]
  *
- * --no-update: launch + wait for the window + close. The smoke arm.
- * Otherwise: click Update now, then poll for completion. Two signals,
- * either satisfies (poll whichever are given, first hit wins):
- *   --result      the windows hand-off's result file
- *                 (HERMES_HOME/.hermes-update-result.json)
- *   --expect-sha  the installed checkout reaching the expected commit -
- *                 the source-install signal, where the About pane's update
- *                 runs `hermes update` and no result file exists.
+ * --no-update: require a real desktop chat, then close gracefully.
+ * Otherwise: click Update now, then require a new successful handoff result
+ * or source-update receipt, the expected checkout, and marker removal.
+ * A checkout reset alone is not completion. No driver-assisted relaunch,
+ * force-kill, or rebuild may turn an unfinished update into a passing one.
  * The Playwright close event is unreliable across the update handoff, so
  * neither signal is an app event.
  */
@@ -33,6 +30,12 @@ import { execFileSync } from 'node:child_process';
 import { parseArgs } from 'node:util';
 import { _electron } from '@playwright/test';
 import { prepareWindowForInput } from './window-input.cjs';
+import { assertStagedBranch, pickAppWindow, openAbout, readManualUpdateCommand, waitForUpdate } from './update-ui.cjs';
+import { installSourceBranchProbe, prepareSourceBranchEnvironment } from './source-branch-probe.cjs';
+import { observeSourceUpdate } from './source-update-observer.mjs';
+import { runUpdateWindowChat } from './update-window-chat.mjs';
+import { isolateUpdateWindowEnvironment, isolatedElectronArgs, updateWindowEnvironment } from './smoke-env.mjs';
+import { sourceRuntimeSettleCommand } from './source-runtime-settle.mjs';
 
 /**
  * @typedef {{argv: string[], cwd: string, env: Record<string, string>,
@@ -82,6 +85,23 @@ function log(msg) {
   console.log(`[launch-from-spec] ${msg}`);
 }
 
+/**
+ * Settle source runtime/package replacement before Playwright owns Electron.
+ * A first non-metadata startup may replace the packaged app and relaunch it;
+ * doing that after `_electron.launch` attaches loses the inspection pipe.
+ *
+ * @param {string} root
+ * @param {Record<string, string>} env
+ */
+function settleSourceRuntime(root, env) {
+  const invocation = sourceRuntimeSettleCommand(root, env);
+  log('settling source runtime under the captured launch environment');
+  execFileSync(invocation.command, invocation.args, {
+    cwd: root, env, stdio: 'inherit', timeout: 20 * 60_000,
+    windowsVerbatimArguments: invocation.windowsVerbatimArguments,
+  });
+}
+
 // Coarse phase marker for the self-deadline's post-mortem line.
 let currentPhase = 'init';
 /** @param {string} p */
@@ -107,88 +127,67 @@ async function main() {
       result: { type: 'string' },
       'expect-sha': { type: 'string' },
       'repo-dir': { type: 'string' },
+      'old-sha': { type: 'string' },
+      'chat-out': { type: 'string' },
+      'mock-url': { type: 'string' },
       'no-update': { type: 'boolean', default: false },
       'timeout-ms': { type: 'string', default: '600000' },
     },
   });
   if (!values.spec) throw new Error('--spec is required');
+  if (!values['old-sha'] || !values['chat-out'] || !values['mock-url'] || !values['repo-dir']) {
+    throw new Error('--old-sha, --chat-out, --mock-url and --repo-dir are required for OLD chat');
+  }
   /** @type {LaunchSpec} */
   const spec = JSON.parse(fs.readFileSync(values.spec, 'utf8'));
   const launch = resolveLaunch(spec);
-  log(`launching ${launch.executablePath} (shape: ${spec.matchedShape})`);
+  const capturedEnv = updateWindowEnvironment(launch.env, values['repo-dir'], 'source');
+  settleSourceRuntime(values['repo-dir'], capturedEnv);
+  const launchEnv = isolateUpdateWindowEnvironment(capturedEnv);
+  if (!values['no-update']) {
+    // This unpublished E2E target has no R2 channel record. Only the test
+    // probe selects the real checker's explicit branch path.
+    prepareSourceBranchEnvironment(values['repo-dir'], values['expect-sha'],
+      process.env.HERMES_E2E_REAL_GIT, capturedEnv, launchEnv);
+  }
+  log(`launching ${launch.executablePath} (shape: ${spec.matchedShape}, isolated userData: ${launchEnv.HERMES_DESKTOP_USER_DATA_DIR})`);
 
   phase('launch');
   const app = await _electron.launch({
     executablePath: launch.executablePath,
-    args: launch.args,
+    args: isolatedElectronArgs(launch.args, launchEnv.HERMES_DESKTOP_USER_DATA_DIR),
     cwd: launch.cwd,
-    env: launch.env,
+    env: launchEnv,
   });
-  // The app spawns several BrowserWindows (wake indicator, helper surfaces)
-  // and firstWindow() grabs whichever webContents came first, which is not
-  // always the main app window. Pick the window that actually renders the
-  // app UI (a button renders only in the real renderer), retrying as
-  // windows appear.
-  await app.firstWindow({ timeout: 120_000 });
-  let window = null;
-  const windowDeadline = Date.now() + 120_000;
-  while (!window) {
-    for (const candidate of app.windows()) {
-      const hasUi = await candidate
-        .evaluate(() => document.querySelector('button') !== null)
-        .catch(() => false);
-      if (hasUi) { window = candidate; break; }
-    }
-    if (!window) {
-      if (Date.now() > windowDeadline) {
-        for (const c of app.windows()) log(`  window seen: url=${c.url()}`);
-        throw new Error('no window with app UI (a <button>) appeared within 120s');
-      }
-      await new Promise((r) => setTimeout(r, 1_000));
-    }
-  }
-  await window.waitForLoadState('domcontentloaded');
-  log(`window up: ${await window.title()} (${app.windows().length} windows, picked url=${window.url()})`);
+  if (!values['no-update']) await installSourceBranchProbe(app);
+  const window = await pickAppWindow(app, log);
   await window.screenshot({ path: `${values.spec}.window.png` }).catch(() => {});
 
   await prepareWindowForInput(app, window);
   log('[zoom] app window prepared at 100%');
 
+  phase('old-chat');
+  await runUpdateWindowChat(app, window, {
+    mockUrl: values['mock-url'], outDir: values['chat-out'],
+    expectCommit: values['old-sha'],
+    root: values['repo-dir'], origin: 'source', executable: launch.executablePath,
+    userData: launchEnv.HERMES_DESKTOP_USER_DATA_DIR,
+  });
+
   if (values['no-update']) {
-    log('smoke mode: window proven, closing');
-    await app.close().catch(() => {});
+    log('smoke mode: OLD desktop chat proven, closing');
+    await app.close();
     process.exit(0);
   }
 
   if (!values.result && !(values['expect-sha'] && values['repo-dir'])) {
     throw new Error('need --result and/or --expect-sha + --repo-dir unless --no-update');
   }
+  await assertStagedBranch(window, values['expect-sha'], log);
   const deadline = Date.now() + Number(values['timeout-ms']);
 
 
-  // Dismiss the onboarding overlay when present. The drivers seed a
-  // provider so the overlay SHOULD never mount, but it has a real boot
-  // window: the renderer inits `configured` from a localStorage cache
-  // (null on a fresh install) and only flips after gateway probes, so the
-  // overlay can mount late - first as a buttonless boot-progress card,
-  // then as the provider picker with the real escape hatch, "I'll choose
-  // a provider later" (i18n en: chooseLater). Two traps this loop avoids:
-  // a one-shot dismiss probe loses to the late mount, and visibility is
-  // the wrong readiness signal - the settings gear is "visible" UNDER the
-  // fullscreen overlay while the overlay intercepts every click. So:
-  // alternate short-timeout dismiss clicks with short-timeout settings
-  // clicks until a settings click actually LANDS (Playwright's hit-target
-  // check makes a landed click proof the overlay is gone).
   phase('overlay-loop');
-  const later = window.getByRole('button', { name: /choose a provider later|skip/i }).first()
-  const settingsButton = window.getByRole('button', { name: /open settings|settings/i }).first()
-
-  const overlayDeadline = Date.now() + 180_000
-  let settingsOpened = false
-  const brief = (e) => String(e && e.message || e).split('\n').slice(0, 25).join(' | ')
-  // When a settings click fails, record what wins the hit-test at the
-  // button's center plus the titlebar geometry, so a CI-only interception
-  // is attributable from the log alone.
   const hitDump = () => window.evaluate(() => {
     const describe = (el) => el ? {
       tag: el.tagName,
@@ -215,83 +214,44 @@ async function main() {
       win: `${window.innerWidth}x${window.innerHeight} dpr=${window.devicePixelRatio}`,
     }
   }).then((d) => JSON.stringify(d)).catch((e) => `hit-dump failed: ${e.message}`)
-  for (let iter = 1; ; iter++) {
-    await prepareWindowForInput(app, window);
-    await later
-      .click({ timeout: 2_000 })
-      .then(async () => {
-        log('dismissed onboarding overlay')
-        await later.waitFor({ state: 'hidden', timeout: 15_000 }).catch(() => {})
-      })
-      .catch((e) => log(`[overlay] iter ${iter} chooseLater click failed: ${brief(e)}`))
-    try {
-      await settingsButton.click({ timeout: 4_000 })
-      // A landed click during shell hydration can be lost on a remount.
-      // Confirm the destination before looking for its About control.
-      await window.waitForURL(/[#/]settings(?:[/?]|$)/, { timeout: 4_000 })
-      settingsOpened = true
-      break
-    } catch (e) {
-      log(`[overlay] iter ${iter} settings click failed: ${brief(e)}`)
-      // Every 5th failure, log the hit-test stack (every iteration would be
-      // noise; the interceptor identity is what matters, not its frequency).
-      if (iter === 1 || iter % 5 === 0) {
-        log(`[overlay] iter ${iter} hit-test: ${await hitDump()}`)
-      }
-    }
-    if (Date.now() > overlayDeadline) break
-  }
-  if (!settingsOpened) {
-    await window.screenshot({ path: `${values.spec}.overlay-stuck.png` }).catch(() => {})
-    throw new Error('onboarding overlay never cleared: Settings not clickable within 180s')
-  }
-
+  const ui = {
+    log,
+    shot: (page, name) => page.screenshot({ path: `${values.spec}.${name}.png` }).catch(() => {}),
+  };
+  await openAbout(window, { ...ui, prepare: () => prepareWindowForInput(app, window), confirmSettings: true, hitDump });
   phase('about-update');
-  // Settings is open: About -> Update now.
-  await window.getByRole('tab', { name: /about/i }).or(
-    window.getByRole('button', { name: /about/i })).first().click();
-  const updateNow = window.getByRole('button', { name: /update now/i }).first();
-  // "Update now" only renders once a check reports behind > 0, and the
-  // About panel starts at "Last checked: never". The boot-time auto-check
-  // can also fail transiently and latch the error UI, while a fresh check
-  // succeeds. Nudge like an impatient user: click Check now whenever it is
-  // clickable (not a spinner), re-test Update now, 3 minute ceiling.
-  const checkNow = window.getByRole('button', { name: /check now/i }).first();
-  const nudgeDeadline = Date.now() + 180_000;
-  let updateVisible = await updateNow.isVisible().catch(() => false);
-  while (!updateVisible && Date.now() < nudgeDeadline) {
-    await checkNow.click({ timeout: 5_000 })
-      .then(() => log('nudged Check now'))
-      .catch(() => {}); // spinner or mid-transition - fine, just wait
-    await window.waitForTimeout(15_000);
-    updateVisible = await updateNow.isVisible().catch(() => false);
-  }
-  try {
-    await updateNow.waitFor({ state: 'visible', timeout: 15_000 });
-  } catch (e) {
-    // The About UI flattens every check failure to a generic "couldn't
-    // reach the update server", hiding the git stderr the main process
-    // captured. Pull the full status over the same IPC the panel uses so
-    // the log names the real error.
-    const status = await window.evaluate(() =>
-      window.hermesDesktop?.updates?.check?.() ?? Promise.resolve('no updates.check bridge')
-    ).catch((err) => `updates.check failed: ${err?.message || err}`);
-    log(`[update-status] ${JSON.stringify(status)}`);
-    throw e;
-  }
+  const updateNow = await waitForUpdate(window, ui);
+  const observe = observeSourceUpdate({
+    home: spec.env.HERMES_HOME,
+    resultPath: values.result,
+    expectSha: values['expect-sha'],
+  });
   await updateNow.click();
   phase('update-poll');
   log('clicked Update now; polling for result file');
 
+  const manualCommand = await readManualUpdateCommand(window);
+  if (manualCommand) {
+    fs.mkdirSync(values['chat-out'], { recursive: true });
+    fs.writeFileSync(
+      path.join(values['chat-out'], 'manual-update.json'),
+      `${JSON.stringify({ command: manualCommand, oldSha: values['old-sha'] }, null, 2)}\n`,
+    );
+    log(`OLD requires the manual update path: ${manualCommand}`);
+    await app.close();
+    process.exit(42);
+  }
+
   // The app may relaunch/exit during the update; completion signals are
   // product state, not Playwright events.
-  const resultPath = values.result;
-  const expectSha = values['expect-sha'];
   const repoDir = values['repo-dir'];
   /** @returns {string} */
   const headSha = () => {
     try {
-      return execFileSync('git', ['-C', /** @type {string} */ (repoDir), 'rev-parse', 'HEAD'], {
+      // The driver's real git: a fresh-machine leg takes every git off PATH
+      // so the product must provision its own, and an observer that cannot
+      // spawn git would read '' forever instead of failing.
+      return execFileSync(process.env.HERMES_E2E_REAL_GIT || 'git', ['-C', /** @type {string} */ (repoDir), 'rev-parse', 'HEAD'], {
         encoding: 'utf8',
       }).trim();
     } catch {
@@ -299,28 +259,19 @@ async function main() {
     }
   };
   for (;;) {
-    if (resultPath && fs.existsSync(resultPath)) {
-      log(`update result present: ${fs.readFileSync(resultPath, 'utf8').slice(0, 200)}`);
-      break;
-    }
-    if (expectSha && repoDir && headSha() === expectSha) {
-      log(`checkout reached expected sha ${expectSha}`);
+    if (observe(repoDir ? headSha() : '')) {
+      log('successful update receipt and expected checkout observed');
       break;
     }
     if (Date.now() > deadline) {
       await window.screenshot({ path: `${values.spec}.timeout.png` }).catch(() => {});
-      throw new Error('update completion signal never appeared (result file / expected sha)');
+      throw new Error('no successful update completion receipt; leaving the install untouched');
     }
     await new Promise((r) => setTimeout(r, 2_000));
   }
 
-  // ── Post-update: observe the hand-off state, then relaunch and verify ──
-  // On CI runners the rebuilt app cannot self-relaunch (chrome-sandbox needs
-  // root ownership; user namespaces are restricted), so the product parks on
-  // an "update complete, reopen Hermes to finish" overlay and never exits;
-  // a bare app.close() would wait on it forever. Record the hand-off state,
-  // close with a bounded teardown, then do what the overlay asks (the real
-  // user journey) and assert the relaunched app runs the updated code.
+  // Record what the product did. The enclosing source driver verifies the
+  // produced artifacts read-only; this helper does not repair or relaunch.
   phase('post-update');
   const handoff = await window.evaluate(() => {
     const text = document.body ? document.body.innerText : ''
@@ -330,129 +281,13 @@ async function main() {
   log(handoff ? `post-update hand-off state: "${handoff}"` : 'post-update: no hand-off overlay observed (app may self-relaunch)');
   await window.screenshot({ path: `${values.spec}.post-update.png` }).catch(() => {});
 
-  const boundedClose = async (application, label) => {
-    // ElectronApplication.process() can throw on darwin once the app has
-    // started tearing down; never assume it is callable.
-    let proc = null;
-    try { proc = application.process(); } catch { /* connection gone */ }
-    const rootPid = proc?.pid;
-    // Snapshot descendants BEFORE closing: once the root dies its children
-    // reparent to init and a PPID walk can no longer find them.
-    let doomed = [];
-    if (rootPid && process.platform !== 'win32') {
-      try {
-        const out = execFileSync('ps', ['-eo', 'pid=,ppid='], { encoding: 'utf8' });
-        const children = new Map();
-        for (const line of out.trim().split('\n')) {
-          const [pid, ppid] = line.trim().split(/\s+/).map(Number);
-          if (!children.has(ppid)) children.set(ppid, []);
-          children.get(ppid).push(pid);
-        }
-        const queue = [rootPid];
-        while (queue.length) {
-          const next = queue.shift();
-          for (const child of children.get(next) || []) {
-            doomed.push(child);
-            queue.push(child);
-          }
-        }
-      } catch (e) {
-        log(`${label}: descendant snapshot failed (continuing): ${String(e).slice(0, 120)}`);
-      }
-    }
-    const closed = await Promise.race([
-      application.close().then(() => true).catch(() => true),
-      new Promise((r) => setTimeout(() => r(false), 15_000)),
+  if (app.windows().length) {
+    await Promise.race([
+      app.close(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('app did not close after completion; no force-kill attempted')), 15_000)),
     ]);
-    if (!closed) {
-      // SIGTERM first: Electron runs its exit handlers, and any npm/node
-      // children the in-app update spawned get a chance to settle instead
-      // of leaving node_modules half-written.
-      log(`${label}: graceful close timed out after 15s - SIGTERM, then SIGKILL if needed`);
-      if (proc) {
-        try { proc.kill('SIGTERM'); } catch { /* already gone */ }
-        const terminated = await new Promise((r) => {
-          const timer = setTimeout(() => r(false), 10_000);
-          proc.once('exit', () => { clearTimeout(timer); r(true); });
-        });
-        if (!terminated) {
-          log(`${label}: SIGTERM ignored after 10s - SIGKILL`);
-          try { proc.kill('SIGKILL'); } catch { /* already gone */ }
-        }
-      } else {
-        log(`${label}: no process handle to signal - relying on descendant sweep`);
-      }
-    }
-    // Killing the Electron root does not cascade: the spawned backend
-    // (`hermes serve` python + node helpers) survives and keeps writing
-    // under the install dir. SIGTERM the snapshot first (orderly backend
-    // shutdown), then SIGKILL stragglers.
-    if (doomed.length) {
-      for (const pid of doomed) {
-        try { process.kill(pid, 'SIGTERM'); } catch { /* raced exit - fine */ }
-      }
-      await new Promise((r) => setTimeout(r, 5_000));
-      let killed = 0;
-      for (const pid of doomed) {
-        try { process.kill(pid, 'SIGKILL'); killed++; } catch { /* exited on TERM */ }
-      }
-      log(`${label}: swept ${doomed.length} descendant process(es) (${killed} needed SIGKILL)`);
-    }
-  };
-  await boundedClose(app, 'updated-app teardown');
-
-  // Relaunch from the same captured spec - the leg's own launch mechanism -
-  // and require the UI to come up on the updated checkout. Verification:
-  // the renderer's DOM carries the running build's short sha when launched
-  // from a git checkout (statusbar/About); require the EXPECTED sha's short
-  // form, or at minimum a live UI window, logging what we saw.
-  phase('relaunch');
-  log('relaunching the updated app (the "reopen Hermes" step)');
-  const relaunch = await _electron.launch({
-    executablePath: launch.executablePath,
-    args: launch.args,
-    cwd: launch.cwd,
-    env: launch.env,
-  });
-  let window2 = null;
-  const relaunchDeadline = Date.now() + 120_000;
-  while (!window2 && Date.now() < relaunchDeadline) {
-    for (const candidate of relaunch.windows()) {
-      const hasUi = await candidate
-        .evaluate(() => document.querySelector('button') !== null)
-        .catch(() => false);
-      if (hasUi) { window2 = candidate; break; }
-    }
-    if (!window2) await new Promise((r) => setTimeout(r, 1_000));
   }
-  if (!window2) {
-    await boundedClose(relaunch, 'relaunch teardown');
-    throw new Error('relaunched app never presented a UI window within 120s - updated build may be broken');
-  }
-  // Give the shell a moment to paint the statusbar/version chrome.
-  await new Promise((r) => setTimeout(r, 10_000));
-  const shortSha = (expectSha || '').slice(0, 7);
-  const verdict = await window2.evaluate((sha) => {
-    const text = document.body ? document.body.innerText : ''
-    const version = (text.match(/v\d+\.\d+\.\d+[^\n]*/) || [null])[0]
-    return { version, hasSha: sha ? text.includes(sha) : false, sample: text.slice(-200) }
-  }, shortSha).catch(() => null);
-  await window2.screenshot({ path: `${values.spec}.relaunched.png` }).catch(() => {});
-  log(`relaunched app: version="${verdict?.version || 'unseen'}" expectedSha(${shortSha}) in DOM=${verdict?.hasSha}`);
-  if (!verdict) {
-    await boundedClose(relaunch, 'relaunch teardown');
-    throw new Error('relaunched app UI came up but could not be read');
-  }
-  if (shortSha && !verdict.hasSha) {
-    // Not fatal on its own: packaged builds do not always surface the sha in
-    // the DOM. The window came up on the updated install dir, which is the
-    // user-facing contract; log loudly so a human can tighten this later.
-    log(`NOTE: expected short sha ${shortSha} not found in relaunched DOM; version line was "${verdict.version}"`);
-  }
-  log('relaunch verification complete: updated app boots and presents UI');
-  await boundedClose(relaunch, 'relaunch teardown');
-  // Explicit exit: SIGKILLed Electron leaves driver connections holding
-  // the event loop; falling off main() never terminates.
+  log('update completed without driver-assisted recovery (automatic relaunch not asserted here)');
   process.exit(0);
 }
 

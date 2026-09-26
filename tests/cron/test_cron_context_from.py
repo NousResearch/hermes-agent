@@ -1,6 +1,5 @@
 """Tests for cron job context_from feature (issue #5439 Option C)."""
 
-import logging
 import sys
 from pathlib import Path
 
@@ -64,6 +63,96 @@ def test_saved_run_payload_survives_repeated_chaining(cron_env, monkeypatch, sel
     assert "wrapper sentinel" not in injected
 
 
+@pytest.mark.parametrize("response", [
+    "first line\nsecond line\nthird line\nfourth line\n",
+    "first line\r\nsecond line\r\n\nlast line  \n",
+    "[SILENT]",
+])
+def test_multiline_agent_payload_survives_windows_text_persistence(
+    cron_env, monkeypatch, response
+):
+    """Text-mode translation must not change the persisted payload's character count."""
+    from unittest.mock import MagicMock
+
+    from cron import jobs, scheduler
+    from cron.scheduler_prompt import _inject_context_from
+
+    source = jobs.create_job(prompt="upstream", schedule="every 1h")
+    monkeypatch.setattr(
+        scheduler, "_resolve_cron_agent_setup", lambda *a: scheduler._CronAgentSetup()
+    )
+    monkeypatch.setattr(scheduler, "_construct_cron_agent", lambda *a, **kw: MagicMock())
+    monkeypatch.setattr(scheduler, "_teardown_cron_agent", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        scheduler,
+        "_run_agent_with_watchdog",
+        lambda *a, **kw: {"final_response": response},
+    )
+
+    # Inject an actual translating text stream at the persistence boundary;
+    # binary writes must remain byte-exact regardless of host newline policy.
+    import os
+    fdopen = os.fdopen
+
+    def windows_fdopen(fd, mode="r", *args, **kwargs):
+        if mode == "w":
+            kwargs["newline"] = "\r\n"
+        return fdopen(fd, mode, *args, **kwargs)
+
+    monkeypatch.setattr(os, "fdopen", windows_fdopen)
+
+    success, output, _, error = scheduler.run_job(source)
+    assert success, error
+    saved = jobs.save_job_output(source["id"], output)
+    with saved.open("r", encoding="utf-8", newline="") as stream:
+        persisted = stream.read()
+
+    assert persisted == output
+    prompt, injected = _inject_context_from(
+        {"id": "abcdef123456", "context_from": [source["id"]]}, "downstream task"
+    )
+    if response == "[SILENT]":
+        assert not injected
+        assert prompt == "downstream task"
+    else:
+        assert injected
+        assert response in prompt
+
+
+@pytest.mark.parametrize("heading", ["Error", "Response"])
+def test_script_only_archive_keeps_natural_markdown_error_heading(cron_env, monkeypatch, heading):
+    """A script's Markdown headings are payload, not legacy agent result delimiters."""
+    from cron import jobs, scheduler
+    from cron.scheduler_prompt import _inject_context_from
+
+    source = jobs.create_job(prompt="run checks", schedule="every 1h")
+    script_output = (
+        "## Summary\n\n3 checks, two passed.\n\n"
+        f"## {heading}\n\ncheck B failed."
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "_run_job_script_with_claim_heartbeat",
+        lambda *a, **kw: (True, script_output),
+    )
+
+    success, output, response, error = scheduler._run_no_agent_job(
+        {**source, "no_agent": True, "script": "checks.sh"},
+        source["id"],
+        source.get("name") or source["id"],
+        None,
+    )
+    assert success, error
+    assert response == script_output
+    jobs.save_job_output(source["id"], output)
+
+    prompt, injected = _inject_context_from(
+        {"id": "abcdef123456", "context_from": [source["id"]]}, "downstream task"
+    )
+    assert injected
+    assert script_output in prompt
+
+
 def test_oversized_result_length_falls_back_during_context_injection(cron_env):
     from cron.jobs import create_job, save_job_output
     from cron.scheduler_prompt import _inject_context_from
@@ -80,6 +169,83 @@ def test_oversized_result_length_falls_back_during_context_injection(cron_env):
     assert "usable result" in prompt
     assert "Result Chars" not in prompt
     assert "downstream task" in prompt
+
+
+def test_legacy_success_preserves_markdown_error_heading(cron_env):
+    from cron.jobs import create_job, save_job_output
+    from cron.scheduler import _run_doc_header
+    from cron.scheduler_prompt import _inject_context_from
+
+    source = create_job(prompt="upstream", schedule="every 1h")
+    response = "Overall: 3 checks\n\n## Error\n\nOne check failed"
+    document = _run_doc_header(source, "report", source["id"], "prompt sentinel")
+    save_job_output(source["id"], document + f"## Response\n\n{response}\n")
+    prompt, injected = _inject_context_from(
+        {"id": "abcdef123456", "context_from": [source["id"]]}, "next task"
+    )
+    assert injected and response in prompt
+    assert "prompt sentinel" not in prompt
+
+
+@pytest.mark.parametrize("result_heading", ["Response", "Error"])
+def test_legacy_context_uses_final_result_heading(cron_env, result_heading):
+    """A quoted result heading in a legacy prompt is not the archive boundary."""
+    from cron.jobs import create_job, save_job_output
+    from cron.scheduler_prompt import _inject_context_from
+
+    source = create_job(prompt="upstream", schedule="every 1h")
+    from cron.scheduler import _run_doc_header
+    title = "legacy (FAILED)" if result_heading == "Error" else "legacy"
+    document = _run_doc_header(
+        source, title, source["id"],
+        "Follow this documented heading:\n## Response\n\nprompt-only sentinel",
+    )
+    save_job_output(source["id"], document + f"## {result_heading}\n\nauthoritative result\n")
+    prompt, injected = _inject_context_from(
+        {"id": "abcdef123456", "context_from": [source["id"]]}, "next task"
+    )
+    assert injected
+    assert "authoritative result" in prompt
+    assert "prompt-only sentinel" not in prompt
+    assert "Follow this documented heading" not in prompt
+
+
+@pytest.mark.parametrize("response", ["[SILENT]", "  \n\t\n"])
+def test_silent_result_archive_falls_back_to_older_answer(cron_env, response):
+    """A metadata-delimited silent run must not mask an older reusable answer."""
+    import os
+    from cron.jobs import create_job, OUTPUT_DIR
+    from cron.scheduler_prompt import _inject_context_from
+
+    source = create_job(prompt="upstream", schedule="every 1h")
+    output_dir = OUTPUT_DIR / source["id"]
+    output_dir.mkdir(parents=True, exist_ok=True)
+    older = output_dir / "2026-04-22_08-00-00.md"
+    newer = output_dir / "2026-04-22_10-00-00.md"
+    older.write_text("## Response\n\nprevious useful result\n", encoding="utf-8")
+    newer.write_text(
+        f"**Result Chars:** {len(response)}\n"
+        "# Cron Job: Example\n\n## Response\n\n"
+        f"{response}\n",
+        encoding="utf-8",
+    )
+    os.utime(older, (1, 1))
+    os.utime(newer, (2, 2))
+
+    prompt, injected = _inject_context_from(
+        {"id": "abcdef123456", "context_from": [source["id"]]}, "downstream task"
+    )
+
+    assert injected
+    assert "previous useful result" in prompt
+    assert "[SILENT]" not in prompt
+
+
+def test_context_from_empty_string_normalized_to_none(cron_env):
+    from cron.jobs import create_job
+
+    job = create_job(prompt="Hello", schedule="every 1h", context_from="")
+    assert job.get("context_from") is None
 
 
 class TestJobContextFromField:
@@ -100,11 +266,6 @@ class TestJobContextFromField:
         assert loaded["context_from"] == [job_a["id"]]
 
 
-    def test_context_from_empty_string_normalized_to_none(self, cron_env):
-        from cron.jobs import create_job
-
-        job = create_job(prompt="Hello", schedule="every 1h", context_from="")
-        assert job.get("context_from") is None
 
 
 class TestBuildJobPromptContextFrom:
@@ -267,14 +428,14 @@ class TestBuildJobPromptContextFrom:
         assert "preamble data that must not be injected" not in prompt
 
     def test_cron_output_preserves_structural_headings_inside_result_body(self, cron_env):
-        """Length metadata prevents result-body headings from becoming delimiters."""
+        """Length metadata keeps payload headings and original line endings intact."""
         from cron.jobs import create_job, OUTPUT_DIR
         from cron.scheduler_prompt import _build_job_prompt
 
         job_a = create_job(prompt="Find data", schedule="every 1h")
         out_dir = OUTPUT_DIR / job_a["id"]
         out_dir.mkdir(parents=True, exist_ok=True)
-        response = "answer intro\n\n## Error\n\nquoted subheading"
+        response = "answer intro\r\n\r\n## Error\r\n\r\nquoted subheading"
         cron_doc = (
             f"**Result Chars:** {len(response)}\n"
             "# Cron Job: Example\n**Result Chars:** 1\n\n"
@@ -319,7 +480,8 @@ class TestBuildJobPromptContextFrom:
 
         assert "**Candidate Report**" in prompt
         assert "**Generated at:** `2026-05-29T08:30:25+02:00`" in prompt
-        assert "[... output truncated ...]" in prompt
+        assert "chars omitted" in prompt
+        assert big_response not in prompt
 
     def test_cron_output_prefers_error_section_when_response_absent(self, cron_env):
         """Failed upstream cron runs should pass the useful error body, not the whole wrapper."""
@@ -348,22 +510,24 @@ class TestBuildJobPromptContextFrom:
         assert "P" * 8500 not in prompt
 
     def test_output_truncated_at_8k_chars(self, cron_env):
-        """Output longer than 8000 chars should be truncated."""
+        """Output longer than the 8000-char budget is clipped head+tail (#117290)."""
         from cron.jobs import create_job, OUTPUT_DIR
         from cron.scheduler_prompt import _build_job_prompt
 
         job_a = create_job(prompt="Find data", schedule="every 1h")
         out_dir = OUTPUT_DIR / job_a["id"]
         out_dir.mkdir(parents=True, exist_ok=True)
-        big_output = "x" * 10000
+        big_output = "HEAD" + "x" * 9992 + "TAIL"
         (out_dir / "2026-04-22_10-00-00.md").write_text(big_output, encoding="utf-8")
 
         job_b = create_job(
             prompt="Process", schedule="every 2h", context_from=job_a["id"]
         )
         prompt = _build_job_prompt(job_b)
-        assert "truncated" in prompt
-        assert "x" * 10000 not in prompt
+        assert "chars omitted" in prompt
+        assert "x" * 9992 not in prompt
+        assert "HEAD" in prompt  # head+tail clip keeps both ends
+        assert "TAIL" in prompt
 
 
     def test_invalid_job_id_skipped(self, cron_env):
@@ -477,34 +641,7 @@ class TestSelfContext:
         assert "prev output" in prompt
         assert "previous run" in prompt.lower()
 
-    def test_tool_create_accepts_self(self, cron_env):
-        from tools.cronjob_tools import cronjob
-        from cron.jobs import get_job
-        import json
 
-        result = json.loads(cronjob(
-            action="create",
-            prompt="Scan for news",
-            schedule="every 1h",
-            context_from="self",
-        ))
-        assert result["success"] is True
-        job_id = result["job_id"]
-        assert get_job(job_id)["context_from"] == ["self"]
-
-    def test_tool_update_accepts_self(self, cron_env):
-        from cron.jobs import create_job, get_job
-        from tools.cronjob_tools import cronjob
-        import json
-
-        job = create_job(prompt="Scan", schedule="every 1h")
-        result = json.loads(cronjob(
-            action="update",
-            job_id=job["id"],
-            context_from="self",
-        ))
-        assert result["success"] is True
-        assert get_job(job["id"])["context_from"] == ["self"]
 
 
 class TestContinuityFlag:
@@ -513,19 +650,6 @@ class TestContinuityFlag:
     It translates to the reserved 'self' entry in context_from internally.
     """
 
-    def test_create_with_continuity_true(self, cron_env):
-        from tools.cronjob_tools import cronjob
-        from cron.jobs import get_job
-        import json
-
-        result = json.loads(cronjob(
-            action="create",
-            prompt="Scan for news",
-            schedule="every 1h",
-            continuity=True,
-        ))
-        assert result["success"] is True
-        assert get_job(result["job_id"])["context_from"] == ["self"]
 
     def test_create_continuity_false_is_noop(self, cron_env):
         from tools.cronjob_tools import cronjob

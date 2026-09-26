@@ -14,7 +14,7 @@ import sys
 
 import pytest
 
-from hermes_cli import backup as backup_mod
+from hermes_cli import backup_restore as backup_restore_mod
 from hermes_cli import update_cmd
 from hermes_cli.sqlite_safe_read import connect_tracked
 
@@ -84,7 +84,7 @@ def test_safe_restore_fallback_refuses_under_own_live_connection(live_held_db):
     wal = dst.with_name(dst.name + "-wal")
     wal_ino = wal.stat().st_ino
 
-    assert backup_mod._safe_restore_db(src, dst) is False
+    assert backup_restore_mod._safe_restore_db(src, dst) is False
 
     # The held generation must survive: same WAL inode, no deleted-fd ghosts.
     assert wal.exists() and wal.stat().st_ino == wal_ino
@@ -114,7 +114,7 @@ def test_safe_restore_fallback_still_works_without_holder(tmp_path):
     with open(dst, "r+b") as fh:
         fh.write(b"\x00" * 100)
 
-    assert backup_mod._safe_restore_db(src, dst) is True
+    assert backup_restore_mod._safe_restore_db(src, dst) is True
     assert _read_marker(dst) == "snapshot-good"
 
 

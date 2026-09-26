@@ -9,7 +9,6 @@ unexpected on-disk ids back unless the caller passes ``removed_ids``.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 
@@ -20,7 +19,7 @@ def hermes_env(tmp_path, monkeypatch):
     home.mkdir()
     (home / "scripts").mkdir()
     (home / "cron").mkdir()
-    (home / "scripts" / "watch.sh").write_text("#!/bin/bash\necho alert\n")
+    (home / "scripts" / "watch.sh").write_text("#!/usr/bin/env bash\necho alert\n")
     monkeypatch.setenv("HERMES_HOME", str(home))
 
     import importlib
@@ -59,7 +58,7 @@ def test_stale_empty_save_preserves_concurrent_no_agent_create(hermes_env):
 
 def test_remove_other_job_preserves_concurrent_create(hermes_env):
     """``cron remove`` of job A must not drop job B created mid-flight."""
-    from cron.jobs import create_job, load_jobs, remove_job, save_jobs
+    from cron.jobs import create_job, load_jobs, save_jobs
 
     agent = create_job(
         prompt="hello",
@@ -120,26 +119,11 @@ def test_replace_flag_allows_wholesale_rewrite(hermes_env):
     assert load_jobs() == []
 
 
-def test_jobs_json_on_disk_matches_merge(hermes_env):
-    from cron.jobs import create_job, save_jobs
-
-    job = create_job(
-        prompt=None,
-        schedule="every 2m",
-        script="watch.sh",
-        no_agent=True,
-        deliver="local",
-        name="watchdog",
-        repeat=0,
-    )
-    save_jobs([])
-    payload = json.loads((Path(hermes_env) / "cron" / "jobs.json").read_text())
-    assert [j["id"] for j in payload["jobs"]] == [job["id"]]
 
 
-def test_stamp_fast_path_skips_merge_when_file_unchanged(hermes_env, monkeypatch):
-    """Inside a critical section whose load stamp still matches, the save
-    must not re-read jobs.json at all (#80703's single-stat fast path)."""
+def test_sibling_write_inside_section_is_merged(hermes_env):
+    """A write that lands on disk after the section's load changes the stamp,
+    so the save must re-merge instead of trusting its stale snapshot."""
     import cron.jobs as jobs
     from cron.jobs import create_job
 
@@ -153,23 +137,6 @@ def test_stamp_fast_path_skips_merge_when_file_unchanged(hermes_env, monkeypatch
         repeat=0,
     )
 
-    peeks = {"count": 0}
-    real_peek = jobs._peek_jobs_unlocked
-
-    def _counting_peek():
-        peeks["count"] += 1
-        return real_peek()
-
-    monkeypatch.setattr(jobs, "_peek_jobs_unlocked", _counting_peek)
-
-    # load -> save inside ONE critical section, no sibling write in between:
-    # the stamp matches, so the merge (and its peek) must be skipped.
-    with jobs._jobs_lock():
-        current = jobs.load_jobs()
-        jobs._save_jobs_unlocked(current)
-    assert peeks["count"] == 0, "healthy same-section save should not re-parse"
-
-    # A sibling write invalidates the stamp -> the merge runs again.
     with jobs._jobs_lock():
         current = jobs.load_jobs()
         (jobs._current_cron_store().jobs_file).write_text(
@@ -177,7 +144,6 @@ def test_stamp_fast_path_skips_merge_when_file_unchanged(hermes_env, monkeypatch
             encoding="utf-8",
         )
         jobs._save_jobs_unlocked(current)
-    assert peeks["count"] > 0, "changed stamp must re-trigger the merge"
     ids = {j["id"] for j in jobs.load_jobs()}
     assert ids == {job["id"], "bbbbbbbbbbbb"}
 

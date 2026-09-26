@@ -48,7 +48,7 @@ def _iter_blocklist_file_rules(path: Path) -> List[str]:
     """Rules from a shared blocklist file; missing/unreadable files warn and yield nothing rather than
     raising — a bad file path must not disable all web tools."""
     try:
-        raw = path.read_text(encoding="utf-8")
+        raw = path.read_text(encoding="utf-8-sig")
     except FileNotFoundError:
         logger.warning("Shared blocklist file not found (skipping): %s", path)
         return []
@@ -69,12 +69,12 @@ def _load_policy_config(config_path: Path) -> Dict[str, Any]:
     if not config_path.exists():
         return dict(_DEFAULT_WEBSITE_BLOCKLIST)
     try:
-        import yaml
+        import hermes_yaml as yaml
     except ImportError:
-        logger.debug("PyYAML not installed — website blocklist disabled")
+        logger.debug("ruamel.yaml not installed — website blocklist disabled")
         return dict(_DEFAULT_WEBSITE_BLOCKLIST)
     try:
-        config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8-sig")) or {}
     except yaml.YAMLError as exc:
         raise WebsitePolicyError(f"Invalid config YAML at {config_path}: {exc}") from exc
     except OSError as exc:

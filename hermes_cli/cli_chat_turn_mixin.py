@@ -77,6 +77,12 @@ class CLIChatTurnMixin:
         agent = self.agent
         if agent is None:
             return None
+        # #124033: retry persisting a queued /title or /new <title> at the top
+        # of every turn — a transient DB-row failure during agent setup no
+        # longer silently drops the user-chosen title (the helper is
+        # idempotent; it no-ops once the title is persisted or nothing is
+        # queued).
+        self._apply_pending_title()
         self._sync_fallback_chain_with_config(agent)  # chain added after this chat opened reaches this turn
         message = self._chat_route_images(message, images)
 

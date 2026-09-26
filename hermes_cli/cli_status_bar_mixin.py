@@ -411,10 +411,21 @@ class CLIStatusBarMixin:
             return str(getattr(self, "_status_bar_title_cache", "") or "")
         title = pending
         db = getattr(self, "_session_db", None)
-        if not pending and db is not None and session_id:
+        if db is not None and session_id:
             try:
-                title = str(db.get_session_title(session_id) or "").strip()
+                db_title = str(db.get_session_title(session_id) or "").strip()
             except Exception:
+                db_title = ""
+            if db_title:
+                # A persisted title wins — the retry path may have applied the
+                # queued title since it was stored (#124033).
+                title = db_title
+            elif pending:
+                # #124033: an unpersisted pending title is shown with an
+                # explicit marker so a stuck retry is visible instead of being
+                # masked as if it had been saved.
+                title = f"{pending} (pending)"
+            else:
                 title = ""
         self._status_bar_title_session_id = session_id
         self._status_bar_title_cache = title

@@ -112,7 +112,8 @@ def _prune_sessions(body: SessionPrune):
                 "sessions": [{k: r.get(k) for k in _PRUNE_ROW_KEYS} for r in rows]}
         sessions_dir = profile_home / "sessions"
         removed = db.prune_sessions(
-            sessions_dir=sessions_dir if sessions_dir.exists() else None, **filters)
+            sessions_dir=sessions_dir if sessions_dir.exists() else None,
+            exclude_active_write_guards=True, **filters)
         return {"ok": True, "removed": removed, "skipped_open": skipped_open}
     finally:
         db.close()
@@ -435,8 +436,16 @@ async def bulk_delete_sessions_endpoint(body: BulkDeleteSessions):
     if len(body.ids) > 500:
         raise HTTPException(status_code=400, detail="ids must contain at most 500 entries")
     profile = destructive_profile(body.profile, "POST /api/sessions/bulk-delete")
-    deleted = await asyncio.to_thread(
-        _with_db, profile, lambda db: db.delete_sessions(body.ids), read_only=False)
+    try:
+        deleted = await asyncio.to_thread(
+            _with_db, profile,
+            lambda db: db.delete_sessions(body.ids, reject_active_write_guards=True),
+            read_only=False)
+    except Exception as exc:
+        from hermes_state import SessionCompressionInProgressError, SessionTurnLeaseLostError
+        if isinstance(exc, (SessionCompressionInProgressError, SessionTurnLeaseLostError)):
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise
     return {"ok": True, "deleted": deleted}
 
 
@@ -713,7 +722,13 @@ async def delete_session_endpoint(session_id: str, profile: Optional[str] = None
         sid = _resolve_session_id(db, session_id)
         if not sid:
             return {"ok": True, "already_absent": True}
-        db.delete_session(sid)
+        try:
+            db.delete_session(sid, reject_active_write_guards=True)
+        except Exception as exc:
+            from hermes_state import SessionCompressionInProgressError, SessionTurnLeaseLostError
+            if isinstance(exc, (SessionCompressionInProgressError, SessionTurnLeaseLostError)):
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            raise
         return {"ok": True}
 
     return await asyncio.to_thread(_with_db, profile, _delete, read_only=False)

@@ -3206,7 +3206,14 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         if err:
             return err
         db = await self._ensure_session_db_async()
-        deleted = await asyncio.to_thread(db.delete_session, session_id)
+        try:
+            deleted = await asyncio.to_thread(
+                db.delete_session, session_id, reject_active_write_guards=True)
+        except Exception as exc:
+            from hermes_state import SessionCompressionInProgressError, SessionTurnLeaseLostError
+            if isinstance(exc, (SessionCompressionInProgressError, SessionTurnLeaseLostError)):
+                return _error_response(str(exc), 409, code="session_active")
+            raise
         return web.json_response({"object": "hermes.session.deleted", "id": session_id, "deleted": bool(deleted)})
 
     @_require_auth

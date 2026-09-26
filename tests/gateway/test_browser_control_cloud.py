@@ -136,6 +136,74 @@ def test_cloud_principal_digest_is_unambiguous_across_identity_components():
     )
 
 
+def test_cloud_controller_registration_uses_created_session_profile(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "gateway.browser_control_broker.browser_control_enabled", lambda: True
+    )
+    monkeypatch.setattr(server, "_schedule_agent_build", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_completion_cwd", lambda params=None: str(tmp_path))
+    monkeypatch.setattr(server, "_current_profile_name", lambda: "default")
+
+    profile_home = tmp_path / "profiles" / "ops"
+    profile_home.mkdir(parents=True)
+    monkeypatch.setattr(
+        server,
+        "_profile_home",
+        lambda profile: profile_home if profile == "ops" else None,
+    )
+
+    class Transport:
+        auth_identity = {
+            "user_id": "user-fixture",
+            "provider": "provider-fixture",
+        }
+
+        def write(self, _frame):
+            return True
+
+    transport = Transport()
+    for requested_profile, expected_profile in (
+        (None, "default"),
+        ("ops", "ops"),
+        (None, "default"),
+    ):
+        create_params = {"cols": 80}
+        if requested_profile is not None:
+            create_params["profile"] = requested_profile
+
+        created = server.dispatch(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "session.create",
+                "params": create_params,
+            },
+            transport,
+        )
+        session_id = created["result"]["session_id"]
+        try:
+            registration = server.dispatch(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "browser.controller.register",
+                    "params": {
+                        "protocol_version": 1,
+                        "session_id": session_id,
+                        "controller_id": "controller-fixture",
+                        "browser_profile_id": "browser-profile-fixture",
+                        "capabilities": ["browser_navigate"],
+                    },
+                },
+                transport,
+            )
+            assert registration["result"]["scope"]["profile_id"] == expected_profile
+        finally:
+            get_browser_control_broker().reset()
+            server._sessions.pop(session_id, None)
+
+
 @pytest.mark.parametrize(
     "identity",
     [None, {}, {"user_id": "server-internal", "provider": "server-internal"}],

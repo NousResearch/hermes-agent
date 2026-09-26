@@ -11,6 +11,7 @@ keeps resolving.
 
 import json
 import logging
+import os
 import re
 import shlex
 import stat
@@ -175,6 +176,57 @@ def _read_script_for_guard(env: Any, guard_cwd: str, script_path: str, max_bytes
     return None
 
 
+def _in_unattended_agent_session() -> bool:
+    """Whether this terminal-tool call runs inside an agent session no human is watching.
+
+    Marks: a non-interactive one-shot (``hermes chat -q``/``-z`` — the #122501 incident
+    had a one-shot register a LaunchAgent that re-ran itself every ~10 s for 16 hours),
+    a run tagged via ``HERMES_SESSION_SOURCE`` (tool/kanban integrations), or a cron job
+    session. An interactive CLI/TUI turn carries none of these markers — its approval
+    flow still gates dangerous commands — and a plain human shell never executes this
+    guard, which runs only on the agent's own terminal tool."""
+    if os.environ.get("HERMES_SINGLE_QUERY_SESSION") == "1":
+        return True
+    try:
+        from gateway.session_context import get_session_env
+    except Exception:
+        return False
+    if str(get_session_env("HERMES_SESSION_SOURCE", "") or "").strip():
+        return True
+    return get_session_env("HERMES_CRON_SESSION", "") == "1"
+
+
+def _block_unattended_launchctl_registration(command: str) -> Optional[str]:
+    """Refuse ``launchctl submit``/``bootstrap`` from an out-of-gateway agent session.
+
+    The supervised-gateway block below already covers sessions served by the gateway; its
+    refusal message points at "a separate shell outside the gateway", and a one-shot or
+    integration session is not that shell — the same detachment primitive it offers an
+    unattended agent registers work that survives the session with nobody supervising it
+    (#122501). Registration verbs only: job inspection and removal stay available.
+    Fail-closed on scan-budget exhaustion, mirroring the gateway branch below."""
+    if not _in_unattended_agent_session():
+        return None
+    from cron.lifecycle_guard import contains_launchctl_submit_command, lifecycle_scan_root_within_budget
+    if not lifecycle_scan_root_within_budget(command):
+        return _blocked_json(
+            "Blocked: the command is too large to scan for launchctl registration inside "
+            "an agent session. Re-run it from your own shell if this is legitimate "
+            "maintenance.",
+            "error",
+        )
+    if contains_launchctl_submit_command(command):
+        return _blocked_json(
+            "Blocked: launchctl submit/bootstrap is restricted inside agent sessions. "
+            "This session runs outside the supervised gateway but is still unattended, "
+            "and registering a persistent LaunchAgent from it leaves work that survives "
+            "the session with nobody supervising it. Perform LaunchAgent maintenance "
+            "from a separate human shell instead.",
+            "error",
+        )
+    return None
+
+
 def gateway_lifecycle_block(
     *,
     command: str,
@@ -201,7 +253,7 @@ def gateway_lifecycle_block(
     from tools.terminal_tool import _resolve_command_cwd, get_session_cwd
 
     if not _is_supervised_gateway_process():
-        return None
+        return _block_unattended_launchctl_registration(command)
     from cron.lifecycle_guard import (
         _MAX_REFERENCED_SCRIPT_BYTES,
         HOST_INTERPRETER_KILL_REJECTION,

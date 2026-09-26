@@ -253,8 +253,13 @@ def _extract_email_address(raw: str) -> str:
     ``parseaddr`` keeps the quoted text as the display name and returns the
     actual addr-spec (``attacker@evil.test``), so authorization is evaluated
     against the real sender identity.
+
+    RFC 5322 header folding is unfolded before parsing. Without that step,
+    ``parseaddr`` can mistake a folded quoted display name for the mailbox
+    itself, dropping legitimate allowlisted mail or polluting session identity.
     """
-    _, addr = parseaddr(str(raw or ""))
+    value = re.sub(r"\r?\n[ \t]+", " ", str(raw or ""))
+    _, addr = parseaddr(value)
     return addr.strip().lower()
 
 
@@ -823,33 +828,4 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
         msg = MIMEText(message, "plain", "utf-8")
         for key, value in (("From", address), ("To", chat_id), ("Subject", "Hermes Agent"), ("Date", formatdate(localtime=True))):
             msg[key] = value
-        server = _open_smtp(smtp_host, smtp_port, smtp_security, _tls_context(smtp_tls_verify, smtp_host), smtplib.SMTP, smtplib.SMTP_SSL)
-        server.login(address, password)
-        server.send_message(msg)
-        server.quit()
-        return {"success": True, "platform": "email", "chat_id": chat_id}
-    except Exception as e:
-        try:
-            from tools.send_message_tool import _error as _e
-            return _e(f"Email send failed: {e}")
-        except Exception:
-            return send_error(f"Email send failed: {e}")
-
-
-def _is_connected(config) -> bool:
-    """Connected when an address is configured (PlatformConfig.extra or EMAIL_ADDRESS)."""
-    if (getattr(config, "extra", {}) or {}).get("address"):
-        return True
-    import hermes_cli.gateway as gateway_mod
-    return bool((gateway_mod.get_env_value("EMAIL_ADDRESS") or "").strip())
-
-
-
-def register(ctx) -> None:
-    """Plugin entry point — called by the Hermes plugin system."""
-    ctx.register_platform(
-        name="email", label="Email", adapter_factory=EmailAdapter, check_fn=check_email_requirements, is_connected=_is_connected,
-        required_env=["EMAIL_ADDRESS", "EMAIL_PASSWORD", "EMAIL_SMTP_HOST"],
-        install_hint="Email uses the Python stdlib (smtplib/imaplib) — no extra deps", allowed_users_env="EMAIL_ALLOWED_USERS",
-        allow_all_env="EMAIL_ALLOW_ALL_USERS", cron_deliver_env_var="EMAIL_HOME_ADDRESS", standalone_sender_fn=_standalone_send,
-        max_message_length=50_000, pii_safe=True, emoji="📧", allow_update_command=True)
+        server = _open_smtp(smtp_host, smtp_port, smtp_security, _tls_context(smtp_tl

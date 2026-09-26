@@ -69,6 +69,39 @@ def test_list_authenticated_providers_includes_full_models_list_from_user_provid
     assert "qwen3.5:cloud" in user_prov["models"]
 
 
+def test_builtin_provider_timeout_settings_keep_native_model_validation(monkeypatch):
+    """Operational settings under providers.<builtin> must not turn the builtin into a custom endpoint."""
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **_kwargs: {
+            "provider": "openai-codex",
+            "api_key": "oauth-token",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_mode": "codex_responses",
+        },
+    )
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *_a, **_kw: None)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_capabilities", lambda *_a, **_kw: None)
+
+    result = switch_model(
+        raw_input="gpt-5.6-sol",
+        current_provider="openai-codex",
+        current_model="gpt-6-luna",
+        current_base_url="https://chatgpt.com/backend-api/codex",
+        current_api_key="oauth-token",
+        user_providers={
+            "openai-codex": {
+                "request_timeout_seconds": 300,
+                "stale_timeout_seconds": 180,
+            }
+        },
+        custom_providers=[],
+    )
+
+    assert result.success is True, result.error_message
+    assert result.target_provider == "openai-codex"
+
+
 def test_list_authenticated_providers_enumerates_dict_format_models(monkeypatch):
     """providers: dict entries with ``models:`` as a dict keyed by model id
     (canonical Hermes write format) should surface every key in the picker.

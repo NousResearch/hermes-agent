@@ -211,8 +211,22 @@ def _openai_prefers_native_web_search() -> bool:
         return False
 
 
+def _copilot_model_has_native_web_search(model: str) -> bool:
+    """True for models whose server-side ``web_search`` Copilot's Responses route hosts: GPT-5+ and Grok."""
+    stem = (model or "").lower().rsplit("/", 1)[-1]
+    if stem.startswith("grok-"):
+        return True
+    if not stem.startswith("gpt-"):
+        return False
+    try:
+        return int(stem.split("-")[1].split(".")[0]) >= 5
+    except (IndexError, ValueError):
+        return False
+
+
 def _alias_wire_tools(
     response_tools: Any, params: dict[str, Any], is_xai_responses: bool, is_codex_backend: bool = False,
+    model: str = "",
 ) -> tuple[Any, dict[str, str]]:
     """Apply provider-reserved tool-name aliasing; returns ``(tools, {alias: original})`` for THIS request.
 
@@ -221,6 +235,9 @@ def _alias_wire_tools(
 
     OpenAI Codex: the Responses endpoint carries the same collision, so the backend
     selection drives the same 1:1 swap (``web.search_backend: openai-native``).
+
+    GitHub Copilot: one route serves several vendors, so a global backend selection cannot
+    fit every model. GPT-5+ and Grok swap to the built-in per request; others keep Hermes dispatch.
     """
     wire_aliases: dict[str, str] = {}
 
@@ -241,6 +258,14 @@ def _alias_wire_tools(
     # client tool untouched, so an endpoint that cannot host the built-in never breaks.
     if is_codex_backend and response_tools and any(is_client_web_search(t) for t in response_tools):
         if _openai_prefers_native_web_search():
+            response_tools = [t for t in response_tools if not is_client_web_search(t)] + [{"type": "web_search"}]
+    # GitHub Copilot: decided per request from the model, not from ``web.search_backend``, so
+    # switching to Claude or Gemini on the same route keeps the configured client backend.
+    # 1:1 swap only when client ``web_search`` was already present — never an additive grant.
+    if params.get("is_github_responses") is True and response_tools and any(
+        is_client_web_search(t) for t in response_tools
+    ):
+        if _copilot_model_has_native_web_search(model):
             response_tools = [t for t in response_tools if not is_client_web_search(t)] + [{"type": "web_search"}]
     # OpenCode Responses backends reserve web_search / search_files as function names (HTTP 400 "custom
     # function name 'X' is reserved", #85589). Alias them on the wire; normalize_response maps them back.
@@ -699,7 +724,7 @@ class ResponsesApiTransport(ProviderTransport):
 
         reasoning_effort, reasoning_enabled = _resolve_reasoning(model, params)
         response_tools, self._last_wire_aliases = _alias_wire_tools(
-            self.convert_tools(tools), params, is_xai_responses, is_codex_backend,
+            self.convert_tools(tools), params, is_xai_responses, is_codex_backend, model=model,
         )
 
         # Lazy: provider plugins import this transport during model_metadata init.

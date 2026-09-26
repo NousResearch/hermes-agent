@@ -628,7 +628,7 @@ def fence_reopen_reserve(text, len_fn=None) -> int:
         stripped = line.strip()
         if stripped.startswith("```"):
             tag = stripped[3:].split()
-            if tag and len(tag[0]) > len(widest):
+            if tag and _len(tag[0]) > _len(widest):
                 widest = tag[0]
     return _len(f"```{widest}\n") + _len("\n```")
 

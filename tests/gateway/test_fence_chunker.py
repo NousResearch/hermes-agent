@@ -238,6 +238,24 @@ def test_long_tag_headroom_holds_under_a_custom_length_unit():
     assert all(utf16_len(c) <= 200 for c in chunks)
 
 
+@pytest.mark.parametrize("emoji_first", [False, True])
+def test_the_widest_tag_is_chosen_in_the_callers_length_unit(emoji_first):
+    """An astral tag is wider in UTF-16 than a longer ASCII one: 8 code points but 16
+    units against 12. Picking the widest tag by code points reserved for the ASCII tag
+    and let the emoji-tagged fence's reopen push chunks past the limit."""
+    emoji, ascii_tag = "\U0001F642" * 8, "abcdefghijkl"
+    body = "".join(f"{i:02d}" + "x" * 33 + "\n" for i in range(9))
+    tags = (emoji, ascii_tag) if emoji_first else (ascii_tag, emoji)
+    text = "".join(f"```{tag}\n{body}```\n" for tag in tags)
+
+    chunks = split_text_fence_aware(
+        text, 200, utf16_len, prefer_paragraphs=False, balance_fences=True
+    )
+
+    assert fence_reopen_reserve(text, utf16_len) == utf16_len(f"```{emoji}\n\n```")
+    assert all(utf16_len(c) <= 200 for c in chunks)
+
+
 def test_text_without_fences_keeps_the_full_limit():
     """No fences means nothing to reopen, so no headroom is given up."""
     chunks = split_text_fence_aware(

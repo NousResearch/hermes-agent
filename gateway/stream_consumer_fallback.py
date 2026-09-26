@@ -369,7 +369,10 @@ class StreamFallbackMixin:
                 # split (#14238).
                 self._delivered_commentary_texts.append(text)
                 # #122905: interim sends were otherwise invisible at INFO, so a long turn's
-                # actual delivery order couldn't be reconstructed from the log.
+                # actual delivery order couldn't be reconstructed from the log. seq is
+                # per-turn, not per-session or global: it resets to 1 whenever run_turn_runner
+                # constructs a fresh GatewayStreamConsumer, since self._delivered_commentary_texts
+                # is an instance attribute of that one turn's consumer.
                 logger.info(
                     "[%s] Sending interim message seq=%d (%d chars) to %s",
                     getattr(self.adapter, "name", "?"), len(self._delivered_commentary_texts),

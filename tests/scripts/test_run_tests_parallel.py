@@ -449,18 +449,22 @@ def test_interpreter_crash_is_reported_as_a_crash_not_as_no_tests_ran(tmp_path: 
     wrong diagnoses for one real bug. The crash must be named on the summary
     line and in the failure buckets, and the run must still exit non-zero.
     """
+    # A core-dumping signal is an EXC_CRASH on macOS: ReportCrash pops "Python quit
+    # unexpectedly" on the developer's desktop on every run. The runner names whatever
+    # signal killed the interpreter, so SIGKILL covers the same classification there.
+    crash_signal = "SIGKILL" if sys.platform == "darwin" else "SIGSEGV"
     probe_dir = tmp_path / "probe"
     probe_dir.mkdir()
     (probe_dir / "test_probe_crash.py").write_text(
         textwrap.dedent(
-            """
+            f"""
             import os, signal
 
             def test_before():
                 assert True
 
             def test_crash():
-                os.kill(os.getpid(), signal.SIGSEGV)
+                os.kill(os.getpid(), signal.{crash_signal})
             """
         )
     )
@@ -469,7 +473,7 @@ def test_interpreter_crash_is_reported_as_a_crash_not_as_no_tests_ran(tmp_path: 
 
     assert proc.returncode != 0
     assert "1 file CRASHED" in proc.stdout
-    assert "SIGSEGV" in proc.stdout
+    assert crash_signal in proc.stdout
     assert "where no tests ran" not in proc.stdout
     assert "NO TESTS RAN" not in proc.stdout
 

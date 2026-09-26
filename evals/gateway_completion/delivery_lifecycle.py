@@ -90,7 +90,7 @@ async def main():
 
     # Real spawn, reader thread, durable process output and actual post-turn scheduling.
     result = spawn("NOTIFY_OK", notify=True)
-    await runner._hmwa_post_turn_hooks({}, {}, "")
+    await runner._hmwa_post_turn_side_effects()
     await asyncio.sleep(5.5)
     await settle()
     print("NOTIFY_TRUE", json.dumps({"spawn": result, "turns": turns, "sends": sends}))
@@ -99,7 +99,7 @@ async def main():
     sends.clear()
     # Pattern arrives after post-turn drain while idle watcher remains running.
     result = spawn("READY_AUDIT", patterns=["READY_AUDIT"])
-    await runner._hmwa_post_turn_hooks({}, {}, "")
+    await runner._hmwa_post_turn_side_effects()
     await asyncio.sleep(1)
     print(
         "WATCH_IDLE",
@@ -112,7 +112,7 @@ async def main():
     assert len(turns) == 1
     assert not any(e["type"] == "watch_match" for e in list(pr.completion_queue.queue))
     # Same hook that a subsequent user turn executes, with no synthetic queue fabrication.
-    await runner._hmwa_post_turn_hooks({}, {}, "")
+    await runner._hmwa_post_turn_side_effects()
     await settle()
     print("WATCH_AFTER_NEXT_POST_TURN", json.dumps({"turns": turns, "sends": sends}))
     assert len(turns) == 1 and "READY_AUDIT" in turns[0]["text"]

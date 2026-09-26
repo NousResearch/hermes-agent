@@ -417,6 +417,19 @@ def cmd_install(
         console.print(catalog.entry_capability_summary(entry))
     else:
         console.print("[yellow]Warning:[/yellow] custom (unreviewed) source — not from the Hermes catalog.")
+    if entry is not None and entry.known_issues:
+        # #124037: catalog entries may document known traps (unsupported
+        # install-method/mode combinations, retired lazy-install paths, ...).
+        # A trap the catalog itself documents must not be installed silently —
+        # non-interactive (non-TTY) runs fail closed; interactive runs require
+        # explicit confirmation.
+        for issue in entry.known_issues:
+            console.print(f"[yellow]Known issue:[/yellow] {issue}")
+        console.print(
+            "[bold red]This catalog entry documents known issues. "
+            "Install proceeds only with explicit confirmation.[/bold red]")
+        if not (_pc()._is_tty() and _pc()._ask_yes("  Continue install anyway? [y/N]: ")):
+            _pc()._fail(console, "[red]Install cancelled — the catalog entry documents known issues.[/red]")
     if allow_removed:
         console.print(
             "[bold red]WARNING:[/bold red] [red]--allow-removed set — skipping the catalog kill-list check. "
@@ -539,6 +552,15 @@ def dashboard_install_plugin(
         entry = catalog.get_live_catalog_entry(catalog_name)
         if entry is None:
             return {"ok": False, "error": f"'{catalog_name}' is not in the Hermes plugin catalog."}
+        if entry.known_issues:
+            # #124037: no GUI bypass — an entry whose own catalog documents
+            # known traps is refused outright on this non-interactive path.
+            return {
+                "ok": False,
+                "error": "refused: this catalog entry documents known issues that cannot be confirmed "
+                         f"in a non-interactive install: {'; '.join(entry.known_issues)}",
+                "known_issues": list(entry.known_issues),
+            }
         identifier = entry.install_identifier
     else:
         warnings.append("Custom (unreviewed) source — not from the Hermes catalog.")

@@ -36,6 +36,11 @@ _TRANSIENT_HTTP_NEEDLES = _TRANSIENT_OSERROR_NEEDLES + (
 _TRANSIENT_ERRNOS = frozenset({
     errno.ECONNREFUSED, errno.ECONNRESET, errno.EHOSTUNREACH, errno.ENETUNREACH, errno.ENETDOWN,
     errno.ETIMEDOUT, errno.EAGAIN})
+# The error summarizer (``agent.api_error_summary``) folds raw network/DNS failures into this
+# canonical offline sentence, and ``cron.scheduler`` re-raises that prose bare (no ``__cause__``)
+# from the summarized result payload — without this needle the matcher walks a chain that no
+# longer exists and offline failures never enter the retry ladder (#118536).
+_SUMMARIZED_OFFLINE_NEEDLES = ("hermes can't reach the model provider",)
 
 
 def _is_transient_provider_resolve_error(exc: BaseException) -> bool:
@@ -72,6 +77,10 @@ def _is_transient_provider_resolve_error(exc: BaseException) -> bool:
                 return True
         # Bare exceptions that carry the raw DNS text (format_runtime_provider_error).
         if any(needle in msg for needle in _DNS_FAILURE_NEEDLES):
+            return True
+        # Summarized offline prose (``api_error_summary``): the raw transport exception was
+        # already folded away, so match the canonical sentence itself (#118536).
+        if any(needle in msg for needle in _SUMMARIZED_OFFLINE_NEEDLES):
             return True
         cur = cur.__cause__ or cur.__context__
     return False

@@ -1543,7 +1543,10 @@ re-discovery. Every one of those paths runs a **real forced rescan** (`discover_
 
 Install surfaces report exactly this split: `hermes plugins install/enable` prints it after nudging the running
 gateway (`reload-plugins` control-socket verb), `plugins.manage install/toggle/update` returns `activation` +
-`gateway_reloaded` (`restart_required` is true only when no gateway answered).
+`gateway_reloaded` (`restart_required` is true only when no gateway answered). `handler_wiring`
+(`confirmed` / `unconfirmed` / `failed`, plus `handler_wiring_failures`) is the gateway's own attestation of
+that re-wire: only `confirmed` may be shown as "active now", because a factory that raises leaves the
+plugin's callbacks unwired and is reported — and retried on the next re-wire — rather than counted as live.
 
 :::tip
 This guide covers **general plugins** (tools, hooks, slash commands, CLI commands). The sections below sketch the authoring pattern for each specialized plugin type; each links to its full guide for field reference and examples.

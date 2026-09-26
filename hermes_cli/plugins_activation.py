@@ -90,6 +90,19 @@ def find_activation(summaries: Optional[List[Dict[str, Any]]], name: str) -> Opt
     return None
 
 
+def _handler_wiring(answer: Optional[Dict[str, Any]]) -> tuple:
+    """``(status, failures)`` for the gateway's ``reload-plugins`` answer: ``"confirmed"`` only when
+    the gateway read its live adapters back and none reported an unwired handler factory,
+    ``"failed"`` when it did and some did, ``"unconfirmed"`` for no answer, a loop timeout, or a
+    gateway that predates the wiring receipt (#119502)."""
+    if not answer or answer.get("reloaded") is not True or answer.get("adapters_rewired") is None:
+        return "unconfirmed", []
+    failures = sorted(str(f) for f in (answer.get("handler_wiring_failures") or ()))
+    if failures:
+        return "failed", failures
+    return "confirmed", []
+
+
 def activate_plugin_now(name: str, *, in_process: bool = True) -> Dict[str, Any]:
     """After an install/enable/update: load the plugin in THIS process (so ``on_plugin_loaded``
     subscribers here — the TUI/Desktop server — see it), connect its MCP servers and hand them plus
@@ -98,10 +111,13 @@ def activate_plugin_now(name: str, *, in_process: bool = True) -> Dict[str, Any]
     in another process (``hermes plugins install``) passes ``in_process=False``; the running Desktop /
     dashboard backend is then asked to do the in-process half (:func:`notify_serve_backend`). Never raises.
 
-    Returns ``{"gateway_reloaded": bool, "activation": summary | None, "restart_required": bool}``.
+    Returns ``{"gateway_reloaded": bool, "activation": summary | None, "restart_required": bool,
+    "handler_wiring": "confirmed" | "unconfirmed" | "failed", "handler_wiring_failures": [plugin]}``.
     ``activation.live_now`` lists what is usable in open chats now; ``activation.deferred`` what waits
     for the next session. ``restart_required`` is True only when no gateway answered (old gateway, not
-    running)."""
+    running). ``handler_wiring`` is ``"confirmed"`` only when the gateway attested that every live
+    adapter's handler factories wired: a reloaded gateway is not enough to claim the plugin's
+    callbacks are active (#119502), which is what :func:`activation_hint` enforces."""
     from hermes_constants import get_hermes_home
     activation: Optional[Dict[str, Any]] = load_and_go_live(name) if in_process else None
     if not in_process:
@@ -121,7 +137,9 @@ def activate_plugin_now(name: str, *, in_process: bool = True) -> Dict[str, Any]
     reloaded = bool(answer and answer.get("reloaded"))
     if reloaded and activation is None:
         activation = find_activation((answer or {}).get("activations"), name)
-    return {"gateway_reloaded": reloaded, "activation": activation, "restart_required": not reloaded}
+    wiring, failures = _handler_wiring(answer)
+    return {"gateway_reloaded": reloaded, "activation": activation, "restart_required": not reloaded,
+            "handler_wiring": wiring, "handler_wiring_failures": failures}
 
 
 def load_and_go_live(name: str) -> Optional[Dict[str, Any]]:
@@ -218,12 +236,25 @@ def activation_hint(result: Dict[str, Any]) -> str:
             return "\n".join(lines)
         return "\n".join([*lines, "Restart the gateway for the plugin to take effect:\n  hermes gateway restart"])
     now, deferred = act.get("activated_now") or {}, act.get("deferred") or {}
+    labels: Dict[str, str] = {"tools": "tools (next session)", "prompt": "system prompt (next session)",
+                              "mcp_servers": "MCP servers (next session)"}
+    if result.get("handler_wiring") != "confirmed":
+        # #119502: the rescan was acknowledged, but the wiring was not — never say "active now".
+        if result.get("handler_wiring") == "failed":
+            head = ("Gateway reloaded plugins, but handler wiring FAILED for "
+                    + ", ".join(result.get("handler_wiring_failures") or ())
+                    + " — its callbacks are NOT active.")
+        else:
+            head = ("Gateway reloaded plugins, but handler wiring was not confirmed — "
+                    "callbacks may not be active yet.")
+        tail = (["Deferred: " + ", ".join(labels.get(k, k) for k in sorted(deferred)) + "."]
+                if deferred else [])
+        return "\n".join([*lines, head, *tail,
+                          "Retry the activation, or restart the gateway:\n  hermes gateway restart"])
     parts = []
     if now:
         parts.append("active in the running gateway now: " + ", ".join(sorted(now)))
     if deferred:
-        labels: Dict[str, str] = {"tools": "tools (next session)", "prompt": "system prompt (next session)",
-                                  "mcp_servers": "MCP servers (next session)"}
         parts.append("deferred: " + ", ".join(labels.get(k, k) for k in sorted(deferred)))
     if not parts:
         return "\n".join([*lines, "Gateway reloaded plugins; nothing of this plugin needs a session or restart."])

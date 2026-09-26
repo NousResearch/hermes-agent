@@ -4030,7 +4030,7 @@ export interface PluginsManageParams {
   values?: Record<string, unknown> | null
 }
 export type PluginsAction = 'list' | 'toggle' | 'install' | 'update' | 'remove' | 'settings' | 'onboarding'
-/** ``list`` → ``plugins`` + counts; ``toggle`` → ``ok``/``unchanged``/``restart_required``/``name`` (the canonical key written)/``plugin``; ``install`` → ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s ok payload; ``toggle``/``install``/``update`` that loaded a plugin also carry ``gateway_reloaded`` (the running gateway picked it up and re-wired its handlers) and ``activation`` — the honest split of what is live now vs deferred, so ``restart_required`` is True only when no gateway answered; ``update`` → ``ok``/``unchanged``/``sha``, or ``ok=false`` + ``consent_required`` with the ``delta`` (``{surface: [added...]}``) / ``delta_lines`` a widened pin adds — nothing changed until the client retries with ``accept_capabilities``; ``remove`` → ``ok``/``name`` plus ``cleared_memory_provider`` when the removed plugin was the live ``memory.provider``. */
+/** ``list`` → ``plugins`` + counts; ``toggle`` → ``ok``/``unchanged``/``restart_required``/``name`` (the canonical key written)/``plugin``; ``install`` → ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s ok payload; ``toggle``/``install``/``update`` that loaded a plugin also carry ``gateway_reloaded`` (the running gateway picked it up and re-wired its handlers) and ``activation`` — the honest split of what is live now vs deferred, so ``restart_required`` is True only when no gateway answered — plus ``handler_wiring``/``handler_wiring_failures``, the gateway's own attestation of that re-wire: only ``confirmed`` may be shown as "active now" (#119502); ``update`` → ``ok``/``unchanged``/``sha``, or ``ok=false`` + ``consent_required`` with the ``delta`` (``{surface: [added...]}``) / ``delta_lines`` a widened pin adds — nothing changed until the client retries with ``accept_capabilities``; ``remove`` → ``ok``/``name`` plus ``cleared_memory_provider`` when the removed plugin was the live ``memory.provider``. */
 export interface PluginsManageResult {
   plugins?: AgentPluginRow[] | null
   user_count?: number | null
@@ -4040,6 +4040,8 @@ export interface PluginsManageResult {
   restart_required?: boolean | null
   gateway_reloaded?: boolean | null
   activation?: PluginActivation | null
+  handler_wiring?: PluginHandlerWiring | null
+  handler_wiring_failures?: string[] | null
   cleared_memory_provider?: boolean | null
   name?: string | null
   plugin?: AgentPluginRow | null
@@ -4122,6 +4124,8 @@ export interface PluginLiveSkill {
   name: string
   description?: string
 }
+/** Whether the running gateway confirmed the native plugin handler re-wire for this activation (#119502). ``confirmed`` = every live adapter's handler factories wired (the only value that may be shown as "active now"); ``failed`` = at least one factory raised (``handler_wiring_failures`` names those plugins); ``unconfirmed`` = the gateway never reported it — control-socket loop timeout, or a gateway older than the wiring receipt. */
+export type PluginHandlerWiring = 'confirmed' | 'unconfirmed' | 'failed'
 /** A catalog plugin curated for the onboarding card (``onboarding: true``) that this OS runs. ``app_state`` is the pinned ``plugin.json`` declaration judged on this host; ``sentence`` names what is missing (empty when present or unknown). */
 export interface OnboardingCatalogPlugin {
   name: string

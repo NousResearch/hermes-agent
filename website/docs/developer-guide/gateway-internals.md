@@ -305,7 +305,9 @@ Plugins that load after the adapters connected (install/enable from the CLI, Des
   `register_slack_action_handler` callbacks once per `AsyncApp`.
 - **`reload-plugins` control verb** — other processes (`hermes plugins install`, `hermes serve`) ask the
   running gateway to force-rescan the requested (served) home; the answer carries `plugins`, per-plugin
-  `activations` and `adapters_rewired`, so the caller can say "active now" truthfully.
+  `activations`, `adapters_rewired` (`None` when the loop read timed out) and `handler_wiring_failures`
+  (the plugins whose handler factory is still unwired), so the caller can say "active now" only when the
+  wiring was actually attested (#119502).
 - **Scope limit** — handlers only. Tools and system-prompt sections of a late plugin wait for the next
   session (prompt-cache invariant); portable MCP servers wait for `mcp.reload`. Nothing un-wires on disable.
 

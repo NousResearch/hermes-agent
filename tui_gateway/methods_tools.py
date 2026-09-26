@@ -1639,6 +1639,9 @@ def _plugins_toggle(rid, params):
         "ok": True, "unchanged": bool(result.get("unchanged")),
         "restart_required": bool(result.get("restart_required")),
         "gateway_reloaded": bool(result.get("gateway_reloaded")), "activation": result.get("activation"),
+        # The gateway's own attestation of that re-wire (#119502): only "confirmed" may say active now.
+        "handler_wiring": result.get("handler_wiring"),
+        "handler_wiring_failures": list(result.get("handler_wiring_failures") or ()),
         "name": key, "plugin": row}, key))
 
 

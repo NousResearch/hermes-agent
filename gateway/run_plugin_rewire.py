@@ -82,9 +82,12 @@ def reload_plugins_verb(runner: Any, loop: asyncio.AbstractEventLoop) -> Callabl
     """Control-socket ``reload-plugins``: force re-discovery under the requested home's scope so a plugin
     installed/enabled by another process (CLI, Desktop, ``plugins.manage``) loads now; the loaded event
     then re-wires that profile's adapters. Only the gateway home and served profile homes are accepted.
-    Answer: ``{"reloaded", "home", "plugins", "activations", "adapters_rewired"}``. Runs on the socket executor thread
-    (discovery is blocking); the count is read on the loop AFTER the re-wire callback (FIFO), so a
-    truthful "active now" reaches the caller."""
+    Answer: ``{"reloaded", "home", "plugins", "activations", "adapters_rewired",
+    "handler_wiring_failures"}``. Runs on the socket executor thread (discovery is blocking); the wiring
+    report is read on the loop AFTER the re-wire callback (FIFO), so a truthful receipt reaches the
+    caller. ``adapters_rewired`` is ``None`` when that read times out or raises, and
+    ``handler_wiring_failures`` names the plugins whose handler factory is still unwired — only an int
+    count with an empty failure list attests wiring (#119502)."""
 
     def _handler(params: Optional[dict] = None) -> dict:
         from hermes_constants import get_hermes_home, hermes_home_key
@@ -110,17 +113,34 @@ def reload_plugins_verb(runner: Any, loop: asyncio.AbstractEventLoop) -> Callabl
             manager = get_plugin_manager()
             names, activations = sorted(manager._plugins), activation_summaries(manager)
         try:
-            rewired = asyncio.run_coroutine_threadsafe(_count_adapters(runner, profile_name), loop).result(timeout=5.0)
-        except Exception:
-            rewired = None
+            report = asyncio.run_coroutine_threadsafe(
+                _wiring_report(runner, profile_name), loop).result(timeout=5.0)
+        except Exception:  # loop timeout / error: the rescan happened, the wiring was never attested
+            report = None
         return {"reloaded": True, "home": str(requested), "plugins": names, "activations": activations,
-                "adapters_rewired": rewired}
+                "adapters_rewired": (report or {}).get("adapters_rewired"),
+                "handler_wiring_failures": list((report or {}).get("handler_wiring_failures") or ())}
 
     return _handler
 
 
-async def _count_adapters(runner: Any, profile_name: Optional[str]) -> int:
-    """Live adapters for the profile; scheduled after the loaded-event callback, so they are re-wired."""
+async def _wiring_report(runner: Any, profile_name: Optional[str]) -> Dict[str, Any]:
+    """``{adapters_rewired, handler_wiring_failures}`` for the profile, read on the loop AFTER the
+    re-wire callback (FIFO). Counting adapter objects never said whether the re-wire succeeded, so
+    the failures are read back from the adapters themselves (#119502)."""
     if profile_name is None:
-        return len(getattr(runner, "adapters", None) or {})
-    return len((getattr(runner, "_profile_adapters", None) or {}).get(profile_name) or {})
+        adapters = dict(getattr(runner, "adapters", None) or {})
+    else:
+        adapters = dict((getattr(runner, "_profile_adapters", None) or {}).get(profile_name) or {})
+    failures: set = set()
+    for platform, adapter in adapters.items():
+        probe = getattr(adapter, "plugin_handler_wiring_failures", None)
+        if probe is None:  # not a BasePlatformAdapter — nothing to attest with, keep the count honest
+            continue
+        try:
+            failures.update(probe())
+        except Exception:
+            logger.warning("[%s] plugin handler wiring status unavailable",
+                           getattr(platform, "value", platform), exc_info=True)
+            failures.add(str(getattr(platform, "value", platform)))
+    return {"adapters_rewired": len(adapters), "handler_wiring_failures": sorted(failures)}

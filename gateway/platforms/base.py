@@ -2233,9 +2233,12 @@ class BasePlatformAdapter(ABC):
 
     # Plugin handler factories wired on the live native client: ``(plugin, qualname)`` keys, reset when
     # the native client is rebuilt. ``None`` = ``connect()`` has not wired yet (class defaults so
-    # subclasses that skip ``super().__init__`` still re-wire safely).
+    # subclasses that skip ``super().__init__`` still re-wire safely). ``_plugin_handlers_failed`` holds
+    # the keys whose factory RAISED: unwired (so the next re-wire retries them) and never counted as
+    # live by the ``reload-plugins`` receipt (#119502).
     _plugin_handler_native: Any = None
     _plugin_handlers_wired: Optional[set] = None
+    _plugin_handlers_failed: Optional[set] = None
 
     def _wire_plugin_handlers(self, native: Any = None) -> None:
         """Invoke plugin-registered native handler factories (``ctx.register_platform_handler``)
@@ -2256,6 +2259,9 @@ class BasePlatformAdapter(ABC):
             # A rebuilt native client (transient-init rebuild, reconnect) starts with nothing wired.
             self._plugin_handler_native = native
             self._plugin_handlers_wired = set()
+            self._plugin_handlers_failed = set()
+        if self._plugin_handlers_failed is None:  # pragma: no cover - defensive
+            self._plugin_handlers_failed = set()
         for factory, plugin_name in factories:
             key = (plugin_name, getattr(factory, "__qualname__", None) or repr(factory))
             if key in self._plugin_handlers_wired:
@@ -2266,8 +2272,19 @@ class BasePlatformAdapter(ABC):
             except Exception as exc:
                 logger.error("[%s] Plugin '%s' handler factory raised: %s", self.name, plugin_name,
                              exc, exc_info=True)
-            # A raising factory is recorded too: re-wire must not re-raise it on every plugin load.
+                # Recorded as FAILED, not wired: the next re-wire retries it, and the reload receipt
+                # reports this plugin's callbacks as inactive instead of claiming success (#119502).
+                self._plugin_handlers_failed.add(key)
+                continue
             self._plugin_handlers_wired.add(key)
+            self._plugin_handlers_failed.discard(key)
+
+    def plugin_handler_wiring_failures(self) -> List[str]:
+        """Sorted plugin names whose ``register_platform_handler`` factory is still unwired on the
+        live native client because it raised (``[]`` = every factory it has seen succeeded). The
+        ``reload-plugins`` receipt reads this back to attest that the re-wire succeeded instead of
+        counting adapter objects (#119502)."""
+        return sorted({key[0] for key in (self._plugin_handlers_failed or ())})
 
     def rewire_plugin_handlers(self) -> None:
         """Register handlers of plugins loaded AFTER ``connect()`` wired the first batch (#87770);

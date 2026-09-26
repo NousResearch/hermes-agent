@@ -459,24 +459,37 @@ The live transcript tail is a bounded recent excerpt, not an unlimited conversat
 
 The classic CLI's `/agents` and `/tasks` commands still print a text summary; **Ctrl+T** (or **F6**) is the immediate interactive monitor, including while the parent is busy. See [TUI — Slash commands](../tui.md#slash-commands).
 
-### Monitoring multiple Hermes processes
+### Monitoring all local Hermes activity
 
 `/agents`, the composer dock, and the TUI overlay manage the current runtime.
-When several independent Hermes processes share one profile—for example, one
-process in each tmux pane—run the profile-scoped fleet monitor from another
-terminal:
+When several independent Hermes processes run across profiles or tmux panes, open
+the machine-wide monitor in another terminal:
 
 ```bash
-hermes agents                 # live, refreshing table on a TTY
-hermes agents --once          # one table and exit
-hermes agents --json          # one machine-readable snapshot
-hermes -p research agents     # select a named profile
+hermes monitor                       # full-screen, live dashboard
+hermes monitor --once                # one human-readable snapshot
+hermes monitor --json                # one redacted machine-readable snapshot
+hermes monitor --only-profile research # restrict the view to one profile
+hermes monitor --all                 # expand MCP/helper processes
 ```
 
-The fleet monitor verifies both the owner PID and its process-start fingerprint,
-so a crashed owner or recycled PID is not reported as live. It shows queued and
-running children, their owner session and PID, activity age, model, latest tool,
-and goal. `--json` also includes each child's redacted live-transcript path.
+The dashboard is closer to `htop` than the in-session agent overlay: it inventories
+Hermes processes owned by the same OS account (real UID on POSIX, token SID on Windows),
+so older CLI/TUI sessions and sibling installations are visible even if they predate
+the monitor. Helper descendants are admitted only through a same-owner parent chain
+rooted in a directly discovered Hermes process; a spawn-ledger row alone is not
+inventory evidence. It classifies gateways, web backends, Kanban workers, interactive
+sessions, and the monitor itself, with CPU, RSS, elapsed time, profile, TTY/tmux pane,
+and redacted activity. Owner-verified delegation manifests are scanned from every
+discovered runtime home and add only child identity, status, and activity age after
+strict projection. Goals, model/provider names, and latest-tool names are deliberately
+omitted because the manifest is runtime-controlled rather than a trusted public-data
+source; manifest-only rows without a discovered owner PID/start-time match are omitted
+as well.
+
+In the live screen, use `↑`/`↓` (or `j`/`k`) to select a runtime, `Enter` to
+toggle its detail panel, `s` to cycle sort keys, `a` to expand helper processes,
+and `q` to quit.
 
 This cross-process view is deliberately **read-only**. Steering and stopping a
 specific child require the owning runtime's live session authority; use that

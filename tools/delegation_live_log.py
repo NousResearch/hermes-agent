@@ -326,11 +326,14 @@ def _owner_is_live(owner: Any) -> bool:
 
 def _resolved_transcript(manifest_dir: Path, relative: Any) -> Optional[str]:
     """Resolve a v2 relative transcript path without allowing traversal."""
-    if not isinstance(relative, str) or not relative:
+    if not isinstance(relative, str) or not relative or Path(relative).name != relative:
         return None
     try:
         base = manifest_dir.resolve()
-        candidate = (base / relative).resolve()
+        unresolved = base / relative
+        if unresolved.is_symlink():
+            return None
+        candidate = unresolved.resolve()
         candidate.relative_to(base)
     except (OSError, ValueError):
         return None
@@ -344,7 +347,7 @@ def scan_live_delegations(root: Optional[Path] = None) -> List[Dict[str, Any]]:
     process identity and are omitted rather than reported as live.
     """
     live_root = root if root is not None else live_transcript_root()
-    if not live_root.is_dir():
+    if live_root.is_symlink() or not live_root.is_dir():
         return []
     try:
         resolved_root = live_root.resolve()
@@ -353,7 +356,7 @@ def scan_live_delegations(root: Optional[Path] = None) -> List[Dict[str, Any]]:
     children: List[Dict[str, Any]] = []
     for manifest_path in sorted(live_root.glob("*/manifest.json")):
         try:
-            if manifest_path.is_symlink():
+            if manifest_path.is_symlink() or manifest_path.parent.is_symlink():
                 continue
             manifest_dir = manifest_path.parent.resolve()
             manifest_dir.relative_to(resolved_root)
@@ -387,13 +390,10 @@ def scan_live_delegations(root: Optional[Path] = None) -> List[Dict[str, Any]]:
                 "owner_pid": owner.get("pid"),
                 "owner_started_at": owner.get("started_at"),
                 "goal": task.get("goal", ""),
-                "model": manifest.get("model"),
-                "provider": manifest.get("provider"),
                 "status": task.get("status"),
                 "started_at": task.get("started_at") or manifest.get("started_at"),
                 "updated_at": task.get("updated_at") or manifest.get("updated_at"),
                 "tool_count": task.get("tool_count", 0),
-                "last_tool": task.get("last_tool"),
                 "transcript": transcript,
             })
     return sorted(

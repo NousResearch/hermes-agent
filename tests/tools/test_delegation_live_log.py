@@ -252,8 +252,7 @@ def test_manifest_goal_is_redacted():
     assert "deploy using" in goal, "redaction must not blank the goal entirely"
 
 
-def test_manifest_includes_model_and_provider():
-    """The manifest.json should record the model and provider used for the delegation."""
+def test_manifest_model_and_provider_are_not_projected_by_public_scan(monkeypatch):
     delegation_id, _writers, _paths = create_live_transcripts(
         [{"goal": "task 1"}, {"goal": "task 2"}],
         model="openrouter/gpt-4o",
@@ -265,10 +264,15 @@ def test_manifest_includes_model_and_provider():
             encoding="utf-8"
         )
     )
-    assert manifest["model"] == "openrouter/gpt-4o"
-    assert manifest["provider"] == "openrouter"
-    # tasks array should not be affected
-    assert len(manifest["tasks"]) == 2
+    manifest["tasks"][0]["status"] = "running"
+    manifest["tasks"][0]["last_tool"] = "read_file"
+    (live_transcript_root() / delegation_id / "manifest.json").write_text(
+        json.dumps(manifest), encoding="utf-8",
+    )
+    monkeypatch.setattr("tools.delegation_live_log._owner_is_live", lambda owner: True)
+
+    child = scan_live_delegations()[0]
+    assert set(child).isdisjoint({"model", "provider", "last_tool"})
 
 
 def test_manifest_v2_records_owner_and_relative_transcripts():
@@ -318,7 +322,7 @@ def test_scan_live_delegations_returns_pid_verified_children(monkeypatch):
     assert child["delegation_id"] == delegation_id
     assert child["subagent_id"] == "sa-0-abcd"
     assert child["owner_session_id"] == "session-parent"
-    assert child["last_tool"] == "read_file"
+    assert "last_tool" not in child
     assert child["transcript"] == str(
         live_transcript_root() / delegation_id / "task-0.log"
     )
@@ -365,6 +369,31 @@ def test_scan_skips_symlink_escape_and_malformed_manifests(monkeypatch, tmp_path
     linked.mkdir()
     (linked / "manifest.json").symlink_to(outside / "manifest.json")
 
+    assert scan_live_delegations(root) == []
+
+
+def test_scan_rejects_symlinked_delegation_dirs_and_transcripts_inside_root(monkeypatch, tmp_path):
+    monkeypatch.setattr("tools.delegation_live_log._owner_is_live", lambda owner: True)
+    root = tmp_path / "live"
+    real_dir = root / "real"
+    real_dir.mkdir(parents=True)
+    task_log = real_dir / "task-0.log"
+    task_log.write_text("safe", encoding="utf-8")
+    manifest = {
+        "schema_version": 2,
+        "delegation_id": "deleg_deadbeef",
+        "owner": {"pid": 1, "started_at": 1.0},
+        "tasks": [{"index": 0, "status": "running", "log": "task-0.log"}],
+    }
+    (real_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    linked_dir = root / "linked"
+    linked_dir.symlink_to(real_dir, target_is_directory=True)
+
+    assert len(scan_live_delegations(root)) == 1
+
+    task_log.unlink()
+    task_log.symlink_to(root / "other.log")
+    (root / "other.log").write_text("still inside root", encoding="utf-8")
     assert scan_live_delegations(root) == []
 
 

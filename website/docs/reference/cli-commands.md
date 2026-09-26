@@ -66,7 +66,7 @@ The install also ships `hermes-agent`, a minimal runner that sends one query and
 | `hermes migrate` | Diagnose and (optionally) rewrite `config.yaml` to replace references to retired models or deprecated settings (e.g. `migrate xai`). |
 | `hermes codex-runtime` | Noninteractive counterpart of `/codex-runtime`: `migrate [--dry-run] [--json]` regenerates the Hermes-managed block in `~/.codex/config.toml` for the selected profile. See [Codex app-server runtime](../user-guide/features/codex-app-server-runtime.md#running-the-migration-from-a-script). |
 | `hermes status` | Show agent, auth, and platform status. |
-| `hermes agents` | Monitor live delegated agents across all Hermes processes using the selected profile. |
+| `hermes monitor` | Full-screen local dashboard for Hermes runtimes, profiles, Kanban workers, gateways, and delegated agents. |
 | `hermes usage` | Show the configured account's rate-limit windows (the `/usage` block) without a session; `--json` for scripts. |
 | `hermes cron` | Inspect and tick the cron scheduler. |
 | `hermes pause` / `hermes resume` | Global emergency stop: no new cron fires (built-in ticker, managed-cron webhook, misfire catch-up), kanban dispatch or gateway turns start until resumed; in-flight work is never killed. |
@@ -751,25 +751,40 @@ hermes status [--all] [--deep]
 | `--all` | Show all details in a shareable redacted format. |
 | `--deep` | Run deeper checks that may take longer. |
 
-## `hermes agents`
+## `hermes monitor`
 
 ```bash
-hermes agents [--once | --json] [--interval <seconds>]
+hermes monitor [--once | --json] [--only-profile <name>] [--sort <key>] [--all] [--interval <seconds>]
 ```
 
-Shows live delegated children owned by every Hermes process sharing the selected
-profile. On an interactive terminal the table refreshes until `Ctrl+C`; redirected
-output automatically behaves like `--once`.
+Shows every same-user Hermes runtime on the local machine, including independent
+CLI/TUI sessions, gateways, web backends, Kanban workers, and delegated children.
+The full-screen dashboard reports profile, CPU, RSS, elapsed time, TTY/tmux pane,
+and redacted activity. On an interactive terminal it refreshes until `Ctrl+C`;
+redirected output automatically behaves like `--once`.
+
+Use `↑`/`↓` (or `j`/`k`) to select a runtime, `Enter` to open its safe detail
+panel, `s` to cycle sort keys, `a` to show or hide helper processes, and `q` to quit.
 
 | Option | Description |
 |--------|-------------|
-| `--once` | Render one human-readable table and exit. |
-| `--json` | Emit one JSON snapshot and exit. |
-| `--interval <seconds>` | Set the live refresh interval (default `1.5`, minimum `0.2`). |
+| `--once` | Render one human-readable dashboard snapshot and exit. |
+| `--json` | Emit one redacted JSON snapshot and exit. |
+| `--only-profile <name>` | Restrict rows to one profile. The default is all local profiles. |
+| `--sort <key>` | Sort runtimes by `cpu`, `rss`, `elapsed`, `profile`, or `pid`. |
+| `--all` | Expand helper processes; by default they are summarized in the header. |
+| `--interval <seconds>` | Set the live refresh interval (default `1.0`, minimum `0.2`). |
 
-The command verifies the owner PID and process-start fingerprint and omits stale
-or legacy manifests whose owner cannot be proven live. It is read-only: steer and
-stop controls remain on the owning runtime's `/agents` surface.
+Process discovery is the inventory source, so runtimes from older Hermes installs
+remain visible. Account ownership is checked by real UID on POSIX and token SID on
+Windows; same-named accounts are not treated as the same owner. Same-owner helper
+descendants are included only when rooted in a discovered Hermes process, never merely
+because a spawn-ledger row names them. PID/start-time identities and owner-verified
+manifests from every discovered runtime home enrich that view; manifest-only delegation
+rows without a discovered owner process are omitted. Raw argv, prompts, environments,
+secrets, manifest-supplied model/provider/tool names, and transcript contents are never
+rendered or emitted. The monitor is
+read-only: steer and stop controls remain on each owning runtime's `/agents` surface.
 
 ## `hermes cron`
 

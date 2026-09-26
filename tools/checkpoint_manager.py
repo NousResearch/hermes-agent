@@ -619,7 +619,20 @@ def _register_project(store: Path, working_dir: str) -> None:
             pass
     try:
         meta_path.parent.mkdir(parents=True, exist_ok=True)
-        meta_path.write_text(json.dumps(meta), encoding="utf-8")
+        tmp = meta_path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(meta), encoding="utf-8")
+        # Best-effort fsync for crash durability; ignore if not supported.
+        try:
+            import os as _os
+
+            _fd = _os.open(str(tmp), _os.O_RDONLY)
+            try:
+                _os.fsync(_fd)
+            finally:
+                _os.close(_fd)
+        except OSError:
+            pass
+        tmp.replace(meta_path)
     except OSError as exc:
         logger.debug("Could not write project metadata %s: %s", meta_path, exc)
 
@@ -648,7 +661,19 @@ def _touch_project(store: Path, working_dir: str) -> None:
     if evidence:
         meta.update(evidence)
     try:
-        meta_path.write_text(json.dumps(meta), encoding="utf-8")
+        tmp = meta_path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(meta), encoding="utf-8")
+        try:
+            import os as _os
+
+            _fd = _os.open(str(tmp), _os.O_RDONLY)
+            try:
+                _os.fsync(_fd)
+            finally:
+                _os.close(_fd)
+        except OSError:
+            pass
+        tmp.replace(meta_path)
     except OSError as exc:
         logger.debug("Could not update project metadata %s: %s", meta_path, exc)
 

@@ -180,10 +180,17 @@ def test_compression_tip_adoption_applies_the_identity_check(db):
     only restores while the slot is None), so with the NULL gone it must apply the identity
     check itself: a tip whose route moved since its last persist stays unseeded (the next
     restore rebuilds), while a matching tip is adopted verbatim.
+
+    The slot starts NON-NULL — it holds the parent's prompt, exactly as a live agent that
+    cached a turn before the parent rotated. Adoption moves ``agent.session_id`` onto the
+    child, so a rejected child prompt must not leave the parent's bytes behind: the turn gate
+    (``turn_context``: restore/rebuild only while the slot is None) would then send the parent
+    session's prompt for the child turn unvalidated.
     """
     from agent.conversation_compression import _adopt_live_compression_child
 
     stale = _stored_prompt("model-a", "prov-a")
+    parent_prompt = _stored_prompt("parent-model", "parent-provider")
     db.create_session("parent", source="discord", model="model-a")
     db.end_session("parent", "compression")
     db.create_session("child", source="discord", model="model-a", parent_session_id="parent")
@@ -193,7 +200,7 @@ def test_compression_tip_adoption_applies_the_identity_check(db):
 
     def _adopt(model: str, provider: str) -> MagicMock:
         agent = MagicMock()
-        agent._cached_system_prompt = None
+        agent._cached_system_prompt = parent_prompt
         agent.session_id = "parent"
         agent.model, agent.provider = model, provider
         agent.pass_session_id = False
@@ -202,5 +209,7 @@ def test_compression_tip_adoption_applies_the_identity_check(db):
         assert _adopt_live_compression_child(agent, db, "parent") is not None
         return agent
 
-    assert _adopt("model-b", "prov-b")._cached_system_prompt is None
+    rejected = _adopt("model-b", "prov-b")
+    assert rejected.session_id == "child"
+    assert rejected._cached_system_prompt is None
     assert _adopt("model-a", "prov-a")._cached_system_prompt == stale

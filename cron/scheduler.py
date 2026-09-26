@@ -1583,11 +1583,30 @@ class _CronJobConfig:
     cron_default_provider: str
 
 
+def _coerce_job_model(value: Any) -> Optional[str]:
+    """Flatten a job's ``model`` field to its plain string form, or None.
+
+    ``model`` is normally a string, but jobs written by older schemas or edited by hand can
+    carry the structured form ``{"model": "<name>", "provider": "<p>"}``. That dict is truthy,
+    so it satisfied ``job.get("model") or ...`` and skipped the config fallback, then failed
+    the ``isinstance(model, str)`` fail-fast guard -- reporting "no model configured" while
+    quoting the model. None means "no usable pin", so the env/config fallback runs.
+    """
+    if isinstance(value, str):
+        return value.strip() or None
+    if isinstance(value, dict):
+        inner = value.get("model") or value.get("name") or value.get("default")
+        if isinstance(inner, str):
+            return inner.strip() or None
+    return None
+
+
 def _load_cron_job_config(job: dict, job_id: str, job_name: str) -> _CronJobConfig:
     """Load config.yaml and resolve the run's model: per-job pin > cron.model (fleet default) >
     the main agent model (config ``model:``, then HERMES_MODEL). Re-read every tick (no cache) so
     ``hermes cron edit --model`` and ``hermes model`` both apply next tick."""
-    model = job.get("model") or cron_env_setting("HERMES_MODEL") or ""
+    _job_model = _coerce_job_model(job.get("model"))
+    model = _job_model or cron_env_setting("HERMES_MODEL") or ""
     _cron_default_provider = ""
     _cfg: dict = {}
     _model_cfg: Any = {}
@@ -1603,7 +1622,7 @@ def _load_cron_job_config(job: dict, job_id: str, job_name: str) -> _CronJobConf
             if isinstance(_cron_cfg_for_model, dict):
                 _cron_default_model = str(_cron_cfg_for_model.get("model") or "").strip()
                 _cron_default_provider = str(_cron_cfg_for_model.get("model_provider") or "").strip()
-            if not job.get("model"):
+            if not _job_model:
                 if _cron_default_model:
                     model = _cron_default_model
                 else:

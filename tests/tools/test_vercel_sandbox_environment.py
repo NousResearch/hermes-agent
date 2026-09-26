@@ -645,3 +645,66 @@ class TestCleanup:
 
         assert len(sandbox.snapshot_calls) == 1
         assert sandbox.closed == 1
+
+
+# ---------------------------------------------------------------------------
+# Staged-stdin scrubbing on pre-dispatch SDK failure
+# ---------------------------------------------------------------------------
+
+class TestStagedStdinScrub:
+    """A staged payload must not survive an SDK error between write and dispatch.
+
+    write_files can land the bytes and then fail its ack; _retry_vercel_call
+    re-issues the write before giving up. No shell is dispatched in that case,
+    so the only thing that can blank the file is scrub_staged().
+    """
+
+    @staticmethod
+    def _ack_timeout():
+        """A genuinely retryable SDK failure, so the retry loop really re-issues."""
+        err = RuntimeError("write_files ack timeout")
+        err.status_code = 503
+        return err
+
+    def _run(self, make_env, vercel_module, fail_writes):
+        env = make_env()
+        sandbox = env._sandbox
+        # Every retry fails the same way: bytes land, then the ack does not.
+        for _ in range(fail_writes):
+            sandbox.write_files_side_effects.append(self._ack_timeout())
+        before = len(sandbox.write_files_calls)
+        handle = env._run_bash("cat", stdin_data="SUDO_PASSWORD")
+        handle.wait(timeout=10)
+        return sandbox, handle, before
+
+    def test_write_ack_failure_scrubs_staged_payload(self, make_env, vercel_module):
+        sandbox, handle, before = self._run(
+            make_env, vercel_module, vercel_module._WRITE_RETRY_ATTEMPTS
+        )
+
+        writes = sandbox.write_files_calls[before:]
+        # The payload write was re-issued once per attempt, then the final
+        # write blanks the path. Every one of those attempts put the secret
+        # bytes on the sandbox, which is why the amplification matters.
+        assert len(writes) == vercel_module._WRITE_RETRY_ATTEMPTS + 1
+        assert all(w[0]["content"] == b"SUDO_PASSWORD" for w in writes[:-1])
+        scrub = writes[-1]
+        assert scrub[0]["content"] == b""
+        assert ".hermes-stdin-" in str(scrub[0]["path"])
+        # The original failure still surfaces, and no shell was dispatched.
+        assert handle.returncode == 1
+        assert not any("rm -f --" in str(args) for _c, args, _k in sandbox.run_command_calls)
+
+    def test_dispatched_payload_is_not_scrubbed_by_us(self, make_env, vercel_module):
+        """The success path still hands cleanup to the user shell's ``rm -f``.
+
+        Blanking the file here would race the shell about to redirect from it.
+        """
+        sandbox, handle, before = self._run(make_env, vercel_module, 0)
+
+        assert handle.returncode == 0
+        writes = sandbox.write_files_calls[before:]
+        assert writes[0][0]["content"] == b"SUDO_PASSWORD"
+        # No scrub write: the dispatched shell owns unlinking the payload.
+        assert [w for w in writes if w[0]["content"] == b""] == []
+        assert any("rm -f --" in str(args) for _c, args, _k in sandbox.run_command_calls)

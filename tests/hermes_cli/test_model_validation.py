@@ -41,6 +41,14 @@ class TestParseModelInput:
         assert provider == "openrouter"
         assert model == "anthropic/claude-sonnet-4.5"
 
+    def test_local_picker_ids_keep_provider_and_model_tag(self):
+        from hermes_cli.providers import LLAMACPP_ALIASES, LLAMACPP_PROVIDER_ID
+        for alias in LLAMACPP_ALIASES:
+            assert parse_model_input(f"{alias}:local-model:quant", "custom") == (
+                LLAMACPP_PROVIDER_ID, "local-model:quant")
+        assert parse_model_input("unknown:model:tag", "custom") == (
+            "custom", "unknown:model:tag")
+
 
 # -- curated_models_for_provider ---------------------------------------------
 

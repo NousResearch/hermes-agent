@@ -763,6 +763,10 @@ def parse_model_input(
     if colon > 0:
         provider_part = stripped[:colon].strip().lower()
         model_part = stripped[colon + 1:].strip()
+        # ACP's Local picker uses runtime provider IDs outside the cloud catalog.
+        from hermes_cli.providers import LLAMACPP_ALIASES, LLAMACPP_PROVIDER_ID
+        if model_part and provider_part in LLAMACPP_ALIASES:
+            return (LLAMACPP_PROVIDER_ID, model_part)
         if provider_part and model_part and provider_part in _KNOWN_PROVIDER_NAMES:
             if provider_part == "custom":
                 configured = _configured_custom_provider_ids() if custom_ids is None else custom_ids

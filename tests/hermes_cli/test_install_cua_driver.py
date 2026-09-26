@@ -178,3 +178,79 @@ def test_version_summary(raw, expected):
     from hermes_cli.tools_config_cua import _cua_version_summary
 
     assert _cua_version_summary(raw) == expected
+
+
+TASK_NS = "http://schemas.microsoft.com/windows/2004/02/mit/task"
+
+
+def _wrapped_task_xml(binary, *, declaration="UTF-16", wrapper="powershell.exe"):
+    """Task XML whose Exec action either wraps `binary` in a powershell
+    Start-Process launcher (what `autostart enable` writes on some boxes)
+    or invokes it directly."""
+    if wrapper:
+        args = ' -WindowStyle Hidden -Command "\\' + "Start-Process -FilePath '" \
+               + binary + "' -ArgumentList @('serve')\\" + '"'
+        command = wrapper
+    else:
+        command = binary
+        args = "serve --socket localhost"
+    return ('<?xml version="1.0" '
+            f'encoding="{declaration}"?>'
+            f'<Task xmlns="{TASK_NS}"><Actions><Exec>'
+            f'<Command>{escape(command)}</Command>'
+            f'<Arguments>{escape(args)}</Arguments>'
+            '</Exec></Actions></Task>')
+
+
+def test_parse_schtasks_xml_tolerates_misreported_utf16_declaration():
+    """Regression for #123774 layer 1: schtasks declares UTF-16 over
+    codepage/ASCII bytes (no BOM), which fromstring() rejects."""
+    from hermes_cli import tools_config_cua as cua
+
+    raw = _wrapped_task_xml(r"C:\bin\cua-driver.exe").encode("ascii")
+    task = cua._parse_schtasks_task_xml(raw)
+    assert task.findtext(".//{" + TASK_NS + "}Command") == "powershell.exe"
+
+
+def test_parse_schtasks_xml_keeps_real_utf16_bytes():
+    from hermes_cli import tools_config_cua as cua
+
+    raw = _wrapped_task_xml(r"C:\bin\cua-driver.exe").encode("utf-16")
+    task = cua._parse_schtasks_task_xml(raw)
+    assert task.findtext(".//{" + TASK_NS + "}Arguments")
+
+
+@pytest.mark.parametrize("declaration", ["UTF-16", "UTF-8"])
+def test_registration_matches_shell_wrapped_launcher(declaration):
+    """Regression for #123774 layer 2: the registered action is a
+    powershell launcher wrapping the driver binary, so exact Command
+    equality never matches; match in Command or Arguments."""
+    from hermes_cli import tools_config_cua as cua
+
+    binary = (r"C:\Users\u\AppData\Local\hermes\tools"
+              r"\cua-driver-0.21.0-win32-x64\cua-driver.exe")
+    xml = _wrapped_task_xml(binary, declaration=declaration)
+    if declaration == "UTF-16":
+        task = cua._parse_schtasks_task_xml(xml.encode("ascii"))  # declaration/bytes mismatch
+    else:
+        task = cua._parse_schtasks_task_xml(xml.encode("utf-8"))
+    assert cua._task_actions_target_binary(task, binary)
+
+
+def test_registration_still_matches_direct_command():
+    from hermes_cli import tools_config_cua as cua
+
+    binary = r"C:\bin\cua-driver-0.21.0-win32-x64\cua-driver.exe"
+    task = cua._parse_schtasks_task_xml(
+        _wrapped_task_xml(binary, wrapper=None).encode("utf-8"))
+    assert cua._task_actions_target_binary(task, binary)
+
+
+def test_registration_rejects_task_targeting_other_binary():
+    """A task pointing at a previous PM version stays "not registered"."""
+    from hermes_cli import tools_config_cua as cua
+
+    task = cua._parse_schtasks_task_xml(
+        _wrapped_task_xml(r"C:\bin\cua-driver-0.19.0-win32-x64\cua-driver.exe").encode("ascii"))
+    assert not cua._task_actions_target_binary(
+        task, r"C:\bin\cua-driver-0.21.0-win32-x64\cua-driver.exe")

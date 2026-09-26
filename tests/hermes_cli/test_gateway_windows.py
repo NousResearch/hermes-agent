@@ -757,3 +757,68 @@ def test_wizard_install_service_asks_once_and_never_starts_after_windows_install
 
     assert installs == [{"force": False, "start_now": True, "start_on_login": True}]
     assert starts == []
+
+
+# ---------------------------------------------------------------------------
+# Never-ran Scheduled Task diagnosis — issue #124041
+#
+# A task can sit at Ready/Enabled with LastRunTime 11/30/1999 and
+# LastTaskResult 267011 (TASK_HAS_NOT_RUN_YET) forever: the LogonTrigger never
+# fired, yet status() printed a clean checkmark. These tests pin the RED state
+# (no diagnosis on unfixed main) before the fix wires it in.
+# ---------------------------------------------------------------------------
+
+_NEVER_RAN_LIST_OUTPUT = "\r\n".join([
+    "HostName:      MYPC",
+    "TaskName:      \\Hermes_Gateway",
+    "Status:        Ready",
+    "Last Run Time: 11/30/1999 12:00:00 AM",
+    "Last Run Result: 267011",
+])
+
+
+def test_task_has_never_run_reads_scheduler_sentinels():
+    """#124041: 267011 / 0x41303 and the 11/30/1999 LastRunTime sentinel mean the trigger never fired."""
+    never = gateway_windows.task_has_never_run({
+        "status": "Ready",
+        "last run time": "11/30/1999 12:00:00 AM",
+        "last run result": "267011",
+    })
+    assert never is True
+
+    assert gateway_windows.task_has_never_run({
+        "status": "Ready",
+        "last run time": "9/25/2026 9:00:00 AM",
+        "last run result": "0",
+    }) is False
+
+
+def test_status_flags_scheduled_task_that_never_ran(monkeypatch, tmp_path, capsys):
+    """#124041: a registered-but-never-ran task must not get a clean bill of health: status()
+    names the never-ran state and points at the launcher plus the install repair."""
+    import hermes_cli.gateway_windows_legacy as gateway_windows_legacy
+
+    script = tmp_path / "gateway-service" / "Hermes_Gateway.cmd"
+    script.parent.mkdir(parents=True)
+    script.write_text("@echo off\r\n", encoding="utf-8")
+    # NOTE: the .vbs launcher is deliberately absent — the diagnosis must say so.
+
+    def fake_schtasks(args):
+        if "/XML" in args:
+            return (1, "", "ERROR: The system cannot find the file specified.")
+        if "/V" in args:
+            return (0, _NEVER_RAN_LIST_OUTPUT, "")
+        return (0, "SUCCESS", "")
+
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Hermes_Gateway")
+    monkeypatch.setattr(gateway_windows, "get_task_script_path", lambda: script)
+    monkeypatch.setattr(gateway_windows, "_exec_schtasks", fake_schtasks)
+    monkeypatch.setattr(gateway_windows, "_gateway_pids", lambda *a, **k: [])
+    monkeypatch.setattr(gateway_windows, "_print_start_attestation_warning", lambda: None)
+    monkeypatch.setattr(gateway_windows_legacy, "warn_legacy_launchers", lambda: None)
+
+    gateway_windows.status()
+    out = capsys.readouterr().out
+    assert "has never run" in out
+    assert "hermes gateway install" in out

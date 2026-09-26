@@ -1425,6 +1425,46 @@ def query_task_status() -> dict[str, str]:
     return info
 
 
+# 267011 (0x00041303, SCHED_S_TASK_HAS_NOT_RUN): the trigger never fired — the task only LOOKS
+# healthy (#124041). LastRunTime stays at the 11/30/1999 sentinel in every locale's date order.
+_TASK_NEVER_RAN_RESULT = "267011"
+_TASK_NEVER_RAN_RESULT_HEX = ("0x00041303", "0x41303")
+
+
+def task_has_never_run(info: dict[str, str]) -> bool:
+    """True when a ``query_task_status()`` map shows the task never fired: result 267011 (or its hex
+    spelling) or the 11/30/1999 LastRunTime sentinel. Pure so it is testable off-Windows."""
+    result = (info.get("last run result") or "").strip().casefold()
+    if result and (_TASK_NEVER_RAN_RESULT in result or any(h in result for h in _TASK_NEVER_RAN_RESULT_HEX)):
+        return True
+    last_run = (info.get("last run time") or "").strip()
+    if not last_run:
+        return False
+    # ponytail: sentinel sniffed by year substring, not locale date parsing — every rendering of
+    # 11/30/1999 keeps the digits; upgrade to full parsing only if a locale ever spells it out.
+    if "1999" in last_run:
+        return True
+    return last_run.casefold() in {"never", "n/a", "none"}
+
+
+def _print_task_never_ran_warning(task_name: str, info: dict[str, str]) -> None:
+    """#124041: a registered task whose trigger never fired must not get a clean bill of health. The
+    task action's exit code cannot explain this state — the trigger never ran it — so point at the
+    launcher path, the VBScript engine hosts without which the wscript action is dead (#107197), and
+    the reinstall repair. Read-only: repairs run from install()."""
+    if not task_has_never_run(info):
+        return
+    print(f"⚠ Scheduled Task {task_name!r} has never run (Last Run Result 267011 = the task has not yet run).")
+    print("  Expected before the next logon; if it persists after logoff/logon, the LogonTrigger never fired it.")
+    launcher = get_task_script_path().with_suffix(".vbs")
+    if launcher.exists():
+        print(f"  Launcher present: {launcher}")
+    else:
+        print(f"  Launcher missing: {launcher}")
+    print("  Also check the wscript.exe action can run on this host (builds without the VBScript")
+    print("  engine need a non-VBS launcher), then repair with: hermes gateway install")
+
+
 def _gateway_pids() -> list[int]:
     """Reuse the cross-platform PID scanner in gateway.py."""
     from hermes_cli.gateway import find_gateway_pids
@@ -1564,6 +1604,7 @@ def status(deep: bool = False) -> None:
             if key in info:
                 print(f"  {key.title()}: {info[key]}")
         _print_scheduled_task_drift(task_name)
+        _print_task_never_ran_warning(task_name, info)
     elif startup_installed:
         entry = get_startup_entry_path()
         print(f"✓ Windows login item installed: {entry if entry.exists() else _legacy_startup_entry_path()}")

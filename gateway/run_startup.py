@@ -37,6 +37,17 @@ from typing import Any, Dict, Optional, Tuple
 logger = logging.getLogger("gateway.run")
 
 
+# Scope-safe repair for a stale systemd unit. The timing probe cannot reliably
+# name the owning manager on every supported systemd version, so never suggest
+# a scope-changing install from this diagnostic. Both restart commands route
+# through refresh_systemd_unit_if_needed() and preserve the installed scope.
+_SYSTEMD_TIMING_REMEDIATION = (
+    "Restart the matching installed service to refresh its unit: "
+    "user scope: `hermes gateway restart`; "
+    "system scope: `sudo hermes gateway restart --system`"
+)
+
+
 class GatewayStartupMixin:
     """Startup sequence, resume/restore and handoff methods for GatewayRunner."""
 
@@ -949,12 +960,12 @@ class GatewayStartupMixin:
                 logger.warning(
                     "Stale systemd unit detected: %s has TimeoutStopSec=%.0fs but drain_timeout=%.0fs "
                     "cron_drain_timeout=%.0fs (expected >=%.0fs). systemd may SIGKILL the gateway "
-                    "mid-drain. Run `hermes gateway install --force` to regenerate the unit, or shorten "
-                    "agent.restart_drain_timeout / agent.cron_drain_timeout.",
+                    "mid-drain. %s, or shorten agent.restart_drain_timeout / agent.cron_drain_timeout.",
                     _alignment.get("unit", "(unknown)"), _alignment["timeout_stop_sec"],
                     _alignment["drain_timeout"],
                     _alignment.get("cron_drain_timeout", DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT),
                     _alignment["expected_min"],
+                    _SYSTEMD_TIMING_REMEDIATION,
                 )
 
     # Builtin platforms whose ``<P>_ALLOWED_USERS`` / ``<P>_ALLOW_ALL_USERS`` env vars count as an

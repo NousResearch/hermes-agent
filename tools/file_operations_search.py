@@ -221,9 +221,15 @@ def _parse_search_output(result, output_mode: str, limit: int, offset: int,
                     counts[path] = int(n)
                 except ValueError:
                     pass
+        # Page the per-file table like every other mode (sorted for a stable
+        # order across runs/engines); total_count stays the fetched full sum,
+        # mirroring files_only, with truncated set when the window cuts.
+        ordered = sorted(counts)
+        page = {key: counts[key] for key in ordered[offset:offset + limit]}
         return SearchResult(
-            counts=counts, total_count=sum(counts.values()),
-            truncated=bool(limit_reason), limit_reason=limit_reason)
+            counts=page, total_count=sum(counts.values()),
+            truncated=len(counts) > offset + limit or bool(limit_reason),
+            limit_reason=limit_reason)
     matches = []
     for line in lines:
         if line == "--":

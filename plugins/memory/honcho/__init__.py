@@ -789,6 +789,11 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
         if not clean_user_content and not clean_assistant_content:
             return
 
+        # Match the sanitized text that is actually stored. This avoids treating
+        # a phrase that only appeared in recalled <memory-context> as a user's
+        # opt-out request, and keeps the decision aligned with the payload.
+        no_observe = self._matches_observation_opt_out(clean_user_content)
+
         author = turn_author if isinstance(turn_author, dict) else self._turn_author
         session_kwargs: dict[str, str] = {}
         if author.get("is_bot"):
@@ -817,15 +822,29 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
         def _sync():
             session = self._manager.get_or_create(session_key, **session_kwargs)
             for chunk in self._chunk_message(clean_user_content, msg_limit) if clean_user_content else ():
-                session.add_message("user", chunk, author_peer_id=author_peer_id)
+                session.add_message("user", chunk, author_peer_id=author_peer_id, no_observe=no_observe)
             for chunk in self._chunk_message(clean_assistant_content, msg_limit) if clean_assistant_content else ():
-                session.add_message("assistant", chunk)
+                session.add_message("assistant", chunk, no_observe=no_observe)
             # save() (not _flush_session) so writeFrequency batching is honored.
             self._manager.save(session)
 
         if self._sync_thread and self._sync_thread.is_alive():
             self._sync_thread.join(timeout=5.0)
         self._sync_thread = self._spawn_write(_sync, "honcho-sync", "Honcho sync_turn failed: %s")
+
+    def _matches_observation_opt_out(self, user_content: str) -> bool:
+        """Return whether the sanitized user message contains an opt-out phrase.
+
+        Phrases are provider-local and use case-insensitive substring matching.
+        ``casefold`` handles non-ASCII case equivalence more reliably than
+        ``lower``; an empty list (the default) leaves every turn observable.
+        """
+        cfg = self._config
+        phrases = getattr(cfg, "observation_opt_out_phrases", None) if cfg else None
+        if not phrases or not user_content:
+            return False
+        haystack = user_content.casefold()
+        return any(phrase.casefold() in haystack for phrase in phrases if phrase)
 
     def _a2a_session_key(self, author: Dict[str, Any]) -> str:
         """Honcho session for one sender bot's turns into this agent, named from core's ``a2a_key``.

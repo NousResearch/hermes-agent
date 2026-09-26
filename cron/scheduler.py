@@ -2001,6 +2001,14 @@ def _run_agent_with_watchdog(
     return result
 
 
+# An iteration-limit handoff ("the turn ran out of iterations and returned a summary") is carried to
+# the caller by ``run_job``'s explicit ``handoff_out`` out-parameter — NOT by a module-level
+# ContextVar. A ContextVar here is process-lifetime state with no per-run reset: a run that hits the
+# limit would plant a verdict that every later run in the same context inherits, including runs that
+# return before the agent is even built. Deciding the outcome from the run's own return value keeps
+# each run's verdict attached to that run.
+
+
 def _final_response_from_result(result: dict, job_id: str, job_name: str, AIAgent) -> str:
     """Deliverable final response from a ``run_conversation`` result. Raises RuntimeError on
     `failed=True`/`completed=False`: the error text may sit in `final_response` and would otherwise
@@ -2469,11 +2477,17 @@ class _FireAudit:
 def run_job(
     job: dict, *, defer_agent_teardown: Optional[list] = None, extra_prompt: Optional[str] = None,
     cancel_event: Optional[_CancelEventLike] = None, execution_id: Optional[str] = None,
+    handoff_out: Optional[list] = None,
 ) -> tuple[bool, str, str, Optional[str]]:
     """Execute a single cron job. Returns (success, full_output_doc, final_response, error).
     ``defer_agent_teardown``: if a list, the live agent is appended instead of torn down; the caller
     MUST call ``_teardown_cron_agent(agent)`` AFTER delivery (a torn-down async client can't
     deliver). ``extra_prompt``: per-fire context, never persisted.
+    ``handoff_out``: if a list, the run's iteration-limit detail (e.g.
+    ``"max_iterations_reached(35/35)"``) is appended when the turn stopped at its limit and returned
+    a fallback summary. The delivered text is unchanged — the caller needs the outcome to record a
+    soft failure instead of "ok", and it must come from THIS run's result (never process state a
+    later run could inherit).
 
     ``defer_agent_teardown``: when a caller passes a list, ``run_job`` skips the agent's async-resource
     teardown (``agent.close()`` + ``cleanup_stale_async_clients()``) in its ``finally`` block and instead
@@ -2528,6 +2542,11 @@ def run_job(
             agent, prompt, job, job_id, job_name, scope.task_id, cancel_event,
             worker_state=_worker_state)
         final_response = _final_response_from_result(result, job_id, job_name, AIAgent)
+        if handoff_out is not None and is_max_iteration_handoff(result):
+            # The turn stopped at its iteration limit and ``final_response`` is a fallback summary.
+            # Hand the outcome of THIS run to the caller (see ``handoff_out``): the text still gets
+            # delivered, but the run is not a completed piece of work.
+            handoff_out.append(str(result.get("turn_exit_reason") or "max_iterations_reached"))
         if (setup.fallback_notice and final_response.strip() and not _is_cron_silence_response(final_response)
                 and _cron_failure_marker_error(final_response) is None):
             # Pre-agent provider switch (#74349) rides with the delivered report; silence and the
@@ -2832,12 +2851,15 @@ def _classify_delivery_outcome(
 
 def _compose_run_delivery(
     job: dict, *, success: bool, error, final_response: str, output_file,
-    agent_declared: bool = False,
+    agent_declared: bool = False, handoff: bool = False,
 ) -> tuple[str, bool, bool, bool, Optional[str]]:
     """Text to deliver for a finished run. Returns ``(deliver_content, blocked_config,
     silent_alert, incident_acked, failure_incident_id)``; ``silent_alert``: an alert-once marker
     says the operator was already told, deliver nothing. ``agent_declared``: *error* is the
-    agent's own ``[CRON_FAILURE]`` evidence, delivered verbatim."""
+    agent's own ``[CRON_FAILURE]`` evidence, delivered verbatim. ``handoff``: *error* is an
+    iteration-limit handoff and *final_response* is the agent's own resumable summary — delivered
+    with a header saying the run did not finish, instead of the generic failure diagnostic that
+    would replace the summary the caller asked for."""
     err = str(error) if error else ""
     # Failed jobs always deliver, except blocked-config runs, which alert exactly ONCE.
     blocked_config_silent = BLOCKED_CONFIG_SILENT_MARKER in err
@@ -2861,6 +2883,15 @@ def _compose_run_delivery(
         )
         if incident_acked:
             deliver_content = ""
+        elif handoff and final_response.strip():
+            # The run did not finish, but the summary it produced is the useful payload (a resumable
+            # handoff the operator picks up next fire). Deliver THAT, headed so nobody reads it as
+            # finished work — the generic summarizer below would replace it with a provider-flavoured
+            # diagnostic and the summary would never reach the operator.
+            from cron.scheduler_failure_copy import iteration_limit_handoff_notice
+            deliver_content = iteration_limit_handoff_notice(
+                job.get("name") or job["id"], job["id"], err, final_response
+            ) + _failure_streak_nudge(job)
         elif agent_declared:
             # The agent already diagnosed the failure in prose; the summarizer's substring
             # heuristics would re-diagnose it ("timed out" -> blame the model service, "401" ->
@@ -2951,6 +2982,10 @@ class _RunDelivery:
     # True when ``error`` is the agent's own ``[CRON_FAILURE]`` evidence rather than a runtime
     # error string, so composition must not run it through the provider-error heuristics.
     agent_declared: bool = False
+    # True when ``error`` is an iteration-limit handoff: the agent's summary is a resumable
+    # deliverable, so composition delivers that text (with a header saying the run did not finish)
+    # instead of replacing it with the generic failure diagnostic.
+    handoff: bool = False
     incident_acked: bool = False
     failure_incident_id: Optional[str] = None
     side_effect_ownership_lost: bool = False
@@ -2986,7 +3021,7 @@ def _save_compose_deliver(
         deliver_content, d.blocked_config, _silent_alert, d.incident_acked, d.failure_incident_id,
     ) = _compose_run_delivery(
         job, success=d.success, error=d.error, final_response=final_response,
-        output_file=output_file, agent_declared=d.agent_declared)
+        output_file=output_file, agent_declared=d.agent_declared, handoff=d.handoff)
     # Whitespace-only == empty: skip delivery; the guard below marks it a soft failure.
     d.should_deliver = bool(deliver_content.strip()) and not _silent_alert
     if d.should_deliver and not d.success and job.get("_model_unreachable"):
@@ -3235,10 +3270,14 @@ def _run_one_job_body(
             for _deferred_agent in _deferred_agents:
                 _teardown_cron_agent(_deferred_agent, job["id"])
 
+        _handoff_out: list = []
         _run_kwargs = {
             "defer_agent_teardown": _deferred_agents,
             "extra_prompt": extra_prompt,
-            "execution_id": execution_id}
+            "execution_id": execution_id,
+            # Iteration-limit verdict of THIS run (see run_job's handoff_out). Never process state:
+            # a run that never reached the agent must not inherit another run's verdict (#123051).
+            "handoff_out": _handoff_out}
         if fence.cancel_event is not None:
             _run_kwargs["cancel_event"] = fence.cancel_event
         try:
@@ -3263,9 +3302,23 @@ def _run_one_job_body(
             if marker_error is not None:
                 success, error, agent_declared = False, marker_error, True
 
+        # A run that stopped at its iteration limit delivered a fallback summary, not the finished
+        # work. Decide that outcome HERE, before ``_RunDelivery`` exists and before the save/compose/
+        # deliver phase commits anything: the incident ledger (``_compose_run_delivery``'s success
+        # branch resolves every open incident for the job), ``failure_streak``, the delivery lane and
+        # the status finally written then all describe the SAME run — instead of booking the job as
+        # recovered and then overwriting it with a failure (#123051 class).
+        handoff_detail = _handoff_out[0] if _handoff_out else None
+        handoff = False
+        if success and handoff_detail is not None:
+            success, handoff = False, True
+            error = (f"Agent hit the iteration limit ({handoff_detail}); the delivered text is a "
+                     "fallback, not evidence the work completed")
+
         # Agent is still live through delivery; wrap ALL of save/compose/deliver in try/finally so a
         # raise anywhere still tears the deferred agent down.
-        d = _RunDelivery(job=job, success=success, error=error, agent_declared=agent_declared)
+        d = _RunDelivery(job=job, success=success, error=error, agent_declared=agent_declared,
+                         handoff=handoff)
         try:
             _save_compose_deliver(
                 d, fence, final_response, output, adapters=adapters, loop=loop, verbose=verbose,

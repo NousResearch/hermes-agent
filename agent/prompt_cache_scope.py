@@ -202,21 +202,13 @@ def is_fork_cache_scope(scope: Any) -> bool:
 
 
 def _apply_fork_tag(agent: Any, scope: str) -> str:
-    """Derive ``<scope>::<tag>`` for a tagged cache-parity fork on a slot-keyed provider, but only
-    after the fork's own compaction committed.
-
-    A same-model fork shares the parent's scope (#109964): until it compacts, its requests are a
-    strict prefix extension of the parent's, so request #1 is a warm read and cannot evict. Once
-    its in-place compaction rewrites the transcript, on xAI the divergent stream evicts the
-    parent's conversation slot (grok-4.7, ~160k: the parent's next call read 1,152 of 162k prompt
-    tokens, 2/2, vs 162,176 with a derived key). ``compression_count`` is the fork's own counter
-    (rolled back on aborted attempts). Evaluated per call, so a provider fallback re-evaluates.
-    """
+    """``<scope>::<tag>`` for a tagged fork on a slot-keyed route, once the fork's OWN compaction
+    committed: before it the fork extends the parent's prefix (warm read, #109964); after it the
+    rewritten stream would evict the parent's xAI slot. Read per call, so fallbacks re-evaluate."""
     tag = getattr(agent, "_prompt_cache_fork_tag", None)
     if not scope or not isinstance(tag, str) or not tag:
         return scope
-    compactions = getattr(getattr(agent, "context_compressor", None), "compression_count", 0)
-    if not isinstance(compactions, int) or compactions < 1:
+    if getattr(getattr(agent, "context_compressor", None), "compression_count", 0) < 1:
         return scope
     if not is_slot_keyed_cache_route(
         getattr(agent, "provider", ""), getattr(agent, "model", ""), getattr(agent, "base_url", ""),

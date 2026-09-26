@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import { dispatchPluginNativeNotification } from '@/store/native-notifications'
 
+import { emitGatewayEvent } from './events'
 import { createPluginContext } from './plugin'
 
 vi.mock('@/store/native-notifications', () => ({ dispatchPluginNativeNotification: vi.fn() }))
@@ -21,6 +22,26 @@ describe('createPluginContext.onDispose', () => {
     expect(disposers).toHaveLength(1)
     disposers.forEach(dispose => dispose())
     expect(cleaned).toBe(true)
+  })
+})
+
+describe('createPluginContext.onEvent', () => {
+  it('retires the gateway listener with the plugin, even when subscribed after register()', () => {
+    // Runtime plugins are re-imported as a fresh module on every hot reload; a
+    // gateway subscription the loader cannot see outlives its incarnation and
+    // one event then fires once per reload (#112366). The ctx door is tracked.
+    const disposers: Array<() => void> = []
+    const ctx = createPluginContext('demo', dispose => disposers.push(dispose))
+    const seen: string[] = []
+
+    // Deliberately outside any loader register() scope — the late-subscription case.
+    ctx.onEvent('gateway.reconnecting', event => seen.push(event.type))
+    emitGatewayEvent({ type: 'gateway.reconnecting', payload: { attempt: 1 } } as never)
+    expect(seen).toEqual(['gateway.reconnecting'])
+
+    disposers.forEach(dispose => dispose())
+    emitGatewayEvent({ type: 'gateway.reconnecting', payload: { attempt: 2 } } as never)
+    expect(seen).toEqual(['gateway.reconnecting'])
   })
 })
 

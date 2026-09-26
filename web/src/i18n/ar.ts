@@ -269,6 +269,8 @@ export const ar = defineLocale({
     disableRuntime: "تعطيل",
     enableAfterInstall: "تفعيل بعد التثبيت",
     enableRuntime: "تفعيل",
+    toggleTakesEffectAfterRestart:
+      "تم الحفظ — أعد تشغيل البوابة لتطبيق التغيير.",
     forceReinstall: "إعادة تثبيت إجباري (حذف المجلد الموجود أولاً)",
     headline:
       "اكتشف وثبِّت وفعِّل وحدِّث مكوِّنات Hermes الإضافية (مطابقة `hermes plugins`).",

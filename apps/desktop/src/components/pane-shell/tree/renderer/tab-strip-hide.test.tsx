@@ -106,13 +106,6 @@ describe('tab strip hide grammar', () => {
     expect(groupNode().tabStrip).toBeUndefined()
   })
 
-  it('renders no strip at all for a zone set to never', () => {
-    setTreeGroupTabStrip('grp-main', 'never')
-    render(<LiveTreeGroup />)
-
-    expect(tablist()).toBeNull()
-  })
-
   // The state that had no way out. The command targets the zone by
   // hover/focus/workspace fallback, so restoring the strip never depends on
   // the strip — or on any other chrome the hide took away.

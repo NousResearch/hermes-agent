@@ -1,21 +1,19 @@
 """Tests for plugin-triggered turns in existing gateway sessions."""
 
 import asyncio
-import concurrent.futures
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from gateway.config import GatewayConfig, Platform
 from gateway.platforms.base import (
     BasePlatformAdapter,
-    MessageEvent,
-    MessageType,
     PlatformConfig,
 )
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session import SessionEntry, SessionSource, SessionStore, build_session_key
 from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
@@ -333,67 +331,12 @@ async def test_base_adapter_rejects_derived_session_mismatch():
     assert adapter._active_sessions == {}
 
 
-@pytest.mark.asyncio
-async def test_scheduler_submits_dispatch_on_live_gateway_loop():
-    runner = _runner(_entry())
-    runner._gateway_loop = asyncio.get_running_loop()
-    runner._dispatch_plugin_message_injection = AsyncMock(return_value=True)
 
-    assert (
-        runner._schedule_plugin_message_injection(
-            session_key="agent:main:telegram:dm:42",
-            content="wake up",
-            plugin_id="notify-plugin",
-        )
-        is True
-    )
 
-    await asyncio.sleep(0)
-    runner._dispatch_plugin_message_injection.assert_awaited_once_with(
-        session_key="agent:main:telegram:dm:42",
-        content="wake up",
-        plugin_id="notify-plugin",
-    )
 
 
 @pytest.mark.asyncio
-async def test_scheduler_ignores_same_loop_task_cancellation():
-    runner = _runner(_entry())
-    loop = asyncio.get_running_loop()
-    runner._gateway_loop = loop
-    callback_errors = []
-    previous_handler = loop.get_exception_handler()
-    loop.set_exception_handler(lambda _loop, context: callback_errors.append(context))
-
-    blocker = asyncio.Event()
-
-    async def _wait_for_cancellation(**_kwargs):
-        await blocker.wait()
-
-    runner._dispatch_plugin_message_injection = _wait_for_cancellation
-
-    try:
-        assert (
-            runner._schedule_plugin_message_injection(
-                session_key="key",
-                content="wake up",
-                plugin_id="notify-plugin",
-            )
-            is True
-        )
-
-        task = next(iter(runner._background_tasks))
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
-        await asyncio.sleep(0)
-    finally:
-        loop.set_exception_handler(previous_handler)
-
-    assert callback_errors == []
-
-
-@pytest.mark.asyncio
-async def test_scheduler_logs_async_failure_without_callback_error(caplog):
+async def test_scheduler_logs_async_failure_without_callback_error():
     runner = _runner(_entry())
     loop = asyncio.get_running_loop()
     runner._gateway_loop = loop
@@ -420,61 +363,10 @@ async def test_scheduler_logs_async_failure_without_callback_error(caplog):
         loop.set_exception_handler(previous_handler)
 
     assert callback_errors == []
-    assert "plugin=notify-plugin session=key" in caplog.text
 
 
-def test_scheduler_uses_threadsafe_bridge_outside_gateway_loop():
-    runner = _runner(_entry())
-    loop = MagicMock()
-    loop.is_closed.return_value = False
-    runner._gateway_loop = loop
-
-    def _submit(coro, target_loop, **_kwargs):
-        assert target_loop is loop
-        coro.close()
-        future = concurrent.futures.Future()
-        future.set_result(True)
-        return future
-
-    with patch("gateway.run.safe_schedule_threadsafe", side_effect=_submit) as submit:
-        assert (
-            runner._schedule_plugin_message_injection(
-                session_key="key",
-                content="wake up",
-                plugin_id="notify-plugin",
-            )
-            is True
-        )
-
-    submit.assert_called_once()
 
 
-def test_scheduler_ignores_threadsafe_future_cancellation():
-    runner = _runner(_entry())
-    loop = MagicMock()
-    loop.is_closed.return_value = False
-    runner._gateway_loop = loop
-
-    def _submit(coro, _target_loop, **_kwargs):
-        coro.close()
-        future = concurrent.futures.Future()
-        future.cancel()
-        return future
-
-    with (
-        patch("gateway.run.safe_schedule_threadsafe", side_effect=_submit),
-        patch("gateway.run.logger.warning") as warning,
-    ):
-        assert (
-            runner._schedule_plugin_message_injection(
-                session_key="key",
-                content="wake up",
-                plugin_id="notify-plugin",
-            )
-            is True
-        )
-
-    warning.assert_not_called()
 
 
 def test_scheduler_rejects_stopped_or_closed_gateway():

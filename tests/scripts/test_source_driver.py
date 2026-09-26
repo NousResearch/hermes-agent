@@ -165,7 +165,7 @@ def test_pm_observer_accepts_ready_fixture_and_leaves_failed_fixture_untouched(t
     path = os.pathsep.join(p for p in os.get_exec_path() if ".hermes" not in Path(p).parts)
     node = shutil.which("node", path=path)
     assert node
-    setup = '''import sys
+    setup = '''import os, sys
 from pathlib import Path
 root, store, node, deps = map(Path, sys.argv[1:])
 sys.path.insert(0, str(root))
@@ -177,10 +177,19 @@ lock = Lockfile(root / 'pm/lock.json')
 lock.set_pin('node', 'fixture', {})
 lock.save()
 for name, executable in [('python', Path(sys.executable)), ('node', node)]:
-    binary = store / name / 'bin' / ('python3' if name == 'python' else name)
+    package = 'python-fixture' if name == 'python' else name
+    binary = store / package / 'bin' / ('python3' if name == 'python' else name)
     binary.parent.mkdir(parents=True)
-    binary.symlink_to(executable)
-    Facts(store / 'facts.json').record(name, 'fixture', name, {}, store)
+    if name == 'python':
+        os.link(Path(getattr(sys, '_base_executable', sys.executable)).resolve(), binary)
+        lib = binary.parents[1] / 'lib'
+        lib.mkdir()
+        stdlib = f'python{sys.version_info.major}.{sys.version_info.minor}'
+        (lib / stdlib).symlink_to(Path(sys.base_prefix) / 'lib' / stdlib,
+                                 target_is_directory=True)
+    else:
+        binary.symlink_to(executable)
+    Facts(store / 'facts.json').record(name, 'fixture', package, {}, store)
 selected = install_state_dir(root) / 'environments/fixture/venv'
 selected.mkdir(parents=True)
 (selected / 'pyvenv.cfg').write_text('home = fixture')

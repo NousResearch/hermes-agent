@@ -12,18 +12,58 @@ import tempfile
 from hermes_cli.version_info import _git_version_info, _reset_version_info_cache
 
 
+def _publish_stamp(root: Path, stamp_path: Path, stamp: dict) -> None:
+    """Replace a stamp atomically, without exposing partial JSON to readers."""
+    fd, tmp_name = tempfile.mkstemp(dir=root, prefix=".install-stamp.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(stamp, indent=2) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_name, stamp_path)
+        with suppress(OSError):
+            directory_fd = os.open(root, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+    finally:
+        with suppress(OSError):
+            os.unlink(tmp_name)
+
+
 def write_source_stamp(root: Path) -> dict | None:
     """Replace ``install-stamp.json`` with identity read from ``root`` itself.
 
-    A root git cannot identify -- the ZIP update fallback runs precisely because
-    git is unusable -- publishes no identity: the old stamp is removed rather
-    than left naming the commit that was just replaced. Returns None then.
+    When git cannot identify the checkout, discard the stale commit identity
+    but retain an existing self-install's runtime ownership. Returns None then.
     """
     root = Path(root).resolve()
     info = _git_version_info(root, include_untracked=True)
+    stamp_path = root / "install-stamp.json"
+    try:
+        previous = json.loads(stamp_path.read_text(encoding="utf-8-sig"))
+    except FileNotFoundError:
+        previous = {}
+    if not isinstance(previous, dict):
+        raise ValueError(f"invalid source install stamp at {stamp_path}")
+    # Source identity changes with each checkout update; the runtime binding
+    # belongs to the installed checkout and must not follow an ambient HOME or
+    # HERMES_RUNTIME_DIR inherited from the caller.
+    runtime_dir = (previous.get("runtimeDir")
+                   if previous.get("updateMechanism") == "self" else None)
+    if runtime_dir is not None and (not isinstance(runtime_dir, str)
+                                    or not Path(runtime_dir).is_absolute()):
+        raise ValueError(f"invalid runtimeDir in source install stamp at {stamp_path}")
     if info.commit is None:
-        with suppress(FileNotFoundError):
-            (root / "install-stamp.json").unlink()
+        if previous.get("updateMechanism") == "self":
+            ownership = {"schemaVersion": 2, "updateMechanism": "self"}
+            if runtime_dir is not None:
+                ownership["runtimeDir"] = runtime_dir
+            _publish_stamp(root, stamp_path, ownership)
+        else:
+            with suppress(FileNotFoundError):
+                stamp_path.unlink()
         _reset_version_info_cache()
         return None
     stamp = {
@@ -42,23 +82,9 @@ def write_source_stamp(root: Path) -> dict | None:
         "payload": "bootstrap",
         "tag": None,
     }
-    stamp_path = root / "install-stamp.json"
-    fd, tmp_name = tempfile.mkstemp(dir=root, prefix=".install-stamp.", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(json.dumps(stamp, indent=2) + "\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp_name, stamp_path)
-        with suppress(OSError):
-            directory_fd = os.open(root, os.O_RDONLY)
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
-    finally:
-        with suppress(OSError):
-            os.unlink(tmp_name)
+    if runtime_dir is not None:
+        stamp["runtimeDir"] = runtime_dir
+    _publish_stamp(root, stamp_path, stamp)
     _reset_version_info_cache()
     # Every path that publishes a new checkout identity (completion handoff, the PM
     # updater's finish, boot-time adoption) moves the installers' receipt with it.

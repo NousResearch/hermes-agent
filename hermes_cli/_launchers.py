@@ -92,26 +92,30 @@ def _is_windows() -> bool:
     return os.name == "nt"
 
 
+def _recorded_store_python(runtime: Path) -> Path | None:
+    """Use only a runnable Python in the recorded package directory of this store."""
+    runtime = runtime.resolve()
+    try:
+        facts = json.loads((runtime / "facts.json").read_text(encoding="utf-8-sig"))
+        packages = facts.get("packages") if isinstance(facts, dict) else None
+        package = packages.get("python") if isinstance(packages, dict) else None
+        entry = package.get("entry") if isinstance(package, dict) else None
+        if (not isinstance(entry, str) or not entry or Path(entry).is_absolute()
+                or ".." in Path(entry).parts):
+            return None
+        candidate = runtime / entry / ("python.exe" if _is_windows() else "bin/python3")
+        if (not candidate.resolve().is_relative_to(runtime)
+                or not candidate.is_file()
+                or (not _is_windows() and not os.access(candidate, os.X_OK))):
+            return None
+        return candidate
+    except (OSError, ValueError, RuntimeError):
+        return None
+
+
 def resolve_store_python(repo_root: Path) -> Path | None:
     """Read PM's committed Python tool, without adopting unrecorded bytes."""
-    runtime = store_root(repo_root)
-    rel = "python.exe" if _is_windows() else "bin/python3"
-
-    facts = runtime / "facts.json"
-    if facts.is_file():
-        try:
-            packages = json.loads(facts.read_text(encoding="utf-8-sig")).get(
-                "packages", {}
-            )
-            entry = (packages.get("python") or {}).get("entry")
-        except (OSError, ValueError):
-            entry = None
-        if entry:
-            candidate = runtime / entry / rel
-            if candidate.is_file():
-                return candidate
-
-    return None
+    return _recorded_store_python(store_root(repo_root))
 
 
 def _load_script_maker():
@@ -317,6 +321,189 @@ def _mint_shell_launcher(name: str, out_dir: Path, python_exe: Path, script: str
     return _write_shell(out_dir / name, [str(python_exe), "-I", "-c", script])
 
 
+def _published_store_root(target: Path, root: Path) -> Path | None:
+    """Recover the runtime owner from one of our existing boot launchers.
+
+    Older source stamps have no runtimeDir, so the installed launcher is the
+    only durable record of the store that owns the checkout. Do not follow a
+    symlink or infer an owner from an unrelated user command.
+    """
+    if target.is_symlink() or not target.is_file():
+        return None
+    python: Path
+    script: str
+    if target.suffix.lower() == ".exe":
+        import re
+        from zipfile import BadZipFile, ZipFile
+
+        try:
+            with ZipFile(target) as archive:
+                if archive.namelist() != ["__main__.py"]:
+                    return None
+                script = archive.read("__main__.py").decode("utf-8")
+                prefix = target.read_bytes()[:archive.infolist()[0].header_offset]
+            # Match the complete appended shebang. Windows paths may themselves
+            # contain '#!', so taking the last such pair drops the path prefix.
+            shebang = re.search(rb'#!(?:"([^"\r\n]+)"|([^\r\n]+)) -I\r?\n$', prefix)
+            if shebang is None:
+                return None
+            python = Path((shebang.group(1) or shebang.group(2)).decode("utf-8"))
+        except (OSError, BadZipFile, KeyError, IndexError, UnicodeError):
+            return None
+    elif target.suffix.lower() == ".cmd":
+        import base64
+        import re
+
+        try:
+            body = target.read_text(encoding="utf-8-sig")
+            match = re.search(
+                r'^"([^"]+)" -I -c "import base64; exec\(base64.b64decode\('
+                r"'([A-Za-z0-9+/=]+)'\)\)\" %\*$", body, re.MULTILINE,
+            )
+            if match is None:
+                return None
+            python = Path(match.group(1))
+            script = base64.b64decode(match.group(2), validate=True).decode("utf-8")
+        except (OSError, ValueError, UnicodeError):
+            return None
+    else:
+        try:
+            tokens = shlex.split(target.read_text(encoding="utf-8-sig"), comments=True)
+        except (OSError, UnicodeError, ValueError):
+            return None
+        if len(tokens) < 5 or tokens[0] != "exec" or tokens[2:4] != ["-I", "-c"]:
+            return None
+        python, script = Path(tokens[1]), tokens[4]
+    if (f"sys.path.insert(0, {str(root)!r})" not in script
+            or "import hermes_bootstrap" not in script
+            or not python.is_absolute()):
+        return None
+    # PM installs Python under <store>/<python-package>/bin/python3. Legacy
+    # developer launchers may point at an arbitrary system Python instead.
+    package_dir = python.parent if target.suffix.lower() in (".cmd", ".exe") else python.parents[1]
+    if not package_dir.name.startswith("python-"):
+        return None
+    return package_dir.parent
+
+
+def _guard_launcher_runtime(root: Path, target: Path, selected: Path) -> None:
+    from pm.paths import install_stamp_path
+
+    path = install_stamp_path(root)
+    try:
+        stamp = json.loads(path.read_text(encoding="utf-8-sig"))
+    except FileNotFoundError:
+        stamp = {}  # Legacy unstamped installs still have launcher provenance.
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"cannot verify runtime owner in {path}: {exc}") from exc
+    if not isinstance(stamp, dict):
+        raise RuntimeError(f"cannot verify runtime owner in {path}: invalid stamp")
+    if stamp.get("updateMechanism") != "self":
+        if not (target.exists() or target.is_symlink()):
+            return  # Initial publication into a fresh checkout.
+        current = _published_store_root(target, root)
+        if current is not None and current.resolve() == selected.resolve():
+            return  # Existing managed launcher in a legacy unstamped checkout.
+        raise RuntimeError(
+            f"refusing to replace {target}: cannot verify its published runtime; "
+            "bind a persistent runtime explicitly before migration"
+        )
+    pinned = stamp.get("runtimeDir")
+    if pinned is not None and (not isinstance(pinned, str)
+                               or not Path(pinned).is_absolute()):
+        raise RuntimeError(f"cannot verify runtime owner in {path}: invalid runtimeDir")
+    if pinned is not None and Path(pinned).resolve() != selected.resolve():
+        raise RuntimeError(
+            f"refusing to replace {target}: runtime {selected} does not own this "
+            f"installation (pinned runtime: {pinned})"
+        )
+    current = _published_store_root(target, root)
+    if pinned is None and current is not None and current.resolve() != selected.resolve():
+        raise RuntimeError(
+            f"refusing to replace {target}: runtime {selected} does not own this "
+            f"installation (published runtime: {current})"
+        )
+    if current is None and pinned is None and (target.exists() or target.is_symlink()):
+        raise RuntimeError(
+            f"refusing to replace {target}: cannot verify its published runtime; "
+            "repair this installation with an explicitly pinned runtimeDir"
+        )
+
+
+def _guard_install_runtime(root: Path, out_dir: Path, selected: Path, *,
+                           strict_out: bool = False) -> None:
+    """Validate every discoverable owner before any launcher in this checkout changes."""
+    from hermes_constants import get_default_hermes_root
+
+    local = root / ".hermes" / "bin"
+    suffixes = (".exe", ".cmd") if _is_windows() else ("",)
+    directories = (local, Path(out_dir), Path.home() / ".local" / "bin",
+                   get_default_hermes_root() / "bin", Path("/usr/local/bin"))
+    canonical_owner = any(
+        _published_store_root(local / f"{name}{suffix}", root) is not None
+        for name in WINDOWS_BIN_LAUNCHERS for suffix in suffixes
+    )
+    seen: set[Path] = set()
+    for directory in directories:
+        for name in WINDOWS_BIN_LAUNCHERS:
+            for suffix in suffixes:
+                target = directory / f"{name}{suffix}"
+                if target in seen:
+                    continue
+                seen.add(target)
+                current = _published_store_root(target, root)
+                ours = _owns_launcher(target, root) if directory != local else False
+                if (directory != local and current is None and not ours
+                        and not (strict_out and directory == out_dir)):
+                    continue  # An unrelated PATH command is not ours to publish.
+                # A root-owned PATH forwarder has no interpreter of its own.
+                # It can only inherit an owner already proved in this checkout.
+                if directory != local and current is None and ours and canonical_owner:
+                    continue
+                _guard_launcher_runtime(root, target, selected)
+
+
+def bind_source_runtime(repo_root: Path, runtime_dir: Path) -> Path:
+    """Explicit migration for a self-managed source install, never ambient HOME."""
+    import tempfile
+    from pm.paths import install_stamp_path
+
+    root = Path(repo_root).resolve()
+    store = Path(runtime_dir).resolve()
+    stamp_path = install_stamp_path(root)
+    if not (root / ".git").exists():
+        raise ValueError(f"runtime binding requires a source checkout at {root}")
+    try:
+        stamp = json.loads(stamp_path.read_text(encoding="utf-8-sig"))
+    except FileNotFoundError:
+        local = root / ".hermes" / "bin"
+        owned = any(
+            _owns_launcher(local / name, root)
+            or _published_store_root(local / name, root) is not None
+            for name in ("hermes", "hermes.cmd", "hermes.exe")
+        )
+        if not owned:
+            raise ValueError(f"runtime binding requires an existing source launcher at {local}")
+        stamp = {"schemaVersion": 2, "updateMechanism": "self"}
+    if not isinstance(stamp, dict) or stamp.get("updateMechanism") != "self":
+        raise ValueError(f"runtime binding requires a self-managed source stamp at {stamp_path}")
+    if _recorded_store_python(store) is None:
+        raise ValueError(f"runtime {store} has no valid recorded Python interpreter")
+    fd, staging = tempfile.mkstemp(dir=root, prefix=".install-stamp.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps({**stamp, "runtimeDir": str(store)}, indent=2) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(staging, stamp_path)
+    finally:
+        try:
+            os.unlink(staging)
+        except FileNotFoundError:
+            pass
+    return store
+
+
 def _owns_launcher(target: Path, root: Path) -> bool:
     """Recognize our old source/venv launchers, never a mere mention in a comment."""
     if target.is_symlink():
@@ -364,9 +551,10 @@ def _publish_conveniences(root: Path, out_dir: Path, names, *, create: bool = Tr
 
 def stage_launcher(name: str, repo_root: Path, out_dir: Path) -> Path | None:
     """Publish one launcher bound to store Python, or refuse missing tools."""
-    repo_root = Path(repo_root)
+    repo_root = Path(repo_root).resolve()
     store_python = resolve_store_python(repo_root)
     if store_python is not None:
+        _guard_install_runtime(repo_root, Path(out_dir), store_root(repo_root), strict_out=True)
         path = mint_launcher(name, repo_root, out_dir, store_python, None)
         if path is not None and path.suffix == ".cmd":
             # cmd.exe prefers .exe. An older launcher must not shadow the
@@ -383,6 +571,7 @@ def ensure_install_launchers(repo_root: Path, out_dir: Path) -> list[str]:
     """Publish exact-install commands; conveniences follow them across Python repins."""
     root = Path(repo_root).resolve()
     local = root / ".hermes" / "bin"
+    _guard_install_runtime(root, Path(out_dir), store_root(root), strict_out=_is_windows())
     local.mkdir(parents=True, exist_ok=True)
     written = [str(path) for name in WINDOWS_BIN_LAUNCHERS
                if (path := stage_launcher(name, root, local)) is not None]
@@ -597,9 +786,20 @@ if __name__ == "__main__":
         raise SystemExit(0)
 
     parser = argparse.ArgumentParser(description="Publish source-install launchers.")
-    parser.add_argument("out_dir", type=Path)
+    parser.add_argument("--bind-runtime", type=Path, metavar="STORE",
+                        help="Explicitly bind this self-managed source install to a validated PM store")
+    parser.add_argument("out_dir", type=Path, nargs="?")
     args = parser.parse_args()
     repo_root = Path(__file__).resolve().parents[1]
+    if args.bind_runtime is not None:
+        try:
+            selected = bind_source_runtime(repo_root, args.bind_runtime)
+        except (OSError, ValueError) as exc:
+            parser.exit(1, f"hermes: runtime binding refused: {exc}\n")
+        print(f"Bound source runtime to {selected}; rerun this command with OUT_DIR to publish launchers.")
+        raise SystemExit(0)
+    if args.out_dir is None:
+        parser.error("out_dir is required unless --bind-runtime is specified")
     if resolve_store_python(repo_root) is None:
         parser.exit(1, "hermes: store interpreter is missing; finish pm install before publishing launchers\n")
     args.out_dir.mkdir(parents=True, exist_ok=True)

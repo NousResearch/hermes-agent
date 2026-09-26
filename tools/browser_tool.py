@@ -915,8 +915,14 @@ def browser_scroll(direction: str, task_id: Optional[str] = None) -> str:
     if direction not in {"up", "down"}:
         return _dumps(_err(f"Invalid direction '{direction}'. Use 'up' or 'down'."))
     _SCROLL_PIXELS = 500  # ~half a viewport in one call instead of 5x subprocess calls
-    if _is_camofox_mode():  # Camofox REST API has no pixel argument; use repeated calls
-        return [_camofox("camofox_scroll", direction, task_id) for _ in range(5)][-1]
+    if _is_camofox_mode():
+        # Preserve the existing successful travel, but never continue a failed
+        # action or hide it behind a later success in the five-step scroll.
+        for _ in range(5):
+            result = _camofox("camofox_scroll", direction, task_id)
+            if not json.loads(result).get("success"):
+                return result
+        return result
     effective_task_id = _last_session_key(task_id or "default")
     result = _session._run_browser_command(effective_task_id, "scroll", [direction, str(_SCROLL_PIXELS)])
     return _tool_response(result, {"scrolled": direction}, f"Failed to scroll {direction}")
@@ -938,7 +944,7 @@ def browser_back(task_id: Optional[str] = None) -> str:
 
 
 def browser_press(key: str, task_id: Optional[str] = None) -> str:
-    """Press a keyboard key (e.g. "Enter", "Tab")."""
+    """Press a keyboard key (e.g. "Enter")."""
     if _is_camofox_mode():
         return _camofox("camofox_press", key, task_id)
     return _guarded_action(task_id, "press", "press", [key], {"pressed": key}, f"Failed to press {key}")
@@ -1115,26 +1121,38 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
 
 
 def _camofox_eval(expression: str, task_id: Optional[str] = None) -> str:
-    """Evaluate JS via Camofox's /tabs/{tab_id}/evaluate endpoint (if available)."""
-    from tools.browser_camofox import _ensure_tab, _post
+    """Evaluate once; a stale target is invalidated, never replaced and replayed."""
+    from requests import HTTPError
+    from tools.browser_camofox import (
+        _EVAL_CAPABILITY_ERROR, _STALE_TAB_ERROR, _clear_stale_tab,
+        _ensure_tab, _post, classify_camofox_http_error,
+    )
     try:
         tab_info = _ensure_tab(task_id or "default")
         tab_id = tab_info.get("tab_id") or tab_info.get("id")
         user_id = tab_info["user_id"]
-        resp = _post(f"/tabs/{tab_id}/evaluate", body={"expression": expression, "userId": user_id})
+        try:
+            resp = _post(f"/tabs/{tab_id}/evaluate", body={"expression": expression, "userId": user_id})
+        except HTTPError as exc:
+            if _clear_stale_tab(tab_info, exc, endpoint="evaluate"):
+                return tool_error(_STALE_TAB_ERROR, success=False)
+            if classify_camofox_http_error(exc, endpoint="evaluate") == "capability":
+                return tool_error(_EVAL_CAPABILITY_ERROR, success=False)
+            raise
         parsed = _parse_eval_value(resp.get("result") if isinstance(resp, dict) else resp)
 
         if _eval_policy._eval_ssrf_guard_active(task_id or "default"):
-            _blocked_url = _eval_policy._camofox_current_page_private_url(tab_id, user_id)
+            _blocked_url = _eval_policy._camofox_current_page_private_url(
+                tab_id, user_id, session=tab_info
+            )
             if _blocked_url:
                 return _blocked_private_page_json(_blocked_url, _EVAL_NAVIGATED_WHY)
 
         return _dumps(_eval_ok_response(parsed), default=str)
-    except Exception as e:
-        if any(code in str(e) for code in ("404", "405", "501")):  # server without eval support
-            return json.dumps(_err("JavaScript evaluation is not supported by this Camofox server. "
-                                   "Use browser_snapshot or browser_vision to inspect page state."))
-        return tool_error(str(e), success=False)
+    except Exception as exc:
+        # Only the evaluate request owns capability classification; creation,
+        # decoding and transport failures must not masquerade as a missing route.
+        return tool_error(str(exc), success=False)
 
 
 def _maybe_start_recording(task_id: str):

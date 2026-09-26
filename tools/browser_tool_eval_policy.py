@@ -151,9 +151,12 @@ def _enforce_browser_eval_policy(expression: str) -> Optional[str]:
             "browser.restrict_evaluate: false in config.yaml to allow programmatic evaluation.")
 
 
-def _camofox_current_page_private_url(tab_id: str, user_id: str) -> Optional[str]:
+def _camofox_current_page_private_url(
+    tab_id: str, user_id: str, session: Optional[dict] = None
+) -> Optional[str]:
     """Camofox analogue of ``_current_page_private_url`` (evaluate endpoint instead of the CLI). Fail-open
-    on probe failure, matching the snapshot/vision guards — do not make fail-closed without the sibling."""
+    on probe failure, matching the snapshot/vision guards. A proven stale tab still invalidates
+    the supplied session so callers cannot act on it after this probe returns."""
     _bt = _origin()
     try:
         from tools.browser_camofox import _post
@@ -163,5 +166,8 @@ def _camofox_current_page_private_url(tab_id: str, user_id: str) -> Optional[str
         if current_url and _url_blocked(_bt, current_url):
             return current_url
     except Exception as exc:
+        if session is not None:
+            from tools.browser_camofox import _clear_stale_tab
+            _clear_stale_tab(session, exc, endpoint="evaluate")
         _bt.logger.debug("_camofox_current_page_private_url: probe failed (%s)", exc)
     return None

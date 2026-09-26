@@ -97,10 +97,11 @@ class TestManagedPersistenceMode:
         requests_seen = []
 
         def _capture_post(url, json=None, timeout=None, headers=None):
-            requests_seen.append(json)
-            return _mock_response(
-                json_data={"tabId": f"tab-{len(requests_seen)}", "url": "https://example.com"}
-            )
+            requests_seen.append((url, json))
+            if url.endswith("/tabs"):
+                count = sum(request_url.endswith("/tabs") for request_url, _ in requests_seen)
+                return _mock_response(json_data={"tabId": f"tab-{count}"})
+            return _mock_response(json_data={"url": (json or {}).get("url", ""), "title": "live"})
 
         with (
             _enable_persistence(),
@@ -113,9 +114,18 @@ class TestManagedPersistenceMode:
 
         assert first["success"] is True
         assert second["success"] is True
-        tab_requests = [req for req in requests_seen if "userId" in req]
+        tab_requests = [body for url, body in requests_seen if url.endswith("/tabs")]
+        navigate_requests = [(url, body) for url, body in requests_seen if url.endswith("/navigate")]
         assert len(tab_requests) == 2
+        assert len(navigate_requests) == 2
+        assert all("url" not in body for body in tab_requests)
         assert tab_requests[0]["userId"] == tab_requests[1]["userId"]
+        assert [url for url, _ in navigate_requests] == [
+            "http://localhost:9377/tabs/tab-1/navigate",
+            "http://localhost:9377/tabs/tab-2/navigate",
+        ]
+        assert all(body["userId"] == tab_requests[0]["userId"] for _, body in navigate_requests)
+        assert all(body["url"] == "https://example.com" for _, body in navigate_requests)
 
 
 class TestConfiguredCamofoxIdentity:
@@ -151,22 +161,29 @@ class TestConfiguredCamofoxIdentity:
                 patch("tools.browser_camofox.load_config", return_value=config),
                 patch(
                     "tools.browser_camofox.requests.post",
-                    return_value=_mock_response(json_data={"tabId": "scoped-tab"}),
+                    side_effect=[
+                        _mock_response(json_data={"tabId": "scoped-tab"}),
+                        _mock_response(json_data={"url": "https://example.com", "title": "live"}),
+                    ],
                 ) as mock_post,
             ):
                 result = json.loads(
                     camofox_navigate("https://example.com", task_id="scoped-precedence")
                 )
-                request_url = mock_post.call_args.args[0]
-                request_body = mock_post.call_args.kwargs["json"]
+                create_call, navigate_call = mock_post.call_args_list
         finally:
             secret_scope.reset_secret_scope(token)
             secret_scope.set_multiplex_active(False)
 
         assert result["success"] is True
-        assert request_url == "https://secondary.example/tabs"
-        assert request_body["userId"] == "secondary-scope-user"
-        assert request_body["listItemId"] == "secondary-scope-session"
+        assert create_call.args[0] == "https://secondary.example/tabs"
+        assert create_call.kwargs["json"] == {
+            "userId": "secondary-scope-user", "listItemId": "secondary-scope-session",
+        }
+        assert navigate_call.args[0] == "https://secondary.example/tabs/scoped-tab/navigate"
+        assert navigate_call.kwargs["json"] == {
+            "userId": "secondary-scope-user", "url": "https://example.com",
+        }
 
     def test_multiplex_scope_miss_uses_profile_config_not_process_env(
         self, tmp_path, monkeypatch

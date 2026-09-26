@@ -92,6 +92,22 @@ describe('boundRetainedTranscript', () => {
     expect(untouched(messages, messages[40].id)).toEqual({ released: false })
   })
 
+  it('does not release a live correction or its zero-span folded-tool prefix', () => {
+    const messages = transcript(60, heavy)
+    const boundary = 40 - slackRows(messages[40])
+    messages[boundary - 1] = { ...messages[boundary - 1], serverRowSpan: 0 }
+    messages[boundary] = {
+      id: 'user-correction',
+      role: 'user',
+      parts: [{ type: 'text', text: 'x'.repeat(RENDER_WEIGHT_CHARS * 100) }]
+    }
+
+    // A live redirect has no durable rowId but is not `pending: true`.
+    // Cutting at the correction would also release the preceding virtual
+    // assistant fragment, whose zero span could not rewind the older page.
+    expect(untouched(messages, messages[40].id)).toEqual({ released: false })
+  })
+
   it('does not split an assistant branch group', () => {
     // The slack boundary lands inside one three-message branch group; keeping
     // the whole group is what stops a branch being re-parented onto a fork

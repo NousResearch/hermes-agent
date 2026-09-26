@@ -228,11 +228,11 @@ export function JarvisDashboard({
   const conversation = (
     <main
       aria-label={copy.conversationLabel}
-      className="relative isolate flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-(--ui-chat-surface-background)"
+      className="jarvis-conversation relative isolate flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
       data-home={home ? 'true' : undefined}
     >
-      {/* Home only: the Earth-from-orbit backdrop behind the orb. Decoration, never a hit target. */}
-      {home ? <span aria-hidden="true" className="jarvis-space" /> : null}
+      {/* Theme-aware space backdrop shared by home and conversation. Decoration only. */}
+      <span aria-hidden="true" className="jarvis-space" />
       {/* Balanced, centred header: the orb in the middle of the conversation
           and its status beneath it. The orb stays compact while you read and
           grows — smoothly, see core.css — while you talk with Jarvis. */}
@@ -240,13 +240,27 @@ export function JarvisDashboard({
         {home ? null : (
           <JarvisCore compact={compactCore && !voiceActive} live taskPhase={state.task.phase} voice={state.voice} />
         )}
-        {home ? null : <button className="text-xs font-medium text-(--ui-text-tertiary) transition-colors hover:text-(--ui-accent)" onClick={() => navigate(NEW_CHAT_ROUTE)} type="button">{locale === 'pl' ? 'Na pulpit' : 'To dashboard'}</button>}
+        {home ? null : (
+          <button
+            className="text-xs font-medium text-(--ui-text-tertiary) transition-colors hover:text-(--ui-accent)"
+            onClick={() => navigate(NEW_CHAT_ROUTE)}
+            type="button"
+          >
+            {locale === 'pl' ? 'Na pulpit' : 'To dashboard'}
+          </button>
+        )}
         {home ? <HomeTopBar tips={tipsLauncher} /> : null}
         <div className="flex flex-wrap items-center justify-center gap-2">
           {/* At rest on home the hero's own status line says it; the pills would
               only crowd the greeting. */}
           {home && connected && !busy && state.voice === 'idle' && state.activeTool === null ? null : (
-            <JarvisStatusStrip className="justify-center" connected={connected} copy={copy.status} state={state} />
+            <JarvisStatusStrip
+              className="justify-center"
+              compact
+              connected={connected}
+              copy={copy.status}
+              state={state}
+            />
           )}
           {/* The deck is capability- and history-aware, so it lives here rather
               than behind a menu: it is the answer to "and now what?" that the
@@ -339,7 +353,7 @@ export function JarvisDashboard({
           // The rail scrolls as one column: the cards first, then the session's
           // own activity — so a long news list never squeezes the log away.
           <div
-            className="flex w-80 shrink-0 flex-col gap-3 overflow-y-auto border-l border-(--ui-stroke-tertiary) p-3"
+            className="jarvis-dashboard__rail flex w-80 shrink-0 flex-col gap-3 overflow-y-auto border-l border-(--ui-stroke-tertiary) p-3 backdrop-blur-2xl"
             data-testid="jarvis-rail"
           >
             {rail}

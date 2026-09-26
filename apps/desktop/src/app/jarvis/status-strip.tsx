@@ -5,6 +5,7 @@ import type { JarvisTaskPhase, JarvisUiState, JarvisVoiceState } from './types'
 
 interface StatusStripProps {
   className?: string
+  compact?: boolean
   connected: boolean
   copy: {
     connection: {
@@ -44,11 +45,13 @@ const TONE_CLASS: Record<Tone, string> = {
 
 function Chip({
   children,
+  compact = false,
   icon: Icon,
   spin = false,
   tone = 'muted'
 }: {
   children: React.ReactNode
+  compact?: boolean
   icon: React.ComponentType<{ className?: string }>
   spin?: boolean
   tone?: Tone
@@ -58,17 +61,19 @@ function Chip({
       className={cn(
         // Read-only status, not a control: a compact pill, so four of them sit
         // on one line instead of pushing the conversation down.
-        'inline-flex min-h-8 max-w-full items-center gap-1.5 rounded-full border border-(--ui-stroke-tertiary) bg-(--ui-bg-quaternary)/70 px-2.5 text-xs',
+        'jarvis-status-chip inline-flex min-h-8 max-w-full items-center justify-center gap-1.5 rounded-full border border-(--ui-stroke-tertiary) bg-(--ui-bg-quaternary)/70 text-xs backdrop-blur-xl',
+        compact ? 'size-9 px-0' : 'px-2.5',
         TONE_CLASS[tone]
       )}
+      title={typeof children === 'string' ? children : undefined}
     >
       <Icon className={cn('size-3.5 shrink-0', spin && 'animate-spin')} />
-      <span className="truncate">{children}</span>
+      <span className={compact ? 'sr-only' : 'truncate'}>{children}</span>
     </span>
   )
 }
 
-export function JarvisStatusStrip({ className, connected, copy, state }: StatusStripProps) {
+export function JarvisStatusStrip({ className, compact = false, connected, copy, state }: StatusStripProps) {
   const phase = state.task.phase
   const tone = taskTone(phase)
   const TaskIcon = phase === 'verified' ? CheckCircle2 : phase === 'failed' ? AlertCircle : Loader2
@@ -80,21 +85,25 @@ export function JarvisStatusStrip({ className, connected, copy, state }: StatusS
       {/* The status bar already says the gateway is up; only a lost connection
           earns a chip up here. */}
       {connected ? null : (
-        <Chip icon={Power} tone="warn">
+        <Chip compact={compact} icon={Power} tone="warn">
           {copy.connection.disconnected}
         </Chip>
       )}
       {/* The spinner is reserved for a phase that is actually advancing —
           a static "Loader" next to "Gotowy" reads as a hung app. */}
-      <Chip icon={TaskIcon} spin={ACTIVE_PHASES.has(phase)} tone={tone}>
+      <Chip compact={compact} icon={TaskIcon} spin={ACTIVE_PHASES.has(phase)} tone={tone}>
         {copy.task[phase]}
       </Chip>
       {state.activeTool ? (
-        <Chip icon={Wrench} tone={toolRunning ? 'accent' : 'muted'}>
+        <Chip compact={compact} icon={Wrench} tone={toolRunning ? 'accent' : 'muted'}>
           {state.activeTool.label}
         </Chip>
       ) : null}
-      <Chip icon={VoiceIcon} tone={state.voice === 'error' ? 'warn' : state.voice === 'idle' ? 'muted' : 'accent'}>
+      <Chip
+        compact={compact}
+        icon={VoiceIcon}
+        tone={state.voice === 'error' ? 'warn' : state.voice === 'idle' ? 'muted' : 'accent'}
+      >
         {copy.voice[state.voice]}
       </Chip>
     </section>

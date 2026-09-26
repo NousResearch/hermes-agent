@@ -117,7 +117,7 @@ export function JarvisCore({
   const reactiveAudioLevel = audioActive ? clampAudioLevel(audioLevel) : 0
   const taskSignal = TASK_SIGNAL[taskPhase]
   const hero = variant === 'hero'
-  const size = hero ? (compact ? 290 : 430) : compact ? 172 : 292
+  const size = hero ? (compact ? 340 : 520) : compact ? 184 : 340
   // Until the canvas proves it can paint, the SVG liquid stays as the fallback.
   const [plasmaReady, setPlasmaReady] = useState(false)
   const taskCopy = copy.task[taskPhase]
@@ -204,8 +204,6 @@ export function JarvisCore({
           <circle className="jarvis-core__outer-ring" cx="100" cy="100" r="88" />
           <path className="jarvis-core__shine" d="M62 58 C76 42 107 35 129 48" fill="none" />
         </svg>
-        <span className="jarvis-core__state jarvis-core__state--voice" />
-        <span className="jarvis-core__state jarvis-core__state--task" />
       </span>
       {/* A sibling of the stage, not a child, so the halo layers stay inside
           the stage's clip while the plasma paints over the whole core. */}

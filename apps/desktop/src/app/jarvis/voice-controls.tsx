@@ -17,7 +17,7 @@ export interface VoiceControlsProps {
   error?: null | string
   listening: boolean
   loading?: boolean
-  /** True when the conversation is running with the microphone muted. */
+  /** True when the conversation is running with its microphone muted. */
   muted?: boolean
   speaking: boolean
   startListening: VoiceAction
@@ -50,7 +50,7 @@ export function VoiceControls({
   const meterRef = useRef<HTMLDivElement>(null)
   const busy = loading || pendingAction !== null
 
-  // The meter reads the real recorder through CSS variables: a live level must
+  // The meter reads the real recorder through CSS variables. Live input must
   // not re-render the dashboard on every animation frame.
   useMicLevelVar(meterRef, listening && !muted)
 
@@ -72,11 +72,12 @@ export function VoiceControls({
   const listenAction = listening ? stopListening : startListening
   const listenPending = pendingAction === 'startListening' || pendingAction === 'stopListening'
   const muteLabel = muted ? copy.unmute : copy.mute
+  const iconButton = 'size-10 min-h-10 min-w-10 rounded-full'
 
   return (
     <section
       aria-label={copy.label}
-      className="flex min-w-0 flex-wrap items-center gap-2 rounded-xl border border-(--ui-stroke-tertiary) bg-(--ui-bg-secondary)/50 px-2 py-2 backdrop-blur"
+      className="jarvis-voice-dock mx-auto flex w-fit max-w-full items-center gap-1.5 rounded-full border border-(--ui-stroke-tertiary) px-2 py-1.5 backdrop-blur-2xl"
       data-testid="jarvis-voice-controls"
     >
       <div
@@ -84,67 +85,74 @@ export function VoiceControls({
         aria-valuemax={100}
         aria-valuemin={0}
         aria-valuenow={0}
-        className="flex min-h-11 items-center gap-1 px-1 text-(--ui-text-secondary)"
+        className="flex h-9 w-20 items-center overflow-hidden px-1 text-(--ui-text-secondary) sm:w-24"
         data-testid="jarvis-mic-meter"
         ref={meterRef}
         role="meter"
         style={{ '--jarvis-audio-level': '0' } as React.CSSProperties}
       >
-        {/* A scrolling history of measured levels; flat whenever the mic is
-            closed or muted. */}
-        <VoiceWaveform active={listening && !muted} className="h-8 w-36 sm:w-44" />
+        <VoiceWaveform active={listening && !muted} className="h-7 w-full" />
       </div>
+
       <Button
         aria-label={listenLabel}
         aria-pressed={listening}
-        className="min-h-11"
+        className={iconButton}
         disabled={disabled || busy}
         onClick={() => void run(listening ? 'stopListening' : 'startListening', listenAction)}
+        size="icon"
+        title={listenLabel}
         type="button"
         variant={listening ? 'secondary' : 'default'}
       >
         {listenPending ? <Loader2 className="animate-spin" /> : listening ? <Square /> : <Mic />}
-        {listenLabel}
       </Button>
+
       {toggleMute && (
         <Button
           aria-label={muteLabel}
           aria-pressed={muted}
-          className="min-h-11"
+          className={iconButton}
           disabled={disabled || busy || !listening}
           onClick={() => void run('toggleMute', toggleMute)}
+          size="icon"
+          title={muteLabel}
           type="button"
           variant="secondary"
         >
           {pendingAction === 'toggleMute' ? <Loader2 className="animate-spin" /> : muted ? <MicOff /> : <Mic />}
-          {muteLabel}
         </Button>
       )}
+
       <Button
         aria-label={copy.stopSpeaking}
-        className="min-h-11"
+        className={iconButton}
         disabled={disabled || busy || !speaking}
         onClick={() => void run('stopPlayback', stopPlayback)}
+        size="icon"
+        title={copy.stopSpeaking}
         type="button"
         variant="secondary"
       >
         {pendingAction === 'stopPlayback' ? <Loader2 className="animate-spin" /> : <VolumeX />}
-        {copy.stopSpeaking}
       </Button>
+
       <Button
         aria-label={copy.cancelTask}
-        className={cn('min-h-11', taskRunning && 'text-destructive')}
+        className={cn(iconButton, taskRunning && 'text-destructive')}
         disabled={disabled || busy || !taskRunning}
         onClick={() => void run('cancelTask', cancelTask)}
+        size="icon"
+        title={copy.cancelTask}
         type="button"
         variant="outline"
       >
         {pendingAction === 'cancelTask' ? <Loader2 className="animate-spin" /> : <Square />}
-        {copy.cancelTask}
       </Button>
-      <DesktopOrbToggle />
+
+      <DesktopOrbToggle compact />
       {error ? (
-        <p className="basis-full text-xs text-destructive" role="alert">
+        <p className="sr-only" role="alert">
           {error}
         </p>
       ) : null}

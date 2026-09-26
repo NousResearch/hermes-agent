@@ -8,18 +8,29 @@ import { $petOverlayActive, popInPet, popOutDesktopOrb } from '@/store/pet-overl
 import { desktopOrbCopy } from './desktop-orb-copy'
 import { $desktopOrbMode } from './desktop-orb-state'
 
-export function DesktopOrbToggle() {
+export function DesktopOrbToggle({ compact = false }: { compact?: boolean }) {
   const { locale } = useI18n()
   const active = useStore($petOverlayActive)
   const orb = useStore($desktopOrbMode)
 
-  if (!window.hermesDesktop?.petOverlay) {return null}
+  if (!window.hermesDesktop?.petOverlay) {
+    return null
+  }
+
   const shown = active && orb
 
   return (
-    <Button aria-pressed={shown} onClick={() => (shown ? popInPet() : popOutDesktopOrb())} variant="secondary">
+    <Button
+      aria-label={shown ? desktopOrbCopy[locale].hide : desktopOrbCopy[locale].show}
+      aria-pressed={shown}
+      className={compact ? 'size-10 min-h-10 min-w-10 rounded-full' : undefined}
+      onClick={() => (shown ? popInPet() : popOutDesktopOrb())}
+      size={compact ? 'icon' : 'default'}
+      title={shown ? desktopOrbCopy[locale].hide : desktopOrbCopy[locale].show}
+      variant="secondary"
+    >
       <Monitor />
-      {shown ? desktopOrbCopy[locale].hide : desktopOrbCopy[locale].show}
+      {compact ? null : shown ? desktopOrbCopy[locale].hide : desktopOrbCopy[locale].show}
     </Button>
   )
 }

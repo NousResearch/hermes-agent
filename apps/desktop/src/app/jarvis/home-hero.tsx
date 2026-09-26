@@ -83,7 +83,7 @@ export function JarvisHomeHero({
       <section
         aria-labelledby="jarvis-home-title"
         className={cn(
-          'jarvis-home relative flex w-full max-w-3xl flex-col items-center gap-4 px-4 py-5 text-center [--jarvis-hero-size:min(390px,44vh,78cqw)] @2xl:[--jarvis-hero-size:min(430px,48vh,58cqw)]',
+          'jarvis-home relative flex w-full max-w-4xl flex-col items-center gap-3 px-4 py-4 text-center [--jarvis-hero-size:min(440px,50vh,86cqw)] @2xl:[--jarvis-hero-size:min(520px,56vh,66cqw)]',
           className
         )}
         data-testid="jarvis-home-hero"
@@ -107,8 +107,8 @@ export function JarvisHomeHero({
           <JarvisCore live taskPhase={state.task.phase} variant="hero" voice={listening ? 'listening' : state.voice} />
         </div>
 
-      <div className="flex flex-wrap items-center justify-center gap-2">
-        <DesktopOrbToggle />
+        <div className="flex flex-wrap items-center justify-center gap-2">
+          <DesktopOrbToggle />
           <Button
             aria-pressed={listening}
             className={cn('min-h-12 rounded-full px-7 text-base font-semibold', !listening && 'jarvis-cta')}

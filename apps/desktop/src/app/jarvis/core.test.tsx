@@ -49,7 +49,9 @@ describe('Agent CzesiekCore', () => {
   it('describes itself in the active locale rather than a hardcoded language', () => {
     renderCore(<JarvisCore taskPhase="running" voice="listening" />, 'en')
 
-    expect(screen.getByRole('status').getAttribute('aria-label')).toBe('Agent Czesiek is listening and running the task')
+    expect(screen.getByRole('status').getAttribute('aria-label')).toBe(
+      'Agent Czesiek is listening and running the task'
+    )
 
     cleanup()
     renderCore(<JarvisCore taskPhase="idle" voice="idle" />, 'en')
@@ -89,7 +91,7 @@ describe('Agent CzesiekCore', () => {
 
     expect(core.getAttribute('data-compact')).toBe('true')
     expect(core.getAttribute('data-motion')).toBe('reduced')
-    expect(core.style.getPropertyValue('--jarvis-core-size')).toBe('148px')
+    expect(core.style.getPropertyValue('--jarvis-core-size')).toBe('184px')
     expect(core.getAttribute('data-voice')).toBe('speaking')
     expect(core.getAttribute('data-task')).toBe('approval')
   })

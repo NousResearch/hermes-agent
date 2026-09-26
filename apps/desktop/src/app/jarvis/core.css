@@ -472,12 +472,67 @@
   overflow: hidden;
   pointer-events: none;
   background:
-    linear-gradient(180deg, rgb(255 255 255 / 0.38) 0%, transparent 26%, transparent 78%, rgb(255 255 255 / 0.3) 100%),
+    linear-gradient(180deg, rgb(246 250 255 / 0.28) 0%, rgb(236 246 255 / 0.08) 42%, rgb(244 249 255 / 0.2) 100%),
     url('../../assets/backgrounds/dashboard-light.webp') center bottom / cover no-repeat;
 }
 
 :root.dark .jarvis-space {
   background:
-    linear-gradient(180deg, rgb(4 7 16 / 0.45) 0%, transparent 24%, transparent 80%, rgb(4 7 16 / 0.5) 100%),
+    linear-gradient(180deg, rgb(3 8 18 / 0.24) 0%, transparent 42%, rgb(2 7 16 / 0.34) 100%),
     url('../../assets/backgrounds/dashboard-dark.webp') center bottom / cover no-repeat;
+}
+
+/* A restrained field of drifting light adds depth without competing with the
+   orb. The supplied photography remains the dominant background. */
+.jarvis-space::after {
+  position: absolute;
+  inset: -12%;
+  background-image:
+    radial-gradient(circle at 12% 18%, rgb(255 255 255 / 0.7) 0 1px, transparent 1.8px),
+    radial-gradient(circle at 68% 26%, rgb(183 226 255 / 0.62) 0 1px, transparent 1.7px),
+    radial-gradient(circle at 84% 64%, rgb(255 255 255 / 0.5) 0 1.2px, transparent 2px),
+    radial-gradient(circle at 38% 78%, rgb(118 191 255 / 0.45) 0 1px, transparent 1.8px);
+  background-size:
+    170px 170px,
+    230px 230px,
+    310px 310px,
+    390px 390px;
+  content: '';
+  opacity: 0.3;
+  transform: translate3d(0, 0, 0);
+  animation: jarvis-particles-drift 32s linear infinite;
+}
+
+:root:not(.dark) .jarvis-space::after {
+  opacity: 0.18;
+  mix-blend-mode: soft-light;
+}
+
+@keyframes jarvis-particles-drift {
+  to {
+    transform: translate3d(3%, -4%, 0);
+  }
+}
+
+.jarvis-voice-dock,
+.jarvis-dashboard__rail {
+  background: var(--glass-bg);
+  box-shadow:
+    inset 0 1px 0 var(--glass-highlight),
+    var(--glass-shadow);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(150%);
+  backdrop-filter: blur(var(--glass-blur)) saturate(150%);
+}
+
+.jarvis-status-chip {
+  background: color-mix(in srgb, var(--glass-bg-strong) 88%, transparent);
+  box-shadow:
+    inset 0 1px 0 var(--glass-highlight),
+    0 8px 22px -18px rgb(8 24 56 / 0.65);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .jarvis-space::after {
+    animation: none;
+  }
 }

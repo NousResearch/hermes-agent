@@ -67,7 +67,7 @@ export function JarvisInsightsPanel({
     <aside
       aria-labelledby={labelledBy}
       className={cn(
-        'flex min-h-0 flex-col bg-(--ui-chat-surface-background) text-(--ui-text-primary)',
+        'jarvis-glass-strong flex min-h-0 flex-col text-(--ui-text-primary)',
         surface === 'panel' && 'border-l border-(--ui-stroke-tertiary)',
         overlay && 'shadow-nous border border-(--stroke-nous)',
         className

@@ -143,6 +143,94 @@ class _FakeStatusAdapter:
         self.cleared.append((chat_id, metadata))
 
 
+# ---------------------------------------------------------------------------
+# /stop also cancels background (async) delegate_task units the session
+# spawned — the CLI's own /stop does this via interrupt_all; the gateway's
+# had no equivalent, so a background delegation kept running/spending after
+# an explicit /stop.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_stop_interrupts_background_delegations_for_the_session(monkeypatch):
+    runner = object.__new__(GatewayRunner)
+    key = _per_user_key("userA")
+    runner._running_agents = {key: _FakeAgent()}
+    runner.session_store = _FakeStore(key)
+
+    async def _fake_interrupt(session_key, source, *, interrupt_reason, invalidation_reason):
+        pass
+
+    runner._interrupt_and_clear_session = _fake_interrupt
+
+    calls = []
+    monkeypatch.setattr(
+        "tools.async_delegation.interrupt_for_session",
+        lambda **kwargs: calls.append(kwargs) or 0,
+    )
+
+    event = MessageEvent(
+        text="/stop", message_type=MessageType.TEXT, source=_thread_source("userA")
+    )
+    await runner._handle_stop_command(event)
+
+    assert calls == [{"session_key": key, "reason": "stop_command"}]
+
+
+@pytest.mark.asyncio
+async def test_stop_interrupts_background_delegations_for_each_sibling(monkeypatch):
+    runner = object.__new__(GatewayRunner)
+    key_a = _per_user_key("userA")
+    key_b = _per_user_key("userB")
+    runner._running_agents = {key_b: _FakeAgent()}
+    runner.session_store = _FakeStore(key_a)
+    runner._is_user_authorized_for_source = lambda source: True
+
+    async def _fake_interrupt(session_key, source, *, interrupt_reason, invalidation_reason):
+        pass
+
+    runner._interrupt_and_clear_session = _fake_interrupt
+
+    calls = []
+    monkeypatch.setattr(
+        "tools.async_delegation.interrupt_for_session",
+        lambda **kwargs: calls.append(kwargs) or 0,
+    )
+
+    event = MessageEvent(
+        text="/stop", message_type=MessageType.TEXT, source=_thread_source("userA")
+    )
+    await runner._handle_stop_command(event)
+
+    assert calls == [{"session_key": key_b, "reason": "stop_command"}]
+
+
+@pytest.mark.asyncio
+async def test_stop_survives_delegation_interrupt_failure(monkeypatch):
+    """A broken async_delegation import/call must not break the /stop reply."""
+    runner = object.__new__(GatewayRunner)
+    key = _per_user_key("userA")
+    runner._running_agents = {key: _FakeAgent()}
+    runner.session_store = _FakeStore(key)
+
+    async def _fake_interrupt(session_key, source, *, interrupt_reason, invalidation_reason):
+        pass
+
+    runner._interrupt_and_clear_session = _fake_interrupt
+
+    def _boom(**_kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("tools.async_delegation.interrupt_for_session", _boom)
+
+    event = MessageEvent(
+        text="/stop", message_type=MessageType.TEXT, source=_thread_source("userA")
+    )
+    result = await runner._handle_stop_command(event)
+
+    assert "stopped" in str(getattr(result, "text", result)).lower()
+
+
 @pytest.mark.asyncio
 async def test_stop_no_active_agent_survives_status_clear_failure():
     """A failing adapter clear must not break the /stop reply."""

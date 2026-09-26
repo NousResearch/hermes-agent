@@ -53,3 +53,30 @@ def test_clean_tree_reports_no_known_vulnerabilities(capsys):
     out, issues = _run_audit_one(capsys, ["--workspaces=false"], _audit_json())
     assert "no known vulnerabilities" in out
     assert issues == []
+
+
+def test_registry_network_failure_warns_instead_of_false_clean(capsys):
+    """#101760: a DNS/network failure reaching registry.npmjs.org still exits 0
+    with a JSON body carrying a top-level "error" and no metadata.vulnerabilities.
+    Treating that missing shape as zero vulnerabilities used to print a false
+    "no known vulnerabilities" instead of surfacing the audit failure."""
+    network_failure_stdout = json.dumps({
+        "message": ("request to https://registry.npmjs.org/-/npm/v1/security/audits/quick "
+                    "failed, reason: getaddrinfo ENOTFOUND registry.npmjs.org"),
+        "error": {"summary": "", "detail": ""},
+    })
+    out, issues = _run_audit_one(capsys, ["--workspaces=false"], network_failure_stdout)
+    assert "no known vulnerabilities" not in out
+    assert "npm audit unavailable: registry/network error" in out
+    assert issues == []
+
+
+def test_audit_subprocess_exception_warns_instead_of_silently_passing(capsys):
+    """A subprocess timeout or JSON parse failure must be visible, not swallowed."""
+    issues: list[str] = []
+    with patch.object(doctor_tools.subprocess, "run", side_effect=subprocess.TimeoutExpired("npm", 30)):
+        doctor_tools._audit_one("npm", "C:/fake/root", "Browser tools (agent-browser)",
+                                ["--workspaces=false"], issues)
+    out = capsys.readouterr().out
+    assert "npm audit unavailable: registry/network error" in out
+    assert issues == []

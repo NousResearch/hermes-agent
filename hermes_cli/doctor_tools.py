@@ -420,7 +420,7 @@ def _plural(n: int) -> str:
 
 
 def _audit_one(npm_bin: str, npm_dir, label: str, audit_extra: list[str], issues: list[str]) -> None:
-    """Run one `npm audit --json` and report; any failure is silently skipped.
+    """Run one `npm audit --json` and report.
 
     Every row here audits a tree whose versions come from a COMMITTED lockfile
     (`npm ci` in `_run_npm_install_deterministic` reifies exactly that state on
@@ -436,7 +436,15 @@ def _audit_one(npm_bin: str, npm_dir, label: str, audit_extra: list[str], issues
         audit_result = subprocess.run([npm_bin, "audit", "--json", *audit_extra], cwd=str(npm_dir),
                                       capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30)
         audit_data = json.loads(audit_result.stdout) if audit_result.stdout.strip() else {}
-        counts = audit_data.get("metadata", {}).get("vulnerabilities", {})
+        # A network/registry failure (e.g. a DNS lookup to registry.npmjs.org
+        # fails) still exits 0 with a JSON body shaped like a result, but it
+        # carries a top-level "error" instead of "metadata.vulnerabilities".
+        # Treating the missing/invalid shape as zero vulnerabilities turns an
+        # audit failure into a false "no known vulnerabilities". See #101760.
+        counts = audit_data.get("metadata", {}).get("vulnerabilities") if isinstance(audit_data, dict) else None
+        if not isinstance(audit_data, dict) or audit_data.get("error") or not isinstance(counts, dict):
+            check_warn(f"{label} deps", "(npm audit unavailable: registry/network error)")
+            return
         critical, high, moderate = (counts.get(k, 0) for k in ("critical", "high", "moderate"))
         total = critical + high + moderate
         workspace_scoped = bool(audit_extra) and audit_extra[0] == "--workspace"
@@ -456,7 +464,7 @@ def _audit_one(npm_bin: str, npm_dir, label: str, audit_extra: list[str], issues
         else:
             check_ok(f"{label} deps", f"({moderate} moderate {_plural(moderate)})")
     except Exception:
-        pass
+        check_warn(f"{label} deps", "(npm audit unavailable: registry/network error)")
 
 
 @doctor_check()

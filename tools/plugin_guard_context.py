@@ -52,6 +52,11 @@ def js_block_comment_lines(lines: list[str]) -> set[int]:
                 pending.clear()
                 in_block = False
                 i = end + 2
+            elif line.startswith('#!', i):
+                # A JavaScript hashbang consumes the first line, including /*.
+                if number == 1 and i == 0:
+                    break
+                return completed - code
             elif line.startswith('//', i):
                 break
             elif line.startswith('/*', i):

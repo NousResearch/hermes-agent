@@ -18,6 +18,8 @@ def scan(tmp_path, source, suffix='.ts'):
     '\ufeff  /*\r\n Refuses /etc/shadow.\r\n */\r\n',
     'const x = 1; /* header\n * Refuses /etc/shadow.\n */ const y = 2;',
     '/* /etc/shadow */ /* /etc/passwd */',
+    '#!node /*\n/** Refuses /etc/shadow. */',
+    '/**\n * Examples: `template`, /regex/, \\ slash, <!-- and -->.\n * Refuses /etc/shadow.\n */',
 ])
 def test_whole_line_block_prose_stays_visible_and_installable(tmp_path, source, suffix):
     result = scan(tmp_path, source, suffix)
@@ -45,6 +47,7 @@ def test_whole_line_block_prose_stays_visible_and_installable(tmp_path, source, 
     'const marker = "broken\n/* /etc/shadow */',
     '/* benign */' + ' ' * 150 + 'readFileSync("/etc/shadow");',
     '--> /*\nreadFileSync("/etc/shadow");\n/* */',
+    '#!node /*\nreadFileSync("/etc/shadow");\n/* */',
     '<!-- /*\nreadFileSync("/etc/shadow");\n/* */',
     '/* benign */\u2028readFileSync("/etc/shadow");',
 ])

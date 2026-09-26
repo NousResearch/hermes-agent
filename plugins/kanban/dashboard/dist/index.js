@@ -1311,6 +1311,7 @@
           boardData,
           onOpen: setSelectedTaskId,
         }),
+        h(DispatchHealthStrip, { health: boardData && boardData.dispatch_health }),
         h(BoardToolbar, {
           board: boardData,
           tenantFilter, setTenantFilter,
@@ -2539,6 +2540,37 @@
   // -------------------------------------------------------------------------
   // Toolbar
   // -------------------------------------------------------------------------
+
+  // A stalled queue must not render like a quiet one: `state=starved` means
+  // spawnable ready tasks exist and EVERY one is held back, so nothing is
+  // running and nothing will start. The strip is driven by the board payload's
+  // `dispatch_health`, i.e. the same read as `hermes kanban health`.
+  function DispatchHealthStrip(props) {
+    const { t } = useI18n();
+    const health = props.health;
+    if (!health || health.state !== "starved") return null;
+    const byReason = health.suppressed_by_reason || {};
+    const reasons = Object.keys(byReason).map(function (key) {
+      return key + "=" + byReason[key];
+    }).join(", ");
+    return h("div", {
+      className: cn("hermes-kanban-health", "hermes-kanban-health--starved"),
+      role: "status",
+      "data-kanban-dispatch-health": health.state,
+    },
+      h("span", { className: "hermes-kanban-health-icon" }, "!!"),
+      h("span", { className: "hermes-kanban-health-text" },
+        tx(t, "dispatcherStarved",
+          "Dispatcher stalled: {n} spawnable ready task(s) held back with nothing running",
+          { n: health.spawnable }),
+        h("span", { className: "hermes-kanban-health-detail" },
+          "ready_total=" + health.ready_total
+          + "  spawnable=" + health.spawnable
+          + "  suppressed=" + health.suppressed
+          + (reasons ? "  " + reasons : "")),
+      ),
+    );
+  }
 
   function BoardToolbar(props) {
     const { t } = useI18n();

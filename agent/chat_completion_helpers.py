@@ -1303,21 +1303,19 @@ def interruptible_api_call(agent, api_kwargs: dict):
     return _NonStreamRequest(agent, api_kwargs).run()
 
 
-def _consume_ephemeral_reasoning_off(agent) -> bool:
-    """Consume the one-shot "answer without thinking" continuation flag.
+def _ephemeral_reasoning_off_requested(agent) -> bool:
+    """The one-shot "answer without thinking" continuation flag.
 
     Set by the length-continuation path when a request returned reasoning but NO
     visible content (thinking ate the output cap); continuation turns never replay
     prior reasoning, so thinking ON would re-burn the budget. When True the caller
     overrides the wire reasoning_config with ``{"enabled": False, "effort": "none"}``
-    for exactly the next call. Prompt-cache cost is bounded to ONE cold prefix write
+    for the next call. Prompt-cache cost is bounded to ONE cold prefix write
     on config-sensitive providers (Anthropic, OpenAI) — far cheaper than four futile
-    full-budget continuations.
+    full-budget continuations. It stays set until a response to that call is accepted
+    (``check_api_response``): a retry of the same call after a 429/5xx must carry it too.
     """
-    consumed = bool(getattr(agent, "_ephemeral_reasoning_off", False))
-    if consumed:
-        agent._ephemeral_reasoning_off = False
-    return consumed
+    return bool(getattr(agent, "_ephemeral_reasoning_off", False))
 
 
 def _reasoning_config_for_wire(agent):
@@ -1330,7 +1328,9 @@ def _reasoning_config_for_wire(agent):
     applies its own default.
     """
     cfg = agent.reasoning_config
-    ephemeral_off = _consume_ephemeral_reasoning_off(agent)
+    ephemeral_off = _ephemeral_reasoning_off_requested(agent)
+    if getattr(agent, "_reasoning_effort_rejected", False) or getattr(agent, "_reasoning_disable_rejected", False):
+        agent._ephemeral_reasoning_off = False  # these routes drop every disable for the session
     if getattr(agent, "_reasoning_effort_rejected", False):
         # The route rejected the configured reasoning LEVEL itself (#100536: ``reasoning.effort:
         # max`` on an enabled config). Omit the reasoning fields for the rest of the session —
@@ -1397,17 +1397,15 @@ def _alias_tool_search_bridge_for_xai(agent, transport, tools_for_api):
     return tools_for_api
 
 
-def _consume_ephemeral_max_output(agent):
-    """Pop the one-shot ephemeral output cap; whichever path builds the request consumes it."""
-    ephemeral_out = getattr(agent, "_ephemeral_max_output_tokens", None)
-    if ephemeral_out is not None:
-        agent._ephemeral_max_output_tokens = None
-    return ephemeral_out
+def _ephemeral_max_output(agent):
+    """The one-shot output cap (continuation boost, clamp). Read by whichever path builds the request and
+    cleared once a response to it is accepted (``check_api_response``), so a retried build carries it again."""
+    return getattr(agent, "_ephemeral_max_output_tokens", None)
 
 
 def _build_anthropic_kwargs(agent, api_messages, tools_for_api, reasoning_config, request_overrides):
     ctx_len = getattr(agent, "context_compressor", None)
-    ephemeral_out = _consume_ephemeral_max_output(agent)
+    ephemeral_out = _ephemeral_max_output(agent)
     anthropic_kwargs = agent._get_transport().build_kwargs(model=agent.model,
         messages=agent._prepare_anthropic_messages_for_api(api_messages), tools=tools_for_api,
         max_tokens=ephemeral_out if ephemeral_out is not None else agent.max_tokens,
@@ -1449,7 +1447,7 @@ def _build_codex_kwargs(agent, api_messages, tools_for_api, reasoning_config, re
             tools_for_api, _ = strip_slash_enum(tools_for_api)
         except Exception as exc:
             logger.warning("%s⚠️ Failed to sanitize tool schemas for xAI: %s", getattr(agent, "log_prefix", ""), exc)
-    ephemeral_out = _consume_ephemeral_max_output(agent)
+    ephemeral_out = _ephemeral_max_output(agent)
     return agent._get_transport().build_kwargs(model=agent.model,
         messages=agent._prepare_messages_for_non_vision_model(api_messages), tools=tools_for_api,
         reasoning_config=reasoning_config, session_id=getattr(agent, "session_id", None),
@@ -1491,7 +1489,7 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
         from providers import get_provider_profile
         _profile = get_provider_profile(agent.provider)
 
-    _ephemeral_out = _consume_ephemeral_max_output(agent)
+    _ephemeral_out = _ephemeral_max_output(agent)
     # Strip image parts for non-vision models on BOTH paths (registered
     # providers with profiles used to bypass it).
     _common = dict(model=agent.model, messages=agent._prepare_messages_for_non_vision_model(api_messages),

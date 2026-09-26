@@ -50,9 +50,10 @@ class TestReasoningOffOneShotOverride:
         cfg = _reasoning_config_for_wire(agent)
         assert cfg["enabled"] is False
         assert cfg["effort"] == "none"
-        assert agent._ephemeral_reasoning_off is False, (
-            "The one-shot override must be consumed by the first call."
+        assert agent._ephemeral_reasoning_off is True, (
+            "The override must survive the build: a retry of the same call sends it again."
         )
+        agent._ephemeral_reasoning_off = False  # what check_api_response does once a response is accepted
 
         # Subsequent calls keep the user's own reasoning config.
         assert _reasoning_config_for_wire(agent) == {

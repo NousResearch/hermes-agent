@@ -87,6 +87,23 @@ class TestCliSkinPromptIntegration:
         assert get_active_skin().name == "ares"
         assert cli._app.style is not None
 
+    def test_handle_skin_command_reaches_a_listed_user_skin_in_any_case(self, tmp_path, monkeypatch):
+        """A user skin keeps its own capitalisation; `/skin` must select the name it lists."""
+        from hermes_cli.skin_engine import list_skins
+
+        (tmp_path / "skins").mkdir()
+        (tmp_path / "skins" / "MyTheme.yaml").write_text(
+            'name: MyTheme\ncolors:\n  banner_title: "#FF00FF"\n', encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        listed = next(s["name"] for s in list_skins() if s["source"] == "user")
+        cli = _make_cli_stub()
+
+        for typed in (listed, listed.lower()):
+            set_active_skin("default")
+            with patch("cli.save_config_value", return_value=True):
+                cli._handle_skin_command(f"/skin {typed}")
+            assert get_active_skin().name == listed, typed
+
 
 class TestCompactBannerSkinIntegration:
 

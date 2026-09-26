@@ -1510,11 +1510,32 @@ def check_respawn_guard(
     passes own those.
     """
     row = conn.execute(
-        "SELECT last_failure_error FROM tasks WHERE id = ?",
+        "SELECT * FROM tasks WHERE id = ?",
         (task_id,),
     ).fetchone()
     if row is None:
         return None
+
+    if _kb._kanban_observer_consumed("pre_kanban_dispatch"):
+        try:
+            from hermes_cli.lifecycle import invoke_hook
+            task = _kb.Task.from_row(row)
+            for decision in invoke_hook(
+                "pre_kanban_dispatch", task_id=task_id, board=_kb.get_current_board(),
+                assignee=task.assignee, lane=lane, task=task,
+            ):
+                if not isinstance(decision, dict):
+                    _kb._log.debug("pre kanban dispatch hook returned a non-dict directive")
+                    continue
+                if decision.get("action") != "hold":
+                    _kb._log.debug("pre kanban dispatch hook returned unknown action: %r", decision.get("action"))
+                    continue
+                reason = decision.get("reason")
+                if isinstance(reason, str) and reason.strip():
+                    return reason.strip()
+                _kb._log.debug("pre kanban dispatch hook hold requires a reason")
+        except Exception as exc:
+            _kb._log.debug("pre kanban dispatch hook failed: %s", exc)
 
     now = int(time.time())
 

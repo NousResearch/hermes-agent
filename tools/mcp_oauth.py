@@ -409,13 +409,22 @@ def _model_json(model: Any) -> dict:
     return model.model_dump(mode="json", exclude_none=True)
 
 
+def _resource_key(url: str | None) -> str | None:
+    """The MCP server URL as recorded next to its OAuth state (trailing slash insignificant)."""
+    return str(url).strip().rstrip("/") or None if url else None
+
+
 class HermesTokenStorage:
     """Persist OAuth state as ``HERMES_HOME/mcp-tokens/<server_name>`` + ``.json`` (tokens),
     ``.client.json`` (client info), ``.meta.json`` (server metadata), ``.cimd-off`` (CIMD refused)."""
 
-    def __init__(self, server_name: str, *, hermes_home: str | Path | None = None):
+    def __init__(self, server_name: str, *, hermes_home: str | Path | None = None, server_url: str | None = None):
         self._server_name = _safe_filename(server_name)
         self._hermes_home = Path(hermes_home) if hermes_home is not None else None
+        # Resource binding: state is filed by server NAME, so a name re-pointed at another URL would
+        # otherwise hand the old server's tokens and client registration to the new one. The token
+        # file records ``hermes_resource``; a storage opened for a different URL sees no state.
+        self._server_url = _resource_key(server_url)
         # Issuer binding: ``loaded_issuer`` is what the token file on disk recorded (the authorization
         # server that granted the stored refresh token); ``_bound_issuer`` is stamped onto the next
         # ``set_tokens`` write. See ``tools.mcp_oauth_provider.enforce_refresh_token_issuer``.
@@ -479,12 +488,28 @@ class HermesTokenStorage:
                 data["expires_in"] = int(max(implied_expiry - time.time(), 0))
 
     def _fixup_loaded_tokens(self, data: dict) -> None:
-        # ``hermes_issuer`` is Hermes bookkeeping, not an SDK OAuthToken field: pop before validation.
+        # ``hermes_issuer`` / ``hermes_resource`` are Hermes bookkeeping, not SDK OAuthToken fields.
         self.loaded_issuer = data.pop("hermes_issuer", None)
+        data.pop("hermes_resource", None)
         self._rebase_expires_in(data)
+
+    def _state_is_for_another_server(self) -> bool:
+        """True when the stored state was granted for a different URL than this storage serves.
+        A file predating the record is adopted (stamped on the next ``set_tokens``)."""
+        if self._server_url is None:
+            return False
+        data = _read_json(self._tokens_path())
+        recorded = _resource_key(data.get("hermes_resource")) if isinstance(data, dict) else None
+        if recorded is None or recorded == self._server_url:
+            return False
+        logger.info("MCP OAuth: stored state for %s was granted for %s, not %s; re-authorization required",
+                    self._server_name, recorded, self._server_url)
+        return True
 
     async def get_tokens(self) -> "OAuthToken | None":
         self.loaded_issuer = None
+        if self._state_is_for_another_server():
+            return None
         return self._load_model(self._tokens_path(), "OAuthToken", "tokens", self._fixup_loaded_tokens)
 
     async def set_tokens(self, tokens: "OAuthToken") -> None:
@@ -496,6 +521,8 @@ class HermesTokenStorage:
         if self._bound_issuer:  # which authorization server granted these tokens (never sent on the wire)
             payload["hermes_issuer"] = self._bound_issuer
             self.loaded_issuer = self._bound_issuer
+        if self._server_url:  # which MCP server these tokens are for (never sent on the wire)
+            payload["hermes_resource"] = self._server_url
         _write_json(self._tokens_path(), payload)
         logger.debug("OAuth tokens saved for %s", self._server_name)
 
@@ -546,6 +573,8 @@ class HermesTokenStorage:
         return False
 
     async def get_client_info(self) -> "OAuthClientInformationFull | None":
+        if self._state_is_for_another_server():
+            return None
         coerced: list[bool] = []
         info = self._load_model(
             self._client_info_path(), "OAuthClientInformationFull", "client info",
@@ -567,6 +596,8 @@ class HermesTokenStorage:
         logger.debug("OAuth metadata saved for %s", self._server_name)
 
     def load_oauth_metadata(self) -> "OAuthMetadata | None":
+        if self._state_is_for_another_server():
+            return None
         return self._load_model(self._meta_path(), "OAuthMetadata", "OAuth metadata")
 
     def mark_cimd_rejected(self) -> None:

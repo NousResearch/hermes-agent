@@ -610,7 +610,7 @@ def prepare_oauth_config(server_name: str, server_url: str, oauth_config: dict |
     from tools import mcp_oauth as mo
     cfg = dict(oauth_config or {})
     mo.apply_oauth_provider_defaults(cfg, server_name=server_name, server_url=server_url)
-    return cfg, mo.HermesTokenStorage(server_name)
+    return cfg, mo.HermesTokenStorage(server_name, server_url=server_url)
 
 
 def build_provider_kwargs(cfg: dict, storage: "HermesTokenStorage", *, ssh_proxy_hint: bool) -> dict[str, Any]:

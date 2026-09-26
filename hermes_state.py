@@ -39,7 +39,7 @@ from hermes_state_health import (
 from hermes_state_errors import (
     _DELETED_WAL_GENERATION_MSG, _DISK_IO_ERROR_MARKER, _STATE_DB_CORRUPT_MSG, _STATE_DB_GENERATION_KEY,
     _STATE_DB_REPLACED_MSG, DeletedWalGenerationError, SessionCompressionInProgressError, StateDbCorruptError,
-    StateDbReplacedError, _is_no_more_rows, classify_persistence_error, is_malformed_db_error,
+    StateDbReplacedError, TranscriptInvariantError, _is_no_more_rows, classify_persistence_error, is_malformed_db_error,
     is_malformed_schema_error, is_sqlite_lock_error,
 )
 from hermes_state_guard import (

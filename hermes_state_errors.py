@@ -172,6 +172,16 @@ class SessionTurnLeaseLostError(RuntimeError):
     be persisting a newer turn, and landing this one would interleave a stale reply."""
 
 
+class TranscriptInvariantError(ValueError):
+    """A transcript rewrite would leave two ACTIVE result rows for one tool call.
+    Raised inside the write transaction (so it rolls back) by ``archive_and_compact``:
+    the live set it publishes must hold at most one ``role='tool'`` row per
+    ``(session_id, tool_call_id)``, or the next resume replays the same tool exchange
+    twice. Keys ALREADY duplicated in the pre-compaction live set (legacy rows,
+    providers that reuse index-style ids such as ``terminal:0``) are tolerated: the
+    invariant is that a compaction never INTRODUCES a duplicate."""
+
+
 class StateDbReplacedError(RuntimeError):
     """The state.db path no longer names the file this SessionDB opened
     (out-of-band cp/mv/restore). In-place FTS repair and fail-open trigger

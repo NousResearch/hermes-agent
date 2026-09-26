@@ -851,7 +851,7 @@ class SessionMessagesMixin:
         index the clones naturally), and the originals are archived. NOTE: re-sequencing assigns the tail
         rows fresh ids; consumers that reference durable row ids re-resolve by content (see 3e8ab0610).
         """
-        from hermes_state import SessionCompressionInProgressError
+        from hermes_state import SessionCompressionInProgressError, TranscriptInvariantError
         def _do(conn):
             if lock_holder is not None:
                 lock_row = conn.execute(_COMPRESSION_LOCK_ROW_SQL, (session_id,)).fetchone()
@@ -897,7 +897,28 @@ class SessionMessagesMixin:
             conn.execute(f"{_SET_COUNTERS_SQL}{', model_config = ?' if patch else ''} WHERE id = ?",
                 (inserted, tool_calls_total, *((patched_model_config,) if patch else ()), session_id))
             return inserted
-        return self._execute_write(_do)
+
+        def _do_checked(conn):
+            # One ACTIVE result per tool call: remember keys already duplicated in the live set,
+            # so only a duplicate this compaction INTRODUCES (on either the proved-coverage or the
+            # watermark path) fails the txn and rolls it back.
+            preexisting = self._active_duplicate_tool_result_ids(conn, session_id)
+            result = _do(conn)
+            introduced = self._active_duplicate_tool_result_ids(conn, session_id) - preexisting
+            if introduced:
+                raise TranscriptInvariantError(
+                    f"archive_and_compact({session_id!r}) would publish {len(introduced)} tool_call_id(s) "
+                    f"with more than one active result row (e.g. {sorted(introduced)[:3]}); rolled back")
+            return result
+        return self._execute_write(_do_checked)
+
+    @staticmethod
+    def _active_duplicate_tool_result_ids(conn, session_id: str) -> set:
+        """tool_call_ids with more than one ACTIVE ``role='tool'`` row in *session_id*."""
+        return {row[0] for row in conn.execute(
+            "SELECT tool_call_id FROM messages WHERE session_id = ? AND active = 1 AND role = 'tool' "
+            "AND tool_call_id IS NOT NULL AND tool_call_id != '' "
+            "GROUP BY tool_call_id HAVING COUNT(*) > 1", (session_id,)).fetchall()}
 
     def _message_column_names(self, conn) -> List[str]:
         """Column names of the messages table, cached per-connection era."""

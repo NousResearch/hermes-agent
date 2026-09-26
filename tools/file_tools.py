@@ -28,7 +28,8 @@ from tools.file_operations_common import DEFAULT_READ_LIMIT, count_conflict_bloc
 from tools import file_state
 from agent.redact import _is_secret_file_arg, redact_sensitive_text
 from tools.file_tools_paths import (
-    _expand_tilde, _path_resolution_warning, _resolve_base_dir, _resolve_path_for_task)
+    _DOUBLED_PATH_MARKER, _cwd_echo_warning, _expand_tilde, _path_resolution_warning,
+    _resolve_base_dir, _resolve_path_for_task)
 from tools.file_tools_write_guards import (
     _READ_DEDUP_STATUS_MESSAGE, _check_approval_required_write, _check_binary_document_write,
     _check_cross_profile_path, _check_protected_instruction_write, _check_sensitive_path,
@@ -782,13 +783,22 @@ def _write_precheck_error(paths: list[str], content_paths: list[str], task_id: s
 def _edit_warnings(paths: list[str], path_to_resolved: dict, task_id: str) -> list[str]:
     """One pre-edit warning per path, in priority order: cross-agent registry
     (names the sibling subagent) > per-task staleness > workspace divergence
-    (relative path resolving outside the terminal's cwd — the worktree-cwd bug)."""
+    (relative path resolving outside the terminal's cwd — the worktree-cwd bug).
+
+    Exception: a doubled-path resolution (#67185, a cwd-shaped relative input
+    that landed in a replayed tree INSIDE the workspace) means the edit itself
+    is misdirected, so that warning wins over staleness of the wrong file — in
+    the issue's recurring-cron case the doubled target is rewritten by fresh
+    sessions and staleness would otherwise mask the misdirection every run."""
     warnings: list[str] = []
     for p in paths:
         r = path_to_resolved.get(p)
-        w = (file_state.check_stale(task_id, r) if r else None) or _check_file_staleness(p, task_id)
-        if not w and r:
-            w = _path_resolution_warning(p, Path(r), task_id)
+        pw = _path_resolution_warning(p, Path(r), task_id) if r else None
+        if pw and pw.startswith(_DOUBLED_PATH_MARKER):
+            w = pw
+        else:
+            w = ((file_state.check_stale(task_id, r) if r else None)
+                 or _check_file_staleness(p, task_id) or pw)
         if w:
             warnings.append(w)
     return warnings

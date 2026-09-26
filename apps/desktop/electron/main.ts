@@ -728,12 +728,14 @@ if (IS_WSL && !REMOTE_DISPLAY_REASON && fs.existsSync('/dev/dxg')) {
   console.log('[hermes] WSL GPU passthrough (/dev/dxg) detected; enabling GPU acceleration')
 }
 
-// #40077: NVIDIA driver 580+ breaks ANGLE's EGL probing (Invalid visual ID),
+// #40077: NVIDIA driver 580.x breaks ANGLE's EGL probing (Invalid visual ID),
 // killing the GPU process at startup. Route ANGLE through its SwiftShader
 // backend instead — the app then launches and stays up (CPU rendering, slow
-// but stable). Deliberately NOT disableHardwareAcceleration(): on 580.173.02 +
-// Electron 40 that SIGKILLs the renderer (see the closed #40119). Must run
-// before app `ready` — the switch only applies pre-launch. Override with
+// but stable). The window is bounded to [580, 590): newer series launch
+// clean (the #40077 reporter confirmed 615.x) and keep the GPU. Deliberately
+// NOT disableHardwareAcceleration(): on 580.173.02 + Electron 40 that
+// SIGKILLs the renderer (see the closed #40119). Must run before app
+// `ready` — the switch only applies pre-launch. Override with
 // HERMES_DESKTOP_NVIDIA_SWIFTSHADER (1/true → force on, 0/false → never).
 const NVIDIA_EGL_FALLBACK = decideNvidiaEglFallback({
   driverMajor: parseNvidiaDriverMajor(
@@ -755,7 +757,7 @@ if (NVIDIA_EGL_FALLBACK.enable) {
   app.commandLine.appendSwitch('use-angle', 'swiftshader')
   console.log(
     `[hermes] NVIDIA EGL fallback enabled (${NVIDIA_EGL_FALLBACK.reason}); routing ANGLE ` +
-      'through SwiftShader to avoid the NVIDIA 580+ EGL probe crash (#40077). ' +
+      'through SwiftShader to avoid the NVIDIA 580.x EGL probe crash (#40077). ' +
       'HERMES_DESKTOP_NVIDIA_SWIFTSHADER=0 to opt out.'
   )
 }

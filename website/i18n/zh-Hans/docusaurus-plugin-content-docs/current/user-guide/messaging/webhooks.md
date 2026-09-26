@@ -301,7 +301,7 @@ platforms:
 | 投递类型 | 描述 |
 |-------------|-------------|
 | `log` | 将响应记录到 gateway 日志输出。这是默认值，适合测试使用。 |
-| `github_comment` | 通过 `gh` CLI 将响应作为 PR/issue 评论发布。需要 `deliver_extra.repo` 和 `deliver_extra.pr_number`。`gh` CLI 必须安装并在 gateway 主机上完成认证（`gh auth login`）。 |
+| `github_comment` | 通过 `gh` CLI（`gh issue comment`，PR 编号和 issue 编号均可）将响应作为 PR/issue 评论发布。`deliver_extra.repo` 和 `deliver_extra.pr_number` 默认取事件自身的仓库（`repository.full_name`）和 PR 或 issue（`pull_request.number`、`issue.number` 或 `number`）；要评论到别处时再显式设置。`gh` CLI 必须安装并在 gateway 主机上完成认证（`gh auth login`）。 |
 | `telegram` | 将响应路由到 Telegram。使用主频道，或在 `deliver_extra` 中指定 `chat_id`。 |
 | `discord` | 将响应路由到 Discord。使用主频道，或在 `deliver_extra` 中指定 `chat_id`。 |
 | `slack` | 将响应路由到 Slack。使用主频道，或在 `deliver_extra` 中指定 `chat_id`。 |

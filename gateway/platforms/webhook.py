@@ -483,7 +483,7 @@ class WebhookAdapter(BasePlatformAdapter):
         """deliver_only: the rendered prompt IS the message — skip the agent, reuse the same
         auth/rate-limit/idempotency/template pipeline."""
         delivery = {"deliver": route_config.get("deliver", "log"), "payload": payload, "profile": profile,
-                    "deliver_extra": self._render_delivery_extra(route_config.get("deliver_extra", {}), payload),
+                    "deliver_extra": self._route_delivery_extra(route_config, payload),
                     "route": route_name,
                     "mirror": route_config.get("mirror_to_session") is True}
         logger.info("[webhook] direct-deliver event=%s route=%s target=%s msg_len=%d delivery=%s", event_type,
@@ -654,7 +654,7 @@ class WebhookAdapter(BasePlatformAdapter):
         # THIS profile's adapter, home channel and secrets — not the first profile that has the platform.
         self._delivery_info[session_chat_id] = {
             "deliver": route_config.get("deliver", "log"), "profile": profile,
-            "deliver_extra": self._render_delivery_extra(route_config.get("deliver_extra", {}), payload),
+            "deliver_extra": self._route_delivery_extra(route_config, payload),
             "route": route_name,
             "mirror": route_config.get("mirror_to_session") is True}
         self._delivery_info_created[session_chat_id] = now
@@ -784,6 +784,18 @@ class WebhookAdapter(BasePlatformAdapter):
         return {key: self._render_prompt(value, payload, "", "") if isinstance(value, str) else value
                 for key, value in extra.items()}
 
+    def _route_delivery_extra(self, route_config: dict, payload: Any) -> dict:
+        """Rendered ``deliver_extra``; a ``github_comment`` route without ``repo`` / ``pr_number`` targets the
+        event's own PR or issue — `hermes webhook subscribe` and the dashboard cannot set those keys, so their
+        github_comment routes never posted."""
+        extra = self._render_delivery_extra(route_config.get("deliver_extra", {}), payload)
+        if route_config.get("deliver") == "github_comment" and isinstance(payload, dict):
+            repository = payload.get("repository")
+            subject = payload.get("pull_request") or payload.get("issue") or payload
+            extra.setdefault("repo", repository.get("full_name", "") if isinstance(repository, dict) else "")
+            extra.setdefault("pr_number", subject.get("number", "") if isinstance(subject, dict) else "")
+        return extra
+
     # --- Response delivery ---
 
     async def _direct_deliver(self, content: str, delivery: dict) -> SendResult:
@@ -820,13 +832,14 @@ class WebhookAdapter(BasePlatformAdapter):
             # (Pattern A, #91912 class). asyncio.to_thread keeps the loop serving while the subprocess runs;
             # the worker thread is bounded by the subprocess timeout below.
             result = await asyncio.to_thread(
-                subprocess.run, ["gh", "pr", "comment", str(pr_int), "--repo", repo, "--body", content],
+                # `gh issue comment` resolves PR and issue numbers alike; `gh pr comment` fails on an issue.
+                subprocess.run, ["gh", "issue", "comment", str(pr_int), "--repo", repo, "--body", content],
                 capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30,
                 env=self._github_env(delivery.get("profile")))
             if result.returncode == 0:
                 logger.info("[webhook] Posted comment on %s#%s", repo, pr_number)
                 return SendResult(success=True)
-            logger.error("[webhook] gh pr comment failed: %s", result.stderr)
+            logger.error("[webhook] gh issue comment failed: %s", result.stderr)
             return SendResult(success=False, error=result.stderr)
         except FileNotFoundError:
             logger.error("[webhook] 'gh' CLI not found — install GitHub CLI for github_comment delivery")

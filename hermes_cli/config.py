@@ -3425,6 +3425,42 @@ def _legacy_gateway_platforms_key(requested_key: str) -> Optional[str]:
     return None
 
 
+def _wrap_platform_home_channel(key: str, value: Any) -> tuple[Any, bool]:
+    """Wrap a bare chat id for ``platforms.<name>.home_channel`` into the mapping
+    ``HomeChannel.from_dict`` reads. The gateway drops a non-mapping ``home_channel``
+    silently, so an unwrapped write reports success while the runtime never sees it
+    (#33141). Explicit mappings pass through untouched."""
+    segs = _split_key_path(key)
+    if (
+        len(segs) == 3
+        and segs[0] == "platforms"
+        and segs[2] == "home_channel"
+        and not isinstance(value, (dict, list, bool))
+    ):
+        return {"platform": segs[1], "chat_id": str(value), "name": "Home"}, True
+    return value, False
+
+
+def _redirect_root_home_channel_key(key: str) -> tuple[str, Optional[str]]:
+    """Redirect ``<platform>.home_channel`` to ``platforms.<platform>.home_channel``.
+    The two-segment spelling lands in a root-level ``<platform>:`` block that no reader
+    picks up — ``merge_platform_sections`` never copies a root block while ``home_channel``
+    is a typed key, so the write is another silent dead end of #33141. Only names the
+    gateway recognizes as platforms redirect (a non-platform two-segment key keeps its
+    meaning); the redirect also puts the value on the ``_wrap_platform_home_channel``
+    path. The gateway import is guarded like ``_redirect_platform_display_key``."""
+    segs = _split_key_path(key)
+    if len(segs) != 2 or segs[1] != "home_channel":
+        return key, None
+    try:
+        from gateway.config import Platform
+        Platform(segs[0])
+    except Exception:
+        return key, None
+    canonical = f"platforms.{segs[0]}.home_channel"
+    return canonical, f"  (note: a root-level {segs[0]} block is not read for home_channel — saved as {canonical})"
+
+
 def _exit_if_key_managed(key: str, action: str) -> None:
     """A key pinned by the managed layer cannot be set/unset (the next load would reinstate it):
     hard-reject and name the source. Distinct from ``is_managed()``; env-shaped keys route to the
@@ -3565,8 +3601,11 @@ def set_config_value(key: str, value: str, force: bool = False):
     # runtime reads.
     legacy_key = _legacy_gateway_platforms_key(key)
     key, _redirect_note = _redirect_platform_display_key(key)
+    key, _root_home_channel_note = _redirect_root_home_channel_key(key)
     if _redirect_note:
         print(_redirect_note)
+    if _root_home_channel_note:
+        print(_root_home_channel_note)
     is_known, suggestion = _validate_config_key(key)
     # DEFAULT_CONFIG is an incomplete schema: runtime-read settings may deliberately have no
     # seeded default. Refuse only the positive wrong-prefix case from #112003; other unknown
@@ -3578,6 +3617,9 @@ def set_config_value(key: str, value: str, force: bool = False):
     config_path = get_config_path()
     user_config = require_readable_config_before_write(config_path)
     value = _coerce_config_set_value(key, value)
+    value, _home_channel_wrapped = _wrap_platform_home_channel(key, value)
+    if _home_channel_wrapped:
+        print("  (note: home_channel is a mapping — bare chat id saved as {platform, chat_id, name})")
     # A scalar ``model`` shorthand must become a dict before writing sub-keys, or _set_nested
     # replaces it with an empty dict and the model id is lost.
     _model_val = user_config.get("model")

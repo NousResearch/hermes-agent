@@ -274,10 +274,17 @@ def _cmd_adopt(args) -> int:
         print("curator: name a skill to adopt, or pass --all-unmanaged")
         return 1
     if getattr(args, "dry_run", False):
-        print(f"curator: would adopt {len(names)} skill(s) (dry run):")
+        eligible = []
         for n in names:
+            refusal = skill_usage.adoption_refusal(n)
+            if refusal is not None:
+                print(f"curator: {refusal}")
+            else:
+                eligible.append(n)
+        print(f"curator: would adopt {len(eligible)} skill(s) (dry run):")
+        for n in eligible:
             print(f"  + {n}")
-        return 0
+        return 1 if len(eligible) != len(names) else 0
     # Bulk adoption is a lifecycle change (adopted skills become archivable): confirm.
     if adopt_all and not getattr(args, "yes", False):
         print(f"curator: adopt {len(names)} unmanaged skill(s) into curator management?")

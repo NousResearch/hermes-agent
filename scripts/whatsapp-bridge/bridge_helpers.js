@@ -22,6 +22,11 @@ export function normalizeWhatsAppId(value) {
   return String(value).replace(/:\d+(?=@)/, '').replace(/:\d+$/, '');
 }
 
+export function normalizePresenceState(value) {
+  const state = String(value || '').trim().toLowerCase();
+  return state === 'composing' || state === 'paused' ? state : null;
+}
+
 function unwrapMessageEnvelopes(content) {
   let cur = content;
   // Envelopes nest (ephemeral wrapping viewOnce wrapping the payload); peel

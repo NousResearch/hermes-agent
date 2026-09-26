@@ -12,6 +12,8 @@
  *   POST /send-media     - Send media natively { chatId, filePath, mediaType?, caption?, fileName?, mentions? }
  *   POST /send-location  - Send location pin { chatId, latitude, longitude, name?, address? }
  *   POST /typing         - Send typing indicator { chatId }
+ *   POST /presence       - Set composing/paused presence { chatId, state }
+ *   POST /read           - Mark accepted inbound message read { key }
  *   GET  /chat/:id       - Get chat info
  *   GET  /health         - Health check
  *
@@ -47,6 +49,7 @@ import {
   inboundReadReceiptKeys,
   inferMediaType,
   mediaPayloadForFile,
+  normalizePresenceState,
   normalizeWhatsAppId,
   pollCreationMessageFromPayload,
   pollUpdateForAggregation,
@@ -1066,6 +1069,27 @@ app.post('/typing', async (req, res) => {
     res.json({ success: true });
   } catch (err) {
     res.json({ success: false });
+  }
+});
+
+// Explicit composing/paused state for gateways that keep typing active while
+// an asynchronous job runs and clear it when the response is ready.
+app.post('/presence', async (req, res) => {
+  if (!sock || connectionState !== 'connected') {
+    return res.status(503).json({ error: 'Not connected' });
+  }
+
+  const { chatId } = req.body;
+  const state = normalizePresenceState(req.body?.state);
+  if (!chatId) return res.status(400).json({ error: 'chatId required' });
+  if (!state) return res.status(400).json({ error: 'state must be composing or paused' });
+
+  try {
+    await sock.sendPresenceUpdate(state, chatId);
+    return res.json({ success: true });
+  } catch (err) {
+    console.warn('[bridge] failed to update presence:', err.message);
+    return res.status(500).json({ error: 'Failed to update presence' });
   }
 });
 

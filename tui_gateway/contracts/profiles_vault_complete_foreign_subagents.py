@@ -612,6 +612,7 @@ class SubagentSnapshot(Result):
     tool_count: int | None = None
     last_tool: str | None = None
     accepting_steer: bool | None = None
+    controls_available: bool
 
 
 class SubagentListResult(Result):

@@ -51,6 +51,30 @@ def _parse_model_config(raw: Any) -> Dict[str, Any]:
     return dict(raw) if isinstance(raw, dict) else {}
 
 
+def _gateway_main_session_key(session_key: Optional[str]) -> bool:
+    return session_key is not None and session_key != ""
+
+
+def _strip_delegate_from_gateway_config(
+    config: Optional[Dict[str, Any]],
+    session_key: Optional[str],
+    *,
+    session_id: str,
+    context: str,
+) -> Optional[Dict[str, Any]]:
+    """Remove ``_delegate_from`` from gateway main rows (``session_key`` set, #109073)."""
+    if not config or not _gateway_main_session_key(session_key) or "_delegate_from" not in config:
+        return config if config else None
+    stripped = {k: v for k, v in config.items() if k != "_delegate_from"}
+    logger.warning(
+        "Stripped _delegate_from from gateway session %s (session_key=%r) at %s",
+        session_id,
+        session_key,
+        context,
+    )
+    return stripped if stripped else None
+
+
 def _cwd_prefix_clause(cwd_prefix: str) -> Tuple[str, List[str]]:
     prefix = cwd_prefix.rstrip("/\\") or cwd_prefix
     # ``_``/``%`` are LIKE wildcards but ordinary path characters: unescaped, a
@@ -333,6 +357,9 @@ class SessionSessionsMixin:
         """
         if not (profile_name or "").strip():
             profile_name = self._own_profile_name()
+        model_config = _strip_delegate_from_gateway_config(  # type: ignore[assignment]
+            model_config, session_key, session_id=session_id, context="insert",
+        )
         def _do(conn):
             system_prompt_hash = self._store_system_prompt(conn, system_prompt)
             conn.execute(
@@ -646,10 +673,24 @@ class SessionSessionsMixin:
     ) -> None:
         """Update model_config and (COALESCE) optionally model."""
         self.flush_token_counts()  # barrier against queued token deltas — see update_session_model
-        self._write_sql(
-            "UPDATE sessions SET model_config = ?, model = COALESCE(?, model) WHERE id = ?",
-            (model_config_json, model, session_id),
-        )
+        def _do(conn):
+            row = conn.execute(
+                "SELECT session_key FROM sessions WHERE id = ?", (session_id,),
+            ).fetchone()
+            if row is None:
+                return
+            config = _strip_delegate_from_gateway_config(
+                _parse_model_config(model_config_json),
+                row["session_key"],
+                session_id=session_id,
+                context="replace",
+            )
+            stored = json.dumps(config) if config else None
+            conn.execute(
+                "UPDATE sessions SET model_config = ?, model = COALESCE(?, model) WHERE id = ?",
+                (stored, model, session_id),
+            )
+        self._execute_write(_do)
 
     def update_system_prompt(self, session_id: str, system_prompt: Optional[str]) -> None:
         """Store the full assembled system prompt snapshot."""
@@ -725,7 +766,7 @@ class SessionSessionsMixin:
         """SELECT + tolerant-parse + merge ``patch`` into model_config (the one place that keeps
         ``_branched_from``/``_delegate_from`` alive); ``None`` deletes a key. Returns serialized JSON
         (``None`` when empty) or ``_MODEL_CONFIG_ROW_MISSING`` (``on_missing="raise"`` → ValueError)."""
-        row = conn.execute("SELECT model_config FROM sessions WHERE id = ?", (session_id,)).fetchone()
+        row = conn.execute("SELECT model_config, session_key FROM sessions WHERE id = ?", (session_id,)).fetchone()
         if row is None:
             if on_missing == "raise":
                 raise ValueError(f"Session not found: {session_id}")
@@ -736,6 +777,9 @@ class SessionSessionsMixin:
                 config.pop(key, None)
             else:
                 config[key] = value
+        config = _strip_delegate_from_gateway_config(
+            config, row["session_key"], session_id=session_id, context="merge",
+        )
         return json.dumps(config) if config else None
 
     def patch_session_model_config(self, session_id: str, patch: Dict[str, Any]) -> None:

@@ -1252,6 +1252,15 @@ export interface DesktopOauthLoginOptions {
   connectionId?: null | string
   /** Draft label — used to mint the id when `connectionId` is absent. */
   label?: string
+  /**
+   * Draft entry kind — the kind the save will persist. Together with
+   * `authMode` it gates the pre-save cookie jar: only a cookie-auth remote
+   * draft gets its own jar; cloud and token drafts sign in on the legacy
+   * shared jar, which is what they read after the save.
+   */
+  kind?: DesktopConnectionKind
+  /** Draft auth mode ('oauth' | 'token') the save will persist. */
+  authMode?: 'oauth' | 'token'
 }
 
 export interface DesktopOauthLoginResult {

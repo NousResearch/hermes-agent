@@ -237,19 +237,34 @@ export function ConnectionsRegistrySection() {
   // the main process, so a crafted payload can't slip past the UI check).
   const [dupeError, setDupeError] = useState<null | string>(null)
 
+  // The draft's auth mode lives inside the remote-setup state below; the
+  // sign-in identity callback runs at login time (after that state exists),
+  // so it reads the mode through this ref rather than the render-time closure.
+  const remoteAuthModeRef = useRef<'oauth' | 'token'>('token')
+
   const remote = useRemoteSetup({
     host: 'registry',
     enabled: editor?.kind === 'remote' || editor?.kind === 'cloud',
     onNotice: notify,
     // The registry draft can sign in BEFORE it is saved: the login carries
     // the draft's identity so the main process settles the id the save will
-    // reuse and writes the session into that connection's own cookie jar.
-    // Pin the settled id into the draft so Save reuses it.
-    oauthLoginIdentity: () => ({ connectionId: editor?.id ?? null, label: editor?.label ?? '' }),
+    // reuse and writes the session into the jar the saved connection reads.
+    // The kind/authMode gate in oauth-partition.ts decides WHICH jar that is:
+    // a cookie-auth remote draft gets its own; cloud and token drafts share
+    // the legacy jar, exactly what they resolve to after the save. Pin the
+    // settled id into the draft so Save reuses it.
+    oauthLoginIdentity: () => ({
+      connectionId: editor?.id ?? null,
+      label: editor?.label ?? '',
+      kind: editor?.kind,
+      authMode: editor?.kind === 'cloud' ? 'oauth' : remoteAuthModeRef.current
+    }),
     onOAuthLoginSettled: settledId => {
       setEditor(prev => (prev && !prev.id ? { ...prev, id: settledId } : prev))
     }
   })
+
+  remoteAuthModeRef.current = remote.credentials.authMode
 
   const bridge = window.hermesDesktop?.connections
 

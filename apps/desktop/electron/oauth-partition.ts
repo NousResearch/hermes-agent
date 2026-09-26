@@ -75,6 +75,16 @@ export interface ResolveOauthPartitionOptions {
    * is skipped entirely.
    */
   connectionId?: unknown
+  /**
+   * Draft entry shape for the pre-save login: the `kind`/`authMode` the save
+   * will persist. The unknown-id shortcut below grants a private jar only
+   * when the saved entry would earn one (a non-primary cookie-auth remote);
+   * cloud and token drafts keep the legacy shared jar, which is what they
+   * resolve to after the save. Absent/invalid values fail closed to the
+   * legacy jar — never a private one a saved entry would not read.
+   */
+  pendingAuthMode?: unknown
+  pendingKind?: unknown
 }
 
 /**
@@ -156,7 +166,26 @@ export function resolveOauthPartition(requestUrl: unknown, opts: ResolveOauthPar
     const own = (registry.connections as unknown[]).find(c => entryField(c, 'id') === wantedId)
 
     if (!own) {
-      return `${CONNECTION_PARTITION_PREFIX}${sanitizePartitionComponent(wantedId)}`
+      // No persisted entry yet: gate the up-front private jar on the SAME
+      // eligibility the URL-match path applies after the save, so the jar the
+      // login writes is always the jar the saved entry reads. Only a
+      // non-primary cookie-auth remote earns its own partition (module
+      // header): cloud drafts must share the portal jar (the silent per-agent
+      // cloud cascade depends on it) and token drafts never ride cookies, so
+      // both sign in on the legacy jar — which is also what they resolve to
+      // once saved. A draft whose URL IS the v1 remote's lands on legacy for
+      // the same reason a saved v1-migrated entry does. An unknown id cannot
+      // be the registry primary (the primary is, by definition, persisted), so
+      // no primary check is needed here. Missing/invalid pending shape (an
+      // older renderer) fails closed to the legacy jar, never a private one.
+      const pendingKind = typeof opts.pendingKind === 'string' ? opts.pendingKind : ''
+      const pendingAuthMode = typeof opts.pendingAuthMode === 'string' ? opts.pendingAuthMode : ''
+
+      return pendingKind === 'remote' &&
+        pendingAuthMode === 'oauth' &&
+        !(v1Norm && requestNorm === v1Norm)
+        ? `${CONNECTION_PARTITION_PREFIX}${sanitizePartitionComponent(wantedId)}`
+        : LEGACY_OAUTH_PARTITION
     }
 
     const ownBaseNorm = normalizeForMatch(entryField(own, 'url'))

@@ -165,21 +165,39 @@ describe('resolveOauthPartition (#92183 per-connection cookie jars)', () => {
 // must then write to the jar the saved entry will read — an unsaved draft has
 // no on-disk entry to URL-match, so identity (connectionId) decides instead.
 describe('resolveOauthPartition with connectionId (pre-save sign-in identity)', () => {
-  it('sends a pending (unsaved) draft sign-in to its own jar, not the legacy shared one', () => {
+  it('sends a pending (unsaved) cookie-auth remote draft to its own jar, not the legacy shared one', () => {
     const reg = registry('local', [{ id: 'local', kind: 'local' }])
 
-    const got = resolveOauthPartition('https://macmini.lan:9119', { registry: reg, connectionId: 'macmini' })
+    const got = resolveOauthPartition('https://macmini.lan:9119', {
+      registry: reg,
+      connectionId: 'macmini',
+      pendingAuthMode: 'oauth',
+      pendingKind: 'remote'
+    })
 
     expect(got).not.toBe(LEGACY_OAUTH_PARTITION)
     expect(got).toContain('conn-macmini')
     // Deterministic across calls — the saved entry must read the jar the login wrote.
-    expect(resolveOauthPartition('https://macmini.lan:9119', { registry: reg, connectionId: 'macmini' })).toBe(got)
+    expect(
+      resolveOauthPartition('https://macmini.lan:9119', {
+        registry: reg,
+        connectionId: 'macmini',
+        pendingAuthMode: 'oauth',
+        pendingKind: 'remote'
+      })
+    ).toBe(got)
   })
 
   it('keeps a pending same-host sign-in out of an existing gateway’s jar (no #92183 eviction)', () => {
     const reg = registry('local', [{ id: 'local', kind: 'local' }, remote('conn-a', 'https://10.27.27.7:9119')])
 
-    const pending = resolveOauthPartition('https://10.27.27.7:9220', { registry: reg, connectionId: 'conn-b' })
+    const pending = resolveOauthPartition('https://10.27.27.7:9220', {
+      registry: reg,
+      connectionId: 'conn-b',
+      pendingAuthMode: 'oauth',
+      pendingKind: 'remote'
+    })
+
     const existing = resolveOauthPartition('https://10.27.27.7:9119', { registry: reg })
 
     expect(pending).not.toBe(LEGACY_OAUTH_PARTITION)
@@ -241,10 +259,107 @@ describe('resolveOauthPartition with connectionId (pre-save sign-in identity)', 
     }
   })
 
+  // The unknown-id shortcut must grant a private jar ONLY to the draft
+  // shapes that earn one after the save. Before this gate, ANY unsaved id got
+  // its own jar — so a pre-save CLOUD sign-in wrote its portal session into
+  // `persist:hermes-remote-oauth-conn-<id>` while the saved cloud entry kept
+  // reading the shared `persist:hermes-remote-oauth` (the silent per-agent
+  // cascade jar): a successful-looking sign-in that bounces straight back to
+  // signed-out, plus an orphan jar. The invariant below is the contract: for
+  // every draft shape, the jar the login writes equals the jar the saved
+  // entry reads.
+  it('pins the login-jar == saved-read-jar invariant for every draft shape', () => {
+    const draftUrl = 'https://gw-draft.example.com'
+
+    const shapes = [
+      ['remote', 'oauth'],
+      ['remote', 'token'],
+      ['cloud', 'oauth']
+    ] as const
+
+    for (const [kind, authMode] of shapes) {
+      const draftReg = registry('local', [{ id: 'local', kind: 'local' }])
+
+      const loginJar = resolveOauthPartition(draftUrl, {
+        registry: draftReg,
+        connectionId: 'draft-1',
+        pendingAuthMode: authMode,
+        pendingKind: kind
+      })
+
+      const savedReg = registry('local', [
+        { id: 'local', kind: 'local' },
+        kind === 'remote'
+          ? remote('draft-1', draftUrl, { authMode })
+          : { id: 'draft-1', kind, url: draftUrl, authMode }
+      ])
+
+      const readJar = resolveOauthPartition(draftUrl, { registry: savedReg })
+
+      expect(loginJar).toBe(readJar)
+    }
+  })
+
+  it('keeps a pending cloud draft on the legacy shared jar (portal cascade)', () => {
+    const reg = registry('local', [{ id: 'local', kind: 'local' }])
+
+    const got = resolveOauthPartition('https://team.hermes.cloud', {
+      registry: reg,
+      connectionId: 'team-cloud',
+      pendingAuthMode: 'oauth',
+      pendingKind: 'cloud'
+    })
+
+    expect(got).toBe(LEGACY_OAUTH_PARTITION)
+  })
+
+  it('keeps a pending token-auth remote draft on the legacy jar (no cookies)', () => {
+    const reg = registry('local', [{ id: 'local', kind: 'local' }])
+
+    const got = resolveOauthPartition('https://gw-t.example.com', {
+      registry: reg,
+      connectionId: 'tok-draft',
+      pendingAuthMode: 'token',
+      pendingKind: 'remote'
+    })
+
+    expect(got).toBe(LEGACY_OAUTH_PARTITION)
+  })
+
+  it('keeps a pending draft whose URL IS the v1 remote on the legacy jar (migration)', () => {
+    const reg = registry('local', [{ id: 'local', kind: 'local' }])
+
+    const got = resolveOauthPartition('https://gw-a.example.com', {
+      registry: reg,
+      connectionId: 'mig-draft',
+      pendingAuthMode: 'oauth',
+      pendingKind: 'remote',
+      v1RemoteUrl: 'https://gw-a.example.com'
+    })
+
+    expect(got).toBe(LEGACY_OAUTH_PARTITION)
+  })
+
+  it('fails closed for an unknown-id sign-in with no pending shape: legacy jar, never a private one', () => {
+    // A stale renderer can still name an id without the draft shape. The
+    // resolver must never hand such a sign-in a private jar the saved entry
+    // would not read — the legacy jar is the safe pre-PR behavior.
+    const reg = registry('local', [{ id: 'local', kind: 'local' }])
+
+    expect(resolveOauthPartition('https://gw.example.com', { registry: reg, connectionId: 'ghost' })).toBe(
+      LEGACY_OAUTH_PARTITION
+    )
+  })
+
   it('sanitizes hostile pending ids into partition-safe names', () => {
     const reg = registry('local', [{ id: 'local', kind: 'local' }])
 
-    const got = resolveOauthPartition('https://gw.example.com', { registry: reg, connectionId: 'we ird/id:€' })
+    const got = resolveOauthPartition('https://gw.example.com', {
+      registry: reg,
+      connectionId: 'we ird/id:€',
+      pendingAuthMode: 'oauth',
+      pendingKind: 'remote'
+    })
 
     expect(got.startsWith('persist:')).toBe(true)
     expect(got).not.toMatch(/[\s/€]/)

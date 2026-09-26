@@ -599,11 +599,18 @@ class GatewaySessionCommandsMixin:
         _checkpoint_required = _is_truthy(
             ((_load_cfg() or {}).get("compression") or {}).get("checkpoint_required"),
             default=False)
-        tmp_agent = AIAgent(**runtime_kwargs, model=model, max_iterations=4, quiet_mode=True,
-                            skip_memory=not _checkpoint_required, enabled_toolsets=["memory"],
-                            session_id=session_id,
-                            session_db=getattr(self._session_db, "_db", self._session_db))
-        _seed_hygiene_system_prompt(tmp_agent, session_row)
+
+        # Construct OFF the event loop (context-engine load can wait tens of seconds on a
+        # process-global lock; see _hmwa_hygiene_build_agent).
+        def _build():
+            _a = AIAgent(**runtime_kwargs, model=model, max_iterations=4, quiet_mode=True,
+                         skip_memory=not _checkpoint_required, enabled_toolsets=["memory"],
+                         session_id=session_id,
+                         session_db=getattr(self._session_db, "_db", self._session_db))
+            _seed_hygiene_system_prompt(_a, session_row)
+            return _a
+
+        tmp_agent = await asyncio.to_thread(_build)
         # Real platform during construction (context engines bind correctly); afterwards a prompt
         # rebuilt by compression is stamped as the provider-less fallback, stale for the next turn.
         tmp_agent.platform = _GATEWAY_HYGIENE_PLATFORM

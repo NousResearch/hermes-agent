@@ -1274,12 +1274,20 @@ class GatewayTurnMixin:
         _hyg_checkpoint_required = _is_truthy(
             ((_load_cfg() or {}).get("compression") or {}).get("checkpoint_required"), default=False,
         )
-        _hyg_agent = AIAgent(
-            **_hyg_runtime, model=_hyg_model, max_iterations=4, quiet_mode=True,
-            skip_memory=not _hyg_checkpoint_required, enabled_toolsets=["memory"],
-            session_id=session_entry.session_id, session_db=_hyg_session_db,
-        )
-        _seed_hygiene_system_prompt(_hyg_agent, _hyg_session_row)
+
+        # Construct OFF the event loop: AIAgent.__init__ loads the context engine under a
+        # process-global load lock that concurrent worker turns hold for tens of seconds, which
+        # blocked the loop past the Discord heartbeat ACK window (~41 s) and dropped the socket.
+        def _build():
+            _a = AIAgent(
+                **_hyg_runtime, model=_hyg_model, max_iterations=4, quiet_mode=True,
+                skip_memory=not _hyg_checkpoint_required, enabled_toolsets=["memory"],
+                session_id=session_entry.session_id, session_db=_hyg_session_db,
+            )
+            _seed_hygiene_system_prompt(_a, _hyg_session_row)
+            return _a
+
+        _hyg_agent = await asyncio.to_thread(_build)
         # A rebuilt (not retained) prompt is deliberately stale for every real gateway surface.
         _hyg_agent.platform = _GATEWAY_HYGIENE_PLATFORM
         return _hyg_agent, _hyg_session_db

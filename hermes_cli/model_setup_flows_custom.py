@@ -334,9 +334,11 @@ def _model_flow_named_custom(config, provider_info):
     saved_model = provider_info.get("model", "")
     provider_key = (provider_info.get("provider_key") or "").strip()
 
-    # Resolve key from env var if api_key not set directly
+    # Resolve key_env through the profile secret scope (fresh .env; never another
+    # profile's process env under multiplexing), like the runtime does (#67935).
     if not api_key and key_env:
-        api_key = os.environ.get(key_env, "")
+        from agent.secret_scope import get_secret_str
+        api_key = get_secret_str(key_env, "")
     # Only configured credentials may be persisted, never a short-lived probe token.
     config_api_key = _custom_provider_api_key_config_value(provider_info, api_key)
 

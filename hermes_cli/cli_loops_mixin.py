@@ -102,10 +102,12 @@ class CLILoopsMixin:
             ctx_len = None
             if agent and hasattr(agent, "context_compressor"):
                 ctx_len = agent.context_compressor.context_length
+            from agent.context_pin import is_context_pinned
             build_welcome_banner(
                 console=cc, model=self.model, cwd=os.getenv("TERMINAL_CWD", os.getcwd()),
                 tools=tools, enabled_toolsets=self.enabled_toolsets, session_id=self.session_id,
-                context_length=ctx_len, provider=self.provider)
+                context_length=ctx_len, provider=self.provider,
+                context_pinned=is_context_pinned(ctx_len, getattr(agent, "_config_context_length", None)))
         _cprint(_FRESH_START)
         self._print_random_tip()
 

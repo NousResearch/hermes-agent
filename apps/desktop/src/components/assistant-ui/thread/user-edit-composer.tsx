@@ -16,6 +16,7 @@ import {
 import { ComposerDirectiveActions } from '@/app/chat/composer/directive-actions'
 import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from '@/app/chat/composer/drop-affordance'
 import {
+  ackComposerInsert,
   type ComposerInsertMode,
   focusComposerInput,
   markActiveComposer,
@@ -73,11 +74,13 @@ import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
 import { Loader2Icon } from '@/lib/icons'
+import { isMacPlatform } from '@/lib/platform'
 import { cn } from '@/lib/utils'
 import type { ComposerAttachment } from '@/store/composer'
 import { notifyError } from '@/store/notifications'
 import { $terminalBackend } from '@/store/session'
 import { isSessionRemote } from '@/store/session-states'
+import { useForcedTextDirection } from '@/store/text-direction'
 import { notifyThreadEditClose } from '@/store/thread-scroll'
 
 interface UserEditComposerProps {
@@ -91,6 +94,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
   const copy = t.assistant.thread
   const aui = useAui()
   const draft = useAuiState(s => s.composer.text)
+  const textDirection = useForcedTextDirection()
   const rootRef = useRef<HTMLDivElement | null>(null)
   const editorRef = useRef<HTMLDivElement | null>(null)
   // Capture the original draft immediately before the first edit. The runtime
@@ -185,11 +189,11 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
   }, [])
 
   const appendExternalText = useCallback(
-    (text: string, mode: ComposerInsertMode) => {
+    (text: string, mode: ComposerInsertMode): boolean => {
       const value = text.trim()
 
       if (!value) {
-        return
+        return false
       }
 
       rememberInitialDraft()
@@ -208,6 +212,8 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
       }
 
       setFocusRequestId(id => id + 1)
+
+      return true
     },
     [aui, rememberInitialDraft]
   )
@@ -245,9 +251,11 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
       }
     })
 
-    const offInsert = onComposerInsertRequest(({ mode, target, text }) => {
+    const offInsert = onComposerInsertRequest(({ mode, target, text, token }) => {
       if (target === 'edit') {
-        appendExternalText(text, mode)
+        // Tokened inserts come from the plugin SDK: acknowledge whether the
+        // text landed instead of reporting success unconditionally.
+        ackComposerInsert(token, appendExternalText(text, mode))
       }
     })
 
@@ -528,6 +536,11 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
 
   const handleDrop = (event: ReactDragEvent<HTMLElement>) => {
     if (!dragHasAttachments(event.dataTransfer, HERMES_PATHS_MIME)) {
+      // A plain text drag within the editor mutates the DOM without a
+      // React-visible beforeinput (insertFromDrop), so the undo snapshot has
+      // to be banked here — before Chromium applies the move.
+      recordUndoPoint()
+
       return
     }
 
@@ -596,6 +609,15 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
     }
 
     recordUndoPoint({ coalesce: inputType === 'insertText' || inputType === 'deleteContentBackward' })
+  }
+
+  // Cut never reaches the handler above: React's onBeforeInput is a
+  // keypress/textInput polyfill and does not observe the native
+  // `beforeinput` event, so Chromium's deleteByCut input type is invisible to
+  // it. The native `cut` clipboard event still fires before the DOM mutation,
+  // which is where the pre-edit snapshot has to be banked or ⌘Z skips the cut.
+  const handleCut = () => {
+    recordUndoPoint()
   }
 
   const handlePaste = (event: ClipboardEvent<HTMLDivElement>) => {
@@ -844,7 +866,8 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
             <div
               aria-label={copy.editMessage}
               autoCapitalize="off"
-              autoCorrect="off"
+              // Match the main composer: allow macOS replacements, not spellcheck.
+              autoCorrect={isMacPlatform() ? 'on' : 'off'}
               className={cn(
                 'ui-prompt-input-editor__input max-h-48 w-full resize-none overflow-y-auto bg-transparent p-0 pr-7 text-[length:var(--conversation-text-font-size)] text-foreground/95 outline-none',
                 '**:data-ref-text:cursor-default',
@@ -853,6 +876,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
               contentEditable
               data-placeholder={copy.editMessage}
               data-slot={RICH_INPUT_SLOT}
+              dir={textDirection}
               onBeforeInput={handleBeforeInput}
               onBlur={() => scheduleTimeout(closeTrigger, 80)}
               onCompositionEnd={event => {
@@ -863,6 +887,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
                 composingRef.current = true
                 beginComposerComposition(event.currentTarget)
               }}
+              onCut={handleCut}
               onDragOver={handleDragOver}
               onDrop={handleDrop}
               onFocus={() => markActiveComposer('edit')}
@@ -921,7 +946,6 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
               // the edit silently never sends. The restore button guards the
               // same way.
               onPointerDown={event => event.preventDefault()}
-              title={copy.sendEdited}
               type="button"
             >
               {submitting ? StopGlyph : <Codicon name="arrow-up" size={USER_ACTION_ICON_SIZE} />}

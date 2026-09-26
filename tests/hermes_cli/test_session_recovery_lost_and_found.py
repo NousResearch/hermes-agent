@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import shutil
 import sqlite3
+import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -19,6 +21,7 @@ from hermes_cli import session_recovery
 from hermes_cli import session_schema_history
 from hermes_cli.session_lost_and_found import (
     STUB_TITLE_PREFIX,
+    _cli_recover_attempts,
     classify_lost_and_found_row,
     map_lost_and_found_rows,
     rebuild_fts_indexes,
@@ -1175,3 +1178,43 @@ def test_recovery_lane_refuses_to_verify_when_rows_matched_no_layout(
     assert report["lost_and_found"]["unrecognized_layout_rows"] == 2
     assert report["verified"] is False
     assert any("matched no known physical column layout" in e for e in report["verification"]["errors"])
+
+
+# ── .recover stderr pipe must be drained while the child runs ──────────────
+
+
+@pytest.mark.platforms("posix")  # stub sqlite3 is a /bin/sh script
+def test_recover_attempts_survive_dump_stderr_beyond_pipe_buffer(tmp_path: Path) -> None:
+    """A heavily damaged source makes ``.recover`` emit per-page diagnostics on
+    stderr. Past the OS pipe buffer (~64KB) an undrained stderr blocks the dump
+    child, its stdout never reaches EOF, and ``load.communicate()`` burns the
+    whole salvage timeout instead of finishing in milliseconds."""
+    stub = tmp_path / "sqlite3"
+    stub.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "-readonly" ]; then\n'
+        "  i=0\n"
+        "  while [ $i -lt 3000 ]; do\n"
+        '    echo "lost and found page $i: orphan btree cell, unable to reconstruct row" >&2\n'
+        "    i=$((i+1))\n"
+        "  done\n"
+        '  echo "Error: near line 4000: file is not a database" >&2\n'
+        '  echo "CREATE TABLE t(x); INSERT INTO t VALUES(1);"\n'
+        "else\n"
+        "  cat >/dev/null\n"
+        "fi\n",
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    source = tmp_path / "source.db"
+    source.write_bytes(b"corrupt")
+    lf_path = tmp_path / "lost_and_found.db"
+
+    started = time.monotonic()
+    attempts = _cli_recover_attempts(source, lf_path, str(stub), timeout=30.0)
+    assert time.monotonic() - started < 30.0
+
+    assert attempts[-1]["dump_returncode"] == 0
+    # The stderr tail is load-bearing: the caller keys the header-zeroing retry
+    # on "not a database" appearing in it, so the drain must preserve it.
+    assert "file is not a database" in attempts[-1]["dump_stderr_tail"]

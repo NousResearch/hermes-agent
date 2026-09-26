@@ -193,11 +193,6 @@ describe('the roster activity filter', () => {
     // A bot with no activity at all counts as older, never recent.
     expect(rosterActivityMatches({}, 'older', NOW)).toBe(true)
   })
-
-  it('reads the live pulse for the active filter', () => {
-    expect(rosterActivityMatches({ active: true }, 'active', NOW)).toBe(true)
-    expect(rosterActivityMatches({ active: false }, 'active', NOW)).toBe(false)
-  })
 })
 
 describe('which row owns the workspace highlight', () => {

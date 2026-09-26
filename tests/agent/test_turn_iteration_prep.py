@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.turn_iteration_prep import apply_retry_restarts
+from agent.turn_iteration_prep import apply_retry_restarts, begin_iteration
 from agent.turn_retry_state import TurnRetryState
 
 RESTART_FLAGS = ["restart_with_redirected_messages", "restart_with_rebuilt_messages"]
@@ -64,3 +64,29 @@ def test_restart_refunds_are_bounded_per_turn(flag):
     assert verdicts[-1]._turn_exit_reason.endswith("restart_limit_exceeded")
     # The correction that tripped the redirect cap is handed back as the next user turn.
     assert agent.steered == (["last correction"] if flag == "restart_with_redirected_messages" else [])
+
+
+def _interrupted_agent(tool_interrupt_reason):
+    agent = SimpleNamespace(
+        _interrupt_requested=True, _tool_interrupt_reason=tool_interrupt_reason, quiet_mode=True,
+        _drain_pending_redirect=lambda: None, _checkpoint_mgr=SimpleNamespace(new_turn=lambda: None),
+    )
+    return begin_iteration(
+        agent, messages=[], conversation_history=[], original_user_message="hi",
+        api_call_count=0, interrupted=False, _turn_exit_reason="unknown",
+    )
+
+
+@pytest.mark.parametrize("tool_interrupt_reason, expected", [
+    # Human stops keep the historical reason (every ``interrupt()`` category, and a bare flag write).
+    ("explicit stop requested", "interrupted_by_user"),
+    ("user sent a new message", "interrupted_by_user"),
+    (None, "interrupted_by_user"),
+    # A producer that named itself via ``tool_reason`` is booked as the issuer (#112647).
+    ("cron inactivity watchdog", "interrupted_by_system(cron_inactivity_watchdog)"),
+    ("turn liveness watchdog", "interrupted_by_system(turn_liveness_watchdog)"),
+])
+def test_interrupt_exit_reason_names_the_system_issuer(tool_interrupt_reason, expected):
+    """A watchdog abort must not be recorded as a user stop: the exit reason carries the issuer."""
+    verdict = _interrupted_agent(tool_interrupt_reason)
+    assert (verdict.action, verdict.interrupted, verdict._turn_exit_reason) == ("break", True, expected)

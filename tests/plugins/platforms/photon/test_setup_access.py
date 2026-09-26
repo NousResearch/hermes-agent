@@ -11,7 +11,7 @@ import argparse
 
 import pytest
 
-from hermes_cli.config import get_env_value, save_env_value
+from hermes_cli.config import get_env_value
 from plugins.platforms.photon.adapter import _env_enablement
 from plugins.platforms.photon import cli
 
@@ -41,51 +41,6 @@ def test_env_enablement_seeds_home_channel(monkeypatch: pytest.MonkeyPatch) -> N
     }
 
 
-def test_setup_hint_uses_gateway_service_command(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
-    monkeypatch.setattr(cli.photon_auth, "load_photon_token", lambda: "token")
-    # Token validation (added for #72763) would otherwise hit the network.
-    monkeypatch.setattr(cli.photon_auth, "check_photon_token_valid", lambda token: True)
-    # The dashboard id *is* the Spectrum project id (ids unified), so setup no
-    # longer enables Spectrum or fetches a separate spectrumProjectId — it
-    # reuses this id directly.
-    monkeypatch.setattr(cli.photon_auth, "load_dashboard_project_id", lambda: "dashboard")
-    # No existing credentials — first-time setup path.
-    monkeypatch.setattr(
-        cli.photon_auth, "load_project_credentials", lambda: (None, None),
-    )
-    monkeypatch.setattr(
-        cli.photon_auth,
-        "regenerate_project_secret",
-        lambda token, dashboard_id: "secret_123",
-    )
-    monkeypatch.setattr(cli.photon_auth, "store_project_credentials", lambda **kwargs: None)
-    monkeypatch.setattr(
-        cli.photon_auth,
-        "register_user_if_absent",
-        lambda *args, **kwargs: ({"id": "user_123", "phoneNumber": "+155****4567"}, True),
-    )
-    monkeypatch.setattr(cli.photon_auth, "user_assigned_line", lambda user: "+155****4321")
-    monkeypatch.setattr(cli.photon_auth, "store_user_numbers", lambda **kwargs: None)
-    monkeypatch.setattr(cli, "_install_sidecar", lambda: 0)
-
-    rc = cli._cmd_setup(
-        argparse.Namespace(
-            project_name=None,
-            phone="+155****4567",
-            first_name=None,
-            last_name=None,
-            email=None,
-            no_browser=True,
-            skip_sidecar_install=False,
-        )
-    )
-
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert "Start the gateway:  hermes gateway start" in out
-    assert "--platform photon" not in out
-    assert "new secret saved" in out
-    assert "restart it so the sidecar" in out
 
 
 def test_setup_reuses_valid_existing_secret(

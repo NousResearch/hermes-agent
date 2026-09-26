@@ -2427,6 +2427,17 @@ DEFAULT_CONFIG = {
             "enabled": True,        # `bw` CLI (Password Manager, not Secrets Manager); run `bw login` once first.
             "binary_path": "",      # absolute path to bw; empty = PATH.
         },
+        "keychain": {
+            # macOS only: a dedicated passworded Keychain file (default
+            # <HERMES_HOME>/vault/keychain.keychain-db) holding internet-password items, read
+            # headlessly via the OS `security` CLI. Create it with `hermes vault keychain init`
+            # (writes the unlock password to a 0600 sidecar → unattended fills). Set
+            # enabled:false to stop using an existing keychain file.
+            "enabled": True,
+            "file": "",            # absolute path to the keychain file; empty = <HERMES_HOME>/vault/keychain.keychain-db
+            "password_file": "",   # 0600 sidecar with the keychain password; empty = <HERMES_HOME>/vault/keychain.pw.
+                                   # Without the sidecar the master password is asked via a masked prompt per session.
+        },
     },
     "secrets": {
         # Optional ordering of enabled sources (e.g. [onepassword, bitwarden]); default registration

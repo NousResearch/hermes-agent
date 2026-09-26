@@ -1,7 +1,7 @@
 ---
 name: xlsx
 description: Create, read, edit Excel .xlsx workbooks and CSVs.
-version: 1.1.0
+version: 1.1.1
 author: Nous Research
 license: MIT
 platforms: [linux, macos, windows]
@@ -162,6 +162,15 @@ LibreOffice or hand the file to the user unconverted.
   it cannot move chart anchors, images, or conditional-format RULE
   formulas; read its JSON report's `not_shifted` list and
   `references/restructuring.md`.
+- **Never set a sheet `autofilter` over a native table range.** Excel
+  treats a sheet-level autofilter overlapping a table as invalid
+  content and demands repair on open ("We found a problem with some
+  content"), stripping the table — tables already carry their own
+  filter UI. `xlsx_create.py` and `xlsx_edit.py` guard this: the
+  overlapping sheet autofilter is dropped and reported under
+  `"warnings"` in the JSON summary. Table header cells must also be
+  non-empty and unique (another repair trigger); the scripts reject
+  violations.
 - **Sheet protection is NOT security.** `--protect` sets the standard
   xlsx sheet-protection hash: it signals "don't edit this" to
   well-behaved apps and nothing more. Anyone can strip it by editing

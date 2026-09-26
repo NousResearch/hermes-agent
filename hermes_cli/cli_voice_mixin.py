@@ -231,8 +231,11 @@ class CLIVoiceMixin:
                     return
                 self._attached_images.clear()
                 self._voice_invalidate()
-                self._pending_input.put(_VoiceInputMessage(transcript))
-                submitted = True
+                deliver = getattr(self, "_tui_deliver_voice_text_prompt", None)
+                submitted = bool(deliver and deliver(transcript))
+                if not submitted:
+                    getattr(self, "_pending_input").put(_VoiceInputMessage(transcript))
+                    submitted = True
             elif result.get("success"):
                 _cprint(f"{_DIM}No speech detected.{_RST}")
             else:

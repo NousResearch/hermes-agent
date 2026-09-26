@@ -33,6 +33,7 @@ def _make_voice_cli(**overrides):
     cli._voice_barge_capture = threading.Event()
     cli._voice_last_tts_text = ""
     cli._voice_barge_phase = None
+    cli._voice_text_prompt_target = None
     cli._pending_input = queue.Queue()
     cli._app = None
     cli._attached_images = []
@@ -109,6 +110,131 @@ class TestHandleVoiceCommandReal:
         assert any("Unknown" in str(c) or "unknown" in str(c)
                     for c in mock_cp.call_args_list)
 
+
+class TestVoiceRecordHotkeyReal:
+    """The configured record key must work from a fresh CLI session."""
+
+    @staticmethod
+    def _idle_cli():
+        return _make_voice_cli(
+            _agent_running=False,
+            _clarify_state=None,
+            _sudo_state=None,
+            _secret_state=None,
+            _approval_state=None,
+            _slash_confirm_state=None,
+            _connection_state=None,
+        )
+
+    @patch("cli._cprint")
+    def test_first_press_enables_voice_and_starts_recording(self, _cp):
+        cli = self._idle_cli()
+        started = threading.Event()
+
+        def enable():
+            cli._voice_mode = True
+
+        def start():
+            cli._voice_recording = True
+            started.set()
+
+        cli._enable_voice_mode = enable
+        cli._voice_start_recording = start
+        event = SimpleNamespace(app=MagicMock())
+
+        cli._tui_handle_voice_record(event)
+
+        assert started.wait(1), "record-key worker did not start recording"
+        assert cli._voice_mode is True
+        assert cli._voice_recording is True
+        assert cli._voice_continuous is True
+        event.app.invalidate.assert_called()
+
+    @patch("cli._cprint")
+    def test_failed_enable_does_not_start_recording(self, _cp):
+        cli = self._idle_cli()
+        finished = threading.Event()
+        cli._enable_voice_mode = finished.set
+        cli._voice_start_recording = MagicMock()
+        event = SimpleNamespace(app=MagicMock())
+
+        cli._tui_handle_voice_record(event)
+
+        assert finished.wait(1), "record-key worker did not try to enable voice mode"
+        cli._voice_start_recording.assert_not_called()
+        assert cli._voice_mode is False
+
+
+    @patch("cli._cprint")
+    def test_clarify_choice_hotkey_opens_other_and_starts_recording(self, _cp):
+        cli = self._idle_cli()
+        cli._agent_running = True
+        cli._clarify_freetext = False
+        cli._secret_state = None
+        cli._clarify_state = {
+            "choices": ["one", "two"],
+            "selected": 0,
+            "multi_select": False,
+            "response_queue": queue.Queue(),
+        }
+        started = threading.Event()
+        cli._enable_voice_mode = lambda: setattr(cli, "_voice_mode", True)
+
+        def start():
+            cli._voice_recording = True
+            started.set()
+
+        cli._voice_start_recording = start
+        event = SimpleNamespace(app=MagicMock())
+
+        cli._tui_handle_voice_record(event)
+
+        assert started.wait(1), "record-key worker did not start recording"
+        assert cli._clarify_state["selected"] == 2
+        assert cli._clarify_freetext is True
+        assert cli._voice_text_prompt_target == ("clarify", cli._clarify_state)
+
+    def test_voice_transcript_answers_clarify_instead_of_queueing_chat(self):
+        cli = self._idle_cli()
+        response_queue = queue.Queue()
+        state = {
+            "question": "Custom answer?",
+            "choices": ["one"],
+            "selected": 1,
+            "multi_select": False,
+            "response_queue": response_queue,
+        }
+        cli._clarify_state = state
+        cli._clarify_freetext = True
+        cli._clarify_multi_base = None
+        cli._voice_text_prompt_target = ("clarify", state)
+        cli._persist_prompt_summary = MagicMock()
+        buffer = MagicMock()
+        buffer.text = ""
+        cli._app = SimpleNamespace(
+            current_buffer=buffer,
+            loop=None,
+            invalidate=MagicMock(),
+        )
+
+        assert cli._tui_deliver_voice_text_prompt("spoken answer") is True
+
+        assert response_queue.get_nowait() == "spoken answer"
+        assert cli._clarify_state is None
+        assert cli._pending_input.empty()
+
+    def test_secret_connection_field_does_not_accept_voice(self):
+        cli = self._idle_cli()
+        cli._secret_state = None
+        cli._connection_state = {
+            "phase": "form",
+            "field_index": 0,
+            "fields": [{"name": "TOKEN", "type": "secret"}],
+        }
+        event = SimpleNamespace(app=MagicMock())
+
+        assert cli._tui_prepare_voice_text_prompt(event) is False
+        assert cli._voice_text_prompt_target is None
 
 class TestEnableVoiceModeReal:
     """Tests _enable_voice_mode with real CLI instance."""

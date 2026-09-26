@@ -13,6 +13,7 @@ import string
 import sys
 import threading
 import time
+from types import SimpleNamespace
 
 from agent.interrupt_compat import request_hard_interrupt
 from hermes_cli.commands_completion import SlashCommandAutoSuggest, SlashCommandCompleter
@@ -901,7 +902,10 @@ class CLITuiMixin:
         """Toggle voice recording when voice mode is active.
 
         Runs on prompt_toolkit's event-loop thread: any blocking call here (locks, sd.wait,
-        disk I/O) freezes the whole UI, so all heavy work goes to daemon threads.
+        disk I/O) freezes the whole UI, so all heavy work goes to daemon threads. Clarify and
+        non-secret connection fields are voice-capable text prompts: the hotkey opens Clarify's
+        ``Other`` row and the transcript is submitted back to that prompt instead of becoming a
+        queued chat turn.
         """
         from cli import _DIM, _RST, _cprint, logger
         if not self._voice_mode:
@@ -914,16 +918,20 @@ class CLITuiMixin:
             event.app.invalidate()
             threading.Thread(target=self._voice_stop_and_transcribe, daemon=True).start()
             return
+        text_prompt = self._tui_prepare_voice_text_prompt(event)
         # Allow disarming continuous mode while the agent runs or transcribes — otherwise the
-        # user is stuck in an auto-restart loop until /voice off.
-        if self._agent_running or self._voice_processing:
+        # user is stuck in an auto-restart loop until /voice off. A text prompt is part of the
+        # running turn, but it deliberately admits a new recording.
+        if (self._agent_running and not text_prompt) or self._voice_processing:
             with self._voice_lock:
                 self._voice_continuous = False
             event.app.invalidate()
             return
-        # Don't START recording during interactive prompts.
-        if (self._clarify_state or self._sudo_state or self._approval_state
-                or self._slash_confirm_state or self._connection_state):
+        # Selection, approval and masked-input prompts are not dictation targets. In particular,
+        # never send passwords, tokens or approval decisions through a cloud STT provider.
+        if (not text_prompt and (
+                self._clarify_state or self._sudo_state or self._approval_state
+                or self._secret_state or self._slash_confirm_state or self._connection_state)):
             return
         # Cut TTS so the user can start talking: stop_playback() just terminates a subprocess;
         # the stop event drains the streaming pipeline if one is live.
@@ -953,6 +961,83 @@ class CLITuiMixin:
 
         threading.Thread(target=_start_recording, daemon=True).start()
         event.app.invalidate()
+
+    def _tui_prepare_voice_text_prompt(self, event) -> bool:
+        """Select the active safe text field for dictation; return whether one was selected."""
+        state = self._clarify_state
+        if state:
+            if not self._clarify_freetext:
+                choices = state.get("choices") or []
+                state["selected"] = len(choices)  # the synthetic Other row
+                if state.get("multi_select"):
+                    state.setdefault("selected_indices", set()).add(len(choices))
+                if state.get("questions"):
+                    getattr(self, "_clarify_batch_enter")(state)
+                else:
+                    self._tui_enter_clarify_choice(event)
+            self._voice_text_prompt_target = ("clarify", state)
+            event.app.invalidate()
+            return True
+
+        state = self._connection_state
+        if state and state.get("phase") in {"form", "failed"}:
+            fields = state.get("fields") or []
+            index = state.get("field_index", 0)
+            if 0 <= index < len(fields) and fields[index].get("type") != "secret":
+                self._voice_text_prompt_target = ("connection", state, index)
+                event.app.invalidate()
+                return True
+        self._voice_text_prompt_target = None
+        return False
+
+    def _tui_deliver_voice_text_prompt(self, transcript: str) -> bool:
+        """Submit a transcript to the exact text prompt that started its recording."""
+        target = getattr(self, "_voice_text_prompt_target", None)
+        self._voice_text_prompt_target = None
+        app = getattr(self, "_app", None)
+        if not target or app is None:
+            return False
+
+        delivered = [False]
+
+        def _deliver() -> None:
+            kind, state, *rest = target
+            buf = app.current_buffer
+            existing = (buf.text or "").strip()
+            text = f"{existing} {transcript}" if existing else transcript
+            if kind == "clarify" and self._clarify_state is state and self._clarify_freetext:
+                buf.text = text
+                buf.cursor_position = len(text)
+                event = SimpleNamespace(app=app)
+                self._tui_enter_clarify_freetext(event)
+                delivered[0] = True
+            elif kind == "connection" and self._connection_state is state:
+                fields = state.get("fields") or []
+                index = rest[0]
+                if (state.get("phase") in {"form", "failed"} and state.get("field_index") == index
+                        and 0 <= index < len(fields) and fields[index].get("type") != "secret"):
+                    buf.reset()
+                    getattr(self, "_connection_set_field")(text)
+                    delivered[0] = True
+            app.invalidate()
+
+        loop = getattr(app, "loop", None)
+        if loop is None:
+            _deliver()
+            return delivered[0]
+        ready = threading.Event()
+
+        def _scheduled() -> None:
+            try:
+                _deliver()
+            finally:
+                ready.set()
+
+        try:
+            loop.call_soon_threadsafe(_scheduled)
+        except Exception:
+            return False
+        return ready.wait(timeout=5) and delivered[0]
 
     def _tui_cancel_voice_recording(self, event) -> bool:
         """Cancel an active recording; True when one was cancelled (caller stops there)."""
@@ -1995,6 +2080,7 @@ class CLITuiMixin:
         self._voice_barge_capture = threading.Event()  # barge monitor is capturing the interruption
         self._voice_last_tts_text = ""  # most recently spoken TTS text (echo guard, #75780)
         self._voice_barge_phase = None  # "generation" or "playback" phase of the last barge trip
+        self._voice_text_prompt_target = None  # exact clarify/connection field that started dictation
 
         if os.environ.get("HERMES_DEFER_AGENT_STARTUP") != "1":
             self._install_tool_callbacks()

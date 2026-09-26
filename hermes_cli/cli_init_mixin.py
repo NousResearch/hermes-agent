@@ -436,6 +436,7 @@ class CLIInitMixin:
         self._voice_barge_capture = threading.Event()  # barge monitor is capturing the interruption
         self._voice_last_tts_text = ""  # echo guard
         self._voice_barge_phase = None  # "generation" | "playback"
+        self._voice_text_prompt_target = None  # exact clarify/connection field that started dictation
 
         self._status_bar_visible = _status_bar_visible_from_display_config(CLI_CONFIG.get("display"))
         self._battery_visible = bool(CLI_CONFIG["display"].get("battery", False))

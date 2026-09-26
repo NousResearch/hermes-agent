@@ -645,6 +645,37 @@ class TestSessionLifecycle:
         assert row["billing_base_url"] is None
         assert row["billing_mode"] is None
 
+    def test_mid_session_fallback_usage_row_does_not_inherit_primary_billing_mode(self, db):
+        """A fallback route's per-model usage row never takes another provider's billing mode.
+
+        Primary (subscription) accounts first, so the session row keeps its route; the
+        later fallback call (API-billed, billing_mode=None) must not be stored as
+        subscription-included. A same-route call that omits billing_mode still inherits.
+        """
+        db.create_session(session_id="mix", source="cli", model="primary")
+        db.update_token_counts(
+            "mix", model="primary", billing_provider="sub-provider",
+            billing_mode="subscription_included", input_tokens=10, api_call_count=1,
+        )
+        db.update_token_counts(
+            "mix", model="fallback", billing_provider="api-provider",
+            billing_mode=None, input_tokens=10, estimated_cost_usd=0.01, api_call_count=1,
+        )
+        db.update_token_counts(
+            "mix", model="primary", billing_provider="sub-provider",
+            billing_mode=None, input_tokens=10, api_call_count=1,
+        )
+        with db._lock:
+            modes = {
+                (r["billing_provider"], r["billing_mode"])
+                for r in db._conn.execute(
+                    "SELECT billing_provider, billing_mode FROM session_model_usage WHERE session_id = 'mix'"
+                )
+            }
+        assert ("api-provider", "subscription_included") not in modes
+        assert ("sub-provider", "subscription_included") in modes
+        assert db.get_session("mix")["billing_mode"] == "subscription_included"
+
 
 
 

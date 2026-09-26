@@ -357,13 +357,17 @@ class SessionUsageMixin:
             "SELECT model, billing_provider, billing_base_url, billing_mode FROM sessions WHERE id = ?", (session_id,),
         ).fetchone()
         sess = dict(row) if (row is not None and not task) else {}
+        # The session row's base URL / billing mode describe ITS provider. A delta on another
+        # provider (mid-session fallback) must not inherit them, or API-billed fallback usage
+        # is stored as subscription_included.
+        route = sess if (not billing_provider or billing_provider == sess.get("billing_provider")) else {}
         counts = [v or 0 for v in (input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens)]
         now = time.time()
         conn.execute(_MODEL_USAGE_UPSERT_SQL, (
             session_id, model or sess.get("model") or "unknown",
             billing_provider or sess.get("billing_provider") or "",
-            billing_base_url or sess.get("billing_base_url") or "",
-            billing_mode or sess.get("billing_mode") or "", task or "", api_call_count or 0, *counts,
+            billing_base_url or route.get("billing_base_url") or "",
+            billing_mode or route.get("billing_mode") or "", task or "", api_call_count or 0, *counts,
             float(estimated_cost_usd or 0.0), float(actual_cost_usd or 0.0), cost_status, cost_source, now, now))
 
     def record_auxiliary_usage(

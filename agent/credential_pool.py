@@ -2389,13 +2389,20 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         self,
         api_key_hint: Optional[str] = None,
         credential_id: Optional[str] = None,
+        *,
+        force: bool = True,
     ) -> Optional[PooledCredential]:
-        """Force-refresh the entry that supplied the failed request.
+        """Refresh the entry that supplied the request (forced by default).
 
         Direct integrations may reload the pool after a request failed, so
         ``current_id`` cannot identify the issuing credential. With no hint,
         select WITHOUT the normal proactive refresh: the forced refresh below
         must consume a rotating refresh token exactly once.
+
+        ``force=False`` is the pre-request path: it returns the matching entry
+        untouched unless it is near expiry, and never moves the cursor, so a
+        caller can keep its own binding without rotating accounts or renewing
+        a healthy token on every request.
         """
         with self._lock:
             entry = self._find(lambda e: e.id == credential_id) if credential_id else None
@@ -2406,6 +2413,13 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                     entry = self._current_unlocked() or self._select_unlocked(refresh=False, count=False)[0]
             if entry is None:
                 return None
+            if not force:
+                if self.provider == "anthropic" and entry.source == "claude_code":
+                    # Borrowed login: the external CLI may have rotated (and revoked) the pair.
+                    entry = self._sync_anthropic_entry_from_credentials_file(entry)
+                if not entry.refresh_token or not self._entry_needs_refresh(entry):
+                    return entry
+                return self._refresh_entry(entry, force=False)
             self._current_id = entry.id
             return self._try_refresh_current_unlocked()
 

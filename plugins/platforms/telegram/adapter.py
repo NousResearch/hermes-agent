@@ -384,6 +384,62 @@ _RICH_PROTECTED_REGION_RE = re.compile(
     re.MULTILINE)
 
 
+# Telegram Rich Markdown interprets paired literal dollar signs on one line as inline LaTeX
+# delimiters, so "$18,500 collected ... $18,588.50" renders as an unwrapped italic formula with the
+# spaces stripped. Protect currency only on rich-rendered lines containing multiple amounts; leave
+# ordinary prose, legitimate closed math, code, and shell variables unchanged.
+_RICH_CODE_RE = re.compile(
+    r"(?<!`)(?P<fence>`{3,})(?!`).*?(?<!`)(?P=fence)(?!`)"
+    r"|(?<!`)(?P<ticks>`{1,2})(?!`)[^\n]*?(?<!`)(?P=ticks)(?!`)"
+    r"|(?P<tildes>~{3,}).*?(?P=tildes)",
+    re.DOTALL)
+# Preserve closed math, but not dollar-prefixed tickers or prose such as "$6 per US$ unit". A numeric
+# amount followed by an ordinary word is currency here; single-letter variables and backslash math
+# commands survive.
+_RICH_CURRENCY_PROTECTED_RE = re.compile(
+    _RICH_CODE_RE.pattern
+    + r"|(?<![\\$])\$\$.*?\$\$"
+    + r"|(?<![\\$])\$(?![\s$])"
+    + r"(?!\d+(?:,\d{3})*(?:\.\d+)?\s+[A-Za-z]{2,}\b)"
+    + r"[^$\n]*?(?<![\s([{,:;])\$(?![\w$])",
+    re.DOTALL)
+_RICH_DOLLAR_ENTITY_RE = re.compile(
+    _RICH_CODE_RE.pattern + r"|&#(?:0*36|x0*24);", re.DOTALL | re.IGNORECASE)
+
+
+def _normalize_dollar_entities(text: str) -> str:
+    """Decode ``&#36;`` / ``&#x24;`` outside code before choosing a delivery route, so a model that
+    HTML-escaped its dollars to dodge LaTeX still reaches the user as ``$``."""
+    if "&#" not in text:
+        return text
+    return _RICH_DOLLAR_ENTITY_RE.sub(
+        lambda match: "$" if match.group(0).startswith("&#") else match.group(0), text)
+
+
+_RICH_CURRENCY_AMOUNT_RE = re.compile(r"(?<![\\`\w])\$\d+(?:,\d{3})*(?:\.\d+)?")
+_RICH_CURRENCY_PLACEHOLDER = "\x00HERMES_RICH_CURRENCY_{index}\x00"
+
+
+def _protect_rich_currency(text: str) -> str:
+    """Wrap multiple same-line currency amounts in inline code so they cannot pair into ``$…$`` math."""
+    stashed: list[str] = []
+
+    def stash(match: "re.Match[str]") -> str:
+        stashed.append(match.group(0))
+        return _RICH_CURRENCY_PLACEHOLDER.format(index=len(stashed) - 1)
+
+    masked = _RICH_CURRENCY_PROTECTED_RE.sub(stash, text)
+    lines = masked.split("\n")
+    for index, line in enumerate(lines):
+        if len(_RICH_CURRENCY_AMOUNT_RE.findall(line)) < 2:
+            continue
+        lines[index] = _RICH_CURRENCY_AMOUNT_RE.sub(lambda match: f"`{match.group(0)}`", line)
+    protected = "\n".join(lines)
+    for index, original in enumerate(stashed):
+        protected = protected.replace(_RICH_CURRENCY_PLACEHOLDER.format(index=index), original)
+    return protected
+
+
 def _rich_normalize_linebreaks(text: str) -> str:
     """Convert lone ``\\n`` (a Markdown soft break) to hard breaks for sendRichMessage; ``\\n\\n``,
     fenced code and pipe tables are left untouched."""
@@ -1355,7 +1411,7 @@ class TelegramAdapter(BasePlatformAdapter):
     # is the fallback. Streaming edits stay on the MarkdownV2 edit path.
     def _content_fits_rich_limits(self, content: str) -> bool:
         """Pre-check the 32,768-char cap only; other rich limits surface as BadRequest (permanent)."""
-        return len(content) <= self.RICH_MESSAGE_MAX_CHARS
+        return len(_protect_rich_currency(content)) <= self.RICH_MESSAGE_MAX_CHARS
 
     def _bot_supports_rich(self) -> bool:
         """True when ``do_api_request`` is an *async* callable (real Bot or AsyncMock); plain MagicMock
@@ -1462,7 +1518,7 @@ class TelegramAdapter(BasePlatformAdapter):
     def _rich_message_payload(self, content: str, *, skip_entity_detection: bool = False) -> Dict[str, Any]:
         """``InputRichMessage`` from RAW markdown — never ``format_message(content)``, whose MarkdownV2
         escaping destroys table pipes."""
-        payload: Dict[str, Any] = {"markdown": _rich_normalize_linebreaks(content)}
+        payload: Dict[str, Any] = {"markdown": _rich_normalize_linebreaks(_protect_rich_currency(content))}
         if skip_entity_detection:
             payload["skip_entity_detection"] = True
         return payload
@@ -3664,6 +3720,7 @@ class TelegramAdapter(BasePlatformAdapter):
     async def send(
         self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Send a message to a Telegram chat."""
+        content = _normalize_dollar_entities(content)
         if not self._bot:
             live = self._replacement_telegram_adapter()
             if live is not None:
@@ -3870,6 +3927,7 @@ class TelegramAdapter(BasePlatformAdapter):
         Telegram caps a message at 4096 UTF-16 codeunits. Streaming replies that outgrow it must NOT be truncated
         silently nor fail (the consumer would re-send a duplicate): edit with the first chunk, send the rest as
         continuations, and return the final chunk's id as the next edit target."""
+        content = _normalize_dollar_entities(content)
         if not self._bot:
             return SendResult(success=False, error="Not connected")
         # Shared per-chat budget (#116312): an interim (preview) edit is SKIPPED when the slot is busy —
@@ -4118,6 +4176,7 @@ class TelegramAdapter(BasePlatformAdapter):
     async def send_draft(self, chat_id: str, draft_id: int, content: str, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Stream a partial message via ``sendRichMessageDraft`` (when rich is enabled and supported) else
         ``sendMessageDraft``; reusing ``draft_id`` animates the preview. The caller sends the final text."""
+        content = _normalize_dollar_entities(content)
         if not self._bot:
             return SendResult(success=False, error="not_connected")
         # Rich draft fast-path; any failure degrades to the plain draft below. Drafts have no message_id.

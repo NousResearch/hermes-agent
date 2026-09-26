@@ -2565,6 +2565,26 @@ class TestBuildJobPromptExtraPrompt:
         _build_job_prompt(job, extra_prompt="transient context")
         assert job["prompt"] == "original"
 
+    def test_quiet_gate_script_still_skips_without_override(self):
+        job = {"id": "quiet", "prompt": "stored prompt", "script": "watch.py"}
+
+        assert _build_job_prompt(job, prerun_script=(True, "")) is None
+
+    def test_extra_prompt_forces_run_when_gate_script_is_quiet(self):
+        job = {"id": "quiet", "prompt": "stored prompt", "script": "watch.py"}
+
+        result = _build_job_prompt(
+            job,
+            prerun_script=(True, ""),
+            extra_prompt="Replay this event",
+        )
+
+        assert result is not None
+        assert "stored prompt" in result
+        assert "## Run Context" in result
+        assert "Replay this event" in result
+
+
 class TestSetCronSessionTitle:
     """Robust cron session titling: #50535/#50536/#50537."""
 

@@ -22,7 +22,21 @@
 
 set -uo pipefail
 
-FLOOR_GI="${DISK_GUARD_FLOOR_GI:-10}"
+# TWO NUMBERS, TWO JOBS. Conflating them is what produced both failure modes
+# this guard has actually shown: a 10Gi floor paged 67 times in 13h with no
+# failed write (alert fatigue), and a 0.5Gi floor let the host cross from
+# healthy to ENOSPC inside one 900s tick (no warning at all).
+#
+#   RECLAIM_TARGET_GI  how much free space we try to HOLD. Enforced by evicting
+#                      more sanctioned scratch, SILENTLY. Never pages.
+#   FLOOR_GI           the only thing that pages. Owner-pinned at 0.5Gi
+#                      (Den, 2026-09-22) — page only where writes actually fail.
+#
+# The 10Gi target is the capacity derivation in disk-guard-cron.sh: 2.0GB worst
+# case for 3 concurrent workers on a cold pnpm store + 8GB headroom for the
+# non-worker writers on this volume (state.db, postgres, gateway logs).
+FLOOR_GI="${DISK_GUARD_FLOOR_GI:-0.5}"
+RECLAIM_TARGET_GI="${DISK_GUARD_RECLAIM_TARGET_GI:-10}"
 KANBAN_DB="${HERMES_KANBAN_DB:-$HOME/.hermes/kanban.db}"
 WORKSPACES="$HOME/.hermes/kanban/workspaces"
 TMPDIRS="/private/tmp"
@@ -33,7 +47,12 @@ RECLAIM=0
 log() { printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$*"; }
 
 free_mb() { df -m /System/Volumes/Data 2>/dev/null | awk 'NR==2{print $4}'; }
-free_gi() { echo $(( $(free_mb) / 1024 )); }
+# FLOAT GiB. An integer `free_mb/1024` floored 1708MiB to "1Gi" and made the
+# 0.5 comparison a lie at the only magnitude that matters.
+free_gi() { awk -v m="$(free_mb)" 'BEGIN{printf "%.2f", m/1024}'; }
+# Float-exact comparison: `[ 0.60 -lt 0.5 ]` is a bash INTEGER error, which
+# silently skips the branch and reports green on a dying host.
+lt() { awk -v a="$1" -v b="$2" 'BEGIN{exit !(a+0 < b+0)}'; }
 
 # --- derived fact 1: which task ids are dead (terminal or absent from the DB)
 dead_task() { # $1 = task id -> 0 if dead/unknown
@@ -210,8 +229,78 @@ reclaim_safe_caches() {
   log "safe caches: pruned $n cache dirs + aged session-state/logs, $(( after - before ))MB"
 }
 
+# --- target enforcement: silent, and strictly more of the SAME sanctioned
+# classes. It never introduces a new category of deletion (that would make the
+# quiet path riskier than the loud one) and it never pages — being under the
+# capacity target is not an incident, it is a reason to work harder quietly.
+#
+# The per-user temp root is DERIVED from the running shell's TMPDIR, not the
+# hardcoded /var/folders/<hash> path of one machine. It held 4.0GB of >1d-old
+# agent scratch on 2026-09-25 and nothing was reaping it: reclaim_tmp only ever
+# looked at /private/tmp.
+user_tmp_root() { printf '%s' "${TMPDIR:-/tmp}" | sed 's:/$::'; }
+
+reclaim_user_tmp() { # $1 = age in days
+  local root freed_before freed_after
+  root=$(user_tmp_root)
+  case "$root" in /tmp|/private/tmp|''|/) return 0 ;; esac
+  [ -d "$root" ] || return 0
+  freed_before=$(free_mb)
+  find "$root" -mindepth 1 -maxdepth 1 -mtime "+$1" \
+       ! -name 'com.apple.*' ! -name '*.sock' \
+       -exec rm -rf {} + 2>/dev/null
+  freed_after=$(free_mb)
+  log "user tmp ($root, >${1}d): $(( freed_after - freed_before ))MB"
+}
+
+reclaim_to_target() {
+  local now
+  now=$(free_gi)
+  lt "$now" "$RECLAIM_TARGET_GI" || return 0
+  log "below_target: ${now}Gi < ${RECLAIM_TARGET_GI}Gi — escalating quietly"
+  reclaim_user_tmp 1
+  now=$(free_gi)
+  lt "$now" "$RECLAIM_TARGET_GI" || return 0
+  TMP_AGE_SECONDS=3600 reclaim_tmp
+  reclaim_user_tmp 0
+  now=$(free_gi)
+  lt "$now" "$RECLAIM_TARGET_GI" && \
+    log "below_target: still ${now}Gi after escalation; sanctioned scratch is exhausted (silent by design — only FLOOR_GI pages)"
+  return 0
+}
+
+# --- agent review clones in $HOME. The 2026-09-24 ENOSPC incident: 8 agent
+# clones directly under $HOME held 4.3Gi of node_modules while the guard
+# reported "the remaining consumers are NOT agent scratch". The class is
+# "a git checkout an agent made outside the sanctioned scratch roots".
+#
+# SELECTION (the same predicate prove_disk_guard_node_modules_scope.sh asserts):
+#   include  $HOME/<dir>/ that is a git repo, or a parent of git repos
+#   exclude  ~/workspace (human checkouts), ~/Library, and every dotdir —
+#            which is what keeps ~/.local/lib/node_modules (the global npm
+#            prefix holding the pi/opencode CLIs) and ~/.hermes/hermes-agent
+#            (the running agent itself) out of it.
+# A first cut without those exclusions would have deleted the agent's own
+# runtime, so the narrowing is load-bearing, not tidiness.
+reclaim_home_node_modules() {
+  local before after n e d
+  before=$(free_mb); n=0
+  for e in "$HOME"/[!.]*/; do
+    case "$e" in "$HOME/workspace/"|"$HOME/Library/") continue ;; esac
+    [ -d "${e}.git" ] || [ -f "${e}.git" ] || \
+      { ls -d "$e"*/.git >/dev/null 2>&1 || continue; }
+    while IFS= read -r d; do
+      [ -n "$d" ] || continue
+      path_in_use "$d" && continue
+      rm -rf "$d" 2>/dev/null && n=$((n + 1))
+    done < <(find "$e" -maxdepth 3 -type d -name node_modules -prune -mtime +0 -print 2>/dev/null)
+  done
+  after=$(free_mb)
+  log "node_modules: removed $n agent-clone dirs in \$HOME, $(( after - before ))MB"
+}
+
 before=$(free_gi)
-log "free=${before}Gi floor=${FLOOR_GI}Gi"
+log "free=${before}Gi floor=${FLOOR_GI}Gi target=${RECLAIM_TARGET_GI}Gi"
 
 if [ "$RECLAIM" = 1 ]; then
   reclaim_workspaces
@@ -244,12 +333,20 @@ if [ "$RECLAIM" = 1 ]; then
     done
   fi
   reclaim_tmp
+  reclaim_home_node_modules
+  # Target enforcement runs LAST: only after every ordinary class has been
+  # reclaimed do we decide whether to escalate.
+  reclaim_to_target
 fi
 
 after=$(free_gi)
-log "free=${after}Gi (reclaimed $((after - before))Gi)"
+log "free=${after}Gi (reclaimed $(awk -v a="$after" -v b="$before" 'BEGIN{printf "%.2f", a-b}')Gi)"
 
-if [ "$after" -lt "$FLOOR_GI" ]; then
+# The ONLY paging decision. RECLAIM_TARGET_GI deliberately does not appear
+# below this line: a capacity shortfall is handled silently above, and letting
+# the target reach this branch is exactly how the guard paged 67 times in 13h.
+if lt "$after" "$FLOOR_GI"; then
+  below_floor=1
   log "FAIL: ${after}Gi free is below the ${FLOOR_GI}Gi floor."
   log "An ENOSPC host silently breaks every agent tool call and watchdog."
   log "Top reclaimable, largest first (live-pid paths excluded):"

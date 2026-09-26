@@ -73,11 +73,12 @@ def _iter_invoked_tool_names(raw_calls: Any):
     """Tool names a tool_calls column invoked, with the ``tool_call`` bridge unwrapped to
     the deferred tools it carried: the bridge is plumbing, and a reach figure that counts
     ``tool_call`` instead of ``x_search`` can never tell a hot deferred tool from a cold one."""
+    from tools.tool_search_catalog import TOOL_CALL_NAME
     from tools.tool_search_validation import normalize_tool_call_entries
 
     for fn in _iter_functions(raw_calls):
         name = fn.get("name")
-        if name != "tool_call":
+        if name != TOOL_CALL_NAME:
             if name:
                 yield name
             continue

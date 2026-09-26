@@ -1537,8 +1537,8 @@ class CLICommandsMixin:
         """Handle /personality [name] — list or set a predefined personality. All resolution and
         persistence goes through hermes_cli.personality, the single owner of personality state."""
         from hermes_cli.personality import (
-            describe_personality, normalize_personality_name, persist_personality, prompt_text,
-            resolve_personality)
+            describe_personality, normalize_personality_name, persist_personality,
+            resolve_ephemeral_system_prompt, resolve_personality)
         personality_name = _command_arg(cmd)
         if not personality_name:
             try:
@@ -1562,19 +1562,24 @@ class CLICommandsMixin:
         saved = persist_personality(name)
         scope = "(saved to config)" if saved else "(session only)"
         face = "(^_^)b" if saved else "(^_^)"
+        # Resolve the same overlay at runtime as on startup, even if saving failed.
+        # Read the manual prompt fresh so config edits since CLI startup are honoured.
+        try:
+            from hermes_cli.config import read_raw_config
+            config = read_raw_config()
+        except Exception:
+            config = getattr(self, "config", None) or {}
+        config = dict(config)
+        session_config = getattr(self, "config", None) or {}
+        config["agent"] = {**(session_config.get("agent") or {}), **(config.get("agent") or {})}
+        config["personalities"] = config.get("personalities") or session_config.get("personalities")
+        config["display"] = {**(config.get("display") or {}), "personality": name}
+        self.system_prompt = os.getenv("HERMES_EPHEMERAL_SYSTEM_PROMPT", "") or resolve_ephemeral_system_prompt(config)
         if not name:
-            # Neutral reset — fall back to the user-owned manual prompt.
-            try:
-                from hermes_cli.config import cfg_get, read_raw_config
-                self.system_prompt = prompt_text(
-                    cfg_get(read_raw_config(), "agent", "system_prompt", default=""))
-            except Exception:
-                self.system_prompt = ""
             _retire_agent(self)  # Force re-init
             _pr(f"{face} Personality cleared {scope}",
                 "  No personality overlay — using base agent behavior.")
         else:
-            self.system_prompt = personality_prompt
             _retire_agent(self)  # Force re-init
             _pr(f"{face} Personality set to '{name}' {scope}",
                 f"  \"{_ellipsize(personality_prompt, 60)}\"")

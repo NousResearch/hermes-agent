@@ -286,7 +286,10 @@ def _apply_personality_to_session(
     session["personality"] = personality
     if not (agent := session.get("agent")):
         return False, None
-    agent.ephemeral_system_prompt = new_prompt or None
+    from hermes_cli.personality import prompt_text
+    from tui_gateway.server import _load_cfg
+    manual = prompt_text((_load_cfg().get("agent") or {}).get("system_prompt"))
+    agent.ephemeral_system_prompt = "\n\n".join(part for part in (manual, new_prompt) if part) or None
     marker = (
         "[System: The user has changed the assistant's personality. "
         "From this point forward, adopt the following persona and respond "

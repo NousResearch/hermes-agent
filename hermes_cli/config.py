@@ -74,6 +74,32 @@ class InvalidUserConfigError(RuntimeError):
     """Raised when a run that cannot repair config finds invalid user YAML."""
 
 
+_warned_bad_min_interval_hours: set = set()
+
+
+def bounded_min_interval_hours(raw: Any, default: int = 24) -> int:
+    """``sessions.min_interval_hours`` / ``checkpoints.min_interval_hours`` floored at 1.
+
+    ``maybe_auto_archive``/``maybe_auto_prune_and_vacuum``/``maybe_auto_prune_checkpoints`` gate
+    their sweep on ``now - last_run < min_interval_hours * 3600``. A value <= 0 does not disable
+    the throttle (``auto_prune: false`` / ``auto_archive: false`` is the disable switch) — it
+    makes that comparison false on every call, so the sweep runs on every housekeeping tick
+    instead of at most once per interval; for the checkpoint store that tick is 60s and the sweep
+    is a ``git gc``. Same class of fix as ``agent.curator._bounded_count``.
+    """
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = default
+    if value < 1:
+        key = (raw, value)
+        if key not in _warned_bad_min_interval_hours:
+            _warned_bad_min_interval_hours.add(key)
+            logger.warning("min_interval_hours must be >= 1 (got %r); using the default of %d", raw, default)
+        return default
+    return value
+
+
 _IS_WINDOWS = platform.system() == "Windows"
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 

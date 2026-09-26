@@ -21,7 +21,8 @@ from tools.checkpoint_manager import (
     _touch_project,
 )
 from tools.checkpoint_maintenance import (
-    clear_all, clear_legacy, maybe_auto_prune_checkpoints, prune_checkpoints, store_status,
+    auto_prune_from_config, clear_all, clear_legacy, maybe_auto_prune_checkpoints, prune_checkpoints,
+    store_status,
 )
 
 
@@ -1093,6 +1094,31 @@ class TestMaybeAutoPruneCheckpoints:
         )
         assert second["skipped"] is True
         assert (base / ("2222" * 4)).exists()
+
+    def test_auto_prune_from_config_floors_a_non_positive_min_interval_hours(self, monkeypatch):
+        """``checkpoints.min_interval_hours: 0`` (or negative) must not reach
+        ``maybe_auto_prune_checkpoints`` un-floored: the checkpoint prune tick runs every 60s in
+        the gateway housekeeping loop (gateway/run.py), so an un-floored 0 would run this
+        ``git gc``-backed sweep on every tick instead of at most once per interval."""
+        import tools.checkpoint_maintenance as checkpoint_maintenance
+
+        calls: list = []
+        monkeypatch.setattr(
+            checkpoint_maintenance, "maybe_auto_prune_checkpoints",
+            lambda **kw: calls.append(kw) or {"skipped": False})
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"checkpoints": {
+                "auto_prune": True, "retention_days": 7, "min_interval_hours": 0, "max_total_size_mb": 500,
+            }})
+
+        out = checkpoint_maintenance.auto_prune_from_config()
+
+        assert out == {"skipped": False}
+        assert calls == [{
+            "retention_days": 7, "min_interval_hours": 24,
+            "delete_orphans": False, "max_total_size_mb": 500,
+        }]
 
 
 # =========================================================================

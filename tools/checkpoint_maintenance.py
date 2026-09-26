@@ -427,13 +427,13 @@ def auto_prune_from_config() -> Dict[str, object]:
     honoured unattended: a missing workdir is ambiguous (deleted vs. unmounted share); orphan
     cleanup is only via explicit ``hermes checkpoints prune``. Never raises."""
     try:
-        from hermes_cli.config import load_config
+        from hermes_cli.config import bounded_min_interval_hours, load_config
         cfg = load_config().get("checkpoints") or {}
         if not cfg.get("auto_prune", False):
             return {"skipped": True}
         return maybe_auto_prune_checkpoints(
             retention_days=int(cfg.get("retention_days", 7)),
-            min_interval_hours=int(cfg.get("min_interval_hours", 24)),
+            min_interval_hours=bounded_min_interval_hours(cfg.get("min_interval_hours")),
             delete_orphans=False,
             max_total_size_mb=int(cfg.get("max_total_size_mb", 500)))
     except Exception as exc:

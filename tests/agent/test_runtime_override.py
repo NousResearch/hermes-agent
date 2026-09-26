@@ -431,14 +431,24 @@ class _RecordingSessionDB:
     assert byte-identical restore.
     """
 
-    def __init__(self, session_id: str = "S1") -> None:
+    def __init__(self, session_id: str = "S1", *, absent: bool = False) -> None:
         self.session_id = session_id
         self.calls = []
-        self.fallback_streak = 5
-        self.ineffective_count = 3
-        self.cooldown_until = time.time() + 600.0
-        self.cooldown_error = "summary stall"
-        self.model_config = {PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: 4096}
+        self.absent = absent
+        if absent:
+            # Nothing persisted to protect yet: the numeric columns read as 0,
+            # there is no cooldown row, and model_config has no prune-rearm key.
+            self.fallback_streak = 0
+            self.ineffective_count = 0
+            self.cooldown_until = None
+            self.cooldown_error = None
+            self.model_config = {}
+        else:
+            self.fallback_streak = 5
+            self.ineffective_count = 3
+            self.cooldown_until = time.time() + 600.0
+            self.cooldown_error = "summary stall"
+            self.model_config = {PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: 4096}
 
     def _record(self, name, *args):
         self.calls.append((name, args))
@@ -480,6 +490,9 @@ class _RecordingSessionDB:
 
     def get_compression_failure_cooldown_row(self, session_id):
         self._record("get_compression_failure_cooldown_row", session_id)
+        if self.absent:
+            # The session row is absent (mirrors the real DB's session_exists).
+            return {"session_exists": False, "cooldown_until": None, "error": None}
         return {
             "session_exists": True,
             "cooldown_until": self.cooldown_until,
@@ -493,6 +506,9 @@ class _RecordingSessionDB:
 
     def restore_compression_failure_cooldown_row(self, session_id, snapshot):
         self._record("restore_compression_failure_cooldown_row", session_id, dict(snapshot))
+        if not snapshot.get("session_exists", False):
+            # Absent session row: nothing to re-create (mirrors the real DB).
+            return
         self.cooldown_until = snapshot.get("cooldown_until")
         self.cooldown_error = snapshot.get("error")
 
@@ -514,16 +530,17 @@ class TestDurableProtectionRestore:
     """P1: one ephemeral model override must leave every durable
     compression-protection row byte-identical after the scope exits."""
 
-    def _agent_with_recording_db(self, monkeypatch):
+    def _agent_with_recording_db(self, monkeypatch, *, absent=False):
         _patch_model_owned_resolution(monkeypatch)
         agent = _build_model_owned_agent()
-        db = _RecordingSessionDB()
+        db = _RecordingSessionDB(absent=absent)
         cc = agent.context_compressor
         cc.bind_session_state(db, "S1")
-        # bind_session_state hydrates the in-memory values from the durable rows.
-        assert cc._fallback_compression_streak == 5
-        assert cc._ineffective_compression_count == 3
-        assert cc._proactive_prune_rearm_tokens == 4096
+        if not absent:
+            # bind_session_state hydrates the in-memory values from the durable rows.
+            assert cc._fallback_compression_streak == 5
+            assert cc._ineffective_compression_count == 3
+            assert cc._proactive_prune_rearm_tokens == 4096
         return agent, db, cc
 
     @staticmethod
@@ -588,3 +605,126 @@ class TestDurableProtectionRestore:
         assert db.ineffective_count == 0
         assert db.cooldown_until is None
         assert PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY not in db.model_config
+
+    # ── R1/R2: operator-visible failures, rollback when __enter__ raises ──
+
+    def test_enter_projection_failure_still_restores_durable(self, monkeypatch):
+        # R2: a raise inside __enter__ AFTER the snapshot must not leave the
+        # projection's durable clears behind (__exit__ never runs on its own).
+        import agent.runtime_override as ro_module
+
+        agent, db, _session_cc = self._agent_with_recording_db(monkeypatch)
+        baseline = self._durable_state(db)
+        real_refresh = ro_module._refresh_derived_route_state
+
+        def _refresh_then_boom(agent_arg, ov):
+            real_refresh(agent_arg, ov)  # the clearing projection runs first
+            raise RuntimeError("projection boom")
+
+        monkeypatch.setattr(ro_module, "_refresh_derived_route_state", _refresh_then_boom)
+        with pytest.raises(RuntimeError, match="projection boom"):
+            with apply_runtime_override(agent, {"model": _OVERRIDE_MODEL}):
+                pass
+
+        assert self._durable_state(db) == baseline
+        assert agent.context_compressor._fallback_compression_streak == 5
+
+    def test_snapshot_failure_is_logged_as_warning(self, monkeypatch, caplog):
+        # R1: a failed durable getter must be operator-visible (WARNING), not a
+        # silent debug line that leaves the session in the cleared state.
+        import logging
+
+        agent, db, _session_cc = self._agent_with_recording_db(monkeypatch)
+
+        def _boom(session_id):
+            raise RuntimeError("db down")
+
+        monkeypatch.setattr(db, "get_compression_fallback_streak", _boom)
+        with caplog.at_level(logging.WARNING, logger="agent.runtime_override"):
+            with apply_runtime_override(agent, {"model": _OVERRIDE_MODEL}):
+                pass
+
+        assert any(
+            r.levelno == logging.WARNING and "snapshot failed" in r.getMessage()
+            for r in caplog.records
+        )
+
+    def test_restore_failure_is_logged_as_warning(self, monkeypatch, caplog):
+        # R1: the other half of the same contract — a failed durable setter on
+        # the rollback is operator-visible too, so a rolled-back-but-not-really
+        # session is never silent.
+        import logging
+
+        agent, db, _session_cc = self._agent_with_recording_db(monkeypatch)
+
+        def _boom(session_id, streak):
+            raise RuntimeError("db down")
+
+        monkeypatch.setattr(db, "set_compression_fallback_streak", _boom)
+        with caplog.at_level(logging.WARNING, logger="agent.runtime_override"):
+            with apply_runtime_override(agent, {"model": _OVERRIDE_MODEL}):
+                pass
+
+        assert any(
+            r.levelno == logging.WARNING and "restore failed" in r.getMessage()
+            for r in caplog.records
+        )
+
+    # ── R3: absent pre-state is restored as ABSENCE, not null/0 ────────────
+
+    def test_absent_cooldown_row_is_recreated_as_absent(self, monkeypatch):
+        # Pre-state has no cooldown row at all -> exact restore means still
+        # absent: the restorer runs with session_exists=False and no NULL row is
+        # fabricated.
+        agent, db, _session_cc = self._agent_with_recording_db(monkeypatch, absent=True)
+        baseline = self._durable_state(db)
+        assert db.get_compression_failure_cooldown_row("S1")["session_exists"] is False
+        db.calls.clear()
+
+        with apply_runtime_override(agent, {"model": _OVERRIDE_MODEL}):
+            assert db.get_compression_failure_cooldown_row("S1")["session_exists"] is False
+
+        assert "restore_compression_failure_cooldown_row" in db.names()
+        assert db.get_compression_failure_cooldown_row("S1")["session_exists"] is False
+        assert self._durable_state(db) == baseline
+
+    def test_absent_prune_rearm_key_stays_absent(self, monkeypatch):
+        # Pre-state has no _proactive_prune_rearm_tokens key -> exact restore
+        # re-creates ABSENCE (key removed), never a 0/NULL stray key.
+        agent, db, _session_cc = self._agent_with_recording_db(monkeypatch, absent=True)
+        baseline = self._durable_state(db)
+        db.calls.clear()
+
+        with apply_runtime_override(agent, {"model": _OVERRIDE_MODEL}):
+            assert PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY not in db.model_config
+            patches_mid_scope = [
+                args[1] for name, args in db.calls if name == "patch_session_model_config"
+            ]
+
+        assert db.get_session_model_config_value(
+            "S1", PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY, "ABSENT"
+        ) == "ABSENT"
+        assert db.model_config == {}
+        assert self._durable_state(db) == baseline
+        # The rollback issued its own delete for the absent key, on top of the
+        # projection's no-op clear — so absence is re-created, never a 0/NULL
+        # key.  (Counting the calls distinguishes the rollback from the
+        # projection; the last patch must be the delete.)
+        restore_patches = [
+            args[1] for name, args in db.calls if name == "patch_session_model_config"
+        ]
+        assert len(restore_patches) > len(patches_mid_scope)
+        assert restore_patches[-1] == {PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: None}
+
+    # ── R4: a newer legitimate write must survive nested rollbacks ─────────
+
+    def test_nested_override_does_not_clobber_newer_durable_write(self, monkeypatch):
+        # A legitimate durable write made while a nested override is open must
+        # survive BOTH exits: neither rollback may resurrect the pre-override 5.
+        agent, db, _session_cc = self._agent_with_recording_db(monkeypatch)
+
+        with apply_runtime_override(agent, {"model": _OVERRIDE_MODEL}):
+            with apply_runtime_override(agent, {"model": _FALLBACK_MODEL}):
+                db.set_compression_fallback_streak("S1", 7)
+
+        assert db.fallback_streak == 7

@@ -8,6 +8,10 @@ from typing import Dict, List, Optional, Callable
 
 MAX_CHOICES = 4  # the UI always appends an "Other (type your answer)" row
 MAX_QUESTIONS = 5  # independent questions per batch call
+# The renderer contract (#109939 keeps newlines and wraps text) accepts up to this many
+# characters per choice; anything longer is rejected here, at the source, so no surface
+# silently drops a choice after the agent already offered it.
+MAX_CHOICE_CHARS = 8000
 # Canonical timeout sentinel. The CLI returns this exact text; the batch loop
 # treats it (like ``None``) as "the user walked away" and aborts remaining questions.
 TIMEOUT_RESPONSE = ("The user did not provide a response within the time limit. "
@@ -91,6 +95,23 @@ def _clean_answer(raw, multi: bool):
     return [strip_recommended(r) for r in _parse_multi_select_response(raw)] if multi else strip_recommended(raw)
 
 
+def _choice_limit_error(choices: list, where: str) -> Optional[str]:
+    """Return the ``tool_error`` message for the first choice longer than ``MAX_CHOICE_CHARS``
+    (measured after flattening, before the ``(Recommended)`` suffix is added), else None.
+    Choices are the actionable part of the prompt; an over-limit one would be silently
+    dropped by some surfaces while still being echoed in ``choices_offered``, so the call is
+    rejected up front instead."""
+    for index, choice in enumerate(choices):
+        text = _flatten_choice(choice)
+        if text and len(text) > MAX_CHOICE_CHARS:
+            return (
+                f"{where} choice {index} is {len(text)} characters; the limit is "
+                f"{MAX_CHOICE_CHARS} per choice. Shorten the choice (move detail into "
+                "the question text or the choice description) and resend."
+            )
+    return None
+
+
 def _clean_choices(choices: list) -> Optional[List[str]]:
     """Flatten, drop empties, cap at MAX_CHOICES; None when nothing survives (open-ended)."""
     cleaned = [s for s in (_flatten_choice(c) for c in choices) if s]
@@ -127,6 +148,9 @@ def _normalize_questions(questions) -> tuple:
         if choices is not None:
             if not isinstance(choices, list):
                 return None, f"questions[{index}].choices must be a list."
+            limit_error = _choice_limit_error(choices, f"questions[{index}]")
+            if limit_error:
+                return None, limit_error
             choices = _clean_choices(choices)
         normalized.append({
             "qid": f"q{index}", "id": str(item.get("id") or "").strip() or None, "question": text,
@@ -222,6 +246,9 @@ def clarify_tool(question: str, choices: Optional[List[str]] = None, multi_selec
     if choices is not None:
         if not isinstance(choices, list):
             return tool_error("choices must be a list of strings.")
+        limit_error = _choice_limit_error(choices, "choices")
+        if limit_error:
+            return tool_error(limit_error)
         choices = _clean_choices(choices)
     if callback is None:
         return tool_error(_UNAVAILABLE)
@@ -254,9 +281,11 @@ CLARIFY_SCHEMA = {
         "option FIRST, the UI marks it '(Recommended)' and auto-appends an "
         "'Other' free-text row), multi-select (multi_select=true), or "
         "open-ended (omit choices). Options go ONLY in `choices`, never "
-        "enumerated inside the question text (choices render as pickable "
-        "rows; options written into the question are dead prose the user "
-        "can't click). Result: {responses: [...]} in question order (plus "
+        f"enumerated inside the question text (choices render as pickable "
+        f"rows, each limited to {MAX_CHOICE_CHARS} characters — put longer "
+        f"detail in the question text instead; options written into the "
+        f"question are dead prose the user can't click). Result: "
+        "{responses: [...]} in question order (plus "
         "timed_out=true, and a notice saying why, if the user stopped "
         "part-way or the prompt could not be delivered). Prefer deciding "
         "low-stakes questions yourself; don't use this for dangerous-command "
@@ -281,7 +310,7 @@ CLARIFY_SCHEMA = {
                         "question": {"type": "string"},
                         "choices": {
                             "type": "array",
-                            "items": {"type": "string"},
+                            "items": {"type": "string", "maxLength": MAX_CHOICE_CHARS},
                             "maxItems": MAX_CHOICES,
                         },
                         "multi_select": {"type": "boolean"},

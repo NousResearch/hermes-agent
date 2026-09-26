@@ -117,19 +117,32 @@ export function parseSpawnLedger(contents: unknown): HostBackendRecord[] {
  *
  * Newest registration first, so a host that briefly holds a stale record and a
  * fresh one tries the live one before falling back.
+ *
+ * `isPidAlive` skips records whose backend is already gone (#123586): the
+ * ledger survives the process it describes, so after any shutdown the newest
+ * record points at a dead PID and dialling its port only burns the wait
+ * budget. Absent the probe, every record is assumed live (today's behaviour).
+ *
+ * ponytail: PID-only check — a reused PID still faces the HTTP probe and the
+ * session-token handshake below, which stay the boundary that validates a
+ * record. Read the other end's start time too if a same-PID impostor ever
+ * attaches in the wild (no stdlib way to ask another PID's create_time).
  */
 export function spawnOrAttach({
   isolated = false,
-  records = []
+  records = [],
+  isPidAlive
 }: {
   isolated?: boolean
   records?: HostBackendRecord[]
+  isPidAlive?: (pid: number) => boolean
 }): SpawnOrAttachDecision {
   if (isolated) {
     return { action: 'spawn', reason: 'isolated' }
   }
 
-  const [newest] = [...records].sort((left, right) => right.registeredAt - left.registeredAt)
+  const live = isPidAlive ? records.filter(record => isPidAlive(record.pid)) : records
+  const [newest] = [...live].sort((left, right) => right.registeredAt - left.registeredAt)
 
   return newest ? { action: 'attach', record: newest } : { action: 'spawn', reason: 'no-running-backend' }
 }

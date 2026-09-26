@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { test } from 'vitest'
 
 import { attachToHostBackend } from './host-backend-attach'
+import { spawnOrAttach } from './backend-discovery'
 import { runPrimaryBackendStartup } from './primary-backend-startup'
 
 const LEDGER = JSON.stringify([
@@ -202,4 +203,81 @@ test('a published token the websocket rejects is not adopted', async () => {
 
   assert.equal(attached, null)
   assert.equal(probed, 1)
+})
+
+/**
+ * #123586: the ledger survives the process it describes, so after any
+ * shutdown the newest record points at a dead PID. Attaching to it dials a
+ * port nobody listens on and burns the wait budget (a squatted port can burn
+ * all of it); a PID that is gone must decide `spawn` before any network I/O.
+ */
+test('a record whose pid is dead decides spawn instead of attach', () => {
+  const decision = spawnOrAttach({
+    isolated: false,
+    isPidAlive: () => false,
+    records: JSON.parse(LEDGER)
+  } as Parameters<typeof spawnOrAttach>[0])
+
+  assert.deepEqual(decision, { action: 'spawn', reason: 'no-running-backend' })
+})
+
+test('a dead pid is skipped before any network probe runs', async () => {
+  let servedTokenCalls = 0
+  let readyCalls = 0
+  let probeCalls = 0
+
+  const attached = await attachToHostBackend({ isolated: false, ledgerPath: '/ledger.json' }, {
+    ...attachDeps(LEDGER),
+    isPidAlive: () => false,
+    probeWebSocket: async () => {
+      probeCalls += 1
+
+      return { ok: true }
+    },
+    resolveServedToken: async () => {
+      servedTokenCalls += 1
+
+      return 'served-token'
+    },
+    waitForReady: async () => {
+      readyCalls += 1
+    }
+  } as Parameters<typeof attachToHostBackend>[1])
+
+  assert.equal(attached, null)
+  assert.equal(servedTokenCalls, 0, 'a dead pid must not be probed over HTTP')
+  assert.equal(readyCalls, 0)
+  assert.equal(probeCalls, 0)
+})
+
+test('a dead newest record falls through to a live older one', async () => {
+  const [ordinary] = JSON.parse(LEDGER)
+  const probedPorts: number[] = []
+
+  const ledger = JSON.stringify([
+    ordinary,
+    { ...ordinary, pid: 5150, port: 61_000, registered_at: ordinary.registered_at - 1 }
+  ])
+
+  const attached = await attachToHostBackend({ isolated: false, ledgerPath: '/ledger.json' }, {
+    ...attachDeps(ledger),
+    isPidAlive: (pid: number) => pid !== 4711,
+    resolveServedToken: async (baseUrl: string) => {
+      probedPorts.push(Number(new URL(baseUrl).port))
+
+      return 'served-token'
+    }
+  } as Parameters<typeof attachToHostBackend>[1])
+
+  assert.equal(attached?.pid, 5150)
+  assert.deepEqual(probedPorts, [61_000], 'only the live record may be dialled')
+})
+
+test('a live pid still attaches (liveness gate must not break the hot path)', async () => {
+  const attached = await attachToHostBackend({ isolated: false, ledgerPath: '/ledger.json' }, {
+    ...attachDeps(LEDGER),
+    isPidAlive: () => true
+  } as Parameters<typeof attachToHostBackend>[1])
+
+  assert.equal(attached?.pid, 4711)
 })

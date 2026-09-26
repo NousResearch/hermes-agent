@@ -639,7 +639,17 @@ def test_launch_external_worker_pin_extends_the_sanitized_env_not_os_environ(
 
     assert scheduler._launch_external_cron_worker(job) is True
     entries = spawned[0][1]["env"]["PYTHONPATH"].split(os.pathsep)
-    assert entries == [str(repo_root), str(tmp_path / "kept-by-sanitizer")]
+    # Contract: the checkout first, then the Hermes-owned runtime site-packages the
+    # shared sanitizer stripped (the worker must import the tree AND the dependency
+    # graph that only the committed environment carries), then what the sanitizer kept.
+    # The restored set is the exact inverse of the strip -- computed with the stripper's
+    # own ownership helper, so it can never widen beyond what was removed.
+    from tools.environments.local_pythonpath import _get_hermes_site_packages
+
+    restored = [str(p) for p in _get_hermes_site_packages(spawned[0][1]["env"]) if Path(p).is_dir()]
+    assert entries == [str(repo_root), *restored, str(tmp_path / "kept-by-sanitizer")]
+    # Still NOT rebuilt from raw os.environ.
+    assert str(tmp_path / "raw-environ-only") not in entries
 
     # Wheel / pipx layout: repo_root == purelib -> untouched.
     monkeypatch.setattr(worker_env_mod, "_installed_purelib", lambda: repo_root)

@@ -39,6 +39,14 @@ _UPDATE_FAILED_NOTICE = (
 # deferred line on every poll, in every process, forever. Stop waiting past this age.
 _UPDATE_NOTIFY_MAX_ADAPTER_WAIT_SECONDS = 3600.0
 
+# A signal-driven shutdown cannot tell a supervised restart (systemd revives us seconds
+# later) from a terminal stop (the unit stays down): systemd marks both via ExecStop before
+# SIGTERM. Only a prompt revival is a restart, so a marker older than this sends no online
+# notice — a later manual start after a real stop stays silent instead of helloing (#121937).
+# Sized far above the RestartSec=5s revival plus slow-boot/reconnect headroom, far below a
+# human stop-to-start gap. Markers without ``requested_at`` (pre-#121937) still notify.
+_PLANNED_RESTART_NOTICE_TTL_S = 1800.0
+
 
 def _served_notice_target_key(profile: Optional[str], platform_value: str, chat_id, thread_id) -> tuple:
     """Notice-dedupe key for one SERVED profile's home channel.
@@ -954,6 +962,14 @@ class GatewayNotificationsMixin:
                 return
             try:
                 data = json.loads(path.read_text(encoding="utf-8-sig"))
+                # ponytail: downtime-duration proxy for restart-vs-terminal-stop (see TTL note).
+                requested_at = data.get("requested_at")
+                if (
+                    isinstance(requested_at, (int, float))
+                    and time.time() - requested_at > _PLANNED_RESTART_NOTICE_TTL_S
+                ):
+                    path.unlink(missing_ok=True)
+                    return
                 delivered = {tuple(target) for target in data.get("delivered_targets", [])}
                 # Owed targets come from config, not live transports: a removed home or an opt-out
                 # (gateway_restart_notification=false) must not keep the marker alive forever.

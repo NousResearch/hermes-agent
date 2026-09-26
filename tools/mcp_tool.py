@@ -317,7 +317,8 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
         "_recycled_reason", "initialize_result", "_ping_unsupported", "_list_cache_meta",
         "_reconnect_retries", "_session_proven", "_was_parked", "_inflight_tasks", "_reconnecting",
         "_suspect_reason", "_teardown_race", "_permanent_grace_used", "_stdio_child_pids",
-        "_ever_connected", "_sse_fallback", "_park_reason", "_last_park_line")
+        "_ever_connected", "_sse_fallback", "_park_reason", "_last_park_line", "_degraded_since",
+        "_reestablish_noted")
 
     def __init__(self, name: str):
         self.name = name
@@ -358,6 +359,12 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
         # (revoked credentials, dead endpoint) that must not run the job tool-less forever.
         self._park_reason: Optional[str] = None
         self._last_park_line: Optional[str] = None  # last park WARNING text; identical re-parks log at DEBUG
+        # Monotonic start of the current degraded episode (keepalive / health-check failure, dead
+        # stdio child), or None. Cleared only by REAL proof of health (_mark_session_proven), which
+        # logs the recovery of a reconnect that never parked — otherwise a reconnect that simply
+        # worked logs nothing and a log reader sees two failures and then silence.
+        self._degraded_since: Optional[float] = None
+        self._reestablish_noted: bool = False
         # In-flight RPC tasks so a deliberate teardown fails them fast; _reconnecting is True
         # during that teardown so _track_inflight_rpc turns the cancel into a retryable error.
         # In-flight RPC bookkeeping (#48069 salvage): user-visible requests registered while running so a

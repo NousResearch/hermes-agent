@@ -122,6 +122,7 @@ class MCPServerRunMixin:
                             logger.warning("MCP server '%s' stdio child exited before the session proved "
                                            "healthy; triggering reconnect (state: connected → degraded)",
                                            self.name)
+                            self._note_degraded()
                             break
                         self._mark_session_proven()
                     continue
@@ -139,6 +140,7 @@ class MCPServerRunMixin:
                         logger.warning("MCP server '%s' keepalive failed, triggering reconnect (state: connected → "
                                        "degraded): %s: %s", self.name, type(root).__name__, root)
                         self.mark_suspect(f"keepalive failed: {type(root).__name__}: {root}")
+                        self._note_degraded()
                         self._reconnect_event.set()
                         break
                     # Survived a full keepalive interval: real proof of health.

@@ -150,7 +150,11 @@ beforeEach(() => {
   api.mockResolvedValue({ profiles: [] })
   setApiRequestConnection(null)
   setApiRequestProfile(null)
-  vi.stubGlobal('window', { hermesDesktop: { api, connections: { list, setLastUsed } }, localStorage, location: window.location })
+  vi.stubGlobal('window', {
+    hermesDesktop: { api, connections: { list, setLastUsed } },
+    localStorage,
+    location: window.location
+  })
 })
 
 afterEach(() => vi.unstubAllGlobals())
@@ -162,6 +166,24 @@ describe('connection registry cache', () => {
     expect(list).toHaveBeenCalledTimes(1)
     expect($connectionsRegistry.get()).toEqual(registry)
     expect($activeConnectionId.get()).toBeNull()
+
+    // A stuck IPC read must release the lifecycle's retry loop and preserve
+    // the last good cache, even if the timed-out snapshot eventually arrives.
+    vi.useFakeTimers()
+    const stuck = deferred<DesktopConnectionsRegistry>()
+    list.mockImplementationOnce(() => stuck.promise)
+
+    try {
+      const refresh = refreshConnectionsRegistry()
+      const rejected = expect(refresh).rejects.toThrow('Timed out reading the connection registry')
+      await vi.advanceTimersByTimeAsync(5_000)
+      await rejected
+      stuck.resolve({ ...registry, connections: [] })
+      await Promise.resolve()
+      expect($connectionsRegistry.get()).toEqual(registry)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('restores the last-used source once when that launch mode is enabled', async () => {
@@ -183,6 +205,24 @@ describe('connection registry cache', () => {
     await initializeConnectionsRegistry()
 
     expect(ensureGatewayAgent).not.toHaveBeenCalled()
+  })
+
+  it('selects the registry primary on boot when an update left an unqualified local descriptor', async () => {
+    // Post-update boot can publish a local descriptor with no registry id
+    // while connections.json still says launchMode=primary and the primary is
+    // SSH. That live local must not block selecting the registered primary.
+    list.mockResolvedValueOnce({
+      ...registry,
+      lastUsed: 'local',
+      launchMode: 'primary',
+      primary: 'homelab'
+    })
+    $connection.set({ mode: 'local' })
+
+    await initializeConnectionsRegistry()
+
+    expect(ensureGatewayAgent).toHaveBeenCalledTimes(1)
+    expect(ensureGatewayAgent).toHaveBeenCalledWith('homelab', 'default', expect.anything())
   })
 
   it('restores a remote registry primary through its exact connection id', async () => {

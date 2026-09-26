@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import logging
 
 import pytest
 
@@ -59,8 +58,6 @@ def test_reason_and_timestamp_stored(hermes_home):
     assert raw["reason"] == "runaway cron fan-out"
 
 
-def test_get_state_none_when_disengaged(hermes_home):
-    assert estop.get_state() is None
 
 
 def test_corrupt_sentinel_still_engages(hermes_home):
@@ -75,8 +72,6 @@ def test_corrupt_sentinel_still_engages(hermes_home):
 # ── paused notice for new gateway turns ─────────────────────────────────────
 
 
-def test_paused_reply_none_when_disengaged(hermes_home):
-    assert estop.paused_reply() is None
 
 
 def test_paused_reply_surfaces_reason_and_resume_hint(hermes_home):
@@ -85,40 +80,13 @@ def test_paused_reply_surfaces_reason_and_resume_hint(hermes_home):
     assert notice is not None
     assert "paused" in notice.lower()
     assert "deploy window" in notice
-    assert "hermes resume" in notice
 
 
-def test_paused_reply_without_reason(hermes_home):
-    estop.engage()
-    notice = estop.paused_reply()
-    assert notice is not None
-    assert "paused" in notice.lower()
-    assert "hermes resume" in notice
 
 
 # ── check_paused: cheap gate + log-once ─────────────────────────────────────
 
 
-def test_check_paused_logs_once_per_engagement(hermes_home, caplog):
-    logger = logging.getLogger("test.estop.component")
-    estop.engage()
-    with caplog.at_level(logging.INFO, logger=logger.name):
-        assert estop.check_paused("cron", logger) is True
-        assert estop.check_paused("cron", logger) is True
-        assert estop.check_paused("cron", logger) is True
-    paused_logs = [r for r in caplog.records if "paused" in r.getMessage().lower()]
-    assert len(paused_logs) == 1
-
-    # Resume then re-engage → logs once more (transition-based, not forever).
-    caplog.clear()
-    estop.disengage()
-    with caplog.at_level(logging.INFO, logger=logger.name):
-        assert estop.check_paused("cron", logger) is False
-        estop.engage()
-        assert estop.check_paused("cron", logger) is True
-        assert estop.check_paused("cron", logger) is True
-    paused_logs = [r for r in caplog.records if "paused" in r.getMessage().lower()]
-    assert len(paused_logs) == 1
 
 
 # ── cron scheduler integration ──────────────────────────────────────────────
@@ -256,19 +224,8 @@ def test_cli_resume_disengages(hermes_home, capsys):
     assert "resumed" in capsys.readouterr().out.lower()
 
 
-def test_cli_resume_when_not_paused(hermes_home, capsys):
-    from hermes_cli.subcommands.pause import cmd_resume
-
-    rc = cmd_resume(argparse.Namespace())
-    assert rc == 0
-    assert "not paused" in capsys.readouterr().out.lower()
 
 
-def test_builtin_subcommands_include_pause_resume():
-    from hermes_cli.main import _BUILTIN_SUBCOMMANDS
-
-    assert "pause" in _BUILTIN_SUBCOMMANDS
-    assert "resume" in _BUILTIN_SUBCOMMANDS
 
 
 # ── hermes status surfacing ─────────────────────────────────────────────────

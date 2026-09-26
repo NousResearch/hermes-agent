@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""Fail when a test file fakes macOS without carrying ``@pytest.mark.macos_only``.
+"""Fail when a test file fakes macOS without carrying ``@pytest.mark.platforms("macos")``.
 
 The OS lanes are marker-driven: ``.github/workflows/tests-os.yml`` selects the
-files the macOS job imports via ``scripts/ci/list_os_marked_tests.py macos_only``
-and then runs ``-m macos_only``. A file whose tests only pass because they make
+files the macOS job imports via ``scripts/ci/list_os_marked_tests.py platforms("macos")``
+and then runs ``-m platforms("macos")``. A file whose tests only pass because they make
 the interpreter believe it is on macOS (``is_macos`` patched to ``True``,
 ``sys.platform`` set to ``"darwin"``) but that carries no marker is invisible to
 that lane: it is green on Linux over a faked branch and never imported on the
 host it exists for (#111866). Root ``AGENTS.md`` § "Don't fake the host OS" is
 the rule; this check makes a violation a red job instead of a review catch.
 
-Flags, per ``tests/**/test_*.py`` without a whole-word ``macos_only``:
+Flags, per ``tests/**/test_*.py`` without a whole-word ``platforms("macos")``:
 
   monkeypatch.setattr(mod, "is_macos", lambda: True) / patch(..., return_value=True)
   monkeypatch.setattr(sys, "platform", "darwin")  /  patch("sys.platform", "darwin")
@@ -32,7 +32,7 @@ import re
 import sys
 from pathlib import Path
 
-MARKER = "macos_only"
+MARKER = 'platforms("macos")'
 OPT_OUT = "os-marker: ok"
 
 _TRUE = r"(?:lambda[^:]*:\s*True|return_value\s*=\s*True|,\s*True\b)"
@@ -49,19 +49,6 @@ _FAKES = (
 # Files that faked macOS before this check existed (#111866). Burn down, never extend.
 _BASELINE = frozenset(
     {
-        "tests/hermes_cli/test_doctor.py",
-        "tests/hermes_cli/test_gateway.py",
-        "tests/hermes_cli/test_gateway_proc_fallback.py",
-        "tests/hermes_cli/test_linux_sandbox_fixup.py",
-        "tests/hermes_cli/test_macos_fda_guidance.py",
-        "tests/hermes_cli/test_orphan_desktop_serve_reap.py",
-        "tests/hermes_cli/test_update_launchd_restart_verification.py",
-        "tests/hermes_cli/test_update_launchd_unloaded_gateway.py",
-        "tests/hermes_cli/test_urllib_security.py",
-        "tests/hermes_state/test_state_synchronous_pragma.py",
-        "tests/test_hermes_constants.py",
-        "tests/tools/test_macos_protected_search.py",
-        "tests/tools/test_skills_tool.py",
     }
 )
 
@@ -81,7 +68,7 @@ def _code_lines(text: str) -> list[tuple[int, str, str]]:
 
 def find_unmarked_fakes(root: Path, repo_root: Path) -> dict[str, list[tuple[int, str]]]:
     """Map repo-relative test path -> ``[(lineno, line)]`` of un-opted-out macOS fakes."""
-    marker_pat = re.compile(rf"\b{MARKER}\b")
+    marker_pat = re.compile(r'platforms\(\s*[^)]*?"[^")]*\bmacos\b[^")]*"')
     hits: dict[str, list[tuple[int, str]]] = {}
     for dirpath, _dirnames, filenames in os.walk(root):
         for fname in filenames:
@@ -89,7 +76,7 @@ def find_unmarked_fakes(root: Path, repo_root: Path) -> dict[str, list[tuple[int
                 continue
             path = Path(dirpath) / fname
             try:
-                text = path.read_text(encoding="utf-8", errors="replace")
+                text = path.read_text(encoding="utf-8-sig", errors="replace")
             except OSError:
                 continue
             if marker_pat.search(text):

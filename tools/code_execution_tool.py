@@ -469,7 +469,7 @@ def _env_temp_dir(env: Any) -> str:
     for candidate in (temp_dir, tempfile.gettempdir()):
         if isinstance(candidate, str) and candidate.startswith("/"):
             return candidate.rstrip("/") or "/"
-    return "/tmp"
+    return tempfile.gettempdir()
 
 
 def _format_interrupted_output(stdout_text: str) -> str:
@@ -709,8 +709,14 @@ def execute_code(
             "(process-identity probe wedged); the code was not run. Retry the call."
         )
     if _probe.value:
-        from cron.lifecycle_guard import contains_gateway_lifecycle_command
+        from cron.lifecycle_guard import (
+            HOST_INTERPRETER_KILL_REJECTION,
+            contains_gateway_lifecycle_command,
+            contains_host_interpreter_kill,
+        )
         if contains_gateway_lifecycle_command(code):
+            if contains_host_interpreter_kill(code):
+                return tool_error(HOST_INTERPRETER_KILL_REJECTION)
             return tool_error(
                 "Blocked: cannot restart or stop the gateway from inside the "
                 "gateway process. The gateway would kill this script before "
@@ -842,8 +848,9 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None,
     import_str = ", ".join(import_examples) + ", ..." if import_examples else "..."
     if mode == "strict":
         cwd_note = (
-            "Scripts run in their own temp dir, not the session's CWD — use absolute paths "
-            "(os.path.expanduser('~/.hermes/.env')) or terminal()/read_file() for user files."
+            "Scripts run in their own temp dir, not the session's CWD — pass "
+            "absolute paths for any file that lives outside the session's "
+            "working directory, or use terminal()/read_file() to reach it."
         )
     else:
         cwd_note = (
@@ -944,7 +951,5 @@ def __getattr__(name):  # PEP 562 — lazy so no import cycles
     if target is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
     return getattr(importlib.import_module(target[0]), target[1])
 # ---- END PLUGIN-COMPAT ----

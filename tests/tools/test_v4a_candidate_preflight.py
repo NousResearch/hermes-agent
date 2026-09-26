@@ -163,6 +163,76 @@ def test_write_policy_denial_blocks_entire_batch(
     assert protected.read_text() == "SECRET=unchanged\n"
 
 
+@pytest.mark.parametrize("denied_operation", ["delete", "move_source", "move_destination"])
+def test_mutation_policy_denial_blocks_prior_update(
+    tmp_path: Path,
+    monkeypatch,
+    denied_operation: str,
+):
+    allowed = tmp_path / "allowed"
+    denied = tmp_path / "denied"
+    allowed.mkdir()
+    denied.mkdir()
+    monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(allowed))
+
+    good = allowed / "good.txt"
+    destination = allowed / "moved.json"
+    good.write_text("old\n")
+    if denied_operation == "delete":
+        target = denied / "delete-me.txt"
+        target.write_text("preserve delete target\n")
+        mutation = f"*** Delete File: {target}\n"
+    elif denied_operation == "move_source":
+        target = denied / "move-source.json"
+        target.write_text("{malformed json")
+        destination = allowed / "moved.json"
+        mutation = f"*** Move File: {target} -> {destination}\n"
+    else:
+        target = allowed / "move-source.txt"
+        target.write_text("preserve move source\n")
+        destination = denied / "move-destination.txt"
+        mutation = f"*** Move File: {target} -> {destination}\n"
+
+    result = _apply(
+        f"*** Begin Patch\n*** Update File: {good}\n@@\n-old\n+new\n"
+        f"{mutation}*** End Patch\n",
+        tmp_path,
+    )
+
+    assert result.success is False
+    assert good.read_text() == "old\n"
+    assert "no files were modified" in (result.error or "")
+    assert "denied" in (result.error or "").lower()
+    if denied_operation == "delete":
+        assert target.read_text() == "preserve delete target\n"
+    elif denied_operation == "move_source":
+        assert target.read_text() == "{malformed json"
+        assert not destination.exists()
+    else:
+        assert target.read_text() == "preserve move source\n"
+        assert not destination.exists()
+
+
+def test_move_does_not_validate_existing_file_content_as_a_write_candidate(
+    tmp_path: Path,
+    monkeypatch,
+):
+    monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(tmp_path))
+    source = tmp_path / "malformed.json"
+    destination = tmp_path / "renamed.json"
+    original = b"{not valid JSON\n"
+    source.write_bytes(original)
+
+    result = _apply(
+        f"*** Begin Patch\n*** Move File: {source} -> {destination}\n*** End Patch\n",
+        tmp_path,
+    )
+
+    assert result.success is True, result.error
+    assert not source.exists()
+    assert destination.read_bytes() == original
+
+
 def test_non_string_backend_preflight_result_is_not_a_rejection(tmp_path: Path):
     target = tmp_path / "plain.txt"
     target.write_text("old\n")

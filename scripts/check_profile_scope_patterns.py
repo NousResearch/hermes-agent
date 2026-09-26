@@ -46,10 +46,12 @@ class Finding:
 
 
 def load_patterns(path: Path = PATTERNS) -> list[dict]:
-    data = json.loads(path.read_text(encoding="utf-8"))
+    data = json.loads(path.read_text(encoding="utf-8-sig"))
     out = []
     for p in data["patterns"]:
-        out.append({**p, "_rx": re.compile(p["pattern_regex"], re.M)})
+        # ``path_regex`` (optional) restricts a pattern to files whose repo-relative path matches.
+        path_rx = re.compile(p["path_regex"]) if p.get("path_regex") else None
+        out.append({**p, "_rx": re.compile(p["pattern_regex"], re.M), "_path_rx": path_rx})
     return out
 
 
@@ -63,6 +65,9 @@ def scan_text(rel: str, text: str, patterns: list[dict], lines: set[int] | None 
     findings: list[Finding] = []
     src_lines = text.split("\n")
     for p in patterns:
+        path_rx = p.get("_path_rx")
+        if path_rx is not None and not path_rx.search(rel):
+            continue
         for m in p["_rx"].finditer(text):
             line_no = text.count("\n", 0, m.start()) + 1
             if lines is not None and line_no not in lines:
@@ -106,7 +111,7 @@ def _read(rel: str, head: str | None) -> str | None:
         r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace")
         return r.stdout if r.returncode == 0 else None
     path = ROOT / rel
-    return path.read_text(encoding="utf-8", errors="replace") if path.is_file() else None
+    return path.read_text(encoding="utf-8-sig", errors="replace") if path.is_file() else None
 
 
 def run(base: str | None, head: str | None, files: list[str], patterns: list[dict]) -> list[Finding]:
@@ -114,7 +119,7 @@ def run(base: str | None, head: str | None, files: list[str], patterns: list[dic
     if files:
         for f in files:
             path = Path(f)
-            text = path.read_text(encoding="utf-8", errors="replace") if path.is_file() else None
+            text = path.read_text(encoding="utf-8-sig", errors="replace") if path.is_file() else None
             if text is None:
                 continue
             resolved = path.resolve()

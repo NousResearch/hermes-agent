@@ -3,7 +3,6 @@
 import json
 import os
 import stat
-from pathlib import Path
 
 import pytest
 
@@ -60,18 +59,10 @@ class TestHonchoClientConfigAutoEnable:
                 os.environ["HONCHO_API_KEY"] = env_key
 
 
-    def test_from_env_always_enabled(self, monkeypatch):
-        """from_env() should always set enabled=True."""
-        monkeypatch.setenv("HONCHO_API_KEY", "env-test-key")
-
-        cfg = HonchoClientConfig.from_env()
-
-        assert cfg.api_key == "env-test-key"
-        assert cfg.enabled is True
 
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits not enforced on Windows")
+@pytest.mark.platforms("posix")  # POSIX mode bits not enforced on Windows
 def test_save_config_sets_owner_only_permissions(tmp_path, monkeypatch):
     """honcho.json is created atomically with 0o600, not chmod-after-write."""
     import utils

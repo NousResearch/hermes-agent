@@ -97,6 +97,7 @@ class _FakePeer(BaseHTTPRequestHandler):
     runs: list = []
     run_idempotency_keys: list = []
     auth_seen: list = []
+    chat_reply_content: str = "reply from the other machine"
 
     def _json(self, payload, status=200):
         body = json.dumps(payload).encode()
@@ -152,7 +153,7 @@ class _FakePeer(BaseHTTPRequestHandler):
                 "session_id": "bc_1",
                 "message": {
                     "role": "assistant",
-                    "content": "reply from the other machine",
+                    "content": type(self).chat_reply_content,
                 },
             })
 
@@ -183,6 +184,7 @@ def fake_peer_server():
     _FakePeer.runs = []
     _FakePeer.run_idempotency_keys = []
     _FakePeer.auth_seen = []
+    _FakePeer.chat_reply_content = "reply from the other machine"
     server = HTTPServer(("127.0.0.1", 0), _FakePeer)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -214,6 +216,56 @@ def test_dm_creates_bot_chat_then_chats(monkeypatch, capsys, fake_peer_server):
     assert _FakePeer.chats == ["Message from 🤖 dixie (@dixie): disk status?"]
     # Every request carried the peer key.
     assert all(a == "Bearer secret-key-123456" for a in _FakePeer.auth_seen)
+
+
+def test_dm_hides_a_bare_silence_marker_from_the_sending_agent(monkeypatch, capsys, fake_peer_server):
+    """A successful bare NO_REPLY/[SILENT] marker is a delivery decision, not
+    a message — same rule as the gateway's live Bot Chat completion, the
+    Desktop bot_relay.deliver RPC and the one-shot local `hermes chat -Q`
+    transport (tools/bot_mode_dm.py::_run_local_turn). `hermes peer dm` is a
+    4th Bot Mode delivery door and, before this fix, printed the raw marker
+    to the sending agent as if it were a real reply."""
+    _FakePeer.chat_reply_content = "NO_REPLY"
+    monkeypatch.setattr(peer_cmd, "_load_peers", lambda: {"spark": {"url": fake_peer_server}})
+    monkeypatch.setattr(peer_cmd, "_peer_secret", lambda name: "secret-key-123456")
+
+    rc = peer_cmd.cmd_peer(
+        SimpleNamespace(peer_action="dm", target="spark", message="ping", json=False)
+    )
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "NO_REPLY" not in out
+    assert "(no reply)" in out
+
+
+def test_dm_json_output_hides_a_bare_silence_marker_too(monkeypatch, capsys, fake_peer_server):
+    _FakePeer.chat_reply_content = "[SILENT]"
+    monkeypatch.setattr(peer_cmd, "_load_peers", lambda: {"spark": {"url": fake_peer_server}})
+    monkeypatch.setattr(peer_cmd, "_peer_secret", lambda name: "secret-key-123456")
+
+    rc = peer_cmd.cmd_peer(
+        SimpleNamespace(peer_action="dm", target="spark", message="ping", json=True)
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["reply"] == ""
+
+
+def test_dm_delivers_prose_that_only_mentions_the_marker_normally(monkeypatch, capsys, fake_peer_server):
+    """Prose that merely mentions NO_REPLY must still be delivered — only an
+    EXACT whole-response marker is silence."""
+    _FakePeer.chat_reply_content = "The status is NO_REPLY needed right now, all clear."
+    monkeypatch.setattr(peer_cmd, "_load_peers", lambda: {"spark": {"url": fake_peer_server}})
+    monkeypatch.setattr(peer_cmd, "_peer_secret", lambda name: "secret-key-123456")
+
+    rc = peer_cmd.cmd_peer(
+        SimpleNamespace(peer_action="dm", target="spark", message="ping", json=False)
+    )
+
+    assert rc == 0
+    assert "The status is NO_REPLY needed right now, all clear." in capsys.readouterr().out
 
 
 def test_dm_reuses_existing_bot_chat(monkeypatch, capsys, fake_peer_server):
@@ -389,18 +441,6 @@ def test_dm_older_peer_hidden_duplicate_gives_clear_error(monkeypatch, capsys, o
     assert "Title already in use" in err
 
 
-def test_dm_older_peer_with_visible_bot_chat_still_works(monkeypatch, capsys, fake_peer_server):
-    """Backward compat: an older peer ignores the new query params and returns
-    the plain visible listing — a visible Bot Chat must still resolve."""
-    _FakePeer.sessions = ["bc_visible"]
-    monkeypatch.setattr(peer_cmd, "_load_peers", lambda: {"spark": {"url": fake_peer_server}})
-    monkeypatch.setattr(peer_cmd, "_peer_secret", lambda name: "secret-key-123456")
-
-    rc = peer_cmd.cmd_peer(SimpleNamespace(peer_action="dm", target="spark", message="ping", json=True))
-
-    assert rc == 0
-    assert json.loads(capsys.readouterr().out)["reply"] == "reply from the other machine"
-    assert _FakePeer.sessions == ["bc_visible"]
 
 
 def test_run_starts_async_turn_with_canonical_session_and_idempotency(

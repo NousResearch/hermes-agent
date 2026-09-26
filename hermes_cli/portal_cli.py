@@ -12,7 +12,7 @@ SUBSCRIPTION_URL = "https://portal.nousresearch.com/manage-subscription"
 DOCS_URL = "https://hermes-agent.nousresearch.com/docs/user-guide/features/tool-gateway"
 # Static `portal tools` catalog — the partners Tool Gateway routes to today: (key, label, partner).
 _CATALOG = [
-    ("web", "Web search & extract", "Firecrawl"),
+    ("web", "Web search & extract", "Nous-managed"),
     ("image_gen", "Image generation", "FAL"),
     ("tts", "Text-to-speech", "OpenAI TTS"),
     ("browser", "Browser automation", "Browser Use"),

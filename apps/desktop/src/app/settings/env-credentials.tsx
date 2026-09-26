@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { deleteEnvVar, getEnvVars, revealEnvVar, setEnvVar } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { type IconComponent } from '@/lib/icons'
+import { queryClient } from '@/lib/query-client'
 import { confirm } from '@/store/confirm'
 import { notify, notifyError } from '@/store/notifications'
 import type { EnvVarInfo } from '@/types/hermes'
@@ -115,6 +116,7 @@ export function useEnvCredentials(profile?: string): UseEnvCredentials {
       await setEnvVar(key, value, profile)
       patchVar(key, { is_set: true, redacted_value: redactedValue(value) })
       clearLocalState(key)
+      void queryClient.invalidateQueries({ queryKey: ['model-options'] })
       notify({ kind: 'success', title: toolsets.savedTitle, message: toolsets.savedMessage(key) })
     } catch (err) {
       notifyError(err, toolsets.failedSave(key))
@@ -139,6 +141,7 @@ export function useEnvCredentials(profile?: string): UseEnvCredentials {
       await setEnvVar(key, trimmed, profile)
       patchVar(key, { is_set: true, redacted_value: redactedValue(trimmed) })
       clearLocalState(key)
+      void queryClient.invalidateQueries({ queryKey: ['model-options'] })
       notify({ kind: 'success', message: toolsets.savedMessage(key), title: toolsets.savedTitle })
 
       return { ok: true }
@@ -162,6 +165,7 @@ export function useEnvCredentials(profile?: string): UseEnvCredentials {
       await deleteEnvVar(key, profile)
       patchVar(key, { is_set: false, redacted_value: null })
       clearLocalState(key)
+      void queryClient.invalidateQueries({ queryKey: ['model-options'] })
       notify({ kind: 'success', title: toolsets.removedTitle, message: toolsets.removedMessage(key) })
     } catch (err) {
       notifyError(err, toolsets.failedRemove(key))

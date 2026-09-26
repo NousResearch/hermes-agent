@@ -2,7 +2,7 @@
 
 Activated via ``plugins.enabled``; hooks are inert without the ``langfuse`` SDK
 and credentials. Env: HERMES_LANGFUSE_PUBLIC_KEY / SECRET_KEY (required),
-BASE_URL, ENV, RELEASE, SAMPLE_RATE, MAX_CHARS (12000), DEBUG, and CAPTURE =
+BASE_URL, ENV, RELEASE, SAMPLE_RATE, MAX_CHARS (12000), MAX_DEPTH (4), DEBUG, and CAPTURE =
 metadata (sizes/ids/usage only) | sanitized (default: secret redaction +
 truncation) | full (truncated raw content). See README.md.
 """
@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import atexit
 import contextlib
+import functools
 import json
 import logging
 import os
@@ -383,16 +384,33 @@ def _normalize_payload(value: Any, *, tool_name: str = "", args: Any = None) -> 
     return normalized
 
 
+@functools.lru_cache(maxsize=8)
+def _resolve_max_depth(configured_depth: str) -> int:
+    """Parse ``HERMES_LANGFUSE_MAX_DEPTH``; an invalid value warns ONCE per distinct value.
+    Cached on the raw string (not at import) so a long-lived process still picks up a changed
+    env var, while a bad value no longer logs one warning per captured prompt/tool payload."""
+    try:
+        max_depth = int(configured_depth)
+        if max_depth < 0:
+            raise ValueError
+        return max_depth
+    except ValueError:
+        logger.warning("Invalid HERMES_LANGFUSE_MAX_DEPTH=%r; use a non-negative integer. Falling back to 4.", configured_depth)
+        return 4
+
+
 def _safe_value(value: Any, *, max_chars: Optional[int] = None, depth: int = 0,
-                parse_json_strings: bool = False) -> Any:
+                parse_json_strings: bool = False, max_depth: Optional[int] = None) -> Any:
     max_chars = max_chars if max_chars is not None else int(_env("HERMES_LANGFUSE_MAX_CHARS", "12000") or "12000")
-    if depth > 4:
+    if max_depth is None:
+        max_depth = _resolve_max_depth(_env("HERMES_LANGFUSE_MAX_DEPTH", "4") or "4")
+    if depth > max_depth:
         return "<max-depth>"
     if value is None or isinstance(value, (int, float, bool)):
         return value
     if isinstance(value, bytes):
         return {"type": "bytes", "len": len(value)}
-    recurse = lambda v, d: _safe_value(v, max_chars=max_chars, depth=d, parse_json_strings=parse_json_strings)  # noqa: E731
+    recurse = lambda v, d: _safe_value(v, max_chars=max_chars, depth=d, parse_json_strings=parse_json_strings, max_depth=max_depth)  # noqa: E731
     if isinstance(value, str):
         parsed = _maybe_parse_json_string(value) if parse_json_strings else value
         return recurse(parsed, depth) if parsed is not value else _truncate_text(value, max_chars)

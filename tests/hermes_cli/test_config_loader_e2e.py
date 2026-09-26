@@ -141,7 +141,7 @@ def test_writeback_roundtrip_byte_identical_when_unchanged(tmp_path):
         import json
         from pathlib import Path
         from hermes_cli.config import read_user_config_raw
-        import yaml
+        import hermes_yaml as yaml
 
         p = Path(__import__('os').environ['HERMES_HOME']) / 'config.yaml'
         before = p.read_text(encoding='utf-8')

@@ -35,8 +35,9 @@ Every new or modernised skill — bundled, optional, or contributed — meets al
    `search_files`, `cat`/`head`/`tail` → `read_file`, `sed`/`awk` → `patch`, `find`/`ls` →
    `search_files target='files'`. MCP dependencies are named with setup in `## Prerequisites`.
    Third-party CLIs and pipelines are fine inside script files, not as the headline surface.
-3. **`platforms:` gating is audited against actual script imports.** POSIX-only primitives
-   (`fcntl`, `termios`, `os.setsid`, `os.kill(pid, 0)`, `/proc`, hardcoded `/tmp`, `signal.SIGKILL`,
+<!-- no-tmp: ok — names the POSIX-only anti-pattern reviewers look for -->
+3. **`platforms:` gating is audited against actual script imports.** POSIX-only primitives (hardcoded `/tmp`,
+   `fcntl`, `termios`, `os.setsid`, `os.kill(pid, 0)`, `/proc`, `signal.SIGKILL`,
    bash heredocs, `osascript`, `apt`, `systemctl`) require a platform declaration. Fix cross-platform
    first (`tempfile.gettempdir`, `pathlib.Path`, `psutil.pid_exists`, Python filtering instead of
    `grep`); gate narrower only when the dependency is genuinely platform-bound.

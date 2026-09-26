@@ -1202,7 +1202,7 @@ telegram:
 
 点击按钮回答，或点击 **Other** 输入自由形式的回复（你发送的下一条消息成为答案）。开放式 `clarify` 调用（无预设选项）跳过按钮，直接捕获你的下一条消息。
 
-通过 `~/.hermes/config.yaml` 中的 `agent.clarify_timeout` 配置响应超时（默认 `600` 秒）。如果你在超时内没有响应，Agent 会以哨兵消息解除阻塞并适应，而不是挂起。
+通过 `~/.hermes/config.yaml` 中的 `agent.clarify_timeout` 配置响应超时（默认 `3600` 秒；`0` 或更小 = 不限时）。如果你在超时内没有响应，Agent 会以哨兵消息解除阻塞并适应，而不是挂起。
 
 ## 推送通知音量
 
@@ -1238,4 +1238,4 @@ HERMES_TELEGRAM_NOTIFICATIONS=all
 
 切勿公开分享你的机器人 token。如果泄露，请立即通过 BotFather 的 `/revoke` 命令撤销。
 
-更多详情，请参阅[安全文档](/user-guide/security)。你也可以使用 [DM 配对](/user-guide/messaging#dm-pairing-alternative-to-allowlists) 进行更动态的用户授权方式。
+更多详情，请参阅[安全文档](../security.md)。你也可以使用 [DM 配对](./index.md#dm-pairing-alternative-to-allowlists) 进行更动态的用户授权方式。

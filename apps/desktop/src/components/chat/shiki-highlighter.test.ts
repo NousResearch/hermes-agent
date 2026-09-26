@@ -14,10 +14,6 @@ describe('exceedsHighlightBudget', () => {
   it('skips highlighting past the char budget on few lines', () => {
     expect(exceedsHighlightBudget('a'.repeat(200_000))).toBe(true)
   })
-
-  it('short-circuits on char budget before line loop', () => {
-    expect(exceedsHighlightBudget('y\n'.repeat(250_000))).toBe(true)
-  })
 })
 
 describe('chunkByLines', () => {

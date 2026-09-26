@@ -26,6 +26,7 @@ def watcher_home(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_change_checked_at", {})
     monkeypatch.setattr(server, "_change_broadcast_at", {})
     monkeypatch.setattr(server, "_bot_relay_outbox_seen", 0)
+    monkeypatch.setattr(server, "_pairing_roots_cache", None, raising=False)
 
     events = []
     monkeypatch.setattr(
@@ -123,6 +124,38 @@ def test_pairing_signal_follows_a_profile_store(watcher_home):
     server._broadcast_watched_changes(now=10.0)
 
     assert ("pairing.changed", {}) in events
+
+
+def test_pairing_probe_reuses_live_profile_roots_until_the_profile_set_moves(watcher_home, monkeypatch):
+    """The per-profile liveness probe (~14 stats each) runs once per profiles/ mtime + TTL, not
+    on every 2 s tick (#114041 §2); ledger writes under known roots are still seen each tick,
+    and a newly created profile is picked up because creating it bumps the parent's mtime."""
+    import hermes_constants
+
+    home, events = watcher_home
+    live_calls = []
+    real_live = hermes_constants.named_profile_is_live
+    monkeypatch.setattr(hermes_constants, "named_profile_is_live",
+                        lambda p: live_calls.append(p.name) or real_live(p))
+
+    def _profile(name):
+        (home / "profiles" / name / "platforms" / "pairing").mkdir(parents=True)
+        (home / "profiles" / name / "config.yaml").write_text("{}\n", encoding="utf-8")
+
+    _profile("work")
+    server._broadcast_watched_changes(now=0.0)
+    (home / "profiles" / "work" / "platforms" / "pairing" / "telegram-pending.json").write_text("{}", encoding="utf-8")
+    server._broadcast_watched_changes(now=10.0)
+    assert events == [("pairing.changed", {})]
+    assert live_calls == ["work"]  # second tick reused the cached roots, still saw the ledger
+
+    _profile("play")
+    os.utime(home / "profiles", ns=(0, 10**18))  # deterministic parent-mtime bump
+    server._broadcast_watched_changes(now=20.0)
+    (home / "profiles" / "play" / "platforms" / "pairing" / "discord-approved.json").write_text("{}", encoding="utf-8")
+    server._broadcast_watched_changes(now=30.0)
+    assert events == [("pairing.changed", {})] * 2
+    assert sorted(live_calls) == ["play", "work", "work"]
 
 
 def test_rate_limit_churn_does_not_broadcast_pairing_changed(watcher_home):

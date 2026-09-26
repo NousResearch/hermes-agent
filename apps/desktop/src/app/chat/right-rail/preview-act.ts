@@ -171,6 +171,26 @@ ${preamble()}
 })()`
 }
 
+/** After the locate click: the located editable must itself be
+ *  document.activeElement. A click that only mounts the editor leaves focus
+ *  on body, and the characters that follow would be page input. */
+function buildFocusProbeScript(): string {
+  return `(function () {
+${preamble()}
+  // hermes-focus-probe
+  var aimed = holder.aimed;
+  var active = document.activeElement;
+  var tag = aimed && aimed.tagName ? aimed.tagName : '';
+  var editable = !!(aimed && (aimed.isContentEditable === true || tag === 'INPUT' || tag === 'TEXTAREA'));
+  var focused = editable && active === aimed;
+  return Promise.resolve(JSON.stringify({
+    focused: focused,
+    success: true,
+    tag: active && active.tagName ? active.tagName : ''
+  }));
+})()`
+}
+
 /** Put up a mark that outlives the action that made it. Every other cue on the
  *  overlay retires on a timer, which is right for narrating a click and no use
  *  at all for holding a finding on screen while the agent keeps working. */
@@ -316,6 +336,30 @@ async function runJson(run: PreviewScriptRunner, code: string): Promise<Trip> {
   return { kind: 'answered', result: JSON.parse(raw) as PreviewActResult }
 }
 
+/** A single character is text. Named keys (Enter, Escape, ArrowDown) are not. */
+function isPrintableKey(key: string): boolean {
+  return key.length === 1
+}
+
+/** body/html, or a tag we never learned — a printable key there is a page
+ *  shortcut, not text entry. */
+function isPageRoot(tag: string | undefined): boolean {
+  const normalized = (tag || '').toUpperCase()
+
+  return !normalized || normalized === 'BODY' || normalized === 'HTML'
+}
+
+/** The loop stopped because the tool timed out or the turn was interrupted.
+ *  Say how much landed so the agent does not assume the whole string did. */
+function stoppedType(signal: AbortSignal, typed: number, total: number): PreviewActResult {
+  const reason = signal.reason === 'timeout' ? 'timed out' : 'was interrupted'
+
+  return {
+    error: `Typing stopped after ${typed} of ${total} characters because the action ${reason}.`,
+    success: false
+  }
+}
+
 /** Past tense of the verb the agent asked for, against what it actually hit. */
 function describeDone(action: PreviewActAction, target: string): string {
   if (action.kind === 'type') {
@@ -337,7 +381,8 @@ function describeDone(action: PreviewActAction, target: string): string {
 async function driveAction(
   run: PreviewScriptRunner,
   input: PreviewInputHandle,
-  action: PreviewActAction
+  action: PreviewActAction,
+  signal?: AbortSignal
 ): Promise<PreviewActResult> {
   // A key press must not be preceded by a click — that would activate the
   // control rather than type into it — so the page hands it focus instead.
@@ -366,6 +411,8 @@ async function driveAction(
   if (action.kind === 'click') {
     await clickAt(input)
   } else if (action.kind === 'type') {
+    const text = action.text ?? ''
+
     if (found.typable === false) {
       return {
         error: `${String(found.acted || 'That').replace(/^looking at /, '')} is not a text field, so typing into it would only select the text under the pointer. Click it if it opens one, then type into that.`,
@@ -373,21 +420,63 @@ async function driveAction(
       }
     }
 
+    if (signal?.aborted) {
+      return stoppedType(signal, 0, text.length)
+    }
+
     input.focus()
     await clickAt(input)
+
+    if (signal?.aborted) {
+      return stoppedType(signal, 0, text.length)
+    }
+
+    // The click is what is supposed to move DOM focus. webContents focus is
+    // not that — refuse unless the located editable is now activeElement,
+    // before select-all or any character.
+    const probe = await runJson(run, buildFocusProbeScript())
+    const focused = probe.kind === 'answered' && (probe.result as { focused?: boolean }).focused === true
+
+    if (!focused) {
+      const active =
+        probe.kind === 'answered' ? String((probe.result as { tag?: string }).tag || 'the page') : 'the page'
+
+      return {
+        error: `target is not focused (${active}); nothing typed`,
+        success: false
+      }
+    }
+
+    if (signal?.aborted) {
+      return stoppedType(signal, 0, text.length)
+    }
+
     // Select-all inside the now-focused field, so typing replaces what is there
     // the way it would for a person. NOT a triple-click: that is a pointer
     // gesture and selects the paragraph under the cursor whenever the target
     // turns out not to be a field.
     await selectAll(input)
-    await typeText(input, action.text ?? '')
+    const typed = await typeText(input, text, signal)
+
+    if (signal?.aborted) {
+      return stoppedType(signal, typed, text.length)
+    }
 
     if (action.submit) {
       await pressKey(input, 'Enter')
     }
   } else if (action.kind === 'press') {
+    const key = action.key || 'Enter'
+
+    if (isPrintableKey(key) && action.allowShortcut !== true && isPageRoot(found.tag)) {
+      return {
+        error: `Refused to press a printable key on ${found.tag || 'body'}. That would be a page shortcut; pass allowShortcut to opt in.`,
+        success: false
+      }
+    }
+
     input.focus()
-    await pressKey(input, action.key || 'Enter')
+    await pressKey(input, key)
   }
   // hover is the glide and nothing else — the pointer is already sitting on the
   // target, which is the whole request.
@@ -488,7 +577,8 @@ async function driveScroll(
  *  string: the verb arrives off the wire, and the history ones never reach
  *  the in-page engine. */
 export async function actOnActivePreview(
-  action: Omit<PreviewActAction, 'kind'> & { kind: string }
+  action: Omit<PreviewActAction, 'kind'> & { kind: string },
+  signal?: AbortSignal
 ): Promise<PreviewActResult> {
   const nav = NAV_ACTIONS.find(verb => verb === action.kind)
 
@@ -538,7 +628,7 @@ export async function actOnActivePreview(
   const input = activePreviewInput()
 
   if (input && DRIVEN.indexOf(typed.kind) !== -1) {
-    return driveAction(run, input, typed)
+    return driveAction(run, input, typed, signal)
   }
 
   // A plain page scroll is a wheel gesture. Jumping to an end is not — no hand

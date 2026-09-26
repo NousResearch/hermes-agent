@@ -357,6 +357,32 @@ describe('useComposerSubmit busy-turn routing', () => {
     expect(onSubmit).not.toHaveBeenCalled()
   })
 
+  it('puts a refused steer back in the composer when there is no queue to hold it', async () => {
+    // A brand-new chat is busy while its first session.create is in flight but
+    // has no queue key yet. The steer clears the draft first, so a refusal must
+    // restore the words rather than drop the only copy (#68927).
+    const { hook, loadIntoComposer, onSteer } = renderSubmitHook({ busy: true, sessionKey: null, text: 'keep me' })
+    onSteer.mockResolvedValueOnce(false)
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    await waitFor(() => expect(loadIntoComposer).toHaveBeenCalledWith('keep me', []))
+  })
+
+  it('queues a steer whose redirect RPC fails instead of losing it', async () => {
+    const { hook, onSteer } = renderSubmitHook({ busy: true, text: 'still here' })
+    onSteer.mockRejectedValueOnce(new Error('request timed out: session.redirect'))
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    await waitFor(() => expect(getQueuedPrompts('stored-session').map(({ text }) => text)).toEqual(['still here']))
+    clearQueuedPrompts('stored-session')
+  })
+
   it('queues a plain-text follow-up while the active turn is compacting', () => {
     const { hook, onCancel, onSteer, onSubmit, queueCurrentDraft } = renderSubmitHook({
       busy: true,
@@ -441,18 +467,6 @@ describe('useComposerSubmit busy-turn routing', () => {
     expect(onSteer).not.toHaveBeenCalled()
     expect(queueCurrentDraft).not.toHaveBeenCalled()
     expect(onCancel).not.toHaveBeenCalled()
-  })
-
-  it('threads the loaded composer scope through onSubmit for the #59305 submit-time guard', async () => {
-    const { hook, onSubmit } = renderSubmitHook({ text: 'hello' })
-
-    act(() => {
-      hook.result.current.submitDraft()
-    })
-
-    await waitFor(() =>
-      expect(onSubmit).toHaveBeenCalledWith('hello', expect.objectContaining({ composerScope: 'stored-session' }))
-    )
   })
 })
 

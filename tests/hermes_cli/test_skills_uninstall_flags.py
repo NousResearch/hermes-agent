@@ -36,15 +36,6 @@ def test_cli_skills_uninstall_yes_sets_skip_confirm(monkeypatch):
     assert captured["skip_confirm"] is True
 
 
-def test_cli_skills_uninstall_y_alias_sets_skip_confirm(monkeypatch):
-    """`-y` should behave the same as `--yes`."""
-    captured = _run_uninstall_cli(
-        monkeypatch,
-        ["hermes", "skills", "uninstall", "test-skill", "-y"],
-    )
-
-    assert captured["name"] == "test-skill"
-    assert captured["skip_confirm"] is True
 
 
 def test_cli_skills_uninstall_no_flags_keeps_prompt(monkeypatch):

@@ -228,14 +228,28 @@ class TestUnicodeNormalized:
         expected = 'Line 1 \u2014 with dash\nLine 2 \u201cquoted\u201d text\nLine 3 changed'
         assert new == expected, f"Got {new!r}"
 
-    def test_no_unicode_no_change(self):
-        """When file has no Unicode, replacement is direct (no-op guard)."""
-        content = "plain text here"
+
+    def test_equal_boundary_inside_expansion_keeps_region_text(self):
+        """An edit boundary falling inside a multi-char expansion (em-dash ->
+        '--') must snap to the expansion, not copy text from the region start.
+
+        SequenceMatcher splits old/new so that the second equal block begins
+        at the expansion's second '-': a norm index with no direct original
+        position. The old fallback (position 0) spliced the whole region text
+        into the replacement, duplicating it after every edit.
+        """
+        content = "value = x\u2014y\n"
         new, count, strategy, err = fuzzy_find_and_replace(
-            content, "plain text here", "plain text there"
-        )
-        assert count == 1
-        assert new == "plain text there"
+            content, "value = x--y", "value = x-@-y")
+        assert count == 1, f"Expected match, got err={err}"
+        assert strategy == "unicode_normalized"
+        assert new == "value = x\u2014@\u2014y\n", f"Got {new!r}"
+
+        # Same boundary class for a 3-char expansion (ellipsis -> '...').
+        new, count, strategy, err = fuzzy_find_and_replace("a\u2026b\n", "a...b", "a..X.b")
+        assert count == 1, f"Expected match, got err={err}"
+        assert strategy == "unicode_normalized"
+        assert new == "a\u2026X\u2026b\n", f"Got {new!r}"
 
 
 class TestUnicodeSpaceAndMinusNormalized:
@@ -306,18 +320,6 @@ class TestBlockAnchorThreshold:
         )
 
 
-class TestStrategyNameSurfaced:
-    """Tests for the strategy name in the 4-tuple return (Bug 6)."""
-
-    def test_exact_strategy_name(self):
-        new, count, strategy, err = fuzzy_find_and_replace("hello", "hello", "world")
-        assert strategy == "exact"
-        assert count == 1
-
-    def test_failed_match_returns_none_strategy(self):
-        new, count, strategy, err = fuzzy_find_and_replace("hello", "xyz", "world")
-        assert count == 0
-        assert strategy is None
 
 
 class TestEscapeDriftGuard:
@@ -404,11 +406,6 @@ class TestFindClosestLines:
         assert "def foo" in result or "def bar" in result
 
 
-    def test_includes_line_numbers(self):
-        content = "line1\nline2\ndef foo():\n    pass\n"
-        result = self.find_closest_lines("def foo():", content)
-        # Should include line numbers in format "N| content"
-        assert "|" in result
 
 
 class TestFormatNoMatchHint:

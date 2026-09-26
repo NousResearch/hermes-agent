@@ -12,7 +12,6 @@ import importlib
 import importlib.util
 import json
 import pkgutil
-import sqlite3
 import sys
 from pathlib import Path
 
@@ -102,4 +101,3 @@ def test_kanban_db_connect_opens_a_kanban_board(tmp_path, monkeypatch):
         conn.close()
     assert "tasks" in tables, tables
     assert not (tmp_path / "projects.db").exists()
-    assert isinstance(sqlite3.connect(db), sqlite3.Connection)

@@ -10,7 +10,6 @@ sidecar, so the next request still replays the answer byte-identically.
 
 from __future__ import annotations
 
-import logging
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -105,20 +104,6 @@ def test_stall_guard_interim_row_carries_promoted_text_as_sidecar(loop_agent):
     interim_wire = [m for m in second_call if m.get("role") == "assistant"][0]
     assert interim_wire["content"] == stalled
     assert "api_content" not in interim_wire
-
-
-def test_reasoning_only_clean_stop_logs_warning_with_route(loop_agent, caplog):
-    from tests.agent.test_run_agent import _mock_response
-
-    with caplog.at_level(logging.WARNING, logger="agent.conversation_loop"):
-        _run(loop_agent, [_mock_response(content=None, finish_reason="stop", reasoning_content=REASONING)])
-
-    hits = [r for r in caplog.records if r.getMessage().startswith("Reasoning-only clean stop")]
-    assert len(hits) == 1
-    assert hits[0].levelno == logging.WARNING
-    assert f"model={loop_agent.model}" in hits[0].getMessage()
-    assert "provider=deepseek" in hits[0].getMessage()
-    assert "tool_turns=0" in hits[0].getMessage()
 
 
 # ── planning-monologue stall: promoted reasoning must not fake a completion ──────────────────

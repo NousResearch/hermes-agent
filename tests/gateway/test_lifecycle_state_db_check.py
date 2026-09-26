@@ -122,3 +122,58 @@ def test_clean_exit_does_not_pay_for_the_check(tmp_path: Path, monkeypatch) -> N
     record_startup(home=tmp_path)
 
     assert not called, "integrity check ran on a clean boot"
+
+
+# ── startup-watchdog lease during the check (#115542) ───────────────────────
+
+
+def _armed_handle(monkeypatch):
+    """A real, thread-less StartupWatchdogHandle installed as the module singleton.
+
+    ``report_startup_progress`` resolves the singleton, so the lease bookkeeping the
+    check performs lands on this handle; no watchdog thread means nothing can exit pytest.
+    """
+    import hermes_startup_watchdog as sw
+
+    handle = sw.StartupWatchdogHandle(timeout_s=300.0, exit_code=75)
+    monkeypatch.setattr(sw, "_handle", handle)
+    return handle
+
+
+def test_unclean_exit_check_renews_the_startup_lease_while_sqlite_progresses(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A 37 GB store needs ~4200 s of quick_check; one 900 s entry lease cannot cover it
+    and the watchdog killed every boot with exit 75 (#115542). The check must keep renewing
+    a phase-owned lease from SQLite's progress handler for as long as the PRAGMA advances,
+    through the real unclean-exit entry point.
+    """
+    import gateway.lifecycle_ledger as ledger
+
+    handle = _armed_handle(monkeypatch)
+    # Renew on every handler tick so the renewal count is deterministic, not clock-bound.
+    monkeypatch.setattr(ledger, "_INTEGRITY_CHECK_LEASE_RENEW_S", 0.0)
+    monkeypatch.setattr(ledger, "_INTEGRITY_CHECK_PROGRESS_OPS", 1_000)
+    _make_state_db(tmp_path, corrupt=False)
+    _write_sentinel(tmp_path)
+
+    evidence = record_startup(home=tmp_path)
+
+    assert evidence is not None and evidence["state_db_integrity"] == "ok"
+    assert handle._lease_phase == "state_db_unclean_integrity_check"
+    assert handle._lease_count > 1, "lease was taken once at entry and never renewed"
+
+
+def test_unclean_exit_check_keeps_the_verdict_contract_under_the_lease(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The progress handler must never convert corruption into success or abort the PRAGMA:
+    a torn page still yields the first complaint, and the phase is still on record."""
+    handle = _armed_handle(monkeypatch)
+    _make_state_db(tmp_path, corrupt=True)
+
+    verdict = check_state_db_integrity(home=tmp_path)
+
+    assert verdict not in ("ok", "absent") and not verdict.startswith("check-failed")
+    assert handle._lease_phase == "state_db_unclean_integrity_check"
+    assert check_state_db_integrity(home=tmp_path / "nowhere") == "absent"

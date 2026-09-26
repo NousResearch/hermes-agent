@@ -14,6 +14,7 @@ import logging
 import os
 import re
 import threading
+import time
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -46,7 +47,7 @@ def load_state() -> Dict[str, Any]:
     }
     path = _state_file()
     try:
-        data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        data = json.loads(path.read_text(encoding="utf-8-sig")) if path.exists() else {}
     except (OSError, json.JSONDecodeError) as e:
         logger.debug("Failed to read curator state: %s", e)
         return base
@@ -106,19 +107,39 @@ def is_enabled() -> bool:  # default ON when no config says otherwise
 
 
 def get_interval_hours() -> int:
-    return _config_number("interval_hours", DEFAULT_INTERVAL_HOURS, int)
+    # < 1 would make should_run_now() true on every idle tick (a review pass each time), so floor it the same way.
+    return _bounded_count("interval_hours", DEFAULT_INTERVAL_HOURS)
 
 
 def get_min_idle_hours() -> float:
     return _config_number("min_idle_hours", DEFAULT_MIN_IDLE_HOURS, float)
 
 
+_warned_bad_values: set = set()
+
+
+def _bounded_count(key: str, default: int) -> int:
+    """*key* (a ``curator.<key>`` day/hour count), floored at 1 like ``curator prune --days`` already
+    refuses (hermes_cli/curator.py::_cmd_prune). A value < 1 collapses stale_cutoff/archive_cutoff
+    onto or past "now" in apply_automatic_transitions(), mass-transitioning every skill with any
+    past activity on the next automatic pass — unlike the manual prune path this runs unconfirmed,
+    so it falls back to the default instead of acting on the bad value."""
+    value = _config_number(key, default, int)
+    if value < 1:
+        # Warn once per (key, bad value): the dashboard status endpoint polls these getters.
+        if (key, value) not in _warned_bad_values:
+            _warned_bad_values.add((key, value))
+            logger.warning("curator.%s must be >= 1 (got %d); using the default of %d", key, value, default)
+        return default
+    return value
+
+
 def get_stale_after_days() -> int:
-    return _config_number("stale_after_days", DEFAULT_STALE_AFTER_DAYS, int)
+    return _bounded_count("stale_after_days", DEFAULT_STALE_AFTER_DAYS)
 
 
 def get_archive_after_days() -> int:
-    return _config_number("archive_after_days", DEFAULT_ARCHIVE_AFTER_DAYS, int)
+    return _bounded_count("archive_after_days", DEFAULT_ARCHIVE_AFTER_DAYS)
 
 
 def get_consolidate() -> bool:
@@ -212,6 +233,12 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> Dict[str, int
             _u.seed_record_if_missing(name)
             counts["seeded"] += 1
             continue
+        # A bundled skill's telemetry record predates the curator's first sight of it; anchor the clock here, once.
+        if (row.get("provenance") == "bundled" and int(row.get("use_count", 0) or 0) == 0
+                and not _parse_iso(row.get("last_activity_at")) and not row.get("first_seen_at")):
+            _u.reanchor_clock(name)
+            counts["seeded"] += 1
+            continue
         # Never-active skills anchor on created_at so they don't self-archive.
         anchor = _parse_iso(row.get("last_activity_at")) or _parse_iso(row.get("created_at")) or now
         if anchor.tzinfo is None:
@@ -280,7 +307,10 @@ CURATOR_REVIEW_PROMPT = (
     "(imperative + one clause of why), the same lesson stated twice becomes "
     "one rule, and incident narration, PR/issue numbers, dates and quoted "
     "chatter are dropped — the rule must stand without the story. Moving a "
-    "file unchanged under references/ is filing, not consolidating.\n\n"
+    "file unchanged under references/ is filing, not consolidating. A SKILL.md "
+    "body over ~24k chars is a consolidation target on its own: skill_view loads "
+    "all of it into context for the rest of the session, so distill it to the "
+    "always-on rules and push topic depth into references/.\n\n"
     "Hard rules — do not violate:\n"
     "1. DO NOT touch bundled, hub-installed, or external-dir skills "
     "(`skills.external_dirs`). The candidate list below is already filtered "
@@ -519,7 +549,7 @@ def _parse_structured_summary(llm_final: str) -> Dict[str, List[Dict[str, str]]]
     data = None
     if match:
         try:
-            import yaml  # type: ignore
+            import hermes_yaml as yaml
             data = yaml.safe_load(match.group(1))
         except Exception:
             pass
@@ -896,15 +926,21 @@ def run_curator_review(
     if dry_run:  # count candidates without mutating state
         counts = {"checked": len(_safe_curated_report()), "marked_stale": 0, "archived": 0, "reactivated": 0}
     else:
-        # Pre-mutation snapshot — best-effort, never blocks the run: a transient
-        # disk issue must not silently disable the curator forever.
-        try:
-            from agent import curator_backup
-            snap = curator_backup.snapshot_skills(reason="pre-curator-run")
-            if snap is not None:
-                _notify(on_summary, f"curator: snapshot created ({snap.name})")
-        except Exception as e:
-            logger.debug("Curator pre-run snapshot failed: %s", e, exc_info=True)
+        from agent import curator_backup
+        # The prune-only pass just renames directories into .archive/ (its own undo) and every edit is
+        # ledgered; only the LLM consolidation pass rewrites content in place, so only it earns a
+        # whole-tree snapshot. Retention still runs so old snapshots age out either way.
+        if consolidate:
+            # Best-effort, never blocks the run: a transient disk issue must not silently disable the curator forever.
+            try:
+                snap = curator_backup.snapshot_skills(reason="pre-curator-run")
+                if snap is not None:
+                    _notify(on_summary, f"curator: snapshot created ({snap.name})")
+            except Exception as e:
+                logger.debug("Curator pre-run snapshot failed: %s", e, exc_info=True)
+        else:
+            with contextlib.suppress(Exception):
+                curator_backup.prune_old_snapshots()
         counts = apply_automatic_transitions(now=start)
     auto_summary = ", ".join(
         f"{counts[key]} {label}" for key, label in (("marked_stale", "marked stale"), ("archived", "archived"), ("reactivated", "reactivated")) if counts[key]
@@ -998,7 +1034,7 @@ def _resolve_review_provider() -> tuple:
     explicit provider/model hits an auto-resolution path that fails for OAuth-only providers and pooled credentials
     (HTTP 400 "No models provided"). Never raises."""
     rp: Dict[str, Any] = {}
-    overrides, provider, model_name = {}, None, ""
+    overrides, provider, model_name, binding = {}, None, "", None
     try:
         from hermes_cli.config import load_config_readonly
         from hermes_cli.runtime_provider import resolve_runtime_provider
@@ -1013,7 +1049,8 @@ def _resolve_review_provider() -> tuple:
         if isinstance(rp.get("model"), str) and rp["model"].strip():
             model_name = rp["model"].strip()
     except Exception as e:
-        logger.debug("Curator provider resolution failed: %s", e, exc_info=True)
+        logger.warning("curator: auxiliary.curator.provider '%s' (model '%s') could not be resolved: %s — the review "
+                       "runs on the main model instead", getattr(binding, "provider", None), model_name, e)
     return rp, model_name, provider, overrides
 
 
@@ -1034,10 +1071,16 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         acp_command = rp.get("command")
         if isinstance(acp_command, str) and acp_command:
             agent_kwargs.update(acp_command=acp_command, acp_args=list(rp.get("args") or []))
+        from hermes_cli.config import load_config_readonly
+        from hermes_constants import resolve_reasoning_config
+
         review_agent = AIAgent(
             model=model_name, provider=provider, api_key=rp.get("api_key"), base_url=rp.get("base_url"),
             api_mode=rp.get("api_mode"), credential_pool=rp.get("credential_pool"),
             request_overrides=request_overrides, **agent_kwargs,
+            # Same chokepoint as every other surface: without it ``agent.reasoning_effort`` never reaches
+            # the review fork and the transport applies its default effort (a 400 on non-reasoning models).
+            reasoning_config=resolve_reasoning_config(load_config_readonly(), model_name),
             # No ``terminal``: a shell mv/cp/rm under the skills tree writes bytes
             # with NO ledger entry, so rollback would restore a hollow skill. Every
             # mutation goes through ledgered skill_manage; dropping the toolset
@@ -1088,13 +1131,54 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
 
 # --- Public entrypoint for the session-start hook ---
 
+_CLAIM_STALE_SECONDS = 3600.0
+
+
+def _run_claim_path() -> Path:
+    return get_hermes_home() / "skills" / ".locks" / "curator-run"
+
+
+def _claim_run() -> bool:
+    """One automatic pass per home across processes: two CLIs launched seconds apart both saw the
+    weekly interval elapsed and both pruned the tree. O_EXCL create wins the claim; a claim older than
+    an hour is a crashed holder and is taken over. When the lock dir cannot be created, run anyway."""
+    lock = _run_claim_path()
+    try:
+        lock.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return True
+    try:
+        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        try:
+            if time.time() - lock.stat().st_mtime > _CLAIM_STALE_SECONDS:
+                lock.unlink()
+                return _claim_run()
+        except OSError:
+            pass
+        return False
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(str(os.getpid()))
+    return True
+
+
+def _release_run_claim() -> None:
+    with contextlib.suppress(OSError):
+        _run_claim_path().unlink()
+
+
 def maybe_run_curator(*, idle_for_seconds: Optional[float] = None, on_summary: Optional[Callable[[str], None]] = None) -> Optional[Dict[str, Any]]:
     """Best-effort: run a curator pass if all gates pass. Returns the result dict if a pass was started, else None. Never raises."""
     try:
         # Idle gating: only enforce when the caller provided a measurement.
         if not should_run_now() or (idle_for_seconds is not None and idle_for_seconds < get_min_idle_hours() * 3600.0):
             return None
-        return run_curator_review(on_summary=on_summary)
+        if not _claim_run():
+            return None
+        try:
+            return run_curator_review(on_summary=on_summary)
+        finally:
+            _release_run_claim()
     except Exception as e:
         logger.debug("maybe_run_curator failed: %s", e, exc_info=True)
         return None

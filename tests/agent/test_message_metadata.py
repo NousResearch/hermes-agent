@@ -21,3 +21,18 @@ def test_append_stamps_same_mapping_at_append_time(monkeypatch):
     assert result is message
     assert messages == [message]
     assert message["timestamp"] == 456.0
+
+
+def test_append_replaces_same_durable_tail_but_keeps_identical_distinct_rows():
+    existing = {"role": "user", "content": "raw prompt", "timestamp": 1.0, "_row_id": 7}
+    adopted = {"role": "user", "content": "expanded prompt", "timestamp": 1.0, "_row_id": 7}
+    repeated = {"role": "user", "content": "expanded prompt", "timestamp": 2.0, "_row_id": 8}
+    messages = [existing]
+
+    append_message(messages, adopted)
+
+    assert messages == [adopted]
+
+    append_message(messages, repeated)
+
+    assert messages == [adopted, repeated]

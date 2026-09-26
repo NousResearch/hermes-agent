@@ -453,9 +453,8 @@ def _get_or_create_env(task_id: str):
 
 
 def _ship_file_to_remote(env, remote_path: str, content: str) -> None:
-    """Write *content* owner-only to *remote_path*. stdin-capable backends carry
-    the payload on stdin so it never appears in remote argv; the rest get the
-    base64 echo form (see _remote_write_cmd). Raises on write failure: the
+    """Write *content* owner-only to *remote_path*; the payload rides
+    ``stdin_data``, never an ``echo`` argv (see _remote_write). Raises on write failure: the
     caller ships secrets and code into dirs it believes are locked down, so a
     silent failure would run the next step against a missing or half-written
     file."""

@@ -33,8 +33,6 @@ class ScriptedEnv:
     receives the command and returns the result dict.
     """
 
-    _stdin_mode = "pipe"  # contract-faithful: ssh/docker/local deliver stdin
-
     def __init__(self, handlers):
         self.handlers = handlers
         self.commands = []

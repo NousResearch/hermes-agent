@@ -40,34 +40,23 @@ def _private_dirs_cmd(mkdir_dirs, chmod_dirs) -> str:
     return f"umask 077 && mkdir -p {mkdir} && chmod 700 {chmod}"
 
 
-def _remote_write_cmd(env, remote_path: str, content: str, *, atomic: bool = False) -> tuple:
-    """Build ``(command, stdin_data)`` writing *content* owner-only to *remote_path*.
+def _remote_write(env, remote_path: str, content: str, *, atomic: bool = False,
+                  timeout: int = 30):
+    """Write *content* owner-only to *remote_path*; returns the execute() result.
 
-    Payload transport follows the backend's stdin capability: ``pipe`` mode
-    (ssh, docker, local, singularity — the real shared-host backends) gets the
-    base64 via real stdin so the content never enters argv, where a co-tenant
-    can read it via ``/proc/*/cmdline`` for the command's lifetime.
-    ``heredoc``/``payload`` modes (modal, daytona, vercel, managed_modal —
-    isolated sandboxes where Modal-family stdin delivery is also unreliable)
-    keep the base64 echo form: the argv window there is one short write rather
-    than the whole run."""
+    The base64 payload always travels as ``stdin_data``: pipe-mode backends
+    (ssh, docker, local, singularity: the real shared-host ones) deliver it on
+    real stdin, so it never enters argv where a co-tenant can read it via
+    ``/proc/*/cmdline``; ``BaseEnvironment.execute`` embeds it as a heredoc
+    for heredoc-mode backends (modal, daytona, vercel), and managed_modal
+    forwards it as ``stdinData``, the same contract ``_write_to_sandbox``
+    relies on."""
     encoded = base64.b64encode(content.encode("utf-8")).decode("ascii")
     target = shlex.quote(remote_path)
     write = (f"base64 -d > {target}.tmp && mv -f {target}.tmp {target}"
              if atomic else f"base64 -d > {target}")
-    if getattr(env, "_stdin_mode", "pipe") == "pipe":
-        return f"umask 077 && {write}", encoded
-    return f"umask 077 && echo '{encoded}' | {write}", None
-
-
-def _remote_write(env, remote_path: str, content: str, *, atomic: bool = False,
-                  timeout: int = 30):
-    """Execute an owner-only remote write; returns the execute() result."""
-    cmd, stdin_data = _remote_write_cmd(env, remote_path, content, atomic=atomic)
-    kwargs = {"cwd": "/", "timeout": timeout}
-    if stdin_data is not None:
-        kwargs["stdin_data"] = stdin_data
-    return env.execute(cmd, **kwargs)
+    return env.execute(f"umask 077 && {write}", cwd="/", timeout=timeout,
+                       stdin_data=encoded)
 
 
 def _rpc_token_ok(request: dict, rpc_token: str) -> bool:

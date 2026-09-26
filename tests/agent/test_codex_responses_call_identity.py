@@ -42,7 +42,7 @@ def _argument_event(phase, item_id, value, index: int | None = 0):
     return event
 
 
-def _replay(events):
+def _replay_raw(events):
     events = [
         *events,
         {
@@ -67,8 +67,11 @@ def _replay(events):
         http_client=httpx.Client(transport=transport),
     ) as client:
         with client.responses.create(model="test", input="test", stream=True) as stream:
-            final = _consume_codex_event_stream(stream, model="test")
-    message, _ = _normalize_codex_response(final)
+            return _consume_codex_event_stream(stream, model="test")
+
+
+def _replay(events):
+    message, _ = _normalize_codex_response(_replay_raw(events))
     return [
         (call.id, call.function.name, json.loads(call.function.arguments))
         for call in message.tool_calls
@@ -133,23 +136,97 @@ def test_logical_calls_are_emitted_once(identity):
 
 
 @pytest.mark.parametrize(
-    "conflict", ["call-id", "output-index", "crossed-argument", "crossed-done"]
+    "conflict",
+    [
+        "call-id",
+        "output-index",
+        "crossed-argument",
+        "crossed-done",
+        "crossed-shared-call-id",
+        "ambiguous-shared-call-id",
+    ],
 )
 def test_conflicting_call_identity_is_rejected(conflict):
+    second_call_id = "call_one" if "shared-call-id" in conflict else "call_two"
     events = [
         _item_event("added", "announced", "call_one", "", 0),
-        _item_event("added", "announced-two", "call_two", "", 1),
+        _item_event("added", "announced-two", second_call_id, "", 1),
     ]
     contradictions = {
         "call-id": _item_event("done", "new-id", "call_other", "{}", 0),
         "output-index": _item_event("done", "announced", "call_one", "{}", 2),
         "crossed-argument": _argument_event("delta", "announced", "{}", 1),
         "crossed-done": _item_event("done", "announced", "call_two", "{}", 1),
+        "crossed-shared-call-id": _item_event("done", "announced", "call_one", "{}", 1),
+        "ambiguous-shared-call-id": _item_event("done", "new-id", "call_one", "{}", None),
     }
     with pytest.raises(
         ValueError, match="Conflicting Responses function call identity"
     ):
         _replay([*events, contradictions[conflict]])
+
+
+@pytest.mark.parametrize("count", [2, 3])
+@pytest.mark.parametrize("reverse", [False, True], ids=["forward", "reverse"])
+@pytest.mark.parametrize(
+    "identity", ["exact-indexed", "exact-unindexed", "rotated-indexed"]
+)
+def test_shared_call_ids_preserve_each_announced_item(count, reverse, identity):
+    indexes = [None if identity == "exact-unindexed" else i for i in range(count)]
+    announced_ids = [f"announced_{i}" for i in range(count)]
+    done_ids = (
+        [f"done_{i}" for i in range(count)]
+        if identity == "rotated-indexed" else announced_ids
+    )
+    # Preserve the reported populated/empty twin, including the raw empty payload.
+    arguments = [json.dumps({"value": i}) for i in range(count - 1)] + [""]
+    events = [
+        _item_event("added", announced_ids[i], "call_shared", None, indexes[i])
+        for i in range(count)
+    ]
+    for i in reversed(range(count)) if reverse else range(count):
+        events.append(
+            _item_event("done", done_ids[i], "call_shared", arguments[i], indexes[i])
+        )
+
+    response = _replay_raw(events)
+    assert [(item.id, item.call_id, item.arguments) for item in response.output] == [
+        (done_ids[i], "call_shared", arguments[i]) for i in range(count)
+    ]
+
+
+@pytest.mark.parametrize("count", [2, 3])
+def test_shared_call_ids_keep_interleaved_arguments_with_their_item(count):
+    events = [
+        _item_event("added", f"announced_{i}", "call_shared", "", i)
+        for i in range(count)
+    ]
+    # Learn each rotated alias by index; later frames have only that alias.
+    events += [
+        _argument_event("delta", f"delta_{i}", '{"value":"', i)
+        for i in range(count)
+    ]
+    events += [
+        _argument_event("delta", f"delta_{i}", str(i), None)
+        for i in reversed(range(count))
+    ]
+    events += [
+        _argument_event("delta", f"delta_{i}", '"}', None)
+        for i in range(count)
+    ]
+    expected = [{"value": str(i)} for i in range(count)]
+    if count == 3:
+        events.append(
+            _argument_event("done", "delta_1", '{"value":"arguments-done"}', None)
+        )
+        expected[1] = {"value": "arguments-done"}
+    events.append(
+        _item_event("done", f"delta_{count - 1}", "call_shared", '{"value":"item-done"}', None)
+    )
+    expected[-1] = {"value": "item-done"}
+    assert _replay(events) == [
+        ("call_shared", "diagnostic_echo", arguments) for arguments in expected
+    ]
 
 
 @pytest.mark.parametrize("aliases", [False, True], ids=["stable-ids", "rotating-ids"])

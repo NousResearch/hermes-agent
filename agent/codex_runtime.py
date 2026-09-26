@@ -853,7 +853,7 @@ class _CodexResponseAssembler:
         self._safe(self.on_reasoning_delta, "on_reasoning_delta", reasoning_text)
 
     def _pending_call_key(self, event: Any, item: Any = None) -> str | None:
-        """Match aliases without letting an index override a contradictory call identity.
+        """Match item aliases/indexes before falling back to a unique call ID.
 
         Copilot can rotate item IDs on every frame. Argument events have no call_id,
         so their response-local output_index is the continuity key in that case.
@@ -861,24 +861,28 @@ class _CodexResponseAssembler:
         item_id = str(_event_field(item, "id", "") if item is not None else _event_field(event, "item_id", ""))
         call_id = _event_field(item, "call_id")
         output_index = _event_field(event, "output_index")
-        matches = []
+        item_matches, index_matches, call_matches = set(), set(), set()
         for key, pending in self.pending_function_calls.items():
-            pending_call_id = _event_field(pending["item"], "call_id")
-            pending_index = pending["output_index"]
-            if not (item_id in pending["item_ids"]
-                    or (call_id and call_id == pending_call_id)
-                    or (output_index is not None and output_index == pending_index)):
-                continue
-            if ((call_id and pending_call_id and call_id != pending_call_id)
-                    or (output_index is not None and pending_index is not None and output_index != pending_index)):
-                raise ValueError("Conflicting Responses function call identity")
-            matches.append(key)
+            if item_id in pending["item_ids"]:
+                item_matches.add(key)
+            if output_index is not None and output_index == pending["output_index"]:
+                index_matches.add(key)
+            if call_id and call_id == _event_field(pending["item"], "call_id"):
+                call_matches.add(key)
+        # Separately announced items can share a call_id. Exact item/index evidence
+        # must agree, but another entry matching only that call_id is not a conflict.
+        matches = (item_matches | index_matches) or call_matches
         if len(matches) > 1:
             raise ValueError("Conflicting Responses function call identity")
         if not matches:
             return None
-        key = matches[0]
+        key = next(iter(matches))
         pending = self.pending_function_calls[key]
+        pending_call_id = _event_field(pending["item"], "call_id")
+        pending_index = pending["output_index"]
+        if ((call_id and pending_call_id and call_id != pending_call_id)
+                or (output_index is not None and pending_index is not None and output_index != pending_index)):
+            raise ValueError("Conflicting Responses function call identity")
         if item_id:
             pending["item_ids"].add(item_id)
         if pending["output_index"] is None:

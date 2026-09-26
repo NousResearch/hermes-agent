@@ -1,10 +1,8 @@
 """A notification that claims the session's turn must hand it back whenever no turn runs.
 
-The poller claims the idle session (``running = True``) and only then claims the event's durable
-delivery row. Nothing else clears ``running``: a busy session is exempt from the reaper, keeps its
-active-session lease, diverts every ``prompt.submit`` into a queue that only a finishing turn
-drains, and never polls its bot mailbox again — so a dispatch that returns or raises without
-starting a turn leaves that session unusable for the life of the backend.
+The poller claims the durable event before reserving the idle session turn. A competing claim
+or unreadable ledger must leave ``running`` false: otherwise a busy session is exempt from the
+reaper and never polls its bot mailbox again. Dispatch failures must release the reservation too.
 """
 
 from __future__ import annotations
@@ -46,9 +44,10 @@ def test_a_lost_delivery_claim_hands_the_turn_back(monkeypatch, claim):
 
     monkeypatch.setattr("tools.async_delegation.claim_event_delivery", _claim)
     started = _no_turn(monkeypatch)
-    session = _claimed_session()
-
-    server._notif_dispatch_event("sid", session, dict(DELEGATION), "text")
+    session = {"history_lock": threading.RLock(), "running": False, "history": []}
+    registry = SimpleNamespace(completion_queue=queue.Queue(), completion_routing_lock=threading.RLock())
+    server._notif_handle_ready("sid", session, [dict(DELEGATION)], set(), registry,
+                               lambda evt: "text", None, owned=True)
 
     assert session["running"] is False
     assert started == []
@@ -108,7 +107,9 @@ def test_the_poller_thread_survives_a_dispatch_that_raises(monkeypatch):
     mailbox; an exception out of one event's dispatch used to end the thread for good."""
     events: queue.Queue = queue.Queue()
     events.put({"type": "completion", "session_id": "proc_a"})
-    monkeypatch.setattr("tools.process_registry.process_registry", SimpleNamespace(completion_queue=events))
+    monkeypatch.setattr("tools.process_registry.process_registry", SimpleNamespace(
+        completion_queue=events, completion_routing_lock=threading.RLock(),
+        is_completion_consumed=lambda sid: False))
     for name in ("_poll_bot_live_delivery_guarded", "_maybe_fire_tui_loop_tick",
                  "_maybe_fire_tui_heartbeat_tick", "_notif_poll_kanban"):
         monkeypatch.setattr(server, name, lambda *a, **k: None)

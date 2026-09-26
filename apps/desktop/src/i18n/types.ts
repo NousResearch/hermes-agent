@@ -3021,6 +3021,9 @@ export interface Translations {
       ideaShuffle: string
       noFolders: string
       addFolder: string
+      typePath: string
+      typePathPlaceholder: string
+      typePathAdd: string
       primaryBadge: string
       removeFolder: string
       create: string

@@ -1,4 +1,6 @@
+import { getUiState } from '../app/uiStore.js'
 import { describeRpcError } from '../app/userMessages.js'
+import { translate } from '../i18n/index.js'
 
 export type RpcResult = Record<string, any>
 
@@ -10,7 +12,7 @@ export const asRpcResult = <T extends RpcResult = RpcResult>(value: unknown): T 
 // timeouts) read as what happened + what to do instead of the wire text.
 export const rpcErrorMessage = (err: unknown) =>
   err instanceof Error && err.message
-    ? describeRpcError(err)
+    ? describeRpcError(err, getUiState().locale)
     : typeof err === 'string' && err.trim()
-      ? describeRpcError(err)
-      : 'request failed'
+      ? describeRpcError(err, getUiState().locale)
+      : translate(getUiState().locale, 'messages.requestFailed')

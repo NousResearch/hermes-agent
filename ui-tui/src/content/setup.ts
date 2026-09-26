@@ -1,20 +1,22 @@
+import { type Locale, translate } from '../i18n/index.js'
 import type { PanelSection } from '../types.js'
 
-export const SETUP_REQUIRED_TITLE = 'Setup Required'
+export const setupRequiredTitle = (locale: Locale = 'en') => translate(locale, 'setup.title')
+export const SETUP_REQUIRED_TITLE = setupRequiredTitle()
 
-export const buildSetupRequiredSections = (): PanelSection[] => [
+export const buildSetupRequiredSections = (locale: Locale = 'en'): PanelSection[] => [
   {
-    text: 'Hermes needs a model provider before the TUI can start a session.'
+    text: translate(locale, 'setup.body')
   },
   {
     rows: [
-      ['/setup', 'run the first-time setup wizard in-place (adds a provider)'],
-      ['/model', 'pick a model (needs a session — add a provider first)'],
-      ['Ctrl+C', 'exit and run `hermes setup` manually']
+      ['/setup', translate(locale, 'setup.action.runWizard')],
+      ['/model', translate(locale, 'setup.action.configureModel')],
+      ['Ctrl+C', translate(locale, 'setup.action.exitSetup')]
     ],
-    title: 'Actions'
+    title: translate(locale, 'setup.actions')
   },
   {
-    text: 'In the dashboard the Models page sets the profile default; on Desktop it is Settings -> Models.'
+    text: translate(locale, 'setup.dashboardModels')
   }
 ]

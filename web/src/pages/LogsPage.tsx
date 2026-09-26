@@ -85,7 +85,7 @@ export default function LogsPage() {
           }
         }, 50);
       })
-      .catch((err) => setError(errorMessage(err)))
+      .catch((err) => setError(errorMessage(err, t.common)))
       .finally(() => setLoading(false));
   }, [file, lineCount, level, component]);
 

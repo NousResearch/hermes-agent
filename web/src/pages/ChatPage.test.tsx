@@ -121,17 +121,11 @@ vi.mock("@/contexts/useProfileScope", () => ({
 vi.mock("@/themes", () => ({
   useTheme: () => ({ theme: { terminalBackground: "#000000" } }),
 }));
-vi.mock("@/i18n", () => ({
-  useI18n: () => ({
-    t: {
-      app: {
-        closeModelTools: "Close model tools",
-        modelToolsSheetSubtitle: "Tools",
-        modelToolsSheetTitle: "Model",
-      },
-    },
-  }),
-}));
+vi.mock("@/i18n", async () => {
+  const actual = await vi.importActual<typeof import("@/i18n")>("@/i18n")
+  const { en } = await import("@/i18n/en")
+  return { ...actual, useI18n: () => ({t: en, locale: 'en', format: (template: string, values: Record<string, string | number>) => template.replace(/\{(\w+)\}/g, (match, key: string) => key in values ? String(values[key]) : match)}) }
+})
 vi.mock("@/lib/dashboard-auth-reload", () => ({
   maybeReloadForLoopbackWsAuthFailure,
 }));

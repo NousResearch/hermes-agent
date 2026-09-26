@@ -82,4 +82,16 @@ describe('approvalAction — pure key dispatch for ApprovalPrompt', () => {
       })
     ).toEqual(['once', 'deny'])
   })
+
+  it('falls back safely when gateway choices contain no supported option', () => {
+    const req = {
+      allowPermanent: false,
+      choices: ['later', 'never'],
+      command: 'echo ok',
+      description: 'unsupported choices'
+    }
+
+    expect(approvalOptions(req)).toEqual(['once', 'session', 'deny'])
+    expect(approvalAction('', { return: true }, 0, [])).toEqual({ kind: 'noop' })
+  })
 })

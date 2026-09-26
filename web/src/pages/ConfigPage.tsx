@@ -284,7 +284,7 @@ export default function ConfigPage() {
       await api.saveConfig(config);
       showToast(t.config.configSaved, "success");
     } catch (e) {
-      showToast(`${t.config.failedToSave}: ${errorMessage(e)}`, "error");
+      showToast(`${t.config.failedToSave}: ${errorMessage(e, t.common)}`, "error");
     } finally {
       setSaving(false);
     }
@@ -300,7 +300,7 @@ export default function ConfigPage() {
         .then(setConfig)
         .catch(() => {});
     } catch (e) {
-      showToast(`${t.config.failedToSaveYaml}: ${errorMessage(e)}`, "error");
+      showToast(`${t.config.failedToSaveYaml}: ${errorMessage(e, t.common)}`, "error");
     } finally {
       setYamlSaving(false);
     }
@@ -499,7 +499,7 @@ export default function ConfigPage() {
             onClick={() => setYamlMode(!yamlMode)}
             prefix={yamlMode ? <FormInput /> : <Code />}
           >
-            {yamlMode ? t.common.form : "YAML"}
+            {yamlMode ? t.common.form : t.config.yaml}
           </Button>
 
           {yamlMode ? (

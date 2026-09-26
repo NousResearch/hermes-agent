@@ -1,3 +1,5 @@
+import { type Locale, LOCALE_METADATA, localeDirection, LOCALES } from './locale-registry.js'
+
 // Locale scaffolding shared by the desktop and web i18n layers. Generic over the
 // translation catalog type: each app supplies its own `Translations`/`en` and
 // wraps `mergeTranslations` in a one-line `defineLocale`.
@@ -43,38 +45,10 @@ export function mergeTranslations<T>(base: T, overrides: TranslationOverride<T> 
 // language regardless of the current UI language. No country flags: languages
 // are not countries (English ≠ GB, Portuguese ≠ PT, Chinese variants ≠ any
 // single jurisdiction). Desktop supports a subset of these ids; web all of them.
-export const LOCALE_ENDONYMS = {
-  af: 'Afrikaans',
-  ar: 'العربية',
-  de: 'Deutsch',
-  en: 'English',
-  es: 'Español',
-  fr: 'Français',
-  ga: 'Gaeilge',
-  hu: 'Magyar',
-  it: 'Italiano',
-  ja: '日本語',
-  ko: '한국어',
-  pt: 'Português',
-  ru: 'Русский',
-  tr: 'Türkçe',
-  uk: 'Українська',
-  zh: '简体中文',
-  'zh-hant': '繁體中文'
-} as const satisfies Record<string, string>
+export const LOCALE_ENDONYMS = Object.fromEntries(
+  LOCALES.map(locale => [locale, LOCALE_METADATA[locale].name])
+) as Record<Locale, string>
 
-export type EndonymLocale = keyof typeof LOCALE_ENDONYMS
+export type EndonymLocale = Locale
 
-/** Locales whose script flows right-to-left; drives `<html dir>` so Tailwind's
- *  logical utilities (ms-/me-, ps-/pe-) flip. */
-export const RTL_LOCALES: ReadonlySet<string> = new Set<EndonymLocale>(['ar'])
-
-/** Mirror the active locale onto `<html lang dir>`. No-op without a document (SSR, tests). */
-export function applyDocumentLocale(locale: string): void {
-  if (typeof document === 'undefined') {
-    return
-  }
-
-  document.documentElement.lang = locale
-  document.documentElement.dir = RTL_LOCALES.has(locale) ? 'rtl' : 'ltr'
-}
+export const RTL_LOCALES: ReadonlySet<string> = new Set(LOCALES.filter(locale => localeDirection(locale) === 'rtl'))

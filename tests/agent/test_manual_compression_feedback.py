@@ -33,6 +33,7 @@ def test_failure_reason_redaction_is_forced_at_ui_boundary(monkeypatch):
     )
 
     assert fake_secret not in feedback["note"]
+    assert fake_secret not in feedback["failure_reason"]
     assert "OPENAI_API_KEY=" in feedback["note"]
 
 
@@ -56,6 +57,12 @@ def test_fallback_compression_reports_dropped_message_count():
 
     assert feedback["aborted"] is False
     assert feedback["fallback_used"] is True
+    assert feedback["dropped_count"] == 8
+    assert feedback["failure_reason"] == "summary provider returned an invalid response"
+    assert "invalid response" in feedback["note"]
+
+
+
     assert "12" in feedback["headline"] and "4" in feedback["headline"]
     assert "8" in feedback["note"]
     assert "invalid response" in feedback["note"]

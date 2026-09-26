@@ -2,6 +2,23 @@ import type { McpHttpAuth, McpServerCreate } from "@/lib/api";
 
 export type McpTransport = "http" | "stdio";
 
+export type McpServerCreateErrorCode =
+  | "name-required"
+  | "url-required"
+  | "bearer-token-required"
+  | "command-required";
+
+/** Stable validation failure consumed by localized MCP entry points. */
+export class McpServerCreateError extends Error {
+  readonly code: McpServerCreateErrorCode;
+
+  constructor(code: McpServerCreateErrorCode) {
+    super(code);
+    this.name = "McpServerCreateError";
+    this.code = code;
+  }
+}
+
 export interface McpServerDraft {
   name: string;
   transport: McpTransport;
@@ -49,13 +66,13 @@ function parseEnv(raw: string): Record<string, string> {
 
 export function buildMcpServerCreate(draft: McpServerDraft): McpServerCreate {
   const name = draft.name.trim();
-  if (!name) throw new Error("Name required");
+  if (!name) throw new McpServerCreateError("name-required");
 
   if (draft.transport === "http") {
     const url = draft.url.trim();
-    if (!url) throw new Error("URL required");
+    if (!url) throw new McpServerCreateError("url-required");
     if (draft.httpAuth === "header" && !draft.bearerToken.trim()) {
-      throw new Error("Bearer token required");
+      throw new McpServerCreateError("bearer-token-required");
     }
 
     const server: McpServerCreate = { name, url };
@@ -67,7 +84,7 @@ export function buildMcpServerCreate(draft: McpServerDraft): McpServerCreate {
   }
 
   const command = draft.command.trim();
-  if (!command) throw new Error("Command required");
+  if (!command) throw new McpServerCreateError("command-required");
 
   const server: McpServerCreate = { name, command };
   const args = parseArgs(draft.args);

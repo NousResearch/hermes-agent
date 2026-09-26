@@ -257,3 +257,21 @@ describe('describeCredentialWarning', () => {
     expect(describeCredentialWarning('something else')).toBe('something else')
   })
 })
+
+describe('localized failure contracts', () => {
+  it('keeps recovery decisions and raw details independent of display language', () => {
+    const retryable = describeTurnFailure(
+      { error: 'upstream detail $&', error_surface: { code: 'server_error', retryable: true } },
+      'zh'
+    )
+    expect(retryable).toContain('模型服务商内部出错')
+    expect(retryable).toContain('/retry')
+    expect(retryable).toContain('upstream detail $&')
+    const permanent = describeTurnFailure({ error_surface: { layer: 'provider', retryable: false } }, 'zh')
+    expect(permanent).toContain('/model')
+    expect(permanent).not.toContain('/retry')
+    expect(describeRpcError(new Error('unknown provider detail'), 'zh')).toBe('unknown provider detail')
+    expect(promptTimeoutNotice('sudo', 'timeout', 'zh')).toContain('命令已跳过')
+    expect(promptTimeoutNotice('sudo', 'interrupted', 'zh')).toBeNull()
+  })
+})

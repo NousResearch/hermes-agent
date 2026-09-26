@@ -2,6 +2,7 @@ import type { SessionListRow } from '@hermes/shared/gateway-events'
 import { describe, expect, it } from 'vitest'
 
 import {
+  activeSessionCountLabel,
   canTypeOrchestratorPrompt,
   clampOrchestratorSelection,
   closeFallbackAfterClose,
@@ -11,15 +12,27 @@ import {
   draftTitleFromPrompt,
   isNewSessionRow,
   newSessionRowIndex,
+  orchestratorContextHint,
   orchestratorRowClickAction,
   orchestratorVisibleRowIndexes,
   relativeSessionAge,
   resumableHistory,
-  sessionRowKindAt
+  sessionRowKindAt,
+  sessionsCountLabel
 } from '../components/activeSessionSwitcher.js'
 import type { SessionActiveItem } from '../gatewayTypes.js'
+import { translate } from '../i18n/index.js'
+
+const zhT = (key: Parameters<typeof translate>[1], vars?: Record<string, string | number>) => translate('zh', key, vars)
 
 describe('session orchestrator helpers', () => {
+  it('can render helper copy through the active locale catalog', () => {
+    expect(activeSessionCountLabel(2, zhT)).toBe('2 个实时会话')
+    expect(sessionsCountLabel(2, 7, zhT)).toBe('2 个实时 · 7 个可恢复')
+    expect(orchestratorContextHint(true, zhT)).toBe('新会话： 输入提示词 · Enter 开始 · Tab 模型')
+    expect(draftModelDisplayLabel('', zhT)).toBe('当前/默认')
+  })
+
   it('turns model picker values into session-scoped draft model args', () => {
     expect(draftModelArgFromPickerValue('kimi-k2.6 --provider ollama-cloud --tui-session')).toBe(
       'kimi-k2.6 --provider ollama-cloud --session'

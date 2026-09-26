@@ -117,7 +117,7 @@ describe('handleIdleHotkeyExit', () => {
 
     expect(actions.die).not.toHaveBeenCalled()
     expect(requestDashboardNewSession).toHaveBeenCalledTimes(1)
-    expect(actions.sys).toHaveBeenCalled()
+    expect(actions.sys).toHaveBeenCalledWith('starting a fresh dashboard chat…')
   })
 })
 
@@ -171,10 +171,14 @@ describe('dismissSensitivePrompt', () => {
     const respond = openRequest('srq-sudo', 'sudo')
     const sys = vi.fn()
 
-    dismissSensitivePrompt(getOverlayState(), vi.fn(), sys)
+    dismissSensitivePrompt(getOverlayState(), sys, {
+      secret: 'localized secret cancellation',
+      sudo: 'localized sudo cancellation',
+      vaultUnlock: 'localized vault cancellation'
+    })
 
     expect(getOverlayState().sudo).toBeNull()
-    expect(sys).toHaveBeenCalled()
+    expect(sys).toHaveBeenCalledWith('localized sudo cancellation')
     expect(respond).toHaveBeenCalledWith({ value: '' })
   })
 
@@ -184,9 +188,32 @@ describe('dismissSensitivePrompt', () => {
     patchOverlayState({ secret: { envVar: 'API_KEY', prompt: 'Enter API key', requestId: 'srq-gone' } })
     const sys = vi.fn()
 
-    dismissSensitivePrompt(getOverlayState(), vi.fn(), sys)
+    dismissSensitivePrompt(getOverlayState(), sys, {
+      secret: 'localized secret cancellation',
+      sudo: 'localized sudo cancellation',
+      vaultUnlock: 'localized vault cancellation'
+    })
 
     expect(getOverlayState().secret).toBeNull()
-    expect(sys).toHaveBeenCalled()
+    expect(sys).toHaveBeenCalledWith('localized secret cancellation')
+  })
+
+  it('clears a vault unlock overlay with its localized backend message', async () => {
+    resetOverlayState()
+    patchOverlayState({ vaultUnlock: { backend: '1password', displayName: '1Password', requestId: 'vault-1' } })
+    resetServerRequestsForTests()
+    const respond = openRequest('vault-1', 'vault.unlock_prompt')
+    const sys = vi.fn()
+
+    const pending = dismissSensitivePrompt(getOverlayState(), sys, {
+      secret: 'localized secret cancellation',
+      sudo: 'localized sudo cancellation',
+      vaultUnlock: 'localized vault cancellation'
+    })
+
+    expect(getOverlayState().vaultUnlock).toBeNull()
+    expect(sys).toHaveBeenCalledWith('localized vault cancellation')
+    expect(respond).toHaveBeenCalledWith({ value: '' })
+    await pending
   })
 })

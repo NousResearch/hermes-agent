@@ -1689,6 +1689,8 @@ export interface CompletionItem {
   text: string
   display?: string
   meta?: string
+  meta_key?: string | null
+  meta_vars?: Record<string, string | number> | null
   kind?: string | null
 }
 /** ``session_id`` binds skill completions to that session's profile and workspace (project skills). */
@@ -3121,6 +3123,19 @@ export interface SessionStatusParams {
 }
 export interface SessionStatusResult {
   output: string
+  details?: SessionStatusDetails | null
+}
+export interface SessionStatusDetails {
+  session_id: string
+  path: string
+  title: string
+  model: string
+  provider: string
+  created: string
+  last_activity: string
+  tokens: number
+  agent_running: boolean
+  project: string
 }
 export interface SessionHistoryParams {
   session_id: string
@@ -3442,6 +3457,7 @@ export interface CommandsCatalogParams {
   profile?: string | null
 }
 export interface CommandsCatalogResult {
+  description_keys?: Record<string, string>
   pairs?: string[][]
   sub?: Record<string, string[]>
   canon?: Record<string, string>
@@ -3457,6 +3473,7 @@ export interface CommandCatalogMeta {
 }
 export type ArgumentMode = 'options' | 'text' | 'mixed'
 export interface CommandCategory {
+  key?: string | null
   name: string
   pairs?: string[][]
 }
@@ -4305,6 +4322,7 @@ export interface GatewayReadyPayload {
   skin: SkinPayload
   change_events: boolean
   replay_epoch: string
+  language?: string | null
   heartbeat?: boolean | null
 }
 /** ``tui_gateway/change_watcher.py::resolve_skin`` — the resolved active skin (``HermesSkin``). ``{}`` when the skin engine failed to load. Colour maps are token → colour string. */
@@ -4404,6 +4422,8 @@ export interface PersistedTurn {
 /** ``server._status_update`` and the direct emitters (goal / loop / heartbeat / process). */
 export interface StatusUpdatePayload {
   kind: string
+  text_key?: string | null
+  text_vars?: Record<string, string | number> | null
   text: string
 }
 /** ``server._start_usage_ticker``. */
@@ -4466,6 +4486,8 @@ export interface TodoUpdatedPayload {
 }
 /** ``agent/credits_tracker.py::AgentNotice`` via notice_callback, and ``server._await_agent_ready``'s slow-build notice. ``level``: info | warn | error | success; ``kind``: sticky | ttl | agent. */
 export interface NotificationShowPayload {
+  text_key?: string | null
+  text_vars?: Record<string, string | number> | null
   text: string
   level: string
   kind: string

@@ -32,6 +32,7 @@ import type {
 } from '../gatewayTypes.js'
 import { useGitBranch } from '../hooks/useGitBranch.js'
 import { pruneVirtualHeightCache, useVirtualHistory } from '../hooks/useVirtualHistory.js'
+import { translate, type TranslationKey } from '../i18n/index.js'
 import { composerPromptWidth } from '../lib/inputMetrics.js'
 import { appendTranscriptMessage, capTranscriptHistory } from '../lib/messages.js'
 import { DEFAULT_VOICE_RECORD_KEY, isMac, type ParsedVoiceRecordKey } from '../lib/platform.js'
@@ -133,10 +134,11 @@ export async function startPromptLiveSession({
   // the initial title. Auto-title generation can rename it after the first
   // response; pre-queuing prompt text here causes duplicate-title errors when
   // users dispatch common prompts like "Hello, what model are you?".
-  const sid = (await newLiveSession('new live session started')) ?? null
+  const locale = getUiState().locale
+  const sid = (await newLiveSession(translate(locale, 'sys.newLiveSessionStarted'))) ?? null
 
   if (!sid) {
-    sys('error: failed to start new live session')
+    sys(translate(locale, 'errors.failedStartLiveSession'))
 
     return null
   }
@@ -147,12 +149,16 @@ export async function startPromptLiveSession({
     const result = await rpc<ConfigSetResponse>('config.set', { key: 'model', session_id: sid, value: requestedModel })
 
     if (!result?.value) {
-      sys('error: invalid response: model switch')
+      sys(
+        translate(locale, 'errors.invalidResponse', {
+          method: translate(locale, 'action.switchModel')
+        })
+      )
 
       return sid
     }
 
-    sys(`model → ${result.value}`)
+    sys(translate(locale, 'sys.modelSet', { model: result.value }))
     maybeWarn(result)
     onModelSwitched?.(result.value, result)
   }
@@ -227,6 +233,12 @@ export function useMainApp(gw: GatewayClient) {
   const [bellOnPrompt, setBellOnPrompt] = useState(false)
 
   const ui = useStore($uiState)
+
+  const ti = useCallback(
+    (key: TranslationKey, vars?: Record<string, string | number>) => translate(ui.locale, key, vars),
+    [ui.locale]
+  )
+
   const overlay = useStore($overlayState)
 
   const turnLiveTailActive = useTurnSelector(state =>
@@ -332,7 +344,11 @@ export function useMainApp(gw: GatewayClient) {
   const empty = !historyItems.some(msg => msg.kind !== 'intro')
 
   useEffect(() => {
-    void terminalParityHints()
+    if (!ui.sid) {
+      return
+    }
+
+    void terminalParityHints(process.env, { locale: ui.locale })
       .then(hints => {
         for (const hint of hints) {
           if (terminalHintsShownRef.current.has(hint.key)) {
@@ -344,7 +360,7 @@ export function useMainApp(gw: GatewayClient) {
         }
       })
       .catch(() => {})
-  }, [])
+  }, [ui.locale, ui.sid])
 
   const messageId = useCallback((msg: Msg) => {
     const hit = msgIdsRef.current.get(msg)
@@ -514,10 +530,10 @@ export function useMainApp(gw: GatewayClient) {
       const warning = (value as { warning?: unknown } | null)?.warning
 
       if (typeof warning === 'string' && warning) {
-        sys(`warning: ${warning}`)
+        sys(ti('common.warning') + `: ${warning}`)
       }
     },
-    [sys]
+    [sys, ti]
   )
 
   const rpc: GatewayRpc = useCallback(
@@ -532,14 +548,14 @@ export function useMainApp(gw: GatewayClient) {
           return result
         }
 
-        sys(`error: invalid response: ${method}`)
+        sys(ti('errors.invalidResponse', { method }))
       } catch (e) {
-        sys(`error: ${rpcErrorMessage(e)}`)
+        sys(ti('errors.rpc', { message: rpcErrorMessage(e) }))
       }
 
       return null
     },
-    [gw, sys]
+    [gw, sys, ti]
   )
 
   const gateway = useMemo(() => ({ gw, rpc }), [gw, rpc])
@@ -777,8 +793,8 @@ export function useMainApp(gw: GatewayClient) {
           appendMessage({
             role: 'system',
             text: clarify.questions?.length
-              ? formatAbandonedClarifyBatch(clarify.questions, clarify.answers ?? {}, 'cancelled')
-              : formatAbandonedClarify(clarify.question, clarify.choices, 'cancelled')
+              ? formatAbandonedClarifyBatch(clarify.questions, clarify.answers ?? {}, 'cancelled', getUiState().locale)
+              : formatAbandonedClarify(clarify.question, clarify.choices, 'cancelled', getUiState().locale)
           })
         }
 
@@ -833,19 +849,21 @@ export function useMainApp(gw: GatewayClient) {
           kind: 'trail',
           role: 'system',
           text: '',
-          tools: [buildToolTrailLine('clarify', `${clarify.questions!.length} questions`)]
+          tools: [buildToolTrailLine('clarify', ti('prompt.clarifyBatchCount', { count: clarify.questions!.length }))]
         })
         appendMessage({
           role: 'user',
           text: clarify
-            .questions!.map(q => `${q.question} → ${answers[q.qid]?.trim() ? answers[q.qid] : '(skipped)'}`)
+            .questions!.map(
+              q => `${q.question} → ${answers[q.qid]?.trim() ? answers[q.qid] : ti('prompt.clarifySkipped')}`
+            )
             .join('\n')
         })
         patchUiState({ status: 'running…' })
         patchOverlayState({ clarify: null })
       })
     },
-    [appendMessage, overlay.clarify, rpc]
+    [appendMessage, overlay.clarify, rpc, ti]
   )
 
   sysRef.current = sys
@@ -1003,8 +1021,8 @@ export function useMainApp(gw: GatewayClient) {
         patchUiState({ busy: false, compacting: false, sid: null, status: 'reconnecting…' })
 
         if (state.sid) {
-          turnController.pushActivity(CONNECTION_LOST_ACTIVITY, 'warn')
-          sys(CONNECTION_LOST)
+          turnController.pushActivity(CONNECTION_LOST_ACTIVITY(getUiState().locale), 'warn')
+          sys(CONNECTION_LOST(getUiState().locale))
         }
 
         return
@@ -1026,8 +1044,8 @@ export function useMainApp(gw: GatewayClient) {
 
       if (plan.recover && plan.sid) {
         recoverSidRef.current = plan.sid
-        turnController.pushActivity(BACKEND_RESTARTING_ACTIVITY, 'warn')
-        sys(BACKEND_RESTARTING)
+        turnController.pushActivity(BACKEND_RESTARTING_ACTIVITY(getUiState().locale), 'warn')
+        sys(BACKEND_RESTARTING(getUiState().locale))
         gw.start()
 
         return
@@ -1043,8 +1061,8 @@ export function useMainApp(gw: GatewayClient) {
 
       if (!gaveUpRef.current) {
         gaveUpRef.current = true
-        turnController.pushActivity(BACKEND_GAVE_UP_ACTIVITY, 'error')
-        sys(`error: ${backendGaveUp(code, lastStderrLine(gw.getLogTail(20)))}`)
+        turnController.pushActivity(BACKEND_GAVE_UP_ACTIVITY(getUiState().locale), 'error')
+        sys(`error: ${backendGaveUp(code, lastStderrLine(gw.getLogTail(20)), getUiState().locale)}`)
       }
     }
 
@@ -1059,7 +1077,7 @@ export function useMainApp(gw: GatewayClient) {
       gw.off('request', requestHandler)
       gw.off('exit', exitHandler)
     }
-  }, [gw, sys])
+  }, [gw, sys, ti])
 
   useLongRunToolCharms()
 
@@ -1218,13 +1236,13 @@ export function useMainApp(gw: GatewayClient) {
         return result
       } catch (e: unknown) {
         const message = e instanceof Error ? e.message : String(e)
-        sys(`error: ${message}`)
+        sys(ti('errors.rpc', { message }))
         patchUiState({ status: 'ready' })
 
         throw e
       }
     },
-    [session, sys]
+    [session, sys, ti]
   )
 
   const newPromptSession = useCallback(
@@ -1322,7 +1340,7 @@ export function useMainApp(gw: GatewayClient) {
       // (Switching between live sessions and `+ new` keep the current session
       // running, so those stay unguarded — that's the orchestrator's purpose.)
       resumeById: (id: string) => {
-        if (session.guardBusySessionSwitch('switch sessions')) {
+        if (session.guardBusySessionSwitch(translate(getUiState().locale, 'action.switchSessions'))) {
           return
         }
 
@@ -1411,11 +1429,13 @@ export function useMainApp(gw: GatewayClient) {
       turnStartedAt: ui.sid ? turnStartedAt : null,
       // CLI parity: the classic prompt_toolkit status bar shows a red dot
       // on REC (cli.py:_get_voice_status_fragments line 2344).
-      voiceLabel: voiceRecording
-        ? '● REC'
-        : voiceProcessing
-          ? '◉ STT'
-          : `voice ${voiceEnabled ? 'on' : 'off'}${voiceTts ? ' [tts]' : ''}`
+      // Raw voice state is passed through so StatusRule owns presentation and
+      // computes the translated label from the same active provider as the
+      // rest of the application tree.
+      voiceRecording,
+      voiceProcessing,
+      voiceEnabled,
+      voiceTts
     }),
     [
       cwd,

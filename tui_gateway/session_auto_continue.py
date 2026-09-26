@@ -113,7 +113,7 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> 
             diagnostic = marker.get("notification_category") == "diagnostic"
             with _session_profile_runtime_scope(session):
                 def announce():
-                    _emit("status.update", sid, {"kind": "process", "text": "Resuming interrupted turn…"})
+                    _emit("status.update", sid, {"kind": "process", "text": "Resuming interrupted turn…", "text_key": "status.resumingInterruptedTurn"})
                     _emit("message.start", sid)
                 render_notification(announce, platform="tui", diagnostic=diagnostic)
                 _run_prompt_submit(rid, sid, session, text, display_kind="auto_continue",

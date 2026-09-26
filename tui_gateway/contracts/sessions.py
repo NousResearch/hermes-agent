@@ -432,8 +432,22 @@ class SessionStatusParams(SessionParams):
     pass
 
 
+class SessionStatusDetails(Result):
+    session_id: str
+    path: str
+    title: str
+    model: str
+    provider: str
+    created: str
+    last_activity: str
+    tokens: int
+    agent_running: bool
+    project: str
+
+
 class SessionStatusResult(Result):
     output: str
+    details: SessionStatusDetails | None = None
 
 
 method("session.status", params=SessionStatusParams, result=SessionStatusResult,

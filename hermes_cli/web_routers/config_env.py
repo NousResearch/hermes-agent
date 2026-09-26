@@ -24,7 +24,7 @@ from hermes_cli.web_server_profiles import (
     _approval_mode_of, _broadcast_gateway_session_info, _is_other_profile, _parse_model_entries,
 )
 from fastapi import HTTPException, Request
-from hermes_cli.config import DEFAULT_CONFIG, OPTIONAL_ENV_VARS, read_raw_config, require_readable_config_before_write, custom_endpoint_key_env, coerce_provider_id, find_provider_entry, get_compatible_custom_providers, _ENV_REF_RE, _deep_merge
+from hermes_cli.config import get_config_path, DEFAULT_CONFIG, OPTIONAL_ENV_VARS, read_raw_config, require_readable_config_before_write, custom_endpoint_key_env, coerce_provider_id, find_provider_entry, get_compatible_custom_providers, _ENV_REF_RE, _deep_merge
 from hermes_cli.config_providers import _canonical_api_mode, _custom_provider_entry_to_provider_config
 from hermes_cli.web_models import ConfigUpdate, EnvVarUpdate, EnvVarDelete, EnvVarReveal, CustomEndpointUpdate
 from typing import Any, Dict, List, Optional, Tuple
@@ -90,6 +90,25 @@ async def get_config(profile: Optional[str] = None, include_defaults: bool = Tru
     )
     # Strip internal keys that the frontend shouldn't see or send back
     return {k: v for k, v in config.items() if not k.startswith("_")}
+
+
+@config_router.get("/api/config/revision")
+async def get_config_revision(profile: Optional[str] = None):
+    """Return the identity and disk revision of the profile-scoped config."""
+
+    def _revision() -> dict[str, str | int]:
+        path = get_config_path()
+        try:
+            stat = path.stat()
+        except FileNotFoundError:
+            return {"path": str(path), "mtime_ns": 0, "size": 0}
+        return {
+            "path": str(path),
+            "mtime_ns": stat.st_mtime_ns,
+            "size": stat.st_size,
+        }
+
+    return await scoped_to_thread(profile, _revision)
 
 
 @config_router.get("/api/config/defaults")

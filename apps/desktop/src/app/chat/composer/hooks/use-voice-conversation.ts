@@ -99,11 +99,22 @@ export function useVoiceConversation({
   const wasEnabledRef = useRef(enabled)
   const onStopWordRef = useRef(onStopWord)
   const onInterruptRef = useRef(onInterrupt)
+  // submitVoiceTurn (the real onSubmit caller) refuses while busy, and the
+  // barge monitor is armed ONCE per turn — its onUtterance closure can still
+  // be holding the submit from a render where busy was true. Read the latest
+  // callback at call time so the captured interruption is never dropped by a
+  // stale guard (#123357).
+  const onSubmitRef = useRef(onSubmit)
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     onInterruptRef.current = onInterrupt
   }, [onInterrupt])
+
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
+  useEffect(() => {
+    onSubmitRef.current = onSubmit
+  }, [onSubmit])
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
@@ -411,14 +422,14 @@ export function useVoiceConversation({
         awaitingSpokenResponseRef.current = true
         dropSpeechSession()
         consumePendingResponse()
-        await onSubmit(transcript)
+        await onSubmitRef.current(transcript)
         setStatus('thinking')
       } catch (error) {
         notifyError(error, voiceCopy.transcriptionFailed)
         resumeListening()
       }
     },
-    [consumePendingResponse, onSubmit, onTranscribeAudio, voiceCopy.transcriptionFailed]
+    [consumePendingResponse, onTranscribeAudio, voiceCopy.transcriptionFailed]
   )
 
   /**

@@ -343,3 +343,106 @@ describe('useVoiceConversation honors the read-aloud toggle (#44263)', () => {
     await waitFor(() => expect(playSpeechTextMock).toHaveBeenCalled())
   })
 })
+
+describe('barge capture survives the submit-time busy guard (#123357)', () => {
+  beforeEach(() => {
+    monitorCalls.length = 0
+    vi.clearAllMocks()
+    micHandle.start.mockResolvedValue(undefined)
+    micHandle.stop.mockResolvedValue(null)
+  })
+
+  afterEach(cleanup)
+
+  // Mirrors the real wiring: the composer's submitVoiceTurn recreates per
+  // render and its `if (busy) return` guard captures THAT render's busy. The
+  // barge monitor arms once per turn (idempotent ensure), so its onUtterance
+  // can still hold the arm-time closures from a busy=true render.
+  function renderWithGuardedSubmit() {
+    const submitted: string[] = []
+    const onInterrupt = vi.fn()
+    const onStopWord = vi.fn()
+    let transcriptions = 0
+
+    const onTranscribeAudio = vi.fn(async () =>
+      transcriptions++ === 0 ? 'kick off the task' : 'and another thing'
+    )
+
+    const pendingResponse = () => null
+
+    const onBusyChange: { current: (busy: boolean) => void } = { current: () => undefined }
+
+    const hook = renderHook(
+      ({ busy }: HookProps) =>
+        useVoiceConversation({
+          busy,
+          consumePendingResponse: vi.fn(),
+          enabled: true,
+          onInterrupt,
+          onStopWord,
+          // Fresh closure per render — captures this render's `busy` prop,
+          // exactly like submitVoiceTurn in use-composer-voice.ts. A real
+          // submit also starts the agent turn, so busy flips (rerender).
+          onSubmit: (text: string) => {
+            if (busy) {
+              return
+            }
+
+            submitted.push(text)
+            onBusyChange.current(true)
+          },
+          onTranscribeAudio,
+          pendingResponse
+        }),
+      { initialProps: { busy: false } }
+    )
+
+    onBusyChange.current = busy => hook.rerender({ busy })
+
+    return { hook, onInterrupt, rerenderBusy: (busy: boolean) => hook.rerender({ busy }), submitted }
+  }
+
+  it('submits the captured interruption with the settled render, not the arm-time one', async () => {
+    const { hook, onInterrupt, rerenderBusy, submitted } = renderWithGuardedSubmit()
+
+    // Turn 1: voice-submit while idle → goes through, agent turns busy.
+    await act(async () => {
+      await hook.result.current.start()
+    })
+    await waitFor(() => expect(hook.result.current.status).toBe('listening'))
+
+    micHandle.stop.mockResolvedValueOnce({
+      audio: new Blob(['q'], { type: 'audio/webm' }),
+      durationMs: 900,
+      heardSpeech: true
+    })
+
+    await act(async () => {
+      hook.result.current.stopTurn()
+    })
+    expect(submitted).toEqual(['kick off the task'])
+
+    await act(async () => {
+      rerenderBusy(true)
+    })
+    await waitFor(() => expect(monitorCalls.length).toBeGreaterThan(0))
+
+    // Barge trips mid-turn: interrupt fires, then the turn settles (busy clears).
+    act(() => {
+      monitorCalls.at(-1)?.onSpeech()
+    })
+    expect(onInterrupt).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      rerenderBusy(false)
+    })
+
+    // The monitor was never re-armed, so onUtterance still holds arm-time
+    // (busy=true) closures. The captured interruption must still be submitted.
+    await act(async () => {
+      await monitorCalls.at(-1)?.onUtterance(new Blob(['barge'], { type: 'audio/webm' }))
+    })
+
+    expect(submitted).toEqual(['kick off the task', 'and another thing'])
+  })
+})

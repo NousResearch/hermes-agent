@@ -866,6 +866,14 @@ def _resolve_slack_proxy_url() -> Optional[str]:
     return proxy_url
 
 
+def _slack_ts_seconds(ts: Any) -> Optional[float]:
+    """A Slack ts (``"1787365409.908499"``) as epoch seconds; None when absent or malformed."""
+    try:
+        return float(ts)
+    except (TypeError, ValueError):
+        return None
+
+
 def _slack_dedup_ttl_seconds() -> float:
     """Dedup window for Socket Mode replays (override: ``SLACK_DEDUP_TTL_SECONDS``).
     Slack replays un-acked events on reconnect, sometimes minutes later, so the window must span the
@@ -1066,6 +1074,9 @@ class SlackAdapter(BasePlatformAdapter):
         self._dedup = MessageDeduplicator(ttl_seconds=_slack_dedup_ttl_seconds())
         # ts of messages already routed to the agent, so later edits don't re-trigger a reply.
         self._processed_message_ts: Dict[str, float] = {}
+        # Slack ts at or below which that map cannot vouch: it starts empty on every
+        # gateway restart and evicts when full (#118349).
+        self._processed_message_ts_floor = time.time()
         # approval / clarify message_ts (or (team_id, ts)) → resolved; blocks double-clicks.
         # Bounded: never-clicked prompts would otherwise leak forever.
         self._approval_resolved: Dict[Any, bool] = {}
@@ -3594,7 +3605,12 @@ class SlackAdapter(BasePlatformAdapter):
         self._processed_message_ts[ts] = time.time()
         if len(self._processed_message_ts) > self._PROCESSED_MESSAGE_TS_MAX:
             newest = sorted(self._processed_message_ts.items(), key=lambda item: item[1])
+            evicted = newest[: -self._PROCESSED_MESSAGE_TS_MAX]
             self._processed_message_ts = dict(newest[-self._PROCESSED_MESSAGE_TS_MAX :])
+            # An evicted claim is the same blind spot as a restart for messages at or
+            # below it, so the floor follows the newest evicted message ts (#118349).
+            evicted_s = [s for s in (_slack_ts_seconds(t) for t, _ in evicted) if s is not None]
+            self._processed_message_ts_floor = max([self._processed_message_ts_floor, *evicted_s])
 
     @staticmethod
     def _event_team_id(event: dict, body: Optional[dict] = None) -> str:
@@ -4215,8 +4231,10 @@ class SlackAdapter(BasePlatformAdapter):
 
     def _normalize_changed_message(self, event: dict) -> Optional[dict]:
         """Turn a ``message_changed`` envelope into a plain message event.
-        None if malformed or the original was already routed to the agent. The edit's own ts rides
-        along as ``_slack_changed_event_ts`` for dedup."""
+        None if malformed, if the original was already routed to the agent, or if the
+        change carries no new user action (metadata-only, or a message the processed-ts
+        map cannot vouch for — #118349). The edit's own ts rides along as
+        ``_slack_changed_event_ts`` for dedup."""
         updated_message = event.get("message")
         if not isinstance(updated_message, dict):
             return None
@@ -4226,6 +4244,27 @@ class SlackAdapter(BasePlatformAdapter):
         edited = updated_message.get("edited")
         edited_ts = str(edited.get("ts") or "") if isinstance(edited, dict) else ""
         outer_event_ts = str(event.get("ts") or "")
+        previous_message = event.get("previous_message")
+        if (
+            isinstance(previous_message, dict)
+            and previous_message.get("text") == updated_message.get("text")
+        ):
+            # Same text: this change only updates Slack-side metadata (thread reply
+            # count / latest_reply, agent-session stamps, unfurls, file state) — no
+            # person is speaking. Routing it would replay a thread parent as a new
+            # user turn whenever the in-memory claim map has no memory of the ts
+            # (gateway restart, bounded eviction) — #118349.
+            logger.debug(
+                "[Slack] Ignoring message_changed with unchanged text for ts=%s",
+                original_message_ts)
+            return None
+        if self._change_replays_unvouched_message(
+                event, updated_message, original_message_ts, edited_ts):
+            logger.debug(
+                "[Slack] Ignoring message_changed for ts=%s: the processed-ts map "
+                "cannot vouch for it (restart or eviction) and the change carries "
+                "no new user edit", original_message_ts)
+            return None
         changed_event_ts = (
             str(event.get("event_ts") or edited_ts or "")
             or (outer_event_ts if outer_event_ts != original_message_ts else "")
@@ -4237,6 +4276,32 @@ class SlackAdapter(BasePlatformAdapter):
         if changed_event_ts:
             normalized_event["_slack_changed_event_ts"] = changed_event_ts
         return normalized_event
+
+    def _change_replays_unvouched_message(
+            self, event: dict, message: dict, message_ts: str, edited_ts: str) -> bool:
+        """True when a ``message_changed`` would re-drive a message the processed-ts
+        map cannot vouch for: posted before this adapter started (the map starts
+        empty after every gateway restart) or claimed only before an eviction (the
+        map is bounded). Slack generates such changes on its own — thread reply
+        metadata, agent-session stamps, unfurls, file state — and without this
+        guard the bot answers the old message a second time (#118349).
+
+        A new user action still routes: a text change against ``previous_message``,
+        or an ``edited.ts`` that is this change itself / newer than the floor (an
+        edit older than both is a past edit riding along on a metadata update)."""
+        floor = self._processed_message_ts_floor
+        message_s = _slack_ts_seconds(message_ts)
+        if message_s is None or message_s > floor:
+            return False
+        previous = event.get("previous_message")
+        if isinstance(previous, dict) and previous.get("text") != message.get("text"):
+            return False
+        if edited_ts:
+            edited_s = _slack_ts_seconds(edited_ts)
+            change_s = _slack_ts_seconds(event.get("event_ts") or event.get("ts"))
+            if edited_s is None or change_s is None or edited_s >= min(change_s, floor):
+                return False
+        return True
 
     @staticmethod
     def _append_link_unfurls(text: str, slack_attachments: list) -> str:

@@ -74,3 +74,46 @@ def test_snapshot_error_names_databases_and_reason(tmp_path, monkeypatch, reason
         assert fragment in err, err
     assert "database(s) unavailable" not in err
     assert "Cookies" not in err  # only the databases that actually failed are named
+
+
+@pytest.mark.parametrize("system, expect", [
+    ("Darwin", ("macOS is blocking the read", "Full Disk Access", "--setup-tcc-identity")),
+    ("Linux", ("owner and permissions",)),
+])
+def test_snapshot_reports_os_denial_not_a_browser_lock(tmp_path, monkeypatch, system, expect):
+    """macOS TCC (no Full Disk Access) denies reads of the Chrome profile with EPERM; that must
+    surface as a distinct denial — never as the running-browser/profile-lock message that sends
+    the user through pointless Chrome restarts (#120396)."""
+    root = tmp_path / "real"
+    _fake_profile(root)
+    monkeypatch.setattr(bc, "get_hermes_home", lambda: tmp_path / "hh")
+    monkeypatch.setattr(bc, "_real_profile_pin", lambda: None)
+    monkeypatch.setattr(bc.platform, "system", lambda: system)
+
+    def denied_scandir(path):
+        raise PermissionError(1, "Operation not permitted", path)
+
+    monkeypatch.setattr(bc.os, "scandir", denied_scandir)
+    dst, err = bc.snapshot_real_profile("chrome", src=str(root))
+    assert dst is None and err
+    assert not err.startswith(bc._PROFILE_LOCKED_PREFIX)
+    assert "is running" not in err
+    for fragment in expect:
+        assert fragment in err, err
+
+
+def test_snapshot_reports_denial_from_deep_in_the_copy(tmp_path, monkeypatch):
+    """A PermissionError escaping the copy itself (past the fast probe) is reported as the same
+    denial message, not as a generic snapshot failure."""
+    import shutil
+    root = tmp_path / "real"
+    _fake_profile(root)
+    monkeypatch.setattr(bc, "get_hermes_home", lambda: tmp_path / "hh")
+    monkeypatch.setattr(bc, "_real_profile_pin", lambda: None)
+    monkeypatch.setattr(bc.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(shutil, "copytree",
+                        lambda *a, **k: (_ for _ in ()).throw(PermissionError(1, "Operation not permitted")))
+    dst, err = bc.snapshot_real_profile("chrome", src=str(root))
+    assert dst is None and err
+    assert "Full Disk Access" in err, err
+    assert "is running" not in err

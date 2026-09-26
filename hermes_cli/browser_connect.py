@@ -476,7 +476,9 @@ _PROFILE_LOCKED_PREFIX = "[profile-locked] "
 def _profile_is_locked(src: str, source_profile: str) -> bool:
     """True when the active profile's cookie DB can't be opened (browser running). On Windows a
     running browser holds Cookies deny-all (PermissionError); this FAST probe fails closed BEFORE
-    the heavy snapshot so a locked profile never hangs the launch. Always False on POSIX."""
+    the heavy snapshot so a locked profile never hangs the launch. Always False on POSIX: there a
+    PermissionError means the OS denied the READ (macOS TCC without Full Disk Access, or plain
+    Unix perms), which is not a browser lock — the snapshot surfaces it as a denial instead."""
     db = _first_present(  # modern Network/ location first
         os.path.join(src, source_profile, rel)
         for rel in (os.path.join("Network", "Cookies"), "Cookies"))
@@ -486,7 +488,7 @@ def _profile_is_locked(src: str, source_profile: str) -> bool:
         with open(db, "rb"):
             return False
     except OSError as e:  # other OSErrors are transient — don't declare locked; let the copy try
-        return isinstance(e, PermissionError)
+        return platform.system() == "Windows" and isinstance(e, PermissionError)
 
 
 def _browser_setting(key: str):
@@ -642,6 +644,19 @@ def _locked_profile_error(browser: str) -> str:
     return _PROFILE_LOCKED_PREFIX + msg
 
 
+def _profile_denied_error(browser: str, err: OSError) -> str:
+    """Fail-closed message when the OS itself denies reading the profile. macOS TCC denies reads
+    of the Chrome profile without Full Disk Access; reporting that as a browser/profile lock
+    sends the user through pointless Chrome restarts (#120396), so name the real blocker."""
+    base = f"could not read the '{browser}' profile ({err})"
+    if platform.system() == "Darwin":
+        return (base + " — macOS is blocking the read, not the browser. Grant Hermes Full Disk "
+                "Access (System Settings → Privacy & Security → Full Disk Access; "
+                "`hermes desktop --setup-tcc-identity` provisions it for Hermes Desktop), then "
+                "retry. Quitting the browser will not fix this.")
+    return base + " — check the profile directory's owner and permissions, then retry."
+
+
 def _copy_profile_tree(src: str, dst: str, source_profile: str) -> None:
     """Fresh (or torn-and-rebuilding) copy of the ACTIVE profile dir into the copy's Default,
     minus caches AND the SQLite auth DBs (raw copytree of a Chrome-held file raises on Windows);
@@ -682,6 +697,13 @@ def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | N
     # auth DB backups that miss their deadline (``_unavailable_auth_dbs_error``).
     if _profile_is_locked(src, source_profile):
         return None, _locked_profile_error(browser)
+    # On POSIX a PermissionError is macOS TCC / Unix perms, never a browser lock: fail fast with
+    # the distinct denial message BEFORE the heavy copy hits the same error deeper in the tree.
+    try:
+        with os.scandir(os.path.join(src, source_profile)):
+            pass
+    except PermissionError as e:
+        return None, _profile_denied_error(browser, e)
     marker = os.path.join(dst, _SNAPSHOT_DONE_MARKER)
     # Only a copy that previously COMPLETED counts as populated; a half-written tree is
     # rebuilt — otherwise a torn first copy poisons freshness forever.
@@ -712,6 +734,8 @@ def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | N
         # AFTER the marker write so the marker itself is covered; every pass, so old snapshots heal.
         _secure_snapshot(dst, contents=True)
     except OSError as e:
+        if isinstance(e, PermissionError):  # e.g. copytree scandir under TCC past the probe above
+            return None, _profile_denied_error(browser, e)
         return None, f"could not snapshot the '{browser}' profile into {dst}: {e}"
     return dst, None
 

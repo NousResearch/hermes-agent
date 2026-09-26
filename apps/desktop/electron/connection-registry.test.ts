@@ -184,6 +184,90 @@ test('matching primary/default SSH route reuses the existing descriptor once', a
   assert.equal(fingerprintCalls, 1)
 })
 
+test('matching primary SSH route reuses its configured named remote profile', async () => {
+  const registry = migrateV1ToRegistry({
+    mode: 'ssh',
+    remote: {
+      mode: 'ssh',
+      host: 'build-host',
+      remoteProfile: 'mac-default',
+      user: 'alice'
+    },
+    profiles: {}
+  })
+
+  const source = registry.connections.find(connection => connection.id === registry.primary)
+  const descriptor = {
+    mode: 'remote' as const,
+    remoteKind: 'ssh' as const,
+    ssh: {
+      effectiveConfigFingerprint: 'same-effective-config',
+      host: 'build-host',
+      remoteProfile: 'mac-default',
+      user: 'alice'
+    }
+  }
+
+  let ensureCalls = 0
+  let fingerprintCalls = 0
+
+  assert.equal(source?.kind, 'ssh')
+  assert.equal(
+    await reuseMatchingPrimarySshBackend({
+      connectionId: registry.primary,
+      effectiveFingerprint: async () => {
+        fingerprintCalls += 1
+
+        return 'same-effective-config'
+      },
+      ensurePrimary: async () => {
+        ensureCalls += 1
+
+        return descriptor
+      },
+      profile: 'mac-default',
+      registry,
+      source: source!
+    }),
+    descriptor
+  )
+  assert.equal(ensureCalls, 1)
+  assert.equal(fingerprintCalls, 1)
+})
+
+test('fixed SSH remote profile reuses primary for a different registry scope', async () => {
+  const registry = migrateV1ToRegistry({
+    mode: 'ssh',
+    remote: { mode: 'ssh', host: 'build-host', remoteProfile: 'mac-default', user: 'alice' },
+    profiles: {}
+  })
+  const source = registry.connections.find(connection => connection.id === registry.primary)!
+  const descriptor = {
+    mode: 'remote' as const,
+    remoteKind: 'ssh' as const,
+    ssh: { effectiveConfigFingerprint: 'same', remoteProfile: 'mac-default' }
+  }
+  let bootCalls = 0
+
+  for (const profile of ['default', 'researcher']) {
+    assert.equal(
+      await reuseMatchingPrimarySshBackend({
+        connectionId: registry.primary,
+        effectiveFingerprint: async () => 'same',
+        ensurePrimary: async () => {
+          bootCalls += 1
+          return descriptor
+        },
+        profile,
+        registry,
+        source
+      }),
+      descriptor
+    )
+  }
+  assert.equal(bootCalls, 2)
+})
+
 test('non-default or non-primary SSH routes do not resolve the primary backend', async () => {
   const registry = migrateV1ToRegistry({
     mode: 'ssh',

@@ -78,6 +78,12 @@ describe('artifact version identity', (): void => {
     })
   })
 
+  it('keeps a bootstrap client on its baked local version when connected to a newer remote backend', (): void => {
+    const stamp: InstallStamp = { payload: 'bootstrap', displayVersion: '0.21.5+2168.g59004a6', baseVersion: '0.21.5', commit: '59004a6' + '0'.repeat(33) } as InstallStamp
+    expect(appVersionInfo(stamp, '0.21.5+2472.g8afaab3', '0.0.0').appVersion).toBe('0.21.5+2168.g59004a6')
+    expect(appVersionInfo({ ...stamp, displayVersion: null }, '9.9.9-remote', '0.0.0').appVersion).toBe('0.21.5')
+  })
+
   it('keeps source installs on their runtime version without a fixed package channel', (): void => {
     expect(appVersionInfo(null, '9.9.9-runtime', '1.2.3')).toMatchObject({ appVersion: '9.9.9-runtime' })
     expect((): void => assertSourceUpdateChannel(null)).not.toThrow()

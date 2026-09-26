@@ -178,7 +178,11 @@ def _receipt_dir() -> Path:
     # (#112465, #112558).
     from hermes_constants import get_hermes_home
 
-    return get_hermes_home() / "logs" / "update_receipts"
+    # A managed Desktop update can visit several profile homes while restarting
+    # the fleet. Keep its receipt at the launch home that Desktop observes.
+    origin = os.environ.get("HERMES_UPDATE_ORIGIN_HOME", "").strip()
+    home = Path(origin).expanduser() if origin else get_hermes_home()
+    return home / "logs" / "update_receipts"
 
 
 def begin_update_receipt(*, previous: dict | None = None, correlation_id: str | None = None) -> None:
@@ -192,7 +196,13 @@ def begin_update_receipt(*, previous: dict | None = None, correlation_id: str | 
         receipt = UpdateReceipt()
         if previous:
             receipt.data.update(copy.deepcopy(previous))
-        receipt.correlation_id = correlation_id or receipt.correlation_id
+        external_id = None
+        if _current.get() is None:
+            raw = os.environ.get("HERMES_UPDATE_CORRELATION_ID", "").strip()
+            if raw:
+                with suppress(ValueError):
+                    external_id = str(uuid.UUID(raw))
+        receipt.correlation_id = correlation_id or external_id or receipt.correlation_id
         receipt.data.update(update_id=receipt.correlation_id, outcome="running", finished_at=None)
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("Could not start update receipt: %s", exc)

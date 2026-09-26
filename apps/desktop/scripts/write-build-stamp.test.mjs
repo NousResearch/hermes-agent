@@ -38,6 +38,20 @@ test('fromLocalGit reads HEAD + branch + dirty status', () => {
   assert.ok(calls.includes('git rev-parse HEAD'))
 })
 
+test('fromLocalGit stamps the source release distance independently of a remote runtime', () => {
+  const sha = 'a'.repeat(40)
+  const execFn = argv => {
+    const cmd = argv.join(' ')
+    if (cmd === 'git rev-parse HEAD') return sha
+    if (cmd === 'git rev-parse --abbrev-ref HEAD') return 'main'
+    if (cmd === 'git status --porcelain -uno') return ''
+    if (cmd === 'git describe --tags --long --match v2[0-9][0-9][0-9].* HEAD') return `v2026.9.24-2168-g${sha.slice(0, 7)}`
+    if (cmd === 'git show v2026.9.24:pyproject.toml') return '[project]\nversion = "0.21.5"\n'
+    return null
+  }
+  assert.deepEqual(fromLocalGit('/repo', execFn), { commit: sha, branch: 'main', dirty: false, source: 'local', baseVersion: '0.21.5', displayVersion: `0.21.5+2168.g${sha.slice(0, 7)}`, distance: 2168 })
+})
+
 test('fromFallback uses the all-zero placeholder commit', () => {
   assert.deepEqual(fromFallback(), {
     commit: FALLBACK_COMMIT,

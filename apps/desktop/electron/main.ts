@@ -3530,7 +3530,7 @@ function resolveCheckoutUpdateStrategy(): UpdaterStrategy {
         return
       }
 
-      preflightStateDb({
+      await preflightStateDb({
         python: await findPythonForRoot(root),
         script: path.join(root, 'hermes_cli', 'backup_sqlite.py'),
         home,
@@ -4282,6 +4282,17 @@ async function applyUpdates(): Promise<UpdaterApplyResultWire> {
     let handedOff: boolean = false
 
     try {
+      // A managed SSH update keeps the app alive until its remote receipt and
+      // serve restoration finish. Starting a local hand-off concurrently makes
+      // posix.sh time out waiting for this Desktop to exit (and loses the GUI).
+      if (managedConnectionUpdates.size > 0 || managedConnectionRecoveries.size > 0) {
+        return {
+          ok: false,
+          error: 'remote-update-in-progress',
+          message: 'A remote Hermes update is still finishing. Wait for it to complete, then retry the client update.'
+        }
+      }
+
       const strategy: UpdaterStrategy = (await resolvePackagedUpdateStrategy()) ?? resolveCheckoutUpdateStrategy()
       const result: UpdaterApplyResultWire = await strategy.apply()
       handedOff = result.handedOff === true
@@ -10915,7 +10926,8 @@ async function ensureRegistryBackend(
     return {
       ...primary,
       profile: profileKey,
-      connectionId: id
+      connectionId: id,
+      ...(profileKey === (String(source.remoteProfile || '').trim() || 'default') ? {} : { sharedRemote: true })
     }
   }
 
@@ -16094,6 +16106,15 @@ async function requestManagedSshUpdate(rawId) {
   }
 
   const correlationId = crypto.randomUUID()
+
+  if (updateInFlight || isQuittingForHandoff) {
+    return refusedManagedSshUpdate(
+      connectionId,
+      correlationId,
+      'A local Hermes update is in progress. Retry the remote update after the Desktop restarts.'
+    )
+  }
+
   const registry = readDesktopConnectionsRegistry()
   const source = registry.connections.find(connection => connection.id === connectionId)
 
@@ -17934,7 +17955,12 @@ function showAboutPanelFresh(): void {
 }
 
 ipcMain.handle('hermes:version', async (_event, scope?: { connectionId?: string; profile?: string }) => {
-  const [skew, version] = await Promise.all([detectRendererSkew(), resolveHermesVersion(scope)])
+  // A packaged client's identity comes from its immutable build stamp. Do
+  // not make that label wait for a remote gateway during startup or reconnect.
+  const [skew, version] = await Promise.all([
+    detectRendererSkew(),
+    INSTALL_STAMP ? Promise.resolve('') : resolveHermesVersion(scope)
+  ])
 
   return {
     ...appVersionInfo(INSTALL_STAMP, version, app.getVersion()),

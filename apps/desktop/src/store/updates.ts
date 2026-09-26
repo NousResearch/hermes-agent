@@ -467,10 +467,10 @@ export async function refreshDesktopVersion(): Promise<DesktopVersionInfo | null
   // mid-reload, or the bridge not yet ready on first paint) would surface
   // as an unhandled promise rejection in the renderer. Swallow it.
   try {
-    const connection = $connection.get()
+    const requestKey = connectionKey($connection.get())
     const next = await window.hermesDesktop?.getVersion?.({ ...connectionScoped(), ...profileScoped() })
 
-    if ($connection.get() !== connection) {
+    if (connectionKey($connection.get()) !== requestKey) {
       return null
     }
 
@@ -1219,7 +1219,16 @@ export function startUpdatePoller(): void {
       return
     }
 
+    const previousKey = lastConnectionKey
+
     lastConnectionKey = key
+
+    // A version reply from the previous connection is deliberately discarded.
+    // Re-request it for this connection so the client pill cannot remain on
+    // its commit-SHA fallback after the initial remote connection arrives.
+    if (previousKey !== undefined) {
+      void refreshDesktopVersion()
+    }
 
     if (conn?.mode === 'remote') {
       void checkBackendUpdates()

@@ -37,6 +37,23 @@ def _finalize(outcome="success", fleet=None):
     return ur.finalize_update_receipt(outcome, fleet=fleet)
 
 
+def test_managed_desktop_receipt_keeps_its_correlation_and_origin_home(receipt_home, tmp_path, monkeypatch):
+    correlation = "12345678-1234-4678-9234-567812345678"
+    monkeypatch.setenv("HERMES_UPDATE_CORRELATION_ID", correlation)
+    monkeypatch.setenv("HERMES_UPDATE_ORIGIN_HOME", str(receipt_home))
+
+    ur.begin_update_receipt()
+    assert ur.current_correlation_id() == correlation
+
+    # Fleet restart work can temporarily switch the active profile home.
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "other-profile"))
+    path = _finalize()
+
+    assert path is not None
+    assert path.parent == receipt_home / "logs" / "update_receipts"
+    assert json.loads(path.read_text(encoding="utf-8"))["update_id"] == correlation
+
+
 class TestReceiptLifecycle:
     def test_begin_record_finalize_roundtrip(self, receipt_home):
         ur.begin_update_receipt()

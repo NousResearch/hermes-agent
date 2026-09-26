@@ -4639,6 +4639,8 @@ export const esOverrides = {
     everythingSkipped: 'Omitido',
     everythingRowFailed: 'Falló la actualización',
     everythingFanoutFailedTitle: 'No se pudieron actualizar las demás instancias',
+    updateEverything: 'Actualizar todo',
+    updatingEverything: 'Actualizando todo…',
     changeLogNew: 'Novedades',
     changeLogFixed: 'Corregido',
     changeLogFaster: 'Más rápido',

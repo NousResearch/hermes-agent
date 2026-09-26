@@ -1,7 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { type ReactElement, useEffect } from 'react'
 
-import { UpdateStatusCard, VersionHero } from '@/components/update-status'
+import { UpdateEverythingAction, UpdateStatusCard, VersionHero } from '@/components/update-status'
 import { VersionDetails } from '@/components/version-details'
 import { useI18n } from '@/i18n'
 import { RefreshCw } from '@/lib/icons'
@@ -54,7 +54,7 @@ function AppUpdatesSettings({ includeUninstall }: AppUpdatesSettingsProps): Reac
     <SettingsContent>
       <VersionHero version={version} />
       <div className="mx-auto mt-4 w-full max-w-2xl">
-        <SectionHeading icon={RefreshCw} title={t.settings.about.updates} />
+        <SectionHeading aside={<UpdateEverythingAction />} icon={RefreshCw} title={t.settings.about.updates} />
         <div className="grid gap-3" id={settingElementId(SETTING_IDS.about.updates)}>
           <UpdateStatusCard target="client" />
           {/* Client and remote backend updates are independent. Only the client has release notes. */}

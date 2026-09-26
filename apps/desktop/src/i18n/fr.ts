@@ -4659,6 +4659,8 @@ export const frOverrides = {
     everythingSkipped: 'Ignorée',
     everythingRowFailed: 'Échec de la mise à jour',
     everythingFanoutFailedTitle: 'Impossible de mettre à jour les autres instances',
+    updateEverything: 'Tout mettre à jour',
+    updatingEverything: 'Mise à jour de tout en cours…',
     changeLogNew: 'Nouveautés',
     changeLogFixed: 'Corrigé',
     changeLogFaster: 'Plus rapide',

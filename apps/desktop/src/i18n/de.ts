@@ -4647,6 +4647,8 @@ export const deOverrides = {
     everythingSkipped: 'Übersprungen',
     everythingRowFailed: 'Update fehlgeschlagen',
     everythingFanoutFailedTitle: 'Andere Instanzen konnten nicht aktualisiert werden',
+    updateEverything: 'Alles aktualisieren',
+    updatingEverything: 'Alles wird aktualisiert…',
     changeLogNew: 'Neuigkeiten',
     changeLogFixed: 'Behoben',
     changeLogFaster: 'Schneller',

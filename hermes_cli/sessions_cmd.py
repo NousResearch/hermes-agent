@@ -974,10 +974,6 @@ def _cmd_repair_routing(db, args):
     print(f"\nRepaired {repaired} of {len(adoptable)} session(s).")
 
 
-_SKILLS_GUIDANCE_MARKER = "## Skill Safety"
-_HYGIENE_PIN_TOOLS = frozenset({"memory"})
-
-
 def _repair_prompts_pin_names(row) -> list[str] | None:
     """Resolve legacy name-list and current versioned tools[] pins to tool names.
 
@@ -1010,21 +1006,9 @@ def _repair_prompts_pin_names(row) -> list[str] | None:
 def _repair_prompts_missing_skills_markers(row) -> bool:
     # Only the Skill Safety guidance is a reliable marker: <available_skills> is legitimately
     # absent when no skills are installed, but the guidance is emitted whenever skill_manage is.
+    from agent.prompt_builder import SKILL_SAFETY_HEADING
     prompt = (row.get("system_prompt") or "").strip()
-    return bool(prompt and _SKILLS_GUIDANCE_MARKER not in prompt)
-
-
-def _repair_prompts_degraded_reason(row) -> str:
-    """Why the stored prompt is provably a reduced-toolset build; '' without sufficient evidence.
-
-    A memory-only pin is not proof: toolsets=[memory] is also a legitimate user config whose
-    healthy prompt has no skills markers, so clearing it would repeat on every run.
-    """
-    if not _repair_prompts_missing_skills_markers(row):
-        return ""
-    if "skill_manage" in (_repair_prompts_pin_names(row) or ()):
-        return "Skill Safety guidance missing while the tools[] pin carries skill_manage"
-    return ""
+    return bool(prompt and SKILL_SAFETY_HEADING not in prompt)
 
 
 def _cmd_repair_prompts(db, args):
@@ -1034,64 +1018,57 @@ def _cmd_repair_prompts(db, args):
     reported as unverifiable and never changed by a scan. An explicit session_id remains the
     operator escape hatch and clears that row regardless of detector evidence.
     """
+    findings = []
+    unverifiable = []
     target = getattr(args, "session_id", None)
     if target:
         session_id = db.resolve_session_id(target)
         if not session_id:
             print(f"No session matches {target!r}.")
             return 1
-        rows = [db.get_session(session_id)]
+        row = db.get_session(session_id)
+        if row and row.get("system_prompt"):
+            findings.append({
+                "id": row["id"], "reason": "targeted clear", "prompt_chars": len(row["system_prompt"]),
+            })
     else:
-        rows = []
+        seen = set()
         offset = 0
         while True:
             batch = db.list_sessions_rich(
                 limit=200, offset=offset, include_children=True,
-                include_archived=True, include_hidden=True,
+                include_archived=True, include_hidden=True, compact_rows=True,
             )
             if not batch:
                 break
-            rows.extend(db.get_session(s["id"]) for s in batch)
             offset += len(batch)
-
-    findings = []
-    unverifiable = []
-    for row in rows:
-        if not row:
-            continue
-        pin = _repair_prompts_pin_names(row)
-        if target:
-            prompt_chars = len(row.get("system_prompt") or "")
-            clear_pin = set(pin or ()) == _HYGIENE_PIN_TOOLS
-            if prompt_chars or clear_pin:
-                findings.append({
-                    "id": row["id"],
-                    "reason": "targeted clear",
-                    "prompt_chars": prompt_chars,
-                    "clear_pin": clear_pin,
-                })
-            continue
-
-        reason = _repair_prompts_degraded_reason(row)
-        if reason:
-            findings.append({
-                "id": row["id"],
-                "reason": reason,
-                "prompt_chars": len(row["system_prompt"] or ""),
-                "clear_pin": set(pin or ()) == _HYGIENE_PIN_TOOLS,
-            })
-        elif _repair_prompts_missing_skills_markers(row) and (
-            pin is None or set(pin) == _HYGIENE_PIN_TOOLS
-        ):
-            unverifiable.append({
-                "id": row["id"],
-                "reason": (
-                    "skills markers missing but the tools[] pin is unavailable or unreadable"
-                    if pin is None else
-                    "memory-only tools[] pin may be a user toolset; clear explicitly by SESSION_ID"
-                ),
-                "prompt_chars": len(row["system_prompt"] or ""),
-            })
+            for summary in batch:
+                # OFFSET paging can re-serve a row when sessions are inserted mid-scan.
+                if summary["id"] in seen:
+                    continue
+                seen.add(summary["id"])
+                row = db.get_session(summary["id"])
+                if not row or not _repair_prompts_missing_skills_markers(row):
+                    continue
+                pin = _repair_prompts_pin_names(row)
+                entry = {"id": row["id"], "prompt_chars": len(row["system_prompt"])}
+                if "skill_manage" in (pin or ()):
+                    findings.append({
+                        **entry,
+                        "reason": "Skill Safety guidance missing while the tools[] pin carries skill_manage",
+                    })
+                elif pin is None:
+                    unverifiable.append({
+                        **entry,
+                        "reason": "skills markers missing but the tools[] pin is unavailable or unreadable",
+                    })
+                elif set(pin) == {"memory"}:
+                    # Not proof: toolsets=[memory] is also a legitimate user config whose healthy
+                    # prompt has no skills markers, so auto-clearing it would repeat every run.
+                    unverifiable.append({
+                        **entry,
+                        "reason": "memory-only tools[] pin may be a user toolset; clear explicitly by SESSION_ID",
+                    })
 
     apply = bool(getattr(args, "apply", False))
     as_json = bool(getattr(args, "json", False))
@@ -1115,8 +1092,7 @@ def _cmd_repair_prompts(db, args):
 
     if not as_json:
         for finding in findings:
-            suffix = " (tools[] pin cleared too)" if finding["clear_pin"] else ""
-            print(f"  {finding['id']}  ({finding['prompt_chars']} chars) - {finding['reason']}{suffix}")
+            print(f"  {finding['id']}  ({finding['prompt_chars']} chars) - {finding['reason']}")
         if unverifiable:
             print(f"\nSkipped {len(unverifiable)} unverifiable row(s) without enough tools[] evidence.")
 
@@ -1135,9 +1111,7 @@ def _cmd_repair_prompts(db, args):
 
     cleared = []
     for finding in findings:
-        db.clear_system_prompt_for_rebuild(
-            finding["id"], clear_tool_names=finding["clear_pin"],
-        )
+        db.update_system_prompt(finding["id"], None)
         cleared.append(finding["id"])
 
     if as_json:

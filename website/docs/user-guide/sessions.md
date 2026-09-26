@@ -690,9 +690,7 @@ hermes sessions repair-prompts --apply --json
 hermes sessions repair-prompts SESSION_ID --apply
 ```
 
-With an explicit `SESSION_ID`, a memory-only `tools[]` pin is cleared together
-with the prompt so the next live turn can pin the real surface again. Clearing the prompt
-intentionally stores NULL; the next turn rebuilds and persists healthy bytes,
+Clearing the prompt intentionally stores NULL; the next turn rebuilds and persists healthy bytes,
 which causes one expected
 `Stored system prompt ... is null; rebuilding from scratch` warning for each
 repaired session. That warning is the consequence of this explicit repair, not

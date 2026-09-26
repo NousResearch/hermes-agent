@@ -8,9 +8,9 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 import { app, ipcMain } from 'electron'
-import nodePty from 'node-pty'
 
 import { resolveTerminalConnectionForSender } from './connection-apply'
+import { stageExternalSpawnHelper } from './pty-spawn-helper-stage'
 import { ensureSpawnHelperExecutable } from './spawn-helper-perms'
 import { buildInteractiveSshArgs } from './ssh-connection'
 import { createTerminalOutputGate } from './terminal-output-gate'
@@ -270,8 +270,14 @@ export function registerTerminalIpc({
   // node-pty's published tarball ships the POSIX `spawn-helper` without an exec
   // bit; the dev flow resolves node-pty straight from node_modules (nothing
   // chmods it there), so the first terminal spawn dies with `posix_spawnp
-  // failed`. Restore the bit once, lazily, right before the first spawn. Packaged
-  // builds already stage an executable copy, so this is a no-op there.
+  // failed`. Restore the bit once, lazily, right before the first spawn.
+  //
+  // Packaged macOS builds additionally need the helper OUTSIDE the sealed .app
+  // bundle subtree: macOS 26's hardened runtime rejects posix_spawn with
+  // POSIX_SPAWN_SETSID for in-bundle helpers even at 0755 (#63784). Copy the
+  // staged helper to userData and export HERMES_NODE_PTY_SPAWN_HELPER, which
+  // the stage-native-deps-patched unixTerminal.js honors at module load — so
+  // this must run before node-pty is first imported (dynamic import below).
   let _spawnHelperEnsured = false
 
   function ensureNodePtySpawnHelper() {
@@ -291,6 +297,24 @@ export function registerTerminalIpc({
 
       for (const failure of errors) {
         rememberLog(`[terminal] could not chmod spawn-helper ${failure.path}: ${failure.error}`)
+      }
+
+      if (process.platform === 'darwin') {
+        const staged = stageExternalSpawnHelper({
+          nodePtyRoot,
+          destDir: path.join(app.getPath('userData'), 'bin')
+        })
+
+        if (staged.staged) {
+          rememberLog(
+            `[terminal] using node-pty spawn-helper outside the app bundle: ${staged.staged}` +
+              (staged.reused ? ' (reused)' : ` (staged from ${staged.sourcePath})`)
+          )
+        }
+
+        for (const failure of staged.errors) {
+          rememberLog(`[terminal] external spawn-helper staging skipped: ${failure}`)
+        }
       }
     } catch (error) {
       rememberLog(
@@ -317,6 +341,11 @@ export function registerTerminalIpc({
       remoteState?.remotePlatform === 'Windows'
         ? buildWindowsInteractiveCommand(String(payload?.cwd || '').trim())
         : undefined
+
+    // Dynamic import: node-pty computes its spawn-helper path once at module
+    // load from HERMES_NODE_PTY_SPAWN_HELPER (see ensureNodePtySpawnHelper),
+    // so it must not be evaluated before that env var is exported.
+    const { default: nodePty } = await import('node-pty')
 
     const ptyProcess = remote
       ? nodePty.spawn(

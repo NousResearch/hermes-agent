@@ -252,6 +252,12 @@ def _persist_branch(db, new_key: str, parent_key: str, title: str, history: list
     db.create_session(new_key, source=source, model=model, model_config={"_branched_from": parent_key},
                       parent_session_id=parent_key, cwd=cwd, profile_name=profile_name, user_id=user_id,
                       system_prompt=parent_prompt or None)
+    # Same for tools[], which heads the request ahead of that prompt: without the parent's pin the
+    # branch's first agent re-derives the array for this surface and the preserved prompt buys nothing.
+    try:
+        db.copy_session_tool_pin(parent_key, new_key)
+    except Exception:
+        logger.debug("branch: tools[] pin copy failed for %s", new_key, exc_info=True)
     try:
         # Compensation guard (#93959 review): if the transcript copy or title write fails AFTER the row
         # committed, the durable-but-empty row would defeat the lazy first-prompt fallback

@@ -1294,3 +1294,20 @@ async def test_interim_commentary_reaches_session_sse_and_responses_stream(adapt
     monkeypatch.setattr("run_agent.AIAgent", CapturingAgent)
     adapter._create_agent(session_id="gated", interim_assistant_callback=lambda *_a, **_k: None)
     assert captured["interim_assistant_callback"] is None
+
+
+@pytest.mark.asyncio
+async def test_forked_session_carries_the_parent_tools_pin(adapter, session_db):
+    """The fork's first turn builds a fresh agent; the parent's tools[] pin keeps its request prefix."""
+    import json
+
+    pin = {"version": "sha", "tools": [{"type": "function", "function": {"name": "read_file"}}]}
+    session_db.create_session("parent", "api_server", system_prompt="PARENT PROMPT")
+    session_db.update_session_tool_names("parent", pin)
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.post("/api/sessions/parent/fork", json={"id": "child"})
+        assert resp.status == 201
+    child = session_db.get_session("child")
+    assert child["system_prompt"] == "PARENT PROMPT"
+    assert json.loads(child["tool_names"]) == pin

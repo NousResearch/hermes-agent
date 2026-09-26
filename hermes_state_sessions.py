@@ -673,6 +673,18 @@ class SessionSessionsMixin:
             self._delete_unreferenced_system_prompts(conn)
         self._execute_write(_do)
 
+    def copy_session_tool_pin(self, source_session_id: str, session_id: str) -> None:
+        """Give ``session_id`` the ``tools[]`` pin ``source_session_id`` holds, as the compression
+        fork does: the stored column value (hash or legacy inline list) is copied as is, so the child
+        sends the parent's exact bytes. A child that already has a pin keeps it; a parent without one
+        leaves the child unpinned."""
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET tool_names = (SELECT tool_names FROM sessions WHERE id = ?) "
+                "WHERE id = ? AND tool_names IS NULL",
+                (source_session_id, session_id))
+        self._execute_write(_do)
+
     def update_session_model(
         self, session_id: str, model: str, provider: Optional[str] = None, *,
         base_url: Optional[str] = None, api_mode: Optional[str] = None,

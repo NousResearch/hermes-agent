@@ -3268,6 +3268,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             db.create_session, fork_id, "api_server", model=source.get("model"),
             system_prompt=source.get("system_prompt"), parent_session_id=source_id,
             model_config={"_branched_from": source_id})
+        # The fork's first turn builds a fresh agent: without the parent's tools[] pin it re-derives the
+        # array that heads the request, ahead of the system prompt carried above.
+        try:
+            await asyncio.to_thread(db.copy_session_tool_pin, source_id, fork_id)
+        except Exception:
+            logger.debug("[api_server] tools[] pin copy failed for fork %s", fork_id, exc_info=True)
         await asyncio.to_thread(db.end_session, source_id, "branched")
         messages = await asyncio.to_thread(db.get_messages, source_id)
         await asyncio.to_thread(db.replace_messages, fork_id, messages)

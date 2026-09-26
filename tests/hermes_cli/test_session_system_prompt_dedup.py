@@ -303,3 +303,32 @@ def test_compact_rows_omit_hash_and_never_read_prompt_blob(db):
     assert "system_prompt_hash" not in rows[0]
     assert "system_prompt" not in rich
     assert "system_prompt_hash" not in rich
+
+
+def test_copy_session_tool_pin_carries_the_stored_pin_as_is(db):
+    pin = {"version": "sha", "tools": [{"type": "function", "function": {"name": "read_file"}}]}
+    db.create_session("parent", "tui")
+    db.update_session_tool_names("parent", pin)
+    db.create_session("child", "tui", parent_session_id="parent")
+    db.copy_session_tool_pin("parent", "child")
+
+    raw = lambda sid: db._conn.execute("SELECT tool_names FROM sessions WHERE id = ?", (sid,)).fetchone()[0]
+    assert raw("child") == raw("parent")  # the content-addressed hash itself, not a re-encoded copy
+    assert json.loads(db.get_session("child")["tool_names"]) == pin
+
+    # A child that already has a pin keeps it; an unpinned parent leaves the child unpinned.
+    own = {"version": "sha", "tools": [{"type": "function", "function": {"name": "terminal"}}]}
+    db.create_session("pinned-child", "tui")
+    db.update_session_tool_names("pinned-child", own)
+    db.copy_session_tool_pin("parent", "pinned-child")
+    assert json.loads(db.get_session("pinned-child")["tool_names"]) == own
+    db.create_session("bare", "tui")
+    db.create_session("bare-child", "tui")
+    db.copy_session_tool_pin("bare", "bare-child")
+    assert db.get_session("bare-child")["tool_names"] is None
+
+    # Legacy rows hold an inline JSON name list instead of a hash: copied verbatim too.
+    db._conn.execute("UPDATE sessions SET tool_names = ? WHERE id = 'bare'", ('["read_file"]',))
+    db._conn.commit()
+    db.copy_session_tool_pin("bare", "bare-child")
+    assert db.get_session("bare-child")["tool_names"] == '["read_file"]'

@@ -950,10 +950,15 @@ def _cmd_edit(args: argparse.Namespace) -> int:
     title = getattr(args, "title", None)
     body = getattr(args, "body", None)
     priority = getattr(args, "priority", None)
+    goal_mode = getattr(args, "goal_mode", None)
+    goal_max_turns = getattr(args, "goal_max_turns", None)
+    clear_goal_max_turns = bool(getattr(args, "clear_goal_max_turns", False))
+    if goal_max_turns is not None and clear_goal_max_turns:
+        return _err("kanban edit: --goal-max-turns conflicts with --clear-goal-max-turns", 2)
     if result is None and (summary is not None or raw_metadata is not None):
         return _err("kanban edit: --summary and --metadata require --result", 2)
-    if all(value is None for value in (title, body, priority, result)):
-        return _err("kanban edit: provide --title, --body, --priority, or --result", 2)
+    if all(value is None for value in (title, body, priority, result, goal_mode, goal_max_turns)) and not clear_goal_max_turns:
+        return _err("kanban edit: provide an editable field", 2)
     metadata, rc = _parse_metadata_flag(raw_metadata)
     if rc:
         return rc
@@ -961,6 +966,8 @@ def _cmd_edit(args: argparse.Namespace) -> int:
         ok = kb.edit_task(
             conn, args.task_id, title=title, body=body, priority=priority,
             result=result, summary=summary, metadata=metadata,
+            goal_mode=goal_mode, goal_max_turns=goal_max_turns,
+            clear_goal_max_turns=clear_goal_max_turns,
         )
     return _ok_or_err(
         ok,

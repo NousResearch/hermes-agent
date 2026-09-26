@@ -90,6 +90,34 @@ def test_legacy_db_migrates_goal_columns(tmp_path, monkeypatch):
     assert task.goal_max_turns is None
 
 
+def test_goal_settings_editable_only_before_first_run(kanban_home):
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="goal-edit")
+        assert kb.edit_task(conn, tid, goal_mode=True, goal_max_turns=40)
+        task = kb.get_task(conn, tid)
+        assert task.goal_mode is True
+        assert task.goal_max_turns == 40
+
+        # Durable history, not current status, permanently closes the edit window.
+        conn.execute(
+            "INSERT INTO task_runs (task_id, started_at, status) VALUES (?, 1, 'running')",
+            (tid,),
+        )
+        conn.commit()
+        with pytest.raises(RuntimeError, match="execution has started"):
+            kb.edit_task(conn, tid, goal_mode=False)
+        task = kb.get_task(conn, tid)
+        assert task.goal_mode is True
+        assert task.goal_max_turns == 40
+
+
+def test_goal_max_turns_must_be_positive(kanban_home):
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="goal-budget")
+        with pytest.raises(ValueError, match="greater than zero"):
+            kb.edit_task(conn, tid, goal_max_turns=0)
+
+
 # ---------------------------------------------------------------------------
 # Spawn env
 # ---------------------------------------------------------------------------

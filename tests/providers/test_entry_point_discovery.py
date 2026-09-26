@@ -51,9 +51,10 @@ def _restore_real_discovery():
 
 
 class _FakeEP:
-    def __init__(self, name, loader):
+    def __init__(self, name, loader, value=""):
         self.name = name
         self.group = "hermes_agent.plugins"
+        self.value = value
         self._loader = loader
 
     def load(self):
@@ -222,4 +223,185 @@ def test_filesystem_plugins_win_over_entry_points(monkeypatch):
         # The bundled OpenRouter profile (real base_url) must win, not the impostor.
         assert "impostor.test" not in (p.base_url or "")
     finally:
+        _clear_provider_caches()
+
+
+def test_platform_named_entry_point_not_loaded(monkeypatch):
+    """A ``<name>-platform`` entry point must not be imported by this scan
+    (#98438).
+
+    Platform adapters are owned by the PluginManager, which loads them
+    lazily; importing one here runs its ``from gateway.config import
+    Platform`` while ``gateway.config`` may still be half-initialized (this
+    scan can run inside the ``gateway.config -> hermes_cli.config`` import
+    chain), killing the platform with a circular-import error.
+    """
+    loads = []
+
+    def _platform_side_effect():
+        loads.append("stub-platform")  # the import itself would already fail
+        return object()
+
+    fake_eps = _FakeEntryPoints(
+        [_FakeEP("stub-platform", _platform_side_effect, value="stubplat")]
+    )
+    import importlib.metadata as md
+
+    monkeypatch.setattr(md, "entry_points", lambda: fake_eps)
+    _enable(monkeypatch, "stub-platform")
+    _clear_provider_caches()
+    try:
+        providers._discover_providers()
+        assert loads == []  # never imported
+    finally:
+        _clear_provider_caches()
+
+
+def test_memory_provider_entry_point_not_loaded(monkeypatch, tmp_path):
+    """An enabled memory-provider entry point (``MemoryProvider`` source
+    signature) is not imported here — memory providers are owned by the
+    ``plugins/memory`` discovery system."""
+    loads = []
+    # A resolvable top-level module whose source carries the memory-provider
+    # markers the PluginManager's import-free classifier looks for.
+    (tmp_path / "stub_mem_plugin.py").write_text(
+        "from plugins.memory import register_memory_provider\n"
+        "class StubMemoryProvider(MemoryProvider):\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    def _mem_side_effect():
+        loads.append("stub-mem")
+        return object()
+
+    fake_eps = _FakeEntryPoints(
+        [_FakeEP("stub-mem", _mem_side_effect, value="stub_mem_plugin")]
+    )
+    import importlib.metadata as md
+
+    monkeypatch.setattr(md, "entry_points", lambda: fake_eps)
+    _enable(monkeypatch, "stub-mem")
+    _clear_provider_caches()
+    try:
+        providers._discover_providers()
+        assert loads == []  # never imported
+    finally:
+        sys.modules.pop("stub_mem_plugin", None)
+        _clear_provider_caches()
+
+
+def test_unresolvable_entry_point_still_loaded(monkeypatch):
+    """Fail-open: an entry point whose source cannot be classified is still
+    loaded, so a real provider is never dropped because classification
+    failed (unresolvable module, thin re-export package, ...)."""
+    from providers.base import ProviderProfile
+
+    def _register_unresolvable():
+        def register():
+            providers.register_provider(
+                ProviderProfile(name="ep-unresolvable", base_url="https://c.test/v1")
+            )
+
+        return register
+
+    fake_eps = _FakeEntryPoints(
+        [
+            _FakeEP(
+                "ep-unresolvable",
+                _register_unresolvable,
+                value="no_such_module_zq",
+            )
+        ]
+    )
+    import importlib.metadata as md
+
+    monkeypatch.setattr(md, "entry_points", lambda: fake_eps)
+    _enable(monkeypatch, "ep-unresolvable")
+    _clear_provider_caches()
+    try:
+        assert providers.get_provider_profile("ep-unresolvable") is not None
+    finally:
+        _clear_provider_caches()
+
+
+def test_platform_import_marker_entry_point_not_loaded(monkeypatch, tmp_path):
+    """A hand-written ``plugins.enabled`` entry whose name lacks the
+    ``-platform`` suffix is still skipped when its source carries the
+    documented platform-adapter import (#98438).
+
+    The name convention only covers PluginManager-generated ids; the
+    ``from gateway.config import Platform`` base import is the remaining
+    import-free platform signal (model-provider plugins never touch
+    gateway.config).
+    """
+    loads = []
+    (tmp_path / "stub_platform_plugin.py").write_text(
+        "from gateway.config import Platform, PlatformConfig\n"
+        "class StubAdapter:\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    def _adapter_side_effect():
+        loads.append("stub-adapter")  # the import itself would already fail
+        return object()
+
+    fake_eps = _FakeEntryPoints(
+        [
+            _FakeEP(
+                "stub-adapter",
+                _adapter_side_effect,
+                value="stub_platform_plugin",
+            )
+        ]
+    )
+    import importlib.metadata as md
+
+    monkeypatch.setattr(md, "entry_points", lambda: fake_eps)
+    _enable(monkeypatch, "stub-adapter")
+    _clear_provider_caches()
+    try:
+        providers._discover_providers()
+        assert loads == []  # never imported
+    finally:
+        sys.modules.pop("stub_platform_plugin", None)
+        _clear_provider_caches()
+
+
+def test_plain_plugin_without_markers_still_loaded(monkeypatch, tmp_path):
+    """A source-bearing entry point with NO platform/memory markers keeps
+    the historical load path — the marker scan must not over-skip."""
+    from providers.base import ProviderProfile
+
+    (tmp_path / "stub_plain_plugin.py").write_text(
+        "# a plain plugin: no gateway import, no memory markers\n"
+        "def register():\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    def _plain_side_effect():
+        def register():
+            providers.register_provider(
+                ProviderProfile(name="ep-plain", base_url="https://d.test/v1")
+            )
+
+        return register
+
+    fake_eps = _FakeEntryPoints(
+        [_FakeEP("ep-plain", _plain_side_effect, value="stub_plain_plugin")]
+    )
+    import importlib.metadata as md
+
+    monkeypatch.setattr(md, "entry_points", lambda: fake_eps)
+    _enable(monkeypatch, "ep-plain")
+    _clear_provider_caches()
+    try:
+        assert providers.get_provider_profile("ep-plain") is not None
+    finally:
+        sys.modules.pop("stub_plain_plugin", None)
         _clear_provider_caches()

@@ -160,13 +160,12 @@ def _resolve_openrouter_runtime(
         # OPENAI_API_KEY is a legacy home for an OpenRouter key. When OPENAI_BASE_URL binds it, it
         # goes only to that host. Unbound, openrouter.ai gets it only when it is OpenRouter-shaped
         # (sk-or-), so a real OpenAI key never reaches a third party.
-        from hermes_cli.auth import looks_like_openrouter_key
         openai_key = get_secret_str("OPENAI_API_KEY")
         openai_base_host = base_url_hostname(get_secret_str("OPENAI_BASE_URL", "").strip())
         if openai_base_host:
             openai_key_ok = openai_base_host == base_url_hostname(base_url)
         else:
-            openai_key_ok = not is_openrouter_url or looks_like_openrouter_key(openai_key)
+            openai_key_ok = not is_openrouter_url or rp.looks_like_openrouter_key(openai_key)
         candidates = [explicit_api_key, get_secret_str("OPENROUTER_API_KEY"),
                       openai_key if openai_key_ok else ""]
     else:

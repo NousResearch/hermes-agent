@@ -326,12 +326,17 @@ KNOWN_PROVIDER_KEY_PREFIXES: Dict[str, tuple] = {
 }
 
 
+def _matches_key_prefix(provider_id: str, val: str) -> bool:
+    """True when *val* starts with one of *provider_id*'s declared key prefixes (False when the
+    provider declares none)."""
+    return val.startswith(KNOWN_PROVIDER_KEY_PREFIXES.get(provider_id, ()))
+
+
 def looks_like_openrouter_key(value: Any) -> bool:
     """True when *value* carries an OpenRouter key prefix. OPENAI_API_KEY is a legacy home for an
     OpenRouter key, so only a value shaped like one may be read as an OpenRouter credential: a real
     OpenAI key must never be auto-routed to, or sent to, openrouter.ai."""
-    val = str(value or "").strip()
-    return any(val.startswith(p) for p in KNOWN_PROVIDER_KEY_PREFIXES["openrouter"])
+    return _matches_key_prefix("openrouter", str(value or "").strip())
 
 
 def _usable_declared_secret(provider_id: str, value: Any, source: str) -> Optional[str]:
@@ -342,7 +347,7 @@ def _usable_declared_secret(provider_id: str, value: Any, source: str) -> Option
     if not has_usable_secret(val):
         return None
     prefixes = KNOWN_PROVIDER_KEY_PREFIXES.get(provider_id)
-    if prefixes and not any(val.startswith(p) for p in prefixes):
+    if prefixes and not _matches_key_prefix(provider_id, val):
         logger.warning(
             "Ignoring %s for provider %r: value does not match the expected key "
             "prefix (%s). Falling back to the next credential source. Fix or "
@@ -1462,7 +1467,7 @@ def _openrouter_auto_detected(scoped_key_env: Callable[[str], str]) -> bool:
         # env var). Without this, a key that only lives in the credential pool is invisible to
         # auto-detection — the user sees `hermes auth list` showing the credential while requests go out
         # with no Authorization header ("HTTP 401: Missing Authentication header"). The env-var check above
-        # only covers keys exported as OPENROUTER_API_KEY / OPENAI_API_KEY. See issue #42130.
+        # only covers OPENROUTER_API_KEY and an sk-or- key in OPENAI_API_KEY. See issue #42130.
         from agent.credential_pool import load_pool as _load_pool
         return bool(_load_pool("openrouter").has_credentials())
     except Exception as e:

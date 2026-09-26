@@ -523,6 +523,19 @@ import {
 } from './updater-process'
 import { AppInstallerStrategy } from './updater/app-installer'
 import { createChannelAppInstallerStrategy } from './updater/app-installer'
+import {
+  type AutoUpdateOutcome,
+  autoUpdatePlatformSupported,
+  autoUpdateSessionScope,
+  decideAutoUpdateClaim,
+  defaultGatewayScanDeps,
+  defaultLoginSessionDeps,
+  readAutoUpdateState,
+  recordAutoUpdateOutcome,
+  resolveLoginSessionKey,
+  scanGatewayActivity,
+  writeAutoUpdateState
+} from './updater/auto-update'
 import { ChannelResolver, type ChannelTarget } from './updater/channel'
 import { inspectRunningChannelApp } from './updater/channel-native'
 import { ChannelStrategy } from './updater/channel-strategy'
@@ -988,6 +1001,8 @@ const DESKTOP_CONNECTION_CONFIG_PATH = path.join(app.getPath('userData'), 'conne
 const DESKTOP_CONNECTIONS_REGISTRY_PATH = path.join(app.getPath('userData'), 'connections.json')
 const DESKTOP_INSTALLATION_PATH = path.join(app.getPath('userData'), 'desktop-installation.json')
 const DESKTOP_UPDATE_CONFIG_PATH = path.join(app.getPath('userData'), 'updates.json')
+// Opt-in automatic updates (#123674): device-scoped, like the branch pin above.
+const DESKTOP_AUTO_UPDATE_PATH = path.join(app.getPath('userData'), 'auto-update.json')
 const DESKTOP_WINDOW_STATE_PATH = path.join(app.getPath('userData'), 'window-state.json')
 const DESKTOP_BACKEND_OWNERSHIP_PATH = path.join(app.getPath('userData'), 'backend-ownership.json')
 const DESKTOP_MANAGED_SSH_RECOVERY_PATH = path.join(app.getPath('userData'), 'managed-ssh-update-recovery.json')
@@ -17954,6 +17969,119 @@ ipcMain.handle('hermes:updates:apply', async (_event, payload) =>
 )
 
 ipcMain.handle('hermes:updates:branch:get', async () => readDesktopUpdateConfig())
+
+// ── Opt-in automatic update on the first launch after login (#123674) ──────
+// The policy (one attempt per OS login session, defer while gateways are busy)
+// lives in updater/auto-update.ts; these handlers only feed it machine facts.
+// The renderer runs the ordinary check/apply flow when the claim says 'run'.
+
+let autoUpdateSessionKeyCache: string | null = null
+
+function autoUpdateSessionKey(): string {
+  if (!autoUpdateSessionKeyCache) {
+    autoUpdateSessionKeyCache = resolveLoginSessionKey(
+      defaultLoginSessionDeps((command: string, args: string[]): string =>
+        execFileSync(command, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 2000 })
+      )
+    )
+  }
+
+  return autoUpdateSessionKeyCache
+}
+
+function autoUpdateView() {
+  const state = readAutoUpdateState(DESKTOP_AUTO_UPDATE_PATH)
+
+  const supported = autoUpdatePlatformSupported(process.platform)
+
+  return {
+    enabled: state.enabled,
+    supported,
+    // Resolving the key shells out (pgrep/ps on macOS); skip it where the
+    // feature cannot run anyway.
+    sessionScope: supported ? autoUpdateSessionScope(autoUpdateSessionKey()) : 'boot',
+    lastAttempt: state.lastAttempt ?? null
+  }
+}
+
+ipcMain.handle('hermes:updates:auto:get', async () => autoUpdateView())
+
+ipcMain.handle('hermes:updates:auto:set', async (_event: Electron.IpcMainInvokeEvent, enabled: unknown) => {
+  const state = readAutoUpdateState(DESKTOP_AUTO_UPDATE_PATH)
+  const next = { ...state, enabled: enabled === true }
+
+  // Turning it on mid-session must not fire an update right away: the trigger
+  // is the NEXT login. Consume the current session when enabling.
+  if (next.enabled && !state.enabled) {
+    next.claimedSessionKey = autoUpdateSessionKey()
+  }
+
+  writeAutoUpdateState(DESKTOP_AUTO_UPDATE_PATH, next)
+  rememberLog(`[auto-update] ${next.enabled ? 'enabled' : 'disabled'}`)
+
+  return autoUpdateView()
+})
+
+ipcMain.handle('hermes:updates:auto:claim', async () => {
+  const state = readAutoUpdateState(DESKTOP_AUTO_UPDATE_PATH)
+
+  if (!state.enabled) {
+    return { action: 'skip', reason: 'disabled', sessionKey: '' }
+  }
+
+  const sessionKey = autoUpdateSessionKey()
+  const gateways = scanGatewayActivity(defaultGatewayScanDeps(HERMES_HOME))
+
+  const { claim, nextState } = decideAutoUpdateClaim({
+    state,
+    sessionKey,
+    platform: process.platform,
+    gatewayActiveAgents: gateways.activeAgents,
+    desktopActiveTurns: mergeActiveWork(activeWorkByWebContents.values()).count,
+    now: Date.now()
+  })
+
+  if (nextState !== state) {
+    writeAutoUpdateState(DESKTOP_AUTO_UPDATE_PATH, nextState)
+  }
+
+  if (claim.action !== 'skip' || claim.reason !== 'already-ran-this-session') {
+    rememberLog(
+      `[auto-update] claim ${claim.action} (${claim.reason})${claim.activeAgents ? ` active=${claim.activeAgents} ${gateways.busyHomes.join(',')}` : ''}`
+    )
+  }
+
+  return claim
+})
+
+ipcMain.handle(
+  'hermes:updates:auto:report',
+  async (
+    _event: Electron.IpcMainInvokeEvent,
+    report: { sessionKey?: unknown; outcome?: unknown; target?: unknown; message?: unknown }
+  ) => {
+    const sessionKey =
+      typeof report?.sessionKey === 'string' && report.sessionKey ? report.sessionKey : autoUpdateSessionKey()
+
+    const outcome = String(report?.outcome ?? '') as AutoUpdateOutcome
+
+    const next = recordAutoUpdateOutcome(
+      readAutoUpdateState(DESKTOP_AUTO_UPDATE_PATH),
+      {
+        sessionKey,
+        outcome,
+        target: typeof report?.target === 'string' ? report.target : undefined,
+        message: typeof report?.message === 'string' ? report.message : undefined
+      },
+      Date.now()
+    )
+
+    writeAutoUpdateState(DESKTOP_AUTO_UPDATE_PATH, next)
+    rememberLog(`[auto-update] outcome ${outcome}${typeof report?.message === 'string' ? `: ${report.message}` : ''}`)
+
+    return autoUpdateView()
+  }
+)
 
 ipcMain.handle(
   'hermes:updates:branch:set',

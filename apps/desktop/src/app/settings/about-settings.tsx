@@ -8,6 +8,7 @@ import { RefreshCw } from '@/lib/icons'
 import { $connection } from '@/store/session'
 import { $desktopVersion, checkBackendUpdates, refreshDesktopVersion } from '@/store/updates'
 
+import { AutoUpdateSetting } from './auto-update-setting'
 import { SectionHeading, SettingsContent } from './primitives'
 import { SETTING_IDS, settingElementId } from './settings-manifest'
 import { UninstallSection } from './uninstall-section'
@@ -56,7 +57,9 @@ function AppUpdatesSettings({ includeUninstall }: AppUpdatesSettingsProps): Reac
       <div className="mx-auto mt-4 w-full max-w-2xl">
         <SectionHeading icon={RefreshCw} title={t.settings.about.updates} />
         <div className="grid gap-3" id={settingElementId(SETTING_IDS.about.updates)}>
-          <UpdateStatusCard target="client" />
+          <UpdateStatusCard target="client">
+            <AutoUpdateSetting />
+          </UpdateStatusCard>
           {/* Client and remote backend updates are independent. Only the client has release notes. */}
           {remote && <UpdateStatusCard showReleaseNotes={false} target="backend" />}
         </div>

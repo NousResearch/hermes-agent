@@ -3537,6 +3537,30 @@ export interface Translations {
     checkNow: string
     seeWhatsNew: string
     releaseNotes: string
+    autoUpdate: {
+      title: string
+      desc: string
+      descBootScoped: string
+      unsupported: string
+      saveFailed: string
+      deferredTitle: string
+      deferredMessage: string
+      skippedTitle: string
+      skippedDirty: string
+      checkFailed: string
+      last: (outcome: string, age: string) => string
+      outcomes: Record<
+        | 'handed-off'
+        | 'updated'
+        | 'up-to-date'
+        | 'failed'
+        | 'skipped-dirty'
+        | 'skipped-unsupported'
+        | 'check-failed'
+        | 'deferred-timeout',
+        string
+      >
+    }
     onLatest: string
     installing: string
     cantReach: string

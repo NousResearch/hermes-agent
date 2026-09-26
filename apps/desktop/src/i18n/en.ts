@@ -4242,6 +4242,31 @@ export const en: Translations = {
     checkNow: 'Check now',
     seeWhatsNew: "See what's new",
     releaseNotes: 'Release notes',
+    autoUpdate: {
+      title: 'Install updates automatically',
+      desc: 'The first time Hermes opens after you log in, it pulls the latest update on your update channel and restarts itself. It waits while a gateway is busy, and it tries once per login.',
+      descBootScoped:
+        'The first time Hermes opens after this computer starts, it pulls the latest update on your update channel and restarts itself. It waits while a gateway is busy, and it tries once per boot. (This system does not expose login sessions, so “per login” becomes “per boot”.)',
+      unsupported: 'Automatic updates are available on macOS and Linux.',
+      saveFailed: 'Could not change automatic updates',
+      deferredTitle: 'Automatic update is waiting',
+      deferredMessage: 'A gateway is in the middle of a task. Hermes will update once it finishes.',
+      skippedTitle: 'Automatic update skipped',
+      skippedDirty:
+        'This Hermes checkout has local changes, so it was not updated automatically. Update manually when you are ready.',
+      checkFailed: 'Hermes could not check for updates. It will try again at your next login.',
+      last: (outcome: string, age: string) => `Last automatic update: ${outcome} · ${age}`,
+      outcomes: {
+        'handed-off': 'installed',
+        updated: 'installed',
+        'up-to-date': 'already up to date',
+        failed: 'failed',
+        'skipped-dirty': 'skipped (local changes)',
+        'skipped-unsupported': 'not supported for this install',
+        'check-failed': 'could not check',
+        'deferred-timeout': 'skipped (gateway stayed busy)'
+      }
+    },
     onLatest: "You're on the latest version.",
     installing: 'An update is currently installing.',
     cantReach: "We couldn't reach the update server.",

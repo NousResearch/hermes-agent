@@ -606,6 +606,13 @@ declare global {
         getBranch: () => Promise<{ branch: string }>
         setBranch: (name: string) => Promise<{ branch: string }>
         onProgress: (callback: (payload: DesktopUpdateProgress) => void) => () => void
+        /** Opt-in automatic update on the first launch after login (#123674). */
+        auto?: {
+          get: () => Promise<DesktopAutoUpdateView>
+          set: (enabled: boolean) => Promise<DesktopAutoUpdateView>
+          claim: () => Promise<DesktopAutoUpdateClaim>
+          report: (report: DesktopAutoUpdateReport) => Promise<DesktopAutoUpdateView>
+        }
       }
       uninstall: {
         summary: () => Promise<DesktopUninstallSummary>
@@ -837,6 +844,47 @@ export type DesktopUpdateDirtyStrategy = 'abort' | 'stash' | 'force'
 
 export interface DesktopUpdateApplyOptions {
   dirtyStrategy?: DesktopUpdateDirtyStrategy
+}
+
+export type DesktopAutoUpdateOutcome =
+  | 'handed-off'
+  | 'updated'
+  | 'up-to-date'
+  | 'failed'
+  | 'skipped-dirty'
+  | 'skipped-unsupported'
+  | 'check-failed'
+  | 'deferred-timeout'
+
+export interface DesktopAutoUpdateAttempt {
+  sessionKey: string
+  at: number
+  outcome: DesktopAutoUpdateOutcome
+  target?: string
+  message?: string
+}
+
+export interface DesktopAutoUpdateView {
+  enabled: boolean
+  supported: boolean
+  /** `login` = key changes on logout/login; `boot` = only on reboot (Linux without logind, fallbacks). */
+  sessionScope: 'login' | 'boot'
+  lastAttempt: DesktopAutoUpdateAttempt | null
+}
+
+export interface DesktopAutoUpdateClaim {
+  action: 'run' | 'skip' | 'defer'
+  reason: string
+  sessionKey: string
+  retryInMs?: number
+  activeAgents?: number
+}
+
+export interface DesktopAutoUpdateReport {
+  sessionKey: string
+  outcome: DesktopAutoUpdateOutcome
+  target?: string
+  message?: string
 }
 
 export interface DesktopUpdateApplyResult {

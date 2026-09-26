@@ -23,7 +23,7 @@ import shutil
 import uuid
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 try:
     from aiohttp import web
@@ -317,27 +317,30 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         code = err.get("code")
         return f"graph error {code} (HTTP {resp.status_code}): {message}" if code is not None else f"HTTP {resp.status_code}: {message}"
 
-    async def _post_messages(self, payload: Dict[str, Any], *, fail_log: str, reject_log: str, reject_args: tuple = ()) -> tuple[list, Optional[str]]:
-        """POST one /messages payload. Returns ``(response messages[], None)`` or ``([], error)``."""
+    async def _post_messages(
+        self, payload: Dict[str, Any], *, fail_log: str, reject_log: str, reject_args: tuple = (),
+    ) -> tuple[list, Optional[str], bool]:
+        """POST one /messages payload. Returns ``(response messages[], None, False)`` or
+        ``([], error, unsent)``; ``unsent`` when Meta certainly created nothing (``_send_never_landed``)."""
         try:
             resp = await self._http_client.post(self._graph_url("messages"), headers=self._auth_headers(), json=payload)
         except Exception as exc:
             logger.exception(fail_log)
-            return [], str(exc) or type(exc).__name__
+            return [], str(exc) or type(exc).__name__, self._send_never_landed(exc)
         if resp.status_code != 200:
             error_msg = self._response_error(resp)
             logger.warning(reject_log, resp.status_code, *reject_args, error_msg)
-            return [], error_msg
+            return [], error_msg, self._send_never_landed(status=resp.status_code)
         try:
-            return resp.json().get("messages") or [], None
+            return resp.json().get("messages") or [], None, False
         except Exception:
-            return [], None
+            return [], None, False
 
     async def _post_message_result(self, payload: Dict[str, Any], **log_kwargs) -> SendResult:
         """``_post_messages`` → SendResult with the first returned message id; guards disconnected state."""
         if self._http_client is None:
             return SendResult(success=False, error="Not connected")
-        ids, err = await self._post_messages(payload, **log_kwargs)
+        ids, err, _unsent = await self._post_messages(payload, **log_kwargs)
         return SendResult(success=False, error=err) if err is not None else SendResult(success=True, message_id=ids[0].get("id") if ids else None)
 
     @staticmethod
@@ -355,25 +358,44 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if not content or not content.strip():
             return SendResult(success=True, message_id=None)
         formatted = self.format_message(content)
-        last_message_id: Optional[str] = None
-        for idx, chunk in enumerate(self.truncate_message(formatted, self._outgoing_chunk_limit())):
+        return await self._send_chunks(
+            chat_id, self.truncate_message(formatted, self._outgoing_chunk_limit()), [], reply_to, formatted)
+
+    async def _send_chunks(
+        self, chat_id: str, chunks: List[str], delivered: List[Optional[str]], reply_to: Optional[str], text: str,
+    ) -> SendResult:
+        """Send ``chunks`` after the ``delivered`` ones (one entry per confirmed chunk; Meta may omit an id).
+        A failure after one landed is a partial result, so the visible head is never sent again."""
+        for i, chunk in enumerate(chunks):
             # Quote the user's message on the first chunk only.
             payload = self._outbound_payload(
-                chat_id, "text", {"body": chunk, "preview_url": True}, reply_to if idx == 0 else None
+                chat_id, "text", {"body": chunk, "preview_url": True}, None if delivered else reply_to
             )
-            ids, err = await self._post_messages(
+            ids, err, unsent = await self._post_messages(
                 payload,
                 fail_log="[whatsapp_cloud] send failed",
                 reject_log="[whatsapp_cloud] send rejected (status=%d): %s",
             )
             if err is not None:
-                return SendResult(success=False, error=err)
-            last_message_id = ids[0].get("id") if ids else last_message_id
+                return self._split_send_failed(
+                    SendResult(success=False, error=err), chunks[i:], delivered, unsent=unsent)
+            delivered.append(ids[0].get("id") if ids else None)
+        last_message_id = next((m for m in reversed(delivered) if m), None)
         # Index (chat_id, wamid) → text: Meta's inbound ``context`` carries only the
         # quoted message's id, so this is how replies to our messages resolve text.
         if last_message_id:
-            await rich_sent_store.record_async(chat_id, last_message_id, formatted)
+            await rich_sent_store.record_async(chat_id, last_message_id, text)
         return SendResult(success=True, message_id=last_message_id)
+
+    async def _resume_partial_send(
+        self, chat_id: str, result: SendResult, *, reply_to: Optional[str], metadata: Optional[Dict[str, Any]],
+    ) -> Optional[SendResult]:
+        raw = result.raw_response if isinstance(result.raw_response, dict) else {}
+        undelivered = list(raw.get("undelivered_chunks") or ())
+        if not undelivered or self._http_client is None:
+            return None
+        return await self._send_chunks(
+            chat_id, undelivered, list(raw.get("delivered_message_ids") or ()), reply_to, "\n".join(undelivered))
 
     # ------------------------------------------------------------------ typing indicator + read receipts
     async def send_typing(self, chat_id: str, metadata=None) -> None:

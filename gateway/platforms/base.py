@@ -3578,7 +3578,7 @@ class BasePlatformAdapter(ABC):
             return await self._resume_partial_send(chat_id, previous, reply_to=reply_to, metadata=metadata)
 
         result = await _send(content)
-        if result.success or self._send_retry_is_final(result):
+        if result.success or self._send_retry_is_final(result) or self._partial_tail_uncertain(result):
             return result
         error_str = result.error or ""
         # A rate-limited / flood-capped send is transient: it should back off
@@ -3630,7 +3630,7 @@ class BasePlatformAdapter(ABC):
                     logger.info("[%s] Send succeeded on retry %d", self.name, attempt)
                     return result
                 error_str = result.error or ""
-                if self._send_retry_is_final(result):
+                if self._send_retry_is_final(result) or self._partial_tail_uncertain(result):
                     return result
                 if result.retry_after is not None:
                     server_retry_after = result.retry_after
@@ -3693,10 +3693,69 @@ class BasePlatformAdapter(ABC):
     @staticmethod
     def _is_partial_delivery(result: "SendResult") -> bool:
         """True when a split payload was PARTLY delivered (``raw_response["partial_overflow"]``, the
-        contract Telegram's send/edit-overflow paths set and the stream consumer reads): the visible
+        contract split-sending adapters set via :meth:`_with_partial_send` and the stream consumer reads): the visible
         head must never be sent again."""
         raw = getattr(result, "raw_response", None)
         return isinstance(raw, dict) and bool(raw.get("partial_overflow"))
+
+    @classmethod
+    def _partial_tail_uncertain(cls, result: "SendResult") -> bool:
+        """A partial delivery whose remainder may already have landed (no ``undelivered_chunks``): no
+        retry can resume it and the plain-text fallback would repeat the head, so it is returned as-is."""
+        return cls._is_partial_delivery(result) and not result.raw_response.get("undelivered_chunks")
+
+    @staticmethod
+    def _with_partial_send(
+        result: SendResult, undelivered: List[str], delivered: List[str], *, tail_certain: bool = True) -> SendResult:
+        """Mark a split-send failure that happened after earlier chunks landed with the ``partial_overflow``
+        contract (the same key ``_edit_overflow_split`` sets and the stream consumer reads), so no caller
+        re-sends the already-visible head. ``undelivered`` (the formatted remainder, for
+        :meth:`_resume_partial_send`) is attached only when ``tail_certain``. No-op when nothing landed."""
+        if not delivered:
+            return result
+        raw = dict(result.raw_response) if isinstance(result.raw_response, dict) else {}
+        raw.update({
+            "partial_overflow": True, "delivered_chunks": len(delivered), "total_chunks": len(delivered) + len(undelivered),
+            "last_message_id": delivered[-1], "continuation_message_ids": tuple(delivered[1:])})
+        if tail_certain and undelivered:
+            raw["undelivered_chunks"] = tuple(undelivered)
+            raw["delivered_message_ids"] = tuple(delivered)
+        result.raw_response = raw
+        return result
+
+    @staticmethod
+    def _send_never_landed(exc: Optional[BaseException] = None, status: Optional[int] = None) -> bool:
+        """True only when a failed send certainly created nothing: HTTP 429 (refused before processing) or a
+        failed connect (the request never left), also when an SDK wraps it. A 5xx, a timeout or a dropped
+        response may have posted it."""
+        connect_errors = (ConnectionRefusedError,) + tuple(
+            cls for cls in (getattr(sys.modules.get("aiohttp"), "ClientConnectorError", None),
+                            getattr(sys.modules.get("httpx"), "ConnectError", None)) if isinstance(cls, type))
+        for _ in range(4):  # the exception and the SDK wrappers above it
+            if exc is None:
+                break
+            if isinstance(exc, connect_errors):
+                return True
+            status = status or next((s for s in (
+                getattr(getattr(exc, "response", None), "status_code", None),  # httpx, slack_sdk
+                getattr(exc, "http_status", None),  # mautrix
+                getattr(getattr(exc, "resp", None), "status", None),  # googleapiclient
+            ) if isinstance(s, int)), None)
+            exc = exc.__cause__
+        return status == 429
+
+    @classmethod
+    def _split_send_failed(
+        cls, result: SendResult, undelivered: List[str], delivered: List[Any], *, unsent: bool) -> SendResult:
+        """``result`` for a split send whose chunk after ``delivered`` failed (``unsent``: it certainly never
+        landed, see :meth:`_send_never_landed`). Once a chunk landed, the tail is kept for
+        :meth:`_resume_partial_send` only when ``unsent``, and only then is it retryable: a whole-payload
+        redelivery would repeat the visible head."""
+        if not delivered:
+            return result
+        result = cls._with_partial_send(result, undelivered, delivered, tail_certain=unsent)
+        result.retryable = unsent
+        return result
 
     async def _resume_partial_send(
         self, chat_id: str, result: "SendResult", *, reply_to: Optional[str], metadata: Any) -> "Optional[SendResult]":

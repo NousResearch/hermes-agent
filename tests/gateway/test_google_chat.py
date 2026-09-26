@@ -479,13 +479,6 @@ class TestConnectModes:
 
 
 # ===========================================================================
-# _chunk_text
-# ===========================================================================
-
-
-
-
-# ===========================================================================
 # _on_pubsub_message — event routing
 # ===========================================================================
 
@@ -765,6 +758,27 @@ class TestSend:
         assert kwargs.get("body") == body
         assert kwargs.get("messageReplyOption") == "REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD"
 
+
+    @pytest.mark.asyncio
+    async def test_split_inside_code_fence_keeps_every_chunk_fence_balanced(self, adapter):
+        """A split inside a code block closes it in each chunk and reopens it in the next, so each
+        message renders alone and the text after the block is never swallowed into code."""
+        from gateway.platforms.base import SendResult
+        from gateway.platforms.helpers import text_has_unclosed_fence
+        sent = []
+
+        async def _create(chat_id, body):
+            sent.append(body["text"])
+            return SendResult(success=True, message_id=f"spaces/S/messages/{len(sent)}")
+        adapter._create_message = _create
+        code = "\n".join(f"    nested_{i} = compute(item_{i})  # padding padding padding" for i in range(160))
+
+        result = await adapter.send("spaces/S", f"Code:\n\n```python\n{code}\n```\n\nDone.")
+
+        assert result.success and len(sent) > 1
+        assert all(len(text) <= GoogleChatAdapter.MAX_MESSAGE_LENGTH for text in sent)
+        assert not [text for text in sent if text_has_unclosed_fence(text)]
+        assert not text_has_unclosed_fence(sent[-1].split("Done.")[0])
 
     @pytest.mark.asyncio
     async def test_with_typing_card_patches_instead_of_creating(self, adapter):

@@ -43,7 +43,7 @@ from dataclasses import dataclass, field
 from html import escape as _html_escape
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any, Dict, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 
 from agent.secret_scope import get_secret
 from gateway.platforms._shared import (
@@ -1400,25 +1400,48 @@ class MatrixAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         if not content:
             return SendResult(success=True)
-        last_event_id = None
-        for chunk in self.truncate_message(self.format_message(content), self.max_message_length):
+        return await self._send_chunks(
+            chat_id, self.truncate_message(self.format_message(content), self.max_message_length), [], reply_to,
+            metadata)
+
+    async def _send_chunks(
+        self, chat_id: str, chunks: List[str], delivered: List[str], reply_to: Optional[str],
+        metadata: Optional[Dict[str, Any]]) -> SendResult:
+        """Send ``chunks`` after the ``delivered`` event ids; a failure after one landed is a partial result
+        (see :meth:`_split_send_failed`), so the visible head is never sent again."""
+        for i, chunk in enumerate(chunks):
             msg_content = self._build_text_message_content(chunk)
             self._apply_relation_metadata(msg_content, reply_to=reply_to, metadata=metadata)
             try:
-                last_event_id = await self._send_room_message(chat_id, msg_content)
-                logger.info("Matrix: sent event %s to %s", last_event_id, chat_id)
+                event_id = await self._send_room_message(chat_id, msg_content)
+                logger.info("Matrix: sent event %s to %s", event_id, chat_id)
             except Exception as exc:
                 if not (self._encryption and getattr(self._client, "crypto", None)):
                     logger.error("Matrix: failed to send to %s: %s", chat_id, exc)
-                    return SendResult(success=False, error=str(exc))
+                    return self._split_send_failed(
+                        SendResult(success=False, error=str(exc)), chunks[i:], delivered,
+                        unsent=self._send_never_landed(exc))
                 try:  # E2EE error: retry once after sharing keys
                     await self._client.crypto.share_keys()
-                    last_event_id = await self._send_room_message(chat_id, msg_content)
-                    logger.info("Matrix: sent event %s to %s (after key share)", last_event_id, chat_id)
+                    event_id = await self._send_room_message(chat_id, msg_content)
+                    logger.info("Matrix: sent event %s to %s (after key share)", event_id, chat_id)
                 except Exception as retry_exc:
                     logger.error("Matrix: failed to send to %s after retry: %s", chat_id, retry_exc)
-                    return SendResult(success=False, error=str(retry_exc))
-        return SendResult(success=True, message_id=last_event_id)
+                    return self._split_send_failed(
+                        SendResult(success=False, error=str(retry_exc)), chunks[i:], delivered,
+                        unsent=self._send_never_landed(retry_exc))
+            delivered.append(event_id)
+        return SendResult(success=True, message_id=delivered[-1] if delivered else None)
+
+    async def _resume_partial_send(
+        self, chat_id: str, result: SendResult, *, reply_to: Optional[str], metadata: Optional[Dict[str, Any]],
+    ) -> Optional[SendResult]:
+        raw = result.raw_response if isinstance(result.raw_response, dict) else {}
+        undelivered = list(raw.get("undelivered_chunks") or ())
+        if not undelivered or self._client is None:
+            return None
+        return await self._send_chunks(
+            chat_id, undelivered, list(raw.get("delivered_message_ids") or ()), reply_to, metadata)
 
     async def _send_room_message(self, chat_id: str, msg_content: Dict[str, Any]) -> str:
         """Send one m.room.message event (45s cap) and return its event ID as str."""

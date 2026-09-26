@@ -3044,26 +3044,21 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             chunks = self._cap_split_chunks(
                 self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
             )
-            message_ids = []
-            reference = self._reply_reference_for_send(reply_to, channel)
-            for i, chunk in enumerate(chunks):
-                if self._reply_to_mode == "all":
-                    chunk_reference = reference
-                else:  # "first" (default) or "off"
-                    chunk_reference = reference if i == 0 else None
-                try:
-                    msg = await channel.send(content=chunk, reference=chunk_reference)
-                except Exception as e:
-                    if chunk_reference is not None and self._is_reply_reference_rejected(e):
-                        logger.warning(
-                            "[%s] Reply target %s rejected the reply reference; retrying send without reply reference",
-                            self.name, reply_to,
-                        )
-                        reference = None
-                        msg = await channel.send(content=chunk, reference=None)
-                    else:
-                        raise
-                message_ids.append(str(msg.id))
+            message_ids: List[str] = []
+            try:
+                await self._send_chunks(
+                    channel, chunks, message_ids, self._reply_reference_for_send(reply_to, channel), reply_to)
+            except Exception as e:
+                if not message_ids:
+                    raise
+                logger.error("[%s] Split send failed after %d/%d chunks: %s", self.name, len(message_ids), len(chunks), e)
+                result = self._partial_send_result(e, chunks[len(message_ids):], message_ids, channel)
+            else:
+                result = SendResult(
+                    success=True,
+                    message_id=message_ids[0] if message_ids else None,
+                    raw_response={"message_ids": message_ids}
+                )
             # Track the last sent message for history backfill (skips the full history scan).
             if message_ids:
                 _target_id = thread_id or chat_id
@@ -3071,23 +3066,89 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                     await self._nonconversational_messages.mark_many(message_ids)
                 elif not _looks_like_nonconversational_history_message(content):
                     self._last_self_message_id[_target_id] = message_ids[-1]
-            # Connection-shaped failure (WS drop / closed session): use the ledger's runtime-retryable
-            # marker so the reconnect sweep can replay this final response instead of stranding it until a
-            # process restart (#95382 silent partial loss).
-            result = SendResult(
-                success=True,
-                message_id=message_ids[0] if message_ids else None,
-                raw_response={"message_ids": message_ids}
-            )
             return await self._record_response_async(reply_to, result, content, final_delivery, metadata)
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to send Discord message: %s", self.name, e, exc_info=True)
-            if _is_discord_transport_error(e):
-                # Connection-shaped failure: runtime-retryable marker so the reconnect sweep can replay it.
-                result = SendResult(success=False, error="send_path_degraded", retryable=True)
-            else:
-                result = SendResult(success=False, error=str(e))
+            result = self._send_failure_result(e)
             return await self._record_response_async(reply_to, result, content, bool(metadata and metadata.get("notify")), metadata)
+
+    async def _send_chunks(
+        self, channel: Any, chunks: List[str], message_ids: List[str], reference: Any, reply_to: Optional[str],
+    ) -> None:
+        """Send formatted ``chunks`` in order, appending each landed id to ``message_ids`` (pre-seeded with the
+        head's ids when resuming, so only the first chunk of the reply carries the reference in ``first``
+        mode). Raises on the first failed chunk; ``message_ids`` then says exactly what landed."""
+        for chunk in chunks:
+            if self._reply_to_mode == "all":
+                chunk_reference = reference
+            else:  # "first" (default) or "off"
+                chunk_reference = reference if not message_ids else None
+            try:
+                msg = await channel.send(content=chunk, reference=chunk_reference)
+            except Exception as e:
+                if chunk_reference is not None and self._is_reply_reference_rejected(e):
+                    logger.warning(
+                        "[%s] Reply target %s rejected the reply reference; retrying send without reply reference",
+                        self.name, reply_to,
+                    )
+                    reference = None
+                    msg = await channel.send(content=chunk, reference=None)
+                else:
+                    raise
+            message_ids.append(str(msg.id))
+
+    @staticmethod
+    def _send_failure_result(e: BaseException) -> SendResult:
+        if _is_discord_transport_error(e):
+            # Connection-shaped failure (WS drop / closed session): the ledger's runtime-retryable marker lets
+            # the reconnect sweep replay it instead of stranding it until a restart (#95382 silent partial loss).
+            return SendResult(success=False, error="send_path_degraded", retryable=True)
+        return SendResult(success=False, error=str(e))
+
+    def _partial_send_result(
+        self, e: BaseException, undelivered: List[str], delivered: List[str], channel: Any,
+    ) -> SendResult:
+        """The failed result for a split send whose head already landed. Only a transport error proves the
+        refused chunk never reached Discord, so only then is the tail kept for :meth:`_resume_partial_send`;
+        an HTTP rejection or a timeout may have posted it."""
+        result = self._with_partial_send(
+            self._send_failure_result(e), undelivered, delivered, tail_certain=_is_discord_transport_error(e))
+        result.raw_response["resume_channel_id"] = str(getattr(channel, "id", ""))
+        return result
+
+    async def _resume_partial_send(
+        self, chat_id: str, result: SendResult, *, reply_to: Optional[str], metadata: Optional[Dict[str, Any]],
+    ) -> Optional[SendResult]:
+        """Send only the chunks a partial ``send()`` could not deliver, continuing the message-id sequence;
+        ``None`` when the tail was not certain-undelivered or its channel is gone."""
+        raw = result.raw_response if isinstance(result.raw_response, dict) else {}
+        undelivered = list(raw.get("undelivered_chunks") or ())
+        channel_id = raw.get("resume_channel_id")
+        if not undelivered or not channel_id or not self._client:
+            return None
+        channel = await self._resolve_channel(channel_id)
+        if not channel:
+            return None
+        delivered = list(raw.get("delivered_message_ids") or ())
+        prior = len(delivered)
+        try:
+            await self._send_chunks(
+                channel, undelivered, delivered, self._reply_reference_for_send(reply_to, channel), reply_to)
+        except Exception as e:
+            logger.error("[%s] Resuming split send failed after %d/%d chunks: %s",
+                         self.name, len(delivered), prior + len(undelivered), e)
+            resumed = self._partial_send_result(e, undelivered[len(delivered) - prior:], delivered, channel)
+        else:
+            resumed = SendResult(success=True, message_id=delivered[0], raw_response={"message_ids": delivered})
+        new_ids = delivered[prior:]
+        if new_ids:
+            _target_id = (metadata or {}).get("thread_id") or chat_id
+            if _metadata_marks_nonconversational(metadata):
+                await self._nonconversational_messages.mark_many(new_ids)
+            elif self._last_self_message_id.get(_target_id) == raw.get("last_message_id"):
+                self._last_self_message_id[_target_id] = new_ids[-1]
+        return await self._record_response_async(
+            reply_to, resumed, "", bool(metadata and metadata.get("notify")), metadata)
 
     @staticmethod
     def _forum_thread_parts(thread: Any) -> tuple:

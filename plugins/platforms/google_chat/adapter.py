@@ -1045,52 +1045,82 @@ class GoogleChatAdapter(BasePlatformAdapter):
         self.pause_typing_for_chat(chat_id)
         try:
             # Format BEFORE chunking so the size limit applies to the rendered form.
-            chunks = self._chunk_text(self.format_message(content))
+            formatted = self.format_message(content)
+            chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH) if formatted else []
             if not chunks:
                 return SendResult(success=False, error="empty message")
-            last_result: Optional[SendResult] = None
             typing_msg_name = self._typing_messages.pop(chat_id, None)
             if typing_msg_name == _TYPING_CONSUMED_SENTINEL:
                 typing_msg_name = None
-            patched_typing = False
-            for idx, chunk in enumerate(chunks):
-                # Only set thread on the create path; patch inherits.
-                body = _thread_body(chunk, thread_id if (idx > 0 or not typing_msg_name) else None)
-                try:
-                    if idx == 0 and typing_msg_name:
-                        last_result = await self._patch_message(typing_msg_name, body)
-                        patched_typing = True
-                    else:
-                        last_result = await self._create_message(chat_id, body)
-                except HttpError as exc:
-                    status = _http_status(exc)
-                    if status == 403:
-                        self._set_fatal_error(
-                            code="chat_forbidden", message="Bot lacks access (removed from space or perms revoked)",
-                            retryable=False,
-                        )
-                        return SendResult(success=False, error=str(exc))
-                    if status == 404:
+            return await self._send_chunks(chat_id, chunks, [], thread_id, typing_msg_name)
+        finally:
+            self.resume_typing_for_chat(chat_id)
+
+    async def _send_chunks(self, chat_id: str, chunks: List[str], delivered: List[Optional[str]],
+                           thread_id: Optional[str], typing_msg_name: Optional[str] = None) -> SendResult:
+        """Send ``chunks`` after the ``delivered`` message names, the reply's first chunk patching
+        ``typing_msg_name``. A failure after one landed is a partial result (see
+        :meth:`_split_send_failed`), so the visible head is never sent again."""
+        result = SendResult(success=False, error="empty message")
+        for i, chunk in enumerate(chunks):
+            patch_typing = bool(typing_msg_name) and not delivered
+            # Only set thread on the create path; patch inherits.
+            body = _thread_body(chunk, None if patch_typing else thread_id)
+            try:
+                if patch_typing:
+                    try:
+                        result = await self._patch_message(typing_msg_name, body)
+                    except HttpError as exc:
+                        if _http_status(exc) != 404:
+                            raise
                         # Typing card deleted under us: fall back to a fresh message.
-                        if idx == 0 and typing_msg_name:
-                            logger.info("[GoogleChat] Typing card disappeared; creating new message")
-                            typing_msg_name = None
-                            last_result = await self._create_message(chat_id, body)
-                            continue
-                        logger.info("[GoogleChat] send target 404; skipping")
-                        return SendResult(success=False, error="target not found")
-                    if status == 429:
-                        hits = self._note_rate_limit(chat_id)
-                        if hits >= _RATE_LIMIT_WARN_THRESHOLD:
-                            logger.warning("[GoogleChat] Rate limit hit %d times on chat; throttling", hits)
-                    raise
-            if last_result is None:
-                return SendResult(success=False, error="empty message")
-            # Sentinel keeps a trailing _keep_typing tick from posting a fresh marker that
-            # stop_typing would then delete and tombstone. Cleared in on_processing_complete.
-            if patched_typing:
-                self._typing_messages[chat_id] = _TYPING_CONSUMED_SENTINEL
-            return last_result
+                        logger.info("[GoogleChat] Typing card disappeared; creating new message")
+                        result = await self._create_message(chat_id, body)
+                    else:
+                        # Keeps a trailing _keep_typing tick from posting a fresh marker that
+                        # stop_typing would then delete and tombstone. Cleared in on_processing_complete.
+                        self._typing_messages[chat_id] = _TYPING_CONSUMED_SENTINEL
+                else:
+                    result = await self._create_message(chat_id, body)
+            except Exception as exc:
+                failed = self._split_send_failed(
+                    self._send_failure_result(chat_id, exc), chunks[i:], delivered, unsent=self._send_never_landed(exc))
+                if self._is_partial_delivery(failed):
+                    failed.raw_response["resume_thread_id"] = thread_id
+                return failed
+            delivered.append(result.message_id)
+        return result
+
+    def _send_failure_result(self, chat_id: str, exc: BaseException) -> SendResult:
+        """A failed text send as a result, never a raise (``_call_with_retry`` already retried it)."""
+        status = _http_status(exc)
+        if status == 403:
+            self._set_fatal_error(
+                code="chat_forbidden", message="Bot lacks access (removed from space or perms revoked)",
+                retryable=False,
+            )
+            return SendResult(success=False, error=str(exc))
+        if status == 404:
+            logger.info("[GoogleChat] send target 404; skipping")
+            return SendResult(success=False, error="target not found")
+        if status == 429:
+            hits = self._note_rate_limit(chat_id)
+            if hits >= _RATE_LIMIT_WARN_THRESHOLD:
+                logger.warning("[GoogleChat] Rate limit hit %d times on chat; throttling", hits)
+        logger.warning("[GoogleChat] send failed: %s", _redact_sensitive(str(exc)))
+        return SendResult(success=False, error=_redact_sensitive(str(exc)), retryable=_is_retryable_error(exc))
+
+    async def _resume_partial_send(
+        self, chat_id: str, result: SendResult, *, reply_to: Optional[str], metadata: Optional[Dict[str, Any]],
+    ) -> Optional[SendResult]:
+        raw = result.raw_response if isinstance(result.raw_response, dict) else {}
+        undelivered = list(raw.get("undelivered_chunks") or ())
+        if not undelivered:
+            return None
+        self.pause_typing_for_chat(chat_id)
+        try:
+            return await self._send_chunks(
+                chat_id, undelivered, list(raw.get("delivered_message_ids") or ()), raw.get("resume_thread_id"))
         finally:
             self.resume_typing_for_chat(chat_id)
 
@@ -1179,21 +1209,6 @@ class GoogleChatAdapter(BasePlatformAdapter):
             .execute(http=self._new_authed_http())
         )
         return SendResult(success=True, message_id=resp.get("name", message_name))
-
-    def _chunk_text(self, text: str) -> List[str]:
-        chunks: List[str] = []
-        remaining = text
-        while remaining:
-            if len(remaining) <= _MAX_TEXT_LENGTH:
-                chunks.append(remaining)
-                break
-            # Split on a newline near the cutoff when one exists past the midpoint.
-            cut = remaining.rfind("\n", 0, _MAX_TEXT_LENGTH)
-            if cut < _MAX_TEXT_LENGTH // 2:
-                cut = _MAX_TEXT_LENGTH
-            chunks.append(remaining[:cut])
-            remaining = remaining[cut:].lstrip()
-        return chunks
 
     @classmethod
     def format_message(cls, content: str) -> str:

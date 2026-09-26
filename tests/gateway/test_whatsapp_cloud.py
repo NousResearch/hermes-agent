@@ -1448,7 +1448,7 @@ class TestReplyContextResolution:
         image = tmp_path / "chart.png"
         image.write_bytes(b"\x89PNG fake")
         adapter._upload_media = AsyncMock(return_value=("MEDIA-ID", None))
-        adapter._post_messages = AsyncMock(return_value=([{"id": "wamid.BOT_IMG"}], None))
+        adapter._post_messages = AsyncMock(return_value=([{"id": "wamid.BOT_IMG"}], None, False))
         adapter._http_client = MagicMock()
 
         sent = await adapter.send_image_file("15551234567", str(image))

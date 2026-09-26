@@ -2225,6 +2225,9 @@ class SlackAdapter(BasePlatformAdapter):
             return blocked
         chat_id = await self._dm_target(chat_id, metadata)
         thread_ts = None
+        team_id = ""
+        chunks: List[str] = []
+        delivered: List[Optional[str]] = []
         try:
             team_id = self._metadata_team_id(metadata)
             slash_ctx = self._pop_slash_context(chat_id, team_id)
@@ -2245,19 +2248,9 @@ class SlackAdapter(BasePlatformAdapter):
                 # stay stuck on "is thinking..." (#24117).
                 return SendResult(success=True)
             thread_ts = self._resolve_thread_ts(reply_to, metadata)
-            last_result = await self._post_chunks(chat_id, team_id, content, formatted, thread_ts)
-            # Clear Slack Assistant status as soon as the final message is posted.
-            if thread_ts:
-                await self.stop_typing(chat_id, metadata=metadata)
-            # Track sent ts (and the thread root) so thread replies get answered
-            # without an @mention.
-            sent_ts = last_result.get("ts") if last_result else None
-            if sent_ts:
-                self._bot_message_ts.add(self._workspace_message_marker(team_id, sent_ts))
-                if thread_ts:
-                    self._bot_message_ts.add(self._workspace_message_marker(team_id, thread_ts))
-                self._trim_bot_message_timestamps()
-            return SendResult(success=True, message_id=sent_ts, raw_response=last_result)
+            chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+            last_result = await self._post_chunks(chat_id, team_id, content, chunks, thread_ts, delivered)
+            return await self._posted_result(chat_id, team_id, thread_ts, last_result, metadata)
         except Exception as e:  # pragma: no cover - defensive logging
             # Clear the status even when the failure preceded thread_ts resolution:
             # stop_typing falls back to metadata / the uniquely tracked status.
@@ -2267,35 +2260,87 @@ class SlackAdapter(BasePlatformAdapter):
             # tracked status for this channel, so a failed turn cannot leave "is thinking..." visible
             # (#24117).
             logger.error("[Slack] Send error: %s", e, exc_info=True)
-            _retryable = self._is_retryable_upload_error(e)
-            return SendResult(
-                success=False, error=str(e), retryable=_retryable,
-                retry_after=self._retry_after_from_exc(e) if _retryable else None)
+            return self._send_failure_result(e, chunks[len(delivered):], delivered, chat_id, team_id, thread_ts)
+
+    async def _posted_result(
+        self, chat_id: str, team_id: str, thread_ts: Optional[str], last_result: Any,
+        metadata: Optional[Dict[str, Any]]) -> SendResult:
+        """Success bookkeeping once the last chunk is posted."""
+        # Clear Slack Assistant status as soon as the final message is posted.
+        if thread_ts:
+            await self.stop_typing(chat_id, metadata=metadata)
+        # Track sent ts (and the thread root) so thread replies get answered
+        # without an @mention.
+        sent_ts = last_result.get("ts") if last_result else None
+        if sent_ts:
+            self._bot_message_ts.add(self._workspace_message_marker(team_id, sent_ts))
+            if thread_ts:
+                self._bot_message_ts.add(self._workspace_message_marker(team_id, thread_ts))
+            self._trim_bot_message_timestamps()
+        return SendResult(success=True, message_id=sent_ts, raw_response=last_result)
+
+    def _send_failure_result(
+        self, e: Exception, undelivered: List[str], delivered: List[Optional[str]], chat_id: str, team_id: str,
+        thread_ts: Optional[str]) -> SendResult:
+        """The failed result; after a landed chunk it is partial, so the visible head is never posted again."""
+        _retryable = self._is_retryable_upload_error(e)
+        result = SendResult(
+            success=False, error=str(e), retryable=_retryable,
+            retry_after=self._retry_after_from_exc(e) if _retryable else None)
+        if not delivered:
+            return result
+        unsent = self._send_never_landed(e)
+        result = self._with_partial_send(result, undelivered, delivered, tail_certain=unsent)
+        # Only an in-process resume completes the reply once (a ledger redelivery re-sends the whole text).
+        result.retryable = result.retryable or unsent
+        result.raw_response.update(resume_chat_id=chat_id, resume_team_id=team_id, resume_thread_ts=thread_ts)
+        return result
+
+    async def _resume_partial_send(
+        self, chat_id: str, result: SendResult, *, reply_to: Optional[str], metadata: Optional[Dict[str, Any]],
+    ) -> Optional[SendResult]:
+        raw = result.raw_response if isinstance(result.raw_response, dict) else {}
+        undelivered = list(raw.get("undelivered_chunks") or ())
+        if not undelivered:
+            return None
+        target, team_id, thread_ts = raw["resume_chat_id"], raw["resume_team_id"], raw["resume_thread_ts"]
+        delivered = list(raw.get("delivered_message_ids") or ())
+        prior = len(delivered)
+        try:
+            last_result = await self._post_chunks(target, team_id, "", undelivered, thread_ts, delivered)
+        except Exception as e:
+            logger.error("[Slack] Resuming split send failed: %s", e)
+            return self._send_failure_result(
+                e, undelivered[len(delivered) - prior:], delivered, target, team_id, thread_ts)
+        return await self._posted_result(target, team_id, thread_ts, last_result, metadata)
 
     async def _post_chunks(
-        self, chat_id: str, team_id: str, content: str, formatted: str, thread_ts: Optional[str]
+        self, chat_id: str, team_id: str, content: str, chunks: List[str], thread_ts: Optional[str],
+        delivered: List[Optional[str]],
     ) -> Any:
-        """``chat.postMessage`` each ``MAX_MESSAGE_LENGTH`` chunk; returns the last response.
-        Block Kit only for single-chunk messages (a >39k response is pathological for the 50-block /
-        3000-char limits); ``text`` stays the notification/accessibility fallback. With
-        ``reply_broadcast`` only the first chunk is also posted to the main channel."""
-        chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+        """``chat.postMessage`` each chunk after the ``delivered`` ones, appending each landed ts to
+        ``delivered``; returns the last response. Block Kit only for single-chunk messages (a >39k
+        response is pathological for the 50-block / 3000-char limits); ``text`` stays the
+        notification/accessibility fallback. With ``reply_broadcast`` only the first chunk is also
+        posted to the main channel."""
         broadcast = self.config.extra.get("reply_broadcast", False)
-        blocks = self._maybe_blocks(content) if len(chunks) == 1 else None
+        blocks = self._maybe_blocks(content) if len(chunks) == 1 and not delivered else None
         last_result = None
-        for i, chunk in enumerate(chunks):
+        for chunk in chunks:
+            first = not delivered
             kwargs = {
                 "channel": chat_id, "text": chunk,
                 "mrkdwn": True, **_slack_unfurl_kwargs(self.config.extra)}
-            if blocks and i == 0:
+            if blocks:
                 kwargs["blocks"] = blocks
             if thread_ts:
                 kwargs["thread_ts"] = thread_ts
-                if broadcast and i == 0:
+                if broadcast and first:
                     kwargs["reply_broadcast"] = True
             client_fn = lambda: self._get_client(chat_id, team_id=team_id)  # noqa: E731
             last_result = await self._call_with_block_fallback(
                 client_fn, "chat_postMessage", kwargs, "send")
+            delivered.append(last_result.get("ts") if last_result else None)
         return last_result
 
     @staticmethod

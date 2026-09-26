@@ -131,6 +131,7 @@ Each `hermes auth add openai-codex` login becomes its own pool entry, but only *
 | `hermes auth add openai-codex --browser` | Codex only: sign in with the browser authorization-code + PKCE flow on `localhost:1455` instead of the default device code (for orgs that disable device-code grants); falls back to device code when the port is busy. Default for every Codex login via `auth.codex_login_flow: browser` |
 | `hermes auth add <provider> --priority 0` | Add a credential and place it first in the `fill_first` order |
 | `hermes auth priority <provider> <target> <n>` | Move a credential to priority `n` (0 = tried first); the rest are renumbered |
+| `hermes auth rename <provider> <target> <new_label>` | Rename a credential's label. Rejects empty, whitespace-only, and control-char labels, and duplicates within the same provider. For `nous` and `openai-codex`, also updates the legacy `providers.<provider>.label` mirror when it still matches the old label. |
 | `hermes auth remove <provider> <index>` | Remove credential by 1-based index |
 | `hermes auth reset <provider>` | Clear all cooldowns/exhaustion status (applies to running sessions too: a live gateway or chat picks the reset up on its next request instead of writing its stale cooldown back) |
 | `hermes auth reset <provider> <target>` | Clear the cooldown on one credential by index, id, or label |

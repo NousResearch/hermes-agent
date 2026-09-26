@@ -367,7 +367,13 @@ class SessionManager:
             # create/fork every row is active (== full replace), and archived rows survive.
             # Unconditional because an existence probe would fail OPEN on DB error and can
             # race a concurrent archive_and_compact. Still rolls back on mid-rewrite failure.
-            db.replace_messages(state.session_id, state.history, active_only=True)
+            # SOFT-archive the rows this rewrite drops instead of DELETEing them (archive_dropped): a
+            # non-owning agent's state.history is only the switching writer's view, so any active row it
+            # doesn't hold — a second writer's turn on the same ACP session (#122699) — would otherwise be
+            # hard-deleted and evicted from FTS, unrecoverable. Archived rows stay readable via
+            # include_inactive/include_compacted and search. archive_dropped implies active-only handling
+            # (already-archived rows are untouched), so the fresh-create/fork live view is unchanged.
+            db.replace_messages(state.session_id, state.history, active_only=True, archive_dropped=True)
         except Exception:
             logger.warning("Failed to persist ACP session %s", state.session_id, exc_info=True)
 

@@ -740,22 +740,49 @@ def execute_code(
     if _guard.get("user_approved"):
         from tools.interrupt import clear_current_thread_interrupt
         clear_current_thread_interrupt()
+    # write_file/patch refuse the active config.yaml via _check_sensitive_path,
+    # but arbitrary Python here bypasses those gates with a plain open(path, "w")
+    # — static analysis of the script cannot hold. Snapshot the protected file
+    # before dispatch and fail loudly when the cell mutated it (#113421).
+    try:
+        from tools.file_tools_write_guards import snapshot_hermes_config_state
+        _config_before = snapshot_hermes_config_state()
+    except Exception:
+        _config_before = None
     if env_type != "local":
-        return _execute_remote(code, task_id, enabled_tools, reset=bool(reset))
-    from tools.interrupt import is_interrupted as _is_interrupted
-    # Session kernels are always on locally (one interpreter per conversation); the guards above
-    # already ran for this cell, and the kernel path shares env builder, RPC server and redaction.
-    from tools.code_kernel import execute_in_session_kernel
-    _cfg = _load_config()
-    _mode = _get_execution_mode()
-    return execute_in_session_kernel(
-        code, task_id=task_id or "", mode=_mode, child_python=_resolve_child_python(_mode),
-        child_cwd=_resolve_child_cwd(_mode, "", task_id=task_id or ""),
-        sandbox_tools=frozenset(_sandbox_tools_for(enabled_tools)),
-        timeout=_cfg.get("timeout", DEFAULT_TIMEOUT),
-        max_tool_calls=_cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS),
-        reset=bool(reset), is_interrupted=_is_interrupted,
-    )
+        _result = _execute_remote(code, task_id, enabled_tools, reset=bool(reset))
+    else:
+        from tools.interrupt import is_interrupted as _is_interrupted
+        # Session kernels are always on locally (one interpreter per conversation); the guards above
+        # already ran for this cell, and the kernel path shares env builder, RPC server and redaction.
+        from tools.code_kernel import execute_in_session_kernel
+        _cfg = _load_config()
+        _mode = _get_execution_mode()
+        _result = execute_in_session_kernel(
+            code, task_id=task_id or "", mode=_mode, child_python=_resolve_child_python(_mode),
+            child_cwd=_resolve_child_cwd(_mode, "", task_id=task_id or ""),
+            sandbox_tools=frozenset(_sandbox_tools_for(enabled_tools)),
+            timeout=_cfg.get("timeout", DEFAULT_TIMEOUT),
+            max_tool_calls=_cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS),
+            reset=bool(reset), is_interrupted=_is_interrupted,
+        )
+    try:
+        from tools.file_tools_write_guards import hermes_config_mutated
+        _mutated, _detail = hermes_config_mutated(_config_before)
+    except Exception:
+        _mutated, _detail = False, None
+    if _mutated:
+        _made, _dur = 0, 0.0
+        try:
+            _parsed = json.loads(_result) if isinstance(_result, str) else {}
+            _made = int(_parsed.get("tool_calls_made", 0) or 0)
+            _dur = float(_parsed.get("duration_seconds", 0) or 0)
+        except Exception:
+            pass
+        logger.warning("execute_code mutated the Hermes config file; failing the call loudly")
+        return _error_result(_detail or "execute_code modified the Hermes config file.",
+                             tool_calls_made=_made, duration=_dur)
+    return _result
 
 
 def _kill_process_group(proc, escalate: bool = False):

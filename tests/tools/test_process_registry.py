@@ -1432,9 +1432,11 @@ class TestKillProcess:
             assert result["status"] == "killed"
             assert result["completion_reason"] == "killed"
             assert result["termination_source"] == "process.kill"
-            # First save: the reader won the race and persisted a plain exit.
-            assert saved[0] == ("exited", "", 0)
-            # Second save: the receipt rewritten with the kill outcome.
+            # The kill reason is reserved before signalling, so the reader's
+            # save cannot record a plain exit even when it finalises first —
+            # the reserved reason wins, the observed exit code is recorded.
+            assert saved[0] == ("killed", "process.kill", 0)
+            # Second save: the receipt rewritten with the kill exit code.
             assert saved[-1] == ("killed", "process.kill", -15)
         finally:
             registry._running.pop(s.id, None)

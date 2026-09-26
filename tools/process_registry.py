@@ -597,11 +597,12 @@ class ProcessSession:
                 self.output_buffer = self.output_buffer[-self.max_output_chars:]
 
     def mark_exited(self, exit_code, reason: str = "exited", source: str = "") -> None:
-        """Record an exit. A kill that raced the observer already recorded its own
-        exit_code/reason; never overwrite it."""
+        """Record an exit. A kill that raced the observer already reserved its
+        reason; never overwrite the reason, but the observed exit code is
+        always the truth for the receipt."""
         self.exited = True
+        self.exit_code = exit_code
         if self.completion_reason not in ("killed", "timed_out"):
-            self.exit_code = exit_code
             self.completion_reason = reason
             if source:
                 self.termination_source = source
@@ -2194,6 +2195,13 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 self._completion_consumed.add(session_id)
             return result
         try:
+            # Reserve the kill reason before signalling: a reader finalising
+            # mid-signal must not overwrite it with a plain "exited" receipt
+            # (mark_exited keeps an existing killed/timed_out). Reverted below
+            # when the kill cannot be verified.
+            with session._lock:
+                session.completion_reason = "timed_out" if source == "terminal.timeout" else "killed"
+                session.termination_source = source
             early = self._signal_kill(session, session_id, consume_output)
             if early is not None:
                 return early
@@ -2223,6 +2231,13 @@ class ProcessRegistry(ProcessCheckpointMixin):
                         f"({alive}); session running"),
                     "session_id": session.id, "survivors": survivors,
                     "process_running": True}
+            # The reservation above only sticks when the kill took effect;
+            # a failed kill must not poison a later natural-exit receipt.
+            with session._lock:
+                signal_race_exited2 = session.exited
+                if not signal_race_exited2:
+                    session.completion_reason = ""
+                    session.termination_source = ""
             # Capture output, mark consumed, THEN expose ``exited`` to watcher tasks —
             # closes the delayed-notification race without losing the transcript.
             with session._lock:

@@ -42,7 +42,7 @@ def _pid_alive(pid):
 
 def test_runtime_deadline_is_enforced_without_wait():
     registry = ProcessRegistry()
-    session = registry.spawn_local("sleep 30", runtime_deadline=time.time() + 0.15)
+    session = registry.spawn_local("sleep 30", runtime_deadline=time.time() + 0.5)
     session.notify_on_complete = True
 
     assert _wait_until(lambda: session._completion_event.is_set()), "deadline was not enforced"

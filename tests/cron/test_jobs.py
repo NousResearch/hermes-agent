@@ -1737,21 +1737,45 @@ class TestJobsJsonIdKeyedMap:
         assert isinstance(on_disk["jobs"], list)
         assert [j["id"] for j in on_disk["jobs"]] == ["goodjob1"]
 
-    def test_non_dict_list_entries_do_not_stop_healthy_jobs_firing(self, tmp_cron_dir, caplog):
+    def test_non_dict_list_entries_do_not_stop_healthy_jobs_firing(
+        self, tmp_cron_dir, caplog, monkeypatch
+    ):
         """A junk entry in the canonical list shape must not abort the due scan for its
-        healthy siblings (it used to raise on every tick, so no job fired); an all-junk list
-        or a scalar jobs field must be repaired on disk too, without logging raw values."""
+        healthy siblings (it used to raise on every tick, so no job fired); a lock-free
+        reader's repair must not save its stale snapshot over a writer that landed after it
+        parsed the file; an all-junk list or a scalar jobs field must be repaired on disk too,
+        without logging raw values."""
         import json
-        from cron.jobs import JOBS_FILE, load_jobs
+        import cron.jobs as jobs_mod
+        from cron.jobs import JOBS_FILE, load_jobs, update_job
 
         job = create_job(prompt="keep me", schedule="every 1h", name="survivor")
-        payload = json.loads(JOBS_FILE.read_text(encoding="utf-8"))
-        payload["jobs"][0]["next_run_at"] = (_hermes_now() - timedelta(seconds=5)).isoformat()
-        payload["jobs"] += [None, "i am not a job", 42]
-        JOBS_FILE.write_text(json.dumps(payload), encoding="utf-8")
 
-        assert [j["id"] for j in get_due_jobs()] == [job["id"]]
+        def add_junk():
+            payload = json.loads(JOBS_FILE.read_text(encoding="utf-8"))
+            payload["jobs"][0]["next_run_at"] = (_hermes_now() - timedelta(seconds=5)).isoformat()
+            payload["jobs"] += [None, "i am not a job", 42]
+            JOBS_FILE.write_text(json.dumps(payload), encoding="utf-8")
+
+        add_junk()
+        real_parse = jobs_mod._parse_jobs_file
+        raced = []
+
+        def parse_then_race(path):
+            parsed = real_parse(path)
+            if not raced:
+                raced.append(True)
+                update_job(job["id"], {"name": "raced"})
+            return parsed
+
+        monkeypatch.setattr(jobs_mod, "_parse_jobs_file", parse_then_race)
         assert [j["id"] for j in list_jobs(include_disabled=True)] == [job["id"]]
+        monkeypatch.setattr(jobs_mod, "_parse_jobs_file", real_parse)
+        on_disk = json.loads(JOBS_FILE.read_text(encoding="utf-8"))["jobs"]
+        assert [(j["id"], j["name"]) for j in on_disk] == [(job["id"], "raced")]
+
+        add_junk()
+        assert [j["id"] for j in get_due_jobs()] == [job["id"]]
         on_disk = json.loads(JOBS_FILE.read_text(encoding="utf-8"))
         assert [j["id"] for j in on_disk["jobs"]] == [job["id"]]
 
@@ -1761,36 +1785,6 @@ class TestJobsJsonIdKeyedMap:
                 assert load_jobs() == []
             assert json.loads(JOBS_FILE.read_text(encoding="utf-8"))["jobs"] == []
         assert "***" not in caplog.text
-
-    def test_unlocked_reader_repair_does_not_revert_a_concurrent_update(
-        self, tmp_cron_dir, monkeypatch
-    ):
-        """A lock-free reader's repair must not save its stale snapshot over a writer that
-        landed after the reader parsed the file."""
-        import json
-        import cron.jobs as jobs_mod
-        from cron.jobs import JOBS_FILE, update_job
-
-        job = create_job(prompt="keep me", schedule="every 1h", name="racer")
-        payload = json.loads(JOBS_FILE.read_text(encoding="utf-8"))
-        payload["jobs"].append(None)
-        JOBS_FILE.write_text(json.dumps(payload), encoding="utf-8")
-
-        real_parse = jobs_mod._parse_jobs_file
-        raced = []
-
-        def parse_then_race(path):
-            parsed = real_parse(path)
-            if not raced:
-                raced.append(True)
-                update_job(job["id"], {"enabled": False})
-            return parsed
-
-        monkeypatch.setattr(jobs_mod, "_parse_jobs_file", parse_then_race)
-        list_jobs(include_disabled=True)
-
-        on_disk = json.loads(JOBS_FILE.read_text(encoding="utf-8"))["jobs"]
-        assert [j["enabled"] for j in on_disk] == [False]
 
 
 

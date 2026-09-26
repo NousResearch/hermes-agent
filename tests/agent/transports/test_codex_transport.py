@@ -59,6 +59,16 @@ class TestCodexBuildKwargs:
         )
         assert kw.get("reasoning") == ({"effort": expected} if expected else None)
 
+    @pytest.mark.parametrize("model, expected", [
+        ("gpt-6-astra", ["low", "medium", "high", "xhigh", "max"]),
+        ("openai/gpt-6-astra", ["low", "medium", "high", "xhigh", "max"]),
+        ("gpt-6-astra-pro", []),  # speed-tier / unknown suffixes stay off the Astra ladder
+    ])
+    def test_copilot_offline_astra_efforts_use_exact_slug(self, model, expected):
+        from hermes_cli.models import github_model_reasoning_efforts
+
+        assert github_model_reasoning_efforts(model, catalog=[]) == expected
+
     def test_astra_direct_request_applies_model_contract_after_overrides(self, transport):
         kw = transport.build_kwargs(
             model="gpt-6-astra",

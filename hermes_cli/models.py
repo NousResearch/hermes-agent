@@ -533,7 +533,7 @@ _nous_caps_disk_checked = False
 _nous_caps_warm_started = False
 
 
-from agent.reasoning_effort import clamp_effort as _clamp_effort, is_astra_model
+from agent.reasoning_effort import CODEX_ASTRA_EFFORTS, clamp_effort as _clamp_effort, is_astra_model
 
 
 def clamp_reasoning_effort_to_supported(
@@ -2335,9 +2335,7 @@ def _github_reasoning_efforts_for_model_id(model_id: str) -> list[str]:
     if raw.startswith(("openai/o1", "openai/o3", "openai/o4", "o1", "o3", "o4")):
         return list(COPILOT_REASONING_EFFORTS_O_SERIES)
     normalized = normalize_copilot_model_id(model_id).lower()
-    if normalized.startswith("gpt-6-astra"):
-        from agent.reasoning_effort import CODEX_ASTRA_EFFORTS
-
+    if is_astra_model(normalized):
         return list(CODEX_ASTRA_EFFORTS)
     if normalized.startswith("gpt-5"):
         return list(COPILOT_REASONING_EFFORTS_GPT5)

@@ -5,6 +5,9 @@ This root file holds only what applies everywhere. Each area has its own `AGENTS
 ~8k chars; `agent/subdirectory_hints.py` delivers up to 32k and truncates head/tail with a warning
 past that); see the **routing table** at the end and read the area file before editing in that area.
 
+This file is the canonical, exhaustive guide. `CLAUDE.md` (root) is a condensed
+orientation layer derived from it — keep the two in sync when conventions change.
+
 **Never give up on the right solution.**
 
 ## What Hermes Is

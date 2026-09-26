@@ -3699,6 +3699,19 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
         home_token = set_hermes_home_override(profile_home)
         multiplex_active = bool(payload.get("multiplex_active", False))
         set_multiplex_active(multiplex_active)
+        # Plugin secret sources are the documented path for third-party vaults
+        # (developer-guide/secret-source-plugin) but only register once plugin
+        # discovery runs — the worker process starts with the builtin registry
+        # alone, so hydrating here silently saw none of them and agent-mode jobs
+        # on secondary profiles died at runtime resolution with
+        # "No usable credentials found for provider ..." (#121929). Discovery is
+        # idempotent and re-pulls enabled plugin sources for the active home
+        # (#64177 bootstrap parity); it must run under the home override so a
+        # multiplexed worker loads the profile's own plugins, not the launch
+        # profile's.
+        from hermes_cli.plugins import discover_plugins
+
+        discover_plugins()
         hydrate_profile_secret_sources(profile_home)
         secret_token = set_secret_scope(build_profile_secret_scope(profile_home), profile_home=str(profile_home))
         with use_cron_store(profile_home):

@@ -20,11 +20,15 @@ from pm import paths
 from pm.package import InstallError
 from pm.plugin_declarations import read_python_declaration, manifest_version_error
 
-_MEMBER_EXCLUDE = frozenset({".git", ".venv", "venv", "node_modules", "__pycache__"})
+# _JUNK is excluded at every depth. Root outputs and its lock are excluded by
+# the curated source.iterdir()/files selection; below the root, output-like
+# names such as pm/uv.lock and dashboard/dist are build inputs.
+_JUNK = frozenset({".git", ".venv", "venv", "node_modules", "__pycache__"})
+_ROOT_OUTPUTS = frozenset({"build", "dist", "release", "uv.lock"})
 
 
 def _member_ignored(directory, names):
-    return [name for name in names if name in _MEMBER_EXCLUDE or name.endswith(".egg-info")]
+    return [name for name in names if name in _JUNK or name.endswith(".egg-info")]
 
 
 # The uv failure classifier lives beside the uv runner (stdlib-only imports): the bootstrap
@@ -82,13 +86,14 @@ def _copy_core_inputs(source: Path, destination: Path) -> None:
         files.update(str(p.relative_to(source)) for p in source.glob(pattern))
     files.update(p.name for p in source.glob("*.py"))
 
-    excluded = {".git", ".venv", "venv", "node_modules", "__pycache__", "build", "dist", "release", "uv.lock"}
+    root_excluded = _JUNK | _ROOT_OUTPUTS
+
     def ignore(directory, names):
-        return [name for name in names if name in excluded or name.startswith(".")
+        return [name for name in names if name in _JUNK or name.startswith(".")
                 or name.endswith(".egg-info") or (Path(directory) / name).is_symlink()]
 
     for entry in source.iterdir():
-        if (entry.is_dir() and not entry.is_symlink() and entry.name not in excluded
+        if (entry.is_dir() and not entry.is_symlink() and entry.name not in root_excluded
                 and not entry.name.startswith(".") and entry.resolve() != destination.resolve()
                 and any(fnmatch.fnmatchcase(entry.name, pattern) for pattern in package_roots)):
             target = destination / entry.name

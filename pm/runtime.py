@@ -119,6 +119,49 @@ def _hold_for_children(environment: Path) -> None:
         _HELD[environment] = lease_directory(environment)
 
 
+def _codebase_repos() -> list[Path]:
+    """This install's Hermes checkout: the tree materialized snapshots come from."""
+    from hermes_constants import get_hermes_home
+    from pm.environments import dependency_home_root
+
+    return list(dict.fromkeys([dependency_home_root() / "hermes-agent", get_hermes_home() / "hermes-agent"]))
+
+
+def _restore_member_lock(project: Path) -> None:
+    """Bring back the member lock the workspace materializer used to strip (#122593).
+
+    A snapshot copied by the old code carries a member's pyproject.toml but not
+    its uv.lock, and the identity digest dies reading it — from the very pm copy
+    whose repair would fix the snapshot. Restore the exact bytes from this
+    install's codebase repo (the tree snapshots are materialized from); never
+    regenerate them: a lock is trusted content, not a value to recompute. The
+    source's member manifest must be byte-identical to this one, which makes its
+    sibling lock the lock of exactly the project this snapshot runs.
+    """
+    lock = project / "uv.lock"
+    if lock.is_file():
+        return
+    try:
+        manifest = (project / "pyproject.toml").read_bytes()
+    except OSError:
+        manifest = None
+    for repo in _codebase_repos():
+        source = repo / project.name
+        candidate = source / "uv.lock"
+        try:
+            if (candidate.is_file() and manifest is not None
+                    and (source / "pyproject.toml").read_bytes() == manifest):
+                from pm.filesystem import durable_write_bytes
+
+                durable_write_bytes(lock, candidate.read_bytes())
+                return
+        except OSError:
+            continue
+    raise InstallError("pm-runtime", f"missing build input: {lock}",
+                       f"copy {project.name}/uv.lock from this install's Hermes checkout "
+                       f"(the hermes-agent tree under your Hermes home), or reinstall this application")
+
+
 def prepare_runtime(uv: Path, python: Path, root: Path, *, offline: bool = False,
                     project: Path | None = None, bootstrap: bool = True,
                     cache: Path | None = None) -> Path:
@@ -132,6 +175,7 @@ def prepare_runtime(uv: Path, python: Path, root: Path, *, offline: bool = False
     from pm.runtime_stage import stage_runtime
 
     project = project or Path(__file__).resolve().parent
+    _restore_member_lock(project)
     identity = _inputs(project, python)
     env = runtime_environment()
     root.mkdir(parents=True, exist_ok=True)

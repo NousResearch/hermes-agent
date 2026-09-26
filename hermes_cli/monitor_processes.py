@@ -16,6 +16,12 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
+from hermes_state_holders import (
+    _looks_like_hermes,
+    _looks_like_python_executable,
+    _python_execution_target,
+)
+
 
 @dataclass(frozen=True)
 class ProcessKey:
@@ -40,6 +46,17 @@ class ProcessRow:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass
+class _CandidateRow:
+    row: ProcessRow
+    key: ProcessKey
+    ppid: int
+    canonical: bool
+    home: str | None
+    cpu_total: float
+    start_fingerprint: int | None
 
 
 @dataclass
@@ -237,41 +254,57 @@ def _default_current_account_identity() -> object | None:
         return None
 
 
-_HERMES_EXECUTABLES = frozenset({
-    "hermes", "hermes.exe", "hermes-agent", "hermes-acp", "hermes-gateway",
+_MONITOR_EXECUTABLES = frozenset({
+    "hermes", "hermes-agent", "hermes-acp", "hermes-gateway",
 })
-_HERMES_MODULES = frozenset({"hermes_cli.main", "agent.legacy_cli", "acp_adapter.entry", "gateway.run"})
-_HERMES_SCRIPT_SUFFIXES = (
-    "/hermes_cli/main.py", "/agent/legacy_cli.py", "/acp_adapter/entry.py", "/gateway/run.py",
+_MONITOR_PYTHON_MODULES = frozenset({
+    "acp_adapter.entry", "agent.legacy_cli", "gateway.run",
+})
+_MONITOR_SCRIPT_SUFFIXES = (
+    "/acp_adapter/entry.py", "/agent/legacy_cli.py", "/gateway/run.py",
 )
+_MONITOR_SCRIPT_BASENAMES = frozenset({
+    "cli.py", "desktop-gateway.py", "hermes", "hermes-acp", "hermes-agent", "hermes-gateway",
+})
 
 
 def _argv_basename(token: str) -> str:
     return str(token).replace("\\", "/").rstrip("/").rsplit("/", 1)[-1].casefold()
 
 
+def _python_target_end(argv: list[str], target: tuple[str, str]) -> int | None:
+    """Locate the command tail by asking the shared Python parser about each argv prefix."""
+    for end in range(2, len(argv) + 1):
+        if _python_execution_target(argv[:end]) == target:
+            return end
+    return None
+
+
 def _launcher_tail_index(argv: list[str]) -> int | None:
     if not argv:
         return None
-    executable = _argv_basename(argv[0])
-    if executable in _HERMES_EXECUTABLES:
+    executable = _argv_basename(argv[0]).removesuffix(".exe")
+    if executable in _MONITOR_EXECUTABLES:
         return 1
-    if not re.fullmatch(r"python(?:\d+(?:\.\d+)*)?(?:\.exe)?", executable):
+    if not _looks_like_python_executable(executable):
         return None
-    if len(argv) >= 3 and argv[1] == "-m" and argv[2] in _HERMES_MODULES:
-        return 3
-    if len(argv) < 2:
+
+    target = _python_execution_target(argv)
+    if target is None:
         return None
-    launcher = str(argv[1]).replace("\\", "/")
-    launcher_basename = _argv_basename(launcher)
-    if launcher_basename in _HERMES_EXECUTABLES:
-        return 2
-    lowered = launcher.casefold()
-    if any(lowered.endswith(suffix) for suffix in _HERMES_SCRIPT_SUFFIXES):
-        return 2
-    if launcher_basename == "desktop-gateway.py":
-        return 2
-    return None
+    kind, value = target
+    normalized = str(value).replace("\\", "/").casefold()
+    basename = _argv_basename(normalized)
+    shared_match = _looks_like_hermes(argv)
+    if kind == "module":
+        matches = shared_match or normalized in _MONITOR_PYTHON_MODULES
+    else:
+        matches = (
+            shared_match
+            or basename in _MONITOR_SCRIPT_BASENAMES
+            or any(normalized.endswith(suffix) for suffix in _MONITOR_SCRIPT_SUFFIXES)
+        )
+    return _python_target_end(argv, target) if matches else None
 
 
 def _is_hermes_candidate(_name: str, argv: list[str]) -> bool:
@@ -474,10 +507,7 @@ class MonitorSampler:
             if isinstance(entry, dict) and isinstance(entry.get("pid"), int)
         }
 
-        rows: list[ProcessRow] = []
-        discovered_homes: set[str] = set()
-        owner_fingerprints: dict[ProcessKey, tuple[int, Any]] = {}
-        live_keys: set[ProcessKey] = set()
+        candidates: dict[int, _CandidateRow] = {}
         discovered: dict[int, tuple[Any, dict[str, Any], ProcessKey, list[str], int, bool]] = {}
         try:
             processes = self._process_iter()
@@ -519,7 +549,7 @@ class MonitorSampler:
             included.update(descendants)
 
         for pid in included:
-            proc, info, key, argv, _ppid, canonical = discovered[pid]
+            proc, info, key, argv, ppid, canonical = discovered[pid]
             try:
                 create_time = key.create_time
                 ledger = ledger_by_pid.get(pid)
@@ -588,34 +618,75 @@ class MonitorSampler:
                 )
                 if not self._is_fresh(key):
                     continue
-                self._cpu_samples[key] = (monotonic, cpu_total)
-                live_keys.add(key)
-                rows.append(row)
-                if (
+                if not (
                     isinstance(start_fingerprint, int)
                     and not isinstance(start_fingerprint, bool)
                     and start_fingerprint > 0
                 ):
-                    owner_fingerprints[key] = (start_fingerprint, proc)
-                if home:
-                    discovered_homes.add(str(home))
+                    start_fingerprint = None
+                candidates[pid] = _CandidateRow(
+                    row=row,
+                    key=key,
+                    ppid=ppid,
+                    canonical=canonical,
+                    home=str(home) if home else None,
+                    cpu_total=cpu_total,
+                    start_fingerprint=start_fingerprint,
+                )
             except Exception:
                 continue
 
+        # Freeze freshness once for every complete candidate row, then admit helpers only through
+        # a surviving chain that terminates at a surviving canonical Hermes root. A root lost after
+        # process-graph construction therefore removes its whole subtree and all of its enrichment.
+        fresh_candidates = {
+            pid for pid, candidate in candidates.items() if self._is_fresh(candidate.key)
+        }
+        surviving = {
+            pid for pid in fresh_candidates if candidates[pid].canonical
+        }
+        while True:
+            descendants = {
+                pid for pid in fresh_candidates - surviving
+                if (
+                    not candidates[pid].canonical
+                    and candidates[pid].ppid in surviving
+                    and candidates[candidates[pid].ppid].key.create_time
+                    <= candidates[pid].key.create_time
+                )
+            }
+            if not descendants:
+                break
+            surviving.update(descendants)
+
+        final_candidates = [candidates[pid] for pid in surviving]
+        final_candidates.sort(key=lambda candidate: candidate.row.pid)
+        rows = [candidate.row for candidate in final_candidates]
+        live_keys = {candidate.key for candidate in final_candidates}
         self._cpu_samples = {
             key: sample for key, sample in self._cpu_samples.items() if key in live_keys
         }
-        rows.sort(key=lambda row: row.pid)
+        for candidate in final_candidates:
+            self._cpu_samples[candidate.key] = (monotonic, candidate.cpu_total)
+
+        discovered_homes = {
+            candidate.home for candidate in final_candidates if candidate.home
+        }
         try:
             delegations = self._delegation_scanner(sorted(discovered_homes))
         except Exception:
             delegations = []
-        rows_by_key = {ProcessKey(row.pid, row.create_time): row for row in rows}
         owners = {}
-        for key, (fingerprint, proc) in owner_fingerprints.items():
-            row = rows_by_key.get(key)
-            if row is not None and self._is_fresh(key):
-                owners[key.pid] = (row, key, fingerprint)
+        for candidate in final_candidates:
+            fingerprint = candidate.start_fingerprint
+            if (
+                candidate.canonical
+                and fingerprint is not None
+                and self._is_fresh(candidate.key)
+            ):
+                owners[candidate.key.pid] = (
+                    candidate.row, candidate.key, fingerprint,
+                )
         safe_delegations = []
         for delegation in delegations:
             if not isinstance(delegation, dict):

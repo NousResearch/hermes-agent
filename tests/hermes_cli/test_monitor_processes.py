@@ -114,6 +114,12 @@ def test_discovers_old_hermes_processes_and_rejects_same_username_from_another_a
     (["python", "-m", "agent.legacy_cli", "hello"], ["hello"]),
     (["python", "-m", "acp_adapter.entry"], []),
     (["python", "/opt/hermes/desktop-gateway.py"], []),
+    (["python", "-u", "-m", "hermes_cli.main", "monitor"], ["monitor"]),
+    (["python", "-X", "utf8", "-m", "gateway.run", "--profile", "work"], []),
+    (["python", "-W", "ignore", "-m", "hermes_cli.main", "chat"], ["chat"]),
+    (["python", "-Wignore", "-umgateway.run"], []),
+    (["python", "/opt/hermes/gateway/run.py"], []),
+    (["python", "/opt/hermes/cli.py", "chat"], ["chat"]),
 ])
 def test_canonical_roots_recognize_only_supported_launcher_forms(argv, command):
     assert _is_hermes_candidate("python", argv)
@@ -126,6 +132,10 @@ def test_canonical_roots_recognize_only_supported_launcher_forms(argv, command):
     ["python", "worker.py", "hermes_cli.main"],
     ["python", "-m", "unrelated", "hermes"],
     ["python", "script.py", "desktop-gateway.py"],
+    ["python", "-u", "script.py", "hermes-gateway"],
+    ["python", "-X", "utf8", "worker.py", "gateway.run"],
+    ["python", "worker.py", "gateway/run.py"],
+    ["python", "worker.py", "cli.py"],
 ])
 def test_prompt_and_noncanonical_argument_occurrences_are_not_roots(argv):
     assert not _is_hermes_candidate("python", argv)
@@ -164,6 +174,47 @@ def test_reused_parent_pid_does_not_claim_an_older_unrelated_process():
     rows = _sampler([older, root], now=300.0).sample().processes
 
     assert [row.pid for row in rows] == [160]
+
+
+def test_helper_and_enrichment_are_removed_when_root_fails_final_freshness_check():
+    root = FakeProcess(162, name="hermes", cmdline=["hermes"], create=100.0)
+    helper = FakeProcess(163, name="sleep", cmdline=["sleep", "30"], ppid=162, create=101.0)
+    root_is_live = True
+    scanned_homes = []
+    original_memory_info = root.memory_info
+
+    def replace_root_after_resource_read():
+        nonlocal root_is_live
+        result = original_memory_info()
+        root_is_live = False
+        return result
+
+    root.memory_info = replace_root_after_resource_read
+
+    def resolve_key(pid):
+        process = root if pid == root.pid else helper
+        create_time = process.info["create_time"]
+        if pid == root.pid and not root_is_live:
+            create_time += 1.0
+        return ProcessKey(pid, create_time)
+
+    sampler = MonitorSampler(
+        process_iter=lambda: [root, helper],
+        ledger_reader=lambda: [],
+        home_resolver=lambda pid: f"/home/me/.hermes/profiles/{pid}",
+        delegation_scanner=lambda homes: scanned_homes.extend(homes) or [],
+        start_fingerprint_resolver=lambda _proc, _key: 10000,
+        process_key_resolver=resolve_key,
+        account_identity_resolver=lambda proc: proc.account_identity,
+        current_account_identity="account-me",
+        wall_clock=lambda: 200.0,
+        monotonic_clock=lambda: 200.0,
+    )
+
+    snapshot = sampler.sample()
+
+    assert snapshot.processes == []
+    assert scanned_homes == []
 
 
 def test_classification_prefers_kanban_then_gateway_and_monitor():

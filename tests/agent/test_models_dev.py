@@ -100,6 +100,25 @@ class TestProviderMapping:
         assert PROVIDER_TO_MODELS_DEV["xai-oauth"] == "xai"
 
 
+    @patch("agent.models_dev.fetch_models_dev")
+    def test_unmapped_provider_does_not_borrow_same_named_catalog(self, mock_fetch):
+        """Custom provider names must not silently inherit models.dev metadata."""
+        mock_fetch.return_value = {
+            "private-relay": {
+                "models": {
+                    "vendor/model": {
+                        "tool_call": False,
+                        "attachment": False,
+                        "reasoning": False,
+                        "limit": {"context": 8192, "output": 1024},
+                    }
+                }
+            }
+        }
+
+        assert get_model_capabilities("private-relay", "vendor/model") is None
+        mock_fetch.assert_not_called()
+
 
 
 class TestExtractContext:
@@ -119,6 +138,21 @@ class TestLookupModelsDevContext:
     def test_exact_match(self, mock_fetch):
         mock_fetch.return_value = SAMPLE_REGISTRY
         assert lookup_models_dev_context("anthropic", "claude-opus-4-6") == 1000000
+
+    @patch("agent.models_dev._default_override_context", return_value=131072)
+    @patch("agent.models_dev.fetch_models_dev")
+    def test_unmapped_provider_keeps_default_override(self, mock_fetch, _mock_default):
+        """An unmapped provider must bypass a colliding models.dev slug."""
+        mock_fetch.return_value = {
+            "private-relay": {
+                "models": {
+                    "vendor/model": {"limit": {"context": 8192}}
+                }
+            }
+        }
+
+        assert lookup_models_dev_context("private-relay", "vendor/model") == 131072
+        mock_fetch.assert_not_called()
 
 
 

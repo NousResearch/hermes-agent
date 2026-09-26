@@ -1,7 +1,13 @@
-import { act, cleanup, renderHook } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, renderHook, screen } from '@testing-library/react'
+import { MotionGlobalConfig } from 'motion/react'
+import { createElement, type ReactElement, type ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { NotificationStack } from '@/components/notifications'
 import { getStatus } from '@/hermes'
+import { I18nProvider, type Locale, TRANSLATIONS, type Translations } from '@/i18n'
+import { $setupReadyTick, notifySetupReady } from '@/store/live-sync'
+import { clearNotifications } from '@/store/notifications'
 
 import { deferred } from '../../../test/deferred'
 
@@ -19,12 +25,19 @@ async function flushAsync() {
   })
 }
 
+// This file is about status RPC cadence, not card choreography: the notification
+// stack's exit animation would otherwise straddle the fake→real timer swap between
+// locales and leave a departing card in the next test's DOM.
+MotionGlobalConfig.skipAnimations = true
+
 beforeEach(() => {
   vi.useFakeTimers()
   vi.spyOn(document, 'hasFocus').mockReturnValue(true)
   vi.mocked(getStatus)
     .mockReset()
     .mockResolvedValue({} as never)
+  $setupReadyTick.set(0)
+  clearNotifications()
 })
 
 afterEach(() => {
@@ -34,6 +47,69 @@ afterEach(() => {
 })
 
 describe('useStatusSnapshot', () => {
+  it.each(Object.entries(TRANSLATIONS) as [Locale, Translations][])(
+    'localizes and deduplicates shared-profile warnings in %s',
+    async (locale: Locale, copy: Translations): Promise<void> => {
+      const warning: string = copy.notifications.sharedProfileWarning
+
+      expect(warning).toBeTypeOf('string')
+
+      const wrapper: (props: { children: ReactNode }) => ReactElement = ({
+        children
+      }: {
+        children: ReactNode
+      }): ReactElement => createElement(I18nProvider, { configClient: null, initialLocale: locale, children })
+
+      const requestGateway: GatewayRequester = vi.fn().mockResolvedValue({}) as unknown as GatewayRequester
+
+      render(createElement(NotificationStack), { wrapper })
+
+      const { rerender }: { rerender: (props: { scope: string }) => void } = renderHook(
+        ({ scope }: { scope: string }): ReturnType<typeof useStatusSnapshot> =>
+          useStatusSnapshot('open', requestGateway, scope),
+        {
+          initialProps: { scope: 'local-default' },
+          wrapper
+        }
+      )
+
+      await flushAsync()
+      expect(screen.queryByText(warning)).toBeNull()
+      vi.mocked(getStatus).mockResolvedValue({ shared_profile_warning: true } as never)
+      await act(async (): Promise<void> => {
+        await vi.advanceTimersByTimeAsync(60_000)
+      })
+      expect(screen.getByText(warning)).toBeTruthy()
+      // Dismiss departs through the card stack (store row on a microtask, then the exit).
+      await act(async (): Promise<void> => {
+        fireEvent.click(screen.getByRole('button', { name: copy.notifications.dismiss }))
+        await vi.advanceTimersByTimeAsync(100)
+      })
+      expect(screen.queryByText(warning)).toBeNull()
+      await act(async (): Promise<void> => {
+        await vi.advanceTimersByTimeAsync(60_000)
+      })
+      expect(screen.queryByText(warning)).toBeNull()
+
+      vi.mocked(getStatus).mockResolvedValue({ shared_profile_warning: false } as never)
+      await act(async (): Promise<void> => {
+        await vi.advanceTimersByTimeAsync(60_000)
+      })
+      vi.mocked(getStatus).mockResolvedValue({ shared_profile_warning: true } as never)
+      await act(async (): Promise<void> => {
+        await vi.advanceTimersByTimeAsync(60_000)
+      })
+      expect(screen.getByText(warning)).toBeTruthy()
+      vi.mocked(getStatus).mockResolvedValue({ shared_profile_warning: false } as never)
+      rerender({ scope: 'local-work' })
+      await flushAsync()
+      await act(async (): Promise<void> => {
+        await vi.advanceTimersByTimeAsync(100)
+      })
+      expect(screen.queryByText(warning)).toBeNull()
+    }
+  )
+
   it('pauses status RPCs while visible but unfocused, then catches up on focus', async () => {
     vi.mocked(document.hasFocus).mockReturnValue(false)
     const requestGateway = vi.fn().mockResolvedValue({}) as unknown as GatewayRequester
@@ -54,7 +130,8 @@ describe('useStatusSnapshot', () => {
     await flushAsync()
 
     expect(getStatus).toHaveBeenCalledOnce()
-    expect(requestGateway).toHaveBeenCalledTimes(2)
+    // One refresh round = setup.status + setup.runtime_check + free_tier.status.
+    expect(requestGateway).toHaveBeenCalledTimes(3)
   })
 
   it('keeps the last authoritative readiness through a transient RPC failure', async () => {
@@ -199,13 +276,16 @@ describe('useStatusSnapshot', () => {
     renderHook(() => useStatusSnapshot('open', requestGateway))
     await flushAsync()
 
-    expect(requestGatewayMock).toHaveBeenCalledTimes(2)
+    // Open runs the readiness legs once: setup.status, setup.runtime_check, free_tier.status.
+    expect(getStatus).toHaveBeenCalledOnce()
+    expect(requestGatewayMock).toHaveBeenCalledTimes(3)
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(60_000)
     })
 
-    expect(requestGatewayMock).toHaveBeenCalledTimes(2)
+    expect(getStatus).toHaveBeenCalledOnce()
+    expect(requestGatewayMock).toHaveBeenCalledTimes(3)
 
     await act(async () => {
       setup.resolve({ provider_configured: true })
@@ -216,11 +296,79 @@ describe('useStatusSnapshot', () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(59_999)
     })
-    expect(requestGatewayMock).toHaveBeenCalledTimes(2)
+    expect(getStatus).toHaveBeenCalledOnce()
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1)
     })
-    expect(requestGatewayMock).toHaveBeenCalledTimes(4)
+
+    // The periodic tick is status-only: readiness and the free-tier verdict
+    // arrive by `setup.ready` push plus the one-shots on open and on return.
+    expect(getStatus).toHaveBeenCalledTimes(2)
+    expect(requestGatewayMock).toHaveBeenCalledTimes(3)
+  })
+
+  it('re-reads readiness and the free-tier verdict once per setup.ready, off the status tick', async () => {
+    const requestGatewayMock = vi.fn(
+      async (method: string) =>
+        (method === 'setup.runtime_check' ? { ok: true } : { provider_configured: true }) as never
+    )
+
+    const requestGateway = requestGatewayMock as unknown as GatewayRequester
+
+    renderHook(() => useStatusSnapshot('open', requestGateway))
+    await flushAsync()
+    requestGatewayMock.mockClear()
+    vi.mocked(getStatus).mockClear()
+
+    await act(async () => {
+      notifySetupReady()
+      await vi.advanceTimersByTimeAsync(0)
+    })
+
+    const methods = requestGatewayMock.mock.calls.map(([method]) => method)
+    expect(methods.filter(method => method === 'free_tier.status')).toHaveLength(1)
+    expect(methods.filter(method => method === 'setup.runtime_check')).toHaveLength(1)
+    expect(methods.filter(method => method === 'setup.status')).toHaveLength(1)
+    expect(getStatus).not.toHaveBeenCalled()
+  })
+
+  it('ignores setup.ready while the gateway is not open', async () => {
+    const requestGatewayMock = vi.fn(async () => ({}) as never)
+    const requestGateway = requestGatewayMock as unknown as GatewayRequester
+
+    renderHook(() => useStatusSnapshot('connecting', requestGateway))
+    await flushAsync()
+
+    await act(async () => {
+      notifySetupReady()
+      await vi.advanceTimersByTimeAsync(0)
+    })
+
+    expect(requestGatewayMock).not.toHaveBeenCalled()
+  })
+
+  it('keeps the same snapshot reference across a content-equal 60s re-read; a real change publishes', async () => {
+    vi.mocked(getStatus).mockImplementation(async () => ({ version: '1.0.0' }) as never)
+    const requestGateway = vi.fn().mockResolvedValue({}) as unknown as GatewayRequester
+
+    const { result } = renderHook(() => useStatusSnapshot('open', requestGateway))
+    await flushAsync()
+
+    const first = result.current.statusSnapshot
+    expect(first).toEqual({ version: '1.0.0' })
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000)
+    })
+    expect(getStatus).toHaveBeenCalledTimes(2)
+    // Identity preserved on a no-op: consumers keyed on the snapshot must not re-render.
+    expect(result.current.statusSnapshot).toBe(first)
+
+    vi.mocked(getStatus).mockImplementation(async () => ({ version: '1.0.1' }) as never)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000)
+    })
+    expect(result.current.statusSnapshot).toEqual({ version: '1.0.1' })
   })
 })

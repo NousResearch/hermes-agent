@@ -22,7 +22,7 @@ from hermes_cli.web_deps import late
 from hermes_cli.web_server_chat import _ws_auth_ok, _ws_request_is_allowed
 from hermes_cli.web_server_gateway import _split_text_for_speak_stream
 from fastapi import HTTPException, WebSocket, WebSocketDisconnect
-from hermes_cli.web_models import AudioTranscriptionRequest, TTSSpeakRequest, TTSLeaseRequest
+from hermes_cli.web_models import AudioTranscriptionRequest, TTSSpeakRequest, TTSLeaseRequest, VoiceLiveSessionRequest
 from typing import Any, Dict, Optional
 
 _log = logging.getLogger("hermes_cli.web_server")
@@ -164,6 +164,39 @@ async def get_client_voice_config(profile: Optional[str] = None):
     return {"ok": True, **result}
 
 
+@router.get("/api/audio/voice-live/status")
+async def get_voice_live_status(profile: Optional[str] = None):
+    """Which voice chat mode the profile selected (``chained`` | ``gpt-live``) and whether GPT-Live
+    can start. Non-secret: the desktop decides which conversation engine to mount from this."""
+    from tools.voice_live import resolve_gpt_live_status
+    with http_failure("GPT-Live status resolution failed", 500, "GPT-Live status failed"):
+        result = await _run_config_scoped(profile, resolve_gpt_live_status)
+    return {"ok": True, **result}
+
+
+@router.post("/api/audio/voice-live/session")
+async def create_voice_live_session(payload: VoiceLiveSessionRequest, profile: Optional[str] = None):
+    """Exchange the renderer's WebRTC SDP offer for a GPT-Live session answer.
+
+    The project API key stays on this host; the renderer only receives the session id and the
+    SDP answer. Client delegation is fixed at creation: every ``session.delegation.created`` the
+    renderer receives becomes a Hermes turn on the session it belongs to.
+    """
+    from tools.voice_live import create_webrtc_session
+    # Validate emptiness only: the vendor's SDP parser needs the offer byte-exact, including the
+    # trailing CRLF (a stripped offer answers 400 "failed to unmarshal SDP: EOF").
+    sdp = payload.sdp or ""
+    if not sdp.strip():
+        raise HTTPException(status_code=400, detail="An SDP offer is required")
+    try:
+        result = await _run_config_scoped(profile, lambda: create_webrtc_session(sdp, payload.history))
+    except ValueError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    return {"ok": True, **result}
+
+
 def _elevenlabs_voice_label(voice: Dict[str, Any]) -> str:
     name = str(voice.get("name") or voice.get("voice_id") or "Voice").strip()
     category = str(voice.get("category") or "").strip()
@@ -185,7 +218,8 @@ async def get_elevenlabs_voices(profile: Optional[str] = None):
     if not api_key:
         # Fallback for env-only deployments — scope-aware: under multiplex
         # os.environ may hold another profile's key, so honor the installed
-        # scope's verdict before touching the env.
+        # scope's verdict. Only the unscoped default-profile path
+        # (UnscopedSecretError) reads the env; any other failure stays empty.
         try:
             from agent.secret_scope import UnscopedSecretError, get_secret
 
@@ -194,7 +228,7 @@ async def get_elevenlabs_voices(profile: Optional[str] = None):
             except UnscopedSecretError:
                 api_key = (os.environ.get("ELEVENLABS_API_KEY") or "").strip()
         except Exception:
-            api_key = (os.environ.get("ELEVENLABS_API_KEY") or "").strip()
+            pass
     if not api_key:
         return {"available": False, "voices": []}
 
@@ -324,7 +358,13 @@ async def tts_lease(payload: TTSLeaseRequest, profile: Optional[str] = None):
         if payload.active:
             with _config_profile_scope(profile):
                 return acquire_tts_lease(lease)
-        return release_tts_lease(lease)
+        # Release reads the requester's keep_warm_seconds, but must drop the lease even when
+        # that profile is gone — a stuck lease pins the local model in memory.
+        try:
+            with _config_profile_scope(profile):
+                return release_tts_lease(lease)
+        except HTTPException:
+            return release_tts_lease(lease)
 
     try:
         result = await asyncio.get_running_loop().run_in_executor(None, _apply)
@@ -334,6 +374,100 @@ async def tts_lease(payload: TTSLeaseRequest, profile: Optional[str] = None):
         _log.warning("TTS lease %s (%s) failed: %s", lease, payload.active, exc)
         result = {"leases": None, "action": "error", "error": str(exc)}
     return {"ok": True, "lease": lease, "active": payload.active, **result}
+
+
+class _SyncSentencePCMStreamer:
+    """Speak one sentence through the sync TTS tool and yield int16 mono PCM.
+
+    Not a second provider: ``text_to_speech_tool`` is the same stack the CLI
+    speaker uses for edge and every other non-chunked provider. The desktop
+    socket only plays PCM, so the written file is decoded before it is sent.
+    ``sample_rate`` is updated before the first yield, matching the chunked
+    streamers whose rate is only final once synthesis has answered.
+    """
+
+    sample_rate = 24000
+    channels = 1
+
+    def stream(self, text: str):
+        pcm, rate = _sync_sentence_to_pcm(text)
+        if rate:
+            self.sample_rate = rate
+        if pcm:
+            yield pcm
+
+
+def _sync_sentence_to_pcm(text: str) -> tuple:
+    """Synthesize *text* with the configured sync provider and return PCM."""
+    from tools.tts_tool import text_to_speech_tool
+
+    fd, tmp_path = tempfile.mkstemp(suffix=".mp3")
+    os.close(fd)
+    extra = None
+    try:
+        raw = text_to_speech_tool(text=text, output_path=tmp_path)
+        try:
+            payload = json.loads(raw) if isinstance(raw, str) else raw
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("Invalid TTS response") from exc
+        if not isinstance(payload, dict) or not payload.get("success"):
+            detail = str(payload.get("error") or "") if isinstance(payload, dict) else ""
+            raise RuntimeError(detail or "Speech synthesis failed")
+        written = payload.get("file_path") or tmp_path
+        if not isinstance(written, str) or not os.path.isfile(written) or os.path.getsize(written) <= 0:
+            raise RuntimeError("Audio file missing")
+        if os.path.abspath(written) != os.path.abspath(tmp_path):
+            extra = written
+        pcm, rate = _audio_file_to_pcm(written)
+        if not pcm:
+            raise RuntimeError("TTS audio decoded to silence")
+        return pcm, rate
+    finally:
+        _unlink_quietly(tmp_path)
+        if extra:
+            _unlink_quietly(extra)
+
+
+def _audio_file_to_pcm(path: str) -> tuple:
+    """Decode *path* to int16 mono PCM. WAV via the stdlib; anything else via ffmpeg."""
+    with open(path, "rb") as fh:
+        head = fh.read(12)
+    if len(head) >= 12 and head.startswith(b"RIFF") and head[8:12] == b"WAVE":
+        pcm, rate = _wav_s16le_mono(path)
+        if pcm:
+            return pcm, rate
+    return _ffmpeg_s16le_mono(path)
+
+
+def _wav_s16le_mono(path: str) -> tuple:
+    import wave
+
+    try:
+        with wave.open(path, "rb") as wf:
+            if wf.getsampwidth() != 2 or wf.getnchannels() != 1 or wf.getframerate() <= 0:
+                return b"", 0
+            return wf.readframes(wf.getnframes()), int(wf.getframerate())
+    except (wave.Error, EOFError, OSError):
+        return b"", 0
+
+
+def _ffmpeg_s16le_mono(path: str) -> tuple:
+    import shutil
+
+    from tools.tts_tool_delivery import _ffmpeg_run
+
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise RuntimeError("ffmpeg is required to decode TTS audio for speak-stream")
+    result = _ffmpeg_run(
+        ffmpeg,
+        ["-i", path, "-f", "s16le", "-ac", "1", "-ar", "24000", "-loglevel", "error", "pipe:1"],
+        timeout=60,
+    )
+    if result.returncode != 0 or not result.stdout:
+        stderr = (result.stderr or b"").decode("utf-8", "replace")[:200]
+        raise RuntimeError(f"TTS audio decode failed: {stderr}")
+    return result.stdout, 24000
 
 
 @router.websocket("/api/audio/speak-stream")
@@ -349,10 +483,13 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
       client → ``{"text": "..."}`` frames (incremental; may combine with done),
                ``{"done": true}`` when the reply is complete,
                ``{"stop": true}`` or disconnect = barge-in
-      server → ``{"type": "start", "sample_rate": N, "channels": 1}``,
+      server → ``{"type": "start", "sample_rate": N, "channels": 1}`` (sent
+               with the first PCM frame, once the provider's rate is final),
                binary PCM frames, then ``{"type": "end"}``
-      server → ``{"type": "fallback"}`` when the configured provider has no
-               chunked API — the client uses the POST endpoint instead.
+      server → ``{"type": "fallback"}`` only when sentence synthesis produced
+               no audio. Providers with no chunked API (edge, the default)
+               still speak per sentence via ``text_to_speech_tool`` and stream
+               that PCM — the client POST is the last resort, not the Edge path.
     """
     if not _ws_auth_ok(ws):
         await ws.close(code=4401)
@@ -364,8 +501,7 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
 
     # Profile via query param, like /api/pty and /api/console: the provider
     # chain + API keys must resolve from the requesting profile's config, not
-    # the dashboard's own. The streamer captures its config at resolve time,
-    # so scoping resolution scopes the whole session.
+    # the dashboard's own — at resolve time AND in the synthesis thread.
     profile = (ws.query_params.get("profile") or "").strip() or None
 
     loop = asyncio.get_running_loop()
@@ -376,33 +512,54 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
         with _config_profile_scope(profile):
             cfg = _load_tts_config()
             streamer = resolve_streaming_provider(cfg)
-            cap = _resolve_max_text_length(_get_provider(cfg), cfg) if streamer else 0
-        return streamer, cap
+            cap = _resolve_max_text_length(_get_provider(cfg), cfg)
+        return streamer, cap, cfg
 
     try:
-        streamer, cap = await loop.run_in_executor(None, _resolve)
+        streamer, cap, cfg = await loop.run_in_executor(None, _resolve)
     except Exception:
         _log.exception("speak-stream provider resolution failed")
-        streamer, cap = None, 0
+        streamer, cap, cfg = None, 0, {}
     if streamer is None:
-        with contextlib.suppress(Exception):
-            await ws.send_json({"type": "fallback"})
-            await ws.close()
-        return
+        # Edge (the default) and every other non-chunked provider still have a
+        # documented per-sentence path. type=fallback here is what makes Desktop
+        # wait for the whole reply and POST it to /api/audio/speak.
+        streamer = _SyncSentencePCMStreamer()
 
-    await ws.send_json(
-        {"type": "start", "sample_rate": streamer.sample_rate, "channels": streamer.channels}
-    )
+    # The start frame is deferred until the first PCM chunk (or end-of-speech):
+    # the OpenAI-compatible streamer only learns the endpoint's real rate from
+    # the response headers inside stream(), and the client opens its
+    # AudioContext at whatever rate the start frame carries.
+    start_sent = False
+
+    async def _send_start():
+        nonlocal start_sent
+        if start_sent:
+            return
+        start_sent = True
+        await ws.send_json(
+            {"type": "start", "sample_rate": streamer.sample_rate, "channels": streamer.channels}
+        )
 
     stop = threading.Event()
+    produced_audio = False
+    synthesis_failed = False
     text_q: queue.Queue = queue.Queue()  # str deltas; None = end-of-text
     chunks: asyncio.Queue = asyncio.Queue()  # PCM out; None = synthesis done
 
     def _produce():
+        # Every streamer re-resolves its API key on each stream() call (tts_streaming ->
+        # resolve_provider_secret), so the whole synthesis body runs under the requesting
+        # profile's scope, not only the resolve step above (else the launch profile's key).
+        with _config_profile_scope(profile):
+            _synthesize()
+
+    def _synthesize():
+        nonlocal produced_audio, synthesis_failed
         from tools.tts_streaming import SentenceChunker
         from tools.tts_text_normalize import _strip_markdown_for_tts
 
-        chunker = SentenceChunker()
+        chunker = SentenceChunker.from_config(cfg)  # the requesting profile's tts.streaming.min_len
 
         # The session stays open for a whole agent turn and no text arrives
         # during tool execution, so without an idle flush a narration line with
@@ -441,9 +598,11 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
                     for chunk in streamer.stream(piece):
                         if stop.is_set():
                             return
+                        produced_audio = True
                         loop.call_soon_threadsafe(chunks.put_nowait, chunk)
         except Exception as exc:
             _log.warning("speak-stream synthesis failed: %s", exc)
+            synthesis_failed = True
         finally:
             loop.call_soon_threadsafe(chunks.put_nowait, None)
 
@@ -472,9 +631,16 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
             chunk = await chunks.get()
             if chunk is None:
                 break
+            await _send_start()
             await ws.send_bytes(chunk)
         if not stop.is_set():
-            await ws.send_json({"type": "end"})
+            # Fallback is the last resort: sentence synthesis was asked for and
+            # produced nothing. A normal edge reply has already streamed PCM.
+            if synthesis_failed and not produced_audio:
+                await ws.send_json({"type": "fallback"})
+            else:
+                await _send_start()
+                await ws.send_json({"type": "end"})
     except (WebSocketDisconnect, RuntimeError):
         pass
     finally:

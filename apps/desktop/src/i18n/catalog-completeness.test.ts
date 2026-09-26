@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { TRANSLATIONS } from './catalog'
+import { csOverrides } from './cs'
 import { deOverrides } from './de'
 import { esOverrides } from './es'
 import { frOverrides } from './fr'
@@ -9,8 +10,8 @@ import type { Locale } from './types'
 // Locales that shipped fully translated. They are `defineLocale` overlays like
 // ja/ru, so an English key added later falls back to English instead of
 // failing typecheck; these checks keep the translated copy structurally sound.
-const COMPLETE_LOCALES = ['fr', 'de', 'es'] as const satisfies readonly Locale[]
-const completeOverrides = { fr: frOverrides, de: deOverrides, es: esOverrides }
+const COMPLETE_LOCALES = ['fr', 'de', 'es', 'cs'] as const satisfies readonly Locale[]
+const completeOverrides = { fr: frOverrides, de: deOverrides, es: esOverrides, cs: csOverrides }
 
 type Leaf = { path: string; value: unknown }
 

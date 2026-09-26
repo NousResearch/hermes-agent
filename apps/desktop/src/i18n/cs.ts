@@ -1,8 +1,8 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
-import { defineLocale } from './define-locale'
+import { defineLocale, type TranslationOverrides } from './define-locale'
 
-export const cs = defineLocale({
+export const csOverrides = {
   externalOpenFailed: {
     title: 'Tento odkaz se nepodařilo otevřít',
     message: 'K otevření této adresy není zaregistrován žádný prohlížeč. Zkopírujte odkaz a otevřete jej ručně.',
@@ -1352,7 +1352,6 @@ export const cs = defineLocale({
       'browser.useRealProfile': 'Používat můj skutečný profil prohlížeče',
       'checkpoints.enabled': 'Kontrolní body souborů',
       'checkpoints.maxSnapshots': 'Limit kontrolních bodů',
-      'voice.recordKey': 'Hlasová zkratka',
       'voice.maxRecordingSeconds': 'Maximální délka nahrávání',
       'voice.autoTts': 'Předčítat odpovědi',
       'stt.enabled': 'Převod řeči na text',
@@ -5994,4 +5993,6 @@ export const cs = defineLocale({
       toggle: open => `${open ? 'Zobrazit' : 'Skrýt'} postranní panel`
     }
   }
-})
+} satisfies TranslationOverrides
+
+export const cs = defineLocale(csOverrides)

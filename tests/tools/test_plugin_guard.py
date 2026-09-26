@@ -585,6 +585,82 @@ class TestInertContextDemotions:
         assert sev[("redact.py", "dump_all_env")] == "medium"
         assert sev[("priv.py", "sudo_usage")] == "high"
 
+    def test_screener_own_detection_patterns_stay_confirmable(self, tmp_path):
+        """#123193: an injection-detection module compiles the risky words INTO its regexes —
+        ``(?:sudo\\s+)?`` inside a group, ``\\bprintenv\\b`` against an escape, ``|/etc/passwd|``
+        an alternation member. Those shapes are inert exactly like the short ``|sudo|`` form,
+        and the critical ``system_passwd_access`` no longer hard-blocks the screener plugin."""
+        files = dict(BASE_FILES)
+        files["jevkit/rerank.py"] = (
+            'SHELL_RE = re.compile(r"|\\|\\s*(?:sudo\\s+)?(?:ba|z|da)?sh\\b|\\bbase64\\b|/dev/tcp/")\n'
+            'ENV_RE = re.compile(r"\\b(?:printenv|env\\s*\\|)\\b")\n'
+            'PATH_RE = re.compile(r"\\b(?:/etc/passwd|/etc/shadow|id_rsa)\\b")\n'
+        )
+        result = scan_plugin(_mk_plugin(tmp_path, files), source="owner/repo")
+        sev = {
+            (f.file, f.line, f.pattern_id): f.severity
+            for f in result.findings
+            if f.pattern_id in ("sudo_usage", "dump_all_env", "system_passwd_access")
+        }
+        assert sev[("jevkit/rerank.py", 1, "sudo_usage")] == "medium"
+        assert sev[("jevkit/rerank.py", 2, "dump_all_env")] == "medium"
+        assert sev[("jevkit/rerank.py", 3, "system_passwd_access")] == "high"
+        assert result.verdict != "dangerous"
+
+    def test_metasyntax_adjacency_is_not_a_bypass(self, tmp_path):
+        """The widened member test must only accept real regex metasyntax: a lone backslash
+        before the word (``"\\sudo x"`` is how an obfuscated ``sudo`` reaches a shell), a
+        glob/brace after it (``sudo*``, ``sudo{x,y}``), and real command strings keep full
+        severity."""
+        files = dict(BASE_FILES)
+        files["run.py"] = (
+            'sh_argv = ["sh", "-c", r"\\sudo rm -rf /"]\n'
+            'glob_cmd = "sudo* -l"\n'
+            'brace_cmd = "sudo{x,y} -l"\n'
+            'passwd_read = open("/etc/passwd")\n'
+            'shell_cmd = "sudo cat /etc/shadow"\n'
+        )
+        result = scan_plugin(_mk_plugin(tmp_path, files), source="owner/repo")
+        sev = {
+            (f.file, f.line, f.pattern_id): f.severity
+            for f in result.findings
+            if f.pattern_id in ("sudo_usage", "system_passwd_access")
+        }
+        assert sev[("run.py", 1, "sudo_usage")] == "high"
+        assert sev[("run.py", 2, "sudo_usage")] == "high"
+        assert sev[("run.py", 3, "sudo_usage")] == "high"
+        assert sev[("run.py", 4, "system_passwd_access")] == "critical"
+        assert sev[("run.py", 5, "sudo_usage")] == "high"
+        assert sev[("run.py", 5, "system_passwd_access")] == "critical"
+    def test_string_escapes_after_the_word_are_not_pattern_text(self, tmp_path):
+        """In a plain (non-raw) string the two source characters after the word are a shell word
+        separator, not regex metasyntax: ``"sudo\\tcat"`` is the real command ``sudo cat`` with
+        a tab, ``"/etc/shadow\\n"`` a real password-file read. The escape/quantifier adjacency
+        only applies where backslashes stay verbatim — a raw string or a JS regex literal."""
+        files = dict(BASE_FILES)
+        files["run2.py"] = (
+            'subprocess.run("sudo\\tcat /etc/shadow", shell=True)\n'
+            'subprocess.run("sudo\\nrm -rf /", shell=True)\n'
+            'open("/etc/shadow\\n").read()\n'
+            'open("/etc/passwd\\x00").read()\n'
+            'JS_RE = /sudo\\s+/.test(value)\n'
+        )
+        result = scan_plugin(_mk_plugin(tmp_path, files), source="owner/repo")
+        sev = {
+            (f.file, f.line, f.pattern_id): f.severity
+            for f in result.findings
+            if f.pattern_id in ("sudo_usage", "system_passwd_access")
+        }
+        assert sev[("run2.py", 1, "sudo_usage")] == "high"
+        assert sev[("run2.py", 1, "system_passwd_access")] == "critical"
+        assert sev[("run2.py", 2, "sudo_usage")] == "high"
+        assert sev[("run2.py", 3, "system_passwd_access")] == "critical"
+        assert sev[("run2.py", 4, "system_passwd_access")] == "critical"
+        assert result.verdict == "dangerous"
+        # backslashes that DO stay verbatim keep the exemption: raw strings are covered by
+        # ``test_screener_own_detection_patterns_stay_confirmable``; the JS regex literal here.
+        assert sev[("run2.py", 5, "sudo_usage")] == "medium"
+
     def test_whole_literal_list_entry_vs_executed_literal(self, tmp_path):
         files = dict(BASE_FILES)
         files["gate.py"] = (

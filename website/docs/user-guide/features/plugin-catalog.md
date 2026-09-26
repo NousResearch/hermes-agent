@@ -170,7 +170,8 @@ The same folder receives any file of yours where the new version has a
 directory (or the reverse). If the installed revision can no longer be
 fetched, files the new version does not ship are kept, except code and
 scripts (Python, JavaScript/TypeScript, shell and other script files, and any
-executable file) and plugin declarations (manifests, `mcp.json`,
+executable file), binaries and loadable modules (`.exe`, `.dll`, `.so`,
+`.pyc`, `.wasm` and the like) and plugin declarations (manifests, `mcp.json`,
 dependency files, `desktop/`, `skills/`, `sidecar/`), which go to the backup
 folder along with files the new version ships with different content. Files
 kept this way pass the same security scan as the new version. If the plugin

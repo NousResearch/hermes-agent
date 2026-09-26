@@ -533,15 +533,44 @@ def test_carry_without_the_installed_revision_does_not_resurrect_removed_scripts
     old, new, backup = tmp_path / "old", tmp_path / "new", tmp_path / "backup"
     old.mkdir()
     new.mkdir()
-    for name, mode in (("setup.sh", 0o755), ("install.ps1", 0o644), ("run-me", 0o755), ("notes.txt", 0o644)):
+    for name, mode in (("setup.sh", 0o755), ("install.ps1", 0o644), ("run-me", 0o755), ("tool.exe", 0o644),
+                       ("lib.dll", 0o644), ("notes.txt", 0o644)):
         (old / name).write_text("#!/bin/sh\n")
         (old / name).chmod(mode)
 
     set_aside = cat._carry_user_files(old, new, None, backup)
 
-    assert sorted(set_aside) == ["install.ps1", "run-me", "setup.sh"]
+    assert sorted(set_aside) == ["install.ps1", "lib.dll", "run-me", "setup.sh", "tool.exe"]
     assert sorted(p.name for p in new.iterdir()) == ["notes.txt"]
     assert (backup / "setup.sh").stat().st_mode & 0o100
+
+
+def test_update_without_the_installed_revision_does_not_resurrect_a_removed_binary(world, tmp_path, monkeypatch):
+    """A shipped binary has no source suffix and, as git records a Windows executable, no execute bit. Once
+    the installed revision is unfetchable, a ``tool.exe`` the new version removed goes to the backup, not
+    into the new tree: the URL re-clone rescans with ``force=True``, which accepts the caution verdict a
+    bundled binary earns, so a carried one would be published."""
+    def prepare(src):
+        (src / "tool.exe").write_bytes(b"MZ\0\0old")
+        (src / "tool.exe").chmod(0o644)
+
+    src, target, _release = _installed_subdir_plugin(tmp_path, monkeypatch, "url", prepare)
+    (target / "config.yaml").write_text("endpoint: mine\n")
+    monkeypatch.setattr(pc, "_scan_on_install_enabled", lambda: True)
+    mono = src.parents[1]
+    (src / "tool.exe").unlink()
+    (src / "plugin.yaml").write_text("name: sub-plugin\nversion: 2.0.0\ndescription: d\n")
+    sp.run(["git", "add", "-A"], cwd=mono, check=True, env=_GIT_ENV)
+    sp.run(["git", "commit", "-q", "--amend", "-m", "v2"], cwd=mono, check=True, env=_GIT_ENV)
+    sp.run(["git", "reflog", "expire", "--expire=now", "--all"], cwd=mono, check=True, env=_GIT_ENV)
+    sp.run(["git", "gc", "-q", "--prune=now"], cwd=mono, check=True, env=_GIT_ENV)
+
+    assert pc.dashboard_update_user_plugin("sub-plugin")["ok"] is True
+    assert "version: 2.0.0" in (target / "plugin.yaml").read_text()
+    assert not (target / "tool.exe").exists()
+    assert (target / "config.yaml").read_text() == "endpoint: mine\n"
+    backup, = (world["plugins_dir"].parent / "plugins-backup").iterdir()
+    assert (backup / "tool.exe").read_bytes() == b"MZ\0\0old"
 
 
 def test_repin_keeps_a_wholly_ignored_data_dir_in_a_git_checkout(world):

@@ -287,19 +287,24 @@ def refuse_if_installed_removed(name: str, plugin_dir) -> None:
 
 _PRESERVE_SKIP = ("__pycache__", CATALOG_SIDECAR)
 # What Hermes imports, runs or reads as the plugin's declaration: code and scripts (any executable file
-# too), manifests, MCP/dependency metadata and the Desktop/skills/sidecar surfaces. Without the installed
-# revision to compare with, an old copy of any of these is the old version's, not the user's.
+# too), binaries and loadable modules (a Windows .exe/.dll has no execute bit in git), manifests,
+# MCP/dependency metadata and the Desktop/skills/sidecar surfaces. Without the installed revision to
+# compare with, an old copy of any of these is the old version's, not the user's.
 _CODE_SUFFIXES = frozenset({".py", ".pyw", ".js", ".mjs", ".cjs", ".ts", ".mts", ".cts", ".sh", ".bash", ".zsh",
                             ".fish", ".ps1", ".psm1", ".bat", ".cmd", ".rb", ".pl"})
+_MODULE_SUFFIXES = frozenset({".pyc", ".pyo", ".node", ".wasm"})
 _REVISION_FILES = frozenset({"plugin.yaml", "plugin.yml", "plugin.json", "mcp.json", "pyproject.toml",
                              "package.json", "package-lock.json", "uv.lock"})
 _REVISION_DIRS = frozenset({"desktop", "skills", "sidecar", "node_modules"})
 
 
 def _revision_owned(root: Path, rel: Path) -> bool:
+    from tools.skills_guard import SUSPICIOUS_BINARY_EXTENSIONS  # what Plugin Guard flags as a binary
     mode = (root / rel).lstat().st_mode
-    return (rel.suffix.lower() in _CODE_SUFFIXES or rel.as_posix() in _REVISION_FILES
-            or rel.parts[0] in _REVISION_DIRS or (stat.S_ISREG(mode) and bool(mode & stat.S_IXUSR)))
+    suffix = rel.suffix.lower()
+    return (suffix in _CODE_SUFFIXES or suffix in _MODULE_SUFFIXES or suffix in SUSPICIOUS_BINARY_EXTENSIONS
+            or rel.as_posix() in _REVISION_FILES or rel.parts[0] in _REVISION_DIRS
+            or (stat.S_ISREG(mode) and bool(mode & stat.S_IXUSR)))
 
 
 def _local_changes(target: Path) -> Optional[tuple[list[str], list[str]]]:

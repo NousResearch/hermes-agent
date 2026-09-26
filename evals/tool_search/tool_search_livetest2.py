@@ -11,7 +11,7 @@ Runs each scenario N_REPS times in each mode (on/off). Output:
 """
 from __future__ import annotations
 
-import json, os, shutil, sys, tempfile, time, traceback
+import json, os, sys, tempfile, time, traceback
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -188,7 +188,7 @@ def run_one(scenario: Dict[str, Any], mode: str, rep: int, out_dir: Path) -> Dic
     }
     out_path = out_dir / f"{scenario['id']}__{'enabled' if enabled else 'disabled'}__rep{rep}.json"
     out_path.write_text(json.dumps(rec, indent=1), encoding="utf-8")
-    shutil.rmtree(Path(os.environ["HERMES_HOME"]).parent, ignore_errors=True)
+    base.cleanup_isolated_home(hermes_home)
     return rec
 
 

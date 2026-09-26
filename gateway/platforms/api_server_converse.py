@@ -41,7 +41,10 @@ Protocol:
              "quiet_interval":?, "name":?, "profile":?}`` (FIRST frame; all but
              auth optional), then binary PCM16 mono frames at ``input_rate``
              (30 ms blocks preferred),
-           ``{"stop": true}`` to end, ``{"commit": true}`` to force endpoint
+           ``{"stop": true}`` to end, ``{"commit": true}`` to force endpoint,
+           ``{"type":"drained","turn_id":?}`` when the reply's last audio has left the speaker
+             (ends the server's playback-tail: resumes quiet/VAD from real playback end, not from
+             turn_done which fires mid-playback)
   server → ``{"type": "ready", "input": {...}, "output": {...}, "session_id": ...,
              "server_recv_unix_ms": ..., "server_send_unix_ms": ...}`` (session_id joins this
              socket across client/server traces; the two timestamps + the client's
@@ -310,6 +313,10 @@ async def _handle_converse_ws(self, request: "web.Request") -> "web.WebSocketRes
                         break
                     if isinstance(frame, dict) and frame.get("commit"):
                         session.commit()
+                    if isinstance(frame, dict) and frame.get("type") == "drained":
+                        # Client finished PLAYING the reply → end the playback tail (resume
+                        # quiet/VAD from now, not from turn_done which was mid-playback).
+                        session.notify_drained(frame.get("turn_id"))
                 elif msg.type in (web.WSMsgType.CLOSE, web.WSMsgType.ERROR):
                     break
         except Exception:

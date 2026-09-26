@@ -45,6 +45,24 @@ _log = logging.getLogger("hermes_cli.web_server")
 # is a backstop; the root-cause cap is a provider request_timeout_seconds on the LLM itself.
 _TURN_TIMEOUT_DEFAULT = 120.0
 
+# How long (seconds) the server keeps the "playback tail" state — turn_done sent, waiting for the
+# client's `drained` — before giving up and resuming quiet/VAD on its own. The client sends
+# `drained` at real playback end (tail is normally ~15-25 s), so this is only a backstop for a
+# client that never sends it; keep it generous so a long reply's tail isn't cut short.
+_PLAYBACK_TAIL_FALLBACK_DEFAULT = 45.0
+
+
+def _resolve_tail_fallback() -> float:
+    """Playback-tail fallback (seconds) from ``voice.playback_tail_timeout_seconds``; falls back to
+    :data:`_PLAYBACK_TAIL_FALLBACK_DEFAULT`. ``<= 0`` disables the tail entirely."""
+    try:
+        from hermes_cli.config import load_config
+
+        raw = (load_config().get("voice") or {}).get("playback_tail_timeout_seconds")
+        return _PLAYBACK_TAIL_FALLBACK_DEFAULT if raw is None else float(raw)
+    except Exception:  # noqa: BLE001
+        return _PLAYBACK_TAIL_FALLBACK_DEFAULT
+
 
 def _resolve_turn_timeout() -> float:
     """Per-connection agent-turn deadline (seconds) from ``voice.turn_timeout_seconds``; falls back
@@ -227,6 +245,18 @@ class QuietTick:
         self.quiet_seconds = quiet_seconds
 
 
+class _TailBarge:
+    """A marker the VAD worker puts on the transcripts queue when speech trips DURING the playback
+    tail (after turn_done, before the client's `drained`). The driver turns it into an
+    ``{"type":"interrupted"}`` frame and does NOT run a turn — so the reply's own echo leaking into
+    the mic can't be transcribed and answered, while a real barge-in still stops playback."""
+
+    __slots__ = ("turn_id",)
+
+    def __init__(self, turn_id: Optional[str]) -> None:
+        self.turn_id = turn_id
+
+
 class _Utterance:
     """One captured+transcribed utterance on the transcripts queue: the text PLUS the phase
     recorder that belongs to THAT capture. Binding the recorder to its transcript (rather than a
@@ -284,6 +314,12 @@ class ConverseSession:
         # agent's 14-50 s of think/speak time would fire a quiet advisory the instant the reply
         # ends. Cleared on turn_done, where the quiet clock also restarts from zero.
         self._turn_active = threading.Event()
+        # Playback-tail state: between turn_done and the client's `drained` (or a fallback), the
+        # client is still PLAYING the reply. Quiet is suppressed and a VAD trip is treated as a
+        # barge-in (not a new turn) so the reply's own echo can't be answered.
+        self._tail_active = False
+        self._tail_turn_id: Optional[str] = None
+        self._tail_deadline = 0.0
         self._stop = threading.Event()
         self._playing = threading.Event()
         # Set by the handler while TTS is streaming so a barge-in can cut it.
@@ -387,6 +423,10 @@ class ConverseSession:
         np, vm = self._np, self._vm
         try:
             while not self._stop.is_set():
+                # Fallback: end a playback tail the client never closed with `drained` so quiet/VAD
+                # can't stay suppressed forever (only reached when audio is flowing).
+                if self._tail_active and time.monotonic() >= self._tail_deadline:
+                    self.end_playback_tail()
                 data, _ = self.stream.read(self._block)
                 if self._stop.is_set():
                     break
@@ -402,6 +442,14 @@ class ConverseSession:
                     continue
                 # Speech: the user is talking, so the quiet clock resets.
                 self._reset_quiet()
+                # A trip DURING the playback tail is a barge-in, not a new turn: signal the driver
+                # to emit `interrupted` (the client stops playback) and DON'T capture, so the
+                # reply's own echo leaking into the mic can never be transcribed and answered.
+                if self._tail_active:
+                    tid = self._tail_turn_id
+                    self.end_playback_tail()
+                    self.transcripts.put(_TailBarge(tid))
+                    continue
                 # Barge-in: a trip during playback cuts the reply mid-stream.
                 if playing:
                     self._trigger_barge_in()
@@ -426,7 +474,7 @@ class ConverseSession:
         emit an :class:`QuietTick` each time the received silence crosses another quiet_interval —
         so quiet reflects the user going quiet WHILE STREAMING AND FREE TO SPEAK, never wall-clock
         time and never the agent's think/speak time (suppressed while a turn is active)."""
-        if self._quiet_interval <= 0 or self._turn_active.is_set():
+        if self._quiet_interval <= 0 or self._turn_active.is_set() or self._tail_active:
             return
         self._quiet_seconds += self._block / self._input_rate  # == 0.03 s per block
         if self._quiet_seconds + 1e-6 >= self._next_quiet_at:
@@ -450,6 +498,29 @@ class ConverseSession:
         follow up before a wake-word client sleeps."""
         self._turn_active.clear()
         self._reset_quiet()
+
+    def begin_playback_tail(self, turn_id: Optional[str], fallback_seconds: float) -> None:
+        """Driver hook: the reply is fully SENT (turn_done) but the client is still PLAYING it.
+        Suppress quiet and treat a VAD trip as a barge-in until the client's `drained` (or the
+        fallback) — so the tail isn't counted as quiet and the reply's echo isn't answered."""
+        if fallback_seconds <= 0:
+            return
+        self._tail_active = True
+        self._tail_turn_id = turn_id
+        self._tail_deadline = time.monotonic() + fallback_seconds
+
+    def end_playback_tail(self) -> None:
+        """Playback finished (client `drained`, a barge-in, or the fallback): resume quiet/VAD from
+        zero, so the follow-up window starts when the user actually stopped hearing the reply."""
+        self._tail_active = False
+        self._tail_turn_id = None
+        self._reset_quiet()
+
+    def notify_drained(self, turn_id: Optional[str] = None) -> None:
+        """Client hook (``{"type":"drained"}``): the last scheduled audio has left the speaker. Ends
+        the playback tail for the matching turn (or the current tail when no id is given)."""
+        if self._tail_active and (turn_id is None or turn_id == self._tail_turn_id):
+            self.end_playback_tail()
 
     def _trigger_barge_in(self) -> None:
         """Cut the in-flight reply: latch the interrupt note and stop TTS."""
@@ -531,17 +602,26 @@ class ConverseSession:
         prob = None
         reason = "max_utterance"  # ran to the hard cap without a commit decision
         inferences: List[Dict[str, Any]] = []
+        # Timing bookkeeping so the span can separate speech from waiting (the "endpointing is
+        # slow" question). block_ms is the read granularity; the pre-roll is pre-trip speech.
+        block_ms = self._block / self._input_rate * 1000.0
+        window_ms = self._endpoint_blocks * block_ms  # trailing silence before each inference
+        pre_roll_ms = len(frames) * block_ms
+        blocks_read = 0
+        last_voiced_block = 0  # last block (in-loop) whose level cleared the silence floor
         for _ in range(self._max_blocks):
             data, _ = self.stream.read(self._block)
             if self._stop.is_set():
                 reason = "stopped"
                 break
             frames.append(data.copy())
+            blocks_read += 1
             if vm._rms(np, data) < silence_rms:
                 quiet += 1
             else:
                 quiet = 0
                 holds = 0  # the user resumed talking — restore the full patience budget
+                last_voiced_block = blocks_read
             if quiet < self._endpoint_blocks:
                 continue
             # Candidate pause reached. Consult the semantic endpointer on the utterance so far.
@@ -576,6 +656,14 @@ class ConverseSession:
             meta["smart_turn.inferences"] = len(inferences)
             if prob is not None:
                 meta["smart_turn.final_probability"] = round(float(prob), 4)
+            # Latency breakdown for tuning: silence_ms = the trailing-silence window that must
+            # elapse before EACH inference (inference is NOT rolling — it fires only when this
+            # window is reached, so it is the whole post-speech endpoint budget); speech_ms =
+            # pre-roll + speech up to the last voiced block; hold_ms = extra windows spent on
+            # sub-threshold "hold" verdicts. Waiting ≈ span duration − speech_ms.
+            meta["smart_turn.silence_ms"] = round(window_ms)
+            meta["capture.speech_ms"] = round(pre_roll_ms + last_voiced_block * block_ms)
+            meta["smart_turn.hold_ms"] = round(holds * window_ms)
             meta["_inferences"] = inferences
         return vm.AudioRecorder._write_wav(
             np.concatenate(frames, axis=0), sample_rate=self._input_rate)
@@ -819,6 +907,7 @@ async def drive_converse_turns(
     from tools.voice_tracing import emit_turn_trace, start_turn
 
     turn_timeout = _resolve_turn_timeout()
+    tail_fallback = _resolve_tail_fallback()
     session_id = getattr(session, "session_id", None)
 
     while not session.stopped:
@@ -833,6 +922,11 @@ async def drive_converse_turns(
             break
         if isinstance(item, QuietTick):
             await send_json({"type": "quiet", "quiet_seconds": item.quiet_seconds})
+            continue
+        if isinstance(item, _TailBarge):
+            # Speech tripped during the playback tail: tell the client to stop playing. NOT a turn —
+            # no capture ran, so nothing (incl. the reply's echo) is transcribed or answered.
+            await send_json({"type": "interrupted", "turn_id": item.turn_id})
             continue
         # A real utterance carries its own capture/STT phase recorder (bound to the transcript so a
         # backed-up driver never mis-attributes it); a bare str (test fakes) has no recorder.
@@ -1065,8 +1159,13 @@ async def drive_converse_turns(
             elif reply.rstrip().endswith("?"):
                 turn_done["expects_more"] = True
         await send_json(turn_done)
-        # Reply done: resume the quiet clock from zero (a full quiet_interval window follows).
+        # Reply done (SENDING): resume the quiet clock from zero. In session mode, unless the agent
+        # signed off, enter the playback-tail state — the client is still PLAYING the reply, so hold
+        # quiet/VAD until its `drained` (or the fallback) instead of counting the tail as quiet or
+        # answering the reply's own echo. Sign-off (client sleeps) skips the tail.
         session.end_turn()
+        if quiet_interval > 0 and turn_done.get("expects_more") is not False and not timed_out:
+            session.begin_playback_tail(turn_id, tail_fallback)
 
         # Finish the trace: append the agent (LLM) + TTS phases with their real start/end times to
         # the capture/STT phases in the bound recorder, then close the live voice.turn span. A

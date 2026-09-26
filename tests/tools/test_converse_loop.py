@@ -326,6 +326,12 @@ def test_capture_and_transcribe_records_capture_and_stt_phases(monkeypatch):
     assert set(phases) == {"voice.capture", "voice.stt"}
     assert phases["voice.capture"].attrs["endpoint.mode"] == "smart_turn"
     assert phases["voice.capture"].attrs["smart_turn.commit_reason"] == "complete"
+    # Latency-breakdown attrs for tuning "endpointing is slow": the trailing-silence window,
+    # speech time, and hold cost are all exposed on the capture span.
+    cap = phases["voice.capture"].attrs
+    assert cap["smart_turn.silence_ms"] > 0
+    assert "capture.speech_ms" in cap
+    assert cap["smart_turn.hold_ms"] == 0  # no holds on this immediate-commit turn
     assert phases["voice.stt"].attrs["stt.transcript_chars"] == len("hello there")
     assert phases["voice.stt"].attrs["stt.success"] is True
 
@@ -517,6 +523,15 @@ class _FakeConverseSession:
     def end_turn(self):
         self.turns_ended = getattr(self, "turns_ended", 0) + 1
 
+    def begin_playback_tail(self, turn_id, fallback_seconds):
+        self.tails_begun = getattr(self, "tails_begun", 0) + 1
+
+    def end_playback_tail(self):
+        pass
+
+    def notify_drained(self, turn_id=None):
+        pass
+
 
 class _EchoSynth:
     sample_rate = 24000
@@ -703,6 +718,50 @@ def test_drive_converse_turns_flushes_queue_on_signoff():
     assert transcripts == ["are we done?"]          # the leftover never became a turn
     turn_dones = [f for f in sent if isinstance(f, dict) and f.get("type") == "turn_done"]
     assert len(turn_dones) == 1 and turn_dones[0].get("expects_more") is False
+
+
+def test_driver_tail_barge_emits_interrupted_not_a_turn():
+    # A trip during the playback tail arrives as _TailBarge → the driver emits `interrupted`
+    # (client stops playback) and runs NO turn (the reply's echo is never transcribed/answered).
+    from tools.voice_converse_loop import _TailBarge
+
+    session = _FakeConverseSession([])
+    session.transcripts = _queue.Queue()
+    session.transcripts.put(_TailBarge("turn-x"))
+    session.transcripts.put(None)
+    sent = _run_driver(session, [], [])
+    types = [f.get("type") if isinstance(f, dict) else "bytes" for f in sent]
+    assert types == ["interrupted"]
+    assert sent[0] == {"type": "interrupted", "turn_id": "turn-x"}
+    assert getattr(session, "turns_begun", 0) == 0  # no agent turn ran
+
+
+def test_playback_tail_suppresses_quiet_until_drained():
+    from tools.voice_converse_loop import QuietTick
+
+    session = ConverseSession(np, quiet_interval=0.5)  # 0.03s of received-silence per call
+
+    def _drain_ticks():
+        out = []
+        while True:
+            try:
+                out.append(session.transcripts.get_nowait())
+            except Exception:  # noqa: BLE001 - queue.Empty
+                break
+        return [t for t in out if isinstance(t, QuietTick)]
+
+    session.begin_playback_tail("t1", fallback_seconds=100)
+    for _ in range(50):  # 1.5s of received silence — but tail suppresses accrual
+        session._account_received_silence()
+    assert _drain_ticks() == []                       # no quiet during the playback tail
+    session.notify_drained("other")                   # mismatched id: tail stays active
+    for _ in range(50):
+        session._account_received_silence()
+    assert _drain_ticks() == []
+    session.notify_drained("t1")                       # correct id ends the tail
+    for _ in range(50):
+        session._account_received_silence()
+    assert len(_drain_ticks()) >= 1                    # quiet resumes after drain
 
 
 def test_voice_system_prompt_signoff_instruction():

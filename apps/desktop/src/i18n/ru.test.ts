@@ -16,6 +16,7 @@ it('keeps merged Russian plugin and fleet labels on the live nested paths', () =
 it('declines counts and retains interpolated plugin names and payment warnings', () => {
   const fact = TRANSLATIONS.ru.connectorsPage.card.fact.tools
   const reachable = TRANSLATIONS.ru.settings.customEndpoints.endpointReachableModels
+
   for (const [count, verb, tools, models] of [
     [1, 'Найдена', 'инструмент', 'модель'],
     [2, 'Найдено', 'инструмента', 'модели'],
@@ -26,10 +27,12 @@ it('declines counts and retains interpolated plugin names and payment warnings',
     expect(fact(count)).toBe(`${count} ${tools}`)
     expect(reachable('Доступно.', count)).toContain(`${verb} ${count} ${models}`)
   }
+
   const missingKey = TRANSLATIONS.ru.settings.plugins.installModal.missingEnv('Plugin Ω', 'VAR_SECRET')
   expect(missingKey).toContain('Plugin Ω')
   expect(missingKey).toContain('VAR_SECRET')
   expect(missingKey).toContain('не заработают')
+
   const warning = TRANSLATIONS.ru.settings.billing.charge.unconfirmedBody('Платёж обрабатывается.')
   expect(warning).toContain('Платёж обрабатывается.')
   expect(warning).toContain('прежде чем повторять попытку')
@@ -37,6 +40,7 @@ it('declines counts and retains interpolated plugin names and payment warnings',
 
 it('uses the instrumental case after the Russian starmap import preposition', () => {
   const importSuccess = TRANSLATIONS.ru.starmap.importSuccess
+
   for (const [count, noun] of [[1, 'узлом'], [2, 'узлами'], [5, 'узлами'], [11, 'узлами'], [21, 'узлом']] as const) {
     expect(importSuccess(count)).toContain(`с ${count} ${noun}`)
   }

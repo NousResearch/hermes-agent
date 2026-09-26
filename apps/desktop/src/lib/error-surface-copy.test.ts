@@ -63,8 +63,14 @@ it('renders every classified Russian error card in Russian, preserving provider 
     const source = errorCardText(english, surface)
     expect(copy.title, code).not.toBe(source.title)
     expect(copy.body, code).not.toBe(source.body)
-    if (source.title.includes('Provider Ω')) expect(copy.title, code).toContain('Provider Ω')
-    if (source.body.includes('Provider Ω')) expect(copy.body, code).toContain('Provider Ω')
+
+    if (source.title.includes('Provider Ω')) {
+      expect(copy.title, code).toContain('Provider Ω')
+    }
+
+    if (source.body.includes('Provider Ω')) {
+      expect(copy.body, code).toContain('Provider Ω')
+    }
   }
 
   for (const layer of ['provider', 'auth', 'billing', 'gateway', 'disk', 'streaming'] as const) {

@@ -84,6 +84,8 @@ def _fire_pre_api_request_hook(
                 started_at=api_start_time,
                 middleware_trace=list(_llm_middleware_trace),
                 request=agent._api_request_payload_for_hook(api_kwargs),
+                execution_kind=getattr(agent, "_execution_kind", "live"),
+                execution_id=getattr(agent, "_execution_id", None),
             )
     except Exception:
         pass

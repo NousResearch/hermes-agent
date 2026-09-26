@@ -31,21 +31,19 @@ _COMPRESSION_MARKER_RE = re.compile(
 )
 
 # #121548 — every OTHER model-visible elision (turn text, summaries, skill bodies, diagnostics)
-# mints this shorter marker instead of the open-coded bare truncation idiom those renderers used
-# to compose, which the model imitated from replayed context into new durable writes. The first
-# sentence is byte-identical to the args marker's, so _COMPRESSION_MARKER_RE — and therefore the
-# dispatch-boundary guard in ``agent.tool_dispatch_helpers`` — rejects a copied marker regardless
-# of which renderer leaked it; only the tool-call-specific second sentence is dropped so the
-# marker still fits small caps (the clarify summary cap is 199 chars).
-_ELISION_MARKER_TEMPLATE = (
-    _COMPRESSION_MARKER_PREFIX
-    + " {omitted:,} of {total:,} chars omitted here by Hermes's context compressor.⟫"
-)
+# mints the args marker's first sentence only (so the dispatch-boundary guard's
+# _COMPRESSION_MARKER_RE catches a copy from any renderer) and fits small caps like clarify's 199.
+_ELISION_MARKER_TEMPLATE = _COMPRESSION_MARKER_TEMPLATE.split(". ", 1)[0] + ".⟫"
 
 
 def _elision_marker(omitted: int, total: int) -> str:
     """Render the non-imitable elision marker with per-instance byte counts."""
     return _ELISION_MARKER_TEMPLATE.format(omitted=omitted, total=total)
+
+
+# Widest marker for any text under ~1 TB: callers with a small leftover budget skip the item
+# when the budget cannot hold the marker plus content, instead of emitting a marker-only line.
+ELISION_MARKER_MAX_LEN = len(_elision_marker(omitted=10**12 - 1, total=10**12 - 1))
 
 
 def elide(text: str, limit: int) -> str:
@@ -72,4 +70,4 @@ def elide_middle(text: str, head: int, tail: int) -> str:
     if len(text) <= head + tail:
         return text
     marker = _elision_marker(omitted=len(text) - head - tail, total=len(text))
-    return text[:head] + marker + text[-tail:]
+    return text[:head] + marker + text[len(text) - tail:]

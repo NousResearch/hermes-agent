@@ -1201,7 +1201,7 @@ When you run `hermes update`, the web frontend is automatically rebuilt if `npm`
 
 ## Themes & plugins
 
-The dashboard ships with eight built-in themes and can be extended with user-defined themes, plugin tabs, and backend API routes — all drop-in, no repo clone needed.
+The dashboard ships with nine built-in themes and can be extended with user-defined themes, plugin tabs, and backend API routes — all drop-in, no repo clone needed.
 
 **Switch themes live** from the header bar — click the palette icon next to the language switcher. Selection persists to `config.yaml` under `dashboard.theme` and is restored on page load.
 
@@ -1218,6 +1218,7 @@ Built-in themes:
 | **Ember** (`ember`) | Warm crimson + bronze, Spectral serif + IBM Plex Mono |
 | **Mono** (`mono`) | Grayscale, IBM Plex, compact |
 | **Cyberpunk** (`cyberpunk`) | Neon green on black, Share Tech Mono |
+| **Hades** (`hades`) | Deep underworld blue-violet, Inter + JetBrains Mono |
 | **Rosé** (`rose`) | Pink + ivory, Fraunces serif, spacious |
 
 To build your own theme, add a plugin tab, inject into shell slots, or expose plugin-specific REST endpoints, see **[Extending the Dashboard](./extending-the-dashboard)** — the complete guide covers:

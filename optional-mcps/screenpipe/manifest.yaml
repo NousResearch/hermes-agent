@@ -15,7 +15,7 @@ transport:
   command: npx
   args:
     - "-y"
-    - "screenpipe-mcp@0.20.0"
+    - "screenpipe-mcp@0.19.4"
   env:
     SCREENPIPE_DISABLE_TELEMETRY: "1"
 

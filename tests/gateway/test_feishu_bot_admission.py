@@ -640,3 +640,96 @@ def test_dm_admission_config_falls_back_to_os_environ_when_unscoped(monkeypatch)
     adapter = object.__new__(FeishuAdapter)
     adapter._apply_settings(settings)
     assert adapter._admit(make_sender(open_id="ou_anyone"), make_message(chat_type="p2p")) is None
+
+
+# --- Unauthorized DM -> gateway unauthorized_dm_behavior (#105156) ----------
+
+
+def _feishu_dm_intake(tmp_path, monkeypatch, *, behavior, wiring, sender_type="user", chat_type="p2p") -> dict:
+    """Run one stranger message through the real intake with a real GatewayRunner resolver.
+
+    The owner is the only allowlisted sender, so ``_admit`` rejects the stranger. ``wiring``:
+    ``bound-handler`` (single profile), ``multiplex-primary`` (closure handler, runner on
+    ``gateway_runner``), ``multiplex-secondary`` (the allowlist lives only in that profile's
+    ``.env``, as under ``gateway.multiplex_profiles``). Returns what reached
+    ``_process_inbound_message`` (empty when the adapter dropped it).
+    """
+    import asyncio
+
+    from agent import secret_scope as ss
+    from gateway.config import GatewayConfig, Platform, PlatformConfig
+    from gateway.run import GatewayRunner
+
+    for key in ("FEISHU_ALLOWED_USERS", "FEISHU_ALLOW_ALL_USERS", "GATEWAY_ALLOW_ALL_USERS", "GATEWAY_ALLOWED_USERS"):
+        monkeypatch.delenv(key, raising=False)
+    root = tmp_path / ".hermes"
+    coder = root / "profiles" / "coder"
+    coder.mkdir(parents=True)
+    (root / ".env").write_text("", encoding="utf-8")
+    (coder / ".env").write_text("FEISHU_ALLOWED_USERS=ou_owner\n", encoding="utf-8")
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    extra = {} if behavior is None else {"unauthorized_dm_behavior": behavior}
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(platforms={Platform.FEISHU: PlatformConfig(enabled=True, extra=extra)})
+    runner.adapters = {}
+
+    adapter = make_adapter_skeleton(allow_bots="all")
+    install_dedup_state(adapter)
+    adapter._allowed_group_users = frozenset({"ou_owner"})
+    adapter._owner_profile = "coder" if wiring == "multiplex-secondary" else None
+    adapter.config = SimpleNamespace(extra={})
+    if wiring == "bound-handler":
+        monkeypatch.setenv("FEISHU_ALLOWED_USERS", "ou_owner")
+        adapter._message_handler = runner._handle_message
+    else:  # multiplex: the handler is a closure (no __self__); the runner rides on gateway_runner
+        if wiring == "multiplex-primary":
+            monkeypatch.setenv("FEISHU_ALLOWED_USERS", "ou_owner")
+        adapter._message_handler = lambda event: None
+        adapter.gateway_runner = runner
+    captured: dict = {}
+
+    async def _fake_process_inbound_message(**kwargs):
+        captured.update(kwargs)
+
+    adapter._process_inbound_message = _fake_process_inbound_message
+    data = SimpleNamespace(event=SimpleNamespace(
+        sender=make_sender(sender_type=sender_type, open_id="ou_stranger"),
+        message=make_message(message_id="om_stranger", chat_type=chat_type, chat_id="oc_x"),
+    ))
+    ss.set_multiplex_active(wiring != "bound-handler")
+    try:
+        asyncio.run(adapter._handle_message_event_data(data))
+    finally:
+        ss.set_multiplex_active(False)
+    return captured
+
+
+@pytest.mark.parametrize("wiring", ["bound-handler", "multiplex-primary", "multiplex-secondary"])
+@pytest.mark.parametrize(
+    "behavior, forwarded",
+    [("pair", True), ("decline", True), ("ignore", False), (None, False)],
+    ids=["pair", "decline", "ignore", "allowlist-default"],
+)
+def test_allowlist_rejected_dm_reaches_gateway_only_when_behavior_replies(
+    tmp_path, monkeypatch, behavior, forwarded, wiring
+):
+    """``unauthorized_dm_behavior`` pair/decline must fire on Feishu like every other platform;
+    ``ignore`` and the allowlist default keep the fail-closed pre-event drop, including for a
+    multiplex secondary whose allowlist exists only in its own profile scope."""
+    captured = _feishu_dm_intake(tmp_path, monkeypatch, behavior=behavior, wiring=wiring)
+    assert (captured.get("message_id") == "om_stranger") is forwarded
+    if forwarded:
+        assert captured.get("chat_type") == "p2p"
+
+
+@pytest.mark.parametrize(
+    "sender_type, chat_type", [("user", "group"), ("bot", "p2p")], ids=["stranger-group-message", "bot-dm"]
+)
+def test_unauthorized_dm_forward_is_limited_to_pairable_human_dms(tmp_path, monkeypatch, sender_type, chat_type):
+    """Forwarding never widens group admission, and a bot DM (which the gateway can never pair
+    or answer) stays dropped even with ``pair``."""
+    captured = _feishu_dm_intake(
+        tmp_path, monkeypatch, behavior="pair", wiring="bound-handler", sender_type=sender_type, chat_type=chat_type
+    )
+    assert captured == {}

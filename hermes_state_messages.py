@@ -1134,7 +1134,12 @@ class SessionMessagesMixin:
                JOIN messages AS chosen ON chosen.id = (
                    SELECT candidate.id FROM messages AS candidate
                    WHERE candidate.session_id = ?
-                     AND candidate.display_order = page.display_order
+                     -- NULL-safe: a rewound/rewritten row can carry a NULL display_order
+                     -- (the heal and this read are separate transactions, and a read-only
+                     -- handle skips the heal), which groups as one NULL page here. `=`
+                     -- never matches it, so the JOIN used to drop that whole group from
+                     -- the transcript with no error (#118996).
+                     AND candidate.display_order IS page.display_order
                      AND (candidate.active = 1 OR candidate.compacted = 1){DISPLAY_VISIBLE_SQL}
                    ORDER BY candidate.active DESC, candidate.id DESC LIMIT 1
                )

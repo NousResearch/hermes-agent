@@ -100,6 +100,8 @@ Hermes reads environment variables from the process environment and, for user-ma
 | `NOVITA_BASE_URL` | Override NovitaAI base URL (default: `https://api.novita.ai/openai/v1`) |
 | `RAMP_ROUTER_API_KEY` | Ramp Router API key ([app.router.com/keys](https://app.router.com/keys)); alias `ROUTER_API_KEY` also accepted |
 | `RAMP_ROUTER_BASE_URL` | Override Ramp Router base URL (default: `https://api.router.com/v1`) |
+| `TETRATE_AGENT_ROUTER_API_KEY` | Tetrate Agent Router API key — unified OpenAI-compatible gateway across 25+ providers ([router.tetrate.ai](https://router.tetrate.ai/)); alias `AGENTROUTER_API_KEY` also accepted |
+| `TETRATE_AGENT_ROUTER_BASE_URL` | Override Tetrate Agent Router base URL (default: `https://api.router.tetrate.ai/v1`) |
 | `NEBIUS_API_KEY` | Nebius Token Factory API key ([tokenfactory.nebius.com](https://tokenfactory.nebius.com/)); `NEBIUS_TOKEN_FACTORY_API_KEY` also accepted |
 | `NEBIUS_BASE_URL` | Override Nebius Token Factory base URL (default: `https://api.tokenfactory.nebius.com/v1`) |
 | `NVIDIA_API_KEY` | NVIDIA NIM API key — Nemotron and open models ([build.nvidia.com](https://build.nvidia.com)) |

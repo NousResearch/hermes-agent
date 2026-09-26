@@ -725,3 +725,41 @@ export function createVersionResolver(fetchVersionFn, {
     return cachedVersion;
   };
 }
+
+/**
+ * Terminal disconnect classification and the bridge -> gateway exit contract.
+ *
+ * Baileys' documented lifecycle terminates on `DisconnectReason.loggedOut`
+ * (401) and reconnects on every other close (`shouldReconnect = statusCode !==
+ * DisconnectReason.loggedOut`). WhatsApp answers 401 both when the session is
+ * logged out and when the linked device is removed from the phone, so the two
+ * are indistinguishable here and both mean the credentials are gone.
+ *
+ * The gateway sees only the child's exit code, and exit 1 is indistinguishable
+ * from a crash, so it classifies every bridge exit as retryable and respawns
+ * the process forever against credentials that cannot work (#80088). The
+ * bridge therefore records why it is going in `bridge-exit.json` beside the
+ * session, and the adapter reads it back before deciding whether to retry.
+ */
+export const TERMINAL_DISCONNECT_REASONS = { 401: 'logged_out' };
+
+/** Reason a `statusCode` ends the session for good, else null (a retry may still recover). */
+export function terminalDisconnectReason(statusCode) {
+  return TERMINAL_DISCONNECT_REASONS[Number(statusCode)] || null;
+}
+
+/**
+ * Record a terminal exit beside the session so the gateway can classify it.
+ * Best effort: if the record cannot be written the bridge still exits
+ * terminally, and the gateway reports the exit as an ordinary crash.
+ */
+export function writeBridgeExit(sessionDir, { reason, statusCode, at = new Date().toISOString() }, { writeFileSyncFn = writeFileSync, log = () => {} } = {}) {
+  try {
+    mkdirSync(sessionDir, { recursive: true });
+    writeFileSyncFn(path.join(sessionDir, 'bridge-exit.json'), JSON.stringify({ reason, statusCode, at }), 'utf8');
+    return true;
+  } catch (err) {
+    log(`⚠️  Could not record the bridge exit reason: ${err?.message || err}`);
+    return false;
+  }
+}

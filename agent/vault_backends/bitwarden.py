@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import shutil
+import stat
 import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -48,12 +49,37 @@ class BitwardenLoginBackend(LoginBackend):
     def _env(self, session_token: Optional[str]) -> Dict[str, str]:
         env = {k: os.environ[k] for k in _ENV_KEEP if k in os.environ}
         env["NO_COLOR"] = "1"
+        appdata = str(self.cfg.get("appdata_dir") or "").strip()
+        if appdata:
+            env["BITWARDENCLI_APPDATA_DIR"] = appdata
         if session_token:
             env["BW_SESSION"] = session_token
         return env
 
     def is_unlocked(self) -> bool:
-        return _unlock.is_unlocked(self.name)
+        session_file = str(self.cfg.get("session_file") or "").strip()
+        if not session_file:
+            return _unlock.is_unlocked(self.name)
+        path = Path(session_file)
+        # A Lock acknowledged during disk I/O must invalidate this read, just as it
+        # invalidates an in-flight interactive `bw unlock` child.
+        generation = _unlock.begin_unlock(self.name)
+        try:
+            if os.name == "posix" and stat.S_IMODE(path.stat().st_mode) & 0o077:
+                logger.warning("Bitwarden session_file must not be group/world-accessible")
+                _unlock.lock(self.name)
+                return False
+            token = path.read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeDecodeError) as exc:
+            logger.warning("Could not read managed Bitwarden session file: %s", exc)
+            _unlock.lock(self.name)
+            return False
+        if not token:
+            _unlock.lock(self.name)
+            return False
+        if _unlock.get_session_token(self.name) == token:
+            return True
+        return _unlock.store_session_token(self.name, token, generation)
 
     def unlock(self, master_password: str) -> None:
         # bw refuses a piped password ("Master password is required"); its non-interactive contract is
@@ -72,6 +98,8 @@ class BitwardenLoginBackend(LoginBackend):
             raise RuntimeError("Bitwarden was locked while unlocking; try again")
 
     def _run(self, *args: str) -> str:
+        if self.cfg.get("session_file") and not self.is_unlocked():
+            raise UnlockRequired(self)
         token = _unlock.get_session_token(self.name)
         if not token:
             raise UnlockRequired(self)

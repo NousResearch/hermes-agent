@@ -14,6 +14,8 @@ from __future__ import annotations
 import json
 import os
 import stat
+import threading
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -32,7 +34,8 @@ argv = sys.argv[1:]
 stdin = sys.stdin.read() if not sys.stdin.isatty() else ""
 pw_env = argv[argv.index("--passwordenv") + 1] if "--passwordenv" in argv else None
 log.write(json.dumps({"argv": argv, "stdin": stdin, "BW_SESSION": os.environ.get("BW_SESSION"),
-                      "pw": os.environ.get(pw_env) if pw_env else None}) + "\n")
+                      "pw": os.environ.get(pw_env) if pw_env else None,
+                      "appdata": os.environ.get("BITWARDENCLI_APPDATA_DIR")}) + "\n")
 if argv[:2] == ["unlock", "--raw"]:
     if pw_env is None:
         sys.stderr.write("Master password is required. Try again in interactive mode or provide a password file or environment variable.\n"); sys.exit(1)
@@ -231,3 +234,148 @@ def test_onepassword_backend_env_forwards_config_directory(monkeypatch):
     backend = OnePasswordLoginBackend({"enabled": True})
 
     assert backend._env(None)["OP_CONFIG_DIR"] == "/tmp/op-config"
+
+
+def test_managed_bitwarden_session_lists_headless_via_config(fake_bw, tmp_path, monkeypatch):
+    """The real backend resolver must pass managed credentials to browser_vault_list."""
+    exe, log = fake_bw
+    session = tmp_path / "managed-session"
+    session.write_text("SESSION-TOKEN-123\n", encoding="utf-8")
+    session.chmod(0o600)
+    appdata = tmp_path / "bw-appdata"
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        f"vault:\n  bitwarden:\n    binary_path: {exe}\n    session_file: {session}\n"
+        f"    appdata_dir: {appdata}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+    from tools.browser_vault_tool import browser_vault_list
+
+    result = json.loads(browser_vault_list())
+    assert result["items"][0]["handle"] == "bw:abc"
+    assert not result.get("locked")
+    calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert all(call["BW_SESSION"] == "SESSION-TOKEN-123" for call in calls)
+    assert all(call["appdata"] == str(appdata) for call in calls)
+    assert os.environ.get("BW_SESSION") is None
+
+
+def test_managed_session_file_unlocks_headless_backend_and_sets_cli_appdata(fake_bw, tmp_path):
+    exe, log = fake_bw
+    session_file = tmp_path / "bw-session"
+    session_file.write_text("SESSION-TOKEN-123\n", encoding="utf-8")
+    session_file.chmod(0o600)
+    appdata = tmp_path / "bw-appdata"
+    backend = BitwardenLoginBackend({
+        "enabled": True,
+        "binary_path": str(exe),
+        "session_file": str(session_file),
+        "appdata_dir": str(appdata),
+    })
+
+    assert backend.is_unlocked()
+    assert backend.list_items()[0].id == "bw:abc"
+    call = json.loads(log.read_text(encoding="utf-8").splitlines()[-1])
+    assert call["BW_SESSION"] == "SESSION-TOKEN-123"
+    assert os.environ.get("BW_SESSION") is None
+
+
+def test_insecure_managed_session_is_reported_locked_without_invoking_bw(fake_bw, tmp_path):
+    exe, log = fake_bw
+    session = tmp_path / "world-readable-session"
+    session.write_text("SESSION-TOKEN-123\n", encoding="utf-8")
+    session.chmod(0o644)
+    backend = BitwardenLoginBackend({"binary_path": str(exe), "session_file": str(session)})
+    from tools.browser_vault_tool import browser_vault_list
+
+    with patch("agent.vault_backends.enabled_backends", return_value=[backend]):
+        result = json.loads(browser_vault_list())
+    assert result["items"] == []
+    assert result["locked"][0]["backend"] == "bitwarden"
+    assert not log.exists()
+
+
+def test_managed_session_removal_invalidates_cached_token(fake_bw, tmp_path):
+    exe, log = fake_bw
+    session = tmp_path / "managed-session"
+    session.write_text("SESSION-TOKEN-123\n", encoding="utf-8")
+    session.chmod(0o600)
+    backend = BitwardenLoginBackend({"binary_path": str(exe), "session_file": str(session)})
+
+    assert backend.list_items()[0].id == "bw:abc"
+    session.unlink()
+    assert not backend.is_unlocked()
+    from agent.vault_backends.base import UnlockRequired
+    with pytest.raises(UnlockRequired):
+        backend.resolve_password("bw:abc")
+    assert len(log.read_text(encoding="utf-8").splitlines()) == 1
+
+
+def test_lock_during_managed_session_read_cannot_restore_token(fake_bw, tmp_path, monkeypatch):
+    exe, _log = fake_bw
+    session = tmp_path / "managed-session"
+    session.write_text("SESSION-TOKEN-123\n", encoding="utf-8")
+    session.chmod(0o600)
+    backend = BitwardenLoginBackend({"binary_path": str(exe), "session_file": str(session)})
+    read_started = threading.Event()
+    continue_read = threading.Event()
+    original_read = Path.read_text
+
+    def paused_read(path, *args, **kwargs):
+        if path == session:
+            read_started.set()
+            assert continue_read.wait(5), "test failed to resume session read"
+        return original_read(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", paused_read)
+    result = []
+    worker = threading.Thread(target=lambda: result.append(backend.is_unlocked()))
+    worker.start()
+    try:
+        assert read_started.wait(5), "session read did not start"
+        unlock_mod.lock("bitwarden")
+    finally:
+        continue_read.set()
+        worker.join(timeout=5)
+    assert not worker.is_alive()
+    assert result == [False]
+    assert not unlock_mod.is_unlocked("bitwarden")
+
+
+def test_invalid_utf8_managed_session_is_locked_and_drops_cached_token(fake_bw, tmp_path):
+    exe, log = fake_bw
+    session = tmp_path / "managed-session"
+    session.write_text("SESSION-TOKEN-123\n", encoding="utf-8")
+    session.chmod(0o600)
+    backend = BitwardenLoginBackend({"binary_path": str(exe), "session_file": str(session)})
+    assert backend.list_items()[0].id == "bw:abc"
+    session.write_bytes(b"\xff\xfe")
+    assert not backend.is_unlocked()
+    assert not unlock_mod.is_unlocked("bitwarden")
+    from tools.browser_vault_tool import browser_vault_list
+
+    with patch("agent.vault_backends.enabled_backends", return_value=[backend]):
+        result = json.loads(browser_vault_list())
+    assert result["items"] == []
+    assert result["locked"][0]["backend"] == "bitwarden"
+    assert len(log.read_text(encoding="utf-8").splitlines()) == 1
+
+
+def test_managed_session_is_scoped_to_each_profile(fake_bw, tmp_path, monkeypatch):
+    exe, _log = fake_bw
+    a_home, b_home = tmp_path / "profile-a", tmp_path / "profile-b"
+    a_home.mkdir()
+    b_home.mkdir()
+    session = tmp_path / "managed-session"
+    session.write_text("SESSION-TOKEN-123\n", encoding="utf-8")
+    session.chmod(0o600)
+    a_backend = BitwardenLoginBackend({"binary_path": str(exe), "session_file": str(session)})
+    b_backend = BitwardenLoginBackend({"binary_path": str(exe)})
+
+    monkeypatch.setenv("HERMES_HOME", str(a_home))
+    assert a_backend.list_items()[0].id == "bw:abc"
+    monkeypatch.setenv("HERMES_HOME", str(b_home))
+    assert not b_backend.is_unlocked()
+    assert b_backend.list_items() == []
+    monkeypatch.setenv("HERMES_HOME", str(a_home))
+    assert a_backend.resolve_password("bw:abc") == "plain sentence nobody would flag 7"

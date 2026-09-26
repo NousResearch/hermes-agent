@@ -30,6 +30,7 @@ def _reset_caches():
     cfg._RAW_CONFIG_CACHE.clear()
     config_effective._EFFECTIVE_CACHE.clear()
     config_effective._LAST_GOOD_USER_RAW.clear()
+    getattr(config_effective, "_GOOD_BACKUP_SIGNATURE", {}).clear()
     managed_scope.invalidate_managed_cache()
 
 
@@ -121,3 +122,16 @@ def _reset_caches_keep_last_good():
 
     cfg._RAW_CONFIG_CACHE.clear()
     config_effective._EFFECTIVE_CACHE.clear()
+
+
+def test_side_effect_free_read_defers_active_home_good_backup(homes):
+    """Authorization reads do not write, without suppressing the next ordinary backup."""
+    from hermes_cli.config_effective import load_user_config_effective
+
+    home, _ = homes
+    _write(home / "config.yaml", USER_YAML)
+    load_user_config_effective(home / "config.yaml", side_effect_free=True)
+    assert not (home / "backups").exists()
+
+    load_user_config_effective(home / "config.yaml")
+    assert list((home / "backups" / "config").glob("config.yaml.good.*"))

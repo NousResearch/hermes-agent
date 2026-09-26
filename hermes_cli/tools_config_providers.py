@@ -224,7 +224,13 @@ def _toolset_needs_configuration_prompt(ts_key: str, config: dict, *, force_fres
     selection_key = {"tts": "provider", "web": "backend", "browser": "cloud_provider"}.get(ts_key)
     if selection_key:
         section = config.get(ts_key, {})
-        return not isinstance(section, dict) or selection_key not in section
+        if not isinstance(section, dict):
+            return True
+        if selection_key in section:
+            return False
+        # Browser's "Browser Use" row writes browser.backend and leaves cloud_provider unset. Presence is no
+        # test of a choice here: browser.backend exists on every install after the defaults merge ("" = unset).
+        return not (ts_key == "browser" and _browser_backend(config))
     if ts_key == "image_gen":  # in-tree FAL backend OR any available plugin image gen provider satisfies
         return not fal_key_is_configured() and not _any_plugin_provider_available("agent.image_gen_registry")
     if ts_key == "video_gen":  # no in-tree fallback — every video backend is a plugin
@@ -409,10 +415,14 @@ def _browser_provider_active(provider: dict, config: dict) -> bool:
     return True
 
 
-def _browser_backend_active(provider: dict, config: dict) -> bool:
+def _browser_backend(config: dict) -> str:
+    """``browser.backend`` as a string; ``""`` when unset or empty (YAML 1.1 parses an unquoted ``off`` as False)."""
     backend = cfg_get(config, "browser", "backend")
-    if backend is False:
-        backend = "off"  # YAML 1.1: unquoted `off` parses as boolean False
+    return "off" if backend is False else (backend or "")
+
+
+def _browser_backend_active(provider: dict, config: dict) -> bool:
+    backend = _browser_backend(config)
     if backend == provider["browser_backend"]:
         return True
     if backend:
@@ -825,7 +835,8 @@ def _print_provider_selection(provider: dict, managed_feature, *, reconfigure: b
         _print_success(f"  Browser engine set to: {provider['browser_engine']}")
     if provider.get("web_backend"):
         tier = f" ({provider['web_tier']} tier)" if reconfigure and provider.get("web_tier") else ""
-        _print_success(f"  Web backend set to: {provider['web_backend']}{tier}")
+        backend = NOUS_MANAGED_PROVIDER if managed_feature else provider["web_backend"]
+        _print_success(f"  Web backend set to: {backend}{tier}")
     if reconfigure and provider.get("computer_use_backend"):
         _print_success(f"  Computer Use backend set to: {provider['computer_use_backend']}")
 

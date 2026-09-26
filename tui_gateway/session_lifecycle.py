@@ -549,8 +549,45 @@ def _settle_isolated_turn_before_close(session: dict) -> None:
             return
         session["_deferred_active_session_lease"] = lease
         _deferred_active_session_leases[str(lease.lease_id)] = lease
+        _deferred_active_session_lease_ages[str(lease.lease_id)] = time.time()
     logger.warning("isolated turn still live after %.1fs close grace; holding lease for %s until the child settles",
                    _TURN_SETTLE_BEFORE_CLOSE_SECONDS, session.get("session_key"))
+
+
+# A deferred lease is released by the compute-host turn's completion callback
+# (_on_compute_host_turn_done → _release_deferred_active_session_lease). If that callback
+# is lost — supervisor restart/reload, a child killed without failing its pending turns,
+# a dropped completion — the lease sits in the registry FOREVER: _own_live_lease_ids
+# vouches for it, so the orphan sweep never reclaims it, and the concurrency cap treats
+# the dead session as active (#62823 zombie slot). A deferred lease past this generous
+# ceiling (the longest legitimate isolated turn is the compression ceiling, minutes) is
+# force-released by the reaper tick instead of leaking the slot until process exit.
+_DEFERRED_ACTIVE_SESSION_LEASE_TTL_SECONDS = 1800.0
+_deferred_active_session_lease_ages: dict[str, float] = {}
+
+
+def _reap_stale_deferred_leases(now: float | None = None) -> int:
+    """Force-release deferred leases whose settlement callback never arrived. Returns the count."""
+    now = time.time() if now is None else now
+    stale = [
+        lease_id for lease_id, deferred_at in list(_deferred_active_session_lease_ages.items())
+        if now - deferred_at > _DEFERRED_ACTIVE_SESSION_LEASE_TTL_SECONDS
+    ]
+    reaped = 0
+    for lease_id in stale:
+        _deferred_active_session_lease_ages.pop(lease_id, None)
+        lease = _deferred_active_session_leases.pop(lease_id, None)
+        if lease is None:
+            continue
+        if (err := _lease_retry(3, lease.release)) is not None:
+            logger.warning("Failed to force-release stale deferred active session lease %s", lease_id,
+                           exc_info=err)
+            continue
+        logger.warning("Force-released deferred active session lease %s held past %.0fs without a "
+                       "compute-host settlement (zombie concurrency slot, #62823)",
+                       lease_id, _DEFERRED_ACTIVE_SESSION_LEASE_TTL_SECONDS)
+        reaped += 1
+    return reaped
 
 
 def _release_deferred_active_session_lease(session: dict) -> None:
@@ -559,6 +596,7 @@ def _release_deferred_active_session_lease(session: dict) -> None:
     if lease is None:
         return
     _deferred_active_session_leases.pop(str(lease.lease_id), None)
+    _deferred_active_session_lease_ages.pop(str(lease.lease_id), None)
     if (err := _lease_retry(3, lease.release)) is not None:
         logger.warning("Failed to release deferred active session slot", exc_info=err)
 
@@ -703,6 +741,14 @@ def _rebind_live_transport(sid: str, session: dict, transport: Transport) -> Non
     """Attach a live peer without displacing existing subscribers (caller holds ``history_lock``).
     Subagent control authority needs no bookkeeping here: it resolves against ``session["transport"]``
     at RPC time (``tools.delegate_tool_registry._subagent_transport_matches``)."""
+    if transport is not _detached_ws_transport and _transport_is_dead(transport):
+        # The rebinding socket already closed: its disconnect cleanup ran before this late RPC (a
+        # resume-then-drop burst), so nothing will detach it again. The client is NOT back — re-arm the
+        # reap the caller cancelled instead of leaving a detached session with no Timer (#116464).
+        with _sessions_lock:
+            if _ws_session_is_detached(session) and sid not in _pending_ws_reaps:
+                _schedule_ws_orphan_reap(sid)
+        return
     _attach_session_transport(session, transport)
     # Every transport that showed this session (pop-outs resume the same sid); on disconnect the last
     # viewer becomes the transport instead of the drop sentinel.
@@ -743,11 +789,40 @@ def _schedule_ws_orphan_reap(
     sid: str, *, delay_s: float | None = None, _expected_timer: threading.Timer | None = None,
 ) -> None:
     """After a grace window, reap session ``sid`` iff it's still orphaned. Called from the WS-disconnect path; a
-    reconnect or ``session.resume`` cancels the reap by re-binding a live transport. Disabled when grace is 0."""
+    reconnect or ``session.resume`` cancels the reap by re-binding a live transport. Disabled when grace is 0.
+
+    The grace is measured in AWAKE (monotonic) time: ``threading.Timer``'s wait elapses in wall-clock time on
+    platforms without a monotonic condvar (macOS lacks ``pthread_condattr_setclock``), so a system sleep makes
+    the timer fire "early" in awake-time terms. Without the sleep check below, closing a laptop lid for longer
+    than the grace reaped the parked session at the instant of wake — before the Desktop's WS reconnect or
+    ``session.resume`` could re-bind a transport — so every sleep/wake cycle 404'd the open chat (#44183)."""
     if _WS_ORPHAN_REAP_GRACE_S <= 0:
         return
+    grace_s = _WS_ORPHAN_REAP_GRACE_S if delay_s is None else max(0.0, delay_s)
+    # Sample both clocks at arm time: time.monotonic() (mach_absolute_time / CLOCK_MONOTONIC)
+    # does not advance while the host is asleep, so the divergence between the two clocks'
+    # elapsed times at fire time is exactly the time the host spent asleep.
+    armed_monotonic = time.monotonic()
+    armed_wall = time.time()
 
     def _reap() -> None:
+        # The timer fired. If more wall-clock than monotonic time elapsed, the host
+        # slept through the wait: the grace has NOT been granted in awake time, so
+        # re-arm for the remaining awake grace instead of reaping. The slack keeps
+        # ordinary timer jitter and NTP slew from re-arming a legitimately-expired
+        # reap, and a fired-without-elapsed timer (tests, spurious dispatch) shows
+        # zero divergence and reaps normally.
+        slept_s = (time.time() - armed_wall) - (time.monotonic() - armed_monotonic)
+        if slept_s > _WS_ORPHAN_REAP_SLEEP_SLACK_S:
+            rearm_delay = max(0.0, grace_s - (time.monotonic() - armed_monotonic))
+            if rearm_delay <= 0:
+                pass  # no awake grace left — fall through and reap
+            else:
+                # Re-arm through the public scheduler with THIS timer as the expected
+                # one: the fresh closure's identity guard then matches the entry it
+                # installs, so the awake-remainder fire proceeds to the real reap.
+                _schedule_ws_orphan_reap(sid, delay_s=rearm_delay, _expected_timer=timer)
+                return
         # Serialize the re-check against session.resume (rebinds under _session_resume_lock). Claim teardown by popping
         # under both locks, then release the resume lock before slow finalization. Order: resume_lock -> sessions_lock.
         reschedule_delay = interrupt_session = session = None

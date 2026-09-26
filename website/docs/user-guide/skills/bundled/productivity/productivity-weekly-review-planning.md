@@ -15,13 +15,13 @@ Weekly reset: commitments, stalled work, next-week plan.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/productivity\weekly-review-planning` |
+| Path | `skills/productivity/weekly-review-planning` |
 | Version | `0.1.0` |
 | Author | Ben Barclay (benbarclay), Hermes Agent |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Weekly-Review`, `Planning`, `Tasks`, `Calendar`, `Productivity` |
-| Related skills | [`obsidian`](../note-taking/note-taking-obsidian.md), [`notion`](./productivity-notion.md), [`airtable`](./productivity-airtable.md), [`google-workspace`](./productivity-google-workspace.md), [`email-inbox-triage`](../email/email-email-inbox-triage.md) |
+| Related skills | [`obsidian`](../../bundled/note-taking/note-taking-obsidian.md), [`notion`](../../bundled/productivity/productivity-notion.md), [`airtable`](../../bundled/productivity/productivity-airtable.md), [`google-workspace`](../../bundled/productivity/productivity-google-workspace.md), [`email-inbox-triage`](../../bundled/email/email-email-inbox-triage.md) |
 
 ## Reference: full SKILL.md
 

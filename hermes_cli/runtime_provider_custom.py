@@ -144,15 +144,15 @@ def _match_new_style_provider(requested_norm: str, providers: Dict[str, Any]) ->
         # ``providers.<name>.enabled: false`` entries stay in config but are invisible here.
         if not isinstance(entry, dict) or not is_provider_enabled(entry):
             continue
-        # API key from the env var named by key_env, else the inline api_key. Read BEFORE the
-        # alias match (scope-aware ``get_secret_str`` fails closed identically for every entry).
-        key_env = _clean(entry.get("key_env") or entry.get("api_key_env"))
-        api_key = get_secret_str(key_env, "").strip() if key_env else ""
         if requested_norm not in custom_provider_aliases(str(entry.get("name", "") or ep_name), str(ep_name)):
             continue
         base_url = _entry_url(entry)
         if not base_url:
             continue
+        # Resolve credentials only after identity and endpoint validation. Merely scanning an
+        # unrelated entry must not read its profile-scoped secret.
+        key_env = _clean(entry.get("key_env") or entry.get("api_key_env"))
+        api_key = get_secret_str(key_env, "").strip() if key_env else ""
         result: Dict[str, Any] = {"name": entry.get("name", ep_name), "base_url": base_url.strip(),
                                   "api_key": api_key or _clean(entry.get("api_key", "")), "model": entry.get("default_model", "")}
         # Command that PRINTS a short-lived credential; wrapped in a per-request token provider.
@@ -432,7 +432,7 @@ def _resolve_llamacpp_runtime(requested_provider: str, explicit_api_key: Optiona
     rp = _rp()
     try:
         from hermes_cli.local_runtime.endpoint import resolve_llamacpp_endpoint
-        endpoint = resolve_llamacpp_endpoint()
+        endpoint = resolve_llamacpp_endpoint(config=rp.load_config())
     except Exception:  # noqa: BLE001 — resolution is best-effort
         endpoint = None
     if endpoint:
@@ -533,13 +533,16 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
     # treated identically here, so a YAML `provider: ollama` with a LAN/WireGuard `base_url` doesn't
     # silently fall through to OpenRouter.
     requested_norm = (requested_provider or "").strip().lower()
+    custom_provider = None
     if requested_norm in _LLAMACPP_ALIASES and not explicit_base_url:
-        return _resolve_llamacpp_runtime(requested_provider, explicit_api_key)
+        custom_provider = rp._get_named_custom_provider(requested_provider)
+        if not custom_provider:
+            return _resolve_llamacpp_runtime(requested_provider, explicit_api_key)
     if requested_norm and requested_norm != "custom" and rp._resolves_to_custom(requested_norm):
         requested_norm = "custom"
     if requested_norm == "custom" and explicit_base_url:
         return _resolve_direct_alias_runtime(requested_provider, explicit_api_key, explicit_base_url)
-    custom_provider = rp._get_named_custom_provider(requested_provider)
+    custom_provider = custom_provider or rp._get_named_custom_provider(requested_provider)
     if not custom_provider:
         return None
     base_url = ((explicit_base_url or "").strip() or custom_provider.get("base_url", "")).rstrip("/")

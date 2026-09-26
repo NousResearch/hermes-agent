@@ -150,6 +150,10 @@ User plugins at `~/.hermes/plugins/model-providers/<name>/` override bundled mod
 
 **General plugins and user-installed backends are disabled by default** — discovery finds them (so they show up in `hermes plugins` and `/plugins`), but nothing with hooks or tools loads until you add the plugin's name to `plugins.enabled` in `~/.hermes/config.yaml`. This stops third-party code from running without your explicit consent.
 
+:::note `plugins.enabled` governs plugins only
+[Gateway event hooks](./hooks.md#gateway-event-hooks) under `~/.hermes/hooks/<name>/` are not plugins and are **not** gated by `plugins.enabled` or `plugins.disabled`. That directory is trusted by placement: any subdirectory holding a valid `HOOK.yaml` + `handler.py` is imported by the gateway at startup, and placing the files there is the opt-in. See the [gateway hook trust model](./hooks.md#gateway-hook-trust).
+:::
+
 ```yaml
 plugins:
   enabled:
@@ -157,6 +161,11 @@ plugins:
     - disk-cleanup
   disabled:       # optional deny-list — always wins if a name appears in both
     - noisy-plugin
+  # Optional: deadline (seconds) for each Git clone, fetch or checkout
+  # during plugin installation, including automatic memory-provider migration.
+  # Default 300; values above 3600 are clamped. A subdirectory install
+  # (owner/repo/path/to/plugin) downloads only that folder's files.
+  clone_timeout_seconds: 300
   # Optional: wall-clock cap (seconds) for timeout-bounded in-process Python
   # plugin hook callbacks (hot-path observers + pre_tool_call). Default 30;
   # set 0 to disable; values above 600 are clamped. Timed-out pre_tool_call
@@ -164,6 +173,13 @@ plugins:
   # subagent_stop are never moved onto a timeout worker.
   # Shell hooks keep their own per-entry timeout under the top-level hooks: key.
   hook_callback_timeout: 30
+  # Optional: deadline (seconds) for one plugin's import + register() at load.
+  # A plugin that overruns it is skipped with the reason "load timed out after
+  # Ns" (reported like any other load failure: the startup warning and the
+  # in-session `/plugins` listing) and the remaining plugins keep loading; the
+  # stuck thread is abandoned. Default 10; set 0 to disable; values above 600
+  # are clamped.
+  load_timeout_seconds: 10
 ```
 
 Three ways to flip state:
@@ -191,10 +207,11 @@ plugin; choose a new exact commit explicitly with
 profile-local install metadata contains no config values, environment values,
 secrets, or capability grants.
 
-The same pin is available in Hermes Desktop: **Skills → Plugins → Install from
-Git** has a *Pin to commit* field that takes the full 40-character SHA, and the
-plugins list shows a `pinned @ <sha8>` badge on every pinned install so a team
-can confirm everyone is running the same commit. `hermes plugins list` prints
+The same agent-plugin pin is available in Hermes Desktop: **Capabilities →
+Plugins → Install from Git** has a *Pin to commit* field that takes the full
+40-character SHA, and **Installed** shows a `pinned @ <sha8>` badge on pinned
+agent plugins. This does not guarantee a pinned standalone desktop-plugin
+install. `hermes plugins list` prints
 the pin in its Source column (`git pinned@<sha8>`). Pins work for private
 repositories too, through the same stored credentials described below.
 
@@ -218,6 +235,10 @@ it is never written into the plugin's `.git/config` or the install metadata.
 SSH sources (`git@host:owner/repo.git`) authenticate through your ssh-agent as
 before. The same resolution applies to `hermes plugins update`, catalog MCP
 installs from git, and profile distributions fetched from a git URL.
+
+`hermes doctor` sends a configured `GITHUB_TOKEN`/`GH_TOKEN` to `api.github.com`
+(under **API Connectivity**) and, when GitHub rejects it, names the variable and the
+`.env` file that carries the expired token so you can remove or replace it.
 
 ### What the allow-list does NOT gate
 
@@ -302,7 +323,7 @@ Plugins can register the 27 lifecycle events currently accepted by `hermes_cli.p
 |---|---|
 | **Directive/control** | `pre_tool_call`, `pre_llm_call`, `pre_verify`, `pre_gateway_dispatch` |
 | **Transform** | `transform_tool_result`, `transform_terminal_output`, `transform_llm_output`, `pre_transcription` |
-| **Observer** | `post_tool_call`, `post_llm_call`, `pre_api_request`, `post_api_request`, `api_request_error`, `on_stream_start`, `on_stream_delta`, `on_stream_end`, `on_interim_message`, `on_session_start`, `on_session_end`, `on_session_finalize`, `on_session_reset`, `agent_loop_stopped`, `on_skill_lifecycle`, `subagent_start`, `subagent_stop`, `pre_approval_request`, `post_approval_response`, `pre_command`, `kanban_task_claimed`, `kanban_task_completed`, `kanban_task_blocked` |
+| **Observer** | `post_tool_call`, `post_llm_call`, `pre_api_request`, `post_api_request`, `api_request_error`, `pre_auxiliary_call`, `post_auxiliary_call`, `on_stream_start`, `on_stream_delta`, `on_stream_end`, `on_interim_message`, `on_session_start`, `on_session_end`, `on_session_finalize`, `on_session_reset`, `agent_loop_stopped`, `on_skill_lifecycle`, `subagent_start`, `subagent_stop`, `pre_approval_request`, `post_approval_response`, `pre_command`, `kanban_task_claimed`, `kanban_task_completed`, `kanban_task_blocked` |
 
 These categories describe current behavior rather than defining future naming rules. Plugin middleware remains a separate registry/surface.
 ## Plugin types
@@ -355,7 +376,7 @@ services.hermes-agent = {
   # Directory plugin (source tree with plugin.yaml)
   extraPlugins = [ (pkgs.fetchFromGitHub { ... }) ];
   # Entry-point plugin (pip package)
-  extraPythonPackages = [ (pkgs.python312Packages.buildPythonPackage { ... }) ];
+  extraPythonPackages = [ (config.services.hermes-agent.package.python.pkgs.buildPythonPackage { ... }) ];
   # Enable in config
   settings.plugins.enabled = [ "my-plugin" ];
 };
@@ -367,18 +388,93 @@ Declarative plugins are symlinked with a `nix-managed-` prefix — they coexist 
 
 ```bash
 hermes plugins                               # unified interactive UI
-hermes plugins list                          # table: enabled / disabled / not enabled
+hermes plugins list                          # table: enabled / disabled / not enabled (bundled backends,
+                                             # platforms and the live memory.provider count as enabled)
 hermes plugins search <term>                 # search the Hermes plugin catalog
 hermes plugins install <name>                # install a catalog entry (repo @ reviewed pinned SHA)
 hermes plugins install user/repo             # install from Git, then prompt Enable? [y/N]
-hermes plugins install user/repo --enable    # install AND enable (no prompt)
+hermes plugins install user/repo --enable    # request enable; dependency consent still applies
 hermes plugins install user/repo --no-enable # install but leave disabled (no prompt)
 hermes plugins update my-plugin              # pull latest (local edits are autostashed and re-applied)
-hermes plugins remove my-plugin              # uninstall
+hermes plugins remove my-plugin              # uninstall; also drops it from plugins.enabled/disabled/entries
+                                             # and resets memory.provider when it was the live provider
 hermes plugins enable my-plugin              # add to allow-list
-hermes plugins disable my-plugin             # remove from allow-list + add to disabled
+hermes plugins disable my-plugin             # remove from allow-list + add to disabled (bundled platforms:
+                                             # either spelling works, e.g. photon-platform or platforms/photon)
 hermes plugins capabilities [my-plugin]      # declared vs granted capabilities
+hermes plugins check-updates                 # read-only: is any installed plugin outdated?
+hermes plugins adopt my-plugin               # track a self-cloned plugin dir (read its git origin)
+hermes plugins trust-update-url my-plugin    # confirm a changed update_url after review
 ```
+
+### Update checks and provenance
+
+Hermes records Git install source and revision in `.install-metadata.json`.
+Unpinned tracked installs compare the saved source's remote HEAD, or a matching
+saved `update_url` feed. Pinned installs remain pinned. Self-cloned directories
+need `hermes plugins adopt NAME` before they become tracked installations.
+Manually copied or provenance-drifted directories receive diagnostic guidance.
+Pip entry-point plugins can report an owning distribution's available version;
+that check does not turn them into Git-managed installs.
+
+`hermes plugins check-updates` leaves plugin files unchanged. A scheduled gateway
+check runs when `plugins.auto_update_check_hours` is due: default 24 hours,
+`0` disables it. Its receipt is available through `hermes pm status` and the
+desktop sync-status view. This is not a hard once-per-day limit if you configure
+a different interval.
+
+By default, updates require `hermes plugins update NAME`. Setting
+`plugins.auto_apply: true` opts tracked Git plugins into unattended updates.
+Both routes use the update security scan. Auto-apply does not manage pinned,
+manual, drifted, or pip-distribution rows.
+
+If a manifest changes or introduces `update_url`, Hermes refuses the new address
+until you approve it with `hermes plugins trust-update-url NAME`. This is a
+feed-source check, not a sandbox against already trusted plugin code.
+
+### Dependency preparation and preservation
+
+Python dependency installation has a separate consent/admission step.
+`plugins install --enable` does not bypass that step. A declined or
+non-interactive dependency install can leave the plugin installed but disabled.
+Node sidecar dependencies have a separate prompt and remain plugin-local.
+
+PM prepares Python dependencies with core and the enabled plugin set before
+publishing the new environment and configuration. A resolution failure preserves
+the previous selection. Restart Hermes when a new selected environment is not
+yet active in the running process.
+
+The enabled set is the union over the default home **and every profile** under
+`profiles/`, read from each `config.yaml` (`plugins.enabled`, `plugins.disabled`,
+`memory.provider`). PM refuses to guess at a home it cannot read: a
+`config.yaml` that is not valid YAML, is not a mapping, or has a non-list
+`plugins.enabled`/`plugins.disabled` or non-string `memory.provider` fails
+dependency preparation for **all** homes (`could not parse plugin selection:
+<path>`), rather than silently dropping that profile's plugins from the next
+environment. Fix or remove the offending file; an empty `config.yaml` is fine.
+
+Ordinary Hermes application updates preserve user plugin directories, including
+wrapper files and external sidecar links. Explicit plugin updates or removals
+can change those files. See [Package management](../../reference/package-management.md)
+and the [plugin authoring guide](../../developer-guide/plugins/index.md#lazy-install-optional-python-dependencies).
+
+### Installed and Browse in Desktop
+
+Open **Capabilities → Plugins**. **Installed** reads the app's desktop-plugin
+registry and the selected profile's actual agent-plugin state, combining both
+halves in one row where appropriate. It is not a list of catalog entries
+assumed to be installed. **Browse** is a native catalog view, not an embedded
+website; it uses the same **Installed / Browse** tabs as Skills, with search
+at the top and the tab switch and actions on one row.
+
+Desktop and the public [Plugin Catalog](/plugins) consume the same CDN
+snapshot, [`/docs/api/plugins.json`](https://hermes-agent.nousresearch.com/docs/api/plugins.json).
+The public alias serves the same data as Desktop's fetch URL,
+`https://nousresearch.github.io/hermes-agent/docs/api/plugins.json`. The docs
+build generates it from `plugin-catalog/*.yaml` and cached star counts. The
+same publish also supplies the removed-entry list used by the installer.
+Browsing does not query GitHub live or fetch source repos;
+the installer retrieves code only as part of the separate install flow.
 
 ### One-click install links (Desktop)
 
@@ -386,12 +482,28 @@ Hermes Desktop registers the `hermes://` URL scheme, so a website, README, or
 chat message can link straight to a plugin install:
 
 ```
-hermes://plugin/install?repo=owner/repo            # main install link
+hermes://plugin/install?catalog=NAME               # catalog entry, installs the reviewed pin
+hermes://plugin/install?repo=owner/repo            # any git repo
 hermes://plugin/install?repo=owner/repo&enable=1   # enable the agent plugin after install
 hermes://plugin/install?repo=owner/repo&force=1    # replace an existing install
 ```
 
-Clicking one opens Hermes and shows a **confirmation dialog** — the repo id,
+The `catalog=<name>` form is what the **Open in Hermes Desktop** button on
+every [Plugin Catalog](./plugin-catalog.md) card uses. Desktop resolves the
+name against the live catalog (the same feed **Capabilities → Plugins → Browse**
+shows) and opens the same **reviewed catalog entry** dialog an in-app
+pick does: the agent half installs at the catalog's pinned commit, never the
+branch tip. The link carries no repo URL, and a name that is not in the
+catalog shows an error toast and nothing else — it is never reinterpreted as a
+git path, so a link cannot smuggle an unreviewed repo behind a
+familiar-looking name.
+
+Use an updated Desktop build for catalog links and the Skills Hub's
+`hermes://skill/install?identifier=...` route. If the app is missing or too old,
+use the card's copyable `hermes plugins install <catalog-name>` command to
+retain catalog resolution.
+
+For a `repo=` link, clicking one opens Hermes and shows a **confirmation dialog** — the repo id,
 a "Before you install" note, and GitHub browse + clone links — then
 shallow-clones the repo to detect what it ships (an **agent plugin** —
 backend Python, a **desktop plugin** — app UI, or both). You pick the
@@ -438,7 +550,12 @@ gracefully.
 **Update re-consent:** if a plugin update declares capabilities you haven't
 granted, `hermes plugins update` surfaces the additions and asks again. New
 capabilities stay off until you consent — a plugin update can never silently
-widen its access.
+widen its access. Catalog re-pins go one step further: when the new pin adds
+tools, hooks, Python dependencies, host capabilities or a Desktop UI half the
+installed version did not have, the CLI shows the delta and asks `y/N` before
+anything moves, and the Desktop / dashboard **Update** button opens the same
+confirmation. Declining (or a non-interactive session) leaves the plugin at
+the old pin.
 
 **Non-interactive sessions fail closed:** installing or updating without a
 TTY completes the install, but declared capabilities are *not* granted. Run
@@ -713,7 +830,7 @@ Plugins
      Context Engine           ▸ compressor
 ```
 
-- **General Plugins section** — checkboxes, toggle with SPACE. Checked = in `plugins.enabled`, unchecked = in `plugins.disabled` (explicit off).
+- **General Plugins section** — checkboxes, toggle with SPACE. A row opens checked when the plugin is active right now: listed in `plugins.enabled`, or a bundled platform, backend or model provider (on without a list entry), or the selected provider of a category. Only rows you flip are written on exit: unticking adds the plugin to `plugins.disabled` (explicit off), ticking adds it to `plugins.enabled` and clears a stale disable. Opening the picker and leaving changes nothing.
 - **Provider Plugins section** — shows current selection. Press ENTER to drill into a radio picker where you choose one active provider.
 - Bundled plugins appear in the same list with a `[bundled]` tag.
 
@@ -776,7 +893,9 @@ In gateway mode:
 - The route and conversation are pinned while dispatch is pending. Hermes drops the request if topic recovery changes the route or the session rotates before handling starts.
 - The request enters the platform adapter's normal message path. Active sessions use the existing busy-session queue rather than starting a competing turn.
 - Returns `True` when the live gateway accepts the request for asynchronous dispatch. This does not confirm that the agent turn or platform delivery has completed.
-- Returns `False` when `session_key` is omitted, the permission is not granted, or no live gateway can accept the request. Unknown or unroutable session keys discovered after asynchronous acceptance are written to the gateway log.
+- Returns `False` when `session_key` is omitted, the permission is not granted, or no live host can accept the request. Unknown or unroutable session keys discovered after asynchronous acceptance are written to the gateway log.
+
+Ink TUI (`hermes --tui`) and the desktop / dashboard chat are a third host. They do not set the classic CLI reference and they do not register on the messaging-gateway injector — those two hosts stay separate so a live gateway cannot clobber the TUI (or the reverse). Pass the session's durable `session_key` (the `ses_…` id), not the ephemeral UI session id. Hermes queues the text on that session's prompt queue: a busy session keeps the message for the next turn, an idle session starts one. A key that is not a live TUI session is left for the messaging gateway when one is running, and is never rerouted to a different chat.
 
 This enables plugins like remote control viewers, messaging bridges, or webhook receivers to feed messages into the conversation from external sources.
 

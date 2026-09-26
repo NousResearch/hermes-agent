@@ -1,11 +1,19 @@
+import concurrent.futures
+import contextvars
+import threading
+import time
 from datetime import datetime, timezone
+
+import pytest
 
 from agent.account_usage import (
     AccountUsageSnapshot,
     AccountUsageWindow,
+    _fetch_portal_account,
     fetch_account_usage,
     render_account_usage_lines,
 )
+from agent.billing_usage import fetch_nous_account as _billing_fetch_nous_account
 from providers.base import ProviderProfile
 
 
@@ -151,29 +159,6 @@ def test_fetch_account_usage_prefers_builtin_fetcher_over_profile(monkeypatch):
     assert profile.calls == 0
 
 
-def test_render_account_usage_lines_includes_reset_and_provider():
-    snapshot = AccountUsageSnapshot(
-        provider="openai-codex",
-        source="usage_api",
-        fetched_at=datetime.now(timezone.utc),
-        plan="Pro",
-        windows=(
-            AccountUsageWindow(
-                label="Session",
-                used_percent=25,
-                reset_at=datetime.now(timezone.utc),
-            ),
-        ),
-        details=("Credits balance: $9.99",),
-    )
-    lines = render_account_usage_lines(snapshot)
-
-    assert lines[0] == "📈 Account limits"
-    assert "openai-codex (Pro)" in lines[1]
-    assert "Session: 75% remaining (25% used)" in lines[2]
-    assert "Credits balance: $9.99" in lines[3]
-
-
 def test_fetch_account_usage_openrouter_uses_limit_remaining_and_ignores_deprecated_rate_limit(monkeypatch):
     monkeypatch.setattr(
         "agent.account_usage.resolve_runtime_provider",
@@ -286,3 +271,71 @@ def test_plugin_usage_hook_is_bounded_and_fails_open(monkeypatch):
     assert time.monotonic() - t0 < 1.3 and started.is_set()
     account_usage.fetch_account_usage("openrouter")
     assert builtin_calls == [1]
+
+
+def test_plugin_usage_hook_failure_never_reaches_threading_excepthook(monkeypatch):
+    """A raising hook fails open in the caller — it must not die on a worker thread, where
+    ``threading.excepthook`` prints a traceback into every ``/usage`` surface."""
+    import threading
+
+    from agent import account_usage
+
+    class _Boom(ProviderProfile):
+        def fetch_account_usage(self, *, base_url=None, api_key=None):
+            raise RuntimeError("boom from plugin")
+
+    _register_profile(monkeypatch, _Boom(name="plugin-boom"))
+    monkeypatch.setattr(account_usage, "_USAGE_FETCHERS", {})
+    escaped = []
+    monkeypatch.setattr(threading, "excepthook", lambda args: escaped.append(args.exc_value))
+
+    assert account_usage.fetch_account_usage("plugin-boom") is None
+    for t in threading.enumerate():
+        if t is not threading.current_thread() and "account-usage" in t.name:
+            t.join(2)
+    assert escaped == []
+
+
+@pytest.mark.parametrize("fetch", [_fetch_portal_account, _billing_fetch_nous_account])
+def test_fetch_portal_account_is_wall_clock_bounded(monkeypatch, fetch):
+    """A portal that accepts the connection but never answers must release the
+    caller at ``timeout``, not when the wedged worker finishes on its own
+    (``Executor.__exit__`` used to join it via ``shutdown(wait=True)``) — on the
+    /usage path and the /billing path alike (#115982)."""
+    release = threading.Event()
+
+    def hanging_portal_fetch(*, force_fresh):
+        release.wait(timeout=30)
+        return object()
+
+    monkeypatch.setattr(
+        "hermes_cli.nous_account.get_nous_portal_account_info", hanging_portal_fetch
+    )
+    started = time.monotonic()
+    try:
+        with pytest.raises(concurrent.futures.TimeoutError):
+            fetch(timeout=0.5)
+    finally:
+        release.set()
+    assert time.monotonic() - started < 10
+
+
+def test_fetch_portal_account_returns_value_and_keeps_caller_context(monkeypatch):
+    marker = contextvars.ContextVar("portal_fetch_test_marker", default="unset")
+    sentinel = object()
+    seen = {}
+
+    def probing_portal_fetch(*, force_fresh):
+        seen["force_fresh"] = force_fresh
+        seen["marker"] = marker.get()
+        return sentinel
+
+    monkeypatch.setattr(
+        "hermes_cli.nous_account.get_nous_portal_account_info", probing_portal_fetch
+    )
+    token = marker.set("profile-scope")
+    try:
+        assert _fetch_portal_account(timeout=5) is sentinel
+    finally:
+        marker.reset(token)
+    assert seen == {"force_fresh": True, "marker": "profile-scope"}

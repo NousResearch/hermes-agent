@@ -2,7 +2,6 @@
 platform home channel ("telegram"), origin (back to where the job was created), or local (files)."""
 
 import logging
-import os
 import re
 from pathlib import Path
 from datetime import datetime
@@ -221,10 +220,8 @@ class DeliveryRouter:
         return path
 
     def _filter_silence_narration_enabled(self) -> bool:
-        """``HERMES_FILTER_SILENCE_NARRATION`` env overrides the ``gateway.filter_silence_narration`` flag."""
-        env = os.getenv("HERMES_FILTER_SILENCE_NARRATION")
-        return (bool(getattr(self.config, "filter_silence_narration", True)) if env is None
-                else env.strip().lower() in ("1", "true", "yes", "on"))
+        """filter silence narration based on gateway config without checking process env"""
+        return bool(getattr(self.config, "filter_silence_narration", True))
 
     def _cap_oversized_output(self, adapter: Any, content: str, job_id: str) -> str:
         """Audit-save oversized cron output; truncate it for non-chunking adapters. Above MAX_PLATFORM_OUTPUT

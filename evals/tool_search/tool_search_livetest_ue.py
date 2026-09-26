@@ -54,7 +54,7 @@ def _mock_result(tool_name: str) -> str:
 
 
 def load_epic_tools(scale: str) -> List[Dict[str, Any]]:
-    with open(PROBE, encoding="utf-8") as f:
+    with open(PROBE, encoding="utf-8-sig") as f:
         raw = json.load(f)
     out = []
     for ts_name, ts in raw["toolsets"].items():

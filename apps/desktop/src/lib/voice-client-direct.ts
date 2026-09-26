@@ -1,4 +1,4 @@
-import { profileScoped } from '@/api/client'
+import { type OwnerScope, ownerScoped } from '@/api/client'
 import { getApiRequestConnection, getApiRequestProfile, hermesApi } from '@/hermes'
 
 /**
@@ -70,8 +70,10 @@ const STT_REQUEST_TIMEOUT_MS = 60_000
 let cached: { key: string; at: number; config: VoiceClientConfig } | null = null
 let inflight: { key: string; promise: Promise<null | VoiceClientConfig> } | null = null
 
-function scopeKey(): string {
-  return `${getApiRequestConnection() ?? 'local'}::${getApiRequestProfile() ?? 'default'}`
+// `owner` is the speaking session's (connection, profile) — a Bot chat runs
+// on its own profile, on its own gateway; missing halves → the active scope.
+function scopeKey(owner?: OwnerScope): string {
+  return `${owner?.connectionId || getApiRequestConnection() || 'local'}::${owner?.profile || getApiRequestProfile() || 'default'}`
 }
 
 /** Drop cached credentials (used by tests; scope changes rotate the key). */
@@ -80,8 +82,8 @@ export function clearVoiceClientConfigCache(): void {
   inflight = null
 }
 
-export async function fetchVoiceClientConfig(): Promise<null | VoiceClientConfig> {
-  const key = scopeKey()
+export async function fetchVoiceClientConfig(owner?: OwnerScope): Promise<null | VoiceClientConfig> {
+  const key = scopeKey(owner)
 
   if (cached && cached.key === key && Date.now() - cached.at < CONFIG_TTL_MS) {
     return cached.config
@@ -97,7 +99,7 @@ export async function fetchVoiceClientConfig(): Promise<null | VoiceClientConfig
       // profile — the same routing every relay audio call uses, so the
       // config comes from the backend the user is actually talking to.
       const response = await hermesApi<{ ok: boolean } & VoiceClientConfig>({
-        ...profileScoped(),
+        ...ownerScoped(owner),
         path: '/api/audio/voice-config'
       })
 
@@ -316,8 +318,8 @@ export async function transcribeAudioClientDirect(audio: Blob): Promise<null | s
 // ---------------------------------------------------------------------------
 
 /** Resolve the profile's TTS config when it is client-callable, else null. */
-export async function directTtsConfig(): Promise<DirectTtsConfig | null> {
-  const config = await fetchVoiceClientConfig()
+export async function directTtsConfig(owner?: OwnerScope): Promise<DirectTtsConfig | null> {
+  const config = await fetchVoiceClientConfig(owner)
 
   return config?.tts && config.tts.mode === 'direct' ? config.tts : null
 }
@@ -375,58 +377,4 @@ export async function synthesizeSpeechClientDirect(tts: DirectTtsConfig, text: s
   }
 
   throw new Error(`Unknown TTS wire: ${(tts as { wire?: string }).wire}`)
-}
-
-// ---------------------------------------------------------------------------
-// Sentence cutter for the streaming TTS session — mirrors the server-side
-// SentenceChunker's contract: emit complete sentences as they form, hold
-// the incomplete tail, flush everything on finish.
-// ---------------------------------------------------------------------------
-
-const SENTENCE_BOUNDARY_RE = /[.!?…。！？]+["'”’)\]]*\s+/g
-const MIN_SENTENCE_CHARS = 24
-
-export function cutSentences(
-  buffer: string,
-  flush: boolean,
-  minSentenceChars?: null | number
-): { sentences: string[]; rest: string } {
-  // tts.streaming.min_len when the backend sends it (a 5–7 char CJK opener is a
-  // whole clause); the historical 24 for older backends without the key.
-  const minChars = minSentenceChars ?? MIN_SENTENCE_CHARS
-  const sentences: string[] = []
-  let rest = buffer
-  let start = 0
-
-  SENTENCE_BOUNDARY_RE.lastIndex = 0
-
-  let match = SENTENCE_BOUNDARY_RE.exec(buffer)
-
-  while (match) {
-    const end = match.index + match[0].length
-    const candidate = buffer.slice(start, end).trim()
-
-    // Too-short fragments ("e.g. ", "1. ") stay buffered so we don't fire a
-    // provider call per abbreviation — unless a later boundary extends them.
-    if (candidate.length >= minChars) {
-      sentences.push(candidate)
-      start = end
-    }
-
-    match = SENTENCE_BOUNDARY_RE.exec(buffer)
-  }
-
-  rest = buffer.slice(start)
-
-  if (flush) {
-    const tail = rest.trim()
-
-    if (tail) {
-      sentences.push(tail)
-    }
-
-    rest = ''
-  }
-
-  return { sentences, rest }
 }

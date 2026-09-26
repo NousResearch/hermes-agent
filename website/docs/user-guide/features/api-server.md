@@ -111,7 +111,7 @@ Uploaded files (`file` / `input_file` / `file_id`) and non-image `data:` URLs re
 All SSE streams (Chat Completions, Responses, `/api/sessions/{id}/chat/stream`, `/v1/runs/{id}/events`) emit a `: keepalive` comment line whenever no event has been sent for 10 seconds, so long tool calls do not trip client idle timeouts. Standard SSE clients ignore comment lines; custom parsers must skip lines that start with `:`.
 
 **Tool progress in streams**:
-- **Chat Completions**: Hermes emits `event: hermes.tool.progress` for tool-start visibility without polluting persisted assistant text.
+- **Chat Completions**: Hermes emits `event: hermes.tool.progress` for tool-start visibility without polluting persisted assistant text. Strict OpenAI clients that choke on named SSE events can turn these frames off with `gateway.platforms.api_server.tool_progress_events: false` (default `true`); content chunks are unaffected. The opt-out applies only to Chat Completions — `/v1/runs/{id}/events` always emits tool events, which is what the `tool_progress_events` feature in `/v1/capabilities` describes.
 - **Responses**: Hermes emits spec-native `function_call` and `function_call_output` output items during the SSE stream, so clients can render structured tool UI in real time.
 
 **Model reasoning** (emitted only when the model actually produces reasoning and the resolved `reasoning` config allows it; the input-side opt-out is `model_options.reasoning.enabled: false`):
@@ -486,6 +486,8 @@ Poll the current run state. This is useful for dashboards that need status witho
 
 Statuses are retained briefly after terminal states (`completed`, `failed`, `cancelled`, or `interrupted`) for polling and UI reconciliation. When the gateway shuts down while a run is active, the run is persisted as `interrupted` (error `Gateway shutdown interrupted the run.`, terminal event `run.interrupted`) before the agent is asked to stop, so a durable run never survives a restart as `running`; a late result from the interrupted turn cannot overwrite it.
 
+While the gateway is still draining (a `hermes gateway stop`/`restart` or SIGTERM with a turn in flight), every non-terminal run additionally carries `shutdown_requested_at` (Unix seconds) from the moment new turns are refused. `status` stays `running` because the turn is still being served; a poller that sees the field knows the process is on its way out and the run will end `interrupted` at the latest when the drain budget expires. Terminal runs never gain the field.
+
 ### GET /v1/runs/\{run_id\}/events
 
 Server-Sent Events stream of the run's tool-call progress, token deltas, and lifecycle events. Designed for dashboards and thick clients that want to attach/detach without losing state.
@@ -612,7 +614,7 @@ External UIs can manage Hermes sessions over REST without standing up the dashbo
 | `GET` | `/api/sessions/{id}/messages` | Message history for a session |
 | `POST` | `/api/sessions/{id}/fork` | Branch the session via `SessionDB` lineage (matches CLI `/branch` semantics) |
 | `POST` | `/api/sessions/{id}/chat` | Run one synchronous agent turn |
-| `POST` | `/api/sessions/{id}/chat/stream` | SSE wrapper over a single turn — emits `assistant.delta`, `assistant.commentary` (mid-turn commentary: `message_id`, `text`, `already_streamed`; never folded into `assistant.completed`), `tool.started`, `tool.completed`, then a terminal `run.completed` / `run.failed` / `run.cancelled` event that matches how the turn ended (see [Terminal run status](../../developer-guide/programmatic-integration.md#terminal-run-status)) |
+| `POST` | `/api/sessions/{id}/chat/stream` | SSE wrapper over a single turn — emits `assistant.delta`, `assistant.commentary` (mid-turn commentary: `message_id`, `text`, `already_streamed`; never folded into `assistant.completed`), `tool.started`, `tool.completed`, `tool.failed` (a tool that finished with an error), then a terminal `run.completed` / `run.failed` / `run.cancelled` event that matches how the turn ended (see [Terminal run status](../../developer-guide/programmatic-integration.md#terminal-run-status)) |
 
 `/v1/capabilities` advertises the full surface via `session_*` feature flags and `endpoints.session_*` entries so external UIs can detect support and fall back safely. Inline images are supported in `chat` and `chat/stream` payloads (multimodal-aware path).
 
@@ -657,6 +659,8 @@ X-Hermes-Session-Key: agent:main:webui:dm:user-42
 ```
 
 Rules: max 256 chars, control characters (`\r`, `\n`, `\x00`) are rejected, and the value is echoed back on responses (JSON + SSE). `/v1/capabilities` advertises support via `"session_key_header": "X-Hermes-Session-Key"`. Without the key, Honcho's `per-session` strategy produces a different scope per `session_id` — exactly the behavior Hermes had before.
+
+Automatic recall follows the **transcript**: the memory provider is initialised once per session and kept across requests, so a continued session (`X-Hermes-Session-Id`, `previous_response_id`, or a declared `X-Hermes-Session-Key` conversation) receives the recall the provider prepared after the previous turn, exactly like a Telegram or Discord chat does. A request without any continuation starts a fresh session and, like the first turn of any new CLI session, has nothing queued yet. Idle sessions release their provider after the same idle TTL as the gateway agent cache (`agent.agent_cache.idle_ttl_secs`, default one hour).
 
 ## System Prompt Handling
 

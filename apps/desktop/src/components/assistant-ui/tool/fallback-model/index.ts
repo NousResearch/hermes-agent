@@ -706,8 +706,9 @@ function toolStatus(part: ToolPart, resultRecord: Record<string, unknown>): Tool
     return 'running'
   }
 
+  // A call the user stopped is expected to have no result; don't warn about it.
   if (part.result === undefined && !part.isError) {
-    return 'warning'
+    return part.interrupted ? 'notice' : 'warning'
   }
 
   // Explicit success wins over isError / nested-error heuristics. Memory writes
@@ -751,6 +752,11 @@ function durationLabel(resultRecord: Record<string, unknown>): string | undefine
 }
 
 function toolPreviewTarget(toolName: string, args: Record<string, unknown>, result: Record<string, unknown>): string {
+  // Reading an existing file is not producing a deliverable.
+  if (toolName === 'read_file' || toolName === 'search_files' || toolName === 'list_files') {
+    return ''
+  }
+
   const direct =
     firstStringField(result, ['preview', 'url', 'target']) ||
     firstStringField(args, ['preview', 'url', 'target', 'path', 'file', 'filepath']) ||
@@ -1316,6 +1322,22 @@ function titlePartsFromAction(title: string, action?: string): ToolTitleParts {
   }
 }
 
+// A model-authored terminal `context`/`preview` sometimes already opens with
+// the verb the title template prepends ("Running grep …"), which renders as a
+// doubled "Running Running grep …". Drop a leading word that matches the action
+// we're about to prefix so the verb appears once.
+function withoutLeadingAction(value: string, action: string): string {
+  const verb = action.trim()
+  const text = value.trimStart()
+  const boundary = text.search(/\s/)
+
+  if (!verb || boundary < 0) {
+    return value
+  }
+
+  return text.slice(0, boundary).toLowerCase() === verb.toLowerCase() ? text.slice(boundary + 1).trimStart() : value
+}
+
 function dynamicTitle(
   part: ToolPart,
   args: Record<string, unknown>,
@@ -1405,7 +1427,7 @@ function dynamicTitle(
         translateNow(
           'assistant.tool.titleTemplates.actionCommand',
           action,
-          compactPreview(summarizeShellCommand(command), 160)
+          withoutLeadingAction(compactPreview(summarizeShellCommand(command), 160), action)
         )
       )
     }
@@ -1435,6 +1457,17 @@ function dynamicTitle(
   return fallback
 }
 
+/** Status + detected preview target only — for feeds that never render the
+ *  row (the live completion handler) and must not pay for titles/details. */
+export function toolPreviewOutcome(part: ToolPart): { previewTarget: string; status: ToolStatus } {
+  const resultRecord = toolResultRecord(part)
+
+  return {
+    previewTarget: toolPreviewTarget(part.toolName, parseMaybeObject(part.args), resultRecord),
+    status: toolStatus(part, resultRecord)
+  }
+}
+
 export function buildToolView(part: ToolPart, inlineDiff: string): ToolView {
   const argsRecord = parseMaybeObject(part.args)
   const resultRecord = toolResultRecord(part)
@@ -1461,7 +1494,11 @@ export function buildToolView(part: ToolPart, inlineDiff: string): ToolView {
   )
 
   const unavailable = part.result === undefined && part.completedAt !== undefined
-  const title = unavailable ? translateNow('assistant.tool.resultUnavailable') : titleParts.title
+
+  const title = unavailable
+    ? translateNow(part.interrupted ? 'assistant.tool.resultInterrupted' : 'assistant.tool.resultUnavailable')
+    : titleParts.title
+
   const titleEnriched = title !== baseTitle
   const baseSubtitle = error || toolSubtitle(part, argsRecord, resultRecord)
 

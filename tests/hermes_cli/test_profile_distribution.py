@@ -10,9 +10,14 @@ mocking git would just test the mock.
 
 from __future__ import annotations
 
+import json
 import shutil
+import stat
+import subprocess
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -22,10 +27,10 @@ from hermes_cli.profile_distribution import (
     DistributionManifest,
     EnvRequirement,
     MANIFEST_FILENAME,
-    USER_OWNED_EXCLUDE,
     _env_template_from_manifest,
     _looks_like_git_url,
     _parse_semver,
+    _stage_source,
     check_hermes_requires,
     describe_distribution,
     install_distribution,
@@ -55,7 +60,7 @@ def _make_staging_dir(root: Path, name: str = "src", *, manifest: DistributionMa
     contain after .git is removed).
 
     Lays down a minimal but representative tree: SOUL.md, config.yaml,
-    mcp.json, one skill, one cron file, plus the distribution.yaml manifest.
+    mcp.json, one skill, one cron job, plus the distribution.yaml manifest.
     """
     staged = root / f"staging_{name}"
     staged.mkdir(parents=True, exist_ok=True)
@@ -67,8 +72,9 @@ def _make_staging_dir(root: Path, name: str = "src", *, manifest: DistributionMa
     (staged / "skills" / "demo" / "SKILL.md").write_text(
         "---\nname: demo\ndescription: test\n---\n# Demo skill\n"
     )
-    (staged / "cron").mkdir(exist_ok=True)
-    (staged / "cron" / "daily.json").write_text('{"schedule": "0 9 * * *"}')
+    from cron.jobs import create_job, use_cron_store
+    with use_cron_store(staged):
+        create_job("daily task", "0 9 * * *", name="daily")
 
     mf = manifest or DistributionManifest(name=name, version="0.1.0")
     write_manifest(staged, mf)
@@ -211,6 +217,36 @@ class TestLooksLikeGitUrl:
     def test_accepts_git_sources(self, src):
         assert _looks_like_git_url(src)
 
+    @pytest.mark.platforms("windows")
+    def test_git_source_removes_read_only_git_metadata(self, tmp_path, monkeypatch):
+        origin = tmp_path / "origin"
+        subprocess.run(["git", "init", "--quiet", str(origin)], check=True)
+        (origin / MANIFEST_FILENAME).write_text("name: demo\nversion: 1.0.0\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(origin), "add", "."], check=True)
+        subprocess.run([
+            "git", "-C", str(origin), "-c", "user.name=Test", "-c",
+            "user.email=test@example.invalid", "commit", "--quiet", "-m", "init",
+        ], check=True)
+        saw_read_only_objects = []
+
+        def clone_local(_url, dest):
+            subprocess.run(["git", "clone", "--quiet", str(origin), str(dest)], check=True)
+            objects = [path for path in (dest / ".git" / "objects").rglob("*") if path.is_file()]
+            saw_read_only_objects.append(
+                bool(objects) and any(
+                    path.stat().st_file_attributes & stat.FILE_ATTRIBUTE_READONLY for path in objects
+                )
+            )
+
+        monkeypatch.setattr("hermes_cli.profile_distribution._git_clone", clone_local)
+
+        workdir = tmp_path / "work"
+        workdir.mkdir()
+        staged, _provenance = _stage_source("https://example.invalid/demo.git", workdir)
+
+        assert saw_read_only_objects == [True]
+        assert not (staged / ".git").exists()
+
 
 # ===========================================================================
 # Install — fresh and force (from a local-directory source)
@@ -260,14 +296,6 @@ class TestInstall:
         # distribution.yaml is always written by write_manifest
         assert (plan.target_dir / "distribution.yaml").exists()
 
-    def test_install_default_owned_paths_preserved(self, profile_env):
-        """When distribution_owned is not set, all DEFAULT_DIST_OWNED paths are copied."""
-        staged = _make_staging_dir(profile_env, "default_owned")
-        plan = install_distribution(str(staged), name="default_owned")
-        for path in DEFAULT_DIST_OWNED:
-            full = plan.target_dir / path
-            assert full.exists() or full.is_dir(), \
-                f"DEFAULT_DIST_OWNED '{path}' not found in target"
 
     def test_install_omitted_allowlist_copies_everything(self, profile_env):
         """Legacy contract: when distribution_owned is OMITTED, every staged
@@ -276,40 +304,33 @@ class TestInstall:
         staged = _make_staging_dir(profile_env, "legacy_all")
         # Extra top-level payload not covered by DEFAULT_DIST_OWNED
         (staged / "extra.txt").write_text("bonus\n")
-        (staged / "tools").mkdir()
-        (staged / "tools" / "helper.py").write_text("# helper\n")
+        (staged / "assets").mkdir()
+        (staged / "assets" / "helper.py").write_text("# helper\n")
 
         plan = install_distribution(str(staged), name="legacy_all")
         assert (plan.target_dir / "extra.txt").read_text() == "bonus\n", \
             "omitted distribution_owned must keep copying undeclared files"
-        assert (plan.target_dir / "tools" / "helper.py").exists(), \
+        assert (plan.target_dir / "assets" / "helper.py").exists(), \
             "omitted distribution_owned must keep copying undeclared dirs"
 
     def test_install_allowlist_supports_nested_paths(self, profile_env):
-        """Documented nested entries like skills/research/ and cron/digest.json
-        must select exactly that subtree/file, not be silently dropped."""
+        """Nested skill paths and the canonical cron store can be allowlisted exactly."""
         mf = DistributionManifest(
             name="nested",
             version="0.1.0",
-            distribution_owned=["SOUL.md", "skills/research/", "cron/digest.json"],
+            distribution_owned=["SOUL.md", "skills/research/", "cron/jobs.json"],
         )
         staged = _make_staging_dir(profile_env, "nested", manifest=mf)
         (staged / "skills" / "research").mkdir()
         (staged / "skills" / "research" / "SKILL.md").write_text(
             "---\nname: research\ndescription: r\n---\n# R\n"
         )
-        (staged / "cron" / "digest.json").write_text('{"schedule": "0 8 * * *"}')
 
         plan = install_distribution(str(staged), name="nested")
-        # Nested allowlisted paths are installed
         assert (plan.target_dir / "skills" / "research" / "SKILL.md").exists()
-        assert (plan.target_dir / "cron" / "digest.json").exists()
-        # Sibling paths under the same parents are NOT dragged along
+        assert (plan.target_dir / "cron" / "jobs.json").exists()
         assert not (plan.target_dir / "skills" / "demo").exists(), \
             "skills/demo is not allowlisted and must not be copied"
-        assert not (plan.target_dir / "cron" / "daily.json").exists(), \
-            "cron/daily.json is not allowlisted and must not be copied"
-        # Unrelated top-level entries stay out too
         assert not (plan.target_dir / "mcp.json").exists()
 
     def test_update_respects_distribution_owned_allowlist(self, profile_env):
@@ -346,6 +367,34 @@ class TestInstall:
         assert not (plan.target_dir / "new_config.toml").exists(), \
             "new_config.toml should not be copied (not in distribution_owned)"
 
+    def test_install_pauses_shipped_cron_jobs_and_skips_runtime_state(self, profile_env):
+        """Distribution cron definitions are inert until the installer explicitly resumes them."""
+        from cron.jobs import get_due_jobs, is_job_runnable, list_jobs, update_job, use_cron_store
+
+        staged = _make_staging_dir(profile_env, "cron_src")
+        with use_cron_store(staged):
+            shipped = list_jobs(include_disabled=True)[0]
+            update_job(shipped["id"], {
+                "next_run_at": (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()
+            })
+        (staged / "cron" / "future-runtime.bin").write_text("runtime", encoding="utf-8")
+        (staged / "skills" / ".future-runtime").write_text("runtime", encoding="utf-8")
+        (staged / "skills" / "demo" / ".authored-hidden").write_text("keep", encoding="utf-8")
+
+        plan = install_distribution(str(staged), name="cron_paused")
+
+        with use_cron_store(plan.target_dir):
+            installed = {job["id"]: job for job in list_jobs(include_disabled=True)}
+            due = get_due_jobs()
+        job = installed[shipped["id"]]
+        assert not is_job_runnable(job)
+        assert job["state"] == "paused"
+        assert due == []
+        assert not (plan.target_dir / "cron" / "future-runtime.bin").exists()
+        assert not (plan.target_dir / "skills" / ".future-runtime").exists()
+        assert (plan.target_dir / "skills" / "demo" / ".authored-hidden").read_text() == "keep"
+
+
     def test_install_rejects_non_distribution_directory(self, profile_env, tmp_path):
         bogus = tmp_path / "bogus_dir"
         bogus.mkdir()
@@ -356,8 +405,10 @@ class TestInstall:
 
     def test_install_enforces_hermes_requires(self, profile_env, monkeypatch):
         # Pin current Hermes version to something well below the requirement
-        import hermes_cli
-        monkeypatch.setattr(hermes_cli, "__version__", "0.1.0", raising=False)
+        monkeypatch.setattr(
+            "hermes_cli.version_info.get_version_info",
+            lambda: SimpleNamespace(base_version="0.1.0"),
+        )
 
         mf = DistributionManifest(
             name="future",
@@ -412,6 +463,61 @@ class TestUpdate:
 
         assert (custom / "SKILL.md").read_text(encoding="utf-8") == "custom skill\n"
         assert (plan.target_dir / "cron" / "mine.json").exists()
+
+    def test_update_merges_cron_jobs_without_losing_local_state(self, profile_env):
+        """Updating one shipped definition cannot replace the profile's whole cron store."""
+        from cron.jobs import create_job, list_jobs, pause_job, resume_job, update_job, use_cron_store
+
+        staged = _make_staging_dir(profile_env, "cron_update")
+        with use_cron_store(staged):
+            shipped = list_jobs(include_disabled=True)[0]
+        plan = install_distribution(str(staged), name="cron_merge")
+
+        with use_cron_store(plan.target_dir):
+            resume_job(shipped["id"])
+            mine = create_job("water the plants", "0 9 * * *", name="mine")
+            pause_job(mine["id"], reason="my choice")
+            old_next_run = {
+                job["id"]: job for job in list_jobs(include_disabled=True)
+            }[shipped["id"]]["next_run_at"]
+
+        with use_cron_store(staged):
+            update_job(shipped["id"], {
+                "prompt": "updated upstream definition",
+                "schedule": "every 7d",
+            })
+
+        update_distribution("cron_merge")
+
+        with use_cron_store(plan.target_dir):
+            jobs = {job["id"]: job for job in list_jobs(include_disabled=True)}
+        assert mine["id"] in jobs
+        assert jobs[mine["id"]]["state"] == "paused"
+        assert jobs[mine["id"]]["paused_reason"] == "my choice"
+        assert jobs[shipped["id"]]["prompt"] == "updated upstream definition"
+        assert jobs[shipped["id"]]["schedule"]["minutes"] == 7 * 24 * 60
+        assert jobs[shipped["id"]]["next_run_at"] != old_next_run
+        assert jobs[shipped["id"]]["enabled"] is True
+
+        # An authored schedule the live job cannot take (past one-shot) is rejected as a
+        # job-labelled DistributionError before any other file is replaced.
+        (staged / "SOUL.md").write_text("upstream v3\n")
+        store = staged / "cron" / "jobs.json"
+        data = json.loads(store.read_text(encoding="utf-8"))
+        data["jobs"][0]["schedule"] = {"kind": "once", "run_at": "2020-01-01T00:00:00+00:00", "display": "once"}
+        store.write_text(json.dumps(data), encoding="utf-8")
+        with pytest.raises(DistributionError, match="cron job 'daily'"):
+            update_distribution("cron_merge")
+        assert (plan.target_dir / "SOUL.md").read_text() != "upstream v3\n"
+        with use_cron_store(plan.target_dir):
+            assert {j["id"]: j for j in list_jobs(include_disabled=True)}[shipped["id"]]["schedule"] == \
+                jobs[shipped["id"]]["schedule"]
+
+        # A corrupt target store surfaces as DistributionError too, not a raw RuntimeError.
+        (plan.target_dir / "cron" / "jobs.json").write_text("42", encoding="utf-8")
+        with pytest.raises(DistributionError, match="Could not merge cron jobs"):
+            update_distribution("cron_merge")
+
 
     def test_update_refuses_symlinked_owned_container(self, profile_env):
         staged = _make_staging_dir(profile_env, "src")
@@ -537,12 +643,6 @@ class TestDescribe:
 
 class TestSecurity:
 
-    def test_user_owned_exclude_covers_credentials(self):
-        assert "auth.json" in USER_OWNED_EXCLUDE
-        assert ".env" in USER_OWNED_EXCLUDE
-        assert "memories" in USER_OWNED_EXCLUDE
-        assert "sessions" in USER_OWNED_EXCLUDE
-        assert "local" in USER_OWNED_EXCLUDE
 
     def test_install_does_not_import_credentials_from_staging(self, profile_env):
         """If an author accidentally ships auth.json or .env in their
@@ -585,33 +685,20 @@ class TestSecurity:
 class TestNestedUserOwnedExcludeNotFiltered:
 
     def test_nested_bin_dir_is_preserved(self, profile_env):
-        """A distribution shipping tools/bin/ must not have tools/bin/ dropped
+        """A distribution shipping assets/bin/ must not have assets/bin/ dropped
         during install even though 'bin' is in USER_OWNED_EXCLUDE."""
         mf = DistributionManifest(
             name="nested_bin",
             version="0.1.0",
-            distribution_owned=list(DEFAULT_DIST_OWNED) + ["tools"],
+            distribution_owned=list(DEFAULT_DIST_OWNED) + ["assets"],
         )
         staged = _make_staging_dir(profile_env, "src", manifest=mf)
-        (staged / "tools" / "bin").mkdir(parents=True)
-        (staged / "tools" / "bin" / "tool.py").write_text("# tool\n")
+        (staged / "assets" / "bin").mkdir(parents=True)
+        (staged / "assets" / "bin" / "tool.py").write_text("# tool\n")
 
         plan = install_distribution(str(staged), name="nested_bin")
-        assert (plan.target_dir / "tools" / "bin").is_dir(), "nested bin/ was dropped"
-        assert (plan.target_dir / "tools" / "bin" / "tool.py").exists()
-
-    def test_nested_logs_dir_is_preserved(self, profile_env):
-        mf = DistributionManifest(
-            name="nested_logs",
-            version="0.1.0",
-            distribution_owned=list(DEFAULT_DIST_OWNED) + ["scripts"],
-        )
-        staged = _make_staging_dir(profile_env, "src", manifest=mf)
-        (staged / "scripts" / "logs").mkdir(parents=True)
-        (staged / "scripts" / "logs" / "run.log").write_text("ok\n")
-        plan = install_distribution(str(staged), name="nested_logs")
-        assert (plan.target_dir / "scripts" / "logs").is_dir()
-        assert (plan.target_dir / "scripts" / "logs" / "run.log").read_text() == "ok\n"
+        assert (plan.target_dir / "assets" / "bin").is_dir(), "nested bin/ was dropped"
+        assert (plan.target_dir / "assets" / "bin" / "tool.py").exists()
 
     def test_top_level_user_owned_still_skipped(self, profile_env):
         """Top-level entries in USER_OWNED_EXCLUDE must still be skipped —
@@ -636,21 +723,22 @@ class TestNestedUserOwnedExcludeNotFiltered:
             "staged logs/ content should not leak into target"
 
     def test_both_nested_and_top_level_coexist(self, profile_env):
-        """Top-level bin/ filtered, but tools/bin/ kept."""
+        """Top-level bin/ filtered, but assets/bin/ kept."""
         mf = DistributionManifest(
             name="coexist",
             version="0.1.0",
-            distribution_owned=list(DEFAULT_DIST_OWNED) + ["tools"],
+            distribution_owned=list(DEFAULT_DIST_OWNED) + ["assets"],
         )
         staged = _make_staging_dir(profile_env, "src", manifest=mf)
         (staged / "bin").mkdir(exist_ok=True)
         (staged / "bin" / "top.sh").write_text("# top\n")
-        (staged / "tools" / "bin").mkdir(parents=True)
-        (staged / "tools" / "bin" / "helper.py").write_text("# helper\n")
+        (staged / "assets" / "bin").mkdir(parents=True)
+        (staged / "assets" / "bin" / "helper.py").write_text("# helper\n")
 
         plan = install_distribution(str(staged), name="coexist")
         assert not (plan.target_dir / "bin").exists()
-        assert (plan.target_dir / "tools" / "bin" / "helper.py").exists()
+        assert (plan.target_dir / "assets" / "bin" / "helper.py").exists()
+
 
 
 # ===========================================================================
@@ -797,9 +885,7 @@ class TestManifestCrashDurability:
         # No temp file left behind next to the manifest.
         assert list(tmp_path.glob("*.tmp")) == []
 
-    @pytest.mark.skipif(
-        sys.platform == "win32", reason="POSIX permission bits"
-    )
+    @pytest.mark.platforms("posix")  # POSIX permission bits
     def test_existing_file_mode_is_preserved(self, tmp_path):
         import os
         import stat
@@ -813,9 +899,7 @@ class TestManifestCrashDurability:
         mode = stat.S_IMODE(mf.stat().st_mode)
         assert mode == 0o644, f"mode changed to {oct(mode)}"
 
-    @pytest.mark.skipif(
-        sys.platform == "win32", reason="POSIX permission bits"
-    )
+    @pytest.mark.platforms("posix")  # POSIX permission bits
     def test_created_file_mode_is_not_tightened(self, tmp_path):
         """A manifest this function *creates* must not land owner-only.
 

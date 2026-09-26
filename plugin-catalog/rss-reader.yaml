@@ -1,14 +1,14 @@
 name: rss-reader
 repo: https://github.com/apoapostolov/hermes-agent-awesome-plugins
-sha: 4620ac2e8d8e3590da37e3581576ac1ed7a2b049
+sha: 33f24206737c7cbc5d2528578bec9bc00d517da2
 subdir: public/rss-reader
-description: "Desktop RSS reader with reader-mode capture, drag-reorder subscriptions, mute rules, saved searches, AI summaries, keyboard shortcuts, and an optional headline ticker."
+description: "Desktop RSS reader with reader-mode capture, drag-reorder subscriptions, mute rules, saved searches, AI summaries, keyboard shortcuts, and an optional headline ticker. Disclosure — optional YouTube cookies you paste in Settings are sent with YouTube feed requests; selectable User-Agent presets (incl. a ChatGPT-User string) are sent to feed hosts; YouTube videos render as youtube-nocookie.com embed iframes inside the reader."
 maintainer: apoapostolov
 tier: community
 category: desktop
 docs_url: https://github.com/apoapostolov/hermes-agent-awesome-plugins/tree/main/public/rss-reader
-version: "1.0.5"
-image: https://raw.githubusercontent.com/apoapostolov/hermes-agent-awesome-plugins/4620ac2e8d8e3590da37e3581576ac1ed7a2b049/public/rss-reader/docs/hero.png
+version: "1.0.9"
+image: https://raw.githubusercontent.com/apoapostolov/hermes-agent-awesome-plugins/33f24206737c7cbc5d2528578bec9bc00d517da2/public/rss-reader/docs/hero.png
 platforms: []
 capabilities:
   provides_tools: 

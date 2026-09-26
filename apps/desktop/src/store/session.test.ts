@@ -535,6 +535,19 @@ describe('mergeSessionPage', () => {
     expect(mergeSessionPage(previous, incoming, ['b']).map(s => s.id)).toEqual(['b'])
   })
 
+  it('never resurrects a HIDDEN session even when the keep set names it (#113273)', () => {
+    // Bot Mode canonical chats are born hidden and are live almost constantly
+    // (routines, bot-to-bot turns), so $workingSessionIds nearly always holds
+    // them — and an open Bot Chat tab pins the id via the tile keep too. The
+    // server page never lists hidden rows; the merge must not let the
+    // keep-list re-insert what the backend excludes by design, or "Bot Chat"
+    // rows become permanent residents of the Sessions sidebar.
+    const previous = [session({ hidden: true, id: 'bot-chat', title: 'Bot Chat' }), session({ id: 'mine' })]
+    const incoming = [session({ id: 'mine', message_count: 3 })]
+
+    expect(mergeSessionPage(previous, incoming, ['bot-chat']).map(s => s.id)).toEqual(['mine'])
+  })
+
   it('keeps a pinned session that has aged off the recent page', () => {
     // Repro of "loses pins until you refresh": a pinned chat falls off the
     // most-recent page, so the server stops returning it. A hard replace would
@@ -591,6 +604,91 @@ describe('mergeSessionPage', () => {
     const merged = mergeSessionPage(previous, incoming, ['b'])
 
     expect(merged.map(s => s.id)).toEqual(['b', 'a-new'])
+  })
+
+  it('drops an old segment kept in the keep set after the chain reorg minted a fresh root (#85331)', () => {
+    // The reporter's unit repro: a manual compression-chain reorganization
+    // relinked old segments under a NEW root id. The backend now returns the
+    // tip (carrying _lineage_ids with every chain segment); the previous
+    // list still holds an old SEGMENT row that is in the keep set (it was
+    // the working/selected session at refresh time). Its id is absent from
+    // the incoming page and unmatched by the root-only lineage key, so it
+    // used to survive as a title-less ghost row the backend never sent.
+    const previous = [
+      session({ id: 'seg2' }), // old segment: no lineage of its own
+      session({ id: 'tip', _lineage_root_id: 'fresh-root' }),
+      session({ id: 'other' })
+    ] as SessionInfo[]
+
+    const incoming = [
+      // The reorganized chain served as its tip, with every chain id.
+      session({ id: 'tip', _lineage_ids: ['seg1', 'seg2', 'fresh-root', 'tip'], _lineage_root_id: 'fresh-root' }),
+      session({ id: 'other' })
+    ] as SessionInfo[]
+
+    // seg2 was the working session at refresh time — in the keep set.
+    const merged = mergeSessionPage(previous, incoming, ['seg2'])
+
+    expect(merged.map(s => s.id)).toEqual(['tip', 'other'])
+  })
+
+  it('keeps a pinned session aged off the page even when another row carries a deep lineage', () => {
+    // The absorption filter must NOT evict legitimately-kept rows: a pinned
+    // row's own id never appears inside ANOTHER session's lineage. Guard for
+    // the #85331 fix — this is the pre-existing pinned-aging-off behavior
+    // ('keeps a pinned session that has aged off the recent page') plus a
+    // deep _lineage_ids on the incoming page.
+    const previous = [session({ id: 'recent' }), session({ id: 'pinned' })]
+
+    const incoming = [
+      session({ id: 'recent', _lineage_ids: ['recent', 'recent-root'], _lineage_root_id: 'recent-root' })
+    ]
+
+    const merged = mergeSessionPage(previous, incoming, ['pinned'])
+
+    expect(merged.map(s => s.id)).toEqual(['pinned', 'recent'])
+  })
+
+  it('keeps a pinned twin in another profile when an incoming lineage carries the same stored id (#92454)', () => {
+    // Bare-id lineage matching evicted a kept row whose id merely coincided
+    // with another profile's `_lineage_ids`: in that other profile the id
+    // really was absorbed into the projected tip, but the pinned row is a
+    // different session. Lineage members must be profile-qualified like
+    // every other key in the survivor predicate.
+    const previous = [session({ id: 'sess-42', profile: 'quietbot', title: 'Pinned quiet work' })] as SessionInfo[]
+
+    const incoming = [
+      session({
+        id: 'tip',
+        profile: 'testbot',
+        _lineage_ids: ['sess-42', 'fresh-root', 'tip'],
+        _lineage_root_id: 'fresh-root'
+      })
+    ] as SessionInfo[]
+
+    const merged = mergeSessionPage(previous, incoming, ['sess-42'])
+
+    expect(merged.map(s => `${s.profile}:${s.id}`).sort()).toEqual(['quietbot:sess-42', 'testbot:tip'])
+  })
+
+  it('drops a same-profile segment in the keep set when the incoming lineage absorbed it', () => {
+    // Counterpart to the twin guard: qualification must not weaken the actual
+    // absorption. seg2 was absorbed into testbot's projected tip and must be
+    // evicted even though it sits in the keep set.
+    const previous = [session({ id: 'seg2', profile: 'testbot' })] as SessionInfo[]
+
+    const incoming = [
+      session({
+        id: 'tip',
+        profile: 'testbot',
+        _lineage_ids: ['seg1', 'seg2', 'fresh-root', 'tip'],
+        _lineage_root_id: 'fresh-root'
+      })
+    ] as SessionInfo[]
+
+    const merged = mergeSessionPage(previous, incoming, ['seg2'])
+
+    expect(merged.map(s => `${s.profile}:${s.id}`)).toEqual(['testbot:tip'])
   })
 
   it('never regresses last_active behind an optimistic user-send bump', () => {
@@ -750,6 +848,28 @@ describe('carryForwardFailedProfileSessions', () => {
       'idle'
     ])
   })
+
+  it('does not carry a hidden row forward through a failed profile scan (#113273)', () => {
+    // The failed-slice carry is the back door: a canonical Bot Chat parked in
+    // the list by an owner-resolution upsert would ride the "keep what the
+    // failed scan couldn't confirm" rule right back into the sidebar.
+    const previous = [
+      session({ hidden: true, id: 'bot-chat', profile: 'work', title: 'Bot Chat' }),
+      session({ id: 'idle', profile: 'work' })
+    ]
+
+    const carried = carryForwardFailedProfileSessions(previous, [], [{ profile: 'work', error: 'disk I/O error' }])
+
+    expect(carried.map(s => s.id)).toEqual(['idle'])
+  })
+
+  it('keeps every profile when the unified (all) read failed', () => {
+    const previous = [session({ id: 'home', profile: 'default' }), session({ id: 'job', profile: 'work' })]
+
+    expect(
+      carryForwardFailedProfileSessions(previous, [], [{ profile: 'all', error: 'timed out' }]).map(s => s.id)
+    ).toEqual(['home', 'job'])
+  })
 })
 
 describe('keepFailedProfileMeta', () => {
@@ -767,6 +887,12 @@ describe('keepFailedProfileMeta', () => {
       default: { cost_usd: 4, tokens: 40 },
       work: { cost_usd: 2, tokens: 20 }
     })
+  })
+
+  it('keeps all previous meta when the unified (all) read failed', () => {
+    const previous = { default: true, work: false }
+
+    expect(keepFailedProfileMeta(previous, {}, [{ profile: 'all' }])).toBe(previous)
   })
 })
 

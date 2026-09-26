@@ -15,13 +15,13 @@ Provision SaaS services + sync creds via Stripe Projects.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/payments/stripe-projects` |
-| Path | `optional-skills/payments\stripe-projects` |
+| Path | `optional-skills/payments/stripe-projects` |
 | Version | `0.1.0` |
 | Author | Teknium (teknium1), Hermes Agent |
 | License | MIT |
 | Platforms | linux, macos |
 | Tags | `Payments`, `Stripe`, `Projects`, `Provisioning`, `Infrastructure` |
-| Related skills | [`stripe-link-cli`](./payments-stripe-link-cli.md), [`mpp-agent`](./payments-mpp-agent.md) |
+| Related skills | [`stripe-link-cli`](../../optional/payments/payments-stripe-link-cli.md), [`mpp-agent`](../../optional/payments/payments-mpp-agent.md) |
 
 ## Reference: full SKILL.md
 

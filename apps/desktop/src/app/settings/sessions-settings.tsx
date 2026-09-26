@@ -8,6 +8,8 @@ import {
   deleteSession,
   getHermesConfigRecord,
   listAllProfileSessions,
+  peekConfigReadOrigin,
+  retainConfigReadOrigin,
   saveHermesConfig,
   setSessionArchived
 } from '@/hermes'
@@ -24,13 +26,33 @@ import { forgetSessionUnread } from '@/store/session-unread'
 import type { HermesConfigRecord, SessionInfo } from '@/types/hermes'
 
 import { EmptyState, ListRow, SectionHeading, SettingsContent, SettingsSkeleton, ToggleRow } from './primitives'
+import { SETTING_IDS, settingElementId } from './settings-manifest'
 import { useDeepLinkHighlight } from './use-deep-link-highlight'
+import { useSettingDeepLink } from './use-setting-deep-link'
 
 const DEFAULT_AUTO_ARCHIVE_DAYS = 3
 
 const ARCHIVED_FETCH_LIMIT = 200
 
-export function SessionsSettings() {
+interface SessionsSettingsProps {
+  subpage?: string
+}
+
+export function SessionsSettings({ subpage }: SessionsSettingsProps = {}) {
+  useSettingDeepLink('sessions', page => subpage === undefined || page === subpage)
+
+  if (subpage === 'default-directory') {
+    return (
+      <SettingsContent>
+        <DefaultProjectDirSetting />
+      </SettingsContent>
+    )
+  }
+
+  return <ArchivedSessionsSettings includeDefaultDirectory={subpage === undefined} />
+}
+
+function ArchivedSessionsSettings({ includeDefaultDirectory }: { includeDefaultDirectory: boolean }) {
   const { t } = useI18n()
   const s = t.settings.sessions
   const [sessions, setLocalSessions] = useState<SessionInfo[]>([])
@@ -118,7 +140,7 @@ export function SessionsSettings() {
 
   return (
     <SettingsContent>
-      <DefaultProjectDirSetting />
+      {includeDefaultDirectory && <DefaultProjectDirSetting />}
 
       <AutoArchiveSetting />
 
@@ -236,13 +258,17 @@ function AutoArchiveSetting() {
         auto_archive_days: archiveDays
       }
 
-      const updated = { ...config, sessions }
-      setConfig(updated)
+      // Read the route at save time from the record itself, and carry it onto
+      // the replacement snapshot so the next save still targets the gateway
+      // that served the original GET.
+      const writeScope = peekConfigReadOrigin(config)
+
+      setConfig(retainConfigReadOrigin({ ...config, sessions }, config))
 
       try {
         // Sparse patch: PUT /api/config deep-merges, and echoing the cached
         // snapshot would overwrite keys other surfaces changed since it loaded.
-        await saveHermesConfig({ sessions: { auto_archive: autoArchive, auto_archive_days: archiveDays } })
+        await saveHermesConfig({ sessions: { auto_archive: autoArchive, auto_archive_days: archiveDays } }, writeScope)
       } catch (err) {
         notifyError(err, s.autoArchiveFailed)
       }
@@ -259,6 +285,7 @@ function AutoArchiveSetting() {
       <ToggleRow
         checked={enabled}
         description={s.autoArchiveDesc}
+        id={settingElementId(SETTING_IDS.sessions.autoArchive)}
         label={s.autoArchiveTitle}
         onChange={on => {
           setEnabled(on)
@@ -379,7 +406,7 @@ function DefaultProjectDirSetting() {
 
   return (
     <div className="mb-6">
-      <SectionHeading icon={FolderOpen} title={s.defaultDirTitle} />
+      <SectionHeading icon={FolderOpen} page title={s.defaultDirTitle} />
       <p className="mb-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
         {s.defaultDirDesc}
       </p>

@@ -47,13 +47,13 @@ def test_idle_proof_reads_the_real_cron_and_human_input_ledgers():
     assert idle_proof()["idle"] is True
 
     with scheduler._running_lock:
-        scheduler._running_job_ids.add("idle-proof-live-job")
+        scheduler._running_job_ids.add(scheduler._inflight_key("idle-proof-live-job"))
     try:
         # The busy verdict names the ledger and the job, so a backend that will not retire is diagnosable.
         assert idle_proof() == {"idle": False, "reason": "turn_in_flight", "detail": "cron:idle-proof-live-job"}
     finally:
         with scheduler._running_lock:
-            scheduler._running_job_ids.discard("idle-proof-live-job")
+            scheduler._running_job_ids.discard(scheduler._inflight_key("idle-proof-live-job"))
 
     from tools.approval_gateway_wait import _ApprovalEntry
 
@@ -103,7 +103,7 @@ def test_queued_prompts_and_unwinding_workers_are_not_idle(monkeypatch):
 # Live children: three real desktop-shaped ``serve`` processes, one held busy
 # ---------------------------------------------------------------------------
 
-pytestmark_live = pytest.mark.skipif(sys.platform == "win32", reason="POSIX serve-runner path under test")
+pytestmark_live = pytest.mark.platforms("posix")  # POSIX serve-runner path under test
 
 TOKEN = "idle-proof-live-token"
 
@@ -129,7 +129,7 @@ def _spawn_desktop_child(tmp_path: Path, name: str, *, busy: bool) -> subprocess
     hold = (
         "import cron.scheduler as s\n"
         "with s._running_lock:\n"
-        "    s._running_job_ids.add('live-idle-proof-job')\n"
+        "    s._running_job_ids.add(s._inflight_key('live-idle-proof-job'))\n"
     ) if busy else ""
     code = (
         hold

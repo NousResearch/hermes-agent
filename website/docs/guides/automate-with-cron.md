@@ -15,7 +15,7 @@ Cron jobs run in fresh agent sessions with no memory of your current chat. Promp
 :::
 
 :::tip Don't need the LLM? You have two zero-token options.
-- **Recurring watchdog** where the script already produces the exact message (memory alerts, disk alerts, heartbeats): use [script-only cron jobs](./cron-script-only.md). Same scheduler, no LLM. You can ask Hermes to set one up for you in chat — the `cronjob` tool knows when to pick `no_agent=True` and writes the script for you.
+- **Recurring watchdog** where the script already produces the exact message (memory alerts, disk alerts, heartbeats): use [script-only cron jobs](./cron-script-only.md). Same scheduler, no LLM. You can ask Hermes to set one up for you in chat — the `cronjob_manage` tool knows when to pick `no_agent=True` and writes the script for you.
 - **One-shot from a script that's already running** (CI step, post-commit hook, deploy script, externally-scheduled monitor): use [`hermes send`](./pipe-script-output.md) to pipe stdout or a file straight to Telegram / Discord / Slack / etc. without setting up a cron entry.
 :::
 

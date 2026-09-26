@@ -51,7 +51,21 @@ class StreamFallbackMixin:
         """Return only the part of final_text the user has not already seen."""
         prefix = self._fallback_prefix or self._visible_prefix()
         if prefix and final_text.startswith(prefix):
-            return final_text[len(prefix):].lstrip()
+            cut = len(prefix)
+            # ``prefix`` is whatever the last successful edit put on screen. Edits
+            # fire on a throttle tick, not at a word boundary, so that prefix can
+            # end inside a word.  Back the cut up to the last space or newline so
+            # the continuation re-sends the broken word's tail and reads as an
+            # ordinary continuation.  A prefix with no boundary (one very long
+            # token) keeps the original cut rather than re-sending the whole reply.
+            if cut < len(final_text):
+                boundary = max(
+                    final_text.rfind(" ", 0, cut),
+                    final_text.rfind("\n", 0, cut),
+                )
+                if boundary >= 0:
+                    cut = boundary + 1
+            return final_text[cut:].lstrip()
         return final_text
 
     @staticmethod
@@ -107,9 +121,13 @@ class StreamFallbackMixin:
         last_message_id: Optional[str] = None
         last_successful_chunk = ""
         sent_any_chunk = False
+        # Thread only a FULL resend (it replaces the preview); a tail continuation
+        # keeps its existing unthreaded delivery on every platform.
+        anchor = self._initial_reply_to_id if continuation == final_text else None
         for chunk in chunks:
             result = await self._send_with_flood_retry(
-                content=chunk, retry_log="Flood control on fallback send, retrying in %.1fs")
+                content=chunk, reply_to=None if sent_any_chunk else anchor,
+                retry_log="Flood control on fallback send, retrying in %.1fs")
             if not result or not result.success:
                 # Partial continuation landed: do NOT set _final_response_sent (the
                 # gateway must still deliver the full answer); _already_sent only
@@ -291,6 +309,8 @@ class StreamFallbackMixin:
     async def _flush_segment_tail_on_edit_failure(self) -> None:
         """Before a segment reset, send the unseen tail as a new message (and best-effort
         strip the stuck cursor from the partial)."""
+        if getattr(self, "_egress_declined", False):
+            return  # a new message is exactly the re-addressing the egress guard refused
         if not self._fallback_final_send:
             await self._try_strip_cursor()
         visible = self._fallback_prefix or self._visible_prefix()

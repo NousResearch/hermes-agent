@@ -83,7 +83,9 @@ def _configure_mcp_tools_interactive(config: dict):
         _print_info("No MCP servers configured.")
         return
 
-    enabled_names = [k for k, v in mcp_servers.items() if v.get("enabled", True) not in {False, "false", "0", "no", "off"}]
+    from tools.mcp_tool_common import mcp_server_enabled
+
+    enabled_names = [k for k, v in mcp_servers.items() if isinstance(v, dict) and mcp_server_enabled(v)]
     if not enabled_names:
         _print_info("All MCP servers are disabled.")
         return

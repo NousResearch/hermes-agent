@@ -49,9 +49,18 @@ _PEER_SELECT_HEAD = """
                 FROM sessions s
                 LEFT JOIN system_prompts sp ON sp.hash = s.system_prompt_hash
 """
+# A row a *completed handoff* owns stays recoverable whatever end_reason it carries: the source
+# interface's teardown runs AFTER ownership moved to the destination and can stamp a terminal reason
+# (``cli_close``) before the destination's first reply — the row must survive that race or the
+# handed-off leg is orphaned and a fresh empty session is minted in its place. A later DELIBERATE
+# close is still fenced the ordinary way: a reset-boundary row ended after this row's last activity
+# blocks recovery (the NOT EXISTS below). ``pending``/``failed``/NULL handoffs are untouched, so this
+# is strictly "ownership was transferred", never "a handoff was attempted".
+_HANDOFF_OWNED_ROW_SQL = "(s.handoff_state = 'completed')"
 _PEER_BY_KEY_SQL = f"""{_PEER_SELECT_HEAD}                WHERE s.session_key = ?
                   AND s.source = ?
-                  AND (s.ended_at IS NULL OR s.end_reason IN ({_RECOVERABLE_END_REASONS_SQL}))
+                  AND (s.ended_at IS NULL OR s.end_reason IN ({_RECOVERABLE_END_REASONS_SQL})
+                       OR {_HANDOFF_OWNED_ROW_SQL})
                   AND NOT EXISTS (
                       SELECT 1 FROM sessions b
                       WHERE b.session_key = s.session_key
@@ -71,7 +80,8 @@ _PEER_BY_TUPLE_SQL = f"""{_PEER_SELECT_HEAD}                WHERE s.source = ?
                   AND COALESCE(s.chat_type, '') = COALESCE(?, '')
                   AND COALESCE(s.thread_id, '') = COALESCE(?, '')
                   AND (? IS NULL OR COALESCE(s.profile_name, ?) = ?)
-                  AND (s.ended_at IS NULL OR s.end_reason IN ({_RECOVERABLE_END_REASONS_SQL}))
+                  AND (s.ended_at IS NULL OR s.end_reason IN ({_RECOVERABLE_END_REASONS_SQL})
+                       OR {_HANDOFF_OWNED_ROW_SQL})
                   AND (COALESCE(s.message_count, 0) > 0 OR EXISTS (
                       SELECT 1 FROM messages WHERE messages.session_id = s.id LIMIT 1
                   ))
@@ -315,6 +325,10 @@ class SessionGatewayMixin:
         That is exactly the shape of a leaked test fixture (#82770) — and also of a chat that was routed but
         never answered.
         """
+        if older_than_days < 0:
+            raise ValueError(
+                f"older_than_days must be >= 0, got {older_than_days!r}: a negative "
+                "retention builds a future cutoff that matches every never-active keyed row.")
         cutoff = time.time() - (float(older_than_days) * 86400.0)
         rows = self._read_all(
             """

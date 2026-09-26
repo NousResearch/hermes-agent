@@ -8,10 +8,11 @@ import os
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 from hermes_cli.doctor_platform import _system_package_install_cmd
 from hermes_cli.doctor_report import Finding, _fail_and_issue, check_bool, check_info, check_ok, check_warn, doctor_check
 from hermes_cli.vercel_auth import describe_vercel_auth
-from hermes_constants import agent_browser_runnable, is_termux as _is_termux
+from hermes_constants import is_termux as _is_termux
 from tools.environments.docker import docker_runtime_name, docker_runtime_start_hint, find_docker
 
 
@@ -21,6 +22,56 @@ def _safe_which(cmd: str) -> str | None:
         return shutil.which(cmd)
     except Exception:
         return None
+
+
+def _pm_tool_path(name: str) -> Path | None:
+    """Use PM's current selection, including writable payload extensions.
+
+    Old facts are diagnostic evidence, not an available runtime tool.
+    """
+    try:
+        from pm import installed_package
+
+        installed = installed_package(name)
+    except Exception:
+        return None
+    return installed.binary if installed is not None else None
+
+
+def _pm_package_for_command(command: str) -> str | None:
+    """The pm package that provisions *command*, derived from pm's own
+    package definitions (binary_rel → executable basename) — no restated
+    name table, so new pm packages are covered without doctor changes."""
+    try:
+        import pm  # noqa: F401 — imports pm.packages, registering the definitions
+        from pm import registry, store
+        from pm.packages import BinaryPackage
+
+        target = store.current_target()
+        for package_name in registry.all_packages():
+            package = registry.get_package(package_name)
+            if isinstance(package, BinaryPackage):
+                rel = package._rel(target)
+                if rel and Path(rel).name.removesuffix(".exe").removesuffix(".cmd") == command:
+                    return package_name
+    except Exception:
+        return None
+    return None
+
+
+def _doctor_tool(name: str) -> tuple[str | None, str]:
+    """Resolve the tool Hermes would actually run: the pm store first
+    (pinned installs run tools out of the store, which nothing puts on
+    PATH), then PATH. *name* is the command ("rg"); its pm package
+    ("ripgrep") is resolved from pm's own definitions. Returns
+    ``(path, ok-row detail)``."""
+    for package_name in (name, _pm_package_for_command(name)):
+        if not package_name:
+            continue
+        staged = _pm_tool_path(package_name)
+        if staged:
+            return str(staged), "(pm store)"
+    return _safe_which(name), ""
 
 
 def _run_ok(cmd: list[str], timeout: int, **kw) -> bool:
@@ -38,7 +89,7 @@ def _termux_browser_setup_steps(node_installed: bool) -> list[str]:
 
 
 _TERMUX_INSTALL_ALL_FALLBACK_NOTES = (
-    "Termux install profile: use .[termux-all] for broad compatibility (installer default on Termux).",
+    "Termux uses the Hermes APT package: pkg install hermes-agent.",
     "Matrix E2EE extra is excluded on Termux (python-olm currently fails to build).",
     "Local faster-whisper extra is excluded on Termux (ctranslate2/av build path unavailable).",
     "STT fallback: use Groq Whisper (set GROQ_API_KEY) or OpenAI Whisper (set VOICE_TOOLS_OPENAI_KEY).",
@@ -137,8 +188,10 @@ def _missing_api_key_toolsets_for_summary(unavailable: list[dict]) -> list[dict]
 
 @doctor_check()
 def _check_git_and_rg(should_fix: bool, f: Finding) -> None:
-    check_bool(_safe_which("git"), "git", ("git not found", "(optional)"))
-    if not check_bool(_safe_which("rg"), ("ripgrep (rg)", "(faster file search)"),
+    git, git_detail = _doctor_tool("git")
+    rg, rg_detail = _doctor_tool("rg")
+    check_bool(git, ("git", git_detail), ("git not found", "(optional)"))
+    if not check_bool(rg, ("ripgrep (rg)", f"{rg_detail} (faster file search)".strip()),
                       ("ripgrep (rg) not found", "(file search uses grep fallback)")):
         check_info(f"Install for faster search: {_system_package_install_cmd('ripgrep')}")
 
@@ -202,7 +255,7 @@ def _check_daytona_backend(issues: list[str]) -> None:
         from daytona import Daytona  # noqa: F401 — SDK presence check
         check_ok("daytona SDK", "(installed)")
     except ImportError:
-        _fail_and_issue("daytona SDK not installed", "(pip install daytona)", "Install daytona SDK: pip install daytona", issues)
+        _fail_and_issue("daytona SDK not installed", "(run hermes setup terminal)", "Run hermes setup terminal and select Daytona, then restart Hermes", issues)
 
 
 def _check_vercel_backend(issues: list[str]) -> None:
@@ -215,8 +268,8 @@ def _check_vercel_backend(issues: list[str]) -> None:
              ("Vercel disk setting", "(uses platform default)"), ("Vercel custom disk unsupported", "(reset terminal.container_disk to 51200)"),
              "Vercel Sandbox does not support custom container_disk; use the shared default 51200", issues)
     _require(importlib.util.find_spec("vercel") is not None, ("vercel SDK", "(installed)"),
-             ("vercel SDK not installed", "(pip install 'hermes-agent[vercel]')"),
-             "Install the Vercel optional dependency: pip install 'hermes-agent[vercel]'", issues)
+             ("vercel SDK not installed", "(run hermes setup terminal)"),
+             "Run hermes setup terminal and select Vercel Sandbox, then restart Hermes", issues)
     auth_status = describe_vercel_auth()
     if auth_status.ok:
         check_ok("Vercel auth", f"({auth_status.label})")
@@ -271,37 +324,28 @@ def _check_terminal_backend(should_fix: bool, f: Finding) -> None:
 
 
 def _check_agent_browser(should_fix: bool) -> bool:
-    """agent-browser resolution; returns True when browser tools will find a usable install.
-
-    Mirrors ``tools.browser_tool_install._find_agent_browser``'s own cascade (lazy npx or a global/Hermes-managed
-    install) so doctor can't diverge from the tools; validate=False keeps it a cheap, side-effect-free check.
-    """
+    """Read the runtime's installed selection; only --fix may acquire through PM."""
     try:
-        # agent-browser is no longer a root package.json dependency (#43564) — it resolves lazily via npx
-        # (or a global/Hermes-managed install) at first use.
-        from tools.browser_tool_install import _find_agent_browser, _is_npx_agent_browser_sentinel
+        from tools.browser_tool_install import _find_agent_browser
         resolved = _find_agent_browser(validate=False)
     except Exception:
         resolved = None
-    if resolved and _is_npx_agent_browser_sentinel(resolved):
-        check_ok("agent-browser", "(resolves via npx on first use)")
-        if should_fix:
-            # Can't tell whether npx's cache is warm — fire the same warm-up `hermes update` does.
-            from tools.browser_tool_install import warm_agent_browser_npx_cache
-            check_info("  Warmed npx cache for agent-browser" if warm_agent_browser_npx_cache()
-                       else "  Could not warm npx cache (offline or npx unavailable)")
-        return True
-    if resolved and agent_browser_runnable(resolved):
-        check_ok("agent-browser", "(browser automation)")
-        return True
+    if not resolved and should_fix and not _is_termux():
+        try:
+            import pm
+            from tools.browser_tool_install import _find_agent_browser
+            pm.ensure("agent-browser", explicit=True)
+            resolved = _find_agent_browser(validate=False)
+        except Exception as exc:
+            check_warn("agent-browser install failed", f"({exc})")
     if resolved:
-        # Almost always a dangling global symlink left by npm postinstall after `hermes update` wiped node_modules.
-        check_warn("agent-browser found but not runnable", f"(broken symlink at {resolved}? run: npx agent-browser --version)")
-    elif _is_termux():
+        check_ok("agent-browser", f"({resolved})")
+        return True
+    if _is_termux():
         _termux_browser_hints("agent-browser is not installed (expected in the tested Termux path)",
                               "Install it manually later with: npm install -g agent-browser && agent-browser install", node_installed=True)
     else:
-        check_warn("agent-browser not installed", "(requires npm/npx on PATH)")
+        check_warn("agent-browser not installed", "(run: hermes pm install agent-browser)")
     return False
 
 
@@ -319,7 +363,6 @@ def _check_chromium() -> None:
     Lazy import: browser_tool is ~150KB; an import failure is a separate bug surfaced elsewhere. Camofox, a
     CDP override, a cloud provider, or Lightpanda all bypass the local Chromium requirement (no warning).
     """
-    from hermes_cli.doctor import PROJECT_ROOT
     try:
         from tools.browser_tool import _is_camofox_mode
         from tools.browser_tool_cloud import _get_cloud_provider
@@ -332,8 +375,7 @@ def _check_chromium() -> None:
         return
     if not check_bool(_chromium_installed(), ("Playwright Chromium", "(browser engine)"),
                       ("Playwright Chromium not installed", "(browser_* tools will be hidden from the agent)")):
-        with_deps = "" if sys.platform == "win32" else "--with-deps "
-        check_info(f"Install with: cd {PROJECT_ROOT} && npx playwright install {with_deps}chromium")
+        check_info("Install with: hermes pm install chromium")
 
 
 def _check_lightpanda() -> None:
@@ -363,13 +405,13 @@ def _check_node_and_browser(should_fix: bool, f: Finding) -> None:
     """Node.js, agent-browser resolution, Playwright Chromium, Lightpanda engine."""
     if _safe_which("node"):
         check_ok("Node.js")
-        if _check_agent_browser(should_fix) and not _is_termux():  # Chromium check is not a tested Termux path
-            _check_chromium()
     elif _is_termux():
         _termux_browser_hints("Node.js not found (browser tools are optional in the tested Termux path)",
                               "Install Node.js on Termux with: pkg install nodejs", node_installed=False)
     else:
-        check_warn("Node.js not found", "(optional, needed for browser tools)")
+        check_warn("Node.js not found", "(optional; PM agent-browser is a native executable)")
+    if _check_agent_browser(should_fix) and not _is_termux():
+        _check_chromium()
     _check_lightpanda()
 
 
@@ -380,9 +422,13 @@ def _plural(n: int) -> str:
 def _audit_one(npm_bin: str, npm_dir, label: str, audit_extra: list[str], issues: list[str]) -> None:
     """Run one `npm audit --json` and report; any failure is silently skipped.
 
-    Workspace-scoped (`--workspace <name>`) advisories are build-time tooling (esbuild/vite), not runtime
-    code. `npm audit fix --workspace` crashes on current npm (arborist "edgesOut") and the root-level fix can
-    crash on the same tree ("isDescendantOf"), so no manual fix command is offered — they clear via a lockfile bump.
+    Every row here audits a tree whose versions come from a COMMITTED lockfile
+    (`npm ci` in `_run_npm_install_deterministic` reifies exactly that state on
+    every `hermes update`), so a local `npm audit fix` never persists — the next
+    update's deterministic install restores the pinned (vulnerable) versions and
+    the finding reappears. The durable remedy in every case is a lockfile bump
+    on main (update `package-lock.json` and ship it); the doctor therefore never
+    prescribes a local mutating fix command. See #116774.
     """
     import json
     try:
@@ -397,12 +443,15 @@ def _audit_one(npm_bin: str, npm_dir, label: str, audit_extra: list[str], issues
         if total == 0:
             check_ok(f"{label} deps", "(no known vulnerabilities)")
         elif critical > 0 or high > 0:
-            flag = " --workspaces=false" if audit_extra == ["--workspaces=false"] else ""
-            remedy = "build-tool advisory; clears via lockfile bump" if workspace_scoped else f"run: cd {npm_dir} && npm audit fix{flag}"
+            detail = "build-time tooling" if workspace_scoped else "runtime dependency tree"
+            remedy = ("fix is an upstream lockfile bump — a local manual fix does not persist"
+                      " (the next `hermes update` reinstalls from the committed lockfile)")
             check_warn(f"{label} deps", f"({critical} critical, {high} high, {moderate} moderate — {remedy})")
             if workspace_scoped:
                 check_info("  ^ build-time tooling (not runtime); if manual npm remediation "
                            "errors with an arborist crash it's a known npm bug — clears via a lockfile bump")
+            else:
+                check_info(f"  ^ {detail}; report/pin the fix in package-lock.json — see #116774")
             issues.append(f"{label} has {total} npm {_plural(total)}")
         else:
             check_ok(f"{label} deps", f"({moderate} moderate {_plural(moderate)})")

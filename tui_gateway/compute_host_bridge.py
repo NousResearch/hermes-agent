@@ -130,6 +130,12 @@ def _relay_compute_host_rpc(message: dict) -> bool:
                         session["_compute_host_activity_ns"] = params.get("activity_ns")
         return True  # Internal observation, not a client event or replay entry.
     if (isinstance(message, dict) and message.get("method") == "event" and isinstance(params, dict)
+            and params.get("type") in ("session.queue", "session.queue.changed")):
+        # The parent owns the client's queue; the child only holds its own leftovers between turns
+        # (a pending steer), under an independent revision counter. Relaying the child's snapshot
+        # would replace the parent's real items on every client.
+        return True
+    if (isinstance(message, dict) and message.get("method") == "event" and isinstance(params, dict)
             and not params.get("session_id")):
         # A session-less (global) event the child could not deliver itself: ``write_json`` would drop it
         # on this process's stdio; fan it out to every connected client like a local broadcast.

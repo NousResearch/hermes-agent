@@ -558,6 +558,7 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
         _clear_session_context(tokens)
     session.update(updates)
     session.pop("queued_prompts", None)
+    _publish_queue(sid, session)
     with session["history_lock"]:
         session["history"] = []
         session["history_version"] = int(session.get("history_version", 0)) + 1

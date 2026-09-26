@@ -134,12 +134,15 @@ def _ac_inflight_original(session: dict) -> str:
 
 
 def _enqueue_prompt(session: dict, text: Any, transport: Any, image_paths: list[str] | None = None,
-                    turn_author: dict | None = None) -> dict | None:
+                    turn_author: dict | None = None, *, queue_id: str = "",
+                    client_message_id: str = "") -> dict | None:
     """Queue a message for the next turn. Text-only arrivals share a slot and merge losslessly (like the
     consecutive-user merge in ``repair_message_sequence``); image-bearing and authored ones stay separate
-    envelopes so attachment chronology and the sender survive. ``transport`` is pinned so the drained turn
-    streams to its sender. Returns the envelope dict the text landed in (the merged head on a merge)
-    so the caller can attach durable state to it; None when the text was dropped as a duplicate."""
+    envelopes so attachment chronology and the sender survive. A client-chosen ``queue_id`` also keeps its
+    own envelope (and no id-less arrival merges into it): the client addresses that item later through
+    ``session.queue.update``. ``transport`` is pinned so the drained turn streams to its sender. Returns
+    the envelope dict the text landed in (the merged head on a merge) so the caller can attach durable
+    state to it; None when the text was dropped as a duplicate."""
     image_paths = list(image_paths or [])
     # Scrub live-turn self-duplicates first so the text merge below can't glue "{original}\n\n{later}" and re-fire the
     # original after a correction settles.
@@ -150,11 +153,14 @@ def _enqueue_prompt(session: dict, text: Any, transport: Any, image_paths: list[
     if text_only and not turn_author and text.strip() == _ac_inflight_original(session) != "":
         return None
     queued = {"text": text, "transport": transport, **({"image_paths": image_paths} if image_paths else {}),
-              **({"turn_author": turn_author} if turn_author else {})}
+              **({"turn_author": turn_author} if turn_author else {}),
+              # Underscore-internal like ``_submit_user_row``; a server id is minted on first snapshot.
+              **({"_queue_id": queue_id, "_client_queue_id": True} if queue_id else {}),
+              **({"_client_message_id": client_message_id} if client_message_id else {})}
     existing = session.get("queued_prompt")
-    if (existing and text_only and not turn_author and isinstance(existing.get("text"), str)
+    if (existing and text_only and not turn_author and not queue_id and isinstance(existing.get("text"), str)
             and not existing.get("image_paths") and not existing.get("turn_author")
-            and not session.get("queued_prompts")):
+            and not existing.get("_client_queue_id") and not session.get("queued_prompts")):
         prev = existing["text"]
         existing["text"] = f"{prev}\n\n{text}" if prev and text else (prev or text)
         return existing
@@ -349,11 +355,13 @@ def _replace_queued_user_row_for_turn(session: dict, queued: dict) -> dict | Non
 
 
 def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any, queued: bool = False,
-                        turn_author: dict | None = None, display_kind: str | None = None) -> dict | None:
+                        turn_author: dict | None = None, display_kind: str | None = None,
+                        queue_id: str = "", client_message_id: str = "") -> dict | None:
     """Apply ``display.busy_input_mode`` to a mid-turn prompt instead of rejecting it (rejection made clients busy-retry
     and drop sends): ``interrupt`` (default) → redirect, falling back to hard interrupt + queue; ``queue`` → queue only;
     ``steer`` → inject after the current atomic action. ``queued=True`` (client queue drain) forces queue mode: a "run
-    after" message must NEVER become a live correction."""
+    after" message must NEVER become a live correction. A queued reply carries the ``queue`` snapshot; resubmitting a
+    ``queue_id`` that is still waiting (a client retry after a dropped socket) is acknowledged, not queued twice."""
     mode = "queue" if queued else _load_busy_input_mode()
     agent = session.get("agent")
     # Compression in flight demotes steer/interrupt to queue: a correction delivered
@@ -364,6 +372,12 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any,
     with session["history_lock"]:
         if not session.get("running"):
             return None  # turn ended since prompt.submit's busy check; caller retries on the idle session
+        duplicate = bool(queue_id) and _find_queued_envelope(session, queue_id) is not None
+    if duplicate:
+        return _ok(rid, {"status": "queued", "queue": _publish_queue(sid, session)})
+    with session["history_lock"]:
+        if not session.get("running"):
+            return None
         image_paths = list(session.get("attached_images", []))
         if image_paths:
             session["attached_images"] = []  # claim now so a later paste isn't consumed when the turn yields
@@ -377,6 +391,7 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any,
         method, status = {"steer": ("steer", "steered"), "interrupt": ("redirect", "redirected")}.get(mode, (None, None))
         if (method and supported[mode]
                 and (resp := _ac_try_correction(rid, session, agent, method, plain_text, status)) is not None):
+            _publish_queue(sid, session)  # the correction scrubs queued self-copies of the live prompt
             return resp
     # Queue before asking the live turn to stop. Never call a provider/compute-host method under history_lock: an
     # interrupt can wait behind the op it cancels.
@@ -385,7 +400,8 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any,
             if image_paths:
                 session["attached_images"] = image_paths + list(session.get("attached_images", []))
             return None
-        envelope = _enqueue_prompt(session, text, transport, image_paths=image_paths, turn_author=turn_author)
+        envelope = _enqueue_prompt(session, text, transport, image_paths=image_paths, turn_author=turn_author,
+                                   queue_id=queue_id, client_message_id=client_message_id)
         # Durable AT ACCEPT (not when the turn runs): a cold resume sees the queued message and a
         # backend restart cannot lose it. Lives on the envelope, never the shared session slot.
         if envelope is not None:
@@ -400,7 +416,7 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any,
     # pending steer buffer — silently destroying the earlier messages of the burst. See #86134.
     if mode == "interrupt" and not image_paths:
         _interrupt_busy_session(sid, session, agent)
-    return _ok(rid, {"status": "queued"})
+    return _ok(rid, {"status": "queued", "queue": _publish_queue(sid, session)})
 
 
 def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
@@ -429,6 +445,7 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
             _ac_set_queue(session, [queued, *([advanced] if advanced else []), *(session.get("queued_prompts") or [])])
             session["running"] = False
             return True
+    _publish_queue(sid, session)  # the claimed head left the queue
     kwargs: dict = {"queued_prompt_generation": queue_generation}
     if queued.get("image_paths"):
         kwargs["image_paths"] = queued["image_paths"]

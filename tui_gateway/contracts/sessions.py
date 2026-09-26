@@ -8,8 +8,8 @@ from __future__ import annotations
 from pydantic import Field
 
 from .base import JsonValue, Params, Result, WireEnum
-from .common import (OpenModel, PendingApproval, ProfileParams, SessionLiveInfo, SessionParams, TranscriptMessage,
-                     Usage)
+from .common import (OpenModel, PendingApproval, ProfileParams, SessionLiveInfo, SessionParams, SessionQueueSnapshot,
+                     TranscriptMessage, Usage)
 from .connectors_operation import ConnectionRequestPayload
 from .registry import method
 
@@ -88,7 +88,8 @@ class LiveSessionSnapshot(Result):
     started_at: float | None = None
     status: str | None = None  # a LiveSessionStatus value
     inflight: InflightTurn | None = None
-    queued: QueuedPrompt | None = None
+    queued: QueuedPrompt | None = None  # legacy head-only view of ``queue``
+    queue: SessionQueueSnapshot | None = None  # live sessions: every held prompt with its stable id
     pending_approval: PendingApproval | None = None
     open_requests: list[OpenRequestEntry] | None = None
     # The open connection operation (``tools/connectors/live.current``) as its ``connection.request``
@@ -707,6 +708,37 @@ class SessionEventsStatsResult(Result):
 
 method("session.events.stats", params=SessionEventsStatsParams, result=SessionEventsStatsResult,
        doc="Replay-buffer occupancy telemetry (ops/debug).")
+
+
+# ── queued prompts ────────────────────────────────────────────────────────────────────────────
+
+
+class SessionQueueGetParams(SessionParams):
+    pass
+
+
+method("session.queue.get", params=SessionQueueGetParams, result=SessionQueueSnapshot,
+       doc="The live session's queued prompts in execution order, with stable ids.")
+
+
+class SessionQueueAction(WireEnum):
+    edit = "edit"
+    delete = "delete"
+    steer = "steer"
+
+
+class SessionQueueUpdateParams(SessionParams):
+    queue_id: str
+    action: SessionQueueAction
+    text: str | None = None  # required for ``edit``
+
+
+class SessionQueueUpdateResult(SessionQueueSnapshot):
+    status: SessionQueueAction
+
+
+method("session.queue.update", params=SessionQueueUpdateParams, result=SessionQueueUpdateResult,
+       doc="Edit or delete one queued prompt, or promote it into the running turn as a steer.")
 
 
 # ── one-shot LLM ──────────────────────────────────────────────────────────────────────────────

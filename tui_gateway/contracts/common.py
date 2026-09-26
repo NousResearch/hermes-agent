@@ -53,6 +53,24 @@ class ProjectRef(Result):
     primary_path: str | None = None
 
 
+class SessionQueueItem(Result):
+    """``methods_session_queue._queue_item``: one held prompt, addressable by ``id``."""
+
+    id: str
+    client_message_id: str  # the submitter's opaque id ("" when none was sent)
+    text: str
+    has_images: bool
+    editable: bool
+    steerable: bool
+
+
+class SessionQueueSnapshot(Result):
+    """``methods_session_queue._queue_snapshot_unlocked``: every held prompt in execution order."""
+
+    revision: int
+    items: list[SessionQueueItem]
+
+
 class McpServerStatus(OpenModel):
     name: str = ""
     status: str | None = None

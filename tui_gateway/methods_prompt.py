@@ -585,6 +585,10 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:
         return err
+    queue_id, id_error = _queue_identity_param(params, "queue_id", _QUEUE_ID_MAX)
+    client_message_id, cm_error = _queue_identity_param(params, "client_message_id", _CLIENT_MESSAGE_ID_MAX)
+    if id_error or cm_error:
+        return _err(rid, 4004, str(id_error or cm_error))
     from tools.bot_relay import DeliveryAuthor
 
     # Only the relay handler can build a DeliveryAuthor. A dict here is a client claiming a sender.
@@ -650,7 +654,7 @@ def _(rid, params: dict) -> dict:
             return _err(rid, 4009, "session busy")
         busy_response = _handle_busy_submit(
             rid, sid, session, text, busy_transport, queued=bool(params.get("queued")), turn_author=turn_author,
-            display_kind=display_kind)
+            display_kind=display_kind, queue_id=queue_id, client_message_id=client_message_id)
         if busy_response is not None:
             return busy_response
     raw_rebind_ids = params.get("rebind_survivor_row_ids")

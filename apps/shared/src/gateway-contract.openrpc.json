@@ -3337,6 +3337,42 @@
       }
     },
     {
+      "name": "session.queue.get",
+      "summary": "The live session's queued prompts in execution order, with stable ids.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SessionQueueGetParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionQueueSnapshot"
+        }
+      }
+    },
+    {
+      "name": "session.queue.update",
+      "summary": "Edit or delete one queued prompt, or promote it into the running turn as a steer.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SessionQueueUpdateParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionQueueUpdateResult"
+        }
+      }
+    },
+    {
       "name": "session.redirect",
       "summary": "Redirect the active turn (queued for the next turn while the agent is still building).",
       "params": [
@@ -25317,6 +25353,30 @@
             "default": null,
             "title": "Queued"
           },
+          "queue_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Queue Id"
+          },
+          "client_message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Client Message Id"
+          },
           "surface": {
             "anyOf": [
               {
@@ -25529,6 +25589,17 @@
             ],
             "default": null,
             "title": "Turn Isolation"
+          },
+          "queue": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SessionQueueSnapshot"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "title": "PromptSubmitResult",
@@ -27482,6 +27553,17 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/QueuedPrompt"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "queue": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SessionQueueSnapshot"
               },
               {
                 "type": "null"
@@ -30067,6 +30149,220 @@
         "title": "SessionParams",
         "type": "object"
       },
+      "SessionQueueAction": {
+        "enum": [
+          "edit",
+          "delete",
+          "steer"
+        ],
+        "title": "SessionQueueAction",
+        "type": "string"
+      },
+      "SessionQueueChangedPayload": {
+        "additionalProperties": false,
+        "description": "``methods_session_queue._publish_queue`` (global): for windows not attached to the session.",
+        "properties": {
+          "session_key": {
+            "title": "Session Key",
+            "type": "string"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "session_key",
+          "revision"
+        ],
+        "title": "SessionQueueChangedPayload",
+        "type": "object"
+      },
+      "SessionQueueGetParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "SessionQueueGetParams",
+        "type": "object"
+      },
+      "SessionQueueItem": {
+        "additionalProperties": false,
+        "description": "``methods_session_queue._queue_item``: one held prompt, addressable by ``id``.",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "client_message_id": {
+            "title": "Client Message Id",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "has_images": {
+            "title": "Has Images",
+            "type": "boolean"
+          },
+          "editable": {
+            "title": "Editable",
+            "type": "boolean"
+          },
+          "steerable": {
+            "title": "Steerable",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "client_message_id",
+          "text",
+          "has_images",
+          "editable",
+          "steerable"
+        ],
+        "title": "SessionQueueItem",
+        "type": "object"
+      },
+      "SessionQueuePayload": {
+        "additionalProperties": false,
+        "description": "``methods_session_queue._publish_queue``: the full queue, not a delta.",
+        "properties": {
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/SessionQueueItem"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "revision",
+          "items"
+        ],
+        "title": "SessionQueuePayload",
+        "type": "object"
+      },
+      "SessionQueueSnapshot": {
+        "additionalProperties": false,
+        "description": "``methods_session_queue._queue_snapshot_unlocked``: every held prompt in execution order.",
+        "properties": {
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/SessionQueueItem"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "revision",
+          "items"
+        ],
+        "title": "SessionQueueSnapshot",
+        "type": "object"
+      },
+      "SessionQueueUpdateParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "queue_id": {
+            "title": "Queue Id",
+            "type": "string"
+          },
+          "action": {
+            "$ref": "#/components/schemas/SessionQueueAction"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Text"
+          }
+        },
+        "required": [
+          "session_id",
+          "queue_id",
+          "action"
+        ],
+        "title": "SessionQueueUpdateParams",
+        "type": "object"
+      },
+      "SessionQueueUpdateResult": {
+        "additionalProperties": false,
+        "properties": {
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/SessionQueueItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "status": {
+            "$ref": "#/components/schemas/SessionQueueAction"
+          }
+        },
+        "required": [
+          "revision",
+          "items",
+          "status"
+        ],
+        "title": "SessionQueueUpdateResult",
+        "type": "object"
+      },
       "SessionReclaimedPayload": {
         "additionalProperties": false,
         "description": "``session_lifecycle._announce_session_reclaimed`` (broadcast).",
@@ -30355,6 +30651,17 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/QueuedPrompt"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "queue": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SessionQueueSnapshot"
               },
               {
                 "type": "null"
@@ -38269,6 +38576,30 @@
           "name": "payload",
           "schema": {
             "$ref": "#/components/schemas/SessionLiveInfo"
+          }
+        }
+      ]
+    },
+    {
+      "name": "session.queue",
+      "summary": "The session's queued prompts changed; replace the local view.",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/SessionQueuePayload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "session.queue.changed",
+      "summary": "A stored session's queue revision advanced; call session.queue.get to read it.",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/SessionQueueChangedPayload"
           }
         }
       ]

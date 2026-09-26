@@ -2440,6 +2440,8 @@ export interface PromptSubmitParams {
   display_kind?: string | null
   interrupted?: boolean | null
   queued?: boolean | null
+  queue_id?: string | null
+  client_message_id?: string | null
   surface?: string | null
   voice_context?: string | null
   title_preview?: string | null
@@ -2458,8 +2460,23 @@ export interface PromptSubmitResult {
   survivor_user_row_ids?: (number | null)[] | null
   survivor_row_id_map?: Record<string, number | null> | null
   turn_isolation?: boolean | null
+  queue?: SessionQueueSnapshot | null
 }
 export type PromptSubmitStatus = 'streaming' | 'queued' | 'steered' | 'redirected'
+/** ``methods_session_queue._queue_snapshot_unlocked``: every held prompt in execution order. */
+export interface SessionQueueSnapshot {
+  revision: number
+  items: SessionQueueItem[]
+}
+/** ``methods_session_queue._queue_item``: one held prompt, addressable by ``id``. */
+export interface SessionQueueItem {
+  id: string
+  client_message_id: string
+  text: string
+  has_images: boolean
+  editable: boolean
+  steerable: boolean
+}
 export interface ClipboardPasteParams {
   session_id: string
   profile?: string | null
@@ -2861,6 +2878,7 @@ export interface SessionResumeResult {
   status?: string | null
   inflight?: InflightTurn | null
   queued?: QueuedPrompt | null
+  queue?: SessionQueueSnapshot | null
   pending_approval?: PendingApproval | null
   open_requests?: OpenRequestEntry[] | null
   pending_connection?: ConnectionRequestPayload | null
@@ -2931,6 +2949,7 @@ export interface SessionActivateResult {
   status?: string | null
   inflight?: InflightTurn | null
   queued?: QueuedPrompt | null
+  queue?: SessionQueueSnapshot | null
   pending_approval?: PendingApproval | null
   open_requests?: OpenRequestEntry[] | null
   pending_connection?: ConnectionRequestPayload | null
@@ -3324,6 +3343,23 @@ export interface SessionEventsStatsResult {
   max_per_session: number
   max_bytes_per_session: number
   max_bytes_process: number
+}
+export interface SessionQueueGetParams {
+  session_id: string
+  profile?: string | null
+}
+export interface SessionQueueUpdateParams {
+  session_id: string
+  profile?: string | null
+  queue_id: string
+  action: SessionQueueAction
+  text?: string | null
+}
+export type SessionQueueAction = 'edit' | 'delete' | 'steer'
+export interface SessionQueueUpdateResult {
+  revision: number
+  items: SessionQueueItem[]
+  status: SessionQueueAction
 }
 /** Needs a ``template`` or ``instructions`` / ``input``; a live ``session_id`` lends its model. */
 export interface LlmOneshotParams {
@@ -4500,6 +4536,16 @@ export interface SessionReclaimedPayload {
 export interface SessionControlUpdatePayload {
   control: SessionControlSnapshot
 }
+/** ``methods_session_queue._publish_queue``: the full queue, not a delta. */
+export interface SessionQueuePayload {
+  revision: number
+  items: SessionQueueItem[]
+}
+/** ``methods_session_queue._publish_queue`` (global): for windows not attached to the session. */
+export interface SessionQueueChangedPayload {
+  session_key: string
+  revision: number
+}
 /** ``methods_session`` billing.step_up on_verification. */
 export interface BillingStepUpVerificationPayload {
   verification_url: string
@@ -5042,6 +5088,10 @@ export interface RpcMethods {
   'session.list': { params: SessionListParams; result: SessionListResult }
   /** Most recent human-facing session; errors fold into a null session_id. */
   'session.most_recent': { params: SessionMostRecentParams; result: SessionMostRecentResult }
+  /** The live session's queued prompts in execution order, with stable ids. */
+  'session.queue.get': { params: SessionQueueGetParams; result: SessionQueueSnapshot }
+  /** Edit or delete one queued prompt, or promote it into the running turn as a steer. */
+  'session.queue.update': { params: SessionQueueUpdateParams; result: SessionQueueUpdateResult }
   /** Redirect the active turn (queued for the next turn while the agent is still building). */
   'session.redirect': { params: SessionCorrectionParams; result: SessionCorrectionResult }
   /** Attach to a stored session: reuse it if live here, else lazy / deferred / cold / eager rebuild. */
@@ -5334,6 +5384,8 @@ export const RPC_METHODS = [
   'session.interrupt',
   'session.list',
   'session.most_recent',
+  'session.queue.get',
+  'session.queue.update',
   'session.redirect',
   'session.resume',
   'session.save',
@@ -5532,6 +5584,10 @@ export interface BackendGatewayEventMap {
   'session.control.update': SessionControlUpdatePayload
   /** Live session settings snapshot (``server._session_info``); also the ``info`` of create/resume/activate. */
   'session.info': SessionLiveInfo
+  /** The session's queued prompts changed; replace the local view. */
+  'session.queue': SessionQueuePayload
+  /** A stored session's queue revision advanced; call session.queue.get to read it. */
+  'session.queue.changed': SessionQueueChangedPayload
   /** The backend reclaimed a live session out from under its clients. */
   'session.reclaimed': SessionReclaimedPayload
   /** Deferred resume hydration progress. */
@@ -5635,6 +5691,8 @@ export const GATEWAY_EVENT_TYPES = [
   'review.summary',
   'session.control.update',
   'session.info',
+  'session.queue',
+  'session.queue.changed',
   'session.reclaimed',
   'session.resume_progress',
   'session.title',

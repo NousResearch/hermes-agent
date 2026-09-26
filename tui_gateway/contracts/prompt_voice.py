@@ -10,7 +10,7 @@ from __future__ import annotations
 from pydantic import Field
 
 from .base import JsonValue, Params, Result, WireEnum
-from .common import OpenModel, PendingApproval, SessionParams
+from .common import OpenModel, PendingApproval, SessionParams, SessionQueueSnapshot
 from .registry import method
 
 # ── prompt.submit ─────────────────────────────────────────────────────────────────────────────
@@ -33,6 +33,10 @@ class PromptSubmitParams(SessionParams):
     display_kind: str | None = None  # only "hidden" is honoured; anything else renders as a user row
     interrupted: bool | None = None  # client-side barge-in: the turn's model message carries the note
     queued: bool | None = None  # client queue drain — the busy path must hold it, never redirect/steer
+    # Busy path only: the held prompt's stable id (a resubmit of a waiting id is not queued twice) and
+    # the submitter's opaque message id, both echoed by session.queue.
+    queue_id: str | None = None
+    client_message_id: str | None = None
     surface: str | None = None  # a ClientSurface value; unknown values clear the surface
     voice_context: str | None = None  # recent spoken transcript, model input only (voice-live)
     # Desktop-generated large-paste preview (first ~1000 chars); TITLE input only, never the model turn.
@@ -71,6 +75,7 @@ class PromptSubmitResult(Result):
     survivor_user_row_ids: list[int | None] | None = None
     survivor_row_id_map: dict[str, int | None] | None = None
     turn_isolation: bool | None = None
+    queue: SessionQueueSnapshot | None = None  # on ``status: queued``: the queue including this prompt
 
 
 method("prompt.submit", params=PromptSubmitParams, result=PromptSubmitResult,

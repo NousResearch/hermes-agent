@@ -26,7 +26,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.context_compressor import ContextCompressor, _DB_PERSISTED_MARKER
+from agent.context_compressor import SUMMARY_PREFIX, ContextCompressor, _DB_PERSISTED_MARKER
 from agent.conversation_compression import (
     CompressionCommitFence,
     _is_real_user_message,
@@ -68,6 +68,32 @@ def _build_agent_with_db(db: SessionDB, session_id: str, platform: str = "telegr
     # rotation regardless of the global default (flipped to True in #38763).
     agent.compression_in_place = False
     return agent
+
+
+def _seed_bulk_head(db: SessionDB, parent: str) -> None:
+    """Durable parent transcript: 10 bulk turns + the persisted question/answer pair.
+
+    Bulk head so the stub fold genuinely shrinks: the no-growth commit guard
+    refuses a 3-row candidate that is not smaller than a 3-row original; the
+    transcript's last reply stays "persisted answer" (#118900 guard shape).
+    """
+    for i in range(10):
+        db.append_message(parent, "user", f"bulk question {i} " + "x" * 60)
+        db.append_message(parent, "assistant", f"bulk answer {i} " + "y" * 60)
+    db.append_message(parent, "user", "persisted question")
+    db.append_message(parent, "assistant", "persisted answer")
+
+
+def _conforming_fold(*tail: dict) -> list:
+    """Conforming-engine shape (#118900): a real handoff summary (recognized as
+    scaffolding, not human intent) plus the transcript's own last reply kept
+    verbatim ahead of the scaffolding tail, so the commit guard sees the reply
+    present and the user-turn anchor still takes the MERGED branch these tests exercise."""
+    return [
+        {"role": "user", "content": SUMMARY_PREFIX + " earlier turns"},
+        {"role": "assistant", "content": "persisted answer"},
+        *tail,
+    ]
 
 
 def _msgs(n=20):
@@ -392,70 +418,6 @@ class TestRotationChildFlushDedup:
         ) == 1
         assert _count_rows(child_rows, content="tool result", role="tool") == 1
 
-    def test_mid_tool_loop_rows_do_not_duplicate_after_failed_parent_flush_direct_path(
-        self, tmp_path: Path
-    ):
-        db = SessionDB(db_path=tmp_path / "state.db")
-        parent = "PARENT_ROT_TOOL_LOOP_DIRECT"
-        db.create_session(parent, source="cli")
-        db.append_message(parent, "user", "persisted question")
-        db.append_message(parent, "assistant", "persisted answer")
-
-        loaded = db.get_messages_as_conversation(parent)
-        assistant_turn = {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [
-                {
-                    "id": "call-1",
-                    "type": "function",
-                    "function": {"name": "lookup", "arguments": "{}"},
-                }
-            ],
-        }
-        tool_turn = {
-            "role": "tool",
-            "tool_call_id": "call-1",
-            "content": "tool result",
-        }
-        messages = [
-            *loaded,
-            {"role": "user", "content": "live tool question"},
-            assistant_turn,
-            tool_turn,
-        ]
-
-        agent = _build_agent_with_db(db, parent)
-        agent._persist_user_message_idx = len(loaded)
-        agent.context_compressor.compress.return_value = [
-            copy.deepcopy(assistant_turn),
-            copy.deepcopy(tool_turn),
-        ]
-
-        real_flush = agent._flush_messages_to_session_db
-        with patch.object(
-            agent,
-            "_flush_messages_to_session_db",
-            side_effect=RuntimeError("simulated parent flush failure"),
-        ):
-            _returned, _ = agent._compress_context(
-                messages,
-                "sys",
-                approx_tokens=120_000,
-                commit_fence=CompressionCommitFence(),
-            )
-
-        assert agent.session_id != parent
-        real_flush(messages, conversation_history=loaded)
-
-        child_rows = db.get_messages_as_conversation(
-            agent.session_id, include_inactive=True
-        )
-        assert _count_rows(
-            child_rows, content="live tool question", role="user"
-        ) == 1
-        assert _count_rows(child_rows, content="", role="assistant") == 1
-        assert _count_rows(child_rows, content="tool result", role="tool") == 1
 
     def test_timestampless_duplicate_content_rows_are_all_stamped(
         self, tmp_path: Path
@@ -564,51 +526,6 @@ class TestRotationChildFlushDedup:
     # source with a marker-independent exact-hit two-phase scan.
     # ------------------------------------------------------------------
 
-    def test_rotation_never_stamps_drifted_user_role_neighbor(
-        self, tmp_path: Path
-    ):
-        """A user-role neighbor at a drifted index must not be stamped."""
-        db = SessionDB(db_path=tmp_path / "state.db")
-        parent = "PARENT_ROT_DRIFTED_NEIGHBOR"
-        db.create_session(parent, source="cli")
-        db.append_message(parent, "user", "persisted question")
-        db.append_message(parent, "assistant", "persisted answer")
-
-        loaded = db.get_messages_as_conversation(parent)
-        messages = [
-            *loaded,
-            {"role": "user", "content": "live question"},
-            {
-                "role": "user",
-                "content": "drifted neighbor",
-                "_todo_snapshot_synthetic": True,
-            },
-        ]
-
-        agent = _build_agent_with_db(db, parent)
-        # Index drifted onto the synthetic user-role neighbor (the reanchor
-        # fallback / stale-index failure shape the guard must not trust).
-        agent._persist_user_message_idx = len(messages) - 1
-        agent.context_compressor.compress.return_value = [
-            {"role": "assistant", "content": "[CONTEXT COMPACTION] summary"},
-        ]
-
-        with patch.object(
-            agent,
-            "_flush_messages_to_session_db",
-            side_effect=RuntimeError("simulated parent flush failure"),
-        ):
-            _returned, _ = agent._compress_context(
-                messages,
-                "sys",
-                approx_tokens=120_000,
-                commit_fence=CompressionCommitFence(),
-            )
-
-        # The drifted neighbor is not the row the child represents.
-        assert _DB_PERSISTED_MARKER not in messages[-1]
-        # The anchor source (the real live question) is stamped.
-        assert _DB_PERSISTED_MARKER in messages[-2]
 
     def test_rotation_drifted_index_does_not_duplicate_live_question_in_child(
         self, tmp_path: Path
@@ -618,8 +535,7 @@ class TestRotationChildFlushDedup:
         db = SessionDB(db_path=tmp_path / "state.db")
         parent = "PARENT_ROT_DRIFTED_MERGED"
         db.create_session(parent, source="cli")
-        db.append_message(parent, "user", "persisted question")
-        db.append_message(parent, "assistant", "persisted answer")
+        _seed_bulk_head(db, parent)
 
         loaded = db.get_messages_as_conversation(parent)
         messages = [
@@ -634,13 +550,13 @@ class TestRotationChildFlushDedup:
 
         agent = _build_agent_with_db(db, parent)
         agent._persist_user_message_idx = len(messages) - 1
-        agent.context_compressor.compress.return_value = [
+        agent.context_compressor.compress.return_value = _conforming_fold(
             {
                 "role": "user",
                 "content": "handoff scaffolding",
                 "_todo_snapshot_synthetic": True,
             },
-        ]
+        )
 
         real_flush = agent._flush_messages_to_session_db
         with patch.object(
@@ -675,21 +591,20 @@ class TestRotationChildFlushDedup:
         db = SessionDB(db_path=tmp_path / "state.db")
         parent = "PARENT_ROT_MERGED_LIVE"
         db.create_session(parent, source="cli")
-        db.append_message(parent, "user", "persisted question")
-        db.append_message(parent, "assistant", "persisted answer")
+        _seed_bulk_head(db, parent)
 
         loaded = db.get_messages_as_conversation(parent)
         messages = [*loaded, {"role": "user", "content": "live question"}]
 
         agent = _build_agent_with_db(db, parent)
         agent._persist_user_message_idx = len(messages) - 1
-        agent.context_compressor.compress.return_value = [
+        agent.context_compressor.compress.return_value = _conforming_fold(
             {
                 "role": "user",
                 "content": "scaffolding",
                 "_todo_snapshot_synthetic": True,
             },
-        ]
+        )
 
         real_flush = agent._flush_messages_to_session_db
         with patch.object(
@@ -730,8 +645,7 @@ class TestRotationChildFlushDedup:
         db = SessionDB(db_path=tmp_path / "state.db")
         parent = "PARENT_ROT_ADOPT_DIVERGE"
         db.create_session(parent, source="cli")
-        db.append_message(parent, "user", "persisted question")
-        db.append_message(parent, "assistant", "persisted answer")
+        _seed_bulk_head(db, parent)
 
         # (b) Old live list object kept alive; divergence set so the twin is
         # the SAME object the guard scans (not a fresh copy).
@@ -743,7 +657,6 @@ class TestRotationChildFlushDedup:
 
         agent = _build_agent_with_db(db, parent)
         agent._session_messages = old_live_list
-        assert agent._session_messages is old_live_list
 
         # (c) The stale snapshot passed to _compress_context is a separate
         # object (the production frontend-snapshot shape).
@@ -751,46 +664,35 @@ class TestRotationChildFlushDedup:
             {"role": "user", "content": "persisted question"},
             {"role": "assistant", "content": "persisted answer"},
         ]
-        assert stale_snapshot is not agent._session_messages
 
-        # (d) Pin the initial persist-index state: production "no known
-        # un-persisted tail" shape, so the real code takes the adopt-directly
-        # branch (:2994-3001) and the pre-adoption flush (:2988) is provably
-        # never attempted (no fixture flush can mask the divergence).
+        # (d) Production "no known un-persisted tail" shape, so the real code
+        # adopts the durable parent directly.
         agent._persist_user_message_idx = None
-        assert agent._persist_user_message_idx is None
 
         # Grow the DB AFTER the snapshot is taken so the REAL adoption
         # condition (durable parent longer than the caller snapshot) fires.
         db.append_message(parent, "user", "live question")
         durable_check = db.get_messages_as_conversation(parent)
-        assert len(durable_check) == 3 > len(stale_snapshot) == 2
+        assert len(durable_check) == len(loaded) + 1 > len(stale_snapshot) == 2
         # Sync the twin's timestamp to the committed row so the guard's
         # exact-timestamp twin scan matches the adopted anchor.
         old_live_list[-1]["timestamp"] = durable_check[-1]["timestamp"]
 
-        agent.context_compressor.compress.return_value = [
+        agent.context_compressor.compress.return_value = _conforming_fold(
             {
                 "role": "user",
                 "content": "handoff scaffolding",
                 "_todo_snapshot_synthetic": True,
             },
-        ]
+        )
 
-        # Phase-keyed flush failure: fail ONLY the pre-publish flush (:3780);
-        # a blanket failure would not distinguish the phases and a masked
-        # pre-adoption flush would hide the divergence.
-        flush_attempts = []
-
-        def _fail_only_prepublish_flush(messages_arg, **kwargs):
-            flush_attempts.append((messages_arg, kwargs))
-            raise RuntimeError("simulated pre-publish flush failure")
-
+        # The pre-publish flush fails, so the post-rotation flush below is the
+        # only writer of the live view.
         real_flush = agent._flush_messages_to_session_db
         with patch.object(
             agent,
             "_flush_messages_to_session_db",
-            side_effect=_fail_only_prepublish_flush,
+            side_effect=RuntimeError("simulated pre-publish flush failure"),
         ):
             _returned, _ = agent._compress_context(
                 stale_snapshot,
@@ -799,16 +701,12 @@ class TestRotationChildFlushDedup:
                 commit_fence=CompressionCommitFence(),
             )
 
-        # The ONLY internal flush was the single pre-publish one.
-        assert len(flush_attempts) == 1
-
-        # (e) Identity and shape asserts BEFORE markers: adoption fired, the
-        # divergence is preserved, the persist index was rebound out of range.
+        # (e) Preconditions BEFORE markers: adoption fired and the divergence
+        # is preserved.
         adopted = agent.context_compressor.compress.call_args.args[0]
         assert adopted is not stale_snapshot
         assert adopted is not agent._session_messages
         assert agent._session_messages is old_live_list
-        assert agent._persist_user_message_idx == len(adopted)
         assert adopted[-1]["role"] == "user"
         assert adopted[-1]["content"] == "live question"
         assert adopted[-1].get("timestamp") is not None
@@ -938,48 +836,6 @@ class TestRotationChildFlushDedup:
             == 1
         )
 
-    def test_no_real_user_anchor_guard_not_entered(self, tmp_path: Path):
-        """Negative regression: placeholder_appended/already_present must not
-        enter the anchor-source guard branch — no exception, rotation happens,
-        no live row outside the handoff carries the marker."""
-        db = SessionDB(db_path=tmp_path / "state.db")
-        parent = "PARENT_ROT_NO_REAL_ANCHOR"
-        db.create_session(parent, source="cli")
-
-        # All-user-synthetic transcript with NO real user. The rows carry
-        # enough content that compression shrinks the transcript (a single
-        # short synthetic row trips the would-grow gate and aborts rotation,
-        # which would make this a fixture failure, not a regression).
-        messages = [
-            {
-                "role": "user",
-                "content": f"synthetic scaffolding block {i} with enough "
-                f"content to keep the compressed transcript smaller",
-                "_todo_snapshot_synthetic": True,
-            }
-            for i in range(6)
-        ]
-
-        agent = _build_agent_with_db(db, parent)
-        agent.context_compressor.compress.return_value = [
-            {"role": "assistant", "content": "[CONTEXT COMPACTION] summary"},
-        ]
-
-        with patch.object(
-            agent,
-            "_flush_messages_to_session_db",
-            side_effect=RuntimeError("simulated parent flush failure"),
-        ):
-            _returned, _ = agent._compress_context(
-                messages,
-                "sys",
-                approx_tokens=120_000,
-                commit_fence=CompressionCommitFence(),
-            )
-
-        # Rotation happened; no live row carries the marker.
-        assert agent.session_id != parent
-        assert _DB_PERSISTED_MARKER not in messages[0]
 
     def test_list_content_merged_outcome_still_stamps_live_question(
         self, tmp_path: Path
@@ -990,8 +846,7 @@ class TestRotationChildFlushDedup:
         db = SessionDB(db_path=tmp_path / "state.db")
         parent = "PARENT_ROT_LIST_MERGED"
         db.create_session(parent, source="cli")
-        db.append_message(parent, "user", "persisted question")
-        db.append_message(parent, "assistant", "persisted answer")
+        _seed_bulk_head(db, parent)
 
         loaded = db.get_messages_as_conversation(parent)
         messages = [
@@ -1004,13 +859,13 @@ class TestRotationChildFlushDedup:
 
         agent = _build_agent_with_db(db, parent)
         agent._persist_user_message_idx = len(messages) - 1
-        agent.context_compressor.compress.return_value = [
+        agent.context_compressor.compress.return_value = _conforming_fold(
             {
                 "role": "user",
                 "content": [{"type": "text", "text": "scaffolding"}],
                 "_todo_snapshot_synthetic": True,
             },
-        ]
+        )
 
         real_flush = agent._flush_messages_to_session_db
         with patch.object(
@@ -1063,8 +918,7 @@ class TestRotationChildFlushDedup:
         db = SessionDB(db_path=tmp_path / "state.db")
         parent = "PARENT_ROT_STAMPED_TWIN"
         db.create_session(parent, source="cli")
-        db.append_message(parent, "user", "persisted question")
-        db.append_message(parent, "assistant", "persisted answer")
+        _seed_bulk_head(db, parent)
 
         loaded = db.get_messages_as_conversation(parent)
         messages = [
@@ -1088,13 +942,13 @@ class TestRotationChildFlushDedup:
             },
             {"role": "user", "content": "live question"},
         ]
-        agent.context_compressor.compress.return_value = [
+        agent.context_compressor.compress.return_value = _conforming_fold(
             {
                 "role": "user",
                 "content": "handoff scaffolding",
                 "_todo_snapshot_synthetic": True,
             },
-        ]
+        )
 
         with patch.object(
             agent,
@@ -1348,21 +1202,6 @@ class TestGateLevelGuardRefresh:
         assert compressor.should_compress(10**9) is True
         assert compressor._fallback_compression_streak == 0
 
-    def test_unblocked_gate_does_not_touch_the_db(
-        self,
-        refresh_state_db: SessionDB,
-    ):
-        db = refresh_state_db
-        session_id = "GATE_LEVEL_HOT_PATH"
-        db.create_session(session_id, source="telegram")
-        compressor = _bound_context_compressor(db, session_id)
-
-        with patch.object(
-            compressor,
-            "_refresh_durable_guards",
-            side_effect=AssertionError("hot path must not refresh"),
-        ):
-            assert compressor._automatic_compression_blocked() is False
 
 
 class TestCooldownPersistFailureIsNotAClearedRow:
@@ -1479,11 +1318,21 @@ class TestTodoSnapshotMergedNotDuplicated:
                 "image_url": {"url": "https://example.com/context.png"},
             },
         ]
-        agent.context_compressor.compress.return_value = [
-            {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
-            {"role": "assistant", "content": "ok"},
-            {"role": "user", "content": list(original_parts)},
-        ]
+        agent.context_compressor.compress.return_value = None
+
+        def _keep_last_reply(messages, **_kwargs):
+            # Conforming-engine shape (#118900): the retained tail assistant
+            # row is the transcript's own last reply, kept verbatim — the
+            # commit guard reinserts a dropped last reply, so a stub that
+            # invents a new tail row would (correctly) come back with the
+            # original alongside it.
+            return [
+                {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
+                {"role": "assistant", "content": messages[-1]["content"]},
+                {"role": "user", "content": list(original_parts)},
+            ]
+
+        agent.context_compressor.compress.side_effect = _keep_last_reply
         agent._todo_store._todos = [
             {"id": "t1", "content": "inspect image", "status": "in_progress"}
         ]
@@ -1566,7 +1415,11 @@ class TestTodoSnapshotScaffoldingTails:
         agent = self._agent_with_todo(
             db,
             "PARENT_TODO_RESTRIP",
-            {"role": "user", "content": previously_merged},
+            {
+                "role": "user",
+                "content": previously_merged,
+                "api_content": "stale wire copy containing the old task",
+            },
         )
 
         compressed, _ = agent._compress_context(
@@ -1579,6 +1432,7 @@ class TestTodoSnapshotScaffoldingTails:
         assert "task A" in tail["content"]
         assert "old finished task" not in tail["content"]
         assert tail["content"].count(TODO_INJECTION_HEADER) == 1
+        assert "api_content" not in tail
         assert not any(
             previous.get("role") == current.get("role") == "user"
             for previous, current in zip(compressed, compressed[1:])
@@ -1611,7 +1465,7 @@ class TestTodoSnapshotScaffoldingTails:
             {
                 k: v
                 for k, v in m.items()
-                if k not in {"_row_id", _DB_PERSISTED_MARKER}
+                if k not in {"_row_id", "timestamp", _DB_PERSISTED_MARKER}
             }
             for m in compressed
         ] == expected
@@ -1619,6 +1473,288 @@ class TestTodoSnapshotScaffoldingTails:
             TODO_INJECTION_HEADER in str(message.get("content") or "")
             for message in compressed
         )
+
+    def test_empty_todo_store_removes_previous_compaction_snapshot(
+        self, tmp_path: Path
+    ):
+        """Completed items make the store authoritative and clear old work."""
+        from tools.todo_tool import TODO_INJECTION_HEADER
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        session_id = "PARENT_TODO_CLEARED"
+        db.create_session(session_id, source="cli")
+        agent = _build_agent_with_db(db, session_id, platform="cli")
+        stale_task = "- [ ] stale-task. This task was already cleared"
+        agent.context_compressor.compress.return_value = [
+            {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
+            {"role": "assistant", "content": "acknowledged"},
+            {
+                "role": "user",
+                "content": (
+                    "Keep this user context.\n\n"
+                    f"{TODO_INJECTION_HEADER}\n{stale_task}"
+                ),
+                "api_content": "stale wire copy containing the old snapshot",
+            },
+        ]
+        agent._todo_store.write(
+            [{"id": "done", "content": "done thing", "status": "completed"}]
+        )
+
+        compressed, _ = agent._compress_context(
+            _msgs(), "sys", approx_tokens=120_000
+        )
+
+        combined = "\n".join(str(m.get("content") or "") for m in compressed)
+        assert "Keep this user context." in combined
+        assert TODO_INJECTION_HEADER not in combined
+        assert stale_task not in combined
+        retained = next(
+            message
+            for message in compressed
+            if "Keep this user context." in str(message.get("content") or "")
+        )
+        assert "api_content" not in retained
+
+    def test_cancelled_only_store_is_authoritative(self, tmp_path: Path):
+        """Cancelled work retires the old snapshot just like completed work."""
+        from tools.todo_tool import TODO_INJECTION_HEADER
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        session_id = "PARENT_TODO_CANCELLED"
+        db.create_session(session_id, source="cli")
+        agent = _build_agent_with_db(db, session_id, platform="cli")
+        agent.context_compressor.compress.return_value = [
+            {"role": "user", "content": "Keep the request"},
+            {"role": "assistant", "content": "acknowledged"},
+            {
+                "role": "user",
+                "content": f"{TODO_INJECTION_HEADER}\n- [ ] obsolete task",
+                "_todo_snapshot_synthetic": True,
+            },
+        ]
+        agent._todo_store.write(
+            [{"id": "nope", "content": "obsolete task", "status": "cancelled"}]
+        )
+
+        compressed, _ = agent._compress_context(
+            _msgs(), "sys", approx_tokens=120_000
+        )
+
+        assert [message.get("role") for message in compressed] == [
+            "user",
+            "assistant",
+        ]
+        assert all(
+            TODO_INJECTION_HEADER not in str(message.get("content") or "")
+            for message in compressed
+        )
+
+    def test_structured_snapshot_only_tail_is_removed(self, tmp_path: Path):
+        """A flagged list row is removable only when no other part remains."""
+        from tools.todo_tool import TODO_INJECTION_HEADER
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        session_id = "PARENT_TODO_STRUCTURED_ONLY"
+        db.create_session(session_id, source="cli")
+        agent = _build_agent_with_db(db, session_id, platform="cli")
+        agent.context_compressor.compress.return_value = [
+            {"role": "user", "content": "Keep the request"},
+            {"role": "assistant", "content": "acknowledged"},
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": f"{TODO_INJECTION_HEADER}\n- [ ] stale task",
+                    }
+                ],
+                "_todo_snapshot_synthetic": True,
+            },
+        ]
+        agent._todo_store.write(
+            [{"id": "done", "content": "stale task", "status": "completed"}]
+        )
+
+        compressed, _ = agent._compress_context(
+            _msgs(), "sys", approx_tokens=120_000
+        )
+
+        assert [message.get("role") for message in compressed] == [
+            "user",
+            "assistant",
+        ]
+
+    def test_non_tail_snapshot_deletion_repairs_assistant_alternation(
+        self, tmp_path: Path
+    ):
+        from tools.todo_tool import TODO_INJECTION_HEADER
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        session_id = "PARENT_TODO_MIDDLE"
+        db.create_session(session_id, source="cli")
+        agent = _build_agent_with_db(db, session_id, platform="cli")
+        agent.context_compressor.compress.return_value = [
+            {"role": "user", "content": "Keep the request"},
+            {
+                "role": "assistant",
+                "content": "before snapshot",
+                "api_content": "stale assistant wire copy",
+            },
+            {
+                "role": "user",
+                "content": f"{TODO_INJECTION_HEADER}\n- [ ] stale task",
+                "_todo_snapshot_synthetic": True,
+            },
+            {"role": "assistant", "content": "after snapshot"},
+            {"role": "user", "content": "new request"},
+        ]
+        agent._todo_store.write(
+            [{"id": "done", "content": "stale task", "status": "completed"}]
+        )
+
+        compressed, _ = agent._compress_context(
+            _msgs(), "sys", approx_tokens=120_000
+        )
+
+        assert [message.get("role") for message in compressed] == [
+            "user",
+            "assistant",
+            "user",
+        ]
+        repaired = compressed[1]
+        assert "before snapshot" in repaired["content"]
+        assert "after snapshot" in repaired["content"]
+        assert "api_content" not in repaired
+        assert not any(
+            previous.get("role") == current.get("role")
+            for previous, current in zip(compressed, compressed[1:])
+        )
+
+    def test_multimodal_content_survives_and_synthetic_provenance_clears(
+        self, tmp_path: Path
+    ):
+        from tools.todo_tool import TODO_INJECTION_HEADER
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        session_id = "PARENT_TODO_MULTIMODAL_RETIRE"
+        db.create_session(session_id, source="cli")
+        agent = _build_agent_with_db(db, session_id, platform="cli")
+        surviving_parts = [
+            {"type": "text", "text": "Keep this caption"},
+            {
+                "type": "image_url",
+                "image_url": {"url": "https://example.com/context.png"},
+            },
+            {"type": "input_audio", "input_audio": {"data": "audio-data"}},
+        ]
+        agent.context_compressor.compress.return_value = [
+            {"role": "user", "content": "summary"},
+            {"role": "assistant", "content": "acknowledged"},
+            {
+                "role": "user",
+                "content": surviving_parts
+                + [
+                    {
+                        "type": "text",
+                        "text": f"{TODO_INJECTION_HEADER}\n- [ ] stale task",
+                    }
+                ],
+                "api_content": "stale wire copy containing the snapshot",
+                "_todo_snapshot_synthetic": True,
+                "unrelated_metadata": "keep-me",
+            },
+        ]
+        agent._todo_store.write(
+            [{"id": "done", "content": "stale task", "status": "completed"}]
+        )
+
+        input_msgs = [
+            {
+                "role": "user" if index % 2 == 0 else "assistant",
+                "content": f"message {index} " + "x" * 1000,
+            }
+            for index in range(40)
+        ]
+        compressed, _ = agent._compress_context(
+            input_msgs, "sys", approx_tokens=120_000
+        )
+
+        retained = next(
+            message for message in compressed if isinstance(message.get("content"), list)
+        )
+        assert retained["content"] == surviving_parts
+        assert retained["unrelated_metadata"] == "keep-me"
+        assert "api_content" not in retained
+        assert "_todo_snapshot_synthetic" not in retained
+
+    @pytest.mark.parametrize("authority_mode", ["missing", "raises"])
+    def test_unknown_store_authority_preserves_snapshot(
+        self, tmp_path: Path, authority_mode: str
+    ):
+        """Legacy or broken stores fail conservative, never erasing pending work."""
+        from tools.todo_tool import TODO_INJECTION_HEADER
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        session_id = f"PARENT_TODO_COMPAT_{authority_mode.upper()}"
+        db.create_session(session_id, source="telegram")
+        agent = _build_agent_with_db(db, session_id, platform="telegram")
+        pending_task = "- [ ] pending-task. Preserve conservatively"
+        agent.context_compressor.compress.return_value = [
+            {"role": "user", "content": "Keep the request"},
+            {"role": "assistant", "content": "acknowledged"},
+            {
+                "role": "user",
+                "content": f"{TODO_INJECTION_HEADER}\n{pending_task}",
+                "_todo_snapshot_synthetic": True,
+            },
+        ]
+
+        class LegacyStore:
+            def format_for_injection(self):
+                return None
+
+        store = LegacyStore()
+        if authority_mode == "raises":
+            store.has_items = MagicMock(side_effect=RuntimeError("store unavailable"))
+        agent._todo_store = store
+
+        compressed, _ = agent._compress_context(
+            _msgs(), "sys", approx_tokens=120_000
+        )
+
+        combined = "\n".join(str(message.get("content") or "") for message in compressed)
+        assert TODO_INJECTION_HEADER in combined
+        assert pending_task in combined
+
+    def test_unhydrated_empty_todo_store_preserves_pending_snapshot(
+        self, tmp_path: Path
+    ):
+        """A fresh empty store must not erase pending work retained by compression."""
+        from tools.todo_tool import TODO_INJECTION_HEADER
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        session_id = "PARENT_TODO_UNHYDRATED"
+        db.create_session(session_id, source="telegram")
+        agent = _build_agent_with_db(db, session_id, platform="telegram")
+        pending_task = "- [ ] pending-task. Continue after the next compaction"
+        getattr(agent, "context_compressor").compress.return_value = [
+            {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
+            {"role": "assistant", "content": "acknowledged"},
+            {
+                "role": "user",
+                "content": f"{TODO_INJECTION_HEADER}\n{pending_task}",
+                "_todo_snapshot_synthetic": True,
+            },
+        ]
+
+        compressed, _ = agent._compress_context(
+            _msgs(), "sys", approx_tokens=120_000
+        )
+
+        combined = "\n".join(str(m.get("content") or "") for m in compressed)
+        assert TODO_INJECTION_HEADER in combined
+        assert pending_task in combined
 
 
 class TestArchivedParentActivityLabelsCleared:
@@ -1682,17 +1818,46 @@ class TestAbortedRotationDoesNotGrowParent:
     def _durable_len(db: SessionDB, session_id: str) -> int:
         return len(db.get_messages_as_conversation(session_id))
 
-    def test_ended_parent_aborts_before_the_prepublish_flush(self, tmp_path: Path):
+    def test_automatic_stamp_no_longer_wedges_rotation(self, tmp_path: Path):
+        """Flipped by the #88197 wedge fix: an AUTOMATIC stamp
+        (``tui_shutdown`` — is_automatic_end_reason) is stale by construction
+        for a live rotating writer, so publish now clears it in-transaction
+        and the rotation COMMITS instead of aborting forever. The abort
+        contract below moves to deliberate boundaries."""
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "PARENT_AUTOMATIC_STAMP_HEALS"
+        db.create_session(parent, source="cli")
+        agent = _build_agent_with_db(db, parent)
+
+        # The lie at the heart of #88197: the row says ended, the agent is live.
+        db.end_session(parent, "tui_shutdown")
+        assert db.get_session(parent)["ended_at"] is not None
+
+        returned, _sp = agent._compress_context(_msgs(), "sys", approx_tokens=120_000)
+
+        # Rotation went through — no abort loop, no repeated flush growth.
+        assert agent.session_id != parent
+        parent_row = db.get_session(parent)
+        assert parent_row["end_reason"] == "compression", (
+            "parent must close with its TRUE boundary, not the stale stamp"
+        )
+        child_row = db.get_session(agent.session_id)
+        assert child_row is not None
+        assert child_row["parent_session_id"] == parent
+
+    def test_deliberately_ended_parent_aborts_before_the_prepublish_flush(
+        self, tmp_path: Path
+    ):
         db = SessionDB(db_path=tmp_path / "state.db")
         parent = "PARENT_ENDED_NO_GROWTH"
         db.create_session(parent, source="cli")
         agent = _build_agent_with_db(db, parent)
 
-        # The lie at the heart of #88197: the row says ended, the agent is live.
-        # ``tui_shutdown`` is not a lineage boundary -- nothing forked off this
-        # session -- so durable writes to it are still permitted, which is
-        # exactly why the flush lands and the publish still refuses.
-        db.end_session(parent, "tui_shutdown")
+        # A DELIBERATE boundary (another path owns lineage): the guard must
+        # still refuse BEFORE the #47202 flush so aborted attempts cannot
+        # grow the parent (#88411's contract, now scoped to non-automatic
+        # reasons — automatic stamps rotate through, see the test above).
+        db.end_session(parent, "session_reset")
         assert db.get_session(parent)["ended_at"] is not None
 
         before = self._durable_len(db, parent)

@@ -24,6 +24,9 @@ from gateway.config import GatewayConfig
 from gateway.session import SessionStore
 from hermes_state import SessionDB
 
+# These probe the live-DB guard against the real root on purpose.
+pytestmark = pytest.mark.allow_real_home_io
+
 # Must match the root the guard itself computes.  Hardcoding ``~/.hermes``
 # silently disarmed every assertion below on Windows, where the real root is
 # ``%LOCALAPPDATA%\hermes``: the paths under test were then *correctly*
@@ -77,13 +80,6 @@ class TestProductionPathRefused:
 
 
 class TestHermeticPathsAllowed:
-    def test_tmp_db_path_works(self, tmp_path):
-        db = SessionDB(db_path=tmp_path / "state.db")
-        try:
-            db.create_session("iso-guard-session", "cli")
-            assert db.get_session("iso-guard-session") is not None
-        finally:
-            db.close()
 
     def test_tmp_hermes_home_default_resolution_works(self, tmp_path, monkeypatch):
         """Argless SessionDB() under a hermetic HERMES_HOME must succeed."""

@@ -1279,10 +1279,10 @@ def build_prepared_desktop(desktop_dir: Path, *, source_mode: bool, npm: str, en
         # and stopping it would kill this process first (#123499). Packing would only
         # produce a build that cannot be installed; leave the app as it is. Its content
         # stamp stays stale, so `hermes desktop` run outside the app rebuilds it
-        # (_desktop_build_needed).
+        # (_desktop_build_needed), and the in-app update completes with desktop=True.
         print(f"  ⚠ Skipped rebuilding the desktop app: this update is running inside it (pid {ancestor}),")
-        print("    and Windows locks a running app's files. Quit Hermes Desktop, then run")
-        print("    `hermes desktop` from a terminal to rebuild and reopen it.")
+        print("    and Windows locks a running app's files. Quit Hermes Desktop and run `hermes desktop`")
+        print("    from a terminal, or use Update now in Settings → About, to rebuild and reopen it.")
         return None
     build_label = "source build" if source_mode else "packaged app"
     build_env = dict(env)
@@ -1521,7 +1521,8 @@ def cmd_gui(args: argparse.Namespace):
                                         explicit=force_build or getattr(args, "build_only", False))
             built = build_prepared_desktop(desktop_dir, source_mode=source_mode, npm=npm, env=build_env)
             if not source_mode:
-                packaged_executable = built
+                # None only when the build was skipped under its own Desktop: reopen the app it kept.
+                packaged_executable = built or packaged_executable
         else:
             build_label = "source build" if source_mode else "packaged app"
             desktop_launch_notice(f"✓ Desktop {build_label} is up to date (content stamp matches)", source_mode=source_mode)

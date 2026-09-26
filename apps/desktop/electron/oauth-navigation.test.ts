@@ -4,9 +4,12 @@ import { isExpectedOauthNavigationAbort } from './oauth-navigation'
 
 describe('isExpectedOauthNavigationAbort', () => {
   it('treats Electron ERR_ABORTED callback navigation as non-fatal', () => {
-    const error = Object.assign(new Error("ERR_ABORTED (-3) loading 'https://agent.example.com/auth/callback?code=redacted'"), {
-      code: -3
-    })
+    const error = Object.assign(
+      new Error("ERR_ABORTED (-3) loading 'https://agent.example.com/auth/callback?code=redacted'"),
+      {
+        code: -3
+      }
+    )
 
     expect(isExpectedOauthNavigationAbort(error)).toBe(true)
   })

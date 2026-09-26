@@ -5643,7 +5643,8 @@ export const deOverrides = {
       questionProgress: (answered, total) => `${answered} von ${total} beantwortet`,
       lateAnswer: (question, choice) => `Re: „${question}“ — meine Antwort: ${choice}`,
       lateAnswerTip: 'Diese Antwort als Folgenachricht entwerfen',
-      lateAnswerHint: 'Dieser Prompt wartet nicht mehr. Wählen Sie eine Option, um sie als Folgenachricht zu entwerfen.',
+      lateAnswerHint:
+        'Dieser Prompt wartet nicht mehr. Wählen Sie eine Option, um sie als Folgenachricht zu entwerfen.',
       notDelivered:
         'Diese Frage hat die App nicht erreicht und kann hier nicht beantwortet werden. Klicken Sie auf Stopp, um den Durchgang zu beenden, und antworten Sie dann im Chat.'
     },

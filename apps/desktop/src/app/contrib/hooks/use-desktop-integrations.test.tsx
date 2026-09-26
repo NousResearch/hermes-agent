@@ -321,8 +321,6 @@ describe('useDesktopIntegrations', () => {
     })
   })
 
-
-
   describe('resume-exhausted write barrier (#98467)', () => {
     it('does not re-persist an exhausted session on a session-list refresh', () => {
       window.localStorage.setItem('hermes.desktop.lastRoute.profile.default', '/exhausted-session')

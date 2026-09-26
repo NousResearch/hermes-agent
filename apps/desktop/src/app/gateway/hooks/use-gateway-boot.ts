@@ -199,6 +199,7 @@ export async function connectInitialGateway({
       if (isGatewayReauthRequired(err)) {
         throw err
       }
+
       lastConnectError = err
 
       if (attempt < attempts - 1) {
@@ -1437,12 +1438,14 @@ export function useGatewayBoot({
                   RECONNECT_ATTEMPT_TIMEOUT_MS,
                   'Timed out minting the gateway WebSocket URL'
                 ))
+
               await gateway.connect(url)
             },
             isCancelled: () => cancelled,
             initialUrl: wsUrl
           })
         }
+
         stage = 'connected'
 
         if (cancelled) {

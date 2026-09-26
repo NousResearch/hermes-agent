@@ -2933,6 +2933,7 @@ export const ar = defineLocale({
       gatewayOffline: 'البوابة غير متصلة',
       gatewayRestarting: 'جار إعادة التشغيل...',
       gatewayTitle: 'البوابة',
+      toggleDateTime: 'التاريخ والوقت',
       agents: 'الوكلاء',
       closeAgents: 'إغلاق الوكلاء',
       openAgents: 'فتح الوكلاء',

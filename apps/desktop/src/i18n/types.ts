@@ -3916,6 +3916,7 @@ export interface Translations {
       toggleCacheHitRate: string
       toggleCommandCenter: string
       toggleContextUsage: string
+      toggleDateTime: string
       toggleRunningTimer: string
       toggleSessionTimer: string
       toggleTerminal: string

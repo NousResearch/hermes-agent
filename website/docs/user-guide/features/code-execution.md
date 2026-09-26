@@ -155,12 +155,23 @@ Security-critical invariants are identical across both modes:
 
 Switching mode changes where scripts run and which interpreter runs them, not what credentials they can see or which tools they can call.
 
+## Persistent session kernel
+
+Calls reuse a Python child for the same session, execution mode, interpreter,
+working directory, and tool set. Imports, variables, and loaded data can persist
+between cells. The child environment is fixed when the kernel starts.
+
+Pass `reset: true` to discard that kernel state. A timeout or interrupted kernel
+can also lose it. Do not assume that a later terminal environment change is
+already visible inside an existing kernel. The old `code_execution.kernel_mode`
+setting is no longer a separate switch.
+
 ## Resource Limits
 
 | Resource | Limit | Notes |
 |----------|-------|-------|
 | **Timeout** | 5 minutes (300s) | Script is killed with SIGTERM, then SIGKILL after 5s grace |
-| **Stdout** | 50 KB | Output truncated with `[output truncated at 50KB]` notice |
+| **Stdout** | 50 KB | Shown head-and-tail inline; the full output is saved to `~/.hermes/cache/exec/` and the path is included in the result |
 | **Stderr** | 10 KB | Included in output on non-zero exit for debugging |
 | **Tool calls** | 50 per execution | Error returned when limit reached |
 
@@ -173,6 +184,29 @@ code_execution:
   timeout: 300       # Max seconds per script (default: 300)
   max_tool_calls: 50 # Max tool calls per execution (default: 50)
 ```
+
+## State Between Calls (the session kernel)
+
+On the local terminal backend, `execute_code` does not start a fresh interpreter for every call. Each session owns a persistent Python kernel, so variables, imports, and loaded data from one call are available in the next. The agent can load a dataset once and query it across several turns instead of re-reading it every time. Subagents get their own kernel; kernels are never shared across sessions. A subagent's kernel lives exactly as long as the subagent: it is exempt from the live-kernel cap while the subagent runs (a wide fan-out no longer evicts a sibling's kernel mid-task) and is disposed when the subagent finishes.
+
+What ends a kernel:
+
+- **Timeout or interrupt.** A cell that hits the timeout (or is interrupted) kills the kernel process and its state is lost on purpose; the result says so and the next call starts a fresh kernel.
+- **`reset=true`.** The agent can pass `reset: true` to discard the kernel's state and start clean. This is also the way to pick up environment changes: a kernel's environment is frozen when it spawns, so a newly allowlisted passthrough variable is invisible until the kernel is reset.
+- **Idle timeout and eviction.** Kernels die with the session, after `code_execution.kernel_idle_timeout` idle seconds (default 1800), or when more than `code_execution.max_session_kernels` (default 4) top-level sessions' kernels are alive and the oldest is evicted (running subagents' kernels do not count against the cap).
+
+The security envelope is the same as a one-shot script: environment scrubbing, the tool whitelist, and the per-call tool budget all apply to every cell, and tool-call authority (approvals, session, allow-list) is rebound on each cell.
+
+```yaml
+# ~/.hermes/config.yaml
+code_execution:
+  kernel_idle_timeout: 1800   # seconds a kernel may sit idle before it is reaped
+  max_session_kernels: 4      # kernels kept alive at once; oldest is evicted past this
+```
+
+**Remote backends** (Docker, SSH, Modal) run a remote session kernel with the same contract. If the kernel cannot be spawned on the backend, Hermes falls back to running each call as a standalone script and says so in the result.
+
+**Large output.** Stdout over 50 KB is shown head-and-tail inline, and the full text is saved under `~/.hermes/cache/exec/` with the path included in the result, so the agent can page through it with `read_file` instead of re-running the script.
 
 ## How Tool Calls Work Inside Scripts
 
@@ -217,7 +251,7 @@ terminal:
     - ANOTHER_TOKEN
 ```
 
-See the [Security guide](/user-guide/security#environment-variable-passthrough) for full details.
+See the [Security guide](../security.md#environment-variable-passthrough) for full details.
 
 ### `HERMES_*` variables in the child
 
@@ -287,7 +321,7 @@ Hermes always writes the script and the auto-generated `hermes_tools.py` RPC stu
 | Running a build or test suite | ❌ | ✅ |
 | Looping over search results | ✅ | ❌ |
 | Interactive/background processes | ❌ | ✅ |
-| Needs API keys in environment | ⚠️ Only via [passthrough](/user-guide/security#environment-variable-passthrough) | ✅ (most pass through) |
+| Needs API keys in environment | ⚠️ Only via [passthrough](../security.md#environment-variable-passthrough) | ✅ (most pass through) |
 
 **Rule of thumb:** Use `execute_code` when you need to call Hermes tools programmatically with logic between calls. Use `terminal` for running shell commands, builds, and processes.
 

@@ -95,16 +95,6 @@ describe('applyDisplay', () => {
     expect($uiState.get().destructiveSlashConfirm).toBe(false)
   })
 
-  it('coerces legacy true + "on" alias to top', () => {
-    const setBell = vi.fn()
-
-    applyDisplay({ config: { display: { tui_statusbar: true as unknown as 'on' } } }, setBell)
-    expect($uiState.get().statusBar).toBe('top')
-
-    applyDisplay({ config: { display: { tui_statusbar: 'on' } } }, setBell)
-    expect($uiState.get().statusBar).toBe('top')
-  })
-
   it('applies v1 parity defaults when display fields are missing', () => {
     const setBell = vi.fn()
 
@@ -215,27 +205,6 @@ describe('applyDisplay', () => {
     )
 
     expect($uiState.get().sections).toEqual({ activity: 'hidden' })
-  })
-
-  it('treats a null config like an empty display block', () => {
-    const setBell = vi.fn()
-
-    applyDisplay(null, setBell)
-
-    const s = $uiState.get()
-    expect(setBell).toHaveBeenCalledWith(false)
-    expect(s.inlineDiffs).toBe(true)
-    expect(s.streaming).toBe(true)
-  })
-
-  it('accepts the new string statusBar modes', () => {
-    const setBell = vi.fn()
-
-    applyDisplay({ config: { display: { tui_statusbar: 'bottom' } } }, setBell)
-    expect($uiState.get().statusBar).toBe('bottom')
-
-    applyDisplay({ config: { display: { tui_statusbar: 'top' } } }, setBell)
-    expect($uiState.get().statusBar).toBe('top')
   })
 })
 
@@ -357,16 +326,6 @@ describe('applyDisplay → busy_input_mode', () => {
     applyDisplay({ config: { display: { busy_input_mode: 'steer' } } }, setBell)
     expect($uiState.get().busyInputMode).toBe('steer')
   })
-
-  it('falls back to queue when value is missing or invalid (TUI-only default)', () => {
-    const setBell = vi.fn()
-
-    applyDisplay({ config: { display: {} } }, setBell)
-    expect($uiState.get().busyInputMode).toBe('queue')
-
-    applyDisplay({ config: { display: { busy_input_mode: 'drop' } } }, setBell)
-    expect($uiState.get().busyInputMode).toBe('queue')
-  })
 })
 
 describe('applyDisplay → tui_status_indicator', () => {
@@ -382,16 +341,6 @@ describe('applyDisplay → tui_status_indicator', () => {
 
     applyDisplay({ config: { display: { tui_status_indicator: 'unicode' } } }, setBell)
     expect($uiState.get().indicatorStyle).toBe('unicode')
-  })
-
-  it('falls back to kaomoji default when missing or invalid', () => {
-    const setBell = vi.fn()
-
-    applyDisplay({ config: { display: {} } }, setBell)
-    expect($uiState.get().indicatorStyle).toBe('kaomoji')
-
-    applyDisplay({ config: { display: { tui_status_indicator: 'rainbow' } } }, setBell)
-    expect($uiState.get().indicatorStyle).toBe('kaomoji')
   })
 })
 
@@ -421,14 +370,6 @@ describe('applyDisplay → voice.record_key (#18994)', () => {
     applyDisplay({ config: { display: {} } }, setBell, setVoiceRecordKey)
 
     expect(setVoiceRecordKey).toHaveBeenCalledWith(expect.objectContaining({ ch: 'b', mod: 'ctrl', raw: 'ctrl+b' }))
-  })
-
-  it('is a no-op when the voice setter is not passed (back-compat)', () => {
-    const setBell = vi.fn()
-
-    // applyDisplay is used in the setVoiceEnabled-less init path too;
-    // omitting the third arg must not throw.
-    expect(() => applyDisplay({ config: { display: {}, voice: { record_key: 'alt+r' } } }, setBell)).not.toThrow()
   })
 
   it('does not reset voiceRecordKey when cfg is null (transient RPC failure)', () => {

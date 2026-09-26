@@ -33,6 +33,7 @@ const buildUiState = (): UiState => ({
   sid: null,
   status: 'summoning hermes…',
   statusBar: 'top',
+  storedSid: null,
   statusBarFields: null,
   streaming: true,
   // Stay off until config hydrates — the title hook writes as soon as it

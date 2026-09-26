@@ -47,6 +47,7 @@ _RECONNECT_BASE_DELAY, _RECONNECT_MAX_DELAY, _RECONNECT_JITTER = 2.0, 60.0, 0.2 
 _POST_WITH_FILE_ERROR = "Failed to post with file"
 _MEDIA_MSG_TYPES = (("image/", MessageType.PHOTO), ("audio/", MessageType.VOICE))  # first match wins
 _INBOUND_CACHE_EXT = {"image/": ".png", "audio/": ".ogg"}  # mime prefix → default extension for cached media
+_INTAKE_DENIAL_LOG_LIMIT = 512
 
 
 def _with_mentions_disabled(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -60,6 +61,72 @@ def _channel_id_set(raw: Any) -> set:
     """Parse a list or comma-separated string of channel IDs into a stripped set."""
     items = raw if isinstance(raw, list) else str(raw).split(",")
     return {str(c).strip() for c in items if str(c).strip()}
+
+
+def _normalized_id_set(value: Any) -> Optional[set[str]]:
+    """Normalize a scalar or flat YAML list; return None for malformed shapes."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (str, int)):
+        items = [value]
+    elif isinstance(value, list):
+        if any(isinstance(item, bool) or not isinstance(item, (str, int)) for item in value):
+            return None
+        items = value
+    else:
+        return None
+    return {str(item).strip() for item in items if str(item).strip()}
+
+
+def _channel_group_cfg(groups: Dict[str, Any], channel_id: str) -> tuple[Optional[str], Any]:
+    """Resolve a channel's config key/value without hiding malformed entries."""
+    channel_key = str(channel_id)
+    if channel_key in groups:
+        return channel_key, groups[channel_key]
+    lowered = channel_key.lower()
+    for key, value in groups.items():
+        if isinstance(key, str) and key != "*" and key.lower() == lowered:
+            return key, value
+    if "*" in groups:
+        return "*", groups["*"]
+    return None, None
+
+
+def _channel_scope_allows(
+    extra: Dict[str, Any], sender_id: str, channel_id: str, warned_keys: set[str]
+) -> bool:
+    """Apply an optional sender allowlist only when this channel is listed."""
+    if not isinstance(extra, dict):
+        return True
+    groups = extra.get("groups")
+    if not isinstance(groups, dict):
+        return True
+    group_key, group_cfg = _channel_group_cfg(groups, channel_id)
+    if group_key is None:
+        return True
+    group_path = f"groups.{group_key}"
+    if not isinstance(group_cfg, dict):
+        if group_path not in warned_keys:
+            warned_keys.add(group_path)
+            logger.warning(
+                "Mattermost: invalid channel config at %s; denying all senders for this channel",
+                group_path,
+            )
+        return False
+    allow_key = "allow_from" if "allow_from" in group_cfg else "allowFrom"
+    if allow_key not in group_cfg:
+        return True
+    allowed = _normalized_id_set(group_cfg[allow_key])
+    if allowed is None:
+        allow_path = f"{group_path}.{allow_key}"
+        if allow_path not in warned_keys:
+            warned_keys.add(allow_path)
+            logger.warning(
+                "Mattermost: invalid sender allowlist at %s; denying all senders for this channel",
+                allow_path,
+            )
+        return False
+    return not allowed or "*" in allowed or sender_id in allowed
 
 
 def _post_result(data: Dict[str, Any], error: str) -> SendResult:
@@ -122,6 +189,8 @@ class MattermostAdapter(BasePlatformAdapter):
         self._last_post_status: Optional[int] = None  # POST-only, read by the broken-thread-root fallback
         self._last_post_error: str = ""
         self._dedup = MessageDeduplicator()
+        self._logged_intake_denials: set[tuple[str, str]] = set()
+        self._warned_invalid_acl_keys: set[str] = set()
 
     # --- HTTP helpers ---
 
@@ -562,6 +631,20 @@ class MattermostAdapter(BasePlatformAdapter):
         channel_id, is_dm = post.get("channel_id", ""), data.get("channel_type", "O") == "D"
         message_text = post.get("message", "")
         if not is_dm:  # DMs need no gating; channels are mention-gated.
+            if not _channel_scope_allows(
+                self.config.extra or {}, sender_id, channel_id, self._warned_invalid_acl_keys
+            ):
+                logger.debug(
+                    "Mattermost: ignoring sender outside configured channel allowlist "
+                    "(channel=%s sender=%s)", channel_id, sender_id)
+                denial_key = (channel_id, sender_id)
+                if (denial_key not in self._logged_intake_denials
+                        and len(self._logged_intake_denials) < _INTAKE_DENIAL_LOG_LIMIT):
+                    self._logged_intake_denials.add(denial_key)
+                    logger.info(
+                        "Mattermost: first denial for sender outside configured channel allowlist "
+                        "(channel=%s sender=%s)", channel_id, sender_id)
+                return
             message_text = self._apply_channel_gating(channel_id, message_text)
             if message_text is None:
                 return

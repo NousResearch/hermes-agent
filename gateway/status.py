@@ -588,6 +588,34 @@ def command_line_runs_inline_source(tokens: list[str]) -> bool:
     return inline_source_flag_index(tokens) is not None
 
 
+def _store_python_relaunch_subcommand(cased_tokens: list[str]) -> str | None:
+    """Gateway subcommand from a store-Python ``-I -c`` relaunch bootstrap, else None.
+
+    ``venv_sync.relaunch_command`` / ``_launchers.runtime_command`` boot Hermes as
+    ``python -I -c "import sys, runpy; …; sys.argv = [...]; runpy.run_module('hermes_cli.main', …)"``.
+    That inline source RUNS the gateway module in-process (via ``runpy``), so the process is
+    genuinely the gateway. The detached restart watcher's ``-c`` source instead spawns the
+    gateway as a child later and must NOT count (#107002); the two differ by the runpy
+    invocation, so only a source that actually runs ``hermes_cli.main`` is matched.
+    """
+    flag_index = inline_source_flag_index(cased_tokens)
+    if flag_index is None:
+        return None
+    source = cased_tokens[flag_index + 1:]
+    if not source:
+        return None
+    joined = " ".join(source)
+    if "runpy.run_module" not in joined or "hermes_cli.main" not in joined:
+        return None
+    for i, token in enumerate(source):
+        if token == "gateway":
+            for following in source[i + 1:]:
+                if following in (",", "]", ";"):
+                    continue
+                return following
+    return None
+
+
 def _gateway_command_subcommand(command: str | None) -> str | None:
     """Hermes gateway lifecycle subcommand from a command line, or None. No loose substring matches
     (``"gateway" in cmdline`` also matched ``gateway status`` / ``python -m tui_gateway``): needs a
@@ -610,7 +638,9 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
     # the inline source will spawn later, not to this process (#107002). Case-preserving tokens:
     # the operand-taking ``-X``/``-W``/``-Q`` must not be conflated with ``-q``/``-b``.
     if command_line_runs_inline_source(cased_tokens):
-        return None
+        # The store-Python runtime bootstrap RUNS the gateway module in-process (see helper),
+        # so it is the gateway; the detached restart watcher is not and returns None here.
+        return _store_python_relaunch_subcommand(cased_tokens)
     # The launchd job's osascript wrapper (gateway_launchd.launchd_program_arguments) carries the gateway argv
     # inside one AppleScript string; the gateway itself is its child and is matched on its own command line.
     if basenames[0] == "osascript":

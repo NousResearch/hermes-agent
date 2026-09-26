@@ -551,10 +551,20 @@ function Get-PinnedGit {
         # filter ("unable to run program bzip2 -d", issue #122512).
         Unblock-File -Path $sfxPath -ErrorAction SilentlyContinue
         # The SFX stub is a GUI-subsystem exe: PowerShell's `&` would not wait
-        # for it, so drive it explicitly and wait for its exit code.
+        # for it, so drive it explicitly. Under -y the extractor is silent on
+        # every channel (no stdout, stderr, or error box), so report the exit
+        # code and the usual causes instead of promising captured output.
+        # Bound the wait like pm's timeout=600: a stuck post-install must fail
+        # loudly instead of hanging the bootstrap.
         $sfx = [System.Diagnostics.Process]::Start($sfxPath, "-o`"$extractDir`" -y")
-        $sfx.WaitForExit()
-        if ($sfx.ExitCode) { Fail "failed to extract pinned git archive" }
+        if (-not $sfx.WaitForExit(600000)) {
+            $sfx.Kill()
+            $sfx.WaitForExit()
+            Fail "pinned git self-extractor timed out after 600s"
+        }
+        if ($sfx.ExitCode) {
+            Fail "pinned git self-extractor failed with exit code $($sfx.ExitCode); under -y the GUI stub is silent - check disk full, path-length limits, or antivirus locks"
+        }
         # PortableGit roots cmd\git.exe directly; still flatten a single
         # wrapper dir if a layout ever arrives wrapped.
         $inner = @(Get-ChildItem $extractDir)

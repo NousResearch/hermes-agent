@@ -142,48 +142,48 @@ class DaytonaEnvironment(BaseEnvironment):
     def _run_bash(self, cmd_string: str, *, login: bool = False, timeout: int = 120,
                   stdin_data: str | None = None):
         sandbox, lock = self._sandbox, self._lock
-        staged_stdin = {"path": None}
+        # Guarded by ``lock`` so cancel() and dispatch agree on whether the shell
+        # has taken ownership of (opened + unlinked) the staged stdin file.
+        state = {"cancelled": False, "staged": None, "dispatched": False}
 
         def cancel():
             with lock:
-                remote_stdin = staged_stdin["path"]
-                if remote_stdin:
+                state["cancelled"] = True
+                if state["staged"] and not state["dispatched"]:
+                    # Uploaded but never dispatched: nothing else will unlink it.
+                    # Once dispatched the user shell rm's it before running cmd.
                     with contextlib.suppress(Exception):
-                        sandbox.fs.delete_file(remote_stdin, request_timeout=5)
+                        sandbox.fs.delete_file(state["staged"], request_timeout=5)
                 with contextlib.suppress(Exception):
                     sandbox.stop()
 
         def exec_fn() -> tuple[str, int]:
-            remote_stdin = None
-            local_stdin = None
-            try:
-                command = cmd_string
-                if stdin_data is not None:
-                    temp_dir = self.get_temp_dir().rstrip("/") or "/"
-                    remote_stdin = f"{temp_dir}/.hermes-stdin-{uuid.uuid4().hex}"
-                    staged_stdin["path"] = remote_stdin
-                    with tempfile.NamedTemporaryFile(delete=False) as staged:
-                        local_stdin = staged.name
-                        staged.write(stdin_data.encode("utf-8", "surrogateescape"))
-                    sandbox.fs.upload_file(local_stdin, remote_stdin)
-                    sandbox.fs.set_file_permissions(remote_stdin, mode="600")
-                    quoted_stdin = shlex.quote(remote_stdin)
-                    command = (
-                        f"exec 0< {quoted_stdin} || exit $?\n"
-                        f"rm -f -- {quoted_stdin} || exit $?\n"
-                        f"{cmd_string}"
-                    )
-                shell_cmd = f"bash {'-l ' if login else ''}-c {shlex.quote(command)}"
-                response = sandbox.process.exec(shell_cmd, timeout=timeout)
-                return (response.result or "", response.exit_code)
-            finally:
-                if local_stdin:
-                    with contextlib.suppress(OSError):
-                        os.unlink(local_stdin)
-                if remote_stdin:
-                    with contextlib.suppress(Exception):
-                        sandbox.fs.delete_file(remote_stdin, request_timeout=5)
-                    staged_stdin["path"] = None
+            command = cmd_string
+            if stdin_data is not None:
+                temp_dir = self.get_temp_dir().rstrip("/") or "/"
+                remote_stdin = f"{temp_dir}/.hermes-stdin-{uuid.uuid4().hex}"
+                with tempfile.NamedTemporaryFile(delete=False) as staged:
+                    staged.write(stdin_data.encode("utf-8", "surrogateescape"))
+                try:
+                    sandbox.fs.upload_file(staged.name, remote_stdin)
+                finally:
+                    os.unlink(staged.name)
+                with lock:
+                    state["staged"] = remote_stdin
+                sandbox.fs.set_file_permissions(remote_stdin, mode="600")
+                quoted_stdin = shlex.quote(remote_stdin)
+                command = (
+                    f"exec 0< {quoted_stdin} || exit $?\n"
+                    f"rm -f -- {quoted_stdin} || exit $?\n"
+                    f"{cmd_string}"
+                )
+            shell_cmd = f"bash {'-l ' if login else ''}-c {shlex.quote(command)}"
+            with lock:
+                if state["cancelled"]:
+                    return ("", 130)
+                state["dispatched"] = True
+            response = sandbox.process.exec(shell_cmd, timeout=timeout)
+            return (response.result or "", response.exit_code)
 
         return _ThreadedProcessHandle(exec_fn, cancel_fn=cancel)
 

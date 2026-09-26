@@ -64,8 +64,11 @@ const MAX_RAPID_EVICTIONS = 3
 async function loadRfb(): Promise<
   new (target: HTMLElement, socket: WebSocket, options?: Record<string, unknown>) => RfbLike
 > {
+  // SAFETY: @novnc/novnc exposes a single default RFB constructor; the RfbLike casts below
+  // only narrow to the members this pane uses, and loadRfb's caller fails closed on mismatch.
   const mod = (await import('@novnc/novnc')) as unknown as { default: new (...args: never[]) => RfbLike }
 
+  // SAFETY: same single-default-export invariant as above; narrowed to this pane's RfbLike subset.
   return mod.default as unknown as new (
     target: HTMLElement,
     socket: WebSocket,
@@ -203,6 +206,14 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
         )
 
         const minted = { id: observe.viewer_id, hash: await viewerHash(observe.viewer_id) }
+        // A stop (or a newer attach) superseded this observe while it was in
+        // flight: its snapshot is older truth and must not repaint the pane back
+        // to running. The superseding detach already released this attach's
+        // retention, so just return.
+        if (generation !== attachGeneration.current) {
+          return
+        }
+
         setScreenStatus(bot, observe)
         const url = await resolveScreenWsUrl(bot, observe.ticket)
 
@@ -363,6 +374,28 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
     [bot, viewer?.id]
   )
 
+  // The pane could start the runtime but never end it: closing the tab only
+  // detaches the stream while the backend keeps running, so a stuck session had
+  // no way out from Desktop. `force` mirrors display.stop's rule — a held human
+  // lease is only released by an explicit stop, never yanked by a stray call.
+  const stop = useCallback(
+    async (force = false) => {
+      setBusy(true)
+
+      try {
+        const next = await displayRequest<DisplayStatus>(bot, 'display.stop', force ? { force: true } : {})
+        detach()
+        setScreenStatus(bot, next)
+        setConn('idle')
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err))
+      } finally {
+        setBusy(false)
+      }
+    },
+    [bot, detach]
+  )
+
   if (state?.unavailable) {
     return <EmptyState description={t.screen.portalUnavailable} title={t.screen.unavailableTitle} />
   }
@@ -442,6 +475,25 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
               <Codicon name="record-keys" /> {t.screen.takeOver}
             </Button>
           </>
+        )}
+        {/* Ending the session is the only way out of a stuck screen: closing this tab merely
+            detaches the stream while the backend runtime keeps running, so reopening re-attaches
+            to the same live session. */}
+        {humanOther ? (
+          <Tip label={t.screen.stopForceHint}>
+            <Button disabled={busy} onClick={() => void stop(true)} size="sm" variant="secondary">
+              <Codicon name="debug-stop" /> {t.screen.stopForce}
+            </Button>
+          </Tip>
+        ) : (
+          <Button
+            disabled={busy}
+            onClick={() => void stop(lease?.holder === 'human')}
+            size="sm"
+            variant="secondary"
+          >
+            <Codicon name="debug-stop" /> {t.screen.stop}
+          </Button>
         )}
         <Tip label={t.screen.reconnect}>
           <Button

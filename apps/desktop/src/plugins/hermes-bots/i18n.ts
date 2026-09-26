@@ -400,6 +400,9 @@ type BotsMessages = {
     handBack: string
     handBackForce: string
     handBackForceHint: string
+    stop: string
+    stopForce: string
+    stopForceHint: string
     openNeedsUpdate: string
     youControl: string
     otherControls: string
@@ -833,6 +836,9 @@ const en: BotsMessages = {
     handBack: 'Hand back',
     handBackForce: 'Hand back (force)',
     handBackForceHint: 'Release a lease held by a viewer that is no longer here, e.g. after a reload.',
+    stop: 'Stop screen',
+    stopForce: 'Stop screen (force)',
+    stopForceHint: 'Stop the desktop even though another viewer is in control.',
     openNeedsUpdate: 'Update Hermes Desktop to open bot screens.',
     youControl: 'You are in control',
     otherControls: 'Another viewer is in control',
@@ -1266,6 +1272,9 @@ const ja: BotsMessages = {
     handBack: '戻す',
     handBackForce: '強制的に戻す',
     handBackForceHint: 'もう存在しないビューア（再読み込み後など）が保持しているリースを解放します。',
+    stop: '画面を停止',
+    stopForce: '強制的に停止',
+    stopForceHint: '別のビューアが操作中でもデスクトップを停止します。',
     openNeedsUpdate: 'ボットの画面を開くには Hermes Desktop を更新してください。',
     youControl: 'あなたが操作中',
     otherControls: '別のビューアが操作中',
@@ -1683,6 +1692,9 @@ const zh: BotsMessages = {
     handBack: '交还',
     handBackForce: '强制交还',
     handBackForceHint: '释放已不在场的查看者（例如重新加载后）持有的控制权。',
+    stop: '停止屏幕',
+    stopForce: '强制停止',
+    stopForceHint: '即使其他查看者正在控制，也停止桌面。',
     openNeedsUpdate: '更新 Hermes Desktop 以打开机器人屏幕。',
     youControl: '你正在控制',
     otherControls: '另一位查看者正在控制',
@@ -2100,6 +2112,9 @@ const zhHant: BotsMessages = {
     handBack: '交還',
     handBackForce: '強制交還',
     handBackForceHint: '釋放已不在場的檢視者（例如重新載入後）持有的控制權。',
+    stop: '停止螢幕',
+    stopForce: '強制停止',
+    stopForceHint: '即使其他檢視者正在控制，也停止桌面。',
     openNeedsUpdate: '更新 Hermes Desktop 以開啟機器人螢幕。',
     youControl: '你正在控制',
     otherControls: '另一位檢視者正在控制',

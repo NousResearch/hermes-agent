@@ -3545,6 +3545,7 @@ display:
     aux_failure_label: "background review"
   notice:
     uncompressed_context_overflow: "⚠️ Session context (~{tokens} tokens) exceeds the model context window (~{context_length} tokens) with compression disabled (compression.enabled: false). Use /compact to compress history or enable compression in config.yaml."
+    uncompressed_context_overflow_session_scoped: "⚠️ Session context (~{tokens} tokens) exceeds the model context window (~{context_length} tokens) with auto-compression disabled for this session. Start a new session, or compress history from the application hosting this session."
 
 explainer:
   # Turn-completion explanations and file-mutation footers (agent/turn_explainers.py). Appended to

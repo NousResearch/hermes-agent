@@ -3437,6 +3437,7 @@ display:
     aux_failure_label: "agtergrond-hersiening"
   notice:
     uncompressed_context_overflow: "⚠️ Die sessiekonteks (~{tokens} tokens) oorskry die model se konteksvenster (~{context_length} tokens) terwyl kompressie gedeaktiveer is (compression.enabled: false). Gebruik /compact om die geskiedenis te komprimeer of aktiveer kompressie in config.yaml."
+    uncompressed_context_overflow_session_scoped: "⚠️ Die sessiekonteks (~{tokens} tokens) oorskry die model se konteksvenster (~{context_length} tokens) terwyl outokompressie vir hierdie sessie gedeaktiveer is. Begin 'n nuwe sessie, of komprimeer die geskiedenis vanaf die toepassing wat hierdie sessies huisves."
 explainer:
   no_reply_prefix: "⚠️ Geen antwoord: "
   empty_response: "{model} het hierdie keer geen antwoord gelewer nie, selfs na herpogings. Stuur `continue` om weer te probeer, of verander modelle met /model."

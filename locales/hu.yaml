@@ -3454,6 +3454,7 @@ display:
     aux_failure_label: "háttér-áttekintés"
   notice:
     uncompressed_context_overflow: "⚠️ A munkamenet kontextusa (~{tokens} token) meghaladja a modell kontextusablakát (~{context_length} token), miközben a tömörítés ki van kapcsolva (compression.enabled: false). Használd a /compact parancsot az előzmények tömörítéséhez, vagy kapcsold be a tömörítést a config.yaml fájlban."
+    uncompressed_context_overflow_session_scoped: "⚠️ A munkamenet kontextusa (~{tokens} token) meghaladja a modell kontextusablakát (~{context_length} token), miközben az automatikus tömörítés ki van kapcsolva ehhez a munkamenethez. Indíts új munkamenetet, vagy tömörítsd az előzményeket az alkalmazásból, amelyik ezt a munkamenetet futtatja."
 explainer:
   no_reply_prefix: "⚠️ Nincs válasz: "
   empty_response: "A(z) {model} ezúttal az újrapróbálkozások után sem adott választ. Küldj egy `continue` üzenetet az újrapróbáláshoz, vagy válts modellt a /model paranccsal."

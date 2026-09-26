@@ -3437,6 +3437,7 @@ display:
     aux_failure_label: "백그라운드 리뷰"
   notice:
     uncompressed_context_overflow: "⚠️ 세션 컨텍스트(약 {tokens} 토큰)가 압축이 비활성화된 상태(compression.enabled: false)에서 모델 컨텍스트 창(약 {context_length} 토큰)을 초과했어요. /compact로 기록을 압축하거나 config.yaml에서 압축을 활성화해 주세요."
+    uncompressed_context_overflow_session_scoped: "⚠️ 세션 컨텍스트(약 {tokens} 토큰)가 이 세션에 대해 자동 압축이 비활성화된 상태에서 모델 컨텍스트 창(약 {context_length} 토큰)을 초과했어요. 새 세션을 시작하거나, 이 세션을 호스팅하는 애플리케이션에서 기록을 압축해 주세요."
 explainer:
   no_reply_prefix: "⚠️ 응답 없음: "
   empty_response: "{model}이(가) 다시 시도했지만 이번에는 답변을 만들지 못했어요. `continue`를 보내 다시 시도하거나 /model로 모델을 바꿔 보세요."

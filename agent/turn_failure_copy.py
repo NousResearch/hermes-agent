@@ -302,6 +302,13 @@ _ONE_OFF_COPY: Dict[str, str] = {
         "your settings (compression.enabled). Run /compress to shrink it now, /new to start "
         "fresh, or pick a model with a bigger context window."
     ),
+    # Same dead end, but the flag was flipped off after init by the embedding host
+    # rather than config — no "your settings" blame, no config knob to flip (#123500).
+    "compression_disabled_host": (
+        "This conversation is too long for {model} and automatic shrinking is off for this "
+        "session. Run /compress to shrink it now if available, /new to start fresh, or pick "
+        "a model with a bigger context window."
+    ),
     # Wording deliberately avoids the overflow phrases gateway/run_turn.py matches on
     # (``_CONTEXT_OVERFLOW_ERROR_PHRASES``): this failure is transient, so the user's
     # message must stay in the transcript and the session must not be auto-reset.

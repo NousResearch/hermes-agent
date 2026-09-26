@@ -3437,6 +3437,7 @@ display:
     aux_failure_label: "фоновое ревью"
   notice:
     uncompressed_context_overflow: "⚠️ Контекст сеанса (~{tokens} токенов) превышает контекстное окно модели (~{context_length} токенов), а сжатие отключено (compression.enabled: false). Используйте /compact, чтобы сжать историю, или включите сжатие в config.yaml."
+    uncompressed_context_overflow_session_scoped: "⚠️ Контекст сеанса (~{tokens} токенов) превышает контекстное окно модели (~{context_length} токенов), а автосжатие отключено для этого сеанса. Начните новый сеанс или сожмите историю из приложения, в котором размещён этот сеанс."
 explainer:
   no_reply_prefix: "⚠️ Нет ответа: "
   empty_response: "{model} в этот раз не дала ответа даже после повторных попыток. Отправьте `continue`, чтобы попробовать ещё раз, или смените модель через /model."

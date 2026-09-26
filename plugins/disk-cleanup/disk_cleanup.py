@@ -125,6 +125,20 @@ def _is_protected_dir(p: Path) -> bool:
         return not rel.parts or rel.parts[0] in _EMPTY_DIR_PROTECTED_TOP_LEVEL
     return False
 
+
+def _is_named_profile_home(home: Optional[Path] = None) -> bool:
+    """True when the active home is a per-profile home (``<root>/profiles/<name>``).
+
+    The guard sets above describe the ROOT home layout. When a process runs bound to a
+    profile, ``get_hermes_home()`` IS the profile dir, so ``_NEVER_TRACK_TOP_LEVEL``'s
+    ``"profiles"`` entry can never match and the profile's own user trees (``scripts/``,
+    ``hooks/``, ``image_cache/``, ...) lose protection: name rules then treat arbitrary
+    ``test_*`` files there as disposable, and the empty-dir sweep rmdirs real user dirs
+    (#123632). A named profile home is user-owned — only its known scratch areas
+    (``cache/``, ``cron/output/``) may be auto-tracked or swept."""
+    home = home or get_hermes_home()
+    return home.parent.name == "profiles"
+
 @functools.lru_cache(maxsize=8)  # keyed by home: a multiplexed process serves several profiles
 def _protected_cron_paths(home: Path) -> frozenset:
     """Defense-in-depth for quick(): EXACT cron control-plane paths (``cron/``, ``output/`` root,
@@ -291,8 +305,14 @@ def _sweep_empty_dirs(hermes_home: Path) -> int:
     rglob over a checkout+venv under HERMES_HOME can stall the gateway loop for minutes).
     Iterative post-order so parents emptied by child removal are caught."""
     removed = 0
+    protected = set(_EMPTY_DIR_PROTECTED_TOP_LEVEL)
+    if _is_named_profile_home(hermes_home):
+        # A profile home's top level is user-owned: protect every entry except the
+        # disposable cache/ tree, so genuine dirs (hooks/, image_cache/, ...) are never
+        # rmdir'd just because they are momentarily empty (#123632).
+        protected |= {child.name for child in _subdirs(hermes_home, frozenset())} - {"cache"}
     stack: List[Tuple[Path, bool]] = [
-        (top, False) for top in _subdirs(hermes_home, _EMPTY_DIR_PROTECTED_TOP_LEVEL | _EMPTY_DIR_SWEEP_PRUNE_DIRS)]
+        (top, False) for top in _subdirs(hermes_home, protected | _EMPTY_DIR_SWEEP_PRUNE_DIRS)]
     while stack:
         dirpath, visited = stack.pop()
         if visited:
@@ -369,6 +389,11 @@ def guess_category(path: Path) -> Optional[str]:
             return "cron-output" if len(rel.parts) >= 3 and rel.parts[1] == "output" else None
         if top == "cache":
             return "temp"
+        # In a named profile home an unrecognized top-level dir is a user tree; only
+        # known scratch areas above are disposable (#123632). Root-level scratch files
+        # (no subdir) still name-classify, preserving the stray-test cleanup contract.
+        if _is_named_profile_home() and len(rel.parts) >= 2:
+            return None
     name = path.name
     if name.startswith(_TEST_PATTERNS) or name.endswith(_TEST_SUFFIXES):
         # Git-owned trees manage their own files: never classify a test_* there as disposable,

@@ -1067,6 +1067,17 @@ function authModeFromStatus(statusBody) {
 }
 
 /**
+ * 'container' | 'native' from a public `/api/status` body, else undefined (unknown, no
+ * indicator). Absence is never read as 'native': a gateway older than the field would
+ * otherwise wear a confident, wrong badge.
+ */
+function runtimeKindFromStatus(statusBody) {
+  const kind = statusBody && typeof statusBody === 'object' ? statusBody.runtime_kind : undefined
+
+  return kind === 'container' || kind === 'native' ? kind : undefined
+}
+
+/**
  * Resolve the effective auth mode for a coerce/save operation.
  * Explicit input wins; otherwise inherit the saved value; default 'token'.
  * Returns 'oauth' | 'token'.
@@ -1159,6 +1170,7 @@ export {
   resolveRemoteSshDashboardProfile,
   resolveTestWsUrl,
   RT_COOKIE_VARIANTS,
+  runtimeKindFromStatus,
   sanitizeRemoteHeaderValue,
   savedProfileSsh,
   tokenPreview,

@@ -219,6 +219,14 @@ DEFAULT_CONFIG = {
         # (kills the turn) and gateway_notify_interval. 0 = disable.
         # See #76354.
         "session_stall_timeout": 300,
+        # Stream stall watchdog (seconds): when a streaming reply stops emitting text
+        # mid-answer because the upstream API died, no finalize ever arrives - deliver
+        # the accumulated partial with an "Incomplete response" notice instead of
+        # leaving the message open. Armed on the first text delta; any control sentinel
+        # (tool run, flush barrier, approval wait) disarms it. Telegram transports only.
+        # 0 = disable.
+        # See #25010.
+        "stream_stall_timeout": 12.0,
         # Transcript-sanitiser heal escalation: after this many pre-send heal passes within a
         # 10-minute window, log one ERROR and queue a ONE-TIME out-of-band notice pointing at /debug
         # share or `hermes doctor` (status channel only; prompt cache untouched). 0 = no escalation

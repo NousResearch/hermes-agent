@@ -16,6 +16,8 @@ logger = logging.getLogger("hermes_cli.auth")
 _CUSTOM_LABEL = "Enter custom model name"
 _SKIP_LABEL = "Skip (keep current)"
 _CURRENT_SUFFIX = "  ← currently in use"
+# ponytail: static provider-typical TTLs; per-model live TTL lookup if catalogs ever expose it
+PROMPT_CACHE_TTL_LEGEND = "Cache TTL (typical): Anthropic 5m, OpenAI 5-10m auto, Gemini 1h"
 
 
 def _confirm_selection_guards(
@@ -147,6 +149,8 @@ class _ModelPickerRows:
             title += header + "  $/Mtok"
             if self.any_on_sale:
                 title += "  ★ = on sale"
+            if self.has_cache:
+                title += f"\n{pad}{PROMPT_CACHE_TTL_LEGEND}"
         return title
 
 

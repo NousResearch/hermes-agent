@@ -22,6 +22,7 @@ _THINKING_TYPES = frozenset(("thinking", "redacted_thinking"))
 _CACHEABLE_TYPES = frozenset(("text", "tool_use"))
 _EMPTY_TEXT_PLACEHOLDER = "(empty)"
 _EMPTY_SCHEMA = {"type": "object", "properties": {}}
+_VALID_JSON_SCHEMA_TYPES = frozenset(("object", "string", "number", "integer", "boolean", "array", "null"))
 _BEDROCK_REGION_PREFIXES = ("global.", "us.", "eu.", "apac.", "ap.", "au.", "jp.", "ca.", "sa.", "me.", "af.")
 
 
@@ -124,6 +125,22 @@ def _tool_use_block(tool_id: Any, name: Any, tool_input: Any) -> Dict[str, Any]:
     return {"type": "tool_use", "id": _sanitize_tool_id(tool_id), "name": name, "input": tool_input}
 
 
+def _coerce_invalid_schema_type_strings(node: Any) -> Any:
+    """Coerce invalid scalar JSON Schema type strings for Anthropic's strict validator."""
+    if isinstance(node, list):
+        return [_coerce_invalid_schema_type_strings(item) for item in node]
+    if not isinstance(node, dict):
+        return node
+    return {
+        key: (
+            "object"
+            if key == "type" and isinstance(value, str) and value not in _VALID_JSON_SCHEMA_TYPES
+            else _coerce_invalid_schema_type_strings(value)
+        )
+        for key, value in node.items()
+    }
+
+
 def _normalize_tool_input_schema(schema: Any) -> Dict[str, Any]:
     """Normalize a tool schema for Anthropic's validator: collapse nullable unions (``anyOf:
     [{type: string}, {type: null}]`` from Pydantic/MCP optional fields) to the non-null branch —
@@ -135,6 +152,7 @@ def _normalize_tool_input_schema(schema: Any) -> Dict[str, Any]:
     normalized = strip_nullable_unions(schema, keep_nullable_hint=False) if schema else None
     if not isinstance(normalized, dict):
         return dict(_EMPTY_SCHEMA)
+    normalized = _coerce_invalid_schema_type_strings(normalized)
     banned = {"oneOf", "allOf", "anyOf"}
     if banned & normalized.keys():
         normalized = {k: v for k, v in normalized.items() if k not in banned}

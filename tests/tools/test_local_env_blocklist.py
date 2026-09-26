@@ -113,7 +113,7 @@ def test_builders_strip_runtime_markers_and_owned_paths(child_env, monkeypatch, 
 
 
 @pytest.mark.parametrize("builder,base_force,extra_force", [
-    ("foreground", "base-forced", "extra-forced"),
+    ("foreground", None, "extra-forced"),
     ("background", None, "extra-forced"),
     ("factory", None, "extra-forced"),
     ("nonterminal", None, None),
@@ -223,6 +223,37 @@ def test_profile_passthrough_in_terminal_child(child_env, monkeypatch, scoped, e
             env.cleanup()
         ss.reset_secret_scope(token)
         ss.set_multiplex_active(False)
+
+
+
+@pytest.mark.parametrize("name", ["GH_TOKEN", "PLUGIN_AUTH_TOKEN"])
+def test_force_prefix_cannot_override_tier1_secret(child_env, monkeypatch, name):
+    monkeypatch.setattr(local, "_plugin_terminal_env_strip_keys", lambda: frozenset({"PLUGIN_AUTH_TOKEN"}))
+    result = local._make_run_env({"_HERMES_FORCE_" + name: "fake-explicit-secret"})
+    assert observe_child(result, [name]) == {name: None}
+
+
+def test_container_wrapper_cannot_tunnel_plugin_tier1_secret(child_env, monkeypatch):
+    monkeypatch.setattr(local, "_plugin_terminal_env_strip_keys", lambda: frozenset({"PLUGIN_AUTH_TOKEN"}))
+    name = "APPTAINERENV_PLUGIN_AUTH_TOKEN"
+    monkeypatch.setenv(name, "fake-plugin-wrapper")
+    assert observe_child(local._make_run_env({}), [name]) == {name: None}
+
+
+@pytest.mark.parametrize("inherit_credentials", [False, True])
+def test_nonterminal_plugin_and_nested_wrapper_secrets_are_denied(child_env, monkeypatch, inherit_credentials):
+    planted = {
+        "PLUGIN_AUTH_TOKEN": "direct-plugin",
+        "plugin_auth_token": "mixed-plugin",
+        "APPTAINERENV_PLUGIN_AUTH_TOKEN": "wrapped-plugin",
+        "SINGULARITYENV_APPTAINERENV_PLUGIN_AUTH_TOKEN": "nested-plugin",
+        "APPTAINERENV_SINGULARITYENV_GH_TOKEN": "nested-tier1",
+    }
+    for key, value in planted.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(local, "_plugin_terminal_env_strip_keys", lambda: frozenset({"PLUGIN_AUTH_TOKEN"}))
+    result = local.hermes_subprocess_env(inherit_credentials=inherit_credentials)
+    assert observe_child(result, planted) == dict.fromkeys(planted)
 
 
 @pytest.mark.parametrize("entries,expected", [

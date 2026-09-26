@@ -290,10 +290,6 @@ async def _run_turn(monkeypatch, tmp_path, *, consumer_cls=None, session_id):
         encoding="utf-8",
     )
 
-    fake_dotenv = types.ModuleType("dotenv")
-    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
-    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
-
     fake_run_agent = types.ModuleType("run_agent")
     fake_run_agent.AIAgent = PrefixOnlyAgent
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)

@@ -2642,7 +2642,7 @@ def _worker_profile_scope(hermes_home: str, *, bind_home: bool = True):
             reset_hermes_home_override(home_token)
 
 
-def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[str]]:
+def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> list[str]:
     """Return the assigned profile's effective CLI toolsets for a worker.
 
     Resolved at dispatch time and passed as an explicit ``--toolsets`` pin so
@@ -2652,7 +2652,7 @@ def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[st
     tools when ``HERMES_KANBAN_TASK`` is set.
     """
     if not hermes_home:
-        return None
+        raise RuntimeError("kanban worker profile home is unavailable for toolset pin")
     try:
         from hermes_cli.config import load_config
         from hermes_cli.tools_config import _get_platform_tools
@@ -2660,14 +2660,14 @@ def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[st
         with _worker_profile_scope(hermes_home):
             cfg = load_config()
             toolsets = sorted(_get_platform_tools(cfg, "cli"))
-        return toolsets or None
+            if not toolsets:
+                raise RuntimeError("assigned profile resolved an empty CLI toolset surface")
+            return toolsets
     except Exception as exc:
-        _kb._log.debug(
-            "kanban worker: could not resolve CLI toolsets for HERMES_HOME=%r (%s)",
-            hermes_home,
-            exc,
-        )
-        return None
+        raise RuntimeError(
+            f"kanban worker CLI toolsets could not be resolved for HERMES_HOME={hermes_home!r}"
+        ) from exc
+    return toolsets
 
 
 _retagged_workspace_roots: set[str] = set()
@@ -2727,8 +2727,11 @@ def _worker_argv(task: Task, profile_arg: str, hermes_home: Optional[str]) -> li
     if task.reasoning_effort:
         cmd.extend(["--reasoning", task.reasoning_effort])
     worker_toolsets = _resolve_worker_cli_toolsets(hermes_home)
-    if worker_toolsets:
-        cmd.extend(["--toolsets", ",".join(worker_toolsets)])
+    if not worker_toolsets:
+        raise RuntimeError("kanban worker CLI toolsets could not be pinned")
+    # The resolver rejects an empty surface: omitting this flag would silently
+    # reactivate CLI defaults rather than preserve the assignee's authority.
+    cmd.extend(["--toolsets", ",".join(worker_toolsets)])
     cmd.extend(["chat", "-q", f"work kanban task {task.id}"])
     # goal_mode rides the same `-q` path: cli.py runs the judge loop there too, so the
     # worker log keeps its live tool feed (forcing -Q blanked it).
@@ -2799,6 +2802,7 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
         raise ValueError(f"task {task.id} has no assignee")
 
     from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
+    from hermes_constants import get_routing_process_hermes_home
 
     profile_arg = normalize_profile_name(task.assignee)
 
@@ -2806,25 +2810,20 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     from tools.environments.local import _is_routed_home, build_subprocess_env, strip_launch_profile_env
 
     try:
-        profile_home = resolve_profile_env(profile_arg)
-    except FileNotFoundError:
-        # No profile dir (isolated test fixtures) — the CLI resolves it from
-        # HERMES_PROFILE (set below) instead.
-        profile_home = None
-
-    # Scrub for a ROUTED home, not only under multiplex: the authority test is "does this worker act
-    # for another profile", exactly as served_profile_child_env decides it (tools/environments/local.py).
-    # Gating on the gateway-wide flag left B's worker inheriting the dispatcher's own OPENAI_API_KEY and
-    # systemd-injected tokens on every single-profile host.
-    routed = bool(profile_home) and _is_routed_home(profile_home)
-    # build_subprocess_env's secret scrub resolves terminal.env_passthrough vars through get_secret(),
-    # which without a bound scope reads the LAUNCH profile's ambient environment for a worker spawned
-    # on B's behalf (and raises under multiplex) — so bind B's secret scope around the build.
-    with (_worker_profile_scope(profile_home, bind_home=False) if profile_home
-          else contextlib.nullcontext()):
+        target_home = resolve_profile_env(profile_arg)
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            f"refusing to spawn Kanban worker for unresolved profile {profile_arg!r}"
+        ) from exc
+    # Preserve launch-setting removal before projecting target authority.
+    base = strip_launch_profile_env(dict(os.environ), target_home)
+    with _worker_profile_scope(str(target_home), bind_home=False):
         env = build_subprocess_env(
-            scrub_secrets=is_multiplex_active() or routed,
-            inherit_profile_home=True,
+            base=base,
+            scrub_secrets=is_multiplex_active() or _is_routed_home(target_home),
+            profile_home=target_home,
+            source_profile_home=get_routing_process_hermes_home(),
+            enforce_profile_boundary=True,
         )
     # The dispatcher is detached from every conversation; its worker must never
     # inherit routing mirrored by a previous gateway turn.
@@ -2836,11 +2835,7 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     # without it the child's get_hermes_home() falls back to the DEFAULT
     # profile root because `hermes -p` applies its override before
     # hermes_constants is imported.
-    if profile_home:
-        env["HERMES_HOME"] = profile_home
-        # A multiplexer dispatching for another profile must not hand it the launch
-        # profile's .env settings / TERMINAL_* policy — a standalone dispatcher never would.
-        strip_launch_profile_env(env, profile_home)
+    # The boundary factory already installs target HERMES_HOME and derives HOME.
     if task.tenant:
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id

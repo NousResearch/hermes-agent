@@ -266,9 +266,11 @@ class TestIdleReapAndCapEviction(RemoteKernelBase):
         import threading
 
         gate = threading.Event()
+        cell_started = threading.Event()
 
         def slow_cat(command):
-            gate.wait(10)
+            cell_started.set()
+            gate.wait(30)
             return {"output": json.dumps(_cell()), "returncode": 0}
 
         busy_env = ScriptedEnv([
@@ -279,16 +281,18 @@ class TestIdleReapAndCapEviction(RemoteKernelBase):
         with patch("tools.code_kernel._lifecycle_limits", return_value=(1, 1800)):
             worker = threading.Thread(target=_run, args=(busy_env,), kwargs={"task": "busy"})
             worker.start()
-            # Snapshot: the worker thread inserts into the registry concurrently and a live
-            # dict iteration raises "dictionary changed size during iteration".
-            while not any(k.attached for k in list(_REMOTE_KERNELS.values())):
-                time.sleep(0.005)
-            env = ScriptedEnv(_spawn_ok_handlers([_cell()]))
-            _run(env, task="settled")
-            owners = {key[0] for key in _REMOTE_KERNELS}
-            self.assertIn("busy", owners)
-            gate.set()
-            worker.join(10)
+            try:
+                # Wait for the cell, not an unlocked view of a registry being
+                # mutated by the worker (which can raise during iteration).
+                self.assertTrue(cell_started.wait(10), "busy cell did not start")
+                env = ScriptedEnv(_spawn_ok_handlers([_cell()]))
+                _run(env, task="settled")
+                owners = {key[0] for key in _REMOTE_KERNELS}
+                self.assertIn("busy", owners)
+            finally:
+                gate.set()
+                worker.join(10)
+            self.assertFalse(worker.is_alive(), "busy cell worker did not stop")
         self.assertFalse(any("kill 4242" in c for c in busy_env.commands))
 
 

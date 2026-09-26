@@ -286,7 +286,9 @@ function ChoiceButton({
   )
 }
 
-export const ClarifyTool = (props: ToolCallMessagePartProps) => {
+type ClarifyToolProps = ToolCallMessagePartProps & { interrupted?: boolean }
+
+export const ClarifyTool = (props: ClarifyToolProps) => {
   // Answered → settled Q&A (ToolFallback collapsed the answer away).
   if (props.result !== undefined) {
     return <ClarifyToolSettled {...props} />
@@ -372,7 +374,7 @@ function ClarifyToolSingleSettled({ args, result }: ToolCallMessagePartProps) {
   )
 }
 
-function ClarifyToolPending(props: ToolCallMessagePartProps) {
+function ClarifyToolPending(props: ClarifyToolProps) {
   // The tool row is in whichever session's transcript rendered it — read THAT
   // session's clarify (primary or tile), not the globally-active one.
   const sessionId = useStore(useSessionView().$runtimeId)
@@ -381,15 +383,20 @@ function ClarifyToolPending(props: ToolCallMessagePartProps) {
   const fromArgs = useMemo(() => readClarifyArgs(props.args), [props.args])
   const messageRunning = useAuiState(selectMessageRunning)
   // Answering clears the request a beat before `tool.complete` swaps in the
-  // settled card. Latch submit so that gap doesn't demote; Stop also clears
-  // the request and must still collapse an unanswered card.
+  // settled card. Latch submit so that gap doesn't demote; a still-uninterrupted
+  // call keeps its disabled args preview until the result settles.
   const [answered, setAnswered] = useState(false)
 
-  // Stopped mid-prompt with no result — don't leave a dead interactive panel.
-  // `session.info` reports running=false while clarify is blocking, so the
-  // running flag alone would remount the question as a tool row. Keep the
-  // card while a request is open or this instance already submitted.
-  if (!messageRunning && !request && !answered) {
+  // `messageRunning` reflects the containing assistant message, not an
+  // independent tool lifecycle. A session.info edge can settle that message
+  // while the server-side clarify request is still hydrating. Keep an args-only
+  // preview in that gap, but honor the explicit interruption marker so Stop
+  // still demotes an unanswered prompt. The controls stay disabled until the
+  // live request ID is present.
+  const hasQuestionPreview = Boolean(fromArgs.question?.trim() || fromArgs.questions?.length)
+  const endedWithoutRequest = props.interrupted || props.status.type === 'incomplete'
+
+  if (!messageRunning && !request && !answered && (endedWithoutRequest || !hasQuestionPreview)) {
     return <ToolFallback {...props} />
   }
 
@@ -734,12 +741,18 @@ function ClarifyToolSinglePending({
     // The form is the outer element so the actions can sit OUTSIDE the card and
     // still submit it — the panel holds the question, the buttons ride below it.
     <form
+      aria-busy={ready ? undefined : 'true'}
       className="my-1.5 grid gap-4"
-      data-clarify-choices={hasChoices ? choices.length : undefined}
-      onKeyDownCapture={handleClarifySubmitShortcut}
+      data-clarify-choices={ready && hasChoices ? choices.length : undefined}
+      onKeyDownCapture={ready ? handleClarifySubmitShortcut : undefined}
       onSubmit={handleSubmit}
       ref={formRef}
     >
+      {ready ? null : (
+        <span className="sr-only" role="status">
+          {copy.loadingQuestion}
+        </span>
+      )}
       <ClarifyShell className="grid gap-2">
         <div className="flex items-start gap-2">
           <span className="flex-1 whitespace-pre-wrap font-medium leading-(--conversation-line-height)">
@@ -1180,7 +1193,7 @@ function ClarifyToolBatchPending({
       className="my-1.5 grid gap-4"
       data-clarify-batch={questions.length}
       data-clarify-batch-preview={ready ? undefined : ''}
-      onKeyDownCapture={handleClarifySubmitShortcut}
+      onKeyDownCapture={ready ? handleClarifySubmitShortcut : undefined}
       onSubmit={handleSubmit}
     >
       {ready ? null : (

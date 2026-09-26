@@ -162,10 +162,15 @@ def _load_hermes_env() -> None:
         home = get_hermes_home()
     except Exception:
         return
-    from agent.secret_scope import current_secret_scope, is_multiplex_active
-    scope = current_secret_scope() if is_multiplex_active() else None
-    if isinstance(scope, dict):
-        target: dict = scope
+    from agent.secret_scope import (
+        UnscopedSecretError, add_secret_scope_defaults, current_secret_scope, serves_routed_profile,
+    )
+    scoped = serves_routed_profile()
+    scope = current_secret_scope() if scoped else None
+    if scoped:
+        if scope is None:
+            raise UnscopedSecretError("", "routed send requires its owning profile scope")
+        target = scope
     else:
         target = os.environ
         env_path = home / ".env"
@@ -186,9 +191,12 @@ def _load_hermes_env() -> None:
         cfg = load_user_config_effective(config_path)
     except Exception:
         return
-    for key, val in cfg.items():
-        if isinstance(val, (str, int, float, bool)) and key not in target:
-            target[key] = str(val)
+    defaults = {key: str(val) for key, val in cfg.items()
+                if isinstance(val, (str, int, float, bool)) and key not in target}
+    if scoped:
+        add_secret_scope_defaults(defaults, profile_home=home)
+    else:
+        os.environ.update(defaults)
 
 
 def cmd_send(args: argparse.Namespace) -> None:

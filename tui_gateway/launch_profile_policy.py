@@ -126,7 +126,7 @@ def launch_terminal_env() -> Dict[str, str]:
     return {k: v for k, v in capture_launch_env().items() if k.startswith("TERMINAL_")}
 
 
-def launch_secret_scope(launch_home: "str | Path") -> Dict[str, str]:
+def launch_secret_scope(launch_home: "str | Path", *, hydrate_external: bool = True) -> Dict[str, str]:
     """The launch profile's secret mapping: its ``.env`` + external sources over the launch env
     (systemd / ``op run`` injection survives the fail-closed flip; a secondary never sees it because
     its scope is built from its own files only). Bound for EVERY launch-profile body, multiplexing or
@@ -144,7 +144,7 @@ def launch_secret_scope(launch_home: "str | Path") -> Dict[str, str]:
     """
     from agent.secret_scope import _is_global_env, build_profile_secret_scope
     scope = {k: v for k, v in _launch_env().items() if not _is_global_env(k)}
-    scope.update(build_profile_secret_scope(Path(launch_home)))
+    scope.update(build_profile_secret_scope(Path(launch_home), hydrate_external=hydrate_external))
     return scope
 
 

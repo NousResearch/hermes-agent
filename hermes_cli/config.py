@@ -2642,23 +2642,35 @@ def _publish_env_value(key: str, value: Optional[str]) -> None:
     profile-home override), but the in-process mirror historically went straight to ``os.environ``. See
     #77490, #88441.
     """
+    scope_module: Any = None
+    scope = None
+    routed = False
+    multiplex = False
     try:
-        from agent.secret_scope import current_secret_scope, serves_routed_profile
+        from agent import secret_scope as imported_scope_module
+        scope_module = imported_scope_module
 
-        scope, routed = current_secret_scope(), serves_routed_profile()
+        scope = scope_module.current_secret_scope()
+        routed = scope_module.serves_routed_profile()
+        multiplex = scope_module.is_multiplex_active()
     except Exception:
-        scope, routed = None, False
-    # The launch profile's own body runs under a scope snapshot even single-profile (the TUI /
-    # dashboard launch scope), so a same-request read after the write must see it there too; a
-    # routed profile's value never reaches the shared process env.
-    targets = [scope] if isinstance(scope, dict) else []
-    if not routed and (scope is None or isinstance(scope, dict)):
-        targets.append(os.environ)
-    for target in targets:
-        if value is None:
-            target.pop(key, None)
-        else:
-            target[key] = value
+        scope_module = None
+    if scope_module is not None and (multiplex or routed):
+        # Multiplex/routed mode must never publish a profile credential to
+        # shared os.environ. The immutable scope owner replaces the current
+        # context value; a missing scope stays fail-closed.
+        if scope_module.update_secret_scope(key, value, profile_home=get_env_path().parent):
+            return
+        return
+    if scope_module is not None and scope is not None:
+        # The launch profile may also have an installed scope (TUI/dashboard
+        # launch path). Keep same-request reads coherent, then retain the
+        # single-profile process-environment mirror below.
+        scope_module.update_secret_scope(key, value, profile_home=get_env_path().parent)
+    if value is None:
+        os.environ.pop(key, None)
+    else:
+        os.environ[key] = value
 
 
 def _env_write_blocked(key: str, action: str) -> bool:

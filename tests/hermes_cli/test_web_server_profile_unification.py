@@ -222,12 +222,9 @@ class TestProfileScopedMcp:
         # same env name — the probe must not use it.
         monkeypatch.setenv("GITHUB_PERSONAL_ACCESS_TOKEN", "default-profile-token")
 
-        def _worker_sources(hermes_home):
-            if Path(hermes_home).resolve() == worker_home.resolve():
-                return {"GITHUB_PERSONAL_ACCESS_TOKEN": "bw-worker-token"}
-            return {}
-
-        monkeypatch.setattr(env_loader, "get_secret_source_values", _worker_sources)
+        env_loader._record_external_secret_snapshot(
+            worker_home, data={"GITHUB_PERSONAL_ACCESS_TOKEN": "bw-worker-token"}, status="ready")
+        monkeypatch.setattr(env_loader, "_APPLIED_HOMES", {str(worker_home.resolve())})
 
         resolved_headers = {}
 
@@ -256,11 +253,9 @@ class TestProfileScopedMcp:
             "mcp_servers:\n  bw-srv:\n    url: ${MCP_GH_URL}\n", encoding="utf-8"
         )
         monkeypatch.setenv("MCP_GH_URL", "http://default-profile/mcp")
-        monkeypatch.setattr(
-            env_loader, "get_secret_source_values",
-            lambda hermes_home: {"MCP_GH_URL": "http://worker/mcp"}
-            if Path(hermes_home).resolve() == worker_home.resolve() else {},
-        )
+        env_loader._record_external_secret_snapshot(
+            worker_home, data={"MCP_GH_URL": "http://worker/mcp"}, status="ready")
+        monkeypatch.setattr(env_loader, "_APPLIED_HOMES", {str(worker_home.resolve())})
 
         resp = client.get("/api/mcp/servers", params={"profile": "worker_beta"})
         assert resp.status_code == 200

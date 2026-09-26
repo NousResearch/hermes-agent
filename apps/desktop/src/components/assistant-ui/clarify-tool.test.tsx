@@ -9,6 +9,8 @@ import { type SessionView, SessionViewProvider } from '@/app/chat/session-view'
 import { hiddenPaneProps } from '@/components/pane-shell/pane-visibility'
 import { $activeTreeGroup, $hoveredTreeGroup } from '@/components/pane-shell/tree/store'
 import { I18nProvider } from '@/i18n'
+import { toRuntimeMessage } from '@/lib/chat-runtime'
+import { clarifyCardOwnsKey, composerFocusKeysAllowed } from '@/lib/keybinds/composer-focus-keys'
 import { clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
 import { $gateway } from '@/store/gateway'
 import { $profiles } from '@/store/profile'
@@ -112,6 +114,35 @@ function liveClarifyProps(choices = ['staging', 'production']): ToolCallMessageP
   }
 }
 
+function messageClarifyProps(interrupted = false): ToolCallMessagePartProps & { interrupted?: boolean } {
+  const args = { choices: ['staging', 'production'], question: 'Which deployment target?' }
+
+  const message = toRuntimeMessage({
+    id: 'assistant-clarify',
+    parts: [
+      {
+        args,
+        argsText: JSON.stringify(args),
+        ...(interrupted ? { interrupted: true } : {}),
+        toolCallId: 'clarify-live',
+        toolName: 'clarify',
+        type: 'tool-call'
+      }
+    ],
+    pending: false,
+    role: 'assistant'
+  })
+
+  if (message.role !== 'assistant' || message.status.type !== 'complete') {
+    throw new Error('Expected an assistant runtime message')
+  }
+
+  const part = message.content[0] as (typeof message.content)[number] & { interrupted?: boolean }
+  const status: ToolCallMessagePartProps['status'] = { type: 'complete' }
+
+  return { ...liveClarifyProps(), interrupted: part.interrupted, status }
+}
+
 function renderLiveClarify({ multiSelect = false }: { multiSelect?: boolean } = {}) {
   const request = vi.fn().mockResolvedValue({ ok: true })
   const respond = liveServerRequest('request-1')
@@ -140,14 +171,49 @@ describe('ClarifyTool live card stays mounted across settle', () => {
     expect(document.querySelector('[data-clarify-settled]')).toBeNull()
   })
 
-  it('demotes to a tool row when the turn stopped and no request is left to answer', () => {
+  it('keeps the question visible while a running tool waits for its request to hydrate', () => {
     messageRunning = false
     $activeSessionId.set('session-1')
     $gateway.set({ request: vi.fn() } as never)
     renderClarify(<ClarifyTool {...liveClarifyProps()} />)
 
-    expect(document.querySelector('[data-clarify-choices]')).toBeNull()
+    expect(screen.getByText('Which deployment target?')).toBeTruthy()
+    expect((screen.getByRole('button', { name: /Continue/ }) as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByRole('button', { name: /Skip/ }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('keeps an unresolved question visible when session-info settles the containing message', () => {
+    messageRunning = false
+    $activeSessionId.set('session-1')
+    $gateway.set({ request: vi.fn() } as never)
+    renderClarify(<ClarifyTool {...messageClarifyProps()} />)
+
+    expect(screen.getByText('Which deployment target?')).toBeTruthy()
+    const form = screen.getByRole('button', { name: /Continue/ }).closest('form')
+
+    if (!form) {
+      throw new Error('Expected the pending clarify form')
+    }
+
+    expect(form.hasAttribute('data-clarify-choices')).toBe(false)
+    expect(composerFocusKeysAllowed(new KeyboardEvent('keydown', { key: 'a' }), 'type')).toBe(true)
+
+    for (const key of ['Enter', 'a', '1']) {
+      expect(clarifyCardOwnsKey(new KeyboardEvent('keydown', { key }))).toBe(false)
+    }
+
+    expect(fireEvent.keyDown(form, { ctrlKey: true, key: 'Enter' })).toBe(true)
+    expect((screen.getByRole('button', { name: /Continue/ }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('demotes an explicitly interrupted clarify when its result never arrived', () => {
+    messageRunning = false
+    $activeSessionId.set('session-1')
+    $gateway.set({ request: vi.fn() } as never)
+    renderClarify(<ClarifyTool {...messageClarifyProps(true)} />)
+
     expect(screen.queryByRole('button', { name: /Continue/ })).toBeNull()
+    expect(clarifyCardOwnsKey(new KeyboardEvent('keydown', { key: 'Enter' }))).toBe(false)
   })
 
   it('holds the card through the gap between answering and the settled result', async () => {
@@ -165,19 +231,35 @@ describe('ClarifyTool live card stays mounted across settle', () => {
     messageRunning = false
     rerender(clarifyTree(<ClarifyTool {...liveClarifyProps()} />))
 
-    expect(document.querySelector('[data-clarify-choices]')).toBeTruthy()
+    expect(screen.getByText('Which deployment target?')).toBeTruthy()
+    const form = screen.getByText('Which deployment target?').closest('form')
+
+    if (!form) {
+      throw new Error('Expected the pending clarify form')
+    }
+
+    expect(form.hasAttribute('data-clarify-choices')).toBe(false)
+    expect((screen.getByRole('button', { name: /Skip/ }) as HTMLButtonElement).disabled).toBe(true)
   })
 
-  it('demotes when the turn is stopped after the card was live but never answered', () => {
-    renderLiveClarify()
+  it('keeps a disabled question preview when the request is cleared before the tool result arrives', () => {
+    const { rerender } = renderLiveClarify()
 
     expect(document.querySelector('[data-clarify-choices]')).toBeTruthy()
 
     messageRunning = false
     act(() => clearClarifyRequest('request-1', 'session-1'))
+    rerender(clarifyTree(<ClarifyTool {...messageClarifyProps()} />))
 
-    expect(document.querySelector('[data-clarify-choices]')).toBeNull()
-    expect(screen.queryByRole('button', { name: /Continue/ })).toBeNull()
+    expect(screen.getByText('Which deployment target?')).toBeTruthy()
+    const form = screen.getByRole('button', { name: /Continue/ }).closest('form')
+
+    if (!form) {
+      throw new Error('Expected the unresolved clarify preview form')
+    }
+
+    expect(form.hasAttribute('data-clarify-choices')).toBe(false)
+    expect((screen.getByRole('button', { name: /Continue/ }) as HTMLButtonElement).disabled).toBe(true)
   })
 
   it('paints the question from tool args instead of a spinner while request_id is still racing', () => {
@@ -650,6 +732,33 @@ function liveBatchProps(): ToolCallMessagePartProps {
   }
 }
 
+function settledMessageBatchProps(): ToolCallMessagePartProps {
+  const args = batchArgs()
+
+  const message = toRuntimeMessage({
+    id: 'assistant-batch-clarify',
+    parts: [
+      {
+        args,
+        argsText: JSON.stringify(args),
+        toolCallId: 'clarify-batch',
+        toolName: 'clarify',
+        type: 'tool-call'
+      }
+    ],
+    pending: false,
+    role: 'assistant'
+  })
+
+  if (message.role !== 'assistant' || message.status.type !== 'complete') {
+    throw new Error('Expected an assistant runtime message')
+  }
+
+  const status: ToolCallMessagePartProps['status'] = { type: 'complete' }
+
+  return { ...liveBatchProps(), status }
+}
+
 function renderLiveBatch(lockedAnswers?: Record<string, string>, multiSelect = false) {
   const request = vi.fn().mockResolvedValue({ ok: true, remaining: [] })
   const respond = liveServerRequest('request-batch')
@@ -752,6 +861,35 @@ describe('ClarifyTool batch card', () => {
     // Nothing is answerable yet: no qids to respond with.
     expect((screen.getByRole('button', { name: /red/ }) as HTMLButtonElement).disabled).toBe(true)
     expect((screen.getByRole('button', { name: /Skip/ }) as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByRole('button', { name: /Confirm and continue/ }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('keeps batch question previews visible when the tool is running but its request has not hydrated', () => {
+    messageRunning = false
+    $activeSessionId.set('session-1')
+    $gateway.set({ request: vi.fn() } as never)
+    renderClarify(<ClarifyTool {...liveBatchProps()} />)
+
+    expect(screen.getByText('Color?')).toBeTruthy()
+    expect(screen.getByText('Name?')).toBeTruthy()
+    expect((screen.getByRole('button', { name: /red/ }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('keeps batch questions visible when session-info settles the row before its request result', () => {
+    messageRunning = false
+    $activeSessionId.set('session-1')
+    $gateway.set({ request: vi.fn() } as never)
+    renderClarify(<ClarifyTool {...settledMessageBatchProps()} />)
+
+    expect(screen.getByText('Color?')).toBeTruthy()
+    expect(screen.getByText('Name?')).toBeTruthy()
+    const form = screen.getByRole('button', { name: /Confirm and continue/ }).closest('form')
+
+    if (!form) {
+      throw new Error('Expected the pending batch clarify form')
+    }
+
+    expect(fireEvent.keyDown(form, { ctrlKey: true, key: 'Enter' })).toBe(true)
     expect((screen.getByRole('button', { name: /Confirm and continue/ }) as HTMLButtonElement).disabled).toBe(true)
   })
 

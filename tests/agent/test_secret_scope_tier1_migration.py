@@ -14,6 +14,7 @@ against the three canonical scope semantics:
 """
 
 import pytest
+from unittest.mock import patch
 
 from agent import secret_scope as ss
 
@@ -37,10 +38,7 @@ class _Scope:
     def __exit__(self, *exc):
         ss.reset_secret_scope(self.token)
 
-class _ExplodingScope(dict):
-    """A bound secret scope whose resolution fails (resolver/backend error)."""
-    def get(self, name, default=None):
-        raise RuntimeError("resolver boom")
+
 
 
 # ── Cluster A: gateway/pairing.py allowlist reads ─────────────────────────
@@ -77,7 +75,7 @@ class TestPairingAllowlistRead:
 
         monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "other-profile")
         ss.set_multiplex_active(True)
-        with _Scope(_ExplodingScope()):
+        with _Scope({}), patch.object(ss.ProfileSecretScope, "get", side_effect=RuntimeError("resolver boom")):
             with pytest.raises(RuntimeError, match="resolver boom"):
                 _read_allowlist_env("TELEGRAM_ALLOWED_USERS")
 
@@ -196,7 +194,7 @@ class TestToolGatewayUserToken:
 
         monkeypatch.setenv("TOOL_GATEWAY_USER_TOKEN", "other-profile-tok")
         ss.set_multiplex_active(True)
-        with _Scope(_ExplodingScope()):
+        with _Scope({}), patch.object(ss.ProfileSecretScope, "get", side_effect=RuntimeError("resolver boom")):
             with pytest.raises(RuntimeError, match="resolver boom"):
                 _read_user_token_override()
 
@@ -222,7 +220,7 @@ class TestOpenRouterCheckApiKey:
 
         monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-other-profile")
         ss.set_multiplex_active(True)
-        with _Scope(_ExplodingScope()):
+        with _Scope({}), patch.object(ss.ProfileSecretScope, "get", side_effect=RuntimeError("resolver boom")):
             with pytest.raises(RuntimeError, match="resolver boom"):
                 check_api_key()
 
@@ -262,7 +260,7 @@ class TestAuxiliaryScopedKeyEnv:
 
         monkeypatch.setenv("OPENAI_API_KEY", "sk-other-profile")
         ss.set_multiplex_active(True)
-        with _Scope(_ExplodingScope()):
+        with _Scope({}), patch.object(ss.ProfileSecretScope, "get", side_effect=RuntimeError("resolver boom")):
             with pytest.raises(RuntimeError, match="resolver boom"):
                 _scoped_key_env("OPENAI_API_KEY")
 
@@ -280,7 +278,7 @@ class TestScopedEnvironGet:
 
         monkeypatch.setenv("SOME_PROFILE_KEY", "other-profile")
         ss.set_multiplex_active(True)
-        with _Scope(_ExplodingScope()):
+        with _Scope({}), patch.object(ss.ProfileSecretScope, "get", side_effect=RuntimeError("resolver boom")):
             with pytest.raises(RuntimeError, match="resolver boom"):
                 _scoped_environ_get("SOME_PROFILE_KEY")
 

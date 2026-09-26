@@ -15,6 +15,7 @@ approval:
   allowed_once:    "      ✓ Egyszer engedélyezve"
   allowed_session: "      ✓ Engedélyezve ehhez a munkamenethez"
   allowed_always:  "      ✓ Hozzáadva az állandó engedélylistához"
+  allowed_yolo:  "      ✓ Allowed, approval off for this session (YOLO)"
   denied:          "      ✗ Elutasítva"
   cancelled:       "      ✗ Megszakítva"
   blocklist_message: "Ez a parancs a feltétel nélküli tiltólistán van, és nem hagyható jóvá."
@@ -66,6 +67,8 @@ gateway:
     session_plural:        "✅ Parancsok jóváhagyva (minta jóváhagyva ehhez a munkamenethez) ({count} parancs). Az ügynök folytatja..."
     always_singular:       "✅ Parancs jóváhagyva (minta véglegesen jóváhagyva). Az ügynök folytatja..."
     always_plural:         "✅ Parancsok jóváhagyva (minta véglegesen jóváhagyva) ({count} parancs). Az ügynök folytatja..."
+    yolo_singular:         "✅ Command approved (approval off for this session). The agent is resuming..."
+    yolo_plural:         "✅ Commands approved (approval off for this session) ({count} commands). The agent is resuming..."
 
   background:
     usage:                 "Használat: /bg <prompt>\nPélda: /bg Foglald össze a mai legjobb HN sztorikat\n\nKülön munkamenetben futtatja a promptot. Folytathatod a beszélgetést — az eredmény itt jelenik meg, amint elkészül."

@@ -15,6 +15,7 @@ approval:
   allowed_once:    "      ✓ Consentito una volta"
   allowed_session: "      ✓ Consentito per questa sessione"
   allowed_always:  "      ✓ Aggiunto alla lista permessi permanente"
+  allowed_yolo:  "      ✓ Allowed, approval off for this session (YOLO)"
   denied:          "      ✗ Negato"
   cancelled:       "      ✗ Annullato"
   blocklist_message: "Questo comando è nella lista di blocco incondizionata e non può essere approvato."
@@ -66,6 +67,8 @@ gateway:
     session_plural:        "✅ Comandi approvati (modello approvato per questa sessione) ({count} comandi). L'agente sta riprendendo..."
     always_singular:       "✅ Comando approvato (modello approvato in modo permanente). L'agente sta riprendendo..."
     always_plural:         "✅ Comandi approvati (modello approvato in modo permanente) ({count} comandi). L'agente sta riprendendo..."
+    yolo_singular:         "✅ Command approved (approval off for this session). The agent is resuming..."
+    yolo_plural:         "✅ Commands approved (approval off for this session) ({count} commands). The agent is resuming..."
 
   background:
     usage:                 "Uso: /bg <prompt>\nEsempio: /bg Riassumi le principali notizie di HN di oggi\n\nEsegue il prompt in una sessione separata. Puoi continuare a chattare — il risultato apparirà qui al termine."

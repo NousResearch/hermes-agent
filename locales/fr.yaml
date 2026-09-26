@@ -15,6 +15,7 @@ approval:
   allowed_once:    "      ✓ Autorisé une fois"
   allowed_session: "      ✓ Autorisé pour cette session"
   allowed_always:  "      ✓ Ajouté à la liste d'autorisation permanente"
+  allowed_yolo:  "      ✓ Allowed, approval off for this session (YOLO)"
   denied:          "      ✗ Refusé"
   cancelled:       "      ✗ Annulé"
   blocklist_message: "Cette commande est sur la liste de blocage inconditionnel et ne peut pas être approuvée."
@@ -66,6 +67,8 @@ gateway:
     session_plural:        "✅ Commandes approuvées (modèle approuvé pour cette session) ({count} commandes). L'agent reprend..."
     always_singular:       "✅ Commande approuvée (modèle approuvé de manière permanente). L'agent reprend..."
     always_plural:         "✅ Commandes approuvées (modèle approuvé de manière permanente) ({count} commandes). L'agent reprend..."
+    yolo_singular:         "✅ Command approved (approval off for this session). The agent is resuming..."
+    yolo_plural:         "✅ Commands approved (approval off for this session) ({count} commands). The agent is resuming..."
 
   background:
     usage:                 "Usage : /bg <prompt>\nExemple : /bg Résume les meilleures histoires HN d'aujourd'hui\n\nExécute le prompt dans une session séparée. Vous pouvez continuer à discuter — le résultat apparaîtra ici une fois terminé."

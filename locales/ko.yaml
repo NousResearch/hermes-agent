@@ -15,6 +15,7 @@ approval:
   allowed_once:    "      ✓ 한 번 허용됨"
   allowed_session: "      ✓ 이 세션에서 허용됨"
   allowed_always:  "      ✓ 영구 허용 목록에 추가됨"
+  allowed_yolo:  "      ✓ Allowed, approval off for this session (YOLO)"
   denied:          "      ✗ 거부됨"
   cancelled:       "      ✗ 취소됨"
   blocklist_message: "이 명령은 무조건 차단 목록에 있으며 승인할 수 없습니다."
@@ -66,6 +67,8 @@ gateway:
     session_plural:        "✅ 명령이 승인되었습니다 (이 세션 동안 패턴 승인됨) ({count}개). 에이전트가 재개됩니다..."
     always_singular:       "✅ 명령이 승인되었습니다 (패턴 영구 승인됨). 에이전트가 재개됩니다..."
     always_plural:         "✅ 명령이 승인되었습니다 (패턴 영구 승인됨) ({count}개). 에이전트가 재개됩니다..."
+    yolo_singular:         "✅ Command approved (approval off for this session). The agent is resuming..."
+    yolo_plural:         "✅ Commands approved (approval off for this session) ({count} commands). The agent is resuming..."
 
   background:
     usage:                 "사용법: /bg <prompt>\n예시: /bg 오늘 HN 인기 글을 요약해줘\n\n프롬프트를 별도 세션에서 실행합니다. 계속 대화할 수 있으며, 완료되면 결과가 여기에 표시됩니다."

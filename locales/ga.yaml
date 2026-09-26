@@ -19,6 +19,7 @@ approval:
   allowed_once:    "      ✓ Ceadaithe uair amháin"
   allowed_session: "      ✓ Ceadaithe don seisiún seo"
   allowed_always:  "      ✓ Curtha leis an liosta ceadaithe buan"
+  allowed_yolo:  "      ✓ Allowed, approval off for this session (YOLO)"
   denied:          "      ✗ Diúltaithe"
   cancelled:       "      ✗ Cealaithe"
   blocklist_message: "Tá an t-ordú seo ar an liosta cosc gan choinníoll agus ní féidir é a cheadú."
@@ -70,6 +71,8 @@ gateway:
     session_plural:        "✅ Orduithe ceadaithe (patrún ceadaithe don seisiún seo) ({count} ordú). Tá an gníomhaire ag atosú..."
     always_singular:       "✅ Ordú ceadaithe (patrún ceadaithe go buan). Tá an gníomhaire ag atosú..."
     always_plural:         "✅ Orduithe ceadaithe (patrún ceadaithe go buan) ({count} ordú). Tá an gníomhaire ag atosú..."
+    yolo_singular:         "✅ Command approved (approval off for this session). The agent is resuming..."
+    yolo_plural:         "✅ Commands approved (approval off for this session) ({count} commands). The agent is resuming..."
 
   background:
     usage:                 "Úsáid: /bg <leid>\nSampla: /bg Déan achoimre ar phríomhscéalta HN inniu\n\nRitheann an leid i seisiún ar leith. Is féidir leat leanúint leis an gcomhrá — taispeánfar an toradh anseo nuair a bheidh sé críochnaithe."

@@ -126,6 +126,29 @@ class TestCliApprovalUi:
         assert result["value"] == "once"
 
 
+    def test_session_capable_menu_offers_yolo_and_returns_it(self):
+        """The dangerous-command panel offers the mid-task trust choice: run this command and stop
+        asking for the rest of the session (#98139)."""
+        cli = _make_cli_stub()
+        result = {}
+
+        def _run_callback():
+            result["value"] = cli._approval_callback("rm -rf /tmp/example", "recursive delete")
+
+        thread = threading.Thread(target=_run_callback, daemon=True)
+        thread.start()
+
+        deadline = time.time() + 2
+        while cli._approval_state is None and time.time() < deadline:
+            time.sleep(0.01)
+
+        assert cli._approval_state is not None
+        assert cli._approval_state["choices"] == ["once", "session", "always", "yolo", "deny"]
+
+        cli._approval_state["response_queue"].put("yolo")
+        thread.join(timeout=2)
+        assert result["value"] == "yolo"
+
     def test_sudo_prompt_restores_existing_draft_after_response(self):
         cli = _make_cli_stub()
         cli._app.current_buffer = _FakeBuffer("draft command", cursor_position=5)

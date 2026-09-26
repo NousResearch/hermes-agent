@@ -145,6 +145,112 @@ test('an app update re-probes the sandbox once instead of degrading forever', ()
   assert.equal(legacy.reason, 'sticky-fallback')
 })
 
+test('a successful ACL repair while fallback is engaged re-probes the sandbox once', () => {
+  // Host healed between launches: the launch-time ACL repair succeeds while the
+  // sticky fallback marker is in place → same one-shot re-probe as a version
+  // change, so the sandboxed boot gets a chance before --no-sandbox.
+  const probed = decideWindowsSandboxLaunch({
+    platform: 'win32',
+    marker: { state: 'fallback', reason: 'gpu-breakpoint', version: '1.2.3' },
+    argv: [],
+    env: {},
+    appVersion: '1.2.3',
+    aclRepairSucceeded: true
+  })
+
+  assert.equal(probed.enable, false)
+  assert.equal(probed.reason, null)
+  assert.deepEqual(probed.nextMarker, { state: 'booting', reprobe: true, bootAborts: 0, aclRepairProbed: true })
+})
+
+test('an aborted ACL-repair re-probe returns straight to fallback, consumed', () => {
+  // The one-shot ACL-repair re-probe boot aborted → back to fallback without a
+  // second strike, exactly like the version-change re-probe failure path — and
+  // the fallback records that the one-shot was consumed.
+  const failedProbe = decideWindowsSandboxLaunch({
+    platform: 'win32',
+    marker: { state: 'booting', reprobe: true, bootAborts: 0, aclRepairProbed: true },
+    argv: [],
+    env: {},
+    appVersion: '1.2.3'
+  })
+
+  assert.equal(failedProbe.enable, true)
+  assert.equal(failedProbe.reason, 'reprobe-failed')
+  assert.deepEqual(failedProbe.nextMarker, {
+    state: 'fallback',
+    reason: 'boot-loop',
+    version: '1.2.3',
+    aclRepairProbed: true
+  })
+})
+
+test('a failed ACL repair keeps the sticky fallback exactly as today', () => {
+  const decision = decideWindowsSandboxLaunch({
+    platform: 'win32',
+    marker: { state: 'fallback', reason: 'gpu-breakpoint', version: '1.2.3' },
+    argv: [],
+    env: {},
+    appVersion: '1.2.3',
+    aclRepairSucceeded: false
+  })
+
+  assert.equal(decision.enable, true)
+  assert.equal(decision.reason, 'sticky-fallback')
+  assert.equal(decision.nextMarker.state, 'fallback')
+  assert.equal(decision.nextMarker.aclRepairProbed, undefined)
+})
+
+test('the ACL-repair re-probe is one-shot per fallback episode', () => {
+  // After the probe aborted, the fallback marker carries aclRepairProbed — a
+  // still-broken host must NOT re-probe (and re-crash) on every launch even
+  // though the ACL repair keeps succeeding.
+  const decision = decideWindowsSandboxLaunch({
+    platform: 'win32',
+    marker: { state: 'fallback', reason: 'boot-loop', version: '1.2.3', aclRepairProbed: true },
+    argv: [],
+    env: {},
+    appVersion: '1.2.3',
+    aclRepairSucceeded: true
+  })
+
+  assert.equal(decision.enable, true)
+  assert.equal(decision.reason, 'sticky-fallback')
+  assert.equal(decision.nextMarker.state, 'fallback')
+  assert.equal(decision.nextMarker.aclRepairProbed, true)
+})
+
+test('a version-change re-probe does not consume the ACL-repair one-shot', () => {
+  const decision = decideWindowsSandboxLaunch({
+    platform: 'win32',
+    marker: { state: 'fallback', reason: 'boot-loop', version: '1.2.3' },
+    argv: [],
+    env: {},
+    appVersion: '1.3.0',
+    aclRepairSucceeded: true
+  })
+
+  // Version change wins the ordering and probes without marking the ACL
+  // one-shot as consumed, so the two mechanisms stay independent.
+  assert.equal(decision.enable, false)
+  assert.deepEqual(decision.nextMarker, { state: 'booting', reprobe: true, bootAborts: 0 })
+  assert.equal(decision.nextMarker.aclRepairProbed, undefined)
+})
+
+test('ACL repair success never probes outside the fallback state', () => {
+  const cleanOk = decideWindowsSandboxLaunch({
+    platform: 'win32',
+    marker: { state: 'ok' },
+    argv: [],
+    env: {},
+    appVersion: '1.2.3',
+    aclRepairSucceeded: true
+  })
+
+  assert.equal(cleanOk.enable, false)
+  assert.deepEqual(cleanOk.nextMarker, { state: 'booting' })
+})
+
 test('manual --no-sandbox is honored but never made sticky', () => {
   const manual = decideWindowsSandboxLaunch({
     platform: 'win32',
@@ -177,6 +283,21 @@ test('marker transitions after a successful boot', () => {
     reason: 'gpu-breakpoint',
     version: '1.2.3'
   })
+
+  // A sticky fallback boot keeps the consumed ACL-repair one-shot so a later
+  // launch does not re-probe on a host the repair could not fix.
+  assert.deepEqual(
+    markerAfterSuccessfulBoot({
+      fallbackActive: true,
+      reason: 'gpu-breakpoint',
+      appVersion: '1.2.3',
+      aclRepairProbed: true
+    }),
+    { state: 'fallback', reason: 'gpu-breakpoint', version: '1.2.3', aclRepairProbed: true }
+  )
+
+  // A clean boot drops the flag — a future episode starts fresh.
+  assert.deepEqual(markerAfterSuccessfulBoot({ fallbackActive: false, aclRepairProbed: true }), { state: 'ok' })
 })
 
 test('shouldAttemptAclRepair only fires on evidence of trouble', () => {
@@ -203,12 +324,27 @@ test('sandbox marker round-trips through the userData file', () => {
       version: '1.2.3'
     })
 
+    // The consumed ACL-repair one-shot round-trips through the file too.
+    writeSandboxMarker(dir, { state: 'fallback', reason: 'boot-loop', version: '1.2.3', aclRepairProbed: true })
+    assert.deepEqual(readSandboxMarker(dir), {
+      state: 'fallback',
+      reason: 'boot-loop',
+      version: '1.2.3',
+      aclRepairProbed: true
+    })
+
     assert.equal(parseSandboxMarker({ state: 'fallback' })?.state, 'fallback')
     assert.equal(parseSandboxMarker({ state: 'nope' }), null)
     // Unknown reason strings and junk fields are dropped, not fatal.
     assert.deepEqual(parseSandboxMarker({ state: 'fallback', reason: 'weird', bootAborts: -3 }), {
       state: 'fallback'
     })
+    // aclRepairProbed is only honored as an explicit true.
+    assert.deepEqual(parseSandboxMarker({ state: 'booting', aclRepairProbed: true }), {
+      state: 'booting',
+      aclRepairProbed: true
+    })
+    assert.deepEqual(parseSandboxMarker({ state: 'booting', aclRepairProbed: 'yes' }), { state: 'booting' })
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }

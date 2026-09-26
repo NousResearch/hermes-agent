@@ -4195,6 +4195,10 @@ class BasePlatformAdapter(ABC):
                 if live is not delivery_adapter and callable(redeliver):
                     await redeliver(event.source.platform,
                                     profile=getattr(delivery_adapter, "_owner_profile", None))
+                elif live is delivery_adapter:
+                    schedule = getattr(self.gateway_runner, "_schedule_send_path_recovery", None)
+                    if callable(schedule):
+                        schedule(delivery_adapter, reason="failed-finalized")
             elif classify_dead_error(error) is None:  # a dead chat is never retried: no timer to wake
                 schedule = getattr(self.gateway_runner, "_schedule_flood_redelivery", None)
                 if callable(schedule):

@@ -2019,10 +2019,92 @@ class MatrixAdapter(BasePlatformAdapter):
         # m.notice is the conventional bot-response msgtype; ignoring it prevents bot-to-bot loops.
         if msgtype == "m.notice" and not self._process_notices:
             return
+        # Dispatch by msgtype.
         if msgtype in ("m.image", "m.audio", "m.video", "m.file"):
             await self._handle_media_message(room_id, sender, event_id, event_ts, source_content, relates_to, msgtype)
+        elif msgtype == "m.location":
+            await self._handle_location_message(
+                room_id, sender, event_id, event_ts, source_content, relates_to
+            )
         elif msgtype in ("m.text", "m.notice"):
             await self._handle_text_message(room_id, sender, event_id, event_ts, source_content, relates_to)
+
+    async def _handle_location_message(
+        self,
+        room_id: str,
+        sender: str,
+        event_id: str,
+        event_ts: float,
+        source_content: dict,
+        relates_to: dict,
+    ) -> None:
+        """Process a location-sharing event (m.location).
+
+        Extracts geo_uri coordinates from the Matrix location event and
+        formats them as plain-text so the agent can use them for spatial
+        queries (maps, POI lookups, routing, etc.).
+        """
+        body = source_content.get("body", "") or ""
+
+        # Primary coordinate source: geo_uri (RFC 5870).
+        # Format: geo:<lat>,<lon>[;crs=wgs84][;u=<uncertainty>]
+        geo_uri = source_content.get("geo_uri", "")
+
+        # MSC3488 extended location (Matrix spec proposal).
+        # May carry a richer description and metadata.
+        msc3488 = source_content.get("org.matrix.msc3488.location", {})
+        if isinstance(msc3488, dict):
+            if not geo_uri:
+                geo_uri = msc3488.get("uri", "")
+            if not body:
+                body = msc3488.get("description", "") or body
+
+        # Parse coordinates from geo_uri.
+        lat, lon = None, None
+        if geo_uri and isinstance(geo_uri, str):
+            # Strip the "geo:" prefix.
+            coords_part = geo_uri[4:] if geo_uri.startswith("geo:") else geo_uri
+            # Split off parameters after ';'.
+            coords_part = coords_part.split(";")[0]
+            parts = coords_part.split(",")
+            if len(parts) >= 2:
+                try:
+                    lat = float(parts[0].strip())
+                    lon = float(parts[1].strip())
+                except ValueError:
+                    lat, lon = None, None
+
+        # Build a human-readable location text for the agent.
+        if lat is not None and lon is not None:
+            label = body.strip() if body and body.strip() else "Shared location"
+            location_text = f"{label}\nCoordinates: {lat}, {lon}"
+        elif body and body.strip():
+            # No parseable coordinates — pass the body through as-is.
+            location_text = body.strip()
+        else:
+            return  # Nothing useful to pass on.
+
+        ctx = await self._resolve_message_context(
+            room_id,
+            sender,
+            event_id,
+            location_text,
+            source_content,
+            relates_to,
+        )
+        if ctx is None:
+            return
+        location_text, is_dm, chat_type, thread_id, display_name, source = ctx
+
+        msg_event = MessageEvent(
+            text=location_text,
+            message_type=MessageType.TEXT,
+            source=source,
+            raw_message=source_content,
+            message_id=event_id,
+        )
+
+        await self.handle_message(msg_event)
 
     async def _resolve_message_context(
         self, room_id: str, sender: str, event_id: str, body: str, source_content: dict,

@@ -57,6 +57,37 @@ def _patch_provider(monkeypatch, streamer, cap=4000):
     monkeypatch.setattr("tools.tts_tool._resolve_max_text_length", lambda provider, cfg: cap)
 
 
+def test_streaming_websocket_blocks_before_provider(stream_client, monkeypatch):
+    from hermes_cli.plugins import PluginManager
+    manager = PluginManager()
+    manager._hooks["pre_tts_synthesis"] = [
+        lambda text: {"action": "block", "message": "raw number"} if any(c.isnumeric() for c in text) else None]
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+    streamer = _FakeStreamer([b"\x00\x00"])
+    _patch_provider(monkeypatch, streamer)
+    with stream_client.websocket_connect(_url()) as conn:
+        conn.send_text(json.dumps({"text": "Price 123.", "done": True}))
+        assert conn.receive_json() == {"type": "fallback"}
+    assert streamer.requests == []
+
+
+def test_streaming_websocket_policy_sees_selected_backend(stream_client, monkeypatch):
+    from hermes_cli.plugins import PluginManager
+    manager = PluginManager()
+    seen = []
+    manager._hooks["pre_tts_synthesis"] = [
+        lambda text, provider: seen.append(provider) or
+        ({"action": "block"} if provider == "openai" else None)]
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+    streamer = _FakeStreamer([b"\x00\x00"])
+    setattr(streamer, "provider_name", "openai")
+    _patch_provider(monkeypatch, streamer)
+    with stream_client.websocket_connect(_url()) as conn:
+        conn.send_text(json.dumps({"text": "Hello there.", "done": True}))
+        assert conn.receive_json() == {"type": "fallback"}
+    assert seen == ["openai"] and streamer.requests == []
+
+
 class _RateLearningStreamer(_FakeStreamer):
     """Mimics the OpenAI-compatible streamer: the true PCM rate is only known once
     the endpoint's response headers arrive inside stream()."""

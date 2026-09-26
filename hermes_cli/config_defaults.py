@@ -1055,6 +1055,9 @@ DEFAULT_CONFIG = {
         # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" |
         # "gemini" | "deepinfra" | "neutts" (local) | "kittentts" (local) | "piper" (local)
         "provider": "edge",
+        # Optional fail-closed policy gate. Every named plugin must load and own a live
+        # pre_tts_synthesis hook before any server-side speech backend runs.
+        "pre_synthesis": {"required_plugins": []},
         # Seconds a local engine (Piper, KittenTTS) stays loaded after the last speech toggle
         # turns off, so a quick re-activation (wake word, voice-chat restart) skips the reload.
         # 0 unloads immediately.

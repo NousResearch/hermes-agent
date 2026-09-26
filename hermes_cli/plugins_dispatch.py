@@ -46,7 +46,7 @@ _HOOK_TIMEOUT_BOUNDED_HOOKS: Set[str] = {
 }
 
 # Policy hooks: timeout / still-running must fail closed (block the tool).
-_HOOK_TIMEOUT_FAIL_CLOSED_HOOKS: Set[str] = {"pre_tool_call"}
+_HOOK_TIMEOUT_FAIL_CLOSED_HOOKS: Set[str] = {"pre_tool_call", "pre_tts_synthesis"}
 # Documented parent-thread serialization contract — never run on a timeout worker (hooks.md).
 _HOOK_CALLER_THREAD_HOOKS: Set[str] = {"subagent_stop"}
 # After a timeout, suppress the same callback this long so a hung hook cannot pile up threads.
@@ -479,6 +479,16 @@ class PluginDispatchMixin:
     def has_hook(self, hook_name: str) -> bool:
         """Return True when at least one callback is registered for a hook."""
         return bool(self._hooks.get(hook_name))
+
+    def has_plugin_hook(self, plugin_key: str, hook_name: str) -> bool:
+        """Only a successfully loaded plugin with a live owned callback satisfies a required policy."""
+        with getattr(self, "_discovery_lock"):
+            loaded = getattr(self, "_plugins", {}).get(plugin_key)
+            return bool(
+                loaded and loaded.enabled and not loaded.error
+                and any(reg.active and reg.kind == "hook" and reg.key == hook_name
+                        for reg in getattr(self, "_ownership_ledger", {}).get(plugin_key, ()))
+            )
 
     async def ainvoke_hook(self, hook_name: str, **kwargs: Any) -> List[Any]:
         """:meth:`invoke_hook` for callers that are already on an event loop.

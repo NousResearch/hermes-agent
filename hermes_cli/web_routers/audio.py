@@ -512,14 +512,15 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
         with _config_profile_scope(profile):
             cfg = _load_tts_config()
             streamer = resolve_streaming_provider(cfg)
-            cap = _resolve_max_text_length(_get_provider(cfg), cfg)
-        return streamer, cap, cfg
+            provider = getattr(streamer, "provider_name", _get_provider(cfg))
+            cap = _resolve_max_text_length(provider, cfg)
+        return streamer, cap, cfg, provider
 
     try:
-        streamer, cap, cfg = await loop.run_in_executor(None, _resolve)
+        streamer, cap, cfg, provider = await loop.run_in_executor(None, _resolve)
     except Exception:
         _log.exception("speak-stream provider resolution failed")
-        streamer, cap, cfg = None, 0, {}
+        streamer, cap, cfg, provider = None, 0, {}, "edge"
     if streamer is None:
         # Edge (the default) and every other non-chunked provider still have a
         # documented per-sentence path. type=fallback here is what makes Desktop
@@ -558,6 +559,7 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
         nonlocal produced_audio, synthesis_failed
         from tools.tts_streaming import SentenceChunker
         from tools.tts_text_normalize import _strip_markdown_for_tts
+        from tools.tts_synthesis_policy import enforce_pre_synthesis
 
         chunker = SentenceChunker.from_config(cfg)  # the requesting profile's tts.streaming.min_len
 
@@ -595,7 +597,10 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
                 if not cleaned:
                     continue
                 for piece in _split_text_for_speak_stream(cleaned, cap):
-                    for chunk in streamer.stream(piece):
+                    # The sync fallback goes through text_to_speech_tool, which already
+                    # enforces this boundary; avoid firing a policy hook twice for it.
+                    approved = piece if isinstance(streamer, _SyncSentencePCMStreamer) else enforce_pre_synthesis(piece, provider)
+                    for chunk in streamer.stream(approved):
                         if stop.is_set():
                             return
                         produced_audio = True

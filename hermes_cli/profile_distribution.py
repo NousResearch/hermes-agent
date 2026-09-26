@@ -441,10 +441,19 @@ def _refuse_symlink(path: Path) -> None:
         )
 
 
-def _is_container(path: Path) -> bool:
-    """A shipped directory holding no files (a skills category) is a container of roots,
-    not a root itself; a skill dir always holds at least SKILL.md."""
-    return path.is_dir() and not any(p.is_file() for p in path.iterdir())
+def _is_container(path: Path, rel: Tuple[str, ...]) -> bool:
+    """A shipped directory that is a container of roots, not a root itself.
+
+    Under ``skills/`` the boundary is the hub installer's (``_check_install_target``): a skill
+    root holds ``SKILL.md``, anything else is a category. A category carries files of its own
+    (``skills_sync`` puts a ``DESCRIPTION.md`` in every one), so "holds no files" would make the
+    bundled layout a root and replace it whole. Elsewhere a directory holding no files is the
+    container."""
+    if not path.is_dir():
+        return False
+    if rel and rel[0] == "skills":
+        return not (path / "SKILL.md").is_file()
+    return not any(p.is_file() for p in path.iterdir())
 
 
 def _merge_dir(src: Path, dest: Path, rel: Tuple[str, ...]) -> None:
@@ -455,7 +464,7 @@ def _merge_dir(src: Path, dest: Path, rel: Tuple[str, ...]) -> None:
             continue
         if parts == _CRON_STORE_REL:
             continue  # merged up front by _copy_dist_payload
-        if _is_container(child):
+        if _is_container(child, parts):
             _merge_dir(child, _real_dir(dest, (child.name,)), parts)
         else:
             _replace_entry(child, dest / child.name)
@@ -466,7 +475,7 @@ def _refuse_symlinked_containers(src: Path, dest: Path, rel: Tuple[str, ...]) ->
         parts = (*rel, child.name)
         if _is_distribution_runtime_path(parts):
             continue
-        if _is_container(child):
+        if _is_container(child, parts):
             _refuse_symlink(dest / child.name)
             _refuse_symlinked_containers(child, dest / child.name, parts)
 
@@ -483,7 +492,7 @@ def _refuse_symlinked_targets(target: Path, entries) -> None:
         for part in rel_parts[:depth]:
             path = path / part
             _refuse_symlink(path)
-        if src.is_dir() and (len(rel_parts) == 1 or _is_container(src)):
+        if src.is_dir() and (len(rel_parts) == 1 or _is_container(src, rel_parts)):
             _refuse_symlinked_containers(src, path, rel_parts)
 
 
@@ -523,10 +532,10 @@ def _copy_dist_payload(staged: Path, target: Path, manifest: DistributionManifes
             if src.is_dir():
                 _merge_dir(src, _real_dir(target, rel_parts), rel_parts)
                 continue
-        elif _is_container(src):
-            # An owned category (``skills/research/``) holds skill roots, not files: merge it per
-            # root like a top-level dir, so skills the installer added to it (``hermes skills
-            # install`` and agent-created skills land in ``skills/<category>/``) survive.
+        elif _is_container(src, rel_parts):
+            # An owned category (``skills/research/``) holds skill roots: merge it per root like
+            # a top-level dir, so skills the installer added to it (``hermes skills install``
+            # and agent-created skills land in ``skills/<category>/``) survive.
             _merge_dir(src, _real_dir(target, rel_parts), rel_parts)
             continue
         _replace_entry(src, _real_dir(target, rel_parts[:-1]) / rel_parts[-1])

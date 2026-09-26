@@ -950,21 +950,30 @@ def _cmd_edit(args: argparse.Namespace) -> int:
     title = getattr(args, "title", None)
     body = getattr(args, "body", None)
     priority = getattr(args, "priority", None)
+    completion_contract = getattr(args, "completion_contract", None)
     if result is None and (summary is not None or raw_metadata is not None):
         return _err("kanban edit: --summary and --metadata require --result", 2)
-    if all(value is None for value in (title, body, priority, result)):
-        return _err("kanban edit: provide --title, --body, --priority, or --result", 2)
+    if all(value is None for value in (title, body, priority, result, completion_contract)):
+        return _err("kanban edit: provide --title, --body, --priority, --completion-contract, or --result", 2)
     metadata, rc = _parse_metadata_flag(raw_metadata)
     if rc:
         return rc
     with kbc.connect_closing() as conn:
-        ok = kb.edit_task(
-            conn, args.task_id, title=title, body=body, priority=priority,
-            result=result, summary=summary, metadata=metadata,
-        )
+        try:
+            ok = kb.edit_task(
+                conn, args.task_id, title=title, body=body, priority=priority,
+                result=result, summary=summary, metadata=metadata,
+                completion_contract=completion_contract,
+            )
+        except kb.LiveClaimError:
+            return _err(f"cannot edit {args.task_id}: a live worker is running it. Wait for the "
+                        f"worker or `hermes kanban reclaim {args.task_id}` to release it, then retry.")
+        except ValueError as exc:
+            return _err(f"kanban edit: {exc}", 2)
     return _ok_or_err(
         ok,
-        f"cannot edit {args.task_id} (unknown id, or --result used on a task that is not done)",
+        f"cannot edit {args.task_id} (unknown id, --result used on a task that is not done, "
+        f"or --completion-contract used on a done/archived task)",
         f"Edited {args.task_id}",
     )
 

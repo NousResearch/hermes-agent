@@ -3139,12 +3139,21 @@ def edit_task(
     body: Optional[str] = None, priority: Optional[int] = None,
     result: Optional[str] = None, summary: Optional[str] = None,
     metadata: Optional[dict] = None, board: Optional[str] = None,
+    completion_contract: Optional[str] = None,
 ) -> bool:
-    """Edit task fields, optionally backfilling a completed task's result."""
+    """Edit task fields, optionally backfilling a completed task's result.
+
+    ``completion_contract`` re-gates the card (``local-only`` relaxes a PR
+    demand so no-PR closures can complete honestly); None leaves the gate.
+    """
+    if completion_contract is not None:
+        from hermes_cli.kanban_pr_acceptance import validate_contract
+        completion_contract = validate_contract(completion_contract)
     changed_fields = [
         field for field, value in (("title", title), ("body", body), ("priority", priority))
         if value is not None
     ]
+    changed_contract: Optional[tuple[Optional[str], str]] = None
     with write_txn(conn):
         status = _task_status(conn, task_id)
         if status is None or (result is not None and status != "done"):
@@ -3155,6 +3164,24 @@ def edit_task(
             if value is not None:
                 assignments.append(f"{field} = ?")
                 params.append(value)
+        if completion_contract is not None:
+            # A terminal card's gate can never fire again; re-gating it only
+            # fabricates audit history.
+            if status in ("done", "archived"):
+                return False
+            trow = conn.execute(
+                "SELECT status, claim_lock, worker_pid, worker_started_at, completion_contract"
+                " FROM tasks WHERE id = ?", (task_id,),
+            ).fetchone()
+            # Same fence as complete_task: never re-gate a live worker's run
+            # from under it; see _claim_is_live for what "live" means.
+            if _claim_is_live(trow):
+                raise LiveClaimError(task_id)
+            if trow["completion_contract"] != completion_contract:
+                assignments.append("completion_contract = ?")
+                params.append(completion_contract)
+                changed_fields.append("completion_contract")
+                changed_contract = (trow["completion_contract"], completion_contract)
         if result is not None:
             assignments.append("result = ?")
             params.append(result)
@@ -3170,7 +3197,11 @@ def edit_task(
         if result is None:
             non_priority_fields = [field for field in changed_fields if field != "priority"]
             if non_priority_fields:
-                _append_event(conn, task_id, "edited", {"fields": non_priority_fields})
+                payload: dict = {"fields": non_priority_fields}
+                if changed_contract is not None:
+                    payload["completion_contract_old"] = changed_contract[0]
+                    payload["completion_contract_new"] = changed_contract[1]
+                _append_event(conn, task_id, "edited", payload)
         else:
             handoff_summary = summary if summary is not None else result
             changed_fields.append("summary")

@@ -35,6 +35,10 @@ if TYPE_CHECKING:
 # dispatcher parks the task in ``blocked`` with a reason — prevents retry storms.
 DEFAULT_FAILURE_LIMIT = 2
 
+# Skills the review lane force-loads into every claim; the curator protects
+# them from inactivity archival (dispatch has no existence check — see #118753).
+REVIEW_LANE_SKILLS = ("sdlc-review",)
+
 # Worker log files larger than this at spawn time are rotated.
 DEFAULT_LOG_ROTATE_BYTES = 2 * 1024 * 1024   # 2 MiB
 DEFAULT_LOG_BACKUP_COUNT = 1
@@ -2095,9 +2099,9 @@ def _dispatch_lane_task(
         _kbw.set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
     _kbw._maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
     if lane == "review":
-        # Force-load sdlc-review; the kanban lifecycle is already in every
-        # worker's system prompt via KANBAN_GUIDANCE.
-        claimed.skills = list(dict.fromkeys([*(claimed.skills or []), "sdlc-review"]))
+        # Force-load the review-lane skills; the kanban lifecycle is already in
+        # every worker's system prompt via KANBAN_GUIDANCE.
+        claimed.skills = list(dict.fromkeys([*(claimed.skills or []), *REVIEW_LANE_SKILLS]))
     try:
         pid = _call_spawn_fn(spawn_fn if spawn_fn is not None else _default_spawn, claimed, str(workspace), board)
         if pid:

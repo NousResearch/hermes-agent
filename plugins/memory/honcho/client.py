@@ -14,6 +14,7 @@ import ipaddress
 import json
 import logging
 import os
+import re
 import threading as _threading
 import time
 import weakref
@@ -261,6 +262,19 @@ def _env_base_url() -> str | None:
     read through the secret scope: the scoped HONCHO_API_KEY beside it must not be sent to the default
     profile's server."""
     return (get_secret("HONCHO_BASE_URL", "") or "").strip() or (get_secret("HONCHO_URL", "") or "").strip() or None
+
+
+def resolve_effective_base_url(config: "HonchoClientConfig") -> str | None:
+    """Resolve and normalize the base URL used to build the Honcho client."""
+    base_url = _sanitize_url(config.base_url)
+    if not base_url:
+        with contextlib.suppress(Exception):
+            from hermes_cli.config import load_config
+
+            honcho_cfg = load_config().get("honcho", {})
+            if isinstance(honcho_cfg, dict):
+                base_url = _sanitize_url(honcho_cfg.get("base_url", "").strip() or None)
+    return re.sub(r"/v\d+/*$", "", base_url).rstrip("/") if base_url else None
 
 
 def _connection_fields(look: _HostLookup, host: str, path: Path) -> dict[str, Any]:
@@ -639,15 +653,13 @@ def _build_client(config: HonchoClientConfig) -> "Honcho":
                           "(or run `hermes honcho setup` to configure).")
 
     # config.yaml honcho.base_url / timeout fill whatever honcho.json left unset.
-    base_url, timeout = config.base_url, config.timeout
-    if not base_url or timeout is None:
+    base_url, timeout = resolve_effective_base_url(config), config.timeout
+    if timeout is None:
         with contextlib.suppress(Exception):
             from hermes_cli.config import load_config
             honcho_cfg = load_config().get("honcho", {})
             if isinstance(honcho_cfg, dict):
-                base_url = base_url or _sanitize_url(honcho_cfg.get("base_url", "").strip() or None)
-                if timeout is None:
-                    timeout = _resolve_optional_float(honcho_cfg.get("timeout"), honcho_cfg.get("request_timeout"))
+                timeout = _resolve_optional_float(honcho_cfg.get("timeout"), honcho_cfg.get("request_timeout"))
     if timeout is None:
         timeout = _DEFAULT_HTTP_TIMEOUT  # an unconfigured install must not hang on a stalled request
 
@@ -667,10 +679,7 @@ def _build_client(config: HonchoClientConfig) -> "Honcho":
     api_key = "local" if _is_local_base_url(base_url) and not explicit_key else config.api_key
     kwargs: dict = {"workspace_id": config.workspace_id, "api_key": api_key, "environment": config.environment, "timeout": timeout}
     if base_url:
-        # The SDK's route builders already carry the version prefix ("/v3/..."), so
-        # strip a trailing version segment from any base_url to avoid "/v3/v3/...".
-        import re
-        kwargs["base_url"] = re.sub(r"/v\d+/*$", "", base_url).rstrip("/")
+        kwargs["base_url"] = base_url
     _register_exit_close()
     return Honcho(**kwargs)
 

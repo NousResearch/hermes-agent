@@ -215,7 +215,7 @@ export function ModelPickerDialog({
         </Command>
 
         <DialogFooter className="flex-row items-center justify-end gap-2 bg-card p-3">
-          <Button className="mr-auto" onClick={enterSlug} variant="ghost">
+          <Button className="me-auto" onClick={enterSlug} variant="ghost">
             {copy.addCustomModelAction}
           </Button>
           <Button onClick={addProvider} variant="ghost">

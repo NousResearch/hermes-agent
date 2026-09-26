@@ -748,8 +748,8 @@ export const fa = defineLocale({
           'یک ماسکوت متحرک petdex به‌کار بگیرید که روی برنامه شناور است و به کارهای Hermes واکنش نشان می‌دهد — هنگام اجرای ابزار در حال کار، در موفقیت جشن، در خطا اخم.',
         restartHint:
           'موجودهای زنده به راه‌اندازی سریع نیاز دارند — برنامه در حال اجرا پیش از افزودن این قابلیت بالا آمده. Hermes را ببندید و دوباره باز کنید و به اینجا برگردید.',
-        on: 'روشن',
-        off: 'خاموش',
+
+
         scaleTitle: 'اندازه',
         scaleDesc: 'اندازه ماسکوت شناور را تغییر دهید. همه‌جا بلافاصله اعمال می‌شود.',
         roamTitle: 'پرسه',
@@ -783,37 +783,35 @@ export const fa = defineLocale({
       }
     },
     about: {
-      heading: 'Hermes Desktop',
-      version: value => `نسخه ${value}`,
-      versionUnavailable: 'نسخه در دسترس نیست',
-      bundleOutOfSync: 'نسخه برنامه قدیمی است',
-      bundleOutOfSyncDesc:
-        'زمان اجرا Hermes به‌روزرسانی شد، اما خود برنامه دسکتاپ هنوز نسخه قدیمی است — قابلیت‌های جدید رابط (مثل Bot Mode) تا به‌روزرسانی وجود نخواهند داشت. برای بازسازی برنامه به‌روزرسانی زیر را اجرا کنید. اگر این هشدار پاک نشد، از جدیدترین نصب‌کننده دسکتاپ دوباره نصب کنید.',
-      bundleOutOfSyncAction: 'دریافت نصب‌کننده',
+
+
+
+
+
+
       updates: 'به‌روزرسانی‌ها',
-      checkNow: 'بررسی الان',
-      checking: 'در حال بررسی…',
-      seeWhatsNew: 'ببینید چه چیزهای جدیدی هست',
-      updateNow: 'به‌روزرسانی الان',
-      releaseNotes: 'یادداشت‌های انتشار',
-      onLatest: 'روی جدیدترین نسخه هستید.',
-      installing: 'یک به‌روزرسانی در حال نصب است.',
-      cantUpdate: 'این نسخه نمی‌تواند از داخل برنامه خودش را به‌روز کند.',
-      cantReach: 'به سرور به‌روزرسانی دسترسی نداشتیم.',
-      tapCheck: 'برای جستجوی به‌روزرسانی «بررسی الان» را بزنید.',
-      updateReady: count => `به‌روزرسانی جدید آماده است (${count} تغییر).`,
-      updateReadyUnknown: 'به‌روزرسانی جدید آماده است.',
-      lastChecked: age => `آخرین بررسی ${age}`,
-      justNowSuffix: ' · همین حالا',
-      automaticUpdates: 'به‌روزرسانی‌های خودکار',
-      automaticUpdatesDesc: 'Hermes در پس‌زمینه خودکار به‌روزرسانی‌ها را بررسی می‌کند و وقتی یکی آماده شد خبر می‌دهد.',
-      branchCommit: (branch, commit) => `شاخه ${branch} · کامیت ${commit}`,
-      never: 'هرگز',
-      justNow: 'همین حالا',
-      minAgo: count => `${count} دقیقه پیش`,
-      hoursAgo: count => `${count} ساعت پیش`,
-      daysAgo: count => `${count} روز پیش`
-    },
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+},
     config: {
       none: 'هیچ',
       noneParen: '(هیچ)',
@@ -1116,43 +1114,43 @@ export const fa = defineLocale({
     mcp: {
       loading: 'در حال بارگذاری سرورهای MCP…',
       failedLoad: 'بارگذاری پیکربندی MCP ناموفق بود',
-      nameRequiredTitle: 'نام لازم است',
-      nameRequiredMessage: 'به این سرور MCP یک کلید پیکربندی بدهید.',
-      objectRequired: 'پیکربندی سرور باید یک شیء JSON باشد',
+
+
+
       invalidJson: 'JSON نامعتبر برای MCP',
       saveFailed: 'ذخیره ناموفق بود',
       removeFailed: 'حذف ناموفق بود',
-      gatewayUnavailableTitle: 'دروازه در دسترس نیست',
-      gatewayUnavailableMessage: 'پیش از بارگذاری مجدد MCP، دروازه را دوباره وصل کنید.',
-      reloadedTitle: 'ابزارهای MCP بارگذاری مجدد شد',
-      reloadedMessage: 'طرح‌های ابزار جدید روی نوبت‌های تازه اعمال می‌شوند.',
+
+
+
+
       reloadFailed: 'بارگذاری مجدد MCP ناموفق بود',
       savedTitle: 'سرور MCP ذخیره شد',
       savedMessage: name => `${name} پس از بارگذاری مجدد MCP اعمال می‌شود.`,
       newServer: 'سرور جدید',
       reload: 'بارگذاری مجدد MCP',
-      reloading: 'در حال بارگذاری مجدد…',
+
       emptyTitle: 'هیچ سرور MCP نیست',
       emptyDesc: 'برای در دسترس گذاشتن ابزارهای MCP یک سرور stdio یا HTTP اضافه کنید.',
       disabled: 'غیرفعال',
-      editServer: 'ویرایش سرور',
+
       name: 'نام',
       serverJson: 'JSON سرور',
       remove: 'حذف',
-      saveServer: 'ذخیره سرور',
+
       test: 'آزمایش اتصال',
-      testing: 'در حال آزمایش…',
-      testOk: count => `متصل شد — ${count} ابزار در دسترس`,
-      testFailed: 'اتصال ناموفق بود',
-      enableServer: name => `فعال‌سازی ${name}`,
-      disableServer: name => `غیرفعال‌سازی ${name}`,
-      serverEnabled: name => `${name} فعال شد — روی نشست‌های جدید اعمال می‌شود.`,
-      serverDisabled: name => `${name} غیرفعال شد — روی نشست‌های جدید اعمال می‌شود.`,
-      toggleFailed: (name, enabled) => `تغییر وضعیت ${name} به ${enabled ? 'روشن' : 'خاموش'} ناموفق بود`,
+
+
+
+
+
+
+
+
       tabServers: 'سرورها',
       tabCatalog: 'کاتالوگ',
       catalogLoading: 'در حال بارگذاری کاتالوگ MCP…',
-      catalogLoadFailed: 'بارگذاری کاتالوگ MCP ناموفق بود',
+
       catalogEmpty: 'ورودی‌ای در کاتالوگ موجود نیست.',
       catalogInstalled: 'نصب‌شده',
       catalogEnabled: 'فعال',
@@ -1178,8 +1176,8 @@ export const fa = defineLocale({
       waitingForBrowser: 'در انتظار مرورگر…',
       authenticate: 'احراز هویت',
       unsavedConnect: 'ذخیره‌نشده — mcp.json را ذخیره کنید تا وصل شود.',
-      enableTool: tool => `فعال‌سازی ${tool}`,
-      disableTool: tool => `غیرفعال‌سازی ${tool}`,
+
+
       noOutput: 'هنوز خروجی نیست.',
       deepLinkTitle: 'سرور MCP اضافه شود؟',
       deepLinkDescription:
@@ -1381,7 +1379,7 @@ export const fa = defineLocale({
     tabSkills: 'مهارت‌ها',
     tabToolsets: 'ابزارها',
     configuringProfile: 'در حال پیکربندی:',
-    tabMcp: 'MCP',
+
     all: 'همه',
     searchSkills: 'جستجوی مهارت‌ها…',
     searchToolsets: 'جستجوی ابزارها…',
@@ -3070,7 +3068,7 @@ export const fa = defineLocale({
         title: 'مصرف زمینه',
         tokenSummary: (used, max) => `${used} / ${max} توکن`
       },
-      session: 'نشست',
+
       yoloOn: 'YOLO روشن — تأیید خودکار فرمان‌های خطرناک. Shift+کلیک به‌صورت سراسری تغییرش می‌دهد.',
       yoloOff: 'YOLO خاموش. Shift+کلیک به‌صورت سراسری تغییرش می‌دهد.',
       modelNone: 'هیچ',

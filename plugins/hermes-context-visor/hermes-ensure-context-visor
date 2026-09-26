@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# Hermes Context Visor — ensure running (operator-facing, zero terminal work).
+#
+# Called from Desktop launch wrappers so opening Hermes also starts the browser
+# cockpit sidecar server. Idempotent: if a cockpit for the target profile is
+# already alive, do nothing.
+# Fail-open: never block Desktop launch if the Visor cannot start.
+#
+# Cross-platform notes:
+#   Starts a detached localhost server; the main user-facing surface is browser UI.
+#
+# Install:
+#   cp scripts/hermes-ensure-context-visor ~/.local/bin/
+#   chmod +x ~/.local/bin/hermes-ensure-context-visor
+set -u
+
+PROFILE="${HERMES_VISOR_PROFILE:-${HERMES_PROFILE:-default}}"
+VISOR_BIN="${HERMES_CONTEXT_VISOR_BIN:-$HOME/.local/bin/hermes-context-visor}"
+SCRIPT="${HERMES_VISOR_SCRIPT:-$HOME/.hermes/profiles/${PROFILE}/scripts/context_visor.py}"
+LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/hermes"
+LOG_FILE="${LOG_DIR}/context-visor-ensure.log"
+mkdir -p "$LOG_DIR" 2>/dev/null || true
+
+_log() {
+  printf '%s %s\n' "$(date -Iseconds 2>/dev/null || date)" "$*" >>"$LOG_FILE" 2>/dev/null || true
+}
+
+# Already running for this profile?
+_visor_running() {
+  ps -eo args= 2>/dev/null | grep -F "context_visor.py --profile ${PROFILE}" \
+    | grep -E '(^|/)python([0-9.]+)?( |$)|/venv/bin/python' \
+    | grep -v grep >/dev/null 2>&1
+}
+
+if _visor_running; then
+  _log "already_running profile=${PROFILE}"
+  exit 0
+fi
+
+if [[ ! -x "$VISOR_BIN" ]]; then
+  # Fall back to invoking python directly if launcher missing but script exists.
+  PY="${HERMES_PYTHON:-$HOME/.hermes/hermes-agent/venv/bin/python3}"
+  if [[ -x "$PY" && -f "$SCRIPT" ]]; then
+    VISOR_CMD=("$PY" "$SCRIPT" "--profile" "$PROFILE" "--serve" "--no-browser")
+  else
+    _log "missing_launcher_and_script bin=${VISOR_BIN} script=${SCRIPT}"
+    exit 0
+  fi
+else
+  VISOR_CMD=("$VISOR_BIN" "--serve" "--no-browser")
+fi
+nohup "${VISOR_CMD[@]}" >>"$LOG_FILE" 2>&1 &
+_log "spawned detached profile=${PROFILE} pid=$!"
+exit 0

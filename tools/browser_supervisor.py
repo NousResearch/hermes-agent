@@ -447,6 +447,23 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, 10.0)
 
+    def bind_driver_page(self, url: str, timeout: float = 3.0) -> bool:
+        """Bind to the tab showing ``url`` (the driver's current page) — exact, where
+        ``_prefer_web_page`` can only guess "first web tab" when several are open. Called once
+        before the first evaluation; True when bound."""
+        if not url.startswith(_WEB_SCHEMES):
+            return False
+        from agent.vault_store import normalize_origin
+        for attempt in range(2):  # a tab mid-navigation can miss the exact-URL check once
+            result = self.focus_page(normalize_origin(url), accept=f"location.href === {json.dumps(url)}", timeout=timeout)
+            if result.get("ok"):
+                self._web_page_seen = True
+                return True
+            if attempt == 0:
+                time.sleep(0.5)
+        logger.debug("CDP supervisor %s: driver-page bind failed: %s", self.task_id, result.get("error"))
+        return False
+
     def _prefer_web_page(self, timeout: float = 3.0) -> None:
         """Move off a browser-internal page (the startup ``chrome://newtab``, ``about:blank``)
         onto a web page when one exists. Attaching to a browser we did not launch, the supervisor

@@ -400,3 +400,44 @@ def test_evaluate_runtime_moves_off_startup_tab_to_web_page(chrome_cdp, supervis
         assert out.get("result") == "web-tab", out
     finally:
         server.shutdown()
+
+
+def test_bind_driver_page_picks_the_driver_tab_among_several(chrome_cdp, supervisor_registry):
+    """With several web tabs open, "first web tab" is a guess; binding by the driver's exact
+    URL must land evaluation in that tab."""
+    import http.server
+    import threading
+    import urllib.request
+
+    class _Page(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            body = f"<!doctype html><title>tab{self.path.replace('/', '-')}</title>".encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Page)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        cdp_url, port = chrome_cdp
+        supervisor = supervisor_registry.get_or_start(task_id="pytest-bind-driver", cdp_url=cdp_url)
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        for path in ("/a", "/b"):
+            urllib.request.urlopen(urllib.request.Request(f"http://127.0.0.1:{port}/json/new?{base}{path}", method="PUT"),
+                                   timeout=5).read()
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:  # both tabs committed their URLs
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/list", timeout=5) as r:
+                urls = {t.get("url") for t in json.loads(r.read().decode())}
+            if {f"{base}/a", f"{base}/b"} <= urls:
+                break
+            time.sleep(0.25)
+        assert supervisor.bind_driver_page(f"{base}/b") is True
+        assert supervisor.evaluate_runtime("document.title")["result"] == "tab-b"
+    finally:
+        server.shutdown()

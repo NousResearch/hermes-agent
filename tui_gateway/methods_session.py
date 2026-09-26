@@ -2185,22 +2185,59 @@ def _(rid, params: dict) -> dict:
 
 
 def _apply_correction(rid, session: dict, verb: str, text: str, accepted_status: str) -> dict:
-    """``agent.<verb>(text)``; on acceptance record it on the live turn (mid-turn resume rebuilds the bubble)
-    and purge queued self-copies so post-turn drain cannot re-fire the old prompt."""
+    """``agent.<verb>(text)`` on the in-process agent; see ``_record_accepted_correction``."""
     try:
         accepted = getattr(session["agent"], verb)(text)
     except Exception as exc:
         return _err(rid, 5000, f"{verb} failed: {exc}")
     if accepted:
-        with session["history_lock"]:
-            _record_inflight_correction(session, text)
-            # #84417: steer does not cancel the live original, but a server queue self-copy of that original
-            # must still not re-fire after settle (same class as redirect).
-            # #84417: purge server-queue self-duplicates of the live original so post-turn drain cannot
-            # restart the pre-correction prompt.
-            _drop_queued_duplicates_of_inflight_user(session)
-            session["last_active"] = time.time()
+        _record_accepted_correction(session, text)
     return _ok(rid, {"status": accepted_status if accepted else "rejected", "text": text})
+
+
+def _record_accepted_correction(session: dict, text: str) -> None:
+    """Record an accepted correction on the live turn (mid-turn resume rebuilds the bubble) and purge
+    queued self-copies so post-turn drain cannot re-fire the old prompt."""
+    with session["history_lock"]:
+        _record_inflight_correction(session, text)
+        # #84417: steer does not cancel the live original, but a server queue self-copy of that original
+        # must still not re-fire after settle (same class as redirect).
+        # #84417: purge server-queue self-duplicates of the live original so post-turn drain cannot
+        # restart the pre-correction prompt.
+        _drop_queued_duplicates_of_inflight_user(session)
+        session["last_active"] = time.time()
+
+
+def _hosted_turn_live(session: dict) -> bool:
+    """A compute-host turn is running: its AIAgent lives in the child, the parent holds only a mirror."""
+    return bool(_session_uses_compute_host(session) and session.get("running")
+                and session.get("_compute_host_turn_id"))
+
+
+def _apply_hosted_correction(rid, sid: str, session: dict, verb: str, text: str, accepted_status: str) -> dict:
+    """Deliver steer/redirect to the compute host that owns the live AIAgent and mirror an accepted
+    correction onto the parent's in-flight turn, exactly as the in-process path records it."""
+    try:
+        ack = _send_compute_host_control(sid, route_name=f"session.{verb}", payload={"text": text}, timeout=15.0)
+    except Exception as exc:
+        return _err(rid, 5019, f"compute-host {verb} failed: {exc}")
+    if ack.get("type") in {"control.error", "error"}:
+        return _err(rid, 5019, str(ack.get("message") or f"compute-host {verb} failed"))
+    if ack.get("deferred"):
+        _enqueue_prompt(session, text, current_transport() or _stdio_transport)
+        session["last_active"] = time.time()
+        return _ok(rid, {"status": "queued", "text": text})
+    response = ack.get("response")
+    if not isinstance(response, dict):
+        return _err(rid, 5019, f"compute-host {verb} returned no result")
+    if isinstance(error := response.get("error"), dict):
+        return _err(rid, int(error.get("code") or 5019), str(error.get("message") or f"{verb} failed"))
+    result = response.get("result")
+    if not isinstance(result, dict):
+        return _err(rid, 5019, f"compute-host {verb} returned an invalid result")
+    if result.get("status") == accepted_status:
+        _record_accepted_correction(session, text)
+    return _ok(rid, result)
 
 
 def _correction_method(name: str, verb: str, accepted_status: str, supported, unsupported: str):
@@ -2214,9 +2251,10 @@ def _correction_method(name: str, verb: str, accepted_status: str, supported, un
         if err:
             return err
         agent = session.get("agent")
+        hosted = _hosted_turn_live(session)
         # Redirect during the turn-build window (running=True, agent None): queue for the next turn instead of
         # a misleading 4010 the client swallows into a lost follow-up.
-        if verb == "redirect" and agent is None and session.get("running"):
+        if verb == "redirect" and agent is None and session.get("running") and not hosted:
             _enqueue_prompt(session, text, current_transport() or _stdio_transport)
             session["last_active"] = time.time()
             return _ok(rid, {"status": "queued", "text": text})
@@ -2229,6 +2267,9 @@ def _correction_method(name: str, verb: str, accepted_status: str, supported, un
             _enqueue_prompt(session, text, current_transport() or _stdio_transport)
             session["last_active"] = time.time()
             return _ok(rid, {"status": "queued", "text": text})
+        if hosted:
+            return _apply_hosted_correction(
+                rid, str(params.get("session_id") or ""), session, verb, text, accepted_status)
         if not supported(agent):
             return _err(rid, 4010, unsupported)
         # An idle agent accepts steer() but only the next turn drains it, spliced after an old tool

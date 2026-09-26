@@ -450,6 +450,15 @@ class ComputeHost:
         sid = str(frame.get("sid") or "")
         route_name = str(frame.get("route_name") or "")
         command = str(frame.get("command") or "")
+        if route_name in {"session.steer", "session.redirect"}:
+            # The live AIAgent is here, not in the parent's metadata mirror. A turn whose agent is
+            # still building, or one mid-compression, must not take a correction yet: defer so the
+            # parent queues the text as the next prompt in ITS queue, the queue that drains after
+            # the hosted turn ends (an entry in this process's queue would never reach the client).
+            if session.get("agent") is None or server._session_compression_in_flight(session):
+                return {"deferred": True}
+            return {"response": server._methods[route_name](
+                frame.get("request_id"), {"session_id": sid, "text": frame.get("text")})}
         if route_name in {"session.save", "session.compress"}:
             params = {"session_id": sid}
             if route_name == "session.compress":

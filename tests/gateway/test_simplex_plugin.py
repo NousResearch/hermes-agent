@@ -413,6 +413,100 @@ def _make_file_chat_item(file_path: str, file_name: str) -> dict:
     }
 
 
+def _pending_file_chat_item(file_name: str, file_id: int = 7) -> dict:
+    """The same item as newChatItems delivers it: XFTP download still in flight, no path."""
+    item = _make_file_chat_item("", file_name)
+    item["chatItem"]["file"] = {"fileId": file_id, "fileName": file_name}
+    return item
+
+
+def _rcv_file_complete(file_path: str, file_name: str) -> dict:
+    return {"resp": {"type": "rcvFileComplete", "chatItem": _make_file_chat_item(file_path, file_name)}}
+
+
+def _file_adapter():
+    adapter = _adapter_with_ws()
+    adapter.handle_message = AsyncMock()
+    return adapter
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "file_name, message_type",
+    [("photo.jpg", "PHOTO"), ("order.pdf", "DOCUMENT"), ("note.m4a", "VOICE")],
+)
+async def test_incomplete_file_is_delivered_on_rcv_file_complete(tmp_path, file_name, message_type):
+    from gateway.platforms.base import MessageType
+
+    adapter = _file_adapter()
+    await adapter._handle_chat_item(_pending_file_chat_item(file_name))
+
+    adapter.handle_message.assert_not_awaited()
+    assert 7 in adapter._pending_file_transfers
+    sent = json.loads(adapter._ws.send.await_args.args[0])
+    assert sent["cmd"] == "/freceive 7"
+
+    path = str(tmp_path / file_name)
+    await adapter._handle_event(_rcv_file_complete(path, file_name))
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.media_urls == [path]
+    assert event.message_type == getattr(MessageType, message_type)
+    assert event.text == "here you go"
+    assert 7 not in adapter._pending_file_transfers
+
+
+@pytest.mark.asyncio
+async def test_rcv_file_complete_before_new_chat_items_delivers_once(tmp_path):
+    """XFTP downloads start on rcvFileDescrReady, so completion can overtake newChatItems."""
+    adapter = _file_adapter()
+    path = str(tmp_path / "photo.jpg")
+
+    await adapter._handle_event(_rcv_file_complete(path, "photo.jpg"))
+    adapter.handle_message.assert_awaited_once()
+    assert adapter.handle_message.await_args.args[0].media_urls == [path]
+
+    # The late newChatItems, with or without the path, must not deliver it again
+    # nor start a second transfer.
+    adapter._ws.send.reset_mock()
+    await adapter._handle_chat_item(_pending_file_chat_item("photo.jpg"))
+    await adapter._handle_chat_item(_make_file_chat_item(path, "photo.jpg"))
+    adapter.handle_message.assert_awaited_once()
+    adapter._ws.send.assert_not_awaited()
+    assert adapter._pending_file_transfers == {}
+
+
+@pytest.mark.asyncio
+async def test_completed_file_in_new_chat_items_is_not_redelivered(tmp_path):
+    adapter = _file_adapter()
+    path = str(tmp_path / "order.pdf")
+
+    await adapter._handle_chat_item(_make_file_chat_item(path, "order.pdf"))
+    await adapter._handle_event(_rcv_file_complete(path, "order.pdf"))
+
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_rcv_file_complete_without_path_delivers_nothing():
+    adapter = _file_adapter()
+    await adapter._handle_chat_item(_pending_file_chat_item("photo.jpg"))
+    await adapter._handle_event(_rcv_file_complete("", "photo.jpg"))
+
+    adapter.handle_message.assert_not_awaited()
+    assert 7 in adapter._pending_file_transfers
+
+
+def test_delivered_file_ids_are_bounded():
+    adapter = _adapter_with_ws()
+    adapter._max_delivered_files = 3
+    for file_id in range(5):
+        assert adapter._mark_file_delivered(file_id)
+    assert list(adapter._delivered_file_ids) == [2, 3, 4]
+    assert not adapter._mark_file_delivered(4)
+
+
 
 
 # ---------------------------------------------------------------------------

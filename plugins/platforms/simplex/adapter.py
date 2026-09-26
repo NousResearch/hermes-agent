@@ -18,6 +18,7 @@ import os
 import random
 import re
 import time
+from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -116,6 +117,10 @@ class SimplexAdapter(BasePlatformAdapter):
         self._pending_corr_ids: set = set()  # cosmetic echo filter: corrIds we minted, bounded
         self._max_pending_corr = 200
         self._pending_file_transfers: Dict[int, dict] = {}  # awaiting rcvFileComplete, by fileId
+        # fileIds already handed to the agent: newChatItems and rcvFileComplete can both carry
+        # a finished file, in either order, and each file must reach the agent exactly once.
+        self._delivered_file_ids: OrderedDict[int, None] = OrderedDict()
+        self._max_delivered_files = 500
         self._pending_responses: Dict[str, asyncio.Future] = {}  # awaited command replies
         self._corr_counter = 0
         # SimpleX has no client-side split, so the split delay equals the plain one.
@@ -258,21 +263,41 @@ class SimplexAdapter(BasePlatformAdapter):
     async def _on_new_chat_item(self, resp: dict) -> None:  # singular variant from some daemon versions
         await self._safe_handle_chat_item(resp, "SimpleX: error processing chat item")
 
+    def _mark_file_delivered(self, file_id: int) -> bool:
+        """Record ``file_id`` as delivered; False when it already was."""
+        if file_id in self._delivered_file_ids:
+            return False
+        self._delivered_file_ids[file_id] = None
+        while len(self._delivered_file_ids) > self._max_delivered_files:
+            self._delivered_file_ids.popitem(last=False)
+        return True
+
     async def _on_rcv_file_complete(self, resp: dict) -> None:
-        """Deliver a chat item deferred until its file transfer completed."""
-        chat_item_data = (resp.get("chatItem", {}) or {}).get("chatItem", {}) or {}
-        file_info = chat_item_data.get("file", {}) or {}
+        """Deliver a file-bearing chat item once its transfer has completed.
+
+        This is the delivery point for every incomplete transfer, whatever the file type. The
+        completion event carries the whole chat item with its downloaded path, so it is delivered
+        even when the file was never parked: XFTP downloads start on rcvFileDescrReady, and the
+        completion can overtake the newChatItems it belongs to.
+        """
+        event_item = resp.get("chatItem", {}) or {}
+        file_info = (event_item.get("chatItem", {}) or {}).get("file", {}) or {}
         file_id = file_info.get("fileId") if isinstance(file_info, dict) else None
-        if file_id is None or file_id not in self._pending_file_transfers:
+        if file_id is None:
             return
-        pending = self._pending_file_transfers.pop(file_id)
         file_source = file_info.get("fileSource", {}) or {}
         file_path = file_source.get("filePath") if isinstance(file_source, dict) else None
-        if file_path:
-            pending_item_data = pending.get("chatItem", {}) or {}
-            pending_item_data.setdefault("file", {})["fileSource"] = {"filePath": file_path}
-            pending["chatItem"] = pending_item_data
-            await self._safe_handle_chat_item(pending, "SimpleX: error processing deferred file message")
+        if not file_path:
+            return
+        pending = self._pending_file_transfers.pop(file_id, None)
+        if file_id in self._delivered_file_ids:
+            return
+        item = pending if pending is not None else event_item
+        item_data = item.get("chatItem", {}) or {}
+        item_data.setdefault("file", {})["fileSource"] = {"filePath": file_path}
+        item["chatItem"] = item_data
+        logger.info("SimpleX: file %s received, delivering", file_id)
+        await self._safe_handle_chat_item(item, "SimpleX: error processing deferred file message")
 
     _EVENT_HANDLERS = {
         "contactRequest": _on_contact_request, "rcvFileDescrReady": _on_rcv_file_descr_ready,
@@ -339,13 +364,18 @@ class SimplexAdapter(BasePlatformAdapter):
             ext = Path(file_path).suffix.lower() if file_path else ""
             if not ext and file_info.get("fileName", ""):
                 ext = Path(file_info["fileName"]).suffix.lower()
-            # Voice notes typically arrive before the file finishes downloading; defer until
-            # rcvFileComplete. /freceive gets no corrId reply, so awaiting one would block the loop.
-            if not file_path and _is_audio_ext(ext) and file_id is not None:
-                logger.info("SimpleX: voice file %d not yet received, accepting transfer", file_id)
+            if file_id is not None and file_id in self._delivered_file_ids:
+                return  # rcvFileComplete already delivered this file
+            # XFTP files (voice, images, PDFs, anything) usually arrive before the download has
+            # finished; defer until rcvFileComplete. /freceive gets no corrId reply, so awaiting
+            # one would block the loop.
+            if not file_path and file_id is not None:
+                logger.info("SimpleX: file %d not yet received, accepting transfer", file_id)
                 self._pending_file_transfers[file_id] = chat_item
                 await self._send_fire_and_forget(f"/freceive {file_id}")
                 return
+            if file_path and file_id is not None:
+                self._mark_file_delivered(file_id)
             if file_path:
                 media_urls.append(file_path)
                 media_types.append(_mime_for_ext(ext))

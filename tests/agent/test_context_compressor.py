@@ -1,4 +1,4 @@
-"""Tests for agent/context_compressor.py — compression logic, thresholds, truncation fallback."""
+"""Tests for agent/context_compressor.py — compression logic, thresholds, and fallbacks."""
 
 import json
 import re
@@ -12,12 +12,9 @@ from agent.context_compressor import (
     HISTORICAL_TASK_HEADING,
     SUMMARY_PREFIX,
     COMPRESSED_SUMMARY_METADATA_KEY,
-    _COMPRESSION_MARKER_PREFIX,
-    _COMPRESSION_MARKER_TEMPLATE,
     _PRUNE_MIN_CHARS,
     _summarize_tool_result,
     _is_summary_access_or_quota_error,
-    _truncate_tool_call_args_json,
 )
 from hermes_state import SessionDB
 
@@ -2157,130 +2154,80 @@ class TestThresholdTokensCap:
 
 
 
-class TestTruncateToolCallArgsJson:
-    """Regression tests for #11762.
+class TestHistoricalToolCallArgumentsStayCanonical:
+    """Regression coverage for #122559: compression may summarize results, never executable args."""
 
-    The previous implementation produced invalid JSON by slicing
-    ``function.arguments`` mid-string, which caused non-retryable 400s from
-    strict providers (observed on MiniMax) and stuck long sessions in a
-    re-send loop. The helper here must always emit parseable JSON whose
-    shape matches the original — shrunken, not corrupted.
-    """
+    @staticmethod
+    def _compressor():
+        return ContextCompressor(
+            model="test/model",
+            config_context_length=100_000,
+            threshold_percent=0.85,
+            protect_first_n=1,
+            protect_last_n=2,
+            quiet_mode=True,
+        )
 
-    def _helper(self):
-        from agent.context_compressor import _truncate_tool_call_args_json
-        return _truncate_tool_call_args_json
+    @staticmethod
+    def _write_call(call_id: str, arguments: str) -> dict:
+        return {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{
+                "id": call_id,
+                "type": "function",
+                "function": {"name": "write_file", "arguments": arguments},
+            }],
+        }
 
-
-
-
-
-    def test_non_string_leaves_preserved(self):
-        import json as _json
-        shrink = self._helper()
-        payload = _json.dumps({
-            "retries": 3,
-            "enabled": True,
-            "timeout": None,
-            "items": [1, 2, 3],
-            "note": "z" * 500,
-        })
-        parsed = _json.loads(shrink(payload))
-        assert parsed["retries"] == 3
-        assert parsed["enabled"] is True
-        assert parsed["timeout"] is None
-        assert parsed["items"] == [1, 2, 3]
-        assert parsed["note"].startswith("z" * 200)
-        assert parsed["note"][200:].startswith(_COMPRESSION_MARKER_PREFIX)
-
-
-
-    def test_pass3_emits_valid_json_for_downstream_provider(self):
-        """End-to-end: Pass 3 must never produce the exact failure payload
-        that caused the 400 loop (unterminated string, missing brace)."""
-        import json as _json
-        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
-            c = ContextCompressor(
-                model="test/model",
-                threshold_percent=0.85,
-                protect_first_n=1,
-                protect_last_n=1,
-                quiet_mode=True,
-            )
-        huge_content = "# Shopping Browser Setup Notes\n\n## Overview\n" + "x " * 400
-        args_payload = _json.dumps({
-            "path": "~/.hermes/skills/shopping/browser-setup-notes.md",
-            "content": huge_content,
-        })
-        assert len(args_payload) > 500  # triggers the Pass-3 shrink
+    def test_ordinary_prune_keeps_effectful_arguments_byte_exact(self):
+        c = self._compressor()
+        arguments = json.dumps(
+            {"path": "/tmp/app.py", "content": "x" * 4_000},
+            separators=(",", ":"),
+        )
         messages = [
-            {"role": "user", "content": "please write two files"},
-            {"role": "assistant", "content": None, "tool_calls": [
-                {"id": "call_1", "type": "function",
-                 "function": {"name": "write_file", "arguments": args_payload}},
-            ]},
-            {"role": "tool", "tool_call_id": "call_1",
-             "content": '{"bytes_written": 727}'},
-            {"role": "user", "content": "ok"},
+            {"role": "user", "content": "write it"},
+            self._write_call("call_1", arguments),
+            {"role": "tool", "tool_call_id": "call_1", "content": "R" * 10_000},
+            {"role": "user", "content": "continue"},
             {"role": "assistant", "content": "done"},
         ]
-        result, _ = c._prune_old_tool_results(messages, protect_tail_count=2)
-        shrunk = result[1]["tool_calls"][0]["function"]["arguments"]
-        # Must parse — otherwise downstream provider returns 400
-        parsed = _json.loads(shrunk)
-        assert parsed["path"] == "~/.hermes/skills/shopping/browser-setup-notes.md"
-        assert parsed["content"].startswith(huge_content[:200])
-        assert parsed["content"][200:].startswith(_COMPRESSION_MARKER_PREFIX)
 
-
-class TestTruncationMarkerNotImitable:
-    """Regression tests for #83714.
-
-    A model replayed its own history containing the bare
-    ``"...[truncated]"`` marker and, in a later turn, imitated it — writing
-    the literal marker into a *new* tool call's ``new_string`` instead of
-    real content. The compressor-side fix is to stop injecting a marker that
-    looks like something the model itself would plausibly write.
-    """
-
-
-    def test_args_without_a_net_gain_leaf_are_left_byte_identical(self):
-        """Leaves the marker would not shrink, and leaves that merely quote the marker.
-
-        Below the break-even (``head_chars`` + marker) replacing a leaf would grow the payload, and
-        re-serialising alone would rewrite compact wire JSON — both read as "this changed" upstream
-        and are counted as reclaimed pressure.
-        """
-        tiny = json.dumps({"new_string": "y" * 201, "pad": "z" * 320})
-        assert _truncate_tool_call_args_json(tiny) == tiny
-        compact = json.dumps({"new_string": "y" * 201, "pad": "z" * 320}, separators=(",", ":"))
-        assert _truncate_tool_call_args_json(compact) == compact
-        # Separator whitespace added by the re-serialise can exceed a single leaf's saving.
-        many_keys = json.dumps(
-            {**{f"k{i}": i for i in range(300)}, "big": "y" * 426}, separators=(",", ":")
+        result, pruned = c._prune_old_tool_results(
+            messages, protect_tail_count=2, min_prune_chars=1_000,
         )
-        assert _truncate_tool_call_args_json(many_keys) == many_keys
 
-        # The guard keys on the marker being the whole tail, so the imitation shape #83714
-        # describes — replayed head+marker followed by new content — is still shrinkable.
-        for leaf in (
-            "x" * 1000 + _COMPRESSION_MARKER_PREFIX + " 5 of 9⟫" + "y" * 500,
-            "x" * 200 + _COMPRESSION_MARKER_PREFIX + " 5 of 9 chars omitted⟫" + "y" * 5000,
-        ):
-            out = _truncate_tool_call_args_json(json.dumps({"new_string": leaf}))
-            assert json.loads(out)["new_string"] == "x" * 200 + _COMPRESSION_MARKER_TEMPLATE.format(
-                omitted=len(leaf) - 200, total=len(leaf)
-            )
+        assert pruned >= 1
+        assert result[1]["tool_calls"][0]["function"]["arguments"] == arguments
+        assert "HERMES-CONTEXT-COMPRESSION" not in json.dumps(result, ensure_ascii=False)
 
-    def test_shrunken_leaf_is_head_plus_marker_and_a_fixed_point(self):
-        """Re-shrinking must be a no-op: the marker's counts are its anti-imitation value."""
-        payload = json.dumps({"content": "x" * 2000})
-        once = _truncate_tool_call_args_json(payload)
-        assert len(once) < len(payload)
-        assert json.loads(once)["content"] == "x" * 200 + _COMPRESSION_MARKER_TEMPLATE.format(
-            omitted=1800, total=2000
+    def test_pressure_demotion_keeps_protected_arguments_byte_exact(self):
+        c = self._compressor()
+        arguments = json.dumps(
+            {"path": "/tmp/app.py", "content": "y" * 8_000},
+            separators=(",", ":"),
         )
-        assert _truncate_tool_call_args_json(once) == once
+        messages = [
+            {"role": "user", "content": "write it"},
+            self._write_call("call_1", arguments),
+            {"role": "tool", "tool_call_id": "call_1", "content": "R" * 12_000},
+            {"role": "user", "content": "follow up"},
+            {"role": "assistant", "content": "ok"},
+            {"role": "user", "content": "again"},
+            {"role": "assistant", "content": "done"},
+        ]
+
+        result, pruned = c._prune_old_tool_results(
+            messages,
+            protect_tail_count=6,
+            protect_tail_tokens=100,
+            min_prune_chars=1_000,
+        )
+
+        assert pruned >= 1
+        assert result[1]["tool_calls"][0]["function"]["arguments"] == arguments
+        assert "HERMES-CONTEXT-COMPRESSION" not in json.dumps(result, ensure_ascii=False)
 
 
 class TestLazyContextResolution:

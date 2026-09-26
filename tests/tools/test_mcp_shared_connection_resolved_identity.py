@@ -164,7 +164,8 @@ def _adoptable_by_each_profile(homes: dict, name: str, config: dict) -> dict:
     adoptable = {}
     for profile, home in homes.items():
         with gateway_run._profile_runtime_scope(home):
-            adoptable[profile] = _same_server_route(owner, config, cross_profile=True)
+            adoptable[profile] = _same_server_route(
+                owner, config, cross_profile=True, resolved_identity=_resolved_identity(name, config))
     return adoptable
 
 

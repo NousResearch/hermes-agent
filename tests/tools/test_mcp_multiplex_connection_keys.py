@@ -52,9 +52,10 @@ def two_profiles(tmp_path, monkeypatch):
         return hermes_home_key(homes[which])
 
     yield enter
-    for tool_name in list(registry.get_tool_names_for_toolset("mcp-x")):
-        for home in homes.values():
-            registry.deregister(tool_name, scope=hermes_home_key(home))
+    for toolset in ("mcp-x", "mcp-y"):
+        for tool_name in list(registry.get_tool_names_for_toolset(toolset)):
+            for home in homes.values():
+                registry.deregister(tool_name, scope=hermes_home_key(home))
     for token in reversed(tokens):
         reset_hermes_home_override(token)
     for n in ledgers:
@@ -170,6 +171,67 @@ def test_cross_profile_share_refuses_on_connection_policy_differences(two_profil
     two_profiles("b")
     assert reg.register_connected_into_current_scope({"x": cfg_b}) == 0
     assert "x" in disc._select_new_servers({"x": cfg_b})
+
+
+@pytest.mark.parametrize("b_token, adopts", [("tok-a", True), ("tok-b", False)])
+def test_unscoped_routed_profile_judges_the_share_in_its_own_secret_scope(
+        two_profiles, tmp_path, monkeypatch, b_token, adopts):
+    """``discover_mcp_tools`` binds the owner scope only around the config load (#113746), so a
+    routed profile reconciles with NO ambient secret scope. With a source-tagged secret in play
+    the adopter's stdio identity must still resolve, in ITS OWN profile scope: an equal value shares
+    the owner's child, another value gives the profile its own connection, and neither aborts the
+    pass with ``UnscopedSecretError``."""
+    import sys
+    import agent.secret_scope as secret_scope
+    import hermes_cli.env_loader as env_loader
+    from tools import mcp_tool_discovery as disc
+    from tools import mcp_tool_registration as reg
+    from tools.registry import registry
+
+    monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
+    monkeypatch.setattr(env_loader, "_SECRET_SOURCES", {"FIXTURE_TOKEN": "op"})
+    (tmp_path / "profiles" / "a" / ".env").write_text("FIXTURE_TOKEN=tok-a\n", encoding="utf-8")
+    (tmp_path / "profiles" / "b" / ".env").write_text(f"FIXTURE_TOKEN={b_token}\n", encoding="utf-8")
+    cfg = {"command": sys.executable, "args": ["-c", "pass"]}
+
+    two_profiles("a")
+    with disc._owner_secret_scope():  # the connecting task records its digest in the owner's scope
+        srv_a = _server("x", cfg)
+    disc._adopt_server("x", srv_a)
+    srv_a._registered_tool_names = reg._register_server_tools("x", srv_a, cfg)
+
+    two_profiles("b")
+    assert secret_scope.current_secret_scope() is None
+    assert reg.register_connected_into_current_scope({"x": dict(cfg)}) == (1 if adopts else 0)
+    assert registry.get_tool_names_for_toolset("mcp-x") == (["mcp__x__t"] if adopts else [])
+    assert ("x" in disc._select_new_servers({"x": dict(cfg)})) is not adopts
+
+
+def test_one_unresolvable_identity_refuses_only_that_share(two_profiles, monkeypatch):
+    """An identity the adopter cannot resolve is unprovable, so that name is not shared; the pass
+    still judges — and adopts — the other names instead of aborting on the first failure."""
+    from tools import mcp_tool_discovery as disc
+    from tools import mcp_tool_registration as reg
+    from tools import mcp_tool_transport as transport
+    from tools.registry import registry
+
+    cfg_x = {"url": "https://mcp.example/x"}
+    cfg_y = {"command": "srv"}
+    two_profiles("a")
+    for name, cfg in (("x", cfg_x), ("y", cfg_y)):
+        srv = _server(name, cfg)
+        disc._adopt_server(name, srv)
+        srv._registered_tool_names = reg._register_server_tools(name, srv, cfg)
+
+    def unresolvable(config):
+        raise RuntimeError("cannot resolve the launch")
+
+    monkeypatch.setattr(transport, "_stdio_launch", unresolvable)
+    two_profiles("b")
+    assert reg.register_connected_into_current_scope({"y": dict(cfg_y), "x": dict(cfg_x)}) == 1
+    assert registry.get_tool_names_for_toolset("mcp-x") == ["mcp__x__t"]
+    assert registry.get_tool_names_for_toolset("mcp-y") == []
+    assert set(disc._select_new_servers({"x": dict(cfg_x), "y": dict(cfg_y)})) == {"y"}
 
 
 def test_owner_reload_reregisters_profiles_that_adopted_its_connection(two_profiles):

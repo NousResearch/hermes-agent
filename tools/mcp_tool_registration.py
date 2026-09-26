@@ -435,41 +435,47 @@ def _identity_digest(resolved: list) -> str:
     return hashlib.sha256(json.dumps(resolved, sort_keys=True, default=str).encode()).hexdigest()
 
 
-def _resolved_identity(server_name: str, config: dict) -> str:
+def _resolved_identity(server_name: str, config: dict) -> Optional[str]:
     """Digest of what a connection is opened with that the config does not show, resolved in the
     CURRENT profile's scope by the transport's own resolvers: a stdio child's executable (bare
     ``npx``/``node`` may resolve under the profile's home), env (external secret-source values) and
     default cwd; an HTTP connection's URL and headers after a ``server_json`` live endpoint and
     ``identity_header`` (``value_from: profile``). The transport publishes the digest of the very
-    inputs each attempt connects with; an adopter recomputes it here."""
+    inputs each attempt connects with; an adopter recomputes it here. None when the inputs cannot
+    be resolved (no live endpoint, no command, an unscoped secret read): an identity that cannot be
+    proven is never shared, and the profile's own connection attempt reports the real failure."""
     from tools.mcp_tool_errors import _apply_identity_header
-    from tools.mcp_tool_transport import LiveEndpointUnavailable, _http_endpoint, _stdio_launch
+    from tools.mcp_tool_transport import _http_endpoint, _stdio_launch
 
-    if "url" in config:
-        try:
+    try:
+        if "url" in config:
             url, headers = _http_endpoint(server_name, config)
-        except LiveEndpointUnavailable:  # the transport cannot connect either; never equal to a live one
-            return ""
-        return _identity_digest([url, _apply_identity_header(server_name, config, headers)])
-    if not config.get("command"):  # the transport refuses it before resolving anything
-        return ""
-    return _identity_digest(list(_stdio_launch(config)))
+            return _identity_digest([url, _apply_identity_header(server_name, config, headers)])
+        if not config.get("command"):
+            return None
+        return _identity_digest(list(_stdio_launch(config)))
+    except Exception as exc:
+        logger.debug("MCP server '%s': connection identity unresolvable in this profile (%s); "
+                     "not sharing another profile's connection", server_name, type(exc).__name__)
+        return None
 
 
-def _same_server_route(server: Any, config: dict, *, cross_profile: bool = False) -> bool:
+def _same_server_route(server: Any, config: dict, *, cross_profile: bool = False,
+                       resolved_identity: Optional[str] = None) -> bool:
     """Whether *server* matches *config*. Across profiles the static config is not enough: OAuth
     tokens live in the owner's token store (never reusable), and secret-source env, the profile
-    identity header and the default cwd resolve per profile, so the adopter's resolution must hash
-    to what the owner connected with. Within one profile the connection is the profile's: its
-    default cwd resolves in the connection task's own context, never per session."""
+    identity header and the default cwd resolve per profile, so *resolved_identity* (the adopter's
+    own resolution, from ``_adopter_identities``) must equal what the owner connected with; missing
+    on either side refuses. Within one profile the connection is the profile's: its default cwd
+    resolves in the connection task's own context, never per session."""
     if _connection_identity(getattr(server, "_config", {}) or {}) != _connection_identity(config):
         return False
     if not cross_profile:
         return True
     # Identities match, so both sides carry the same normalised auth type.
     recorded = getattr(server, "_resolved_identity", None)
-    return (_auth_type(config) != "oauth" and recorded is not None
-            and recorded == _resolved_identity(server.name, config))
+    return (_auth_type(config) != "oauth" and recorded is not None and resolved_identity is not None
+            and recorded == resolved_identity)
 
 
 def register_connected_into_current_scope(servers: dict) -> int:
@@ -501,7 +507,16 @@ def _register_connected_into_current_scope(servers: dict) -> int:
     with _core._lock:
         omitted = {_key_name(key) for key, scopes in _core._server_tool_scopes.items()
                    if scope in scopes and _key_name(key) not in servers}
-    profile_servers = _config._load_mcp_config() if omitted else {}
+    # A routed profile's pass reconciles after ``discover_mcp_tools`` released its temporary owner
+    # scope (#113746), so the reads behind a config load and a resolved identity (``${VAR}`` refs,
+    # secret-source env, the live endpoint) bind THIS profile's own scope here, once per judged
+    # name and outside the registry lock, instead of failing closed for the whole pass.
+    from tools.mcp_tool_discovery import _owner_secret_scope
+    with _owner_secret_scope():
+        profile_servers = _config._load_mcp_config() if omitted else {}
+        judged = {**{name: profile_servers.get(name) for name in omitted}, **servers}
+        resolved = {name: _resolved_identity(name, config) for name, config in judged.items()
+                    if config is not None}
 
     with _core._lock:
         stale = []
@@ -516,7 +531,8 @@ def _register_connected_into_current_scope(servers: dict) -> int:
             cross_profile = _key_scope(key) != scope
             if (config is None or not mcp_server_enabled(config) or server is None
                     or getattr(server, "session", None) is None
-                    or not _same_server_route(server, config, cross_profile=cross_profile)):
+                    or not _same_server_route(server, config, cross_profile=cross_profile,
+                                              resolved_identity=resolved.get(name))):
                 stale.append(key)
     for key in stale:
         _remove_server_scope(key, scope)
@@ -531,7 +547,8 @@ def _register_connected_into_current_scope(servers: dict) -> int:
             # Any other profile's live connection with the same route AND credentials is shareable.
             shared = [(key, live) for key, live in _core._servers.items()
                       if _key_name(key) == name and getattr(live, "session", None) is not None
-                      and _same_server_route(live, config, cross_profile=True)]
+                      and _same_server_route(live, config, cross_profile=True,
+                                             resolved_identity=resolved.get(name))]
         if not shared:
             continue
         key, server = shared[0]

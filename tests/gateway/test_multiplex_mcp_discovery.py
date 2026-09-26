@@ -274,8 +274,11 @@ def test_shared_server_tools_are_callable_and_removed_on_non_owner_reload(
         _registered_tool_names=[],
         _config={},
         initialize_result=None,
-        _resolved_identity=_mcp_registration._resolved_identity("shared", {}),
+        _resolved_identity="same-identity",
     )
+    # Premise: scope cleanup, not identity — both profiles resolve the connection's inputs
+    # identically (an empty config resolves to no identity at all, which is never shareable).
+    monkeypatch.setattr(_mcp_registration, "_resolved_identity", lambda *_args: "same-identity")
     owner_tool_name = "mcp__shared__echo"
     registry.register(
         owner_tool_name,

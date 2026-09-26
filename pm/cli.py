@@ -469,15 +469,35 @@ def cmd_doctor(args) -> int:
     return 1 if bad else 0
 
 
-def _gc_store(store, facts) -> tuple[int, int]:
+def _gc_keep_list(store_root) -> set[str]:
+    """Entry names the user pinned in ``<store>/.gc-keep`` — one per line,
+    ``#`` starts a comment. The store is writable space the user may place
+    things in by hand (portable CLIs, nested checkouts); without a pin the
+    sweep cannot tell those apart from orphaned versions and deletes them."""
+    keep_file = store_root / ".gc-keep"
+    try:
+        lines = keep_file.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return set()
+    names = set()
+    for line in lines:
+        entry = line.partition("#")[0].strip()
+        if entry:
+            names.add(entry)
+    return names
+
+
+def _gc_store(store, facts, *, dry_run: bool = False) -> tuple[int, int]:
     """The sweep core shared by `pm gc` and `pm bundle`.
 
     Removes every store entry nothing references: fetch-<sha> download-cache
     dirs (the raw archives — needed only at install time, dead weight in a
     staged payload or a CI cache), orphaned package versions from an older
     lock, and expired partials. Keeps live package entries (recorded in
-    facts) and partials an in-flight download still owns. Returns
-    (removed, kept).
+    facts), partials an in-flight download still owns, and entries pinned in
+    ``<store>/.gc-keep``. ``dry_run`` prints the removals instead of doing
+    them — partial collection is skipped too, since it unlinks expired
+    partials. Returns (removed, kept).
     """
     from pm.download_state import collect_partials
     from pm import paths
@@ -488,8 +508,9 @@ def _gc_store(store, facts) -> tuple[int, int]:
     removed = 0
     with store.install_lock():
         facts.reload()
-        keep = facts.entries_in_use()
-        collect_partials(partials_dir)
+        keep = facts.entries_in_use() | _gc_keep_list(store.root)
+        if not dry_run:
+            collect_partials(partials_dir)
         for item in sorted(store.root.iterdir()):
             if not item.is_dir():
                 continue
@@ -500,6 +521,10 @@ def _gc_store(store, facts) -> tuple[int, int]:
             if item.name.startswith(".") and not item.name.startswith(".staging-"):
                 continue
             if item.name in keep:
+                continue
+            if dry_run:
+                print(f"would remove {item.name}")
+                removed += 1
                 continue
             print(f"removing {item.name}")
             shutil.rmtree(item, ignore_errors=True)
@@ -513,7 +538,12 @@ def cmd_gc(args) -> int:
     from pm.store import Store
     store = Store(writable_store_root())
     facts = _facts() if store.root == _store().root else Facts(store.root / "facts.json")
-    removed, kept = _gc_store(store, facts)
+    dry_run = bool(getattr(args, "dry_run", False))
+    removed, kept = _gc_store(store, facts, dry_run=dry_run)
+    if dry_run:
+        print(f"gc: would remove {removed}, kept {kept}; dependency and PM runtime "
+              "generations not scanned")
+        return 0
     from hermes_cli.runtime_state import collect_generations
     from pm.environments import install_state_dir
     from pm.paths import repo_root
@@ -824,6 +854,11 @@ def main(argv=None) -> int:
     p.set_defaults(func=cmd_repair)
 
     p = sub.add_parser("gc", help="remove store entries nothing references")
+    p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="print the entries gc would remove; delete nothing",
+    )
     p.set_defaults(func=cmd_gc)
 
     p = sub.add_parser("bundle", help="stage a payload (repo+store+facts+relocatable venv) into --out")

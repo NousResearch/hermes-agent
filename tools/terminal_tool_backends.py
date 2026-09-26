@@ -6,6 +6,7 @@ import functools
 import importlib.util
 import inspect
 import logging
+import os
 import shutil
 import subprocess
 from typing import Any, Dict, Optional
@@ -324,6 +325,33 @@ _BACKEND_SPECS: Dict[str, Dict[str, Any]] = {
 }
 
 
+_DEFAULT_PROBE_TIMEOUT = 20.0
+
+
+def _probe_timeout() -> float:
+    """Seconds to wait for a backend's executable probe (e.g. ``docker version``).
+
+    A Docker daemon that has just started, or is under load, can take well over
+    five seconds to answer. A timeout here makes the requirements check fail,
+    which removes the terminal and file tools from the session, so the default
+    is generous. ``TERMINAL_PROBE_TIMEOUT`` overrides it; a missing, unparsable
+    or non-positive value falls back to the default.
+    """
+    raw = os.getenv("TERMINAL_PROBE_TIMEOUT", "").strip()
+    if not raw:
+        return _DEFAULT_PROBE_TIMEOUT
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning("Ignoring TERMINAL_PROBE_TIMEOUT=%r: not a number; using %ss", raw, _DEFAULT_PROBE_TIMEOUT)
+        return _DEFAULT_PROBE_TIMEOUT
+    if not value > 0 or value == float("inf"):
+        logger.warning("Ignoring TERMINAL_PROBE_TIMEOUT=%r: must be a positive number; using %ss",
+                       raw, _DEFAULT_PROBE_TIMEOUT)
+        return _DEFAULT_PROBE_TIMEOUT
+    return value
+
+
 _PROBE_FAILED_REASONS = {
     "docker": "Docker is installed but the Docker daemon is not running",
     "singularity": "Apptainer/Singularity is installed but `--version` failed, so the install looks broken",
@@ -341,7 +369,8 @@ def _check_requirements(env_type: str, config: Dict[str, Any]) -> bool:
         executable = finder()
         if not executable:
             return _reject(missing_msg or f"the {env_type!r} backend's executable was not found")
-        probe = subprocess.run([executable, arg], capture_output=True, timeout=5, stdin=subprocess.DEVNULL)
+        probe = subprocess.run([executable, arg], capture_output=True, timeout=_probe_timeout(),
+                               stdin=subprocess.DEVNULL)
         if probe.returncode != 0:
             return _reject(f"{_PROBE_FAILED_REASONS[env_type]} (`{executable} {arg}` exited with code {probe.returncode})")
         return True

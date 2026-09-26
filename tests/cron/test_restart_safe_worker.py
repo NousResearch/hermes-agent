@@ -629,6 +629,10 @@ def test_launch_external_worker_pin_extends_the_sanitized_env_not_os_environ(
         lambda command, **_: GatewayChildDispatch("degraded", command),
     )
     monkeypatch.setenv("PYTHONPATH", str(tmp_path / "raw-environ-only"))
+    # This test pins the repo-root contract only; neutralize the committed-venv pin so
+    # it stays deterministic on machines that DO carry a PM install for the checkout.
+    from pm import environments as _pm_env
+    monkeypatch.setattr(_pm_env, "runtime_facts_path", lambda root: tmp_path / "absent-facts.json")
     monkeypatch.setattr(
         "tools.environments.local.build_subprocess_env",
         lambda **_: {"PATH": os.environ.get("PATH", ""),
@@ -913,3 +917,37 @@ def test_managed_gateway_restart_preserves_active_worker_and_single_side_effect(
             parent.wait(timeout=5)
         if worker_pid is not None and _pid_exists(worker_pid):
             os.kill(worker_pid, signal.SIGKILL)
+
+
+def test_pin_carries_committed_venv_site_packages_for_store_launch(tmp_path, monkeypatch):
+    """Under a PM store-interpreter gateway, the worker is spawned as the bare store
+    python and the sanitizer has stripped the committed venv's site-packages from its
+    env. The pin must carry them back -- the worker is Hermes on the SAME interpreter
+    the venv is built for -- or it dies on its first third-party import before the
+    ownership ack. A launch already running ON the committed venv carries them natively
+    and must not get them re-pinned."""
+    import cron.scheduler_worker_env as worker_env_mod
+    from pm import environments as pm_env
+
+    repo_root = Path(worker_env_mod.__file__).resolve().parent.parent
+    venv = tmp_path / "committed-venv"
+    venv_sp = venv / "lib" / "python3.14" / "site-packages"
+    venv_sp.mkdir(parents=True)
+    (tmp_path / "facts.json").touch()
+    monkeypatch.setattr(worker_env_mod, "_installed_purelib", lambda: tmp_path / "elsewhere")
+    monkeypatch.setattr(pm_env, "runtime_facts_path", lambda root: tmp_path / "facts.json")
+    monkeypatch.setattr(pm_env, "selected_venv", lambda root: venv)
+    monkeypatch.setattr(pm_env, "site_packages", lambda v: v / "lib" / "python3.14" / "site-packages")
+
+    # Store-interpreter launch: sys.prefix is NOT the committed venv -> pinned.
+    out = worker_env_mod.pin_hermes_tree_on_pythonpath(
+        {"PYTHONPATH": "/opt/user-libs"}, repo_root)
+    entries = out["PYTHONPATH"].split(os.pathsep)
+    assert entries[:2] == [str(repo_root), str(venv_sp)]
+    assert "/opt/user-libs" in entries
+
+    # Launch already on the committed venv: native site-packages, no re-pin.
+    with monkeypatch.context() as on_venv:
+        on_venv.setattr(worker_env_mod.sys, "prefix", str(venv))
+        out = worker_env_mod.pin_hermes_tree_on_pythonpath({}, repo_root)
+    assert out["PYTHONPATH"].split(os.pathsep) == [str(repo_root)]

@@ -9,7 +9,7 @@ import threading
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Optional
-from tools.mcp_tool_common import _parse_boolish, _core, _resolve_tool_timeout, mcp_field, mcp_server_enabled
+from tools.mcp_tool_common import _parse_boolish, _core, _resolve_tool_timeout, mcp_field, mcp_server_enabled, normalize_tools_filter
 from tools import mcp_tool_config as _config
 from tools import mcp_tool_handlers as _handlers
 from tools import mcp_tool_schema as _schema
@@ -152,7 +152,7 @@ def _select_utility_schemas(server_name: str, server: "MCPServerTask", config: d
     capabilities. ``initialize_result.capabilities`` is the truth (sub-object non-None iff the
     family is served); without it fall back to the legacy session-method check, which never
     filters anything since ClientSession defines all four methods."""
-    tools_filter = config.get("tools") or {}
+    tools_filter = normalize_tools_filter(config.get("tools"), f"mcp_servers.{server_name}.tools")
     enabled = {f: _parse_boolish(tools_filter.get(f), default=True) for f in ("resources", "prompts")}
     advertised = getattr(getattr(server, "initialize_result", None), "capabilities", None)
 
@@ -210,7 +210,7 @@ def _existing_tool_names() -> List[str]:
 def _make_tool_filter(name: str, config: dict) -> Callable[[str], bool]:
     """Include/exclude predicate for a server's tool names: ``tools.include`` is a whitelist (``[]`` = register
     nothing), ``tools.exclude`` a blacklist; entries are exact names or fnmatch globs; include wins over exclude."""
-    tools_filter = config.get("tools") or {}
+    tools_filter = normalize_tools_filter(config.get("tools"), f"mcp_servers.{name}.tools")
     # Selective tool loading: honour include/exclude lists from config. Rules (matching issue #690 spec,
     # extended with glob support): tools.include — whitelist: only matching tool names are registered
     # tools.exclude — blacklist: all tools EXCEPT matching ones are registered entries may be exact names or

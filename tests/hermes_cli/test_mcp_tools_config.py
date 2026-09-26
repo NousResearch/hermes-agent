@@ -89,3 +89,99 @@ def test_empty_include_reopens_with_nothing_preselected():
     assert checklist.call_args.args[2] == set()
     mock_save.assert_not_called()
     assert config["mcp_servers"]["github"]["tools"] == {"include": []}
+
+
+def test_shorthand_filter_checklist_rewrites_canonical():
+    """``tools: "a,b"`` shorthand is an include whitelist the checklist must accept (PR #122381):
+    it preselects the whitelist like registration, and saving rewrites the canonical dict form
+    instead of crashing on item assignment into the string."""
+    config = {"mcp_servers": {"github": {"command": "npx", "tools": "create_issue,search_repos"}}}
+    tools = [
+        ("create_issue", "Create an issue"),
+        ("delete_repo", "Delete a repo"),
+        ("search_repos", "Search repos"),
+    ]
+
+    # User unchecks search_repos (index 2) from the shorthand-preselected {0, 2}
+    with patch(_PROBE, return_value={"github": tools}), \
+         patch(_CHECKLIST, return_value={0}) as checklist, \
+         patch(_SAVE) as mock_save:
+        _configure_mcp_tools_interactive(config)
+
+    assert checklist.call_args.args[2] == {0, 2}
+    mock_save.assert_called_once()
+    assert config["mcp_servers"]["github"]["tools"] == {"include": ["create_issue"]}
+
+
+def test_apply_mcp_change_accepts_shorthand_filter():
+    """``hermes tools enable|disable server:tool`` must accept a shorthand ``tools`` filter
+    (same TypeError/AttributeError class as the interactive writers, PR #122381): the exclude
+    entry lands beside the canonical include whitelist."""
+    from hermes_cli.tools_config_mcp import _apply_mcp_change
+
+    config = {"mcp_servers": {"github": {"command": "npx", "tools": "a,b"}}}
+
+    failed = _apply_mcp_change(config, ["github:c"], "disable")
+
+    assert not failed
+    assert config["mcp_servers"]["github"]["tools"] == {"include": ["a", "b"], "exclude": ["c"]}
+
+
+def test_tools_list_shows_shorthand_filter(capsys):
+    """``hermes tools list`` must accept a shorthand ``tools`` filter (PR #122381 review follow-up)
+    and show the whitelist it represents instead of crashing on ``str.get``."""
+    from hermes_cli.tools_config_mcp import _print_tools_list
+
+    _print_tools_list(set(), {"github": {"command": "npx", "tools": "a,b"}})
+
+    out = capsys.readouterr().out
+    assert "include only: a, b" in out
+
+
+def test_checklist_preselects_scalar_include_as_one_name():
+    """A scalar ``tools.include`` entry is ONE tool name — the checklist must preselect
+    exactly that tool, matching runtime registration, not treat the string as unfiltered
+    or char-wise (PR #122381 review follow-up)."""
+    config = {"mcp_servers": {"github": {"command": "npx", "tools": {"include": "delete_repo"}}}}
+    tools = [("create_issue", ""), ("delete_repo", ""), ("search_repos", "")]
+
+    with patch(_PROBE, return_value={"github": tools}), \
+         patch(_CHECKLIST, side_effect=lambda title, labels, pre, **kw: pre) as checklist, \
+         patch(_SAVE):
+        _configure_mcp_tools_interactive(config)
+
+    assert checklist.call_args.args[2] == {1}
+
+
+def test_checklist_preselects_scalar_exclude_as_one_name():
+    config = {"mcp_servers": {"github": {"command": "npx", "tools": {"exclude": "delete_repo"}}}}
+    tools = [("create_issue", ""), ("delete_repo", ""), ("search_repos", "")]
+
+    with patch(_PROBE, return_value={"github": tools}), \
+         patch(_CHECKLIST, side_effect=lambda title, labels, pre, **kw: pre) as checklist, \
+         patch(_SAVE):
+        _configure_mcp_tools_interactive(config)
+
+    assert checklist.call_args.args[2] == {0, 2}
+
+
+def test_apply_mcp_change_treats_scalar_exclude_as_one_name():
+    """``hermes tools enable|disable`` must not split a scalar exclude into characters —
+    the mangled list used to be written back, corrupting the config."""
+    from hermes_cli.tools_config_mcp import _apply_mcp_change
+
+    config = {"mcp_servers": {"github": {"command": "npx", "tools": {"exclude": "ab"}}}}
+
+    failed = _apply_mcp_change(config, ["github:c"], "disable")
+
+    assert not failed
+    assert sorted(config["mcp_servers"]["github"]["tools"]["exclude"]) == ["ab", "c"]
+
+
+def test_tools_list_shows_scalar_exclude_as_one_name(capsys):
+    from hermes_cli.tools_config_mcp import _print_tools_list
+
+    _print_tools_list(set(), {"github": {"command": "npx", "tools": {"exclude": "team_member"}}})
+
+    out = capsys.readouterr().out
+    assert "excluded: team_member" in out

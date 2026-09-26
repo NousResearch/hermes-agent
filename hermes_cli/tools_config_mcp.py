@@ -10,6 +10,8 @@ from hermes_cli.cli_output import (
 from hermes_cli.colors import Colors, color
 from hermes_cli.toolset_scope import (
     _TOOLSET_PLATFORM_RESTRICTIONS, toolset_allowed_for_platform as _toolset_allowed_for_platform)
+from tools.mcp_tool_common import mutable_tools_filter, normalize_tools_filter
+from tools.mcp_tool_schema import _normalize_name_filter
 
 
 def _mcp_match_filter():
@@ -119,11 +121,17 @@ def _configure_mcp_tools_interactive(config: dict):
             _print_info(f"  {server_name}: no tools found")
             continue
 
-        tools_cfg = mcp_servers.get(server_name, {}).get("tools") or {}
+        # A shorthand filter (`tools: "a,b"` / list) is an include whitelist; read it in
+        # canonical form so the checklist sees the same selection registration honors.
+        tools_cfg = normalize_tools_filter(
+            mcp_servers.get(server_name, {}).get("tools"), f"mcp_servers.{server_name}.tools")
         # ``include: []`` is an explicit block-all whitelist, not "unfiltered" (#12865).
+        # Scalar entries are one tool name, exactly as runtime matching reads them — a
+        # string is not a char list, and absent (None) is not [].
         include_raw, exclude_raw = tools_cfg.get("include"), tools_cfg.get("exclude")
-        include_set = {str(p) for p in include_raw} if isinstance(include_raw, list) else None
-        exclude_set = {str(p) for p in exclude_raw or []} or None
+        include_set = (_normalize_name_filter(include_raw, f"mcp_servers.{server_name}.tools.include")
+                       if include_raw is not None else None)
+        exclude_set = _normalize_name_filter(exclude_raw, f"mcp_servers.{server_name}.tools.exclude") or None
 
         labels = []
         for tool_name, description in tools:
@@ -140,7 +148,7 @@ def _configure_mcp_tools_interactive(config: dict):
             _print_info(f"  {server_name}: no changes")
             continue
 
-        tools_cfg = mcp_servers.setdefault(server_name, {}).setdefault("tools", {})
+        tools_cfg = mutable_tools_filter(mcp_servers.setdefault(server_name, {}), f"mcp_servers.{server_name}.tools")
         _apply_mcp_checklist(server_name, tools_cfg, tool_names, chosen, include_set, exclude_set, match)
 
         _print_success(f"  {server_name}: {len(chosen)} enabled, {len(tools) - len(chosen)} disabled")
@@ -173,8 +181,9 @@ def _apply_mcp_change(config: dict, targets: List[str], action: str) -> Set[str]
         if server_name not in mcp_servers:
             failed_servers.add(server_name)
             continue
-        tools_cfg = mcp_servers[server_name].setdefault("tools", {})
-        exclude = list(tools_cfg.get("exclude") or [])
+        tools_cfg = mutable_tools_filter(mcp_servers[server_name], f"mcp_servers.{server_name}.tools")
+        # Scalar exclude is one tool name (runtime contract) — never iterate it char-wise.
+        exclude = sorted(_normalize_name_filter(tools_cfg.get("exclude"), f"mcp_servers.{server_name}.tools.exclude"))
         if action != "disable":
             exclude = [t for t in exclude if t != tool_name]
         elif tool_name not in exclude:
@@ -210,9 +219,12 @@ def _print_tools_list(enabled_toolsets: set, mcp_servers: dict, platform: str = 
         print()
         print("MCP servers:")
         for srv_name, srv_cfg in mcp_servers.items():
-            tools_cfg = srv_cfg.get("tools") or {}
-            exclude, include = tools_cfg.get("exclude") or [], tools_cfg.get("include")
-            if isinstance(include, list):
+            tools_cfg = normalize_tools_filter(srv_cfg.get("tools"), f"mcp_servers.{srv_name}.tools")
+            include_raw, exclude_raw = tools_cfg.get("include"), tools_cfg.get("exclude")
+            include = (sorted(_normalize_name_filter(include_raw, f"mcp_servers.{srv_name}.tools.include"))
+                       if include_raw is not None else None)
+            exclude = sorted(_normalize_name_filter(exclude_raw, f"mcp_servers.{srv_name}.tools.exclude"))
+            if include is not None:
                 _print_info(f"{srv_name}  [include only: {', '.join(include) or '(none)'}]")
             elif exclude:
                 _print_info(f"{srv_name}  [excluded: {color(', '.join(exclude), Colors.YELLOW)}]")

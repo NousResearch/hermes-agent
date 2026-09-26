@@ -665,7 +665,10 @@ describe('active transcript refresh', () => {
     await waitFor(() => expect(refreshProjectTree).toHaveBeenCalledTimes(1))
   })
 
-  it('refreshes the project list + tree on a projects.changed tick — CLI-created projects surface without a manual refresh (#56757)', async () => {
+  it('refreshes the projects list and tree on a projects.changed tick (#53046, #56757)', async () => {
+    // projects.db is written by the CLI and other windows — processes that never
+    // touch the gateway's transports. Without the tick-driven refresh their
+    // creates/folder edits never reach the Projects UI until a manual refresh.
     $changeEventsAvailable.set(true)
 
     renderSync(vi.fn(async () => undefined))
@@ -673,7 +676,20 @@ describe('active transcript refresh', () => {
     act(() => notifyProjectsChanged())
 
     await waitFor(() => expect(refreshProjects).toHaveBeenCalledTimes(1))
-    await waitFor(() => expect(refreshProjectTree).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(refreshProjectTree).toHaveBeenCalled())
+  })
+
+  it('does not refresh projects on a bare sessions.changed tick', async () => {
+    // The two stores are independent: a sessions.changed refresh pulls the tree
+    // (grouping of the same rows) but must not also fire a projects.list read.
+    $changeEventsAvailable.set(true)
+
+    renderSync(vi.fn(async () => undefined))
+
+    act(() => notifySessionsChanged())
+
+    await waitFor(() => expect(refreshProjectTree).toHaveBeenCalled())
+    expect(refreshProjects).not.toHaveBeenCalled()
   })
 })
 

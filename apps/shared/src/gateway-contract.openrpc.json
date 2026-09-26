@@ -38179,7 +38179,7 @@
     },
     {
       "name": "projects.changed",
-      "summary": "projects.db moved; refetch the Projects sidebar.",
+      "summary": "projects.db moved; refetch the project list + tree.",
       "params": [
         {
           "name": "payload",

@@ -863,7 +863,6 @@ export function useBackgroundSync({
 }: BackgroundSyncParams): void {
   const changeEventsAvailable = useStore($changeEventsAvailable)
   const cronChangeTick = useStore($cronChangeTick)
-  const projectsChangeTick = useStore($projectsChangeTick)
   const activeTranscriptRefreshPendingRef = useRef<string | null>(null)
   const activeTranscriptReadRef = useRef<{ sessionKey: string; preservePending: boolean } | null>(null)
   // Tile reconcile state (#93942 slice 1): shared sequence guard + per-tile
@@ -1225,19 +1224,29 @@ export function useBackgroundSync({
     )
   }, [changeEventsAvailable, cronChangeTick, gatewayState, refreshCronJobs])
 
-  // Projects created or switched by CLI / agent tooling write projects.db without any
-  // state.db movement, so sessions.changed never fires and the Projects sidebar used to
-  // go stale until a manual refresh (#56757). The gateway's change watcher now
-  // broadcasts projects.changed when projects.db moves; this effect refetches the
-  // project list + tree on that tick.
+  // projects.changed (projects.db moved: a CLI `hermes projects create`, another
+  // window's folder picker, a `set_primary` from the workspace settings) refreshes
+  // both the projects list and the sidebar tree — the desktop's own mutations
+  // refresh optimistically, so this only needs to cover writers in OTHER
+  // processes, exactly the sessions.changed contract (#53046, #56757). The
+  // refreshes keep the cached atoms on failure, so an older backend that never
+  // broadcasts costs nothing. Subscribed (not mount-read) so a tick that landed
+  // before this hook mounted — a stale value from a previous connection —
+  // doesn't fire a refresh into a wiped store.
   useEffect(() => {
-    if (gatewayState !== 'open' || !changeEventsAvailable || projectsChangeTick === 0) {
+    if (gatewayState !== 'open') {
       return
     }
 
-    void refreshProjects()
-    void refreshProjectTree()
-  }, [changeEventsAvailable, gatewayState, projectsChangeTick, refreshProjects, refreshProjectTree])
+    return $projectsChangeTick.listen(tick => {
+      if (tick <= 0) {
+        return
+      }
+
+      void refreshProjects()
+      void refreshProjectTree()
+    })
+  }, [gatewayState])
 
   // Preserve the pre-existing messaging behavior: refresh once when a
   // messaging transcript opens, then keep its visibility backstop. Desktop

@@ -436,6 +436,49 @@ def _cli_error_message(stderr: str, returncode: int, *, redact_path: Optional[Pa
     return _bounded_cli_message(text or f"buzz CLI failed with exit code {returncode}", redact_path)
 
 
+# The relay (block/buzz ``buzz-media`` ``validate_mp4_metadata_free``) 422s any MP4 carrying a ``udta`` box
+# other than the exact empty one ffmpeg writes under these bitexact/no-metadata flags — the same flags Buzz
+# desktop's transcoder uses — and also requires moov-before-mdat, an ISO (non-QuickTime) brand and at most
+# one video + one audio track (timecode/data tracks are dropped). Stream copy keeps the pixels/samples.
+_REMUX_VIDEO_SUFFIXES = frozenset({".mp4", ".m4v", ".mov"})
+_REMUX_TIMEOUT = 120.0
+_METADATA_REJECTION = "media contains metadata"
+
+
+def _find_ffmpeg() -> Optional[str]:
+    try:
+        from tools.transcription_audio import _find_ffmpeg_binary
+    except ImportError:  # standalone plugin import
+        return None
+    return _find_ffmpeg_binary()
+
+
+def _canonical_mp4_for_upload(src: Path) -> Optional[Path]:
+    """Losslessly remux *src* into a metadata-free, fast-start MP4 in a fresh temp dir (same stem, so the
+    CLI and chat still show the original name). None when ffmpeg is missing or the remux fails; the caller
+    removes the returned file's parent dir. Blocking — run in a thread."""
+    ffmpeg = _find_ffmpeg()
+    if not ffmpeg:
+        return None
+    workdir = Path(tempfile.mkdtemp(prefix="buzz_mp4_"))
+    out = workdir / f"{src.stem or 'video'}.mp4"
+    try:
+        import subprocess
+        proc = subprocess.run(
+            [ffmpeg, "-y", "-loglevel", "error", "-i", str(src), "-map", "0:v:0", "-map", "0:a:0?", "-c", "copy",
+             "-map_metadata", "-1", "-map_chapters", "-1", "-fflags", "+bitexact", "-flags:v", "+bitexact",
+             "-flags:a", "+bitexact", "-movflags", "+faststart", "-f", "mp4", str(out)],
+            capture_output=True, timeout=_REMUX_TIMEOUT, stdin=subprocess.DEVNULL)
+        if proc.returncode == 0 and out.is_file() and out.stat().st_size > 0:
+            return out
+        logger.warning("Buzz: ffmpeg metadata-strip remux failed for %s (exit %s); uploading original",
+                       src.name, proc.returncode)
+    except Exception as exc:
+        logger.warning("Buzz: ffmpeg metadata-strip remux failed for %s (%s); uploading original", src.name, exc)
+    shutil.rmtree(workdir, ignore_errors=True)
+    return None
+
+
 def _parse_send_receipt(stdout: str) -> Tuple[Optional[str], Optional[str]]:
     """Validate the buzz-cli success receipt and return ``(event_id, error)``."""
     data = _json_or(stdout, None)
@@ -916,10 +959,22 @@ class BuzzAdapter(BasePlatformAdapter):
         if probe and not local.is_file():
             # Never leak host filesystem paths into chat-visible errors.
             return SendResult(success=False, error="Media file not found")
-        args = ["messages", "send", "--channel", str(chat_id), "--file", str(local), "--content", "-"]
-        args += self._reply_args((metadata or {}).get("thread_id") or reply_to)
-        code, out, err = await self._run_message_send(args, caption or "")
-        return self._send_result(chat_id, code, out, err, redact_path=local)
+        upload = None
+        if local.suffix.lower() in _REMUX_VIDEO_SUFFIXES:
+            upload = await asyncio.to_thread(_canonical_mp4_for_upload, local)
+        try:
+            args = ["messages", "send", "--channel", str(chat_id), "--file", str(upload or local), "--content", "-"]
+            args += self._reply_args((metadata or {}).get("thread_id") or reply_to)
+            code, out, err = await self._run_message_send(args, caption or "")
+        finally:
+            if upload is not None:
+                shutil.rmtree(upload.parent, ignore_errors=True)
+        result = self._send_result(chat_id, code, out, err, redact_path=upload or local)
+        if not result.success and _METADATA_REJECTION in (result.error or ""):
+            how = "after metadata-strip remux" if upload else "sent unmodified: ffmpeg missing or remux failed"
+            result.error = _bounded_cli_message(
+                f"Buzz relay rejected {local.name}: file carries container metadata ({how}). {result.error}")
+        return result
 
     async def send_image_file(
         self, chat_id: str, image_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None,

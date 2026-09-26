@@ -45,6 +45,7 @@ from tools.terminal_tool_lifecycle import (
 )
 from tools.terminal_tool_config import (
     _is_container_backend, _is_host_cwd, _is_unusable_container_cwd, _parse_env_var,
+    coerce_ssh_remote_cwd,
     _plugin_env_flag, _quiet, _safe_getcwd, _tenv, _tenv_bool,
 )
 from tools.terminal_tool_backends import (
@@ -165,6 +166,7 @@ Foreground (default): returns INSTANTLY when the command finishes, even with a h
 Background: set background=true (returns a session_id) only for commands that must keep running independently after this tool call returns; add notify=true for bounded tasks, leave silent only for servers/daemons that never exit. Do not start sleep, timers, cooldowns, delays, or polling loops with background=true — to wait a fixed time, run the wait as a normal foreground command with a high enough timeout. After starting a server, verify readiness with a health check in a separate call (no blind sleep loops); manage with process(action="poll"/"wait").
 Working directory: use 'workdir' for per-command cwd; when a command changes the session cwd (cd, pushd), trust the result's "cwd" field instead of prefixing every command with 'cd'.
 PTY: pty=true + background=true for interactive CLIs (they hang without a terminal); drive them with process(action="write"/"submit"). Local backend only.
+Persist: background=true, persist_on_release=true keeps the job alive across agent lifecycle cleanup (session end, /new, compression, error recovery, stop-on-max-iterations). Use ONLY for long-running jobs the user explicitly wants to outlive the conversation; the user can still stop it on purpose.
 """
 
 # Environment lifecycle state.
@@ -430,6 +432,30 @@ def _docker_session_isolation_enabled() -> bool:
     return _session_scope().docker_session_isolated
 
 
+def _routed_home_task_key(profile_scoped: bool) -> Optional[str]:
+    """Key for a session-less task serving a routed (non-launch) profile home, else None.
+
+    A multiplexed host runs every profile's cron jobs without a session key; collapsing them all onto
+    ``"default"`` made profile B's cron tool calls reuse the environment the launch profile's job
+    created (its ``.env`` residue, its bridged ``TERMINAL_*``, its shell), so B ran with A's settings.
+    Persistent Docker keys the profile name exactly like B's session-bound work, so B keeps ONE
+    container instead of a second one per home path.
+    """
+    from hermes_constants import get_hermes_home_override, profile_name_for_home
+    from tools.environments.local import _is_routed_home
+
+    override = get_hermes_home_override()
+    if not override or not _is_routed_home(override):
+        return None
+    profile = profile_name_for_home(override) if profile_scoped else None
+    if profile:
+        return "default" if profile == "default" else f"profile:{profile}"
+    try:
+        return f"home:{os.path.realpath(override)}"
+    except OSError:
+        return f"home:{override}"
+
+
 def _resolve_container_task_id(task_id: Optional[str]) -> str:
     """Map a tool-call ``task_id`` to the ``_active_environments`` key. Order matters —
     earlier branches are authoritative where they apply:
@@ -445,9 +471,10 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
        default-profile gateway sessions share ONE container; other backends key
        ``session:<key>`` so switching profiles can't reuse another profile's
        SSHEnvironment on the wrong host.
-    4. No session key (CLI): ``shared:<key>`` when opted in (else a CLI run of a
-       keyed profile would split from its gateway sessions), else ``"default"``,
-       which subagent ids collapse onto to share the parent's container.
+    4. No session key (CLI, cron): ``shared:<key>`` when opted in (else a CLI run of a
+       keyed profile would split from its gateway sessions); a routed multiplexed profile
+       keys its own home (``profile:<name>`` under persistent Docker, matching branch 3);
+       else ``"default"``, which subagent ids collapse onto to share the parent's container.
     """
     if task_id and _has_isolation_overrides(task_id):
         return task_id
@@ -470,7 +497,7 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
         # ONE container/cache slot (and sandbox dir) regardless of profile name (#84671).
         return f"shared:{shared}"
     if not session_key:
-        return "default"
+        return _routed_home_task_key(scope.docker_profile_scoped) or "default"
     if not scope.docker_profile_scoped:
         return f"session:{session_key}"
     profile = _current_session_profile() or "default"
@@ -819,7 +846,7 @@ def _resolve_command_cwd(
     Same guard class as the env-creation sanitizers (#50636, #54447); this is the per-command sibling site.
     """
     if workdir:
-        return workdir
+        return coerce_ssh_remote_cwd(workdir, env_type)
     recorded = get_session_cwd(session_key)
     if recorded and _is_container_backend(env_type) and _is_unusable_container_cwd(recorded):
         logger.info(
@@ -828,7 +855,7 @@ def _resolve_command_cwd(
             recorded, env_type, default_cwd,
         )
         return default_cwd
-    return recorded or default_cwd
+    return coerce_ssh_remote_cwd(recorded or default_cwd, env_type)
 
 
 def _error_json(error: str, *, exit_code: int = -1, status: Optional[str] = None, **extra) -> str:
@@ -980,7 +1007,8 @@ def _plan_execution(
     overrides = resolve_task_overrides(task_id)
     image = _select_image(env_type, overrides, config)
 
-    cwd = overrides.get("cwd") or get_session_cwd(task_id) or config["cwd"]
+    cwd = coerce_ssh_remote_cwd(
+        overrides.get("cwd") or get_session_cwd(task_id) or config["cwd"], env_type)
     host_cwd = _resolve_task_host_cwd(config, task_id)
     # config["cwd"] was sanitized for container backends in _get_env_config
     # but an override / session record is raw: a host path would reach
@@ -1235,6 +1263,7 @@ def terminal_tool(
     _host_local: bool = False,
     _completion_output_chars: int = 0,
     heartbeat: int = 0,
+    persist_on_release: bool = False,
 ) -> str:
     """Execute *command* in the configured terminal environment; returns a JSON string.
 
@@ -1248,6 +1277,10 @@ def terminal_tool(
     use it only for rare one-shot signals on long-lived processes. ``heartbeat`` (seconds,
     background-only, implies notify_on_complete) emits a "still running + output since last
     time" event every N seconds so the agent stays current on a long job without polling.
+    ``persist_on_release`` (background-only) keeps the process alive across agent-lifecycle
+    cleanup — session end, context compression, error recovery, max-iteration stop — all of
+    which kill the task's background processes; the user can still stop it on purpose via
+    process_manage kill (#41225).
     ``_completion_output_chars`` (internal) sizes the completion notification's output for a
     spawner whose output is the payload (a bot DM's reply); 0 keeps the usual tail.
     ``_host_local`` forces the local backend for Hermes-owned control-plane
@@ -1316,6 +1349,7 @@ def terminal_tool(
                 pty_disabled_reason=_PTY_DISABLED_REASON if pty_disabled else None,
                 completion_output_chars=_completion_output_chars,
                 heartbeat_seconds=heartbeat,
+                persist_on_release=persist_on_release,
             )
             if plan.promoted_from_foreground_timeout is not None:
                 result = _with_promoted_note(result, plan.promoted_from_foreground_timeout)
@@ -1388,6 +1422,11 @@ TERMINAL_SCHEMA = {
                 "type": "integer",
                 "minimum": 60,
                 "description": "With background=true: also notify every N seconds (min 60) with the output since the last notice. For long jobs you must react to mid-run (merge trains, full suites); implies notify=true."
+            },
+            "persist_on_release": {
+                "type": "boolean",
+                "default": False,
+                "description": "With background=true: keep the process alive across agent lifecycle cleanup (session end, /new, context compression, error recovery, max-iteration stop). Use ONLY for long-running jobs the user explicitly wants to outlive the conversation (overnight batches, watchful daemons); it still dies with the host process, and the user (or a later turn via process kill) can stop it on purpose. Default false."
             }
             # Legacy aliases (unadvertised, still accepted): notify_on_complete
             # (bool) and watch_patterns (list). notify=true|[...] maps onto
@@ -1417,6 +1456,7 @@ def _handle_terminal(args, **kw):
     notify_on_complete = args.get("notify_on_complete", False)
     watch_patterns = args.get("watch_patterns")
     heartbeat = args.get("heartbeat") or 0
+    persist_on_release = bool(args.get("persist_on_release", False))
     if not isinstance(heartbeat, int) or isinstance(heartbeat, bool) or heartbeat < 0:
         return tool_error("heartbeat must be a whole number of seconds (min 60).")
     if not args.get("background", False):
@@ -1432,6 +1472,12 @@ def _handle_terminal(args, **kw):
                 "with via process(action='write'/'submit'), which needs a "
                 "tracked background process). Retry as terminal(command=..., "
                 "background=true, pty=true)."
+            )
+        if persist_on_release:
+            return tool_error(
+                "persist_on_release only applies to background commands (a foreground "
+                "process is awaited inline and has nothing to persist). Retry as "
+                "terminal(command=..., background=true, persist_on_release=true)."
             )
     if notify is not None:
         if isinstance(notify, bool):
@@ -1458,6 +1504,7 @@ def _handle_terminal(args, **kw):
         notify_on_complete=notify_on_complete,
         watch_patterns=watch_patterns,
         heartbeat=heartbeat,
+        persist_on_release=persist_on_release,
     )
 
 

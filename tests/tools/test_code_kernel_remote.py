@@ -36,12 +36,14 @@ class ScriptedEnv:
     def __init__(self, handlers):
         self.handlers = handlers
         self.commands = []
+        self.stdin_payloads = []
 
     def get_temp_dir(self):
         return "/tmp"
 
-    def execute(self, command, cwd=None, timeout=None):
+    def execute(self, command, cwd=None, timeout=None, stdin_data=None):
         self.commands.append(command)
+        self.stdin_payloads.append(stdin_data)
         for needle, handler in self.handlers:
             if needle in command:
                 return handler(command)
@@ -106,9 +108,21 @@ class RemoteKernelBase(unittest.TestCase):
 
 class TestSpawnAndReuse(RemoteKernelBase):
     def test_first_call_spawns_second_reuses(self):
-        env = ScriptedEnv(_spawn_ok_handlers(
+        healthy = _spawn_ok_handlers(
             [_cell(stdout="one\n"), _cell(stdout="two\n", execution_count=2)],
-        ))
+        )
+
+        def route(command):
+            if command.startswith("rm -f") and "cell_res_" in command:
+                raise ConnectionError("ssh dropped after the cell ran")
+            for needle, handler in healthy:
+                if needle in command:
+                    return handler(command)
+            return {"output": "", "returncode": 0}
+
+        # The result-file cleanup is best-effort: a transport drop after the
+        # cell ran must not surface (the caller would re-run the cell per-call).
+        env = ScriptedEnv([("", route)])
         first = _run(env)
         self.assertEqual(first["status"], "success", first)
         self.assertFalse(first["kernel"]["reused"])
@@ -338,6 +352,64 @@ class TestDispatchIntegration(unittest.TestCase):
             result = json.loads(_execute_remote("print()", "t", ["read_file"]))
         self.assertEqual(result["status"], "success")
         self.assertIn("per-call ran", result["output"])
+
+
+class TestSharedHostLockdown(RemoteKernelBase):
+    """Shared-host hardening: the kernel dir lives under a shared temp dir, so
+    every dir must be owner-only, every remote write owner-only, and the RPC
+    token must travel in a sourced env file rather than a ps-visible argv."""
+
+    def test_spawn_locks_down_dirs_and_hides_token(self):
+        self._ship.stop()  # let the real ship commands reach env.commands
+        env = ScriptedEnv(_spawn_ok_handlers([_cell(stdout="hi\n")]))
+        result = _run(env)
+        self.assertEqual(result["status"], "success", result)
+        kernel = next(iter(_REMOTE_KERNELS.values()))
+        # The token never rides a command line: a remote shell's argv is
+        # world-readable via ps for the command's whole lifetime.
+        self.assertFalse(
+            any(kernel.rpc_token in c for c in env.commands),
+            "rpc token appeared in a remote command line")
+        spawn_cmd = next(c for c in env.commands if "nohup" in c)
+        self.assertNotIn("HERMES_RPC_TOKEN=", spawn_cmd)
+        mkdir_cmd = next(c for c in env.commands if "mkdir -p" in c)
+        if sys.platform != "win32":
+            # Behaviour, not command text: replay the recorded dir setup
+            # through a real shell under a private temp root; every dir under
+            # the shared temp dir must come out owner-only.
+            import shutil
+            import subprocess
+            import tempfile
+            root = tempfile.mkdtemp()
+            self.addCleanup(shutil.rmtree, root, True)
+            local = root + kernel.kernel_dir
+            r = subprocess.run(["bash", "-c", mkdir_cmd.replace(kernel.kernel_dir, local)],
+                               capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            for d in (local, f"{local}/cells", f"{local}/rpc"):
+                self.assertEqual(os.stat(d).st_mode & 0o777, 0o700, d)
+        # Ships write owner-only and carry the base64 as stdin_data, so it
+        # (which decodes to the token for kernel.env) never enters argv.
+        ship_cmds = [c for c in env.commands if "base64 -d" in c]
+        self.assertTrue(any("kernel.env" in c for c in ship_cmds))
+        import base64
+        env_ship = next(p for p, c in zip(env.stdin_payloads, env.commands)
+                        if p and "kernel.env" in c)
+        env_content = base64.b64decode(env_ship).decode()
+        self.assertIn(f"HERMES_RPC_TOKEN={kernel.rpc_token}", env_content)
+        # Fail closed on a failed cell ship: the checked write raises and the
+        # kernel is evicted, so the next call cannot reuse a kernel whose
+        # state silently missed this cell.
+        env.handlers.insert(0, ("cell_req_", lambda c: {"output": "ENOSPC", "returncode": 1}))
+        with self.assertRaises(RuntimeError):
+            _run(env, timeout=1)
+        self.assertEqual(len(_REMOTE_KERNELS), 0)
+        # Fail closed on a failed dir setup: nothing (env file, runner) is
+        # shipped into a dir that may still be missing or permissive.
+        env = ScriptedEnv([("mkdir -p", lambda c: {"output": "EACCES", "returncode": 1})]
+                          + _spawn_ok_handlers([_cell()]))
+        self.assertIsNone(_run(env))
+        self.assertFalse(any("base64 -d" in c for c in env.commands), env.commands)
 
 
 if __name__ == "__main__":

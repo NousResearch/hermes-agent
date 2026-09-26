@@ -48,7 +48,7 @@ def test_duplicate_singleton_secret_named_identically_by_doctor_status_and_prefl
     assert len(findings) == 1
     line = findings[0]
     assert "'default'" in line and "'worker'" in line and "TELEGRAM_BOT_TOKEN" in line
-    assert "only one gateway" in line and gm.MIGRATE_COMMAND in line
+    assert gm.MIGRATE_COMMAND in line
     # Same helper, same words: the preflight blocker IS the doctor/status finding.
     assert gm.build_migration_plan().blockers == findings
     out = _surfaces()

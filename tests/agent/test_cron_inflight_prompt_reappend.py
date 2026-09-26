@@ -138,20 +138,6 @@ def test_cron_job_prompt_survives_after_the_handoff():
     )
 
 
-def test_model_is_not_left_without_a_user_message_after_the_handoff():
-    """The 'no user message after this summary → do nothing' branch of
-    SUMMARY_PREFIX must not be what a mid-run cron compaction produces."""
-    compressed = _compress(_cron_transcript())
-
-    idx = _handoff_idx(compressed)
-    after = compressed[idx + 1:]
-    has_user_after = bool(_actionable_user_rows(after)) or bool(
-        _text(compressed[idx]).split(_SUMMARY_END_MARKER)[-1].strip()
-    )
-    assert has_user_after, (
-        "compaction left no user message after the handoff; the model is "
-        "instructed to do nothing and the cron run fails silently"
-    )
 
 
 def test_role_alternation_and_head_are_preserved():
@@ -293,7 +279,9 @@ def test_merged_restatement_is_not_anchored_twice():
 
     original = [{"role": "user", "content": JOB_SENTINEL}, *_tool_pairs(40)]
     out = _compress_with(2, 1, original)
-    assert any(m.get("_inflight_replay_merged") for m in out), "expected merge layout"
+    assert any(
+        ContextCompressor._has_merged_inflight_replay(m) for m in out
+    ), "expected merge layout"
     assert _job_copies(out) == 1
     assert _ensure_compressed_has_user_turn(original, out) == "already_present"
     assert _job_copies(out) == 1

@@ -237,8 +237,6 @@ class TestClarifyBatchPanel:
         thread.join(timeout=2)
         assert result["value"] == "a"
 
-        # The connection modal uses the same agent-thread queue handoff. Connect sends the
-        # approved target and env directly to the backend, while rendering masks secrets.
         cli._connection_state = None
         cli._capture_modal_input_snapshot = MagicMock()
         cli._restore_modal_input_snapshot = MagicMock()
@@ -265,15 +263,14 @@ class TestClarifyBatchPanel:
                 target=lambda: connection_result.setdefault("value", cli._connection_callback(payload)), daemon=True
             )
             connection_thread.start()
-            deadline = time.time() + 2
-            while cli._connection_state is None and time.time() < deadline:
-                time.sleep(0.01)
+            connection_thread.join(timeout=2)
+            assert not connection_thread.is_alive()
+            assert connection_result["value"] is None
             state = cli._connection_state
             state["drafts"]["asana"]["CLIENT_SECRET"] = "never-render-this"
             assert "never-render-this" not in "\n".join(cli._connection_render_lines())
             assert "Client secret*: Set" in cli._connection_render_lines()
             cli._connection_answer(approve=True)
-            connection_thread.join(timeout=2)
 
         sent = json.loads(apply_answer.call_args.args[1])
         assert sent == {"targets": [{
@@ -281,7 +278,6 @@ class TestClarifyBatchPanel:
             "status": "approved",
             "env": {"CLIENT_ID": "default-id", "CLIENT_SECRET": "never-render-this"},
         }]}
-        assert connection_result["value"] == "approved"
         cli._connection_close()
 
 

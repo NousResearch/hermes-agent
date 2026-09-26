@@ -10,12 +10,15 @@
 // and unit-testable (mirroring windows-sandbox-fallback.ts / session-windows.ts).
 //
 // Policy (matches the primary window's previous behavior, generalized):
-// - `render-process-gone` with reason `crashed`/`oom` → bounded reload (rolling
-//   crash-loop guard shared across ALL windows — one budget per process).
-// - `render-process-gone` with any other reason (`killed`, `launch-failed`,
-//   `clean-exit`, unknown) → log only. `killed` after an expected close/destroy
-//   is normal teardown, and blindly reloading it would loop windows back up
-//   after the user closed them.
+// - `render-process-gone` with reason `crashed`/`oom`/`killed` on a live window
+//   → bounded reload (rolling crash-loop guard shared across ALL windows).
+//   Live-window `killed` covers external SIGTERM / OOM watchdogs; user close
+//   still short-circuits via `isDestroyed`, and an app quit/update handoff via
+//   `isIntentionalTeardown` (expected teardown). Once the budget is spent, a
+//   live window hands off to `onRendererTerminated` so it ends on a visible
+//   recovery affordance rather than a dead window.
+// - `render-process-gone` with other reasons (`launch-failed`, `clean-exit`,
+//   unknown) → log only.
 // - `unresponsive` → log only (no reload; Chromium usually follows with
 //   render-process-gone, and forcing a reload while the main thread is wedged
 //   can make things worse).
@@ -91,13 +94,16 @@ export interface WindowRendererLifecycleOptions {
      *  (`reloadOnFailedLoad`): the window would otherwise stay blank, so the
      *  caller should load a visible error page in its place. */
     onFailedLoadBudgetExhausted?: (details?: FailedLoadDetails) => void
-    /** Called when a LIVE window's renderer is terminated by something other than a
-     *  recoverable crash or an expected teardown (e.g. an external SIGKILL / OS
-     *  reclaim). Deliberately never reloaded — reloading a killed-after-close window
-     *  would pop it back up — so this is the caller's chance to surface WHY instead
-     *  of a silent loss (#116472). */
+    /** Called when a LIVE window's renderer is gone and will not be reloaded:
+     *  an unrecoverable reason (`launch-failed`, unknown), or a recoverable one
+     *  (`crashed`/`oom`/`killed`) after the crash-loop budget is spent. This is
+     *  the caller's chance to surface WHY instead of a silent loss (#116472). */
     onRendererTerminated?: (details?: RendererLifecycleDetails) => void
   }
+  /** True while the app is deliberately tearing windows down (quit, update
+   *  handoff). A renderer killed then is expected teardown even though its
+   *  window may still report live, so it is never reloaded or surfaced. */
+  isIntentionalTeardown?: () => boolean
   /** Rolling crash-loop window, ms. Defaults to 60_000 (RENDERER_RELOAD_WINDOW_MS). */
   reloadWindowMs?: number
   /** Max reloads per rolling window. Defaults to 3 (RENDERER_RELOAD_MAX). */
@@ -124,7 +130,7 @@ export interface LifecycleWindowLike {
 const DEFAULT_RELOAD_WINDOW_MS = 60_000
 const DEFAULT_RELOAD_MAX = 3
 
-const RECOVERABLE_REASONS = new Set(['crashed', 'oom'])
+const RECOVERABLE_REASONS = new Set(['crashed', 'oom', 'killed'])
 
 function safeNow(now: (() => number) | undefined): number {
   return typeof now === 'function' ? now() : Date.now()
@@ -149,10 +155,10 @@ export function pushReloadTime(times: number[], now: number): number[] {
 /**
  * Decide whether a render-process-gone event should reload its window.
  *
- * Reload only for `crashed`/`oom` on a live window, bounded by the shared
- * rolling crash-loop budget. Anything else — expected teardown (`killed` after
- * close/destroy), unrecoverable reasons, unknown reasons — is log-only, exactly
- * like the primary window's previous behavior but now per window kind.
+ * Reload for `crashed`/`oom`/`killed` on a live window, bounded by the shared
+ * rolling crash-loop budget. Expected teardown still short-circuits first via
+ * `isDestroyed` (user close reports `killed` with a destroyed window). Other
+ * unrecoverable/unknown reasons remain log-only.
  */
 export function shouldReloadAfterRendererGone(details: {
   reason?: string
@@ -279,7 +285,7 @@ export function installWindowRendererLifecycle(
   const contents = win.webContents
 
   const onRendererGone = (_event: unknown, details?: RendererLifecycleDetails) => {
-    const destroyed = win.isDestroyed()
+    const destroyed = win.isDestroyed() || options.isIntentionalTeardown?.() === true
 
     log(describeRendererLifecycleEvent({ kind, event: 'render-process-gone', ...details, isDestroyed: destroyed }))
 
@@ -304,13 +310,15 @@ export function installWindowRendererLifecycle(
           `[renderer:${kind}] suppressing reload: ${budgetRef.current.length} crashes within ${reloadWindowMs}ms (likely a crash loop)`
         )
         onCrashLoopSuppressed?.(details)
+        // The budget is spent and the window is still live: end on the caller's
+        // recovery affordance, not a dead window (#85048).
+        onRendererTerminated?.(details)
 
         return
       }
 
-      // A live window whose renderer was lost to something other than a recoverable
-      // crash (e.g. an external SIGKILL / OS reclaim). We deliberately do not reload,
-      // but the loss must not be silent — let the caller surface WHY (#116472).
+      // A live window whose renderer was lost to an unrecoverable reason (e.g.
+      // launch-failed). The loss must not be silent — let the caller surface WHY (#116472).
       if (decision.suppressedReason === 'unrecoverable-reason' && !destroyed) {
         log(
           `[renderer:${kind}] renderer terminated while live (reason=${String(details?.reason || 'unknown')}` +
@@ -330,7 +338,7 @@ export function installWindowRendererLifecycle(
 
     // Deferred: never reload from inside the event handler (see above).
     setImmediate(() => {
-      if (win.isDestroyed()) {
+      if (win.isDestroyed() || options.isIntentionalTeardown?.() === true) {
         return
       }
 
@@ -412,7 +420,7 @@ export function installWindowRendererLifecycle(
 
     // Deferred: never reload from inside the event handler (see above).
     setImmediate(() => {
-      if (win.isDestroyed()) {
+      if (win.isDestroyed() || options.isIntentionalTeardown?.() === true) {
         return
       }
 

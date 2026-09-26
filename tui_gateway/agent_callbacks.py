@@ -127,6 +127,8 @@ def _agent_cbs(sid: str) -> dict:
     callbacks = {
         "tool_start_callback": lambda tc_id, name, args: _on_tool_start(sid, tc_id, name, args),
         "tool_complete_callback": lambda tc_id, name, args, result: _on_tool_complete(sid, tc_id, name, args, result),
+        "tool_result_metadata_callback": lambda tc_id, name, args, result: _prepare_tool_result_metadata(
+            sid, tc_id, name, args, result),
         "tool_progress_callback": lambda event_type, name=None, preview=None, args=None, **kwargs: _on_tool_progress(
             sid, event_type, name, preview, args, **kwargs),
         "tool_gen_callback": lambda name: _tool_progress_enabled(sid) and _emit("tool.generating", sid, {"name": name}),
@@ -184,7 +186,8 @@ def _apply_project_workspace(task_id: str, path: str, _name: str = "") -> None:
         agent = session.get("agent")
         info = _session_info(agent, session) if agent is not None else {
             "cwd": resolved, "branch": git_probe.branch(resolved),
-            "project": _project_info_for_cwd(resolved), "lazy": True}
+            "project": _project_info_for_cwd(resolved), "lazy": True,
+            "desktop_contract": DESKTOP_BACKEND_CONTRACT}
         _emit("session.info", sid, info)
     except Exception:
         logger.debug("failed to emit session.info after project workspace move", exc_info=True)
@@ -199,7 +202,24 @@ def _wire_callbacks(sid: str):
 
     def secret_cb(env_var, prompt, metadata=None):
         pl = {"prompt": prompt, "env_var": env_var, **({"metadata": metadata} if metadata else {})}
-        val = _ask("secret", sid, pl)
+        # One process-global callback, so the closure sid is just the last session wired,
+        # not the owner. Ask the UI session bound by _set_session_context: the same
+        # record whose profile scope the value is saved into. No bound owner: skip.
+        from gateway.session_context import get_session_env
+
+        owner_sid = get_session_env("HERMES_UI_SESSION_ID")
+        # Credential admission is fenced to a live runtime. owner_sid is a ContextVar copied onto
+        # the worker's thread at spawn: a background/btw/preview worker outlives its session, and
+        # the close path's `_clear_pending` cancels only requests ALREADY open — it cannot fence
+        # one created afterward. Without a session here the request would register, wait 300s for
+        # a client that never reconnects, and any late answer would settle into the saver with no
+        # owner to revalidate (andrexibiza P2, #121471). A parked reconnectable record also keeps
+        # `write_json` off the stdio fallback — there is no `session.resume` for a closed sid.
+        if owner_sid and _sessions.get(owner_sid) is None:
+            logger.info("secret prompt for %s refused: its UI session is closed", owner_sid)
+            val = ""
+        else:
+            val = _ask("secret", owner_sid, pl) if owner_sid else ""
         if not val:
             return {"success": True, "stored_as": env_var, "validated": False, "skipped": True, "message": "skipped"}
         from hermes_cli.config import save_env_value_secure
@@ -355,6 +375,7 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
                              "provider_data_collection", "openrouter_min_coding_score")},
         "model": g("model") or _resolve_model(), "max_iterations": _cfg_max_turns(cfg, 25),
         "enabled_toolsets": g("enabled_toolsets") or _load_enabled_toolsets("tui"),
+        "disabled_toolsets": g("disabled_toolsets") or _load_disabled_toolsets(),
         "quiet_mode": True, "verbose_logging": False,
         "provider_require_parameters": g("provider_require_parameters", False), "session_id": task_id,
         "reasoning_config": g("reasoning_config") or _load_reasoning_config(str(g("model", "") or "")),
@@ -362,7 +383,8 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
         "request_overrides": dict(g("request_overrides", {}) or {}),
         # The side agent persists into the PARENT's store: a named-profile chat's ``bg_*`` rows
         # belong to that profile's state.db, not the launch handle.
-        "platform": "tui", "session_db": getattr(agent, "_session_db", None) or _get_db(), "fallback_model": fallback}
+        "platform": "tui", "session_db": getattr(agent, "_session_db", None) or _get_db(), "fallback_model": fallback,
+        "side_agent": True}
 
 
 def _ephemeral_preview_agent_kwargs(agent, task_id: str) -> dict:

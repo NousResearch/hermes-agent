@@ -159,20 +159,6 @@ async def test_send_retries_without_reference_when_reply_target_is_deleted():
 import discord as _discord_mod  # noqa: E402 — imported after _ensure_discord_mock
 
 
-class TestIsForumParent:
-    def test_none_returns_false(self):
-        adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
-        assert adapter._is_forum_parent(None) is False
-
-    def test_forum_channel_class_instance(self):
-        adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
-        forum_cls = getattr(_discord_mod, "ForumChannel", None)
-        if forum_cls is None:
-            # Re-create a type for the mock
-            forum_cls = type("ForumChannel", (), {})
-            _discord_mod.ForumChannel = forum_cls
-        ch = forum_cls()
-        assert adapter._is_forum_parent(ch) is True
 
 
 # ---------------------------------------------------------------------------

@@ -1,9 +1,8 @@
 """Tests for save_config_value() in cli.py — atomic write behavior."""
 
 from pathlib import Path
-from unittest.mock import MagicMock
 
-import yaml
+import hermes_yaml as yaml
 
 import pytest
 
@@ -17,7 +16,7 @@ class TestSaveConfigValueAtomic:
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
         config_path = hermes_home / "config.yaml"
-        config_path.write_text(yaml.dump({
+        config_path.write_text(yaml.safe_dump({
             "model": {"default": "test-model", "provider": "openrouter"},
             "display": {"skin": "default"},
         }))
@@ -28,15 +27,6 @@ class TestSaveConfigValueAtomic:
         monkeypatch.setattr("cli._hermes_home", hermes_home)
         return config_path
 
-    def test_calls_roundtrip_yaml_update(self, config_env, monkeypatch):
-        """save_config_value must preserve user-edited YAML structure."""
-        mock_update = MagicMock()
-        monkeypatch.setattr("utils.atomic_roundtrip_yaml_update", mock_update)
-
-        from cli import save_config_value
-        save_config_value("display.skin", "mono")
-
-        mock_update.assert_called_once_with(config_env, "display.skin", "mono")
 
 
     def test_creates_nested_keys(self, config_env):

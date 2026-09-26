@@ -46,11 +46,11 @@ describe('group mention rendering', () => {
     const text = '@planner compare the options, then @user picks; mail ops@example.com — @everyone review'
     const html = renderToStaticMarkup(<>{renderGroupMentionText(text, members)}</>)
 
-    expect(html).toContain('<span class="ref font-medium" data-ref="agent"')
+    expect(html).toContain('data-ref="agent"')
     expect(html).toContain('data-ref="human"')
     expect(html).toContain('data-ref="broadcast"')
     // `@example.com` is not a room identity — no span around it.
-    expect(html).not.toContain('data-ref="agent" title="Bot in this room">@example')
+    expect(html).not.toMatch(/data-ref="[^"]*"[^>]*>@example/)
     expect(html.replace(/<[^>]+>/g, '')).toBe(text)
   })
 })

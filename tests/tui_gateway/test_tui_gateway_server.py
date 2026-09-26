@@ -4226,6 +4226,40 @@ def test_config_sync_switches_unpinned_session(monkeypatch):
     assert session["config_model_seen"] == ("new/model", "nous")
 
 
+def test_config_sync_skips_desktop_sessions(monkeypatch):
+    _patch_config_model(monkeypatch, "antigravity/gemini-3.8-flash-tiered", provider="omniroute")
+    session = _sync_test_session(
+        source="desktop",
+        config_model_seen=("grok-4.6", "xai-oauth"),
+    )
+    monkeypatch.setattr(
+        server,
+        "_apply_model_switch",
+        lambda *a, **k: pytest.fail("desktop session must not auto-adopt config.yaml"),
+    )
+
+    server._sync_agent_model_with_config("sid", session)
+
+
+def test_config_sync_desktop_bot_room_still_follows_profile(monkeypatch):
+    _patch_config_model(monkeypatch, "new/model", provider="nous")
+    session = _sync_test_session(
+        source="desktop",
+        follow_profile_config=True,
+        config_model_seen=("old/model", "nous"),
+    )
+    calls = []
+    monkeypatch.setattr(
+        server,
+        "_apply_model_switch",
+        lambda sid, sess, raw, **kw: calls.append(raw),
+    )
+
+    server._sync_agent_model_with_config("sid", session)
+
+    assert calls == ["new/model --provider nous"]
+
+
 def test_config_sync_treats_auto_provider_as_unset(monkeypatch):
     _patch_config_model(monkeypatch, "new/model", provider="auto")
     session = _sync_test_session(config_model_seen=("old/model", ""))

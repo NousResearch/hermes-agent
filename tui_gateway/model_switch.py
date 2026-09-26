@@ -413,9 +413,17 @@ def _sync_bot_capabilities(sid: str, session: dict) -> None:
 
 def _sync_agent_model_with_config(sid: str, session: dict) -> None:
     """Adopt a config.yaml model change at turn start (like gateways do per message). Sessions
-    pinned with /model keep their choice; a failed switch keeps the current model."""
+    pinned with /model keep their choice; a failed switch keeps the current model.
+
+    Desktop chats are exempt: auto-adopting config.yaml (or a custom provider's
+    default model) at turn start is what yanked a grok/xAI session onto
+    OmniRoute Gemini after a gateway restart. Bot rooms opt in via
+    ``follow_profile_config``.
+    """
     agent = session.get("agent")
     if agent is None:
+        return
+    if session.get("source") == "desktop" and not session.get("follow_profile_config"):
         return
     target = _config_model_target()
     if not target[0]:

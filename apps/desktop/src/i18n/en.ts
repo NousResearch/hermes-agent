@@ -4233,6 +4233,8 @@ export const en: Translations = {
     autoUpdate: {
       title: 'Install updates automatically',
       desc: 'The first time Hermes opens after you log in, it pulls the latest update on your update channel and restarts itself. It waits while a gateway is busy, and it tries once per login.',
+      descBootScoped:
+        'The first time Hermes opens after this computer starts, it pulls the latest update on your update channel and restarts itself. It waits while a gateway is busy, and it tries once per boot. (This system does not expose login sessions, so “per login” becomes “per boot”.)',
       unsupported: 'Automatic updates are available on macOS and Linux.',
       saveFailed: 'Could not change automatic updates',
       deferredTitle: 'Automatic update is waiting',

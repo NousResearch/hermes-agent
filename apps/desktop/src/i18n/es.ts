@@ -4548,6 +4548,8 @@ export const esOverrides = {
     autoUpdate: {
       title: 'Instalar actualizaciones automáticamente',
       desc: 'La primera vez que Hermes se abre tras iniciar sesión, descarga la última actualización de tu canal y se reinicia. Espera si una pasarela está ocupada y solo lo intenta una vez por inicio de sesión.',
+      descBootScoped:
+        'La primera vez que Hermes se abre tras encender este equipo, descarga la última actualización de tu canal y se reinicia. Espera si una pasarela está ocupada y solo lo intenta una vez por arranque. (Este sistema no expone sesiones de inicio, así que «por inicio de sesión» pasa a ser «por arranque».)',
       unsupported: 'Las actualizaciones automáticas están disponibles en macOS y Linux.',
       saveFailed: 'No se pudieron cambiar las actualizaciones automáticas',
       deferredTitle: 'La actualización automática está en espera',

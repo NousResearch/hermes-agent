@@ -4558,6 +4558,8 @@ export const deOverrides = {
     autoUpdate: {
       title: 'Updates automatisch installieren',
       desc: 'Beim ersten Start nach der Anmeldung lädt Hermes das neueste Update Ihres Update-Kanals und startet sich neu. Läuft auf einem Gateway gerade eine Aufgabe, wartet Hermes. Pro Anmeldung gibt es einen Versuch.',
+      descBootScoped:
+        'Beim ersten Start nach dem Hochfahren dieses Computers lädt Hermes das neueste Update Ihres Update-Kanals und startet sich neu. Läuft auf einem Gateway gerade eine Aufgabe, wartet Hermes. Pro Systemstart gibt es einen Versuch. (Dieses System meldet keine Anmeldesitzungen, daher gilt „pro Anmeldung“ hier als „pro Systemstart“.)',
       unsupported: 'Automatische Updates sind unter macOS und Linux verfügbar.',
       saveFailed: 'Automatische Updates konnten nicht geändert werden',
       deferredTitle: 'Automatisches Update wartet',

@@ -17,13 +17,14 @@ vi.mock('@/store/updates', async () => {
     $updateChecking: atom(false),
     $updateOverlayOpen: atom(false),
     $updateOverlayTarget: atom('client'),
+    $updateStatus: atom(null),
     checkUpdates: updates.checkUpdates,
     applyUpdates: updates.applyUpdates
   }
 })
 
 import { notify } from '@/store/notifications'
-import { $updateOverlayOpen } from '@/store/updates'
+import { $updateChecking, $updateOverlayOpen, $updateStatus } from '@/store/updates'
 
 import { _resetAutoUpdateForTests, autoUpdateCheckVerdict, runAutoUpdateOnLaunch } from './auto-update'
 
@@ -71,11 +72,13 @@ describe('runAutoUpdateOnLaunch', () => {
     _resetAutoUpdateForTests()
     vi.clearAllMocks()
     $updateOverlayOpen.set(false)
+    $updateStatus.set(null)
+    $updateChecking.set(false)
     auto = {
       get: vi.fn(),
       set: vi.fn(),
       claim: vi.fn<() => Promise<DesktopAutoUpdateClaim>>(),
-      report: vi.fn(async () => ({ enabled: true, supported: true, lastAttempt: null }))
+      report: vi.fn(async () => ({ enabled: true, supported: true, sessionScope: 'login', lastAttempt: null }))
     }
     ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = { updates: { auto } }
   })
@@ -151,6 +154,54 @@ describe('runAutoUpdateOnLaunch', () => {
     await vi.waitFor(() => expect(auto.report).toHaveBeenCalled())
 
     expect(auto.claim).toHaveBeenCalledTimes(2)
+  })
+
+  it('reuses a check that just answered instead of hitting the server twice at launch', async () => {
+    auto.claim.mockResolvedValue({ action: 'run', reason: 'first-launch-after-login', sessionKey: 'S1' })
+    // The mount-time passive check (or the user's own Check now) already answered.
+    $updateStatus.set(behind({ fetchedAt: Date.now() - 5_000 }))
+    updates.applyUpdates.mockResolvedValue({ ok: true, handedOff: true } satisfies DesktopUpdateApplyResult)
+
+    runAutoUpdateOnLaunch()
+    await settle()
+
+    expect(updates.checkUpdates).not.toHaveBeenCalled()
+    expect(updates.applyUpdates).toHaveBeenCalledTimes(1)
+  })
+
+  it('waits for an in-flight check rather than racing it', async () => {
+    auto.claim.mockResolvedValue({ action: 'run', reason: 'first-launch-after-login', sessionKey: 'S1' })
+    $updateChecking.set(true)
+    updates.checkUpdates.mockResolvedValue(behind({ behind: 0 }))
+
+    runAutoUpdateOnLaunch()
+    await vi.waitFor(() => expect(auto.claim).toHaveBeenCalled())
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(updates.checkUpdates).not.toHaveBeenCalled()
+
+    // The manual check finishes with a stale answer → the auto check forces its own.
+    $updateStatus.set(behind({ behind: 0, fetchedAt: Date.now() - 10 * 60_000 }))
+    $updateChecking.set(false)
+    await settle()
+
+    expect(updates.checkUpdates).toHaveBeenCalledWith({ force: true })
+    expect(updates.applyUpdates).not.toHaveBeenCalled()
+  })
+
+  it('never retries a deferral faster than once a minute, whatever main says', async () => {
+    vi.useFakeTimers()
+    auto.claim
+      .mockResolvedValueOnce({ action: 'defer', reason: 'busy', sessionKey: 'S1', retryInMs: 0, activeAgents: 1 })
+      .mockResolvedValue({ action: 'skip', reason: 'already-ran-this-session', sessionKey: 'S1' })
+
+    runAutoUpdateOnLaunch()
+    await vi.waitFor(() => expect(auto.claim).toHaveBeenCalledTimes(1))
+
+    await vi.advanceTimersByTimeAsync(59_000)
+    expect(auto.claim).toHaveBeenCalledTimes(1)
+
+    await vi.advanceTimersByTimeAsync(1_000)
+    await vi.waitFor(() => expect(auto.claim).toHaveBeenCalledTimes(2))
   })
 
   it('only starts once per renderer', async () => {

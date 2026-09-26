@@ -40,7 +40,11 @@ export function AutoUpdateSetting(): ReactElement | null {
         {u.autoUpdate.title}
       </div>
       <div className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-        {auto.supported ? u.autoUpdate.desc : u.autoUpdate.unsupported}
+        {!auto.supported
+          ? u.autoUpdate.unsupported
+          : auto.sessionScope === 'boot'
+            ? u.autoUpdate.descBootScoped
+            : u.autoUpdate.desc}
       </div>
       {auto.enabled && last && (
         <div className="mt-1 text-xs text-muted-foreground">

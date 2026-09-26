@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   AUTO_UPDATE_MAX_DEFER_MS,
+  autoUpdateSessionScope,
   type AutoUpdateState,
   decideAutoUpdateClaim,
   DEFAULT_AUTO_UPDATE_STATE,
@@ -259,5 +260,18 @@ describe('resolveLoginSessionKey', () => {
     const b = resolveLoginSessionKey(deps({ platform: 'freebsd', uptimeSeconds: () => 1060, now: () => NOW + 60_000 }))
 
     expect(a).toBe(b)
+  })
+})
+
+describe('autoUpdateSessionScope', () => {
+  it('names login-scoped keys so the UI can promise "after you log in"', () => {
+    expect(autoUpdateSessionScope('darwin:loginwindow:598:Tue Sep 15 19:39:38 2026')).toBe('login')
+    expect(autoUpdateSessionScope('linux:abc-123:session:4')).toBe('login')
+  })
+
+  it('names boot-scoped fallbacks so the UI says "after this computer starts" instead', () => {
+    expect(autoUpdateSessionScope('linux:abc-123')).toBe('boot')
+    expect(autoUpdateSessionScope('darwin:boot:1789481317')).toBe('boot')
+    expect(autoUpdateSessionScope('boot:5964937')).toBe('boot')
   })
 })

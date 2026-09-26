@@ -4569,6 +4569,8 @@ export const frOverrides = {
     autoUpdate: {
       title: 'Installer les mises à jour automatiquement',
       desc: 'Au premier lancement après votre connexion, Hermes récupère la dernière mise à jour de votre canal et redémarre. Il attend si une passerelle est occupée, et ne fait qu’une tentative par connexion.',
+      descBootScoped:
+        'Au premier lancement après le démarrage de cet ordinateur, Hermes récupère la dernière mise à jour de votre canal et redémarre. Il attend si une passerelle est occupée, et ne fait qu’une tentative par démarrage. (Ce système n’expose pas de sessions de connexion : « par connexion » devient donc « par démarrage ».)',
       unsupported: 'Les mises à jour automatiques sont disponibles sur macOS et Linux.',
       saveFailed: 'Impossible de modifier les mises à jour automatiques',
       deferredTitle: 'Mise à jour automatique en attente',

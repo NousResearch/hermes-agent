@@ -23,6 +23,7 @@ import {
   $updateChecking,
   $updateOverlayOpen,
   $updateOverlayTarget,
+  $updateStatus,
   applyUpdates,
   checkUpdates
 } from '@/store/updates'
@@ -31,17 +32,32 @@ export interface AutoUpdateView {
   loaded: boolean
   enabled: boolean
   supported: boolean
+  /** Whether "once per session" means per login or (fallback) per boot. */
+  sessionScope: 'login' | 'boot'
   saving: boolean
   lastAttempt: DesktopAutoUpdateAttempt | null
 }
 
-const INITIAL: AutoUpdateView = { loaded: false, enabled: false, supported: false, saving: false, lastAttempt: null }
+const INITIAL: AutoUpdateView = {
+  loaded: false,
+  enabled: false,
+  supported: false,
+  sessionScope: 'login',
+  saving: false,
+  lastAttempt: null
+}
 
 export const $autoUpdate = atom<AutoUpdateView>(INITIAL)
 
 const AUTO_UPDATE_TOAST_ID = 'desktop-auto-update'
 /** How long to wait for a passive check already in flight before our forced one. */
 const CHECK_IDLE_WAIT_MS = 60_000
+// Main's AUTO_UPDATE_DEFER_RETRY_MS is the intended cadence; this floor only
+// guards the renderer against a short/zero value ever arriving over IPC.
+const MIN_DEFER_RETRY_MS = 60_000
+// A check answered this recently (the mount-time passive check, or the user's
+// own Check now) is current enough to act on without a second round-trip.
+const FRESH_CHECK_MS = 2 * 60_000
 /** Upper bound on deferral retries inside one app run (main also caps by time). */
 const MAX_DEFER_RETRIES = 45
 
@@ -57,6 +73,7 @@ function applyView(view: DesktopAutoUpdateView | null | undefined): void {
   $autoUpdate.set({
     loaded: true,
     enabled: Boolean(view.enabled),
+    sessionScope: view.sessionScope === 'boot' ? 'boot' : 'login',
     supported: Boolean(view.supported),
     saving: false,
     lastAttempt: view.lastAttempt ?? null
@@ -208,7 +225,10 @@ async function attempt(retries: number): Promise<void> {
     }
 
     if (retries < MAX_DEFER_RETRIES) {
-      deferTimer = globalThis.setTimeout(() => void attempt(retries + 1), claim.retryInMs ?? 60_000)
+      deferTimer = globalThis.setTimeout(
+        () => void attempt(retries + 1),
+        Math.max(claim.retryInMs ?? MIN_DEFER_RETRY_MS, MIN_DEFER_RETRY_MS)
+      )
     }
 
     return
@@ -222,8 +242,15 @@ async function attempt(retries: number): Promise<void> {
     return
   }
 
+  // `checkUpdates` is single-flight (it returns the cached status while one is
+  // running), so a manual "Check now" or the mount-time passive check cannot
+  // overlap with this one — the auto check simply waits for it to finish and,
+  // if that answer is fresh, uses it rather than hitting the update server
+  // twice at launch. Only a stale/absent answer forces a new check.
   await waitForIdleCheck()
-  const status = await checkUpdates({ force: true })
+  const recent = $updateStatus.get()
+  const fresh = recent && !recent.error && Date.now() - (recent.fetchedAt ?? 0) < FRESH_CHECK_MS
+  const status = fresh ? recent : await checkUpdates({ force: true })
   const verdict = autoUpdateCheckVerdict(status)
 
   if (verdict !== 'apply') {

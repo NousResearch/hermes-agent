@@ -521,6 +521,7 @@ import { createChannelAppInstallerStrategy } from './updater/app-installer'
 import {
   type AutoUpdateOutcome,
   autoUpdatePlatformSupported,
+  autoUpdateSessionScope,
   decideAutoUpdateClaim,
   defaultGatewayScanDeps,
   defaultLoginSessionDeps,
@@ -17922,9 +17923,14 @@ function autoUpdateSessionKey(): string {
 function autoUpdateView() {
   const state = readAutoUpdateState(DESKTOP_AUTO_UPDATE_PATH)
 
+  const supported = autoUpdatePlatformSupported(process.platform)
+
   return {
     enabled: state.enabled,
-    supported: autoUpdatePlatformSupported(process.platform),
+    supported,
+    // Resolving the key shells out (pgrep/ps on macOS); skip it where the
+    // feature cannot run anyway.
+    sessionScope: supported ? autoUpdateSessionScope(autoUpdateSessionKey()) : 'boot',
     lastAttempt: state.lastAttempt ?? null
   }
 }

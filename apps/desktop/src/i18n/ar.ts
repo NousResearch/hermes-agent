@@ -366,6 +366,8 @@ export const ar = defineLocale({
       'session.newWindow': 'جلسة جديدة في نافذة',
       'session.next': 'الجلسة التالية',
       'session.prev': 'الجلسة السابقة',
+      'session.pinned.next': 'الجلسة المثبتة التالية',
+      'session.pinned.previous': 'الجلسة المثبتة السابقة',
       'session.slot.1': 'الانتقال إلى الجلسة الأخيرة 1',
       'session.slot.2': 'الانتقال إلى الجلسة الأخيرة 2',
       'session.slot.3': 'الانتقال إلى الجلسة الأخيرة 3',

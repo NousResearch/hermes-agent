@@ -90,6 +90,11 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // (macOS reserves Cmd+Tab for app switching); see `ctrl` in combo.ts.
   { id: 'session.next', category: 'session', defaults: ['ctrl+tab', 'ctrl+pagedown'] },
   { id: 'session.prev', category: 'session', defaults: ['ctrl+shift+tab', 'ctrl+pageup'] },
+  // Visible pinned-session order is sidebar-owned and context-filtered. These
+  // ship unbound so users can choose chords that do not collide with tab
+  // cycling or positional session slots.
+  { id: 'session.pinned.next', category: 'session', defaults: [] },
+  { id: 'session.pinned.previous', category: 'session', defaults: [] },
   ...SESSION_SLOT_ACTIONS,
   { id: 'session.focusSearch', category: 'session', defaults: ['mod+shift+f'] },
   { id: 'session.togglePin', category: 'session', defaults: [] },

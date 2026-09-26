@@ -86,3 +86,11 @@ describe('KEYBIND_ACTIONS', () => {
     }
   })
 })
+
+describe('pinned session keybind actions', () => {
+  it.each(['session.pinned.next', 'session.pinned.previous'])('registers %s as an unbound session action', id => {
+    expect(keybindAction(id)).toMatchObject({ id, category: 'session', defaults: [] })
+    expect(defaultBindings()[id]).toEqual([])
+    expect(en.keybinds.actions[id]).toBeTruthy()
+  })
+})

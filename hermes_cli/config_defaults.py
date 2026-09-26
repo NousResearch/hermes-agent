@@ -1877,6 +1877,14 @@ DEFAULT_CONFIG = {
         # Auto-block after this many consecutive non-success attempts (spawn_failed, timed_out,
         # crashed) for the same task/profile. Reassignment resets the streak.
         "failure_limit": 2,
+        # CPU scheduling priority for dispatcher-spawned worker gateways, and therefore for
+        # everything they spawn (niceness is inherited across fork/exec, so terminal-tool children
+        # and their forked grandchildren are covered too). "background" (default) runs each worker
+        # at nice 19 — and, on Linux, SCHED_IDLE — so batch worker load can never outbid a resident
+        # gateway on the same host for CPU. This is a floor on interactive responsiveness, not a
+        # throughput cap: an otherwise idle machine still gives workers the whole CPU. Set "normal"
+        # to leave workers at the dispatcher's inherited priority.
+        "worker_cpu_priority": "background",
         # Worker stdout/stderr log rotation at spawn time (2 MiB + one backup). Raise to keep more
         # early failure evidence from long-running workers.
         "worker_log_rotate_bytes": 2 * 1024 * 1024,

@@ -2408,6 +2408,70 @@ def worker_log_rotation_config(kanban_cfg: Optional[dict] = None) -> tuple[int, 
     return max_bytes, backup_count
 
 
+WORKER_CPU_PRIORITY_DEFAULT = "background"
+WORKER_BACKGROUND_NICE = 19
+
+
+def worker_cpu_priority_config(kanban_cfg: Optional[dict] = None) -> "tuple[str, int]":
+    """Return ``(mode, nice_value)`` for dispatcher-spawned worker gateways.
+
+    ``background`` (the default) runs each worker at ``nice 19`` so batch worker
+    load can never outbid a RESIDENT gateway on the same host for CPU. Niceness
+    is inherited across fork and exec, so deprioritising the worker gateway also
+    deprioritises everything it later spawns — its terminal-tool children and
+    their forked grandchildren included. That inheritance is the point: a
+    runaway process is almost never the worker itself.
+
+    ``normal`` opts out and leaves the child at the dispatcher's own priority.
+    An unrecognised value falls back to ``background``: this knob guards
+    interactive responsiveness, so a typo must fail SAFE.
+    """
+    if kanban_cfg is None:
+        try:
+            from hermes_cli.config import load_config
+
+            kanban_cfg = (load_config().get("kanban") or {})
+        except Exception:
+            kanban_cfg = {}
+    raw = (kanban_cfg or {}).get("worker_cpu_priority", WORKER_CPU_PRIORITY_DEFAULT)
+    if str(raw or "").strip().lower() == "normal":
+        return ("normal", 0)
+    return ("background", WORKER_BACKGROUND_NICE)
+
+
+def _build_worker_priority_preexec(nice_value: int):
+    """Return a ``preexec_fn`` that deprioritises the child, or ``None``.
+
+    Runs in the forked child between ``fork`` and ``exec``, so the setting is
+    part of the process image the worker execs into. Windows has no
+    ``preexec_fn`` (and no POSIX priority API), so it gets ``None``.
+
+    Every call inside is best-effort: a hardened container may deny
+    ``sched_setscheduler`` while allowing ``setpriority``, and a preexec hook
+    that raises aborts the spawn. Refusing to start the worker is worse than
+    running it at normal priority, so failures degrade silently.
+    """
+    if _kb._IS_WINDOWS or nice_value <= 0 or not hasattr(os, "setpriority"):
+        return None
+
+    def _apply_background_priority() -> None:  # pragma: no cover - child side
+        try:
+            os.setpriority(os.PRIO_PROCESS, 0, nice_value)
+        except Exception:
+            pass
+        # Linux only: SCHED_IDLE yields to any runnable normal-class task,
+        # strictly stronger than nice 19 under heavy load.
+        sched_idle = getattr(os, "SCHED_IDLE", None)
+        setscheduler = getattr(os, "sched_setscheduler", None)
+        if sched_idle is not None and setscheduler is not None:
+            try:
+                setscheduler(0, sched_idle, os.sched_param(0))
+            except Exception:
+                pass
+
+    return _apply_background_priority
+
+
 def _rotated_log_path(log_path: Path, generation: int) -> Path:
     return log_path.with_suffix(log_path.suffix + f".{generation}")
 
@@ -2878,6 +2942,15 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     from tools.process_registry import systemd_user_bus_env
     env = systemd_user_bus_env(env)
     log_f = _open_worker_log(task, board)
+    # Background CPU priority for the worker gateway. Niceness is inherited
+    # across fork/exec, so this covers every process the worker later spawns
+    # without policing them individually.
+    cpu_priority_mode, cpu_nice = worker_cpu_priority_config()
+    priority_preexec = _build_worker_priority_preexec(cpu_nice)
+    _kb._log.info(
+        "PHASE=worker_spawn task=%s profile=%s cpu_priority=%s nice=%s",
+        task.id, profile_arg, cpu_priority_mode, cpu_nice,
+    )
     try:
         proc = subprocess.Popen(  # noqa: S603 -- argv is a fixed list built above
             cmd,
@@ -2887,6 +2960,7 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
             stderr=subprocess.STDOUT,
             env=env,
             start_new_session=True,
+            preexec_fn=priority_preexec,
             creationflags=subprocess.CREATE_NO_WINDOW if _kb._IS_WINDOWS else 0,
         )
     except FileNotFoundError:

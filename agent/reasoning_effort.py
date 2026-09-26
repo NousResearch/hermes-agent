@@ -210,7 +210,12 @@ def thinking_toggle_extras(
     if isinstance(reasoning_config, dict) and reasoning_config.get("enabled") is False:
         return {"thinking": {"type": "disabled"}}, {}
     effort = requested_effort(reasoning_config)
-    clamped = clamp_effort(None if effort == "none" else effort, efforts, overrides)
+    # Treat "none" the same as enabled: False — disables thinking on this wire.
+    # Without this, clamp_effort(None, ...) returns None, which falls through to
+    # the "thinking enabled" branch and bills reasoning tokens (#118871).
+    if effort == "none":
+        return {"thinking": {"type": "disabled"}}, {}
+    clamped = clamp_effort(effort, efforts, overrides)
     if clamped in efforts:
         return ({"thinking": {"type": "enabled"}} if always_emit_toggle else {}), {"reasoning_effort": clamped}
     return {"thinking": {"type": "enabled"}}, {}

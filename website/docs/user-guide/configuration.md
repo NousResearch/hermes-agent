@@ -2051,7 +2051,7 @@ The gate is independent of `tool_use_enforcement` — either can be on without t
 
 ## Tool-Loop Guardrails
 
-Hermes detects when the agent is stuck in an unproductive tool-calling loop — the same tool call failing repeatedly, the same tool failing over and over, or an idempotent call returning the same result with no progress. By default it injects a **warning** into the tool result so the model self-corrects. Interactive CLI, TUI, Desktop, and ACP sessions remain warning-only because a person can intervene; unattended gateway and cron sessions enable hard stops by default.
+Hermes detects when the agent is stuck in an unproductive tool-calling loop — the same tool call failing repeatedly, the same tool failing over and over, an idempotent call returning the same result with no progress, the same *successful* call repeated back-to-back, or an unusually high number of tool calls in a single turn. By default it injects a **warning** into the tool result so the model self-corrects. Interactive CLI, TUI, Desktop, and ACP sessions remain warning-only because a person can intervene; unattended gateway and cron sessions enable hard stops by default.
 
 The platform-aware default can be disabled for an unattended deployment, or hard stops can be explicitly enabled on every platform:
 
@@ -2064,6 +2064,8 @@ tool_loop_guardrails:
     exact_failure: 2           # identical failing call repeated N times
     same_tool_failure: 3       # same tool failing N times (different args)
     idempotent_no_progress: 2  # same result, no progress, N times
+    repeated_success: 4        # identical successful call repeated N times in a row (non-idempotent tools)
+    turn_volume: 25            # completed tool calls in one turn reach N (warns once per turn)
   hard_stop_after:
     exact_failure: 5
     same_tool_failure: 8
@@ -2073,7 +2075,7 @@ tool_loop_guardrails:
     max_subagents: 50          # max subagents spawned per turn (0 = unlimited)
 ```
 
-`hard_stop_enabled` explicitly enables hard stops on every platform. When it remains `false`, `non_interactive_hard_stop_enabled` still enables them for unattended gateway/cron-style platforms while preserving warning-only behavior for CLI, TUI, Desktop, ACP, subagents, and `api_server` runs (supervised task loops with a live parent or client). Set `non_interactive_hard_stop_enabled: false` to opt an unattended deployment out. See also [Docker / unattended deployments](docker.md).
+`hard_stop_enabled` explicitly enables hard stops on every platform. When it remains `false`, `non_interactive_hard_stop_enabled` still enables them for unattended gateway/cron-style platforms while preserving warning-only behavior for CLI, TUI, Desktop, ACP, subagents, and `api_server` runs (supervised task loops with a live parent or client). Set `non_interactive_hard_stop_enabled: false` to opt an unattended deployment out. See also [Docker / unattended deployments](docker.md). The `repeated_success` and `turn_volume` detectors are warn-only: they inject guidance into the tool result but never block or halt the turn.
 
 Hard stops are designed to catch **replays** — the same call, unchanged, with nothing happening in between — not legitimate iteration:
 

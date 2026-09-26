@@ -309,20 +309,24 @@ class SessionPortabilityMixin:
             "messages": messages, "timings": _export_timings(messages, session_id),
         }
 
-    def export_all(self, source: str = None, include_compacted: bool = False) -> List[Dict[str, Any]]:
-        """Export all sessions (with messages) as dicts, e.g. for JSONL backup (``include_compacted`` as in
-        :meth:`export_session`; that display read dedupes per session, so it skips the batched read)."""
+    def export_all(self, source: str = None, include_compacted: bool = False,
+                   include_inactive: bool = False) -> List[Dict[str, Any]]:
+        """Export all sessions (with messages) as dicts, e.g. for JSONL backup (flags as in
+        :meth:`export_session`; that display read dedupes per session, so it skips the batched read).
+        Backups that go back through :meth:`import_sessions` pass ``include_inactive`` so
+        compaction-archived turns survive the round trip as archived rows."""
         sessions = self.search_sessions(source=source, limit=100000)
         if include_compacted:
-            return [self._with_messages(session, True) for session in sessions]
+            return [self._with_messages(session, True, include_inactive) for session in sessions]
         messages_by_session = {session["id"]: [] for session in sessions}
         session_ids = list(messages_by_session)
+        active_clause = "" if include_inactive else " AND active = 1"
         # Stay below SQLite's legacy 999-variable limit while replacing the per-session N+1 reads.
         for start in range(0, len(session_ids), 900):
             chunk = session_ids[start:start + 900]
             rows = self._read_all(
                 f"SELECT * FROM messages WHERE session_id IN ({','.join('?' for _ in chunk)}) "
-                "AND active = 1 ORDER BY session_id, id",
+                f"{active_clause} ORDER BY session_id, id",
                 chunk,
             )
             for row in rows:

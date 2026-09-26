@@ -1092,6 +1092,12 @@ DEFAULT_CONFIG = {
             # Optional local text file with performance direction; may include a `{transcript}`
             # placeholder, else the live transcript is appended.
             "persona_prompt_file": "",
+            # Gemini 3.8: concise speech_metadata.style, overriding persona_prompt_file.
+            "style": "",
+            # Protocol: "auto" (default: generateContent for Google AI Studio, interactions for custom reverse proxies) | "interactions" | "generateContent"
+            "protocol": "auto",
+            # HTTP/HTTPS proxy URL for Gemini TTS requests (e.g. "http://127.0.0.1:7890")
+            "proxy": "",
         },
         "xai": {
             "voice_id": "eve",  # or a custom voice ID (docs.x.ai custom voices)

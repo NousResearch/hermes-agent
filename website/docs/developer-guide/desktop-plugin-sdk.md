@@ -1078,10 +1078,18 @@ wins (no plugin "owns" the value afterwards, nothing to tear down for `set`).
 type DesktopSettingValues = {
   'backdrop.v1': boolean
   'composerPopout.gesturesEnabled': boolean
+  'embed-mode': 'ask' | 'always' | 'off'
+  hideThreadTimeline: boolean
+  'interfaceMode.v1': 'simple' | 'advanced'
   'intro-splash.v1': boolean
   'reasoning.collapsedByDefault': boolean
   sessionListDensity: 'compact' | 'comfortable' | 'detailed'
   tabStripDefault: 'auto' | 'always' | 'never'
+  titlebarAppActions: 'left' | 'right'
+  'toolView.hideCodeDiffs': boolean
+  // Enum, despite the legacy storage key's name.
+  'toolView.technical': 'product' | 'technical'
+  'user-bubble-transparency.v1': number // 0–100; off-band values are refused, not clamped
 }
 host.settings.get<K extends DesktopSettingKey>(key: K): DesktopSettingValues[K]
 host.settings.set<K extends DesktopSettingKey>(key: K, value: DesktopSettingValues[K]): void
@@ -1113,7 +1121,7 @@ Deliberately **not** keys, and why:
 | keybind map (`hermes.desktop.keybinds`) | `KEYBINDS_AREA` contribution | a raw map write rebinds every other plugin's shortcuts; the area merges per plugin and is torn down with it |
 | active theme / mode record | `THEMES_AREA` (register a theme; the user selects it) | theme selection is per window/profile and arbitrated by the app, not a flat preference |
 | `pluginDecisions` (desktop plugin on/off) | the app's Plugins tab (a read-only view is a separate SDK hook) | a plugin toggling another plugin's enable state is plugins interfering with each other |
-| `toolView.technical`, `embed-mode`, `titlebarAppActions`, `translucency.v2`, `user-bubble-transparency.v1`, `hermesDesktop.zoom.*` | follow-up keys after each store is audited | some drive the main process or window chrome; each needs its own guard and ownership review before it becomes plugin-writable |
+| `translucency.v2`, `hermesDesktop.zoom.*` | `host.window` (proposed: #121896 items B/C) | these drive the main process / window chrome, not a renderer atom — they need a typed window bridge with its own guards, not a settings key |
 
 Migration — `hermes-appearance-hub`, which today does
 `localStorage.setItem('hermes.desktop.sessionListDensity', id)` followed by

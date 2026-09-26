@@ -632,6 +632,24 @@ def turn_wait_seconds() -> float:
     return float(TURN_WAIT_SECONDS_FALLBACK) if val is None else max(0.0, float(val))
 
 
+LOCAL_TURN_TIMEOUT_SECONDS_FALLBACK = 900.0  # mirrors DEFAULT_ENVELOPE_TTL_SECONDS
+
+
+def local_turn_timeout_seconds() -> float:
+    """Hard bound for one local Bot Chat delivery turn (``bot_mode.local_turn_timeout_seconds``).
+
+    The wrapper holds the profile turn lock for the whole child turn; an unbounded turn pins every
+    other delivery into its (much shorter) lock-wait budget until they all fail target_busy."""
+    val = _bot_mode_cfg("local_turn_timeout_seconds", loader="load_config")
+    if val is None:
+        return LOCAL_TURN_TIMEOUT_SECONDS_FALLBACK
+    try:
+        return max(1.0, float(val))
+    except (TypeError, ValueError, OverflowError):
+        logger.debug("Invalid bot_mode.local_turn_timeout_seconds %r; using fallback", val)
+        return LOCAL_TURN_TIMEOUT_SECONDS_FALLBACK
+
+
 def turn_lock_path(root: Path | str, profile: str) -> Path:
     """Per-profile lockfile path (short — safe on macOS temp roots)."""
     safe = re.sub(r"[^a-zA-Z0-9_-]", "_", str(profile or ""))[:64] or "_"

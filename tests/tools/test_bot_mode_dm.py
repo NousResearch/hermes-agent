@@ -667,6 +667,17 @@ def test_delivery_runner_keeps_file_for_child_then_unlinks(tmp_path, stdin_file,
     assert not dm_file.exists()
 
 
+def test_delivery_runner_unlinks_when_child_launch_raises(tmp_path, monkeypatch):
+    dm_file = tmp_path / "message.txt"
+    dm_file.write_text("secret", encoding="utf-8")
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("child launch failed")
+
+    monkeypatch.setattr(subprocess, "Popen", boom)
+    with pytest.raises(RuntimeError, match="child launch failed"):
+        bot_mode_dm._run_delivery(["hermes"], str(dm_file), stdin_file=False)
+    assert not dm_file.exists()
 
 
 def test_delivery_runner_preserves_child_failure_and_unlinks(tmp_path):
@@ -726,6 +737,31 @@ def test_local_turn_reemits_empty_stdout_for_a_bare_silence_marker(tmp_path, cap
     assert capsys.readouterr().out.strip() == prose
 
 
+def _fake_popen_factory(calls, responses):
+    """A subprocess.Popen stand-in for _run_local_turn: records spawn (argv, kwargs) and
+    replays (returncode, stdout, stderr) from the queue. Communicate-based, matching the
+    bounded-turn spawn path."""
+
+    class _FakePopen:
+        def __init__(self, argv, **kwargs):
+            calls.append((argv, kwargs))
+            self.args = argv
+            self.returncode = None
+
+        def communicate(self, timeout=None):
+            rc, out, err = responses.pop(0)
+            self.returncode = rc
+            return out, err
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+    return _FakePopen
+
+
 def test_query_file_delivery_closes_stdin_for_initial_attempt_and_retry(
     tmp_path, monkeypatch
 ):
@@ -733,15 +769,12 @@ def test_query_file_delivery_closes_stdin_for_initial_attempt_and_retry(
     dm_file.write_text("secret", encoding="utf-8")
     calls = []
     responses = [
-        subprocess.CompletedProcess([], 1, stdout="", stderr="HTTP 429 rate limit"),
-        subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+        (1, "", "HTTP 429 rate limit"),
+        (0, "", ""),
     ]
 
-    def fake_run(argv, **kwargs):
-        calls.append((argv, kwargs))
-        return responses.pop(0)
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    fake_run = _fake_popen_factory(calls, responses)
+    monkeypatch.setattr(subprocess, "Popen", fake_run)
 
     returncode = bot_mode_dm._run_delivery(
         ["hermes", "-p", "researcher"], str(dm_file), stdin_file=False
@@ -770,11 +803,14 @@ def test_delivery_main_child_env_carries_only_the_argv_author(tmp_path, monkeypa
     dm_file.write_text("secret", encoding="utf-8")
     calls = []
 
-    def fake_run(argv, **kwargs):
+    fake_run = _fake_popen_factory(calls, [(0, "", "")])
+    monkeypatch.setattr(subprocess, "Popen", fake_run)
+
+    def fake_run_stdio(argv, **kwargs):  # stdin mode spawns through subprocess.run instead
         calls.append((argv, kwargs))
         return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "run", fake_run_stdio)
     monkeypatch.setenv("HERMES_DM_TEST_MARKER", "kept")
     monkeypatch.setenv(TURN_AUTHOR_ENV, json.dumps({"id": "bot:previous", "name": "previous", "is_bot": True}))
     author_args = ["--author", json.dumps(author)] if author else []
@@ -1180,6 +1216,7 @@ def test_poll_reply_is_persisted_as_a_delivery_row_when_the_runner_exits(tmp_pat
     assert kw["display_kind"] == "process_complete"
     assert "PAYLOAD_SENTINEL_42" in kw["content"]
     assert procs[0].id in kw["content"]
+    assert kw["display_metadata"]["display_text"].startswith("Background Process Finished")
 
 
 def test_local_turn_survives_undecodable_transport_output(tmp_path, capsys):
@@ -1210,3 +1247,58 @@ def test_local_turn_relays_utf8_reply_under_a_gbk_default_codec(tmp_path, monkey
 
     assert bot_mode_dm._run_local_turn(argv, str(dm_file)) == 0
     assert reply in capsys.readouterr().out
+
+
+def _run_local_turn_in_thread(argv, dm_file, env=None):
+    import threading
+
+    outcome = {}
+
+    def _run():
+        outcome["rc"] = bot_mode_dm._run_local_turn(argv, dm_file, env=env)
+
+    worker = threading.Thread(target=_run, daemon=True)
+    worker.start()
+    return worker, outcome
+
+
+def test_local_turn_bounds_a_wedged_child_and_reaps_it(tmp_path, monkeypatch, capsys):
+    """A delivery child that never finishes must be stopped at the configured bound —
+    not pin the profile turn lock for its whole unbounded runtime. Red on an unbounded
+    spawner: _run_local_turn blocks for the child's full 60s sleep, so the join below
+    times out and the assertions never see a result."""
+    pid_file = tmp_path / "child.pid"
+    child_code = (
+        "import os, time, pathlib; "
+        f"pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid())); "
+        "time.sleep(60)"
+    )
+    monkeypatch.setattr(bot_relay, "local_turn_timeout_seconds", lambda: 1.0)
+    dm = tmp_path / "dm.md"
+    dm.write_text("hello", encoding="utf-8")
+    argv = [sys.executable, "-c", child_code]
+
+    worker, outcome = _run_local_turn_in_thread(argv, str(dm))
+    worker.join(timeout=20.0)
+    assert not worker.is_alive(), "a wedged delivery child must be interrupted at the turn bound"
+    assert outcome["rc"] == 1
+    assert "turn_timeout" in capsys.readouterr().out
+    child_pid = int(pid_file.read_text())
+    with pytest.raises(ProcessLookupError):
+        os.kill(child_pid, 0)  # the stopped child must not outlive the delivery
+
+
+def test_local_turn_quick_child_unaffected(tmp_path, monkeypatch, capsys):
+    """Counterweight: a child that finishes well inside the bound keeps the legacy
+    contract — exit code and re-emitted reply on stdout."""
+    child_code = "print('QUICK_REPLY_SENTINEL')"
+    monkeypatch.setattr(bot_relay, "local_turn_timeout_seconds", lambda: 900.0)
+    dm = tmp_path / "dm.md"
+    dm.write_text("hello", encoding="utf-8")
+    argv = [sys.executable, "-c", child_code]
+
+    worker, outcome = _run_local_turn_in_thread(argv, str(dm))
+    worker.join(timeout=20.0)
+    assert not worker.is_alive()
+    assert outcome["rc"] == 0
+    assert "QUICK_REPLY_SENTINEL" in capsys.readouterr().out

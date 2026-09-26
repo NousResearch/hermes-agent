@@ -415,15 +415,69 @@ def _delivery_lock(argv: list[str], *, stdin_file: bool):
     return acquire_turn_lock(_hermes_root(Path(_default_home())), argv[2])
 
 
+def _kill_child_process_group(proc: subprocess.Popen, grace_seconds: float = 2.0) -> None:
+    """Best-effort tree kill for a delivery child: SIGTERM the process group, SIGKILL what survives
+    the grace window. The child is spawned in its own session (POSIX), so the group is exactly its
+    tree; on Windows there is no killpg, so only the child itself is killed."""
+    if proc.poll() is not None:
+        return
+    if os.name == "posix":
+        import signal as _signal
+
+        def _group(sig: int) -> None:
+            with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+                os.killpg(os.getpgid(proc.pid), sig)
+
+        _group(_signal.SIGTERM)
+        deadline = time.monotonic() + max(0.0, grace_seconds)
+        while proc.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        if proc.poll() is None:
+            _group(_signal.SIGKILL)
+    else:  # pragma: no cover — Windows
+        with contextlib.suppress(OSError):
+            proc.kill()
+    with contextlib.suppress(Exception):
+        proc.wait(timeout=5)
+
+
 def _run_local_turn(argv: list[str], dm_file: str, *, env: Optional[dict[str, str]] = None) -> int:
     """One Bot Chat turn via ``--query-file`` (plus one policy-gated retry); re-emits
     the transport's streams and returns its exit code. Transient failures re-run the
     same session; a context_overflow re-run lets the retried turn's pre-API compaction
-    compact the transcript first (no fresh session is ever minted). Auth/quota/config never retry."""
+    compact the transcript first (no fresh session is ever minted). Auth/quota/config never retry.
+
+    The child turn is bounded (``bot_mode.local_turn_timeout_seconds``): the wrapper holds the
+    profile turn lock for the whole ``communicate()``, so an unbounded — or wedged — turn pins
+    every other delivery into its ~120s lock-wait budget until they all fail ``target_busy``.
+    On expiry the child's process group is killed (no orphaned ``hermes chat`` outliving the
+    delivery) and the sender gets a structured ``turn_timeout`` instead of silence."""
 
     def _turn(turn_env=env):
-        return subprocess.run([*argv, "--query-file", dm_file], check=False, stdin=subprocess.DEVNULL,
-                              capture_output=True, text=True, encoding="utf-8", errors="replace", env=turn_env)
+        from tools.bot_relay import local_turn_timeout_seconds
+
+        proc = subprocess.Popen([*argv, "--query-file", dm_file], stdin=subprocess.DEVNULL,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                encoding="utf-8", errors="replace", env=turn_env,
+                                start_new_session=(os.name == "posix"))
+        try:
+            out, err = proc.communicate(timeout=local_turn_timeout_seconds())
+        except subprocess.TimeoutExpired:
+            _kill_child_process_group(proc)
+            out, err = proc.communicate()
+            who = argv[argv.index("-p") + 1] if "-p" in argv[:-1] else "the teammate"
+            out = (json.dumps({
+                "error": f"Delivery failed: @{who}'s reply turn did not finish within "
+                         f"{int(local_turn_timeout_seconds())}s and was stopped. Your message may sit "
+                         "unanswered in their Bot Chat — check on them before resending.",
+                "reason": "turn_timeout",
+            }) + "\n") + (out or "")
+            err = err or ""
+            return subprocess.CompletedProcess(proc.args, 1, out, err)
+        finally:
+            if proc.poll() is None:
+                _kill_child_process_group(proc)
+        return subprocess.CompletedProcess(proc.args, proc.returncode, out, err)
 
     proc = _turn()
     if proc.returncode != 0:

@@ -205,6 +205,8 @@ export {
   captureLoginShellPath,
   ensureLoginShellPath,
   extractSentinelPath,
+  PROBE_COMMAND as LOGIN_SHELL_PATH_PROBE,
+  ATTEMPT_TIMEOUT_MS as LOGIN_SHELL_PATH_TIMEOUT_MS,
   loginShellExecutable,
   mergeLoginShellPath,
   resetLoginShellPathForTests

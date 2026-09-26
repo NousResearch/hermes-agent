@@ -34,6 +34,7 @@ import {
   READY_RE,
   remotePidAlive,
   remoteSupportsSshOwnership,
+  resolveRemoteLoginPath,
   scrapeReadyPort,
   spawnLogPath,
   spawnRemoteDashboard,
@@ -420,6 +421,75 @@ test('locateHermes uses a login shell for the command -v probe', async () => {
   assert.ok(
     ssh.calls.some(c => /bash -lc/.test(c)),
     'must probe in a login shell (PATH pitfall)'
+  )
+})
+
+// Runs the resolver's remote command in a real POSIX shell whose environment
+// matches a non-interactive SSH session: thin PATH, SHELL naming a fake login
+// shell that stands in for the user's profile.
+function localSshWithLoginShell(directory: string, loginShell: string) {
+  return {
+    async exec(command: string) {
+      const { stdout } = await exec(command, {
+        env: { HOME: directory, PATH: '/usr/bin:/bin', SHELL: loginShell },
+        shell: '/bin/sh',
+        timeout: 20_000
+      })
+
+      return stdout
+    }
+  }
+}
+
+test.skipIf(process.platform === 'win32')(
+  'resolveRemoteLoginPath puts login-shell entries ahead of the SSH PATH, surviving banners and -ilc refusal',
+  async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'hermes-login-path-'))
+    const loginShell = path.join(directory, 'login-shell')
+
+    try {
+      // Refuses -ilc (as shells with a broken rc or a non-tty stdin can), so
+      // the resolver must fall back to -lc. Prints a banner before the probe.
+      await writeFile(
+        loginShell,
+        '#!/bin/sh\nprintf "profile banner\\n"\n[ "$1" = "-lc" ] || exit 64\nPATH="$HOME/.local/bin:/usr/bin"\nexport PATH\nexec /bin/sh -c "$2"\n',
+        { mode: 0o700 }
+      )
+
+      assert.equal(
+        await resolveRemoteLoginPath(localSshWithLoginShell(directory, loginShell)),
+        `${directory}/.local/bin:/usr/bin:/bin`
+      )
+    } finally {
+      await rm(directory, { force: true, recursive: true })
+    }
+  }
+)
+
+test.skipIf(process.platform === 'win32')(
+  'resolveRemoteLoginPath gives up on a hung profile and keeps the SSH PATH',
+  async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'hermes-login-path-'))
+    const loginShell = path.join(directory, 'login-shell')
+
+    try {
+      await writeFile(loginShell, '#!/bin/sh\nexec sleep 30\n', { mode: 0o700 })
+      const started = Date.now()
+
+      assert.equal(await resolveRemoteLoginPath(localSshWithLoginShell(directory, loginShell), { timeoutSecs: 1 }), '')
+      assert.ok(Date.now() - started < 15_000, 'each probe attempt is bounded remotely')
+    } finally {
+      await rm(directory, { force: true, recursive: true })
+    }
+  },
+  30_000
+)
+
+test('resolveRemoteLoginPath never fails the connection', async () => {
+  assert.equal(await resolveRemoteLoginPath(fakeSsh([[/__HERMES_LOGIN_PATH_START__/, 'profile banner only\n']])), '')
+  assert.equal(
+    await resolveRemoteLoginPath(fakeSsh([[/__HERMES_LOGIN_PATH_START__/, new Error('channel closed')]])),
+    ''
   )
 })
 
@@ -988,6 +1058,11 @@ test('connect() spawns fresh when there is no lockfile, adopts the served token'
     [/uname/, 'Linux\nx86_64'],
     [/\[ -x/, 'OK'],
     [/cat .*lock\.json/, ''], // no lockfile
+    [
+      /__HERMES_LOGIN_PATH_START__/,
+      '__HERMES_SSH_PATH_START__/usr/local/bin:/usr/bin__HERMES_SSH_PATH_END__' +
+        '__HERMES_LOGIN_PATH_START__/home/alice/.local/bin:/usr/bin__HERMES_LOGIN_PATH_END__'
+    ],
     [/grep -q ssh-session-token-file/, 'YES\n'],
     [/python3 -c/, ''], // token file write
     [/printf '%s\\n'/, ''],
@@ -1011,6 +1086,13 @@ test('connect() spawns fresh when there is no lockfile, adopts the served token'
   assert.equal(result.token, 'the-served-token')
   assert.equal(result.baseUrl, 'http://127.0.0.1:50001')
   assert.equal(result.tokenFingerprint, fingerprintToken('the-served-token'))
+  const spawnCommand = ssh.calls.find(command => /setsid|nohup/.test(command)) || ''
+  // Login entries first (user installs win), SSH-only entries appended.
+  const loginPath = '/home/alice/.local/bin:/usr/bin:/usr/local/bin'
+
+  assert.match(spawnCommand, /exec env HERMES_DESKTOP=1 PATH=/)
+  assert.ok(spawnCommand.includes(loginPath))
+  assert.ok(spawnCommand.indexOf(loginPath) < spawnCommand.indexOf('serve --isolated'))
 })
 
 test('managed SSH maps a local scope to a different non-default remote profile', async () => {
@@ -1445,6 +1527,17 @@ test('buildSpawnCommand includes --ssh-session-token-file when tokenFilePath is 
 
   assert.match(cmd, /--ssh-session-token-file/)
   assert.match(cmd, /\.hermes\/desktop-ssh\//)
+})
+
+test('buildSpawnCommand rejects control characters in the resolved remote login PATH', () => {
+  assert.throws(
+    () =>
+      buildSpawnCommand('/x/hermes', '', {
+        logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE),
+        remoteLoginPath: '/usr/bin\nmalicious=value'
+      }),
+    /Unsafe remote login PATH/
+  )
 })
 
 test('spawnRemoteDashboard removes a token file when upload reporting fails', async () => {

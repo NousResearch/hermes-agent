@@ -49,6 +49,7 @@ interface ChildReport {
   sessionId: number
   hupIgnored: boolean
   mutexFds: number[]
+  path: string
 }
 
 interface SpawnLock {
@@ -68,6 +69,7 @@ interface SpawnLock {
 
 interface SpawnFixture {
   root: string
+  loginPath: string
   shell: string
   env: NodeJS.ProcessEnv
   command: string
@@ -151,7 +153,7 @@ for fd in range(3,256):
   candidate=os.fstat(fd)
   if (candidate.st_dev,candidate.st_ino)==(identity.st_dev,identity.st_ino):fds.append(fd)
  except OSError:pass
-report={'pid':pid,'sessionId':os.getsid(0),'hupIgnored':signal.getsignal(signal.SIGHUP)==signal.SIG_IGN,'mutexFds':fds}
+report={'pid':pid,'sessionId':os.getsid(0),'hupIgnored':signal.getsignal(signal.SIGHUP)==signal.SIG_IGN,'mutexFds':fds,'path':os.environ.get('PATH','')}
 p=Path(os.environ['HOME'])/'reports'/str(pid)
 p.with_suffix('.tmp').write_text(json.dumps(report),encoding='utf-8')
 p.with_suffix('.tmp').replace(p)
@@ -160,8 +162,12 @@ time.sleep(30)
     { encoding: 'utf8', mode: 0o700 }
   )
 
+  // A resolved login PATH with a space and a quote, as a real profile can produce.
+  const loginPath: string = `${path.join(root, "login it's")}:${bin}`
+
   const command: string = buildSpawnCommand(hermesPath, lock.profile, {
     hermesHome,
+    remoteLoginPath: loginPath,
     logPath: lock.logPath,
     spawnNonce,
     tokenFilePath: spawnTokenPath(ownershipId, spawnNonce),
@@ -192,7 +198,7 @@ time.sleep(30)
     await rm(root, { recursive: true, force: true })
   }
 
-  return { root, shell, env, command, lock, marker, run, ssh, localPath, dispose }
+  return { root, loginPath, shell, env, command, lock, marker, run, ssh, localPath, dispose }
 }
 
 async function reports(fixture: SpawnFixture): Promise<ChildReport[]> {
@@ -246,6 +252,7 @@ test.skipIf(process.platform === 'win32').each(variants)(
       assert.equal(result.stdout.trim(), String(report.pid))
       assert.equal(result.stderr, '')
       assert.deepEqual(report.mutexFds, [])
+      assert.equal(report.path, fixture.loginPath, 'the detached backend runs with the resolved login PATH')
       assert.ok(process.kill(report.pid, 0), 'the reported child survives the spawning shell exiting')
 
       if (launcher === 'setsid') {

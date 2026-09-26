@@ -869,6 +869,43 @@ def test_reviewer_reassigns_for_autonomous_dispatch(kanban_home: Path) -> None:
         assert ev["implementer"] == "worker"
 
 
+def test_request_review_without_reviewer_uses_deterministic_installed_profile(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An omitted reviewer selects the alphabetically first non-implementer profile."""
+    import hermes_cli.config as cfgmod
+    import hermes_cli.profiles as profmod
+
+    monkeypatch.setattr(cfgmod, "load_config", lambda *args, **kwargs: {"kanban": {}})
+    monkeypatch.setattr(profmod, "profile_exists", lambda name: name in {"worker", "reviewer-a", "reviewer-z"})
+    monkeypatch.setattr(
+        profmod,
+        "list_profiles",
+        lambda: [
+            SimpleNamespace(name="reviewer-z"),
+            SimpleNamespace(name="worker"),
+            SimpleNamespace(name="reviewer-a"),
+        ],
+    )
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="choose installed reviewer", assignee="worker")
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+
+        assert kb.request_review(
+            conn, tid, summary="ready", expected_run_id=claimed.current_run_id,
+        ) is True
+
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "review"
+        assert task.assignee == "reviewer-a"
+        event = _events(conn, tid, kind="review_requested")[0][1]
+        assert event["reviewer"] == "reviewer-a"
+        assert event["implementer"] == "worker"
+
+
 def test_request_review_replaces_invalid_reviewer_with_configured_default(
     kanban_home: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

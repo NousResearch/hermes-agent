@@ -716,6 +716,7 @@ from urllib.parse import urlparse  # noqa: F401,E402
 _PLUGIN_COMPAT_LAZY = {
     'InvalidMcpUrlError': ('tools.mcp_tool_errors', 'InvalidMcpUrlError'),
     'MCP_TOOL_NAME_PREFIX': ('tools.mcp_tool_schema', 'MCP_TOOL_NAME_PREFIX'),
+    'McpAuthRequiredError': ('tools.mcp_tool_errors', 'McpAuthRequiredError'),
     'NonMcpEndpointError': ('tools.mcp_tool_errors', 'NonMcpEndpointError'),
     'discover_mcp_tools': ('tools.mcp_tool_discovery', 'discover_mcp_tools'),
     'get_mcp_status': ('tools.mcp_tool_discovery', 'get_mcp_status'),

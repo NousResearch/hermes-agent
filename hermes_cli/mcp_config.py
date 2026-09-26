@@ -411,6 +411,21 @@ def _resolve_mcp_server_config(config: dict) -> dict:
     return _interpolate_env_vars(config)
 
 
+def _server_uses_oauth(config: dict) -> bool:
+    """True when this server signs in with OAuth, so a pending login can bound the connect."""
+    return config.get("auth") == "oauth" or isinstance(config.get("oauth"), dict)
+
+
+# A sign-in attempt that completed the handshake but stored no token. Both sign-in paths (the
+# dashboard's and the connectors') hand this text to the Desktop, which writes it back onto the
+# server's probe result, where it becomes the card's state — so it says what happened without
+# sign-in vocabulary that would re-read as "this server needs a login" (#119232).
+NO_TOKEN_STORED_MESSAGE = (
+    "The server responded, but no access token was stored — this provider may require a "
+    "manually-registered client, whose credentials go in config.yaml."
+)
+
+
 def _probe_single_server(
     name: str, config: dict, connect_timeout: Optional[float] = None, *, details: Optional[dict] = None
 ) -> List[Tuple[str, str]]:
@@ -456,9 +471,15 @@ def _probe_single_server(
             server = await asyncio.wait_for(_connect_server(name, config), timeout=connect_timeout)
         except asyncio.TimeoutError:
             # str(TimeoutError()) is '' — printed verbatim it was a blank "Authentication failed:".
+            # The oauth.timeout half of the hint is named only for a server that HAS a sign-in to
+            # wait for. On a server without one it was inapplicable and actively harmful: this text
+            # is what every surface shows for an unreachable endpoint, and naming OAuth in it reads
+            # as "this server needs a login" (#119232).
+            bounds = "bounded by connect_timeout"
+            if _server_uses_oauth(config):
+                bounds += "; a pending login also by oauth.timeout"
             raise TimeoutError(
-                f"Connecting to MCP server '{name}' timed out after {float(connect_timeout):.0f}s "
-                "(bounded by connect_timeout; an OAuth login also by oauth.timeout)"
+                f"Connecting to MCP server '{name}' timed out after {float(connect_timeout):.0f}s ({bounds})"
             ) from None
         finally:
             _core._connect_server_claim.reset(claim_token)

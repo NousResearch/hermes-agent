@@ -70,18 +70,48 @@ class NonMcpEndpointError(ConnectionError):
     so broad catches still see a connection problem."""
 
 
+class McpAuthRequiredError(ConnectionError):
+    """An HTTP MCP endpoint refused the connect with 401/403. Subclasses ConnectionError so broad
+    catches still see a connection problem, while the message names the authorization failure."""
+
+
 # Streamable-HTTP rejection statuses an SSE-only server (or its load balancer) produces for the
 # chunked ``initialize`` POST: Bad Request, Method Not Allowed, Not Acceptable, Length Required.
 _STREAMABLE_REJECT_STATUSES = (400, 405, 406, 411)
+# Authorization refusals. The same credentials are refused over SSE too, so these never mean
+# "wrong transport".
+_AUTH_REJECT_STATUSES = (401, 403)
 
 
-def _is_streamable_http_rejection(exc: BaseException) -> bool:
+def _is_http_auth_rejection(exc: BaseException, rejection: Optional[dict] = None) -> bool:
+    """True when the server refused the connect with 401/403.
+
+    mcp >= 2.0 folds a non-2xx whose body it cannot parse as JSON-RPC into the opaque ``-32603
+    Server returned an error response``, so the status usually survives only in the recorder's
+    ``rejection`` (``_make_http_rejection_recorder``), never on the exception. An SDK-typed auth
+    failure (``_is_auth_error``) counts too: it is the same refusal, already named.
+    """
+    root = _unwrap_exception_group(exc)
+    if _is_auth_error(root):
+        return True
+    status = getattr(getattr(root, "response", None), "status_code", None)
+    if status is None and isinstance(rejection, dict):
+        status = rejection.get("status")
+    return status in _AUTH_REJECT_STATUSES
+
+
+def _is_streamable_http_rejection(exc: BaseException, rejection: Optional[dict] = None) -> bool:
     """True when a Streamable-HTTP connect failure looks like a transport mismatch rather than a
     broken server: a 400-family rejection of the initialize POST, or the SDK's opaque INTERNAL_ERROR
     (-32603 ``Server returned an error response``) it maps such rejections to on mcp >= 2.0 (error
     class per PR #104363, @RohithPariki). Timeouts and auth errors never qualify — neither carries
     these markers — so a slow or 401ing server is not retried on the wrong transport.
+
+    A 401/403 reaches the opaque-INTERNAL_ERROR branch like any other unparseable non-2xx, so the
+    recorded ``rejection`` is what keeps that promise (#119232).
     """
+    if _is_http_auth_rejection(exc, rejection):
+        return False
     root = _unwrap_exception_group(exc)
     if getattr(getattr(root, "response", None), "status_code", None) in _STREAMABLE_REJECT_STATUSES:
         return True
@@ -478,7 +508,14 @@ def _get_auth_error_types() -> tuple:
 
 
 def _is_auth_error(exc: BaseException) -> bool:
-    """True if ``exc`` indicates an MCP OAuth failure; ``HTTPStatusError`` counts only with status 401."""
+    """True if ``exc`` indicates an MCP auth failure; ``HTTPStatusError`` counts only with status 401.
+
+    ``McpAuthRequiredError`` is the connect path's own verdict (a recorded 401/403), so it answers
+    here too: ``_classify_mcp_failure`` then parks the server for credentials instead of retrying a
+    refusal, and the park names re-authentication — the behaviour that docstring already promises.
+    """
+    if isinstance(exc, McpAuthRequiredError):
+        return True
     auth_types, http_types = _get_auth_error_types()
     if not isinstance(exc, auth_types):
         return False

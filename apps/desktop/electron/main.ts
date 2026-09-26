@@ -259,6 +259,7 @@ import { downloadViaOauthSessionToFile, downloadViaTokenToFile } from './gateway
 import { stopGatewayBeforeUpdate } from './gateway-stop-before-update'
 import { resolveGatewayVersion } from './gateway-version'
 import { probeGatewayWebSocket, spawnedBackendProbeOptions } from './gateway-ws-probe'
+import { killChildOnAbort } from './git-abort'
 import { windowsGitCandidates } from './git-binary-candidates'
 import { registerGitIpc } from './git-ipc'
 import { desktopBackendSpawnEnv, guestOnboardingEnabled, skipIntroEnabled } from './guest-onboarding'
@@ -3257,19 +3258,12 @@ function runGit(args, options: any = {}): Promise<{ code: number; stdout: string
     let stderr = ''
     // The probe aborts git at its timeout (a treeless partial clone can
     // lazy-fetch trees for minutes), so a caller-supplied signal kills the
-    // child. Without it the spawn outlives the promise that stopped waiting.
+    // child: SIGTERM, escalating to SIGKILL if it has not closed shortly
+    // after. Without it the spawn outlives the promise that stopped waiting.
     const signal: AbortSignal | undefined = options.signal
 
-    const killOnAbort = (): void => {
-      child.kill()
-    }
-
     if (signal) {
-      if (signal.aborted) {
-        killOnAbort()
-      } else {
-        signal.addEventListener('abort', killOnAbort, { once: true })
-      }
+      killChildOnAbort(child, signal)
     }
 
     child.stdout.on('data', chunk => {
@@ -3285,7 +3279,6 @@ function runGit(args, options: any = {}): Promise<{ code: number; stdout: string
     // A spawn-level failure means git itself never ran (missing, not
     // executable, wrong CPU architecture) — a local problem, not a network one.
     child.once('error', error => {
-      signal?.removeEventListener('abort', killOnAbort)
       const local = describeGitSpawnFailure(error, gitBinary)
 
       reject(local ? Object.assign(new Error(local), { kind: GIT_UNUSABLE, cause: error }) : error)
@@ -3294,7 +3287,6 @@ function runGit(args, options: any = {}): Promise<{ code: number; stdout: string
     // resolved-early `remote get-url` came back as "" often enough to route
     // passive checks down the wrong remote path.
     child.once('close', (code: number): void => {
-      signal?.removeEventListener('abort', killOnAbort)
       resolve({ code, stdout, stderr })
     })
   })

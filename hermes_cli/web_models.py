@@ -99,6 +99,12 @@ class ManagedFileDelete(BaseModel):
     path: str
     recursive: bool = False
 
+class ReasoningEffortUpdate(BaseModel):
+    scope: Literal["main", "delegation"]
+    # Empty clears the raw override (main: provider default; delegation: inherit parent).
+    effort: Literal["", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] = ""
+    profile: Optional[str] = None
+
 class ModelAssignment(BaseModel):
     """POST /api/model/set — assign a provider/model to a slot.
 

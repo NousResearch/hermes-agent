@@ -579,7 +579,7 @@ revoked key parks the card exactly like an implementer. `hermes kanban show`
 surfaces it as *Provider rejected this profile's credential or model — blocked
 after one attempt*; fix the assignee profile's provider (`hermes -p <profile>
 auth` / `setup`), then `hermes kanban unblock <id>`. The worker also writes its exit code as the
-last line of its own log (`[kanban-worker-exit] rc=<code>`), so a per-tick
+last line of its own log (`[kanban-worker-exit] rc=<code> run=<run-id>`), so a per-tick
 `hermes kanban dispatch` process — which never reaped the worker and cannot
 read its exit status — books the same death the same way the gateway-embedded
 dispatcher does; a worker killed before it reaches that line is a plain

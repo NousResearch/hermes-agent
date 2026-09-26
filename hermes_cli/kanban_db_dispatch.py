@@ -258,24 +258,43 @@ def _exit_code_kind(code: int) -> "tuple[str, int]":
 
 
 _EXIT_TRAILER_RE = re.compile(
-    r"^" + re.escape(KANBAN_WORKER_EXIT_TRAILER) + r"(\d+)\s*$", re.MULTILINE,
+    r"^" + re.escape(KANBAN_WORKER_EXIT_TRAILER) + r"(\d+)(?:\s+run=(\d+))?\s*$", re.MULTILINE,
 )
 
 
-def _worker_log_exit_code(task_id: str, board: Optional[str] = None) -> Optional[int]:
+def _worker_log_exit_code(
+    task_id: str, board: Optional[str] = None, run_id: Optional[int] = None,
+) -> Optional[int]:
     """Exit code from the trailer the worker CLI wrote to its own log; None when absent.
 
     The durable twin of ``_recent_worker_exits``: written by the worker itself
     (``hermes_cli.quiet_single_query.exit_single_query``), so it is there whether
-    or not the process running this sweep ever reaped the worker. Last trailer
-    wins — the log is append-mode across re-runs.
+    or not the process running this sweep ever reaped the worker. Only the LAST
+    trailer can belong to the run being reaped (attempts run sequentially, the
+    task log is append-mode across them) — and when ``run_id`` is known only a
+    trailer tagged with that exact run is evidence: a SIGKILLed/OOM-killed worker
+    writes no trailer, so honouring another attempt's receipt would book the kill
+    with the previous attempt's exit (#121255). An untagged trailer is pre-anchor
+    and only counts when the caller has no run identity (legacy rows).
     """
     try:
         raw = _kb.read_worker_log(task_id, tail_bytes=4000, board=board)
     except Exception:
         return None
     matches = _EXIT_TRAILER_RE.findall(raw or "")
-    return int(matches[-1]) if matches else None
+    if not matches:
+        return None
+    code, logged_run = matches[-1]
+    if run_id is None:
+        # No run identity (a legacy row): the last trailer of either generation is
+        # all the evidence there is.
+        return int(code)
+    # A run identity is known, so only an exact run-qualified receipt may speak for
+    # it. An untagged trailer is a pre-anchor receipt OR one written by a worker
+    # still on the old code while this dispatcher upgraded — either way it is not
+    # evidence about THIS run, and reading it would book a kill with another
+    # attempt's exit (#121255).
+    return int(code) if logged_run and int(logged_run) == int(run_id) else None
 
 
 def reap_worker_zombies() -> "list[int]":
@@ -1037,6 +1056,7 @@ class _DeadWorker:
 
 def _classify_dead_worker(
     pid: int, claimer: Optional[str], *, task_id: Optional[str] = None, board: Optional[str] = None,
+    run_id: Optional[int] = None,
 ) -> _DeadWorker:
     """Map a dead worker's reaped exit status to its reclaim bookkeeping.
 
@@ -1044,7 +1064,7 @@ def _classify_dead_worker(
     in the event payload, appended to the error text) so the board and the retry
     worker see WHY instead of a bare label; a rate-limited requeue does not need it.
     """
-    dead = _classify_dead_worker_exit(pid, claimer, task_id=task_id, board=board)
+    dead = _classify_dead_worker_exit(pid, claimer, task_id=task_id, board=board, run_id=run_id)
     if task_id and not dead.rate_limited:
         worker_output = _worker_final_output(task_id, board=board)
         if worker_output:
@@ -1059,18 +1079,22 @@ def _classify_dead_worker_exit(
     *,
     task_id: Optional[str] = None,
     board: Optional[str] = None,
+    run_id: Optional[int] = None,
 ) -> _DeadWorker:
     """Exit status -> reclaim bookkeeping, before the worker's own words are folded in.
 
     The reap registry only knows children of THIS process; a per-tick dispatcher
     reads the exit trailer the worker left in its log instead, so the same death
     gets the same booking (protocol violation / rate-limit requeue / crash) as
-    under the gateway-embedded dispatcher. A worker that never reached its exit
-    epilogue (killed, OOM) leaves no trailer and stays a plain crash.
+    under the gateway-embedded dispatcher. ``run_id`` is the run being reaped
+    (``tasks.current_run_id``): a trailer tagged with an older run is stale — the
+    reaped attempt wrote nothing — and stays a plain crash (#121255). A worker
+    that never reached its exit epilogue (killed, OOM) leaves no trailer and
+    stays a plain crash.
     """
     kind, code = _classify_worker_exit(pid)
     if kind == "unknown" and task_id:
-        logged = _worker_log_exit_code(task_id, board=board)
+        logged = _worker_log_exit_code(task_id, board=board, run_id=run_id)
         if logged is not None:
             kind, code = _exit_code_kind(logged)
     if kind == "clean_exit":
@@ -1139,7 +1163,7 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
     sweep = _CrashSweep()
     with _kb.write_txn(conn):
         rows = conn.execute(
-            "SELECT id, worker_pid, worker_started_at, claim_lock, started_at, assignee "
+            "SELECT id, worker_pid, worker_started_at, claim_lock, started_at, assignee, current_run_id "
             "FROM tasks "
             "WHERE status = 'running' AND worker_pid IS NOT NULL"
         ).fetchall()
@@ -1157,7 +1181,10 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
                 continue
 
             pid = int(row["worker_pid"])
-            dead = _classify_dead_worker(pid, row["claim_lock"], task_id=row["id"], board=board)
+            dead = _classify_dead_worker(
+                pid, row["claim_lock"], task_id=row["id"], board=board,
+                run_id=_kb._row_get(row, "current_run_id"),
+            )
             retry_status = _kb._retry_status_for_run(conn, row["id"])
             dead.event_payload["retry_status"] = retry_status
             cur = conn.execute(

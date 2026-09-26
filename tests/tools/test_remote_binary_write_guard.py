@@ -19,7 +19,7 @@ import pytest
 
 import tools.file_tools as file_tools_mod  # noqa: F401 — registers the file tools
 import tools.terminal_tool as terminal_tool
-from tools.environments.local import LocalEnvironment
+from tools.environments.local import LocalEnvironment, _bash_safe_path
 from tools.registry import registry
 
 _KEEP = "KEEPME line"
@@ -58,11 +58,12 @@ class VercelSandboxEnvironment:
         self._inner = inner
         self.failure_mode = None  # None | "raise" | "error"
         self._home_answer = str(target_dir)
-        self._sub_pairs = []
-        for src, dst in ((str(view_dir), str(target_dir)),):
-            self._sub_pairs.append((src, dst))
-            self._sub_pairs.append((src.replace("\\", "/"), dst.replace("\\", "/")))
-            self._sub_pairs.append((_bash_safe(src), _bash_safe(dst)))
+        src, dst = str(view_dir), str(target_dir)
+        self._sub_pairs = [
+            (src, dst),
+            (src.replace("\\", "/"), dst.replace("\\", "/")),
+            (_bash_safe_path(src), _bash_safe_path(dst)),
+        ]
 
     def _sub(self, text: str) -> str:
         for src, dst in self._sub_pairs:
@@ -77,11 +78,6 @@ class VercelSandboxEnvironment:
         if command.strip() == "echo $HOME":
             return {"output": self._home_answer + "\n", "returncode": 0}
         return self._inner.execute(self._sub(command), cwd=self._sub(cwd), **kwargs)
-
-
-def _bash_safe(path: str) -> str:
-    from tools.environments.local import _bash_safe_path
-    return _bash_safe_path(path)
 
 
 @pytest.fixture()

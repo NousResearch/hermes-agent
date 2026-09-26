@@ -71,6 +71,19 @@ def _prefix_completions(
             yield _completion(name, partial, name, meta)
 
 
+def _later_flag_completions(base_cmd: str, sub_text: str):
+    """``--`` flag options not yet on the line, for second-and-later argument
+    positions (e.g. ``--global`` after ``/reasoning hide ``; #121129). Only flag
+    words are offered here so value positions stay uncluttered."""
+    completed, partial = _split_args(sub_text)
+    if partial and not partial.startswith("--"):
+        return
+    typed = {word.lower() for word in completed}
+    rows = [(sub, None) for sub in SUBCOMMANDS[base_cmd]
+            if sub.startswith("--") and sub.lower() not in typed]
+    yield from _prefix_completions(rows, partial)
+
+
 def _split_args(sub_text: str) -> tuple[list[str], str]:
     """``(completed_words, partial)``; a trailing space means a fresh word."""
     parts = sub_text.split()
@@ -434,9 +447,12 @@ class SlashCommandCompleter(Completer):
             handler, single_word = _DYNAMIC_COMPLETIONS.get(base_cmd, (None, False))
             if handler is not None and (not single_word or first_arg):
                 yield from handler(sub_text, sub_text.lower())
-            elif first_arg and base_cmd in SUBCOMMANDS and self._command_allowed(base_cmd):
-                yield from _prefix_completions(
-                    ((s, None) for s in SUBCOMMANDS[base_cmd]), sub_text)
+            elif base_cmd in SUBCOMMANDS and self._command_allowed(base_cmd):
+                if first_arg:
+                    yield from _prefix_completions(
+                        ((s, None) for s in SUBCOMMANDS[base_cmd]), sub_text)
+                else:
+                    yield from _later_flag_completions(base_cmd, sub_text)
             return
         word = text[1:]
 

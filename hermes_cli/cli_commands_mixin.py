@@ -2615,7 +2615,7 @@ class CLICommandsMixin:
         if parsed is None:
             return _cp(_dim_line(f'(._.) Unknown argument: {arg}'),
                        _dim_line('Valid levels: none, minimal, low, medium, high, xhigh, max, ultra'),
-                       _dim_line('Display:      show, hide'),
+                       _dim_line('Display:      show, hide, full, clamp'),
                        _dim_line('Scope:        session-scoped by default, --global to persist'))
         self.reasoning_config = parsed
         _retire_agent(self)  # Force agent re-init with new reasoning config

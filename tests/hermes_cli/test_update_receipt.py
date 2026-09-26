@@ -111,6 +111,12 @@ class TestReceiptLifecycle:
         assert latest is not None
         assert latest["outcome"] == "partial"
 
+    def test_success_receipt_records_explicit_zero_exit_code(self, receipt_home):
+        ur.begin_update_receipt()
+        path = ur.finalize_update_receipt("success", exit_code=0)
+        assert path is not None
+        assert json.loads(path.read_text(encoding="utf-8"))["exit_code"] == 0
+
 
     def test_record_without_begin_is_noop(self, receipt_home):
         # No begin — nothing should raise, nothing should be written.

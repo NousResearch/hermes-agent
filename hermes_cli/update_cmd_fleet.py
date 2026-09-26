@@ -2008,6 +2008,7 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
         _receipt_path = finalize_update_receipt(
             "partial" if restart.incomplete or not update_complete else "success",
             fleet=_fleet_snapshot,
+            exit_code=0 if update_complete and not restart.incomplete else 1,
         )
         if _receipt_path is not None:
             logger.info("Update receipt written: %s", _receipt_path)

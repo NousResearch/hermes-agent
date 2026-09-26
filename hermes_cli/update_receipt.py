@@ -237,7 +237,13 @@ def record_gateway_restart(**kwargs: Any) -> None:
     _record("gateway_restart_result", "gateway restart result", **kwargs)
 
 
-def finalize_update_receipt(outcome: str, fleet: list | None = None, stop_reason: str = "") -> Optional[Path]:
+def finalize_update_receipt(
+    outcome: str,
+    fleet: list | None = None,
+    stop_reason: str = "",
+    *,
+    exit_code: int | None = None,
+) -> Optional[Path]:
     """Finalize + persist the receipt (``success``/``partial``/``failed``/``refused``); path or None.
 
     Exactly-once by construction: the context's receipt is popped first, so a second call (e.g. the
@@ -266,6 +272,8 @@ def finalize_update_receipt(outcome: str, fleet: list | None = None, stop_reason
             receipt.data["stop_reason"] = stop_reason
         if fleet is not None:
             receipt.data["fleet"] = fleet
+        if exit_code is not None:
+            receipt.data["exit_code"] = int(exit_code)
         # Manual serve restart obligations outlive one receipt rotation: carry the previous
         # receipt's still-pending rows forward so the startup warning survives (see
         # update_serve_obligations).

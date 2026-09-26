@@ -8,8 +8,25 @@ import json
 from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch, MagicMock, AsyncMock
+from types import SimpleNamespace
 
 import pytest
+def _finalized(hermes_home):
+    """Create finalized evidence so the post-fix watcher counts the run as successful."""
+    exit_code = hermes_home / ".update_exit_code"
+    if not exit_code.exists():
+        exit_code.write_text("0")
+    directory = hermes_home / "logs" / "update_receipts"
+    directory.mkdir(parents=True, exist_ok=True)
+    receipt = {
+        "update_id": "test-update", "finished_at": "2026-09-24T19:17:01Z",
+        "outcome": "success", "exit_code": 0,
+        "gateway_restart": {"incomplete": False, "phase_error": ""},
+    }
+    (directory / "update_20260924_191701_123_test-update.json").write_text(
+        json.dumps(receipt), encoding="utf-8")
+    (directory / "latest.json").write_text(json.dumps(receipt), encoding="utf-8")
+
 
 from gateway.config import Platform
 from gateway.platforms.event import MessageEvent
@@ -123,7 +140,7 @@ class TestHandleUpdateCommand:
 
     @pytest.mark.asyncio
     async def test_writes_pending_marker(self, tmp_path):
-        """Writes .update_pending.json with correct platform and chat info."""
+        """Writes .update_pending.json with correct platform, chat, and run identity."""
         runner = _make_runner()
         event = _make_event(platform=Platform.TELEGRAM, chat_id="99999")
         event.message_id = "m-update"
@@ -140,7 +157,8 @@ class TestHandleUpdateCommand:
         with patch("gateway.run._hermes_home", hermes_home), \
              patch("gateway.run.__file__", fake_file), \
              patch("hermes_cli.config.detect_install_method", return_value="git"), \
-             patch("shutil.which", side_effect=lambda x: "/usr/bin/hermes" if x == "hermes" else "/usr/bin/setsid"), \
+             patch("hermes_platform.resolver.locate_command", lambda name: SimpleNamespace(
+                 command=("/usr/bin/setsid",) if name == "setsid" else ())), \
              patch("subprocess.Popen"):
             result = await runner._handle_update_command(event)
 
@@ -151,6 +169,7 @@ class TestHandleUpdateCommand:
         assert data["chat_id"] == "99999"
         assert data["chat_type"] == "dm"
         assert data["message_id"] == "m-update"
+        assert data["update_id"]
         assert "timestamp" in data
         assert not (hermes_home / ".update_exit_code").exists()
 
@@ -173,17 +192,10 @@ class TestHandleUpdateCommand:
 
         mock_popen = MagicMock()
 
-        def which_no_setsid(x):
-            if x == "hermes":
-                return "/usr/bin/hermes"
-            if x == "setsid":
-                return None
-            return None
-
         with patch("gateway.run._hermes_home", hermes_home), \
              patch("gateway.run.__file__", fake_file), \
              patch("hermes_cli.config.detect_install_method", return_value="git"), \
-             patch("shutil.which", side_effect=which_no_setsid), \
+             patch("hermes_platform.resolver.locate_command", lambda name: SimpleNamespace(command=())), \
              patch("subprocess.Popen", mock_popen):
             await runner._handle_update_command(event)
 
@@ -288,10 +300,11 @@ class TestSendUpdateNotification:
 
         claimed_path = hermes_home / ".update_pending.claimed.json"
         claimed_path.write_text(json.dumps({
-            "platform": "telegram", "chat_id": "67890", "user_id": "12345",
+            "update_id": "test-update", "platform": "telegram", "chat_id": "67890", "user_id": "12345",
         }))
         (hermes_home / ".update_output.txt").write_text("done")
         (hermes_home / ".update_exit_code").write_text("0")
+        _finalized(hermes_home)
 
         mock_adapter = AsyncMock()
         runner.adapters = {Platform.TELEGRAM: mock_adapter}
@@ -312,6 +325,7 @@ class TestSendUpdateNotification:
 
         # Write pending marker
         pending = {
+            "update_id": "test-update",
             "platform": "telegram",
             "chat_id": "67890",
             "user_id": "12345",
@@ -322,6 +336,7 @@ class TestSendUpdateNotification:
             "→ Found 3 new commit(s)\n✓ Code updated!\n✓ Update complete!"
         )
         (hermes_home / ".update_exit_code").write_text("0")
+        _finalized(hermes_home)
 
         # Mock the adapter
         mock_adapter = AsyncMock()
@@ -353,12 +368,12 @@ class TestSendUpdateNotification:
 
         pending_path = hermes_home / ".update_pending.json"
         pending_path.write_text(json.dumps({
-            "platform": "telegram",
-            "chat_id": "67890",
-            "user_id": "12345",
+            "update_id": "test-update", "platform": "telegram",
+            "chat_id": "67890", "user_id": "12345",
             "timestamp": (datetime.now() - timedelta(hours=2)).isoformat(),
         }))
         (hermes_home / ".update_exit_code").write_text("0")
+        _finalized(hermes_home)
         # runner.adapters stays empty: no adapter for the target platform, ever.
 
         with patch("gateway.run._hermes_home", hermes_home):
@@ -410,10 +425,11 @@ class TestSendUpdateNotification:
         output_path = hermes_home / ".update_output.txt"
         exit_code_path = hermes_home / ".update_exit_code"
         pending_path.write_text(json.dumps({
-            "platform": "telegram", "chat_id": "111", "user_id": "222",
+            "update_id": "test-update", "platform": "telegram", "chat_id": "111", "user_id": "222",
         }))
         output_path.write_text("✓ Done")
         exit_code_path.write_text("0")
+        _finalized(hermes_home)
 
         # Adapter send raises
         mock_adapter = AsyncMock()
@@ -442,13 +458,14 @@ class TestSendUpdateNotification:
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir()
 
-        pending = {"platform": "discord", "chat_id": "111", "user_id": "222"}
+        pending = {"update_id": "test-update", "platform": "discord", "chat_id": "111", "user_id": "222"}
         pending_path = hermes_home / ".update_pending.json"
         output_path = hermes_home / ".update_output.txt"
         exit_code_path = hermes_home / ".update_exit_code"
         pending_path.write_text(json.dumps(pending))
         output_path.write_text("Done")
         exit_code_path.write_text("0")
+        _finalized(hermes_home)
 
         # Only telegram adapter available, but pending says discord
         mock_adapter = AsyncMock()
@@ -480,13 +497,14 @@ class TestSendUpdateNotification:
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir()
 
-        pending = {"platform": "discord", "chat_id": "111", "user_id": "222"}
+        pending = {"update_id": "test-update", "platform": "discord", "chat_id": "111", "user_id": "222"}
         pending_path = hermes_home / ".update_pending.json"
         output_path = hermes_home / ".update_output.txt"
         exit_code_path = hermes_home / ".update_exit_code"
         pending_path.write_text(json.dumps(pending))
         output_path.write_text("✓ Update complete!")
         exit_code_path.write_text("0")
+        _finalized(hermes_home)
 
         # First pass: target platform (discord) is still offline → defer.
         with patch("gateway.run._hermes_home", hermes_home):
@@ -519,13 +537,14 @@ class TestSendUpdateNotification:
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir()
 
-        pending = {"platform": "discord", "chat_id": "111", "user_id": "222"}
+        pending = {"update_id": "test-update", "platform": "discord", "chat_id": "111", "user_id": "222"}
         pending_path = hermes_home / ".update_pending.json"
         output_path = hermes_home / ".update_output.txt"
         exit_code_path = hermes_home / ".update_exit_code"
         pending_path.write_text(json.dumps(pending))
         output_path.write_bytes(b"ok before\ninvalid byte: \x96\ncontinued after\n")
         exit_code_path.write_text("0")
+        _finalized(hermes_home)
 
         mock_adapter = AsyncMock()
         runner.adapters = {Platform.DISCORD: mock_adapter}
@@ -581,14 +600,14 @@ class TestWatchUpdateProgress:
         hermes_home.mkdir()
 
         (hermes_home / ".update_pending.json").write_text(json.dumps({
-            "platform": "telegram",
-            "chat_id": "67890",
-            "user_id": "12345",
+            "update_id": "test-update", "platform": "telegram",
+            "chat_id": "67890", "user_id": "12345",
         }))
         (hermes_home / ".update_output.txt").write_bytes(
             b"ok before\n\xe2\x9c invalid-continuation: \x96\ncontinued after\n"
         )
         (hermes_home / ".update_exit_code").write_text("0")
+        _finalized(hermes_home)
 
         mock_adapter = AsyncMock()
         runner.adapters = {Platform.TELEGRAM: mock_adapter}

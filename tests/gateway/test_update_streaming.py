@@ -12,8 +12,25 @@ import os
 import time
 import asyncio
 from unittest.mock import patch, MagicMock, AsyncMock
+from types import SimpleNamespace
 
 import pytest
+def _finalized_stream(hermes_home, update_id="stream-update"):
+    """Create finalized evidence so the post-fix watcher counts the run as successful."""
+    exit_code = hermes_home / ".update_exit_code"
+    if not exit_code.exists():
+        exit_code.write_text("0")
+    directory = hermes_home / "logs" / "update_receipts"
+    directory.mkdir(parents=True, exist_ok=True)
+    receipt = {
+        "update_id": update_id, "finished_at": "2026-09-24T19:17:01Z",
+        "outcome": "success", "exit_code": 0,
+        "gateway_restart": {"incomplete": False, "phase_error": ""},
+    }
+    (directory / f"update_20260924_191701_123_{update_id}.json").write_text(
+        json.dumps(receipt), encoding="utf-8")
+    (directory / "latest.json").write_text(json.dumps(receipt), encoding="utf-8")
+
 
 from gateway.config import Platform
 from gateway.platforms.event import MessageEvent
@@ -93,7 +110,7 @@ class TestUpdateCommandGatewayFlag:
     @pytest.mark.asyncio
     @pytest.mark.platforms("linux")
     async def test_spawns_with_gateway_flag(self, tmp_path):
-        """The spawned update command includes --gateway and PYTHONUNBUFFERED."""
+        """The spawned update command carries --gateway and the pending run identity."""
         runner = _make_runner()
         event = _make_event()
 
@@ -109,14 +126,17 @@ class TestUpdateCommandGatewayFlag:
         mock_popen = MagicMock()
         with patch("gateway.run._hermes_home", hermes_home), \
              patch("gateway.run.__file__", fake_file), \
-             patch("shutil.which", side_effect=lambda x: f"/usr/bin/{x}"), \
+             patch("hermes_platform.resolver.locate_command", lambda name: SimpleNamespace(
+                 command=("/usr/bin/setsid",) if name == "setsid" else ())), \
              patch("subprocess.Popen", mock_popen):
             await runner._handle_update_command(event)
 
         # Check the bash command string contains --gateway and PYTHONUNBUFFERED
         call_args = mock_popen.call_args[0][0]
         cmd_string = call_args[-1] if isinstance(call_args, list) else str(call_args)
+        pending = json.loads((hermes_home / ".update_pending.json").read_text(encoding="utf-8"))
         assert "--gateway" in cmd_string
+        assert f"--update-id={pending['update_id']}" in cmd_string
         assert "PYTHONUNBUFFERED" in cmd_string
         assert "rc=$?" in cmd_string
         assert "status=$?" not in cmd_string
@@ -135,7 +155,7 @@ class TestWatchUpdateProgress:
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir()
 
-        pending = {"platform": "telegram", "chat_id": "111", "user_id": "222",
+        pending = {"update_id": "stream-run", "platform": "telegram", "chat_id": "111", "user_id": "222",
                    "session_key": "agent:main:telegram:dm:111"}
         (hermes_home / ".update_pending.json").write_text(json.dumps(pending))
         # Write output
@@ -167,6 +187,7 @@ class TestWatchUpdateProgress:
                 with (hermes_home / ".update_output.txt").open("a", encoding="utf-8") as output:
                     output.write("✓ Code updated!\n")
                 (hermes_home / ".update_exit_code").write_text("0")
+                _finalized_stream(hermes_home, pending["update_id"])
                 await asyncio.wait_for(watcher, timeout=5.0)
             finally:
                 if not watcher.done():
@@ -183,7 +204,7 @@ class TestWatchUpdateProgress:
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir()
 
-        pending = {"platform": "telegram", "chat_id": "111", "user_id": "222",
+        pending = {"update_id": "stream-run", "platform": "telegram", "chat_id": "111", "user_id": "222",
                    "session_key": "agent:main:telegram:dm:111"}
         (hermes_home / ".update_pending.json").write_text(json.dumps(pending))
         (hermes_home / ".update_output.txt").write_text("output\n")
@@ -202,6 +223,7 @@ class TestWatchUpdateProgress:
             (hermes_home / ".update_prompt.json").unlink(missing_ok=True)
             await asyncio.sleep(0.2)
             (hermes_home / ".update_exit_code").write_text("0")
+            _finalized_stream(hermes_home, pending["update_id"])
 
         with patch("gateway.run._hermes_home", hermes_home):
             task = asyncio.create_task(simulate_prompt_cycle())
@@ -226,6 +248,7 @@ class TestWatchUpdateProgress:
         hermes_home.mkdir()
 
         pending = {
+            "update_id": "stream-run",
             "platform": "telegram",
             "chat_id": "111",
             "user_id": "222",
@@ -273,6 +296,7 @@ class TestWatchUpdateProgress:
                 (hermes_home / ".update_response").write_text("y")
                 await asyncio.sleep(0.2)
                 (hermes_home / ".update_exit_code").write_text("0")
+                _finalized_stream(hermes_home, pending["update_id"])
 
             finisher = asyncio.create_task(respond_and_finish())
             await runner2._watch_update_progress(
@@ -343,7 +367,13 @@ class TestCmdUpdateGatewayMode:
         """With --gateway, stash restore uses _gateway_prompt instead of input()."""
         import subprocess
         from types import SimpleNamespace
-        from hermes_cli import main, update_cmd
+        import hermes_cli._early_recovery as early_recovery
+        from hermes_cli import update_cmd
+
+        # The full CLI import is the production entrypoint exercised below. Seed
+        # its recovery module so import-time checkout inspection is inert in tests.
+        early_recovery.restore_interrupted_pull = lambda: False
+        from hermes_cli import main
 
         root = tmp_path / "checkout"
         root.mkdir()

@@ -131,6 +131,15 @@ replaced by #92091's `pause-for-update`. Do NOT "fix" gateway-dies-with-app by r
 gateway under the backend, and do NOT "fix" update locks by widening the tree-kill. Gateways stamp
 `code_sha`/`code_version` into `gateway_state.json` (`status.py`) so the updater can verify a fleet.
 
+## Update watcher
+
+The gateway-spawned `/update` watcher lives in `run_notifications_update.py`:
+`GatewayUpdateNotificationsMixin` owns the `.update_*` IPC files, output streaming,
+prompt forwarding, and completion delivery. `GatewayNotificationsMixin` inherits it.
+Its success gate resolves the exact run's terminal receipt by `update_id`; a zero
+`.update_exit_code` alone is only a preliminary signal, and the canonical host
+update→restart obligation must be discharged before ✅ is sent.
+
 ## Profile scope (adapters, turns, and everything between turns)
 
 - **One identity per inbound event, canonicalized FIRST.** `gateway/session_identity.py::resolve_identity`

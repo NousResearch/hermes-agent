@@ -1071,7 +1071,7 @@ def _begin_update_receipt_and_plan(args):
     with _best_effort('Update receipt unavailable: %s'):
         # See #74973, #81193, #85753, #88848, #91277.
         from hermes_cli.update_receipt import begin_update_receipt
-        begin_update_receipt()
+        begin_update_receipt(correlation_id=str(getattr(args, "update_id", "") or "").strip() or None)
 
     # Plan phase: snapshot runtimes/supervisors/version (read-only; probe failure records
     # nothing). Re-read AFTER the restart phase to reconcile — the plan is the worklist.

@@ -13,7 +13,8 @@ def recover_plugin_publication(project: Path, row: dict, journal: Path) -> None:
 
 
 def publish_plugin(staged: Path, target: Path, old_metadata: dict, new_metadata: dict,
-                   *, target_digest: str | None = None, require_consent: bool = False) -> None:
+                   *, target_digest: str | None = None, require_consent: bool = False,
+                   previous_target: Path | None = None) -> None:
     from pm.client import sync_venv
     from pm.plugin_inputs import StagedUpdate
     from pm.store import tree_digest
@@ -33,6 +34,7 @@ def publish_plugin(staged: Path, target: Path, old_metadata: dict, new_metadata:
         "staged": str(staged.resolve()), "target": str(target.absolute()),
         "old_metadata": old_metadata, "new_metadata": new_metadata,
         "target_digest": target_digest if target_digest is not None else (tree_digest(target) if target.exists() else None),
+        **({"previous_target": str(previous_target.absolute())} if previous_target is not None else {}),
     }))
 
 
@@ -185,7 +187,8 @@ def update_plugin(
                 new_target,
                 metadata,
                 {**metadata, installed_name: record},
-                target_digest=before if new_target == target else None,
+                target_digest=before,
+                previous_target=target if new_target != target else None,
             )
             return output
         except pc.PluginOperationError:

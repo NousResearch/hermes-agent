@@ -457,21 +457,7 @@ def repin_catalog_plugin(
     if modified:
         warnings.append(f"Local edits to {len(modified)} tracked file(s) were not carried over; copies are under "
                         f"{backup} (the previous version's files, re-apply by hand).")
-    if new_target != target and target.exists():
-        from hermes_cli.plugins_cmd import (
-            _admit_and_save_plugin_sets, _get_disabled_set, _get_enabled_set, _remove_plugin_core)
-        enabled, disabled = _get_enabled_set(), _get_disabled_set()
-        selection_changed = False
-        for selected in (enabled, disabled):
-            if target.name in selected:
-                selected.remove(target.name)
-                selected.add(installed_name)
-                selection_changed = True
-        if selection_changed:
-            _admit_and_save_plugin_sets(
-                enabled, disabled, action=f"Rename plugin '{target.name}' to '{installed_name}'",
-                plugin=installed_name)
-        _remove_plugin_core(target)
+    if new_target != target:
         warnings.append(f"Plugin renamed itself from '{target.name}' to '{installed_name}'; the old directory was removed.")
     return RepinResult(entry.sha, True, installed_name, warnings)
 

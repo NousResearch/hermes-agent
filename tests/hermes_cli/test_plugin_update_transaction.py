@@ -257,3 +257,116 @@ def test_successful_update_publishes_matching_code_and_durable_workspace(install
                      if row.name == "transactional")
         assert check.klass == "catalog" and check.update_available is True
         assert check.current == record["revision"] and check.latest == state["sha"]
+
+
+@pytest.mark.parametrize("installed", ["catalog"], indirect=True)
+@pytest.mark.parametrize("failure", ["metadata", "config", "facts", "restart", "recovery_conflict"])
+def test_catalog_rename_rolls_back_the_whole_publication(installed, monkeypatch, failure):
+    """A failed rename preserves the old usable selection and can be retried."""
+    from hermes_cli import plugins_cmd
+    from pm import paths, publication
+    from pm.environments import selected_venv
+    from pm.lock import Facts
+
+    root, home, repo, target, state = installed
+    (target / "user-data.txt").write_text("keep me", encoding="utf-8")
+    manifest = repo / "plugin.yaml"
+    manifest_text = manifest.read_text(encoding="utf-8-sig")
+    manifest.write_text(manifest_text.replace(
+        "name: transactional", "name: renamed"), encoding="utf-8")
+    state["sha"] = _commit(repo, "rename plugin")
+    watched = [home / "config.yaml", home / "plugins/.install-metadata.json", paths.runtime_facts_path()]
+    before = {path: path.read_bytes() for path in watched}
+    old_head, old_venv = _head(target), selected_venv(root / "core")
+    original_write, original_record = publication.durable_write_bytes, Facts.record_state
+    from hermes_cli import runtime_state
+    restart = failure in {"restart", "recovery_conflict"}
+    injected = []
+
+    def write(path, data):
+        destination = watched[0] if failure == "config" else watched[1]
+        if failure in {"metadata", "config"} and path == destination and not injected:
+            injected.append(True)
+            raise OSError("injected publication failure")
+        return original_write(path, data)
+
+    def record(self, *args, **kwargs):
+        if (failure == "facts" or restart) and not injected:
+            injected.append(True)
+            raise OSError("injected publication failure")
+        return original_record(self, *args, **kwargs)
+
+    with monkeypatch.context() as fault:
+        fault.setattr(publication, "durable_write_bytes", write)
+        fault.setattr(Facts, "record_state", record)
+        if restart:
+            # Leave the durable journal for a fresh recovery invocation, as after exit.
+            fault.setattr(runtime_state, "recover_publication", lambda project: None)
+        result = plugins_cmd.dashboard_update_user_plugin("transactional")
+
+    assert injected and not result["ok"], result
+    if restart:
+        journal = runtime_state.install_state_dir(root / "core") / "publication.json"
+        assert journal.exists() and not target.exists()
+        if failure == "recovery_conflict":
+            published_config = watched[0].read_bytes()
+            concurrent_edit = published_config + b"# independent edit\n"
+            watched[0].write_bytes(concurrent_edit)
+            with pytest.raises(RuntimeError, match="configuration changed"):
+                runtime_state.recover_publication(root / "core")
+            assert watched[0].read_bytes() == concurrent_edit
+            assert Path(json.loads(journal.read_bytes())["backup"]).exists()
+            watched[0].write_bytes(published_config)
+        runtime_state.recover_publication(root / "core")
+        runtime_state.recover_publication(root / "core")  # recovery is safe to repeat
+        assert not journal.exists()
+    assert {path: path.read_bytes() for path in watched} == before
+    assert selected_venv(root / "core") == old_venv
+    assert _head(target) == old_head
+    assert (target / "user-data.txt").read_text(encoding="utf-8-sig") == "keep me"
+    assert not (target.parent / "renamed").exists()
+    retry = plugins_cmd.dashboard_update_user_plugin("transactional")
+    assert retry["ok"], retry
+    assert not target.exists()
+    assert (target.parent / "renamed/user-data.txt").read_text(encoding="utf-8-sig") == "keep me"
+
+
+@pytest.mark.parametrize("installed", ["catalog"], indirect=True)
+@pytest.mark.parametrize("selection", ["enabled", "disabled", "provider", "unselected"])
+def test_catalog_rename_preserves_selection_and_dependency_members(installed, selection):
+    """Code, metadata and every reference to the renamed selection move together."""
+    from hermes_cli import plugins_cmd
+    from pm import client
+    from pm.workspace import enabled_plugin_dirs
+    import hermes_yaml as yaml
+
+    root, home, repo, target, state = installed
+    config = {"plugins": {"enabled": ["transactional"] if selection == "enabled" else [],
+                           "disabled": ["transactional"] if selection == "disabled" else []}}
+    if selection == "provider":
+        config["memory"] = {"provider": "transactional"}
+    (home / "config.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
+    client.sync_venv(explicit=True)
+    manifest = repo / "plugin.yaml"
+    manifest_text = manifest.read_text(encoding="utf-8-sig")
+    manifest.write_text(manifest_text.replace(
+        "name: transactional", "name: renamed"), encoding="utf-8")
+    state["sha"] = _commit(repo, "rename plugin")
+
+    result = plugins_cmd.dashboard_update_user_plugin("transactional")
+
+    assert result["ok"], result
+    renamed = target.parent / "renamed"
+    assert not target.exists() and _head(renamed) == state["sha"]
+    records = plugins_cmd._read_install_metadata()
+    assert "transactional" not in records and records["renamed"]["revision"] == state["sha"]
+    updated = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8-sig"))
+    if selection == "provider":
+        assert updated["memory"]["provider"] == "renamed"
+    elif selection != "unselected":
+        assert updated["plugins"][selection] == ["renamed"]
+    else:
+        assert updated == config
+    assert (renamed in enabled_plugin_dirs()) is (selection in {"enabled", "provider"})
+    from pm.install import venv_is_current
+    assert venv_is_current(), "published environment must match the renamed dependency selection"

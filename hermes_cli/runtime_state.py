@@ -61,11 +61,18 @@ def _recover_plugin_publication(project: Path, row: dict, journal: Path) -> None
     from hermes_cli.fs_utils import rmtree_force
 
     target, backup, metadata = (Path(row[key]) for key in ("target", "backup", "metadata"))
+    previous_target = Path(row.get("previous_target", target))
     home = dependency_home_root().resolve()
     if (not target.resolve().is_relative_to(home) or target.parent.name != "plugins"
             or backup.parent != target.parent or not backup.name.startswith(".previous-")
             or metadata != target.parent / ".install-metadata.json"):
         raise ValueError("plugin publication paths escape their home")
+    if (previous_target.parent != target.parent or previous_target.is_symlink()
+            or not previous_target.resolve().is_relative_to(home)):
+        raise ValueError("plugin rename source escapes its home")
+    config = Path(row["config"]) if "config" in row else None
+    if config is not None and config != target.parent.parent / "config.yaml":
+        raise ValueError("plugin rename configuration escapes its home")
     committed = row.get("committed") or _digest(runtime_facts_path(project)) != row["facts_before"]
     if committed:
         if backup.exists():
@@ -76,16 +83,28 @@ def _recover_plugin_publication(project: Path, row: dict, journal: Path) -> None
         new = base64.b64decode(row["metadata_after"], validate=True)
         if current not in (old, new):
             raise ValueError("plugin metadata changed after publication; preserve it for manual recovery")
+        if config is not None:
+            prior_config = base64.b64decode(row["config_before"], validate=True) if row["config_before"] is not None else None
+            prior_digest = hashlib.sha256(prior_config).hexdigest() if prior_config is not None else None
+            if _digest(config) not in (prior_digest, row["config_after"]):
+                raise ValueError("plugin configuration changed after publication; preserve it for manual recovery")
         if backup.exists():
+            if previous_target != target and previous_target.exists():
+                raise ValueError("plugin rename source reappeared; preserve it for manual recovery")
             if target.exists():
                 rmtree_force(target)
-            os.replace(backup, target)
+            os.replace(backup, previous_target)
         elif not row["target_existed"] and target.exists():
             rmtree_force(target)
         if old is None:
             metadata.unlink(missing_ok=True)
         else:
             _atomic_bytes(metadata, old)
+        if config is not None:
+            if prior_config is None:
+                config.unlink(missing_ok=True)
+            else:
+                _atomic_bytes(config, prior_config)
     journal.unlink()
 
 

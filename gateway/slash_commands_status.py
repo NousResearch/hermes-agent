@@ -251,12 +251,16 @@ class GatewayStatusCommandsMixin:
         )
         # Prefer the live or cached agent (actual runtime route + context compressor); fall back
         # to an active /model override, then SessionDB metadata + last_prompt_tokens so /status
-        # stays useful between turns. Rehydrate first so this precedence survives gateway restarts.
+        # stays useful between turns. Read the durable override without activating session state;
+        # any credentials needed for metadata belong to the scoped context lookup below.
         status_agent = agent if is_running else self._cached_agent_for(session_key)
-        self._rehydrate_session_model_override(session_key)
-        active_override = self._session_model_override(session_key) or {}
+        active_override = self._session_model_override(session_key)
+        if active_override is None:
+            active_override = await _quiet(
+                lambda: self.async_session_store.get_model_override(session_key), {}
+            )
         model_name, provider_name, context_used, context_total, route = _status_model_route(
-            status_agent, active_override, persisted_route, session_row, session_entry
+            status_agent, active_override or {}, persisted_route, session_row, session_entry
         )
         if not context_total and model_name:
             # Same resolver /context uses (off-loop: it can probe /models). A window the resolver only

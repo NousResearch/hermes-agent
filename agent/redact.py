@@ -367,6 +367,37 @@ def _has_word_bounded_keyword(key: str, keyword_re: "re.Pattern[str]") -> bool:
     return any(_is_word_start(key, m.start()) and _is_word_end(key, m.end()) for m in keyword_re.finditer(key))
 
 
+# Test-summary counters (``test-x.sh: PASS=174 FAIL=0``) share the bare
+# ``PASS`` key with MYSQL-style password vars, so _ENV_ASSIGN_RE masked the
+# count (``PASS=*** FAIL=0``) and reviewers read it as a hidden result.
+# Exempt ONLY this shape: key exactly ``PASS``, unquoted all-digit value, and a
+# sibling ``FAIL``/``FAILED``/``FAILURES``/``ERRORS`` numeric counter on the
+# SAME line. Everything else keeps masking: a lone ``PASS=1234`` (could be a
+# PIN), ``DB_PASS``/``PASSWORD``/``PASSWD``, quoted or non-digit values, and a
+# sibling on another line or with a non-numeric value.
+# Value: digits plus at most a few CLOSING punctuation chars that \S+ swallows
+# when the summary ends a sentence or a JSON string (``PASS=174"}``).
+_PASS_COUNTER_VALUE_RE = re.compile(r"\d{1,9}[,;.)\]}\"']{0,4}")
+_FAIL_COUNTER_SIBLING_RE = re.compile(
+    r"(?<![A-Za-z0-9_])(?:FAIL|FAILED|FAILURES|ERRORS?)=\d+(?![A-Za-z0-9_])"
+)
+
+
+def _is_test_pass_counter(m) -> bool:
+    name, quote, value = m.group(1), m.group(2), m.group(3)
+    if name != "PASS" or quote or not _PASS_COUNTER_VALUE_RE.fullmatch(value):
+        return False
+    s = m.string
+    line_start = s.rfind("\n", 0, m.start()) + 1
+    line_end = s.find("\n", m.end())
+    if line_end == -1:
+        line_end = len(s)
+    return bool(
+        _FAIL_COUNTER_SIBLING_RE.search(s, line_start, m.start())
+        or _FAIL_COUNTER_SIBLING_RE.search(s, m.end(), line_end)
+    )
+
+
 def _key_has_secret_keyword(key: str) -> bool:
     """Post-match key validator: ``API_KEY``/``DB_PW`` count, ``KEYBOARD``/``secretary`` do not."""
     return _has_word_bounded_keyword(key, _KEY_KEYWORD_RE)
@@ -813,7 +844,8 @@ def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
     mask = _mask_token_nonreusable if mask_nonreusable else _mask_token
     if "=" in text:
         _redact_env = _assignment_sub(lambda g: f"{g[0]}={g[1]}{mask(g[2])}{g[1]}", check_keyword=True)
-        text = _ENV_ASSIGN_RE.sub(_redact_env, text)
+        # ``PASS=174 FAIL=0`` test summary, not a password.
+        text = _ENV_ASSIGN_RE.sub(lambda m: m.group(0) if _is_test_pass_counter(m) else _redact_env(m), text)
         if "://" not in text:  # lowercase names would match URL params
             # Skip URLs — the query string may contain ``token=``/``key=`` params that are intentionally
             # passed through (see note near the bottom of this function; _redact_strict_url_credentials

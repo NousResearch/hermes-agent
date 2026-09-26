@@ -464,8 +464,10 @@ def profile_role_toolsets(profile_home: Optional[Path] = None) -> Tuple[Set[str]
 
 
 def validate_toolset(name: str) -> bool:
+    # ``hermes-<platform>`` for a registered plugin platform is valid: resolve_toolset() synthesizes it.
     return (name in {"all", "*"} or name in TOOLSETS
-            or name in _get_plugin_toolset_names() or name in _get_registry_toolset_aliases())
+            or name in _get_plugin_toolset_names() or name in _get_registry_toolset_aliases()
+            or bool(_plugin_platform_bundle(name)))
 
 
 def create_custom_toolset(name: str, description: str, tools: List[str] = None, includes: List[str] = None) -> None:

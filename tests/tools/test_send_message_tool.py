@@ -631,6 +631,9 @@ class TestMattermostFileDelivery:
         assert result["delivered_media"] == 0
         assert result["partial_failure"] is bool(text)
         assert len(posts) == (1 if text else 0)
+        assert result["media_dropped"] == [
+            {"path": str(tmp_path / "missing.png"), "reason": "not found on this host"},
+        ]
 
     @pytest.mark.parametrize("live", [False, True])
     @pytest.mark.parametrize("media_count", [0, 1, 6])

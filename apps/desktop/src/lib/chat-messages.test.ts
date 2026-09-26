@@ -462,6 +462,45 @@ describe('toChatMessages', () => {
     expect(chatMessageText(messages[1])).toBe('Your request was not processed.')
   })
 
+  it('redraws the failed turn error card kept on the boundary row', () => {
+    const messages = toChatMessages([
+      { role: 'user', content: 'do the thing', timestamp: 1 },
+      {
+        role: 'assistant',
+        content: 'Your request was not processed.',
+        display_kind: 'failed_turn',
+        display_metadata: {
+          error: 'Connection error.',
+          error_surface: { code: 'timeout', layer: 'provider', provider: 'opencode-go', retryable: true }
+        },
+        timestamp: 2
+      }
+    ])
+
+    expect(messages.map(message => message.role)).toEqual(['user', 'assistant', 'system'])
+    expect(messages[1]).toMatchObject({
+      error: 'Connection error.',
+      errorSurface: { code: 'timeout', layer: 'provider', provider: 'opencode-go' },
+      serverRowSpan: 0
+    })
+    expect(chatMessageText(messages[2])).toBe('Your request was not processed.')
+  })
+
+  it('shows only the notice for a boundary row without a usable error surface', () => {
+    const messages = toChatMessages([
+      { role: 'user', content: 'do the thing', timestamp: 1 },
+      {
+        role: 'assistant',
+        content: 'Your request was not processed.',
+        display_kind: 'failed_turn',
+        display_metadata: { error: 'Connection error.', error_surface: { layer: 'bogus' } },
+        timestamp: 2
+      }
+    ])
+
+    expect(messages.map(message => message.role)).toEqual(['user', 'system'])
+  })
+
   // A backend older than this app serves display_metadata as unparsed JSON
   // text. Indexing into that string used to throw and fail the whole resume.
   it.each([
@@ -568,6 +607,25 @@ describe('preserveLocalAssistantErrors', () => {
 
     expect([message.timestamp, message.completedAt]).toEqual([1, 3])
     expect(message.parts[0]).toMatchObject({ completedAt: 3, timestamp: 1, type: 'text' })
+  })
+
+  it('keeps one error card when the refresh rebuilt it from the failed-turn row', () => {
+    const surface = { code: 'timeout', layer: 'provider', retryable: true } as const
+
+    const nextMessages: ChatMessage[] = [
+      { id: 'stored-user', parts: [{ text: 'new prompt', type: 'text' }], role: 'user' },
+      { error: 'Connection error.', errorSurface: surface, id: 'stored-error', parts: [], role: 'assistant' },
+      { id: 'stored-notice', parts: [{ text: 'Your request was not processed.', type: 'text' }], role: 'system' }
+    ]
+
+    const currentMessages: ChatMessage[] = [
+      { id: 'user-123', parts: [{ text: 'new prompt', type: 'text' }], role: 'user' },
+      { error: 'Connection error.', errorSurface: surface, id: 'assistant-error-1', parts: [], role: 'assistant' }
+    ]
+
+    const merged = preserveLocalAssistantErrors(nextMessages, currentMessages)
+
+    expect(merged.filter(message => message.error)).toHaveLength(1)
   })
 
   it('preserves a local user+error pair when hydration omits the failed turn', () => {

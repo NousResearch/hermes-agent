@@ -1699,6 +1699,25 @@ def run_conversation(
     return result
 
 
+_FAILED_TURN_ERROR_MAX_CHARS = 2000
+
+
+def _failed_turn_display_metadata(agent, result: dict) -> dict:
+    """The error text and ``error_surface`` a client needs to redraw the failed turn's error
+    card from the transcript, after the live ``message.complete`` frame is gone."""
+    from agent.error_surface import build_error_surface_from_result
+
+    try:
+        surface = build_error_surface_from_result(
+            result, provider=agent.provider or "", model=agent.model or ""
+        )
+    except Exception:
+        logger.debug("failed-turn error surface unavailable", exc_info=True)
+        surface = None
+    error = str(result.get("error") or "").strip()[:_FAILED_TURN_ERROR_MAX_CHARS]
+    return {k: v for k, v in (("error", error), ("error_surface", surface)) if v}
+
+
 def _close_durable_failed_turn(agent, result: Any) -> None:
     """Append a Hermes-authored assistant boundary when a failed turn left ``user`` as the
     durable conversation tail (in place, on ``result["messages"]`` and in SessionDB).
@@ -1734,9 +1753,12 @@ def _close_durable_failed_turn(agent, result: Any) -> None:
         # hedge over the whole list rather than under-report a possible side effect.
         start = result.get("current_turn_user_idx")
         turn_messages = messages[start:] if isinstance(start, int) and 0 <= start < len(messages) else messages
-        append_message(messages, {
+        boundary = {
             "role": "assistant", "content": failed_turn_notice(turn_messages), "display_kind": FAILED_TURN_DISPLAY_KIND,
-        })
+        }
+        if failure := _failed_turn_display_metadata(agent, result):
+            boundary["display_metadata"] = failure
+        append_message(messages, boundary)
         agent._flush_messages_to_session_db(messages)
     except Exception:
         logger.debug("failed-turn boundary not written", exc_info=True)

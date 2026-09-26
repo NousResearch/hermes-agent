@@ -31,6 +31,7 @@ from gateway.platforms.base import SendResult
 from gateway.platforms.webhook import (
     WebhookAdapter,
     _INSECURE_NO_AUTH,
+    _UNPARSEABLE,
 )
 
 
@@ -373,6 +374,28 @@ class TestEventFilter:
 # ===================================================================
 # Payload filters
 # ===================================================================
+
+
+class TestBodyParseContract:
+    """An undecodable body must reach the fallback and 400, not escape as a 500 (#122754)."""
+
+    def test_parse_body_invalid_bytes_is_unparseable(self):
+        # json.loads(bytes) raises UnicodeDecodeError on bytes undecodable in the
+        # encoding it detects — it must reach the fallback, not escape as a 500.
+        assert WebhookAdapter._parse_body(b"\xff\xff\xff") is _UNPARSEABLE
+
+    def test_parse_body_form_fallback_still_parses(self):
+        assert WebhookAdapter._parse_body(b"a=1&b=2") == {"a": "1", "b": "2"}
+
+    @pytest.mark.asyncio
+    async def test_undecodable_body_is_400_not_500(self):
+        routes = {"gh": {"secret": _INSECURE_NO_AUTH, "prompt": "hi"}}
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/webhooks/gh", data=b"\xff\xff\xff")
+            assert resp.status == 400
 
 
 class TestPayloadFilters:

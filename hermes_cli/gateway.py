@@ -1066,6 +1066,13 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: b
             respawn_cwd = ""
             respawn_env_overlay = {}
 
+    expected_pid_start_time = None
+    try:
+        from gateway.status import get_process_start_time
+        expected_pid_start_time = get_process_start_time(old_pid)
+    except Exception:
+        pass
+
     # cwd/env overlay are embedded as JSON literals in the watcher source (no extra argv plumbing).
     watcher = textwrap.dedent(
         """
@@ -1076,18 +1083,30 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: b
         from hermes_cli._subprocess_compat import (
             _WINDOWS_GATEWAY_BREAKAWAY_ENV, windows_detach_flags, windows_detach_flags_without_breakaway,
         )
+        from gateway.status import _get_process_start_time, _pid_exists, start_time_fingerprints_match
 
         pid = int(sys.argv[1])
         cmd = sys.argv[2:]
         _respawn_cwd = {respawn_cwd_literal}
         _respawn_env_overlay = {respawn_env_literal}
+        expected_pid_start_time = {expected_pid_start_time_literal}
         deadline = time.monotonic() + {watcher_timeout_literal}
         while time.monotonic() < deadline:
             # ``os.kill(pid, 0)`` is not a no-op on Windows — use the cross-platform existence check.
-            from gateway.status import _pid_exists
             if not _pid_exists(pid):
                 break
             time.sleep(0.2)
+        else:
+            if _pid_exists(pid):
+                current_start_time = _get_process_start_time(pid)
+                same_process = (
+                    expected_pid_start_time is None
+                    or current_start_time is None
+                    or start_time_fingerprints_match(expected_pid_start_time, current_start_time)
+                )
+                if same_process:
+                    # don't start a second gateway if the original process is still around
+                    sys.exit(0)
 
         # Route the respawned gateway's stray stdout/stderr to the same sidecar log _spawn_detached
         # uses: with DEVNULL a gateway killed moments after respawn (parent Job Object teardown when
@@ -1141,8 +1160,12 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: b
                 except OSError:
                     pass
         """
-    ).strip().format(respawn_cwd_literal=json.dumps(respawn_cwd), respawn_env_literal=json.dumps(respawn_env_overlay),
-                     watcher_timeout_literal=json.dumps(GATEWAY_RESTART_WATCHER_TIMEOUT_S))
+    ).strip().format(
+        respawn_cwd_literal=json.dumps(respawn_cwd),
+        respawn_env_literal=json.dumps(respawn_env_overlay),
+        expected_pid_start_time_literal=json.dumps(expected_pid_start_time),
+        watcher_timeout_literal=json.dumps(GATEWAY_RESTART_WATCHER_TIMEOUT_S),
+    )
 
     watcher_argv = [sys.executable, "-c", watcher, str(old_pid), *run_argv]
     devnull = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
@@ -5656,4 +5679,3 @@ def _pm_runtime_venv_dir(project_root: Path | None = None) -> Path | None:
 
     venv = selected_venv(root)  # a malformed committed selection raises: fail closed
     return venv if venv.is_dir() else None
-

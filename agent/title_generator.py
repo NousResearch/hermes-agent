@@ -48,6 +48,9 @@ RuntimeValidator = Callable[[], bool]
 MAX_TITLE_INPUT_CHARS = 1000
 _PASTE_PREVIEW_LABEL = "\n\nPasted content:\n"
 _ATTACHMENT_REF_RE = re.compile(r"@(?:file|folder):\S+")
+_BARE_ATTACHMENT_LINE_RE = re.compile(
+    r"^@(?P<kind>file|folder|image):(?:`[^`]+`|\"[^\"]+\"|'[^']+'|\S+)$"
+)
 # Footers the @-reference expander appends below the typed text (agent/context_references.py).
 _CONTEXT_FOOTER_RE = re.compile(r"\n+--- (?:Context Warnings|Attached Context) ---\n.*", re.DOTALL)
 # Cap on the instant derived title; a raw fragment reads worse the longer it runs.
@@ -281,6 +284,39 @@ def _summarize_user_message(user_message: str) -> str:
     return strip_control_wrappers(user_message if described is None else described)
 
 
+def _strip_attachment_scaffolding(message: str) -> tuple[str, set[str]]:
+    """Remove client-generated edge references, not references inside the user's prose."""
+    if not any(_BARE_ATTACHMENT_LINE_RE.fullmatch(line.strip()) for line in message.splitlines()):
+        return message.strip(), set()
+    # Hermes appends expanded file content after this delimiter. It belongs to
+    # the model's context, not to the text that should name the conversation.
+    lines = _CONTEXT_FOOTER_RE.sub("", message).strip().splitlines()
+    kinds: set[str] = set()
+    while lines and (match := _BARE_ATTACHMENT_LINE_RE.fullmatch(lines[0].strip())):
+        kinds.add(match.group("kind"))
+        lines.pop(0)
+        while lines and not lines[0].strip():
+            lines.pop(0)
+        if match.group("kind") == "image" and lines and lines[0].strip() == "[screenshot]":
+            lines.pop(0)
+    while lines:
+        while lines and not lines[-1].strip():
+            lines.pop()
+        if not lines:
+            break
+        screenshot = lines[-1].strip() == "[screenshot]"
+        ref_index = -2 if screenshot else -1
+        match = (_BARE_ATTACHMENT_LINE_RE.fullmatch(lines[ref_index].strip())
+                 if len(lines) >= (2 if screenshot else 1) else None)
+        if not match or (screenshot and match.group("kind") != "image"):
+            break
+        kinds.add(match.group("kind"))
+        if screenshot:
+            lines.pop()
+        lines.pop()
+    return "\n".join(lines).strip(), kinds
+
+
 def build_title_input(user_message: str, title_preview: str | None = None) -> str:
     """Combine the opening text with a bounded Desktop-generated paste preview.
 
@@ -289,9 +325,11 @@ def build_title_input(user_message: str, title_preview: str | None = None) -> st
     Keep enough of a separately typed request to preserve a useful instruction,
     then spend the remaining title budget on the beginning of the pasted topic.
     """
-    message = _summarize_user_message(user_message)
+    message, attachment_kinds = _strip_attachment_scaffolding(_summarize_user_message(user_message))
     preview = title_preview.strip() if isinstance(title_preview, str) else ""
     if not preview:
+        if not message and attachment_kinds:
+            message = "Attached image" if "image" in attachment_kinds else "Attached file"
         return message[:MAX_TITLE_INPUT_CHARS]
     # The titler sees the message AFTER @-reference expansion, so the generated ref drags a
     # warnings/attached-context footer along; the preview already carries the topic, so drop it.

@@ -58,12 +58,17 @@ def _best_effort(fn) -> bool:
 
 @contextlib.contextmanager
 def _hermes_home_scope(path):
-    """Scope config/auth resolution to ``path`` for the block."""
-    token = set_hermes_home_override(str(path))
+    """Bind ``path``'s full runtime scope (home + secrets + terminal) for the block. Home alone is
+    half-bound: under multi-profile hosting every credential read raised ``UnscopedSecretError``,
+    which a best-effort ``_try`` turned into a plausible wrong answer (the toolset snapshot's
+    ``XAI_API_KEY`` probe → "every toolset off", #120726). No external-source hydration: these
+    bodies read and write config, they never call a provider."""
+    launch = Path(path).resolve() == Path(_hermes_home).resolve()
+    scopes = _profile_runtime_scope_tokens(None if launch else path, hydrate_secrets=False)
     try:
         yield
     finally:
-        reset_hermes_home_override(token)
+        _release_profile_runtime_scope_tokens(scopes)
 
 
 def _resolve_profile(rid, params):

@@ -8,6 +8,7 @@ staleness state).
 
 import base64
 import errno
+import hashlib
 import json
 import logging
 import os
@@ -528,7 +529,7 @@ def _dedup_stub_or_block(task_data: dict, dedup_key: tuple, path: str) -> str:
 def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_str: str,
                             offset: int, limit: int, dedup_key: tuple, *, partial: bool,
                             redacted: bool = False, end_line: int | None = None,
-                            total_lines=None, version_before=None, snapshot=None) -> int:
+                            total_lines=None, version_before=None, snapshot=None, content: str = "") -> int:
     """Bookkeeping after a real (non-stub) read; returns the consecutive-read count.
 
     Per-task tracker under the lock (stub counter, history, consecutive count,
@@ -543,12 +544,15 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
     """
     version = (snapshot or _file_version(resolved_str)) if version_before is not None else None
     stable = version is not None and version[:-1] == version_before == _file_metadata(resolved_str)
+    # The same region can show new information after another actor writes it.
+    # Fingerprint the visible payload so this also works on remote backends.
+    read_digest = hashlib.sha256(content.encode("utf-8")).digest()
     complete = False
     with _read_tracker_lock:
         task_data["dedup_hits"].pop(dedup_key, None)
         task_data["dedup_generation_reads"].add(dedup_key)
         task_data["read_history"].add((path, offset, limit))
-        count = _bump_consecutive(task_data, ("read", path, offset, limit))
+        count = _bump_consecutive(task_data, ("read", path, offset, limit, read_digest))
         try:
             _mtime_now = os.path.getmtime(resolved_str)
             task_data.setdefault("read_timestamps", {})[resolved_str] = _mtime_now
@@ -729,7 +733,8 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                                         redacted=redacted or bool(result_dict.get("truncated_lines")),
                                         end_line=end_line, total_lines=total_lines,
                                         version_before=version_before,
-                                        snapshot=getattr(result, "_snapshot", None))
+                                        snapshot=getattr(result, "_snapshot", None),
+                                        content=result.content or "")
         if count >= 4:
             return tool_error(
                 f"BLOCKED: You have read this exact file region {count} times in a row. "
@@ -1042,20 +1047,6 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
         # Pagination args (and order) are part of the key so paging through truncated
         # results doesn't trip the repeated-search guard.
         search_key = ("search", pattern, target, str(path), file_glob or "", limit, offset, order)
-        with _read_tracker_lock:
-            task_data = _read_tracker.setdefault(task_id, {
-                "last_key": None, "consecutive": 0, "read_history": set()})
-            count = _bump_consecutive(task_data, search_key)
-
-        if count >= 4:
-            return tool_error(
-                f"BLOCKED: You have run this exact search {count} times in a row. "
-                "The results have NOT changed. You already have this information. "
-                "STOP re-searching and proceed with your task.",
-                pattern=pattern,
-                already_searched=count,
-                **{GUARDRAIL_REFUSAL_KEY: True})
-
         # Raw string before _resolve_path_for_task: resolving is the NTLM-leak
         # trigger and the task-base join would hide the prefix (see read_file_tool).
         nt_err = get_nt_namespace_error(path, verb="Search")
@@ -1077,27 +1068,41 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
         # "Similar paths"); cache the miss so a retry skips both.
         cached_search_nf = _check_not_found_cache("search", resolved_search_path, task_id)
         if cached_search_nf is not None:
-            return cached_search_nf
+            result_dict = json.loads(cached_search_nf)
+        else:
+            result = _get_file_ops(task_id).search(
+                pattern=pattern, path=path, target=target, file_glob=file_glob,
+                limit=limit, offset=offset, output_mode=output_mode, context=context, order=order)
+            omitted = _filter_read_blocked_search_results(result, task_id)
+            for m in getattr(result, "matches", None) or ():
+                if getattr(m, "content", None):
+                    m.content = redact_sensitive_text(
+                        m.content, file_read=True,
+                        secret_file=_is_secret_file_arg(_resolved_match_path(m.path, task_id)))
+            result_dict = result.to_dict(densify=True)
 
-        result = _get_file_ops(task_id).search(
-            pattern=pattern, path=path, target=target, file_glob=file_glob,
-            limit=limit, offset=offset, output_mode=output_mode, context=context, order=order)
-        omitted = _filter_read_blocked_search_results(result, task_id)
-        for m in getattr(result, "matches", None) or ():
-            if getattr(m, "content", None):
-                m.content = redact_sensitive_text(
-                    m.content, file_read=True,
-                    secret_file=_is_secret_file_arg(_resolved_match_path(m.path, task_id)))
-        result_dict = result.to_dict(densify=True)
+            if omitted:
+                result_dict["_omitted"] = (
+                    f"{omitted} result(s) omitted because they target credential, "
+                    "token, cache, or secret-bearing environment files.")
 
-        if omitted:
-            result_dict["_omitted"] = (
-                f"{omitted} result(s) omitted because they target credential, "
-                "token, cache, or secret-bearing environment files.")
+        # Compare the visible results before adding this guard's own warnings.
+        result_digest = hashlib.sha256(
+            json.dumps(result_dict, sort_keys=True, ensure_ascii=False).encode("utf-8")).digest()
+        with _read_tracker_lock:
+            count = _bump_consecutive(_task_data(task_id), (*search_key, result_digest))
+        if count >= 4:
+            return tool_error(
+                f"BLOCKED: You have run this exact search {count} times in a row. "
+                "The results have NOT changed. You already have this information. "
+                "STOP re-searching and proceed with your task.",
+                pattern=pattern,
+                already_searched=count,
+                **{GUARDRAIL_REFUSAL_KEY: True})
 
         # No early return on a cached miss — same rationale as the read path.
         _search_err = result_dict.get("error") or ""
-        if isinstance(_search_err, str) and _search_err.startswith("Path not found:"):
+        if cached_search_nf is None and isinstance(_search_err, str) and _search_err.startswith("Path not found:"):
             _record_not_found("search", resolved_search_path, task_id, json.dumps(result_dict, ensure_ascii=False))
 
         if count >= 3:

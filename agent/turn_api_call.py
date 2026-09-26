@@ -87,6 +87,9 @@ def perform_api_call(
     _use_streaming = _should_stream(agent)
 
     def _perform_api_call(next_api_kwargs):
+        from agent.chat_completion_helpers import _deepseek_preflight_body_check
+
+        _deepseek_preflight_body_check(agent, next_api_kwargs)
         if agent.api_mode == "codex_responses":
             next_api_kwargs = agent._get_transport().preflight_kwargs(
                 next_api_kwargs, allow_stream=False, is_github_responses=agent._is_copilot_url(),

@@ -1,12 +1,24 @@
 import { describe, expect, it } from 'vitest'
 
-import { currentPickerSelection, displayModelName, formatModelPillLabel, modelDisplayParts } from './model-status-label'
+import {
+  PROVIDER_DISPLAY_NAMES,
+  currentPickerSelection,
+  displayModelName,
+  formatModelPillLabel,
+  modelDisplayParts
+} from './model-status-label'
 
 describe('model-status-label', () => {
   it('strips trailing date-pin snapshots and dots hyphenated Anthropic versions', () => {
     expect(displayModelName('claude-opus-4-5-20251101')).toBe('Opus 4.5')
     expect(displayModelName('anthropic/claude-haiku-4-5-20251001')).toBe('Haiku 4.5')
     expect(displayModelName('claude-fable-5-1')).toBe('Fable 5.1')
+  })
+
+  it('keeps the Claude Code OAuth provider title short', () => {
+    // The onboarding list and the model pill share PROVIDER_DISPLAY_NAMES; the old
+    // "Required Extra Usage Credits to Use Subscription" label was unreadable there.
+    expect(PROVIDER_DISPLAY_NAMES['claude-code']).toBe('Anthropic OAuth (Claude Code)')
   })
 
   it('renders the Anthropic 1M-context route suffix as a tag, never raw brackets', () => {

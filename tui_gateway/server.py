@@ -2576,9 +2576,14 @@ def _hydrate_session_cwd(sid: str, key: str, session_db, profile_home: str | Non
         if db is not None:
             row = db.get_session(key) if hasattr(db, "get_session") else None
             if row and row.get("cwd"):
+                # An ssh session's stored cwd is its workspace: explicit, so the remote terminal uses it instead of
+                # the profile's ~. Other backends keep main's semantics (resolved outside the sessions lock: I/O).
+                remote = _cwd_is_remote(profile_home)
                 with _sessions_lock:
                     if sid in _sessions:
                         _sessions[sid]["cwd"] = row["cwd"]
+                        if remote:
+                            _sessions[sid]["explicit_cwd"] = True
             elif hasattr(db, "update_session_cwd"):
                 try:
                     _persist_session_cwd_and_schedule_git_meta(_sessions[sid], _sessions[sid]["cwd"], db=db)

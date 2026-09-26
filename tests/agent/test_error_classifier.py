@@ -751,6 +751,44 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.payload_too_large
         assert result.should_compress is True
 
+    def test_413_tokens_per_minute_is_rate_limit_not_payload_too_large(self):
+        # Groq returns 413 (not 429) when a request's token count exceeds the
+        # per-minute quota for the model/org, e.g. "Request too large for model
+        # `openai/gpt-oss-120b` ... on tokens per minute (TPM): Limit 8000,
+        # Requested 16885". This is a rate limit wearing a payload-size status
+        # code: routing it to payload_too_large's compress-and-retry recovery is
+        # wrong (a fresh session has nothing to compress, so the turn fails
+        # outright instead of reaching the next fallback provider). Regression
+        # for the learn-daily cron incident, 2026-09-21.
+        e = MockAPIError(
+            "Request too large for model `openai/gpt-oss-120b` in organization "
+            "`org_123` service tier `on_demand` on tokens per minute (TPM): "
+            "Limit 8000, Requested 16885, please reduce your message size and "
+            "try again.",
+            status_code=413,
+        )
+        result = classify_api_error(e, provider="groq", model="openai/gpt-oss-120b")
+        assert result.reason == FailoverReason.rate_limit
+        assert result.should_compress is False
+        assert result.should_fallback is True
+
+    def test_413_requests_per_day_is_rate_limit(self):
+        e = MockAPIError("Request rejected: requests per day limit exceeded", status_code=413)
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.rate_limit
+        assert result.should_fallback is True
+
+    def test_413_without_rate_limit_phrase_stays_payload_too_large(self):
+        # A genuine over-window-for-any-provider payload must still compress —
+        # only a message carrying an explicit rate-limit phrase gets refined.
+        e = MockAPIError(
+            "Request Entity Too Large: message exceeds the 200000 token context window",
+            status_code=413,
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.payload_too_large
+        assert result.should_compress is True
+
     # ── Context overflow ──
 
 

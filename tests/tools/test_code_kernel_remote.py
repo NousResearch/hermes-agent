@@ -108,9 +108,21 @@ class RemoteKernelBase(unittest.TestCase):
 
 class TestSpawnAndReuse(RemoteKernelBase):
     def test_first_call_spawns_second_reuses(self):
-        env = ScriptedEnv(_spawn_ok_handlers(
+        healthy = _spawn_ok_handlers(
             [_cell(stdout="one\n"), _cell(stdout="two\n", execution_count=2)],
-        ))
+        )
+
+        def route(command):
+            if command.startswith("rm -f") and "cell_res_" in command:
+                raise ConnectionError("ssh dropped after the cell ran")
+            for needle, handler in healthy:
+                if needle in command:
+                    return handler(command)
+            return {"output": "", "returncode": 0}
+
+        # The result-file cleanup is best-effort: a transport drop after the
+        # cell ran must not surface (the caller would re-run the cell per-call).
+        env = ScriptedEnv([("", route)])
         first = _run(env)
         self.assertEqual(first["status"], "success", first)
         self.assertFalse(first["kernel"]["reused"])

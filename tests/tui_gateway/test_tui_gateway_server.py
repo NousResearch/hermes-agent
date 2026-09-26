@@ -19530,6 +19530,26 @@ def test_lru_reaper_revalidates_and_tries_next_candidate(monkeypatch):
         server._sessions.clear()
 
 
+@pytest.mark.real_agent_prewarm
+def test_session_create_under_turn_isolation_keeps_routing_to_compute_host(monkeypatch):
+    # session.create pre-warms an AIAgent 50ms later. Under turn isolation that parent-side
+    # agent made _session_uses_compute_host() False, so the chat's turns ran in-process.
+    built = []
+    monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"dashboard": {"turn_isolation": True}})
+    monkeypatch.setattr(server, "_start_agent_build", lambda sid, _session: built.append(sid))
+    try:
+        sid = server._methods["session.create"]("iso-create", {"cols": 80})["result"]["session_id"]
+        session = server._sessions[sid]
+        time.sleep(0.3)  # well past the 50ms pre-warm timer
+
+        assert built == []
+        assert session["agent"] is None
+        assert server._session_uses_compute_host(session)
+    finally:
+        server._sessions.clear()
+
+
 def test_session_create_records_ui_model_as_session_override(monkeypatch):
     """The desktop composer owns its model as plain UI state and ships it on
     session.create. The gateway must record it as a PER-SESSION override (built

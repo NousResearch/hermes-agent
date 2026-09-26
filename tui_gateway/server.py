@@ -2749,6 +2749,10 @@ def _finalize_superseded_runtimes(stale: list[tuple[str, dict]]) -> None:
 
 def _schedule_agent_build(sid: str, delay: float = 0.05) -> None:
     """Pre-warm a deferred session's agent off the response path (session.create + cold resume; _sess() also builds on demand)."""
+    if _turn_isolation_enabled():
+        # The compute host owns the turn's AIAgent. A parent-side agent would flip
+        # _session_uses_compute_host() to False and run the session's turns in-process.
+        return
 
     def _run():
         if (session := _sessions.get(sid)) is not None:
@@ -2814,7 +2818,8 @@ def _schedule_resume_hydration(sid: str, stored_id: str, db, *, close_db: bool =
             _emit("session.resume_progress", sid,
                   {"message_count": session["resume_message_count"], "phase": "history", "status": "complete"})
             _maybe_schedule_auto_continue(sid, session, stored_id)
-            _start_agent_build(sid, session)
+            if not _turn_isolation_enabled():  # same reason as _schedule_agent_build
+                _start_agent_build(sid, session)
         except Exception as exc:
             if _sessions.get(sid) is not session:
                 return

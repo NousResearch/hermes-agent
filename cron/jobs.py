@@ -1391,12 +1391,16 @@ def load_jobs() -> List[Dict[str, Any]]:
         jobs = [j for j in jobs if isinstance(j, dict)]
         repair = repair or "non-object entries dropped"
     for job in jobs:
-        # A hand-edited "completed": null would crash every counter reader (None += 1, None >= n)
-        # and render as "None/3"; normalize it once here so readers can trust an int.
+        # A hand-edited "completed" that is not an int (null, "2", 1.0) would crash every counter
+        # reader (None += 1, "2" + 1) or render as "None/3" / "2.0/3"; normalize it once here so
+        # readers can trust an int.
         rep = job.get("repeat")
-        if isinstance(rep, dict) and "completed" in rep and rep["completed"] is None:
-            rep["completed"] = 0
-            repair = repair or "null repeat.completed reset to 0"
+        if isinstance(rep, dict) and "completed" in rep and type(rep["completed"]) is not int:
+            try:
+                rep["completed"] = max(int(rep["completed"] or 0), 0)
+            except (TypeError, ValueError):
+                rep["completed"] = 0
+            repair = repair or "invalid repeat.completed normalized"
     # Persist even an empty result, or an all-junk store repeats the repair on every tick.
     if repair:
         if not getattr(_jobs_lock_state, "depth", 0):

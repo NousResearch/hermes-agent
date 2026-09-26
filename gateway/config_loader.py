@@ -219,6 +219,7 @@ _SHARED_KEYS: tuple = (
         "group_policy", "group_allow_from", "group_allow_admin_from", "group_user_allowed_commands",
     ),
     ("channel_skill_bindings", _DISCORD_SLACK, None),
+    ("channel_skill_profiles", _DISCORD_SLACK, None),
     ("channel_prompts", None, _str_keyed),
     *_plain("gateway_restart_notification", "typing_indicator", "typing_status_text"),
 )

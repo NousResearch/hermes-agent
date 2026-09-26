@@ -4783,11 +4783,42 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         """Return whether Discord channel messages require a bot mention."""
         return self._extra_or_env_flag("require_mention", "DISCORD_REQUIRE_MENTION", "true", truthy=False)
 
-    def _discord_free_response_auto_thread(self) -> bool:
-        """Free-response channels also auto-thread when opted in; default replies inline."""
+    def _discord_free_response_auto_thread(self, channel_id: str | None = None) -> bool:
+        """Return whether a free-response channel should auto-thread.
+
+        The global flag keeps the historical opt-in, while ``free_response_auto_thread_channels``
+        enables the behavior for selected free-response channels without changing other lightweight
+        chat channels.
+        """
+        extra = getattr(self.config, "extra", None)
+        selected = extra.get("free_response_auto_thread_channels") if isinstance(extra, dict) else None
+        if channel_id and selected:
+            if isinstance(selected, str):
+                selected = selected.split(",")
+            if isinstance(selected, (list, tuple, set)) and str(channel_id) in {
+                str(value).strip() for value in selected if str(value).strip()
+            }:
+                return True
         return self._extra_or_env_flag(
             "free_response_auto_thread", "DISCORD_FREE_RESPONSE_AUTO_THREAD", "false", truthy=True,
         )
+
+    def should_semantic_rename_discord_thread(self, source: Any) -> bool:
+        """Return whether an auto-created Discord thread may be renamed from an LLM title.
+
+        Channels listed in ``auto_thread_title_original_channels`` keep the original post text as
+        their permanent thread title.
+        """
+        extra = getattr(self.config, "extra", None)
+        selected = extra.get("auto_thread_title_original_channels") if isinstance(extra, dict) else None
+        if isinstance(selected, str):
+            selected = selected.split(",")
+        if not isinstance(selected, (list, tuple, set)):
+            return True
+        channel_id = getattr(source, "parent_chat_id", None) or getattr(source, "chat_id", None)
+        return str(channel_id) not in {
+            str(value).strip() for value in selected if str(value).strip()
+        }
 
     def _discord_max_attachment_bytes(self) -> int:
         """Per-attachment byte cap; 0 = unlimited (whole attachment is held in memory). Default 32 MiB."""
@@ -6000,7 +6031,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             no_thread_channels = self._get_no_thread_channels()
             # Voice-linked and reply exclusions live in the auto-thread gate below, not in skip_thread.
             skip_thread = bool(channel_keys & no_thread_channels) or (
-                is_free_channel and not self._discord_free_response_auto_thread()
+                is_free_channel and not self._discord_free_response_auto_thread(current_channel_id)
             )
             auto_thread = self._extra_or_env_flag("auto_thread", "DISCORD_AUTO_THREAD", "true", truthy=True)
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply

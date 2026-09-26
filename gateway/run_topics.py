@@ -454,6 +454,16 @@ class GatewayTopicThreadsMixin:
         """Schedule Discord auto-thread rename from the auto-title background thread."""
         if not title:
             return
+        adapter = self._delivery_adapter_for(source) if getattr(self, "adapters", None) else None
+        rename_policy = getattr(adapter, "should_semantic_rename_discord_thread", None)
+        if callable(rename_policy):
+            with suppress(Exception):
+                if not rename_policy(source):
+                    logger.info(
+                        "discord auto-thread rename skipped: original title is locked for parent=%s",
+                        getattr(source, "parent_chat_id", None) or getattr(source, "chat_id", None),
+                    )
+                    return
         relay_info = None
         if not self._is_discord_auto_thread_lane(source):
             # Relay title turn: the source is the PARENT channel event (thread didn't exist at

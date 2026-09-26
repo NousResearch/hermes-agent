@@ -58,6 +58,30 @@ def test_the_rename_waits_for_the_model_title(lane):
     assert renames == ["Fix flaky auth test"]
 
 
+def test_original_title_policy_skips_discord_semantic_rename():
+    """A channel policy can keep the title derived from the user's original post."""
+    scheduled: list[str] = []
+    source = types.SimpleNamespace(
+        platform=Platform.DISCORD,
+        chat_id="thread-1",
+        parent_chat_id="1477833752460923011",
+        thread_id="thread-1",
+    )
+    adapter = types.SimpleNamespace(
+        should_semantic_rename_discord_thread=lambda current: False,
+    )
+    runner = types.SimpleNamespace(
+        adapters=True,
+        _delivery_adapter_for=lambda current: adapter,
+        _is_discord_auto_thread_lane=lambda current: True,
+        _is_relay_discord_channel_lane=lambda current: False,
+        _schedule_rename_from_title_thread=lambda *args: scheduled.append("rename"),
+    )
+
+    GatewayRunner._schedule_discord_semantic_thread_rename(runner, source, "session-1", "ぬぐいデカルコマニー")
+
+    assert scheduled == []
+
 @pytest.mark.anyio
 async def test_native_thread_rename_passes_only_the_initial_name_guard():
     """The shared rename lane must honor the strict native adapter contract."""

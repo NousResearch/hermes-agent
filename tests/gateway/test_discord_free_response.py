@@ -402,6 +402,35 @@ async def test_discord_free_response_auto_thread_opt_in(adapter, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_discord_free_response_channel_specific_auto_thread_opt_in(adapter, monkeypatch):
+    """A channel-specific opt-in threads one free-response channel without affecting others."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "789,790")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_AUTO_THREAD", raising=False)
+    adapter.config.extra["free_response_auto_thread_channels"] = ["789"]
+
+    created_thread = FakeThread(channel_id=456, name="auto-thread")
+    adapter._auto_create_thread = AsyncMock(return_value=created_thread)
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=789),
+        content="thread only this channel",
+    )
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_awaited_once_with(message)
+    assert adapter.handle_message.await_args.args[0].source.chat_id == "456"
+
+    adapter._auto_create_thread.reset_mock()
+    adapter.handle_message.reset_mock()
+    other = make_message(channel=FakeTextChannel(channel_id=790), content="keep this inline")
+    await adapter._handle_message(other)
+
+    adapter._auto_create_thread.assert_not_awaited()
+    assert adapter.handle_message.await_args.args[0].source.chat_id == "790"
+
+
+@pytest.mark.asyncio
 async def test_discord_no_thread_channels_wins_over_free_response_auto_thread(adapter, monkeypatch):
     """An explicit ``no_thread_channels`` listing still forces inline replies with the opt-in on."""
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")

@@ -1768,6 +1768,23 @@ def review_dispatch_enabled() -> bool:
         return True
 
 
+def review_profile() -> Optional[str]:
+    """Read ``kanban.review_profile``: the profile that runs review tasks.
+
+    The dispatcher spawns this profile for ``lane="review"`` so a card cannot
+    self-review. Unset (or not a non-blank string) -> None, which preserves the
+    historical behaviour of reviewing as the row's own assignee.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+        raw = (load_config_readonly() or {}).get("kanban", {}).get("review_profile")
+    except Exception:
+        return None
+    if not isinstance(raw, str):
+        return None
+    return raw.strip() or None
+
+
 # Memory-aware dispatch guard: an uncapped board once OOM'd a 1 GiB host. Two
 # safeguards — a memory-DERIVED default cap when none is configured
 # (``resolve_max_in_progress``) and a live memory-PRESSURE guard inside the
@@ -2002,26 +2019,34 @@ def _dispatch_lane_task(
     spawn_fn,
     per_profile_cap: Optional[int],
     per_profile_running: dict[str, int],
+    review_profile: Optional[str] = None,
 ) -> bool:
     """Guard, claim, resolve the workspace and spawn one ready/review row.
     Returns True when a spawn slot was consumed (real or ``dry_run``); every
     skip is recorded on ``result``.
     """
     task_id = row["id"]
+    # Review self-review guard: with ``kanban.review_profile`` resolved, the
+    # review lane spawns that profile instead of the row's assignee, which is the
+    # card's own implementer whenever no reviewer was reassigned. Applies to the
+    # review lane only, and to the spawn only — see the claim below.
+    effective_assignee = (
+        review_profile if (lane == "review" and review_profile) else assignee
+    )
     # Non-profile assignees (control-plane lanes that pull via ``claim_task``)
     # would fail ``hermes -p <assignee>`` at startup and loop ready→crash→ready
     # forever. Bucketed apart from skipped_unassigned: the operator cannot fix
     # it by assigning a profile, and health telemetry suppresses "stuck" for it.
     profile_exists = _profile_exists_fn()
-    if profile_exists is not None and not profile_exists(assignee):
+    if profile_exists is not None and not profile_exists(effective_assignee):
         result.skipped_nonspawnable.append(task_id)
         return False
     # Per-profile cap: one profile's local model / API quota / browser pool
     # must not be overwhelmed by a fan-out even with global headroom.
     if per_profile_cap is not None:
-        current = per_profile_running.get(assignee, 0)
+        current = per_profile_running.get(effective_assignee, 0)
         if current >= per_profile_cap:
-            result.skipped_per_profile_capped.append((task_id, assignee, current))
+            result.skipped_per_profile_capped.append((task_id, effective_assignee, current))
             return False
     guard_reason = check_respawn_guard(conn, task_id, lane=lane)
     if guard_reason is not None:
@@ -2045,13 +2070,20 @@ def _dispatch_lane_task(
             per_profile_running[name] = per_profile_running.get(name, 0) + 1
 
     if dry_run:
-        result.spawned.append((task_id, assignee, ""))
-        _count_spawn(assignee)
+        result.spawned.append((task_id, effective_assignee, ""))
+        _count_spawn(effective_assignee)
         return True
     claim = _kb.claim_review_task if lane == "review" else _kb.claim_task
     claimed = claim(conn, task_id, ttl_seconds=ttl_seconds)
     if claimed is None:
         return False
+    if effective_assignee and effective_assignee != (claimed.assignee or ""):
+        # Spawn-only override: ``_default_spawn`` builds ``hermes -p <profile>``
+        # from ``task.assignee``, but the task's DB assignee stays whatever the
+        # worker/orchestrator set (the board keeps showing it). Below, only
+        # id-scoped setters write back — never this in-memory copy — so the
+        # override cannot leak into the row.
+        claimed.assignee = effective_assignee
     try:
         resolved_branch_name = None
         if claimed.workspace_kind == "worktree":
@@ -2234,6 +2266,7 @@ def _any_spawnable_review(
     *,
     per_profile_cap: Optional[int] = None,
     per_profile_running: Optional[dict[str, int]] = None,
+    review_profile: Optional[str] = None,
 ) -> bool:
     """Mirror review dispatch gates before reserving ready-lane capacity.
 
@@ -2242,6 +2275,12 @@ def _any_spawnable_review(
     assignee already at the per-profile cap, or respawn-guarded — cannot
     consume the reservation, so it must not withhold capacity from an
     otherwise ready task (one such row would pin ``ready_budget`` to 0).
+
+    With a resolved ``kanban.review_profile`` the row's own assignee is not what
+    gets spawned any more, so it stops deciding spawnability: the lane runs that
+    profile for every assigned review row, including cards whose assignee string
+    is not an installed profile (stale routing left on the board). The profile
+    that actually runs is the one the per-profile cap counts.
     """
     if not review_rows:
         return False
@@ -2251,9 +2290,11 @@ def _any_spawnable_review(
         assignee = row["assignee"]
         if not assignee:
             continue
-        if profile_exists is not None and not profile_exists(assignee):
+        # The spawn target decides the cap once review_profile is resolved.
+        target = review_profile or assignee
+        if review_profile is None and profile_exists is not None and not profile_exists(assignee):
             continue
-        if per_profile_cap is not None and running.get(assignee, 0) >= per_profile_cap:
+        if per_profile_cap is not None and running.get(target, 0) >= per_profile_cap:
             continue
         if check_respawn_guard(conn, row["id"], lane="review") is None:
             return True
@@ -2272,6 +2313,31 @@ def _resolve_default_assignee(default_assignee: Optional[str]) -> Optional[str]:
         profile_exists = _profile_exists_fn()
         if profile_exists is not None and not profile_exists(name):
             return None
+    return name
+
+
+def _resolve_review_profile(configured: Optional[str]) -> Optional[str]:
+    """``kanban.review_profile`` when it names an installed profile, else None.
+
+    Mirrors :func:`_resolve_default_assignee`, including trusting the operator's
+    value when the profiles module is unavailable (the per-lane
+    ``_profile_exists_fn`` check still buckets a missing profile as
+    nonspawnable). Unlike the default assignee there is no fallback name: an
+    unresolvable ``review_profile`` must not silently review as the author, so
+    None means "keep the historical row-assignee behaviour".
+    """
+    name = (configured or "").strip() or None
+    if name:
+        try:
+            from hermes_cli.profiles import profile_exists
+            if not profile_exists(name):
+                _kb._log.warning(
+                    "kanban.review_profile %r is not an installed profile; "
+                    "review tasks run as their own assignee", name,
+                )
+                return None
+        except Exception:
+            pass
     return name
 
 
@@ -2310,6 +2376,14 @@ def _dispatch_once_locked(
         return result
 
     ready_rows = _lane_rows(conn, "ready")
+    # Reviews must not be self-reviews: when ``kanban.review_profile`` names an
+    # installed profile, the review lane spawns it instead of the row's own
+    # assignee — the card's implementer, whenever no reviewer was reassigned.
+    # Resolved once per tick; unset or unresolvable -> None, which is exactly the
+    # historical behaviour. Read here rather than by the caller so every dispatch
+    # entry point (gateway tick, CLI, dashboard) honours the key, mirroring
+    # ``review_dispatch_enabled()`` just below.
+    resolved_review_profile = _resolve_review_profile(review_profile())
     # Review rows are enumerated up front so the budget split can see whether
     # review work exists at all.
     review_rows = _lane_rows(conn, "review") if review_dispatch_enabled() else []
@@ -2341,12 +2415,14 @@ def _dispatch_once_locked(
     if spawn_budget is not None and spawn_budget > 0 and _any_spawnable_review(
         conn, review_rows,
         per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
+        review_profile=resolved_review_profile,
     ):
         ready_budget = max(spawn_budget - 1, 0)
     lane_kwargs: dict[str, Any] = dict(
         dry_run=dry_run, ttl_seconds=ttl_seconds, board=board,
         failure_limit=failure_limit, spawn_fn=spawn_fn,
         per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
+        review_profile=resolved_review_profile,
     )
     default_assignee = _resolve_default_assignee(default_assignee)
     spawned = 0

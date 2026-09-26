@@ -307,6 +307,11 @@ def allow_deprecated_imports(config: Optional[dict] = None) -> bool:
 
 def disable_reason(manifest, *, today: Optional[_dt.date] = None) -> Optional[str]:
     """Why the loader must skip this plugin now, or None. Only ever non-None after the removal date."""
+    # Belt-and-braces: _scan_root already returns None for source == "bundled", so this saves the
+    # config read below and a load_manifest() call rather than an AST walk. Kept so the invariant is
+    # local to this function instead of depending on _scan_root.
+    if getattr(manifest, "source", "") == "bundled":
+        return None
     if not removal_in_effect(today) or allow_deprecated_imports():
         return None
     hits = plugin_hits(manifest)

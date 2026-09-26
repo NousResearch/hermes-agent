@@ -614,6 +614,24 @@ function Invoke-Native([scriptblock]$Command) {
     & $Command
 }
 
+# Windows PowerShell 5.1 decodes a native command's CAPTURED output with
+# [Console]::OutputEncoding -- the console's OEM code page (936/gb2312 on a
+# zh-CN box) unless something changed it -- while uv prints UTF-8
+# unconditionally. A non-ASCII install path (C:\Users\<name-with-CJK>\...)
+# therefore arrives mangled, `uv python find` hands back a path that does not
+# exist, and the dependency stage (and the whole bootstrap) fails. Capture
+# under a UTF-8 window so the bytes survive; the caller still judges
+# $LASTEXITCODE, exactly like Invoke-Native.
+function Invoke-NativeUtf8([scriptblock]$Command) {
+    $previous = [Console]::OutputEncoding
+    try {
+        [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+        & $Command
+    } finally {
+        [Console]::OutputEncoding = $previous
+    }
+}
+
 # Interactive runs collapse child-process output (git, uv, pm, the builds)
 # into one status line. CI, -Verbose and redirected output -- the
 # Hermes-Setup -Json driver, E2E transcripts -- keep the full stream those
@@ -901,11 +919,11 @@ function Get-BootstrapPython {
     # A bare version lets uv pick emulated x86_64 on Windows-on-ARM.
     $pyArch = if ((Get-WindowsArch) -eq 'arm64') { 'aarch64' } else { 'x86_64' }
     $pyRequest = "cpython-$pyVersion-windows-$pyArch-none"
-    $bootPy = (Invoke-Native { & $uv python find --managed-python --no-project $pyRequest 2>$null }) -join "`n"
+    $bootPy = (Invoke-NativeUtf8 { & $uv python find --managed-python --no-project $pyRequest 2>$null }) -join "`n"
     if ($LASTEXITCODE -or -not $bootPy) {
         Invoke-Logged "Downloading Python $pyVersion" { & $uv python install --no-bin --no-registry $pyRequest }
         if ($LASTEXITCODE) { Fail "bootstrap Python installation failed" }
-        $bootPy = (Invoke-Native { & $uv python find --managed-python --no-project $pyRequest }) -join "`n"
+        $bootPy = (Invoke-NativeUtf8 { & $uv python find --managed-python --no-project $pyRequest }) -join "`n"
     }
     if ($LASTEXITCODE -or -not $bootPy) { Fail "bootstrap Python lookup failed" }
     $script:BootstrapPython = $bootPy.Trim()

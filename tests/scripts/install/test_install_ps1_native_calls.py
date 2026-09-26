@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 
 import pytest
 
@@ -45,6 +46,27 @@ def test_path_uv_must_run_and_meet_the_pin(tmp_path):
     result = _dot_sourced(checks)
     assert result.returncode == 0, result.stdout + result.stderr
     assert result.stdout.split() == ["old=False", "new=True", "broken=False"]
+
+
+def test_uv_find_output_survives_a_non_utf8_console_code_page(tmp_path):
+    """`uv python find` answers in UTF-8; a captured native command's output is decoded with the
+    console's OEM code page (gb2312 here) unless the capture runs under a UTF-8 window, so a
+    non-ASCII install path arrived mangled and the dependency stage failed."""
+    emit = tmp_path / "emit.py"
+    emit.write_text('import sys\nsys.stdout.write("C:/Users/\\u5f20\\u4e09/temp/file.txt")\n', encoding="utf-8")
+    result_file = tmp_path / "result.txt"
+    body = (f"$py = '{sys.executable}'; $emit = '{emit}'; $mark = [string][char]0x5f20; "
+            "$ambient = [Console]::OutputEncoding.WebName; "
+            "$raw = ((& $py -X utf8 $emit) -join ' ').Trim(); "
+            "$fixed = ((Invoke-NativeUtf8 { & $py -X utf8 $emit }) -join ' ').Trim(); "
+            "foreach ($v in @($ambient, $raw.Contains($mark), $fixed.Contains($mark))) "
+            f"{{ Add-Content -Path '{result_file}' -Value $v }}")
+    result = _dot_sourced(body)
+    assert result.returncode == 0, result.stdout + result.stderr
+    ambient, raw_has, fixed_has = result_file.read_text(encoding="utf-8").split()
+    assert fixed_has == "True", f"ambient={ambient}: Invoke-NativeUtf8 mangled the path"
+    if ambient != "utf-8":
+        assert raw_has == "False", f"ambient={ambient}: the plain capture stopped mangling"
 
 
 def _git(repo: Path, *args: str) -> str:

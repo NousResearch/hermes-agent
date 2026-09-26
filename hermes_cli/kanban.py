@@ -824,7 +824,18 @@ def _worker_run_id_for(task_id: str) -> Optional[int]:
         return None
 
 
-def _goal_mode_handoff_rejection(task: Optional[kb.Task], evidence: str):
+# Kept in sync with tools/kanban_tools.py's copy of this note (#98160).
+_REVIEW_READINESS_NOTE = (
+    "\n\nJudging note: this checks whether the implementation work described "
+    "above is finished and ready to hand off to a reviewer — it does not "
+    "check whether the card as a whole is done. If the card's own criteria "
+    "call for a reviewer to approve or close out the work, treat that as a "
+    "later step outside this check: do not withhold DONE merely because "
+    "reviewer/approval evidence is absent."
+)
+
+
+def _goal_mode_handoff_rejection(task: Optional[kb.Task], evidence: str, *, is_review: bool = False):
     """Goal judge for every terminal worker handoff (including review).
 
     Returns ``(verdict, reason_or_None)``: ``"done"`` allows; ``"blocked"`` = judge ruled the goal
@@ -835,6 +846,11 @@ def _goal_mode_handoff_rejection(task: Optional[kb.Task], evidence: str):
     ``{"done", None}`` means the judge allows the handoff; anything else is a rejection whose verdict
     disambiguates the guidance the caller gives the worker (``continue`` = not done yet, ``blocked`` =
     judged unachievable — see #100954).
+
+    ``is_review=True`` scopes the judge question to "is the implementation ready to hand
+    off to a reviewer" rather than "is the whole card (including review) done" — a
+    same-card-review requirement can never satisfy the unscoped question from an
+    implementer's summary alone, since review hasn't happened yet (#98160).
     """
     if task is None or not task.goal_mode:
         return ("done", None)
@@ -849,6 +865,16 @@ def _goal_mode_handoff_rejection(task: Optional[kb.Task], evidence: str):
 
     from hermes_cli.goals import judge_goal
 
+    goal = f"{task.title}\n\n{task.body or ''}".strip()
+    if is_review:
+        # judge_goal truncates its goal argument to 2000 chars before sending it to the
+        # judge; reserve room here so a long title/body can't push the note itself past
+        # that limit and silently drop it (#98160).
+        budget = 2000 - len(_REVIEW_READINESS_NOTE)
+        if len(goal) > budget:
+            goal = goal[:budget]
+        goal = f"{goal}{_REVIEW_READINESS_NOTE}"
+
     verdict, reason, transport_failed = "done", "", False
     try:
         # Headless handoff checks run outside any agent turn: bind the per-task relay-affinity
@@ -857,7 +883,7 @@ def _goal_mode_handoff_rejection(task: Optional[kb.Task], evidence: str):
         affinity_token = None if get_affinity_scope() else set_affinity_scope(f"kanban:{task.id}")
         try:
             verdict, reason, _, _, transport_failed = judge_goal(
-                goal=f"{task.title}\n\n{task.body or ''}".strip(),
+                goal=goal,
                 last_response=evidence.strip())
         finally:
             if affinity_token is not None:
@@ -878,11 +904,12 @@ def _goal_mode_handoff_rejection(task: Optional[kb.Task], evidence: str):
 
 
 def _goal_gate_error(conn, tid: str, evidence: str, handoff: str, blocked_hint: str,
-                     continue_hint: str) -> Optional[str]:
+                     continue_hint: str, *, is_review: bool = False) -> Optional[str]:
     """Goal-mode judge gate shared by ``complete`` / ``request-review`` (mirrors tools/kanban_tools.py);
     applied to every terminal handoff so request-review can't bypass it. Returns the error line, or
     None to allow."""
-    verdict, rejection = _goal_mode_handoff_rejection(kb.get_task(conn, tid), evidence)
+    verdict, rejection = _goal_mode_handoff_rejection(
+        kb.get_task(conn, tid), evidence, is_review=is_review)
     if verdict == "blocked":
         return (f"kanban: goal {handoff} of {tid} rejected: judge ruled "
                 f"the goal unachievable — {rejection}. {blocked_hint}")
@@ -1041,7 +1068,7 @@ def _cmd_request_review(args: argparse.Namespace) -> int:
         gate_err = _goal_gate_error(
             conn, tid, summary or "", "review handoff",
             "Record the block with kanban block instead of requesting review.",
-            "Provide acceptance evidence matching the task.")
+            "Provide acceptance evidence matching the task.", is_review=True)
         if gate_err:
             return _err(gate_err)
         ok, reason = kb.request_review(

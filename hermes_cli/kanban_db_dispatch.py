@@ -1578,7 +1578,7 @@ def check_respawn_guard(
         requeued_after = conn.execute(
             "SELECT 1 FROM task_events "
             "WHERE task_id = ? AND created_at >= ? "
-            "AND kind IN ('status', 'promoted', 'unblocked', 'reclaimed') "
+            "AND kind IN ('status', 'promoted', 'unblocked', 'reclaimed', 'requeued') "
             "LIMIT 1",
             (task_id, completed_at),
         ).fetchone()
@@ -1593,22 +1593,45 @@ def check_respawn_guard(
     #    so the worker that opened the PR is still not re-spawned against it.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
     for c in conn.execute(
-        "SELECT body, created_at FROM task_comments "
-        "WHERE task_id = ? AND created_at >= ? ORDER BY created_at DESC",
+        "SELECT id, author, body, created_at FROM task_comments "
+        "WHERE task_id = ? AND created_at >= ? ORDER BY id DESC",
         (task_id, pr_cutoff),
     ).fetchall():
         body = _kb._lossy_text(c["body"])
         if not (body and _RESPAWN_GUARD_PR_URL_RE.search(body)):
             continue
-        events = conn.execute(
-            # Strictly after: a same-second tie stays guarded (fail closed).
-            "SELECT kind, payload FROM task_events "
-            "WHERE task_id = ? AND created_at > ? "
-            "AND kind IN ('assigned', 'changes_requested', 'review_reopened')",
-            (task_id, int(c["created_at"] or 0)),
+        # Intent events snapshot the latest comment id within their write txn.
+        # Historical events without that marker resume on an equal-second tie:
+        # a duplicate worker is recoverable; a stranded READY card is not.
+        intent_rows = conn.execute(
+            "SELECT id, kind, payload, created_at FROM task_events "
+            "WHERE task_id = ? AND kind IN "
+            "('assigned', 'changes_requested', 'review_reopened', 'requeued', 'dependency_wait') "
+            "ORDER BY id DESC", (task_id,),
         ).fetchall()
-        if any(_is_handoff_event(e["kind"], e["payload"]) for e in events):
-            return None
+        for event in intent_rows:
+            kind = event["kind"]
+            if kind == "dependency_wait":
+                if _kb._json_or(event["payload"], {}).get("kind") != "dependency":
+                    continue
+                if not conn.execute(
+                    "SELECT 1 FROM task_events WHERE task_id = ? "
+                    "AND kind = 'promoted' AND id > ? LIMIT 1",
+                    (task_id, event["id"]),
+                ).fetchone():
+                    continue
+            elif kind not in {"requeued"} and not _is_handoff_event(kind, event["payload"]):
+                continue
+            marker = _kb._json_or(event["payload"], {}).get("after_comment_id")
+            if not (marker >= c["id"] if marker is not None
+                    else event["created_at"] >= c["created_at"]):
+                continue
+            if not conn.execute(
+                "SELECT 1 FROM task_events WHERE task_id = ? "
+                "AND kind = 'spawned' AND id > ? LIMIT 1",
+                (task_id, event["id"]),
+            ).fetchone():
+                return None
         return "active_pr"
 
     return None

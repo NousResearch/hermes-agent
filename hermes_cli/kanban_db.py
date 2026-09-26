@@ -1582,6 +1582,22 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
     return True
 
 
+def requeue_task(conn: sqlite3.Connection, task_id: str, *, actor: str, reason: str) -> tuple[bool, Optional[str]]:
+    """Explicitly retry a READY card, recording operator intent without changing its status."""
+    if not reason.strip():
+        return False, "a reason is required"
+    with write_txn(conn):
+        row = conn.execute("SELECT status, claim_lock FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        if row is None:
+            return False, "task not found"
+        if row["status"] != "ready" or row["claim_lock"] is not None:
+            return False, "requeue requires an unclaimed READY task"
+        _append_event(conn, task_id, "requeued", {
+            "actor": actor, "reason": reason.strip(),
+        })
+    return True, None
+
+
 def set_model_override(
     conn: sqlite3.Connection, task_id: str, model: Optional[str], provider: Optional[str] = None,
 ) -> bool:
@@ -1946,6 +1962,13 @@ def _append_event(
     run_id: Optional[int] = None,
 ) -> None:
     """Insert an event row inside the caller's txn; ``run_id`` groups it by attempt (NULL = task-scoped)."""
+    if kind in {"assigned", "changes_requested", "review_reopened", "requeued"} or (
+        kind == "dependency_wait" and (payload or {}).get("kind") == "dependency"
+    ):
+        payload = dict(payload or {})
+        payload["after_comment_id"] = conn.execute(
+            "SELECT COALESCE(MAX(id), 0) FROM task_comments WHERE task_id = ?", (task_id,),
+        ).fetchone()[0]
     conn.execute(
         "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
         "VALUES (?, ?, ?, ?, ?)", (task_id, run_id, kind, _json_or_null(payload), int(time.time())),

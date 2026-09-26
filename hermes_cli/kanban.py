@@ -207,7 +207,7 @@ def _profile_author() -> str:
 _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
     "init", "create", "swarm", "assign", "reclaim", "reassign", "link", "unlink",
     "claim", "comment", "attach", "attach-rm", "complete", "edit", "block",
-    "schedule", "unblock", "promote", "archive", "dispatch", "daemon", "repair",
+    "schedule", "unblock", "requeue", "promote", "archive", "dispatch", "daemon", "repair",
     "heartbeat", "notify-subscribe", "notify-unsubscribe", "specify", "decompose",
     "request-review", "request-changes", "reopen-review",
     "gc",
@@ -1031,6 +1031,18 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
                            lambda tid: f"cannot unblock {tid} (not blocked/scheduled?)")
 
 
+def _cmd_requeue(args: argparse.Namespace) -> int:
+    if os.environ.get("HERMES_KANBAN_TASK"):
+        return _err("kanban requeue is orchestrator-only")
+    reason = " ".join(args.reason).strip()
+    with kbc.connect_closing() as conn:
+        ok, error = kb.requeue_task(conn, args.task_id, actor=_profile_author(), reason=reason)
+    if not ok:
+        return _err(f"cannot requeue {args.task_id}: {error}")
+    print(f"Requeued {args.task_id}: {reason}")
+    return 0
+
+
 def _cmd_request_review(args: argparse.Namespace) -> int:
     tid = args.task_id
     summary = _stripped_or_none(getattr(args, "summary", None))
@@ -1326,7 +1338,7 @@ _HANDLERS = {
     "comment": _cmd_comment, "attach": _cmd_attach,
     "attachments": _cmd_attachments, "attach-rm": _cmd_attach_rm,
     "complete": _cmd_complete, "edit": _cmd_edit, "block": _cmd_block,
-    "schedule": _cmd_schedule, "unblock": _cmd_unblock,
+    "schedule": _cmd_schedule, "unblock": _cmd_unblock, "requeue": _cmd_requeue,
     "request-review": _cmd_request_review, "request-changes": _cmd_request_changes,
     "reopen-review": _cmd_reopen_review, "promote": _cmd_promote,
     "archive": _cmd_archive, "tail": _cmd_tail, "dispatch": _cmd_dispatch,

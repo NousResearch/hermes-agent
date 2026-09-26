@@ -577,6 +577,71 @@ describe('recoverInFlightTurnJournal', () => {
     expect(readInFlightTurnJournal('stored-1')).toBeNull()
   })
 
+  it('picks the live tail projection row, not a sealed interim row that precedes it', () => {
+    // finalizeInterimAssistantMessage seals an interim bubble IN PLACE,
+    // keeping its assistant-stream-* id (message.interim events fire on
+    // ordinary "text alongside tool calls" output, not an edge case) — so a
+    // turn that streams interim text and then keeps going leaves TWO rows
+    // matching isLiveProjectionRow after the user row: the sealed one first,
+    // the genuinely live tail second. projectionIndex must pick the second.
+    journalEntry([
+      user('u1', 'do the thing'),
+      assistantWithTool('assistant-stream-new', 'more content from the journal', { pending: true })
+    ])
+
+    const base = [
+      user('db-u1', 'do the thing'),
+      // Sealed interim row: pending is already false, but the id still
+      // starts with assistant-stream- (finalizeInterimAssistantMessage does
+      // not rename it on seal).
+      assistant('assistant-stream-old', 'sealed interim text', { interim: true, pending: false }),
+      // The genuinely live tail that opened after the seal.
+      assistant('assistant-stream-new', 'live tail text', { pending: true })
+    ]
+
+    const result = recoverInFlightTurnJournal('stored-1', base, { keepPending: true })
+
+    expect(result.applied).toBe(true)
+    expect(result.caughtUp).toBe(false)
+    // The sealed row must survive untouched, and the overlay must land on
+    // the live tail (assistant-stream-new), not clobber the sealed one.
+    const sealed = result.messages.find(m => m.id === 'assistant-stream-old')
+    expect(sealed).toBeDefined()
+    expect(sealed!.parts[0]).toMatchObject({ text: 'sealed interim text' })
+    const overlaid = result.messages.find(m => m.id === 'assistant-stream-new')
+    expect(overlaid).toBeDefined()
+    expect(overlaid!.pending).toBe(true)
+    // No duplicate ids in the merged transcript.
+    const ids = result.messages.map(m => m.id)
+    expect(new Set(ids).size).toBe(ids.length)
+  })
+
+  it('does not duplicate a sealed row the base transcript already holds by id', () => {
+    // The resume-replays-a-still-journaled-turn race: the journal's tail and
+    // the base transcript can both carry the same sealed row. Splicing
+    // sealedRows in unfiltered puts a duplicate id in the transcript, which
+    // assistant-ui's MessageRepository rejects by throwing.
+    journalEntry([
+      user('u1', 'do the thing'),
+      assistant('assistant-stream-sealed', 'sealed text', { interim: true, pending: false }),
+      assistantWithTool('assistant-stream-new', 'live tail text', { pending: true })
+    ])
+
+    const base = [
+      user('db-u1', 'do the thing'),
+      // Base already holds this exact sealed row by id.
+      assistant('assistant-stream-sealed', 'sealed text', { interim: true, pending: false }),
+      assistant('assistant-stream-new', 'live tail text', { pending: true })
+    ]
+
+    const result = recoverInFlightTurnJournal('stored-1', base, { keepPending: true })
+
+    expect(result.applied).toBe(true)
+    const ids = result.messages.map(m => m.id)
+    expect(new Set(ids).size).toBe(ids.length)
+    expect(ids.filter(id => id === 'assistant-stream-sealed')).toHaveLength(1)
+  })
+
   it('overlays the backend text-only projection instead of dropping local tool progress', () => {
     // Sweeper regression on #44339: a backend `inflight` assistant snapshot
     // (text only) used to mark the richer local tail "caught up" and delete

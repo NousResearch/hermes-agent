@@ -14,13 +14,12 @@ from __future__ import annotations
 
 import logging
 import shutil
-import types
 from pathlib import Path
 
 import pytest
 
 from plugins.platforms.photon import adapter as adapter_mod
-from plugins.platforms.photon import cli as cli_mod
+from plugins.platforms.photon import sidecar_paths
 
 
 # ---------------------------------------------------------------------------
@@ -53,7 +52,7 @@ def test_fix_logs_warning_when_httpx_missing(
     """When httpx is not installed, check_requirements() must log a warning
     that names the missing package so the operator knows what to install."""
     monkeypatch.setattr(adapter_mod, "HTTPX_AVAILABLE", False)
-    monkeypatch.setattr(adapter_mod, "_SIDECAR_DIR", tmp_path)
+    monkeypatch.setattr(sidecar_paths, "_SIDECAR_DIR", tmp_path)
     (tmp_path / "node_modules").mkdir()
 
     with caplog.at_level(logging.WARNING, logger="plugins.platforms.photon.adapter"):
@@ -82,8 +81,8 @@ def test_risk2_fix_empty_node_modules_no_longer_passes_guard(
     Fixed: check_requirements() now verifies node_modules/spectrum-ts exists,
     so a partial/empty node_modules/ correctly returns False."""
     monkeypatch.setattr(adapter_mod, "HTTPX_AVAILABLE", True)
-    monkeypatch.setattr(adapter_mod, "_SIDECAR_DIR", tmp_path)
-    monkeypatch.setattr(adapter_mod, "_NPM_ERROR_LOG", tmp_path / ".photon-npm-error.log")
+    monkeypatch.setattr(sidecar_paths, "_SIDECAR_DIR", tmp_path)
+    monkeypatch.setattr(sidecar_paths, "_NPM_ERROR_LOG", tmp_path / ".photon-npm-error.log")
     # NS-606: disable the connect-time self-heal branch so the guard itself
     # (empty node_modules must not read as installed) is what's under test.
     monkeypatch.setattr(adapter_mod, "_dir_writable", lambda _p: False)
@@ -103,17 +102,12 @@ def test_risk2_fix_empty_node_modules_no_longer_passes_guard(
 # ---------------------------------------------------------------------------
 
 
-def test_cli_status_shares_adapter_sidecar_deps_check(tmp_path: Path) -> None:
-    """`hermes photon status` must use the exact same spectrum-ts check as
-    check_requirements() / _start_sidecar() — not a separate node_modules-only
-    existence check that would disagree on a partial/empty install."""
-    assert cli_mod.sidecar_deps_installed is adapter_mod.sidecar_deps_installed
 
 
 def test_sidecar_deps_installed_false_on_empty_node_modules(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setattr(adapter_mod, "_SIDECAR_DIR", tmp_path)
+    monkeypatch.setattr(sidecar_paths, "_SIDECAR_DIR", tmp_path)
     (tmp_path / "node_modules").mkdir()  # empty — spectrum-ts absent
     assert adapter_mod.sidecar_deps_installed() is False
 

@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, SessionResetPolicy
+from gateway.config import GatewayConfig, Platform
 from gateway.session import (
     SessionEntry,
     SessionSource,
@@ -31,10 +31,8 @@ def _isolated_db(tmp_path, monkeypatch):
     return tmp_path
 
 
-def _make_store(tmp_path, policy=None):
+def _make_store(tmp_path):
     config = GatewayConfig()
-    if policy:
-        config.default_reset_policy = policy
     return SessionStore(sessions_dir=tmp_path / "sessions", config=config)
 
 
@@ -54,14 +52,14 @@ def _slack_source(thread_id=None):
 
 class TestPrevSessionIdCapture:
     def test_prev_session_id_set_on_auto_reset(self, _isolated_db, tmp_path):
-        store = _make_store(tmp_path, SessionResetPolicy(mode="idle", idle_minutes=1))
+        store = _make_store(tmp_path)
         source = _slack_source(thread_id="T9")
 
         entry1 = store.get_or_create_session(source)
         assert entry1.prev_session_id is None  # fresh session, nothing replaced
 
         entry1.last_prompt_tokens = 4000  # had real conversation
-        entry1.updated_at = datetime.now() - timedelta(minutes=5)
+        entry1.suspended = True
         store._save()
 
         entry2 = store.get_or_create_session(source)
@@ -82,7 +80,7 @@ def _reset_entry(platform, prev="20260101_000000_abc", had_activity=True):
         updated_at=datetime.now(),
         platform=platform,
         was_auto_reset=True,
-        auto_reset_reason="daily",
+        auto_reset_reason="suspended",
         reset_had_activity=had_activity,
         prev_session_id=prev,
     )
@@ -101,4 +99,3 @@ class TestBuildChannelContinuityNote:
     def test_no_activity_returns_none(self):
         entry = _reset_entry(Platform.SLACK, had_activity=False)
         assert build_channel_continuity_note(entry, _slack_source()) is None
-

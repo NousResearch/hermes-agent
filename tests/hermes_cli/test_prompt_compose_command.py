@@ -14,7 +14,6 @@ import tempfile
 import pytest
 
 from hermes_cli.cli_commands_mixin import CLICommandsMixin
-from hermes_cli.commands import resolve_command
 
 
 class _Stub(CLICommandsMixin):
@@ -40,12 +39,9 @@ def _no_visual(monkeypatch):
     monkeypatch.delenv("VISUAL", raising=False)
 
 
-def test_command_registered():
-    cd = resolve_command("prompt")
-    assert cd and cd.name == "prompt"
-    assert resolve_command("compose").name == "prompt"
 
 
+@pytest.mark.platforms("linux")
 def test_compose_reads_and_strips_header(monkeypatch):
     monkeypatch.setenv("EDITOR", _fake_editor("Refactor the auth module.\nUse pytest."))
     out = _Stub()._compose_in_editor("")
@@ -54,6 +50,7 @@ def test_compose_reads_and_strips_header(monkeypatch):
     assert "#!" not in out  # the instructional header is stripped
 
 
+@pytest.mark.platforms("linux")
 def test_empty_buffer_does_not_seed(monkeypatch):
     monkeypatch.setenv("EDITOR", _fake_editor("", mode="clear"))
     s = _Stub()

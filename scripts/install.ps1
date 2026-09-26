@@ -894,6 +894,14 @@ function Get-BootstrapPython {
     # The full ladder runs every stage in one process and four of them need
     # this interpreter; resolve uv and Python once per process.
     if ($script:BootstrapPython) { return $script:BootstrapPython }
+    # uv's default state (%LOCALAPPDATA%\uv and its cache) belongs to the USER's
+    # uv, so a Hermes download must not land in it (#101269). Pin both to the
+    # Hermes root: the cache matches pm.packages.uv_cache_dir(), and the python
+    # dir is what the `find` below reads back after `python install` writes it.
+    # --system still finds a host interpreter, so a machine with one downloads
+    # nothing either way.
+    $env:UV_CACHE_DIR = Join-Path $HermesHome "cache\uv"
+    $env:UV_PYTHON_INSTALL_DIR = Join-Path $HermesHome "cache\uv-python"
     $uv = Get-Uv
     $lock = Get-Content (Join-Path $InstallDir "pm\lock.json") -Raw | ConvertFrom-Json
     $pyPin = $lock.packages.python

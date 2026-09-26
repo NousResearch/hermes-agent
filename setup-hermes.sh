@@ -106,7 +106,12 @@ uv_version="$(pin version)"
 py_version="$(pin version python | cut -d+ -f1 | cut -d. -f1,2)"
 [ -n "$uv_version" ] || { echo -e "${RED}✗${NC} no uv pin in pm/lock.json" >&2; exit 1; }
 
-store="${HERMES_RUNTIME_DIR:-$HOME/.hermes/tools}"
+# The install root follows HERMES_HOME, never a hardcoded ~/.hermes: pm's own
+# store_root() reads that variable, so staging uv anywhere else splits the two
+# and PM re-downloads the very copy this script just verified (and a profile's
+# home would land the store inside the profile).
+hermes_root="${HERMES_HOME:-$HOME/.hermes}"
+store="${HERMES_RUNTIME_DIR:-$hermes_root/tools}"
 entry="$store/uv-$uv_version-$target"
 uv="$entry/uv"; [ "$os" = win32 ] && uv="$entry/uv.exe"
 
@@ -170,6 +175,12 @@ if [ "$os" = win32 ]; then
   case "$arch" in arm64) py_request="cpython-$py_version-windows-aarch64-none" ;;
                   *) py_request="cpython-$py_version-windows-x86_64-none" ;; esac
 fi
+# uv's default state (~/.cache/uv, ~/.local/share/uv) belongs to the USER's uv,
+# so a Hermes download must not land in it (#101269). Pin both to the Hermes
+# root: the cache matches pm.packages.uv_cache_dir(), and the python dir is
+# what the `find` right below reads back after this install writes it.
+export UV_CACHE_DIR="$hermes_root/cache/uv"
+export UV_PYTHON_INSTALL_DIR="$hermes_root/cache/uv-python"
 "$uv" python install --no-bin --no-registry "$py_request"
 boot_py="$("$uv" python find --managed-python "$py_request")"
 boot_py="${boot_py%$'\r'}"

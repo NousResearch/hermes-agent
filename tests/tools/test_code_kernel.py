@@ -180,6 +180,24 @@ class TestKernelLifecycle(unittest.TestCase):
         self.assertEqual(result["status"], "success", result)
         self.assertIn("raw-passthrough", result["output"])
 
+    def test_child_subprocess_does_not_inherit_the_request_pipe(self):
+        """A subprocess a cell starts must see closed stdin (EOF), not the
+        kernel's JSON request pipe -- else it blocks reading stdin until
+        something (the request pipe, here bounded by the subprocess's own
+        timeout) unblocks it, and a successful read would swallow the
+        request meant for a later cell."""
+        code = (
+            "import subprocess, sys\n"
+            "r = subprocess.run([sys.executable, '-c', "
+            "'import sys; sys.stdout.write(repr(sys.stdin.read()))'], "
+            "capture_output=True, text=True, timeout=5)\n"
+            "print(r.stdout)\n"
+        )
+        with _kernel_config(timeout=10):
+            result = _run(code)
+        self.assertEqual(result["status"], "success", result)
+        self.assertIn("''", result["output"])
+
 
 class TestModelFacingReset(unittest.TestCase):
     def test_reset_is_reachable_from_a_model_call_despite_stale_kernel_mode(self):

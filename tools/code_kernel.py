@@ -178,6 +178,25 @@ _start_parent_death_pipe_watchdog()
 
 _real_stdout = sys.stdout
 
+
+def _detach_stdin_for_cells():
+    """Move the request pipe off fd 0 so a cell's ``input()``, or a subprocess it
+    starts, sees a closed stdin instead of the next JSON request line. Without this,
+    both block until the cell timeout kills the kernel, and a background reader
+    started by one cell can steal the request meant for the next.
+    """
+    global _request_stream
+    private_fd = os.dup(0)
+    os.set_inheritable(private_fd, False)
+    _request_stream = os.fdopen(private_fd, "r")
+    devnull_fd = os.open(os.devnull, os.O_RDONLY)
+    os.dup2(devnull_fd, 0)
+    os.close(devnull_fd)
+
+
+_request_stream = None
+_detach_stdin_for_cells()
+
 {cell_source}
 
 def _spill(text, spill_name):
@@ -204,7 +223,7 @@ def _reply(payload):
 
 def main():
     execution_count = 0
-    for line in sys.stdin:
+    for line in _request_stream:
         line = line.strip()
         if not line:
             continue

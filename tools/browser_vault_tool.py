@@ -349,7 +349,7 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
     their surface for the code their phone/email/app shows. The code goes into the page over the supervisor
     socket and never enters the conversation."""
     from agent.redact import register_vault_redaction_value
-    from agent.vault_backends import backend_for_handle
+    from agent.vault_backends import UnlockRequired, backend_for_handle
     from agent.vault_backends.unlock import can_prompt_here, get_code_prompt_callback
     from agent.vault_login_classifier import LoginControl, build_fill_js, build_inspection_js, build_otp_fills, classify_otp_controls
 
@@ -375,13 +375,23 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
     source = "user"
     backend = backend_for_handle(handle) if handle else None
     if backend is not None:
+        if backend.needs_unlock and not backend.is_unlocked():
+            unlocked = json.loads(browser_vault_unlock(backend.name))
+            if not unlocked.get("success"):
+                return json.dumps(unlocked)
         # A saved authenticator code is a credential for the saved origins,
         # not for whichever unrelated site currently displays an OTP input.
         try:
             meta = backend.get_meta(handle)
+        except UnlockRequired:
+            return json.dumps({"success": False, "error_type": "unlock_required",
+                               "error": "The saved login locked again; call browser_vault_unlock."})
         except Exception:
             return json.dumps({"success": False, "error": "Could not verify the saved login's origin."})
-        allowed = (list(meta.allowed_origins) or [meta.origin]) if meta is not None else []
+        if meta is None:
+            return json.dumps({"success": False, "error_type": "missing_item",
+                               "error": "Could not find the saved login. Use browser_vault_list."})
+        allowed = list(meta.allowed_origins) or [meta.origin]
         if origin not in allowed:
             return json.dumps({"success": False, "error_type": "origin_mismatch",
                                "error": "Refused: the code page does not match the saved login's bound origins."})

@@ -410,6 +410,31 @@ def test_saved_otp_is_not_resolved_for_another_origin(remote, monkeypatch):
     assert all("const fills =" not in body["expression"] for _, _, body in calls)
 
 
+def test_relocked_external_otp_unlocks_before_origin_verification(remote, monkeypatch):
+    calls, session, _, _ = remote
+    session["controls"] = [{"index": 0, "type": "text", "autocomplete": "one-time-code"}]
+    meta = add_login()
+    backend = Mock(name="onepassword")
+    backend.name = "onepassword"
+    backend.needs_unlock = True
+    backend.is_unlocked.return_value = False
+    backend.get_meta.return_value = meta
+    backend.resolve_otp.return_value = "246810"
+    monkeypatch.setattr("agent.vault_backends.backend_for_handle", lambda handle: backend)
+    monkeypatch.setattr(vault, "browser_vault_unlock", lambda name: json.dumps({"success": False,
+                                                                     "error_type": "unlock_cancelled"}))
+    refused = json.loads(vault.browser_vault_enter_code(meta.id, task_id=TASK))
+    assert refused["error_type"] == "unlock_cancelled", refused
+    backend.get_meta.assert_not_called()
+    backend.resolve_otp.assert_not_called()
+    assert all("const fills =" not in body["expression"] for _, _, body in calls)
+
+    monkeypatch.setattr(vault, "browser_vault_unlock", lambda name: json.dumps({"success": True}))
+    ok = json.loads(vault.browser_vault_enter_code(meta.id, task_id=TASK))
+    assert ok["success"] is True, ok
+    backend.get_meta.assert_called_once_with(meta.id)
+
+
 def test_save_login_reuses_the_prompted_tab_for_its_nested_fill(remote, monkeypatch):
     from agent.vault_backends import unlock
 

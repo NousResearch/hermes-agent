@@ -13,6 +13,9 @@ import requests
 from hermes_constants import hermes_home_key
 from tools import browser_camofox as camofox
 
+# Private compatibility contract with the external handoff plugin.
+CAMOFOX_VAULT_PROTOCOL = 1
+
 
 @dataclass(frozen=True, repr=False)
 class _Target:

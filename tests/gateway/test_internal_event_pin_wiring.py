@@ -18,7 +18,9 @@ import pytest
 
 from gateway.config import ChannelOverride, GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent
+from gateway.run_turn_runner import TurnRunner
 from gateway.session import SessionEntry, SessionSource
+from gateway.turn_context import TurnContext
 
 KEY = "agent:main:discord:group:1513247605675790346:117431298246705156"
 _ORIGIN = dict(
@@ -126,9 +128,15 @@ async def test_internal_event_reuses_pin_through_real_handler(monkeypatch):
     calls: list[dict] = []
     _capture(runner, calls)
 
+    # Internal-first on a fresh session (kanban/API-server wake, startup resume):
+    # with no pin to reuse it must still render AND pin, or every internal-only
+    # turn re-renders and loses verbatim reuse.
+    await _drive(runner, ((True, _wake_source()),))
+    assert runner._peek_session_state(KEY).conversation.ephemeral_pin is not None
+
     await _drive(runner, ((False, _human_source()), (True, _wake_source()), (False, _human_source())))
 
-    seen = [kw["context_prompt"] for kw in calls]
+    seen = [kw["context_prompt"] for kw in calls[1:]]
     assert len(seen) == 3, f"_run_agent reached {len(seen)}/3 turns"
     # The human render names the chat; the wake-shaped source cannot.  If the
     # internal turn re-rendered, its bytes would differ and the next human
@@ -146,21 +154,9 @@ PARENT_ID = "1513247605675790346"
 
 
 def _effective_ephemeral(runner, kw) -> str:
-    """Mirror TurnRunner.run_sync's combined_ephemeral from _run_agent's inputs."""
-    src = kw["source"]
-    combined = kw["context_prompt"] or ""
-    event_cp = (kw.get("channel_prompt") or "").strip()
-    if event_cp:
-        combined = (combined + "\n\n" + event_cp).strip()
-    cfg_cp = runner._get_system_prompt_for_channel(
-        src.platform,
-        src.chat_id or "",
-        thread_id=getattr(src, "thread_id", None),
-        parent_id=getattr(src, "parent_chat_id", None),
-    )
-    if cfg_cp:
-        combined = (combined + "\n\n" + cfg_cp).strip()
-    return combined
+    """The real TurnRunner combiner applied to what reached ``_run_agent``."""
+    ctx = TurnContext(source=kw["source"], context_prompt=kw["context_prompt"], channel_prompt=kw.get("channel_prompt"))
+    return TurnRunner(runner, ctx)._combined_ephemeral_prompt()
 
 
 def _thread_origin() -> dict:

@@ -1824,6 +1824,65 @@ def _fallback_reason_text(reason: "FailoverReason | None") -> str:
     return label or str(getattr(reason, "value", None) or reason or "provider failure").replace("_", " ")
 
 
+def _fallback_status_route(provider: Any, model: Any) -> Optional[dict[str, str]]:
+    """Build the public route projection without carrying endpoint or credential data."""
+    provider_text, model_text = str(provider or "").strip(), str(model or "").strip()
+    if not provider_text or not model_text or any(token in provider_text + model_text for token in ("://", "@")):
+        return None
+    return {"provider": provider_text[:80], "model": model_text[:200]}
+
+
+def _fallback_status_snapshot(agent: Any) -> dict[str, Any]:
+    """Return the small, secret-free status payload used by transition callbacks."""
+    primary = getattr(agent, "_primary_runtime", None) or {}
+    chain = []
+    primary_route = _fallback_status_route(primary.get("provider"), primary.get("model"))
+    if primary_route:
+        chain.append(primary_route)
+    for entry in list(getattr(agent, "_fallback_chain", []) or []):
+        if not isinstance(entry, dict):
+            continue
+        route = _fallback_status_route(entry.get("provider"), entry.get("model"))
+        if route:
+            chain.append(route)
+    active = (_fallback_status_route(getattr(agent, "provider", None), getattr(agent, "model", None))
+              if getattr(agent, "_fallback_activated", False) else None)
+    cooldown = getattr(agent, "_rate_limited_until", 0) or 0
+    now = time.monotonic()
+    snapshot: dict[str, Any] = {
+        "active": active,
+        "chain": chain,
+        "cooldown_until": time.time() + max(0.0, cooldown - now) if cooldown > now else None,
+    }
+    reason = getattr(agent, "_fallback_status_reason", None) if active else None
+    if isinstance(reason, str) and reason.strip() and "://" not in reason and "@" not in reason:
+        snapshot["reason"] = reason.strip()[:240]
+    return snapshot
+
+
+def _notify_fallback_status(agent: Any) -> None:
+    """Best-effort, nonblocking route publication; duplicate snapshots are coalesced."""
+    callback = getattr(agent, "fallback_status_callback", None)
+    if not callable(callback):
+        return
+    snapshot = _fallback_status_snapshot(agent)
+    signature = repr(snapshot)
+    lock = getattr(agent, "_fallback_status_publish_lock", None)
+    if lock is None:
+        lock = threading.Lock()
+        agent._fallback_status_publish_lock = lock
+    with lock:
+        if getattr(agent, "_fallback_status_last_signature", None) == signature:
+            return
+        agent._fallback_status_last_signature = signature
+    def publish() -> None:
+        try:
+            callback(snapshot)
+        except Exception:
+            logger.debug("fallback status callback failed", exc_info=True)
+    threading.Thread(target=publish, name="fallback-status-publish", daemon=True).start()
+
+
 def _is_anthropic_wire_url(url: str) -> bool:
     """Same Messages-only host match as determine_api_mode() / _detect_api_mode_for_url(): api.anthropic.com,
     a /anthropic suffix, or Kimi Code's api.kimi.com/coding (its /chat/completions 404s — #77256)."""
@@ -2073,7 +2132,9 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
     cooldown_seconds = _arm_rate_limit_cooldown(agent, reason, reset_at=reset_at)
     while True:
         if agent._fallback_index >= len(agent._fallback_chain):
-            return _fallback_chain_exhausted(agent, reason)
+            exhausted = _fallback_chain_exhausted(agent, reason)
+            _notify_fallback_status(agent)
+            return exhausted
         fb = agent._fallback_chain[agent._fallback_index]
         agent._fallback_index += 1
         fb_key = _fallback_entry_key(fb)
@@ -2141,6 +2202,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
             if hasattr(agent, "_transport_cache"):
                 agent._transport_cache.clear()
             agent._fallback_activated = True
+            agent._fallback_status_reason = _fallback_reason_text(reason)
 
             _rebind_fallback_credential_pool(agent, fb_provider, fb_model)
             if fb_provider == "moa":
@@ -2179,6 +2241,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
             from agent.native_compaction import resolve_native_compaction_capabilities
             agent.runtime_capabilities = resolve_native_compaction_capabilities(
                 model=agent.model, base_url=agent.base_url, provider=fb_provider, is_codex_backend=fb_provider == "openai-codex")
+            _notify_fallback_status(agent)
             return True
         except Exception as e:
             if fb_provider == "nous":

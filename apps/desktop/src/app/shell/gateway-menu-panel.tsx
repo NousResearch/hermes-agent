@@ -1,5 +1,6 @@
 import { type ReactNode, useEffect, useRef, useState } from 'react'
 
+import { FallbackStatus } from '@/components/fallback-status'
 import { StatusDot, type StatusTone } from '@/components/status-dot'
 import { Button } from '@/components/ui/button'
 import { LogView } from '@/components/ui/log-view'
@@ -218,6 +219,8 @@ export function GatewayMenuPanel({
           <div className="line-clamp-3">{inferenceStatus.reason}</div>
         </Section>
       )}
+
+      <FallbackStatus status={statusSnapshot?.fallback_status} />
 
       {recentLogs.length > 0 && (
         <Section>

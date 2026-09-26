@@ -465,12 +465,14 @@ export async function installDesktopPluginFromGit(
         await writeDesktopHalfMarker(staged, {
           package: packageName,
           repo: gitUrl,
-          // The clone is deleted below, so this source never matches a local
-          // package's `desktop/` dir: the first reconcile that finds the agent
-          // half re-copies from there and the package folder takes over as the
-          // single source of truth.
-          source: sourceDir,
-          sourceMtimeMs: (await fsp.stat(path.join(sourceDir, 'plugin.js'))).mtimeMs
+          // The published folder, not the temp clone. The clone is deleted
+          // below; a source that disappears is ghost-pruned on the next
+          // reconcile when no local `plugins/<name>/desktop` exists to
+          // re-copy from (remote backend, or Desktop UI only). A later pass
+          // that does find the agent package still replaces this copy,
+          // because this path is not that package's `desktop/` dir.
+          source: targetDir,
+          sourceMtimeMs: (await fsp.stat(path.join(staged, 'plugin.js'))).mtimeMs
         })
       })
 

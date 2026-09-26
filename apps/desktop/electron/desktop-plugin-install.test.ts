@@ -15,7 +15,7 @@ import {
   resolvePluginGitUrl,
   resolveSubdirWithin
 } from './desktop-plugin-install'
-import { PACKAGE_MARKER } from './desktop-plugins-root'
+import { PACKAGE_MARKER, reconcileUnifiedDesktopHalves } from './desktop-plugins-root'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 
@@ -199,6 +199,48 @@ describe('installDesktopPluginFromGit', () => {
     const marker = JSON.parse(fs.readFileSync(path.join(appRoot, 'hermes-talk', PACKAGE_MARKER), 'utf8'))
     expect(marker.package).toBe('hermes-talk')
     expect(marker.repo).toBe(pathToFileURL(repo).href)
+  })
+
+  it('keeps a git-installed unified half when no local agent package exists', async () => {
+    // Remote backends (and a Desktop-only install) never have
+    // plugins/<name>/desktop locally. The marker used to name the temp clone,
+    // which this function deletes, so the next reconcile ghost-pruned the half.
+    const repo = pluginRepo('hermes-talk')
+    const home = mkdtemp('hermes-plugin-home-')
+    roots.push(home)
+    const appRoot = path.join(home, 'desktop-plugins')
+
+    const result = await installDesktopPluginFromGit('git', pathToFileURL(repo).href, appRoot)
+
+    expect(result).toMatchObject({ ok: true, pluginName: 'hermes-talk' })
+    const published = path.join(appRoot, 'hermes-talk')
+    const marker = JSON.parse(fs.readFileSync(path.join(published, PACKAGE_MARKER), 'utf8'))
+    expect(marker.source).toBe(published)
+    expect(fs.existsSync(path.join(marker.source, 'plugin.js'))).toBe(true)
+
+    const touched = await reconcileUnifiedDesktopHalves(home, appRoot)
+
+    expect(fs.existsSync(path.join(published, 'plugin.js'))).toBe(true)
+    expect(touched).not.toContain(published)
+  })
+
+  it('lets a local agent package replace the git-installed half on reconcile', async () => {
+    const repo = pluginRepo('hermes-talk')
+    const home = mkdtemp('hermes-plugin-home-')
+    roots.push(home)
+    const appRoot = path.join(home, 'desktop-plugins')
+
+    await installDesktopPluginFromGit('git', pathToFileURL(repo).href, appRoot)
+
+    const packageDesktop = path.join(home, 'plugins', 'hermes-talk', 'desktop')
+    fs.mkdirSync(packageDesktop, { recursive: true })
+    fs.writeFileSync(path.join(packageDesktop, 'plugin.js'), 'from the agent package\n')
+
+    await reconcileUnifiedDesktopHalves(home, appRoot)
+
+    expect(fs.readFileSync(path.join(appRoot, 'hermes-talk', 'plugin.js'), 'utf8')).toBe('from the agent package\n')
+    const marker = JSON.parse(fs.readFileSync(path.join(appRoot, 'hermes-talk', PACKAGE_MARKER), 'utf8'))
+    expect(marker.source).toBe(packageDesktop)
   })
 
   it('leaves a desktop-only repo unmarked so it stays a standalone plugin', async () => {

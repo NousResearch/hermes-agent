@@ -362,5 +362,10 @@ def finish_text_response(
 
     _turn_exit_reason = f"text_response(finish_reason={finish_reason})"
     if not agent.quiet_mode:
-        agent._safe_print(f"🎉 Conversation completed after {api_call_count} OpenAI-compatible API call(s)")
+        completion_banner = f"🎉 Conversation completed after {api_call_count} OpenAI-compatible API call(s)"
+        turn_review = getattr(agent, "_background_review_turn_settings", None) or {}
+        if turn_review.get("timing") == "before_final":
+            agent._deferred_completion_banner = completion_banner
+        else:
+            agent._safe_print(completion_banner)
     return _verdict("break")

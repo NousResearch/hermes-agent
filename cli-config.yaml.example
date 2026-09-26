@@ -959,6 +959,7 @@ prompt_caching:
 #   # Usage is recorded under session_model_usage task='background_review'.
 #   background_review:
 #     enabled: true            # false = skip automatic forks (/refine still works)
+#     timing: background       # background | before_final
 #     provider: "auto"         # or pin a cheaper model (see memory.md)
 #     model: ""
 

@@ -551,6 +551,10 @@ _CONTROL_STATE: Dict[str, Any] = {
     "_background_review_agent": None,
     "_background_review_run": None,
     "_background_review_lock": threading.Lock,
+    # Snapshot once per foreground turn. ``before_final`` also suppresses provider
+    # token streaming so the answer cannot become visible before review side effects end.
+    "_background_review_turn_settings": None,
+    "_deferred_completion_banner": None,
 }
 
 # Per-turn bookkeeping: budgets, activity tracking, rate-limit/credits telemetry.

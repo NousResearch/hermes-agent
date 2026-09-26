@@ -812,6 +812,40 @@ class AIAgent(
             return
         self._spawn_background_review_now(**kwargs)
 
+    def _run_background_review_before_final(
+        self, messages_snapshot: List[Dict], review_memory: bool = False,
+        review_skills: bool = False, task_cfg: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Run an automatic review inline before the foreground turn becomes terminal.
+
+        This path deliberately bypasses the managed-local idle queue and never creates a
+        daemon thread. The existing review worker still owns fork setup, cancellation,
+        usage accounting, summaries, and cleanup; only its lifecycle placement changes.
+        """
+        if getattr(self, "_delegate_depth", 0) > 0:
+            return
+        from agent.background_review import (
+            finish_background_review_run, prepare_background_review_run, spawn_background_review_thread,
+        )
+        from agent.turn_finalizer import _clone_background_review_messages
+
+        review_run = prepare_background_review_run(self)
+        if review_run is None:
+            return
+        try:
+            target, _prompt = spawn_background_review_thread(
+                self,
+                _clone_background_review_messages(messages_snapshot),
+                review_memory=review_memory,
+                review_skills=review_skills,
+                task_cfg=task_cfg,
+                review_run=review_run,
+            )
+            target()
+        except Exception:
+            finish_background_review_run(self, review_run)
+            raise
+
     def _spawn_background_review_now(self, messages_snapshot: List[Dict], review_memory: bool = False,
                                      review_skills: bool = False, focus: Optional[str] = None,
                                      task_cfg: Optional[Dict[str, Any]] = None, _requeue_attempts: int = 0,

@@ -202,6 +202,29 @@ def _review_input_token_budget(
     return budget if budget > 0 else None
 
 
+_BACKGROUND_REVIEW_TIMINGS = frozenset({"background", "before_final"})
+
+
+def background_review_timing(task_cfg: Optional[Dict[str, Any]] = None) -> str:
+    """Return the configured review lifecycle mode.
+
+    ``background`` preserves the historical daemon-thread behavior. ``before_final``
+    makes the review part of the foreground turn so no review model/tool/persistence
+    work can happen after the terminal response is exposed to the user.
+    """
+    task = _background_review_task_config(task_cfg)
+    raw = str(task.get("timing", "background") or "background").strip().lower()
+    if raw in _BACKGROUND_REVIEW_TIMINGS:
+        return raw
+    logger.warning(
+        "Invalid auxiliary.background_review.timing=%r; expected one of %s. "
+        "Falling back to background.",
+        raw,
+        ", ".join(sorted(_BACKGROUND_REVIEW_TIMINGS)),
+    )
+    return "background"
+
+
 def load_background_review_settings() -> tuple[bool, Dict[str, Any]]:
     """Single config read -> ``(enabled, task_cfg)``. Fail-open (``enabled=True``) so a broken
     config never silently disables reviews — but WARN so the cost is visible."""
@@ -1052,6 +1075,15 @@ def _set_thread_approval_callback(callback: Any) -> None:
         set_approval_callback(callback)
 
 
+def _get_thread_approval_callback() -> Any:
+    from tools.terminal_tool import _get_approval_callback
+
+    try:
+        return _get_approval_callback()
+    except Exception:
+        return None
+
+
 def _track_review_fork(agent: Any, review_agent: Any, *, register: bool) -> None:
     """Add (``register=True``) or remove the fork on the PARENT's tracking slots:
     ``_background_review_agent`` (direct pointer the next live turn interrupts) and
@@ -1211,8 +1243,9 @@ def _run_review_in_thread(
     task_cfg: Optional[Dict[str, Any]] = None, review_run: Optional[_BackgroundReviewRun] = None,
     review_memory: bool = False, explicit: bool = False,
 ) -> None:
-    """Daemon-thread worker: build the fork, run the prompt, surface the action summary via
-    ``agent._safe_print`` / ``background_review_callback``. ``review_run`` (from
+    """Review worker: build the fork, run the prompt, and surface the action summary via
+    ``agent._safe_print`` / ``background_review_callback``. The caller may run this in a
+    daemon thread (``timing: background``) or inline (``timing: before_final``). ``review_run`` (from
     :func:`prepare_background_review_run`) cancelled before the first provider call aborts
     without entering ``run_conversation()``.
 
@@ -1221,6 +1254,7 @@ def _run_review_in_thread(
     if review_run is not None and review_run.cancel_requested.is_set():
         finish_background_review_run(agent, review_run)
         return
+    previous_approval_callback = _get_thread_approval_callback()
     _set_thread_approval_callback(_bg_review_auto_deny)
     # A client that can't carry Hermes tool calls back would spawn a fork that cannot write
     # anything. Checked BEFORE the thread-scoped silence so the warning is not swallowed; cheap
@@ -1232,7 +1266,8 @@ def _run_review_in_thread(
             "auxiliary.background_review.{provider,model} to route the review to a normal model.",
             getattr(agent, "provider", "?"),
         )
-        _set_thread_approval_callback(None)
+        _set_thread_approval_callback(previous_approval_callback)
+        finish_background_review_run(agent, review_run)
         return
     st = _ReviewForkState()
     try:
@@ -1286,8 +1321,9 @@ def _run_review_in_thread(
         if st.review_agent is not None:
             with suppress(Exception), thread_scoped_silence():
                 _release_fork_clients(st.review_agent)
-        # Clear the approval callback so a recycled thread-id doesn't inherit it.
-        _set_thread_approval_callback(None)
+        # Background workers normally restore ``None``; inline ``before_final`` reviews run on
+        # the foreground thread and must not discard its existing CLI approval callback.
+        _set_thread_approval_callback(previous_approval_callback)
 
 
 # (review_memory, review_skills) -> prompt attribute name; skills-only is also the default.
@@ -1329,7 +1365,8 @@ def spawn_background_review_thread(
 
 
 __all__ = [
-    "_MEMORY_REVIEW_PROMPT", "_SKILL_REVIEW_PROMPT", "_COMBINED_REVIEW_PROMPT", "load_background_review_settings",
+    "_MEMORY_REVIEW_PROMPT", "_SKILL_REVIEW_PROMPT", "_COMBINED_REVIEW_PROMPT",
+    "background_review_timing", "load_background_review_settings",
     "spawn_background_review_thread", "summarize_background_review_actions", "build_memory_write_metadata",
 ]
 

@@ -29,7 +29,7 @@ EXTERNAL_LOGINS_NOT_ADOPTED_NOTICE = (
 _notice_logged = False
 
 
-def adopt_external_logins_enabled() -> bool:
+def adopt_external_logins_enabled(*, read_only: bool = False) -> bool:
     """``auth.adopt_external_logins`` (default True).
 
     Codex and Claude OAuth refresh tokens are single-use and rotate, so once Hermes borrows a CLI's
@@ -38,8 +38,15 @@ def adopt_external_logins_enabled() -> bool:
     process (INFO) the first time it would have."""
     global _notice_logged
     try:
-        from hermes_cli.config import load_config_readonly
-        auth_cfg = (load_config_readonly() or {}).get("auth")
+        if read_only:
+            # ``load_config_readonly`` only skips a defensive deepcopy; its
+            # first load still creates the Hermes-home skeleton and backups.
+            # Credential diagnostics must not cause either side effect.
+            from hermes_cli.config import load_config_effective_readonly
+            auth_cfg = (load_config_effective_readonly() or {}).get("auth")
+        else:
+            from hermes_cli.config import load_config_readonly
+            auth_cfg = (load_config_readonly() or {}).get("auth")
     except Exception:
         return True
     enabled = not isinstance(auth_cfg, dict) or bool(auth_cfg.get("adopt_external_logins", True))

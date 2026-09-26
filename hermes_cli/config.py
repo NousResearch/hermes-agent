@@ -2072,6 +2072,42 @@ def load_config_readonly() -> Dict[str, Any]:
     return _load_config_impl(want_deepcopy=False)
 
 
+def load_config_effective_readonly() -> Dict[str, Any]:
+    """Load effective configuration without creating home state or config backups.
+
+    This is for diagnostics that must observe the same defaults, environment
+    expansion, and managed overlay as ``load_config`` while leaving the
+    filesystem untouched.
+    """
+    config = copy.deepcopy(DEFAULT_CONFIG)
+    config_path = get_config_path()
+    try:
+        with open(config_path, encoding="utf-8-sig") as f:
+            user_config = fast_safe_load(f) or {}
+    except FileNotFoundError:
+        user_config = {}
+    except Exception:
+        # Match the normal loader's recovery policy without writing a backup
+        # or initializing the Hermes-home skeleton.  Managed settings still
+        # apply when the user's file needs repair.
+        try:
+            from hermes_cli.config_backups import load_newest_good_backup
+            user_config = load_newest_good_backup(config_path) or {}
+        except Exception:
+            user_config = {}
+    if not isinstance(user_config, dict):
+        raise TypeError(f"top-level YAML must be a mapping, got {type(user_config).__name__}")
+    if "max_turns" in user_config:
+        user_config = dict(user_config)
+        agent_user_config = dict(user_config.get("agent") or {})
+        if agent_user_config.get("max_turns") is None:
+            agent_user_config["max_turns"] = user_config["max_turns"]
+        user_config["agent"] = agent_user_config
+        user_config.pop("max_turns", None)
+    config = _deep_merge(config, user_config)
+    return _merge_managed_overlay(_expand_env_vars(_canonicalize_config(config)))[0]
+
+
 def _ensure_dict(parent: Dict[str, Any], key: str) -> Dict[str, Any]:
     """Return ``parent[key]`` as a dict, replacing a missing or non-dict value with ``{}``."""
     child = parent.get(key)

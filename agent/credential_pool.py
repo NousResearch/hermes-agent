@@ -38,6 +38,7 @@ from hermes_cli.auth import (
     _decode_jwt_claims,
     _global_auth_file_path,
     _load_auth_store,
+    _load_auth_store_readonly,
     _load_provider_state,
     _load_provider_state_with_source,
     _resolve_kimi_base_url,
@@ -47,6 +48,7 @@ from hermes_cli.auth import (
     _save_provider_state,
     _store_provider_state,
     read_credential_pool,
+    read_credential_pool_readonly,
     write_credential_pool,
 )
 
@@ -68,11 +70,11 @@ def _load_config_safe() -> Optional[dict]:
         return None
 
 
-def _is_source_suppressed_fn() -> Callable[[str, str], bool]:
+def _is_source_suppressed_fn(*, read_only: bool = False) -> Callable[[str, str], bool]:
     """``hermes_cli.auth.is_source_suppressed`` (late-bound), or an always-False stub."""
     try:
-        from hermes_cli.auth import is_source_suppressed
-        return is_source_suppressed
+        from hermes_cli.auth import is_source_suppressed, is_source_suppressed_readonly
+        return is_source_suppressed_readonly if read_only else is_source_suppressed
     except ImportError:
         return lambda _p, _s: False
 
@@ -829,14 +831,15 @@ def _singleton_target_for_entry(pool: "CredentialPool", entry: "PooledCredential
         return None
 
 
-def _profile_owns_pool_provider(provider: str) -> bool:
+def _profile_owns_pool_provider(provider: str, *, read_only: bool = False) -> bool:
     """True when the ACTIVE auth.json has its own rows for *provider*.
 
     Named profiles with no local rows read the provider through the
     ``read_credential_pool`` global-root fallback ("borrowing").
     """
     try:
-        pool = _load_auth_store().get("credential_pool")
+        store = _load_auth_store_readonly() if read_only else _load_auth_store()
+        pool = store.get("credential_pool")
     except Exception:
         return True  # unreadable store: assume ownership, keep legacy path
     entries = pool.get(provider) if isinstance(pool, dict) else None
@@ -986,7 +989,7 @@ class _RefreshDone(Exception):
 
 
 class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin):
-    def __init__(self, provider: str, entries: List[PooledCredential]):
+    def __init__(self, provider: str, entries: List[PooledCredential], *, read_only: bool = False):
         self.provider = provider
         self._entries = sorted(entries, key=lambda entry: entry.priority)
         self._current_id: Optional[str] = None
@@ -994,7 +997,8 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         # providers only); set by load_pool(), consumed by add_entry().
         self._borrowed_root_ids: Set[str] = set()
         self._persisted_token_pairs: Dict[str, Tuple[Any, Any]] = {}
-        self._strategy = get_pool_strategy(provider)
+        self._read_only = read_only
+        self._strategy = STRATEGY_FILL_FIRST if read_only else get_pool_strategy(provider)
         # RLock: _replace_entry/_persist self-acquire it so the DEFERRED
         # single-use-token refresh path (network I/O outside the lock by
         # design) still serializes its pool mutations; in-lock callers
@@ -2053,7 +2057,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             # unhydrated duplicate as an empty key.
             if entry.auth_type == AUTH_TYPE_API_KEY and not entry.runtime_api_key:
                 continue
-            synced = self._resync_stale_entry(entry)
+            synced = entry if self._read_only else self._resync_stale_entry(entry)
             if synced is not entry:
                 entry = synced
                 cleared_any = True
@@ -2108,7 +2112,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         if entries_to_prune:
             pruned_ids = set(entries_to_prune)
             self._entries = [e for e in self._entries if e.id not in pruned_ids]
-        if cleared_any:
+        if cleared_any and not self._read_only:
             self._persist(removed_ids=entries_to_prune)
         return available, pending_refresh
 
@@ -2520,12 +2524,12 @@ def _retain_sources_not_in(entries: List[PooledCredential], drop: Set[str]) -> b
 class _Seeder:
     """Accumulates ``_upsert_entry`` results for one ``load_pool`` seeding pass."""
 
-    def __init__(self, provider: str, entries: List[PooledCredential]):
+    def __init__(self, provider: str, entries: List[PooledCredential], *, read_only: bool = False):
         self.provider = provider
         self.entries = entries
         self.changed = False
         self.active_sources: Set[str] = set()
-        self.is_suppressed = _is_source_suppressed_fn()
+        self.is_suppressed = _is_source_suppressed_fn(read_only=read_only)
 
     def upsert(self, source: str, payload: Dict[str, Any]) -> bool:
         """Upsert unless suppressed (``hermes auth remove`` must stay stable across loads)."""
@@ -2541,13 +2545,20 @@ class _Seeder:
         return self.changed, self.active_sources
 
 
-def _seed_anthropic_singletons(seed: _Seeder) -> None:
+def _seed_anthropic_singletons(seed: _Seeder, *, read_only: bool = False) -> None:
     # Only auto-discover external credentials (Claude Code, Hermes PKCE) when
     # the user explicitly configured anthropic; otherwise auxiliary fallback
     # chains would read ~/.claude/.credentials.json without consent (PR #4210).
     try:
-        from hermes_cli.auth import is_provider_explicitly_configured
-        if not is_provider_explicitly_configured("anthropic"):
+        from hermes_cli.auth import (
+            is_provider_explicitly_configured,
+            is_provider_explicitly_configured_readonly,
+        )
+        configured = (
+            is_provider_explicitly_configured_readonly("anthropic")
+            if read_only else is_provider_explicitly_configured("anthropic")
+        )
+        if not configured:
             return
     except ImportError:
         pass
@@ -2578,8 +2589,12 @@ def _seed_anthropic_singletons(seed: _Seeder) -> None:
     from agent.credential_sources import adopt_external_logins_enabled
 
     sources = [("hermes_pkce", read_hermes_oauth_credentials())]
-    if adopt_external_logins_enabled():
-        sources.append(("claude_code", read_claude_code_credentials()))
+    if adopt_external_logins_enabled(read_only=read_only):
+        claude_creds = (
+            read_claude_code_credentials(read_only=True)
+            if read_only else read_claude_code_credentials()
+        )
+        sources.append(("claude_code", claude_creds))
     else:
         # Singleton-seeded rows are otherwise never pruned; the opt-out must also drop the row an
         # earlier (adopting) process persisted, or it keeps rotating a login Hermes no longer reads.
@@ -2777,11 +2792,11 @@ def _seed_tokens_singleton(seed: _Seeder, auth_store: Dict[str, Any]) -> None:
     })
 
 
-def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tuple[bool, Set[str]]:
-    seed = _Seeder(provider, entries)
-    auth_store = _load_auth_store()
+def _seed_from_singletons(provider: str, entries: List[PooledCredential], *, read_only: bool = False) -> Tuple[bool, Set[str]]:
+    seed = _Seeder(provider, entries, read_only=read_only)
+    auth_store = _load_auth_store_readonly() if read_only else _load_auth_store()
     if provider == "anthropic":
-        _seed_anthropic_singletons(seed)
+        _seed_anthropic_singletons(seed, read_only=read_only)
     elif provider == "nous":
         _seed_nous_singleton(seed, auth_store)
     elif provider == "copilot":
@@ -2896,8 +2911,10 @@ def _env_key_var_candidates(env_vars: List[str], entries: List[PooledCredential]
     return names
 
 
-def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool, Set[str]]:
-    seed = _Seeder(provider, entries)
+def _seed_from_env(
+    provider: str, entries: List[PooledCredential], *, read_only: bool = False,
+) -> Tuple[bool, Set[str]]:
+    seed = _Seeder(provider, entries, read_only=read_only)
     # Copilot's singleton branch exchanges the raw ghu_ OAuth token for the
     # api token via `get_copilot_api_token`; the generic loop would re-read
     # COPILOT_GITHUB_TOKEN and overwrite it with the RAW token, causing 400s
@@ -3015,13 +3032,13 @@ def _seed_custom_pool(pool_key: str, entries: List[PooledCredential]) -> Tuple[b
     return seed.result
 
 
-def load_pool(provider: str) -> CredentialPool:
+def load_pool(provider: str, *, read_only: bool = False) -> CredentialPool:
     provider = (provider or "").strip().lower()
-    if provider in SINGLE_USE_REFRESH_POOL_PROVIDERS:
+    if not read_only and provider in SINGLE_USE_REFRESH_POOL_PROVIDERS:
         # One-time heal for installs that forked this grant across profiles
         # before the clone-strip / root write-through existed (#100339).
         auth_mod.heal_forked_single_use_oauth_grants(provider)
-    raw_entries = read_credential_pool(provider)
+    raw_entries = (read_credential_pool_readonly(provider) if read_only else read_credential_pool(provider))
     disk_ids = {e.get("id") for e in raw_entries if isinstance(e, dict) and e.get("id")}
     changed = any(
         isinstance(payload, dict) and sanitize_borrowed_credential_payload(payload, provider) != payload
@@ -3039,7 +3056,8 @@ def load_pool(provider: str) -> CredentialPool:
         # A profile may be reading this provider from the global-root fallback.
         # Keep that fallback read-only: only the owning store may rewrite these
         # rows; loading the default/root profile heals global rows.
-        active_pool = _load_auth_store().get("credential_pool")
+        active_store = _load_auth_store_readonly() if read_only else _load_auth_store()
+        active_pool = active_store.get("credential_pool")
         active_entries = active_pool.get(provider) if isinstance(active_pool, dict) else None
         changed |= bool(active_entries)
 
@@ -3048,15 +3066,15 @@ def load_pool(provider: str) -> CredentialPool:
         changed |= custom_changed
         changed |= _prune_stale_seeded_entries(entries, custom_sources)
     else:
-        singleton_changed, singleton_sources = _seed_from_singletons(provider, entries)
-        env_changed, env_sources = _seed_from_env(provider, entries)
+        singleton_changed, singleton_sources = _seed_from_singletons(provider, entries, read_only=read_only)
+        env_changed, env_sources = _seed_from_env(provider, entries, read_only=read_only)
         changed |= singleton_changed or env_changed
         # ``load_pool()`` is a non-destructive read for env-seeded entries
         # (#9331); file-backed singletons still prune when their file is gone.
         borrowing_root_grant = (
             provider in SINGLE_USE_REFRESH_POOL_PROVIDERS
             and bool(disk_ids)
-            and not _profile_owns_pool_provider(provider)
+            and not _profile_owns_pool_provider(provider, read_only=read_only)
         )
         if borrowing_root_grant:
             # Rows read through the global-root fallback are seeded from the
@@ -3075,12 +3093,12 @@ def load_pool(provider: str) -> CredentialPool:
             )
         changed |= _normalize_pool_priorities(provider, entries)
 
-    pool = CredentialPool(provider, entries)
+    pool = CredentialPool(provider, entries, read_only=read_only)
     pool._persisted_token_pairs = auth_mod._token_pairs_by_id(raw_entries)
-    if changed:
+    if changed and not read_only:
         pool._persist(removed_ids=sorted(disk_ids - {entry.id for entry in entries}))
     # Remember the root's borrowed rows so a later ``add_entry`` in this
     # profile leaves them out of the profile's own store (#100339).
-    if provider in SINGLE_USE_REFRESH_POOL_PROVIDERS and not _profile_owns_pool_provider(provider):
+    if provider in SINGLE_USE_REFRESH_POOL_PROVIDERS and not _profile_owns_pool_provider(provider, read_only=read_only):
         pool._borrowed_root_ids = set(disk_ids)
     return pool

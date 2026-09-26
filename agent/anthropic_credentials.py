@@ -348,7 +348,7 @@ def _read_claude_code_credentials_from_file() -> Optional[Dict[str, Any]]:
     return _claude_oauth_record(data, "claude_code_credentials_file") if data is not None else None
 
 
-def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
+def read_claude_code_credentials(*, read_only: bool = False) -> Optional[Dict[str, Any]]:
     """Read refreshable Claude Code OAuth credentials (Keychain and/or file). When both exist: prefer the only
     non-expired one (Claude Code 2.1.x refreshes one source but not the other), else the later ``expiresAt`` so a
     refresh uses the freshest refreshToken. ~/.claude.json primaryApiKey is deliberately excluded.
@@ -356,7 +356,7 @@ def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
     This is the only reader of the borrowed login, so ``auth.adopt_external_logins: false`` is enforced here:
     every resolver, pool seed/sync and 401 refresher then sees "no Claude Code login" and never touches the file."""
     from agent.credential_sources import adopt_external_logins_enabled
-    if not adopt_external_logins_enabled():
+    if not adopt_external_logins_enabled(read_only=read_only):
         return None
     kc_creds = _read_claude_code_credentials_from_keychain()
     file_creds = _read_claude_code_credentials_from_file()
@@ -645,7 +645,7 @@ def _resolve_anthropic_pool_token(*, skip_borrowed: bool = False) -> Optional[st
     auth.json or hit the network; refresh-on-expiry belongs to the API call path's pool recovery."""
     try:
         from agent.credential_pool import AUTH_TYPE_OAUTH, load_pool
-        entries, _pending = load_pool("anthropic")._available_entries(clear_expired=False, refresh=False)
+        entries, _pending = load_pool("anthropic", read_only=True)._available_entries(clear_expired=False, refresh=False)
     except Exception:
         logger.debug("Failed to read Anthropic credential_pool", exc_info=True)
         return None

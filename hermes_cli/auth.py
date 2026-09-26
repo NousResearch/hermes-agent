@@ -707,6 +707,34 @@ def _load_auth_store(auth_file: Optional[Path] = None) -> Dict[str, Any]:
     return _empty_auth_store()
 
 
+def _load_auth_store_readonly(auth_file: Optional[Path] = None) -> Dict[str, Any]:
+    """Read an auth store without preserving malformed input beside it.
+
+    Credential diagnostics promise not to alter user state.  The ordinary
+    reader intentionally copies malformed JSON to ``*.corrupt`` for recovery,
+    which is correct for a later write but violates that promise.
+    """
+    auth_file = auth_file or _auth_file_path()
+    if not auth_file.exists():
+        return _empty_auth_store()
+    try:
+        raw = json.loads(auth_file.read_text(encoding="utf-8-sig"))
+    except Exception:
+        logger.debug("auth: read-only parse failed for %s", auth_file, exc_info=True)
+        return _empty_auth_store()
+    if isinstance(raw, dict) and (
+        isinstance(raw.get("providers"), dict) or isinstance(raw.get("credential_pool"), dict)
+    ):
+        raw.setdefault("providers", {})
+        return raw
+    if isinstance(raw, dict) and isinstance(raw.get("systems"), dict):
+        systems = raw["systems"]
+        providers = {"nous": systems["nous_portal"]} if "nous_portal" in systems else {}
+        return {**_empty_auth_store(), "providers": providers,
+                "active_provider": "nous" if providers else None}
+    return _empty_auth_store()
+
+
 def _save_private_json(target: Path, data: Any, *, fsync_dir: bool = False, **dump_kwargs: Any) -> None:
     """0600 credential JSON under a 0700 parent (``secure_parent_dir`` refuses ``/``, top-level dirs
     and the install tree). ``atomic_json_write`` creates the temp file 0600 before any byte lands."""
@@ -888,6 +916,27 @@ def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
                 merged[gp_key] = list(gp_entries)
         return merged
 
+    provider_entries = pool.get(provider_id)
+    if isinstance(provider_entries, list) and provider_entries:
+        return list(provider_entries)
+    global_entries = global_pool.get(provider_id)
+    return list(global_entries) if isinstance(global_entries, list) else []
+
+
+def read_credential_pool_readonly(provider_id: Optional[str] = None) -> Dict[str, Any]:
+    """Read credential-pool rows without any auth-store recovery writes."""
+    pool = _load_auth_store_readonly().get("credential_pool")
+    pool = pool if isinstance(pool, dict) else {}
+    global_path = _global_auth_file_path()
+    global_store = _load_auth_store_readonly(global_path) if global_path is not None else {}
+    global_pool = global_store.get("credential_pool")
+    global_pool = global_pool if isinstance(global_pool, dict) else {}
+    if provider_id is None:
+        merged = dict(pool)
+        for gp_key, gp_entries in global_pool.items():
+            if isinstance(gp_entries, list) and gp_entries and not merged.get(gp_key):
+                merged[gp_key] = list(gp_entries)
+        return merged
     provider_entries = pool.get(provider_id)
     if isinstance(provider_entries, list) and provider_entries:
         return list(provider_entries)
@@ -1092,6 +1141,14 @@ def is_source_suppressed(provider_id: str, source: str) -> bool:
         return False
 
 
+def is_source_suppressed_readonly(provider_id: str, source: str) -> bool:
+    """Read a source suppression marker without auth-store recovery writes."""
+    try:
+        return source in _load_auth_store_readonly().get("suppressed_sources", {}).get(provider_id, [])
+    except Exception:
+        return False
+
+
 def unsuppress_credential_source(provider_id: str, source: str) -> bool:
     """Clear a suppression marker so the source will be re-seeded on the next load."""
     with _auth_store_lock():
@@ -1156,7 +1213,10 @@ def _config_selects_provider(normalized: str) -> bool:
     Claude Code OAuth entries get pruned by ``load_pool("anthropic")`` and MoA advisors fail with
     "no ANTHROPIC_API_KEY" while the picker says Anthropic is logged in."""
     from hermes_cli.config import load_config
-    cfg = load_config()
+    return _config_selects_provider_in(cfg=load_config(), normalized=normalized)
+
+
+def _config_selects_provider_in(*, cfg: Dict[str, Any], normalized: str) -> bool:
     if _slot_selects(cfg.get("model"), normalized):
         return True
     # ``auxiliary.<task>.provider: copilot`` selects the provider for that task the same way a MoA
@@ -1176,6 +1236,12 @@ def _config_selects_provider(normalized: str) -> bool:
     presets = moa_cfg.get("presets")
     presets = presets.values() if isinstance(presets, dict) else ()
     return _moa_block_matches(moa_cfg) or any(_moa_block_matches(p) for p in presets)
+
+
+def _config_selects_provider_readonly(normalized: str) -> bool:
+    """Explicit provider selection without initializing Hermes home or backups."""
+    from hermes_cli.config import load_config_effective_readonly
+    return _config_selects_provider_in(cfg=load_config_effective_readonly(), normalized=normalized)
 
 
 def _explicit_pool_entry_present(normalized: str) -> bool:
@@ -1280,6 +1346,26 @@ def is_provider_explicitly_configured(provider_id: str) -> bool:
             if not best_effort:
                 raise
             logger.debug("explicit-config check %s failed for %s: %s", check.__name__, provider_id, exc)
+    return False
+
+
+def is_provider_explicitly_configured_readonly(provider_id: str) -> bool:
+    """Read Anthropic's explicit-configuration gate without auth/config writes."""
+    normalized = (provider_id or "").strip().lower()
+    if normalized != "anthropic":
+        return False
+    checks = (
+        lambda: (_load_auth_store_readonly().get("active_provider") or "").strip().lower() == normalized,
+        lambda: _config_selects_provider_readonly(normalized),
+        lambda: _explicit_env_credentials_present(normalized),
+        lambda: any(_pool_entry_is_explicit(entry) for entry in read_credential_pool_readonly(normalized)),
+    )
+    for check in checks:
+        try:
+            if check():
+                return True
+        except Exception as exc:
+            logger.debug("read-only explicit-config check failed for %s: %s", provider_id, exc)
     return False
 
 

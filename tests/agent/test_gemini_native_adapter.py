@@ -916,3 +916,31 @@ def test_build_gemini_request_tools_plus_json_output_only_on_gemini3(model, keep
         tool_choice="auto", model=model, response_format={"type": "json_object"}, tools_as_json_schema=True,
     )["generationConfig"]
     assert ("responseMimeType" in generation) is keeps_json
+
+
+def test_prompt_feedback_block_terminates_stream_as_content_filter():
+    """A prompt blocked up front (promptFeedback.blockReason, no candidates) must end the stream
+    with a terminal finish reason instead of an empty stream that retries as an outage (#121317)."""
+    from agent.gemini_native_adapter import translate_stream_event
+
+    event = {
+        "promptFeedback": {"blockReason": "SAFETY", "safetyRatings": [
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "probability": "HIGH", "blocked": True}]},
+        "usageMetadata": {"promptTokenCount": 900, "totalTokenCount": 900},
+        "modelVersion": "gemini-3-flash-preview",
+    }
+    chunks = translate_stream_event(event, model="gemini-3-flash-preview", tool_call_indices={})
+
+    assert len(chunks) == 1
+    assert chunks[0].choices[0].finish_reason == "content_filter"
+    assert chunks[0].choices[0].delta.content is None
+    assert chunks[0].usage.prompt_tokens == 900
+    assert chunks[0].usage.total_tokens == 900
+
+
+def test_prompt_feedback_without_block_reason_stays_an_empty_event():
+    """usageMetadata-only and other candidate-less keepalive frames keep translating to nothing."""
+    from agent.gemini_native_adapter import translate_stream_event
+
+    for event in ({"usageMetadata": {"promptTokenCount": 5}}, {"promptFeedback": {}}, {}):
+        assert translate_stream_event(event, model="gemini-3-flash", tool_call_indices={}) == []

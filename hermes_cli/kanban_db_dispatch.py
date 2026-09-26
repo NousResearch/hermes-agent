@@ -925,16 +925,36 @@ _PROTOCOL_VIOLATION_FAILURE_LIMIT = 3
 # Closed runs to walk when counting the streak; it trips at a handful anyway.
 _PROTOCOL_VIOLATION_SCAN_LIMIT = 50
 
+# A route failure (clean exit, zero heartbeats — see ``_ROUTE_FAILURE_ERROR``)
+# gets its OWN bounded streak, independent of ``_PROTOCOL_VIOLATION_FAILURE_LIMIT``:
+# it is not a paperwork miss and must not share that budget. Below this many
+# trailing route failures the card is released streak-free (no
+# ``_record_task_failure`` call at all); at or above it, it trips the breaker
+# so a persistently unreachable route still blocks and surfaces.
+#
+# DELIBERATE OVERRIDE, not read from per-task ``max_retries`` (unlike the
+# protocol-violation streak in ``_account_crashes``, which does honor it): a
+# route failure means the worker never reached the model at all, so a task's
+# retry budget for its own agent work says nothing about how many times to
+# re-attempt routing/credentials before surfacing a persistently unreachable
+# route. A task configured with ``max_retries=1`` still gets exactly two
+# route-failure attempts. See
+# ``test_route_failure_budget_ignores_task_max_retries``.
+_ROUTE_FAILURE_FAILURE_LIMIT = 2
+
 
 def _protocol_violation_streak(conn: sqlite3.Connection, task_id: str) -> int:
     """Count the task's trailing run of clean-exit protocol violations.
 
     Walks closed runs newest-first (including the one ``detect_crashed_workers``
     just closed). ``rate_limited`` runs are neutral and skipped (a quota wall
-    says nothing about the task); any other closed run breaks the streak, so
-    the budget counts ONLY protocol violations. Violations are recognized by the
-    ``protocol_violation`` run-metadata marker, with the error text as fallback
-    for runs recorded before the marker existed.
+    says nothing about the task); a ``route_failure`` run is also neutral (it
+    never reached the model, so it says nothing about paperwork discipline)
+    and is skipped rather than breaking the streak. Any other closed run
+    breaks the streak, so the budget counts ONLY protocol violations.
+    Violations are recognized by the ``protocol_violation`` run-metadata
+    marker, with the error text as fallback for runs recorded before the
+    marker existed.
     """
     streak = 0
     rows = conn.execute(
@@ -945,12 +965,34 @@ def _protocol_violation_streak(conn: sqlite3.Connection, task_id: str) -> int:
     ).fetchall()
     for row in rows:
         outcome = row["outcome"] or ""
-        if outcome == "rate_limited":
+        if outcome == "rate_limited" or _kb._json_dict(row["metadata"]).get("route_failure"):
             continue
         if outcome == "crashed" and (
             _kb._json_dict(row["metadata"]).get("protocol_violation")
             or "protocol violation" in (row["error"] or "")
         ):
+            streak += 1
+            continue
+        break
+    return streak
+
+
+def _route_failure_streak(conn: sqlite3.Connection, task_id: str) -> int:
+    """Count the task's trailing run of route failures.
+
+    Mirrors ``_protocol_violation_streak`` but walks the ``route_failure``
+    marker instead — the two streaks are independent budgets over the same
+    closed-run history (see ``_ROUTE_FAILURE_FAILURE_LIMIT``).
+    """
+    streak = 0
+    rows = conn.execute(
+        "SELECT outcome, metadata FROM task_runs "
+        "WHERE task_id = ? AND ended_at IS NOT NULL "
+        "ORDER BY id DESC LIMIT ?",
+        (task_id, _PROTOCOL_VIOLATION_SCAN_LIMIT),
+    ).fetchall()
+    for row in rows:
+        if row["outcome"] == "crashed" and _kb._json_dict(row["metadata"]).get("route_failure"):
             streak += 1
             continue
         break
@@ -971,6 +1013,19 @@ _PROTOCOL_VIOLATION_ERROR = (
     "report it via kanban_complete (or kanban_request_review); "
     "a run without a terminal kanban call counts as failed no "
     "matter what it did."
+)
+
+# Worker exited cleanly (rc=0) but its ``last_heartbeat_at`` never advanced —
+# no MCP tool call ever extended the claim, so classifying it as a paperwork-
+# miss protocol violation is wrong: the worker never got the chance to do or
+# skip anything. Overwhelmingly a routing/credential failure before the model
+# ever ran. Released via its own bounded streak (``_ROUTE_FAILURE_FAILURE_LIMIT``),
+# independent of the protocol-violation budget, and WITHOUT the ``rate_limited``
+# quota-wall deferral (reusing it suppressed the very next dispatch tick).
+_ROUTE_FAILURE_ERROR = (
+    "worker exited cleanly (rc=0) with zero recorded turns (no heartbeat "
+    "ever reached the claim) — treated as a route failure, not a protocol "
+    "violation."
 )
 
 
@@ -1024,6 +1079,9 @@ class _DeadWorker:
     event_payload: dict
     protocol_violation: bool = False
     rate_limited: bool = False
+    # Clean exit, zero heartbeats ever recorded — a route/credential failure
+    # before the model ever ran, not a paperwork miss. See ``_ROUTE_FAILURE_ERROR``.
+    route_failure: bool = False
     terminal_provider: bool = False
     """``KANBAN_TERMINAL_PROVIDER_EXIT_CODE``: the provider rejected the worker's
     credential/model — trips the breaker on this first occurrence."""
@@ -1031,12 +1089,15 @@ class _DeadWorker:
     @property
     def run_outcome(self) -> str:
         # A rate-limited requeue is recorded as ``rate_limited`` so board history
-        # doesn't show a phantom crash for a quota wall.
+        # doesn't show a phantom crash for a quota wall. A route failure stays
+        # ``crashed`` — only the event kind and metadata marker distinguish it
+        # (reusing ``rate_limited`` here would suppress the next dispatch tick).
         return "rate_limited" if self.rate_limited else "crashed"
 
 
 def _classify_dead_worker(
     pid: int, claimer: Optional[str], *, task_id: Optional[str] = None, board: Optional[str] = None,
+    last_heartbeat_at: Optional[int] = None, elapsed: Optional[float] = None,
 ) -> _DeadWorker:
     """Map a dead worker's reaped exit status to its reclaim bookkeeping.
 
@@ -1044,7 +1105,10 @@ def _classify_dead_worker(
     in the event payload, appended to the error text) so the board and the retry
     worker see WHY instead of a bare label; a rate-limited requeue does not need it.
     """
-    dead = _classify_dead_worker_exit(pid, claimer, task_id=task_id, board=board)
+    dead = _classify_dead_worker_exit(
+        pid, claimer, task_id=task_id, board=board,
+        last_heartbeat_at=last_heartbeat_at, elapsed=elapsed,
+    )
     if task_id and not dead.rate_limited:
         worker_output = _worker_final_output(task_id, board=board)
         if worker_output:
@@ -1059,6 +1123,8 @@ def _classify_dead_worker_exit(
     *,
     task_id: Optional[str] = None,
     board: Optional[str] = None,
+    last_heartbeat_at: Optional[int] = None,
+    elapsed: Optional[float] = None,
 ) -> _DeadWorker:
     """Exit status -> reclaim bookkeeping, before the worker's own words are folded in.
 
@@ -1074,6 +1140,37 @@ def _classify_dead_worker_exit(
         if logged is not None:
             kind, code = _exit_code_kind(logged)
     if kind == "clean_exit":
+        if (
+            last_heartbeat_at is None
+            and elapsed is not None
+            and elapsed >= _kb._resolve_crash_grace_seconds()
+        ):
+            # Zero heartbeats ever recorded (column AND event both absent)
+            # and enough time passed that this isn't a spawn-race artifact:
+            # the worker never made a single MCP tool call, so it never had
+            # the chance to do (or skip) the work. Distinct from a protocol
+            # violation — do NOT set ``protocol_violation`` or ``rate_limited``.
+            return _DeadWorker(
+                kind, code, _ROUTE_FAILURE_ERROR, "route_failure",
+                {
+                    "pid": pid, "claimer": claimer, "exit_code": code,
+                    "exit_signal": "heartbeat_null", "elapsed": int(elapsed),
+                    # Durable marker for _protocol_violation_streak's neutral
+                    # skip and _account_crashes' route-failure branch: _end_run
+                    # copies this payload verbatim into the run metadata, so
+                    # without this key here neither the streak accounting nor
+                    # the breaker logic could recognize a route failure from
+                    # the closed run row.
+                    "route_failure": True,
+                    # This clean exit was actually reaped and classified by
+                    # this process (as opposed to the registry-miss
+                    # ``unknown`` branch below) — makes the two races
+                    # countable.
+                    "reap_status": "observed",
+                },
+                protocol_violation=False,
+                route_failure=True,
+            )
         # rc=0 while still ``running``: usually the work succeeded and only the
         # paperwork was skipped; the corrective sentence reaches the retry
         # worker via ``build_worker_context``.
@@ -1082,7 +1179,13 @@ def _classify_dead_worker_exit(
             # ``protocol_violation`` is the durable marker for
             # _protocol_violation_streak: _end_run copies this payload into the
             # run metadata.
-            {"pid": pid, "claimer": claimer, "exit_code": code, "protocol_violation": True},
+            {
+                "pid": pid, "claimer": claimer, "exit_code": code,
+                "protocol_violation": True,
+                # See the route-failure branch above — this clean exit was
+                # also actually reaped and classified by this process.
+                "reap_status": "observed",
+            },
             protocol_violation=True,
         )
     if kind == "rate_limited":
@@ -1117,6 +1220,15 @@ def _classify_dead_worker_exit(
     if code is not None and kind != "unknown":
         event_payload["exit_kind"] = kind
         event_payload["exit_code"] = code
+    if kind == "unknown":
+        # Registry miss: this pid was never recorded as reaped (either genuinely
+        # dead with no /proc entry, or a zombie the reaper hadn't yet reaped when
+        # this ran) — vs. ``reap_status="observed"`` for a status this process
+        # actually reaped. Makes the two races countable instead of inferred
+        # from a missing ``exit_code`` key.
+        event_payload["reap_status"] = "registry_miss"
+    else:
+        event_payload["reap_status"] = "observed"
     return _DeadWorker(kind, code, error_text, "crashed", event_payload)
 
 
@@ -1127,7 +1239,8 @@ class _CrashSweep:
     crashed: list[str] = field(default_factory=list)
     rate_limited: list[str] = field(default_factory=list)
     # ``(task_id, pid, claimer, dead_worker)``: accounted after the txn via
-    # ``_record_task_failure`` (needs its own write_txn).
+    # ``_record_task_failure`` (needs its own write_txn). ``dead_worker`` carries
+    # the ``protocol_violation`` / ``route_failure`` / ``terminal_provider`` flags.
     crash_details: list[tuple[str, int, str, _DeadWorker]] = field(default_factory=list)
     # Worker-exit observer payloads, fired only after every reclaim/accounting
     # txn has committed.
@@ -1136,6 +1249,11 @@ class _CrashSweep:
 
 def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None) -> _CrashSweep:
     """Release every host-local ``running`` task whose worker PID is dead."""
+    # Reap first: a child that exited between the previous tick's reap and this
+    # classification would otherwise be seen as a registry miss (``unknown``)
+    # instead of its real exit status — the same failure booked two different
+    # ways depending on reap timing.
+    reap_worker_zombies()
     sweep = _CrashSweep()
     with _kb.write_txn(conn):
         rows = conn.execute(
@@ -1157,7 +1275,23 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
                 continue
 
             pid = int(row["worker_pid"])
-            dead = _classify_dead_worker(pid, row["claim_lock"], task_id=row["id"], board=board)
+            # Read the closing run's heartbeat BEFORE ``_end_run`` overwrites
+            # the row below — it is the signal that distinguishes a route
+            # failure (no MCP tool call ever reached the claim) from a
+            # protocol violation (the worker did the work and only skipped
+            # the terminal call).
+            hb_row = conn.execute(
+                "SELECT last_heartbeat_at FROM task_runs "
+                "WHERE task_id = ? AND ended_at IS NULL "
+                "ORDER BY id DESC LIMIT 1",
+                (row["id"],),
+            ).fetchone()
+            last_heartbeat_at = hb_row["last_heartbeat_at"] if hb_row is not None else None
+            elapsed = time.time() - (started_at or 0)
+            dead = _classify_dead_worker(
+                pid, row["claim_lock"], task_id=row["id"], board=board,
+                last_heartbeat_at=last_heartbeat_at, elapsed=elapsed,
+            )
             retry_status = _kb._retry_status_for_run(conn, row["id"])
             dead.event_payload["retry_status"] = retry_status
             cur = conn.execute(
@@ -1186,12 +1320,12 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
                 "outcome": dead.run_outcome,
                 "retry_status": retry_status,
             })
-            if dead.rate_limited or dead.protocol_violation:
+            if dead.rate_limited or dead.protocol_violation or dead.route_failure:
                 # Stamp last_failure_error WITHOUT touching ``consecutive_failures``:
                 # a rate-limited requeue must show ``check_respawn_guard`` a quota
-                # blocker; a below-budget protocol violation never reaches
-                # ``_record_task_failure`` (which stamps this column), yet the
-                # board UI and retry worker need the corrective message.
+                # blocker; a below-budget protocol violation or route failure never
+                # reaches ``_record_task_failure`` (which stamps this column), yet
+                # the board UI and retry worker need the corrective message.
                 conn.execute(
                     "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
                     (dead.error_text[:500], row["id"]),
@@ -1209,9 +1343,10 @@ def _account_crashes(conn: sqlite3.Connection, crash_details: list) -> list[str]
 
     Protocol violations get a BOUNDED violation-only budget independent of
     ``consecutive_failures`` (per-task ``max_retries`` takes precedence);
-    systemic same-error crashes (>= 3 identical fingerprints this tick) and
-    terminal provider errors (credential revoked, model gone — a retry cannot
-    heal them) trip immediately.
+    route failures get their own separate bounded budget
+    (``_ROUTE_FAILURE_FAILURE_LIMIT``); systemic same-error crashes (>= 3
+    identical fingerprints this tick) and terminal provider errors (credential
+    revoked, model gone — a retry cannot heal them) trip immediately.
     """
     auto_blocked: list[str] = []
     fp_counts: dict[str, int] = {}
@@ -1220,7 +1355,28 @@ def _account_crashes(conn: sqlite3.Connection, crash_details: list) -> list[str]
         fp_counts[fp] = fp_counts.get(fp, 0) + 1
     for tid, pid, claimer, dead in crash_details:
         error_text = dead.error_text
-        if dead.protocol_violation:
+        if dead.route_failure:
+            streak = _route_failure_streak(conn, tid)
+            if streak < _ROUTE_FAILURE_FAILURE_LIMIT:
+                # Below budget: already back at ``ready`` with the error stamped.
+                # No ``_record_task_failure`` — streak-free release, must not
+                # consume the unified budget either.
+                continue
+            tripped = _record_task_failure(
+                conn, tid,
+                error=error_text,
+                outcome="crashed",
+                force_trip=True,
+                release_claim=False,
+                end_run=False,
+                event_payload_extra={
+                    "pid": pid,
+                    "claimer": claimer,
+                    "route_failures": streak,
+                    "route_failure_limit": _ROUTE_FAILURE_FAILURE_LIMIT,
+                },
+            )
+        elif dead.protocol_violation:
             streak = _protocol_violation_streak(conn, tid)
             trow = conn.execute("SELECT max_retries FROM tasks WHERE id = ?", (tid,)).fetchone()
             if trow is None:
@@ -2143,7 +2299,9 @@ def _run_reclaim_phase(
     board: Optional[str] = None,
 ) -> None:
     """Reclaim stale/orphaned/crashed/timed-out running tasks, then promote."""
-    reap_worker_zombies()
+    # ``reap_worker_zombies`` moved into ``_reclaim_dead_workers`` (right before
+    # it reads run rows) so the reap-then-classify race stays closed — see
+    # that function's docstring. Do not restore a call here.
     result.reaped_terminal_workers = reap_terminal_workers(conn)
     result.reclaimed = _kb.release_stale_claims(conn, failure_limit=failure_limit)
     if reconcile_orphans:

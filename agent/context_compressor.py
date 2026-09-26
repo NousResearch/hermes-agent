@@ -4297,9 +4297,8 @@ Write only the summary body. Do not include any preamble or prefix."""
 
     @classmethod
     def _strip_context_summary_handoff_message(cls, message: dict[str, Any]) -> Optional[dict[str, Any]]:
-        """Drop stale handoff data while preserving merged prior-tail content.
-        Returns a copy for non-handoff rows, the unwrapped prior-tail content for merged handoffs
-        (delimiter form, or legacy end-marker form), and ``None`` for standalone ones."""
+        """Drop stale handoff data, keeping merged prior-tail content: a copy for non-handoff rows, the unwrapped prior
+        tail (delimiter or legacy end-marker form) for merged handoffs, None for standalone ones without tool_calls."""
         if not isinstance(message, dict):
             return message
         if not cls._is_context_summary_message(message):
@@ -4320,7 +4319,7 @@ Write only the summary body. Do not include any preamble or prefix."""
                 prior = content.split(_SUMMARY_END_MARKER, 1)[1].lstrip()
             else:
                 prior = ""
-            return _unwrapped(prior) if prior else None
+            return _unwrapped(prior) if prior or message.get("tool_calls") else None  # its results follow it
         if isinstance(content, list):
             prior_blocks: list[Any] = []
             found_delimiter = False
@@ -4341,8 +4340,8 @@ Write only the summary body. Do not include any preamble or prefix."""
                         remainder = text.split(_SUMMARY_END_MARKER, 1)[1].lstrip()
                         legacy_blocks = [_with_part_text(item, remainder)] if remainder else []
                         legacy_blocks += [later.copy() if isinstance(later, dict) else later for later in content[index + 1:]]
-                        return _unwrapped(legacy_blocks) if legacy_blocks else None
-                return None
+                        return _unwrapped(legacy_blocks or "") if legacy_blocks or message.get("tool_calls") else None
+                return _unwrapped("") if message.get("tool_calls") else None
 
             # Strip the PRIOR CONTEXT header from the first block that carries it.
             for index, item in enumerate(prior_blocks):
@@ -4354,8 +4353,8 @@ Write only the summary body. Do not include any preamble or prefix."""
                     else:
                         prior_blocks.pop(index)
                     break
-            return _unwrapped(prior_blocks) if prior_blocks else None
-        return None
+            return _unwrapped(prior_blocks or "") if prior_blocks or message.get("tool_calls") else None
+        return _unwrapped("") if message.get("tool_calls") else None
 
     @staticmethod
     def _get_tool_call_id(tc) -> str:
@@ -4974,9 +4973,9 @@ Write only the summary body. Do not include any preamble or prefix."""
 
         window = [_window_row(idx, msg) for idx, msg in enumerate(messages[compress_start:summary_idx], start=compress_start)]
         window.append(_window_row(summary_idx, messages[summary_idx]))
-        scan.turns_to_summarize = [row for row in window if row is not None] + messages[summary_idx + 1:compress_end]
-        if summary_idx >= compress_end:
-            scan.tail_start = summary_idx + 1
+        if summary_idx >= compress_end:  # fold the handoff's tool results: orphans are dropped unsummarized
+            scan.tail_start = self._align_boundary_forward(messages, summary_idx + 1)
+        scan.turns_to_summarize = [r for r in window if r is not None] + messages[summary_idx + 1:max(compress_end, scan.tail_start)]
         return scan
 
     def _begin_compress_attempt(self, current_tokens: Optional[int], force: bool) -> dict[str, Any]:

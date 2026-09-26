@@ -568,6 +568,7 @@ def _sdk_wrapped_result_projection(result, structured):
         projected.append(projected_item)
     return True, projected if isinstance(value, list) else projected[0]
 
+
 def _render_call_tool_result(result, server_name: str) -> str:
     """Pure: ``CallToolResult`` -> handler JSON. ``content`` and ``structuredContent`` are both
     forwarded, except that a ``structuredContent`` whose JSON also sits verbatim in a text block

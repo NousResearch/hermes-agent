@@ -107,7 +107,9 @@ def is_self_uninstall_doc(finding: Finding, line: str) -> bool:
 # depth (``src/__tests__/``), plus test-file naming (``foo.test.js``, ``test_foo.py``, and the
 # plural ``tests_state.py`` / ``state_tests.py`` a single-module plugin uses when it has no
 # ``tests/`` dir); a nested ``src/spec/handler.py`` is runtime code and gets no cap.
-TEST_TREE_DIRS = {"tests", "test", "testing", "spec", "specs", "fixtures"}
+# ``benchmarking`` is the same fixture surface: redaction stress suites embed
+# secret-shaped dummies to prove raw values do not leak (#111334).
+TEST_TREE_DIRS = {"tests", "test", "testing", "spec", "specs", "fixtures", "benchmarking"}
 _TEST_DIRS_ANY_DEPTH = {"__tests__", "__fixtures__", "__mocks__"}
 _TEST_FILE_NAME = re.compile(r"^(?:tests?_[^/]*|[^/]*_tests?\.[^./]+|[^/]*\.(?:test|spec)\.[^./]+)$", re.IGNORECASE)
 

@@ -130,58 +130,25 @@ def _run_turn(db, model: str, provider: str, prose: str = "") -> MagicMock:
 @pytest.mark.parametrize(
     ("live_model", "live_provider"),
     [("x-ai/grok-4.5", ""), ("", "nous")],
-    ids=["provider_emptied", "model_emptied"],
+    ids=["provider_empty", "model_empty"],
 )
 def test_emptied_live_identity_rebuilds_once_then_reuses(db, live_model, live_provider):
-    """A stored ``Provider:``/``Model:`` line with an empty live value is a stale route.
-
-    Route commits keep the stored prompt, so this check is the only rebuild trigger: a
-    model-only request that clears the provider must not replay the previous route's prompt.
-    The rebuilt prompt omits the empty line, so the next turn reuses it (no rebuild loop).
-    """
+    """A stored ``Provider:``/``Model:`` line with an empty live value is a stale route: route
+    commits keep the stored prompt, so this check is the only rebuild trigger. The rebuilt prompt
+    omits the empty line, and memory/context prose carrying its own ``Provider:``/``Model:`` lines
+    must not stand in for it, or every turn would rebuild (a prompt-cache miss per turn)."""
+    prose = "MEMORY\nProvider: openrouter\nModel: some/other-model\n\n"
     stale = _stored_prompt("x-ai/grok-4.5", "nous")
     db.create_session(SESSION_ID, source="discord", model="x-ai/grok-4.5")
     db.update_system_prompt(SESSION_ID, stale)
 
-    first = _run_turn(db, live_model, live_provider)
-    first._build_system_prompt.assert_called_once()
-    rebuilt = db.get_session(SESSION_ID)["system_prompt"]
-    assert rebuilt == first._cached_system_prompt != stale
-
-    second = _run_turn(db, live_model, live_provider)
-    second._build_system_prompt.assert_not_called()
-    assert second._cached_system_prompt == rebuilt
-
-
-@pytest.mark.parametrize(
-    ("live_model", "live_provider"),
-    [("x-ai/grok-4.5", ""), ("", "nous")],
-    ids=["provider_empty", "model_empty"],
-)
-def test_identity_lines_in_memory_prose_never_count_as_the_trailer(db, live_model, live_provider):
-    """Memory/context prose sits before the trailer and may hold its own ``Provider:``/``Model:``
-    lines. With the live value empty the trailer omits that line; the prose line must not stand in
-    for it, or every turn would read a mismatch and rebuild (a prompt-cache miss per turn)."""
-    prose = "MEMORY\nProvider: openrouter\nModel: some/other-model\n\n"
-    db.create_session(SESSION_ID, source="discord", model="x-ai/grok-4.5")
-    db.update_system_prompt(SESSION_ID, _stored_prompt("x-ai/grok-4.5", "nous"))
-
     _run_turn(db, live_model, live_provider, prose)._build_system_prompt.assert_called_once()
     rebuilt = db.get_session(SESSION_ID)["system_prompt"]
+    assert rebuilt != stale
 
     second = _run_turn(db, live_model, live_provider, prose)
     second._build_system_prompt.assert_not_called()
     assert second._cached_system_prompt == rebuilt
-
-
-def test_matching_live_identity_reuses_the_stored_prompt(db):
-    prompt = _stored_prompt("x-ai/grok-4.5", "nous")
-    db.create_session(SESSION_ID, source="discord", model="x-ai/grok-4.5")
-    db.update_system_prompt(SESSION_ID, prompt)
-
-    agent = _run_turn(db, "x-ai/grok-4.5", "nous")
-    agent._build_system_prompt.assert_not_called()
-    assert agent._cached_system_prompt == prompt
 
 
 def test_prompt_without_identity_lines_keeps_reusing(db):

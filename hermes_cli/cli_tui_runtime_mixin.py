@@ -81,6 +81,13 @@ class CLITuiRuntimeMixin:
         # A typed bare stop phrase ends an active voice chat (transcripts are checked earlier).
         if not is_voice_input and self._typed_voice_stop(user_input):
             return
+        # A /yield holder re-claims the cross-surface slot just before its next turn: the
+        # command only freed the slot for OTHERS, never for this session's own future turns.
+        # A stale flag is disarmed even when the lease was re-acquired some other way. #124073.
+        if getattr(self, "_yield_active_session_pending", False):
+            self._yield_active_session_pending = False
+            if not self._claim_active_session():
+                return
 
         # File drops are detected before any dispatch; seeded -q prompts are literal text.
         _file_drop = _detect_file_drop(user_input) if isinstance(user_input, str) and not is_seeded_query else None

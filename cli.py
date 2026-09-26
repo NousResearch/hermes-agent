@@ -908,6 +908,10 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
     ):
         """CLI args win over config; ``reasoning`` is per-run only; ``resume`` restores history from SQLite."""
         self._init_display_options(verbose, compact)
+        # Set by /yield: the cross-surface hold is dropped and the next submitted input
+        # transparently re-claims the slot (or fails with the normal ownership refusal when
+        # another surface took it in between). See #124073.
+        self._yield_active_session_pending = False
         self._init_model_routing(model, toolsets, provider, reasoning, api_key, base_url, max_turns, run_budget,
                                  checkpoints, pass_session_id, ignore_rules)
         self._init_runtime_state(resume)
@@ -938,6 +942,43 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         with suppress(Exception):
             atexit.register(self._release_active_session)
         return True
+
+    def _handle_yield_command(self) -> bool:
+        """Handle /yield — drop this process's active-session lease without ending the session."""
+        lease = getattr(self, "_active_session_lease", None)
+        if lease is None:
+            print("  This session is not holding an active-session slot.")
+            return True
+        if getattr(lease, "released", False) or not getattr(lease, "enabled", True):
+            self._active_session_lease = None
+            return True
+        self._yield_active_session_pending = True
+        try:
+            lease.release()
+        except Exception as exc:
+            self._yield_active_session_pending = False
+            from hermes_cli.active_sessions import ActiveSessionRegistryError
+            if not isinstance(exc, ActiveSessionRegistryError):
+                raise
+            self._console_print(f"[bold red]⚠ Yield failed: {exc}[/]")
+            return True
+        self._active_session_lease = None
+        self._console_print("  ✓ Session yielded — another surface may claim it now. "
+                            "Send a message here to reclaim it if it is still free.")
+        return True
+
+    def _reclaim_yielded_active_session(self) -> bool:
+        """Re-claim the cross-surface slot for this process after a /yield, before the next turn.
+
+        A plain self-claim is enough: writer identity is (pid, live_session_id) and both are
+        unchanged by the yield, so if nobody else has taken the slot in between this process
+        re-acquires its own entry instead of being fenced out. Returns True when the slot is
+        held again; False means another surface claimed it first.
+        """
+        self._yield_active_session_pending = False
+        if getattr(self, "_active_session_lease", None) is not None:
+            return True
+        return self._claim_active_session()
 
     def _release_active_session(self) -> None:
         lease = getattr(self, "_active_session_lease", None)
@@ -1166,6 +1207,7 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         "reload-mcp": ("_confirm_and_reload_mcp", True), "reload-skills": ("_cmd_reload_skills", True),
         "plugins": ("_cmd_plugins", True), "stop": ("_handle_stop_command", False),
         "agents": ("_handle_agents_command", False), "bg": ("_handle_background_command", True),
+        "yield": ("_handle_yield_command", False),
         "queue": ("_cmd_queue", True), "steer": ("_cmd_steer", True), "moa": ("_cmd_moa", True),
     }
 

@@ -361,9 +361,11 @@ describe('barge capture survives the submit-time busy guard (#123357)', () => {
     const onInterrupt = vi.fn()
     const onStopWord = vi.fn()
     let transcriptions = 0
+
     const onTranscribeAudio = vi.fn(async () =>
       transcriptions++ === 0 ? 'kick off the task' : 'and another thing'
     )
+
     const pendingResponse = () => null
 
     const onBusyChange: { current: (busy: boolean) => void } = { current: () => undefined }

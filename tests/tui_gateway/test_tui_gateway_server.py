@@ -1022,8 +1022,58 @@ def test_completion_cwd_explicit_cwd_wins_over_profile(monkeypatch, tmp_path):
     home = _write_profile_cfg(tmp_path / "home-c", str(profile_b))
 
     monkeypatch.setattr(server, "_profile_home", lambda name: home if name else None)
-    result = server._completion_cwd({"cwd": str(explicit), "profile": "ef-design"})
+    result = server._completion_cwd(
+        {"cwd": str(explicit), "cwd_explicit": True, "profile": "ef-design"}
+    )
     assert result == str(explicit)
+
+
+def test_completion_cwd_profile_overrides_inherited_workspace(monkeypatch, tmp_path):
+    """Issue #52589: the desktop seeds a new chat's cwd from its app-global workspace
+    (the launch profile's configured directory) — that inherited default must NOT
+    override the target profile's own ``terminal.cwd``."""
+    launch_ws = tmp_path / "workspace"
+    launch_ws.mkdir()
+    profile_ws = tmp_path / "products"
+    profile_ws.mkdir()
+    home = _write_profile_cfg(tmp_path / "home-dev", str(profile_ws))
+
+    monkeypatch.setattr(server, "_profile_home", lambda name: home if name else None)
+    # No cwd_explicit: the client cwd is the inherited app-global workspace.
+    assert (
+        server._completion_cwd({"profile": "dev", "cwd": str(launch_ws)}) == str(profile_ws)
+    )
+
+
+def test_completion_cwd_explicit_pick_wins_over_profile(monkeypatch, tmp_path):
+    """Issue #52589 regression guard: a deliberate workspace pick (``cwd_explicit``)
+    still beats the profile's configured ``terminal.cwd``."""
+    explicit = tmp_path / "explicit-lane"
+    explicit.mkdir()
+    profile_ws = tmp_path / "products"
+    profile_ws.mkdir()
+    home = _write_profile_cfg(tmp_path / "home-dev", str(profile_ws))
+
+    monkeypatch.setattr(server, "_profile_home", lambda name: home if name else None)
+    assert (
+        server._completion_cwd(
+            {"profile": "dev", "cwd": str(explicit), "cwd_explicit": True}
+        )
+        == str(explicit)
+    )
+
+
+def test_completion_cwd_inherited_workspace_without_profile_cfg_kept(monkeypatch, tmp_path):
+    """An inherited workspace stays when the target profile has NO configured
+    terminal.cwd — the profile override only applies when one exists (#52589)."""
+    launch_ws = tmp_path / "workspace"
+    launch_ws.mkdir()
+    no_cfg_home = tmp_path / "home-plain"
+    no_cfg_home.mkdir()
+    (no_cfg_home / "config.yaml").write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(server, "_profile_home", lambda name: no_cfg_home if name else None)
+    assert server._completion_cwd({"profile": "plain", "cwd": str(launch_ws)}) == str(launch_ws)
 
 
 def test_terminal_task_cwd_local_backend_uses_session_cwd(monkeypatch, tmp_path):
@@ -2363,6 +2413,60 @@ def test_load_enabled_toolsets_folds_project_into_focus_posture(monkeypatch):
     monkeypatch.setattr(cc, "coding_selection", lambda **_: ["coding", "figma"])
 
     assert server._load_enabled_toolsets("tui") == ["coding", "figma", "project"]
+
+
+def test_load_enabled_toolsets_honors_disabled_project_on_focus_path(monkeypatch):
+    """#54433: focus/coding posture must not re-add `project` when disabled."""
+    monkeypatch.delenv("HERMES_TUI_TOOLSETS", raising=False)
+
+    import agent.coding_context as cc
+
+    monkeypatch.setattr(cc, "coding_selection", lambda **_: ["coding", "figma"])
+    monkeypatch.setattr(server, "_load_disabled_toolsets", lambda: ["project"])
+
+    result = server._load_enabled_toolsets("tui")
+    assert result == ["coding", "figma"]
+    assert "project" not in result
+
+
+def test_load_enabled_toolsets_honors_disabled_project_on_configured_fallback(
+    monkeypatch,
+):
+    """#54433: configured/fallback path must not re-add disabled `project`."""
+    monkeypatch.delenv("HERMES_TUI_TOOLSETS", raising=False)
+
+    import agent.coding_context as cc
+    import hermes_cli.tools_config as tools_config_mod
+
+    monkeypatch.setattr(cc, "coding_selection", lambda **_: None)
+    monkeypatch.setattr(
+        tools_config_mod,
+        "_get_platform_tools",
+        lambda *_args, **_kwargs: {"memory", "web"},
+    )
+    monkeypatch.setattr(server, "_load_disabled_toolsets", lambda: ["project"])
+
+    result = server._load_enabled_toolsets("tui")
+    assert result == ["memory", "web"]
+    assert "project" not in result
+
+
+def test_with_session_toolsets_keeps_desktop_ui_when_project_disabled(monkeypatch):
+    """#54433: a disabled name is subtracted from the client-surface fold-in, but
+    ``desktop_ui`` — the client's own control surface — survives the subtraction."""
+    monkeypatch.setattr(server, "_load_disabled_toolsets", lambda: ["project"])
+
+    assert server._with_session_toolsets(["memory"], "desktop") == [
+        "memory",
+        "desktop_ui",
+    ]
+    # Nothing disabled: the fold-in keeps both client-surface toolsets.
+    monkeypatch.setattr(server, "_load_disabled_toolsets", lambda: None)
+    assert server._with_session_toolsets(["memory"], "desktop") == [
+        "memory",
+        "desktop_ui",
+        "project",
+    ]
 
 
 def test_load_enabled_toolsets_rejects_disabled_mcp_env(monkeypatch, capsys):

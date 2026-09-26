@@ -8,6 +8,12 @@ CHANGE DETECTED" block (capped unified diff + new output) is injected into the p
 failure → an ERROR, never a change, and the stored hash is left untouched. State:
 ``job["monitor_state"]`` in jobs.json (hash + last_changed_at) and
 ``OUTPUT_DIR/<job_id>/monitor_last_output.txt`` (for the diff).
+
+Commit boundary: the scheduler evaluates the monitor before every other gate but persists the
+new hash/snapshot only once the run is admitted past all pre-inference gates (``run_job`` →
+``commit_monitor``), so a run refused before inference (blocked config, provider resolution)
+leaves the change replayable. Once admitted, an inference-time failure still commits — a failed
+agent run must not re-alert on the same content forever.
 """
 
 from __future__ import annotations
@@ -32,13 +38,20 @@ _SNAPSHOT_FILENAME = "monitor_last_output.txt"
 
 @dataclass
 class MonitorOutcome:
-    """Result of one monitor-source evaluation."""
+    """Result of one monitor-source evaluation.
+
+    ``output_hash`` / ``output`` carry the observation so a caller that
+    evaluated with ``persist=False`` can commit it later via
+    :func:`commit_monitor` once its pre-inference gates have passed.
+    """
 
     ok: bool
     changed: bool = False
     first_run: bool = False
     context_block: Optional[str] = None
     error: Optional[str] = None
+    output_hash: Optional[str] = None
+    output: Optional[str] = None
 
 
 def hash_monitor_output(output: str) -> str:
@@ -122,12 +135,17 @@ def job_has_monitor(job: dict) -> bool:
     return bool(_field(job, "monitor_script") or _field(job, "monitor_url"))
 
 
-def check_monitor(job: dict) -> MonitorOutcome:
+def check_monitor(job: dict, *, persist: bool = True) -> MonitorOutcome:
     """Run the monitor source and decide whether the agent should run.
 
     On change (or first run) the new hash + snapshot are persisted BEFORE the agent runs — detection
     time is the state boundary, so a failed agent run doesn't re-alert on the same content forever.
     On failure nothing is persisted.
+
+    With ``persist=False`` the observation is only evaluated and carried on the outcome
+    (``output_hash`` / ``output``); the caller commits it via :func:`commit_monitor` once its
+    pre-inference gates have passed, so a run refused before inference (blocked config, provider
+    resolution) leaves the change replayable.
     """
     job_id = str(job.get("id") or "")
     ok, output = _run_monitor_source(job)
@@ -163,8 +181,23 @@ def check_monitor(job: dict) -> MonitorOutcome:
             f"### Diff (previous → current)\n\n```diff\n{diff}\n```\n\n" + current
         )
 
-    _persist_monitor_state(job_id, new_hash, output)
-    return MonitorOutcome(ok=True, changed=True, first_run=first_run, context_block=context_block)
+    if persist:
+        _persist_monitor_state(job_id, new_hash, output)
+    return MonitorOutcome(
+        ok=True, changed=True, first_run=first_run, context_block=context_block,
+        output_hash=new_hash, output=output,
+    )
+
+
+def commit_monitor(job: dict, outcome: MonitorOutcome) -> None:
+    """Persist one changed monitor outcome once the run is admitted past its pre-inference gates."""
+    if not outcome.ok or not outcome.changed:
+        return
+    if outcome.output_hash is None or outcome.output is None:
+        logger.warning(
+            "Monitor: refusing incomplete deferred outcome for %r", job.get("id"))
+        return
+    _persist_monitor_state(str(job.get("id") or ""), outcome.output_hash, outcome.output)
 
 
 def _persist_monitor_state(job_id: str, new_hash: str, output: str) -> None:

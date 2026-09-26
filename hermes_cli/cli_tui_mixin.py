@@ -899,7 +899,7 @@ class CLITuiMixin:
             return []
 
     def _tui_handle_voice_record(self, event):
-        """Toggle voice recording when voice mode is active.
+        """Toggle voice recording, enabling voice mode on the first hotkey press.
 
         Runs on prompt_toolkit's event-loop thread: any blocking call here (locks, sd.wait,
         disk I/O) freezes the whole UI, so all heavy work goes to daemon threads. Clarify and
@@ -908,8 +908,6 @@ class CLITuiMixin:
         queued chat turn.
         """
         from cli import _DIM, _RST, _cprint, logger
-        if not self._voice_mode:
-            return
         if self._voice_recording:
             # Always allow STOPPING (even while the agent runs); manual stop ends continuous
             # mode. Flag clearing happens atomically inside _voice_stop_and_transcribe.
@@ -947,17 +945,35 @@ class CLITuiMixin:
                 self._voice_tts_done.set()
             except Exception:
                 pass
+        # play_beep(sd.wait), AudioRecorder.start(lock), voice requirement checks and config I/O
+        # must never block the event loop.  The first record-key press is also the opt-in action:
+        # it enables voice mode and immediately starts recording, instead of being swallowed until
+        # the user discovers and runs ``/voice on``.
         with self._voice_lock:
-            self._voice_continuous = True
+            if not self._voice_mode:
+                if getattr(self, "_voice_hotkey_starting", False):
+                    return
+                self._voice_hotkey_starting = True
+            needs_enable = not self._voice_mode
 
-        # play_beep(sd.wait), AudioRecorder.start(lock) and config I/O must never block the loop.
         def _start_recording():
             try:
+                if needs_enable:
+                    getattr(self, "_enable_voice_mode")()
+                    if not self._voice_mode:
+                        return
+                with self._voice_lock:
+                    self._voice_continuous = True
                 self._voice_start_recording()
                 if hasattr(self, '_app') and self._app:
                     self._app.invalidate()
             except Exception as e:
                 _cprint(f"\n{_DIM}Voice recording failed: {e}{_RST}")
+            finally:
+                if needs_enable:
+                    with self._voice_lock:
+                        self._voice_hotkey_starting = False
+                event.app.invalidate()
 
         threading.Thread(target=_start_recording, daemon=True).start()
         event.app.invalidate()

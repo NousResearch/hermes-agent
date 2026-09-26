@@ -2309,6 +2309,36 @@ def get_model_context_length(
     return DEFAULT_FALLBACK_CONTEXT
 
 
+def free_tier_context_note(model: str, context_length: int, *, provider: str = "") -> Optional[str]:
+    """One-sentence explanation when a ``-free``/``:free`` id resolves BELOW its family's
+    catalog window (#47247). The provider's number is correct — the free tier is capped — but
+    users read the gap (e.g. ``deepseek-v4-flash-free`` at 200K vs the 1M ``deepseek-v4-flash``
+    family entry) as a detection failure and second-guess a working resolution. Pure helper:
+    no I/O, silent (None) unless the cap is provable — a non-free id, no family entry, or a
+    resolved window already at/above the family's has nothing to say. A routing suffix AFTER
+    the free marker (e.g. ``glm-5.2:free:nitro``) is deliberately not stripped, so such ids
+    stay silent: this helper carries no OpenRouter routing-variant knowledge and prefers a
+    false negative to guessing."""
+    if not isinstance(context_length, int) or context_length <= 0:
+        return None
+    raw = str(model or "").strip()
+    name = raw.lower().rsplit("/", 1)[-1]  # aggregator "org/" prefixes are not part of the id
+    for marker in ("-free", ":free"):
+        if name.endswith(marker):
+            base = name[: -len(marker)]
+            break
+    else:
+        return None
+    hit = _longest_key_match(DEFAULT_CONTEXT_LENGTHS, base) if base else None
+    if hit is None or hit[1] <= context_length:
+        return None
+    def _humanized(n: int) -> str:  # matches the ctx_display form in gateway.run_turn._format_session_info
+        return f"{n / 1_000_000:.1f}M" if n >= 1_000_000 else f"{n // 1_000}K" if n >= 1_000 else str(n)
+    path = f"model_overrides.{(provider or '').strip() or '<provider>'}.{raw}.context_window"
+    return (f"`{raw}` is the free tier of `{hit[0]}` ({_humanized(hit[1])} tokens) — "
+            f"the provider caps this id at {_humanized(context_length)}. Pin a window with {path}")
+
+
 async def get_model_context_length_async(model: str, base_url: str = "", api_key: str = "", config_context_length: int | None = None, provider: str = "", custom_providers: list | None = None) -> int:
     """get_model_context_length on a worker thread (its blocking HTTP would stall the event loop)."""
     import asyncio

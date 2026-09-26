@@ -2369,6 +2369,14 @@ class GatewayTurnMixin:
             f"◆ Provider: {resolved.provider or 'openrouter'}",
             f"◆ Context: {ctx_display} tokens ({ctx_source})",
         ]
+        # A `-free`/`:free` id resolving below its family window is a real provider cap, not
+        # a detection failure — say so once, but never over an explicit config pin (#47247).
+        if resolved.context_source != "config":
+            from agent.model_metadata import free_tier_context_note
+            note = free_tier_context_note(
+                resolved.model, context_length, provider=resolved.provider or "")
+            if note:
+                lines.append(f"ℹ {note}")
         if (resolved.provider or "") == "moa":
             # The preset name hides who pays: the aggregator runs every tool-loop step (#112359).
             from hermes_cli.config import load_config

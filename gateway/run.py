@@ -2351,8 +2351,11 @@ def _resolve_gateway_model_context(
     ``route`` (``provider`` / ``base_url`` / ``api_key`` of a session-only /model switch) replaces the
     default runtime credentials so the window is looked up against the endpoint that actually serves
     ``model``; a ``model.context_length`` pin only survives when that route still matches the config.
-    ``context_source`` is ``"default"`` only for a model unknown to the catalog that fell through to
-    ``DEFAULT_FALLBACK_CONTEXT`` — a catalog-listed 256K model is ``"detected"``.
+    ``context_source`` is ``"config"`` for any window the user declared — ``model.context_length``, a
+    custom_providers pin, or an explicit ``model_overrides.<provider>.<model>.context_window`` (a
+    ``_default`` fill-gap entry is not a declaration) — and ``"default"`` only for a model unknown to
+    the catalog that fell through to ``DEFAULT_FALLBACK_CONTEXT`` — a catalog-listed 256K model is
+    ``"detected"``.
     """
     from agent.model_metadata import (
         DEFAULT_CONTEXT_LENGTHS, DEFAULT_FALLBACK_CONTEXT, _longest_key_match, get_model_context_length)
@@ -2413,6 +2416,18 @@ def _resolve_gateway_model_context(
         config_context_length = None
     if config_context_length is None and custom_providers and base_url:
         config_context_length = _best_effort(_custom_ctx) or None
+    # An EXPLICIT model_overrides.<provider>.<model>.context_window is a declared window even though
+    # get_model_context_length applies it internally (step 0b) and leaves the source "detected":
+    # consumers that offer a "pin a window yourself" escape hatch must yield to the pin already set
+    # (#47247 — the free-tier cap note told users to write the override they had just written).
+    # Explicit-only by design: _override_context_window skips _default fill-gap entries, which are
+    # not a per-model declaration.
+    override_declared = False
+    if config_context_length is None:
+        with suppress(Exception):  # fall through to detection-based sourcing
+            from agent.models_dev import _override_context_window
+            _ov = _override_context_window(provider or "", resolved_model)
+            override_declared = _ov is not None and _ov > 0
 
     context_length = get_model_context_length(
         resolved_model, base_url=base_url or "", api_key=api_key or "",
@@ -2420,7 +2435,7 @@ def _resolve_gateway_model_context(
         custom_providers=custom_providers)
     fell_through = (context_length == DEFAULT_FALLBACK_CONTEXT
                     and _longest_key_match(DEFAULT_CONTEXT_LENGTHS, str(resolved_model).lower()) is None)
-    context_source = ("config" if config_context_length is not None
+    context_source = ("config" if config_context_length is not None or override_declared
                       else "default" if fell_through else "detected")
     return _GatewayModelContext(
         model=resolved_model, provider=provider or "", base_url=base_url or "",

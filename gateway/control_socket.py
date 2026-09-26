@@ -23,6 +23,8 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from utils import atomic_write_text
+
 logger = logging.getLogger(__name__)
 
 CONTROL_PROTOCOL_VERSION = 1
@@ -162,7 +164,7 @@ class GatewayControlServer:
             os.chmod(bind_path, 0o600)
         self._bind_path = bind_path
         if pointer_file is not None:
-            pointer_file.write_text(str(bind_path), encoding="utf-8")
+            atomic_write_text(pointer_file, str(bind_path))
             self._pointer_file = pointer_file
         logger.info("Gateway control socket listening at %s", bind_path)
         return True

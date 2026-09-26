@@ -1868,32 +1868,39 @@ DEFAULT_CONFIG = {
         # every create/promote/unblock path behaves exactly as before. Turning it
         # on is an operator decision (consent-gated), and it makes the ready lane
         # refuse new work while the board is deeper than it can drain.
+        #
+        # These 8 keys are the §5.1 CONTRACT (spec
+        # yaan-platform/docs/READY-QUEUE-ADMISSION-MECHANISM.md): the kernel keeps
+        # its own copy in kanban_db_admission.DEFAULTS for a config.yaml that
+        # predates them, and tests/hermes_cli/test_kanban_admission.py asserts both
+        # against the §5.1 table copied as a literal — so a contract edit is a
+        # visible two-place change and an added key fails the parity test.
         # Epoch the mechanism was turned on. Unset/0 = OFF. Set it to the moment
         # of the decision: cards in 'ready' with admit_state NULL older than this
         # are the pre-mechanism backlog (reported, never mass-admitted).
         "admission_enabled_at": None,
-        # Trailing window (hours) the drain rate is measured over.
-        "admission_lookback_window_hours": 168,
-        # Budget = completions in the window x this multiplier (coverage): how
-        # much standing work the board has actually been draining.
-        "admission_cohort_multiplier": 0.55,
-        # A lane may hold at most this % of its own budget...
-        "admission_lane_budget_pct": 4,
-        # ...except an unassigned/open lane, which gets no lane budget (0).
-        "admission_lane_budget_pct_no_lane": 0,
-        # Floor under the derived budget, so a quiet board is not a stopped one.
-        "admission_floor": 20,
-        # Smallest lane budget: floors the % so a 1-card lane can still start.
-        "admission_lane_budget_floor": 4,
-        # >0 pins the global budget outright, ignoring the completion window
-        # (the rollout/step-3 override). Report budget_source=pin_override.
-        "admission_budget_pin": 0,
+        # Integer pin, overrides the derived BOARD budget. Unset/0 = no pin, so the
+        # derivation below governs. Reports budget_source=pin_override. A lane's
+        # budget is its own derivation and is NOT pinned by this.
+        "admission_budget": None,
+        # Trailing window (hours) the budget derives from, and the drain rate is
+        # measured over.
+        "admission_window_hours": 24,
+        # The budget is the distinct completions in the window x1 (nothing else may
+        # scale it — a hidden multiplier is a deviation budget_source cannot
+        # report). Floor under the derived budget, so a quiet board is not a
+        # stopped one.
+        "admission_budget_floor": 5,
         # Priority at/above which a card is exempt as a P0 fault (a broken
         # substrate that has to be repaired regardless of queue depth).
-        "admission_p0_fault_priority": 2,
-        # Ready-ageing escalation: warn / escalate thresholds in seconds.
-        "admission_ageing_warn_seconds": 1200,
-        "admission_ageing_escalate_seconds": 7200,
+        "admission_p0_priority": 90,
+        # Optional {lane: int} per-lane budget overrides. A lane with no entry gets
+        # the same derivation over the lane's OWN completions (never a share of the
+        # board's); an unassigned card has no lane bound at all.
+        "admission_lane_budgets": None,
+        # Ready-ageing tiers, in HOURS a card has spent in the ready population.
+        "ageing_warn_hours": 24,
+        "ageing_escalate_hours": 72,
         # Worker stdout/stderr log rotation at spawn time (2 MiB + one backup). Raise to keep more
         # early failure evidence from long-running workers.
         "worker_log_rotate_bytes": 2 * 1024 * 1024,

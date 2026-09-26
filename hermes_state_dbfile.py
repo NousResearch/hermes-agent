@@ -231,6 +231,13 @@ _DARWIN_FD_DEV_OFFSET = 24
 _DARWIN_FD_INO_OFFSET = 32
 _DARWIN_FD_PATH_OFFSET = 176
 _DARWIN_LIBPROC = None
+# Wall-clock budget for one _iter_darwin_fd_targets pass (#115583). Every
+# sqlite3.connect on state.db runs the deleted-WAL guard first, and on macOS that
+# enumerates every fd of every process via libproc; a single descriptor-heavy
+# process (virtualization file sharing) stalled cold start 20s+ with no bound.
+# On expiry the scan stops and the guard stays fail-open per its contract
+# (no holders found -> no refusal).
+_DARWIN_FD_SCAN_BUDGET_SECONDS = 1.0
 
 
 def _darwin_libproc():
@@ -275,10 +282,15 @@ def _iter_darwin_fd_targets():
 
     The pathname and the identity both stay readable after the path is unlinked, which is what
     makes an orphaned WAL generation visible at all on macOS.  Processes that cannot be inspected
-    (gone, or not ours) and descriptors that are not vnodes are skipped silently."""
+    (gone, or not ours) and descriptors that are not vnodes are skipped silently.
+
+    The per-fd probe loop is bounded by _DARWIN_FD_SCAN_BUDGET_SECONDS: on expiry
+    the scan logs a warning and stops, so callers see partial results and the guard
+    stays fail-open instead of stalling the connect path."""
     import ctypes
 
     lib = _darwin_libproc()
+    deadline = time.monotonic() + _DARWIN_FD_SCAN_BUDGET_SECONDS
     for pid in _darwin_all_pids(lib):
         size = 4096
         while True:
@@ -292,6 +304,12 @@ def _iter_darwin_fd_targets():
         else:
             continue
         for offset in range(0, used - _DARWIN_PROC_FD_INFO_SIZE + 1, _DARWIN_PROC_FD_INFO_SIZE):
+            if time.monotonic() >= deadline:
+                logger.warning(
+                    "darwin fd scan exceeded %.1fs budget; returning partial results fail-open",
+                    _DARWIN_FD_SCAN_BUDGET_SECONDS,
+                )
+                return
             fd = struct.unpack_from("<i", listing.raw, offset)[0]
             record = ctypes.create_string_buffer(_DARWIN_FD_RECORD_SIZE)
             if lib.proc_pidfdinfo(pid, fd, _DARWIN_PIDFDVNODEPATHINFO, record,

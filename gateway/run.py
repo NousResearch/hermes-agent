@@ -1142,6 +1142,8 @@ def _build_replay_entry(
             entry[_rkey] = _rval
     if preserve_timestamp and msg.get("timestamp"):
         entry["timestamp"] = msg["timestamp"]
+    if msg.get("_db_persisted"):
+        entry["_db_persisted"] = True
     return entry
 
 

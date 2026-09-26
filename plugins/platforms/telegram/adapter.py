@@ -3784,6 +3784,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return result
         raw = dict(result.raw_response) if isinstance(result.raw_response, dict) else {}
         raw.update({
+            "message_ids": list(delivered),
             "partial_overflow": True, "delivered_chunks": len(delivered), "total_chunks": len(delivered) + len(undelivered),
             "last_message_id": delivered[-1], "continuation_message_ids": tuple(delivered[1:])})
         if tail_certain and undelivered:

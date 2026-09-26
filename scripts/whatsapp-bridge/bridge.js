@@ -1118,6 +1118,24 @@ app.get('/chat/:id', async (req, res) => {
   });
 });
 
+// Local group directory for integrations that need to resolve a verified
+// WhatsApp group name to its internal JID before sending.
+app.get('/groups', async (req, res) => {
+  if (!sock || connectionState !== 'connected') {
+    return res.status(503).json({ error: 'Not connected to WhatsApp' });
+  }
+  try {
+    const groups = await sock.groupFetchAllParticipating();
+    return res.json(Object.values(groups).map(group => ({
+      id: group.id,
+      name: group.subject,
+      participants: Array.isArray(group.participants) ? group.participants.length : 0,
+    })));
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 // Health check
 app.get('/health', (req, res) => {
   res.json({

@@ -216,6 +216,10 @@ def test_update_of_a_subdir_install_keeps_files_the_user_created_or_edited(world
     (src / "desktop").mkdir()
     (src / "desktop" / "plugin.js").write_text("export default { id: \"v1\" }\n")
     (src / "server.js").write_text("console.log('v1')\n")
+    (src / "dashboard").mkdir()
+    (src / "dashboard" / "manifest.json").write_text("{}")
+    (src / "hooks").mkdir()
+    (src / "hooks" / "run.cjs").write_text("module.exports = 1\n")
     sp.run(["git", "init", "-q"], cwd=mono, check=True, env=_GIT_ENV)
     pin = {"sha": _commit(mono, "v1")}
 
@@ -244,6 +248,8 @@ def test_update_of_a_subdir_install_keeps_files_the_user_created_or_edited(world
     (src / "config.yaml.example").write_text("endpoint: new-default\n")
     shutil.rmtree(src / "desktop")
     (src / "server.js").unlink()
+    shutil.rmtree(src / "dashboard")
+    shutil.rmtree(src / "hooks")
     pin["sha"] = _commit(mono, "v2")
     assert pc.dashboard_update_user_plugin("sub-plugin")["ok"] is True
 
@@ -252,6 +258,7 @@ def test_update_of_a_subdir_install_keeps_files_the_user_created_or_edited(world
     assert (target / "data" / "state.json").read_text() == "{}"
     assert not (target / "desktop").exists()
     assert not (target / "server.js").exists()
+    assert not (target / "dashboard").exists() and not (target / "hooks" / "run.cjs").exists()
 
 
 def test_repin_keeps_a_wholly_ignored_data_dir_in_a_git_checkout(world):

@@ -289,7 +289,10 @@ _NO_GIT_REVISION_FILES = frozenset({
     "plugin.yaml", "plugin.yml", "plugin.json", "mcp.json",
     "pyproject.toml", "package.json", "package-lock.json", "uv.lock",
 })
-_NO_GIT_REVISION_DIRS = frozenset({"desktop", "skills", "sidecar", "node_modules"})
+_NO_GIT_REVISION_DIRS = frozenset({"dashboard", "desktop", "skills", "sidecar", "node_modules"})
+# JS module/JSX variants the guard does not classify as code. Kept local: adding them to
+# tools.plugin_guard.CODE_FILE_EXTENSIONS would exempt them from env-secret scan patterns.
+_NO_GIT_REVISION_EXTENSIONS = frozenset({".mjs", ".cjs", ".jsx", ".tsx"})
 
 
 def _skip_preserve(name: str) -> bool:
@@ -300,8 +303,10 @@ def _skip_preserve(name: str) -> bool:
 def _revision_owned_without_git(rel: Path) -> bool:
     """True for plugin code/control surfaces an update must never resurrect from the old tree."""
     from tools.plugin_guard import CODE_FILE_EXTENSIONS
+    suffix = rel.suffix.lower()
     return (
-        rel.suffix.lower() in CODE_FILE_EXTENSIONS
+        suffix in CODE_FILE_EXTENSIONS
+        or suffix in _NO_GIT_REVISION_EXTENSIONS
         or rel.as_posix() in _NO_GIT_REVISION_FILES
         or bool(rel.parts and rel.parts[0] in _NO_GIT_REVISION_DIRS)
     )

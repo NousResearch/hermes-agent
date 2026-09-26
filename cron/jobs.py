@@ -1973,7 +1973,7 @@ def _normalize_job_updates(job: Dict[str, Any], updates: Dict[str, Any]) -> None
             updates[key] = norm(updates[key])
     if "repeat" in updates:
         _rp = updates["repeat"]
-        completed = (job.get("repeat") or {}).get("completed", 0)
+        completed = (job.get("repeat") or {}).get("completed") or 0
         if isinstance(_rp, dict):
             _rp = dict(_rp)
             _rp["times"] = normalize_repeat_value(_rp.get("times"))

@@ -26,7 +26,7 @@ def merge_job_definition(local: Dict[str, Any], authored: Dict[str, Any]) -> Dic
     merged = {key: value for key, value in local.items() if key not in JOB_DEFINITION_FIELDS}
     merged.update((key, authored[key]) for key in JOB_DEFINITION_FIELDS if key in authored)
     merged["repeat"] = {
-        "completed": (local.get("repeat") or {}).get("completed", 0),
+        "completed": (local.get("repeat") or {}).get("completed") or 0,
         "times": (authored.get("repeat") or {}).get("times"),
     }
     if isinstance(merged.get("schedule"), str):

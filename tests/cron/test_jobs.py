@@ -438,6 +438,25 @@ class TestJobCRUD:
         with pytest.raises(ValueError, match="Invalid repeat"):
             update_job(job["id"], {"repeat": "banana"})
 
+    def test_null_repeat_completed_counts_as_zero(self, tmp_cron_dir):
+        """A hand-edited "completed": null must not kill mark_job_run (None += 1) or be
+        carried forward by update_job."""
+        import json
+        from cron.jobs import JOBS_FILE, get_job, mark_job_run, update_job
+
+        job = create_job(prompt="t", schedule="every 1h", repeat=3)
+
+        def null_completed():
+            payload = json.loads(JOBS_FILE.read_text(encoding="utf-8"))
+            payload["jobs"][0]["repeat"]["completed"] = None
+            JOBS_FILE.write_text(json.dumps(payload), encoding="utf-8")
+
+        null_completed()
+        mark_job_run(job["id"], success=True)
+        assert get_job(job["id"])["repeat"]["completed"] == 1
+        null_completed()
+        assert update_job(job["id"], {"repeat": {"times": 5}})["repeat"]["completed"] == 0
+
     def test_oneshot_turned_recurring_becomes_forever(self, tmp_cron_dir):
         """A one-shot budget must not survive a schedule change to a recurring kind.
 

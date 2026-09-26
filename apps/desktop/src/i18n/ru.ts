@@ -195,11 +195,25 @@ export const ru = defineLocale({
       backgroundExitedDuringStartup: 'Фоновый процесс Hermes завершился при запуске.',
       backendStopped: 'Бэкенд остановлен',
       desktopBootFailed: 'Не удалось запустить приложение',
-      gatewayConnectionLost: 'Соединение с шлюзом потеряно',
+      gatewayConnectionLost: 'Соединение со шлюзом потеряно',
       gatewaySignInRequired: 'Требуется вход в шлюз',
       ipcBridgeUnavailable: 'IPC-мост приложения недоступен.',
       gatewayConnectionLostDetail:
         'Повторяем попытки в фоне. Можно продолжать читать и писать черновики — откройте настройки шлюза, если это не прекратится.',
+      restartHermes: 'Перезапустить Hermes',
+      openLogs: 'Открыть журналы',
+      reconnectNow: 'Переподключиться сейчас',
+      connectionSettings: 'Настройки подключения',
+      gatewaySignInRequiredDetail: 'Войдите снова, чтобы восстановить соединение. Ваши чаты и настройки сохранены.',
+      signInAgain: 'Войти снова'
+    },
+    causes: {
+      exitedEarly: 'Фоновая служба Hermes остановилась сразу после запуска.',
+      timedOut: 'Фоновая служба Hermes не ответила вовремя.',
+      permission: 'Hermes не смог записать данные в свою папку из-за недостатка прав.',
+      diskFull: 'Диск заполнен, поэтому Hermes не смог запуститься.',
+      portInUse: 'Нужный Hermes сетевой порт занят другой программой.',
+      installMissing: 'Не хватает части файлов Hermes. Нажмите «Восстановить установку», чтобы вернуть их.'
     },
     failure: {
       title: 'Hermes не удалось запустить',
@@ -236,6 +250,9 @@ export const ru = defineLocale({
         'Кнопки ниже открывают Nous Portal (состояние и управление инстансом) и наш Discord для поддержки.',
       cloudDownCheckPortal: 'Проверить статус Portal',
       cloudDownDiscord: 'Помощь в Discord',
+      details: 'Подробности',
+      bundledReinstallHint: 'Эту встроенную установку нельзя восстановить из приложения — переустановите приложение, чтобы вернуть его бэкенд.',
+      reinstallApp: 'Переустановить приложение'
     }
   },
   notifications: {
@@ -288,6 +305,15 @@ export const ru = defineLocale({
       openaiTtsNeedsKey: 'Для TTS OpenAI нужен VOICE_TOOLS_OPENAI_KEY или OPENAI_API_KEY.',
       codeSkewRestartRequired:
         'После обновления этот бэкенд работает на старом коде. Перезапустите его, чтобы загрузить новый код.',
+      storageFailure: 'Hermes не смог сохранить данные в свою папку. Откройте раздел «Обслуживание», чтобы проверить и восстановить её.',
+      rpcOutOfSync: 'Версии приложения и бэкенда не совпадают. Обновите оба.',
+      restartHermesFailed: 'Не удалось перезапустить Hermes'
+    },
+    actions: {
+      restartHermes: 'Перезапустить Hermes',
+      openKeys: 'Открыть раздел «Ключи»',
+      openGateways: 'Открыть раздел «Шлюзы»',
+      openMaintenance: 'Открыть раздел «Обслуживание»'
     },
     voice: {
       configureSpeechToText: 'Настройте распознавание речи, чтобы использовать голосовой режим.',
@@ -477,8 +503,7 @@ export const ru = defineLocale({
       'composer.slash': 'Палитра slash-команд',
       'composer.help': 'Быстрая справка',
       'composer.history': 'Переключить поповер / историю',
-      'composer.cancel': 'Закрыть поповер · отменить запуск',
-      'view.selectionToComposer': 'Отправить выделенное в композер',
+      'composer.cancel': 'Закрыть поповер · отменить запуск'
     }
   },
   findInPage: {
@@ -1150,6 +1175,86 @@ export const ru = defineLocale({
           'Локальный браузинг использует ваши настоящие логины. Hermes копирует профиль вашего браузера по умолчанию (куки, логины, настройки) в управляемый снимок и работает через свой Chromium — живой профиль напрямую не открывается, а копия обновляется из него при каждом запуске. Также позволяет агенту по запросу открыть локальный сеанс с настоящим профилем, даже если настроен облачный браузер. Поддерживаются только браузеры на Chromium (Chrome, Edge, Brave, Brave Origin, Chromium); браузер по умолчанию без Chromium даст понятную ошибку. По умолчанию выключено.',
       },
     }),
+    uninstallSection: {
+      dangerZone: 'Опасная зона',
+      checkingInstalled: 'Проверяем, что установлено…',
+      uninstallHermes: 'Удалить Hermes',
+      chooseHowMuch:
+        'Выберите, что удалить. Для завершения удаления приложение закроется; чтобы снова установить Hermes, запустите установщик.',
+      confirmUninstall: 'Подтвердите удаление',
+      confirmBody: what => `Будет удалено: ${what}. Это действие нельзя отменить.`,
+      appLabel: 'Приложение:',
+      couldNotStart: 'Не удалось начать удаление.',
+      uninstalling: 'Удаляем…',
+      yesUninstall: 'Да, удалить',
+      options: {
+        gui: {
+          title: 'Удалить только графическое приложение Chat GUI',
+          description: 'Удаляется настольное приложение. Агент Hermes, ваши настройки и чаты сохранятся.',
+          consequence: 'настольное приложение Chat GUI (само приложение и его данные)'
+        },
+        lite: {
+          title: 'Удалить приложение и агента, сохранить мои данные',
+          description:
+            'Удаляются приложение и агент Hermes, но настройки, чаты и секреты сохранятся для будущей переустановки.',
+          consequence: 'Chat GUI и агент Hermes (настройки, чаты и секреты сохранятся)'
+        },
+        full: {
+          title: 'Удалить всё',
+          description:
+            'Удаляются приложение, агент и все пользовательские данные — настройки, чаты, запланированные задания, секреты и журналы.',
+          consequence: 'ВСЁ — Chat GUI, агент Hermes и все ваши настройки, чаты, секреты и журналы'
+        }
+      }
+    },
+    poolLimits: {
+      warmBotBackendsAria: 'Количество прогретых бэкендов ботов',
+      warmBotBackendsTitle: 'Прогретые бэкенды ботов',
+      backendIdleTimeoutAria: 'Время простоя бэкенда в миллисекундах',
+      backendIdleTimeoutTitle: 'Время простоя бэкенда'
+    },
+    customEndpoints: {
+      active: 'Активна',
+      apiKeySet: 'Ключ API задан',
+      use: 'Использовать',
+      editTitle: 'Изменить конечную точку',
+      addTitle: 'Добавить конечную точку',
+      fields: {
+        name: 'Название',
+        providerId: 'ID провайдера',
+        endpointUrl: 'URL конечной точки',
+        defaultModel: 'Модель по умолчанию',
+        context: 'Контекст',
+        apiKey: 'Ключ API',
+        apiKeyNewPlaceholder: 'Оставьте пустым, чтобы сохранить текущий ключ',
+        apiKeyPlaceholder: 'Необязательно',
+        useNewChats: 'Использовать для новых чатов',
+        discoverModels: 'Обнаружить модели'
+      },
+      test: 'Проверить',
+      save: 'Сохранить',
+      newEndpoint: 'Новая конечная точка',
+      apiMode: 'Режим API',
+      autoDetect: 'Определить автоматически',
+      couldNotLoad: 'Не удалось загрузить пользовательские конечные точки',
+      endpointSaved: 'Пользовательская конечная точка сохранена.',
+      saveFailed: 'Не удалось сохранить',
+      endpointReachable: 'Конечная точка доступна.',
+      endpointReachableTransport: transport => `Конечная точка доступна (маршрут ${transport} отвечает).`,
+      endpointReachableModels: (reachable, count) =>
+        `${reachable} Найдено ${count} ${RU_NOUN(count, 'модель', 'модели', 'моделей')}.`,
+      endpointValidationFailed: 'Не удалось проверить конечную точку.',
+      validationFailed: 'Проверка не удалась',
+      activationFailed: 'Не удалось активировать',
+      deleteConfirm: name => `Удалить «${name}»?`,
+      deleteFailed: 'Не удалось удалить',
+      title: 'Пользовательские конечные точки',
+      deleteEndpoint: 'Удалить конечную точку',
+      emptyDescription: 'Добавьте ниже конечную точку, совместимую с OpenAI.',
+      emptyTitle: 'Нет пользовательских конечных точек',
+      namePlaceholder: 'Axet Proxy',
+      contextPlaceholder: 'Авто'
+    },
     about: {
       updates: 'Обновления'
     },
@@ -1933,8 +2038,6 @@ export const ru = defineLocale({
       upToDateTitle: 'Движок обновлён',
       upToDateDetail:
         (tag, backend) => `Работает llama.cpp ${tag} (${backend}) \u2014 самая свежая сборка, которую поставляет Hermes.`,
-      updateToast:
-        next => `Доступна более новая сборка локального движка (${next}). Обновите её в разделе «Настройки → Локальные модели».`,
       activeDetail: 'Новые чаты используют эту модель — она загрузится, когда вы отправите первое сообщение',
       activeNotLoaded: 'Загрузится при первом сообщении',
       loadedPill: 'В памяти',
@@ -1995,9 +2098,6 @@ export const ru = defineLocale({
     },
   },
   skills: {
-    plugins: {
-      pageBlurb: 'Плагин может расширять приложение, агента или оба сразу — у каждой части свой переключатель.'
-    },
     tabSkills: 'Навыки',
     tabToolsets: 'Инструменты',
     configuringProfile: 'Настраивается:',
@@ -2701,17 +2801,6 @@ export const ru = defineLocale({
     switchConnectionFailed: name => `Не удалось подключиться к ${name}`,
     manageProfiles: 'Управлять профилями…',
     connectGateway: 'Управлять шлюзами…',
-    fleet: {
-      localDevice: 'Это устройство (локальный бэкенд — установит Hermes, если его нет, иначе откроет новую сессию)',
-      switchDeviceTitle: 'Переключиться на это устройство?',
-      switchDeviceDesc: 'Откроется новая сессия на этом компьютере. Текущий разговор останется на другом шлюзе.',
-      switchDeviceConfirm: 'Переключить',
-      installDeviceTitle: 'Переключиться на это устройство?',
-      installDeviceDesc:
-        'Hermes будет установлен локально, затем откроется новая сессия на этом компьютере. Установка не начнётся, пока вы не подтвердите.',
-      installDeviceConfirm: 'Установить локально',
-      connectExistingInstead: 'Вместо этого подключить существующий'
-    },
     actions: 'Действия',
     color: 'Цвет…',
     colorFor: 'Цвет',
@@ -2794,6 +2883,15 @@ export const ru = defineLocale({
       onGateway: (name, gateway) => `${name} \u00B7 ${gateway}`,
       switchTo: (name, gateway) => `Переключиться на ${name} на ${gateway}`,
       deleteOn: gateway => ` на ${gateway}`,
+      localDevice: 'Это устройство (локальный бэкенд — установит Hermes, если его нет, иначе откроет новую сессию)',
+      switchDeviceTitle: 'Переключиться на это устройство?',
+      switchDeviceDesc: 'Откроется новая сессия на этом компьютере. Текущий разговор останется на другом шлюзе.',
+      switchDeviceConfirm: 'Переключить',
+      installDeviceTitle: 'Переключиться на это устройство?',
+      installDeviceDesc:
+        'Hermes будет установлен локально, затем откроется новая сессия на этом компьютере. Установка не начнётся, пока вы не подтвердите.',
+      installDeviceConfirm: 'Установить локально',
+      connectExistingInstead: 'Вместо этого подключить существующий'
     },
     remoteOverride: {
       menuItem: 'Подключить к удалённому хосту…',
@@ -4557,12 +4655,35 @@ export const ru = defineLocale({
         runtime: 'Ошибка локальной среды',
         streaming: 'Ошибка потокового соединения',
       },
+      errorLayerBodies: {
+        auth: 'Сервис ИИ отклонил вход. Проверьте учётные данные этого провайдера и отправьте сообщение снова.',
+        billing: 'На счёте у этого провайдера закончились средства. Пополните счёт или смените провайдера, затем отправьте сообщение снова.',
+        disk: 'Диск заполнен, поэтому Hermes не смог сохранить этот разговор. Освободите место и повторите попытку.',
+        endpoint: 'Hermes не может подключиться к вашему серверу модели. Проверьте, запущен ли он, и отправьте сообщение снова.',
+        gateway: 'Внутренняя ошибка Hermes помешала начать ответ. Отправьте сообщение снова; если ошибка повторится, отправьте диагностические данные.',
+        generic: 'Во время ответа Hermes произошла ошибка. Повторите попытку, а если она повторится — скопируйте подробности.',
+        provider: 'Сервис ИИ не смог обработать запрос. Повторите попытку чуть позже или смените провайдера.',
+        runtime: 'Внутренняя ошибка Hermes помешала начать ответ. Отправьте сообщение снова; если ошибка повторится, отправьте диагностические данные.',
+        streaming: 'Соединение прервалось до завершения ответа. Повторите отправку.'
+      },
+      errorDetails: 'Подробности',
+      errorGenericProvider: 'Сервис ИИ',
+      errorToastTitle: 'Hermes не смог завершить ответ',
       errorRetry: 'Повторить',
+      errorLimitResets: time => `Лимит обновится в ${time}`,
+      errorRetryAtReset: time => `Повторить после обновления лимита (${time})`,
+      errorRetryScheduled: (time, wait) => `Повторная попытка в ${time} — через ${wait}`,
+      errorRetryScheduledCancel: 'Отменить',
       errorStartNewSession: 'Начать новый сеанс',
       errorSwitchProvider: 'Сменить провайдера',
+      errorChooseModel: 'Выбрать модель',
+      errorCompressConversation: 'Сжать разговор',
+      errorCompressFailed: 'Не удалось сжать разговор',
+      errorOpenHermesFolder: 'Открыть папку Hermes',
+      errorOpenHermesFolderFailed: 'Не удалось открыть папку Hermes',
+      errorUpdateApiKey: 'Обновить API-ключ',
       errorSignInAgain: provider => `Войдите в ${provider} снова`,
-      errorOauthExpired:
-        provider => `Срок входа в ${provider} истёк или доступ отозван. Войдите снова, чтобы продолжить общение.`,
+      errorSignInFreeTier: 'Войти в учётную запись Nous',
       errorOpenLogs: 'Открыть журналы',
       errorOpenLogsFailed: 'Не удалось открыть папку журналов',
       errorOpenDesktopLogs: 'Открыть журналы приложения',

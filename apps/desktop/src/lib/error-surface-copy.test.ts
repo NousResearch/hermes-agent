@@ -67,6 +67,14 @@ it('renders every classified Russian error card in Russian, preserving provider 
     if (source.body.includes('Provider Ω')) expect(copy.body, code).toContain('Provider Ω')
   }
 
+  for (const layer of ['provider', 'auth', 'billing', 'gateway', 'disk', 'streaming'] as const) {
+    const surface = parseErrorSurface({ layer, code: 'unknown_failure' })
+    const copy = errorCardText(russian, surface)
+    const source = errorCardText(english, surface)
+    expect(copy.title, layer).not.toBe(source.title)
+    expect(copy.body, layer).not.toBe(source.body)
+  }
+
   for (const auth_kind of ['api_key', 'oauth'] as const) {
     const surface = parseErrorSurface({ layer: 'auth', code: 'auth', auth_kind, provider_label: 'Provider Ω' })
     const copy = errorCardText(russian, surface)

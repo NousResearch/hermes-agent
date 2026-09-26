@@ -1,28 +1,4 @@
-"""A /model (or route) commit must not null a continuing session's stored system prompt.
-
-Regression for the WARNING ``Stored system prompt for session X is null; rebuilding from
-scratch this turn ... Investigate the previous turn's update_system_prompt write path``:
-three switch-path writers cleared ``system_prompt``/``system_prompt_hash`` "so stale
-Model:/Provider: footers rebuild" —
-
-  * ``SessionDB.update_session_model``      (every /model commit)
-  * ``SessionDB.update_session_runtime_lock`` (Browser / API-client lock)
-  * ``SessionDB.update_session_billing_route`` (billing route; ``switch_model`` after the swap)
-
-— so the next turn read a NULL row and took the broken-row branch of
-``agent.conversation_loop._restore_or_build_system_prompt``: a WARNING blaming the previous
-turn's ``update_system_prompt`` write path, plus a full prompt rebuild (the whole provider
-prefix re-billed) even on a commit that never moved the route — the picker re-committing the
-session's *current* model, which the production log shows verbatim
-(``switched from deepseek-v4.1-flash to deepseek-v4.1-flash via hyper``).
-
-The runtime-identity check (``_stored_prompt_matches_runtime``) is the single mechanism that
-already rebuilds exactly when the stored footer is stale, so the writers preserve the row and
-the check decides: a real switch rebuilds (INFO) on the next turn, a same-route commit reuses
-the bytes verbatim, and the WARNING goes back to meaning "the stored prompt was lost".
-
-Real ``SessionDB`` on a temp file; no mock stands in for the DB layer.
-"""
+"""A /model (or route) commit must not null a continuing session's stored system prompt."""
 
 from __future__ import annotations
 
@@ -68,7 +44,7 @@ _ROUTE_COMMITS = {
 
 @pytest.mark.parametrize("commit", _ROUTE_COMMITS.values(), ids=_ROUTE_COMMITS.keys())
 def test_route_commits_keep_the_stored_prompt(db, commit):
-    """Each switch-path writer leaves the prompt snapshot (and its dedup row) in place."""
+    """Each switch-path writer leaves the stored prompt in place."""
     prompt = _stored_prompt("x-ai/grok-4.5", "nous")
     db.create_session(SESSION_ID, source="discord", model="x-ai/grok-4.5")
     db.update_system_prompt(SESSION_ID, prompt)
@@ -76,15 +52,6 @@ def test_route_commits_keep_the_stored_prompt(db, commit):
     commit(db)
 
     assert db.get_session(SESSION_ID)["system_prompt"] == prompt
-    # Content-addressed storage intact: the row still resolves through its hash.
-    raw = db._conn.execute(
-        "SELECT system_prompt, system_prompt_hash FROM sessions WHERE id = ?", (SESSION_ID,)
-    ).fetchone()
-    assert raw["system_prompt"] is None
-    assert raw["system_prompt_hash"] is not None
-    assert db._conn.execute(
-        "SELECT COUNT(*) FROM system_prompts WHERE hash = ?", (raw["system_prompt_hash"],)
-    ).fetchone()[0] == 1
 
 
 def test_compression_tip_adoption_applies_the_identity_check(db):

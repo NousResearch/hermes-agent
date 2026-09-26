@@ -5955,6 +5955,12 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             if snapshot_text_parts and not raw_content:
                 raw_content = "\n".join(snapshot_text_parts)
                 normalized_content = raw_content
+        # Reply gate for auto-threading: a typed <@bot> token in the RAW content is an
+        # explicit mention and threads like any mention; Discord's reply-ping adds us to
+        # message.mentions without a token and must stay inline (#9399, #123853). Computed
+        # here because the mention-strip below rewrites message.content.
+        is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
+        reply_explicitly_mentions_self = self._self_is_raw_mentioned(message)
         if self._self_is_explicitly_mentioned(message):
             mention_prefix = True
             if self._client.user:
@@ -6003,8 +6009,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 is_free_channel and not self._discord_free_response_auto_thread()
             )
             auto_thread = self._extra_or_env_flag("auto_thread", "DISCORD_AUTO_THREAD", "true", truthy=True)
-            is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
-            if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:
+            # A reply threads only when it carries a typed <@bot> token; the implicit
+            # reply-ping (bot in message.mentions, no token) stays inline (#9399, #123853).
+            thread_blocking_reply = is_reply_message and not reply_explicitly_mentions_self
+            if auto_thread and not skip_thread and not is_voice_linked_channel and not thread_blocking_reply:
                 thread = await self._auto_create_thread(message)
                 if thread:
                     parent_channel_id = str(message.channel.id)

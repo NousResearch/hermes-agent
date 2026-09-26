@@ -128,10 +128,17 @@ def start_loop_liveness_watchdog(
                     "Gateway event loop missed %d consecutive liveness probes; dumping all thread "
                     "stacks and exiting with code %d so the service supervisor can restart it.",
                     strikes, exit_code)
-            try:
-                faulthandler.dump_traceback(all_threads=True)
-            except Exception:
-                logger.debug("Loop liveness faulthandler dump failed", exc_info=True)
+            # stderr alone loses the dump when the gateway was launched with no usable console
+            # (Windows Startup-folder .vbs, #120356), so a liveness death left no stack anywhere.
+            with contextlib.suppress(Exception):
+                _write_watchdog_dump(
+                    get_shutdown_watchdog_dump_path(), delay_s=0.0,
+                    event="loop_liveness_watchdog_fired",
+                    snapshot={"strikes": strikes, "probe_interval_s": probe_interval,
+                              "probe_timeout_s": probe_timeout},
+                    stderr_notice=f"Gateway event loop missed {strikes} consecutive liveness "
+                                  f"probes (pid={os.getpid()}); dumping all thread stacks.\n",
+                )
             if stop_event.is_set():
                 return
             _mark_exited_quietly(exit_code, "loop_liveness_watchdog")
@@ -234,26 +241,36 @@ def resolve_shutdown_watchdog_delay(
 
 
 def _write_watchdog_dump(dump_path: Path, *, delay_s: float,
-                         snapshot: Optional[Dict[str, Any]]) -> None:
-    """Best-effort faulthandler + metadata dump before hard-exit."""
+                         snapshot: Optional[Dict[str, Any]],
+                         event: str = "shutdown_watchdog_fired",
+                         stderr_notice: Optional[str] = None) -> None:
+    """Best-effort faulthandler + metadata dump before hard-exit.
+
+    Writes to ``dump_path`` and mirrors to stderr: a gateway launched with no usable console
+    (Windows Startup-folder .vbs, #120356) discards stderr, so the file is the only copy that
+    survives. Each half is independently best-effort — a wedged disk must not suppress the
+    stderr dump, and a closed stderr must not suppress the file dump.
+    """
+    header = {"event": event, "pid": os.getpid(), "delay_s": delay_s,
+              "fired_at": datetime.now(timezone.utc).isoformat(), "snapshot": snapshot or {}}
     try:
         dump_path.parent.mkdir(parents=True, exist_ok=True)
     except OSError:
-        return
-    header = {"event": "shutdown_watchdog_fired", "pid": os.getpid(), "delay_s": delay_s,
-              "fired_at": datetime.now(timezone.utc).isoformat(), "snapshot": snapshot or {}}
-    with contextlib.suppress(Exception), open(dump_path, "a", encoding="utf-8") as fh:
-        fh.write(json.dumps(header, default=str) + "\n--- faulthandler dump (all threads) ---\n")
-        fh.flush()
-        try:
-            faulthandler.dump_traceback(file=fh, all_threads=True)
-        except Exception:
-            fh.write("(faulthandler.dump_traceback failed)\n")
-        fh.write("--- end dump ---\n")
-        fh.flush()
+        pass  # fall through to the stderr copy rather than losing the dump entirely
+    else:
+        with contextlib.suppress(Exception), open(dump_path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(header, default=str) + "\n--- faulthandler dump (all threads) ---\n")
+            fh.flush()
+            try:
+                faulthandler.dump_traceback(file=fh, all_threads=True)
+            except Exception:
+                fh.write("(faulthandler.dump_traceback failed)\n")
+            fh.write("--- end dump ---\n")
+            fh.flush()
     with contextlib.suppress(Exception):  # stderr too: journald/launchd get it if disk is wedged
-        sys.stderr.write(f"Gateway shutdown watchdog fired after {delay_s:.0f}s "
-                         f"(pid={os.getpid()}); dumping all thread stacks.\n")
+        sys.stderr.write(stderr_notice or (
+            f"Gateway shutdown watchdog fired after {delay_s:.0f}s "
+            f"(pid={os.getpid()}); dumping all thread stacks.\n"))
         sys.stderr.flush()
         faulthandler.dump_traceback(all_threads=True)
 

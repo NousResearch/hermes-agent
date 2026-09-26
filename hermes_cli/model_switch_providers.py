@@ -959,11 +959,11 @@ def _lap_canonical_rows(b: _PickerBuild) -> None:
             cp.slug, cp.label, cp.slug == b.current_provider, model_ids, "canonical", uncapped_ok=False)
 
 
-def _lap_user_provider_rows(b: _PickerBuild, user_providers: dict) -> None:
-    """Section 3: ``providers:`` dict entries, grouped by (api_url, credential, api_mode,
-    extra_headers) so keyed providers on one endpoint with the same wire protocol collapse into
-    one row (two Palantir Claude entries -> one "Palantir Claude" row); a different
-    key_env/api_mode/headers keeps distinct rows since the wire protocol or tenant differs."""
+def _group_user_provider_entries(b: _PickerBuild, user_providers: dict) -> dict[tuple, dict]:
+    """Group ``providers:`` entries the way section 3 renders them (one row per endpoint+credential
+    identity+wire protocol). Split out of :func:`_lap_user_provider_rows` so the refresh path can
+    warm every group's disk-cache row in parallel BEFORE the serial lap turns each probe into a
+    warm ``cached_fetch_api_models`` read. Group dict is exactly what the lap consumes."""
     from hermes_cli.model_switch import _extra_headers_from_config, _scoped_key_env
     from hermes_cli.config import coerce_provider_id, is_provider_enabled
     ep_groups: dict[tuple, dict] = {}
@@ -980,17 +980,106 @@ def _lap_user_provider_rows(b: _PickerBuild, user_providers: dict) -> None:
             # slug = first ep_name encountered; probe key from the first member (inline api_key,
             # else key_env through the per-profile secret scope).
             ep_groups[group_key] = {
-                "slug": ep_name, "name": _group_display_name(display_name), "api_url": api_url, "models": [],
-                "has_explicit_models": False,
+                "slug": ep_name, "name": _group_display_name(display_name), "api_url": api_url,
+                "models": [], "has_explicit_models": False,
                 "api_key": inline_api_key or _scoped_key_env(key_env),
                 "headers": headers, "api_mode": ep_cfg.get("api_mode"),
-                "discovery_allowed": bool(api_url) and _discover_flag(ep_cfg), "raw_names": [], "aliases": set()}
+                "discovery_allowed": bool(api_url) and _discover_flag(ep_cfg), "raw_names": [], "aliases": set(),
+                "native_provider": ep_name if str(ep_name).strip().lower() in {"ollama", "custom:ollama"} else "custom"}
         grp = ep_groups[group_key]
         # ``default_model`` is the legacy key; ``model`` matches custom_providers.
         _absorb_entry_models(grp, ep_cfg, ep_cfg.get("default_model", "") or ep_cfg.get("model", ""))
         grp["raw_names"].append(display_name)
         grp["aliases"].update(custom_provider_aliases(display_name, str(ep_name)))
+    return ep_groups
 
+
+def _prefetch_user_provider_endpoints_parallel(ep_groups: list) -> None:
+    """Refresh path only: fetch every user-provider endpoint group's catalog in parallel.
+
+    A refresh wipes the disk cache first, so the serial section-3 lap would otherwise make one
+    blocking HTTPS round-trip per group (31 configured endpoints -> ~2 minutes, #123793). Each
+    worker runs the SAME discovery the serial lap runs (native-aware ``_fetch_picker_live_models``,
+    cache off) and persists through the locked ``update_custom_endpoint_cache_entry`` under the
+    caller-keyed cache key ``cached_fetch_api_models`` reads, so the lap's probe becomes a warm
+    read with identical semantics; the locked re-persist also repairs the snapshot write race
+    between workers. Preserves refresh behavior: keyless endpoints that declare an allowlist and
+    ``discover_models: false`` rows never live-probe serially, so they are not fetched here."""
+    from agent.command_token_source import materialize_probe_api_key
+    from hermes_cli.models import (
+        _custom_endpoint_fingerprint, _load_provider_models_cache,
+        update_custom_endpoint_cache_entry)
+
+    def _probe_keys(grp: dict) -> dict:
+        # Normalize the section-3 (headers/discovery_allowed) and section-4 (extra_headers/
+        # discover_models) group shapes into one probe spec.
+        headers = grp.get("headers") if grp.get("headers") is not None else grp.get("extra_headers")
+        allowed = grp.get("discovery_allowed")
+        if allowed is None:
+            allowed = bool(grp.get("api_url")) and grp.get("discover_models", True)
+        return {"key": grp.get("api_key"), "url": grp.get("api_url"), "mode": grp.get("api_mode"),
+                "headers": headers or None, "allowed": bool(allowed),
+                "explicit": bool(grp.get("has_explicit_models")),
+                "native_provider": grp.get("native_provider", "custom")}
+
+    def _probe_would_run(spec: dict) -> bool:
+        # Mirror b.discover_endpoint's probe_live gate on a refresh (can_probe_custom=True).
+        return spec["allowed"] and (bool(spec["key"]) or not spec["explicit"])
+
+    def _needs_fetch(spec: dict) -> bool:
+        # Mirror cached_fetch_api_models' key+validity exactly: anything not served warm there
+        # is what the serial lap would block on.
+        url = str(spec["url"] or "").strip().rstrip("/").lower()
+        if not url:
+            return False
+        fp = _custom_endpoint_fingerprint(spec["key"], spec["mode"], spec["headers"])
+        entry = _load_provider_models_cache().get(f"custom:{url}#{fp}")
+        return not (
+            isinstance(entry, dict) and entry.get("fp") == fp
+            and isinstance(entry.get("models"), list) and entry["models"]
+            and isinstance(entry.get("at"), (int, float)) and not isinstance(entry.get("at"), bool))
+
+    stale = [(grp, spec) for grp in ep_groups
+             for spec in [_probe_keys(grp)] if _probe_would_run(spec) and _needs_fetch(spec)]
+    if len(stale) <= 1:
+        return  # the serial lap handles one endpoint fine
+
+    import concurrent.futures
+
+    def _fetch_one(item: tuple) -> None:
+        grp, spec = item
+        try:
+            key = spec["key"]
+            # Fetch with the minted token (as the serial lap's probe would), persist under the
+            # CALLER's credential so the cache key/fingerprint match what the lap reads.
+            models = _fetch_picker_live_models(
+                materialize_probe_api_key(key) if callable(key) else key, spec["url"],
+                spec["native_provider"], spec["explicit"],
+                headers=spec["headers"], timeout=5.0, api_mode=spec["mode"], cache=False)
+            if models is None or (not isinstance(models, _NativePickerModelList) and not models):
+                return
+            update_custom_endpoint_cache_entry(
+                spec["url"], list(models), api_key=key, api_mode=spec["mode"],
+                headers=spec["headers"],
+                native_catalog=isinstance(models, _NativePickerModelList))
+        except Exception:
+            pass  # best-effort; the serial lap re-probes and falls back as before
+
+    with concurrent.futures.ThreadPoolExecutor(
+            max_workers=min(8, len(stale)), thread_name_prefix="picker-endpoint-prefetch") as executor:
+        list(executor.map(_fetch_one, stale))
+
+
+def _lap_user_provider_rows(b: _PickerBuild, user_providers: dict, ep_groups: dict | None = None) -> None:
+    """Section 3: ``providers:`` dict entries, grouped by (api_url, credential, api_mode,
+    extra_headers) so keyed providers on one endpoint with the same wire protocol collapse into
+    one row (two Palantir Claude entries -> one "Palantir Claude" row); a different
+    key_env/api_mode/headers keeps distinct rows since the wire protocol or tenant differs.
+
+    ``ep_groups`` comes pre-grouped from :func:`list_authenticated_providers` (which may have
+    prefetched the groups' catalogs in parallel); pass nothing to group here."""
+    if ep_groups is None:
+        ep_groups = _group_user_provider_entries(b, user_providers)
     for grp in ep_groups.values():
         ep_name, display_name, api_url = grp["slug"], grp["name"], grp["api_url"]
         models_list = list(grp["models"])
@@ -1046,11 +1135,11 @@ def _lap_bare_custom_row(b: _PickerBuild, custom_providers: list | None) -> None
         source="model-config", shown=_cap_models(models, b.max_models))
 
 
-def _lap_custom_provider_rows(b: _PickerBuild, custom_providers: list) -> None:
-    """Section 4: ``custom_providers:`` entries (one model each) grouped into one row per
-    (endpoint, credential identity, api_mode, extra_headers, display prefix). Four "Ollama — X"
-    entries on one host become one "Ollama" row; distinct prefixes sharing a proxy URL keep
-    their own rows."""
+def _group_custom_provider_entries(b: _PickerBuild, custom_providers: list) -> list:
+    """Group ``custom_providers:`` entries the way section 4 renders them (one row per
+    endpoint+credential+api_mode+headers+display prefix). Split out of
+    :func:`_lap_custom_provider_rows` so the refresh path can prefetch every group's catalog in
+    parallel before the serial lap. Returns the group dicts in entry order."""
     from hermes_cli.model_switch import _extra_headers_from_config, _scoped_key_env
     from hermes_cli.config import coerce_provider_id
     groups: dict[tuple, dict] = {}
@@ -1070,22 +1159,38 @@ def _lap_custom_provider_rows(b: _PickerBuild, custom_providers: list) -> None:
         provider_key = str(entry.get("provider_key") or "").strip()
         group_key = (api_url, cred_identity, api_mode, tuple(sorted(entry_extra_headers.items())), prefix.lower())
         display_name = prefix or raw_name
+        slug = custom_provider_slug(display_name, provider_key)
         grp = groups.setdefault(group_key, {
-            "slug": custom_provider_slug(display_name, provider_key), "name": display_name,
+            "slug": slug, "name": display_name,
             "api_url": api_url, "api_key": "", "credential_identity": cred_identity, "models": [], "has_explicit_models": False,
             "discover_models": True, "api_mode": api_mode, "extra_headers": entry_extra_headers,
-            "aliases": set()})
+            "aliases": set(),
+            "native_provider": "ollama" if "ollama" in {str(slug).strip().lower(), str(display_name).strip().lower()} else "custom"})
         grp["api_key"] = grp["api_key"] or api_key  # first member with a key wins
         grp["discover_models"] = grp["discover_models"] and discover  # one opt-out pins the whole row
         grp["aliases"].update(custom_provider_aliases(raw_name, provider_key))
         # ``model:`` is only the active selection; every configured model lives under ``models:``.
         _absorb_entry_models(grp, entry, (entry.get("model") or "").strip())
 
+    return list(groups.values())
+
+
+def _lap_custom_provider_rows(b: _PickerBuild, custom_providers: list, groups: list | None = None) -> None:
+    """Section 4: ``custom_providers:`` entries (one model each) grouped into one row per
+    (endpoint, credential identity, api_mode, extra_headers, display prefix). Four "Ollama — X"
+    entries on one host become one "Ollama" row; distinct prefixes sharing a proxy URL keep
+    their own rows.
+
+    ``groups`` comes pre-grouped from :func:`list_authenticated_providers` (which may have
+    prefetched the groups' catalogs in parallel); pass nothing to group here."""
+    if groups is None:
+        groups = _group_custom_provider_entries(b, custom_providers)
+
     section4_slugs: set = set()
     current_url_group_count = sum(
-        1 for grp in groups.values()
+        1 for grp in groups
         if b.current_base_url_norm and _norm_url(grp["api_url"]) == b.current_base_url_norm)
-    for grp in groups.values():
+    for grp in groups:
         api_url, api_key, slug = grp["api_url"], grp.get("api_key", ""), grp["slug"]
         # Slug claimed by a built-in/overlay/providers: row -> skip (don't shadow).
         if slug.lower() in b.seen_slugs and slug.lower() not in section4_slugs:
@@ -1109,8 +1214,7 @@ def _lap_custom_provider_rows(b: _PickerBuild, custom_providers: list) -> None:
             slug, {str(alias).lower() for alias in grp["aliases"]}, grp_url_norm,
             url_match_ok=current_url_group_count == 1)
         discovered, native_catalog_empty, probe_live = b.discover_endpoint(
-            api_key, api_url,
-            "ollama" if "ollama" in {str(slug).strip().lower(), str(grp.get("name") or "").strip().lower()} else "custom",
+            api_key, api_url, grp["native_provider"],
             bool(grp.get("has_explicit_models")), headers=grp.get("extra_headers") or None,
             api_mode=grp.get("api_mode"), discovery_allowed=bool(api_url) and grp.get("discover_models", True),
             is_current=is_current)
@@ -1242,11 +1346,23 @@ def list_authenticated_providers(
     _lap_builtin_rows(b, data, user_providers)
     _lap_overlay_rows(b, data, user_providers)
     _lap_canonical_rows(b)
-    if user_providers and isinstance(user_providers, dict):
-        _lap_user_provider_rows(b, user_providers)
+    # Explicit refresh with many configured endpoints: the serial laps would otherwise make one
+    # blocking HTTPS round-trip per endpoint group (#123793). Group both sections up front and
+    # warm every probeable group's disk-cache row in one parallel pool; the laps then read warm.
+    s3_groups = (_group_user_provider_entries(b, user_providers)
+                 if user_providers and isinstance(user_providers, dict) else {})
+    s4_groups = (_group_custom_provider_entries(b, custom_providers)
+                 if custom_providers and isinstance(custom_providers, list) else [])
+    if refresh and len(s3_groups) + len(s4_groups) > 1:
+        try:
+            _prefetch_user_provider_endpoints_parallel([*s3_groups.values(), *s4_groups])
+        except Exception:
+            pass  # best-effort; serial laps below still work
+    if s3_groups:
+        _lap_user_provider_rows(b, user_providers, ep_groups=s3_groups)
     _lap_bare_custom_row(b, custom_providers)
-    if custom_providers and isinstance(custom_providers, list):
-        _lap_custom_provider_rows(b, custom_providers)
+    if s4_groups:
+        _lap_custom_provider_rows(b, custom_providers, groups=s4_groups)
 
     return _finalize_picker_rows(b.results, user_providers, current_model)
 

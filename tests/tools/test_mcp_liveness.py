@@ -134,7 +134,9 @@ def test_hydrated_error_shape_for_registered_declaration(tmp_path, monkeypatch):
     payload = json.loads(error)
     assert server is None
     assert payload["server"] == "example-server"
-    assert payload["state"] == "app_not_running"
+    # Static liveness cannot observe the app, so it must not claim the app is not
+    # running: the honest state is the missing MCP connection (#119975).
+    assert payload["state"] == "hermes_not_connected"
     assert payload["app"]["name"] == "Example App"
     assert payload["user_action"]
     assert payload["retry"] == "after_user_action"
@@ -151,3 +153,73 @@ def test_connected_interactive_session_server_is_offerable_from_a_service_sessio
         assert mcp_tool_handlers._declared_app_offerable("example-server") is True
     finally:
         declaration.unregister("example-server")
+
+def test_running_app_with_live_endpoint_reports_the_missing_connection(tmp_path, monkeypatch):
+    """The #119975 report: the app runs and its endpoint answers, only Hermes' MCP connection
+    is missing. That must read as a missing connection with a reconnect action — not as
+    \"<slug> is not running. Start <slug>\" for an app that IS running."""
+    import hermes_cli.agent_plugins as agent_plugins
+    from hermes_platform.resolver.core import CheckState
+    from tools import mcp_liveness
+
+    class _RunningApp:
+        def __init__(self, _definition):
+            pass
+
+        def locate(self, _ctx=None):
+            return object()
+
+        def probe(self, _resolution, effort=None):
+            return type("Probe", (), {
+                "running": type("Value", (), {"value": True})(),
+                "endpoint": type("Endpoint", (), {"state": CheckState.PRESENT})(),
+            })()
+
+    monkeypatch.setattr(mcp_liveness, "AppResolver", _RunningApp)
+    monkeypatch.setattr(agent_plugins, "liveness_for", lambda name: {
+        "kind": "server_json", "path": str(tmp_path / "runtime.json"),
+    }, raising=False)
+    decl = _decl(tmp_path)
+    declaration.register("example-server", decl)
+    try:
+        current = mcp_liveness.status("example-server")
+    finally:
+        declaration.unregister("example-server")
+
+    assert current is not None
+    assert current.state == "hermes_not_connected"
+    sentence = mcp_liveness.describe(decl, current.availability, current.state)
+    assert "MCP connection is missing" in sentence
+    assert "is not running" not in sentence
+    assert current.user_action.startswith("Reconnect")
+
+def test_static_liveness_cannot_claim_the_app_is_not_running(tmp_path, monkeypatch):
+    """Static/unknown liveness kinds have no app probe, so their honest state is the missing
+    connection — not a verdict that an app they cannot see is stopped (#119975)."""
+    import hermes_cli.agent_plugins as agent_plugins
+    from tools import mcp_liveness
+
+    monkeypatch.setattr(agent_plugins, "liveness_for", lambda name: {"kind": "static"}, raising=False)
+    decl = _decl(tmp_path)
+    declaration.register("example-server", decl)
+    try:
+        current = mcp_liveness.status("example-server")
+    finally:
+        declaration.unregister("example-server")
+
+    assert current is not None
+    assert current.state == "hermes_not_connected"
+    sentence = mcp_liveness.describe(decl, current.availability, current.state)
+    assert "MCP connection is missing" in sentence
+    assert "is not running" not in sentence
+
+def test_describe_prefers_the_plugin_title_over_the_server_slug(tmp_path):
+    """The Plugins tab knows the plugin's catalog title; the sentence should name the app by
+    it instead of the declaration's slug (#119975)."""
+    from tools import mcp_liveness
+
+    decl = _decl(tmp_path)
+    sentence = mcp_liveness.describe(decl, None, "hermes_not_connected", display_name="Example Tools")
+    assert sentence.startswith("Example Tools")
+    assert "Example App" not in sentence
+    assert "MCP connection is missing" in sentence

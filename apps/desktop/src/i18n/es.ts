@@ -2785,6 +2785,7 @@ export const esOverrides = {
       serverStates: {
         connected: 'conectado',
         app_not_running: 'la app no se está ejecutando',
+        hermes_not_connected: 'falta la conexión MCP',
         endpoint_unavailable: 'endpoint no disponible',
         no_interactive_session: 'sin sesión interactiva',
         version_too_old: 'versión demasiado antigua',

@@ -2112,6 +2112,7 @@ export interface Translations {
       serverStates: {
         connected: string
         app_not_running: string
+        hermes_not_connected: string
         endpoint_unavailable: string
         no_interactive_session: string
         version_too_old: string

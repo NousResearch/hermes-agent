@@ -851,6 +851,16 @@ def catalog_pins() -> Dict[str, str]:
         return {}
 
 
+def catalog_titles() -> Dict[str, str]:
+    """``{catalog_name: title}`` for entries that carry one — the Plugins hub server-sentence display
+    name. One resolution for a whole listing: callers that annotate every installed plugin must not
+    pay a live-catalog fetch per candidate (see ``resolved_removed_entries``); empty on failure."""
+    try:
+        return {e.name: e.title for e in load_catalog_live() if e.title}
+    except Exception:
+        return {}
+
+
 def catalog_versions() -> Dict[str, str]:
     """``{catalog_name: version_label}`` for entries that carry one; empty on failure (best effort)."""
     try:

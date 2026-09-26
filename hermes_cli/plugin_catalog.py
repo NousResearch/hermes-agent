@@ -309,6 +309,22 @@ def _live_cache_path() -> Path:
     return get_hermes_home() / "cache" / "plugin-catalog.json"
 
 
+def invalidate_live_cache_for_home(home: Path) -> None:
+    """Best-effort removal of the cached live catalog under *home* (any profile's home).
+
+    ``hermes update`` drops it for every profile after the checkout changes: a snapshot fetched
+    before the bump would otherwise out-vote the newer in-tree catalog (pins the update just
+    changed, entries it just added) for the rest of :data:`LIVE_CATALOG_TTL_SECONDS` (#119340).
+    The next :func:`fetch_live_catalog` re-fetches the published doc, or falls back to the
+    in-tree catalog while the network is down — both newer than what was deleted. Safe when the
+    cache is absent (first run, other profiles that never opened the plugins hub).
+    """
+    try:
+        (Path(home) / "cache" / "plugin-catalog.json").unlink(missing_ok=True)
+    except Exception as exc:
+        logger.debug("Plugin catalog: could not drop the live cache under %s: %s", home, exc)
+
+
 # Wall-clock deadline of the last failed live fetch. Without it a dead catalog host costs one
 # full request timeout PER CALL (the plugins hub and ``plugins list`` used to ask once per
 # installed plugin), so the dashboard event loop stalled for minutes.

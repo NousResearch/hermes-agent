@@ -1794,6 +1794,104 @@ class TestResolvePreToolBlock:
     directive (incl. the approve→gate escalation) to a block message."""
 
 
+    def test_approve_gate_receives_final_modified_args(self, monkeypatch):
+        """Approval must describe the post-modifier snapshot, not stale input."""
+        from hermes_cli.plugins import _dispatch_pre_tool_call_hooks
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {"action": "approve", "message": "confirm write"},
+                {"action": "modify", "args": {"path": "/safe/final", "client_secret": "secret-value"}},
+            ],
+        )
+        seen = {}
+
+        def _approve(tool_name, reason, **kwargs):
+            seen["reason"] = reason
+            return {"approved": False, "message": "declined"}
+
+        monkeypatch.setattr("tools.approval.request_tool_approval", _approve)
+        block_msg, modified = _dispatch_pre_tool_call_hooks(
+            "write_file", {"path": "/unsafe", "content": "x"}
+        )
+
+        assert block_msg == "declined"
+        assert modified == {"path": "/safe/final", "content": "x", "client_secret": "secret-value"}
+        assert "/safe/final" in seen["reason"]
+        assert "/unsafe" not in seen["reason"]
+        assert "secret-value" not in seen["reason"]
+        assert "[REDACTED]" in seen["reason"]
+
+    def test_approve_gate_includes_args_even_without_modify(self, monkeypatch):
+        """Approve-only hooks should still show the current payload to the human gate."""
+        from hermes_cli.plugins import _dispatch_pre_tool_call_hooks
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [{"action": "approve", "message": "confirm write"}],
+        )
+        seen = {}
+
+        def _approve(tool_name, reason, **kwargs):
+            seen["reason"] = reason
+            return {"approved": False, "message": "declined"}
+
+        monkeypatch.setattr("tools.approval.request_tool_approval", _approve)
+
+        block_msg, modified = _dispatch_pre_tool_call_hooks(
+            "write_file", {"path": "/safe/current", "bearer_token": "secret-value"}
+        )
+
+        assert block_msg == "declined"
+        assert modified is None
+        assert "/safe/current" in seen["reason"]
+        assert "secret-value" not in seen["reason"]
+
+    def test_approve_gate_receives_tool_execution_middleware_args(self, monkeypatch):
+        """Approval must describe the final payload after execution middleware rewrites it."""
+        import model_tools
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [{"action": "approve", "message": "confirm write"}],
+        )
+
+        def _middleware(**kwargs):
+            return kwargs["next_call"]({
+                "path": "/etc/shadow",
+                "content": "x",
+                "bearer_token": "secret-value",
+            })
+
+        manager = types.SimpleNamespace(
+            _middleware={"tool_execution": [_middleware]},
+            _report_hook_failure=lambda *args, **kwargs: None,
+        )
+        monkeypatch.setattr("hermes_cli.plugins._delivery_manager", lambda: manager)
+
+        seen = {}
+
+        def _approve(tool_name, reason, **kwargs):
+            seen["reason"] = reason
+            return {"approved": False, "message": "declined"}
+
+        monkeypatch.setattr("tools.approval.request_tool_approval", _approve)
+        monkeypatch.setattr(
+            model_tools.registry,
+            "dispatch",
+            lambda *args, **kwargs: pytest.fail("tool executed before approval was resolved"),
+        )
+
+        result = model_tools.handle_function_call(
+            "write_file", {"path": "/safe/final", "content": "x"}, task_id="task-1"
+        )
+
+        assert json.loads(result) == {"error": "declined"}
+        assert "/etc/shadow" in seen["reason"]
+        assert "/safe/final" not in seen["reason"]
+        assert "secret-value" not in seen["reason"]
+
     def test_approve_gate_receives_tool_observability_context(self, monkeypatch):
         from hermes_cli.plugins import resolve_pre_tool_block
         from tools import approval_context
@@ -1846,11 +1944,9 @@ class TestResolvePreToolBlock:
         monkeypatch.setattr("tools.approval.request_tool_approval", _approve)
 
         assert resolve_pre_tool_block("write_file", {}) is None
-        assert seen == {
-            "tool_name": "write_file",
-            "reason": "why",
-            "rule_key": "write_file:ssh",
-        }
+        assert seen["tool_name"] == "write_file"
+        assert seen["rule_key"] == "write_file:ssh"
+        assert seen["reason"].startswith("why")
 
 
     def test_approve_gate_exception_fails_closed(self, monkeypatch):

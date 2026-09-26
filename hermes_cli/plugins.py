@@ -2022,9 +2022,43 @@ def resolve_pre_tool_block(
     return _dispatch_pre_tool_call_hooks(tool_name, args, **hook_kwargs)[0]
 
 
+def _redacted_arguments_json(args: Dict[str, Any]) -> str:
+    """Render tool args for a human approval prompt without exposing secret values."""
+    from agent.redact import redact_sensitive_text
+
+    secret_markers = (
+        "accesskeyid", "access_key", "api_key", "apikey", "auth", "bearer", "client_secret",
+        "connection_string", "credential", "jwt", "passphrase", "passwd", "password", "private_key",
+        "refresh_token", "secret", "session", "token",
+    )
+
+    def _redact_values(value: Any) -> Any:
+        if isinstance(value, dict):
+            redacted = {}
+            for key, item in value.items():
+                normalized = str(key).lower().replace("-", "_").replace(" ", "_")
+                compact = normalized.replace("_", "")
+                redacted[key] = "[REDACTED]" if any(
+                    marker in normalized or marker in compact for marker in secret_markers
+                ) else _redact_values(item)
+            return redacted
+        if isinstance(value, list):
+            return [_redact_values(item) for item in value]
+        return value
+
+    return redact_sensitive_text(
+        json.dumps(_redact_values(args), ensure_ascii=False, sort_keys=True, default=str),
+        force=True,
+    )
+
+
+def _approval_observability_kwargs(hook_kwargs: Dict[str, Any]) -> Dict[str, str]:
+    return {k: hook_kwargs.get(k, "") for k in ("turn_id", "tool_call_id", "session_id")}
+
+
 def _resolve_block_from_details(
     details: "_PreToolCallDirective", tool_name: str, *, turn_id: str = "", tool_call_id: str = "",
-    session_id: str = "",
+    session_id: str = "", final_args: Optional[Dict[str, Any]] = None,
 ) -> Optional[str]:
     """The ONE place for the fail-closed approval logic: ``block`` blocks with its message; an
     ``approve`` whose gate errors, denies, or times out is blocked; anything else proceeds."""
@@ -2040,7 +2074,13 @@ def _resolve_block_from_details(
             approval_tokens = set_current_observability_context(
                 turn_id=turn_id, tool_call_id=tool_call_id, session_id=session_id)
         try:
-            result = request_tool_approval(tool_name, details.message or "", rule_key=details.rule_key or tool_name)
+            approval_reason = details.message or ""
+            if final_args is not None:
+                approval_reason = (
+                    f"{approval_reason}\n\nFinal tool arguments after all pre-tool-call modifiers "
+                    f"and execution middleware (secrets redacted): {_redacted_arguments_json(final_args)}"
+                )
+            result = request_tool_approval(tool_name, approval_reason, rule_key=details.rule_key or tool_name)
         finally:
             if approval_tokens is not None:
                 with suppress(Exception):
@@ -2054,15 +2094,47 @@ def _resolve_block_from_details(
     return None
 
 
+def _resolve_pending_pre_tool_approval(
+    details: "_PreToolCallDirective", tool_name: str, args: Dict[str, Any], **hook_kwargs: Any,
+) -> Optional[str]:
+    """Resolve a deferred approve directive against the final arguments about to execute."""
+    return _resolve_block_from_details(
+        details,
+        tool_name,
+        final_args=args,
+        **_approval_observability_kwargs(hook_kwargs),
+    )
+
+
 def _dispatch_pre_tool_call_hooks(
     tool_name: str, args: Optional[Dict[str, Any]], **hook_kwargs: Any
 ) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
     """Invoke ``pre_tool_call`` hooks once; return ``(block_message, modified_args)`` — the resolved
     block/approve message (``None`` to proceed) and merged ``modify`` args (``None`` if none)."""
     details = _get_pre_tool_call_directive_details(tool_name, args, **hook_kwargs)
+    effective_args = details.modified_args if details.modified_args is not None else (args if isinstance(args, dict) else {})
     block_msg = _resolve_block_from_details(
-        details, tool_name, **{k: hook_kwargs.get(k, "") for k in ("turn_id", "tool_call_id", "session_id")})
+        details, tool_name,
+        final_args=effective_args,
+        **_approval_observability_kwargs(hook_kwargs))
     return (block_msg, details.modified_args)
+
+
+def _prepare_pre_tool_call_hooks_for_dispatch(
+    tool_name: str, args: Optional[Dict[str, Any]], **hook_kwargs: Any
+) -> Tuple[Optional[str], Optional[Dict[str, Any]], Optional["_PreToolCallDirective"]]:
+    """Run pre_tool_call once and defer approve until execution middleware settles final args."""
+    details = _get_pre_tool_call_directive_details(tool_name, args, **hook_kwargs)
+    if details.action == "block":
+        block_msg = _resolve_block_from_details(
+            details,
+            tool_name,
+            final_args=details.modified_args if details.modified_args is not None else (args if isinstance(args, dict) else {}),
+            **_approval_observability_kwargs(hook_kwargs),
+        )
+        return block_msg, details.modified_args, None
+    pending = details if details.action == "approve" else None
+    return None, details.modified_args, pending
 
 
 def get_pre_verify_continue_message(

@@ -2376,19 +2376,19 @@ def switch_model(
 
 
 def _pre_tool_block_message(agent, function_name, function_args, effective_task_id, tool_call_id, middleware_trace):
-    """Plugin pre-tool-call hook verdict: ``(block_message, function_args)``; failures never block."""
+    """Plugin pre-tool-call verdict; approve is deferred until execution middleware settles args."""
     try:
-        from hermes_cli.plugins import _dispatch_pre_tool_call_hooks
-        block_message, modified_args = _dispatch_pre_tool_call_hooks(
+        from hermes_cli.plugins import _prepare_pre_tool_call_hooks_for_dispatch
+        block_message, modified_args, pending_approval = _prepare_pre_tool_call_hooks_for_dispatch(
             function_name, function_args, task_id=effective_task_id or "",
             session_id=getattr(agent, "session_id", "") or "", tool_call_id=tool_call_id or "",
             turn_id=getattr(agent, "_current_turn_id", "") or "",
             api_request_id=getattr(agent, "_current_api_request_id", "") or "",
             middleware_trace=list(middleware_trace),
         )
-        return block_message, (modified_args if modified_args is not None else function_args)
+        return block_message, (modified_args if modified_args is not None else function_args), pending_approval
     except Exception:
-        return None, function_args
+        return None, function_args, None
 
 
 def invoke_tool(agent, function_name: str, function_args: dict, effective_task_id: str,
@@ -2417,8 +2417,9 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     except Exception as _mw_err:
         logger.debug("tool_request middleware error: %s", _mw_err)
     block_message: Optional[str] = None
+    pending_approval = None
     if not pre_tool_block_checked:
-        block_message, function_args = _pre_tool_block_message(
+        block_message, function_args, pending_approval = _pre_tool_block_message(
             agent, function_name, function_args, effective_task_id, tool_call_id, _tool_middleware_trace
         )
     if block_message is not None:
@@ -2431,6 +2432,33 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
         )
         return result
     tool_start_time = time.monotonic()
+
+    def _deferred_approval_block(call_args: dict) -> Optional[str]:
+        if pending_approval is None:
+            return None
+        from hermes_cli.plugins import _resolve_pending_pre_tool_approval
+        return _resolve_pending_pre_tool_approval(
+            pending_approval,
+            function_name,
+            call_args,
+            task_id=effective_task_id or "",
+            session_id=getattr(agent, "session_id", "") or "",
+            tool_call_id=tool_call_id or "",
+            turn_id=getattr(agent, "_current_turn_id", "") or "",
+            api_request_id=getattr(agent, "_current_api_request_id", "") or "",
+            middleware_trace=list(_tool_middleware_trace),
+        )
+
+    def _blocked_by_deferred_approval(call_args: dict, block: str) -> str:
+        result = json.dumps({"error": block}, ensure_ascii=False)
+        emit_terminal_post_tool_call(
+            agent, function_name=function_name, function_args=call_args, result=result,
+            effective_task_id=effective_task_id, tool_call_id=tool_call_id, status="blocked",
+            error_type="plugin_block", error_message=block,
+            middleware_trace=_tool_middleware_trace,
+        )
+        return result
+
     inline_executor = resolve_invoke_tool_executor(agent, function_name)
     if inline_executor is not None:
         inline_ctx = InlineToolContext(
@@ -2438,8 +2466,11 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
         )
 
         def _execute(next_args: dict) -> Any:
-            result = inline_executor(agent, next_args, inline_ctx)
             call_args = next_args if isinstance(next_args, dict) else function_args
+            block = _deferred_approval_block(call_args)
+            if block is not None:
+                return _blocked_by_deferred_approval(call_args, block)
+            result = inline_executor(agent, next_args, inline_ctx)
             duration_ms = int((time.monotonic() - tool_start_time) * 1000)
             emit_terminal_post_tool_call(
                 agent, function_name=function_name, function_args=call_args,
@@ -2452,6 +2483,10 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             )
     else:
         def _execute(next_args: dict) -> Any:
+            call_args = next_args if isinstance(next_args, dict) else function_args
+            block = _deferred_approval_block(call_args)
+            if block is not None:
+                return _blocked_by_deferred_approval(call_args, block)
             dispatch_kwargs = dict(
                 tool_call_id=tool_call_id, session_id=agent.session_id or "",
                 turn_id=getattr(agent, "_current_turn_id", "") or "",

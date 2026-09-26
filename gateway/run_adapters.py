@@ -538,10 +538,16 @@ class GatewayAdapterLifecycleMixin:
             with _log_suppressed(logging.DEBUG, "Stale-handoff reclaim failed", exc_info=True):
                 async with _scope(_phome):
                     await _reclaim_stale(self)
+        offload = getattr(self, "_run_in_executor_with_context", None)
         try:
             while self._running:
                 try:
-                    for profile_name, profile_home in _handoff_watch_scopes(self):
+                    # Resolve watch scopes OFF the loop (the profiles_to_serve() filesystem walk can
+                    # stall the loop past the liveness probe on a thrashing host — see the sibling
+                    # fix in run_goals._loop_wakeup_watcher). Stand-ins keep the on-loop resolve.
+                    scopes = (await offload(_handoff_watch_scopes, self) if callable(offload)
+                              else _handoff_watch_scopes(self))
+                    for profile_name, profile_home in scopes:
                         # Idle gate (run_idle_gates): skip the scope entry when the profile's store
                         # holds no pending handoff. The root poll (None) is unscoped and stays cheap.
                         if profile_home is not None and not await off_loop_gate(

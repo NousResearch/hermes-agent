@@ -81,6 +81,9 @@ def _copy_core_inputs(source: Path, destination: Path) -> None:
     for pattern in project.get("license-files", []):
         files.update(str(p.relative_to(source)) for p in source.glob(pattern))
     files.update(p.name for p in source.glob("*.py"))
+    for candidate in ("hermes", "hermes-acp"):
+        if (source / candidate).is_file():
+            files.add(candidate)
 
     excluded = {".git", ".venv", "venv", "node_modules", "__pycache__", "build", "dist", "release", "uv.lock"}
     def ignore(directory, names):

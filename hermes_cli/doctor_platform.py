@@ -533,6 +533,14 @@ def _check_command_installation(should_fix: bool, f: Finding) -> None:
         return f.manual_issues.append(_python_repair_hint())
     pm_launcher = selected != base_venv(PROJECT_ROOT) or resolve_store_python(PROJECT_ROOT) is not None
     venv_bin = PROJECT_ROOT / "hermes" if pm_launcher else selected / "bin" / "hermes"
+    if pm_launcher and not venv_bin.is_file():
+        for candidate in (
+            selected / "bin" / "hermes",
+            PROJECT_ROOT / ".hermes" / "bin" / "hermes",
+        ):
+            if candidate.is_file():
+                venv_bin = candidate
+                break
     if not venv_bin.is_file():
         check_warn("Hermes entry point not found", f"({venv_bin})")
         return f.manual_issues.append("Repair or reinstall the Hermes launcher through the installation owner")

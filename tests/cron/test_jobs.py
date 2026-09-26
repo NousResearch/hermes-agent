@@ -681,6 +681,37 @@ class TestResolveJobRef:
             remove_job("dup")
 
 
+class TestTriggerOverInFlightRun:
+    """A trigger stamped over an in-flight run never fires (the tick skips the running job and
+    the run's completion drops the stamp), so trigger_job must refuse instead of reporting it."""
+
+    def test_trigger_refused_while_this_process_runs_the_job(self, tmp_cron_dir):
+        from cron.jobs import trigger_job
+        from cron.scheduler import release_running_job, try_register_running_job
+
+        job = create_job(prompt="report", schedule="every 1h", name="hourly")
+        before = load_jobs()
+        assert try_register_running_job(job["id"])
+        try:
+            with pytest.raises(ValueError, match="already running"):
+                trigger_job(job["id"])
+        finally:
+            release_running_job(job["id"])
+        assert load_jobs() == before
+
+    def test_trigger_refused_over_live_fire_claim(self, tmp_cron_dir):
+        """The durable fire claim is the only in-flight signal a run owned by another process
+        (or a restart-safe external worker) leaves in the store."""
+        from cron.jobs import trigger_job
+
+        job = create_job(prompt="report", schedule="every 1h", name="hourly")
+        assert claim_job_for_fire(job["id"])
+        before = load_jobs()
+        with pytest.raises(ValueError, match="already running"):
+            trigger_job(job["id"])
+        assert load_jobs() == before
+
+
 class TestMarkJobRun:
     def test_increments_completed(self, tmp_cron_dir):
         job = create_job(prompt="Test", schedule="every 1h")

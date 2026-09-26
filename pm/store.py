@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import platform
+import re
 import shutil
 import stat
 import sys
@@ -260,6 +261,23 @@ def merge_tree(src: Path, dst: Path) -> None:
         item.replace(target)
 
 
+def _is_ssh_runtime_marker(rel: str, path: Path) -> bool:
+    """Only the Desktop's bounded liveness record is mutable in Python purelib.
+
+    Keep it inside purelib: replacing that directory must still destroy the
+    marker, even when the filesystem reuses the old directory inode.
+    """
+    if not re.fullmatch(
+        r"(?:Lib|lib/python[0-9]+\.[0-9]+)/site-packages/"
+        r"\.hermes-ssh-runtime-[0-9a-f]{16}", rel,
+    ):
+        return False
+    if not stat.S_ISREG(path.lstat().st_mode) or is_junction(path):
+        return False
+    with path.open("rb") as stream:
+        return re.fullmatch(rb"pid=[1-9][0-9]{0,19}\r?\n", stream.read(27)) is not None
+
+
 def tree_digest(root: Path) -> str:
     """Deterministic sha256 over a directory tree: walk every file, sort
     by posix relpath, hash `relpath\\0<content>` per entry. No mtimes, no
@@ -270,7 +288,9 @@ def tree_digest(root: Path) -> str:
     ``__pycache__`` directories are skipped: CPython writes .pyc caches
     into them the first time the staged interpreter runs (uv venv/uv sync
     in a bundle build; first boot of a shipped app), so they are runtime
-    state, not package bytes — the digest is over what pm published."""
+    state, not package bytes — the digest is over what pm published.
+    Valid Desktop SSH liveness markers in Python purelib are likewise
+    runtime state; neighboring files and malformed markers remain hashed."""
     import hashlib
 
     files: list[tuple[str, Path]] = []
@@ -290,6 +310,8 @@ def tree_digest(root: Path) -> str:
 
     digest = hashlib.sha256()
     for rel, path in files:
+        if _is_ssh_runtime_marker(rel, path):
+            continue
         digest.update(rel.encode("utf-8"))
         digest.update(b"\0")
         if path.is_symlink() or is_junction(path):

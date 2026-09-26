@@ -305,6 +305,8 @@ def test_v4a_patch_applies_to_resolved_workspace_not_backend_cwd(
 @pytest.mark.platforms("posix")
 @pytest.mark.parametrize("header,safe_root,content,dest", [
     ("*** Delete File: local.yaml", False, "shared: true\n", None),
+    # A trailing separator must still name the link, not fall back to its target.
+    ("*** Delete File: local.yaml/", False, "shared: true\n", None),
     ("*** Move File: local.yaml -> old.yaml", False, "shared: true\n", "old.yaml"),
     ("*** Update File: local.yaml\n@@\n-shared: true\n+shared: false\n*** Move File: local.yaml -> old.yaml",
      False, "shared: false\n", "old.yaml"),

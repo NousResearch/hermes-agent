@@ -262,15 +262,15 @@ def _classify_write_denial(path: str, *, entry: bool = False) -> Optional[str]:
     # The runtime's own interpreter/venv is never agent-writable (an overwrite
     # bricks the next start exactly like a delete, #58748) — and this must fire
     # BEFORE the approval-gated allow so ~/.ssh-style gating cannot re-open it.
-    from agent.runtime_self_protection import is_protected_path
+    from agent.runtime_self_protection import is_protected_path, split_entry
 
     if is_protected_path(path) or (entry and is_protected_path(path, follow=False)):
         return "credential"
     denial = _classify_resolved_write_denial(homes, resolved)
     if denial or not entry:
         return denial
-    expanded = os.path.expanduser(str(path))
-    entry_path = os.path.join(os.path.realpath(os.path.dirname(expanded) or "."), os.path.basename(expanded))
+    parent, leaf = split_entry(os.path.expanduser(str(path)))
+    entry_path = os.path.join(os.path.realpath(parent or "."), leaf)
     return _classify_resolved_write_denial(homes, entry_path)
 
 

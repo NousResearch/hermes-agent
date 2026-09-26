@@ -162,12 +162,43 @@ def _ps_single_quote(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
+def _normcase_task_path(value: str) -> str:
+    """Case- and separator-insensitive form of a Windows path pulled from a schtasks export,
+    so a comparison survives ``EXE`` vs ``exe`` and ``\\`` vs ``/``. Pure (no ``os.path.normcase``,
+    which is a no-op off-Windows) so the match logic is testable on any platform."""
+    return value.strip().strip('"').replace("\\", "/").casefold()
+
+
+def _task_xml_targets_cua_binary(xml_text: str, binary: str) -> bool:
+    """True when a ``schtasks /XML`` export drives ``binary`` — directly, or via a shell launcher.
+
+    ``cua-driver autostart enable`` registers a powershell wrapper, so ``Exec/Command`` is
+    ``powershell.exe`` and the driver path lives in ``Exec/Arguments`` (``-FilePath '…\\cua-driver.exe'``).
+    The old check compared only ``Exec/Command`` to the binary, so it never matched the wrapped task
+    and reported "not registered" for a healthy autostart (#123774). Check both leaves."""
+    from xml.etree import ElementTree
+
+    try:
+        task = ElementTree.fromstring(xml_text)
+    except ElementTree.ParseError:
+        return False
+    needle = _normcase_task_path(binary)
+    if not needle:
+        return False
+    for exec_node in task.findall(".//{*}Exec"):
+        command = exec_node.find("{*}Command")
+        if command is not None and _normcase_task_path(command.text or "") == needle:
+            return True
+        arguments = exec_node.find("{*}Arguments")
+        if arguments is not None and needle in _normcase_task_path(arguments.text or ""):
+            return True
+    return False
+
+
 def _cua_driver_autostart_registered_windows(binary: Optional[str] = None) -> bool:
     """A task targeting a previous PM version is not a ready registration."""
     if sys.platform != "win32":
         return False
-    from xml.etree import ElementTree
-
     binary = binary or _resolved_cua_driver_cmd()
     if not binary:
         return False
@@ -175,15 +206,17 @@ def _cua_driver_autostart_registered_windows(binary: Optional[str] = None) -> bo
         result = subprocess.run(
             ["schtasks.exe", "/Query", "/TN", "cua-driver-serve", "/XML"],
             capture_output=True, timeout=10, creationflags=_post_setup_no_window_flags())
-        if result.returncode:
-            return False
-        # Parse bytes: schtasks' XML declaration carries the output encoding.
-        task = ElementTree.fromstring(result.stdout)
-        commands = task.findall(".//{*}Exec/{*}Command")
-        return any(os.path.normcase((node.text or "").strip().strip('"')) == os.path.normcase(binary)
-                   for node in commands)
-    except (OSError, subprocess.SubprocessError, ElementTree.ParseError):
+    except (OSError, subprocess.SubprocessError):
         return False
+    if result.returncode:
+        return False
+    # schtasks declares ``encoding="UTF-16"`` but writes the console code page over ASCII/UTF-8
+    # bytes here, so parsing the raw bytes raises ParseError (#123774). Decode to text first with
+    # the gateway's tested codec (strict UTF-8, then the native code pages, then a lossy fallback —
+    # #116193); ElementTree ignores an encoding declaration on a ``str``.
+    from hermes_cli.gateway_windows import _decode_schtasks_output
+
+    return _task_xml_targets_cua_binary(_decode_schtasks_output(result.stdout), binary)
 
 
 def _repair_cua_driver_autostart_windows(driver_cmd: str, *, verbose: bool) -> bool:

@@ -389,7 +389,7 @@ _GATEWAY_AUTH_ERROR_RE = re.compile(
     re.IGNORECASE)
 
 _GATEWAY_RATE_LIMIT_RE = re.compile(
-    r"(rate\s+limit|rate-limited|\b429\b|quota|usage\s+limit)", re.IGNORECASE)
+    r"(rate\s+limit|rate-limited|\b429\b|quota|usage\s+limit|session\s+limit)", re.IGNORECASE)
 
 # Connection-failure markers: the first 8 also anchor the provider-failure envelope shape below.
 _CONNECTION_ERROR_MARKERS = (
@@ -655,8 +655,15 @@ def _rate_limit_reply(text: str) -> str:
     pool's ``retry after Ns``, ``resets in 4hr``) so a weekly cap is not sold as "wait a moment"
     (#89401). One grammar table with the retry loop: ``agent.retry_utils.RETRY_DELAY_PATTERNS``."""
     from agent.retry_utils import format_reset_window, reset_delay_from_message
-    seconds = reset_delay_from_message(text) or 0
-    if seconds < 120:
+    seconds = reset_delay_from_message(text)
+    if seconds is None:
+        from gateway.run_reset_hint import extract_gateway_reset_hint
+
+        hint = extract_gateway_reset_hint(text)
+        if hint:
+            return (f"⏱️ The AI model service hit its usage/session limit — {hint}. "
+                    "Use /retry after that, or /model to switch models.")
+    if (seconds or 0) < 120:
         return "⏱️ The AI model service is rate-limiting requests. Wait a moment, then use /retry."
     return (f"⏱️ The AI model service's usage limit is reached; it resets in {format_reset_window(seconds)}. "
             "Use /retry after that, or /model to switch models.")

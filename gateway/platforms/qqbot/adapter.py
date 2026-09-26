@@ -378,8 +378,17 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                 if code == 4008:
                     logger.info("[%s] Rate limited (4008), waiting %ds", self._log_tag, RATE_LIMIT_DELAY)
                     if backoff_idx >= MAX_RECONNECT_ATTEMPTS:
-                        self._mark_disconnected()
-                        return
+                        # Past the historical \"give up\" threshold: cap the backoff and keep
+                        # trying instead of returning.  ``_reconnect()`` already clamps the
+                        # delay to the last entry of ``RECONNECT_BACKOFF`` so we don't get
+                        # an exponentially-growing sleep; we just log a warning so the
+                        # operator can see the bot has been offline for a while (#21851).
+                        logger.warning(
+                            "[%s] Extended reconnect after %d attempts (rate-limited); "
+                            "capping backoff and continuing",
+                            self._log_tag, backoff_idx,
+                        )
+                        backoff_idx = MAX_RECONNECT_ATTEMPTS
                     await asyncio.sleep(RATE_LIMIT_DELAY)
                     await reconnect()
                     continue
@@ -396,9 +405,15 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
 
                 await reconnect()
                 if backoff_idx >= MAX_RECONNECT_ATTEMPTS:
-                    logger.error("[%s] Max reconnect attempts reached (QQCloseError)", self._log_tag)
-                    self._mark_disconnected()
-                    return
+                    # See the 4008 branch above for the rationale: the bot must not silently
+                    # die after MAX_RECONNECT_ATTEMPTS closes.  Cap and continue so a later
+                    # outage recovery is automatic (#21851).
+                    logger.warning(
+                        "[%s] Extended reconnect after %d attempts (close code %s); "
+                        "capping backoff and continuing",
+                        self._log_tag, backoff_idx, code,
+                    )
+                    backoff_idx = MAX_RECONNECT_ATTEMPTS
 
             except Exception as exc:
                 if not self._running:
@@ -408,9 +423,14 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                 self._fail_pending("Connection interrupted")
 
                 if backoff_idx >= MAX_RECONNECT_ATTEMPTS:
-                    logger.error("[%s] Max reconnect attempts reached", self._log_tag)
-                    self._mark_disconnected()
-                    return
+                    # Same rationale as the QQCloseError branches above: never give up
+                    # permanently from inside ``_listen_loop`` (#21851).
+                    logger.warning(
+                        "[%s] Extended reconnect after %d attempts (exception); "
+                        "capping backoff and continuing",
+                        self._log_tag, backoff_idx,
+                    )
+                    backoff_idx = MAX_RECONNECT_ATTEMPTS
                 await reconnect()
 
     async def _reconnect(self, backoff_idx: int) -> bool:

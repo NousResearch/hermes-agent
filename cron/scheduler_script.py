@@ -131,16 +131,19 @@ def _windows_cron_python_invocation(python_exe: str) -> tuple[str, dict[str, str
             interpreter = sibling
 
     from hermes_cli._launchers import resolve_store_python
-    from pm.environments import selected_venv, site_packages as dependency_site
+    from pm.environments import committed_venv, site_packages as dependency_site
 
     repo = Path(__file__).resolve().parents[1]
     managed_python = resolve_store_python(repo)
     if managed_python is not None:
-        # A packaged caller may hand us the old venv launcher; select bytes
-        # from the install record rather than interpreting relocated pyvenv.cfg.
-        dependencies = dependency_site(selected_venv(repo))
-
-        return str(managed_python), {"PYTHONPATH": os.pathsep.join([str(repo), str(dependencies)])}
+        # Only the committed generation may overlay the store Python: ``selected_venv``
+        # falls back to the leftover pre-PM <root>/venv, a foreign ABI (#122183). With
+        # nothing committed, fall through so the handed venv keeps its own interpreter
+        # and site-packages (a bare store Python would die on its first import).
+        environment = committed_venv(repo)
+        if environment is not None:
+            return str(managed_python), {"PYTHONPATH": os.pathsep.join(
+                [str(repo), str(dependency_site(environment))])}
 
     cfg = _read_windows_pyvenv_cfg(venv_dir)
     home = cfg.get("home", "")

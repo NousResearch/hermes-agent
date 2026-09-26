@@ -1003,7 +1003,7 @@ def _restart_macos_launchd_gateways(
                 continue  # A profile without an installed job has no restart target.
             graceful_ok = False
             if old_pid is not None and old_pid > 0:
-                print(f"  → {label}: draining (up to {int(drain_budget)}s)...")
+                print(f"  → {label}: draining (up to {drain_budget:.0f}s)...")
                 from hermes_cli.update_cmd_drain_report import drain_progress_reporter
                 graceful_ok = _graceful_restart_via_sigusr1(
                     old_pid, drain_timeout=drain_budget,
@@ -1179,7 +1179,7 @@ def _drain_or_signal_gateway_for_update(
         print(f"  ⚠ {label}: gateway event loop is unresponsive — skipping drain, forcing a bounded stop...")
         _escalate_wedged_gateway(pid)
         return True
-    print(f"  → {label}: draining (up to {int(drain_budget)}s)...")
+    print(f"  → {label}: draining (up to {drain_budget:.0f}s)...")
     from hermes_cli.update_cmd_drain_report import drain_progress_reporter
     return _graceful_restart_via_sigusr1(
         pid, drain_timeout=drain_budget,

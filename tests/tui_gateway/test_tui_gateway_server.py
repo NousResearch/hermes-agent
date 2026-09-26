@@ -1,3 +1,4 @@
+import contextlib
 import json
 import logging
 import os
@@ -22405,3 +22406,103 @@ def test_load_cfg_raw_sees_replacement_with_pinned_mtime_and_size(monkeypatch, t
     shutil.copy2(other, cfg)
     os.utime(cfg, ns=(st.st_atime_ns, st.st_mtime_ns))
     assert server._load_cfg_raw()["model"]["default"] == "aaaa-route"
+
+
+def test_session_create_uses_bound_profile_backend_not_launch(monkeypatch, tmp_path):
+    """The regression: launch profile is LOCAL, the session is bound to an SSH profile.
+    session.create must read the BOUND profile's backend, keep the remote cwd, and mark it
+    explicit — not drop it to the launch dir."""
+    remote = "/home/felix/projects/xsd-parser"
+    assert not os.path.isdir(remote)
+    # Launch process looks local; only the bound profile is ssh.
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    (tmp_path / "config.yaml").write_text("terminal:\n  backend: ssh\n", encoding="utf-8")
+    monkeypatch.setattr(server, "_profile_home", lambda name: tmp_path if name == "felix" else None)
+    monkeypatch.setattr(server, "_schedule_agent_build", lambda sid: None)
+    monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda: None)
+
+    resp = server._methods["session.create"]("r1", {"cols": 80, "cwd": remote, "profile": "felix"})
+    sid = resp["result"]["session_id"]
+    session = server._sessions[sid]
+    try:
+        assert session["cwd"] == remote  # not dropped to getcwd()
+        assert session["explicit_cwd"] is True
+    finally:
+        server._sessions.pop(sid, None)
+
+
+def test_workspace_move_accepts_remote_dir_for_bound_ssh_profile(monkeypatch, tmp_path):
+    """session.workspace.move must not reject a remote project dir that does not
+    exist on the host when the bound profile is ssh (the 'working directory does
+    not exist' error the user hit). Local profiles keep the isdir guard."""
+    remote = "/home/felix/projects/xsd-parser"
+    assert not os.path.isdir(remote)
+    monkeypatch.setenv("TERMINAL_ENV", "local")  # launch looks local
+    (tmp_path / "config.yaml").write_text("terminal:\n  backend: ssh\n", encoding="utf-8")
+    monkeypatch.setattr(server, "_profile_home", lambda name: tmp_path if name == "felix" else None)
+
+    class _DB:
+        def get_session(self, key):
+            return {"session_key": key}
+        def update_session_cwd(self, *a, **k):
+            return 1
+    monkeypatch.setattr(server, "_profile_db", lambda params, **_kw: contextlib.nullcontext(_DB()))
+    monkeypatch.setattr(server.git_probe, "branch", lambda c: None)
+    monkeypatch.setattr(server.git_probe, "common_repo_root", lambda c: None)
+
+    resp = server._methods["session.workspace.move"](
+        "r1", {"session_key": "sk1", "cwd": remote, "profile": "felix"})
+    assert "result" in resp, resp
+    assert resp["result"]["cwd"] == remote
+
+
+@pytest.mark.parametrize("launch_backend", ["ssh", "local"])
+def test_ssh_named_profile_cwd_beats_launch_terminal_cwd(monkeypatch, tmp_path, launch_backend):
+    """A named SSH profile's terminal.cwd is on the remote. The desktop must use
+    it even when that path does not exist on this host and the process
+    TERMINAL_CWD still names the launch profile."""
+    remote = "/home/kali"
+    launch = "/home/ubuntu/hermes_sync"
+    assert not os.path.isdir(remote)
+    home = tmp_path / "hunter"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "terminal:\n  backend: ssh\n  cwd: /home/kali\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("TERMINAL_ENV", launch_backend)
+    monkeypatch.setenv("TERMINAL_CWD", launch)
+    monkeypatch.setattr(server, "_profile_home", lambda name: home if name == "hunter" else None)
+
+    assert server._completion_cwd(
+        {"profile": "hunter", "cwd": launch, "cwd_explicit": False}
+    ) == remote
+    assert server._terminal_task_cwd(
+        {"cwd": launch, "explicit_cwd": False, "profile_home": str(home)}
+    ) == remote
+    assert server._terminal_task_cwd(
+        {"cwd": "/opt/picked", "explicit_cwd": True, "profile_home": str(home)}
+    ) == "/opt/picked"
+    # A local launch profile must not "heal" the remote dir to its nearest host ancestor (/home).
+    assert server._display_session_cwd({"cwd": remote, "profile_home": str(home)}) == remote
+    # "~" names the REMOTE user's home, never this host's.
+    (home / "config.yaml").write_text("terminal:\n  backend: ssh\n  cwd: ~/proj\n", encoding="utf-8")
+    assert server._completion_cwd({"profile": "hunter", "cwd": launch, "cwd_explicit": False}) == "~/proj"
+    # No terminal.cwd: the remote default is ~, never the launch profile's host cwd.
+    (home / "config.yaml").write_text("terminal:\n  backend: ssh\n", encoding="utf-8")
+    assert server._completion_cwd({"profile": "hunter"}) == "~"
+    assert server._terminal_task_cwd({"cwd": launch, "explicit_cwd": False, "profile_home": str(home)}) == "~"
+
+
+def test_named_profile_without_backend_stays_local_under_ssh_launch(monkeypatch, tmp_path):
+    """A named profile that declares no terminal.backend is local; the launch profile's ssh backend must not
+    turn its terminal.cwd into a remote path."""
+    home = tmp_path / "plain"
+    home.mkdir()
+    (home / "config.yaml").write_text("terminal:\n  cwd: /srv/not-on-this-host\n", encoding="utf-8")
+    launch = str(tmp_path)
+    monkeypatch.setenv("TERMINAL_ENV", "ssh")
+    monkeypatch.setattr(server, "_profile_home", lambda name: home if name == "plain" else None)
+
+    assert server._completion_cwd({"profile": "plain", "cwd": launch, "cwd_explicit": False}) == launch

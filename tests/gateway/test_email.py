@@ -619,6 +619,36 @@ class TestFetchNewMessages(unittest.TestCase):
         self.assertEqual(results[0]["sender_addr"], "user@test.com")
         self.assertIn(b"3", adapter._seen_uids)
 
+    def test_fetch_uses_peek_so_polling_does_not_mark_mail_read(self):
+        """The poll must fetch with BODY.PEEK[]: a bare RFC822 fetch implicitly
+        sets \\Seen server-side, silently marking the user's mail as read."""
+        adapter = self._make_adapter()
+
+        raw_email = MIMEText("Hello", "plain", "utf-8")
+        raw_email["From"] = "user@test.com"
+        raw_email["Subject"] = "Test"
+        raw_email["Message-ID"] = "<msg@test.com>"
+
+        mock_imap = MagicMock()
+        fetch_items = []
+
+        def uid_handler(command, *args):
+            if command == "search":
+                return ("OK", [b"7"])
+            if command == "fetch":
+                fetch_items.append(args[1])
+                return ("OK", [(b"7", raw_email.as_bytes())])
+            return ("NO", [])
+
+        mock_imap.uid.side_effect = uid_handler
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            adapter._fetch_new_messages()
+
+        self.assertEqual(len(fetch_items), 1)
+        self.assertIn("BODY.PEEK[]", fetch_items[0])
+        self.assertNotIn("RFC822", fetch_items[0])
+
 
 class TestPollLoop(unittest.TestCase):
     """Test the async polling loop."""

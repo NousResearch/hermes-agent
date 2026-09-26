@@ -313,7 +313,7 @@ def _tool_call_id(tool_call: Dict[str, Any]) -> str:
     return str(tool_call.get("id") or tool_call.get("call_id") or "")
 
 
-def _translate_tool_call_to_gemini(tool_call: Dict[str, Any], include_ids: bool = False) -> Dict[str, Any]:
+def _translate_tool_call_to_gemini(tool_call: Dict[str, Any], include_ids: bool = False, is_gemini3: bool = False) -> Dict[str, Any]:
     fn = tool_call.get("function") or {}
     args_raw = fn.get("arguments", "")
     try:
@@ -323,7 +323,11 @@ def _translate_tool_call_to_gemini(tool_call: Dict[str, Any], include_ids: bool 
     call: Dict[str, Any] = {"name": str(fn.get("name") or ""), "args": args if isinstance(args, dict) else {"_value": args}}
     if include_ids and (call_id := _tool_call_id(tool_call)):
         call["id"] = call_id
-    return {"functionCall": call, "thoughtSignature": _tool_call_extra_signature(tool_call) or _SKIP_SIGNATURE}
+
+    result: Dict[str, Any] = {"functionCall": call}
+    if is_gemini3:
+        result["thoughtSignature"] = _tool_call_extra_signature(tool_call) or _SKIP_SIGNATURE
+    return result
 
 
 def _looks_like_json_schema(node: Any) -> bool:
@@ -422,7 +426,7 @@ def _build_gemini_contents(
             tool_name = str((tool_call.get("function") or {}).get("name") or "")
             if (call_id := _tool_call_id(tool_call)) and tool_name:
                 tool_name_by_call_id[call_id] = tool_name
-            parts.append(_translate_tool_call_to_gemini(tool_call, include_ids=include_tool_call_ids))
+            parts.append(_translate_tool_call_to_gemini(tool_call, include_ids=include_tool_call_ids, is_gemini3=is_gemini3))
         if parts:
             contents.append({"role": "model" if role == "assistant" else "user", "parts": parts})
     joined_system = "\n".join(part for part in system_text_parts if part).strip()

@@ -16,6 +16,38 @@ def _unwrap_results(response: Any) -> list:
     return response.get("results", []) if isinstance(response, dict) else response if isinstance(response, list) else []
 
 
+def _provider_block(block: dict, registry: dict) -> dict:
+    """Normalise one OSS provider section (``llm``/``embedder``) for mem0.
+
+    Maps the legacy ``api_base`` key onto the provider's canonical base-URL key, and
+    translates a Hermes-only provider id to the mem0 provider it rides on: ``mittwald`` becomes
+    mem0's ``openai`` pointed at llm.aihosting.mittwald.de. mem0 would only read OPENAI_API_KEY
+    from the environment, so such a provider's own key is passed inline.
+    """
+    from tools.tool_backend_helpers import resolve_mittwald_api_key, resolve_provider_secret
+
+    block = dict(block)
+    provider_config = dict(block.get("config", {}))
+    provider_name = str(block.get("provider") or "").strip().lower()
+    definition = registry.get(provider_name, {})
+    legacy_base = provider_config.pop("api_base", None)
+    canonical_key = definition.get("base_url_key")
+    if legacy_base and canonical_key:
+        provider_config.setdefault(canonical_key, legacy_base)
+    if mem0_provider := definition.get("mem0_provider"):
+        block["provider"] = mem0_provider
+        if canonical_key and definition.get("default_url"):
+            provider_config.setdefault(canonical_key, definition["default_url"])
+        if definition.get("env_var") and not provider_config.get("api_key"):
+            env_var = definition["env_var"]
+            api_key = (resolve_mittwald_api_key() if env_var == "MITTWALD_LLM_API_KEY"
+                       else resolve_provider_secret(env_var, provider_name))
+            if api_key:
+                provider_config["api_key"] = api_key
+    block["config"] = provider_config
+    return block
+
+
 class Mem0Backend(ABC):
     """Unified interface over Platform (MemoryClient), self-hosted (HTTP) and OSS (Memory) backends.
     update()/delete() are template methods: subclasses implement raw ``_update``/``_delete``."""
@@ -119,17 +151,6 @@ class OSSBackend(Mem0Backend):
         from mem0 import Memory
         from ._oss_providers import EMBEDDER_PROVIDERS, KNOWN_DIMS, LLM_PROVIDERS
 
-        def _provider_block(name: str, registry: dict) -> dict:
-            """Copy of oss_config[name] with the legacy ``api_base`` key mapped to the provider's canonical base-URL key."""
-            block = dict(oss_config[name])
-            provider_config = dict(block.get("config", {}))
-            legacy_base = provider_config.pop("api_base", None)
-            canonical_key = registry.get(str(block.get("provider") or "").strip().lower(), {}).get("base_url_key")
-            if legacy_base and canonical_key:
-                provider_config.setdefault(canonical_key, legacy_base)
-            block["config"] = provider_config
-            return block
-
         vector_store = dict(oss_config["vector_store"])
         vs_config = dict(vector_store.get("config", {}))
         if "path" in vs_config:
@@ -140,7 +161,7 @@ class OSSBackend(Mem0Backend):
             vs_config["embedding_model_dims"] = dims
             self._recreate_collection_if_dims_changed(vector_store.get("provider", "qdrant"), vs_config, dims)
         vector_store["config"] = vs_config
-        config = {"vector_store": vector_store, "llm": _provider_block("llm", LLM_PROVIDERS), "embedder": _provider_block("embedder", EMBEDDER_PROVIDERS), "version": "v1.1"}
+        config = {"vector_store": vector_store, "llm": _provider_block(oss_config["llm"], LLM_PROVIDERS), "embedder": _provider_block(oss_config["embedder"], EMBEDDER_PROVIDERS), "version": "v1.1"}
         if str(config["llm"].get("provider") or "").strip().lower() == "openai":
             # mem0 validates LlmConfig.provider before its factory lookup: build the supported OpenAI config, then swap the provider.
             _register_direct_openai_provider()

@@ -34,6 +34,13 @@ def _resolve_provider_key(env_var: str, provider_id: str) -> str:
     return resolve_provider_secret(env_var, provider_id)
 
 
+def _resolve_mittwald_key() -> str:
+    """mittwald's key under either documented name — the requirement probe must agree with the
+    handler, or a user who set only the alias would see the provider gated off."""
+    from tools.tool_backend_helpers import resolve_mittwald_api_key
+    return resolve_mittwald_api_key()
+
+
 from tools.tts_command_provider import (
     BUILTIN_TTS_PROVIDERS, _configured_command_tts_output_path, _generate_command_tts,
     _get_command_tts_output_format, _is_command_tts_voice_compatible, _resolve_command_provider_config)
@@ -48,7 +55,8 @@ from tools.tts_tool_local import _generate_kittentts, _generate_neutts, _generat
 from tools.tts_tool_plugins import (
     _dispatch_to_plugin_provider, _plugin_provider_is_available,
     _plugin_provider_is_voice_compatible)
-from tools.tts_tool_openai import _generate_deepinfra_tts, _generate_openai_tts, _has_openai_audio_backend
+from tools.tts_tool_openai import (
+    _generate_deepinfra_tts, _generate_mittwald_tts, _generate_openai_tts, _has_openai_audio_backend)
 
 
 _PM_FEATURE_ALIASES = {"tts.edge": "edge-tts", "tts.elevenlabs": "tts-premium", "tts.mistral": "mistral"}
@@ -160,7 +168,7 @@ OPUS_VOICE_PLATFORMS = frozenset({"telegram", "matrix", "feishu", "whatsapp", "s
 _MEDIA_DIRECTIVE_RE = re.compile(r"media:\s*[`'\"*_]*(?:[`'\"]|[a-z]:[/\\]|~?/)", re.IGNORECASE)
 
 # Built-ins that emit Opus natively when asked for .ogg; the rest need ffmpeg for voice bubbles.
-_NATIVE_OPUS_PROVIDERS = frozenset({"openai", "elevenlabs", "mistral", "gemini"})
+_NATIVE_OPUS_PROVIDERS = frozenset({"openai", "elevenlabs", "mistral", "gemini", "mittwald"})
 _FFMPEG_OPUS_PROVIDERS = frozenset({"edge", "neutts", "minimax", "xai", "kittentts", "piper"})
 
 
@@ -175,6 +183,8 @@ _BUILTIN_DISPATCH: Dict[str, tuple] = {
                "OpenAI provider selected but 'openai' package not installed."),
     "deepinfra": (lambda: _importable(_import_openai_client), "DeepInfra TTS", "_generate_deepinfra_tts",
                   "DeepInfra TTS uses the 'openai' SDK but it isn't installed."),
+    "mittwald": (lambda: _importable(_import_openai_client), "mittwald AI Hosting TTS", "_generate_mittwald_tts",
+                 "mittwald TTS uses the 'openai' SDK but it isn't installed."),
     "minimax": (None, "MiniMax TTS", "_generate_minimax_tts", None),
     "xai": (None, "xAI TTS", "_generate_xai_tts", None),
     "mistral": (lambda: _importable(_import_mistral_client), "Mistral Voxtral TTS", "_generate_mistral_tts",
@@ -520,6 +530,7 @@ _BUILTIN_REQUIREMENTS: Dict[str, Callable[[], bool]] = {
     "elevenlabs": lambda: _pm_extra_available("tts-premium") and bool(_resolve_provider_key("ELEVENLABS_API_KEY", "elevenlabs")),
     "openai": lambda: _package_installed("openai") and _has_openai_audio_backend(),
     "deepinfra": lambda: _package_installed("openai") and bool(_resolve_provider_key("DEEPINFRA_API_KEY", "deepinfra")),
+    "mittwald": lambda: _package_installed("openai") and bool(_resolve_mittwald_key()),
     "minimax": _minimax_requirements,
     "xai": _xai_requirements,
     "gemini": lambda: bool(_resolve_provider_key("GEMINI_API_KEY", "gemini") or _resolve_provider_key("GOOGLE_API_KEY", "gemini")),

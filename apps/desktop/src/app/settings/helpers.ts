@@ -273,7 +273,8 @@ const BUILTIN_TTS_PROVIDERS = new Set([
   'neutts',
   'kittentts',
   'piper',
-  'deepinfra'
+  'deepinfra',
+  'mittwald'
 ])
 
 const BUILTIN_STT_PROVIDERS = new Set([
@@ -284,7 +285,8 @@ const BUILTIN_STT_PROVIDERS = new Set([
   'mistral',
   'xai',
   'elevenlabs',
-  'deepinfra'
+  'deepinfra',
+  'mittwald'
 ])
 
 // A user-declared command provider, mirroring the runtime discriminator

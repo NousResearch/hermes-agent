@@ -291,6 +291,67 @@ describe('attachmentPreviewDataUrl', () => {
   })
 })
 
+describe('useComposerActions attachment picker defaults', () => {
+  afterEach(() => {
+    Reflect.deleteProperty(window, 'hermesDesktop')
+    vi.clearAllMocks()
+    $connection.set(null)
+  })
+
+  it('requests the Downloads fallback for detached file, folder, and image pickers', async () => {
+    const selectPaths = vi.fn(async () => [] as string[])
+
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { selectPaths }
+    })
+
+    const { result } = renderHook(() =>
+      useComposerActions({ activeSessionId: null, currentCwd: '', requestGateway: vi.fn() })
+    )
+
+    await act(async () => {
+      await result.current.pickContextPaths('file')
+      await result.current.pickContextPaths('folder')
+      await result.current.pickImages()
+    })
+
+    expect(selectPaths).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ defaultPath: undefined, directories: false, fallbackToDownloads: true })
+    )
+    expect(selectPaths).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ defaultPath: undefined, directories: true, fallbackToDownloads: true })
+    )
+    expect(selectPaths).toHaveBeenNthCalledWith(
+      3,
+      expect.objectContaining({ defaultPath: undefined, fallbackToDownloads: true })
+    )
+  })
+
+  it('keeps the session cwd as the requested attachment location', async () => {
+    const selectPaths = vi.fn(async () => [] as string[])
+
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { selectPaths }
+    })
+
+    const { result } = renderHook(() =>
+      useComposerActions({ activeSessionId: null, currentCwd: '/Users/test/project', requestGateway: vi.fn() })
+    )
+
+    await act(async () => {
+      await result.current.pickContextPaths('file')
+    })
+
+    expect(selectPaths).toHaveBeenCalledWith(
+      expect.objectContaining({ defaultPath: '/Users/test/project', fallbackToDownloads: true })
+    )
+  })
+})
+
 describe('useComposerActions native image drops', () => {
   afterEach(() => {
     Reflect.deleteProperty(window, 'hermesDesktop')

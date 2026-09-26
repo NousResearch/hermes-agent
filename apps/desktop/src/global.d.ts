@@ -1602,6 +1602,8 @@ export interface HermesPreviewFileChanged {
 export interface HermesSelectPathsOptions {
   title?: string
   defaultPath?: string
+  /** Use the host Downloads directory only when defaultPath is absent. */
+  fallbackToDownloads?: boolean
   directories?: boolean
   multiple?: boolean
   /** Backend profile that produced defaultPath; Electron uses it for WSL gating. */

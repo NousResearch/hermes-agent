@@ -141,6 +141,10 @@ jobs:
       # has none.
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          # Old release tags need their commit objects too: with a shallow
+          # checkout, fetch-tags alone may omit a tag that is not reachable
+          # from this branch tip, making an explicit install-ref unverifiable.
+          fetch-depth: 0
           filter: blob:none
           fetch-tags: true
           sparse-checkout: |

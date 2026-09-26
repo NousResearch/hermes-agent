@@ -1,0 +1,17 @@
+{
+  "account": "serraville.ai@gmail.com",
+  "allowed_senders": [
+    "jpfischer@serraville.com",
+    "joao@fischer.med.br",
+    "jpaulomf@gmail.com"
+  ],
+  "authserv_id": "mx.google.com",
+  "classifier_backend": "hindsight-reflect",
+  "calendar_profile": "jarvis",
+  "calendar_cli": "/Users/jarvis/.hermes/bin/hermes-calendar",
+  "timezone": "America/Sao_Paulo",
+  "cutover_at": "REPLACE_WITH_DEPLOY_TIMESTAMP",
+  "script_sha256": "REPLACE_WITH_INSTALLED_SCRIPT_SHA256",
+  "processed_label": "Jarvis/Processed",
+  "review_label": "Jarvis/Review"
+}

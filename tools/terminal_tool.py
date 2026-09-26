@@ -146,11 +146,12 @@ def _docker_has_host_access(config: Dict[str, Any]) -> bool:
 
 
 def _check_all_guards(command: str, env_type: str,
-                      has_host_access: bool = False) -> dict:
+                      has_host_access: bool = False,
+                      intent: Optional[str] = None) -> dict:
     """Delegate to consolidated guard (tirith + dangerous cmd) with CLI callback."""
     return _check_all_guards_impl(command, env_type,
                                   approval_callback=_get_approval_callback(),
-                                  has_host_access=has_host_access)
+                                  has_host_access=has_host_access, intent=intent)
 
 
 from tools.environments.base import EnvironmentConnectionError
@@ -908,13 +909,15 @@ class _ApprovalVerdict:
     approved_run: bool = False
 
 
-def _run_approval_guards(command: str, env_type: str, config: Dict[str, Any], *, force: bool) -> _ApprovalVerdict:
+def _run_approval_guards(command: str, env_type: str, config: Dict[str, Any], *, force: bool,
+                         intent: Optional[str] = None) -> _ApprovalVerdict:
     """Run tirith + dangerous-command guards; ``force`` skips them entirely.
     Raises :class:`_Rejected` when the command may not run (denied, or pending
     gateway approval)."""
     if force:
         return _ApprovalVerdict(approved_run=True)
-    approval = _check_all_guards(command, env_type, has_host_access=_docker_has_host_access(config))
+    approval = _check_all_guards(command, env_type, has_host_access=_docker_has_host_access(config),
+                                 intent=intent)
     if not approval["approved"]:
         if approval.get("status") == "pending_approval":  # gateway ask mode
             raise _Rejected(_error_json(
@@ -1251,6 +1254,7 @@ def _degraded_result(e: EnvironmentConnectionError, task_id: Optional[str]) -> s
 
 def terminal_tool(
     command: str,
+    intent: Optional[str] = None,
     background: bool = False,
     timeout: Optional[int] = None,
     task_id: Optional[str] = None,
@@ -1333,7 +1337,7 @@ def terminal_tool(
             ))
         # Pre-exec security checks (tirith + dangerous command detection);
         # force=True means the user already confirmed.
-        verdict = _run_approval_guards(command, env_type, plan.config, force=force)
+        verdict = _run_approval_guards(command, env_type, plan.config, force=force, intent=intent)
 
         pty_disabled = pty and _command_requires_pipe_stdin(command)
         if plan.promoted_from_foreground_timeout is not None:
@@ -1391,6 +1395,10 @@ TERMINAL_SCHEMA = {
             "command": {
                 "type": "string",
                 "description": "The shell command to execute"
+            },
+            "intent": {
+                "type": "string",
+                "description": "Optional plain-language summary of what this command does and why — shown to the user at the top of the approval card when the command is flagged. One short sentence, e.g. 'Read-only: ping the AirFiber radios to check link status'. Strongly recommended whenever a command may need approval."
             },
             "background": {
                 "type": "boolean",
@@ -1495,6 +1503,7 @@ def _handle_terminal(args, **kw):
         notify_on_complete = True  # the heartbeat rides the completion delivery path
     return terminal_tool(
         command=args.get("command"),
+        intent=args.get("intent"),
         background=args.get("background", False),
         timeout=args.get("timeout"),
         task_id=kw.get("task_id"),

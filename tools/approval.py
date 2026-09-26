@@ -1167,11 +1167,16 @@ def _tirith_scan(command: str) -> dict:
 
 def check_all_command_guards(command: str, env_type: str,
                              approval_callback=None,
-                             has_host_access: bool = False) -> dict:
+                             has_host_access: bool = False,
+                             intent: str | None = None) -> dict:
     """Run all pre-exec security checks and return a single approval decision. Tirith and
     dangerous-command findings are presented as ONE combined approval request, so a gateway
     force=True replay cannot bypass one check when only the other was shown to the user.
-    ``has_host_access``: a Docker sandbox with bind-mounted host paths takes the normal flow."""
+    ``has_host_access``: a Docker sandbox with bind-mounted host paths takes the normal flow.
+    ``intent``: optional plain-language summary supplied by the calling tool (from the model's
+    ``intent`` argument) — rendered at the top of the approval card so the user sees what the
+    command is meant to do, not just the code. Never trusted for the security decision itself:
+    it is display-only and always shown alongside the detector's own class description."""
     if _should_skip_container_guards(env_type, has_host_access=has_host_access):
         return _user_deny_block(command) or _approved()
 
@@ -1218,6 +1223,11 @@ def check_all_command_guards(command: str, env_type: str,
         return _approved()
 
     combined_desc = "; ".join(desc for _, desc, _ in warnings)
+    # Agent-supplied intent (display-only, see check_all_command_guards docstring): shown first on
+    # the card, clearly labelled as the caller's claim — the security description always follows.
+    _intent = (str(intent).strip()[:300] if intent else "")
+    if _intent:
+        combined_desc = f"Agent says: {_intent} | Detected: {combined_desc}"
     primary_key = warnings[0][0]
     all_keys = [key for key, _, _ in warnings]
 
@@ -1239,7 +1249,8 @@ _EXECUTE_CODE_DESCRIPTION = (
 )
 
 
-def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = False) -> dict:
+def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = False,
+                             intent: str | None = None) -> dict:
     """Approve an execute_code script before its child process is spawned.
 
     The script can call ``subprocess``/``os.system``/``ctypes`` directly, none of which pass
@@ -1300,6 +1311,9 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
     # run independently. The gateway renders the pending payload to Discord/Slack, so the script body is redacted for
     # display; the raw code is what gets assessed and run.
     from agent.redact import redact_sensitive_text
+    _intent = (str(intent).strip()[:300] if intent else "")
+    if _intent:
+        description = f"Agent says: {_intent} | Detected: {description}"
     return _human_decision(
         _EXECUTE_CODE_GATE, command=command, description=description, pattern_key=pattern_key,
         pattern_keys=[pattern_key], warnings=[(pattern_key, None, False)], session_key=session_key,

@@ -20,6 +20,14 @@ _NO_MAIN_CONFIG = """model:
   provider: ""
 """
 
+# A *selected* main that is text-only / vision-blind (kimi-coding #17076). Unlike an unavailable
+# vision-capable main, this main was never going to serve the image, so the boundary must NOT fire:
+# the vision route falls through to the aggregator chain exactly as before (#123998 regression).
+_TEXT_ONLY_MAIN_CONFIG = """model:
+  default: kimi-code
+  provider: kimi-coding
+"""
+
 
 def _trap(tmp_path, monkeypatch, config: str):
     h = tmp_path / "home"
@@ -80,6 +88,19 @@ def test_vision_task_also_refuses_to_guess_openrouter(tmp_path, monkeypatch):
         ac.call_llm(task="vision", messages=_IMAGE, max_tokens=5)
     assert not any("openrouter" in u for u in built), (
         f"vision request leaked to a non-selected provider: {built}"
+    )
+
+
+def test_vision_text_only_main_still_falls_through_to_openrouter(tmp_path, monkeypatch):
+    """#123998 regression: a *text-only* selected main (kimi-coding, no vision support) was never
+    going to serve the image, so the discovery boundary must NOT gate it — the vision route falls
+    through to the aggregator chain (OpenRouter) as it did before the boundary was added (#17076,
+    #50426). The three tests above all use a vision-capable main, so none of them cover this."""
+    ac, built = _trap(tmp_path, monkeypatch, _TEXT_ONLY_MAIN_CONFIG)
+    with pytest.raises(RuntimeError, match="openrouter.ai"):
+        ac.call_llm(task="vision", messages=_IMAGE, max_tokens=5)
+    assert any("openrouter" in u for u in built), (
+        f"text-only main was wrongly gated instead of falling through to the aggregator: {built}"
     )
 
 

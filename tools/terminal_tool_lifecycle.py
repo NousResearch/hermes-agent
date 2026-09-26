@@ -14,7 +14,7 @@ import shutil
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from tools.environments.singularity import _get_scratch_dir
 from tools.terminal_tool_backends import (
     _container_config_from_config,
@@ -114,30 +114,79 @@ def _teardown_env(env: Any, task_id: str, *, force_remove: Optional[bool] = None
             logger.warning("Error cleaning up environment for task %s: %s", task_id, e)
 
 
+def _own_registry_keys(task_id: str) -> set:
+    """Cache keys that belong to *task_id* alone.
+
+    Environments are cached under ``_resolve_container_task_id(task_id)``, so
+    popping the raw *task_id* misses every session-scoped entry: a gateway
+    session's env lives under ``session:<key>``, and ``tui_gateway`` calls
+    ``cleanup_vm(session["session_key"])`` with the bare key, which never
+    matches the prefixed one.
+
+    Re-resolving at teardown cannot recover the key either — the resolver reads
+    the session ContextVar, which is unbound on this path, so it returns
+    ``default``. That is why the resolved key is accepted ONLY when it is
+    provably this task's: equal to the raw id, or session-scoped.
+
+    Shared keys (``default``, ``profile:<name>``, ``shared:<key>``) are never
+    inferred. Several live sessions share those containers, so releasing one
+    because a single session closed would break the "ONE long-lived container
+    shared across sessions" contract — and on a non-persistent local env it
+    would unlink another entry's snapshot and cwd. A caller that names such a
+    key verbatim (``cleanup_all_environments`` iterates the cache) still gets
+    it, because *task_id* itself is always a candidate.
+    """
+    from tools.terminal_tool import _resolve_container_task_id
+
+    if not task_id:
+        return set()
+    keys = {task_id, f"session:{task_id}"}
+    resolved = _resolve_container_task_id(task_id)
+    if resolved == task_id or resolved.startswith("session:"):
+        keys.add(resolved)
+    return keys
+
+
 def _clear_file_ops_cache(task_id: str) -> None:
     """Invalidate the file_ops cache entry so ShellFileOperations can't reference a dead sandbox."""
     try:
         from tools.file_tools import clear_file_ops_cache
-        clear_file_ops_cache(task_id)
     except ImportError:
-        pass
+        return
+    for key in _own_registry_keys(task_id) or {task_id}:
+        clear_file_ops_cache(key)
 
 
-def _unregister_env(task_id: str):
-    """Pop *task_id* from the env cache, activity map and creation locks; return
-    the env (or None). Callers run the (slow) teardown OUTSIDE the lock —
-    Modal/Docker teardown can block 10-15s and would stall every concurrent
-    terminal/file tool call."""
+def _unregister_env(task_id: str) -> List[Any]:
+    """Pop every key owned by *task_id* (see :func:`_own_registry_keys`) from the
+    env cache, activity map and creation locks; return EVERY env popped.
+
+    All of them, not just the first: two owned keys can each hold a live env —
+    one keyed by the raw id (isolation override, or session-isolated docker)
+    next to a ``session:<key>`` entry from a backend that is not
+    profile-scoped. A popped env the caller never tears down leaks its
+    container for good, because the cache entry is already gone when
+    ``cleanup_all_environments`` sweeps. ``_evict_environment_for_task``
+    collects them the same way.
+
+    Callers run the (slow) teardown OUTSIDE the lock — Modal/Docker teardown can
+    block 10-15s and would stall every concurrent terminal/file tool call."""
     from tools.terminal_tool import (
         _active_environments, _creation_locks, _creation_locks_lock, _env_lock,
         _last_activity,
     )
+    keys = _own_registry_keys(task_id) or {task_id}
+    envs: List[Any] = []
     with _env_lock:
-        env = _active_environments.pop(task_id, None)
-        _last_activity.pop(task_id, None)
+        for key in keys:
+            found = _active_environments.pop(key, None)
+            _last_activity.pop(key, None)
+            if found is not None:
+                envs.append(found)
     with _creation_locks_lock:
-        _creation_locks.pop(task_id, None)
-    return env
+        for key in keys:
+            _creation_locks.pop(key, None)
+    return envs
 
 
 def _cleanup_inactive_envs(lifetime_seconds: int = 300):
@@ -300,14 +349,13 @@ def cleanup_vm(task_id: str, *, force_remove: bool = False):
     directly, so persist-mode idle envs are likewise no-op'd; only the orphan
     reaper at next startup reclaims them.
     """
-    env = _unregister_env(task_id)
+    envs = _unregister_env(task_id)
     _clear_file_ops_cache(task_id)
-    if env is None:
-        return
-    _teardown_env(
-        env, task_id, force_remove=force_remove,
-        done_msg="Manually cleaned up environment for task: %s",
-    )
+    for env in envs:
+        _teardown_env(
+            env, task_id, force_remove=force_remove,
+            done_msg="Manually cleaned up environment for task: %s",
+        )
 
 
 def _evict_environment_for_task(task_id: Optional[str]) -> None:

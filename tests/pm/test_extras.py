@@ -252,3 +252,74 @@ def test_runtime_marker_evaluation_answers_for_the_given_environment():
                           text=True, timeout=60, check=True).stdout.strip()
            for marker in ("sys_platform == 'linux'", "sys_platform == 'win32'")]
     assert out == ["1", "0"]
+
+
+# ---- configured gateway platforms ride explicit syncs (#124228) ----
+
+def _stub_gateway_config(monkeypatch, platforms):
+    """Point the ``from gateway.config import load_gateway_config`` seam in
+    pm.extras at a fake config; ``platforms`` are ``.value`` namespaces."""
+    from types import SimpleNamespace
+    fake_config = SimpleNamespace(get_connected_platforms=lambda: list(platforms))
+    monkeypatch.setitem(sys.modules, "gateway.config",
+                        SimpleNamespace(load_gateway_config=lambda: fake_config))
+
+
+def test_configured_platform_extras_maps_connected_platforms_to_extras(monkeypatch):
+    """Connected messaging platforms resolve to their PM extras; a platform
+    with no SDK extra (node bridge / stdlib) is skipped."""
+    from types import SimpleNamespace
+    _stub_gateway_config(monkeypatch, [SimpleNamespace(value="telegram"),
+                                       SimpleNamespace(value="discord"),
+                                       SimpleNamespace(value="whatsapp")])
+    monkeypatch.setattr(extras, "_PLATFORM_GATES", {})
+    assert extras.configured_platform_extras() == ["discord", "telegram"]
+
+
+def test_configured_platform_extras_empty_when_config_unreadable(monkeypatch):
+    """Config discovery must never break an install: a raising loader and a
+    missing loader both read as 'no platforms'."""
+    from types import SimpleNamespace
+
+    def boom():
+        raise RuntimeError("config.yaml broken")
+    monkeypatch.setitem(sys.modules, "gateway.config", SimpleNamespace(load_gateway_config=boom))
+    assert extras.configured_platform_extras() == []
+    monkeypatch.setitem(sys.modules, "gateway.config", SimpleNamespace())
+    assert extras.configured_platform_extras() == []
+
+
+def test_explicit_sync_unions_connected_platform_extras(monkeypatch):
+    """An explicit build carries connected platforms' SDKs ([all] excludes
+    messaging extras), while lazy and repair syncs never gain features."""
+    from pm import install as install_mod
+    from pm.package import InstallError
+    import pm.receipt as receipt_mod
+    from types import SimpleNamespace
+
+    seen = {}
+    def fake_policy(requested, *, repair):
+        seen["extras"] = requested
+        raise InstallError("venv", "stop after policy")
+    monkeypatch.setattr(install_mod, "_feature_policy", fake_policy)
+    monkeypatch.setattr(receipt_mod, "begin", lambda kind: "tok")
+    monkeypatch.setattr(receipt_mod, "record_step", lambda *args, **kwargs: None)
+    monkeypatch.setattr(receipt_mod, "finalize", lambda *args, **kwargs: None)
+    _stub_gateway_config(monkeypatch, [SimpleNamespace(value="telegram")])
+    monkeypatch.setattr(extras, "_PLATFORM_GATES", {})
+
+    with pytest.raises(InstallError):
+        install_mod.sync_venv(["all"], explicit=True)
+    assert seen["extras"] == ["all", "telegram"]
+
+    with pytest.raises(InstallError):
+        install_mod.sync_venv(None, explicit=True)
+    assert seen["extras"] == ["telegram"]
+
+    with pytest.raises(InstallError):
+        install_mod.sync_venv(["all"])
+    assert seen["extras"] == ["all"]
+
+    with pytest.raises(InstallError):
+        install_mod.sync_venv(None, repair=True)
+    assert seen["extras"] is None

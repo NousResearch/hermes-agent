@@ -320,7 +320,8 @@ def check_telegram_requirements() -> bool:
     try:
         from pm import ensure_import as _lazy_ensure
         _lazy_ensure("telegram")
-    except Exception:
+    except Exception as exc:
+        logger.warning("Telegram lazy install skipped: %s", exc)
         return False
     try:
         import importlib
@@ -7291,7 +7292,7 @@ def register(ctx) -> None:
     ctx.register_platform(
         name="telegram", label="Telegram", adapter_factory=_build_adapter, check_fn=telegram_deps_present,
         ensure_deps_fn=check_telegram_requirements, is_connected=_is_connected, required_env=["TELEGRAM_BOT_TOKEN"],
-        install_hint="Run `hermes setup` to install Telegram support.", setup_fn=interactive_setup, apply_yaml_config_fn=_apply_yaml_config,
+        install_hint="Run `hermes pm install --extra telegram` to install Telegram support.", setup_fn=interactive_setup, apply_yaml_config_fn=_apply_yaml_config,
         allowed_users_env="TELEGRAM_ALLOWED_USERS", allow_all_env="TELEGRAM_ALLOW_ALL_USERS", cron_deliver_env_var="TELEGRAM_HOME_CHANNEL",
         standalone_sender_fn=_standalone_send, max_message_length=4096, emoji="✈️", allow_update_command=True)
 

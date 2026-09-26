@@ -739,6 +739,16 @@ def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False,
             raise ValueError("repair restores the recorded environment; it cannot change features or plugins")
         if evict_incompatible_plugins and (repair or plugins is not None or not explicit):
             raise ValueError("only an explicit sync of the discovered plugin selection may disable plugins")
+        if explicit and not repair:
+            # [all] deliberately excludes messaging SDKs, so an explicit build
+            # union in the connected platforms' extras: a Telegram-configured
+            # home must rebuild WITH python-telegram-bot (#124228). Before the
+            # frozen-bundle policy, so a bundle refuses cleanly instead of
+            # drifting. Reads as no platforms when config is unreadable.
+            # ponytail: config read per explicit sync; cache if measurable.
+            from pm.extras import configured_platform_extras
+            if (platform_extras := configured_platform_extras()):
+                extras = sorted(set(extras or []) | set(platform_extras))
         shipped, frozen = _feature_policy(extras, repair=repair)
         package = get_package("venv")
         from hermes_cli.runtime_state import recover_publication

@@ -185,6 +185,31 @@ def install_hint(extra: str) -> str:
     return f"hermes pm install --extra {extra}"
 
 
+def configured_platform_extras() -> list[str]:
+    """PM extras for the connected gateway platforms (enabled + configured).
+
+    Explicit environment builds union these in: ``[all]`` deliberately
+    excludes messaging SDKs, so without this a Telegram-configured home
+    rebuilds a venv without python-telegram-bot (#124228). Never raises:
+    unreadable config reads as no platforms, never a broken install."""
+    try:
+        from gateway.config import load_gateway_config
+        platforms = load_gateway_config().get_connected_platforms()
+    except Exception:
+        return []
+    found = []
+    for platform in platforms or []:
+        name = getattr(platform, "value", platform)
+        if not isinstance(name, str):
+            continue
+        # An umbrella extra shares its anchor with one member; selecting it
+        # would install every sibling the user never chose.
+        if (name in ANCHORS and name not in {"messaging", "voice", "wake"}
+                and extra_supported(name, importable=lambda _anchor: False)):
+            found.append(name)
+    return sorted(set(found))
+
+
 def ensure_import(extra: str) -> None:
     """Make an extra available: no-op when the anchor imports, otherwise
     sync the venv with the extra enabled. Raises InstallError on failure

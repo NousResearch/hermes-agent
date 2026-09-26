@@ -198,8 +198,13 @@ def _existing_tool_names() -> List[str]:
             for tool_name in registry.get_tool_names_for_toolset(f"mcp-{server_name}")
         })
 
+    # Snapshot the live servers under the same lock every mutation (adoption, teardown,
+    # lazy-connection upgrade) takes: iterating ``_servers`` itself raised "dictionary
+    # changed size during iteration" when a server disconnected mid-enumeration.
+    with _core._lock:
+        servers = list(_core._servers.values())
     names: List[str] = []
-    for server in _core._servers.values():
+    for server in servers:
         names.extend(server._registered_tool_names if hasattr(server, "_registered_tool_names")
                      else (_schema._convert_mcp_schema(server.name, t)["name"] for t in server._tools))
     with _core._lock:

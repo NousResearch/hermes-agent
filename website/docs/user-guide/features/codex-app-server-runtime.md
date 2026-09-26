@@ -463,6 +463,13 @@ This runtime is **opt-in beta**. Working as of Hermes Agent 2026.5 + Codex CLI 0
 - Memory and skill nudge counters (verified live via integration tests)
 - Hermes web_search through codex (verified live: "OpenAI Codex CLI – Getting Started" returned end-to-end)
 
+When `display.show_commentary` is enabled, completed app-server messages appear
+as interim updates. If the final response matches an interim successfully
+delivered during this turn, `response_previewed` lets the TUI settle it onto the
+existing message instead of adding a duplicate. Distinct final answers and
+failed or disabled interim delivery retain normal final delivery. Messaging
+gateways independently check their durable delivery records.
+
 Known limitations:
 
 - **Hermes auth and codex auth are separate sessions.** You need both `codex login` AND `hermes auth add openai-codex` for the cleanest UX (the runtime uses codex's session for the LLM call). This is a deliberate design choice in Hermes' `_import_codex_cli_tokens` — Hermes won't share OAuth state with codex CLI to avoid clobbering each other on token refresh.

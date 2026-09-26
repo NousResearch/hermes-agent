@@ -82,6 +82,54 @@ class TestRunConversationCodexPath:
         assert result["codex_thread_id"] == "thread-stub-1"
         assert result["codex_turn_id"] == "turn-stub-1"
 
+    @pytest.mark.parametrize("streamed", [False, True])
+    @pytest.mark.parametrize("delivery", ["matching", "distinct", "absent", "failed", "hidden"])
+    def test_final_preview_matches_successful_interim_delivery(self, monkeypatch, streamed, delivery):
+        """The real runtime must tell the TUI when its sealed interim already contains the final."""
+        import threading
+        from tui_gateway import server
+
+        final_text = "Done."
+        interim_text = "Checking first." if delivery == "distinct" else final_text
+        delivered = []
+
+        def deliver(text, **kwargs):
+            if delivery == "failed":
+                raise RuntimeError("display delivery failed")
+            delivered.append(text)
+
+        def run_turn(session, user_input, **kwargs):
+            if streamed:
+                session._on_event({"method": "item/agentMessage/delta", "params": {
+                    "itemId": "answer", "delta": interim_text,
+                }})
+            session._on_event({"method": "item/completed", "params": {"item": {
+                "type": "agentMessage", "id": "answer", "text": interim_text,
+            }}})
+            return TurnResult(final_text=final_text, projected_messages=[
+                {"role": "assistant", "content": final_text},
+            ], turn_id="turn-preview", thread_id="thread-preview")
+
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", run_turn)
+        monkeypatch.setattr(CodexAppServerSession, "ensure_started", lambda self: "thread-preview")
+        agent = _make_codex_agent(
+            interim_assistant_callback=None if delivery == "absent" else deliver,
+            stream_delta_callback=(lambda text: None) if streamed else None,
+        )
+        agent.show_commentary = delivery != "hidden"
+        agent._session_title_hint = "Preview regression"
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            result = agent.run_conversation("hello")
+
+        # Exercise the actual result-to-wire boundary, not a synthetic preview flag.
+        session = {"agent": agent, "history_lock": threading.RLock()}
+        st = server._TurnRun(agent=agent, one_turn_restore=None, terminal_callback=None,
+                             receipt_committed=False, result=result)
+        payload, _, _ = server._complete_turn_payload(session, st, None, 80)
+        assert delivered == ([interim_text] if delivery in {"matching", "distinct"} else [])
+        assert payload["text"] == final_text
+        assert bool(payload.get("response_previewed")) == (final_text in delivered)
+
     def test_codex_app_server_token_usage_updates_session_accounting(self, monkeypatch):
         def fake_run_turn(self, user_input: str, **kwargs):
             return TurnResult(

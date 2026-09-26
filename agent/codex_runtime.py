@@ -695,6 +695,8 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
         interrupt, messages, api_calls=1, completed=not turn.interrupted and turn.error is None, error=turn.error,
         # We flushed the projected rows ourselves (agent_persisted); the gateway must skip its own DB write.
         final_response=turn.final_text, agent_persisted=True, codex_thread_id=turn.thread_id, codex_turn_id=turn.turn_id,
+        # The TUI seals completed items as interims; settle an already-delivered final onto that segment.
+        response_previewed=agent._interim_text_was_delivered(turn.final_text),
         **usage_result,
     )
 

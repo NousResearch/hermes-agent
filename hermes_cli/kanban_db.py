@@ -562,6 +562,10 @@ def read_board_metadata(board: Optional[str] = None) -> dict:
         "default_workdir": None,
         # Project scope: new tasks inherit it (deterministic worktree + branch).
         "project_id": None,
+        # Per-board orchestration; None = inherit kanban.orchestrator_profile /
+        # kanban.default_assignee (#34977).
+        "orchestrator_profile": None,
+        "default_assignee": None,
         "created_at": None,
         "archived": False,
     }
@@ -584,10 +588,12 @@ def write_board_metadata(
     board: Optional[str], *, name: Optional[str] = None, description: Optional[str] = None,
     icon: Optional[str] = None, color: Optional[str] = None, archived: Optional[bool] = None,
     default_workdir: Optional[str] = None, project_id: Optional[str] = None,
+    orchestrator_profile: Optional[str] = None, default_assignee: Optional[str] = None,
 ) -> dict:
     """Create/update ``board.json``; unmentioned fields are preserved, ``created_at``
-    set on first write. ``project_id``/``default_workdir``: ``None`` = unchanged,
-    "" = clear (``project_id`` is not validated here)."""
+    set on first write. ``project_id``/``default_workdir``/``orchestrator_profile``/
+    ``default_assignee``: ``None`` = unchanged, "" = clear (not validated here —
+    callers check profile existence)."""
     _assert_not_delegated_child_mutation()
     slug = _slug_or_default(board)
     meta = read_board_metadata(slug)
@@ -603,6 +609,9 @@ def write_board_metadata(
     for key, value in (("default_workdir", default_workdir), ("project_id", project_id)):
         if value is not None:
             meta[key] = str(value) if value else None
+    for key, value in (("orchestrator_profile", orchestrator_profile), ("default_assignee", default_assignee)):
+        if value is not None:
+            meta[key] = str(value).strip() or None
     if not meta.get("created_at"):
         meta["created_at"] = int(time.time())
     path = board_metadata_path(slug)

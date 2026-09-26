@@ -175,7 +175,19 @@ hermes kanban boards rm atm10-server
 
 # Hard delete — `rm -rf` the board dir. No recovery.
 hermes kanban boards rm atm10-server --delete
+
+# Per-board orchestration: this board's decomposed roots and unassigned cards
+# go to its own profiles instead of the global kanban.* ones.
+hermes kanban boards set-orchestrator atm10-server ops-lead
+hermes kanban boards set-default-assignee atm10-server ops
+hermes kanban boards set-orchestrator atm10-server   # clear -> inherit global
 ```
+
+`orchestrator_profile` and `default_assignee` are stored in the board's
+`board.json`. When set they shadow the global `kanban.orchestrator_profile` /
+`kanban.default_assignee` for that board only, in both the decomposer and the
+dispatcher's unassigned-card fallback. Unset boards inherit the global values,
+so single-board setups are unchanged.
 
 Board resolution order (highest precedence first):
 
@@ -815,8 +827,8 @@ Config knobs (all under `kanban:` in `~/.hermes/config.yaml`):
 |---|---|---|
 | `auto_decompose` | `true` | Dispatcher auto-runs the built-in decomposer for Triage tasks every tick. It does not gate profile-driven `kanban_create` calls or creator wake turns. |
 | `auto_decompose_per_tick` | `3` | Cap on decompositions per dispatcher tick. Excess defers to the next tick. |
-| `orchestrator_profile` | `""` | Profile assigned to the root/orchestration task after decomposition. Empty = the root task keeps its own assignee, else the active default profile. |
-| `default_assignee` | `""` | Where a child task lands when the LLM picks an unknown profile. Empty = fall back to the root task's assignee, else the active default. |
+| `orchestrator_profile` | `""` | Profile assigned to the root/orchestration task after decomposition. Empty = the root task keeps its own assignee, else the active default profile. A board's own value (`hermes kanban boards set-orchestrator`) takes precedence on that board. |
+| `default_assignee` | `""` | Where a child task lands when the LLM picks an unknown profile. Empty = fall back to the root task's assignee, else the active default. A board's own value (`hermes kanban boards set-default-assignee`) takes precedence on that board. |
 | `auto_subscribe_on_create` | `true` | When `kanban_create` runs inside a persistent gateway/TUI session, terminal events resume that originating agent with a synthetic status turn. Set to `false` for passive completion or to require explicit `kanban_notify-subscribe` calls. Independent of `auto_decompose`. |
 | `notify_in_gateway` | `true` | Poll and deliver Kanban subscriptions from this gateway. Set to `false` on profiles that own no notification subscriptions to stop the idle five-second notifier poll. Independent of `dispatch_in_gateway`; non-dispatch gateways may still own profile-specific delivery adapters. |
 | `done_sub_retention_days` | `30` | Notify subscriptions survive `done` (reopen-safe) and are removed on `archived`. The notifier GC purges subscriptions whose task has been `done` or `blocked` with no new events for this many days, bounding sub-table growth on boards that never archive. `0` disables the sweep. |

@@ -264,7 +264,9 @@ def _sdk_supports_agent_sessions() -> bool:
     Slack is deprecating the Assistant messaging experience in February 2027:
     ``assistant.threads.setStatus`` / ``assistant.threads.setTitle`` are
     replaced by ``agents.sessions.setStatus`` / ``agents.sessions.rename``
-    (typed methods landed in slack-sdk 3.44.0). Checked on the SDK class —
+    (typed methods landed in slack-sdk 3.44.0). Only ``rename`` is adopted —
+    see ``_session_status_method`` for why status stays on the legacy method.
+    Checked on the SDK class —
     never on a client instance, where mock auto-attributes would lie.
     """
     global _AGENT_SESSIONS_SUPPORTED
@@ -280,11 +282,22 @@ def _sdk_supports_agent_sessions() -> bool:
 
 
 def _session_status_method(client: Any):
-    """Return the status setter: Agent Sessions API when available, else legacy."""
-    if _sdk_supports_agent_sessions():
-        method = getattr(client, "agents_sessions_setStatus", None)
-        if method is not None:
-            return method
+    """Return the status setter: always legacy ``assistant.threads.setStatus``.
+
+    Deliberately NOT routed through ``agents.sessions.setStatus`` (#110374).
+    That API takes a closed enum (``active|processing|suspended|closed``) while
+    every Hermes status payload is free text — live per-tool phrases, the
+    elapsed-time heartbeat, ``typing_status_text`` — plus an EMPTY string to
+    clear. All of those are rejected with ``invalid_arguments``, and because
+    status failures are debug-logged the indicator vanishes silently.
+
+    The enum also has no auto-clear (``processing`` lingers up to an hour after
+    the app replies), which would re-open the stuck-indicator bug class of
+    #64621 / #24117. The legacy method keeps free text and auto-clear until its
+    February 2027 deprecation; migrating means mapping lifecycle states onto the
+    enum and accepting the loss of custom status text, which is a product call.
+    Titles are unaffected — ``agents.sessions.rename`` takes free text.
+    """
     return client.assistant_threads_setStatus
 
 

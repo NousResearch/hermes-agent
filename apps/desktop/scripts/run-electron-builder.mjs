@@ -134,7 +134,8 @@ export function runElectronBuilder(args, { spawn = spawnSync } = {}) {
   pinnedPackageRoot(source, 'app-builder-lib')
   const require = createRequire(path.join(builder, 'package.json'))
   const bin = require(path.join(builder, 'package.json')).bin['electron-builder']
-  const preloads = []
+  // All platforms: retry/resume/stall-abort every builder binary download (#122478).
+  const preloads = ['--import', path.join(import.meta.dirname, 'patch-electron-get-downloads.mjs')]
   if (process.platform === 'darwin') {
     preloads.push('--import', path.join(import.meta.dirname, 'patch-electron-builder-mac-binary.mjs'))
     preloads.push('--require', path.join(import.meta.dirname, 'dmgbuild-diagnostics.cjs'))

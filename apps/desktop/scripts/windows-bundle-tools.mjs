@@ -6,6 +6,7 @@ import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 import { readPackagingInputs, preparationRequired } from './prepared-packaging.mjs'
+import './patch-electron-get-downloads.mjs'
 
 const require = createRequire(import.meta.url)
 

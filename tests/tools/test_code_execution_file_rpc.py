@@ -82,7 +82,7 @@ def test_generated_file_rpc_kwargs_correlation_and_authority(tmp_path, monkeypat
             assert not (rpc / f"res_{seq:06d}").exists()
         assert seen == [] and counter == [0]
         for name, args in CALLS.items():
-            blocked = {"background", "heartbeat", "pty", "notify", "notify_on_complete", "watch_patterns"} if name == "terminal" else set()
+            blocked = {"background", "heartbeat", "pty", "notify", "notify_on_complete", "watch_patterns", "persist_on_release"} if name == "terminal" else set()
             schema_keys = set(registry.get_entry(name).schema["parameters"]["properties"]) - blocked
             assert schema_keys <= set(args), (name, schema_keys - set(args))
             assert namespace[name](**args) == {"name": name, "args": args}

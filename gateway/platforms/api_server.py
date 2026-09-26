@@ -24,6 +24,7 @@ import sys
 import threading
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -231,6 +232,8 @@ MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversation
 # Send a comment before remote API clients' common 20-second idle deadline.
 # This constant is shared by OpenAI chat/Responses and native session SSE.
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 10.0
+API_SERVER_HEARTBEAT_SECONDS = 30.0
+API_SERVER_LATENCY_SAMPLE_LIMIT = 512
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
 RESPONSES_AUTO_TRUNCATION_HISTORY_LIMIT = 100
@@ -250,10 +253,12 @@ class ThreadSafeAsyncQueue(asyncio.Queue):
         self._loop_ref = asyncio.get_running_loop()
 
 
-def _sse_frame(data: Any, *, event: str = None, ensure_ascii: bool = True) -> bytes:
-    """Encode one SSE frame (``event:`` line if given, then ``data: <json>\n\n``) for every
-    SSE writer. ``ensure_ascii=False`` keeps raw non-ASCII on the wire."""
-    prefix = f"event: {event}\n" if event else ""
+def _sse_frame(
+    data: Any, *, event: str = None, ensure_ascii: bool = True, id: Optional[int] = None
+) -> bytes:
+    """Encode one SSE frame (``id:``/``event:`` lines if given, then ``data: <json>\n\n``) for
+    every SSE writer. ``ensure_ascii=False`` keeps raw non-ASCII on the wire."""
+    prefix = (f"id: {id}\n" if id is not None else "") + (f"event: {event}\n" if event else "")
     return f"{prefix}data: {json.dumps(data, ensure_ascii=ensure_ascii)}\n\n".encode()
 
 
@@ -1199,6 +1204,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         # @mssteuer.)
         self._direct_model_requests: bool = _coerce_request_bool(
             extra.get("direct_model_requests"), default=False)
+        # ``platforms.api_server.tool_progress_events: false`` drops the custom
+        # ``hermes.tool.progress`` SSE frames from Chat Completions streams for strict OpenAI
+        # clients that choke on named events (#12020). Default on.
+        self._tool_progress_events: bool = _coerce_request_bool(
+            extra.get("tool_progress_events"), default=True)
         self._app: Optional["web.Application"] = None
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None
@@ -1233,7 +1243,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         self.gateway_runner: Optional[Any] = None  # set by gateway/run.py
         # Admitted requests not yet in agent bookkeeping, so shutdown drain counts them.
         self._pending_agent_requests: int = 0
-        # Shared broker; this adapter maps HTTP registration + controller WS onto it.
+# Shared broker; this adapter maps HTTP registration + controller WS onto it.
         self._browser_control_broker = get_browser_control_broker()
         # One-shot artifact transport: lazy per-profile stores + limiter (tests inject).
         self._browser_control_artifacts: Dict[str, ArtifactStore] = {}
@@ -1241,6 +1251,14 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         # Per-profile single-flight locks for the off-loop store construction in
         # _artifact_store_for_async(); a lost race would strand receipts (in-memory index).
         self._browser_control_artifact_locks: Dict[str, asyncio.Lock] = {}
+        # Daily API metrics + heartbeat stamps published to gateway runtime status (#52323).
+        self._metrics_day: str = self._metrics_day_key()
+        self._metrics_requests_today: int = 0
+        self._metrics_messages_today: int = 0
+        self._metrics_tokens_today: int = 0
+        self._metrics_latency_ms: List[float] = []
+        self._metrics_last_request_at: Optional[float] = None
+        self._metrics_last_heartbeat_at: Optional[float] = None
 
     def active_agent_work_count(self) -> int:
         """All live agent work: pending admissions + in-flight turns + live /v1/runs tasks
@@ -1303,10 +1321,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
 
     def _readiness_work_counts(self) -> tuple[int, int, int]:
         """Return bounded work counts from each subsystem's public state."""
-        # "stopping" is not terminal: executor work continues until the agent notices.
-        active_api_runs = sum(
-            1 for status in self._run_statuses.values()
-            if status.get("status") in {"queued", "running", "waiting_for_approval", "stopping"})
+        active_api_runs = self._active_structured_run_count()
         process_depth = 0
         active_delegations = 0
         with suppress(Exception):
@@ -1316,6 +1331,15 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             from tools.async_delegation import active_count
             active_delegations = active_count()
         return active_api_runs, process_depth, active_delegations
+
+    def _active_structured_run_count(self) -> int:
+        """Count structured runs that still have executable work."""
+        # "stopping" is not terminal: executor work continues until the agent notices.
+        return sum(
+            1
+            for status in self._run_statuses.values()
+            if status.get("status") in {"queued", "running", "waiting_for_approval", "stopping"}
+        )
 
     @staticmethod
     def _parse_cors_origins(value: Any) -> tuple[str, ...]:
@@ -1343,6 +1367,89 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         return max(0, value)
 
     @staticmethod
+    def _metrics_day_key(timestamp: Optional[float] = None) -> str:
+        """Return the UTC day bucket for daily API metrics."""
+        return time.strftime("%Y-%m-%d", time.gmtime(timestamp or time.time()))
+
+    @staticmethod
+    def _iso_timestamp(timestamp: Optional[float]) -> Optional[str]:
+        if timestamp is None:
+            return None
+        return datetime.fromtimestamp(timestamp, timezone.utc).isoformat()
+
+    def _reset_metrics_if_needed(self) -> None:
+        current_day = self._metrics_day_key()
+        if self._metrics_day == current_day:
+            return
+        self._metrics_day = current_day
+        self._metrics_requests_today = 0
+        self._metrics_messages_today = 0
+        self._metrics_tokens_today = 0
+        self._metrics_latency_ms.clear()
+
+    @staticmethod
+    def _total_tokens_from_usage(usage: Optional[Dict[str, Any]]) -> int:
+        if not isinstance(usage, dict):
+            return 0
+        try:
+            return max(0, int(usage.get("total_tokens") or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    @staticmethod
+    def _latency_p95_ms(samples: List[float]) -> Optional[float]:
+        if not samples:
+            return None
+        ordered = sorted(samples)
+        index = max(0, min(len(ordered) - 1, int(len(ordered) * 0.95 + 0.999999) - 1))
+        return round(ordered[index], 2)
+
+    def _api_server_status_payload(self, *, heartbeat_at: Optional[float] = None) -> Dict[str, Any]:
+        self._reset_metrics_if_needed()
+        heartbeat = self._metrics_last_heartbeat_at if heartbeat_at is None else heartbeat_at
+        return {
+            "host": self._host,
+            "port": self._port,
+            "active_runs": self._active_structured_run_count() + self._inflight_agent_runs,
+            "stored_runs": len(self._run_statuses),
+            "last_request_at": self._iso_timestamp(self._metrics_last_request_at),
+            "last_heartbeat": self._iso_timestamp(heartbeat),
+            "metrics_today": {
+                "day": self._metrics_day,
+                "requests": self._metrics_requests_today,
+                "messages": self._metrics_messages_today,
+                "tokens": self._metrics_tokens_today,
+                "latency_p95_ms": self._latency_p95_ms(self._metrics_latency_ms),
+            },
+        }
+
+    def _publish_runtime_status(self) -> None:
+        self._metrics_last_heartbeat_at = time.time()
+        self._write_runtime_status_safe(
+            "api_server_heartbeat",
+            platform_state="connected" if self.is_connected else "disconnected",
+            platform_metrics=self._api_server_status_payload(),
+        )
+
+    def _record_api_metrics(self, usage: Optional[Dict[str, Any]], latency_seconds: float) -> None:
+        self._reset_metrics_if_needed()
+        self._metrics_requests_today += 1
+        self._metrics_messages_today += 1
+        self._metrics_tokens_today += self._total_tokens_from_usage(usage)
+        self._metrics_last_request_at = time.time()
+        self._metrics_latency_ms.append(max(0.0, latency_seconds * 1000.0))
+        if len(self._metrics_latency_ms) > API_SERVER_LATENCY_SAMPLE_LIMIT:
+            del self._metrics_latency_ms[:-API_SERVER_LATENCY_SAMPLE_LIMIT]
+        self._publish_runtime_status()
+
+    async def _heartbeat_loop(self) -> None:
+        while self.is_connected:
+            self._publish_runtime_status()
+            if not self.is_connected:
+                break
+            await asyncio.sleep(API_SERVER_HEARTBEAT_SECONDS)
+
+    @staticmethod
     def _resolve_model_name(explicit: str) -> str:
         """Advertised /v1/models name: explicit override > active profile name > "hermes-agent"
         (precedence owned by ``hermes_cli.model_switch.resolve_effective_model``)."""
@@ -1365,6 +1472,16 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             return None
         return {**_CORS_HEADERS, "Access-Control-Allow-Origin": origin, "Vary": "Origin",
                 "Access-Control-Max-Age": "600"}
+
+    def _sse_headers(self, request: "web.Request", extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+        """Headers for an SSE StreamResponse prepared inside a handler: the CORS middleware only
+        touches the response after the handler returns, by which point ``prepare()`` has already
+        flushed the head, so CORS must be resolved up front (#72892, #6358)."""
+        headers = {"Content-Type": "text/event-stream", "Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+        headers.update(self._cors_headers_for_origin(request.headers.get("Origin", "")) or {})
+        if extra:
+            headers.update(extra)
+        return headers
 
     def _origin_allowed(self, origin: str) -> bool:
         """Allow non-browser clients and explicitly configured browser origins."""
@@ -2302,6 +2419,18 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         runtime = read_runtime_status() or {}
         gw_state = runtime.get("gateway_state")
         gw_active = parse_active_agents(runtime.get("active_agents", 0))
+# Serve the live adapter's own metrics alongside the persisted platform map: the
+        # heartbeat loop keeps the file fresh, but a just-booted or wedged writer would
+        # otherwise show boot-time values here too (#52323).
+        platforms = runtime.get("platforms", {})
+        if not isinstance(platforms, dict):
+            platforms = {}
+        platforms = dict(platforms)
+        api_status = self._api_server_status_payload(heartbeat_at=time.time())
+        api_platform = dict(platforms.get("api_server", {}))
+        api_platform.setdefault("state", "connected" if self.is_connected else "disconnected")
+        api_platform["metrics"] = api_status
+        platforms["api_server"] = api_platform
         # Served BY the gateway process, so gateway_running is True by definition; busy/
         # drainable use the same shared contract as /api/status so the two never disagree.
         active_api_runs, process_depth, active_delegations = self._readiness_work_counts()
@@ -2311,9 +2440,13 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             active_api_runs=active_api_runs, process_completion_queue_depth=process_depth,
             active_delegations=active_delegations)
         return web.json_response({
-            "status": readiness["status"], "readiness": readiness, "platform": "hermes-agent",
+"status": readiness["status"], "readiness": readiness, "platform": "hermes-agent",
             "version": _hermes_version(), "gateway_state": gw_state,
-            "platforms": runtime.get("platforms", {}), "active_agents": gw_active,
+            "platforms": platforms,
+            "api_server": api_status,
+            "metrics_today": api_status["metrics_today"],
+            "last_heartbeat": api_status["last_heartbeat"],
+            "active_agents": gw_active,
             "gateway_busy": derive_gateway_busy(
                 gateway_running=True, gateway_state=gw_state, active_agents=gw_active),
             "gateway_drainable": derive_gateway_drainable(
@@ -3344,10 +3477,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         if admitted is None:
             return None
         events = _SessionEventQueue(session_id, f"run_{uuid.uuid4().hex}")
-        response = web.StreamResponse(status=200, headers={
-            "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "X-Accel-Buffering": "no",
-            **self._session_headers(session_id, ctx["gateway_session_key"])})
-        await response.prepare(request)
+        response = await self._prepare_sse_response(request, session_id, ctx["gateway_session_key"])
 
         async def _write(name: str, payload: Dict[str, Any]) -> None:
             name, payload = events.payload(name, payload)
@@ -3458,7 +3588,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             if event_type == "reasoning.available":
                 events.enqueue("tool.progress", {"message_id": message_id, "tool_name": tool_name or "_thinking", "delta": preview or ""})
             elif event_type in {"tool.started", "tool.completed", "tool.failed"}:
-                events.enqueue(event_type, {"message_id": message_id, "tool_name": tool_name, "preview": preview, "args": args})
+                event_name = (
+                    "tool.failed"
+                    if event_type == "tool.completed" and kwargs.get("is_error")
+                    else event_type
+                )
+                events.enqueue(event_name, {"message_id": message_id, "tool_name": tool_name, "preview": preview, "args": args})
 
         def _commentary(text: str, *, already_streamed: bool = False) -> None:
             # Mid-turn assistant commentary (Codex ``phase="commentary"``, text beside tool calls)
@@ -3520,11 +3655,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         # NOT in _active_run_tasks: _run_agent already counts this turn for the shutdown drain.
         task = asyncio.create_task(_run_and_signal())
         self._track_background_task(task)
-        headers = {
-            "Content-Type": "text/event-stream", "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no", **self._session_headers(session_id, gateway_session_key)}
-        response = web.StreamResponse(status=200, headers=headers)
-        await response.prepare(request)
+        response = await self._prepare_sse_response(request, session_id, gateway_session_key)
         try:
             while True:
                 try:
@@ -4151,12 +4282,17 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     clear_session_vars(tokens)
         self._activate_admitted_request()
         self._inflight_agent_runs += 1
+        started_at = time.perf_counter()
+        usage: Optional[Dict[str, Any]] = None
         try:
-            # Worker-scoped count rides along so the shutdown close gate still sees the thread
+# Worker-scoped count rides along so the shutdown close gate still sees the thread
             # after this handler task is cancelled (#116535); released in the worker's finally.
-            return await _api_runs._submit_api_worker(loop, _run)
+            result, usage = await _api_runs._submit_api_worker(loop, _run)
+            return result, usage
         finally:
             self._inflight_agent_runs -= 1
+            if usage is not None:
+                self._record_api_metrics(usage, time.perf_counter() - started_at)
 
     # -- /v1/runs, room grants, room dispatch: thin delegators (real methods: tests assert
     # __dict__ membership and patch the module-level implementations) ---------------------
@@ -4323,7 +4459,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             self._wire_plugin_handlers(self._app)
             self._runner = web.AppRunner(self._app)
             await self._runner.setup()
-            # Bind directly instead of probing 127.0.0.1 first — the old single-family pre-probe raced the
+# Bind directly instead of probing 127.0.0.1 first — the old single-family pre-probe raced the
             # real bind and reported a TIME_WAIT socket as "in use" (#10297), failing gateway restarts for
             # up to ~60s. Platform-dependent SO_REUSEADDR and the macOS TIME_WAIT rebind live in
             # start_tcp_site; the loop below covers a predecessor still holding the port for a moment.
@@ -4351,8 +4487,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                         # A port conflict is a configuration error, not a transient blip — another process
                         # holds the port for its lifetime. A bare ``return False`` makes the reconnect
                         # watcher in gateway.run treat it as retryable and loop forever at the backoff cap
-                        # (observed: 1568+ retries over 5 days across multi-profile setups all defaulting to
-                        # the same port, #52132), filling errors.log and leaking the adapter's ResponseStore
+                        # (observed: 1568+ retries over 5 days across multi-profile setups all defaulting
+                        # to the same port, #52132), filling errors.log and leaking the adapter's ResponseStore
                         # fds each retry. Non-retryable drops it from the reconnect queue; the operator
                         # recovers with ``/platform resume api_server`` after changing the port.
                         "api_server_port_in_use",
@@ -4367,6 +4503,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 return False
             from gateway.platforms.shared_ingress import listener_base_url
             self._mark_connected(listener_base=listener_base_url(self._host, self._port))
+            # Publish a metrics-bearing snapshot at bind and keep it fresh: the
+            # heartbeat loop updates last_heartbeat/metrics_today (#52323).
+            self._publish_runtime_status()
+            self._track_background_task(asyncio.create_task(self._heartbeat_loop()))
             logger.info(
                 "[%s] API server listening on http://%s:%d (model: %s)",
                 self.name, self._host, self._port, self._model_name)

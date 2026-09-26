@@ -37,6 +37,7 @@ import {
 } from '@/lib/icons'
 import { runtimeReadinessDisplay, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { cacheHitClass, cacheHitLabel, compressionCountClass, contextBarLabel, contextUsageClass, formatDuration, latencyLabel, LiveDuration, tokensPerSecondLabel, usageContextLabel } from '@/lib/statusbar'
+import { resolveSessionTimerSince } from '@/lib/session-timer-since'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { resolveVersionStatus } from '@/lib/version-status'
@@ -57,6 +58,7 @@ import {
   $selectedStoredSessionId,
   $sessions,
   $sessionStartedAt,
+  $tileSessionFocusStartedAt,
   $turnStartedAt,
   idsShareLineage,
   sessionMatchesStoredId
@@ -138,6 +140,7 @@ export function useStatusbarItems({
   const primaryUsage = useStore($currentUsage)
   const gatewayRestarting = useStore($gatewayRestarting)
   const primarySessionStartedAt = useStore($sessionStartedAt)
+  const tileSessionFocusStartedAt = useStore($tileSessionFocusStartedAt)
   const primaryTurnStartedAt = useStore($turnStartedAt)
 
   // The indicator must speak the same scope as the Spawn-tree panel it opens:
@@ -185,6 +188,9 @@ export function useStatusbarItems({
   // Only the fields read here are selected, so an unchanged readout bails out
   // instead of rebuilding all ~9 statusbar items per token.
   const focusedBusy = useStoreSelector($focusedSessionState, state => Boolean(state?.busy))
+
+  const focusedRuntimeStartedAt = useStoreSelector($focusedSessionState, state => state?.runtimeStartedAt ?? null)
+
   const focusedTurnStartedAt = useStoreSelector($focusedSessionState, state => state?.turnStartedAt ?? null)
   // `usage` is an object, so it can't be compared as a scalar. It IS however
   // replaced wholesale rather than mutated, and only changes when the backend
@@ -221,10 +227,10 @@ export function useStatusbarItems({
 
   const turnStartedAt = primaryFocused ? primaryTurnStartedAt : focusedTurnStartedAt
 
-  // A tile's session-start + cold cwd come from its stored row (the cache only
-  // knows runtime state). Only these scalars are read off `$sessions`, so
-  // select them — a whole-list `useStore` re-ran the hook on every session-list
-  // write (title updates, poll refreshes, archives).
+  // A tile's stored row supplies the cold/fallback session-start and cwd when
+  // no focused runtime value is available. Only these scalars are read off
+  // `$sessions`, so select them — a whole-list `useStore` re-ran this hook on
+  // every session-list write (title updates, poll refreshes, archives).
   const focusedRowStartedAt = useStoreSelector($sessions, sessions =>
     focusedStoredSessionId
       ? (sessions.find(s => sessionMatchesStoredId(s, focusedStoredSessionId))?.started_at ?? null)
@@ -291,11 +297,13 @@ export function useStatusbarItems({
   const projectTree = useStore($projectTree)
   const projectName = useMemo(() => projectNameForCwd(currentCwd), [currentCwd, projectTree])
 
-  const sessionStartedAt = primaryFocused
-    ? primarySessionStartedAt
-    : focusedRowStartedAt
-      ? focusedRowStartedAt * 1000
-      : null
+  const sessionStartedAt = resolveSessionTimerSince({
+    focusedStoredSessionId,
+    primaryFocused,
+    primarySessionStartedAt,
+    tileFocus: tileSessionFocusStartedAt,
+    fallbackRuntimeStartedAt: focusedRuntimeStartedAt
+  })
 
   // The backend only knows a session's MEASURED occupancy once a turn has run
   // in this process, so a resumed conversation reports none and the gauge had
@@ -748,6 +756,8 @@ export function useStatusbarItems({
         icon: <ClockPause className="size-3" />,
         id: 'session-timer',
         label: copy.toggleSessionTimer,
+        label: copy.focusedSince,
+        title: copy.focusedSinceTitle,
         toggleLabel: copy.toggleSessionTimer,
         variant: 'text'
       },

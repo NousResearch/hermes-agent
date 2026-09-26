@@ -119,7 +119,7 @@ def sync(project_root: Path | None = None, *, check: bool = False) -> dict:
             return {"state": "would-sync", "ok": True}
         publish_stage("Updating Python dependencies")
         refuse_foreign_owned_venv(root)
-        pm.sync_venv(explicit=True, project_root=root)
+        pm.sync_venv(explicit=True, project_root=root, evict_incompatible_plugins=True)
         collect_superseded_generations(root)
         publish_launchers(root)
         return {"state": "synced", "ok": True}
@@ -342,7 +342,7 @@ def _sync_source_dependencies(root: Path, *, arm: bool) -> None:
     # Same order as `hermes update`: an interrupted update or a hand-run
     # `git pull` leaves this tree's lockfile ahead of the installed tools.
     ensure_tools_for_sync()
-    pm.sync_venv(extras, explicit=True, project_root=root)
+    pm.sync_venv(extras, explicit=True, project_root=root, evict_incompatible_plugins=True)
     collect_superseded_generations(root)
     # These can predate the swap. Once PM commits the replacement they
     # must not make early recovery immediately rebuild it a second time.

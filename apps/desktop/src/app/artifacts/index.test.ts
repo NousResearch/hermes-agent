@@ -251,6 +251,36 @@ ${payload}
     ])
   })
 
+  // #52972: pip logs every download with its full URL when the index is not
+  // files.pythonhosted.org (a mirror), and on Windows reports sdists under
+  // its cache dir. None of that is something the session produced.
+  it('does not index pip downloads or cache files from terminal output', () => {
+    const mirror = 'https://mirror.example.com/pypi/packages/7a/1b/0f3c'
+    const report = '/home/example/project/report.pdf'
+    const release = 'https://github.com/example/tool/archive/refs/tags/v1.0.tar.gz'
+
+    const artifacts = collectArtifactsForSession(makeSession({ id: 'pip-session' }), [
+      {
+        content: JSON.stringify({
+          output: [
+            'Collecting anthropic',
+            `  Downloading ${mirror}/anthropic-0.46.0-py3-none-any.whl.metadata (23 kB)`,
+            `  Downloading ${mirror}/anthropic-0.46.0-py3-none-any.whl (223 kB)`,
+            `  Downloading ${mirror}/jiter-0.8.2.tar.gz (163 kB)`,
+            '  Saved C:\\Users\\Alice\\AppData\\Local\\pip\\Cache\\http-v2\\a\\b\\docstring_parser-0.16.tar.gz',
+            `Wrote ${report}; upstream release: ${release}`
+          ].join('\n'),
+          exit_code: 0
+        }),
+        role: 'tool',
+        timestamp: 1_781_774_001,
+        tool_name: 'terminal'
+      }
+    ])
+
+    expect(artifacts.map(artifact => artifact.value).sort()).toEqual([report, release].sort())
+  })
+
   it('does not treat an arbitrary dotted absolute path as an artifact', () => {
     const artifacts = collectArtifactsForSession(makeSession(), [
       {

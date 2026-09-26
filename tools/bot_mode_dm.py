@@ -275,13 +275,18 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
     # clears the old dir's tombstone right after a successful move (so a FUTURE profile may
     # reuse the name) — but a later side effect (cron heartbeat, log write, stray delivery)
     # regenerating an identity marker there makes the exact match above succeed against a name
-    # nobody uses anymore. Catch it before trusting `resolved` at all, so a stale sender is
-    # taught the current name instead of silently landing on a dead profile (#123133).
-    from tools.bot_mode_probe import renamed_to
-    new_name = renamed_to(raw_target.lower(), root)
-    if new_name is not None and new_name != resolved:
-        return _roster_err(f"'{raw_target}' was renamed to '{new_name}' — use that name instead. "
-                           "Do not retry with the old name.")
+    # nobody uses anymore. Consulted only when `resolved` is not itself a live, bot-managed
+    # teammate — a resurrected stub carries no `ui_meta.hermes-bots` (nothing ever re-registered
+    # it as a bot), while a legitimately reused name belongs to a real teammate profile. This
+    # keeps existing exact-folder precedence: a genuine live profile that exactly matches
+    # `raw_target` is never blocked by history pointing at the ORIGINAL renamed-away
+    # profile (#123133).
+    from tools.bot_mode_probe import _is_bot_managed, renamed_to
+    if resolved is None or not _is_bot_managed(roster_homes[resolved]):
+        new_name = renamed_to(raw_target.lower(), root)
+        if new_name is not None and new_name != resolved:
+            return _roster_err(f"'{raw_target}' was renamed to '{new_name}' — use that name instead. "
+                               "Do not retry with the old name.")
     is_local_shape = bool(_LOCAL_TARGET_RE.match(raw_target))
     if resolved is None and not is_local_shape and "@" not in raw_target:
         return _roster_err(f"Invalid target: {raw_target!r}.")

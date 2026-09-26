@@ -255,6 +255,13 @@ type BotsMessages = {
     settingsTitle: string
     settingsDesc: string
     nameLabel: string
+    limitsTitle: string
+    maxRoundsLabel: string
+    maxRoundsDesc: string
+    maxMessagesLabel: string
+    maxMessagesDesc: string
+    maxContinuationsLabel: string
+    maxContinuationsDesc: string
     holdDetection: string
     holdDetectionHint: string
     compressHistory: string
@@ -688,8 +695,15 @@ const en: BotsMessages = {
     manageDesc: 'A bot can join multiple group chats. Memberships sync to every machine.',
     manageTitle: 'Manage groups',
     settingsTitle: 'Group settings',
-    settingsDesc: 'Rename the group or set a room picture. Members and history are kept.',
+    settingsDesc: 'Rename the group, set a room picture, or adjust its per-send limits. Members and history are kept.',
     nameLabel: 'Group name',
+    limitsTitle: 'Limits per send',
+    maxRoundsLabel: 'Rounds',
+    maxRoundsDesc: 'Maximum round-robin passes',
+    maxMessagesLabel: 'Bot replies',
+    maxMessagesDesc: 'Maximum replies across all bots',
+    maxContinuationsLabel: 'Follow-on mentions',
+    maxContinuationsDesc: 'Extra handoff rounds after a quiet round',
     holdDetection: 'Detect stop directives',
     holdDetectionHint: 'Let room messages put addressed members on hold until they are mentioned again.',
     compressHistory: 'Compress history',
@@ -1118,8 +1132,15 @@ const ja: BotsMessages = {
     manageDesc: 'ボットは複数のグループチャットに参加できます。メンバーシップはすべてのマシンに同期されます。',
     manageTitle: 'グループを管理',
     settingsTitle: 'グループ設定',
-    settingsDesc: 'グループ名の変更や部屋の画像の設定ができます。メンバーと履歴は保持されます。',
+    settingsDesc: 'グループ名、部屋の画像、送信ごとの上限を変更できます。メンバーと履歴は保持されます。',
     nameLabel: 'グループ名',
+    limitsTitle: '送信ごとの上限',
+    maxRoundsLabel: 'ラウンド数',
+    maxRoundsDesc: 'ラウンドロビンの最大回数',
+    maxMessagesLabel: 'Botの返信数',
+    maxMessagesDesc: '全Botを合わせた最大返信数',
+    maxContinuationsLabel: '追加メンション',
+    maxContinuationsDesc: '静かなラウンド後の追加引き継ぎ回数',
     holdDetection: '停止指示を検出',
     holdDetectionHint: 'ルームのメッセージで、再びメンションされるまで対象メンバーを保留にします。',
     compressHistory: '履歴を圧縮',
@@ -1541,8 +1562,15 @@ const zh: BotsMessages = {
     manageDesc: '一个机器人可以加入多个群聊。成员关系会同步到每台设备。',
     manageTitle: '管理群组',
     settingsTitle: '群组设置',
-    settingsDesc: '重命名群组或设置房间图片。成员和历史都会保留。',
+    settingsDesc: '重命名群组、设置房间图片或调整每次发送的限制。成员和历史都会保留。',
     nameLabel: '群组名称',
+    limitsTitle: '每次发送的限制',
+    maxRoundsLabel: '轮数',
+    maxRoundsDesc: '轮询的最大轮数',
+    maxMessagesLabel: '机器人回复',
+    maxMessagesDesc: '所有机器人的最大回复总数',
+    maxContinuationsLabel: '后续提及',
+    maxContinuationsDesc: '安静一轮后的额外交接轮数',
     holdDetection: '检测停止指令',
     holdDetectionHint: '允许房间消息将指定成员保持暂停，直到再次提及该成员。',
     compressHistory: '压缩历史',
@@ -1958,8 +1986,15 @@ const zhHant: BotsMessages = {
     manageDesc: '一個機器人可以加入多個群組聊天。成員關係會同步到每台裝置。',
     manageTitle: '管理群組',
     settingsTitle: '群組設定',
-    settingsDesc: '重新命名群組或設定房間圖片。成員和歷史都會保留。',
+    settingsDesc: '重新命名群組、設定房間圖片或調整每次傳送的限制。成員和歷史都會保留。',
     nameLabel: '群組名稱',
+    limitsTitle: '每次傳送的限制',
+    maxRoundsLabel: '輪數',
+    maxRoundsDesc: '輪詢的最大輪數',
+    maxMessagesLabel: '機器人回覆',
+    maxMessagesDesc: '所有機器人的最大回覆總數',
+    maxContinuationsLabel: '後續提及',
+    maxContinuationsDesc: '安靜一輪後的額外交接輪數',
     holdDetection: '偵測停止指令',
     holdDetectionHint: '允許房間訊息暫停指定成員，直到再次提及該成員。',
     compressHistory: '壓縮歷史',

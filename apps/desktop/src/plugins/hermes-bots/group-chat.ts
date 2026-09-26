@@ -19,6 +19,7 @@ import { getPluginCtx } from './shared'
 import type {
   Attachment,
   GroupChat,
+  GroupChatLimits,
   GroupHold,
   GroupMember,
   GroupMessage,
@@ -61,6 +62,7 @@ let groupChatSyncTimer: ReturnType<typeof setTimeout> | null = null
 interface GroupChatSyncRoom {
   holdDetection?: boolean
   image?: null | string
+  limits?: GroupChatLimits
   log: GroupMessage[]
   members?: GroupMember[]
   name?: string
@@ -355,6 +357,7 @@ export function groupChatSyncSnapshot(
         : {}),
       log,
       holdDetection: room.holdDetection !== false,
+      limits: groupChatLimits(room),
       revision: Math.max(0, Number(room?.syncRevision ?? room?.revision ?? 0)),
       members: (Array.isArray(room.members) ? room.members : []).slice(0, GROUP_CHAT_MAX_MEMBERS).map(member => ({
         name: String(member?.name || '').slice(0, 128),
@@ -546,17 +549,20 @@ export function mergeGroupChatSyncSnapshots(
     let members: GroupMember[]
     let image: null | string | undefined
     let holdDetection = true
+    let limits: GroupChatLimits
 
     if (localRevision > remoteRevision) {
       identity = localRoom
       members = [...(localRoom?.members || [])]
       image = localRoom?.image
       holdDetection = localRoom?.holdDetection !== false
+      limits = groupChatLimits(localRoom)
     } else if (remoteRevision > localRevision) {
       identity = remoteRoom
       members = [...(remoteRoom?.members || [])]
       image = remoteRoom?.image
       holdDetection = remoteRoom?.holdDetection !== false
+      limits = groupChatLimits(remoteRoom)
     } else {
       identity = localRoom || remoteRoom
       const byId = new Map<string, GroupMember>()
@@ -570,6 +576,7 @@ export function mergeGroupChatSyncSnapshots(
       holdDetection = Object.prototype.hasOwnProperty.call(localRoom || {}, 'holdDetection')
         ? localRoom?.holdDetection !== false
         : remoteRoom?.holdDetection !== false
+      limits = groupChatLimits(localRoom || remoteRoom)
     }
 
     rooms[key] = {
@@ -590,6 +597,7 @@ export function mergeGroupChatSyncSnapshots(
       }),
       holdDetection,
       members,
+      limits,
       revision: Math.max(remoteRevision, localRevision),
       ...(omitted > 0
         ? {
@@ -829,6 +837,7 @@ export function mergeRemoteGroupChatSnapshotIntoRooms(
       externalCursors:
         existing.externalCursors && typeof existing.externalCursors === 'object' ? existing.externalCursors : {},
       members: [...members.values()],
+      limits: groupChatLimits(!isPreserved && remoteRevision > localRevision ? projected : existing),
       ...(projectedRoomId || existing.roomId
         ? {
             roomId: existing.roomId || projectedRoomId
@@ -914,6 +923,7 @@ export function durableGroupChatRooms(all: Record<string, GroupChat> = $groupCha
       stranded: room.stranded || {},
       externalCursors: room.externalCursors || {},
       members: Array.isArray(room.members) ? room.members : [],
+      limits: groupChatLimits(room),
       // Immutable room identity: without this, a room merged in via the
       // remote-sync path (the only caller of this function) loses its
       // roomId on the next cold hydrate and falls back to legacy
@@ -1424,7 +1434,28 @@ export const GROUP_CHAT_LOG_RETAIN = GROUP_CHAT_HISTORY_LIMIT * 2
 // ordinary traffic never hits it and a room of back-to-back pastes stays
 // well under a tenth of the quota.
 export const GROUP_CHAT_LOG_RETAIN_CHARS = GROUP_CHAT_HISTORY_CHARS * 8
-export const GROUP_CHAT_MAX_MEMBERS = 6
+export const GROUP_CHAT_MAX_MEMBERS = 12
+
+export const GROUP_CHAT_DEFAULT_LIMITS: GroupChatLimits = {
+  maxRounds: GROUP_CHAT_MAX_ROUNDS,
+  maxMessages: GROUP_CHAT_MAX_MESSAGES,
+  maxContinuations: GROUP_CHAT_MAX_CONTINUATIONS
+}
+
+function normalizedGroupChatLimit(value: unknown, fallback: number, minimum: number) {
+  const parsed = Number(value)
+
+  return Number.isSafeInteger(parsed) && parsed >= minimum ? parsed : fallback
+}
+
+/** Resolve a room's configurable ceilings with safe legacy defaults. */
+export function groupChatLimits(room?: null | { limits?: Partial<GroupChatLimits> }): GroupChatLimits {
+  return {
+    maxRounds: normalizedGroupChatLimit(room?.limits?.maxRounds, GROUP_CHAT_MAX_ROUNDS, 1),
+    maxMessages: normalizedGroupChatLimit(room?.limits?.maxMessages, GROUP_CHAT_MAX_MESSAGES, 1),
+    maxContinuations: normalizedGroupChatLimit(room?.limits?.maxContinuations, GROUP_CHAT_MAX_CONTINUATIONS, 0)
+  }
+}
 
 /** Transcript form of a room speaker's identity. Friendly identity wins:
  *  a Bot Mode title or a core profile display_name (e.g. default renamed to
@@ -1630,6 +1661,7 @@ export function updateGroupChat(
         // Source-qualified member descriptors keep the room whole when the
         // active connection changes and today's local members become remote.
         members: Array.isArray(room.members) ? room.members : [],
+        limits: groupChatLimits(room),
         // Immutable room identity: the member-session title for new rooms.
         roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
         // Room picture (small data URL, same normalization as bot avatars).
@@ -1692,6 +1724,15 @@ export function setGroupChatHoldDetection(group: string, enabled: boolean) {
 export function setGroupChatImage(group: string, image: null | string | undefined) {
   updateGroupChat(group, (room: GroupChatRoom) => {
     room.image = image || null
+
+    return room
+  })
+}
+
+/** Set a group chat's per-send ceilings. Persists and syncs with the room. */
+export function setGroupChatLimits(group: string, limits: GroupChatLimits) {
+  updateGroupChat(group, (room: GroupChatRoom) => {
+    room.limits = groupChatLimits({ limits })
 
     return room
   })

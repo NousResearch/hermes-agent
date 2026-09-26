@@ -56,6 +56,7 @@ import {
   $groupChats,
   $groupChatWorkspace,
   assignLegacyThreads,
+  groupChatLimits,
   handleSessionsGatewayTransition,
   hydrateGroupChatTombstones,
   pullGroupChatServerState,
@@ -285,6 +286,7 @@ export default {
                   externalCursors:
                     room.externalCursors && typeof room.externalCursors === 'object' ? room.externalCursors : {},
                   members: Array.isArray(room.members) ? room.members : [],
+                  limits: groupChatLimits(room),
                   roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
                   image: typeof room.image === 'string' && room.image ? room.image : null,
                   rosterOrder: Number.isFinite(room.rosterOrder) ? room.rosterOrder : undefined,

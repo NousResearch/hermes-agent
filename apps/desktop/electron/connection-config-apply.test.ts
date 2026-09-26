@@ -91,6 +91,34 @@ describe('applyConnectionConfigAtomically', () => {
     expect(events).toEqual(['preflight', 'config:remote-config', 'registry:remote-registry', 'activate'])
   })
 
+  it('keeps the preflight-verified config on disk when activation fails afterward', async () => {
+    const writeConfig = vi.fn()
+    const writeRegistry = vi.fn()
+
+    await expect(
+      applyConnectionConfigAtomically({
+        previousConfig: 'old-config',
+        previousRegistry: 'old-registry',
+        nextConfig: 'remote-config',
+        nextRegistry: 'remote-registry',
+        preflight: async () => {},
+        writeConfig,
+        writeRegistry,
+        apply: async () => {
+          throw new Error('teardown/re-home failed')
+        }
+      })
+    ).rejects.toThrow('teardown/re-home failed')
+
+    // Activation failed AFTER a successful preflight already proved the new
+    // config reachable, so the write must not be rolled back to the old,
+    // unreachable config - that would strand the user on the dead gateway
+    // they were trying to escape (see issue: "Save and reconnect" losing the
+    // new URL on relaunch).
+    expect(writeConfig.mock.calls).toEqual([['remote-config']])
+    expect(writeRegistry.mock.calls).toEqual([['remote-registry']])
+  })
+
   it('leaves both stores untouched when the preflight rejects', async () => {
     const writeConfig = vi.fn()
     const writeRegistry = vi.fn()

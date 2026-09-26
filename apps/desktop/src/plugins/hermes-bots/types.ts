@@ -209,8 +209,11 @@ export interface GroupChat {
   sessionOwners?: Record<string, Partial<RosterRow>>
   sessions?: Record<string, string | true>
   /** A member turn this Desktop is not (or no longer) polling: the message-count baseline to
-   *  harvest its late reply from. `turn` names the poll that owns it while that poll runs. */
-  stranded?: Record<string, number | { before: number; thread?: string; turn?: string }>
+   *  harvest its late reply from. `turn` names the poll that owns it while that poll runs.
+   *  `tail` is the trailing-assistant text at submit — reply detection that survives in-place
+   *  preflight compression shrinking the count under `before`. Absent on markers written by
+   *  older code, null when the baseline carried no message array: both stay count-only. */
+  stranded?: Record<string, number | { before: number; tail?: null | string; thread?: string; turn?: string }>
   /** #93813: how far each member's external-write reconcile sweep has read
    *  into that member's per-group session transcript (absolute row index of
    *  the last mirrored row + 1). Persisted so external posts aren't rescanned

@@ -1516,6 +1516,74 @@ describe('stranded harvest', () => {
     expect(room.chat.$groupChats.get().Grind.stranded?.research).toBe(0)
     expect(room.gateway.calls.filter(call => call.profile === 'builder')).toHaveLength(1)
   })
+
+  // ── In-place compression vs the harvest ─────────────────────────────────
+  // Preflight context compression rewrites a member's session IN PLACE at turn
+  // start (same id, 513 messages -> ~150), so `messages.length > before` can
+  // never fire and a completed reply reads as silence. The harvest consumes
+  // the marker BEFORE testing the count, so a false negative drops the reply
+  // for good (observed 2026-08-24, chief-of-staff).
+
+  it('delivers a late reply when compression shrank the count but the trailing message changed', async () => {
+    const room = await loadRoom()
+
+    room.chat.updateGroupChat('CompLate', current => {
+      current.sessions = { research: 'sid-research' }
+      // The 2026-08-24 shape: the baseline counted 500 pre-compression rows.
+      current.stranded = { research: { before: 500, tail: 'the pre-compression answer', thread: 'legacy' } }
+
+      return current
+    })
+    seedSession(room, 'sid-research', 'research', 'Group: CompLate', [
+      ['user', 'the turn prompt'],
+      ['assistant', 'late full result, post-compression']
+    ])
+
+    await room.turns.harvestStrandedGroupReply('CompLate', { name: 'research', title: '' })
+
+    expect(log(room, 'CompLate')).toHaveLength(1)
+    expect(log(room, 'CompLate')[0].text).toMatch(/late full result/)
+    expect(room.chat.$groupChats.get().CompLate.stranded?.research).toBeUndefined()
+  })
+
+  it('treats an unchanged trailing message as silence, never a stale re-delivery', async () => {
+    const room = await loadRoom()
+
+    room.chat.updateGroupChat('CompQuiet', current => {
+      current.sessions = { research: 'sid-research' }
+      current.stranded = { research: { before: 500, tail: 'same old answer', thread: 'legacy' } }
+
+      return current
+    })
+    seedSession(room, 'sid-research', 'research', 'Group: CompQuiet', [
+      ['user', 'old prompt'],
+      ['assistant', 'same old answer']
+    ])
+
+    await room.turns.harvestStrandedGroupReply('CompQuiet', { name: 'research', title: '' })
+
+    expect(log(room, 'CompQuiet')).toHaveLength(0)
+    expect(room.chat.$groupChats.get().CompQuiet.stranded?.research).toBeUndefined()
+  })
+
+  it('keeps count-only semantics for a tail-less marker written by older code', async () => {
+    const room = await loadRoom()
+
+    room.chat.updateGroupChat('CompCompat', current => {
+      current.sessions = { research: 'sid-research' }
+      current.stranded = { research: { before: 500, thread: 'legacy' } }
+
+      return current
+    })
+    seedSession(room, 'sid-research', 'research', 'Group: CompCompat', [
+      ['user', 'old prompt'],
+      ['assistant', 'whatever was already there']
+    ])
+
+    await room.turns.harvestStrandedGroupReply('CompCompat', { name: 'research', title: '' })
+
+    expect(log(room, 'CompCompat')).toHaveLength(0)
+  })
 })
 
 describe('room record', () => {

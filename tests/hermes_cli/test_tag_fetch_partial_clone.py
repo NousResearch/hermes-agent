@@ -1,13 +1,16 @@
 """The post-update tag fetch must not convert a full clone into a partial one.
 
-`fetch_full_commit_graph` passes `--filter=tree:0` so installer-created partial
-clones keep fetching trees on demand. But `git fetch --filter=...` *writes*
-`remote.origin.promisor` / `remote.origin.partialclonefilter` even on a repo
-where the user removed them — silently converting a deliberately de-partialised
-checkout back into a partial clone and re-arming the `should_include_obj`
-fetch failure (#122353). The filter may only be passed when the repo already is
-a partial clone. These tests pin the relationship between the repo's promisor
-config before the fetch and its config after — not any current git output.
+`fetch_full_commit_graph` passes `--filter=tree:0` so shallow/partial installs
+don't pay for an unfiltered history transfer. But bare `git fetch --filter=...`
+*writes* `remote.origin.promisor` / `remote.origin.partialclonefilter` —
+silently converting a deliberately de-partialised checkout back into a partial
+clone and re-arming the `should_include_obj` fetch failure (#122353). The fetch
+therefore declares the promisor keys via `-c` for the invocation only: the
+filter applies to the wire transfer while the config file stays untouched in
+every state. A partial clone keeps repeating its own filter rather than being
+silently tightened to tree:0. These tests pin the relationship between the
+repo's promisor config before the fetch and its config after — not any current
+git output.
 """
 
 import os
@@ -145,4 +148,60 @@ def test_shallow_unshallow_fetch_leaves_promisor_config_alone(tmp_path):
 
     assert not _has_promisor_config(checkout)
     assert _git(checkout, "rev-parse", "--is-shallow-repository") == "false"
+    assert "v0.21.6" in _git(checkout, "tag", "--list")
+
+
+def _server_repo_with_retired_blob(tmp_path: Path) -> Path:
+    # History carrying a big blob that HEAD no longer references, so an
+    # unfiltered history fetch must transfer it while --filter=tree:0 must not.
+    root = tmp_path / "server-fat"
+    root.mkdir()
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.invalid"}
+
+    def git(*args: str) -> None:
+        subprocess.run(["git", *args], cwd=root, env=env, check=True, capture_output=True)
+
+    git("init", "-q", "-b", "main")
+    (root / "tracked").write_text("release\n", encoding="utf-8")
+    git("add", "tracked")
+    git("commit", "-qm", "release")
+    (root / "fat.bin").write_bytes(b"x" * 262_144)
+    git("add", "fat.bin")
+    git("commit", "-qm", "fat")
+    git("tag", "v0.21.5")
+    git("rm", "-q", "fat.bin")
+    git("commit", "-qm", "drop fat")
+    git("tag", "v0.21.6")
+    return root
+
+
+def _blob_sizes(checkout: Path) -> "list[int]":
+    out = _git(checkout, "cat-file", "--batch-all-objects",
+               "--batch-check=%(objecttype) %(objectsize)")
+    return [int(line.split()[1]) for line in out.splitlines()
+            if line.startswith("blob ")]
+
+
+def test_shallow_non_partial_fetch_keeps_the_tree0_filter(tmp_path):
+    # The installer shipped `git clone --depth 1` before the treeless switch:
+    # a shallow, NON-partial checkout. Its --unshallow fetch must stay filtered
+    # (tree:0), or every update pays for an unfiltered full-history transfer —
+    # 303 MiB vs 33 MiB on the real graph (review blocker on #122430).
+    server = _server_repo_with_retired_blob(tmp_path)
+    _git(server, "config", "uploadpack.allowFilter", "true")
+    checkout = _clone(tmp_path, server, "shallow-nonpartial", "--no-tags", "--depth", "1")
+    assert not _has_promisor_config(checkout)
+    assert _git(checkout, "rev-parse", "--is-shallow-repository") == "true"
+
+    assert fetch_full_commit_graph(checkout) is True
+
+    # The transfer stayed bounded by tree:0: the retired 256 KiB blob never
+    # landed (the full history the commits describe stays undownloaded).
+    assert _blob_sizes(checkout) and max(_blob_sizes(checkout)) < 262_144
+    # ...and the fetch still did both of its jobs: unshallowed, tags arrived,
+    # and the config file gained nothing.
+    assert _git(checkout, "rev-parse", "--is-shallow-repository") == "false"
+    assert not _has_promisor_config(checkout)
+    assert _config_values(checkout, "remote.origin.partialclonefilter") == []
     assert "v0.21.6" in _git(checkout, "tag", "--list")

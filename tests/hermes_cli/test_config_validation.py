@@ -6,6 +6,8 @@ import pytest
 from hermes_cli.config import (
     validate_config_structure,
 )
+from hermes_cli.config_providers import get_compatible_custom_providers
+from hermes_cli.fallback_config import _iter_fallback_entries
 
 
 class TestCustomProvidersValidation:
@@ -63,6 +65,16 @@ class TestCustomProvidersValidation:
             "model": {"provider": "custom"},
         })
         assert any("not a dict" in i.message for i in issues)
+
+    @pytest.mark.parametrize("field,value", [
+        (field, value) for field, valid in (("name", "y"), ("base_url", "http://h2/v1"))
+        for value in (None, "", "   ", "\t", valid)])
+    def test_blank_name_or_base_url_warns_iff_runtime_drops_it(self, field, value):
+        """The runtime strips name/base_url and drops a blank entry; the validator must agree."""
+        entry = {"name": "x", "base_url": "http://h/v1", field: value}
+        issues = validate_config_structure({"custom_providers": [entry], "model": {"provider": "custom"}})
+        warned = any(i.message.startswith(f"custom_providers[0] is missing '{field}'") for i in issues)
+        assert warned == (not get_compatible_custom_providers({"custom_providers": [entry]}))
 
 
 
@@ -193,3 +205,41 @@ class TestQuotedContainerValues:
             "plugins": {"enabled": ["a"]},
         })
         assert not [i for i in issues if "quoted string" in i.message]
+
+
+_FIELD_VALUES = [None, "", "   ", "\t", 0, "x"]
+_GOOD = {"provider": "ok", "model": "ok"}
+_FALLBACK_ENTRIES = (
+    [{"provider": v, "model": "m"} for v in _FIELD_VALUES]
+    + [{"provider": "p", "model": v} for v in _FIELD_VALUES]
+    + ["not-a-dict", 42, {}, {"provider": "p"}, {"model": "m"},
+       {"provider": "p", "model": "m", "base_url": "http://h/v1", "extra": 1}]
+)
+_FALLBACK_CASES = (
+    [(key, [_GOOD, entry]) for key in ("fallback_providers", "fallback_model") for entry in _FALLBACK_ENTRIES]
+    + [(key, entry) for key in ("fallback_providers", "fallback_model")
+       for entry in _FALLBACK_ENTRIES if isinstance(entry, dict) and entry]
+    # Whole values of the modern key: an explicit "none" is silent, anything else unreadable is one finding.
+    + [("fallback_providers", v) for v in ([], {}, "", 42, "openrouter",
+                                           '[{"provider": "openrouter", "model": "x"}]')]
+)
+
+
+class TestFallbackChainValidation:
+    """``_iter_fallback_entries`` silently drops malformed entries, so a half-filled chain
+    becomes empty and failover never engages. Both keys must be flagged exactly where it drops."""
+
+    @pytest.mark.parametrize("key,value", _FALLBACK_CASES, ids=repr)
+    def test_validator_flags_exactly_what_the_parser_drops(self, key, value):
+        messages = [i.message for i in validate_config_structure({key: value})]
+        if isinstance(value, list):
+            for i, entry in enumerate(value):
+                dropped = not _iter_fallback_entries([entry])
+                assert any(m.startswith(f"{key}[{i}] ") for m in messages) == dropped, messages
+        elif isinstance(value, dict) and value:
+            dropped = not _iter_fallback_entries([value])
+            assert any(m.startswith(f"{key} is missing") for m in messages) == dropped, messages
+            assert not any(f"{key}[" in m for m in messages), messages
+        else:
+            findings = [m for m in messages if m.startswith(key)]
+            assert len(findings) == (0 if value in ("", {}) else 1), messages

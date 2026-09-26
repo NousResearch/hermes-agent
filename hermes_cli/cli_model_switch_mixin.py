@@ -11,6 +11,7 @@ module-level functions taking ``cli`` and siblings are called as ``HermesCLI.<na
 from __future__ import annotations
 
 import copy
+import json
 import sys
 import threading
 
@@ -44,6 +45,27 @@ def _resolve_cli_reasoning(cli) -> None:
     cli.reasoning_config = resolve_reasoning_config(CLI_CONFIG, getattr(cli, "model", None) or "")
 
 
+def _row_provider_identity(session_meta) -> str:
+    """The provider identity persisted at the row's TOP level, or ``""`` when it carries none.
+
+    ``SessionDB.session_gateway_runtime`` prefers the nested ``gateway_runtime`` shape; that shape can
+    hold the bare billing class ``custom`` for a row whose top-level key still names the scope — and the
+    URL reverse lookup cannot tell two scopes of one endpoint apart (#118285). Fed to
+    ``canonical_custom_identity`` as the candidate, it only wins when it names a configured entry on the
+    SAME endpoint, so a stale/different name changes nothing. The bare class itself is not an identity.
+    """
+    raw = (session_meta or {}).get("model_config")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            return ""
+    if not isinstance(raw, dict):
+        return ""
+    identity = str(raw.get("provider") or "").strip()
+    return "" if identity.lower() in ("", "auto", "custom") else identity
+
+
 def stored_session_route(session_meta, *, current_model, current_provider):
     """The route a resumed session should run on, or ``None`` when the stored one is absent or
     already current. Returns ``(model, provider, base_url, api_mode, provider_changed)``; the
@@ -56,7 +78,8 @@ def stored_session_route(session_meta, *, current_model, current_provider):
     from hermes_state import SessionDB as _SessionDB
     runtime = _SessionDB.session_gateway_runtime(session_meta)
     base_url = runtime.get("base_url") or None
-    provider = _heal_bare_custom_provider(runtime.get("provider") or None, base_url=base_url, model=stored_model)
+    provider = _heal_bare_custom_provider(runtime.get("provider") or None, base_url=base_url, model=stored_model,
+                                          config_provider=_row_provider_identity(session_meta))
     provider_changed = bool(provider) and provider != current_provider
     if stored_model == current_model and not provider_changed:
         return None
@@ -78,10 +101,16 @@ def stored_session_route(session_meta, *, current_model, current_provider):
     return stored_model, provider, base_url, api_mode, provider_changed
 
 
-def _heal_bare_custom_provider(provider, *, base_url, model):
+def _heal_bare_custom_provider(provider, *, base_url, model, config_provider=None):
     """Bare ``custom`` is a billing class, not a routable identity: persisting/restoring it makes a
     later resume hard-fail once the config default leaves the custom endpoint. Recover the durable
-    ``custom:<name>`` menu key from the endpoint, else drop the provider (None)."""
+    ``custom:<name>`` menu key from the endpoint, else drop the provider (None).
+
+    ``config_provider`` is the identity that came with the row/override (the CLI's twin of the live
+    agent's ``requested_provider`` in ``_runtime_model_config``). With N scopes sharing one ``base_url``
+    the endpoint lookup alone returns whichever entry comes first in ``providers:`` — the named
+    identity wins when it names the same endpoint, so a resume lands on the scope it asked for (#118285).
+    """
     if str(provider or "").strip().lower() != "custom":
         return provider
     try:
@@ -89,7 +118,8 @@ def _heal_bare_custom_provider(provider, *, base_url, model):
         # a routable identity. (Stricter than the TUI gateway's recovery, which keeps bare "custom" when a
         # base_url exists — the CLI's resolve path would hard-fail on it, #14676.)
         from hermes_cli.runtime_provider import canonical_custom_identity
-        return canonical_custom_identity(base_url=base_url or None, model=model or None) or None
+        return canonical_custom_identity(base_url=base_url or None, config_provider=config_provider or None,
+                                         model=model or None) or None
     except Exception:
         return None
 

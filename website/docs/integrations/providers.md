@@ -1349,6 +1349,50 @@ providers:
 
 Each entry accepts: `api` (the endpoint base URL — `base_url`/`url` are accepted aliases), `name` (optional display name; defaults to the dict key), `key_env` or inline `api_key` or `key_cmd` (see below), `transport` (`chat_completions` / `anthropic_messages` / `codex_responses`), `default_model`, `models`, `context_length`, `discover_models`, `extra_body`, `extra_headers`, `session_affinity_header` (name of a header that carries the conversation id, for session-aware proxies; off unless set), `ssl_ca_cert` / `ssl_verify`, `catalog_provider` (see below), and `enabled: false` to hide an entry without deleting it.
 
+#### Multiple credentials for one provider (scopes)
+
+Need two subscriptions to the **same** provider — a personal and a work account? Give each one its own named entry. The dict key is the *scope*, `key_env` is its credential, and two entries may reuse the same `api` URL:
+
+```yaml
+# ~/.hermes/config.yaml
+model:
+  provider: custom:opencode-zen-personal   # the scope this session uses
+  default: kimi-k2.6
+
+providers:
+  opencode-zen-work:
+    name: OpenCode Zen (work)              # label shown in the picker
+    api: https://opencode.ai/zen/v1
+    key_env: OPENCODE_ZEN_WORK_API_KEY
+    default_model: kimi-k2.6
+  opencode-zen-personal:
+    name: OpenCode Zen (personal)
+    api: https://opencode.ai/zen/v1        # same URL — the NAME is what separates the scopes
+    key_env: OPENCODE_ZEN_PERSONAL_API_KEY
+    default_model: kimi-k2.6
+```
+
+```dotenv
+# ~/.hermes/.env (or two secrets with exactly these names in Bitwarden Secrets Manager)
+OPENCODE_ZEN_WORK_API_KEY=...
+OPENCODE_ZEN_PERSONAL_API_KEY=...
+# Do not also set OPENCODE_ZEN_API_KEY — no entry above uses it.
+```
+
+**Naming convention:** `<PROVIDER>_<SCOPE>_API_KEY`. Any name matching `[A-Za-z_][A-Za-z0-9_]*` works, but the `.env` / secret-manager name and the `key_env` value must match exactly. The key value never goes in `config.yaml` — `key_env` is only a pointer.
+
+**Switching scope:**
+- `hermes model` (and `/model`, the TUI or Desktop picker) lists one row per scope — `OpenCode Zen (work)`, `OpenCode Zen (personal)` — and writes `model.provider: custom:<scope>`.
+- Non-interactive: `hermes config set model.provider custom:opencode-zen-personal`.
+- Auxiliary tasks (`auxiliary.*`) left on `auto` follow the main model and therefore the main scope. A task pinned to a different scope uses **that** scope's key.
+
+**Behaviour to know:**
+- The entry you name always wins. Credentials, session restore, and auxiliary calls resolve the scope you asked for — never "the first entry with that URL" (that ambiguity is the bug fixed in #118285).
+- Scope names are free-form: the dict key is the identity and `name` is only the picker label. Per-model wire selection follows the model and its endpoint family, not the scope's name — a scope on `https://opencode.ai/zen/v1` routes a codex-wire model to `codex_responses` and a chat model to chat completions whether it is called `opencode-zen-work` or anything else.
+- A `providers:` entry named exactly after a built-in provider is ignored — the built-in wins.
+- A session row stores the scope it ran on, so a resume (CLI, TUI or Desktop) rebuilds on that scope's key. A row written **before** scopes were stored carries no scope at all — with N scopes on one URL and no surviving `base_url` to disambiguate, the first configured entry answers.
+- Profile secret aliasing: a variable shaped `<BASE>_<PROFILE>_API_KEY` can hydrate `<BASE>_API_KEY` when it is credential-shaped and a profile of that name exists (`secrets.profile_alias: false` disables it). Harmless for names like `OPENCODE_ZEN_WORK_API_KEY`, but keep it in mind when naming scopes after profiles.
+
 #### Command-minted credentials (`key_cmd`)
 
 Vision, thinking, and native local-model capability probes materialize the same

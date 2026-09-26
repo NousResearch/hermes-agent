@@ -1617,10 +1617,15 @@ def _runtime_model_config(agent, existing: dict | None = None) -> dict:
     model, provider, base_url = attr("model"), attr("provider"), attr("base_url")
     if provider.lower() == "custom":
         # ``agent.provider`` resolves every named custom entry to the literal "custom", losing the entry
-        # identity (api_key is never persisted): recover ``custom:<name>`` from the endpoint URL.
+        # identity (api_key is never persisted): recover ``custom:<name>`` from the endpoint URL. The
+        # requested identity the agent was BUILT on breaks the tie when N scopes share one base_url —
+        # the URL lookup alone returns whichever entry comes first in ``providers:``, so a session
+        # resumed on the second scope billed the first scope's key (#118285).
         try:
             from hermes_cli.runtime_provider import canonical_custom_identity
-            provider = canonical_custom_identity(base_url=base_url, model=model or None) or provider
+            provider = canonical_custom_identity(
+                base_url=base_url, config_provider=attr("requested_provider") or None,
+                model=model or None) or provider
         except Exception:
             logger.debug("custom provider identity lookup failed", exc_info=True)
     reasoning_config = getattr(agent, "reasoning_config", None)

@@ -1514,6 +1514,24 @@ When a routed `auxiliary.<task>` block cannot be resolved (unknown provider, mis
 The `"main"` provider option means "use whatever provider my main agent uses" — it's only valid inside `auxiliary:`, `compression:`, and primary fallback entries (`fallback_providers:` or legacy `fallback_model:`). It is **not** a valid value for your top-level `model.provider` setting. If you use a custom OpenAI-compatible endpoint, set `provider: custom` in your `model:` section. See [AI Providers](../integrations/providers.md) for all main model provider options.
 :::
 
+:::tip One provider, several credentials
+To keep more than one key for the same built-in provider (a second subscription, a
+work vs personal account), either point `model.key_env` at the variable that holds the
+key you want — the built-in provider looks it up through the profile's secret scope, so
+one key is active at a time:
+
+```yaml
+model:
+  provider: opencode-zen
+  default: kimi-k2.6
+  key_env: OPENCODE_ZEN_WORK_API_KEY     # switch by editing this, or by switching scope
+```
+
+…or define the provider as named scopes (`providers.<scope>` + `key_env`), which keeps
+several keys live at once and gives each one its own picker row. See
+[Multiple credentials for one provider](../integrations/providers.md#multiple-credentials-for-one-provider-scopes).
+:::
+
 ### Full auxiliary config reference
 
 ```yaml

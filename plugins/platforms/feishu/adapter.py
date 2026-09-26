@@ -1101,6 +1101,30 @@ def _install_lark_ws_isolation(ws_client_module: Any) -> None:
                 asyncio.get_running_loop().stop()
 
         ws_client_module.Client._receive_message_loop = _receive_message_loop_exit_notify
+
+        original_handle_data_frame = getattr(ws_client_module.Client, "_handle_data_frame", None)
+
+        if original_handle_data_frame is not None:
+            async def _handle_data_frame_dispatch_cards(self: Any, frame: Any) -> Any:
+                # lark-oapi (through 1.7.3) drops ``message_type=card`` data frames on the
+                # floor (``elif message_type == MessageType.CARD: return``), so
+                # ``card.action.trigger`` callbacks — Feishu approval-card button clicks —
+                # never reach the dispatcher and the approval silently times out (#122649).
+                # A card frame's payload is the same v2-schema JSON as an event frame, and
+                # the dispatcher routes on the payload's ``header.event_type`` only, so
+                # re-label the frame as ``event`` and let the stock handler dispatch it and
+                # return the resolved card in ``resp.data``.
+                try:
+                    for header in frame.headers:
+                        if getattr(header, "key", None) == "type" and header.value == "card":
+                            header.value = "event"
+                            break
+                except Exception:
+                    logger.debug("[Feishu] Failed to re-label card data frame as event", exc_info=True)
+                return await original_handle_data_frame(self, frame)
+
+            ws_client_module.Client._handle_data_frame = _handle_data_frame_dispatch_cards
+
         _WS_ISOLATION_INSTALLED = True
 
 

@@ -1,5 +1,6 @@
 """Tests for Feishu interactive card approval buttons."""
 
+import asyncio
 import importlib.util
 import json
 import sys
@@ -658,5 +659,139 @@ class TestResolveUpdatePrompt:
 
         assert not (tmp_path / ".hermes" / ".update_response").exists()
         assert 3 in adapter._update_prompt_state
+
+
+def _make_ws_frame(frame_type: str, payload: bytes = b"{}"):
+    """Frame shaped like lark_oapi's protobuf data frame: iterable headers + payload."""
+    headers = [SimpleNamespace(key="message_id", value="m1")]
+    if frame_type is not None:
+        headers.append(SimpleNamespace(key="type", value=frame_type))
+    return SimpleNamespace(headers=headers, payload=payload)
+
+
+class TestWsCardFrameRelabel:
+    """#122649: lark-oapi's ws client drops ``message_type=card`` data frames, so
+    ``card.action.trigger`` never reaches the dispatcher and approval buttons time out.
+    The isolation shim must re-label card frames as ``event`` frames (payload identical,
+    dispatcher routes on the payload's ``header.event_type``) before the stock handler."""
+
+    def _install_shim(self):
+        calls = {}
+
+        class FakeClient:
+            async def _receive_message_loop(self):
+                calls["receive_loop"] = True
+
+            async def _handle_data_frame(self, frame):
+                calls["frame_type"] = next(
+                    (h.value for h in frame.headers if h.key == "type"), None
+                )
+                calls["payload"] = frame.payload
+                return SimpleNamespace(name="stock-response")
+
+        module = SimpleNamespace(
+            loop=object(),
+            websockets=SimpleNamespace(connect=lambda *a, **k: None),
+            Client=FakeClient,
+        )
+        feishu_module._WS_ISOLATION_INSTALLED = False
+        with patch.object(feishu_module, "_ws_isolation_state", SimpleNamespace()):
+            feishu_module._install_lark_ws_isolation(module)
+        return module, calls
+
+    def test_card_frame_relabelled_and_dispatched(self):
+        module, calls = self._install_shim()
+        frame = _make_ws_frame("card", payload=b'{"schema":"2.0"}')
+        result = asyncio.run(module.Client._handle_data_frame(object(), frame))
+        assert calls["frame_type"] == "event"
+        assert calls["payload"] == b'{"schema":"2.0"}'
+        assert result.name == "stock-response"
+
+    def test_event_frame_untouched(self):
+        module, calls = self._install_shim()
+        frame = _make_ws_frame("event")
+        asyncio.run(module.Client._handle_data_frame(object(), frame))
+        assert calls["frame_type"] == "event"
+
+    def test_non_card_type_value_untouched(self):
+        module, calls = self._install_shim()
+        frame = _make_ws_frame("ping")
+        asyncio.run(module.Client._handle_data_frame(object(), frame))
+        assert calls["frame_type"] == "ping"
+
+    def test_frame_without_type_header_still_dispatched(self):
+        module, calls = self._install_shim()
+        frame = _make_ws_frame(None)
+        asyncio.run(module.Client._handle_data_frame(object(), frame))
+        assert calls["frame_type"] is None
+
+    def test_second_install_does_not_double_wrap(self):
+        module, calls = self._install_shim()
+        with patch.object(feishu_module, "_ws_isolation_state", SimpleNamespace()):
+            feishu_module._install_lark_ws_isolation(module)  # flag now True: no-op
+        frame = _make_ws_frame("card")
+        asyncio.run(module.Client._handle_data_frame(object(), frame))
+        assert calls["frame_type"] == "event"
+
+    def test_client_without_handle_data_frame_installs_cleanly(self):
+        class BareClient:
+            async def _receive_message_loop(self):
+                pass
+
+        module = SimpleNamespace(
+            loop=object(),
+            websockets=SimpleNamespace(connect=lambda *a, **k: None),
+            Client=BareClient,
+        )
+        feishu_module._WS_ISOLATION_INSTALLED = False
+        with patch.object(feishu_module, "_ws_isolation_state", SimpleNamespace()):
+            feishu_module._install_lark_ws_isolation(module)  # must not raise
+        assert not hasattr(module.Client, "_handle_data_frame")
+
+
+def _real_lark_oapi_installed() -> bool:
+    """find_spec alone raises ValueError when ``_ensure_feishu_mocks`` already put a
+    MagicMock into sys.modules for a lark-oapi-less environment — screen it out first."""
+    if isinstance(sys.modules.get("lark_oapi"), MagicMock):
+        return False
+    try:
+        return importlib.util.find_spec("lark_oapi") is not None
+    except (ValueError, ModuleNotFoundError):
+        return False
+
+
+@pytest.mark.skipif(not _real_lark_oapi_installed(), reason="lark-oapi not installed")
+class TestLarkDispatcherRoutesCardTrigger:
+    """End-to-end against the real SDK: a card.action.trigger payload (the body of a
+    ``message_type=card`` frame) routes through the stock EventDispatcherHandler and
+    arrives with ``action.value`` as a plain dict — the contract the relabel relies on."""
+
+    def test_dispatch_delivers_dict_action_value(self):
+        from lark_oapi.event.dispatcher_handler import EventDispatcherHandler
+
+        received = {}
+
+        def handler(data):
+            received["value"] = data.event.action.value
+            return None
+
+        dispatcher = (
+            EventDispatcherHandler.builder("", "")
+            .register_p2_card_action_trigger(handler)
+            .build()
+        )
+        payload = json.dumps({
+            "schema": "2.0",
+            "header": {"event_type": "card.action.trigger", "token": "", "app_id": "a"},
+            "event": {
+                "operator": {"open_id": "ou_1"},
+                "token": "tok",
+                "context": {"open_chat_id": "oc_1"},
+                "action": {"tag": "button", "value": {"hermes_action": "approve_once", "approval_id": 1}},
+            },
+        }).encode()
+        dispatcher._do_without_validation(payload)
+        assert received["value"] == {"hermes_action": "approve_once", "approval_id": 1}
+        assert isinstance(received["value"], dict)
 
 

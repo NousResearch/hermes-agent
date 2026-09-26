@@ -24,6 +24,58 @@ _PATTERN_BY_ID = {pid: rx for rx, pid, *_ in _COMPILED_THREAT_PATTERNS}
 # One severity step down; ``medium``/``low`` are already informational (verdict-neutral).
 STEP_DOWN = {"critical": "high", "high": "medium"}
 
+
+def js_block_comment_lines(lines: list[str]) -> set[int]:
+    """Proven whole-line JS/TS block comments (1-based); never guess at code.
+
+    This is intentionally not a JavaScript parser. Quoted strings and line
+    comments are skipped; a template literal, ambiguous slash (regex/division),
+    malformed string or unsupported line separator ends classification. Comments
+    after that point retain their original severity. A block must close, and a
+    line containing any code outside comments never qualifies.
+    """
+    completed: set[int] = set()
+    pending: set[int] = set()
+    code: set[int] = set()
+    in_block = False
+    for number, line in enumerate(lines, 1):
+        if '\u2028' in line or '\u2029' in line:
+            return completed - code - {number}
+        i = 0
+        while i < len(line):
+            if in_block:
+                pending.add(number)
+                end = line.find('*/', i)
+                if end < 0:
+                    break
+                completed.update(pending)
+                pending.clear()
+                in_block = False
+                i = end + 2
+            elif line.startswith('//', i):
+                break
+            elif line.startswith('/*', i):
+                in_block = True
+                pending.add(number)
+                i += 2
+            elif line[i] in " \t\r\ufeff":
+                i += 1
+            else:
+                code.add(number)
+                char = line[i]
+                if char in '`/\\' or line.startswith('<!--', i):
+                    return completed - code
+                i += 1
+                if char in "\"'":
+                    while i < len(line) and line[i] != char:
+                        i += 2 if line[i] == '\\' else 1
+                    if i >= len(line):
+                        return completed - code
+                    i += 1
+    # A still-open block is uncertain, including a previous block on its opener.
+    return completed - code - pending
+
+
 # ── (1) documentation prose ──────────────────────────────────────────────────────────────────
 # A README/AGENTS.md/docs page describing a command, a refused path (``~/.ssh`` in a denylist
 # table) or an uninstall step is not the plugin's runtime behaviour. Command- and path-shaped

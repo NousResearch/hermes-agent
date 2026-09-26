@@ -3386,7 +3386,7 @@ class FeishuAdapter(BasePlatformAdapter):
             # default profile's value.
             # Empty FEISHU_ALLOWED_USERS is setup's pairing-mode default: forward DMs so the
             # pairing handshake can run (gateway auth fail-closes until approval).
-            if self._allow_all_dm or not self._allowed_group_users:
+            if self._allow_all_dm or not self._allowed_group_users or "*" in self._allowed_group_users:
                 return None
             return None if sender_ids & self._allowed_group_users else "dm_policy_rejected"
         if not self._allow_group_message(getattr(sender, "sender_id", None), chat_id, is_bot=is_bot):

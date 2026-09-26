@@ -131,11 +131,8 @@ TASK_FIRST_CLAUSE = (
 PLAIN_INTRO_NOTE = (
     "[System note: This is the user's very first message ever. "
     + TASK_FIRST_CLAUSE
-    + "What this note asks: one brief sentence introducing yourself and mentioning "
-    "that /help shows available commands. "
-    "If the message truly carries no request (e.g. just a greeting), briefly "
-    "introduce yourself and mention that /help shows available commands, in one or "
-    "two sentences.]"
+    + "What this note asks: briefly introduce yourself and mention that /help shows "
+    "available commands, in one or two sentences.]"
 )
 
 

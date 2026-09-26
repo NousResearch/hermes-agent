@@ -3821,6 +3821,8 @@ export const ja = defineLocale({
       preparingAudio: '音声を準備中...',
       stopReading: '読み上げを停止',
       readAloud: '読み上げ',
+      copyFullResponse: '回答全体をコピー',
+      readAloudFullResponseHint: 'Shiftを押しながらクリック: 回答全体を読み上げ',
       editMessage: 'メッセージを編集',
       stop: '停止',
       restorePrevious: '前のチェックポイントに戻す',

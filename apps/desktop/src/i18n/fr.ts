@@ -5591,6 +5591,8 @@ export const frOverrides = {
       preparingAudio: "Préparation de l'audio…",
       stopReading: 'Arrêter la lecture',
       readAloud: 'Lire à voix haute',
+      copyFullResponse: 'Copier la réponse complète',
+      readAloudFullResponseHint: 'Maj+clic : lire la réponse complète',
       editMessage: 'Modifier le message',
       expandMessage: 'Développer le message',
       scrollToBottom: 'Défiler vers le bas',

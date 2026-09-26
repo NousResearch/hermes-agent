@@ -46,7 +46,10 @@ from agent.message_sanitization import (
     _sanitize_surrogates, _repair_tool_call_arguments, normalize_finish_reason as _normalize_finish_reason,
     sanitize_outbound_kwargs, strip_images_for_rejecting_model,
 )
-from agent.reasoning_summaries import append_streamed_reasoning_detail, separate_glued_reasoning_blocks
+from agent.reasoning_summaries import (
+    append_streamed_reasoning_detail, separate_glued_reasoning_blocks,
+    streamed_reasoning_detail_text,
+)
 from agent.repetition_guard import is_repetition_dominated
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 from tools.terminal_tool_lifecycle import is_persistent_env
@@ -3120,6 +3123,11 @@ class _StreamingCall(StreamingWaitMonitor):
         base_timeout, read_timeout, conn_cap = self._stream_timeouts()
         content_parts: list = []
         reasoning_parts: list = []
+        # Live-display accumulator for detail-derived reasoning text: de-gluing must
+        # compare against what the display actually received, not ``reasoning_parts``
+        # (a provider that mirrors the same text in both fields would otherwise read
+        # as already-glued on the first chunk and get a spurious break).
+        detail_display_parts: list[str] = []
         # OpenAI structured refusal (``delta.refusal``): the explanation streams here and
         # ``delta.content`` stays empty, so an un-accumulated refusal looks like an empty
         # stream and burns the empty-response retries (the non-streaming fix is #46013).
@@ -3205,7 +3213,6 @@ class _StreamingCall(StreamingWaitMonitor):
                 reasoning_text = separate_glued_reasoning_blocks(
                     reasoning_parts[-1] if reasoning_parts else "", reasoning_text)
                 reasoning_parts.append(reasoning_text)
-                self._emit_reasoning(reasoning_text)
             # Structured reasoning_details deltas carry the provider's replay data; the
             # non-streaming path already keeps them, so dropping them here lost
             # reasoning continuity on nearly every turn. Pydantic parks unknown fields
@@ -3213,8 +3220,26 @@ class _StreamingCall(StreamingWaitMonitor):
             rd_delta = getattr(delta, "reasoning_details", None)
             if rd_delta is None and isinstance(getattr(delta, "model_extra", None), dict):
                 rd_delta = delta.model_extra.get("reasoning_details")
+            detail_text_parts = []
             for rd in rd_delta if isinstance(rd_delta, (list, tuple)) else ():
+                detail_text_parts.append(streamed_reasoning_detail_text(rd))
                 append_streamed_reasoning_detail(reasoning_details, rd)
+            # Details may carry the full text while ordinary reasoning is only
+            # a sparse fragment or a mirror. Deliver one representation per
+            # chunk, without rewriting either persisted/replayed field.
+            # Summary-part boundaries need the same repair the plain path applies:
+            # de-glue against the detail display's own accumulator (not
+            # ``reasoning_parts`` — with mirrored fields that would insert a
+            # spurious break on the first chunk), so the live box and the
+            # persisted ``reasoning_content`` agree.
+            detail_text = "".join(detail_text_parts)
+            if detail_text:
+                detail_text = separate_glued_reasoning_blocks(
+                    detail_display_parts[-1] if detail_display_parts else "", detail_text)
+                detail_display_parts.append(detail_text)
+            display_reasoning = detail_text or reasoning_text
+            if display_reasoning:
+                self._emit_reasoning(display_reasoning)
             # Not routed to the live display: the transport promotes a sole-payload
             # refusal to content + ``content_filter`` and the loop surfaces it terminally.
             delta_refusal = getattr(delta, "refusal", None)

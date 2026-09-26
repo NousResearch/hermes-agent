@@ -1,4 +1,5 @@
 import { createBackendShutdownCoordinator } from './backend-ownership'
+import { markExpectedTransition } from './crash-forensics'
 
 /** Observe every branch, but never leave quit parked on a lost exit/SSH callback. */
 export async function waitForTeardown(tasks: readonly Promise<unknown>[], timeoutMs: number): Promise<void> {
@@ -74,7 +75,7 @@ export function createLocalBackendLifecycle<Child>(
   }
 
   const shutdown = createBackendShutdownCoordinator((): Promise<void> => {
-    controller.abort(new Error('Hermes Desktop is quitting.'))
+    controller.abort(markExpectedTransition(new Error('Hermes Desktop is quitting.')))
     deps.cancelSetup()
 
     return waitForTeardown([...starts, ...[...children].map(stop), ...stops.values()], deps.timeoutMs ?? 7_000)

@@ -58,7 +58,11 @@ it('keeps background continuations in one response with one action bar and the o
       [...container.querySelectorAll('[data-role="assistant"]')].map(e => e.getAttribute('data-message-id'))
     ).toEqual([messages[1]!.id, messages[3]!.id])
     const actions = container.querySelector('[data-slot="aui_msg-actions"]') as HTMLElement
-    fireEvent.click(within(actions).getByRole('button', { name: 'Copy' }))
+    // Default Copy reads only the tail reply; the full-response scope is a
+    // separate explicit action (#118864).
+    fireEvent.click(within(actions).getByRole('button', { name: /^copy$/i }))
+    await waitFor(() => expect(clipboard.writeText).toHaveBeenLastCalledWith('The deployment is verified.'))
+    fireEvent.click(within(actions).getByRole('button', { name: /copy full response/i }))
     await waitFor(() =>
       expect(clipboard.writeText).toHaveBeenLastCalledWith('Checking the deployment.\n\nThe deployment is verified.')
     )

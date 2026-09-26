@@ -3994,6 +3994,8 @@ export const zhHant = defineLocale({
       preparingAudio: '正在準備音訊...',
       stopReading: '停止朗讀',
       readAloud: '朗讀',
+      copyFullResponse: '複製完整回覆',
+      readAloudFullResponseHint: '按住 Shift 點擊：朗讀完整回覆',
       editMessage: '編輯訊息',
       stop: '停止',
       restorePrevious: '還原至上一個檢查點',

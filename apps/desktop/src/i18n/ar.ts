@@ -3252,6 +3252,8 @@ export const ar = defineLocale({
       preparingAudio: 'جار تجهيز الصوت',
       stopReading: 'إيقاف القراءة',
       readAloud: 'قراءة بصوت عال',
+      copyFullResponse: 'نسخ الرد الكامل',
+      readAloudFullResponseHint: 'انقر مع الضغط على Shift: قراءة الرد الكامل بصوت عال',
       editMessage: 'تحرير الرسالة',
       scrollToBottom: 'التمرير إلى الأسفل',
       stop: 'إيقاف',

@@ -113,6 +113,34 @@ async function openStoredBotChat(
   // previous time this bot was open — which left the pane showing old messages
   // until an app restart (hermes-agent#93604). A resume is cheap and
   // idempotent, so on this explicit user navigation we always request one.
+  // Discard a stale canonical-titled tile before opening the tip: compression
+  // rotates the tip while tiles stay keyed by segment, and hidden Bot Chats
+  // never enter the sidebar listing the lineage guard reads, so without this
+  // probe the old-segment tile survives beside the tip (hermes-agent#120810).
+  // Same owner-scoped probe the roster click runs; side tabs keep any other
+  // title. ponytail: probe-only reconcile here, full lineage walk if hidden
+  // lineages ever rejoin the listing.
+  try {
+    // SAFETY: plugin SDK host gains optional hooks per shell version; the
+    // single-as narrows only for feature detection, never to bypass types.
+    const focusHook = (
+      host as { focusOpenWorkspaceSession?: (
+        ownerKey: string,
+        probe: (tile: { storedSessionId: string; workspaceTabTitle?: string }) => boolean,
+        onlyIds: readonly string[]
+      ) => null | string }
+    ).focusOpenWorkspaceSession
+    if (typeof focusHook === 'function') {
+      const canonicalIds = [...new Set([String(summary?.id ?? ''), String(storedId ?? '')].filter(Boolean))]
+      const isStaleTile = (tile: { storedSessionId: string; workspaceTabTitle?: string }) =>
+        typeof tile.workspaceTabTitle === 'string' &&
+        tile.workspaceTabTitle === CANONICAL_CHAT_TITLE &&
+        !canonicalIds.includes(String(tile.storedSessionId))
+      focusHook(ownerKey, isStaleTile, canonicalIds)
+    }
+  } catch {
+    /* older shells without the focus hook — the tip open below still lands */
+  }
   await host.openSession(storedId, {
     ...(route
       ? {

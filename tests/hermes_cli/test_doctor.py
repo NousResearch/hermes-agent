@@ -28,6 +28,33 @@ from hermes_cli import doctor_config
 from tools import browser_tool_install as bt_install
 
 
+def test_doctor_quick_skips_network_checks(monkeypatch):
+    import argparse
+    from unittest.mock import Mock
+
+    from hermes_cli.subcommands.doctor import build_doctor_parser
+
+    local_check = Mock(return_value=Finding())
+    npm_check = Mock(side_effect=AssertionError("npm audit ran in quick mode"))
+    api_check = Mock(side_effect=AssertionError("API connectivity ran in quick mode"))
+
+    monkeypatch.setattr(doctor_mod, "_check_npm_audit", npm_check)
+    monkeypatch.setattr(doctor_mod, "_check_api_connectivity", api_check)
+    monkeypatch.setattr(doctor_mod, "DOCTOR_CHECKS", (
+        (None, local_check),
+        (None, npm_check),
+        (None, api_check),
+    ))
+
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(dest="command")
+    build_doctor_parser(subparsers, cmd_doctor=doctor_mod.run_doctor)
+    args = parser.parse_args(["doctor", "--quick"])
+    args.func(args)
+
+    local_check.assert_called_once_with(False)
+
+
 @pytest.fixture(autouse=True)
 def _no_browser_downloads(monkeypatch):
     """Unrelated doctor --fix tests must not start an installer worker.
@@ -58,7 +85,7 @@ def test_check_certificates_exercises_real_tls_policy(monkeypatch, capsys):
     assert "✓" in out
     assert "tls" in out
     assert "skipped" not in out
-    assert "verification active" not in out  # configuration, not proof of validation
+    assert "verification active" not in out
     assert "platform trust" in out or "configured" in out
 
 
@@ -74,13 +101,14 @@ def test_check_certificates_fallback_names_openssl_without_platform_trust_claim(
     out = _tls_out_normalized(raw)
     assert "⚠" in raw
     assert "trust store" in out
-    assert "openssl" in out  # names the actual fallback
-    assert "verification active" not in out  # construction proves nothing verified
-    assert "available" in out  # status is context available, not verification proven
+    assert "openssl" in out
+    assert "verification active" not in out
+    assert "available" in out
     assert not any(
         line.startswith("✓") and "platform trust" in line
         for line in raw.splitlines()
     )
+
 
 
 class TestDoctorPlatformHints:

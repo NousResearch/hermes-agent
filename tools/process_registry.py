@@ -82,6 +82,11 @@ WATCH_LIFETIME_MAX_HITS = 8
 HEARTBEAT_MIN_SECONDS = 60
 HEARTBEAT_OUTPUT_CHARS = 2000
 HEARTBEAT_TICK_SECONDS = 5
+# Reader final drain after a reconcile saw the direct child exit: the exited child's unread tail is at
+# most one pipe buffer (Linux pipe-max-size default 1 MiB), and the reader publishes within one select
+# interval plus that drain.
+_FINAL_DRAIN_MAX_CHARS = 1 << 20
+_READER_FINAL_DRAIN_WAIT_SECONDS = 1.0
 # Global circuit breaker across all sessions so concurrent siblings can't collectively
 # flood the user even when each is under its own cap.
 WATCH_GLOBAL_MAX_PER_WINDOW = 15
@@ -1410,10 +1415,14 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 import select as _select
                 session._reader_selectable = True
             idle_after_exit = 0
+            drained_after_request = 0
             while True:
                 if fd is not None:
                     try:
-                        ready, _, _ = _select.select([fd], [], [], 0.2)
+                        # Once a finish is requested, read only what is already buffered: the exited
+                        # child's tail, never an orphaned grandchild's future writes.
+                        wait_s = 0 if session._reader_finish_requested.is_set() else 0.2
+                        ready, _, _ = _select.select([fd], [], [], wait_s)
                     except (ValueError, OSError):
                         break  # fd already closed
                     if not ready:
@@ -1434,7 +1443,11 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 if chunk:
                     _append_chunk(chunk)
                 if session._reader_finish_requested.is_set():
-                    break
+                    # A single chunk is not the tail: the child can exit with a whole pipe buffer
+                    # unread. The cap only stops a grandchild that never lets the pipe go empty.
+                    drained_after_request += len(chunk)
+                    if drained_after_request >= _FINAL_DRAIN_MAX_CHARS:
+                        break
                 idle_after_exit = 0
         except Exception as e:
             logger.debug("Process stdout reader ended: %s", e)
@@ -1954,8 +1967,12 @@ class ProcessRegistry(ProcessCheckpointMixin):
             # finish avoids a competing TextIOWrapper read here racing the
             # reader, publishing an empty owner-stamped result, then closing
             # the pipe before the buffered tail is ingested. It wakes within
-            # the reader's bounded select interval (or after one final chunk).
+            # the reader's bounded select interval and drains what is buffered.
             session._reader_finish_requested.set()
+            # Flipping ``exited`` before that drain lands would hand poll()/wait() a truncated
+            # snapshot (and wait() marks it consumed), so give the reader a moment to publish.
+            if session._completion_event.wait(_READER_FINAL_DRAIN_WAIT_SECONDS):
+                return
             with session._lock:
                 session.mark_exited(rc)
             logger.info(

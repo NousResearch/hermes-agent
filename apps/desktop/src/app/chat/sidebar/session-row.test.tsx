@@ -37,6 +37,7 @@ vi.mock('@/i18n', () => ({
           backgroundRunning: 'Running in background',
           finishedUnread: 'Finished',
           handoffOrigin: (platform: string) => `Started on ${platform}`,
+          continuationOrigin: 'Automatic continuation — this conversation was compressed and continued',
           messageCount: (count: number) => `${count} messages`,
           needsInput: 'Needs input',
           sessionActions: 'Session actions',
@@ -409,5 +410,33 @@ describe('SidebarSessionRow decoration slots', () => {
     })
 
     expect(screen.queryByTestId('lead-deco')).toBeNull()
+  })
+})
+
+// #121148: a projected compression continuation renders as a plain
+// top-level row that reads as a brand-new conversation — and the sealed
+// predecessor it replaced used to nest like a branch users deleted as
+// accidents. The row must carry a visible continuation affordance.
+describe('SidebarSessionRow continuation badge', () => {
+  const continuationGlyph = (container: HTMLElement) => container.querySelector('.codicon-layers')
+
+  it('paints the continuation glyph for a projected compression tip', () => {
+    const { container } = renderRow(
+      makeSession({ continuation_kind: 'compression', title: 'Long-running chat' })
+    )
+
+    expect(continuationGlyph(container)).not.toBeNull()
+  })
+
+  it('paints nothing for a plain session and for a branch', () => {
+    const plain = renderRow(makeSession({ title: 'Plain' }))
+
+    expect(continuationGlyph(plain.container)).toBeNull()
+
+    const branch = renderRow(
+      makeSession({ parent_session_id: 'parent', title: 'A real branch' })
+    )
+
+    expect(continuationGlyph(branch.container)).toBeNull()
   })
 })

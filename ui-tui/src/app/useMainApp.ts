@@ -1317,8 +1317,10 @@ export function useMainApp(gw: GatewayClient) {
       newLiveSession: () => session.newLiveSession(),
       newPromptSession,
       onModelSelect,
-      // Resuming a cold session from the overlay CLOSES the current one, so it
-      // must respect the busy guard just like the `/resume` slash path.
+      // Resuming a cold session from the overlay leaves the current one
+      // running (like switching live sessions), but it still swaps the
+      // visible turn state, so it must respect the busy guard just like
+      // the `/resume` slash path.
       // (Switching between live sessions and `+ new` keep the current session
       // running, so those stay unguarded — that's the orchestrator's purpose.)
       resumeById: (id: string) => {

@@ -194,9 +194,9 @@ export const sessionCommands: SlashCommand[] = [
         return ctx.session.newLiveSession()
       }
 
-      // `/resume <id|title>` (and `/sessions <id>`) load a cold session and
-      // CLOSE the current one, so guard it while a turn is in-flight to avoid
-      // corrupting streaming/busy state. Bare opens the overlay to browse.
+      // `/resume <id|title>` (and `/sessions <id>`) load a cold session into
+      // view while the current one keeps running, so guard it while a turn
+      // is in-flight to avoid corrupting streaming/busy state. Bare opens the overlay to browse.
       if (trimmed) {
         if (ctx.session.guardBusySessionSwitch('switch sessions')) {
           return

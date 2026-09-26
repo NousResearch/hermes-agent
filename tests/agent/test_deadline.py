@@ -26,6 +26,7 @@ import pytest
 from agent.deadline import (
     MAX_SAFE_TIMEOUT_S,
     clamp_timeout,
+    has_live_descendants,
     kill_process_tree,
     resolve_timeout,
     run_bounded_async,
@@ -497,6 +498,34 @@ class TestKillProcessTree:
         finally:
             if proc.poll() is None:
                 proc.kill()
+
+
+# ---------------------------------------------------------------------------
+# has_live_descendants (#122391 review follow-up)
+# ---------------------------------------------------------------------------
+#
+# Portable by construction (no sys.platform branch): it scans every process's own
+# recorded ppid rather than a live parent's children, which is what lets
+# kill_process_tree find a Windows MCP worker after its root has already exited
+# (taskkill /T cannot target a tree whose root PID no longer resolves). The
+# platform-specific piece — a child's ppid surviving its parent's exit — is a
+# Windows behavior (POSIX reparents instead) and isn't exercised here; this
+# covers the scan mechanism itself, which is the same on every host.
+
+class TestHasLiveDescendants:
+    def test_true_while_child_alive_false_after_reap(self):
+        pytest.importorskip("psutil")
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        try:
+            assert has_live_descendants(os.getpid()) is True
+        finally:
+            proc.kill()
+            proc.wait(timeout=5)
+        assert has_live_descendants(os.getpid()) is False
+
+    def test_false_for_pid_with_no_descendants(self):
+        pytest.importorskip("psutil")
+        assert has_live_descendants(999999999) is False
 
 
 # ---------------------------------------------------------------------------

@@ -423,6 +423,206 @@ class TestStdioPgroupReaping:
 
 
 # ---------------------------------------------------------------------------
+# Fix 2c: whole-tree reap when os.killpg is unavailable (Windows) (#122378)
+# ---------------------------------------------------------------------------
+#
+# Windows has no process groups: ``_stdio_pgids`` stays empty (see its module
+# docstring) and a bare ``os.kill(pid, sig)`` only reaches the direct MCP
+# child, leaking any worker subprocess it spawned. ``_signal_mcp_process``
+# must route that case through the portable ``agent.deadline.kill_process_tree``
+# (``taskkill /F /T`` on Windows) instead.
+
+class TestWindowsWholeTreeReap:
+    """_signal_mcp_process reaps the whole descendant tree when os.killpg is unavailable."""
+
+    def test_missing_killpg_routes_through_kill_process_tree(self, monkeypatch):
+        monkeypatch.delattr(os, "killpg", raising=False)
+        with patch("agent.deadline.kill_process_tree", return_value=True) as mock_tree, \
+             patch("tools.mcp_tool_lifecycle.os.kill") as mock_kill:
+            _mcp_lifecycle._signal_mcp_process(12345, signal.SIGTERM, "test-server", None, None)
+
+        mock_tree.assert_called_once_with(12345, sig=signal.SIGTERM)
+        mock_kill.assert_not_called()
+
+    def test_missing_killpg_falls_back_to_kill_pid_when_tree_kill_fails(self, monkeypatch):
+        monkeypatch.delattr(os, "killpg", raising=False)
+        with patch("agent.deadline.kill_process_tree", return_value=False) as mock_tree, \
+             patch("tools.mcp_tool_lifecycle.os.kill") as mock_kill:
+            _mcp_lifecycle._signal_mcp_process(12345, signal.SIGTERM, "test-server", None, None)
+
+        mock_tree.assert_called_once_with(12345, sig=signal.SIGTERM)
+        mock_kill.assert_called_once_with(12345, signal.SIGTERM)
+
+
+# ---------------------------------------------------------------------------
+# Fix 2d: an already-exited root with a live descendant must still be tracked
+# for the sweep on Windows (#122391 review follow-up)
+# ---------------------------------------------------------------------------
+#
+# On Windows _stdio_pgids is never populated (os.getpgid is POSIX-only), so
+# _release_spawned_children's prior gate (_pid_exists(pid) or
+# _pgroup_alive(pgid)) dropped an already-exited root unconditionally, even
+# when it left a live worker subprocess behind — the exact orphan shape
+# #122378 reports. That root never entered _orphan_stdio_pids, so the
+# whole-tree reap added for that issue never ran for it.
+
+class TestReleaseSpawnedChildrenWindowsDescendants:
+    """_release_spawned_children marks an exited root orphaned when a live descendant is found."""
+
+    def _server(self):
+        from tools.mcp_tool import MCPServerTask
+        server = MCPServerTask.__new__(MCPServerTask)
+        server.name = "test-windows-descendants"
+        return server
+
+    def _reset_state(self):
+        from tools.mcp_tool_lifecycle import _orphan_stdio_pid_servers, _orphan_stdio_pids, _stdio_pgids, _stdio_pids
+        from tools.mcp_tool import _lock
+        with _lock:
+            _stdio_pids.clear()
+            _orphan_stdio_pids.clear()
+            _orphan_stdio_pid_servers.clear()
+            _stdio_pgids.clear()
+
+    def test_exited_root_with_live_descendant_is_orphaned(self, monkeypatch):
+        from tools.mcp_tool_lifecycle import _orphan_stdio_pids
+        from tools.mcp_tool import _lock
+
+        self._reset_state()
+        monkeypatch.delattr(os, "killpg", raising=False)  # simulate Windows: no process groups
+        fake_pid = 909090
+        with patch("gateway.status._pid_exists", return_value=False), \
+             patch("agent.deadline.has_live_descendants", return_value=True):
+            self._server()._release_spawned_children({fake_pid})
+
+        with _lock:
+            assert fake_pid in _orphan_stdio_pids, (
+                "an exited root with a live descendant must still be reaped (#122391)"
+            )
+
+    def test_exited_root_with_no_descendants_is_dropped(self, monkeypatch):
+        from tools.mcp_tool_lifecycle import _orphan_stdio_pids
+
+        self._reset_state()
+        monkeypatch.delattr(os, "killpg", raising=False)
+        fake_pid = 909091
+        with patch("gateway.status._pid_exists", return_value=False), \
+             patch("agent.deadline.has_live_descendants", return_value=False):
+            self._server()._release_spawned_children({fake_pid})
+
+        from tools.mcp_tool import _lock
+        with _lock:
+            assert fake_pid not in _orphan_stdio_pids
+
+
+# ---------------------------------------------------------------------------
+# Fix 2e: an orphan pid recorded for a dead root must not be signalled once the
+# number has been recycled by an unrelated live process (#122391 review follow-up)
+# ---------------------------------------------------------------------------
+#
+# The dead-root sweep reaps by walking a bare PID number (taskkill /T, or
+# kill_process_tree's PPID-based descendant fallback). If that number is recycled
+# before the sweep runs, either path would target the new, unrelated process's tree.
+# _take_reapable_pids now validates the pid's creation time (captured while it was
+# still the MCP root) before handing it to _signal_mcp_process.
+
+class TestDeadRootPidRecycleGuard:
+    """_take_reapable_pids drops an orphan entry whose recorded creation time no longer
+    matches the live process now holding that pid number."""
+
+    def _reset_state(self):
+        from tools.mcp_tool_lifecycle import (
+            _orphan_stdio_pid_servers, _orphan_stdio_pids, _stdio_create_times, _stdio_pgids, _stdio_pids,
+        )
+        from tools.mcp_tool import _lock
+        with _lock:
+            _stdio_pids.clear()
+            _orphan_stdio_pids.clear()
+            _orphan_stdio_pid_servers.clear()
+            _stdio_pgids.clear()
+            _stdio_create_times.clear()
+
+    def test_recycled_pid_is_dropped_without_signalling(self, monkeypatch):
+        from tools.mcp_tool_lifecycle import _orphan_stdio_pid_servers, _orphan_stdio_pids, _stdio_create_times
+        from tools.mcp_tool import _lock
+
+        self._reset_state()
+        monkeypatch.delattr(os, "killpg", raising=False)  # simulate Windows: no process groups
+        fake_pid = 909092
+        with _lock:
+            _orphan_stdio_pids.add(fake_pid)
+            _orphan_stdio_pid_servers[fake_pid] = "test-server"
+            _stdio_create_times[fake_pid] = 1000.0  # recorded while the MCP root was still alive
+
+        fake_proc = MagicMock()
+        fake_proc.create_time.return_value = 2000.0  # a different, unrelated process now owns this pid
+        with patch("gateway.status._pid_exists", return_value=True), \
+             patch("psutil.Process", return_value=fake_proc), \
+             patch("agent.deadline.kill_process_tree") as mock_tree, \
+             patch("tools.mcp_tool_lifecycle.os.kill") as mock_kill:
+            _mcp_lifecycle._kill_orphaned_mcp_children()
+
+        mock_tree.assert_not_called()
+        mock_kill.assert_not_called()
+        with _lock:
+            assert fake_pid not in _orphan_stdio_pids
+            assert fake_pid not in _stdio_create_times
+
+    def test_unverifiable_create_time_is_dropped_without_signalling(self, monkeypatch):
+        """A live pid whose creation time can't be looked up (psutil raises) must fail
+        closed — same treatment as a confirmed recycle — not fall through to a bare-PID
+        kill (#122391)."""
+        from tools.mcp_tool_lifecycle import _orphan_stdio_pid_servers, _orphan_stdio_pids, _stdio_create_times
+        from tools.mcp_tool import _lock
+
+        self._reset_state()
+        monkeypatch.delattr(os, "killpg", raising=False)  # simulate Windows: no process groups
+        fake_pid = 909093
+        with _lock:
+            _orphan_stdio_pids.add(fake_pid)
+            _orphan_stdio_pid_servers[fake_pid] = "test-server"
+            _stdio_create_times[fake_pid] = 1000.0  # recorded while the MCP root was still alive
+
+        with patch("gateway.status._pid_exists", return_value=True), \
+             patch("psutil.Process", side_effect=OSError("access denied")), \
+             patch("agent.deadline.kill_process_tree") as mock_tree, \
+             patch("tools.mcp_tool_lifecycle.os.kill") as mock_kill:
+            _mcp_lifecycle._kill_orphaned_mcp_children()
+
+        mock_tree.assert_not_called()
+        mock_kill.assert_not_called()
+        with _lock:
+            assert fake_pid not in _orphan_stdio_pids
+            assert fake_pid not in _stdio_create_times
+
+    def test_missing_create_time_token_is_dropped_without_signalling(self, monkeypatch):
+        """A Windows child whose creation time could not be captured at spawn (no token ever
+        recorded in _stdio_create_times) must not be signalled once it becomes an
+        already-exited-root orphan, even if the pid number is live again by sweep time
+        (#122391 review follow-up)."""
+        from tools.mcp_tool_lifecycle import _orphan_stdio_pid_servers, _orphan_stdio_pids
+        from tools.mcp_tool import _lock
+
+        self._reset_state()
+        monkeypatch.delattr(os, "killpg", raising=False)  # simulate Windows: no process groups
+        fake_pid = 909094
+        with _lock:
+            _orphan_stdio_pids.add(fake_pid)
+            _orphan_stdio_pid_servers[fake_pid] = "test-server"
+            # No _stdio_create_times entry: the initial capture failed at spawn time.
+
+        with patch("gateway.status._pid_exists", return_value=True), \
+             patch("agent.deadline.kill_process_tree") as mock_tree, \
+             patch("tools.mcp_tool_lifecycle.os.kill") as mock_kill:
+            _mcp_lifecycle._kill_orphaned_mcp_children()
+
+        mock_tree.assert_not_called()
+        mock_kill.assert_not_called()
+        with _lock:
+            assert fake_pid not in _orphan_stdio_pids
+
+
+# ---------------------------------------------------------------------------
 # Fix 3: MCP reload timeout (cli.py)
 # ---------------------------------------------------------------------------
 

@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "MAX_SAFE_TIMEOUT_S", "BoundedResult", "DeadlineExpired", "clamp_timeout", "resolve_timeout",
-    "run_bounded_async", "run_bounded_sync", "kill_process_tree",
+    "run_bounded_async", "run_bounded_sync", "kill_process_tree", "has_live_descendants",
 ]
 
 # Upper bound for any timeout handed to platform wait primitives.
@@ -413,10 +413,42 @@ def _process_tree_snapshot(pid: int, *, hard_kill: bool):
                 logger.debug("kill_process_tree: target already gone or resume refused", exc_info=True)
 
 
+def _descendant_pids(pid: int) -> set:
+    """Live PIDs anywhere in the process table whose recorded-parent chain leads back to *pid*,
+    found by scanning every process's own ppid rather than walking a live parent's children.
+    Still finds a descendant once *pid* itself has already exited: Windows keeps a child's
+    recorded ParentProcessId after the parent is gone (POSIX reparents instead, so this matters
+    only where process-group tracking is unavailable — NousResearch/hermes-agent#122391)."""
+    try:
+        import psutil
+    except ImportError:
+        return set()
+    by_ppid: dict = {}
+    try:
+        for info in psutil.process_iter(["pid", "ppid"]):
+            by_ppid.setdefault(info.info["ppid"], []).append(info.info["pid"])
+    except Exception:
+        return set()
+    frontier, seen = [pid], set()
+    while frontier:
+        for child_pid in by_ppid.get(frontier.pop(), ()):
+            if child_pid not in seen:
+                seen.add(child_pid)
+                frontier.append(child_pid)
+    return seen
+
+
+def has_live_descendants(pid: int) -> bool:
+    """True if *pid* has a live descendant, even if *pid* itself has already exited."""
+    return bool(_descendant_pids(pid))
+
+
 def kill_process_tree(pid: int, *, sig: Optional[int] = None) -> bool:
     """Terminate ``pid`` and all its descendants, portably; True when anything was signalled.
 
-    Windows: ``taskkill /F /T`` (``sig`` ignored). POSIX: snapshot descendants via
+    Windows: ``taskkill /F /T`` (``sig`` ignored), falling back to a direct
+    :func:`_descendant_pids` kill when ``pid`` has already exited (``taskkill /T`` cannot walk a
+    tree rooted at a PID that no longer resolves — #122391). POSIX: snapshot descendants via
     psutil; for SIGKILL, stop and rescan the live tree so a concurrent fork cannot
     escape a stale snapshot. Signal identity-checked descendants before their
     parent, then its group when ``pid`` leads one. Stopping is best-effort with a
@@ -434,10 +466,26 @@ def kill_process_tree(pid: int, *, sig: Optional[int] = None) -> bool:
                 capture_output=True, timeout=15, check=False, creationflags=creationflags,
             )
             # taskkill exits non-zero for not-found / access-denied (False = nothing terminated).
-            return proc.returncode == 0
+            if proc.returncode == 0:
+                return True
         except Exception:
             logger.debug("kill_process_tree: taskkill failed for pid %s", pid, exc_info=True)
             return False
+        # taskkill /T needs *pid* itself alive to walk its tree. When it has already exited but
+        # left live descendants (the common MCP-orphan shape, #122391), find and kill them
+        # directly instead — Windows keeps a child's recorded parent id after the parent is gone.
+        try:
+            import psutil
+        except ImportError:
+            return False
+        killed = False
+        for descendant_pid in _descendant_pids(pid):
+            try:
+                psutil.Process(descendant_pid).kill()
+                killed = True
+            except Exception:
+                continue
+        return killed
 
     import signal as _signal
     if sig is None:

@@ -364,6 +364,18 @@ def _normalize_responses_message_status(value: Any, *, default: str = "completed
     return status if status in _RESPONSE_MESSAGE_STATUSES else default
 
 
+def _role_message_with_phase(role: str, content: Any, phase: Any = None) -> Dict[str, Any]:
+    """Preserve an explicitly supplied assistant phase without inventing output status or IDs.
+
+    Ordinary role messages and exact output-item replay must agree on phase; user inputs
+    never inherit assistant-only metadata. Keep absent/invalid phase absent.
+    """
+    item = {"role": role, "content": content}
+    if role == "assistant" and _nonblank(phase):
+        item["phase"] = phase.strip()
+    return item
+
+
 def _message_item(
     content: List[Dict[str, Any]], *, status: str, item_id: Optional[str] = None, phase: Optional[str] = None,
 ) -> Dict[str, Any]:
@@ -635,7 +647,7 @@ def _chat_messages_to_responses_input(
         # non-empty: strict Responses-compatible providers reject "" with 400.
         if fallback is not None and not (fallback == "" and tool_items):
             follower = " " if fallback == "" else fallback
-            emit([{"role": "assistant", "content": wire_content(follower)}], msg)
+            emit([_role_message_with_phase("assistant", wire_content(follower), msg.get("phase"))], msg)
         emit(tool_items, msg)
     # The server renders nothing placed before a compaction item, so pre-checkpoint history is
     # dead weight and plaintext asks / merged summaries silently vanish. Keep the newest checkpoint
@@ -834,7 +846,7 @@ def _preflight_role_message(item: Dict[str, Any], idx: int, ctx: _PreflightCtx) 
         )
     content = item.get("content", "")
     if not isinstance(content, list):
-        return {"role": role, "content": ctx.sanitize_text(_str_or_empty(content))}
+        return _role_message_with_phase(role, ctx.sanitize_text(_str_or_empty(content)), item.get("phase"))
     # Parts are already Responses-shaped; validate and re-type text for the role.
     # Unlike history conversion, empty text / empty image urls are kept, not dropped.
     text_type = _text_type_for(role)
@@ -855,7 +867,7 @@ def _preflight_role_message(item: Dict[str, Any], idx: int, ctx: _PreflightCtx) 
             raise ValueError(
                 f"Codex Responses input[{idx}].content[{part_idx}] has unsupported type {part.get('type')!r}."
             )
-    return {"role": role, "content": validated}
+    return _role_message_with_phase(role, validated, item.get("phase"))
 
 
 _PREFLIGHT_ITEM_HANDLERS: Dict[str, Callable[..., Optional[Dict[str, Any]]]] = {

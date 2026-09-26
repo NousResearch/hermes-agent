@@ -4764,6 +4764,20 @@ def _housekeeping_checkpoint_prune() -> None:
     auto_prune_from_config()
 
 
+def _housekeeping_disk_guard() -> None:
+    """Structural guards against the 2026-09-19/2026-09-20 incident class
+    (107 GB, then a 14 GB renamed relapse, of abandoned DB copies in the temp
+    root filled the volume; the gateway died unclean and every board hit
+    ``sqlite3.OperationalError: disk I/O error``): closed-set sweep of >1 GiB
+    stale, handle-free ``*.db``/``*.db-wal``/``*.db-shm`` copies (lsof + mtime
+    grace protect live files) plus a <5 GiB free-space early warning (ERROR
+    below 1 GiB). Runs every tick so an active leak is bounded by one
+    housekeeping interval, independent of prompt discipline in any cron run."""
+    from gateway.disk_guard import check_free_disk_warning, sweep_abandoned_db_copies
+    sweep_abandoned_db_copies()
+    check_free_disk_warning()
+
+
 def _drain_restart_safe_cron_deliveries(adapters, loop, runner=None) -> None:
     """Drain each profile's worker queue through its matching live adapters. A credential-less satellite
     profile (empty adapter map) drains through the primary's adapters routed by its own profile routes."""
@@ -4835,6 +4849,7 @@ def _start_gateway_housekeeping(
         (1, "Plugin update check", profile_scoped_chore(runner, _housekeeping_plugin_update_check)),
         (1, "Deferred FTS retry tick", _housekeeping_deferred_fts_retry),
         (1, "gateway housekeeping memory trim", _housekeeping_memory_trim),
+        (1, "Disk guard sweep + free-space warning", _housekeeping_disk_guard),
         (1, "MCP config reconcile", _mcp_config_reconciler(runner)),
         # Last: a real prune can hold this thread for a while; every other chore of the tick runs first.
         (1, "Checkpoint prune tick", _housekeeping_checkpoint_prune)]

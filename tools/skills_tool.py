@@ -306,11 +306,34 @@ def _resolve_plugin_skill(name, file_path, task_id, preprocess):
 
 
 def _under_any(path: Path, dirs) -> bool:
-    """True when ``path`` (resolved where possible) lives under one of ``dirs``."""
+    """True when ``path`` is covered by one of ``dirs``.
+
+    Both views of the path get a say, because they answer different questions:
+
+    * the RESOLVED path under a root — a path outside every root that resolves into one
+      is content a root already exposes;
+    * otherwise the path AS LISTED under a root, but only when the final entry is not
+      itself a symlink. Exposing a skill source stored elsewhere under a trusted root
+      with a directory symlink (``~/.hermes/skills/<name> -> /opt/skills/<name>``) is a
+      supported install shape and must stay quiet (#35674), while
+      ``<root>/<name>/SKILL.md`` as a symlink to content no root exposes is the escape
+      this guard exists to catch.
+
+    Roots are accepted unresolved or resolved, so callers can pass whichever they hold."""
+    roots: List[Path] = []
+    for d in dirs:
+        d = Path(d)
+        roots.append(d)
+        with suppress(Exception):
+            roots.append(d.resolve())
     resolved = path
     with suppress(Exception):
         resolved = path.resolve()
-    return any(resolved.is_relative_to(d) for d in dirs)
+    if any(resolved.is_relative_to(r) for r in roots):
+        return True
+    if path.is_symlink():
+        return False
+    return any(path.is_relative_to(r) for r in roots)
 
 
 def _is_package_owned_markdown(path: Path, search_root: Path) -> bool:
@@ -555,14 +578,13 @@ def _locate_skill(name: str, local_category_name: Optional[str], project_dirs: l
 
 def _log_security_warnings(name: str, skill_md: Path, content: str, all_dirs, active_skills_dir):
     """Warn (never block) when loaded from outside the trusted dirs (project + local + external)
-    and/or when common prompt-injection patterns appear. The check is on the RESOLVED path:
-    every candidate is built as ``<search_dir>/...`` so a lexical test can never fire, and a
-    SKILL.md symlinked to a file outside every root is exactly what this guards against."""
-    trusted_dirs = [active_skills_dir.resolve()]
-    with suppress(Exception):
-        trusted_dirs.extend(d.resolve() for d in all_dirs)
+    and/or when common prompt-injection patterns appear. The check asks ``_under_any`` for BOTH
+    views of the path: every candidate is built as ``<search_dir>/...`` so a lexical test alone
+    can never fire, and resolving alone would flag every skill a directory symlink exposes from
+    a source stored elsewhere (#35674). What still warns is a SKILL.md that is itself a symlink
+    to a file outside every root — the escape this guards against."""
     warnings = []
-    if not _under_any(skill_md, trusted_dirs):
+    if not _under_any(skill_md, [active_skills_dir, *all_dirs]):
         warnings.append(f"skill file is outside the trusted skills directory (~/.hermes/skills/): {skill_md}")
     if any(p in content.lower() for p in _INJECTION_PATTERNS):
         warnings.append("skill content contains patterns that may indicate prompt injection")

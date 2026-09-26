@@ -489,13 +489,13 @@ class ClientLifecycleMixin:
             return ("bedrock", getattr(self, "_bedrock_region", "us-east-1") or "us-east-1")
         return (
             "direct", self._anthropic_api_key, getattr(self, "_anthropic_base_url", None),
-            get_provider_request_timeout(self.provider, self.model), bool(getattr(self, "_oauth_1m_beta_disabled", False)),
+            get_provider_request_timeout(self.provider, self.model, requested_provider=getattr(self, "requested_provider", None)), bool(getattr(self, "_oauth_1m_beta_disabled", False)),
         )
 
     def _build_direct_anthropic_client(self, token: str, base_url: Any) -> Any:
         """Native Anthropic client for ``token``/``base_url`` with the provider/model request timeout."""
         from agent.anthropic_adapter import build_anthropic_client
-        return build_anthropic_client(token, base_url, timeout=get_provider_request_timeout(self.provider, self.model))
+        return build_anthropic_client(token, base_url, timeout=get_provider_request_timeout(self.provider, self.model, requested_provider=getattr(self, "requested_provider", None)))
 
     def _anthropic_oauth_flag(self, token: str) -> bool:
         """OAuth flag only on native Anthropic routes; third-party Anthropic-protocol endpoints must not trip OAuth paths."""

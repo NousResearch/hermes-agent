@@ -251,12 +251,7 @@ function createFailureHarness(): FailureHarness {
     clearTimer: () => {}
   })
 
-  const emit = (
-    target: 'window' | 'webContents',
-    kind: 'once' | 'on',
-    event: string,
-    ...args: unknown[]
-  ) => {
+  const emit = (target: 'window' | 'webContents', kind: 'once' | 'on', event: string, ...args: unknown[]) => {
     const key = `${kind}:${event}`
     const map = target === 'window' ? windowListeners : webContentsListeners
 

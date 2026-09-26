@@ -264,99 +264,99 @@
     "llamacpp-cpu": {
       "artifacts": {
         "darwin-arm64": {
-          "sha256": "e353a453cadb25960bea9b24692b72bd0a6b7b50b3bab5860bd5df8a434e7c5b",
-          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10362/llama-b10362-bin-macos-arm64.tar.gz"
+          "sha256": "033c845c1df9bf945ff37bb193238b40910b2244be3e1e637b2ceb5878f1a6f5",
+          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10964/llama-b10964-bin-macos-arm64.tar.gz"
         },
         "darwin-x64": {
-          "sha256": "007ad98aec86111c87f5a602342d9da30f410dfb2e21c35b26c338cb915196e0",
-          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10362/llama-b10362-bin-macos-x64.tar.gz"
+          "sha256": "03430a394d0a169a5e6d8f01c09f48cf58eb026af6fc95940a4a528e2e50cf38",
+          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10964/llama-b10964-bin-macos-x64.tar.gz"
         },
         "linux-arm64": {
-          "sha256": "69bddd2aa441982bb7cf79ff65faa41a82b0629ad79741b32521ce00cba5165f",
-          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10362/llama-b10362-bin-ubuntu-arm64.tar.gz"
+          "sha256": "5f0e9c95d970892e43380f82ebcab960edfd20a1cd0f7abffa13b29fdb924949",
+          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10964/llama-b10964-bin-ubuntu-arm64.tar.gz"
         },
         "linux-x64": {
-          "sha256": "d55a64e814e0a379082f79b9a974499fe14bcc6f4b491ffae23e4a2993d1b85f",
-          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10362/llama-b10362-bin-ubuntu-x64.tar.gz"
+          "sha256": "9abf88aea48a55d0f80edb1ee20220b186848cca0b4e919d71518cfd7ca67443",
+          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10964/llama-b10964-bin-ubuntu-x64.tar.gz"
         },
         "win32-arm64": {
-          "sha256": "901a5c6c680f17e17c3dae1baf134b695144e300ac1e2c3f65607401406f5c75",
-          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10362/llama-b10362-bin-win-cpu-arm64.zip"
+          "sha256": "4b6a004b076eea47c318bea35cf1db2ff2bf037738b04645646ae8d7c3159478",
+          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10964/llama-b10964-bin-win-cpu-arm64.zip"
         },
         "win32-x64": {
-          "sha256": "a9d95d26cf00664f2902f73cb0fd9b167a3a1f252294bb2f8b236305f57d6363",
-          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10362/llama-b10362-bin-win-cpu-x64.zip"
+          "sha256": "917f39c076402c421224824607397af20f53625a60defc20e8dd22446bf4c5d7",
+          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10964/llama-b10964-bin-win-cpu-x64.zip"
         }
       },
-      "version": "10362"
+      "version": "10964"
     },
     "llamacpp-cuda": {
       "artifacts": {
         "win32-arm64": [
           {
-            "sha256": "e96c44911a48f8813760b9076c7c7799db4374debb28d26a5464919bc0f27e8f",
-            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10362/llama-b10362-bin-win-cuda-13.4-arm64.zip"
+            "sha256": "93590d8c74fb2e729b06160b524ee06ebed2aed5619b8c8fbd52a431e453831c",
+            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10964/llama-b10964-bin-win-cuda-13.4-arm64.zip"
           },
           {
-            "sha256": "5a40dc7c5fa3d0a80ceeba4f16f9e8d25d87bcf1399c9233588953c43436c33c",
-            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10362/cudart-llama-bin-win-cuda-13.4-arm64.zip"
+            "sha256": "642dcde8805b3e3165ca710a5443b3b4044b27d96bd3ee3132473988c9bcb774",
+            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10964/cudart-llama-bin-win-cuda-13.4-arm64.zip"
           }
         ],
         "win32-x64": [
           {
-            "sha256": "65d74d6164ed5c8245762f6a7d646269e1c0cd6f8972e74771a43f6d2b3ce2ea",
-            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10362/llama-b10362-bin-win-cuda-13.3-x64.zip"
+            "sha256": "cd63ae76ad78a1540aa0f30f6c6284bab14c146d99a58f70c3f0a38cb9c62351",
+            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10964/llama-b10964-bin-win-cuda-13.3-x64.zip"
           },
           {
             "sha256": "1462a050eb4c684921ba51dcc4cc488a036674c3e73e9945ee705b854808d03e",
-            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10362/cudart-llama-bin-win-cuda-13.3-x64.zip"
+            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10964/cudart-llama-bin-win-cuda-13.3-x64.zip"
           }
         ]
       },
-      "version": "10362"
+      "version": "10964"
     },
     "llamacpp-hip": {
       "artifacts": {
         "linux-x64": {
-          "sha256": "8df777b54d88405fb5d8bb8207b80ae0d2051cb03f5a7dd69f4b1f67f94f3f2b",
-          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10362/llama-b10362-bin-ubuntu-rocm-7.14-x64.tar.gz"
+          "sha256": "162b9645b84fa0a354767ccb5379b1457701134dc1ff4cd8b0ecc5ccec248455",
+          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10964/llama-b10964-bin-ubuntu-rocm-10.0-x64.tar.gz"
         },
         "win32-x64": {
-          "sha256": "fcd1899e9577aa8805e761eb8feb8fde028644975b8c7270edd66c60bcceceb4",
-          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10362/llama-b10362-bin-win-rocm-7.14-x64.zip"
+          "sha256": "1f75c2a7cc64b7d4ee30f1e5a65ebec3681e4a67be788fc7251abc898f98748e",
+          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10964/llama-b10964-bin-win-rocm-10.0-x64.zip"
         }
       },
-      "version": "10362"
+      "version": "10964"
     },
     "llamacpp-metal": {
       "artifacts": {
         "darwin-arm64": {
-          "sha256": "e353a453cadb25960bea9b24692b72bd0a6b7b50b3bab5860bd5df8a434e7c5b",
-          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10362/llama-b10362-bin-macos-arm64.tar.gz"
+          "sha256": "033c845c1df9bf945ff37bb193238b40910b2244be3e1e637b2ceb5878f1a6f5",
+          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10964/llama-b10964-bin-macos-arm64.tar.gz"
         },
         "darwin-x64": {
-          "sha256": "007ad98aec86111c87f5a602342d9da30f410dfb2e21c35b26c338cb915196e0",
-          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10362/llama-b10362-bin-macos-x64.tar.gz"
+          "sha256": "03430a394d0a169a5e6d8f01c09f48cf58eb026af6fc95940a4a528e2e50cf38",
+          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10964/llama-b10964-bin-macos-x64.tar.gz"
         }
       },
-      "version": "10362"
+      "version": "10964"
     },
     "llamacpp-vulkan": {
       "artifacts": {
         "linux-arm64": {
-          "sha256": "aaa5cd203ad591ffc637535239ebd5e341fa4d272f70a976825d8823d9325b0e",
-          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10362/llama-b10362-bin-ubuntu-vulkan-arm64.tar.gz"
+          "sha256": "f7864baa0edf5a059fb42c5efb5aceb96075aa1f41e6c3142b71ca69286cb0bb",
+          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10964/llama-b10964-bin-ubuntu-vulkan-arm64.tar.gz"
         },
         "linux-x64": {
-          "sha256": "cd9dc4885a32bae4c7640454e15aeba1324fff8bb6ea003555b5b112aa16d3bc",
-          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10362/llama-b10362-bin-ubuntu-vulkan-x64.tar.gz"
+          "sha256": "55d1e58e14c11eedea090bf088fdeefbfe7b4b09ee03bf6dba9834651769afcf",
+          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10964/llama-b10964-bin-ubuntu-vulkan-x64.tar.gz"
         },
         "win32-x64": {
-          "sha256": "5da6d2c0cac199b917f0a7677c22b619750a9dd12432586d5d61457350e65a50",
-          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10362/llama-b10362-bin-win-vulkan-x64.zip"
+          "sha256": "1ee3ad952f4ba71f438bd6d7bebef19e1c7af04adcaa35d08b4ddabb27d4c642",
+          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10964/llama-b10964-bin-win-vulkan-x64.zip"
         }
       },
-      "version": "10362"
+      "version": "10964"
     },
     "node": {
       "artifacts": {

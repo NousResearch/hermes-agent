@@ -110,7 +110,9 @@ class TurnRunner:
         """Remember a delivered progress/status message id for end-of-turn cleanup."""
         ctx = self._ctx
         if ctx._cleanup_progress and getattr(result, "success", False) and getattr(result, "message_id", None):
-            ctx._cleanup_msg_ids.append(str(result.message_id))
+            message_id = str(result.message_id)
+            if message_id not in ctx._cleanup_msg_ids:  # a card update returns the same id each time
+                ctx._cleanup_msg_ids.append(message_id)
 
     def _track_future_cleanup_id(self, fut) -> None:
         try:
@@ -429,6 +431,9 @@ class TurnRunner:
                 reply_to=ctx._progress_reply_to, metadata=ctx._progress_metadata, fallback_text=st.fallback_text(),
             )
             if getattr(result, "success", False):
+                # The native card is temporary progress UI like any bubble: with cleanup_progress it
+                # is deleted after the final reply is delivered, and kept on a failed run.
+                self._track_progress_result(result)
                 return
             # P5(b): an AUTHORIZATION decline is not a broken card lane. The
             # fallback below sends the same task text to the same chat, which

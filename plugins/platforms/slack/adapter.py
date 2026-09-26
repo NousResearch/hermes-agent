@@ -1066,6 +1066,8 @@ class SlackAdapter(BasePlatformAdapter):
         self._dedup = MessageDeduplicator(ttl_seconds=_slack_dedup_ttl_seconds())
         # ts of messages already routed to the agent, so later edits don't re-trigger a reply.
         self._processed_message_ts: Dict[str, float] = {}
+        # That map starts empty here, so it cannot vouch for messages older than this adapter.
+        self._processed_message_ts_since = time.time()
         # approval / clarify message_ts (or (team_id, ts)) → resolved; blocks double-clicks.
         # Bounded: never-clicked prompts would otherwise leak forever.
         self._approval_resolved: Dict[Any, bool] = {}
@@ -4226,6 +4228,12 @@ class SlackAdapter(BasePlatformAdapter):
         edited = updated_message.get("edited")
         edited_ts = str(edited.get("ts") or "") if isinstance(edited, dict) else ""
         outer_event_ts = str(event.get("ts") or "")
+        if self._replays_message_from_before_start(
+                event, updated_message, original_message_ts, edited_ts):
+            logger.debug(
+                "[Slack] Ignoring message_changed for ts=%s: the message predates this adapter "
+                "and the change is not a new user edit", original_message_ts)
+            return None
         changed_event_ts = (
             str(event.get("event_ts") or edited_ts or "")
             or (outer_event_ts if outer_event_ts != original_message_ts else "")
@@ -4237,6 +4245,28 @@ class SlackAdapter(BasePlatformAdapter):
         if changed_event_ts:
             normalized_event["_slack_changed_event_ts"] = changed_event_ts
         return normalized_event
+
+    def _replays_message_from_before_start(
+            self, event: dict, message: dict, message_ts: str, edited_ts: str) -> bool:
+        """True when a ``message_changed`` would re-drive a message posted before this adapter
+        started. ``_processed_message_ts`` is empty after a restart, so it cannot tell whether that
+        message was already answered, and Slack emits these changes on its own (thread reply
+        metadata, agent sessions, unfurls, file state) with the text unchanged (#118349).
+        A text change, or an edit made in this very change, is still a new user action."""
+        try:
+            if not message_ts or float(message_ts) >= self._processed_message_ts_since:
+                return False
+            previous = event.get("previous_message")
+            if isinstance(previous, dict) and previous.get("text") != message.get("text"):
+                return False
+            # A user edit's change carries ``edited.ts`` equal to its own ts; an older
+            # ``edited`` block is a past edit riding along on a metadata update.
+            change_ts = str(event.get("event_ts") or event.get("ts") or "")
+            if edited_ts and (not change_ts or float(edited_ts) >= float(change_ts)):
+                return False
+        except ValueError:
+            return False
+        return True
 
     @staticmethod
     def _append_link_unfurls(text: str, slack_attachments: list) -> str:

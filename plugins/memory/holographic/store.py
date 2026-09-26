@@ -189,6 +189,41 @@ class MemoryStore:
             self._rebuild_bank(row["category"])
             return True
 
+    def record_retrieval(self, fact_ids: "list[int] | tuple[int, ...]") -> int:
+        """Increment ``retrieval_count`` for each id; returns the number of rows updated.
+
+        Call this with the facts a query actually RETURNED, not the candidates it considered, so
+        the number means "handed to a caller". Batched into one statement: a per-fact UPDATE would
+        turn a single search into N writes.
+        """
+        ids = [int(fact_id) for fact_id in fact_ids]
+        if not ids:
+            return 0
+        placeholders = ",".join("?" * len(ids))
+        cursor = self._write(
+            f"UPDATE facts SET retrieval_count = retrieval_count + 1 WHERE fact_id IN ({placeholders})",
+            tuple(ids))
+        count = getattr(cursor, "rowcount", None)
+        return count if isinstance(count, int) and count >= 0 else 0
+
+    def fact_id_for_content(self, content: str, category: "str | None" = None) -> int | None:
+        """First fact whose content is EXACTLY ``content``, or None.
+
+        Used to correlate an external memory write with the fact mirroring it -- a 'replace' or
+        'remove' arrives as new text plus the previous text, and the previous text is what
+        identifies the row to amend.
+
+        ``category`` scopes the lookup because ``facts.content`` is UNIQUE across the whole table:
+        the same text in two categories is ONE row, so a target-blind lookup would let a removal
+        from one memory target delete a fact another target still mirrors.
+        """
+        if category is None:
+            row = self._one("SELECT fact_id FROM facts WHERE content = ? ORDER BY fact_id LIMIT 1", (content,))
+        else:
+            row = self._one("SELECT fact_id FROM facts WHERE content = ? AND category = ? ORDER BY fact_id LIMIT 1",
+                            (content, category))
+        return int(row["fact_id"]) if row is not None else None
+
     def list_facts(self, category: str | None = None, min_trust: float = 0.0, limit: int = 50) -> list[dict]:
         """Browse facts ordered by trust_score descending, optionally filtered by category / min trust."""
         with self._lock:

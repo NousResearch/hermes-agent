@@ -54,6 +54,9 @@ def _handle_rpc_request(request: dict, *, allowed_tools: frozenset, tool_call_co
     if tool_name == "terminal" and isinstance(tool_args, dict):
         for param in _TERMINAL_BLOCKED_PARAMS:
             tool_args.pop(param, None)
+    # Count admission, not completion: the enclosing script can time out and
+    # return its usage while a dispatched handler is still running.
+    tool_call_counter[0] += 1
     # Silence handler status prints so they don't leak into the CLI spinner.
     try:
         with thread_scoped_silence():
@@ -61,7 +64,6 @@ def _handle_rpc_request(request: dict, *, allowed_tools: frozenset, tool_call_co
     except Exception as exc:
         logger.error("Tool call failed in %s: %s", where, exc, exc_info=True)
         result = tool_error(str(exc))
-    tool_call_counter[0] += 1
     tool_call_log.append({"tool": tool_name, "args_preview": str(tool_args)[:80],
                           "duration": round(time.monotonic() - call_start, 2)})
     return result

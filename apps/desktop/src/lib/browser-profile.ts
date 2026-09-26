@@ -9,8 +9,10 @@ interface BrowserProfileOptions {
   openWindow: (target: URL) => Promise<{ ok: true }>
 }
 
+// A tab without `?profile=` boots on this origin's saved default, so a named
+// profile — Default included — is always written out; only null clears it.
 function setUrlProfile(url: URL, profile: string | null): void {
-  if (profile && profile !== 'default') {
+  if (profile) {
     url.searchParams.set('profile', profile)
   } else {
     url.searchParams.delete('profile')

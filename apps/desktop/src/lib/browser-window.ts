@@ -76,11 +76,11 @@ export function sessionWindowTarget(
   const target = new URL(currentHref)
   target.searchParams.set('win', 'secondary')
 
+  // Written out even for Default: without `?profile=` the window boots on
+  // this origin's saved default, which may be another profile.
   const profile = opts?.profile?.trim()
 
-  if (profile === 'default') {
-    target.searchParams.delete('profile')
-  } else if (profile) {
+  if (profile) {
     target.searchParams.set('profile', profile)
   }
 

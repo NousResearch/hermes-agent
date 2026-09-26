@@ -87,6 +87,11 @@ export function createBrowserConnectionBridge({ api, bootstrap }: BrowserConnect
   | 'oauthLogoutConnectionConfig'
   | 'testConnectionConfig'
 > {
+  // The window's own backend is the profile this tab booted on. A live switch
+  // rewrites `?profile=` so a reload lands where the user is, but reconnecting
+  // the window's primary socket must not follow it onto another profile.
+  const windowProfile = windowProfileOverride()
+
   const getGatewayWsUrl = async (profile?: null | string) => {
     try {
       return {
@@ -137,7 +142,7 @@ export function createBrowserConnectionBridge({ api, bootstrap }: BrowserConnect
     },
     // Reconnect belongs to the window, not whichever secondary profile is active.
     // Explicit null still selects the default backend.
-    getConnection: async (profile: null | string = windowProfileOverride()) => connectionFor(bootstrap, profile),
+    getConnection: async (profile: null | string = windowProfile) => connectionFor(bootstrap, profile),
     getConnectionConfig: async (profile?: null | string) => browserConnectionConfig(bootstrap, profile),
     getConnectionFor: async (payload: { connectionId?: null | string; profile?: null | string }) => {
       requireBrowserConnection(payload.connectionId)

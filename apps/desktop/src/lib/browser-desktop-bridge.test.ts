@@ -296,10 +296,14 @@ describe('browser-hosted Desktop bridge', () => {
     expect(url.searchParams.get('profile')).toBe('research')
     expect(url.hash).toBe('#/session-1')
 
+    // Default is written out: a bare URL boots on the origin's saved default.
     await expect(win.hermesDesktop!.profile.remember('default')).resolves.toEqual({ profile: 'default' })
     url = new URL(window.location.href)
-    expect(url.searchParams.has('profile')).toBe(false)
+    expect(url.searchParams.get('profile')).toBe('default')
     expect(url.hash).toBe('#/session-1')
+
+    await win.hermesDesktop!.profile.remember(null)
+    expect(new URL(window.location.href).searchParams.has('profile')).toBe(false)
   })
 
   it('opens session windows on the owning profile HashRouter route with spectator flags before the hash', async () => {
@@ -365,7 +369,7 @@ describe('browser-hosted Desktop bridge', () => {
     { expectedProfile: 'work', name: 'undefined', opts: { profile: undefined } },
     { expectedProfile: 'work', name: 'null', opts: { profile: null } },
     { expectedProfile: 'work', name: 'blank', opts: { profile: '   ' } },
-    { expectedProfile: null, name: 'default', opts: { profile: 'default' } },
+    { expectedProfile: 'default', name: 'default', opts: { profile: 'default' } },
     { expectedProfile: 'research', name: 'trimmed non-default', opts: { profile: ' research ' } }
   ])('resolves a $name session-window profile against the ambient launch URL', async ({ expectedProfile, opts }) => {
     const win = mutableWindow()

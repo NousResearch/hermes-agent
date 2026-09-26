@@ -87,7 +87,7 @@ it('opens the requested profile on this host without carrying another session or
   expect(target.hash).toBe('#/')
 
   await window.hermesDesktop.openWindow({ connectionId: null, profile: 'default' })
-  expect(new URL(String(open.mock.calls[1][0])).searchParams.has('profile')).toBe(false)
+  expect(new URL(String(open.mock.calls[1][0])).searchParams.get('profile')).toBe('default')
   open.mockClear()
   await expect(window.hermesDesktop.openWindow({ connectionId: 'another-host', profile: 'research' })).rejects.toThrow(
     'No connection with id'

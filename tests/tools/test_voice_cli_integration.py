@@ -236,6 +236,38 @@ class TestVoiceRecordHotkeyReal:
         assert cli._tui_prepare_voice_text_prompt(event) is False
         assert cli._voice_text_prompt_target is None
 
+    def test_unknown_connection_field_type_does_not_accept_voice(self):
+        cli = self._idle_cli()
+        cli._connection_state = {
+            "phase": "form",
+            "field_index": 0,
+            "fields": [{"name": "VALUE", "type": "masked"}],
+        }
+        event = SimpleNamespace(app=MagicMock())
+
+        assert cli._tui_prepare_voice_text_prompt(event) is False
+        assert cli._voice_text_prompt_target is None
+
+    def test_prompt_attention_does_not_dictate_into_selection_prompt(self):
+        cli = self._idle_cli()
+        cli._app = MagicMock(loop=None)
+        cli._tui_handle_voice_record = MagicMock()
+        cli._clarify_state = {"choices": ["yes", "no"], "voice_safe": False}
+
+        cli._prompt_attention_voice()
+
+        cli._tui_handle_voice_record.assert_not_called()
+
+    def test_prompt_attention_dictates_only_into_explicit_safe_text_prompt(self):
+        cli = self._idle_cli()
+        cli._app = MagicMock(loop=None)
+        cli._tui_handle_voice_record = MagicMock()
+        cli._clarify_state = {"choices": [], "voice_safe": True}
+
+        cli._prompt_attention_voice()
+
+        cli._tui_handle_voice_record.assert_called_once()
+
 class TestEnableVoiceModeReal:
     """Tests _enable_voice_mode with real CLI instance."""
 
@@ -249,6 +281,7 @@ class TestEnableVoiceModeReal:
         cli = _make_voice_cli()
         cli._enable_voice_mode()
         assert cli._voice_mode is True
+        assert cli._voice_enabled_at_monotonic is not None
 
 
     @patch("cli._cprint")
@@ -261,6 +294,18 @@ class TestEnableVoiceModeReal:
         cli = _make_voice_cli()
         cli._enable_voice_mode()
         assert cli._voice_mode is True
+        assert cli._voice_enabled_at_monotonic is not None
+
+    @patch("cli._cprint")
+    @patch("cli.threading.Thread")
+    def test_disable_clears_prompt_attention_recency(self, _thread, _cp):
+        cli = _make_voice_cli()
+        cli._voice_mode = True
+        cli._voice_enabled_at_monotonic = 123.0
+
+        cli._disable_voice_mode()
+
+        assert cli._voice_enabled_at_monotonic is None
 
 
 class TestVoiceBeepConfigReal:

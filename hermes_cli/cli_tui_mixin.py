@@ -999,7 +999,7 @@ class CLITuiMixin:
         if state and state.get("phase") in {"form", "failed"}:
             fields = state.get("fields") or []
             index = state.get("field_index", 0)
-            if 0 <= index < len(fields) and fields[index].get("type") != "secret":
+            if 0 <= index < len(fields) and fields[index].get("type") == "plain":
                 self._voice_text_prompt_target = ("connection", state, index)
                 event.app.invalidate()
                 return True
@@ -1031,7 +1031,7 @@ class CLITuiMixin:
                 fields = state.get("fields") or []
                 index = rest[0]
                 if (state.get("phase") in {"form", "failed"} and state.get("field_index") == index
-                        and 0 <= index < len(fields) and fields[index].get("type") != "secret"):
+                        and 0 <= index < len(fields) and fields[index].get("type") == "plain"):
                     buf.reset()
                     getattr(self, "_connection_set_field")(text)
                     delivered[0] = True
@@ -1090,7 +1090,7 @@ class CLITuiMixin:
         branch, leaving the chat frozen (#14026).
         """
         if not (self._sudo_state or self._secret_state or self._approval_state
-                or self._clarify_state or self._connection_state):
+                or self._clarify_state or self._connection_state or self._slash_confirm_state):
             return False
         self._clear_active_overlays_for_interrupt()
         event.app.current_buffer.reset()

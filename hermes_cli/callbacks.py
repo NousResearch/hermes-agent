@@ -64,14 +64,22 @@ def prompt_for_secret(cli, var_name: str, prompt: str, metadata=None) -> dict:
         return _secret_result(var_name, value)
 
     response_queue = queue.Queue()
+    attention_lease = cli._acquire_prompt_attention() if hasattr(cli, "_acquire_prompt_attention") else None
     cli._secret_state = {
         "var_name": var_name,
         "prompt": prompt,
         "metadata": metadata or {},
-        "response_queue": response_queue}
-    cli._secret_deadline = _time.monotonic() + 120
+        "response_queue": response_queue,
+        "prompt_attention_lease": attention_lease}
+    cli._secret_deadline = None
     if hasattr(cli, "_ring_bell"):
-        cli._ring_bell(prompt=True, context=f"secret needed ({var_name})")
+        cli._ring_bell(
+            prompt=True,
+            context=f"secret needed ({var_name})",
+            attention_lease=attention_lease,
+            acquire_attention=False,
+        )
+    cli._secret_deadline = _time.monotonic() + 120
     _clear_secret_input(cli)
     _invalidate(cli)
 
@@ -86,12 +94,22 @@ def prompt_for_secret(cli, var_name: str, prompt: str, metadata=None) -> dict:
         cli._secret_state = None
         cli._secret_deadline = 0
         _invalidate(cli)
+        if attention_lease is not None:
+            if hasattr(cli, "_release_prompt_attention"):
+                cli._release_prompt_attention(attention_lease)
+            else:
+                attention_lease.release()
         return _secret_result(var_name, value)
 
     cli._secret_state = None
     cli._secret_deadline = 0
     _clear_secret_input(cli)
     _invalidate(cli)
+    if attention_lease is not None:
+        if hasattr(cli, "_release_prompt_attention"):
+            cli._release_prompt_attention(attention_lease)
+        else:
+            attention_lease.release()
     cprint(f"\n{_DIM}  ⏱ Timeout — secret capture cancelled{_RST}")
     return _skipped(var_name, "timeout", "Secret setup timed out and was skipped.")
 

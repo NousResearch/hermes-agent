@@ -47,6 +47,8 @@ class CLIInitMixin:
         self.resume_display = display.get("resume_display", "full")  # "full" | "minimal"
         self.bell_on_complete = display.get("bell_on_complete", False)
         self.bell_on_prompt = display.get("bell_on_prompt", False)  # bell when a blocking modal opens
+        prompt_attention = display.get("prompt_attention")
+        self.prompt_attention_config = prompt_attention if isinstance(prompt_attention, dict) else {}
         self.show_reasoning = display.get("show_reasoning", True)
         self.reasoning_full = display.get("reasoning_full", False)
         _configure_output_history(
@@ -437,6 +439,7 @@ class CLIInitMixin:
         self._voice_last_tts_text = ""  # echo guard
         self._voice_barge_phase = None  # "generation" | "playback"
         self._voice_text_prompt_target = None  # exact clarify/connection field that started dictation
+        self._voice_enabled_at_monotonic: float | None = None  # explicit /voice or record-hotkey enable time
 
         self._status_bar_visible = _status_bar_visible_from_display_config(CLI_CONFIG.get("display"))
         self._battery_visible = bool(CLI_CONFIG["display"].get("battery", False))

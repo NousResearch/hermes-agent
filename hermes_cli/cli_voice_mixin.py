@@ -509,6 +509,7 @@ class CLIVoiceMixin:
 
         with self._voice_lock:
             self._voice_mode = True
+            self._voice_enabled_at_monotonic = time.monotonic()
         if _config_section("voice").get("auto_tts", False):
             with self._voice_lock:
                 self._voice_tts = True
@@ -568,6 +569,7 @@ class CLIVoiceMixin:
                 self._voice_recording = False
             recorder = self._voice_recorder
             self._voice_mode = False
+            self._voice_enabled_at_monotonic = None
             self._voice_tts = False
             self._voice_continuous = False
 

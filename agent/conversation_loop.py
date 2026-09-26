@@ -1474,6 +1474,9 @@ def _run_api_retry_loop(agent, s: _LoopState) -> Optional[Dict[str, Any]]:
         if _ng.action == "break":
             return None
         try:
+            if agent.api_mode == "codex_responses":
+                from agent.provider_reasoning import prepare_client_reasoning
+                prepare_client_reasoning(getattr(agent, "client", None), provider=getattr(agent, "provider", None))
             _run_phase(build_api_request, agent, s)
             if _run_phase(perform_api_call, agent, s).action == "break":
                 return None

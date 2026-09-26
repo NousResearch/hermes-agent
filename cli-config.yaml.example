@@ -311,6 +311,14 @@ model:
 #                             # executor paths stay in sync; human waits
 #                             # (approval prompts, clarify) never count against it.
 
+# xAI discovers supported reasoning levels from its authenticated /models catalog.
+# Optional escape hatch for private models or endpoints without capability metadata:
+# model_overrides:
+#   xai:
+#     grok-4.7:
+#       supported_reasoning_efforts: [low, medium, high, xhigh]
+# Empty [] omits the effort parameter; agent.reasoning_effort still selects the requested level.
+
 # =============================================================================
 # OpenRouter Provider Routing (only applies when using OpenRouter)
 # =============================================================================

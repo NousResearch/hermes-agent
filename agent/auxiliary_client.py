@@ -193,7 +193,10 @@ def _create_openai_client(*, api_key: str, base_url: str, **kwargs: Any) -> Any:
     # SDK-internal retries by default and let Hermes control the budget; explicit callers can still override
     # via kwargs.
     kwargs.setdefault("max_retries", 0)
-    return OpenAI(api_key=api_key, base_url=base_url, **kwargs)
+    client = OpenAI(api_key=api_key, base_url=base_url, **kwargs)
+    from agent.provider_reasoning import prepare_client_reasoning
+    prepare_client_reasoning(client)
+    return client
 
 
 # Interrupt protection for atomic aux tasks: a compression summary killed by an ordinary
@@ -1397,6 +1400,7 @@ class _CodexCompletionsAdapter:
     def __init__(self, real_client: OpenAI, model: str):
         self._client = real_client
         self._model = model
+        self._reasoning_warning_state: set = set()
 
     def _build_responses_kwargs(self, kwargs: Dict[str, Any]) -> Tuple[Dict[str, Any], str, Any]:
         """chat.completions kwargs → Responses API kwargs, ``(resp_kwargs, model, timeout)``; mirrors codex.py::build_kwargs."""
@@ -1422,7 +1426,8 @@ class _CodexCompletionsAdapter:
         host = str(getattr(self._client, "base_url", "") or "")
         is_copilot = base_url_host_matches(host, "githubcopilot.com")
         # Same route classifier as the main transport, so the issuer stamp matches what it minted.
-        route = classify_responses_route(SimpleNamespace(provider=None, base_url=host))
+        route = classify_responses_route(SimpleNamespace(
+            provider=getattr(self._client, "_hermes_aux_effective_provider", None), base_url=host))
         is_xai = route.is_xai_responses
         is_github = route.is_github_responses
         tools = kwargs.get("tools")
@@ -1504,7 +1509,7 @@ class _CodexCompletionsAdapter:
             if isinstance(service_tier, str) and service_tier.strip() and not is_xai:
                 resp_kwargs["service_tier"] = service_tier.strip()
             reasoning_cfg = extra_body.get("reasoning")
-            if isinstance(reasoning_cfg, dict):
+            if isinstance(reasoning_cfg, dict) and not is_xai:
                 # Shared per-model vocabulary with the main transport ("max" is gpt-5.6-only; "minimal"/"ultra"
                 # rejected; ``()`` = the model takes no ``reasoning`` field at all — gpt-4o/4.1 on api.openai.com,
                 # #76255). ``enabled: False`` goes on the wire as ``effort: none`` where the vocabulary has it,
@@ -1519,6 +1524,11 @@ class _CodexCompletionsAdapter:
                     resp_kwargs["include"] = ["reasoning.encrypted_content"]
                 elif "none" in supported and not is_xai:
                     resp_kwargs["reasoning"] = {"effort": "none"}
+        if is_xai:
+            from agent.provider_reasoning import xai_auxiliary_reasoning_fields
+            resp_kwargs.update(xai_auxiliary_reasoning_fields(
+                self._client, model, extra_body, self._reasoning_warning_state,
+            ))
         if wire_tools:
             resp_kwargs["tools"] = wire_tools
         if wire_aliases:
@@ -1564,6 +1574,8 @@ class _CodexCompletionsAdapter:
         # Low-level ``responses.create(stream=True)`` and assemble the final response ourselves
         # from ``response.output_item.done``: the high-level ``responses.stream()`` rebuilds from
         # ``response.completed.response.output``, which Codex returns as ``null`` (SDK crash).
+        from agent.provider_reasoning import prepare_client_reasoning
+        prepare_client_reasoning(self._client, provider=getattr(self._client, "_hermes_aux_effective_provider", None))
         resp_kwargs, model, timeout = self._build_responses_kwargs(kwargs)
         wire_aliases = resp_kwargs.pop("_wire_aliases", None) or {}
         total_timeout = timeout if isinstance(timeout, (int, float)) and timeout > 0 else None
@@ -4932,6 +4944,10 @@ def _wrap_transport(req: _ResolveRequest, client_obj: Any, final_model_str: str,
         )
     )
     if needs_codex:
+        from agent.provider_reasoning import prepare_client_reasoning
+        # Keep the selected provider on the leaf used by the adapter, including proxies.
+        client_obj._hermes_aux_effective_provider = req.provider
+        prepare_client_reasoning(client_obj, provider=req.provider)
         logger.debug("resolve_provider_client: wrapping client in CodexAuxiliaryClient "
                      "(api_mode=%s, model=%s, base_url=%s)",
                      req.api_mode or "auto-detected", final_model_str, base_url_str[:60] if base_url_str else "")

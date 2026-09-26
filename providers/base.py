@@ -276,6 +276,14 @@ class ProviderProfile:
         """
         return self.default_max_tokens
 
+    def prepare_reasoning_catalog(self, *, api_key: str | None, base_url: str) -> "ProviderProfile":
+        """Return a route-bound profile before inference; the registry singleton must stay unchanged.
+
+        Providers may cold-load their catalog here. Request builders only consult the returned
+        profile's cache-only supported_reasoning_efforts hook. Default: no preparation needed.
+        """
+        return self
+
     def supported_reasoning_efforts(
         self, model: str | None
     ) -> tuple[str, ...] | None:

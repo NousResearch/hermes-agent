@@ -12,7 +12,7 @@ from typing import Any, Callable, Optional
 
 from agent.reasoning_effort import (
     CODEX_ASTRA_EFFORTS, CODEX_LEGACY_EFFORTS,
-    XAI_GROK46_EFFORTS, XAI_LEGACY_EFFORTS, clamp_effort, is_astra_model,
+    clamp_effort, is_astra_model,
     # Same declared vocabulary + shared clamp as the main Codex transport (agent.reasoning_effort):
     # per-model — "max" is gpt-5.6-only, "minimal"/"ultra" always rejected (live-verified, #68365).
     codex_supported_efforts,
@@ -298,10 +298,21 @@ def _resolve_reasoning(model: str, params: dict[str, Any]) -> tuple[Any, bool]:
     # repeatedly leaked internal levels like "ultra" to the wire (#89503 class) or clamped one rung below a
     # model's real ceiling (#87279).
     if params.get("is_xai_responses", False):
-        from agent.model_metadata import is_grok_46_family
-
-        # Grok 4.6 accepts xhigh; older Grok tops out at high.
-        supported = XAI_GROK46_EFFORTS if is_grok_46_family(model) else XAI_LEGACY_EFFORTS
+        from providers import get_provider_profile
+        profile = params.get("reasoning_profile") or get_provider_profile("xai")
+        supported = profile.supported_reasoning_efforts(model) if profile is not None else None
+        if supported is None:
+            warned = params.get("reasoning_warning_state")
+            if reasoning_config and isinstance(warned, set) and not warned:
+                warned.add("unknown-effort")
+                logger.warning(
+                    "Cannot confirm the requested reasoning effort for %s; omitting the parameter. "
+                    "Set model_overrides.xai.%s.supported_reasoning_efforts if the catalog lacks capabilities.",
+                    model, model,
+                )
+            return None, reasoning_enabled
+        if not supported:
+            return None, False
     else:
         base_url = params.get("base_url")
         is_codex_backend = params.get("is_codex_backend") is True
@@ -580,11 +591,12 @@ def _reasoning_fields(
     """
     include = ["reasoning.encrypted_content"] if replay_encrypted_reasoning else []
     fields: dict[str, Any] = {}
-    if enabled and is_xai_responses:
-        from agent.model_metadata import grok_supports_reasoning_effort
-
-        fields["include"] = include
-        if grok_supports_reasoning_effort(model):
+    if is_xai_responses:
+        # No effort dial does not imply no native reasoning: preserve encrypted replay.
+        config = params.get("reasoning_config") or {}
+        if config.get("enabled") is not False or effort == "none":
+            fields["include"] = include
+        if effort is not None and (enabled or effort == "none"):
             fields["reasoning"] = {"effort": effort}
     elif enabled:
         if is_github_responses:

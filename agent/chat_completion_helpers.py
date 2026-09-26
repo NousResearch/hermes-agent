@@ -1452,6 +1452,8 @@ def _build_codex_kwargs(agent, api_messages, tools_for_api, reasoning_config, re
     ephemeral_out = _consume_ephemeral_max_output(agent)
     return agent._get_transport().build_kwargs(model=agent.model,
         messages=agent._prepare_messages_for_non_vision_model(api_messages), tools=tools_for_api,
+        reasoning_profile=getattr(getattr(agent, "client", None), "_hermes_reasoning_profile", None),
+        reasoning_warning_state=agent.__dict__.setdefault("_reasoning_warning_state", set()),
         reasoning_config=reasoning_config, session_id=getattr(agent, "session_id", None),
         cache_scope_id=cache_scope_id, base_url=agent.base_url,
         max_tokens=ephemeral_out if ephemeral_out is not None else agent.max_tokens,

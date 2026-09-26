@@ -1820,6 +1820,41 @@ Compression and fallback model settings are config.yaml-only. (`AUXILIARY_WEB_EX
 Run `hermes config` to see your current auxiliary model settings. Overrides only show up when they differ from the defaults.
 :::
 
+### xAI reasoning capabilities
+
+Hermes reads `capabilities.reasoning_effort` and published aliases from your authenticated
+xAI `/v1/models` catalog before the first inference. Newly listed models therefore inherit
+supported levels without a Hermes release. Main and auxiliary Responses calls use the same
+resolver; Hermes clamps a requested level to the supported vocabulary.
+
+An explicit per-model override wins over the catalog:
+
+```yaml
+model_overrides:
+  xai:
+    grok-4.7:
+      supported_reasoning_efforts: [low, medium, high, xhigh]
+agent:
+  reasoning_effort: xhigh
+```
+
+The override describes accepted API levels, while `agent.reasoning_effort` chooses the request.
+An empty list omits the effort parameter; it does not imply that the model stops reasoning.
+Missing or invalid metadata falls back to historical model compatibility. Invalid overrides
+are ignored with a warning. Existing `_default` overrides only fill gaps for unknown models.
+If Hermes cannot confirm an explicitly requested effort, it warns once per session and omits
+that parameter; an explicit override can unblock a private model.
+
+Catalogs are cached in memory for 20 minutes, separately for each Hermes profile, endpoint,
+and credential. Cold initialization waits at most five seconds; expired data remains usable
+while a background refresh runs, and failed refreshes back off for five minutes. Credentials
+and catalog caches are not written to disk. Request construction never fetches the catalog.
+Existing sessions do not change their system prompt or tool definitions when capabilities refresh.
+
+This replaces per-version reasoning exceptions such as the Grok 4.6 fix in
+[PR #85510](https://github.com/NousResearch/hermes-agent/pull/85510).
+Priority Processing and `/fast` retain their existing behavior.
+
 ## Reasoning Effort
 
 Control how much "thinking" the model does before responding:

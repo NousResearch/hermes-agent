@@ -113,3 +113,32 @@ def test_verifier_cli(tmp_path, changes, expect, error):
                             env=env, capture_output=True, text=True, timeout=30)
     assert result.returncode == (1 if error else 0), result.stderr
     assert error in result.stderr if error else "stamp verified" in result.stdout
+
+
+def test_git_helper_decodes_output_explicitly_as_utf8(tmp_path, monkeypatch):
+    """The verifier's git helper carries the same cp936 hazard as the writer's.
+
+    ``text=True`` without ``encoding=`` decodes git's stdout through the
+    platform code page (cp936 on Chinese Windows). The reader thread dies on
+    the first byte it cannot map and the caller sees a *successful* command
+    with no output — which is exactly what makes a healthy checkout look like
+    it has no identity at all, so the decode must be pinned here too.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("verify_bootstrap_version_stamp", _SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    recorded: dict = {}
+
+    def fake_run(*args, **kwargs):
+        recorded.update(kwargs)
+        return subprocess.CompletedProcess(args, 0, stdout="abc123\n", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert module._git(tmp_path, "rev-parse", "HEAD") == "abc123"
+    assert recorded.get("encoding") == "utf-8"
+    assert recorded.get("errors") == "replace"

@@ -80,7 +80,8 @@ def _fail(errors: list[str], message: str) -> None:
 def _git(repo: Path, *args: str) -> str | None:
     try:
         result = subprocess.run(
-            [_GIT, *args], cwd=str(repo), capture_output=True, text=True, timeout=15
+            [_GIT, *args], cwd=str(repo), capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=15,
         )
     except (OSError, subprocess.SubprocessError):
         return None

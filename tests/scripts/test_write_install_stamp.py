@@ -104,3 +104,29 @@ def test_packaged_identity_never_falls_back_to_project_metadata(tmp_path, monkey
     )
 
     assert stamp["baseVersion"] == stamp["displayVersion"] == "1.2.3"
+
+
+def test_run_git_decodes_output_explicitly_as_utf8(tmp_path, monkeypatch):
+    """An unencoded ``text=True`` blanks git output on a non-UTF-8 code page.
+
+    Without ``encoding=``, subprocess decodes the child's stdout through
+    ``locale.getpreferredencoding()`` — cp936/GBK on Chinese Windows. The
+    reader thread then dies on the first byte that code page cannot map (an em
+    dash in ``git show <tag>:pyproject.toml`` is enough), and the caller sees a
+    *successful* command that produced nothing. That is how a build stamps
+    ``baseVersion: "unknown"`` and the desktop later renders ``vunknown``, so
+    the git helper must pin the decode explicitly.
+    """
+    from scripts import write_install_stamp
+
+    recorded: dict = {}
+
+    def fake_run(*args, **kwargs):
+        recorded.update(kwargs)
+        return subprocess.CompletedProcess(args, 0, stdout="abc123\n", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert write_install_stamp._run_git("rev-parse", "HEAD", cwd=tmp_path) == "abc123"
+    assert recorded.get("encoding") == "utf-8"
+    assert recorded.get("errors") == "replace"

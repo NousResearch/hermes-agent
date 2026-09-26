@@ -66,7 +66,8 @@ FALLBACK_COMMIT = "0" * 40
 def _run_git(*args: str, cwd: str | Path = _REPO_ROOT) -> str | None:
     try:
         result = subprocess.run(
-            ["git", *args], capture_output=True, text=True, timeout=5, cwd=str(cwd)
+            ["git", *args], capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=5, cwd=str(cwd),
         )
     except (OSError, subprocess.SubprocessError):
         return None

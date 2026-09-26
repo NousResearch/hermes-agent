@@ -204,7 +204,9 @@ test('startup reap stops at the deadline and preserves the unprocessed records',
   assert.deepEqual(parseBackendOwnership(store.value()), [second])
 })
 
-test('startup reap rotates unprocessed records ahead of survivors so trailing orphans are not starved', async ({ onTestFinished }) => {
+test('startup reap rotates unprocessed records ahead of survivors so trailing orphans are not starved', async ({
+  onTestFinished
+}) => {
   const now = vi.spyOn(Date, 'now').mockReturnValue(0)
   onTestFinished(() => now.mockRestore())
   const dead = ownershipEntry({ pid: 64 })

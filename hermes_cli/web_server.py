@@ -221,10 +221,18 @@ async def _lifespan(app: "FastAPI"):
         # one that would race the same credential (#77276). Runs
         # unconditionally; protection of a healthy standalone gateway lives
         # INSIDE the reaper (registration probed with cleanup_stale=False).
+        # The grace covers the one race this call site creates: a gateway launched
+        # moments ago by the previous Desktop generation (or a concurrent start)
+        # is scan-visible but has not claimed gateway.pid/gateway.lock yet, and the
+        # argv sweep would reap it — writing a planned-stop marker that the booting
+        # gateway consumes seconds later, exiting 0 with no supervisor to revive it
+        # (#122533). Same rule the serve-process reaper applies to an unrecorded
+        # sibling (hermes_cli.dashboard_procs._REAP_MIN_AGE_SECONDS).
         try:
+            from hermes_cli.dashboard_procs import _REAP_MIN_AGE_SECONDS
             from hermes_cli.gateway import _reap_unsupervised_gateway_orphans
 
-            _reap_unsupervised_gateway_orphans()
+            _reap_unsupervised_gateway_orphans(min_age_s=_REAP_MIN_AGE_SECONDS)
         except Exception:
             _log.exception("Desktop startup: orphan gateway reap failed")
 

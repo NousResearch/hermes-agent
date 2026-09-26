@@ -1002,13 +1002,21 @@ async def test_failed_paused_new_preserves_old_session_resources(native_env, mon
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("boundary", ["primary", "binding"])
-@pytest.mark.parametrize("command", ["new", "resume", "compress", "sessions"])
+@pytest.mark.parametrize(("command", "manual_only"), [
+    ("new", False), ("resume", False), ("compress", False), ("sessions", False),
+    ("resume", True), ("sessions", True),
+])
 @pytest.mark.parametrize("fail", [False, True])
 async def test_native_recovery_owns_admission_through_cancelled_commit(
-    native_env, monkeypatch, command, boundary, fail,
+    native_env, monkeypatch, command, manual_only, boundary, fail,
 ):
     e = native_env
-    mark(e)
+    if manual_only:
+        assert e.store.set_session_metadata(e.key, "manual_fallback_index", 0,
+                                           require_primary=True,
+                                           expected_session_id=e.entry.session_id)
+    else:
+        mark(e)
     pin = {"model": "previous-model", "provider": "custom",
            "base_url": "https://previous-provider.invalid/v1"}
     if command in {"resume", "sessions"}:
@@ -1056,7 +1064,9 @@ async def test_native_recovery_owns_admission_through_cancelled_commit(
     assert lease.released
     persisted = reload_entry(e)
     assert persisted is not None
-    assert persisted.compression_paused is (fail and boundary == "primary")
+    assert persisted.compression_paused is (not manual_only and fail and boundary == "primary")
+    if manual_only:
+        assert ("manual_fallback_index" in persisted.metadata) is (fail and boundary == "primary")
     if command in {"resume", "sessions"}:
         if fail and boundary == "primary":
             assert persisted.session_id == e.entry.session_id

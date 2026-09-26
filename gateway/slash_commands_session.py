@@ -1103,7 +1103,8 @@ class GatewaySessionCommandsMixin:
         current_entry = await self.async_session_store.get_or_create_session(source)
         if current_entry.session_id == target_id:
             return t("gateway.resume.already_on", name=name)
-        if getattr(current_entry, "compression_paused", False) is True:
+        if (getattr(current_entry, "compression_paused", False) is True
+                or "manual_fallback_index" in (getattr(current_entry, "metadata", None) or {})):
             async def commit_switch():
                 entry = await self.async_session_store.switch_session(
                     session_key, target_id, clear_model_override=True,

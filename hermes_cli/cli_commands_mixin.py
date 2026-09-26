@@ -2385,7 +2385,7 @@ class CLICommandsMixin:
             from hermes_cli.skin_engine import list_skins, set_active_skin, get_active_skin_name
         except ImportError:
             return print("Skin engine not available.")
-        new_skin = _command_arg(cmd).lower()
+        new_skin = _command_arg(cmd)
         if not new_skin:  # show current skin and list available
             current = get_active_skin_name()
             _pr(f"\n  Current skin: {current}", "  Available skins:")
@@ -2396,6 +2396,10 @@ class CLICommandsMixin:
             return _pr("\n  Usage: /skin <name>",
                        f"  Custom skins: drop a YAML file in {display_hermes_home()}/skins/\n")
         available = {s["name"] for s in list_skins()}
+        # Built-ins are lowercase but a user skin keeps its own case (`MyTheme`): an exact name
+        # wins, else a case-insensitive match switches to the listed spelling.
+        if new_skin not in available:
+            new_skin = next((n for n in sorted(available) if n.lower() == new_skin.lower()), new_skin)
         if new_skin not in available:
             return _pr(f"  Unknown skin: {new_skin}",
                        f"  Available: {', '.join(sorted(available))}")

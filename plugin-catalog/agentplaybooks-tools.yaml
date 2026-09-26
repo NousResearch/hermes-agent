@@ -1,6 +1,6 @@
 name: agentplaybooks-tools
 repo: https://github.com/matebenyovszky/agentplaybooks
-sha: abef0ef9ba94e26ae9ffd38c53ebbc065feb54d0
+sha: 54e144ff3ee91b24cc1c3739cd1e4f1ff6907490
 subdir: packages/hermes-portable/agentplaybooks-tools
 description: "Connect AgentPlaybooks skills and hosted MCP/OpenAPI tools to Hermes, with guided authentication and API-key setup. Requires Node.js 20+ and @agentplaybooks/cli@0.5.0; the CLI is installed separately."
 maintainer: matebenyovszky
@@ -8,8 +8,8 @@ tier: community
 category: tools
 requires_hermes: ">=0.21.4"
 version: "0.1.0"
-docs_url: https://github.com/matebenyovszky/agentplaybooks/tree/abef0ef9ba94e26ae9ffd38c53ebbc065feb54d0/packages/hermes-portable/agentplaybooks-tools
-image: https://raw.githubusercontent.com/matebenyovszky/agentplaybooks/abef0ef9ba94e26ae9ffd38c53ebbc065feb54d0/public/plugin-catalog/hermes-tools.png
+docs_url: https://github.com/matebenyovszky/agentplaybooks/tree/54e144ff3ee91b24cc1c3739cd1e4f1ff6907490/packages/hermes-portable/agentplaybooks-tools
+image: https://raw.githubusercontent.com/matebenyovszky/agentplaybooks/54e144ff3ee91b24cc1c3739cd1e4f1ff6907490/public/plugin-catalog/hermes-tools.png
 readme: true
 platforms: [linux, macos, windows]
 capabilities:

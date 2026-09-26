@@ -564,6 +564,10 @@ def read_board_metadata(board: Optional[str] = None) -> dict:
         "project_id": None,
         "created_at": None,
         "archived": False,
+        # Dispatch pause: the dispatcher still reclaims/promotes but spawns no
+        # new worker; running workers are left alone. Read on every tick.
+        "paused": False,
+        "paused_reason": "",
     }
     try:
         p = board_metadata_path(slug)
@@ -584,6 +588,7 @@ def write_board_metadata(
     board: Optional[str], *, name: Optional[str] = None, description: Optional[str] = None,
     icon: Optional[str] = None, color: Optional[str] = None, archived: Optional[bool] = None,
     default_workdir: Optional[str] = None, project_id: Optional[str] = None,
+    paused: Optional[bool] = None, paused_reason: Optional[str] = None,
 ) -> dict:
     """Create/update ``board.json``; unmentioned fields are preserved, ``created_at``
     set on first write. ``project_id``/``default_workdir``: ``None`` = unchanged,
@@ -600,6 +605,9 @@ def write_board_metadata(
             meta[key] = str(value)
     if archived is not None:
         meta["archived"] = bool(archived)
+    if paused is not None:
+        meta["paused"] = bool(paused)
+        meta["paused_reason"] = str(paused_reason or "") if paused else ""
     for key, value in (("default_workdir", default_workdir), ("project_id", project_id)):
         if value is not None:
             meta[key] = str(value) if value else None

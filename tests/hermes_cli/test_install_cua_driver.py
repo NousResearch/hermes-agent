@@ -178,3 +178,67 @@ def test_version_summary(raw, expected):
     from hermes_cli.tools_config_cua import _cua_version_summary
 
     assert _cua_version_summary(raw) == expected
+
+
+# --- Windows autostart readiness check (#123774) ---------------------------------
+# The registered task is a powershell launcher; the driver path lives in Exec/Arguments,
+# not Exec/Command. schtasks also declares encoding="UTF-16" while writing the console
+# code page, so the readiness check must decode before parsing and match both leaves.
+
+_CUA_BINARY = r"C:\Users\me\AppData\Local\hermes\tools\cua-driver-0.21.0-win32-x64\cua-driver.exe"
+
+
+def _wrapped_task_xml(binary=_CUA_BINARY, declaration='<?xml version="1.0" encoding="UTF-16"?>'):
+    args = (f"-NoProfile -WindowStyle Hidden -NonInteractive -Command "
+            f"\"Start-Process -FilePath '{escape(binary)}' -ArgumentList @('autostart','enable')\"")
+    return (f"{declaration}\n"
+            f"<Task><Actions Context=\"Author\">"
+            f"<Exec><Command>powershell.exe</Command><Arguments>{escape(args)}</Arguments></Exec>"
+            f"</Actions></Task>")
+
+
+def test_autostart_match_finds_binary_in_shell_wrapped_arguments():
+    from hermes_cli.tools_config_cua import _task_xml_targets_cua_binary
+
+    # The powershell launcher: Command is powershell.exe, driver path in Arguments.
+    assert _task_xml_targets_cua_binary(_wrapped_task_xml(), _CUA_BINARY) is True
+
+
+def test_autostart_match_finds_binary_as_direct_command():
+    from hermes_cli.tools_config_cua import _task_xml_targets_cua_binary
+
+    direct = (f"<Task><Actions><Exec><Command>{escape(_CUA_BINARY)}</Command>"
+              f"<Arguments>serve</Arguments></Exec></Actions></Task>")
+    assert _task_xml_targets_cua_binary(direct, _CUA_BINARY) is True
+
+
+def test_autostart_match_is_case_and_separator_insensitive():
+    from hermes_cli.tools_config_cua import _task_xml_targets_cua_binary
+
+    # schtasks may echo the path with different case / forward slashes than resolved.
+    other_case = _CUA_BINARY.replace("cua-driver.exe", "CUA-DRIVER.EXE").replace("\\", "/")
+    assert _task_xml_targets_cua_binary(_wrapped_task_xml(), other_case) is True
+
+
+def test_autostart_match_rejects_a_task_for_a_different_binary():
+    from hermes_cli.tools_config_cua import _task_xml_targets_cua_binary
+
+    stale = _CUA_BINARY.replace("0.21.0", "0.20.0")
+    assert _task_xml_targets_cua_binary(_wrapped_task_xml(binary=stale), _CUA_BINARY) is False
+
+
+def test_autostart_match_survives_utf16_declaration_over_ascii_bytes():
+    # The field repro: declaration says UTF-16, bytes are ASCII/UTF-8. Decoding the raw
+    # bytes with the gateway codec then parsing the str must not ParseError (Layer 1).
+    from hermes_cli.gateway_windows import _decode_schtasks_output
+    from hermes_cli.tools_config_cua import _task_xml_targets_cua_binary
+
+    raw = _wrapped_task_xml().encode("utf-8")  # no UTF-16 BOM, UTF-16 declaration
+    assert _task_xml_targets_cua_binary(_decode_schtasks_output(raw), _CUA_BINARY) is True
+
+
+def test_autostart_match_returns_false_on_malformed_xml():
+    from hermes_cli.tools_config_cua import _task_xml_targets_cua_binary
+
+    assert _task_xml_targets_cua_binary("not xml <<<", _CUA_BINARY) is False
+    assert _task_xml_targets_cua_binary(_wrapped_task_xml(), "") is False

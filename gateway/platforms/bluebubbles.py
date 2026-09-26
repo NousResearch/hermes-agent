@@ -6,9 +6,13 @@ import json
 import logging
 import os
 import re
+import shutil
+import subprocess
+import tempfile
 import uuid
 from collections import OrderedDict
 from contextlib import suppress
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -17,6 +21,7 @@ from urllib.parse import parse_qs, quote
 import httpx
 
 from gateway.config import Platform, PlatformConfig
+from hermes_cli._subprocess_compat import windows_hide_flags
 from gateway.platforms._shared import extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret
 from gateway.platforms.base import (
     BasePlatformAdapter, SendResult,
@@ -35,7 +40,7 @@ _BLUEBUBBLES_IMAGE_EXT_OVERRIDES = {
 }
 _BLUEBUBBLES_AUDIO_EXT_OVERRIDES = {
     "audio/mp3": ".mp3", "audio/mpeg": ".mp3", "audio/ogg": ".ogg", "audio/wav": ".wav",
-    "audio/x-caf": ".mp3", "audio/mp4": ".m4a",
+    "audio/x-caf": ".caf", "audio/mp4": ".m4a",
     "audio/aac": ".m4a",  # historical mapping (shared table says .aac)
 }
 
@@ -90,6 +95,34 @@ def _closed_ext(mime: str, overrides: Dict[str, str], fallback: str) -> str:
     """Historical maps were closed: unlisted mimes fall back without consulting mimetypes."""
     return ext_for_mime(mime, overrides=overrides, use_defaults=False, use_mimetypes=False,
                         fallback=fallback) or fallback
+
+
+@dataclass(frozen=True)
+class _PreparedAttachment:
+    path: str
+    filename: str
+    content_type: str
+    cleanup: bool = False
+    native_voice: bool = False
+
+
+def _attachment_content_type(filename: str, *, is_audio_message: bool = False) -> str:
+    """Use an audio MIME type when native CAF conversion is unavailable."""
+    ext = Path(filename).suffix.lower()
+    audio_types = {
+        ".caf": "audio/x-caf",
+        ".mp3": "audio/mpeg",
+        ".m2a": "audio/mpeg",
+        ".m4a": "audio/mp4",
+        ".aac": "audio/aac",
+        ".wav": "audio/wav",
+        ".ogg": "audio/ogg",
+        ".opus": "audio/opus",
+        ".flac": "audio/flac",
+    }
+    if not is_audio_message:
+        return "application/octet-stream"
+    return audio_types.get(ext, "application/octet-stream")
 
 
 def _temp_guid() -> str:
@@ -384,9 +417,131 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
     # --- Media sending (outbound) ---
 
+    @staticmethod
+    def _is_native_voice_wav_source(audio_path: str) -> bool:
+        """True for a mono 24 kHz WAV that can go directly to ``afconvert``."""
+        import wave
+
+        if Path(audio_path).suffix.lower() != ".wav":
+            return False
+        try:
+            with wave.open(audio_path, "rb") as wav_file:
+                return wav_file.getnchannels() == 1 and wav_file.getframerate() == 24000
+        except (OSError, wave.Error, EOFError):
+            return False
+
+    def _convert_audio_to_caf(self, audio_path: str) -> Optional[str]:
+        """Convert any supported audio source to mono 24 kHz Opus-in-CAF."""
+        afconvert = shutil.which("afconvert")
+        if not afconvert:
+            logger.warning("BlueBubbles native voice conversion unavailable: afconvert not found")
+            return None
+
+        caf_path: Optional[str] = None
+        normalized_path = audio_path
+        normalized_cleanup: Optional[str] = None
+        keep_caf = False
+        try:
+            caf_file = tempfile.NamedTemporaryFile(
+                prefix="hermes-bluebubbles-voice-", suffix=".caf", delete=False)
+            caf_path = caf_file.name
+            caf_file.close()
+            if not self._is_native_voice_wav_source(audio_path):
+                ffmpeg = shutil.which("ffmpeg")
+                if not ffmpeg:
+                    raise RuntimeError("ffmpeg not found for BlueBubbles voice normalization")
+                normalized_file = tempfile.NamedTemporaryFile(
+                    prefix="hermes-bluebubbles-voice-src-", suffix=".wav", delete=False)
+                normalized_path = normalized_file.name
+                normalized_file.close()
+                normalized_cleanup = normalized_path
+                subprocess.run(
+                    [ffmpeg, "-y", "-i", audio_path, "-vn", "-ac", "1", "-ar", "24000", normalized_path],
+                    check=True,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=60,
+                    creationflags=windows_hide_flags(),
+                )
+                if not os.path.isfile(normalized_path) or os.path.getsize(normalized_path) == 0:
+                    raise RuntimeError("ffmpeg produced an empty BlueBubbles voice normalization file")
+
+            subprocess.run(
+                [afconvert, "-f", "caff", "-d", "opus@24000", "-c", "1", normalized_path, caf_path],
+                check=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=60,
+                creationflags=windows_hide_flags(),
+            )
+            if caf_path and os.path.isfile(caf_path) and os.path.getsize(caf_path) > 0:
+                keep_caf = True
+                return caf_path
+        except Exception as exc:
+            logger.warning("BlueBubbles Opus CAF transcode failed: %s", exc)
+        finally:
+            if normalized_cleanup:
+                try:
+                    os.unlink(normalized_cleanup)
+                except OSError:
+                    pass
+            if not keep_caf and caf_path:
+                try:
+                    os.unlink(caf_path)
+                except OSError:
+                    pass
+        return None
+
+    def _prepare_voice_attachment(self, file_path: str, filename: Optional[str] = None) -> _PreparedAttachment:
+        """Prepare an audio payload; preserve CAF or convert it to native iMessage voice."""
+        requested_name = filename or os.path.basename(file_path)
+        if Path(requested_name).suffix.lower() == ".caf":
+            return _PreparedAttachment(
+                path=file_path, filename=requested_name or "Audio Message.caf",
+                content_type="audio/x-caf", native_voice=True)
+        converted = self._convert_audio_to_caf(file_path)
+        if converted:
+            return _PreparedAttachment(
+                path=converted, filename="Audio Message.caf", content_type="audio/x-caf",
+                cleanup=True, native_voice=True)
+        logger.warning(
+            "BlueBubbles native voice conversion unavailable for %s; sending an ordinary audio attachment",
+            requested_name,
+        )
+        return _PreparedAttachment(
+            path=file_path,
+            filename=requested_name,
+            content_type=_attachment_content_type(requested_name, is_audio_message=True),
+        )
+
+    @staticmethod
+    def _cleanup_prepared_attachment(prepared: _PreparedAttachment) -> None:
+        if prepared.cleanup:
+            try:
+                os.unlink(prepared.path)
+            except OSError:
+                pass
+
+    def _cleanup_cancelled_preparation(self, task: asyncio.Task) -> None:
+        try:
+            prepared = task.result()
+        except BaseException:
+            return
+        self._cleanup_prepared_attachment(prepared)
+
+    def _cleanup_cancelled_attachment_read(self, task: asyncio.Task, prepared: _PreparedAttachment) -> None:
+        """Retrieve a worker exception after cancellation, then release its owned payload."""
+        try:
+            task.result()
+        except BaseException:
+            pass
+        self._cleanup_prepared_attachment(prepared)
+
     async def _send_attachment(self, chat_id: str, file_path: str, filename: Optional[str] = None,
                                caption: Optional[str] = None, is_audio_message: bool = False) -> SendResult:
-        """Send a file attachment via BlueBubbles multipart upload."""
+        """Send an attachment; voice preparation, file reads, and conversions stay off-loop."""
         if not self.client:
             return SendResult(success=False, error="Not connected")
         if not await asyncio.to_thread(os.path.isfile, file_path):
@@ -394,27 +549,72 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         guid = await self._resolve_chat_guid(chat_id)
         if not guid:
             return SendResult(success=False, error=f"Chat not found: {chat_id}")
-        fname = filename or os.path.basename(file_path)
+
         try:
-            # httpx's async multipart iterator reads file objects through a sync chunk generator —
-            # read the bytes off the event-loop thread first.
-            payload = await asyncio.to_thread(Path(file_path).read_bytes)
-            data: Dict[str, str] = {"chatGuid": guid, "name": fname, "tempGuid": uuid.uuid4().hex}
             if is_audio_message:
+                preparation_task = asyncio.create_task(
+                    asyncio.to_thread(self._prepare_voice_attachment, file_path, filename)
+                )
+                try:
+                    prepared = await asyncio.shield(preparation_task)
+                except asyncio.CancelledError:
+                    preparation_task.add_done_callback(self._cleanup_cancelled_preparation)
+                    raise
+            else:
+                prepared = _PreparedAttachment(
+                    path=file_path,
+                    filename=filename or os.path.basename(file_path),
+                    content_type="application/octet-stream",
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            return SendResult(success=False, error=str(exc) or type(exc).__name__)
+
+        defer_cleanup = False
+        try:
+            # httpx's multipart iterator reads file objects synchronously; stage bytes off-loop.
+            read_task = asyncio.create_task(asyncio.to_thread(Path(prepared.path).read_bytes))
+            try:
+                payload = await asyncio.shield(read_task)
+            except asyncio.CancelledError:
+                defer_cleanup = True
+                read_task.add_done_callback(
+                    lambda task: self._cleanup_cancelled_attachment_read(task, prepared)
+                )
+                raise
+
+            data: Dict[str, str] = {
+                "chatGuid": guid,
+                "name": prepared.filename,
+                "tempGuid": uuid.uuid4().hex,
+            }
+            if prepared.native_voice:
                 data["isAudioMessage"] = "true"
-            res = await self.client.post(self._api_url("/api/v1/message/attachment"), data=data, timeout=120,
-                                         files={"attachment": (fname, payload, "application/octet-stream")})
-            res.raise_for_status()
-            result = res.json()
+                if self._private_api_enabled and self._helper_connected:
+                    data["method"] = "private-api"
+            response = await self.client.post(
+                self._api_url("/api/v1/message/attachment"),
+                data=data,
+                files={"attachment": (prepared.filename, payload, prepared.content_type)},
+                timeout=120,
+            )
+            response.raise_for_status()
+            result = response.json()
             if caption:
                 await self.send(chat_id, caption)
             if result.get("status") == 200:
-                rdata = result.get("data") or {}
-                return SendResult(success=True, message_id=rdata.get("guid") if isinstance(rdata, dict) else None,
-                                  raw_response=result)
+                data = result.get("data") or {}
+                message_id = data.get("guid") if isinstance(data, dict) else None
+                return SendResult(success=True, message_id=message_id, raw_response=result)
             return SendResult(success=False, error=result.get("message", "Attachment upload failed"))
-        except Exception as e:
-            return SendResult(success=False, error=str(e))
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            return SendResult(success=False, error=str(exc) or type(exc).__name__)
+        finally:
+            if not defer_cleanup:
+                self._cleanup_prepared_attachment(prepared)
 
     async def send_image(self, chat_id: str, image_url: str, caption: Optional[str] = None,
                          reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:

@@ -152,6 +152,45 @@ def test_standalone_guidance_matches_profile_membership(served_root, monkeypatch
     assert "LEGACY" not in output
 
 
+def test_desktop_serve_ticker_is_not_reported_as_no_gateway(tmp_path, monkeypatch, capsys):
+    """Desktop `serve` ticks cron in-process; a fresh ticker heartbeat is not a missing gateway."""
+    from cron import jobs
+    from hermes_cli import cron
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (tmp_path / "locks").mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+    monkeypatch.delenv("HERMES_PROFILE", raising=False)
+    monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
+    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: home)
+    monkeypatch.setattr(jobs, "CRON_DIR", home / "cron")
+    monkeypatch.setattr(jobs, "JOBS_FILE", home / "cron/jobs.json")
+    monkeypatch.setattr(jobs, "OUTPUT_DIR", home / "cron/output")
+    monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [])
+    monkeypatch.setattr("gateway.status.is_gateway_runtime_lock_active", lambda lock_path=None: False)
+    monkeypatch.setattr("hermes_cli.gateway.named_profile_served_by_running_multiplexer", lambda: False)
+    monkeypatch.setattr("gateway.host_topology.host_gateway_serving", lambda profile_name=None: None)
+    monkeypatch.setattr(cron, "_active_cron_provider_name", lambda: "builtin")
+    jobs.record_ticker_heartbeat(success=True)
+
+    assert cron._builtin_gateway_liveness() is True
+    cron.cron_status()
+    output = capsys.readouterr().out
+    assert "Scheduler host: the desktop serve backend (in-process ticker)" in output
+    assert "will fire automatically" in output
+    assert "No gateway is running on this host" not in output
+    assert "gateway install" not in output
+
+    (jobs.CRON_DIR / "ticker_heartbeat").write_text(str(time.time() - 3600))
+    assert cron._builtin_gateway_liveness() is False
+    cron.cron_status()
+    stale = capsys.readouterr().out
+    assert "No gateway is running on this host" in stale
+    assert "gateway install" in stale
+
+
 @pytest.mark.parametrize("detail", ["unreachable " * 30 + "\nsecret second line", ""])
 def test_doctor_bounds_persisted_fire_errors(served_root, capsys, detail):
     from cron import jobs

@@ -59,10 +59,14 @@ def _builtin_gateway_liveness() -> Optional[bool]:
             find_gateway_pids, named_profile_served_by_running_multiplexer)
         if find_gateway_pids():
             return True
+        from cron.jobs import get_ticker_heartbeat_age
+        # Desktop `serve` runs the cron ticker in-process (no `gateway` argv / runtime lock).
+        # A fresh ticker heartbeat is the same evidence status already uses after the pid scan.
+        if _ticker_age_is_fresh(get_ticker_heartbeat_age()):
+            return True
         if not named_profile_served_by_running_multiplexer():
             return False
         # List/create and status require a fresh heartbeat from the satellite's own store.
-        from cron.jobs import get_ticker_heartbeat_age
         return _ticker_age_is_fresh(get_ticker_heartbeat_age())
     except Exception:
         return None
@@ -501,26 +505,38 @@ def cron_status():
             else:
                 _print_ticker_health(pids)
         else:
-            print(color("✗ No gateway is running on this host — cron jobs will NOT fire", Colors.RED))
-            # When scheduling last worked before the host went away: without this, a
-            # 7h-overdue job still reads as a normal upcoming "Next run" (#114309).
+            serve_ticker_age = None
             with contextlib.suppress(Exception):
-                from cron.jobs import TICKER_INTERVAL_SECONDS, get_ticker_heartbeat_age
-                hb_age = get_ticker_heartbeat_age()
-                if hb_age is not None and hb_age > TICKER_INTERVAL_SECONDS * 3 + 20:
-                    print(color("  Scheduler last ticked "
-                                f"{_format_lateness(hb_age)} ago — jobs that came due "
-                                "since then have not fired.", Colors.YELLOW))
-            print("\n  Start the ONE host gateway (it multiplexes every profile, this one included):\n"
-                  "    hermes --profile default gateway install   # user service\n"
-                  "    sudo hermes --profile default gateway install --system  # Linux servers: boot-time service\n"
-                  "    hermes --profile default gateway run       # Or run in foreground")
-            if active not in ("default", "custom"):
-                print("\n  It serves this profile automatically. If a per-profile service or gateway\n"
-                      "  from an older release is still installed, fold it in (preflight + dry run):\n"
-                      "      hermes --profile default gateway migrate --multiplex --dry-run\n"
-                      "      hermes --profile default gateway migrate --multiplex\n"
-                      "  Check: hermes cron status from this profile should show its ticker heartbeat.\n")
+                from cron.jobs import get_ticker_heartbeat_age
+                serve_ticker_age = get_ticker_heartbeat_age()
+            if _ticker_age_is_fresh(serve_ticker_age):
+                # Desktop topology: cron ticks inside `hermes serve`, not a CLI gateway process.
+                print("  Scheduler host: the desktop serve backend (in-process ticker)")
+                _print_ticker_health(
+                    [],
+                    restart_command="restart the Hermes desktop app (or its serve backend)",
+                )
+            else:
+                print(color("✗ No gateway is running on this host — cron jobs will NOT fire", Colors.RED))
+                # When scheduling last worked before the host went away: without this, a
+                # 7h-overdue job still reads as a normal upcoming "Next run" (#114309).
+                with contextlib.suppress(Exception):
+                    from cron.jobs import TICKER_INTERVAL_SECONDS, get_ticker_heartbeat_age
+                    hb_age = get_ticker_heartbeat_age()
+                    if hb_age is not None and hb_age > TICKER_INTERVAL_SECONDS * 3 + 20:
+                        print(color("  Scheduler last ticked "
+                                    f"{_format_lateness(hb_age)} ago — jobs that came due "
+                                    "since then have not fired.", Colors.YELLOW))
+                print("\n  Start the ONE host gateway (it multiplexes every profile, this one included):\n"
+                      "    hermes --profile default gateway install   # user service\n"
+                      "    sudo hermes --profile default gateway install --system  # Linux servers: boot-time service\n"
+                      "    hermes --profile default gateway run       # Or run in foreground")
+                if active not in ("default", "custom"):
+                    print("\n  It serves this profile automatically. If a per-profile service or gateway\n"
+                          "  from an older release is still installed, fold it in (preflight + dry run):\n"
+                          "      hermes --profile default gateway migrate --multiplex --dry-run\n"
+                          "      hermes --profile default gateway migrate --multiplex\n"
+                          "  Check: hermes cron status from this profile should show its ticker heartbeat.\n")
 
     print()
     _print_active_jobs_summary(list_jobs(include_disabled=False))

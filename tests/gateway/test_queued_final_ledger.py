@@ -211,7 +211,7 @@ def _chain_runner_and_ctx(followup_return):
         context_prompt=None, result_holder=[None])
     pending_event = SimpleNamespace(
         source=topic, message_id="6002", channel_prompt=None, message_type=None,
-        internal=False, metadata={})
+        internal=False, metadata={}, reply_expected=None)
     return GatewayRunner, runner, turn_ctx, pending_event
 
 
@@ -239,7 +239,7 @@ async def test_a_chained_queued_turn_carries_its_own_inbound_id():
         context_prompt=None, result_holder=[None])
     pending_event = SimpleNamespace(
         source=topic, message_id="6002", channel_prompt=None, message_type=None,
-        internal=False, metadata={})
+        internal=False, metadata={}, reply_expected=None)
 
     await GatewayRunner._run_agent_queued_followup(
         runner, turn_ctx, adapter=None, pending="hi again", pending_event=pending_event,

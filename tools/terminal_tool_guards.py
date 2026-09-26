@@ -261,6 +261,48 @@ def gateway_lifecycle_block(
     return None
 
 
+def windows_cloud_traversal_block(
+    *,
+    command: str,
+    env: Any,
+    env_type: str,
+    cwd: str,
+    workdir: Optional[str],
+    session_key: str,
+) -> Optional[str]:
+    """Block broad recursive Windows-local scans that can hydrate Cloud Files."""
+    import os
+    import sys
+
+    if env_type != "local" or sys.platform != "win32":
+        return None
+
+    from tools.terminal_tool import _resolve_command_cwd
+    from tools.terminal_tool_windows_cloud import cloud_placeholder_traversal_reason
+
+    command_cwd = _resolve_command_cwd(
+        workdir=workdir,
+        default_cwd=cwd,
+        session_key=session_key,
+        env_type=env_type,
+    )
+    environ = dict(os.environ)
+    environ.update(getattr(env, "env", None) or {})
+    reason = cloud_placeholder_traversal_reason(
+        command, cwd=command_cwd, environ=environ
+    )
+    if not reason:
+        return None
+    return _blocked_json(
+        "Blocked: " + reason + ". Broad recursive terminal scans on Windows can "
+        "silently hydrate OneDrive/iCloud Files On-Demand placeholders and download "
+        "large amounts of data. Narrow the command to the project directory (prefer "
+        "terminal workdir) or explicitly target the cloud directory when hydration "
+        "is intentional.",
+        "blocked",
+    )
+
+
 def self_repo_block(
     *,
     command: str,

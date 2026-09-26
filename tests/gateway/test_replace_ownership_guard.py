@@ -352,6 +352,82 @@ class TestSignalBoundary:
             "no takeover marker may be written for a refused target"
         )
 
+    def test_refusal_reaches_stderr_for_the_supervisor(self, profile_env, capsys):
+        """Regression for #119467: the fatal ``--replace`` refusal must surface on stderr.
+
+        Only the file handlers are attached at this point (the ``-v`` stderr handler is
+        installed later, in ``_start_gateway_configure_logging``), so a logger-only refusal
+        exits 1 with nothing in ``journalctl -u hermes-gateway`` — a clean ``status=1/FAILURE``
+        whose only explanation lives in ``errors.log``, which a supervisor's journal does not
+        show.
+        """
+        def configure(stack):
+            stack.enter_context(
+                patch(
+                    "gateway.run._replace_target_belongs_to_other_profile",
+                    return_value=True,
+                )
+            )
+
+        result, calls = self._run_replace(configure)
+        err = capsys.readouterr().err
+
+        assert result is False
+        assert "❌ Refusing --replace" in err, (
+            "the refusal must be printed where the supervisor reads it (stderr/journal)"
+        )
+        assert "cannot be proven to belong" in err
+        assert "Remove the stale PID record or stop the owning profile explicitly" in err
+
+    def test_permission_denied_abort_reaches_stderr(self, profile_env, capsys):
+        """Sibling of #119467: the SIGTERM-permission-denied abort also exits 1, so it must
+        reach the journal too — a logged-only abort is the same invisible `status=1` crash."""
+        def configure(stack):
+            stack.enter_context(
+                patch("gateway.run._replace_target_belongs_to_other_profile", return_value=False)
+            )
+            stack.enter_context(
+                patch("gateway.status.get_process_start_time", return_value=111222333)
+            )
+            stack.enter_context(
+                patch("gateway.status.terminate_pid", side_effect=PermissionError("denied"))
+            )
+
+        result, calls = self._run_replace(configure)
+        err = capsys.readouterr().err
+
+        assert result is False
+        assert "Permission denied" in err
+        assert err.lstrip().startswith("❌"), "the abort must be a supervisor-visible box"
+
+    def test_sigkill_survivor_abort_reaches_stderr(self, profile_env, capsys):
+        """Sibling of #119467: a target that outlives SIGKILL also aborts startup (exit 1),
+        so its reason must reach the journal rather than only errors.log."""
+        from unittest.mock import AsyncMock
+
+        def configure(stack):
+            stack.enter_context(
+                patch("gateway.run._replace_target_belongs_to_other_profile", return_value=False)
+            )
+            stack.enter_context(
+                patch("gateway.status.get_process_start_time", return_value=111222333)
+            )
+            # The base double takes (pid, force=…); the SIGKILL retry also passes
+            # expected_start_time, so stand in with an accept-anything no-op.
+            stack.enter_context(
+                patch("gateway.status.terminate_pid", side_effect=lambda *a, **k: None)
+            )
+            stack.enter_context(
+                patch("gateway.run._wait_for_pid_exit", new_callable=AsyncMock, return_value=False)
+            )
+
+        result, calls = self._run_replace(configure)
+        err = capsys.readouterr().err
+
+        assert result is False
+        assert "still appears alive after SIGKILL" in err
+        assert err.lstrip().startswith("❌"), "the abort must be a supervisor-visible box"
+
     def test_provable_same_home_reaches_replace_flow(self, profile_env):
         """Counterpart: bound same-home target still enters the replace flow
         (terminate attempted) — the fail-closed gate must not disable legit

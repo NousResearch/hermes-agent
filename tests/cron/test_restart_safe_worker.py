@@ -432,6 +432,8 @@ def test_launch_external_worker_honors_ack_within_adoption_grace(
     assert scheduler._running_worker_pids == {scheduler._inflight_key("job-cold"): 4321}
 
 
+
+
 def test_worker_dying_before_ack_names_its_stderr_cause(tmp_path, monkeypatch):
     """A worker that exits before acknowledging used to report only ``exit 1`` because its stderr
     went to DEVNULL (#112729); the dispatch error must carry the worker's own traceback and the

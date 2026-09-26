@@ -687,9 +687,10 @@ def _check_profiles(should_fix: bool, f: Finding) -> None:
             if not wrapper.is_file():
                 continue
             with warn_on_error(""):
-                _m = _re.search(r"hermes -p (\S+)", wrapper.read_text(encoding="utf-8-sig"))
-                if _m and not profile_exists(_m.group(1)):
-                    check_warn(f"Orphan alias: {wrapper.name} → profile '{_m.group(1)}' no longer exists")
+                # Literal names only (bare or quoted); "$PROFILE", $1, ${X} are skipped, not orphans.
+                for _m in _re.finditer(r"""hermes -p (["']?)([^\s"'$]+)\1(?=\s|$)""", wrapper.read_text(encoding="utf-8-sig")):
+                    if not profile_exists(_m.group(2)):
+                        check_warn(f"Orphan alias: {wrapper.name} → profile '{_m.group(2)}' no longer exists")
     # Same helper as the multiplex migration preflight, so doctor names the duplicates that make
     # `hermes gateway migrate --multiplex` refuse (and made pre-multiplex standalone gateways race).
     from hermes_cli.gateway_migrate import duplicate_credential_findings

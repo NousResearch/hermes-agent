@@ -1249,6 +1249,11 @@ hermes kanban notify-unsubscribe t_abcd \
 
 A subscription removes itself automatically once the task reaches `done` or `archived`; no cleanup needed.
 
+In a one-gateway-per-profile deployment, pass `--notifier-profile <name>` only
+when `<name>` is the exact profile name of the gateway that must deliver it —
+it does not default to the shell's own active profile. Omit it and the
+subscription is treated like a legacy/unowned row (see below).
+
 **Discord threads under `profile_routes`:** when the gateway multiplexes profiles and routes a *channel*
 to a profile, a subscription created from the CLI for a *thread* in that channel needs the thread's route
 anchors, or the notifier cannot match it to any route and skips it (logged once at WARNING). Pass them

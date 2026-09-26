@@ -1167,7 +1167,14 @@ def _cmd_notify_subscribe(args: argparse.Namespace) -> int:
             conn, task_id=args.task_id, platform=args.platform, chat_id=args.chat_id,
             chat_type=args.chat_type, thread_id=args.thread_id, user_id=args.user_id,
             user_id_alt=getattr(args, "user_id_alt", None),
-            notifier_profile=args.notifier_profile or _profile_author(),
+            # Unlike created_by/assignee, this stamp picks which *gateway*
+            # delivers the subscription (gateway/kanban_watchers.py's owner
+            # check) — the invoking shell's own profile (_profile_author())
+            # has no relation to that and can stamp a value no serving
+            # gateway ever claims, silently dropping delivery forever
+            # (#76483). Leave it unstamped unless the caller names the
+            # actual serving profile.
+            notifier_profile=args.notifier_profile,
             delivery_mode=getattr(args, "delivery_mode", None),
             delivery_metadata=delivery_metadata or None,
         )

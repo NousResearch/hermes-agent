@@ -1996,7 +1996,8 @@ def _reresolve_fallback_reasoning_config(agent) -> None:
         logger.debug("Failed to resolve reasoning_config for fallback %s; keeping current: %s", agent.model, _reasoning_err)
 
 
-def _rescope_fallback_extra_body(agent, old_model: str, old_provider: str, old_base_url: str) -> None:
+def _rescope_fallback_extra_body(agent, old_model: str, old_provider: str, old_base_url: str,
+                                 old_requested_provider: str) -> None:
     """Drop the OLD provider's custom_providers-contributed extra_body keys, then merge the fallback
     provider's own. KEY-SCOPED: a key is dropped only if its value still equals what the old provider's
     config injected — a caller override of the same key won at init and differs, so it survives;
@@ -2004,7 +2005,9 @@ def _rescope_fallback_extra_body(agent, old_model: str, old_provider: str, old_b
     try:
         from agent.agent_init import _custom_provider_extra_body_for_agent, _merge_custom_provider_extra_body
         custom_providers = getattr(agent, "_custom_providers", None) or []
-        old_provider_eb = _custom_provider_extra_body_for_agent(provider=old_provider, model=old_model, base_url=old_base_url, custom_providers=custom_providers) or {}
+        old_provider_eb = _custom_provider_extra_body_for_agent(
+            provider=old_provider, model=old_model, base_url=old_base_url, custom_providers=custom_providers,
+            requested_provider=old_requested_provider) or {}
         overrides = dict(getattr(agent, "request_overrides", {}) or {})
         existing_eb = overrides.get("extra_body")
         if isinstance(existing_eb, dict) and old_provider_eb:

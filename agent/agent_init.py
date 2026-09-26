@@ -176,26 +176,24 @@ def _custom_provider_model_matches(agent_model: str, entry: dict[str, Any]) -> b
     return (not provider_model and not catalog) or provider_model == agent_model_norm
 
 
-def _custom_provider_extra_body_for_agent(
-    *, provider: str, model: str, base_url: str, custom_providers: list[dict[str, Any]]
-) -> Optional[dict[str, Any]]:
-    provider_norm = (provider or "").strip().lower()
-    if provider_norm != "custom" and not provider_norm.startswith("custom:"):
-        return None
-    provider_key_filter = provider_norm.partition(":")[2].strip()
+def _custom_provider_extra_body_for_agent(*, provider: str, model: str, base_url: str, custom_providers: list[dict[str, Any]],
+                                          requested_provider: str = "") -> Optional[dict[str, Any]]:
+    from hermes_cli.providers import custom_provider_aliases
+    from hermes_cli.runtime_provider_custom import _normalize_custom_provider_name as _norm, _shadowed_by_builtin
+    entries = [(e, custom_provider_aliases(str(e.get("name") or ""), str(e.get("provider_key") or "")))
+               for e in custom_providers or [] if isinstance(e, dict)]
+    provider_norm, requested_norm = _norm(provider or ""), _norm(requested_provider or "")
+    # Every named entry resolves to the billing class "custom": the selected one survives only in requested_provider.
+    if provider_norm == "custom" and any(requested_norm in aliases for _e, aliases in entries):
+        provider_norm = requested_norm
+    # A `/model --provider` or fallback entry names the entry itself; match it as the resolver does (built-ins win).
     target_url = _normalized_custom_base_url(base_url)
-    if not target_url:
+    if provider_norm in {"", "auto"} or _shadowed_by_builtin(provider_norm) or not target_url:
         return None
 
     fallback: Optional[dict[str, Any]] = None
-    for entry in custom_providers or []:
-        if not isinstance(entry, dict):
-            continue
-        entry_keys = {
-            str(entry.get("provider_key", "") or "").strip().lower(),
-            str(entry.get("name", "") or "").strip().lower(),
-        }
-        if provider_key_filter and provider_key_filter not in entry_keys:
+    for entry, aliases in entries:
+        if provider_norm != "custom" and provider_norm not in aliases:
             continue
         if _normalized_custom_base_url(entry.get("base_url")) != target_url:
             continue
@@ -213,7 +211,7 @@ def _custom_provider_extra_body_for_agent(
 def _merge_custom_provider_extra_body(agent, custom_providers: list[dict[str, Any]]) -> None:
     extra_body = _custom_provider_extra_body_for_agent(
         provider=agent.provider, model=agent.model, base_url=agent.base_url,
-        custom_providers=custom_providers,
+        custom_providers=custom_providers, requested_provider=getattr(agent, "requested_provider", ""),
     )
     if not extra_body:
         return

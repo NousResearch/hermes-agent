@@ -92,6 +92,7 @@ def bind_route_entry(agent: Any, entry: dict[str, Any], provider: str, model: st
     from agent.route_verdicts import reset_route_verdicts, save_primary_route_verdicts
     save_primary_route_verdicts(agent)  # before the swap: stamped with the endpoint that earned them
     old_model, old_provider, old_base_url = agent.model, agent.provider, agent.base_url
+    old_requested_provider = getattr(agent, "requested_provider", "")
     # Clear the per-config context_length override so the new model's own context window is
     # resolved instead of the previous model's stale value (#22387).
     agent._config_context_length = None
@@ -121,7 +122,7 @@ def bind_route_entry(agent: Any, entry: dict[str, Any], provider: str, model: st
     agent._ensure_lmstudio_runtime_loaded()  # LM Studio: preload before probing context length
     _update_fallback_context_compressor(agent)
     _reresolve_fallback_reasoning_config(agent)
-    _rescope_fallback_extra_body(agent, old_model, old_provider, old_base_url)
+    _rescope_fallback_extra_body(agent, old_model, old_provider, old_base_url, old_requested_provider)
     if commit_pool_choice and choice is not None:
         choice.commit()
     return old_model, old_provider

@@ -108,6 +108,29 @@ def test_config_schema_admits_every_type_the_loader_and_renderer_accept(tmp_path
     assert [ok for n, ok, _ in bad.checks if n == "config schema"] == [False], bad.checks
 
 
+def test_config_schema_admits_labelled_and_dynamic_choices_and_rejects_malformed(tmp_path):
+    """Admission accepts what the settings renderer can use (string or ``{value, label}`` choices,
+    ``choices_from: module:function`` on a str field) and rejects shapes it would silently ignore."""
+    good = {
+        "mode": {"type": "str", "choices": ["fast", {"value": "careful", "label": "Careful (slow)"}]},
+        "model": {"type": "str", "choices_from": "catalog.models:list_models", "choices": ["m1"]},
+    }
+    report = validate_plugin_dir(_make_plugin(tmp_path, manifest=dict(BASE_MANIFEST, config_schema=good)))
+    assert ("config schema", True, "shape valid") in report.checks, report.failures
+
+    for name, spec in {
+        "label_not_str": {"type": "str", "choices": [{"value": "a", "label": 1}]},
+        "missing_value": {"type": "str", "choices": [{"label": "A"}]},
+        "not_a_list": {"type": "str", "enum": "a,b"},
+        "no_function": {"type": "str", "choices_from": "catalog.models"},
+        "relative_import": {"type": "str", "choices_from": ".models:list_models"},
+        "non_str_field": {"type": "int", "choices_from": "models:counts"},
+    }.items():
+        bad = validate_plugin_dir(_make_plugin(
+            tmp_path / name, manifest=dict(BASE_MANIFEST, config_schema={"x": spec})))
+        assert [ok for n, ok, _ in bad.checks if n == "config schema"] == [False], (name, bad.checks)
+
+
 def test_admission_runs_the_install_scanner(tmp_path):
     """Admission and install must agree: a tree the installer would hard-block (dangerous) fails
     validation; caution findings are surfaced to the reviewer as warnings without failing."""

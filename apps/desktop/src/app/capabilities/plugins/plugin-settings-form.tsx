@@ -112,6 +112,25 @@ function BooleanControl({ disabled, field, id, onChange, raw }: ControlProps) {
   )
 }
 
+/** `[value, label]` items for a dropdown: first entry wins for a repeated value (items are keyed by
+ *  value), and a current value missing from `choices` is still listed so the select never shows blank.
+ *  The gateway already does both (labelling a missing value "(unavailable)"); this covers older ones. */
+export function enumItems(field: PluginSettingField, raw: string): [string, string][] {
+  const items = new Map<string, string>()
+
+  for (const [index, choice] of (field.choices ?? []).entries()) {
+    if (!items.has(choice)) {
+      items.set(choice, field.choice_labels?.[index] ?? choice)
+    }
+  }
+
+  if (raw && !items.has(raw)) {
+    items.set(raw, raw)
+  }
+
+  return [...items]
+}
+
 function EnumControl({ disabled, field, id, onChange, raw }: ControlProps) {
   return (
     <Select disabled={disabled} onValueChange={onChange} value={raw}>
@@ -119,9 +138,9 @@ function EnumControl({ disabled, field, id, onChange, raw }: ControlProps) {
         <SelectValue />
       </SelectTrigger>
       <SelectContent>
-        {(field.choices ?? []).map(choice => (
-          <SelectItem key={choice} value={choice}>
-            {choice}
+        {enumItems(field, raw).map(([value, label]) => (
+          <SelectItem key={value} value={value}>
+            {label}
           </SelectItem>
         ))}
       </SelectContent>

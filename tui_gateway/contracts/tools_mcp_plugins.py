@@ -620,7 +620,9 @@ class PluginSettingFieldType(WireEnum):
 class PluginSettingField(Result):
     """One ``config_schema`` key of a plugin manifest, rendered by the Plugins hub
     (``hermes_cli.plugins_settings.plugin_settings_fields``). ``secret`` fields carry no value: ``env``
-    names the ``.env`` variable and ``has_value`` whether it is set."""
+    names the ``.env`` variable and ``has_value`` whether it is set. ``choices`` are always the values;
+    ``choice_labels`` (same length, same order) is present only when a choice has a label other than its
+    value, so a client that predates it still renders and saves values."""
 
     key: str
     type: PluginSettingFieldType
@@ -630,6 +632,7 @@ class PluginSettingField(Result):
     value: JsonValue | None = None
     default: JsonValue | None = None
     choices: list[str] | None = None
+    choice_labels: list[str] | None = None
     env: str | None = None
     has_value: bool | None = None
 

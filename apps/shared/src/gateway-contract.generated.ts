@@ -4084,7 +4084,7 @@ export interface PluginServerRow {
   sentence: string
 }
 export type PluginServerState = 'connected' | 'app_not_running' | 'endpoint_unavailable' | 'no_interactive_session' | 'version_too_old' | 'missing_app' | 'unknown'
-/** One ``config_schema`` key of a plugin manifest, rendered by the Plugins hub (``hermes_cli.plugins_settings.plugin_settings_fields``). ``secret`` fields carry no value: ``env`` names the ``.env`` variable and ``has_value`` whether it is set. */
+/** One ``config_schema`` key of a plugin manifest, rendered by the Plugins hub (``hermes_cli.plugins_settings.plugin_settings_fields``). ``secret`` fields carry no value: ``env`` names the ``.env`` variable and ``has_value`` whether it is set. ``choices`` are always the values; ``choice_labels`` (same length, same order) is present only when a choice has a label other than its value, so a client that predates it still renders and saves values. */
 export interface PluginSettingField {
   key: string
   type: PluginSettingFieldType
@@ -4094,6 +4094,7 @@ export interface PluginSettingField {
   value?: unknown | null
   default?: unknown | null
   choices?: string[] | null
+  choice_labels?: string[] | null
   env?: string | null
   has_value?: boolean | null
 }

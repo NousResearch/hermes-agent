@@ -708,6 +708,24 @@ def test_delete_archived_task_removes_related_rows(kanban_home):
         assert conn.execute("SELECT COUNT(*) FROM kanban_notify_subs WHERE task_id = ?", (tid,)).fetchone()[0] == 0
 
 
+@pytest.mark.parametrize("hard_delete", ["delete_task", "archive_then_rm"])
+def test_hard_delete_takes_the_tasks_attachments_with_it(kanban_home, hard_delete):
+    """A hard-deleted task's attachment rows and blobs go with it; before, both
+    stayed behind (the blob still downloadable by attachment id) and no gc swept them."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="to-delete")
+        att_id = kb.store_attachment_bytes(conn, tid, "spec.pdf", b"%PDF-1.4 ...")
+        blob = Path(kb.get_attachment(conn, att_id).stored_path)
+        assert blob.is_file()
+        if hard_delete == "delete_task":
+            assert kb.delete_task(conn, tid)
+        else:
+            assert kb.archive_task(conn, tid)
+            assert kb.delete_archived_task(conn, tid)
+        assert kb.get_attachment(conn, att_id) is None
+        assert not blob.exists()
+
+
 def test_delete_task_removes_task_and_cascades(kanban_home):
     with kbc.connect() as conn:
         t = kb.create_task(conn, title="to-delete", assignee="alice")

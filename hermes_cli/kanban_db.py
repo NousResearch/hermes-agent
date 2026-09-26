@@ -1913,17 +1913,30 @@ def delete_attachment(conn: sqlite3.Connection, attachment_id: int) -> Optional[
         if att is None:
             return None
         conn.execute("DELETE FROM task_attachments WHERE id = ?", (attachment_id,))
-        has_remaining_blob_reference = conn.execute(
-            "SELECT 1 FROM task_attachments WHERE stored_path = ? LIMIT 1",
-            (att.stored_path,),
-        ).fetchone() is not None
+        orphaned = _unreferenced_blobs(conn, [att.stored_path])
         _append_event(conn, att.task_id, "attachment_removed", {"filename": att.filename})
-    if not has_remaining_blob_reference:
+    _unlink_blobs(orphaned)
+    return att
+
+
+def _unreferenced_blobs(conn: sqlite3.Connection, stored_paths: Iterable[str]) -> list[str]:
+    """Those of ``stored_paths`` (rows already deleted in the caller's txn) that no
+    remaining attachment row still names: only these blobs may be unlinked."""
+    return [
+        path for path in dict.fromkeys(stored_paths)
+        if conn.execute(
+            "SELECT 1 FROM task_attachments WHERE stored_path = ? LIMIT 1", (path,),
+        ).fetchone() is None
+    ]
+
+
+def _unlink_blobs(paths: Iterable[str]) -> None:
+    """Best-effort blob removal, after the deleting txn has committed."""
+    for path in paths:
         with contextlib.suppress(OSError):
-            p = Path(att.stored_path)
+            p = Path(path)
             if p.is_file():
                 p.unlink()
-    return att
 
 
 def list_events(conn: sqlite3.Connection, task_id: str) -> list[Event]:
@@ -3926,11 +3939,16 @@ def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> b
     return True
 
 
-def _delete_task_relations(conn: sqlite3.Connection, task_id: str) -> None:
-    """Delete every row referencing ``task_id`` (schema has no ON DELETE CASCADE)."""
+def _delete_task_relations(conn: sqlite3.Connection, task_id: str) -> list[str]:
+    """Delete every row referencing ``task_id`` (schema has no ON DELETE CASCADE);
+    returns the attachment blobs this left unreferenced, to unlink after commit."""
     conn.execute("DELETE FROM task_links WHERE parent_id = ? OR child_id = ?", (task_id, task_id))
     for table in ("task_comments", "task_events", "task_runs", "kanban_notify_subs"):
         conn.execute(f"DELETE FROM {table} WHERE task_id = ?", (task_id,))
+    stored = [r["stored_path"] for r in conn.execute(
+        "SELECT stored_path FROM task_attachments WHERE task_id = ?", (task_id,))]
+    conn.execute("DELETE FROM task_attachments WHERE task_id = ?", (task_id,))
+    return _unreferenced_blobs(conn, stored)
 
 
 def delete_archived_task(conn: sqlite3.Connection, task_id: str) -> bool:
@@ -3939,9 +3957,10 @@ def delete_archived_task(conn: sqlite3.Connection, task_id: str) -> bool:
     with write_txn(conn):
         if _task_status(conn, task_id) != "archived":
             return False
-        _delete_task_relations(conn, task_id)
-        cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
-        return cur.rowcount == 1
+        orphaned = _delete_task_relations(conn, task_id)
+        deleted = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,)).rowcount == 1
+    _unlink_blobs(orphaned)
+    return deleted
 
 
 def delete_task(conn: sqlite3.Connection, task_id: str) -> bool:
@@ -3950,7 +3969,8 @@ def delete_task(conn: sqlite3.Connection, task_id: str) -> bool:
         cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
         if cur.rowcount != 1:
             return False
-        _delete_task_relations(conn, task_id)
+        orphaned = _delete_task_relations(conn, task_id)
+    _unlink_blobs(orphaned)
     recompute_ready(conn)
     return True
 

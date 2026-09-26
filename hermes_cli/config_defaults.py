@@ -458,6 +458,10 @@ DEFAULT_CONFIG = {
             "user_id": "",
             "session_key": "",
             "adopt_existing_tab": False,  # rehydrate tab_id from Camofox before creating a tab
+            # Externally reachable noVNC viewer URL, for when the address discovered from the VNC
+            # plugin's /vnc/status response is not reachable from the device watching the browser
+            # (reverse proxy, container, remote host). Empty = use the discovered address.
+            "vnc_url": "",
             # Docker Camofox opens page URLs from inside the container: rewrite loopback page URLs
             # (localhost/127.0.0.1/::1) to the host alias; CAMOFOX_URL itself is unchanged.
             "rewrite_loopback_urls": False,

@@ -2265,7 +2265,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         route_provider = _clean_request_string(route_cfg.get("provider"))
         session_key = gateway_session_key or session_id
         session_row_model = _clean_request_string(session_model)
-        current_provider = _clean_request_string(runtime_kwargs.get("provider"))
+        # ``provider`` is the normalized transport label (for example ``custom``),
+        # while ``requested_provider`` retains the named identity (``custom:foo``)
+        # needed to re-resolve credentials after a session model is persisted.
+        current_provider = _clean_request_string(
+            runtime_kwargs.get("requested_provider") or runtime_kwargs.get("provider")
+        )
         session_override = None if confirmed_runtime_lock else self._session_model_override_for(session_key)
         # Model-string precedence (override > session-persisted > global) is owned by
         # hermes_cli.model_switch.resolve_effective_model.

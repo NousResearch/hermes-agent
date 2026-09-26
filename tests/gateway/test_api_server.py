@@ -257,6 +257,43 @@ class TestAdapterInit:
         assert captured["checkpoint_max_total_size_mb"] == 321
         assert captured["checkpoint_max_file_size_mb"] == 4
 
+    @pytest.mark.parametrize(
+        ("runtime", "expected"),
+        [
+            ({"provider": "custom", "requested_provider": "custom:inference"}, "custom:inference"),
+            ({"provider": "openai", "requested_provider": "openai"}, "openai"),
+            ({"provider": "openai"}, "openai"),
+        ],
+    )
+    def test_session_model_reresolves_requested_provider_identity(self, monkeypatch, runtime, expected):
+        """A persisted model must not collapse a named custom provider to ``custom``."""
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        seen = []
+
+        monkeypatch.setattr(adapter, "_session_model_override_for", lambda _key: None)
+        monkeypatch.setattr(adapter, "_recover_or_record_model", lambda model, _runtime, _key: model)
+
+        def apply_provider(_runtime, provider, *, target_model, required=False):
+            seen.append((provider, target_model, required))
+            return True
+
+        monkeypatch.setattr(adapter, "_apply_provider_runtime", apply_provider)
+
+        selected = adapter._select_agent_runtime(
+            runtime,
+            "global-model",
+            requested_model=None,
+            requested_provider=None,
+            route=None,
+            session_model="persisted-model",
+            confirmed_runtime_lock=False,
+            gateway_session_key="session-1",
+            session_id="api-session",
+        )
+
+        assert selected[0] == "persisted-model"
+        assert seen == [(expected, "persisted-model", False)]
+
 
 # ---------------------------------------------------------------------------
 # Auth checking

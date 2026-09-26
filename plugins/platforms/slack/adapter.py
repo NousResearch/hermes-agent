@@ -138,7 +138,7 @@ _SLACK_SPECIAL_MENTION_RE = re.compile(r"<!(?:everyone|channel|here)(?:\|[^>\n]*
 
 # Thread-root images delivered on a mid-thread cold start; other messages' files
 # are text markers only (the root is usually the artifact the mention is about).
-_THREAD_ROOT_IMAGE_MAX = 4
+_THREAD_ROOT_IMAGE_MAX = 4  # images and documents combined
 
 
 def _slack_file_marker(file_obj: Dict[str, Any]) -> str:
@@ -5981,9 +5981,10 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def _collect_thread_root_images(
         self, channel_id: str, thread_ts: str, team_id: str = "") -> Tuple[List[str], List[str]]:
-        """Thread-root ``image/*`` files → (paths, mimetypes); cold-start only (once per session),
-        read from the cache filled by :meth:`_fetch_thread_context`. Best-effort: text markers
-        already announce the image, so failures never produce an error turn."""
+        """Thread-root images and documents → (paths, mimetypes); cold-start only (once per session),
+        read from the cache filled by :meth:`_fetch_thread_context`. Files are recovered only when
+        the root was posted by a verified human (not a bot, app, or unknown sender). Best-effort:
+        text markers already announce the files, so failures never produce an error turn."""
         media_urls: List[str] = []
         media_types: List[str] = []
         try:
@@ -5991,8 +5992,9 @@ class SlackAdapter(BasePlatformAdapter):
                 self._thread_cache_key(channel_id, thread_ts, team_id))
             root = self._thread_root_message(cached.messages, thread_ts) if cached else None
             files = root.get("files") if root else None
-            if not isinstance(files, list):
+            if not isinstance(files, list) or not files:
                 return media_urls, media_types
+            docs_allowed: Optional[bool] = None  # resolved lazily, only if a document is present
             for f in files:
                 if len(media_urls) >= _THREAD_ROOT_IMAGE_MAX:
                     break
@@ -6005,20 +6007,49 @@ class SlackAdapter(BasePlatformAdapter):
                         continue
                 mimetype = str(f.get("mimetype") or "")
                 url = f.get("url_private_download") or f.get("url_private", "")
-                if not mimetype.startswith("image/") or not url:
+                kind = self._slack_file_kind(f, mimetype) if url else ""
+                if kind not in ("image", "document"):
                     continue
+                if kind == "document":
+                    if docs_allowed is None:
+                        docs_allowed = await self._thread_root_sender_verified(root, channel_id, team_id)
+                        if not docs_allowed:
+                            logger.info(
+                                "[Slack] Thread-root documents not loaded: root sender is not a "
+                                "verified, authorized human (channel=%s thread=%s)", channel_id, thread_ts)
+                    if not docs_allowed:
+                        continue
                 try:
-                    cached_path, media_type, _ = await self._cache_slack_file(
-                        "image", f, url, mimetype, team_id)
-                    media_urls.append(cached_path)
-                    media_types.append(media_type)
+                    cached_file = await self._cache_slack_file(kind, f, url, mimetype, team_id)
+                    if cached_file is None:
+                        continue
+                    media_urls.append(cached_file[0])
+                    media_types.append(cached_file[1])
                 except Exception as exc:
                     logger.warning(
-                        "[Slack] Failed to cache thread-root image %s: %s",
+                        "[Slack] Failed to cache thread-root %s %s: %s", kind,
                         f.get("id") or f.get("name") or "unknown", exc)
         except Exception as exc:  # pragma: no cover - defensive
-            logger.debug("[Slack] Thread-root image recovery failed: %s", exc)
+            logger.debug("[Slack] Thread-root file recovery failed: %s", exc)
         return media_urls, media_types
+
+    async def _thread_root_sender_verified(
+        self, root: Dict[str, Any], channel_id: str, team_id: str) -> bool:
+        """True only for a root posted by an active human Slack user (no bot/app/webhook author)
+        who also passes this profile's sender authorization (excludes outside guests)."""
+        user_id = str(root.get("user") or "")
+        if not user_id or root.get("bot_id") or root.get("subtype") in {"bot_message", "app_message"}:
+            return False
+        try:
+            payload = await self._users_info_payload(user_id, channel_id, team_id)
+        except Exception:
+            return False
+        user = payload.get("user") if isinstance(payload, dict) else None
+        if not isinstance(user, dict) or user.get("id") not in (None, user_id) or user.get("deleted"):
+            return False
+        if self._parse_users_info(payload, user_id)[1]:
+            return False
+        return self._is_sender_authorized(user_id, "group", channel_id) is not False
 
     async def _handle_slash_command(self, command: dict) -> None:
         """Slash commands: native ``/<command> [args]`` for every COMMAND_REGISTRY entry, or

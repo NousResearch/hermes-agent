@@ -600,6 +600,10 @@ def _(rid, params: dict) -> dict:
         if internal_hosted_submit else _legacy_group_fence_error(rid, session, params))
     if err is not None:
         return err
+    # Reject sanitized blank turns before claiming a slot, building an agent, or
+    # persisting a row. Image-only sends remain valid; authorization takes precedence.
+    if isinstance(text, str) and not text.strip() and not session.get("attached_images"):
+        return _err(rid, 4033, "prompt text is empty")
     if (limit_message := _ensure_active_session_slot(sid, session)) is not None:
         # Refused HERE — before the busy queue, db row and agent build — so a refusal
         # leaves the session untouched.  The reason travels as machine-readable data.

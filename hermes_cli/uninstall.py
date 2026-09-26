@@ -701,8 +701,8 @@ def run_uninstall(args):
     print(f"  Secrets: {hermes_home / '.env'}")
     print(f"  Data:    {hermes_home / 'cron/'}, {hermes_home / 'sessions/'}, {hermes_home / 'logs/'}")
     from hermes_cli.gui_uninstall import desktop_userdata_dir
-    if desktop_userdata_dir().exists():
-        print(f"  Desktop: {desktop_userdata_dir()}  (app data - kept by 'Keep data', removed by 'Full uninstall')")
+    if (desktop_userdata := desktop_userdata_dir()).exists():
+        print(f"  Desktop: {desktop_userdata}  (app data - kept by 'Keep data', removed by 'Full uninstall')")
     print()
 
     if named_profiles:
@@ -778,17 +778,17 @@ def _print_uninstall_dry_run(*, project_root: Path, hermes_home: Path, full_unin
     print("  • Hermes wrapper scripts and Hermes-managed node/npm/npx symlinks")
     print("  • Desktop Chat GUI artifacts")
     print(f"  • Code checkout: {project_root}")
+    from hermes_cli.gui_uninstall import desktop_userdata_dir
+    userdata = desktop_userdata_dir()
     if not full_uninstall:
         print(f"  • Keep Hermes config/data: {hermes_home}")
-        from hermes_cli.gui_uninstall import desktop_userdata_dir
-        if (userdata := desktop_userdata_dir()).exists():
+        if userdata.exists():
             print(f"  • Keep desktop app data: {userdata}")
     else:
         print(f"  • Hermes config/data: {hermes_home}")
         if sys.platform == "darwin":
             print("  • macOS: dashboard/serve launchd jobs, Electron + setup caches")
-        from hermes_cli.gui_uninstall import desktop_userdata_dir
-        if (userdata := desktop_userdata_dir()).exists():
+        if userdata.exists():
             print(f"  • Desktop app data: {userdata}")
         profiles = _discover_named_profiles() if _is_default_hermes_home(hermes_home) else []
         if profiles:
@@ -952,8 +952,10 @@ def _perform_uninstall(
     #     The userData dir is user configuration (connections.json, OAuth partitions, renderer
     #     state), so keep-data preserves it — only the full wipe removes it.
     log_info("Removing desktop Chat GUI artifacts...")
+    desktop_userdata = None
     try:
-        from hermes_cli.gui_uninstall import uninstall_gui
+        from hermes_cli.gui_uninstall import desktop_userdata_dir, uninstall_gui
+        desktop_userdata = desktop_userdata_dir()
         if not uninstall_gui(hermes_home, remove_userdata=full_uninstall):
             log_info("No desktop GUI artifacts found")
     except Exception as e:
@@ -1018,9 +1020,8 @@ def _perform_uninstall(
     if not full_uninstall:
         print(color("Your configuration and data have been preserved:", Colors.CYAN))
         print(f"  {hermes_home}/")
-        from hermes_cli.gui_uninstall import desktop_userdata_dir
-        if desktop_userdata_dir().exists():
-            print(f"  {desktop_userdata_dir()}  (desktop app data)")
+        if desktop_userdata is not None and desktop_userdata.exists():
+            print(f"  {desktop_userdata}  (desktop app data)")
         print()
         print("To reinstall later with your existing settings:")
         print(color(_REINSTALL_HINT[windows], Colors.DIM))

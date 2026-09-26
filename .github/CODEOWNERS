@@ -1,0 +1,3 @@
+# Require maintainer review for workflow and composite action changes.
+.github/workflows/ @NousResearch/hermes-maintainers
+.github/actions/ @NousResearch/hermes-maintainers

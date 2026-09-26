@@ -24,18 +24,21 @@ Two functions are the whole mechanism, and everything else derives from them:
 
 Budget
     Derived, not invented: the throughput the board has ACTUALLY been closing
-    with — completed cards in the trailing window, times
-    ``admission_cohort_multiplier`` — floored at ``admission_floor`` and
-    overridable by ``admission_budget_pin``. A lane's budget is a fraction of
-    its own cohort (``admission_lane_budget_pct``), so a deliberately light
-    lane cannot be handed a heavy lane's share. Lane budget binds BEFORE the
-    global depth check: a full lane refuses even when the fleet has room.
+    with — DISTINCT cards completed in the trailing ``admission_window_hours``
+    — floored at ``admission_budget_floor`` and overridable outright by
+    ``admission_budget``. A lane's budget is the SAME derivation over the
+    lane's OWN completions (never a share of the board's), overridable per lane
+    by ``admission_lane_budgets``; an unassigned card has no lane bound at all.
+    Both overrides are explicit, and neither one leaks: the board pin does not
+    set a lane's bound, and the lane bound is not a fraction of the board's.
+    Lane budget binds BEFORE the global depth check: a full lane refuses even
+    when the fleet has room.
 
 Exemptions (exactly three, each reported as its own reason)
     * a ``todo`` card re-entering the lane it already held (re-entry — the
       demand was admitted once; refusing it would strand a running card's
       retry), 
-    * P0 / fault work (``admission_p0_fault_priority`` and above),
+    * P0 / fault work (``admission_p0_priority`` and above),
     * a consent ask (``admit_reason='consent'`` on the create surface).
 
 State, on the task row
@@ -47,19 +50,19 @@ State, on the task row
     card that leaves the board is not miscounted if its id is ever reused.
 
 Config keys (``kanban:`` section; the keys ship inert, ``admission_enabled_at``
-unset means the mechanism is off and every path behaves exactly as before):
+unset means the mechanism is off and every path behaves exactly as before).
+These 8 keys are the §5.1 contract, and
+``tests/hermes_cli/test_kanban_admission.py`` asserts them against the §5.1
+table copied as a literal, so a contract edit is a visible two-place change.
 
-    admission_enabled_at              epoch; unset/0 = OFF
-    admission_lookback_window_hours   168  (7 days)
-    admission_cohort_multiplier       0.55
-    admission_lane_budget_pct         4.0  (% of the lane's own budget)
-    admission_lane_budget_pct_no_lane 0.0  (0 = open lane, no lane budget)
-    admission_floor                   20
-    admission_budget_pin              0    (>0 pins the global budget)
-    admission_lane_budget_floor       4
-    admission_p0_fault_priority       2
-    admission_ageing_warn_seconds     1200
-    admission_ageing_escalate_seconds 7200
+    admission_enabled_at    unset  epoch; unset = OFF
+    admission_budget        unset  >0 pins the BOARD budget (budget_source=pin_override)
+    admission_window_hours     24  trailing window the budget derives from
+    admission_budget_floor      5  floor under the derived budget
+    admission_p0_priority      90  priority >= this is a P0 fault (exempt)
+    admission_lane_budgets  unset  {lane: int} overrides; unassigned = no lane bound
+    ageing_warn_hours          24  routine tier, in hours spent ready
+    ageing_escalate_hours      72  escalate tier, in hours spent ready
 """
 
 from __future__ import annotations
@@ -80,7 +83,8 @@ REASON_EXEMPT_CONSENT = "exempt_consent"
 REASON_UNDER_BUDGET = "under_budget"
 REASON_OVER_BUDGET = "over_budget"
 
-# ``budget_source`` tokens.
+# ``budget_source`` tokens. SOURCE_COHORT must name the derivation actually
+# used, so it says "x1": the budget is the cohort unscaled (§5.1).
 SOURCE_PIN = "pin_override"
 SOURCE_FLOOR = "floor_min"
 SOURCE_COHORT = "completed_window_1x"
@@ -92,19 +96,18 @@ DISPOSITION_DEDUPED = "deduped"
 DISPOSITION_COMMENT_ON_ORIGIN = "comment_on_origin"
 
 # Config defaults. Kept here (not only in ``config_defaults``) so the kernel is
-# correct on a board whose config.yaml predates the keys.
+# correct on a board whose config.yaml predates the keys. This is the same 8-key
+# §5.1 contract as ``DEFAULT_CONFIG["kanban"]``, and the namesake parity test in
+# ``tests/hermes_cli/test_kanban_admission.py`` pins both to the §5.1 table.
 DEFAULTS: dict[str, Any] = {
-    "admission_enabled_at": 0,
-    "admission_lookback_window_hours": 168.0,
-    "admission_cohort_multiplier": 0.55,
-    "admission_lane_budget_pct": 4.0,
-    "admission_lane_budget_pct_no_lane": 0.0,
-    "admission_floor": 20,
-    "admission_budget_pin": 0,
-    "admission_lane_budget_floor": 4,
-    "admission_p0_fault_priority": 2,
-    "admission_ageing_warn_seconds": 1200,
-    "admission_ageing_escalate_seconds": 7200,
+    "admission_enabled_at": None,
+    "admission_budget": None,
+    "admission_window_hours": 24,
+    "admission_budget_floor": 5,
+    "admission_p0_priority": 90,
+    "admission_lane_budgets": None,
+    "ageing_warn_hours": 24,
+    "ageing_escalate_hours": 72,
 }
 
 
@@ -123,22 +126,55 @@ def kanban_config() -> dict:
         return {}
 
 
-def _num(cfg: dict, key: str, default, cast):
+def _num(cfg: dict, key: str, cast, unset=0):
+    """One config value, cast.
+
+    ``DEFAULTS[key]`` is what an absent, empty or null key means — that is the
+    whole reason the module carries defaults: a board whose config.yaml predates
+    the keys must still be governed by the §5.1 values. ``unset`` is what a key
+    with no numeric default (``admission_budget``, ``admission_enabled_at``) and
+    a malformed value fall back to; for those, unset IS a value.
+    """
+    default = DEFAULTS[key]
     val = cfg.get(key, default)
     if val is None or val == "":
         val = default
+    fallback = cast(default) if default is not None else unset
+    if val is None:
+        return fallback
     try:
         return cast(val)
     except (TypeError, ValueError):
-        return cast(default)
+        return fallback
 
 
 def _int_cfg(cfg: dict, key: str) -> int:
-    return _num(cfg, key, DEFAULTS[key], int)
+    return _num(cfg, key, int)
 
 
 def _float_cfg(cfg: dict, key: str) -> float:
-    return _num(cfg, key, DEFAULTS[key], float)
+    return _num(cfg, key, float)
+
+
+def lane_budgets(cfg: Optional[dict] = None) -> dict[str, int]:
+    """``admission_lane_budgets`` as ``{lane: int}``; ``{}`` when unset.
+
+    THE per-lane override surface (§5.1). A malformed entry, or a value that is
+    not a mapping at all, is dropped rather than allowed to cap a lane at a
+    number nobody wrote — a lane with no entry keeps its own derivation.
+    Negative values clamp to 0, which reads as "no lane bound" everywhere else.
+    """
+    cfg = kanban_config() if cfg is None else cfg
+    raw = cfg.get("admission_lane_budgets", DEFAULTS["admission_lane_budgets"])
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, int] = {}
+    for lane, val in raw.items():
+        try:
+            out[str(lane).strip()] = max(0, int(val))
+        except (TypeError, ValueError):
+            continue
+    return out
 
 
 def admission_enabled_at(cfg: Optional[dict] = None) -> int:
@@ -215,37 +251,53 @@ def completed_in_window(conn, hours: float, *, lane: Optional[str] = None) -> in
 def ready_queue_budget(conn, *, lane: Optional[str] = None, cfg: Optional[dict] = None) -> tuple[int, str]:
     """``(budget, budget_source)`` — the ONE derivation, cohort-derived.
 
-    ``lane=None`` is the global budget; a lane gets the same derivation over
-    its OWN completions, so a lane's throughput sets its own ceiling.
+    ``lane=None`` is the board budget; a lane gets the SAME derivation over its
+    OWN completions, so a lane's throughput sets its own ceiling. §5.1: the
+    cohort is multiplied by nothing — a hidden multiplier is a deviation
+    ``budget_source`` cannot report, and the sanctioned deviation is
+    ``admission_budget``, which reports ``pin_override``.
+
+    The pin is the BOARD's deviation and stops there: a lane's bound is its own
+    derivation (A5), overridden only by the explicit ``admission_lane_budgets``
+    map — otherwise a board pin would silently erase the per-lane structure.
     """
     cfg = kanban_config() if cfg is None else cfg
-    pin = _int_cfg(cfg, "admission_budget_pin")
-    if pin > 0:
-        return pin, SOURCE_PIN
-    hours = _float_cfg(cfg, "admission_lookback_window_hours")
+    if lane is None:
+        pin = _int_cfg(cfg, "admission_budget")
+        if pin > 0:
+            return pin, SOURCE_PIN
+    hours = _float_cfg(cfg, "admission_window_hours")
     cohort = completed_in_window(conn, hours, lane=lane)
-    derived = int(cohort * _float_cfg(cfg, "admission_cohort_multiplier"))
-    floor = _int_cfg(cfg, "admission_floor")
-    if derived < floor:
+    floor = _int_cfg(cfg, "admission_budget_floor")
+    if cohort < floor:
         return floor, SOURCE_FLOOR
-    return derived, SOURCE_COHORT
+    return cohort, SOURCE_COHORT
 
 
-def lane_budget(budget: int, lane: Optional[str], *, cfg: Optional[dict] = None) -> int:
-    """A lane's share of ``budget``; 0 = no lane cap (an open lane)."""
+def lane_budget(conn, lane: Optional[str], *, cfg: Optional[dict] = None) -> int:
+    """A lane's ready budget; 0 = NO lane bound.
+
+    A5/§5.1: the lane's bound is the lane's OWN derivation (its completions in
+    the window, floored), never a share of the board's — a lane that closed
+    nothing gets the floor, not the busy lane's number. ``admission_lane_budgets
+    [lane]`` overrides it explicitly, and an UNASSIGNED demand (``lane``
+    None/empty) has no lane bound at all: the board bound alone applies.
+    """
     cfg = kanban_config() if cfg is None else cfg
-    pct = _float_cfg(cfg, "admission_lane_budget_pct") if lane else _float_cfg(
-        cfg, "admission_lane_budget_pct_no_lane")
-    if pct <= 0:
+    name = (str(lane).strip() or "") if lane else ""
+    if not name:
         return 0
-    share = int(int(budget) * pct / 100.0)
-    return max(share, _int_cfg(cfg, "admission_lane_budget_floor"))
+    overrides = lane_budgets(cfg)
+    if name in overrides:
+        return overrides[name]
+    budget, _ = ready_queue_budget(conn, lane=name, cfg=cfg)
+    return budget
 
 
 def is_p0_fault(priority: Any, *, cfg: Optional[dict] = None) -> bool:
     cfg = kanban_config() if cfg is None else cfg
     try:
-        return int(priority or 0) >= _int_cfg(cfg, "admission_p0_fault_priority")
+        return int(priority or 0) >= _int_cfg(cfg, "admission_p0_priority")
     except (TypeError, ValueError):
         return False
 
@@ -261,14 +313,18 @@ def decide(
     """Would this demand be admitted right now? Read-only; the ONE predicate.
 
     Precedence: admission OFF, then re-entry, then the two exemptions, then the
-    lane bucket, then the global depth (the lane binds first on purpose).
+    lane bucket, then the board depth (the lane binds first on purpose).
+
+    ``Admission`` carries the BOARD budget in ``budget`` and the demand's own
+    lane bound in ``lane_budget`` (0 = no lane bound), so a lane-scoped number
+    is never reported as the board's.
     """
     cfg = kanban_config() if cfg is None else cfg
     lane = (str(lane).strip() or None) if lane else None
     depth = _ready_depth(conn)
     lane_depth = _ready_depth(conn, lane) if lane else 0
-    budget, source = ready_queue_budget(conn, lane=lane, cfg=cfg)
-    lbudget = lane_budget(budget, lane, cfg=cfg)
+    budget, source = ready_queue_budget(conn, cfg=cfg)
+    lbudget = lane_budget(conn, lane, cfg=cfg)
 
     if not admission_enabled_at(cfg):
         return Admission(True, REASON_DISABLED, lane, depth, budget, source, lane_depth, lbudget)
@@ -393,8 +449,8 @@ def queue_state(conn) -> dict:
     """The read surface for the board's admission state (§5.2, frozen keys)."""
     cfg = kanban_config()
     now = int(time.time())
-    budget, source = ready_queue_budget(conn)  # global budget source
-    hours = _float_cfg(cfg, "admission_lookback_window_hours")
+    budget, source = ready_queue_budget(conn)  # board budget + its real source
+    hours = _float_cfg(cfg, "admission_window_hours")
     window_completed = completed_in_window(conn, hours)
     drain_per_hour = round(window_completed / hours, 3) if hours > 0 else 0.0
     depth = _ready_depth(conn)
@@ -405,10 +461,9 @@ def queue_state(conn) -> dict:
     ).fetchall()
     for row in rows:
         lane = str(row["assignee"])
-        lbudget, _ = ready_queue_budget(conn, lane=lane, cfg=cfg)
         lanes[lane] = {
             "depth": int(row["n"] or 0),
-            "budget": lane_budget(lbudget, lane, cfg=cfg),
+            "budget": lane_budget(conn, lane, cfg=cfg),
         }
     deferred_row = conn.execute(
         "SELECT COUNT(*) AS n FROM tasks WHERE admit_state = ?", (DEFERRED,)
@@ -457,10 +512,15 @@ def queue_state(conn) -> dict:
 
 
 def ageing(conn, *, cfg: Optional[dict] = None) -> dict:
-    """Wait-time report from ``ready_since`` (a column read, not an event replay)."""
+    """Wait-time report from ``ready_since`` (a column read, not an event replay).
+
+    §5.1 units: the tiers are HOURS in ready (``ageing_warn_hours`` /
+    ``ageing_escalate_hours``), compared against seconds-in-ready * 3600. A tier
+    of 0 (or less) is off.
+    """
     cfg = kanban_config() if cfg is None else cfg
-    warn = _int_cfg(cfg, "admission_ageing_warn_seconds")
-    escalate = _int_cfg(cfg, "admission_ageing_escalate_seconds")
+    warn = int(_float_cfg(cfg, "ageing_warn_hours") * 3600)
+    escalate = int(_float_cfg(cfg, "ageing_escalate_hours") * 3600)
     now = int(time.time())
     rows = conn.execute(
         "SELECT id, ready_since FROM tasks "

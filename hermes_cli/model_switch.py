@@ -1632,7 +1632,10 @@ def _validate_switch(st: _Switch) -> Optional[ModelSwitchResult]:
     validate_as = st.target_provider
     if not validate_as.lower().startswith("custom"):
         pdef = resolve_provider_full(validate_as, st.user_providers, st.custom_providers)
-        if pdef is not None and pdef.source == "user-config":
+        # A providers.<builtin> block may contain only operational settings (timeouts,
+        # retries, model metadata). That does not make the built-in route a custom
+        # endpoint. Only URL-bearing user entries use custom endpoint validation.
+        if pdef is not None and pdef.source == "user-config" and pdef.base_url:
             validate_as = f"custom:{validate_as}"
     try:
         validation = validate_requested_model(

@@ -5,6 +5,7 @@ import {
   getPluginLoadError,
   onPluginRegistered,
 } from "./registry";
+import { PluginErrorBoundary } from "./PluginErrorBoundary";
 import { useI18n } from "@/i18n";
 import { cn } from "@/lib/utils";
 import type { Translations } from "@/i18n/types";
@@ -26,7 +27,14 @@ export function PluginPage({ name }: { name: string }) {
   );
 
   if (Component) {
-    return <Component />;
+    // Keyed on `name` so navigating between plugin tabs remounts the
+    // boundary (and clears any prior crash) instead of reusing state from
+    // whichever plugin last threw.
+    return (
+      <PluginErrorBoundary key={name} name={name}>
+        <Component />
+      </PluginErrorBoundary>
+    );
   }
 
   if (loadError) {

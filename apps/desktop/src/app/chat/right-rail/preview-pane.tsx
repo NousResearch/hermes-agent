@@ -1240,7 +1240,20 @@ export function PreviewPane({
               void window.hermesDesktop?.contextMenuGuestAddWord?.({ webContentsId, word })
             }
           },
-          copyImage: () => void window.hermesDesktop?.contextMenuCopyImage?.(),
+          // The guest's own gesture never reaches main (only HOST points are
+          // recorded), so name the webview by id and hand over the gesture
+          // point. copyImageAt on a guest consumes EXACTLY the coordinates the
+          // gesture reports — subtracting the webview offset or dividing by the
+          // window zoom lands the hit test on another pixel entirely (measured
+          // live against a known-position image: raw point hits, transformed
+          // point misses).
+          copyImage: () => {
+            const webContentsId = webview.getWebContentsId?.()
+
+            if (typeof webContentsId === 'number') {
+              void window.hermesDesktop?.contextMenuCopyImage?.({ webContentsId, x: params.x, y: params.y })
+            }
+          },
           // The tag's edit commands act on the focused webContents, and the
           // menu click just parked focus on the HOST body — measured live:
           // selectAll() with host focus selected the address bar + chat

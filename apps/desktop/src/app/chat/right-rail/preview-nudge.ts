@@ -16,16 +16,9 @@
 
 import type { WatchStage } from '@/lib/preview-act/watch-in-page'
 
-import { activePreviewScriptRunner } from './preview-script-runner'
+import { activePreviewScriptRunner, type PreviewScriptRunner, previewScriptRunners } from './preview-script-runner'
 
-/** Run one stage against the active pane's overlay, if it has one. */
-export function nudgeOverlay(stage: WatchStage): void {
-  const run = activePreviewScriptRunner()
-
-  if (!run) {
-    return
-  }
-
+function nudgeRunner(run: PreviewScriptRunner, stage: WatchStage): void {
   void run(`(function () {
   var w = window;
   var fn = w.__hermesWatch_fn;
@@ -35,4 +28,23 @@ export function nudgeOverlay(stage: WatchStage): void {
 })()`).catch(() => {
     // The page navigated out from under us. The next action re-injects.
   })
+}
+
+/** Run one stage against the active pane's overlay, if it has one. */
+export function nudgeOverlay(stage: WatchStage): void {
+  const run = activePreviewScriptRunner()
+
+  if (!run) {
+    return
+  }
+
+  nudgeRunner(run, stage)
+}
+
+/** Stop the idle pulse everywhere it could still be running. `think` belongs to
+ * the active page; `rest` is cleanup and must survive a tab switch. */
+export function restOverlays(): void {
+  for (const run of previewScriptRunners()) {
+    nudgeRunner(run, 'rest')
+  }
 }

@@ -10,8 +10,9 @@ Usage:
   docx_read.py file.docx --revisions   # JSON: tracked changes / comments present?
 
 Text output is JSON: {"body": [...], "tables": [[...rows]], "headers": [...],
-"footers": [...]}. Body text is the accepted/as-is text (python-docx ignores
-deleted-in-revision text and shows inserted text).
+"footers": [...]}. Text reads as the document does with every tracked change
+accepted: inserted text is included and deleted text is left out. Paragraphs in
+content controls and text boxes are included too.
 """
 from __future__ import annotations
 
@@ -24,17 +25,66 @@ import zipfile
 from docx import Document
 
 
+W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+MC_FALLBACK = "{http://schemas.openxmlformats.org/markup-compatibility/2006}Fallback"
+# Not part of the text with every tracked change accepted: deleted and moved-away
+# text, the ruby guide, text boxes (read as paragraphs of their own) and the
+# fallback copy Word writes of every text box.
+SKIPPED = frozenset({W + "del", W + "moveFrom", W + "rt", W + "txbxContent", MC_FALLBACK})
+# The run children python-docx's Run.text reads, each as the text it stands for.
+RUN_TEXT = tuple(W + tag for tag in ("br", "cr", "noBreakHyphen", "ptab", "t", "tab"))
+
+
+def _inside_skipped(element, stop) -> bool:
+    node = element.getparent()
+    while node is not None and node is not stop:
+        if node.tag in SKIPPED:
+            return True
+        node = node.getparent()
+    return False
+
+
+def paragraph_text(p) -> str:
+    """Text of a w:p element.
+
+    Paragraph.text reads only the runs directly under the paragraph, so it drops
+    inserted text (w:ins), content controls, simple fields and smart tags.
+    """
+    return "".join(str(el) for el in p.iter(*RUN_TEXT)
+                   if el.getparent().tag == W + "r" and not _inside_skipped(el, p))
+
+
+def paragraph_texts(container) -> list:
+    """Paragraph texts of a body, header, footer or cell in document order.
+
+    Paragraphs inside content controls are included, and each text box follows
+    the paragraph it is anchored in. Tables are read separately.
+    """
+    texts = []
+    for child in container:
+        if child.tag == W + "p":
+            texts.append(paragraph_text(child))
+            for box in child.iter(W + "txbxContent"):
+                if not _inside_skipped(box, child):
+                    texts.extend(paragraph_texts(box))
+        elif child.tag in (W + "sdt", W + "customXml"):
+            content = child.find(W + "sdtContent")
+            texts.extend(paragraph_texts(child if content is None else content))
+    return texts
+
+
 def table_to_rows(table) -> list:
-    return [[cell.text for cell in row.cells] for row in table.rows]
+    return [["\n".join(paragraph_texts(cell._tc)) for cell in row.cells]
+            for row in table.rows]
 
 
 def extract_text(doc) -> dict:
-    out = {"body": [p.text for p in doc.paragraphs],
+    out = {"body": paragraph_texts(doc.element.body),
            "tables": [table_to_rows(t) for t in doc.tables],
            "headers": [], "footers": []}
     for section in doc.sections:
-        out["headers"].extend(p.text for p in section.header.paragraphs)
-        out["footers"].extend(p.text for p in section.footer.paragraphs)
+        out["headers"].extend(paragraph_texts(section.header._element))
+        out["footers"].extend(paragraph_texts(section.footer._element))
         for t in section.header.tables:
             out["headers"].append(json.dumps(table_to_rows(t), ensure_ascii=False))
         for t in section.footer.tables:

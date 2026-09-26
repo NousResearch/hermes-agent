@@ -533,6 +533,19 @@ def _check_command_installation(should_fix: bool, f: Finding) -> None:
         return f.manual_issues.append(_python_repair_hint())
     pm_launcher = selected != base_venv(PROJECT_ROOT) or resolve_store_python(PROJECT_ROOT) is not None
     venv_bin = PROJECT_ROOT / "hermes" if pm_launcher else selected / "bin" / "hermes"
+    if pm_launcher:
+        # #124050: a PM install stages source into <gen>/workspace WITHOUT a
+        # launcher — the entry point lives in the committed generation env or
+        # the base env, or behind the user shim checked below. Accept any of
+        # those before declaring the entry point missing, so a healthy PM
+        # install reports clean instead of a permanent false positive.
+        venv_bin = next(
+            (candidate for candidate in (
+                PROJECT_ROOT / "hermes",
+                selected / "bin" / "hermes",
+                base_venv(PROJECT_ROOT) / "bin" / "hermes",
+            ) if candidate.is_file()),
+            PROJECT_ROOT / "hermes")
     if not venv_bin.is_file():
         check_warn("Hermes entry point not found", f"({venv_bin})")
         return f.manual_issues.append("Repair or reinstall the Hermes launcher through the installation owner")

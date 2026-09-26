@@ -197,6 +197,22 @@ def _missing_api_key_toolsets_for_summary(unavailable: list[dict]) -> list[dict]
     return api_key_unavailable if enabled_toolsets is None else [i for i in api_key_unavailable if str(i.get("name") or "") in enabled_toolsets]
 
 
+def _unavailable_toolset_detail(item: dict) -> str:
+    """Detail for an unavailable-toolset row. A missing key names itself; ``browser-use`` is
+    keyed on *why* its mode is off, so the CLI install remedy is named only when the CLI is
+    actually the problem — an intentional opt-out (``browser.backend: off``) or Camofox names
+    itself instead (#122412 review). Everything else uses its setup hint or the generic text."""
+    env_vars = item.get("missing_vars") or item.get("env_vars") or []
+    if env_vars:
+        return f"(missing {', '.join(env_vars)})"
+    name = str(item.get("name") or "")
+    if name == "browser-use":
+        from tools.browser_use_cli import browser_use_unavailable_detail
+        if detail := browser_use_unavailable_detail():
+            return detail
+    return _TOOLSET_SETUP_HINTS.get(name, "(system dependency not met)")
+
+
 @doctor_check()
 def _check_git_and_rg(should_fix: bool, f: Finding) -> None:
     git, git_detail = _doctor_tool("git")
@@ -527,9 +543,7 @@ def _check_tool_availability(should_fix: bool, f: Finding) -> None:
     for status, label, detail in web_rows:
         (check_ok if status == "ok" else check_warn)(label, detail)
     for item in unavailable:
-        env_vars = item.get("missing_vars") or item.get("env_vars") or []
-        detail = f"(missing {', '.join(env_vars)})" if env_vars else _TOOLSET_SETUP_HINTS.get(item["name"], "(system dependency not met)")
-        check_warn(item["name"], detail)
+        check_warn(item["name"], _unavailable_toolset_detail(item))
     # Only toolsets enabled for the CLI count toward the summary; default-off or
     # disabled toolsets may warn above but must not pollute it.
     api_disabled = _missing_api_key_toolsets_for_summary(unavailable)

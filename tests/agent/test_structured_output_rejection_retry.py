@@ -80,6 +80,11 @@ class TestIsStructuredOutputRejection:
         "Gemini HTTP 400 (INVALID_ARGUMENT): Function calling with a response mime type: 'application/json' is unsupported",
         "Gemini HTTP 400 (INVALID_ARGUMENT): Invalid JSON payload received. Unknown name \"response_json_schema\" at 'generation_config'",
         "Gemini HTTP 400 (INVALID_ARGUMENT): Invalid value at 'generation_config.response_schema.properties[0].value.type'",
+        # NInfer names the rejection in its error code; the prose has no
+        # "unsupported" wording (src/serve/openai_chat_request.cpp).
+        "Error code: 400 - {'error': {'message': 'this response_format requires constrained output, "
+        "which NInfer cannot guarantee; only {\"type\":\"text\"} is available', "
+        "'type': 'invalid_request_error', 'param': 'response_format', 'code': 'response_format_not_supported'}}",
     ])
     def test_matches_real_provider_messages(self, message):
         assert _is_structured_output_rejection(RuntimeError(message)) is True
@@ -165,6 +170,10 @@ class TestCallLlmStructuredOutputRetry:
         "HTTP 400: This response_format type is unavailable now",
         # Strict gateway that rejects the translated Anthropic field
         "HTTP 400: output_config: Extra inputs are not permitted",
+        # NInfer: the machine-readable code is the only rejection signal
+        "Error code: 400 - {'error': {'message': 'this response_format requires constrained output, "
+        "which NInfer cannot guarantee; only {\"type\":\"text\"} is available', "
+        "'param': 'response_format', 'code': 'response_format_not_supported'}}",
     ])
     def test_retries_once_without_response_format(self, error_message):
         client = self._setup(RuntimeError(error_message))

@@ -3370,6 +3370,10 @@ def _is_structured_output_rejection(exc: Exception) -> bool:
         "response_format" in err_lower or "output_config" in err_lower
     ):
         return True
+    # NInfer rejects any non-text response_format with this code; its prose ("requires constrained
+    # output ... only {"type":"text"} is available") has no unsupported-parameter wording.
+    if "response_format_not_supported" in err_lower:
+        return True
     if "response_format" in err_lower and "unavailable" in err_lower:
         return True
     # Gateways that validate the request body with a strict pydantic model reject the

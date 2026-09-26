@@ -368,7 +368,8 @@ async def get_skills(profile: Optional[str] = None):
         for s in skills:
             s["enabled"] = s["name"] not in disabled
             s["usage"] = activity_count(usage.get(s["name"], {}))
-            s["provenance"] = (
+            # Plugin rows arrive pre-tagged (no on-disk SKILL.md to edit).
+            s["provenance"] = s.get("provenance") or (
                 "hub" if s["name"] in hub_names
                 else "bundled" if s["name"] in bundled_names
                 else "agent")

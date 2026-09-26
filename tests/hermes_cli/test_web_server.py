@@ -3036,6 +3036,9 @@ class TestNewEndpoints:
 
         rows = {s["name"]: s for s in self.client.get("/api/skills").json()}
         assert rows["kanban-plugin:board-helper"]["category"] == "plugin"
+        # Not provenance "agent": the desktop offers local edit affordances for
+        # agent rows, and a plugin row has no on-disk SKILL.md to edit (404).
+        assert rows["kanban-plugin:board-helper"]["provenance"] == "plugin"
 
     def test_toggle_plugin_category_membership(self, monkeypatch):
         # The section switch must cover every row it renders: membership for the
@@ -3170,6 +3173,21 @@ class TestNewEndpoints:
             "/api/tools/toolsets/bulk",
             json={"group": "web", "enabled": False, "names": ["web", "memory"]})
         assert resp.status_code == 400
+
+    def test_toggle_toolset_group_config_only_names_persist(self):
+        """A bulk toggle whose names are ALL config-only (stt) must still reach
+        config.yaml: the platform save loop never runs for such a selection,
+        so the config-only branch needs its own persist (regression: the
+        endpoint answered 200 ok while persisting nothing)."""
+        from hermes_cli.config import load_config
+
+        listing = {t["name"]: t for t in self.client.get("/api/tools/toolsets").json()}
+        resp = self.client.put(
+            "/api/tools/toolsets/bulk",
+            json={"group": listing["stt"]["group"], "enabled": False, "names": ["stt"]})
+        assert resp.status_code == 200
+        assert resp.json()["names"] == ["stt"]
+        assert load_config()["stt"]["enabled"] is False
 
     def test_get_toolset_config_returns_provider_matrix(self):
         """GET .../config returns provider rows with structured env_vars."""

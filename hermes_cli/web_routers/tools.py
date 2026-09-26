@@ -296,6 +296,8 @@ async def toggle_toolset_group(body: ToolsetGroupToggle, profile: Optional[str] 
     names = sorted(
         ts_key for ts_key, _, _ in _get_effective_configurable_toolsets()
         if _toolset_group(ts_key) == body.group)
+    if not names:
+        raise HTTPException(status_code=400, detail=f"Unknown toolset group: {body.group}")
     if body.names is not None:
         # The desktop renders a curated subset of the group; toggle exactly the
         # rows it shows — never members that screen gives no row to undo.
@@ -306,18 +308,21 @@ async def toggle_toolset_group(body: ToolsetGroupToggle, profile: Optional[str] 
                 status_code=400,
                 detail=f"Toolsets not in group {body.group}: {', '.join(unknown)}")
         names = sorted(requested)
-    if not names:
-        raise HTTPException(status_code=400, detail=f"Unknown toolset group: {body.group}")
+        if not names:
+            raise HTTPException(
+                status_code=400, detail=f"No toggleable toolsets in group: {body.group}")
     scope_profile = body.profile or profile
 
     def _run():
         with config_write_scope(scope_profile):
             config = load_config()
             enabled_by_platform = {}
+            config_only_touched = False
             for name in names:
                 if name in _CONFIG_ONLY_TOOLSETS:
                     # No platform_toolsets entry — flip the toolset's own section.
                     _dict_section(config, name)["enabled"] = bool(body.enabled)
+                    config_only_touched = True
                     continue
                 platform = _toolset_configuration_platform(name)
                 if platform not in enabled_by_platform:
@@ -329,6 +334,11 @@ async def toggle_toolset_group(body: ToolsetGroupToggle, profile: Optional[str] 
                     enabled_by_platform[platform].discard(name)
             for platform, enabled in enabled_by_platform.items():
                 _save_platform_tools(config, platform, enabled)
+            if config_only_touched and not enabled_by_platform:
+                # The platform loop is otherwise the only writer; an
+                # all-config-only selection must persist on its own.
+                from hermes_cli.config import save_config
+                save_config(config)
 
     await asyncio.to_thread(_run)
     return {"ok": True, "group": body.group, "enabled": body.enabled, "names": names}

@@ -247,7 +247,8 @@ def _find_all_skills(
                 skills.append({
                     "name": name,
                     "description": _truncate_description(str(meta.get("description") or "")),
-                    "category": meta.get("category") or None})
+                    "category": meta.get("category") or None,
+                    "provenance": "plugin"})
         except Exception:
             logger.debug("Plugin skill listing failed", exc_info=True)
     # Keyed by the signature computed BEFORE the scan: a write racing the scan changes the

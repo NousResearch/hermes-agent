@@ -262,7 +262,7 @@ export function SkillsTab({ onRefresh, profile, query, skills }: SkillsTabProps)
       setSkills(cur => cur?.map(row => (names.has(row.name) ? { ...row, enabled } : row)) ?? cur)
       notify({ kind: 'success', title: t.skills.bulkUpdated(result.names.length), message: '' })
     } catch (err) {
-      notifyError(err, t.skills.failedToUpdate(category))
+      notifyError(err, t.skills.failedToUpdate(prettyName(category)))
     } finally {
       invalidateSlashCompletions()
       setBulkBusy(false)

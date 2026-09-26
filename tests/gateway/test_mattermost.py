@@ -1,4 +1,5 @@
 """Tests for Mattermost platform adapter."""
+import asyncio
 import json
 import os
 import time
@@ -708,4 +709,162 @@ class TestMultiplexProfileScope:
             # skipped -- writing here would leak into every other profile's
             # os.environ.
             assert "MATTERMOST_REQUIRE_MENTION" not in os.environ
+
+
+# ---------------------------------------------------------------------------
+# Channel purpose/header → session context (TTL-cached channel metadata)
+# ---------------------------------------------------------------------------
+
+def _make_source_adapter():
+    from gateway.platforms.helpers import MessageDeduplicator
+    from plugins.platforms.mattermost.adapter import MattermostAdapter
+
+    adapter = MattermostAdapter.__new__(MattermostAdapter)
+    adapter.platform = Platform.MATTERMOST
+    adapter.config = PlatformConfig(enabled=True, token="fake-token", extra={})
+    adapter._bot_user_id, adapter._bot_username = "bot-id", "hermes-bot"
+    adapter._reply_mode = "thread"
+    adapter._channel_info_cache = {}
+    adapter._dedup = MessageDeduplicator()
+    adapter.gateway_runner = None
+    adapter._api_get = AsyncMock()
+    adapter.handle_message = AsyncMock()
+    return adapter
+
+
+def _posted_event(*, channel_id: str = "chan-1", channel_type: str = "O",
+                  message: str = "@hermes-bot hello", post_id: str = "post-1") -> dict:
+    return {
+        "event": "posted",
+        "data": {
+            "channel_type": channel_type,
+            "sender_name": "@alice",
+            "post": json.dumps({
+                "id": post_id,
+                "user_id": "user-1",
+                "channel_id": channel_id,
+                "message": message,
+                "root_id": "",
+                "type": "",
+            }),
+        },
+    }
+
+
+_CHANNEL = {
+    "id": "chan-1",
+    "type": "O",
+    "display_name": "Town Square",
+    "purpose": "Team-wide chatter",
+    "header": "Read the rules before posting",
+}
+
+
+class TestChannelInfoCache:
+    def test_populates_and_reuses_within_ttl(self):
+        adapter = _make_source_adapter()
+        adapter._api_get.return_value = _CHANNEL
+
+        async def run():
+            first = await adapter._get_channel_info_cached("chan-1")
+            second = await adapter._get_channel_info_cached("chan-1")
+            return first, second
+
+        first, second = asyncio.run(run())
+        assert first["purpose"] == "Team-wide chatter"
+        assert second["header"] == "Read the rules before posting"
+        adapter._api_get.assert_awaited_once_with("channels/chan-1")
+
+    def test_expired_entry_refetches(self):
+        adapter = _make_source_adapter()
+        adapter._api_get.return_value = _CHANNEL
+        adapter._channel_info_cache["chan-1"] = (0.0, _CHANNEL)  # epoch → stale
+
+        async def run():
+            return await adapter._get_channel_info_cached("chan-1")
+
+        data = asyncio.run(run())
+        assert data["purpose"] == "Team-wide chatter"
+        adapter._api_get.assert_awaited_once_with("channels/chan-1")
+
+    def test_fetch_failure_is_not_cached(self):
+        adapter = _make_source_adapter()
+        adapter._api_get.return_value = {}  # _api_get surfaces failures as {}
+
+        async def run():
+            await adapter._get_channel_info_cached("chan-1")
+            await adapter._get_channel_info_cached("chan-1")
+
+        asyncio.run(run())
+        assert adapter._api_get.await_count == 2  # no stale empty pin
+        assert "chan-1" not in adapter._channel_info_cache
+
+    def test_get_chat_info_reuses_cache(self):
+        adapter = _make_source_adapter()
+        adapter._api_get.return_value = _CHANNEL
+
+        async def run():
+            await adapter._get_channel_info_cached("chan-1")  # prime
+            return await adapter.get_chat_info("chan-1")
+
+        info = asyncio.run(run())
+        assert info == {"name": "Town Square", "type": "channel"}
+        adapter._api_get.assert_awaited_once()  # get_chat_info did not refetch
+
+
+class TestHandleWsEventPurposeHeader:
+    def test_purpose_and_header_reach_source(self):
+        adapter = _make_source_adapter()
+        adapter._api_get.return_value = _CHANNEL
+
+        asyncio.run(adapter._handle_ws_event(_posted_event()))
+
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args.args[0]
+        assert event.source.chat_topic == "Team-wide chatter"
+        assert event.source.chat_header == "Read the rules before posting"
+        assert event.message_type == MessageType.TEXT
+
+    def test_second_message_adds_no_http_call(self):
+        adapter = _make_source_adapter()
+        adapter._api_get.return_value = _CHANNEL
+
+        async def run():
+            await adapter._handle_ws_event(_posted_event())
+            await adapter._handle_ws_event(_posted_event(message="@hermes-bot again", post_id="post-2"))
+
+        asyncio.run(run())
+        adapter._api_get.assert_awaited_once()  # cached across both messages
+        assert adapter.handle_message.await_count == 2
+
+    def test_blank_purpose_header_become_none(self):
+        adapter = _make_source_adapter()
+        adapter._api_get.return_value = {**_CHANNEL, "purpose": "  ", "header": ""}
+
+        asyncio.run(adapter._handle_ws_event(_posted_event()))
+
+        event = adapter.handle_message.await_args.args[0]
+        assert event.source.chat_topic is None
+        assert event.source.chat_header is None
+
+    def test_dm_skips_channel_fetch(self):
+        adapter = _make_source_adapter()
+
+        asyncio.run(adapter._handle_ws_event(
+            _posted_event(channel_id="dm-chan", channel_type="D", message="hi")))
+
+        adapter._api_get.assert_not_awaited()
+        event = adapter.handle_message.await_args.args[0]
+        assert event.source.chat_topic is None
+        assert event.source.chat_header is None
+
+    def test_fetch_failure_leaves_topic_header_off(self):
+        adapter = _make_source_adapter()
+        adapter._api_get.return_value = {}
+
+        asyncio.run(adapter._handle_ws_event(_posted_event()))
+
+        event = adapter.handle_message.await_args.args[0]
+        assert event.source.chat_topic is None
+        assert event.source.chat_header is None
 

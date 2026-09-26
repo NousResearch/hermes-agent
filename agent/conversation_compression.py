@@ -3841,6 +3841,28 @@ def _commit_compaction(
     )
 
 
+def _summary_user_content(agent: Any, messages: list) -> list:
+    """Project the current turn's clean transcript value for a compaction candidate only.
+
+    The live API prefix remains untouched until a real boundary commits. Use the caller's
+    existing persist override, not text matching: a user may legitimately quote a runtime note.
+    """
+    idx = getattr(agent, "_persist_user_message_idx", None)
+    if not isinstance(idx, int) or not 0 <= idx < len(messages):
+        return messages
+    message = messages[idx]
+    if not isinstance(message, dict) or message.get("role") != "user":
+        return messages
+    from agent.session_persistence import durable_user_row_content
+    content = message.get("content")
+    clean, _ = durable_user_row_content(agent, message, content, None)
+    if clean == content:
+        return messages
+    projected = copy.deepcopy(messages)
+    _replace_message_content(projected[idx], copy.deepcopy(clean))
+    return projected
+
+
 @dataclasses.dataclass
 class _SummaryPhase:
     """Outcome of the summary phase; ``abort_prompt`` set means hand ``messages`` back."""
@@ -3884,7 +3906,9 @@ def _run_summary_phase(
                 # Adopted list is fully durable: re-anchor persist idx at the end so the post-
                 # compression flush skips it; run_agent marker sync realigns _session_messages.
                 agent._persist_user_message_idx = len(messages)
-        memory_context = _pre_compress_memory_context(agent, messages, checkpoint_required)
+        summary_messages = _summary_user_content(agent, messages)
+        summary_before = copy.deepcopy(summary_messages) if summary_messages is not messages else None
+        memory_context = _pre_compress_memory_context(agent, summary_messages, checkpoint_required)
         compress_fn, compress_kwargs = _resolve_compress_call(
             agent, approx_tokens=approx_tokens, focus_topic=focus_topic, force=force, memory_context=memory_context,
             bypass_cooldown=bypass_cooldown,
@@ -3894,9 +3918,16 @@ def _run_summary_phase(
             agent, commit_fence=commit_fence, emit_client_status=lease.status_emitted,
         ).start()
         compressed = _run_summary_dispatch(
-            agent, messages, compress_fn, compress_kwargs, commit_fence=commit_fence,
+            agent, summary_messages, compress_fn, compress_kwargs, commit_fence=commit_fence,
             attempt_generation=attempt.generation, hard_cancel_event=hard_cancel_event,
         )
+        # Removing an API-only prefix is not compression progress. Preserve the original
+        # wire bytes when an engine returns its input (including marker-only changes).
+        if summary_before is not None and (
+            compressed == summary_before
+            or _strip_marker_for_comparison(compressed) == _strip_marker_for_comparison(summary_before)
+        ):
+            compressed = messages_before_compression
     except AuxiliaryExplicitCancellation:
         try:
             attempt.restore_compressor(agent.context_compressor)
@@ -4194,7 +4225,7 @@ def compress_context(
                 "active set (session=%s).", agent.session_id or "none",
             )
         _fold_todo_snapshot(agent, compressed)
-        compressed_user_turn_outcome = _ensure_compressed_has_user_turn(messages, compressed)
+        compressed_user_turn_outcome = _ensure_compressed_has_user_turn(_summary_user_content(agent, messages), compressed)
         new_system_prompt = _rebuild_system_prompt_at_boundary(agent, system_message)
         commit = _commit_compaction(
             agent, messages, compressed, in_place=in_place, lease=lease, new_system_prompt=new_system_prompt,

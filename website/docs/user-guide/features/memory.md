@@ -292,15 +292,20 @@ The inverse configuration advertises only `memory` and rejects `USER.md` writes.
 
 ## Controlling memory writes (`write_approval`)
 
-By default the agent saves memory freely — including from the background
-self-improvement review that runs after a turn. If you'd rather approve saves
-first, set `memory.write_approval: true`. It's a simple on/off gate applied to
-**both** foreground turns and the background review:
+By default the general memory-write approval gate is off, so writes can be
+applied without approval — including additions from the background
+self-improvement review that runs after a turn. Set `memory.write_approval: true`
+to require approval for ordinary memory writes from both foreground turns and
+the background review:
 
 | `write_approval` | Behaviour |
 |------------------|-----------|
-| `false` (default) | Write freely — the gate is off (the pre-gate behaviour). |
-| `true` | Require approval before anything is saved. In the interactive CLI, foreground writes prompt you inline (entries are small enough to read in full). Everywhere else — messaging platforms, scripts, and the background self-improvement review — writes are **staged** for review with `/memory pending`. |
+| `false` (default) | Ordinary writes proceed without approval. **Exception:** unattended background-review `replace` and `remove` operations are always staged for review, even when this gate is off. |
+| `true` | Require approval before ordinary writes are saved. In the interactive CLI, foreground writes prompt you inline (entries are small enough to read in full). Everywhere else — messaging platforms, scripts, and the background self-improvement review — writes are **staged** for review with `/memory pending`. |
+
+The exception is an independent safeguard, not a different `write_approval`
+setting: an unattended review may add a memory without approval when the gate is
+off, but it cannot overwrite or remove an existing entry without your review.
 
 > To turn memory off entirely (not just gate it), set both `memory_enabled: false` and `user_profile_enabled: false`. When both built-in stores are disabled, the built-in `memory` tool is automatically hidden.
 

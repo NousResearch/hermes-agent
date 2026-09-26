@@ -12,6 +12,7 @@ from dataclasses import dataclass
 import io
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -48,6 +49,52 @@ _RESOLVER_MARKERS = (
 # A package's own build ran and failed; a fetch/download failure never prints this.
 _BUILD_MARKERS = ("the build backend returned an error",)
 
+# A source build that cannot spawn its compiler is a host toolchain gap, not a
+# resolver or fetch failure (#122402): the interpreter's build configuration can
+# name a compiler this host does not ship (a python-build-standalone interpreter
+# asking for clang++ on a gcc-only box). Recognized spawn shapes across
+# distutils/setuptools, sh and rustc/cc.
+_MISSING_TOOL_RES = (
+    re.compile(r"No such file or directory:\s*[\"']([^\"']+)[\"']"),
+    re.compile(r"command\s+[\"']([^\"']+)[\"']\s+failed:\s*No such file or directory"),
+    re.compile(r"unable to execute\s+[\"']([^\"']+)[\"']"),
+    re.compile(r"linker\s+[`'\"]([^`'\"]+)[`'\"]\s+not found"),
+    re.compile(r"(?:^|:\s*)([\w.+\-]+): command not found", re.MULTILINE),
+    re.compile(r"(?:^|:\s*)([\w.+\-]+): not found", re.MULTILINE),
+)
+
+# Only known build-tool names become a toolchain diagnosis: the generic
+# "No such file or directory: 'x'" shape also carries missing data files, and
+# those must not be reported as missing compilers.
+_BUILD_TOOLS = frozenset({
+    "cc", "c++", "gcc", "g++", "clang", "clang++", "clang-cl", "cl",
+    "ld", "ld.gold", "ld.lld", "lld", "ar", "ranlib", "make", "cmake",
+    "ninja", "meson", "pkg-config", "rustc", "cargo", "nasm", "swig",
+    "flex", "bison", "gfortran", "nvcc",
+})
+_BUILD_TOOL_SUFFIXES = ("-gcc", "-g++", "-cc", "-c++", "-clang", "-clang++", "-ld", "-ar")
+
+
+def _missing_build_tool(output: str) -> "str | None":
+    """The build tool a failed uv step tried to spawn and this host lacks."""
+    for pattern in _MISSING_TOOL_RES:
+        for match in pattern.finditer(output):
+            name = match.group(1).split()[0].replace("\\", "/").rsplit("/", 1)[-1]
+            base = name.lower()
+            if base.endswith(".exe"):
+                base = base[:-len(".exe")]
+            if base in _BUILD_TOOLS or base.endswith(_BUILD_TOOL_SUFFIXES):
+                return name
+    return None
+
+
+def _toolchain_remedy(tool: str) -> str:
+    return (f"the build cannot spawn '{tool}': no such executable on this host. Install the "
+            "toolchain that provides it (Debian/Ubuntu: `apt install g++ clang` or "
+            "`build-essential`; macOS: `xcode-select --install`), or retry pointing the build "
+            "at compilers that are installed via the CC/CXX environment variables "
+            "(e.g. `CC=gcc CXX=g++`)")
+
 
 class ResolutionConflict(InstallError):
     """uv's resolver proved the union has no valid solution."""
@@ -61,13 +108,17 @@ def classify_uv_failure(stage: str, returncode: int, output: str) -> InstallErro
     """Turn a failed `uv <stage>` into the right classified error.
 
     Resolver-conflict output → ResolutionConflict; a build backend that ran and
-    failed → BuildFailure; anything else (fetch, tooling) → plain InstallError
-    with the tail of the output.
+    failed → BuildFailure (with the missing-toolchain remedy attached when the
+    build could not spawn its compiler); anything else (fetch, tooling) → plain
+    InstallError with the tail of the output.
     """
     cause = f"uv {stage} exited {returncode}: {output.strip()[-600:]}"
     lowered = output.lower()
     if any(marker in lowered for marker in _RESOLVER_MARKERS):
         return ResolutionConflict("venv", cause)
+    missing = _missing_build_tool(output)
+    if missing is not None:
+        return BuildFailure("venv", cause, _toolchain_remedy(missing))
     if any(marker in lowered for marker in _BUILD_MARKERS):
         return BuildFailure("venv", cause)
     return InstallError("venv", cause)

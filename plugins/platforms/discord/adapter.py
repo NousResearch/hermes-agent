@@ -6184,11 +6184,13 @@ def _component_check_auth(
     if _scoped_gate_env("GATEWAY_ALLOW_ALL_USERS").strip().lower() in {"true", "1", "yes"}:
         return True
     user_set = {str(uid).strip() for uid in (allowed_user_ids or set()) if str(uid).strip()}
-    global_allowed = {
-        uid.strip()
-        for uid in _scoped_gate_env("GATEWAY_ALLOWED_USERS").split(",")
-        if uid.strip()
-    }
+    raw_global_allowed = _scoped_gate_env("GATEWAY_ALLOWED_USERS")
+    decoded_global_allowed = _decode_json_list_literal(raw_global_allowed)
+    global_allowed = (
+        {str(uid).strip() for uid in decoded_global_allowed if str(uid).strip()}
+        if isinstance(decoded_global_allowed, list)
+        else {uid.strip() for uid in raw_global_allowed.split(",") if uid.strip()}
+    )
     user_set.update(global_allowed)
     role_set = set(allowed_role_ids or set())
     has_users = bool(user_set)

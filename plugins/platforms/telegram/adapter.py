@@ -892,7 +892,11 @@ class TelegramAdapter(BasePlatformAdapter):
         allowed_csv = _scoped_gate_env("TELEGRAM_ALLOWED_USERS").strip()
         if not allowed_csv:
             return None
-        allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
+        decoded = _decode_json_list_literal(allowed_csv)
+        allowed_ids = (
+            {str(uid).strip() for uid in decoded if str(uid).strip()} if isinstance(decoded, list)
+            else {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
+        )
         return "*" in allowed_ids or user_id in allowed_ids
 
     def _is_callback_user_authorized(

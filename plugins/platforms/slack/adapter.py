@@ -37,9 +37,9 @@ from agent.retry_utils import parse_retry_after_seconds
 from agent.secret_scope import get_secret
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms._shared import (
-    apply_yaml_bridge as _apply_yaml_bridge, env_is_connected as _env_is_connected,
-    extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret,
-    platform_gate_env as _scoped_gate_env, send_error
+    apply_yaml_bridge as _apply_yaml_bridge, decode_json_list_literal as _decode_json_list_literal,
+    env_is_connected as _env_is_connected, extra_or_secret as _extra_or_secret,
+    get_scoped_secret as _get_scoped_secret, platform_gate_env as _scoped_gate_env, send_error
 )
 from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base_exec_approval import EA_HEADER_TEXT
@@ -5478,11 +5478,14 @@ class SlackAdapter(BasePlatformAdapter):
         _env = _scoped_gate_env
         if _env("SLACK_ALLOW_ALL_USERS").lower() in {"true", "1", "yes"}:
             return True
-        allowed_ids = {
-            uid.strip()
-            for var in ("SLACK_ALLOWED_USERS", "GATEWAY_ALLOWED_USERS")
-            for uid in _env(var).split(",")
-            if uid.strip()}
+        def _ids(raw: str) -> set:
+            # A JSON-list string (``hermes config set`` on a string-typed default) is decoded;
+            # anything else keeps the comma split.
+            decoded = _decode_json_list_literal(raw)
+            parts = decoded if isinstance(decoded, list) else raw.split(",")
+            return {str(uid).strip() for uid in parts if str(uid).strip()}
+
+        allowed_ids = _ids(_env("SLACK_ALLOWED_USERS")) | _ids(_env("GATEWAY_ALLOWED_USERS"))
         if allowed_ids:
             return "*" in allowed_ids or normalized_user_id in allowed_ids
         return _env("GATEWAY_ALLOW_ALL_USERS").lower() in {"true", "1", "yes"}

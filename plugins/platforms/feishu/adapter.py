@@ -96,8 +96,8 @@ from hermes_constants import get_hermes_home
 from utils import atomic_json_write, env_float, env_int
 
 from gateway.platforms._shared import (
-    apply_yaml_bridge as _apply_yaml_bridge, extra_or_secret as _shared_extra_or_secret,
-    get_scoped_secret as _get_scoped_secret, send_error
+    apply_yaml_bridge as _apply_yaml_bridge, decode_json_list_literal as _decode_json_list_literal,
+    extra_or_secret as _shared_extra_or_secret, get_scoped_secret as _get_scoped_secret, send_error
 )
 
 
@@ -1349,6 +1349,12 @@ class FeishuAdapter(BasePlatformAdapter):
         def _id_set(values: Any) -> set[str]:
             return {str(u).strip() for u in values if str(u).strip()}
 
+        def _csv_or_json_list(raw: str) -> list:
+            """``raw`` from a comma-separated env value, or a JSON-list string (the shape
+            ``hermes config set`` writes)."""
+            decoded = _decode_json_list_literal(raw)
+            return decoded if isinstance(decoded, list) else raw.split(",")
+
         def _secret(name: str, default: str = "") -> str:
             return _get_scoped_secret(name, default).strip()
 
@@ -1393,7 +1399,7 @@ class FeishuAdapter(BasePlatformAdapter):
             encrypt_key=_extra_or_secret("encrypt_key", "FEISHU_ENCRYPT_KEY"),
             verification_token=_extra_or_secret("verification_token", "FEISHU_VERIFICATION_TOKEN"),
             group_policy=_secret("FEISHU_GROUP_POLICY", "allowlist").lower(),
-            allowed_group_users=frozenset(_id_set(_get_scoped_secret("FEISHU_ALLOWED_USERS", "").split(","))),
+            allowed_group_users=frozenset(_id_set(_csv_or_json_list(_get_scoped_secret("FEISHU_ALLOWED_USERS", "")))),
             bot_open_id=_secret("FEISHU_BOT_OPEN_ID"),
             bot_user_id=_secret("FEISHU_BOT_USER_ID"),
             bot_name=_secret("FEISHU_BOT_NAME"),

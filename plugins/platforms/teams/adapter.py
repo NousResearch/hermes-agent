@@ -61,7 +61,8 @@ from gateway.platforms.base_exec_approval import (
     EA_HEADER_TEXT, EA_REASON_LABEL_TEXT, approval_timeout_seconds, format_approval_deadline_line)
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms._shared import (
-    coerce_port, extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret,
+    coerce_port, decode_json_list_literal as _decode_json_list_literal,
+    extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret,
     seed_extra_from_env as _seed_extra_from_env, send_error
 )
 
@@ -668,7 +669,11 @@ class TeamsAdapter(BasePlatformAdapter):
                 "and TEAMS_ALLOW_ALL_USERS not set — default deny")
             return "⛔ Approval buttons require TEAMS_ALLOWED_USERS to be configured."
         clicker_id = getattr(from_account, "aad_object_id", None) or getattr(from_account, "id", "")
-        allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
+        decoded = _decode_json_list_literal(allowed_csv)
+        allowed_ids = (
+            {str(uid).strip() for uid in decoded if str(uid).strip()} if isinstance(decoded, list)
+            else {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
+        )
         if "*" not in allowed_ids and clicker_id not in allowed_ids:
             logger.warning("[teams] Unauthorized card action by %s — ignoring", clicker_id)
             return "⛔ Not authorized."

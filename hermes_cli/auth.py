@@ -1046,6 +1046,7 @@ def write_credential_pool(
     token_bases: Optional[Dict[str, Tuple[Any, Any]]] = None,
     policy_update: bool = False,
     expected_policy_generation: Optional[int] = None,
+    expected_policy_source: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Persist one provider's credential pool under auth.json.
 
@@ -1088,7 +1089,8 @@ def write_credential_pool(
         generation = policy_generation(auth_store, provider_id)
         if policy_update:
             auth_store.setdefault("credential_pool_generations", {})[provider_id] = generation + 1
-        elif expected_policy_generation is not None and expected_policy_generation != generation:
+        elif ((expected_policy_generation is not None and expected_policy_generation != generation)
+              or (expected_policy_source is not None and expected_policy_source != str(_auth_file_path()))):
             merged = preserve_newer_policy(merged, existing_list)
         pool[provider_id] = merged
         _save_auth_store(auth_store)

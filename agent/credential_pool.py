@@ -862,6 +862,7 @@ def _update_root_pool_rows(
     token_bases: Optional[Dict[str, Tuple[Any, Any]]] = None,
     policy_update: bool = False,
     expected_policy_generation: Optional[int] = None,
+    expected_policy_source: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """UPDATE-ONLY merge of *payloads* into the root store's rows for *provider*.
 
@@ -900,7 +901,8 @@ def _update_root_pool_rows(
         generation = policy_generation(store, provider)
         if policy_update:
             store.setdefault("credential_pool_generations", {})[provider] = generation + 1
-        elif expected_policy_generation is not None and expected_policy_generation != generation:
+        elif ((expected_policy_generation is not None and expected_policy_generation != generation)
+              or (expected_policy_source is not None and expected_policy_source != str(global_path))):
             merged = preserve_newer_policy(merged, existing_list)
         if changed or policy_update:
             pool[provider] = merged
@@ -917,6 +919,7 @@ def persist_pool_entries(
     token_bases: Optional[Dict[str, Tuple[Any, Any]]] = None,
     policy_update: bool = False,
     expected_policy_generation: Optional[int] = None,
+    expected_policy_source: Optional[str] = None,
 ) -> Optional[List[Dict[str, Any]]]:
     """Persist a provider's pool rows to the store that OWNS them.
 
@@ -936,6 +939,7 @@ def persist_pool_entries(
                     provider, payloads, global_path,
                     status_cleared_ids=status_cleared_ids, token_bases=token_bases,
                     policy_update=policy_update, expected_policy_generation=expected_policy_generation,
+                    expected_policy_source=expected_policy_source,
                 )
             except Exception as exc:
                 # Fail closed on the FORK, not on the save: never fall back to
@@ -951,6 +955,7 @@ def persist_pool_entries(
         provider, payloads, removed_ids=removed_ids, status_cleared_ids=status_cleared_ids,
         token_bases=token_bases, policy_update=policy_update,
         expected_policy_generation=expected_policy_generation,
+        expected_policy_source=expected_policy_source,
     )
 
 
@@ -1148,6 +1153,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                 token_bases=self._persisted_token_pairs,
                 policy_update=policy_update,
                 expected_policy_generation=getattr(self, "_policy_generation", None),
+                expected_policy_source=getattr(self, "_policy_source", None),
             )
             if policy_update:
                 _, self._policy_generation, self._policy_source = read_credential_pool(

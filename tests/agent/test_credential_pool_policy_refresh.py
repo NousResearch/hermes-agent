@@ -209,6 +209,9 @@ def test_policy_refresh_tracks_borrowed_root_and_local_generation_collision(tmp_
     local = json.loads(local_auth)
     local["credential_pool_generations"] = {"openrouter": 1}
     (profile / "auth.json").write_text(json.dumps(local))
+    agent._credential_pool._persist()
+    stored = json.loads((profile / "auth.json").read_text())["credential_pool"]["openrouter"]
+    assert [row["id"] for row in stored] == ["local-0", "local-1"]
     agent.run_conversation("profile claims credentials", conversation_history=result["messages"])
     assert seen == ["Bearer test-secret-root-0", "Bearer test-secret-root-1", "Bearer test-secret-local-0"]
     agent.close()

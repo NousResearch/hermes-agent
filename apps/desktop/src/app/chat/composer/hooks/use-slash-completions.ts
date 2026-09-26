@@ -11,6 +11,7 @@ import {
   desktopSlashDescription,
   type DesktopThemeCommandOption,
   filterDesktopCommandsCatalog,
+  filterDesktopSubcommandCompletions,
   isDesktopSlashExtensionCommand,
   isDesktopSlashSuggestionWithOptions,
   rankSkillCommands,
@@ -221,13 +222,19 @@ export function useSlashCompletions(options: {
         const isArgCompletion = replaceFrom > 1
         const prefix = isArgCompletion ? text.slice(0, replaceFrom) : ''
 
+        // Commands narrowed by `desktop_subcommands` (e.g. /skills exposes
+        // only its review slice here) must not suggest the subcommands the
+        // exec gate would refuse — filter before the arg-stub rewrite so the
+        // token under test is the bare subcommand word.
+        const scopedItems = filterDesktopSubcommandCompletions(text, result.items ?? [], { isArgCompletion })
+
         // An alias the user typed to completion (`/reset`) must surface even
         // though aliases are hidden while browsing — otherwise the popover
         // says "no matches" for a command Enter happily executes (#57641).
         // Only an EXACT match unlocks it; a partial prefix keeps hiding.
         const exactAliasQuery = isArgCompletion ? undefined : commandText(query).toLowerCase()
 
-        const decorated = (result.items ?? [])
+        const decorated = scopedItems
           .map(item => {
             if (!isArgCompletion) {
               return item

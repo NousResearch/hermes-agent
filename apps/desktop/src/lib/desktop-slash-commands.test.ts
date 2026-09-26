@@ -6,8 +6,12 @@ import {
   desktopSkinSlashCompletions,
   type DesktopSlashArgumentMode,
   desktopSlashCommandArgumentMode,
+  desktopSlashDescription,
   desktopSlashUnavailableMessage,
+  desktopSubcommandAllowlist,
+  desktopSubcommandUnavailableMessage,
   filterDesktopCommandsCatalog,
+  filterDesktopSubcommandCompletions,
   isDesktopSlashCommand,
   isDesktopSlashExtensionCommand,
   isDesktopSlashSuggestion,
@@ -108,6 +112,86 @@ describe('desktop slash command curation', () => {
     rememberDesktopCommandsCatalog(undefined)
     expect(isDesktopSlashCommand('/login')).toBe(false)
     expect(desktopSlashUnavailableMessage('/login')).not.toBeNull()
+  })
+
+  it('surfaces /skills so pending write-approval review is reachable', () => {
+    rememberDesktopCommandsCatalog(undefined)
+
+    expect(isDesktopSlashSuggestion('/skills')).toBe(true)
+    expect(desktopSlashDescription('/skills')).toBe('Review staged skill writes and approval mode')
+    expect(isDesktopSlashCommand('/skills pending')).toBe(true)
+    expect(desktopSlashUnavailableMessage('/skills pending')).toBeNull()
+    expect(desktopSubcommandAllowlist('/skills')).toEqual(['pending', 'approve', 'reject', 'diff', 'approval'])
+    expect(desktopSubcommandUnavailableMessage('/skills', '')).toContain('needs a subcommand')
+    expect(desktopSubcommandUnavailableMessage('/skills', 'install demo')).toContain('not available')
+    expect(desktopSubcommandUnavailableMessage('/skills', 'approve write-1')).toBeNull()
+    expect(
+      filterDesktopSubcommandCompletions('/skills\tap', [
+        { text: 'pending' },
+        { text: 'install' },
+        { text: 'approval on' }
+      ])
+    ).toEqual([{ text: 'pending' }, { text: 'approval on' }])
+  })
+
+  it('trusts the backend arg-stage flag and skips malformed completion rows', () => {
+    expect(filterDesktopSubcommandCompletions('/skills ', [{ text: '/skills' }], { isArgCompletion: false })).toEqual([
+      { text: '/skills' }
+    ])
+    expect(
+      filterDesktopSubcommandCompletions('/skills', [{ text: 'install' }, { text: 'pending' }], {
+        isArgCompletion: true
+      })
+    ).toEqual([{ text: 'pending' }])
+    expect(filterDesktopSubcommandCompletions('/skills ', [{ text: undefined }, { text: 'pending' }])).toEqual([
+      { text: 'pending' }
+    ])
+  })
+
+  it('lets the live catalog narrow the static /skills allowlist', () => {
+    rememberDesktopCommandsCatalog({
+      commands: {
+        '/skills': {
+          argument_mode: 'options',
+          desktop: null,
+          desktop_subcommands: ['pending', 'approve', 'reject']
+        }
+      },
+      canon: { '/skills': '/skills' }
+    })
+
+    expect(desktopSubcommandAllowlist('/skills')).toEqual(['pending', 'approve', 'reject'])
+    expect(desktopSubcommandUnavailableMessage('/skills', 'diff write-1')).toContain('/skills diff')
+    expect(desktopSubcommandUnavailableMessage('/skills', 'pending')).toBeNull()
+  })
+
+  it('fails closed when the live catalog declares an empty skills review slice', () => {
+    rememberDesktopCommandsCatalog({
+      commands: {
+        '/skills': {
+          argument_mode: 'options',
+          desktop: null,
+          desktop_subcommands: []
+        }
+      },
+      canon: { '/skills': '/skills' }
+    })
+
+    expect(desktopSubcommandAllowlist('/skills')).toEqual([])
+    expect(isDesktopSlashSuggestion('/skills')).toBe(false)
+    expect(desktopSubcommandUnavailableMessage('/skills', 'pending')).toBe(
+      '/skills is not available in the desktop app — use the terminal for it.'
+    )
+  })
+
+  it('preserves nested completions after an allowed skills review subcommand', () => {
+    const values = [{ text: 'on' }, { text: 'off' }]
+
+    expect(filterDesktopSubcommandCompletions('/skills approval ', values)).toEqual(values)
+    expect(filterDesktopSubcommandCompletions('/skills approve write-', [{ text: 'write-1' }])).toEqual([
+      { text: 'write-1' }
+    ])
+    expect(filterDesktopSubcommandCompletions('/skills install demo', [{ text: 'demo' }])).toEqual([])
   })
 
   it('routes /compress through the session-compression action', () => {

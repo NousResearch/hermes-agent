@@ -15,15 +15,40 @@ import pytest
 import hermes_cli.gateway as gateway
 
 
-def test_get_python_path_prefers_checkout_venv_over_running_executable(monkeypatch, tmp_path):
-    """No PM store Python committed: the venv's own interpreter wins over sys.executable —
-    the generator must never bake a PATH-race system Python into a regenerated launcher."""
+def test_get_python_path_posix_keeps_running_interpreter_over_stale_venv(monkeypatch, tmp_path):
+    """No PM store Python committed, POSIX: the running interpreter stays the launcher's owner.
+
+    The in-tree venv fallback is Windows-only (#123185's PATH race is a Windows shape). A
+    developer installing systemd/launchd units from a Nix/developer runtime must not have the
+    unit silently rewritten onto a stale checkout venv (_launchers.py's ownership rule).
+    """
     project = tmp_path / "project"
     venv = project / "venv"
-    scripts = venv / ("Scripts" if gateway.sys.platform == "win32" else "bin")
+    venv_bin = venv / "bin"
+    venv_bin.mkdir(parents=True)
+    (venv / "pyvenv.cfg").write_text("version = 3.11.16\n", encoding="utf-8")
+    (venv_bin / "python").write_text("", encoding="utf-8")
+
+    import hermes_cli._launchers as _launchers
+
+    monkeypatch.setattr(gateway, "PROJECT_ROOT", project)
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda root: None)
+    monkeypatch.setattr(gateway.sys, "executable", "/nix/store/xyz-python3/bin/python3")
+
+    assert gateway.get_python_path() == "/nix/store/xyz-python3/bin/python3"
+
+
+@pytest.mark.platforms("windows")
+def test_get_python_path_windows_falls_back_to_checkout_venv(monkeypatch, tmp_path):
+    """No PM store Python committed, Windows: the venv's own interpreter wins over
+    sys.executable — the generator must never bake a PATH-race system Python into a
+    regenerated launcher."""
+    project = tmp_path / "project"
+    venv = project / "venv"
+    scripts = venv / "Scripts"
     scripts.mkdir(parents=True)
     (venv / "pyvenv.cfg").write_text("version = 3.11.16\n", encoding="utf-8")
-    venv_python = scripts / ("python.exe" if scripts.name == "Scripts" else "python")
+    venv_python = scripts / "python.exe"
     venv_python.write_text("", encoding="utf-8")
 
     import hermes_cli._launchers as _launchers
@@ -129,3 +154,66 @@ def test_run_gateway_reexecs_before_heavy_imports(monkeypatch, tmp_path):
     assert calls["argv"][0] == str(venv_python)
     assert calls["argv"][1:3] == ["-m", "hermes_cli.main"]
     assert calls["env"][gateway._GATEWAY_PYTHON_REEXEC_ENV] == "1"
+
+
+def test_reexec_disarms_the_parent_startup_watchdog(monkeypatch, tmp_path):
+    """hermes_cli.main arms the watchdog before dispatch; the re-exec parent waits on the
+    long-lived child without ever reaching the gateway's own disarm point, so a healthy
+    boot would be os._exit(75)ed at the configured timeout. The parent must disarm its
+    handle before spawning the child."""
+    project = tmp_path / "project"
+    venv = project / "venv"
+    # Layout the host's venv_python_path() resolves (bin/ on POSIX hosts); the is_windows
+    # flag under test gates the guard only. Windows-layout resolution is covered by the
+    # windows-marked tests above on a real runner.
+    venv_bin = venv / "bin"
+    venv_bin.mkdir(parents=True)
+    (venv_bin / "python").write_text("", encoding="utf-8")
+    (venv / "pyvenv.cfg").write_text("version = 3.11.16\n", encoding="utf-8")
+
+    import hermes_cli._launchers as _launchers
+    import hermes_startup_watchdog as watchdog
+
+    monkeypatch.setattr(gateway, "PROJECT_ROOT", project)
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda root: None)
+    monkeypatch.delenv(gateway._GATEWAY_PYTHON_REEXEC_ENV, raising=False)
+    monkeypatch.setattr(gateway.sys, "executable", str(tmp_path / "Python314" / "python.exe"))
+    monkeypatch.setattr(
+        gateway.sys, "orig_argv",
+        ["C:\\\\Python314\\\\python.exe", "-m", "hermes_cli.main", "gateway", "run"])
+    monkeypatch.setattr(gateway.subprocess, "call", lambda argv, **kw: 0)
+
+    handle = watchdog.arm_startup_watchdog(timeout_s=3600)
+    assert handle is not None and not handle.disarmed
+    try:
+        with pytest.raises(SystemExit):
+            gateway._reexec_gateway_under_committed_python(is_windows=True)
+        assert handle.disarmed, "parent watchdog still armed across the re-exec wait"
+    finally:
+        watchdog._reset_for_tests()
+
+
+def test_reexec_flush_tolerates_console_less_streams():
+    """Legacy pythonw.exe launchers reach the repair with sys.stdout/sys.stderr None; the
+    flush helper must not raise before the child is spawned (#71671 class). A stream that
+    raises on flush must be survived too — flushing is best-effort, the child matters."""
+
+    class _Broken:
+        def flush(self):
+            raise OSError("console-less stream exploded")
+
+    gateway._flush_reexec_streams((None, None))  # must not raise
+    gateway._flush_reexec_streams((None, _Broken()))
+
+
+def test_reexec_spawn_kwargs_hide_console_on_windows_only():
+    """The recovery child is the console python.exe; on Windows it must carry the
+    hidden-console flag (the _resolve_detached_python contract) without detach bits —
+    this call waits on the child and forwards its status."""
+    kwargs = gateway._reexec_spawn_kwargs({"A": "1"}, is_windows=True)
+    from hermes_cli._subprocess_compat import _CREATE_NO_WINDOW
+
+    assert kwargs["creationflags"] == _CREATE_NO_WINDOW
+    assert "HERMES_GATEWAY_DETACHED" not in kwargs["env"]  # env passes through untouched
+
+    assert gateway._reexec_spawn_kwargs({"A": "1"}, is_windows=False) == {"env": {"A": "1"}}

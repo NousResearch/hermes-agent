@@ -109,6 +109,11 @@ VALID_HOOKS: Set[str] = {
     "pre_tool_call", "post_tool_call", "transform_terminal_output", "transform_tool_result",
     # transform_llm_output: return a replacement string (first non-None wins) or None.
     "transform_llm_output", "pre_llm_call", "post_llm_call",
+    # Observer-only memory-provider prefetch boundary. Fired only when the
+    # operation produced at least one bounded structured observation; the
+    # result is immutable and may contain raw recalled context, so plugins
+    # must opt in deliberately and must not treat this as outbound telemetry.
+    "memory_prefetch",
     # Streaming observers (agent.plugin_stream_hooks), off the token path; payloads are immutable
     # normalized text/lifecycle and cannot transform the stream.
     "on_stream_start", "on_stream_delta", "on_stream_end", "on_interim_message",
@@ -203,9 +208,16 @@ VALID_HOOKS: Set[str] = {
     "pre_command",
 }
 
-# Hooks whose directive the shell-hook response parser has no channel for. VALID_HOOKS doubles as
-# the shell-hook allow-list, so these are refused loudly instead of having output silently ignored.
-SHELL_UNSUPPORTED_HOOKS: Set[str] = {"transform_api_error_classification"}
+# Hooks that the shell-hook bridge cannot safely carry. Most entries have a
+# directive that ``agent/shell_hooks._parse_response`` cannot represent;
+# ``memory_prefetch`` is the in-process Python-plugin event whose immutable
+# observation tuple must not be stringified across a subprocess boundary.
+# ``VALID_HOOKS`` doubles as the shell-hook config allow-list, so registration
+# is refused loudly.
+SHELL_UNSUPPORTED_HOOKS: Set[str] = {
+    "transform_api_error_classification",
+    "memory_prefetch",
+}
 
 _env_enabled = env_var_enabled  # imported by plugins/memory
 _UNSET = object()
@@ -1188,6 +1200,9 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         # matches the key the registries store under (normcase on Windows).
         self.scope_key = hermes_home_key(scope_key)
         self.home_path = Path(self.scope_key)
+        # Observer dispatchers use a per-manager lifetime token, rotated on unload-all so an
+        # old queued event can never attach to a reloaded manager instance.
+        self._observer_dispatcher_scope = object()
         self._discovery_lock = threading.RLock()
         self._discovered: bool = False
         self._cli_ref = None  # Set by CLI after plugin discovery
@@ -1673,6 +1688,41 @@ def _attach_published_tui_host(manager: PluginManager) -> None:
         host = _published_tui_message_injector
     if host is not None and manager._tui_message_injector is None:
         manager._tui_message_injector = host
+
+
+def unload_plugin_manager_for_home(home: Path) -> bool:
+    """Unload and evict a profile's cached manager at profile delete/rename teardown."""
+    global _plugin_manager
+    try:
+        home_key = Path(home).expanduser().resolve()
+    except Exception:
+        home_key = Path(home).expanduser()
+
+    with _plugin_managers_lock:
+        manager = _plugin_managers_by_home.get(home_key)
+        if manager is None and _plugin_manager is not None:
+            manager_home = getattr(_plugin_manager, "home_path", None)
+            if manager_home is not None:
+                try:
+                    matches = Path(manager_home).expanduser().resolve() == home_key
+                except Exception:
+                    matches = Path(manager_home).expanduser() == home_key
+                if matches:
+                    manager = _plugin_manager
+        if manager is None:
+            return False
+
+        # Match the test reset's teardown order: evict directory-plugin modules, then dispose
+        # registrations while the manager still owns their inverses.
+        _clear_plugin_submodules(manager)
+        try:
+            manager.unload()
+        finally:
+            if _plugin_managers_by_home.get(home_key) is manager:
+                _plugin_managers_by_home.pop(home_key, None)
+            if _plugin_manager is manager:
+                _plugin_manager = None
+    return True
 
 
 def get_plugin_manager() -> PluginManager:

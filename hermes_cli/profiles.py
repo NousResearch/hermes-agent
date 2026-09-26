@@ -1774,6 +1774,14 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     from tools.mcp_tool_lifecycle import shutdown_mcp_servers
     shutdown_mcp_servers(scope=hermes_home_key(profile_dir))
 
+    # The live serve process retains profile managers in a strong by-home cache. A deleted profile
+    # has a real teardown boundary here; unload its plugin callbacks/workers before removing files.
+    try:
+        from hermes_cli.plugins import unload_plugin_manager_for_home
+        unload_plugin_manager_for_home(profile_dir)
+    except Exception:
+        logger.warning("Could not unload plugin manager for deleted profile %s", profile_dir, exc_info=True)
+
     # Release this process's holographic memory-store connections into the profile. The
     # Desktop's main serve process opens memory_store.db for every profile and is
     # deliberately not stopped above; on Windows its handles fail rmtree with WinError 32.
@@ -2351,6 +2359,9 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     from hermes_constants import hermes_home_key
     from tools.mcp_tool_lifecycle import shutdown_mcp_servers
     shutdown_mcp_servers(scope=hermes_home_key(old_dir))
+    # Managers are strongly cached by resolved home; retire the old scope before moving its directory.
+    from hermes_cli.plugins import unload_plugin_manager_for_home
+    unload_plugin_manager_for_home(old_dir)
 
     # 2. Rename directory. If the move fails (cross-device EXDEV, permissions, a racing writer),
     # undo the unroute so the profile is never stranded tombstoned-but-present.

@@ -1025,7 +1025,10 @@ export function useBackgroundSync({
   // focus/visibility refresh covers the "came back to the computer" case
   // without running a foreground poll loop. Coalesced: refocus fires `focus`
   // and `visibilitychange` together, and mashing ⌘⇥ should not spam the list
-  // endpoint.
+  // endpoint. The batched sidebar request inside refreshSessions() already
+  // returns the messaging slices too, so no separate messaging refresh is
+  // needed here — and a standalone unguarded one could overwrite newer
+  // messaging rows with a late duplicate response.
   useEffect(() => {
     if (gatewayState !== 'open') {
       return
@@ -1042,7 +1045,6 @@ export function useBackgroundSync({
 
       lastRunAt = now
       void refreshSessions()
-      void refreshMessagingSessions()
     }
 
     const onVisibility = () => {
@@ -1058,7 +1060,7 @@ export function useBackgroundSync({
       window.removeEventListener('focus', refresh)
       document.removeEventListener('visibilitychange', onVisibility)
     }
-  }, [gatewayState, refreshMessagingSessions, refreshSessions])
+  }, [gatewayState, refreshSessions])
 
   // A reconnect loses renderer-only working/attention atoms while the backend
   // keeps the actual turns alive. Re-seed from the gateway's in-memory session

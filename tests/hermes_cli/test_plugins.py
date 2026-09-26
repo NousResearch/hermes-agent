@@ -887,6 +887,97 @@ class TestPluginLoading:
         # And the parent's __init__.py never executed.
         assert not marker.exists()
 
+    def test_evict_modules_survives_concurrent_sys_modules_mutation(self):
+        """``_evict_modules`` must snapshot ``sys.modules`` before iterating it (#123926).
+
+        The pre-fix form walked the live dict inside a comprehension, so any concurrent
+        ``import`` landing mid-iteration raised "dictionary changed size during
+        iteration"; the loader caught it, rolled the plugin's registrations back, and the
+        platform integration silently disappeared at boot. ``del sys.modules[name]``
+        additionally raced a concurrent eviction of the same name into ``KeyError``.
+
+        The inline pre-fix replica below is the positive control: it must fail under the
+        exact pressure the real function survives, so a "no errors" result can never be
+        vacuous (the churn thread may just have been idle).
+        """
+        from hermes_cli.plugins_loader import _evict_modules
+
+        def pre_fix_evict(module_name: str) -> None:
+            prefix = f"{module_name}."
+            for name in [
+                n for n in sys.modules if n == module_name or n.startswith(prefix)
+            ]:
+                del sys.modules[name]
+
+        target = "hermes_plugins._race_probe"
+        churn_prefix = "_evict_race_churn_"
+        stop = threading.Event()
+
+        def churn() -> None:
+            i = 0
+            while not stop.is_set():
+                i += 1
+                sys.modules[f"{churn_prefix}{i}"] = types.ModuleType(f"{churn_prefix}{i}")
+                # Re-register the probe target so evictions race a concurrent insert of
+                # the same name, and drop it again so ``del`` can hit a vanished key.
+                sys.modules.setdefault(target, types.ModuleType(target))
+                sys.modules.pop(target, None)
+                sys.modules.pop(f"{churn_prefix}{i}", None)
+
+        sys.modules[target] = types.ModuleType(target)
+        churner = threading.Thread(target=churn, daemon=True)
+        default_switch_interval = sys.getswitchinterval()
+        # Force frequent GIL handoffs so the churn thread actually lands mid-iteration;
+        # with the default 5ms interval the probe runs vacuously (all errors, no race).
+        sys.setswitchinterval(1e-6)
+        try:
+            # Positive control: the pre-fix form must raise under this pressure.
+            churner.start()
+            control_errors = []
+            for _ in range(400):
+                try:
+                    pre_fix_evict(target)
+                except (RuntimeError, KeyError) as exc:
+                    control_errors.append(exc)
+                    break
+            assert control_errors, (
+                "probe is vacuous: the pre-fix replica raised nothing under churn; "
+                "the race harness no longer reproduces the defect"
+            )
+
+            # The real function must stay silent for a longer run under the same churn.
+            for _ in range(4000):
+                _evict_modules(target)
+        finally:
+            sys.setswitchinterval(default_switch_interval)
+            stop.set()
+            churner.join(timeout=5)
+            for name in [n for n in list(sys.modules) if n.startswith(churn_prefix)]:
+                sys.modules.pop(name, None)
+            sys.modules.pop(target, None)
+
+    def test_evict_modules_drops_only_target_names(self):
+        """``_evict_modules`` removes the module and its submodules, and leaves the rest."""
+        from hermes_cli.plugins_loader import _evict_modules
+
+        target = "hermes_plugins._evict_semantics"
+        for name in (target, f"{target}.state", f"{target}.deep.leaf"):
+            sys.modules[name] = types.ModuleType(name)
+        bystander = "hermes_plugins.keep_me"
+        sys.modules[bystander] = types.ModuleType(bystander)
+        try:
+            _evict_modules(target)
+            assert target not in sys.modules
+            assert f"{target}.state" not in sys.modules
+            assert f"{target}.deep.leaf" not in sys.modules
+            assert bystander in sys.modules
+            # Evicting again (or an unknown name) stays silent — pop() must not KeyError.
+            _evict_modules(target)
+            _evict_modules("hermes_plugins._never_registered")
+        finally:
+            for name in (target, f"{target}.state", f"{target}.deep.leaf", bystander):
+                sys.modules.pop(name, None)
+
 
 # ── TestPluginHooks ────────────────────────────────────────────────────────
 

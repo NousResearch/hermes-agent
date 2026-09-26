@@ -1,0 +1,20 @@
+name: hermes-mail
+repo: https://github.com/rot13maxi/hermes-mail
+sha: 17db7f6b8b935a5023f48fee9ba5f7d1bb322e3c
+description: SQLite-backed agent-to-agent mailbox for concurrent Hermes sessions on one machine — mail_send/mail_read/mail_reply/mail_peek/mail_who over a shared WAL database (no daemon, no network), optional turn-boundary injection hook (pre_llm_call) and signed webhook push to wake gateway sessions. Untrusted-peer trust framing and loop protection built in.
+maintainer: rot13maxi
+tier: community
+category: tools
+docs_url: https://github.com/rot13maxi/hermes-mail#readme
+platforms: []
+capabilities:
+  provides_tools:
+    - mail_send
+    - mail_read
+    - mail_reply
+    - mail_peek
+    - mail_who
+  provides_hooks:
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

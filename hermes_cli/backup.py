@@ -1900,7 +1900,14 @@ def restore_cron_jobs_all_profiles(
 
 
 def _prune_quick_snapshots(root: Path, keep: int = _QUICK_DEFAULT_KEEP) -> int:
-    """Remove oldest quick snapshots beyond the keep limit. Returns count deleted."""
+    """Remove oldest quick snapshots beyond the keep limit. Returns count deleted.
+
+    Snapshots are ordered by modification time, not by directory name, so the
+    keep-N guarantee holds regardless of naming convention. A snapshot whose
+    name sorts above the timestamp prefix (e.g. an archived
+    ``20260831T000011Z-...`` directory) must not shadow the genuinely newest
+    safety-net snapshot under a small keep value.
+    """
     if not root.exists():
         return 0
 
@@ -1910,7 +1917,7 @@ def _prune_quick_snapshots(root: Path, keep: int = _QUICK_DEFAULT_KEEP) -> int:
             for d in root.iterdir()
             if d.is_dir() and not d.name.startswith(".") and not d.name.endswith(".partial")
         ),
-        key=lambda d: d.name,
+        key=lambda d: d.stat().st_mtime_ns,
         reverse=True,
     )
 

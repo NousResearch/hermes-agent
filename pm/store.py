@@ -158,6 +158,32 @@ def _tar_filter(member, dest: str):
         return member.replace(deep=False, uid=None, gid=None, uname=None, gname=None, mode=None)
     return tarfile.data_filter(member, dest)
 
+def _require_tar_filters() -> None:
+    """Refuse, with a remedy, an interpreter that predates PEP 706 extraction filters.
+
+    ``extract_tar`` relies on ``tarfile.data_filter`` and ``extractall(filter=...)``,
+    which exist only on 3.10.12+, 3.11.4+ and 3.12+. The bootstrap interpreter is
+    whatever launched the update (an older app venv on 3.11.0-3.11.3 is common), so
+    without this check the update dies in a bare ``TypeError``/``AttributeError``
+    before PM can install its own pinned Python. Never fall back to unfiltered
+    extraction.
+    """
+    import tarfile
+
+    if hasattr(tarfile, "data_filter"):
+        return
+    from pm.package import InstallError
+
+    version = ".".join(str(part) for part in sys.version_info[:3])
+    raise InstallError(
+        "python",
+        f"bootstrap Python {version} ({sys.executable}) lacks safe tar extraction "
+        "(tarfile.data_filter, PEP 706; needs 3.10.12+, 3.11.4+ or 3.12+)",
+        "re-run the installer (scripts/install.sh or scripts/install.ps1), which "
+        "bootstraps the pinned Python, or run the update with a newer Python",
+    )
+
+
 def extract_tar(archive: Path | IO[bytes], dest: Path, *, git_msys: bool = False) -> None:
     """Extract a tarball (a path, or an open stream such as a .deb's data.tar)
     with the one containment policy every PM tar consumer shares. Unsafe
@@ -168,6 +194,7 @@ def extract_tar(archive: Path | IO[bytes], dest: Path, *, git_msys: bool = False
     """
     import tarfile
 
+    _require_tar_filters()
     dest.mkdir(parents=True, exist_ok=True)
     real_dest = os.path.realpath(dest)
     opened = tarfile.open(archive) if isinstance(archive, (str, os.PathLike)) else tarfile.open(fileobj=archive)

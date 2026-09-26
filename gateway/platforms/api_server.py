@@ -3341,6 +3341,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             return err
         try:
             body = await request.json()
+            if not isinstance(body, dict):
+                raise ValueError("Request body must be a JSON object")
             name = (body.get("name") or "").strip()
             schedule = (body.get("schedule") or "").strip()
             prompt = body.get("prompt", "")
@@ -3460,7 +3462,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             body = {}
             with suppress(Exception):
                 body = await request.json()
-            job_id = (body or {}).get("job_id")
+            job_id = body.get("job_id") if isinstance(body, dict) else None
             if not job_id:
                 return web.json_response({"error": "missing job_id"}, status=400)
             # `hermes pause` ESTOP: refuse the fire and ask NAS to retry later.

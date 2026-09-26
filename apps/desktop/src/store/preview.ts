@@ -562,6 +562,23 @@ export function openBrowserTab() {
   openPreview(current?.target ?? blankPage())
 }
 
+/** The hotkey/palette entry point: front the Browser if it isn't the active
+ *  tab, close it (page and all — a real tab close, not a hide) if it
+ *  already is. `openBrowserTab` itself stays open-only (chat links and
+ *  other callers must never toggle a page closed under them) — this wraps
+ *  it for the one caller that means "collapse". */
+export function toggleBrowserTab() {
+  const tabs = $previewTabs.get()
+  const active = tabs.find(tab => tab.id === $rightRailActiveTabId.get())
+
+  if (active && isBrowserTab(active)) {
+    closeRightRailTab(active.id)
+    return
+  }
+
+  openBrowserTab()
+}
+
 /** Another Browser, always — the strip's "+". */
 export function newBrowserTab() {
   const id = mintBrowserTabId()

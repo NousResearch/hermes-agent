@@ -152,11 +152,15 @@ def _overlaps(a: str, b: str) -> bool:
 
 
 def split_entry(path: str) -> tuple[str, str]:
-    """``os.path.split`` for a directory entry, trailing separators dropped first: an
-    empty leaf (``dir/link/``) would make entry checks degenerate to the link's target.
+    """``os.path.split`` for a directory entry, trailing separators and ``.`` components
+    dropped first: an empty or ``.`` leaf (``dir/link/``, ``dir/link/.``) would make entry
+    checks degenerate to the link's target, while pathlib/rm still act on ``link``.
     A bare root (``/``, ``C:\\``) is kept as is."""
     drive, tail = os.path.splitdrive(path)
-    return os.path.split(drive + (tail.rstrip(os.sep + (os.altsep or "")) or tail[:1]))
+    parent, leaf = os.path.split(drive + (tail.rstrip(os.sep + (os.altsep or "")) or tail[:1]))
+    if leaf == "." and parent:
+        return split_entry(parent)
+    return parent, leaf
 
 
 def is_protected_path(path: str, *, follow: bool = True) -> Optional[str]:

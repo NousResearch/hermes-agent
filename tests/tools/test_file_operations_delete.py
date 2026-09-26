@@ -43,13 +43,14 @@ def test_delete_file_refuses_directory(ops, tmp_path):
 
 
 @pytest.mark.platforms("posix")
-@pytest.mark.parametrize("op", ["delete", "delete_trailing_slash", "move"])
+@pytest.mark.parametrize("op", ["delete", "delete_trailing_slash", "delete_dot", "move"])
 @pytest.mark.parametrize("layout", ["beside_runtime_venv", "link_in_credential_dir"])
 def test_delete_and_move_guard_the_entry_itself(ops, tmp_path, monkeypatch, op, layout):
     """Delete/Move vet the directory entry (parent resolved, leaf kept): a plain file whose
     directory merely CONTAINS the runtime venv (``~/notes.txt``) stays deletable/movable,
     while a link directly inside a credential dir is refused even though it points outside.
-    A trailing separator (``.ssh/link/``) must not empty the leaf and skip the entry check."""
+    A trailing separator or ``.`` (``.ssh/link/``, ``.ssh/link/.``) must not empty the leaf
+    and skip the entry check."""
     home, outside = tmp_path / "home", tmp_path / "outside.txt"
     outside.write_text("keep", encoding="utf-8")
     monkeypatch.setenv("HOME", str(home))
@@ -67,7 +68,7 @@ def test_delete_and_move_guard_the_entry_itself(ops, tmp_path, monkeypatch, op, 
     if op == "move":
         result = ops.move_file(str(entry), str(moved))
     else:
-        result = ops.delete_file(str(entry) + ("/" if op == "delete_trailing_slash" else ""))
+        result = ops.delete_file(str(entry) + {"delete_trailing_slash": "/", "delete_dot": "/."}.get(op, ""))
 
     if layout == "beside_runtime_venv":
         assert result.error is None, result.error

@@ -305,8 +305,9 @@ def test_v4a_patch_applies_to_resolved_workspace_not_backend_cwd(
 @pytest.mark.platforms("posix")
 @pytest.mark.parametrize("header,safe_root,content,dest", [
     ("*** Delete File: local.yaml", False, "shared: true\n", None),
-    # A trailing separator must still name the link, not fall back to its target.
+    # A trailing separator or "." must still name the link, not fall back to its target.
     ("*** Delete File: local.yaml/", False, "shared: true\n", None),
+    ("*** Delete File: local.yaml/.", False, "shared: true\n", None),
     ("*** Move File: local.yaml -> old.yaml", False, "shared: true\n", "old.yaml"),
     ("*** Update File: local.yaml\n@@\n-shared: true\n+shared: false\n*** Move File: local.yaml -> old.yaml",
      False, "shared: false\n", "old.yaml"),
@@ -341,7 +342,7 @@ def test_v4a_delete_and_move_act_on_a_symlink_not_its_target(
         "patch", {"mode": "patch", "patch": f"*** Begin Patch\n{header}\n*** End Patch\n"}, task_id=task_id))
 
     assert target.is_file() and not target.is_symlink()
-    assert target.read_text(encoding="utf-8") == content
+    assert target.read_text(encoding="utf-8-sig") == content
     if safe_root:
         assert not out.get("success") and "HERMES_WRITE_SAFE_ROOT" in json.dumps(out), out
         assert link.is_symlink()

@@ -1622,11 +1622,15 @@ class ProcessRegistry(ProcessCheckpointMixin):
             was_running = session.id in self._running
             if was_running:
                 session.exited_at = time.time()
-                # Keep the session tracked until its result is durable. A finite
-                # parent must not observe completion and exit during this write.
-                save_completed_result(session)
                 self._running.pop(session.id)
             self._finished[session.id] = session
+        if was_running:
+            # Keep the session tracked until its result is durable. A finite
+            # parent must not observe completion and exit during this write —
+            # but the write must not hold _lock: the gateway event loop polls
+            # get() under the same lock, and a stalled receipt write here
+            # blocks the loop until the shutdown watchdog kills the gateway (#108327).
+            save_completed_result(session)
         # Release the retained Popen/PTY handles now: otherwise every
         # finished-but-unpruned session keeps its stdout pipe (or PTY master)
         # FD open until FINISHED_TTL_SECONDS elapses, and heavy background

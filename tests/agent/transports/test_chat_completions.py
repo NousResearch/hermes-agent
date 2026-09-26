@@ -102,6 +102,28 @@ class TestChatCompletionsBasic:
 
 
 
+    def test_convert_messages_strips_anthropic_hidden_blocks(self, transport):
+        blocks = [
+            {
+                "type": "thinking",
+                "thinking": "ANTHROPIC_PRIVATE_TRACE",
+                "signature": "signed",
+            }
+        ]
+        msgs = [
+            {
+                "role": "assistant",
+                "content": "visible",
+                "anthropic_content_blocks": blocks,
+            }
+        ]
+
+        result = transport.convert_messages(msgs)
+
+        assert "anthropic_content_blocks" not in result[0]
+        assert result[0]["content"] == "visible"
+        assert msgs[0]["anthropic_content_blocks"] is blocks
+
 
 
 

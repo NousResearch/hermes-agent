@@ -24,6 +24,11 @@ export interface TimelinePartMetadata {
 export type ChatMessagePart = Exclude<ThreadMessageLike['content'], string>[number] & TimelinePartMetadata
 
 export type ChatMessage = {
+  _reasoning_route?: string
+  anthropic_content_blocks?: unknown
+  bedrock_content_blocks?: unknown
+  codex_message_items?: unknown
+  codex_reasoning_items?: unknown
   id: string
   role: SessionMessage['role']
   parts: ChatMessagePart[]
@@ -66,6 +71,9 @@ export type ChatMessage = {
   serverRowSpan?: number
   /** Emoji reactions on this message — one per author (see MessageReaction). */
   reactions?: MessageReaction[]
+  reasoning?: null | string
+  reasoning_content?: null | string
+  reasoning_details?: unknown
 }
 
 export type GatewayEventPayload = {

@@ -1310,12 +1310,24 @@ def _serialized_length_for_budget(value: Any) -> int:
 
 # Replay/metadata fields invisible to content/tool_calls accounting but shipped
 # on the wire. ``reasoning_details`` is handled by _reasoning_details_text_chars.
-_REPLAY_BUDGET_KEYS = "reasoning", "reasoning_content", "codex_reasoning_items", "codex_message_items"
+_REPLAY_BUDGET_KEYS = (
+    "reasoning",
+    "reasoning_content",
+    "anthropic_content_blocks",
+    "bedrock_content_blocks",
+    "codex_reasoning_items",
+    "codex_message_items",
+)
 
-# Keys replayed on EVERY retained assistant turn: Codex items ride every request and message items are needed
-# for prefix-cache continuity. Generic thinking keys ship for the newest turn only elsewhere (Anthropic strips
-# older, Bedrock never replays, strict chat-completions reject or pad the field); charging them everywhere overcut.
-_ALWAYS_REPLAYED_BUDGET_KEYS = "codex_reasoning_items", "codex_message_items"
+# Native provider sidecars ride every matching-route replay request; Codex message
+# items are also needed for prefix-cache continuity. Generic thinking keys ship
+# for the newest turn only on non-echo routes, so charging them everywhere overcuts.
+_ALWAYS_REPLAYED_BUDGET_KEYS = (
+    "anthropic_content_blocks",
+    "bedrock_content_blocks",
+    "codex_reasoning_items",
+    "codex_message_items",
+)
 _NEWEST_TURN_ONLY_BUDGET_KEYS = "reasoning", "reasoning_content"
 
 # Safe to strip from stale assistant turns: only the current turn's replay needs
@@ -2757,9 +2769,10 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         model_thresholds: dict[str, float] | None = None, threshold_tokens_cap: Any = None,
         proactive_prune_tokens: int = 0, proactive_prune_min_result_chars: int = 8000,
         proactive_prune_min_reclaim_tokens: int = 4096, min_tail_user_messages: int = 1, tail_mode: str = "lean",
-        custom_providers: list | None = None,
+        custom_providers: list | None = None, replay_historical_reasoning: bool = False,
     ):
         self.model, self.base_url, self.api_key, self.provider, self.api_mode = model, base_url, api_key, provider, api_mode
+        self.replay_historical_reasoning = bool(replay_historical_reasoning)
         # "lean" = small clamped tail + verbatim-user summary section; "legacy" = 0.20*window tail.
         self.tail_mode = tail_mode if tail_mode in ("legacy", "lean") else "lean"
         # Per-model context_length overrides live in custom_providers; without them deferred
@@ -4932,8 +4945,17 @@ Write only the summary body. Do not include any preamble or prefix."""
         """Whether the route replays stale thinking every turn; tail walks and preflight MUST agree or compaction loops."""
         try:
             from agent.message_sanitization import stale_thinking_reaches_wire
+            # Boolean compressor state means "soft historical replay is on".
+            # Pass ``reasoning`` as the accounting carrier regardless of the
+            # actual wire field (``reasoning`` vs ``reasoning_content``): both
+            # aliases are charged once in ``_estimate_msg_budget_tokens``.
             return stale_thinking_reaches_wire(
-                *(getattr(self, attr, "") or "" for attr in ("api_mode", "provider", "model", "base_url"))
+                *(getattr(self, attr, "") or "" for attr in ("api_mode", "provider", "model", "base_url")),
+                reasoning_replay_field=(
+                    "reasoning"
+                    if getattr(self, "replay_historical_reasoning", False)
+                    else None
+                ),
             )
         except Exception:
             return False

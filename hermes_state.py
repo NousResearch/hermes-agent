@@ -460,8 +460,10 @@ class SessionDB(
     # sources have their own lifecycle owners; unknown sources fail closed.
     # See #60609.  `recovered` = placeholders `hermes sessions recover` synthesizes for
     # orphaned messages (no live owner, never stamped ended_at); without it they are immortal.
+    # `webhook` = one-shot per-delivery sessions: the adapter ends them on completion, so only a
+    # run killed mid-delivery leaves one open, and nothing ever resumes it.
     _AUTO_PRUNE_STALE_OPEN_SOURCES: Tuple[str, ...] = (
-        "cli", "cron", "kanban", "acp", "api_server", "subagent", "tool", "recovered",
+        "cli", "cron", "kanban", "acp", "api_server", "subagent", "tool", "recovered", "webhook",
     )
 
     # ── Write-contention tuning ──

@@ -290,6 +290,7 @@ class TestSweepOrphanedSessions:
             ("orphan", "cli"),
             ("live-turn", "cli"),
             ("stale-cron", "cron"),
+            ("stale-webhook", "webhook"),
             ("runtime-owned-ui", "tui"),
         ):
             _make_session(db, sid, source=source, started_at=stale, message_at=stale)
@@ -328,6 +329,7 @@ class TestSweepOrphanedSessions:
         assert first["pruned"] == 0
         assert db.get_session("orphan")["end_reason"] == "startup_orphan_reap"
         assert db.get_session("stale-cron")["end_reason"] == "startup_orphan_reap"
+        assert db.get_session("stale-webhook")["end_reason"] == "startup_orphan_reap"
         assert db.get_session("live-turn")["ended_at"] is None
         assert db.get_session("recent-orphan")["ended_at"] is None
         assert db.get_session("runtime-owned-ui")["ended_at"] is None

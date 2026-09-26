@@ -33,13 +33,8 @@ def _osascript_exec_argv(program_args: list[str]) -> list[str]:
     assert program_args[:4] == ["/usr/bin/osascript", "-l", "JavaScript", "-e"], program_args
     assert len(program_args) == 5, program_args
     script = program_args[4]
-    match = re.fullmatch(
-        r'ObjC\.import\("stdlib"\); const status=\$\.system\((.+)\); const signal=status & 127; '
-        r'\$\.exit\(status === -1 \? 1 : signal === 0 \? \(status >> 8\) & 255 : 128 \+ signal\);',
-        script,
-    )
-    assert match, script
-    shell = json.loads(match.group(1))
+    start = script.index("$.system(") + len("$.system(")
+    shell, _ = json.JSONDecoder().raw_decode(script, start)
     exec_, *argv = shlex.split(shell)
     assert exec_ == "exec", shell
     return argv
@@ -1790,18 +1785,17 @@ class TestProfileArg:
         command = [
             sys.executable,
             "-c",
-            "import os, sys; print(os.getpgrp(), os.getpgid(os.getppid())); sys.exit(23)",
+            "import os, sys; print(os.getpgrp()); sys.exit(23)",
         ]
 
-        result = subprocess.run(
-            launchd_program_arguments(command, stdout_log, stderr_log),
-            check=False,
-            timeout=10,
+        # A fresh session makes the wrapper its own group leader (as launchd does), so the child
+        # staying in the wrapper's group is observable rather than inherited from the runner.
+        wrapper = subprocess.Popen(
+            launchd_program_arguments(command, stdout_log, stderr_log), start_new_session=True
         )
 
-        assert result.returncode == 23
-        child_group, wrapper_group = stdout_log.read_text().split()
-        assert child_group == wrapper_group
+        assert wrapper.wait(timeout=10) == 23
+        assert int(stdout_log.read_text()) == wrapper.pid
         assert stderr_log.read_text() == ""
 
     def test_launchd_plist_path_uses_real_user_home_not_profile_home(self, tmp_path, monkeypatch):

@@ -31,7 +31,7 @@
     "postbuild": "node scripts/assert-dist-built.mjs",
     "prebuilder": "node scripts/patch-electron-builder-mac-binary.mjs",
     "builder": "cross-env NODE_OPTIONS=--max-old-space-size=16384 node scripts/run-electron-builder.mjs",
-    "pack": "npm run build && npm run builder -- --dir --publish never",
+    "pack": "npm run build && npm run prebuilder && cross-env NODE_OPTIONS=--max-old-space-size=16384 node scripts/run-electron-builder.mjs --dir --publish never",
     "dist": "npm run build && npm run builder",
     "payload": "node ../../scripts/build/python.mjs ../../scripts/bundles/stage.py --out build/agent-payload",
     "dist:bundled": "npm run payload && cross-env HERMES_DESKTOP_VARIANT=bundled npm run dist",

@@ -117,7 +117,16 @@ def _answer_via_fork(parent_agent: Any, question: str, history: Optional[List[Di
             "Side question (/btw) denied tool call: {tool_name}. "
             "Tools are disabled here — answer directly from the conversation context."))
         snapshot = trim_snapshot_for_fork(history)
-        result = fork.run_conversation(user_message=f"{_FORK_PROMPT}\n\nSide question: {question}",
+        # The trim keeps role alternation and the warm prefix cache, but it also drops the in-progress
+        # turn (latest request, tool calls, tool results) - exactly what a mid-task /btw asks about. Pass
+        # that tail along as text inside the side-question message instead of losing it.
+        tail = list(history or [])[len(snapshot):]
+        user_message = f"{_FORK_PROMPT}\n\nSide question: {question}"
+        if tail:
+            user_message = (f"{_FORK_PROMPT}\n\nThe current turn is still in progress. Snapshot of it so far "
+                            f"(latest request, tool calls, tool results):\n-----\n"
+                            f"{render_history_for_side_question(tail)}\n-----\n\nSide question: {question}")
+        result = fork.run_conversation(user_message=user_message,
                                        conversation_history=_digest_history(snapshot) if routed else snapshot)
         answer = (result or {}).get("final_response", "") or ""
         if not answer and result and result.get("error"):

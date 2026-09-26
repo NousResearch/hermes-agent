@@ -301,6 +301,7 @@ class AIAgent(
         capabilities: Dict[str, bool] | None = None, cwd: str | None = None,
         side_agent: bool = False, memory_manager=None,
         tool_result_metadata_callback: Optional[Callable[..., dict]] = None,
+        memory_mode: str | None = None, memory_tool_allowlist: List[str] | None = None,
     ):
         """Forwarder — see ``agent.agent_init.init_agent`` (same keyword parameters, minus ``tool_delay``)."""
         init_kwargs = {k: v for k, v in locals().items() if k not in ("self", "tool_delay")}
@@ -902,7 +903,8 @@ class AIAgent(
         self._memory_provider_shutdown = True
         if self._memory_manager:
             try:
-                self._memory_manager.on_session_end(messages or [])
+                if getattr(self, "_memory_provider_lifecycle_enabled", True):
+                    self._memory_manager.on_session_end(messages or [])
             except Exception as e:
                 logger.warning("Memory provider on_session_end failed during shutdown: %s", e, exc_info=True)
             _quietly(lambda: self._memory_manager.shutdown_all())
@@ -911,7 +913,7 @@ class AIAgent(
     def commit_memory_session(self, messages: list = None) -> None:
         """Flush end-of-session extraction on session_id rotation (/new, compression) without tearing providers
         down."""
-        if self._memory_manager:
+        if self._memory_manager and getattr(self, "_memory_provider_lifecycle_enabled", True):
             _quietly(lambda: self._memory_manager.on_session_end(messages or []))
         _notify_context_engine_session_end(self, messages)
 
@@ -928,7 +930,11 @@ class AIAgent(
         is almost certainly a retry of the same intent, and a prefetch keyed on the interrupted turn would
         fire against stale context. See #15218.
         """
-        if interrupted or not (self._memory_manager and final_response and original_user_message):
+        if (
+            interrupted
+            or not getattr(self, "_memory_provider_lifecycle_enabled", True)
+            or not (self._memory_manager and final_response and original_user_message)
+        ):
             return
         # Flatten multimodal parts to text (newline-joined for memory).
         user_text = _summarize_user_message_for_log(original_user_message, sep="\n")
@@ -1363,6 +1369,7 @@ class AIAgent(
             goal=function_args.get("goal"), context=function_args.get("context"),
             tasks=_strip_model_hidden_task_fields(function_args.get("tasks")),
             max_iterations=function_args.get("max_iterations"), role=function_args.get("role"),
+            memory_mode=function_args.get("memory_mode"),
             background=not (getattr(self, "_delegate_depth", 0) > 0), images=function_args.get("images"),
             action=function_args.get("action"),
             subagent_id=function_args.get("subagent_id"), message=function_args.get("message"), parent_agent=self,

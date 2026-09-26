@@ -19,7 +19,7 @@ from collections import deque
 from contextlib import suppress
 from datetime import datetime
 from types import SimpleNamespace
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional, cast
 from urllib.parse import parse_qs, urlparse, urlunparse
 
 from agent.context_compressor import ContextCompressor
@@ -1283,7 +1283,102 @@ def _memory_provider_init_kwargs(agent, platform) -> Dict[str, Any]:
     return kwargs
 
 
-def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
+_MEMORY_MODES = frozenset({"full", "on_demand", "off"})
+_MCP_MEMORY_READ_TOOLS = frozenset({"hermes_mem_search", "hermes_mem_get"})
+
+
+def _resolve_memory_mode(memory_mode: Optional[str], skip_memory: bool) -> tuple[str, bool]:
+    """Return ``(mode, explicit)`` while preserving the legacy ``skip_memory`` contract.
+
+    ``memory_mode`` is strict when supplied.  When omitted, existing callers keep the
+    historical boolean behavior: ``skip_memory=False`` is full memory and
+    ``skip_memory=True`` skips the provider while still allowing the special
+    ``enabled_toolsets=["memory"]`` built-in-store path used by flush agents.
+    """
+    if memory_mode is None:
+        return ("off" if skip_memory else "full"), False
+    normalized = str(memory_mode).strip().lower()
+    if normalized not in _MEMORY_MODES:
+        raise ValueError(
+            f"Invalid memory_mode {memory_mode!r}; expected one of: full, on_demand, off"
+        )
+    return normalized, True
+
+
+def _prune_explicit_memory_tools(agent, mode: str, allowed: set[str]) -> None:
+    """Apply strict off/on-demand policy after every dynamic tool injection."""
+    if mode == "full":
+        return
+
+    def _is_memory_tool(name: str) -> bool:
+        if name == "memory" or name.startswith("hermes_mem_"):
+            return True
+        try:
+            import model_tools
+            return "memory" in (model_tools.get_toolset_for_tool(name) or "").lower()
+        except Exception:
+            return False
+
+    agent.tools = [
+        tool for tool in (agent.tools or [])
+        if (
+            (name := tool.get("function", {}).get("name")) in allowed
+            or not (isinstance(name, str) and _is_memory_tool(name))
+        )
+    ]
+    agent.valid_tool_names = {
+        name for name in (agent.valid_tool_names or set())
+        if name in allowed or not _is_memory_tool(name)
+    }
+
+
+def memory_tool_call_allowed(agent, tool_name: str) -> bool:
+    """Runtime backstop for explicit memory policy after schema/catalog refreshes."""
+    if getattr(agent, "_memory_mode_explicit", False) is not True:
+        return True
+    mode = getattr(agent, "_memory_mode", "off")
+    # Full primary agents retain the historical writable memory surface. Delegated
+    # children remain bounded by the parent and by DELEGATE_BLOCKED_TOOLS.
+    if mode == "full" and getattr(agent, "platform", None) != "subagent":
+        return True
+    allowed = set(getattr(agent, "_memory_tool_policy_allowlist", ()) or ())
+    if tool_name in allowed:
+        return True
+    lowered = str(tool_name).lower()
+    is_memory = (
+        lowered == "memory"
+        or lowered.startswith("hermes_mem_")
+        or "__hermes_mem__" in lowered
+    )
+    manager = getattr(agent, "_memory_manager", None)
+    if manager is not None:
+        with suppress(Exception):
+            is_memory = is_memory or manager.has_tool(tool_name)
+    if not is_memory:
+        with suppress(Exception):
+            import model_tools
+            toolset = str(model_tools.get_toolset_for_tool(tool_name) or "").lower()
+            is_memory = "memory" in toolset or "hermes_mem" in toolset
+    return not is_memory
+
+
+def _init_memory(
+    agent, _agent_cfg, skip_memory, platform, memory_manager=None,
+    memory_mode: Optional[str] = None, memory_tool_allowlist: Optional[List[str]] = None,
+):
+    mode, mode_explicit = _resolve_memory_mode(memory_mode, bool(skip_memory))
+    agent._memory_mode = mode
+    agent._memory_mode_explicit = mode_explicit
+    agent._memory_provider_tool_allowlist = (
+        {str(name) for name in memory_tool_allowlist if str(name)}
+        if memory_tool_allowlist is not None else None
+    )
+    # Delegated/query-only managers may answer explicitly requested read tools,
+    # but never autonomously recall, synchronize, or extract a child transcript.
+    agent._memory_provider_lifecycle_enabled = (
+        mode == "full" and platform != "subagent"
+    ) if mode_explicit else not bool(skip_memory)
+
     # Persistent memory (MEMORY.md + USER.md) — loaded from disk
     agent._memory_store = None
     agent._memory_enabled = False
@@ -1302,13 +1397,20 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
         "memory" in (agent.enabled_toolsets or [])
         and "memory" not in (agent.disabled_toolsets or [])
     )
-    if not skip_memory or _memory_toolset_requested:
-        # Memory is optional — don't break agent init
-        with suppress(Exception):
-            from tools.memory_tool import (
-                MemoryStore, get_builtin_memory_config, get_builtin_memory_store_flags,
-            )
-            mem_config = get_builtin_memory_config(_agent_cfg)
+    strict_off = mode_explicit and mode == "off"
+    mem_config: Dict[str, Any] = {}
+    # Memory is optional — don't break agent init. Explicit modes override the
+    # legacy skip_memory boolean; omitted modes preserve its old behavior.
+    with suppress(Exception):
+        from tools.memory_tool import (
+            MemoryStore, get_builtin_memory_config, get_builtin_memory_store_flags,
+        )
+        mem_config = get_builtin_memory_config(_agent_cfg)
+        should_load_store = not strict_off and (
+            (mode_explicit and mode == "full")
+            or (not mode_explicit and (not skip_memory or _memory_toolset_requested))
+        )
+        if should_load_store:
             agent._memory_enabled, agent._user_profile_enabled = get_builtin_memory_store_flags(
                 _agent_cfg
             )
@@ -1324,18 +1426,32 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
 
     # External memory provider plugin (one at a time, alongside built-in): memory.provider.
     agent._memory_manager = None
-    if memory_manager is not None and not skip_memory:
-        # A caller that rebuilds the agent per turn (gateway api_server) hands back the session's
-        # already-initialized manager: providers keep their prefetch/retain state across turns instead
-        # of being re-initialized (#120116). No initialize_all — the providers are already bound.
-        agent._memory_manager = memory_manager
-    elif not skip_memory:
+    provider_requested = (
+        (not mode_explicit and not skip_memory)
+        or (mode_explicit and mode != "off")
+    )
+    if memory_manager is not None and provider_requested:
+        # Reused managers are already profile/identity-bound. Query-only agents get
+        # a borrowed facade, never ownership or lifecycle access to the parent.
+        if mode_explicit and (mode == "on_demand" or platform == "subagent"):
+            read_view = getattr(memory_manager, "read_only_view", None)
+            if callable(read_view):
+                agent._memory_manager = read_view(
+                    allowed_names=agent._memory_provider_tool_allowlist,
+                    include_system_prompt=mode == "full",
+                    owns_parent=False,
+                )
+        else:
+            # A caller that rebuilds the agent per turn (gateway api_server) hands
+            # back the session's already-initialized manager. No initialize_all.
+            agent._memory_manager = memory_manager
+    elif provider_requested and platform != "subagent":
         try:
             _mem_provider_name = mem_config.get("provider", "") if mem_config else ""
             if not is_core_memory_provider(_mem_provider_name):
                 from agent.memory_manager import MemoryManager as _MemoryManager
                 from plugins.memory import load_memory_provider as _load_mem
-                agent._memory_manager = _MemoryManager()
+                _manager = _MemoryManager()
                 _mp = _load_mem(_mem_provider_name)
                 if _mp is None:
                     # The provider left core for the catalog (or was never installed): fetch it once.
@@ -1343,25 +1459,51 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
                     if recover_at_startup(_mem_provider_name):
                         _mp = _load_mem(_mem_provider_name)
                 if _mp and _mp.is_available():
-                    agent._memory_manager.add_provider(_mp)
+                    _manager.add_provider(_mp)
                 elif _mp is not None and _mem_provider_name not in _warned_unavailable_providers:
                     # unavailable_reason() reads config/probes importlib — skip it once warned.
                     _unavailable_reason = ""
                     with suppress(Exception):
                         _unavailable_reason = _mp.unavailable_reason()
                     _warn_memory_provider_unavailable(_mem_provider_name, _unavailable_reason)
-                if agent._memory_manager.providers:
-                    agent._memory_manager.initialize_all(**_memory_provider_init_kwargs(agent, platform))
+                if _manager.providers:
+                    _manager.initialize_all(**_memory_provider_init_kwargs(agent, platform))
+                    if mode_explicit and mode == "on_demand":
+                        agent._memory_manager = _manager.read_only_view(
+                            allowed_names=agent._memory_provider_tool_allowlist,
+                            include_system_prompt=False,
+                            owns_parent=True,
+                        )
+                    else:
+                        agent._memory_manager = _manager
                     _ra().logger.info("Memory provider '%s' activated", _mem_provider_name)
                 else:
                     _ra().logger.debug("Memory provider '%s' not found or not available", _mem_provider_name)
-                    agent._memory_manager = None
         except Exception as _mpe:
             _ra().logger.warning("Memory provider plugin init failed: %s", _mpe)
             agent._memory_manager = None
 
+    if mode_explicit and agent._memory_manager is not None:
+        get_provider_names = getattr(agent._memory_manager, "get_all_tool_names", None)
+        provider_names = (
+            set(cast(Iterable[str], get_provider_names()))
+            if callable(get_provider_names) else set()
+        )
+        requested = agent._memory_provider_tool_allowlist
+        agent._memory_provider_tool_allowlist = (
+            provider_names if requested is None else provider_names & set(requested)
+        )
+
     from agent.memory_manager import inject_memory_provider_tools
     inject_memory_provider_tools(agent)
+    if mode_explicit:
+        allowed = set(agent._memory_provider_tool_allowlist or ())
+        if mode == "on_demand" and memory_tool_allowlist is None:
+            allowed.update(_MCP_MEMORY_READ_TOOLS)
+        agent._memory_tool_policy_allowlist = frozenset(allowed)
+        _prune_explicit_memory_tools(agent, mode, allowed)
+    else:
+        agent._memory_tool_policy_allowlist = frozenset()
 
 
 def _apply_agent_section(agent, _agent_cfg):
@@ -2380,6 +2522,7 @@ def init_agent(
     requested_provider: str = None, capabilities: Optional[Dict[str, bool]] = None, cwd: Optional[str] = None,
     side_agent: bool = False, memory_manager=None,
     tool_result_metadata_callback: Optional[Callable[..., dict]] = None,
+    memory_mode: Optional[str] = None, memory_tool_allowlist: Optional[List[str]] = None,
 ):
     _install_safe_stdio()
 
@@ -2461,7 +2604,10 @@ def init_agent(
         _agent_cfg = {}
 
     _apply_display_config(agent, _agent_cfg, platform)
-    _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=memory_manager)
+    _init_memory(
+        agent, _agent_cfg, skip_memory, platform, memory_manager=memory_manager,
+        memory_mode=memory_mode, memory_tool_allowlist=memory_tool_allowlist,
+    )
     _apply_agent_section(agent, _agent_cfg)
     cs = _parse_compression_config(agent, _agent_cfg)
     _config_context_length, _custom_providers, _effective_context_length, _model_cfg = _resolve_context_length(

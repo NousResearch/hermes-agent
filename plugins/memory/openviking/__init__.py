@@ -1194,6 +1194,7 @@ class _TurnUpload:
 
 class OpenVikingMemoryProvider(MemoryProvider):
     """Full bidirectional memory via OpenViking context database."""
+    read_only_tool_names = frozenset(_OPENVIKING_RECALL_TOOL_NAMES)
 
     def backup_paths(self) -> List[str]:
         """The resolved ovcli config (default ~/.openviking/ovcli.conf) so endpoint/api-key

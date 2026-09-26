@@ -1307,6 +1307,9 @@ DEFAULT_CONFIG = {
     "delegation": {
         "model": "",  # e.g. "google/gemini-3-flash-preview" (empty = inherit parent)
         "provider": "",  # e.g. "openrouter" (empty = inherit parent provider + credentials)
+        # Child memory policy: full = inject profile memory + read tools; on_demand = read tools only;
+        # off = neither. Nested children inherit and may only narrow the parent's policy.
+        "memory_mode": "on_demand",
         # Fallback chain for delegated children (same entry format as the top-level list).
         # For an unpinned child, null = inherit the parent chain; [] = disable fallback.
         # A child pinned by provider, endpoint, or model gets no fallback unless this

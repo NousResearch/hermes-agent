@@ -715,6 +715,13 @@ def _restore_pinned_tools(agent, session_row) -> list:
             persist_agent_tool_names(agent)
     except Exception:
         logger.debug("tool prefix restore skipped", exc_info=True)
+    if getattr(agent, "_memory_mode_explicit", False) is True:
+        from agent.agent_init import _prune_explicit_memory_tools
+        _prune_explicit_memory_tools(
+            agent,
+            getattr(agent, "_memory_mode", "off"),
+            set(getattr(agent, "_memory_tool_policy_allowlist", ()) or ()),
+        )
     return built_for_this_surface
 
 
@@ -855,6 +862,10 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
 
 def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
     """Return False when the persisted runtime-identity lines are stale."""
+    if getattr(agent, "_memory_mode_explicit", False) is True:
+        marker = f"<!-- hermes-memory-mode:{getattr(agent, '_memory_mode', 'off')} -->"
+        if marker not in prompt:
+            return False
     # Model/provider identity, then cwd drift.  A cwd change is a real content change (context
     # files, the workspace snapshot and the coding posture are all resolved from it), so it
     # still rebuilds; the runtime surface does not (agent/surface_switch.py).

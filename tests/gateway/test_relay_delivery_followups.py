@@ -431,6 +431,61 @@ def test_durable_dispatch_persists_and_recovers_scope_id(tmp_path, monkeypatch):
     assert source.user_id == "U9"
 
 
+def test_recovery_finalizes_persisted_child_sessions(tmp_path, monkeypatch):
+    """Restart recovery closes the child session rows owned by an abandoned unit."""
+    import tools.async_delegation as ad
+
+    ad._reset_for_tests()
+    monkeypatch.setattr(ad, "_db_path", lambda: tmp_path / "state.db")
+    with ad._transaction() as conn:
+        conn.executemany(
+            "INSERT INTO sessions (id, source, started_at, parent_session_id) "
+            "VALUES (?, 'delegate', ?, ?)",
+            [
+                ("child-live", 100, "parent"),
+                ("child-done", 100, "parent"),
+                ("child-compressed", 100, "parent"),
+                ("child-after-compression", 110, "child-compressed"),
+                ("child-before-dispatch", 90, "parent"),
+                ("child-foreign", 100, "other-parent"),
+            ],
+        )
+        conn.execute(
+            "UPDATE sessions SET ended_at=123, end_reason='completed' WHERE id='child-done'"
+        )
+        conn.execute(
+            "UPDATE sessions SET ended_at=123, end_reason='compression' "
+            "WHERE id='child-compressed'"
+        )
+    ad._persist_dispatch({
+        "delegation_id": "d-children-1",
+        "session_key": "session",
+        "parent_session_id": "parent",
+        "dispatched_at": 100.0,
+        "task_session_ids": {
+            "0": "child-live",
+            "1": "child-done",
+            "2": "child-compressed",
+            "3": "child-before-dispatch",
+            "4": "child-foreign",
+        },
+    })
+
+    monkeypatch.setattr("gateway.status._pid_exists", lambda pid: False)
+    assert ad.recover_abandoned_delegations() == 1
+
+    with ad._transaction() as conn:
+        rows = {row[0]: row[1:] for row in conn.execute(
+            "SELECT id, ended_at, end_reason FROM sessions"
+        )}
+    assert rows["child-live"][1] == "interrupted"
+    assert rows["child-done"] == (123, "completed")
+    assert rows["child-compressed"] == (123, "compression")
+    assert rows["child-after-compression"][1] == "interrupted"
+    assert rows["child-before-dispatch"][1] == "interrupted"
+    assert rows["child-foreign"] == (None, None)
+
+
 def test_live_completion_event_carries_scope_id(tmp_path, monkeypatch):
     """The live (non-restart) completion event must carry the dispatch-time
     routing origin too, so priming works even when the in-memory source

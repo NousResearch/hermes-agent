@@ -157,7 +157,7 @@ def _persist_dispatch(record: Dict[str, Any]) -> None:
         owner_started_at = None
     task_payload = {
         key: record.get(key)
-        for key in ("goal", "goals", "context", "toolsets", "role", "model", "is_batch", "task_indexes", "task_transcripts", *_ROUTING_KEYS)
+        for key in ("goal", "goals", "context", "toolsets", "role", "model", "is_batch", "task_indexes", "task_transcripts", "task_session_ids", *_ROUTING_KEYS)
         if key in record}
     try:  # where the children's terminals started; lets recovery add a git-state hint
         task_payload["owner_cwd"] = os.getcwd()
@@ -256,8 +256,7 @@ def _owner_liveness() -> Optional[Callable[[Any, Any], bool]]:
 
 
 def recover_abandoned_delegations() -> int:
-    """Classify records whose owning process disappeared as outcome unknown; children a multi-child unit had already
-    recorded (``record_unit_child``) are replayed with their real results."""
+    """Classify abandoned units as ``interrupted``; per-task results with no recorded child outcome remain ``unknown``."""
     alive = _owner_liveness()
     if alive is None:
         return 0
@@ -292,13 +291,29 @@ def recover_abandoned_delegations() -> int:
                 "parent_session_id": parent_id, "goal": task.get("goal", ""), "goals": task.get("goals"),
                 "context": task.get("context"), "toolsets": task.get("toolsets"), "role": task.get("role"),
                 "model": task.get("model"), "is_batch": bool(task.get("is_batch")),
-                "status": "unknown", "summary": None, "error": error, **diagnostics,
+                "status": "interrupted", "summary": None, "error": error, **diagnostics,
                 **({"results": recovered_results} if recovered_results else {}),
                 "dispatched_at": dispatched_at, "completed_at": now,
                 **{k: task[k] for k in _ROUTING_KEYS if task.get(k)}}
-            result = {"status": "unknown", "summary": None, "error": event["error"], **diagnostics,
+            result = {"status": "interrupted", "summary": None, "error": event["error"], **diagnostics,
                       **({"results": recovered_results} if recovered_results else {})}
-            conn.execute("""UPDATE async_delegations SET state='unknown', completed_at=?,
+            if parent_id:
+                child_ids = [
+                    child_id for child_id in (task.get("task_session_ids") or {}).values()
+                    if isinstance(child_id, str) and child_id
+                ]
+                if child_ids:
+                    placeholders = ",".join("?" for _ in child_ids)
+                    conn.execute(
+                        f"WITH RECURSIVE descendants(id) AS ("
+                        f"SELECT id FROM sessions WHERE parent_session_id=? AND id IN ({placeholders})"
+                        f" UNION ALL SELECT sessions.id FROM sessions JOIN descendants "
+                        f"ON sessions.parent_session_id=descendants.id) "
+                        f"UPDATE sessions SET ended_at=?, end_reason='interrupted' "
+                        f"WHERE id IN (SELECT id FROM descendants) AND ended_at IS NULL",
+                        (parent_id, *child_ids, now),
+                    )
+            conn.execute("""UPDATE async_delegations SET state='interrupted', completed_at=?,
                    updated_at=?, event_json=?, result_json=?, delivery_state='pending'
                    WHERE delegation_id=?""", (now, now, json.dumps(event), json.dumps(result), delegation_id))
             recovered += 1
@@ -671,6 +686,7 @@ def _dispatch_admitted(
     progress_fn: Optional[Callable[[], tuple]], capacity_error: str, slot_key: Optional[str] = None,
     task_indexes: Optional[List[int]] = None,
     task_transcripts: Optional[Dict[str, str]] = None,
+    task_session_ids: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """Shared dispatch core for single (``goals is None``) and batch units. Capacity check +
     record insert happen under ONE lock hold so concurrent dispatches can't both pass the check
@@ -693,6 +709,7 @@ def _dispatch_admitted(
         "interrupt_fn": interrupt_fn, **({"is_batch": True} if is_batch else {}), "progress_fn": progress_fn,
         "slot_key": slot_key or delegation_id,
         **({"task_transcripts": dict(task_transcripts)} if task_transcripts else {}),
+        **({"task_session_ids": dict(task_session_ids)} if task_session_ids else {}),
         # Which of the call's ``goals`` this unit runs (None = all of them).
         **({"task_indexes": list(task_indexes)} if task_indexes is not None else {}),
         # The one stale-monitor thread serves every profile and starts with an empty Context;
@@ -784,6 +801,7 @@ def dispatch_async_delegation_batch(
     progress_fn: Optional[Callable[[], tuple]] = None, slot_key: Optional[str] = None,
     task_indexes: Optional[List[int]] = None,
     task_transcripts: Optional[Dict[str, str]] = None,
+    task_session_ids: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """Dispatch a fan-out unit (a whole batch, or one ``group`` of a delegate_task call) as ONE
     background unit: ``runner`` runs its tasks and returns the combined ``{"results": [...],
@@ -802,6 +820,7 @@ def dispatch_async_delegation_batch(
         origin_ui_session_id=origin_ui_session_id, origin_session_id=origin_session_id,
         interrupt_fn=interrupt_fn, max_async_children=max_async_children, progress_fn=progress_fn, slot_key=slot_key,
         task_indexes=task_indexes, task_transcripts=task_transcripts,
+        task_session_ids=task_session_ids,
         capacity_error=(
             f"Async delegation capacity reached ({max_async_children} running). Wait for one to finish "
             "(its result will re-enter the chat), or raise delegation.max_concurrent_children in "

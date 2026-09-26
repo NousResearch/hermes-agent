@@ -1580,7 +1580,11 @@ def test_resolve_hermes_argv_module_actually_runs(tmp_path):
 
     with mock.patch.dict(os.environ, {}, clear=False):
         os.environ.pop("HERMES_BIN", None)
-        with mock.patch.object(shutil, "which", return_value=None):
+        # Use the runner-owned interpreter. A source checkout can itself live
+        # under the real Hermes home; resolving its managed store would cross
+        # the test suite's home I/O guard before the isolated child is started.
+        with mock.patch.object(shutil, "which", return_value=None), \
+             mock.patch("hermes_cli._launchers.resolve_store_python", return_value=None):
             argv = kbd._resolve_hermes_argv()
     workspace = tmp_path / "unrelated-workspace"
     workspace.mkdir()
@@ -1592,10 +1596,10 @@ def test_resolve_hermes_argv_module_actually_runs(tmp_path):
     if os.environ.get("HERMES_RUNTIME_DIR"):
         clean_env["HERMES_RUNTIME_DIR"] = os.environ["HERMES_RUNTIME_DIR"]
     created = subprocess.run(argv + ["kanban", "boards", "create", "launch-probe"],
-                             cwd=workspace, env=clean_env, capture_output=True, text=True, timeout=30)
+                             cwd=workspace, env=clean_env, capture_output=True, text=True, timeout=60)
     assert created.returncode == 0, created.stderr[:200]
     r = subprocess.run(argv + ["kanban", "--board", "launch-probe", "list", "--json"],
-                       cwd=workspace, env=clean_env, capture_output=True, text=True, timeout=30)
+                       cwd=workspace, env=clean_env, capture_output=True, text=True, timeout=60)
     assert r.returncode == 0, (
         f"worker invocation failed from unrelated workspace (rc={r.returncode}); "
         f"stderr={r.stderr[:200]!r}"

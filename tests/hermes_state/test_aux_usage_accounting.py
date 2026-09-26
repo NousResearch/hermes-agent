@@ -6,6 +6,7 @@ the ambient accounting context (agent/aux_accounting.py), making aux model
 spend visible in analytics.
 """
 from pathlib import Path
+from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
@@ -169,6 +170,69 @@ class TestSchemaMigrationV22:
 
 
 class TestAmbientAccountingContext:
+    def test_provider_reported_cost_is_stored_as_actual(self, db, monkeypatch):
+        from agent import aux_accounting
+        from agent.usage_pricing import CostResult
+
+        db.create_session("s1", source="cli")
+        monkeypatch.setattr(
+            "agent.usage_pricing.estimate_usage_cost",
+            lambda *args, **kwargs: CostResult(
+                amount_usd=Decimal("0.06338552"),
+                status="actual",
+                source="provider_cost_api",
+                label="$0.0634",
+            ),
+        )
+        token = aux_accounting.set_accounting_context(db, "s1")
+        try:
+            aux_accounting.record_aux_usage(
+                _mk_response(model="deepseek-v4-flash-0731"),
+                "vision",
+                provider="nous",
+                base_url="https://inference-api.nousresearch.com/v1",
+            )
+        finally:
+            aux_accounting.reset_accounting_context(token)
+
+        rows = _usage_rows(db, "s1")
+        assert len(rows) == 1
+        assert rows[0]["estimated_cost_usd"] == 0
+        assert rows[0]["actual_cost_usd"] == pytest.approx(0.06338552)
+        assert rows[0]["cost_status"] == "actual"
+        assert rows[0]["cost_source"] == "provider_cost_api"
+
+    def test_provider_cost_is_recorded_without_token_counters(self, db, monkeypatch):
+        from agent import aux_accounting
+        from agent.usage_pricing import CostResult
+
+        db.create_session("s1", source="cli")
+        monkeypatch.setattr(
+            "agent.usage_pricing.estimate_usage_cost",
+            lambda *args, **kwargs: CostResult(
+                amount_usd=Decimal("0.06338552"),
+                status="actual",
+                source="provider_cost_api",
+                label="$0.0634",
+            ),
+        )
+        token = aux_accounting.set_accounting_context(db, "s1")
+        try:
+            aux_accounting.record_aux_usage(
+                SimpleNamespace(model="deepseek-v4-flash-0731", usage={"cost": 0.06338552}),
+                "vision",
+                provider="nous",
+                base_url="https://inference-api.nousresearch.com/v1",
+            )
+        finally:
+            aux_accounting.reset_accounting_context(token)
+
+        rows = _usage_rows(db, "s1")
+        assert len(rows) == 1
+        assert rows[0]["input_tokens"] == 0
+        assert rows[0]["output_tokens"] == 0
+        assert rows[0]["actual_cost_usd"] == pytest.approx(0.06338552)
+
     def test_record_aux_usage_writes_through_context(self, db):
         from agent.aux_accounting import (
             record_aux_usage,

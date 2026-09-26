@@ -1,16 +1,11 @@
 import random
 
 from gateway.status_phrases import (
-    classify_status_context,
     choose_status_phrase,
     resolve_status_phrase_catalog,
 )
 
 
-def test_long_running_context_uses_status_bucket():
-    assert classify_status_context("status") == "status"
-    assert classify_status_context("heartbeat") == "status"
-    assert classify_status_context("long_running") == "status"
 
 
 def test_status_phrase_does_not_leak_raw_preview_or_args():

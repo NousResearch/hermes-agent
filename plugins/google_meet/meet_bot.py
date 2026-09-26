@@ -4,7 +4,7 @@ Standalone subprocess spawned by ``process_manager.py``; configured via ``HERMES
 status + transcript written under ``$HERMES_MEET_OUT_DIR`` (filesystem is the only IPC).
 No WebRTC audio parsing: Meet's live captions are watched via a MutationObserver — lossy and
 English-biased, but deterministic (no STT billing) and stable thanks to the ARIA role.
-Debug: ``HERMES_MEET_URL=... HERMES_MEET_OUT_DIR=/tmp/x HERMES_MEET_HEADED=1 \\
+Debug: ``HERMES_MEET_URL=... HERMES_MEET_OUT_DIR=./meet-out HERMES_MEET_HEADED=1 \\
     python -m plugins.google_meet.meet_bot``
 """
 
@@ -22,7 +22,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Optional
 
-from plugins.google_meet._jsonfile import write_json_atomic
+from hermes_cli.browser_runtime import chromium_executable
+from utils import atomic_json_write
 
 # Short three-segment code, a lookup URL, or /new. Anything else is rejected.
 MEET_URL_RE = re.compile(
@@ -63,7 +64,7 @@ _STATUS_FIELDS = (
     ("realtime", "realtime", False), ("realtimeReady", "realtime_ready", False),
     ("realtimeDevice", "realtime_device", None), ("audioBytesOut", "audio_bytes_out", 0),
     ("lastAudioOutAt", "last_audio_out_at", None), ("lastBargeInAt", "last_barge_in_at", None),
-    ("leaveReason", "leave_reason", None))
+    ("leaveReason", "leave_reason", None), ("micState", "mic_state", None))
 
 
 class _BotState:
@@ -93,7 +94,7 @@ class _BotState:
     def _flush(self) -> None:
         data = {key: getattr(self, attr) if attr else None for key, attr, _ in _STATUS_FIELDS}
         data.update(transcriptPath=str(self.transcript_path), pid=os.getpid())  # keeps table key order
-        write_json_atomic(self.status_path, data)
+        atomic_json_write(self.status_path, data)
 
     def set(self, **kwargs) -> None:
         self.__dict__.update(kwargs)
@@ -198,35 +199,62 @@ def _visible(locator):
     return _quiet(lambda: locator.first if locator.first.count() and locator.first.is_visible() else None)
 
 
-def _start_pcm_pump(rt: dict, bridge_info: dict, pcm_path: Path, state: "_BotState") -> None:
-    """Stream the growing ``speaker.pcm`` (24kHz s16le mono) into the device Chrome's fake mic reads."""
+def _pcm_tail_loop(proc, pcm_path: Path, stop_flag: dict, poll_interval: float = 0.05) -> None:
+    """Follow ``speaker.pcm`` as it grows and forward every appended chunk to the pump's stdin.
+    The pump itself would hit EOF on the (empty) file at start-up and exit; this thread keeps
+    feeding it until the stop flag is set or the pump dies."""
+    try:
+        with open(pcm_path, "rb") as f:
+            while not stop_flag.get("stop") and proc.poll() is None:
+                chunk = f.read(65536)
+                if not chunk:
+                    time.sleep(poll_interval)
+                    continue
+                proc.stdin.write(chunk)
+                proc.stdin.flush()
+    except (OSError, ValueError):
+        pass  # pump exited / pipe closed (BrokenPipeError, write on closed stdin): nothing left to stream to
+    finally:
+        _quiet(proc.stdin.close)
+
+
+def _start_pcm_pump(rt: dict, bridge_info: dict, pcm_path: Path, state: "_BotState",
+                    stop_flag: dict) -> None:
+    """Stream the growing ``speaker.pcm`` (24kHz s16le mono) into the device Chrome's fake mic reads.
+    The pump reads raw PCM from stdin (``-``) so audio appended after start-up is still played —
+    pointed at the file it would read the empty sink to EOF and exit before Realtime spoke."""
     bridge_info = bridge_info or {}
     platform_tag = bridge_info.get("platform")
     target = bridge_info.get("write_target")
     if platform_tag == "linux":
         cmd = ["paplay", "--raw", "--rate=24000", "--format=s16le", "--channels=1",
-               f"--device={target or 'hermes_meet_sink'}", str(pcm_path)]
+               f"--device={target or 'hermes_meet_sink'}", "-"]
         missing = "paplay not found — install pulseaudio-utils for realtime on Linux"
     elif platform_tag == "darwin":
         # User must have BlackHole as default input; ffmpeg targets it by audiotoolbox index.
         if not shutil.which("ffmpeg"):
             state.set(error=_FFMPEG_MISSING)
             return
-        cmd = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-re",
-               "-f", "s16le", "-ar", "24000", "-ac", "1", "-i", str(pcm_path), "-f", "audiotoolbox",
+        cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error",
+               "-f", "s16le", "-ar", "24000", "-ac", "1", "-i", "-", "-f", "audiotoolbox",
                "-audio_device_index", _mac_audio_device_index(target or "BlackHole 2ch"), "-"]
         missing = _FFMPEG_MISSING
     else:
         return
     try:
         rt["pcm_pump"] = subprocess.Popen(
-            cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except FileNotFoundError:
         state.set(error=missing)
+        return
     except Exception as e:
         if platform_tag != "darwin":
             raise
         state.set(error=f"macOS pcm pump failed to start: {e}")
+        return
+    rt["pcm_tail_thread"] = threading.Thread(
+        target=_pcm_tail_loop, args=(rt["pcm_pump"], pcm_path, stop_flag), name="meet-pcm-tail", daemon=True)
+    rt["pcm_tail_thread"].start()
 
 
 def _start_realtime_speaker(rt: dict, cfg: "_BotConfig", stop_flag: dict, state: "_BotState") -> None:
@@ -257,7 +285,7 @@ def _start_realtime_speaker(rt: dict, cfg: "_BotConfig", stop_flag: dict, state:
 
     rt["speaker_thread"] = threading.Thread(target=_speaker_loop, name="meet-speaker", daemon=True)
     rt["speaker_thread"].start()
-    _start_pcm_pump(rt, rt["bridge_info"], pcm_path, state)
+    _start_pcm_pump(rt, rt["bridge_info"], pcm_path, state, stop_flag)
     state.set(realtime_ready=True)
 
 
@@ -294,9 +322,10 @@ def _teardown_realtime(rt: dict) -> None:
     if rt.get("pcm_pump"):
         _quiet(rt["pcm_pump"].terminate)
         _quiet(rt["pcm_pump"].wait, timeout=3)
-    for key, method, kw in (("speaker_thread", "join", {"timeout": 5.0}), ("session", "close", {}),
+    for key, method, kw in (("pcm_tail_thread", "join", {"timeout": 1.0}),
+                            ("speaker_thread", "join", {"timeout": 5.0}), ("session", "close", {}),
                             ("bridge", "teardown", {})):
-        if rt[key] is not None:
+        if rt.get(key) is not None:
             _quiet(getattr(rt[key], method), **kw)
 
 
@@ -323,17 +352,37 @@ def _config_from_env() -> _BotConfig:
         lobby_timeout=float(env("HERMES_MEET_LOBBY_TIMEOUT", "300")))
 
 
-def _join(page, cfg: _BotConfig, state: _BotState) -> None:
-    """Fill the guest-name field and click 'Join now' / 'Ask to join' (the latter → lobby_waiting)."""
-    name_box = _visible(page.locator('input[aria-label*="name" i]'))
-    if name_box is not None:
-        _quiet(name_box.fill, cfg.guest_name, timeout=2_000)
-    for label in ("Join now", "Ask to join"):
-        btn = _visible(page.get_by_role("button", name=label, exact=False))
-        if btn is not None and _quiet(lambda: (btn.click(timeout=3_000), True)):
-            if label == "Ask to join":
-                state.set(lobby_waiting=True)
-            break
+def _join(page, cfg: _BotConfig, state: _BotState, timeout: float = 30.0) -> None:
+    """Fill the guest-name field and click 'Join now' / 'Ask to join' (the latter → lobby_waiting).
+    Meet renders the pre-join buttons asynchronously after ``domcontentloaded``, so poll for up to
+    *timeout* seconds instead of checking once — a single miss leaves the bot silently in the lobby."""
+    deadline = time.time() + timeout
+    while True:
+        name_box = _visible(page.locator('input[aria-label*="name" i]'))
+        if name_box is not None:
+            _quiet(name_box.fill, cfg.guest_name, timeout=2_000)
+        for label in ("Join now", "Ask to join"):
+            btn = _visible(page.get_by_role("button", name=label, exact=False))
+            if btn is not None and _quiet(lambda: (btn.click(timeout=3_000), True)):
+                if label == "Ask to join":
+                    state.set(lobby_waiting=True)
+                return
+        if time.time() >= deadline:
+            return
+        time.sleep(0.5)
+
+
+def _ensure_mic_on(page) -> str:
+    """Unmute the bot once admitted — Meet may seat an authenticated bot muted, and a muted mic makes
+    realtime speech inaudible. The in-call toggle's aria-label is "Turn on microphone" while muted /
+    "Turn off microphone" while live; returns ``unmuted_clicked`` / ``unmuted`` / ``unknown``
+    (toggle not found: Meet variant changed or the label is localized)."""
+    muted = _visible(page.locator('button[aria-label*="Turn on microphone" i]'))
+    if muted is not None and _quiet(lambda: (muted.click(timeout=3_000), True)):
+        return "unmuted_clicked"
+    if _visible(page.locator('button[aria-label*="Turn off microphone" i]')) is not None:
+        return "unmuted"
+    return "unknown"
 
 
 def _drain_loop(page, cfg: _BotConfig, state: _BotState, rt: dict, stop_flag: dict) -> None:
@@ -350,7 +399,7 @@ def _drain_loop(page, cfg: _BotConfig, state: _BotState, rt: dict, stop_flag: di
         if not state.in_call and (now - last_admission_check) > 3.0:
             last_admission_check = now
             if _probe(page, _ADMISSION_PROBE_JS):
-                state.set(in_call=True, lobby_waiting=False, joined_at=now)
+                state.set(in_call=True, lobby_waiting=False, joined_at=now, mic_state=_ensure_mic_on(page))
             elif now > lobby_deadline:
                 waited = int(lobby_deadline - state.join_attempted_at) if state.join_attempted_at else 0
                 state.set(error=f"lobby timeout — host never admitted the bot within {waited}s",
@@ -409,7 +458,7 @@ def run_bot() -> int:
     except ImportError as e:
         state.set(error=f"playwright not installed: {e}", exited=True)
         sys.stderr.write("google_meet bot: playwright is not installed. Run "
-                         "`pip install playwright && python -m playwright install chromium`\n")
+                         "`hermes meet install`\n")
         if rt["bridge"]:
             rt["bridge"].teardown()
         return 3
@@ -424,7 +473,10 @@ def run_bot() -> int:
         context_args["storage_state"] = cfg.auth_state
     try:
         with sync_playwright() as pw:
-            browser = pw.chromium.launch(headless=not cfg.headed, args=chrome_args)
+            browser = pw.chromium.launch(
+                channel="chromium", executable_path=chromium_executable(),
+                headless=not cfg.headed, args=chrome_args,
+            )
             context = browser.new_context(**context_args)
             page = context.new_page()
             try:

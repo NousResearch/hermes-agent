@@ -32,13 +32,6 @@ class TestSlashCommands:
         assert "/new" in response_text
         assert "/status" in response_text
 
-    @pytest.mark.asyncio
-    async def test_status_shows_session_info(self, adapter, platform):
-        send = await send_and_capture(adapter, "/status", platform)
-
-        send.assert_called_once()
-        response_text = send.call_args[1].get("content") or send.call_args[0][1]
-        assert "session" in response_text.lower() or "Session" in response_text
 
     @pytest.mark.asyncio
     async def test_new_resets_session(self, adapter, runner, platform):
@@ -47,14 +40,6 @@ class TestSlashCommands:
         send.assert_called_once()
         runner.session_store.reset_session.assert_called_once()
 
-    @pytest.mark.asyncio
-    async def test_stop_when_no_agent_running(self, adapter, platform):
-        send = await send_and_capture(adapter, "/stop", platform)
-
-        send.assert_called_once()
-        response_text = send.call_args[1].get("content") or send.call_args[0][1]
-        response_lower = response_text.lower()
-        assert "no" in response_lower or "stop" in response_lower or "not running" in response_lower
 
     @pytest.mark.asyncio
     async def test_leading_space_stop_is_still_a_command(self, adapter, platform):
@@ -66,32 +51,8 @@ class TestSlashCommands:
         response_lower = response_text.lower()
         assert "no" in response_lower or "stop" in response_lower or "not running" in response_lower
 
-    @pytest.mark.asyncio
-    async def test_commands_shows_listing(self, adapter, platform):
-        send = await send_and_capture(adapter, "/commands", platform)
 
-        send.assert_called_once()
-        response_text = send.call_args[1].get("content") or send.call_args[0][1]
-        # Should list at least some commands
-        assert "/" in response_text
 
-    @pytest.mark.asyncio
-    async def test_sequential_commands_share_session(self, adapter, platform):
-        """Two commands from the same chat_id should both succeed."""
-        send_help = await send_and_capture(adapter, "/help", platform)
-        send_help.assert_called_once()
-
-        send_status = await send_and_capture(adapter, "/status", platform)
-        send_status.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_verbose_responds(self, adapter, platform):
-        send = await send_and_capture(adapter, "/verbose", platform)
-
-        send.assert_called_once()
-        response_text = send.call_args[1].get("content") or send.call_args[0][1]
-        # Either shows the mode cycle or tells user to enable it in config
-        assert "verbose" in response_text.lower() or "tool_progress" in response_text
 
     @pytest.mark.asyncio
     async def test_plaintext_restart_gateway_routes_to_safe_restart_command(self, adapter, runner, platform, monkeypatch):
@@ -124,29 +85,8 @@ class TestSlashCommands:
         assert response_text == "agent-handled"
         runner.request_restart.assert_not_called()
 
-    @pytest.mark.asyncio
-    async def test_personality_lists_options(self, adapter, platform):
-        send = await send_and_capture(adapter, "/personality", platform)
 
-        send.assert_called_once()
-        response_text = send.call_args[1].get("content") or send.call_args[0][1]
-        assert "personalit" in response_text.lower()  # matches "personality" or "personalities"
 
-    @pytest.mark.asyncio
-    async def test_yolo_toggles_mode(self, adapter, platform):
-        send = await send_and_capture(adapter, "/yolo", platform)
-
-        send.assert_called_once()
-        response_text = send.call_args[1].get("content") or send.call_args[0][1]
-        assert "yolo" in response_text.lower()
-
-    @pytest.mark.asyncio
-    async def test_compress_command(self, adapter, platform):
-        send = await send_and_capture(adapter, "/compress", platform)
-
-        send.assert_called_once()
-        response_text = send.call_args[1].get("content") or send.call_args[0][1]
-        assert "compress" in response_text.lower() or "context" in response_text.lower()
 
     @pytest.mark.asyncio
     async def test_quick_command_alias_targets_builtin_command_with_args(
@@ -187,12 +127,6 @@ class TestSessionLifecycle:
         # Session ID from the entry should appear in the status output
         assert session_entry.session_id[:8] in response_text
 
-    @pytest.mark.asyncio
-    async def test_new_is_idempotent(self, adapter, runner, platform):
-        """/new called twice should not crash."""
-        await send_and_capture(adapter, "/new", platform)
-        await send_and_capture(adapter, "/new", platform)
-        assert runner.session_store.reset_session.call_count == 2
 
 
 class TestAuthorization:

@@ -16,11 +16,8 @@ import os
 import unittest
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from email.mime.base import MIMEBase
-from email import encoders
-from unittest.mock import patch, MagicMock, AsyncMock, ANY
+from unittest.mock import patch, MagicMock, ANY
 
-from gateway.platforms.base import SendResult
 
 
 class TestConfigEnvOverrides(unittest.TestCase):
@@ -105,14 +102,6 @@ class TestExtractTextBody(unittest.TestCase):
         self.assertEqual(result, "Plain version")
 
 
-class TestExtractAttachments(unittest.TestCase):
-    """Test attachment extraction and caching."""
-
-    def test_no_attachments(self):
-        from plugins.platforms.email.adapter import _extract_attachments
-        msg = MIMEText("No attachments here.", "plain", "utf-8")
-        result = _extract_attachments(msg)
-        self.assertEqual(result, [])
 
 
 class TestDispatchMessage(unittest.TestCase):
@@ -182,7 +171,6 @@ class TestDispatchMessage(unittest.TestCase):
 
         adapter._message_handler = mock_handler
         # Override handle_message to capture the event directly
-        original_handle = adapter.handle_message
 
         async def capture_handle(event):
             captured_events.append(event)
@@ -238,7 +226,7 @@ class TestDispatchMessage(unittest.TestCase):
     def test_image_attachment_sets_photo_type(self):
         """Email with image attachment should set message type to PHOTO."""
         import asyncio
-        from gateway.platforms.base import MessageType
+        from gateway.platforms.event import MessageType
         adapter = self._make_adapter()
         captured_events = []
 
@@ -330,6 +318,98 @@ class TestDispatchMessage(unittest.TestCase):
 
             asyncio.run(adapter._dispatch_message(msg_data))
             self.assertEqual(len(captured), 1)
+
+
+class TestDispatchDefersToGatewayAuthorization(unittest.TestCase):
+    """The pre-dispatch gate must not drop mail the gateway would authorize (GATEWAY_ALLOWED_USERS,
+    an approved pairing) or answer itself (an explicit pair/decline unauthorized_dm_behavior)."""
+
+    STRANGER = "stranger@example.com"
+
+    def setUp(self):
+        self._env = patch.dict(os.environ, {}, clear=False)
+        self._env.start()
+        for key in ("EMAIL_ALLOWED_USERS", "EMAIL_ALLOW_ALL_USERS", "GATEWAY_ALLOWED_USERS",
+                    "GATEWAY_ALLOW_ALL_USERS", "EMAIL_TRUST_FROM_HEADER"):
+            os.environ.pop(key, None)
+
+    def tearDown(self):
+        self._env.stop()
+
+    def _reached_gateway(self, *, extra=None, env=None, paired=False, authenticated=True):
+        """Dispatch one mail from STRANGER with the real GatewayRunner auth callback wired, as startup does;
+        return the events handed to the gateway. Each call gets its own pairing store."""
+        import asyncio
+        import tempfile
+        from pathlib import Path
+        from gateway.config import GatewayConfig, Platform, PlatformConfig
+        from gateway.pairing import PairingStore
+        from gateway.run import GatewayRunner
+        from plugins.platforms.email.adapter import EmailAdapter
+        with tempfile.TemporaryDirectory() as pairing_dir, \
+                patch("gateway.pairing.PAIRING_DIR", Path(pairing_dir)), \
+                patch.dict(os.environ, {"EMAIL_ADDRESS": "hermes@test.com", "EMAIL_PASSWORD": "secret",
+                                        "EMAIL_IMAP_HOST": "imap.test.com", "EMAIL_SMTP_HOST": "smtp.test.com",
+                                        **(env or {})}):
+            adapter = EmailAdapter(PlatformConfig(enabled=True, extra=dict(extra or {})))
+            runner = object.__new__(GatewayRunner)
+            runner.config = GatewayConfig(platforms={Platform.EMAIL: adapter.config})
+            runner.adapters = {Platform.EMAIL: adapter}
+            runner.pairing_store = PairingStore()
+            adapter.set_authorization_check(runner._make_adapter_auth_check(Platform.EMAIL))
+            if paired:
+                code = runner.pairing_store.generate_code("email", self.STRANGER, "Stranger")
+                self.assertIsNotNone(runner.pairing_store.approve_code("email", code))
+            captured = []
+
+            async def capture(event):
+                captured.append(event)
+
+            adapter.handle_message = capture
+            asyncio.run(adapter._dispatch_message({
+                "uid": b"301", "sender_addr": self.STRANGER, "sender_name": "Stranger", "subject": "Hello",
+                "message_id": "<m301@example.com>", "in_reply_to": "", "body": "Hi there", "attachments": [],
+                "date": "", "sender_authenticated": authenticated,
+                "auth_reason": "dmarc=pass" if authenticated else "no Authentication-Results header"}))
+        return captured
+
+    def test_mail_the_gateway_admits_or_answers_reaches_it(self):
+        cases = {
+            "pair opt-in": {"extra": {"unauthorized_dm_behavior": "pair"}},
+            "decline opt-in": {"extra": {"unauthorized_dm_behavior": "decline"}},
+            "GATEWAY_ALLOWED_USERS": {"env": {"GATEWAY_ALLOWED_USERS": self.STRANGER}},
+            "EMAIL_ALLOWED_USERS JSON list literal": {"env": {"EMAIL_ALLOWED_USERS": f'["{self.STRANGER}"]'}},
+            "approved pairing": {"paired": True},
+        }
+        for label, kwargs in cases.items():
+            with self.subTest(label):
+                self.assertEqual(len(self._reached_gateway(**kwargs)), 1)
+
+    def test_mail_the_gateway_would_ignore_or_that_forges_from_is_dropped(self):
+        cases = {
+            "default ignore": {},
+            "pair opt-in, unauthenticated From": {"extra": {"unauthorized_dm_behavior": "pair"}, "authenticated": False},
+            "approved pairing, unauthenticated From": {"paired": True, "authenticated": False},
+            # Open access grants a stranger nothing beside a list, so a pairing code must not go to a forged From:.
+            "pair opt-in, allow-all beside EMAIL list, unauthenticated From": {
+                "extra": {"unauthorized_dm_behavior": "pair"}, "authenticated": False,
+                "env": {"GATEWAY_ALLOW_ALL_USERS": "true", "EMAIL_ALLOWED_USERS": "boss@example.com"}},
+            # GATEWAY_ALLOW_ALL_USERS is inert beside a list, so a listed address still has to authenticate its From:.
+            "listed sender, GATEWAY allow-all beside the list, unauthenticated From": {
+                "authenticated": False, "env": {"GATEWAY_ALLOW_ALL_USERS": "true", "EMAIL_ALLOWED_USERS": self.STRANGER}},
+            "pair opt-in, allow-all beside GATEWAY list, unauthenticated From": {
+                "extra": {"unauthorized_dm_behavior": "pair"}, "authenticated": False,
+                "env": {"GATEWAY_ALLOW_ALL_USERS": "true", "GATEWAY_ALLOWED_USERS": "boss@example.com"}},
+            # A bare entry (a chat username, say) names one principal, never stranger@<any domain>: the
+            # domain is the sender's to choose, so such mail is dropped rather than admitted or paired.
+            "GATEWAY_ALLOWED_USERS bare entry": {"env": {"GATEWAY_ALLOWED_USERS": "stranger"}},
+            "EMAIL_ALLOWED_USERS bare entry, JSON list literal": {"env": {"EMAIL_ALLOWED_USERS": '["stranger"]'}},
+            "bare entry, pair opt-in": {"env": {"GATEWAY_ALLOWED_USERS": "stranger"},
+                                        "extra": {"unauthorized_dm_behavior": "pair"}},
+        }
+        for label, kwargs in cases.items():
+            with self.subTest(label):
+                self.assertEqual(self._reached_gateway(**kwargs), [])
 
 
 class TestThreadContext(unittest.TestCase):
@@ -432,19 +512,27 @@ class TestSendMethods(unittest.TestCase):
             os.unlink(tmp_path)
 
 
-    def test_get_chat_info(self):
-        """get_chat_info should return email address as chat info."""
+    def test_send_document_threads_on_explicit_reply_to(self):
+        """An explicit reply_to wins over the cached thread context for attachment sends (#10131)."""
         import asyncio
+        import tempfile
         adapter = self._make_adapter()
-        adapter._thread_context["user@test.com"] = {"subject": "Test", "message_id": "<m@t>"}
+        adapter._thread_context["user@test.com"] = {"subject": "Old", "message_id": "<cached@test.com>"}
+        with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as f:
+            f.write(b"doc")
+            tmp_path = f.name
+        try:
+            with patch("smtplib.SMTP") as mock_smtp:
+                mock_server = MagicMock()
+                mock_smtp.return_value = mock_server
+                result = asyncio.run(adapter.send_document("user@test.com", tmp_path, reply_to="<explicit@test.com>"))
+                self.assertTrue(result.success)
+                sent_msg = mock_server.send_message.call_args[0][0]
+                self.assertEqual(sent_msg["In-Reply-To"], "<explicit@test.com>")
+                self.assertEqual(sent_msg["References"], "<explicit@test.com>")
+        finally:
+            os.unlink(tmp_path)
 
-        info = asyncio.run(
-            adapter.get_chat_info("user@test.com")
-        )
-
-        self.assertEqual(info["name"], "user@test.com")
-        self.assertEqual(info["type"], "dm")
-        self.assertEqual(info["subject"], "Test")
 
 
 class TestConnectDisconnect(unittest.TestCase):

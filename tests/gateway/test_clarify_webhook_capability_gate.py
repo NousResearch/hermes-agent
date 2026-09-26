@@ -69,8 +69,8 @@ def test_interactive_adapter_still_registers_and_waits(monkeypatch):
     monkeypatch.setattr(runner, "_close_native_stream_boundary", MagicMock())
     monkeypatch.setattr(runner, "_stream_consumer", MagicMock(return_value=None))
     monkeypatch.setattr(
-        "gateway.run._clarify_send_then_wait",
-        MagicMock(return_value="user picked B"),
+        "gateway.run_turn_runner_clarify_delivery._clarify_send_then_wait",
+        MagicMock(return_value=("user picked B", True)),
     )
 
     result = runner._clarify_callback_sync("Pick one", ["A", "B"])

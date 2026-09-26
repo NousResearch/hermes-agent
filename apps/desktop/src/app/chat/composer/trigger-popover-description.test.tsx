@@ -13,7 +13,14 @@ it('reveals the complete slash description on hover without intercepting selecti
   const onPick = vi.fn()
   render(
     <I18nProvider configClient={null} initialLocale="en">
-      <ComposerTriggerPopover activeIndex={0} items={[item]} kind="/" loading={false} onHover={vi.fn()} onPick={onPick} />
+      <ComposerTriggerPopover
+        activeIndex={0}
+        items={[item]}
+        kind="/"
+        loading={false}
+        onHover={vi.fn()}
+        onPick={onPick}
+      />
     </I18nProvider>
   )
   const row = screen.getByRole('button')

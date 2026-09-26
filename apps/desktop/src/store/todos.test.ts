@@ -42,6 +42,14 @@ describe('setSessionTodos finished-list auto-clear', () => {
     expect($todosBySession.get().s1).toBeUndefined()
   })
 
+  it('clears finished lists for session ids that collide with object prototype keys', () => {
+    setSessionTodos('toString', [todo('a', 'completed')])
+
+    vi.advanceTimersByTime(5_000)
+
+    expect(Object.hasOwn($todosBySession.get(), 'toString')).toBe(false)
+  })
+
   it('cancels the pending clear when a new active list arrives', () => {
     setSessionTodos('s1', [todo('a', 'completed')])
     vi.advanceTimersByTime(2_000)
@@ -86,6 +94,11 @@ describe('clearActiveSessionTodos (turn-end cleanup)', () => {
     clearActiveSessionTodos('s1')
 
     expect($todosBySession.get().s1).toBeUndefined()
+  })
+
+  it('ignores an inherited prototype key on an empty map', () => {
+    expect(() => clearActiveSessionTodos('toString')).not.toThrow()
+    expect(Object.hasOwn($todosBySession.get(), 'toString')).toBe(false)
   })
 })
 

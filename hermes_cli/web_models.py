@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, SecretStr, field_validator
+from pydantic import BaseModel, SecretStr, StrictBool, field_validator
 
 
 class ConfigUpdate(BaseModel):
@@ -33,16 +33,27 @@ class MemoryProviderConfigUpdate(BaseModel):
 class MemoryProviderSetupRequest(BaseModel):
     values: Dict[str, Any] = {}
 
+class CustomEndpointModelDetail(BaseModel):
+    """One ``/v1/models`` row with the routing metadata a gateway may advertise on a
+    reasoning alias (``gpt-5.6-sol-high`` → ``gpt-5.6-sol`` @ ``high``). See #93622."""
+    id: str
+    canonical_model: Optional[str] = None
+    reasoning_effort: Optional[str] = None
+
 class CustomEndpointUpdate(BaseModel):
     id: str = ""
     name: str
     base_url: str
     model: str
     api_key: Optional[str] = None
+    # Same choices as the CLI's custom-provider setup; "" = auto-detect at runtime.
+    # None (older UI payload) leaves a hand-written api_mode alone.
+    api_mode: Optional[Literal["", "chat_completions", "codex_responses", "anthropic_messages"]] = None
     context_length: Optional[int] = None
     discover_models: bool = True
     make_default: bool = False
     models: Optional[List[str]] = None
+    model_details: Optional[List[CustomEndpointModelDetail]] = None
 
 class MessagingPlatformUpdate(BaseModel):
     enabled: Optional[bool] = None
@@ -98,6 +109,9 @@ class ModelAssignment(BaseModel):
     provider: str
     model: str
     task: str = ""
+    # Auxiliary only. Omitted → the task's override is left alone; explicit null → cleared
+    # (inherit the main agent's effort); a level → set. ``model_fields_set`` tells the two apart.
+    reasoning_effort: Optional[str] = None
     # Custom/local endpoint URL + key, honored on main AND auxiliary slots: the runtime resolvers
     # read model.base_url / auxiliary.<task>.base_url (+ .api_key) and ignore OPENAI_BASE_URL.
     base_url: str = ""
@@ -217,6 +231,12 @@ class DebugShareRequest(BaseModel):
 class TTSSpeakRequest(BaseModel):
     text: str
 
+class VoiceLiveSessionRequest(BaseModel):
+    """POST /api/audio/voice-live/session: the renderer's WebRTC SDP offer plus optional prior
+    text turns (``{"type":"message","role":..,"content":[..]}``) to seed the live voice model."""
+    sdp: str
+    history: Optional[List[Dict[str, Any]]] = None
+
 class TTSLeaseRequest(BaseModel):
     """POST /api/audio/tts-lease: ``lease`` names the toggle/surface holding the lease
     (``desktop:read-aloud``, ``desktop:conversation``); ``active`` True acquires + warms, False releases."""
@@ -278,6 +298,8 @@ class SessionPrune(BaseModel):
     dry_run: bool = False
 
 class CronJobCreate(BaseModel):
+    paused: StrictBool = False
+    paused_reason: Optional[str] = None
     prompt: str = ""
     schedule: str
     name: str = ""
@@ -399,6 +421,9 @@ class ProfileCreate(BaseModel):
     clone_from: Optional[str] = None
     clone_from_default: bool = False  # legacy clients; new ones send clone_from explicitly
     clone_all: bool = False
+    # Opt-in: also copy the source's messaging channels (bot tokens, allowlists, platform sections).
+    # Default False — a copied bot credential makes two profiles collide over one bot.
+    clone_channels: bool = False
     no_skills: bool = False
     description: Optional[str] = None
     provider: Optional[str] = None
@@ -494,6 +519,10 @@ class _AgentPluginInstallBody(BaseModel):
     identifier: str
     force: bool = False
     enable: bool = True
+    # Install by curated-catalog name (resolves repo + pinned SHA server-side).
+    catalog_name: Optional[str] = None
+    # Pin a custom source to one full 40-hex commit SHA (same contract as ``--ref``).
+    ref: Optional[str] = None
 
 class _PluginProvidersPutBody(BaseModel):
     memory_provider: Optional[str] = None

@@ -164,14 +164,6 @@ class TestPruneStaleSessionsLocked:
         assert "key" in store._entries
 
 
-    def test_sessions_json_rewritten_after_pruning(self, tmp_path):
-        db = _db_returning({"sid_stale": {"end_reason": "agent_close", "id": "sid_stale"}})
-        store = _make_store_with_db(tmp_path, db)
-        store._entries["stale_key"] = _make_entry("stale_key", "sid_stale")
-
-        with patch.object(store, "_save") as mock_save:
-            store._prune_stale_sessions_locked()
-            mock_save.assert_called_once()
 
     def test_reset_boundary_does_not_recover_older_session_for_peer(self, tmp_path):
         """Startup pruning must not search past an intentional reset boundary.

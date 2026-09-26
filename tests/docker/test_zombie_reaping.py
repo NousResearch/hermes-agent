@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import time
 
-from tests.docker.conftest import docker_exec, docker_exec_sh, start_container, start_container
+from tests.docker.conftest import docker_exec, docker_exec_sh, start_container
 
 
 def test_orphan_zombies_reaped(

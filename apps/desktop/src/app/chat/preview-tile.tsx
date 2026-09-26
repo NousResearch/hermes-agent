@@ -13,19 +13,34 @@
 import { useStore } from '@nanostores/react'
 
 import { findGroup } from '@/components/pane-shell/tree/model'
-import { $activeTreeGroup, $layoutTree, revealTreePane, treePanesWithPrefix } from '@/components/pane-shell/tree/store'
+import {
+  $activeTreeGroup,
+  $layoutTree,
+  closeTabPane,
+  revealTreePane,
+  treePanesWithPrefix
+} from '@/components/pane-shell/tree/store'
+import { type MenuKit, renderActionItem } from '@/components/ui/actions-menu'
 import { FileTypeIcon } from '@/components/ui/file-type-icon'
 import { ToolIcon } from '@/components/ui/tool-icon'
+import { translateNow } from '@/i18n'
+import { openExternalLink } from '@/lib/external-link'
 import { $rightRailActiveTabId, type RightRailTabId, selectRightRailTab } from '@/store/layout'
 import {
   $browserPages,
+  $dockedPreviewTabs,
   $previewTabs,
+  adoptPersistedBrowserTab,
   type BrowserPage,
   closeRightRailTab,
   forgetBrowserPage,
+  markBrowserTabPopped,
   newBrowserTab,
+  popOutBrowserTab,
   type PreviewTarget
 } from '@/store/preview'
+import { explicitOpenBlocksZone, PREVIEW_TILE_PREFIX } from '@/store/preview-explicit'
+import { canOpenBrowserWindow } from '@/store/windows'
 
 import { paneMirror } from './pane-mirror'
 import { PreviewTilePane } from './right-rail/preview'
@@ -34,6 +49,51 @@ import { forgetPreviewConsole } from './right-rail/preview-console-store'
 /** The target behind a tile id, or null once its tab is gone. */
 function targetFor(tabId: string): PreviewTarget | null {
   return $previewTabs.get().find(tab => tab.id === tabId)?.target ?? null
+}
+
+/** Schemes that are not a page the user's default browser can usefully open
+ *  (blank vessel, Chromium internals, injected documents). */
+const NON_EXTERNAL_URL = /^(about|blob|chrome|data|devtools|javascript):/i
+
+/** The URL a Browser tab should hand to the OS browser — the page it is
+ *  showing now, else the address it was opened with. Null when there isn't
+ *  one (`about:blank`, a half-typed address, a file/artifact tab). */
+export function browserTabExternalUrl(tabId: string): null | string {
+  const target = targetFor(tabId)
+
+  if (target?.kind !== 'url') {
+    return null
+  }
+
+  const url = $browserPages.get()[tabId]?.url || target.url
+
+  return url && !NON_EXTERNAL_URL.test(url) ? url : null
+}
+
+function browserTabMenuPrefix(tabId: string) {
+  if (targetFor(tabId)?.kind !== 'url') {
+    return undefined
+  }
+
+  return (kit: MenuKit) => (
+    <>
+      {canOpenBrowserWindow()
+        ? renderActionItem(kit, {
+            icon: 'empty-window',
+            key: 'pop-out',
+            label: translateNow('preview.popOut'),
+            onSelect: () => popOutBrowserTab(tabId)
+          })
+        : null}
+      {renderActionItem(kit, {
+        disabled: !browserTabExternalUrl(tabId),
+        icon: 'link-external',
+        key: 'open-external',
+        label: translateNow('preview.openInExternal'),
+        onSelect: () => openExternalLink(browserTabExternalUrl(tabId) ?? '')
+      })}
+    </>
+  )
 }
 
 /** Tab title. A URL tab is titled by the CONTRIBUTION as the surface — see
@@ -116,8 +176,6 @@ function PreviewTabLead({ tabId }: { tabId: string }) {
   return <FileTypeIcon className="opacity-70" path={target.path || target.url} size="0.6875rem" />
 }
 
-const PREVIEW_TILE_PREFIX = 'preview-tile'
-
 const previewPaneId = (tabId: string) => `${PREVIEW_TILE_PREFIX}:${tabId}`
 
 /** The pane a NEW preview tile should stack into: another preview tile already
@@ -132,7 +190,7 @@ function existingPreviewAnchor(tabId: string): string | undefined {
     return inTree
   }
 
-  const other = $previewTabs.get().find(tab => tab.id !== tabId)
+  const other = $dockedPreviewTabs.get().find(tab => tab.id !== tabId)
 
   return other ? previewPaneId(other.id) : undefined
 }
@@ -142,6 +200,11 @@ function existingPreviewAnchor(tabId: string): string | undefined {
  *  selected. Call once from the root. */
 export function watchPreviewTiles(): void {
   watchPreviewTileMirror()
+
+  window.hermesDesktop?.onBrowserPopoutClosed?.(tabId => {
+    adoptPersistedBrowserTab(tabId)
+    markBrowserTabPopped(tabId, false)
+  })
 
   // The reveal analog of session tiles (session-states calls revealTreePane on
   // open): `openPreview` selects the tab, and the TREE must front its pane —
@@ -168,6 +231,18 @@ export function watchPreviewTiles(): void {
   const follow = () => {
     const tree = $layoutTree.get()
     const groupId = $activeTreeGroup.get()
+
+    // Do not copy this zone over an explicit open that lives in a different
+    // group. A focus change after that open lifts the guard.
+    if (
+      explicitOpenBlocksZone(
+        groupId,
+        $previewTabs.get().map(tab => tab.id)
+      )
+    ) {
+      return
+    }
+
     const active = groupId && tree ? findGroup(tree, groupId)?.active : undefined
 
     if (!active?.startsWith(`${PREVIEW_TILE_PREFIX}:`)) {
@@ -186,7 +261,7 @@ export function watchPreviewTiles(): void {
 }
 
 const watchPreviewTileMirror = paneMirror<{ id: string }>({
-  source: $previewTabs,
+  source: $dockedPreviewTabs,
   // Unscoped on purpose. `$previewTabs` is one global Browser/file surface —
   // clicking a link in a bot chat must open the same pane Sessions already
   // shows. Scoping this to `sessions` filtered the pane out of Bot Mode, so
@@ -207,7 +282,14 @@ const watchPreviewTileMirror = paneMirror<{ id: string }>({
   // A Browser is a vessel, so there can be more of it — a file peek is one of
   // a kind and leaves the strip's "+" to whatever else the zone holds.
   newTab: tabId => (targetFor(tabId)?.kind === 'url' ? newBrowserTab : undefined),
-  render: tabId => <PreviewTilePane tabId={tabId} />,
+  tabMenuPrefix: browserTabMenuPrefix,
+  lifecycleKeepAlive: tabId => {
+    const target = targetFor(tabId)
+
+    return target?.kind === 'url' || target?.previewKind === 'html'
+  },
+  // The body's own Close (an error state's way out) is the tab's ✕, verbatim.
+  render: tabId => <PreviewTilePane onClose={() => closeTabPane(previewPaneId(tabId))} tabId={tabId} />,
   close: tabId => {
     forgetBrowserPage(tabId)
     forgetPreviewConsole(tabId)

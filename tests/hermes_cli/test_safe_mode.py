@@ -43,7 +43,6 @@ def test_cmd_chat_safe_mode_sets_env_before_startup(monkeypatch):
     monkeypatch.setattr(main_mod, "_has_any_provider_configured", fake_has_provider)
     monkeypatch.setattr(main_mod, "_pin_kanban_board_env", lambda: None)
     monkeypatch.setattr(main_mod, "_sync_bundled_skills_for_startup", lambda: None)
-    monkeypatch.setattr(main_mod, "_termux_should_prefetch_update_check", lambda: False)
     setattr(fake_cli, "main", fake_main)
     monkeypatch.setitem(sys.modules, "cli", fake_cli)
 

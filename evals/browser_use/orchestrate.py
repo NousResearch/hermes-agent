@@ -1,12 +1,12 @@
 """Local-CDP battery orchestrator: tasks x arms x models x reps.
 
 Resume-safe: completed cells in results.jsonl are skipped, so a killed
-battery continues where it left off (same pattern as scripts/toolperf_abeval).
+battery continues where it left off (same pattern as evals/toolperf_abeval).
 
 Usage:
     # start a headless Chrome first:
     #   google-chrome --headless=new --remote-debugging-port=9333 \
-    #     --user-data-dir=/tmp/bubench-chrome --no-first-run --disable-gpu about:blank
+    #     --user-data-dir="$TMPDIR/bubench-chrome" --no-first-run --disable-gpu about:blank
     BUBENCH_BASE_TREE=... BUBENCH_PR_TREE=... BENCH_CDP_URL=http://127.0.0.1:9333 \
         python3 orchestrate.py [--tasks tasks/hard.json] [--models m1,m2] \
                                [--arms base,pr,prns] [--reps 3]
@@ -52,7 +52,13 @@ if os.path.exists(args.results):
 
 def reset_browser_state():
     """Kill lingering drivers and clear cookies between cells."""
-    subprocess.run(["pkill", "-f", "agent-browser"], capture_output=True)
+    if sys.platform == "win32":
+        subprocess.run(
+            ["taskkill", "/F", "/IM", "agent-browser.exe", "/T"],
+            capture_output=True,
+        )
+    else:
+        subprocess.run(["pkill", "-f", "agent-browser"], capture_output=True)
     code = "cdp('Network.clearBrowserCookies')\nprint('cleared')\n"
     try:
         subprocess.run(

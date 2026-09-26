@@ -12,14 +12,16 @@ from tools.terminal_tool import terminal_tool
 @pytest.fixture
 def small_cap(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    from hermes_constants import hermes_home_key
     import tools.tool_output_limits as lim
-    monkeypatch.setattr(lim, "_cached_limits", {
+    monkeypatch.setattr(lim, "_cached_limits", {hermes_home_key(): {
         "max_bytes": 2000, "max_lines": 2000, "max_line_length": 2000,
-    })
+    }})
     return tmp_path
 
 
 class TestTruncationSpill:
+    @pytest.mark.platforms("linux")
     def test_truncated_output_has_metadata_and_spill(self, small_cap):
         r = json.loads(terminal_tool(
             "python3 -c \"print('marker_head'); [print(f'row_{i}', 'x'*80) for i in range(200)]; print('marker_tail')\"",
@@ -41,6 +43,7 @@ class TestTruncationSpill:
         assert "full_output_path" not in r
         assert "output_total_chars" not in r
 
+    @pytest.mark.platforms("linux")
     def test_spill_is_redacted(self, small_cap):
         r = json.loads(terminal_tool(
             "python3 -c \"print('sk-proj-' + 'a1B2c3D4e5F6g7H8i9J0' * 3); [print('pad', 'y'*90) for i in range(200)]\"",
@@ -59,6 +62,7 @@ class TestTruncationSpill:
             "python3 -c \"[print('z'*90) for i in range(200)]\"", task_id="t-spill-4"))
         assert not stale.exists()
 
+    @pytest.mark.platforms("linux")
     def test_failed_command_still_gets_spill(self, small_cap):
         r = json.loads(terminal_tool(
             "python3 -c \"[print('e'*90) for i in range(200)]; import sys; sys.exit(3)\"",

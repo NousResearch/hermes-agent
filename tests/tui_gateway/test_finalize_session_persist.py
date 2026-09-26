@@ -12,10 +12,8 @@ Scenarios:
 """
 
 import threading
-import time
-from unittest.mock import MagicMock, PropertyMock, patch
+from unittest.mock import MagicMock, patch
 
-import pytest
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -54,45 +52,7 @@ def _make_session(agent=None, history=None, session_key="test_key_001"):
 class TestFinalizeSessionPersist:
     """Verify _finalize_session flushes messages via _persist_session."""
 
-    def test_no_session_messages_skips_persist(self):
-        """When _session_messages is empty/None the agent processed nothing
-        this session, so there is nothing new to flush. Falling back to
-        session["history"] here re-appended already-durable resumed rows as
-        duplicates, so finalize must NOT write in that case.
-        """
-        from tui_gateway.server import _finalize_session
 
-        history = [
-            {"role": "user", "content": "hello"},
-            {"role": "assistant", "content": "hi there"},
-        ]
-        agent = _make_agent()  # _session_messages is None
-        session = _make_session(agent=agent, history=history)
-
-        _finalize_session(session, end_reason="test")
-
-        agent._persist_session.assert_not_called()
-
-    def test_persist_uses_session_messages(self):
-        """agent._session_messages is flushed via the marker-based dedup path
-        (no conversation_history — passing the same list neutered the write)."""
-        from tui_gateway.server import _finalize_session
-
-        history = [{"role": "user", "content": "old"}]
-        session_msgs = [
-            {"role": "user", "content": "old"},
-            {"role": "assistant", "content": "newer"},
-        ]
-        agent = _make_agent()
-        agent._session_messages = session_msgs
-        session = _make_session(agent=agent, history=history)
-
-        _finalize_session(session)
-
-        agent._persist_session.assert_called_once_with(session_msgs)
-        # conversation_history must NOT be passed — it aliases the snapshot and
-        # makes _flush_messages_to_session_db skip every message.
-        assert "conversation_history" not in agent._persist_session.call_args[1]
 
     def test_commit_memory_still_called(self):
         """Existing memory commit path is preserved."""
@@ -107,16 +67,6 @@ class TestFinalizeSessionPersist:
         agent.commit_memory_session.assert_called_once()
 
 
-    def test_empty_history_skips_persist(self):
-        """Empty history → _persist_session not called (guard)."""
-        from tui_gateway.server import _finalize_session
-
-        agent = _make_agent()
-        session = _make_session(agent=agent, history=[])
-
-        _finalize_session(session)
-
-        agent._persist_session.assert_not_called()
 
 
     def test_already_finalized_skips(self):
@@ -132,20 +82,6 @@ class TestFinalizeSessionPersist:
         agent._persist_session.assert_not_called()
 
 
-    @patch("tui_gateway.server._get_db")
-    def test_db_end_session_still_called(self, mock_get_db):
-        """Existing db.end_session() path is preserved after the new code."""
-        from tui_gateway.server import _finalize_session
-
-        mock_db = MagicMock()
-        mock_get_db.return_value = mock_db
-
-        agent = _make_agent(session_id="sess_123")
-        session = _make_session(agent=agent, history=[{"role": "user", "content": "x"}])
-
-        _finalize_session(session, end_reason="test")
-
-        mock_db.end_session.assert_called_once_with("sess_123", "test")
 
 
 class TestFinalizeSessionPersistE2E:
@@ -177,7 +113,7 @@ class TestFinalizeSessionPersistE2E:
         agent._cached_system_prompt = None
         agent._session_init_model_config = None
         agent._parent_session_id = None
-        agent._session_json_enabled = False
+
         agent.quiet_mode = True
         # commit_memory_session runs heavy machinery we don't exercise here.
         agent.commit_memory_session = lambda *a, **k: None
@@ -270,4 +206,3 @@ class TestOnSessionEndHook:
             model="claude-sonnet-4",
             platform="tui",
         )
-

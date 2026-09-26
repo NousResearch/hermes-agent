@@ -1,0 +1,36 @@
+# Hermes Agent
+
+> The self-improving AI agent built by Nous Research. It ships with persistent memory, agent-created skills, multi-platform messaging, and a docs site optimized for humans *and* LLMs.
+
+Canonical docs: https://hermes-agent.nousresearch.com/docs/
+Live machine-readable docs:
+- https://hermes-agent.nousresearch.com/llms.txt
+- https://hermes-agent.nousresearch.com/llms-full.txt
+- https://hermes-agent.nousresearch.com/docs/llms.txt
+- https://hermes-agent.nousresearch.com/docs/llms-full.txt
+
+Repo: https://github.com/NousResearch/hermes-agent
+
+## Start here
+- [Installation](https://hermes-agent.nousresearch.com/docs/getting-started/installation)
+- [Quickstart](https://hermes-agent.nousresearch.com/docs/getting-started/quickstart)
+- [Learning Path](https://hermes-agent.nousresearch.com/docs/getting-started/learning-path)
+- [Configuration](https://hermes-agent.nousresearch.com/docs/user-guide/configuration)
+- [CLI](https://hermes-agent.nousresearch.com/docs/user-guide/cli)
+- [Messaging Gateway](https://hermes-agent.nousresearch.com/docs/user-guide/messaging)
+- [Tools & Toolsets](https://hermes-agent.nousresearch.com/docs/user-guide/features/tools)
+- [Memory](https://hermes-agent.nousresearch.com/docs/user-guide/features/memory)
+- [Skills System](https://hermes-agent.nousresearch.com/docs/user-guide/features/skills)
+- [MCP Integration](https://hermes-agent.nousresearch.com/docs/user-guide/features/mcp)
+- [Architecture](https://hermes-agent.nousresearch.com/docs/developer-guide/architecture)
+- [FAQ & Troubleshooting](https://hermes-agent.nousresearch.com/docs/reference/faq)
+
+## Why Hermes
+- Runs as a CLI, messaging bot, or service-backed agent
+- Uses a closed learning loop with persistent memory and reusable skills
+- Works across local, Docker, SSH, Daytona, Modal, and Singularity backends
+- Supports 20+ messaging platforms and agent tooling integrations
+
+## Agent-friendly docs
+- The live site mirrors this file at the root and under `/docs/`
+- The full markdown dump is available in `llms-full.txt` for one-shot ingestion

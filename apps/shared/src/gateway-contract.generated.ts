@@ -285,7 +285,7 @@ export interface DelegationStatusResult {
   max_spawn_depth: number
   max_concurrent_children: number
 }
-/** One live child from ``tools/delegate_tool_registry.py::list_active_subagents`` (the record is extended by the child runner — ``missed_steer`` etc. — so it stays open). */
+/** Exact observer allowlist: persisted leases are view-only and never carry control or completion data. */
 export interface ActiveSubagent {
   subagent_id: string
   parent_id?: string | null
@@ -296,8 +296,8 @@ export interface ActiveSubagent {
   started_at?: number | null
   status?: string | null
   tool_count?: number | null
+  last_tool?: string | null
   owner_agent_session_id?: string | null
-  [key: string]: unknown
 }
 export interface DelegationPauseParams {
   profile?: string | null

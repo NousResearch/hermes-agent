@@ -120,7 +120,43 @@ Two theming rules that hold even without loading the reference: **you apply skin
 
 Run additional Hermes processes as fully independent subprocesses — separate sessions, tools, and environments.
 
-### When to Use This vs delegate_task
+### ★★★ "Builtin" skills cannot be deleted
+
+The `builtin` column in `hermes skills list` does **not** mean the file lives in the
+install directory. Builtin skills are **synced/copied into** `~/.hermes/skills/`.
+Deleting the local copy deletes the skill for real -- one production instance saw its
+builtin count drop from 35 to 2 and several skills vanished.
+
+**To adopt a newer upstream version, copy the install-dir version over the local one --
+never delete the local file:**
+
+```bash
+# OK: adopt upstream (overwrite local)
+cp /usr/local/lib/hermes-agent/skills/<cat>/<name>/SKILL.md ~/.hermes/skills/<cat>/<name>/SKILL.md
+# NO: never delete files under ~/.hermes/skills
+```
+
+**Back up before upgrading:** `cp -r ~/.hermes/skills <backup-dir>/skills_<timestamp>/`
+**Verify after upgrading:** `hermes skills list | tail -2` -- the enabled count must not change.
+
+### Before `hermes update`: back up local modifications
+
+`hermes update` replaces the install tree. If the running install carries local
+patches, record and re-apply them instead of losing them silently:
+
+```bash
+cd /usr/local/lib/hermes-agent
+git diff > <backup-dir>/hermes_local_patches_$(date +%Y%m%dT%H%M%S).patch
+git stash push -m "local-fixes" <paths-you-modified...>
+hermes update
+git stash pop                 # replay local fixes
+git diff --stat               # confirm the expected hunks are back
+python3 -m py_compile <modified-files...>
+```
+
+If the patches touch the gateway, restart it afterwards -- a reload is not enough.
+
+## When to Use This vs delegate_task
 
 | | `delegate_task` | Spawning `hermes` process |
 |-|-----------------|--------------------------|

@@ -166,8 +166,8 @@ terminal(command="REVIEW=$(mktemp -d) && git clone https://github.com/user/repo.
 Use separate workdirs/worktrees to avoid collisions:
 
 ```
-terminal(command="opencode run 'Fix issue #101 and commit'", workdir="~/.hermes/cache/scratch/issue-101", background=true, pty=true)
-terminal(command="opencode run 'Add parser regression tests and commit'", workdir="~/.hermes/cache/scratch/issue-102", background=true, pty=true)
+terminal(command="opencode run 'Fix issue #101 and commit'", workdir="/tmp/issue-101", background=true, pty=true)
+terminal(command="opencode run 'Add parser regression tests and commit'", workdir="/tmp/issue-102", background=true, pty=true)
 process(action="list")
 ```
 
@@ -191,6 +191,7 @@ terminal(command="opencode stats --days 7 --models anthropic/claude-sonnet-4")
 - Interactive `opencode` (TUI) sessions require `pty=true`. The `opencode run` command does NOT need pty.
 - `/exit` is NOT a valid command — it opens an agent selector. Use Ctrl+C to exit the TUI.
 - PATH mismatch can select the wrong OpenCode binary/model config.
+- `--model` must use OpenCode's configured provider/model ID, not the Hermes provider name. Run `opencode debug config` and copy its `model` exactly (for example `scales/gpt-5.6-sol`). A nonexistent ID such as `openai/gpt-5.6-sol` may surface only as generic `Unexpected server error` with an opaque `err_*` reference, even though the configured model itself is healthy. Verify with a one-line smoke run using the exact ID.
 - If OpenCode appears stuck, inspect logs before killing:
   - `process(action="log", session_id="<id>")`
 - Avoid sharing one working directory across parallel OpenCode sessions.

@@ -768,13 +768,41 @@ def _wait_reply_main(reply_path: str, label: str, budget_seconds: str) -> int:
     return 1
 
 
+def _activate_committed_dependencies() -> None:
+    """Put the PM-managed environment on ``sys.path`` before the runner's first Hermes import.
+
+    The delivery runner is launched as a bare script (``python bot_mode_dm.py --run-delivery …``),
+    so unlike every canonical launch it never passes through ``hermes_bootstrap`` and never calls
+    ``pm.environments.activate_dependencies``. The committed venv is therefore absent and the first
+    lazy Hermes/third-party import (``agent.turn_author`` → … → ``ruamel``) raises
+    ``ModuleNotFoundError``, which surfaces to the sender as an undeliverable DM. Activating here
+    keeps the command line (and this module's stdlib-only, lazily-importing contract) unchanged.
+    """
+    root = Path(__file__).resolve().parents[1]
+    os.environ.pop("PYTHONHOME", None)
+    os.environ.pop("PYTHONPATH", None)
+    os.environ.setdefault("HERMES_HOME", str(root))
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+    try:
+        from pm.environments import activate_dependencies
+    except Exception:  # pre-PM tree: nothing to activate, let the real import report it
+        return
+    try:
+        activate_dependencies(root)
+    except Exception:
+        pass
+
+
 def _delivery_main(args: list[str]) -> int:
     """Runner entry for the argv ``_delivery_command`` and ``bot_relay.waiter_command`` build.
     Malformed argv exits 2 without touching the DM file."""
     if args[:1] == ["--wait-reply"]:
+        _activate_committed_dependencies()
         return _wait_reply_main(*args[1:]) if len(args) == 4 else 2
     if not args or args[0] != "--run-delivery":
         return 2
+    _activate_committed_dependencies()
     rest, author = args[1:], None
     if rest[:1] == ["--author"]:
         from agent.turn_author import parse_turn_author

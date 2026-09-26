@@ -68,6 +68,11 @@ def _stop_all_lightpanda() -> None:
     stop_all_lightpanda()
 
 
+def _shutdown_owned_harness_daemons() -> None:
+    from tools.browser_use_cli_reaper import shutdown_owned_harness_daemons
+    shutdown_owned_harness_daemons()
+
+
 def _emergency_cleanup_all_sessions():
     """atexit: close this process's sessions, then sweep orphans left by crashed
     hermes processes — every clean exit reaps accumulated orphans, not only
@@ -100,6 +105,9 @@ def _emergency_cleanup_all_sessions():
                 _bt._recording_sessions.clear()
     # Lightpanda servers we spawned that fell out of ``_active_sessions``.
     _best_effort("Lightpanda cleanup on exit", _stop_all_lightpanda)
+    # Browser Use harness daemons THIS process claimed. They are detached on purpose
+    # (start_new_session), so nothing else would ever stop them.
+    _best_effort("Harness daemon shutdown on exit", _shutdown_owned_harness_daemons)
     # Safe even if we never used the browser — owner_pid liveness protects daemons
     # owned by other live hermes processes.
     _best_effort("Orphan reap on exit", _reap_orphaned_browser_sessions)
@@ -385,6 +393,13 @@ def _reap_orphaned_browser_sessions():
         from tools.browser_lightpanda import reap_orphaned_lightpanda
         reap_orphaned_lightpanda()
     _best_effort("Lightpanda orphan reap", _reap_lp)
+
+    # Harness daemons are detached by design and keyed by BU_NAME, not by a socket dir, so
+    # they need their own sweep. Runs BEFORE the agent-browser scan, which may return early.
+    def _reap_harness():
+        from tools.browser_use_cli_reaper import reap_orphaned_harness_daemons
+        reap_orphaned_harness_daemons()
+    _best_effort("Harness daemon orphan reap", _reap_harness)
 
     tmpdir = _bt._socket_safe_tmpdir()
     socket_dirs = []

@@ -123,3 +123,79 @@ def test_retry_and_fallback_rebuild_use_new_client(monkeypatch, async_mode):
         )
         assert actual is rebuilt
         assert ("_reasoning_config" in retry) == (rebuilt is messages_client)
+
+
+@pytest.mark.parametrize("mode", ["sync", "async", "stream"])
+def test_local_configured_route_reaches_http_after_fallback(tmp_path, monkeypatch, mode):
+    """Real config + resolver + SDK + fallback transport, with only local HTTP."""
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    import threading
+
+    requests = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            requests.append((self.path, payload))
+            if payload["model"] == "unavailable":
+                status = 402
+                body = json.dumps({"error": {"message": "insufficient credits"}}).encode()
+                content_type = "application/json"
+            else:
+                status = 200
+                reply = {"id": "fixture", "created": 0, "model": payload["model"],
+                         "object": "chat.completion", "choices": [{"index": 0,
+                         "message": {"role": "assistant", "content": "Local title"},
+                         "finish_reason": "stop"}]}
+                if payload.get("stream"):
+                    reply["object"] = "chat.completion.chunk"
+                    reply["choices"][0]["delta"] = reply["choices"][0].pop("message")
+                    body = f"data: {json.dumps(reply)}\n\ndata: [DONE]\n\n".encode()
+                    content_type = "text/event-stream"
+                else:
+                    body, content_type = json.dumps(reply).encode(), "application/json"
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}/v1"
+    config = {"auxiliary": {"title_generation": {
+        "provider": "minimax", "model": "MiniMax-M3" if mode == "stream" else "unavailable",
+        "base_url": base, "api_key": "fixture-only", "api_mode": "chat_completions",
+        "fallback_chain": [{"provider": "minimax", "model": "MiniMax-M3", "base_url": base,
+                            "api_key": "fixture-only", "api_mode": "chat_completions"}],
+    }}}
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
+    (tmp_path / "config.yaml").write_text(json.dumps(config), encoding="utf8")
+    aux.shutdown_cached_clients()
+    aux._reset_aux_unhealthy_cache()
+    try:
+        options = dict(task="title_generation", messages=[{"role": "user", "content": "Title"}],
+                       reasoning_config={"enabled": False})
+        if mode == "async":
+            result = asyncio.run(aux.async_call_llm(**options))
+        elif mode == "stream":
+            chunks = list(aux.call_llm(**options, stream=True))
+            assert chunks[0].choices[0].delta.content == "Local title"
+        else:
+            result = aux.call_llm(**options)
+        if mode != "stream":
+            assert result.choices[0].message.content == "Local title"
+            assert [p["model"] for _, p in requests] == ["unavailable", "MiniMax-M3"]
+        assert all(path == "/v1/chat/completions" for path, _ in requests)
+        assert all("_reasoning_config" not in payload for _, payload in requests)
+    finally:
+        aux.shutdown_cached_clients()
+        aux._reset_aux_unhealthy_cache()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)

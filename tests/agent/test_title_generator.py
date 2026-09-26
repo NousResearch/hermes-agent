@@ -64,6 +64,32 @@ class TestGenerateTitle:
         # No preview => an ordinary manual attachment ref is never read for titling.
         assert build_title_input("Summarize @file:notes.txt", None) == "Summarize @file:notes.txt"
 
+    @pytest.mark.parametrize("message, expected", [
+        ("@file:/home/user/.hermes/uploads/notes.txt\nReply with exactly OK.", "Reply with exactly OK."),
+        ("Reply with exactly OK.\n@image:/home/user/.hermes/images/shot.png\n[screenshot]",
+         "Reply with exactly OK."),
+        ("@image:/home/user/.hermes/images/shot.png\n[screenshot]\nWhat changed in the drawing?",
+         "What changed in the drawing?"),
+        ("@image:/home/user/.hermes/images/one.png\n\n[screenshot]\nWhat changed in the drawing?"
+         "\n@image:/home/user/.hermes/images/two.png\n[screenshot]",
+         "What changed in the drawing?"),
+        ('@file:"/home/user/My Notes/brief.txt"\nSummarize this brief.', "Summarize this brief."),
+        ("@file:/home/user/.hermes/uploads/notes.txt\nReply with exactly OK."
+         "\n\n--- Attached Context ---\n\n📄 @file:/home/user/.hermes/uploads/notes.txt (8 tokens)"
+         "\n```\nDisposable note.\n```\n@image:/home/user/.hermes/images/shot.png\n[screenshot]",
+         "Reply with exactly OK."),
+        ("@file:/home/user/.hermes/uploads/notes.txt", "Attached file"),
+    ])
+    def test_attachment_refs_do_not_become_titles(self, message, expected, tmp_path):
+        """Persisted media directives and expanded context are not user-authored title text."""
+        assert build_title_input(message) == expected
+        assert derive_title(message) == expected
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(session_id="attached-chat", source="tui")
+        with patch("agent.title_generator.auto_title_session"):
+            maybe_auto_title(db, "attached-chat", message, [])
+        assert db.get_session_title("attached-chat") == expected
+
 
 
 

@@ -10,6 +10,10 @@ PUBLIC_API_PATHS: frozenset[str] = frozenset({
     # Minimal process liveness probe for desktop/backend boot handshakes; avoids
     # gateway config, platform discovery, MCP setup and cold plugin imports.
     "/api/health",
+    # Loopback-only JSON bootstrap for the dashboard session token (issue #117976).
+    # The handler itself refuses non-loopback peers and gated (OAuth) binds — this
+    # allowlist entry only skips the legacy token middleware so the peer check can run.
+    "/api/session-token",
     # Portal wildcard liveness probe (``docs/agent-dashboard-public-url-contract.md``,
     # NAS side): version, gateway state, session count, auth-gate shape. No secrets.
     "/api/status",

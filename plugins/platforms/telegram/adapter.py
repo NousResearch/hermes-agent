@@ -3221,7 +3221,7 @@ class TelegramAdapter(BasePlatformAdapter):
             self._set_fatal_error("missing_credentials", "No bot token configured", retryable=False)
             return False
         try:
-            if not self._acquire_platform_lock('telegram-bot-token', self.config.token, 'Telegram bot token'):
+            if not await self._acquire_platform_lock_async('telegram-bot-token', self.config.token, 'Telegram bot token'):
                 return False
             from plugins.platforms.telegram.update_admission import TelegramApplication
             builder = Application.builder().token(self.config.token)

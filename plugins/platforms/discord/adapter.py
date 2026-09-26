@@ -1234,7 +1234,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             self._set_fatal_error("missing_credentials", "No bot token configured", retryable=False)
             return False
         try:
-            if not self._acquire_platform_lock('discord-bot-token', self.config.token, 'Discord bot token'):
+            if not await self._acquire_platform_lock_async('discord-bot-token', self.config.token, 'Discord bot token'):
                 return False
             # Snapshot gate env inside the owning profile's scope (immune to the first-writer-wins bridge).
             # Snapshot this profile's gate env vars (issue #72348): connect() runs inside the owning

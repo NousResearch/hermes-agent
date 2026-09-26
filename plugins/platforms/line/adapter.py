@@ -424,7 +424,7 @@ class LineAdapter(BasePlatformAdapter):
             return self._fail("config_missing", "LINE_CHANNEL_ACCESS_TOKEN and LINE_CHANNEL_SECRET must be set")
         # One profile per channel token; lock on a hash so the secret never hits disk.
         tok_hash = hashlib.sha256(self.channel_access_token.encode()).hexdigest()[:16]
-        if not self._acquire_platform_lock("line", tok_hash, "LINE channel"):
+        if not await self._acquire_platform_lock_async("line", tok_hash, "LINE channel"):
             return False
         self._client = _LineClient(self.channel_access_token)
         try:  # best-effort self-userId for self-echo filtering (LINE rarely echoes anyway)

@@ -2184,8 +2184,42 @@ class BasePlatformAdapter(ABC):
                     task.add_done_callback(_consume_detached_handler_exception)
                 raise
 
+    async def _acquire_platform_lock_async(self, scope: str, identity: str, resource_desc: str) -> bool:
+        """Off-loop form of :meth:`_acquire_platform_lock`; every ``async def connect()``/``open()`` must use it.
+
+        The sync acquire is file I/O, and on the explicit ``--replace`` takeover path it writes a marker and
+        then polls for the old owner's exit with ``time.sleep`` (20 x 0.5 s graceful + 20 x 0.25 s forced, ~15 s
+        in ``gateway.status._terminate_verified_owner``). Inline on the loop that stalls every other adapter,
+        every in-flight turn and every heartbeat. So the acquire runs on a worker thread.
+
+        Cancellation: ``connect()`` can be cancelled (connect timeout, shutdown) while the worker is still
+        acquiring. The worker is shielded and runs to completion; if it ends up holding the lock nobody is
+        left to use, it is released -- unless this adapter has started a NEWER acquire since (a retry
+        connect reuses the adapter object), in which case the lock belongs to that acquire and is left alone.
+        """
+        gen = self._platform_lock_acquire_gen = getattr(self, "_platform_lock_acquire_gen", 0) + 1
+        worker = asyncio.ensure_future(
+            asyncio.to_thread(self._acquire_platform_lock, scope, identity, resource_desc))
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            def _release_orphaned_acquire(fut: "asyncio.Future") -> None:
+                if fut.cancelled() or fut.exception() is not None or not fut.result():
+                    return
+                if getattr(self, "_platform_lock_acquire_gen", None) != gen:
+                    return  # a newer acquire on this adapter owns the pair now
+                try:
+                    self._release_platform_lock()
+                except Exception as exc:  # pragma: no cover - defensive
+                    logger.warning("[%s] could not release %s taken by a cancelled acquire: %s",
+                                   self.name, resource_desc, exc)
+
+            worker.add_done_callback(_release_orphaned_acquire)
+            raise
+
     def _acquire_platform_lock(self, scope: str, identity: str, resource_desc: str) -> bool:
-        """Acquire a scoped lock for this adapter; True on success. A live cross-HERMES_HOME
+        """Acquire a scoped lock for this adapter; True on success. BLOCKING (file I/O, and up to ~15 s on
+        the takeover path): coroutines must call :meth:`_acquire_platform_lock_async`. A live cross-HERMES_HOME
         holder is replaced only when the runner armed this adapter for its initial
         ``--replace`` connect (the status module validates ownership and terminates)."""
         from gateway.status import (

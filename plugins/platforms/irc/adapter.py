@@ -161,7 +161,7 @@ class IRCAdapter(BasePlatformAdapter):
             logger.error("IRC: server and channel must be configured")
             return self._fail("config_missing", "IRC_SERVER and IRC_CHANNEL must be set", retryable=False)
         # Prevent two profiles from using the same IRC identity
-        if not self._acquire_platform_lock("irc", f"{self.server}:{self.nickname}", f"IRC identity {self.nickname}@{self.server}"):
+        if not await self._acquire_platform_lock_async("irc", f"{self.server}:{self.nickname}", f"IRC identity {self.nickname}@{self.server}"):
             return False
         try:
             self._reader, self._writer = await asyncio.wait_for(

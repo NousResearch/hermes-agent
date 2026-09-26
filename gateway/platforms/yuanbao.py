@@ -1798,7 +1798,7 @@ class ConnectionManager:
         if self.is_connected:
             logger.debug("[%s] Already connected, skipping connect()", adapter.name)
             return True
-        if not adapter._acquire_platform_lock('yuanbao-app-key', adapter._app_key, 'Yuanbao app key'):
+        if not await adapter._acquire_platform_lock_async('yuanbao-app-key', adapter._app_key, 'Yuanbao app key'):
             return False
         try:
             logger.info("[%s] Fetching sign token from %s", adapter.name, adapter._api_domain)

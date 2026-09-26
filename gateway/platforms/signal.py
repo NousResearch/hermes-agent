@@ -229,7 +229,7 @@ class SignalAdapter(BasePlatformAdapter):
             return False
         lock_acquired = False  # scoped lock prevents duplicate Signal listeners for the same phone
         try:
-            if not self._acquire_platform_lock('signal-phone', self.account, 'Signal account'):
+            if not await self._acquire_platform_lock_async('signal-phone', self.account, 'Signal account'):
                 return False
             lock_acquired = True
         except Exception as e:

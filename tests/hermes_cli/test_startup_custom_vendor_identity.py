@@ -42,6 +42,24 @@ def test_oneshot_keeps_selected_custom_vendor(custom_config, monkeypatch):
     assert (choice.provider, choice.model) == ("custom:nvidia", "nvidia/fixture-model")
 
 
+def test_cli_and_tui_keep_selected_custom_vendor(custom_config, monkeypatch):
+    from types import SimpleNamespace
+    import cli
+    from hermes_cli.cli_init_mixin import CLIInitMixin
+    from tui_gateway import server
+
+    monkeypatch.setattr(cli, "CLI_CONFIG", custom_config)
+    instance = SimpleNamespace()
+    CLIInitMixin._init_model_and_provider(instance, None, None, None, None)
+    assert (instance.requested_provider, instance.model) == (
+        "custom:nvidia", "nvidia/fixture-model"
+    )
+    monkeypatch.setenv("HERMES_INFERENCE_MODEL", custom_config["model"]["default"])
+    monkeypatch.delenv("HERMES_TUI_PROVIDER", raising=False)
+    monkeypatch.delenv("HERMES_INFERENCE_PROVIDER", raising=False)
+    assert server._resolve_startup_runtime() == ("nvidia/fixture-model", "custom:nvidia")
+
+
 @pytest.mark.parametrize("raw", ["", "fixture-model", "nvidia/", "/fixture-model"])
 def test_empty_or_unqualified_input_keeps_caller_fallback(raw, custom_config):
     assert resolve_startup_model_route(

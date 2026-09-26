@@ -4,7 +4,7 @@ import { createRoot } from 'react-dom/client'
 import { ErrorBoundary } from '@/components/error-boundary'
 import { ThemeProvider } from '@/themes/context'
 
-import { PetOverlayApp } from './pet-overlay-app'
+import { OverlaySurface } from './overlay-surface'
 
 /**
  * Boot the pet-overlay window. Loaded by the same bundle as the main app but
@@ -30,7 +30,7 @@ export function mountPetOverlay(): void {
     <StrictMode>
       <ErrorBoundary label="pet-overlay">
         <ThemeProvider>
-          <PetOverlayApp />
+          <OverlaySurface />
         </ThemeProvider>
       </ErrorBoundary>
     </StrictMode>

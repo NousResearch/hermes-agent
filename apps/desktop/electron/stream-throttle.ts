@@ -44,6 +44,8 @@ export interface StreamThrottle {
   register(win: ThrottleWindowLike & { on?: (event: string, fn: () => void) => void }): void
   /** Report whether any turn is in flight across all renderers. */
   update(busy: boolean): void
+  /** Keep the microphone meter and Live audio responsive for the desktop orb. */
+  updateVoice(active: boolean): void
 }
 
 export function createStreamThrottle(
@@ -53,6 +55,8 @@ export function createStreamThrottle(
   const windows = new Set<ThrottleWindowLike>()
   let unthrottled = false
   let trailing: unknown = null
+  let workBusy = false
+  let voiceActive = false
 
   function apply(win: ThrottleWindowLike) {
     if (win.isDestroyed()) {
@@ -90,7 +94,9 @@ export function createStreamThrottle(
     },
 
     update(busy) {
-      if (busy) {
+      workBusy = busy
+
+      if (workBusy || voiceActive) {
         if (trailing !== null) {
           timers.clearTimeout(trailing)
           trailing = null
@@ -114,6 +120,10 @@ export function createStreamThrottle(
         unthrottled = false
         applyAll()
       }, delayMs)
+    },
+    updateVoice(active) {
+      voiceActive = active
+      this.update(workBusy)
     }
   }
 }

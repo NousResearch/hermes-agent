@@ -33,7 +33,13 @@ import { $introSplash } from '@/store/intro-splash'
 import { $pinnedSessionIds } from '@/store/layout'
 import { $petActive } from '@/store/pet'
 import { $petOverlayActive } from '@/store/pet-overlay'
-import { $activeGatewayProfile, $gatewaySwapTarget, $hydrationSyncProfile, $profiles, profileLabel } from '@/store/profile'
+import {
+  $activeGatewayProfile,
+  $gatewaySwapTarget,
+  $hydrationSyncProfile,
+  $profiles,
+  profileLabel
+} from '@/store/profile'
 import {
   $connection,
   $contextSuggestions,
@@ -64,6 +70,7 @@ import { buildJarvisNews } from '../jarvis/news'
 import { JarvisQuickAccessCard } from '../jarvis/quick-access'
 import { JarvisAgentsCard, JarvisModelCard, JarvisNewsLiveCard } from '../jarvis/rail-cards'
 import { $jarvisUi, resetJarvisSession } from '../jarvis/store'
+import { useDesktopOrbBridge } from '../jarvis/use-desktop-orb-bridge'
 import { VoiceControls } from '../jarvis/voice-controls'
 import { primaryRouteSelectedSessionId, routeSessionId } from '../routes'
 import { titlebarHeaderBaseClass, titlebarHeaderShadowClass, titlebarHeaderTitleClass } from '../shell/titlebar'
@@ -308,12 +315,18 @@ function ChatRuntimeBoundary({
   const connectionId = connection?.connectionId || (connection?.mode === 'local' ? 'local' : '')
 
   const ownerRoute = useMemo(
-    () => (storedId ? getSessionOwnerHint(storedId, connectionId ? { connectionId, profile: activeProfile } : undefined) : undefined),
+    () =>
+      storedId
+        ? getSessionOwnerHint(storedId, connectionId ? { connectionId, profile: activeProfile } : undefined)
+        : undefined,
     [activeProfile, connectionId, storedId]
   )
 
   const tailProfile = useMemo(
-    () => (ownerRoute ? { connectionId: ownerRoute.connectionId, profile: ownerRoute.targetProfile || ownerRoute.profile } : undefined),
+    () =>
+      ownerRoute
+        ? { connectionId: ownerRoute.connectionId, profile: ownerRoute.targetProfile || ownerRoute.profile }
+        : undefined,
     [ownerRoute]
   )
 
@@ -420,7 +433,9 @@ function JarvisDashboardFrame({
   const connected = gatewayState === 'open'
   const taskRunning = ['approval', 'planning', 'running'].includes(jarvisState.task.phase)
   const listening = mainVoiceConversation?.active === true
-  const speaking = jarvisState.voice === 'speaking' || voicePlayback.status === 'preparing' || voicePlayback.status === 'speaking'
+
+  const speaking =
+    jarvisState.voice === 'speaking' || voicePlayback.status === 'preparing' || voicePlayback.status === 'speaking'
 
   const dashboardState = useMemo(
     () => ({
@@ -574,10 +589,9 @@ const ChatViewContent = memo(function ChatViewContent({
   const resumeExhaustedSessionId = useStore($resumeExhaustedSessionId)
   const [mainVoiceConversation, setMainVoiceConversation] = useState<ChatBarVoiceConversationState | null>(null)
 
-  const mainVoiceActionsRef = useRef<Pick<
-    ChatBarVoiceConversationState,
-    'stop' | 'stopTurn' | 'toggleMute'
-  > | null>(null)
+  const mainVoiceActionsRef = useRef<Pick<ChatBarVoiceConversationState, 'stop' | 'stopTurn' | 'toggleMute'> | null>(
+    null
+  )
 
   const jarvisForegroundRef = useRef<{ profile: string; sessionId: string | null }>({
     profile: activeGatewayProfile,
@@ -586,6 +600,13 @@ const ChatViewContent = memo(function ChatViewContent({
 
   const jarvisForegroundResetRef = useRef(false)
   const stopMainVoiceConversation = useCallback(() => mainVoiceActionsRef.current?.stop(), [])
+  useDesktopOrbBridge({
+    primary: isPrimary,
+    active: mainVoiceConversation?.active === true,
+    connected: gatewayOpen,
+    start: requestVoiceConversationStart,
+    stop: stopMainVoiceConversation
+  })
   const stopMainVoiceTurn = useCallback(() => mainVoiceActionsRef.current?.stopTurn(), [])
   const toggleMainVoiceMute = useCallback(() => mainVoiceActionsRef.current?.toggleMute(), [])
 
@@ -662,8 +683,7 @@ const ChatViewContent = memo(function ChatViewContent({
     const previousForeground = jarvisForegroundRef.current
 
     const sameForeground =
-      previousForeground.profile === nextForeground.profile &&
-      previousForeground.sessionId === nextForeground.sessionId
+      previousForeground.profile === nextForeground.profile && previousForeground.sessionId === nextForeground.sessionId
 
     if (sameForeground) {
       if (!jarvisForegroundResetRef.current) {
@@ -989,7 +1009,9 @@ const ChatViewContent = memo(function ChatViewContent({
               onSteer={onSteer}
               onSubmit={onSubmit}
               onTranscribeAudio={onTranscribeAudio}
-              onVoiceConversationStateChange={dashboard && isPrimary ? handleMainVoiceConversationStateChange : undefined}
+              onVoiceConversationStateChange={
+                dashboard && isPrimary ? handleMainVoiceConversationStateChange : undefined
+              }
               queueSessionKey={queueSessionKey}
               sessionId={activeSessionId}
               state={chatBarState}

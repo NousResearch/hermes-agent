@@ -29,7 +29,17 @@ let cdp: CDPSession | null = null
 
 /** Must match JARVIS_ONBOARDING_STATE_KEY / _VERSION in src/app/jarvis/onboarding-state.ts. */
 const ONBOARDING_KEY_PREFIX = 'ai-evolution-jarvis-onboarding-v1'
-const ONBOARDING_STEPS = ['welcome', 'profile', 'engine', 'model', 'voice', 'access', 'computer', 'connections', 'approvals']
+const ONBOARDING_STEPS = [
+  'welcome',
+  'profile',
+  'engine',
+  'model',
+  'voice',
+  'access',
+  'computer',
+  'connections',
+  'approvals'
+]
 /** Must match JARVIS_TIPS_STATE_KEY in src/app/jarvis/tips-state.ts. */
 const TIPS_KEY_PREFIX = 'ai-evolution-jarvis-tips-v1'
 
@@ -108,7 +118,12 @@ async function completeOnboardingAndReload(): Promise<void> {
   // The generic provider picker may open after the gateway connects. This
   // suite tests the Jarvis shell, so use its persistent first-run escape.
   const chooseLater = page.getByRole('button', { name: /Wybiorę dostawcę później|I'll choose a provider later/ })
-  if (await chooseLater.waitFor({ state: 'visible', timeout: 45_000 }).then(() => true, () => false)) {
+  if (
+    await chooseLater.waitFor({ state: 'visible', timeout: 45_000 }).then(
+      () => true,
+      () => false
+    )
+  ) {
     await chooseLater.click()
   }
 
@@ -137,11 +152,7 @@ async function setViewportWidth(width: number, height = 800): Promise<void> {
     mobile: false
   })
 
-  await fixture!.page.waitForFunction(
-    expected => window.innerWidth === expected,
-    width,
-    { timeout: 10_000 }
-  )
+  await fixture!.page.waitForFunction(expected => window.innerWidth === expected, width, { timeout: 10_000 })
 }
 
 test.beforeAll(async () => {
@@ -158,6 +169,63 @@ test.afterAll(async () => {
 })
 
 test.describe('Jarvis product shell', () => {
+  test('desktop orb stays above the desktop when the app is minimized and returns to the same window', async () => {
+    const { app, page } = fixture!
+    await page.getByRole('button', { name: 'Orb na pulpicie', exact: true }).first().click()
+    await expect.poll(() => app.windows().some(window => window.url().includes('win=overlay'))).toBe(true)
+    const overlay = app.windows().find(window => window.url().includes('win=overlay'))!
+    await expect(overlay.locator('.desktop-orb')).toBeVisible()
+    const before = await app.evaluate(({ BrowserWindow }) => {
+      const windows = BrowserWindow.getAllWindows()
+      const main = windows.find(
+        (window: import('electron').BrowserWindow) => !window.webContents.getURL().includes('win=overlay')
+      )!
+      const orb = windows.find((window: import('electron').BrowserWindow) =>
+        window.webContents.getURL().includes('win=overlay')
+      )!
+      main.minimize()
+      return { bounds: orb.getBounds(), top: orb.isAlwaysOnTop() }
+    })
+    expect(before.top).toBe(true)
+    expect(await overlay.evaluate(() => getComputedStyle(document.body).backgroundColor)).toBe('rgba(0, 0, 0, 0)')
+    await expect(overlay.locator('.desktop-orb')).toBeVisible()
+    await overlay.locator('.desktop-orb__sphere').hover()
+    await overlay.mouse.move(150, 145)
+    await overlay.mouse.down()
+    await overlay.mouse.move(180, 160, { steps: 3 })
+    await overlay.mouse.up()
+    await expect
+      .poll(() =>
+        app.evaluate(({ BrowserWindow }) => {
+          const orb = BrowserWindow.getAllWindows().find((window: import('electron').BrowserWindow) =>
+            window.webContents.getURL().includes('win=overlay')
+          )!
+          return orb.getBounds().x
+        })
+      )
+      .not.toBe(before.bounds.x)
+    await overlay.getByRole('button', { name: 'Otwórz Cześka' }).click()
+    await overlay.screenshot({ path: test.info().outputPath('desktop-orb.png'), omitBackground: true })
+    const remembered = await overlay.evaluate(() => ({ x: window.screenX, y: window.screenY }))
+    await expect
+      .poll(() =>
+        app.evaluate(({ BrowserWindow }) =>
+          BrowserWindow.getAllWindows()
+            .find((window: import('electron').BrowserWindow) => !window.webContents.getURL().includes('win=overlay'))!
+            .isMinimized()
+        )
+      )
+      .toBe(false)
+    await overlay.getByRole('button', { name: 'Schowaj kulę' }).click()
+    await expect.poll(() => app.windows().some(window => window.url().includes('win=overlay'))).toBe(false)
+    await page.getByRole('button', { name: 'Orb na pulpicie', exact: true }).first().click()
+    await expect.poll(() => app.windows().some(window => window.url().includes('win=overlay'))).toBe(true)
+    const reopened = app.windows().find(window => window.url().includes('win=overlay'))!
+    await expect(reopened.locator('.desktop-orb')).toBeVisible()
+    expect(await reopened.evaluate(() => ({ x: window.screenX, y: window.screenY }))).toEqual(remembered)
+    await reopened.getByRole('button', { name: 'Schowaj kulę' }).click()
+  })
+
   test('the shell wraps the runtime instead of replacing it', async () => {
     const page = fixture!.page
 
@@ -249,9 +317,7 @@ test.describe('Jarvis product shell', () => {
     let reached = false
     for (let press = 0; press < 120 && !reached; press += 1) {
       await page.keyboard.press('Tab')
-      reached = await page.evaluate(() =>
-        Boolean(document.activeElement?.closest('nav[data-jarvis-nav]'))
-      )
+      reached = await page.evaluate(() => Boolean(document.activeElement?.closest('nav[data-jarvis-nav]')))
     }
 
     expect(reached, 'the nav rail should be reachable by Tab').toBe(true)

@@ -58,6 +58,26 @@ function makeWindow() {
   return win
 }
 
+test('desktop voice keeps a minimized chat responsive independently of agent work', () => {
+  const timers = makeTimers()
+  const throttle = createStreamThrottle(timers)
+  const win = makeWindow()
+  throttle.register(win)
+  throttle.updateVoice(true)
+  throttle.update(true)
+  throttle.update(false)
+  timers.fire()
+  assert.equal(win.calls.at(-1), false)
+  throttle.updateVoice(false)
+  timers.fire()
+  assert.equal(win.calls.at(-1), true)
+  throttle.update(true)
+  throttle.updateVoice(true)
+  throttle.updateVoice(false)
+  timers.fire()
+  assert.equal(win.calls.at(-1), false)
+})
+
 test('registering a window applies the current throttle state immediately', () => {
   const timers = makeTimers()
   const throttle = createStreamThrottle(timers)

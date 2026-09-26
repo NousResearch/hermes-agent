@@ -317,16 +317,22 @@ def _load_dotenv_with_fallback(path: Path, *, override: bool, load_pass: int | N
     _sanitize_loaded_credentials()  # httpx encodes headers as ASCII
 
 
+def _sanitize_env_lines(lines: list[str]) -> list[str]:
+    """Normalize .env lines before importing config (which may resolve secret refs)."""
+    sanitized = []
+    for line in lines:
+        raw = line.rstrip("\r\n")
+        stripped = raw.strip()
+        sanitized.append((raw if not stripped or stripped.startswith("#") else stripped) + "\n")
+    return sanitized
+
+
 def _sanitize_env_file_if_needed(path: Path) -> None:
     """Pre-sanitize a .env file before python-dotenv reads it. Sniffs a leading BOM *before* any text
     decode: UTF-16 (Notepad "Unicode") is rewritten as clean UTF-8; UTF-32 is refused (left untouched) so
     we never fall through to the errors=replace corruption path."""
     if not path.exists():
         return
-    try:
-        from hermes_cli.config import _sanitize_env_lines
-    except ImportError:
-        return  # early bootstrap — config module not available yet
 
     try:
         raw = path.read_bytes()

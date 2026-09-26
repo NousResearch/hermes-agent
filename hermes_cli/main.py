@@ -669,7 +669,7 @@ if sys.platform == "win32":
 
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
-from hermes_cli.config import get_hermes_home
+from hermes_constants import get_hermes_home
 from hermes_cli.env_loader import load_hermes_dotenv
 
 # ``update`` must not resolve external secret sources (Windows self-lock via cryptography, slow

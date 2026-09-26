@@ -16,8 +16,14 @@ from pathlib import Path
 
 from agent.file_safety import get_nt_namespace_error
 from tools import file_state
-from tools.binary_extensions import has_opaque_document_extension, is_pdf_path
-from tools.file_tools_paths import _expand_tilde, _resolve_path_for_task
+from tools.binary_extensions import (
+    has_binary_extension,
+    has_opaque_document_extension,
+    is_pdf_path,
+    is_sqlite_sidecar,
+)
+from tools.file_tools_paths import (
+    _expand_tilde, _resolve_path_for_task, _ssh_path_escapes_home, _terminal_env_type_for_task)
 from tools.file_tools_read_tracking import _has_full_write_baseline, _read_mtime_drifted
 
 # Prefixes matched after realpath. macOS: /private/var mirrors /var — block the
@@ -148,6 +154,10 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
     if nt_err:
         return nt_err
     candidates = (_resolved_or_raw(filepath, task_id), os.path.normpath(_expand_tilde(filepath)))
+    if _ssh_path_escapes_home(candidates[0]) and _terminal_env_type_for_task(task_id) == "ssh":
+        return (
+            f"Refusing to write to {filepath}: it climbs above the SSH home and the remote "
+            "home could not be detected, so its target cannot be checked. Pass an absolute path.")
     if any(c.startswith(_SENSITIVE_PATH_PREFIXES) or c in _SENSITIVE_EXACT_PATHS for c in candidates):
         return (
             f"Refusing to write to sensitive system path: {filepath}\n"
@@ -417,16 +427,18 @@ def _check_cross_profile_path(filepath: str, task_id: str = "default") -> str | 
 
 def _check_binary_document_write(filepath: str, task_id: str = "default") -> str | None:
     """Reject text-tool writes that would corrupt a binary document (read_file showed
-    EXTRACTED text, so the model may write it back). Opaque formats are always rejected;
-    .pdf only when OVERWRITING an existing file (raw PDF syntax is text-authorable).
+    EXTRACTED text, so the model may write it back). Opaque document formats and
+    SQLite sidecars (-wal/-shm/-journal) are always rejected; .pdf and every other
+    BINARY_EXTENSIONS suffix only when OVERWRITING an existing file (raw PDF syntax
+    is text-authorable and text fixtures named ``*.db`` exist).
 
     ``read_file`` auto-extracts .docx/.xlsx/.pptx (and PDF, via anydoc) to readable text, so the model
     plausibly believes it holds the file's contents and tries to write the edited text back with
     write_file/patch. A plain-text write can never produce a valid OOXML/OLE/ODF container, so that write
     silently destroys the document (port of nearai/ironclaw#7109).
     """
+    ext = os.path.splitext(filepath)[1].lower()
     if has_opaque_document_extension(filepath):
-        ext = filepath[filepath.rfind("."):].lower()
         return (
             f"Refusing to write plain text to binary document '{filepath}' ({ext}). "
             "A text write cannot produce a valid document container and would "
@@ -434,19 +446,42 @@ def _check_binary_document_write(filepath: str, task_id: str = "default") -> str
             "bytes). Use the docx/xlsx/powerpoint skills or a library like "
             "python-docx/openpyxl/python-pptx via the terminal to create or edit "
             "this document.")
-    if is_pdf_path(filepath):
+    # A -wal/-shm/-journal path is never a legitimate text target, even when
+    # no sidecar exists yet: a checkpointed db has none on disk, and a garbage
+    # WAL dropped next to a live database is picked up on the next open.
+    if is_sqlite_sidecar(filepath):
+        return (
+            f"Refusing to write plain text to binary SQLite sidecar '{filepath}' ({ext}). "
+            "A -wal/-shm/-journal file holds raw database pages that SQLite "
+            "reads on the next open; text there corrupts the database. Use the "
+            "sqlite3 CLI or a SQLite library via the terminal to modify the "
+            "database instead.")
+    # Overwriting an existing binary (PDF, image, archive, SQLite db, ...)
+    # with text destroys it — the model only ever saw extracted or mojibake
+    # text. Creating a NEW file with such an extension stays allowed: raw PDF
+    # syntax is text-authorable and text fixtures named ``*.db`` exist.
+    pdf = is_pdf_path(filepath)
+    if pdf or has_binary_extension(filepath):
         try:
             resolved = Path(_resolve_path_for_task(filepath, task_id))
         except Exception:
             resolved = Path(_expand_tilde(filepath))
         try:
             if resolved.is_file():
+                if pdf:
+                    return (
+                        f"Refusing to overwrite existing PDF '{filepath}' with plain text. "
+                        "read_file showed you EXTRACTED text, not the real bytes — writing "
+                        "text back would destroy the document. Use the pdf skill or a PDF "
+                        "library via the terminal to modify it. (Creating a NEW .pdf file "
+                        "is allowed.)")
                 return (
-                    f"Refusing to overwrite existing PDF '{filepath}' with plain text. "
-                    "read_file showed you EXTRACTED text, not the real bytes — writing "
-                    "text back would destroy the document. Use the pdf skill or a PDF "
-                    "library via the terminal to modify it. (Creating a NEW .pdf file "
-                    "is allowed.)")
+                    f"Refusing to overwrite existing binary file '{filepath}' ({ext}) "
+                    "with plain text — read_file showed you extracted or mojibake "
+                    "text, not the real bytes, and writing text back would destroy "
+                    "the file. Use a binary-aware tool via the terminal to modify it "
+                    "(for SQLite databases, the sqlite3 CLI or a SQLite library). "
+                    "(Creating a NEW file with this extension is allowed.)")
         except OSError:
             pass
     return None

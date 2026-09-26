@@ -9,6 +9,7 @@
  * sitting in Hermes' own DOM, where `activeElement` is authoritative.
  */
 
+import { isElementInHiddenPane } from '@/components/pane-shell/pane-visibility'
 import { $rightRailActiveTabId } from '@/store/layout'
 import { $previewTabs } from '@/store/preview'
 
@@ -47,7 +48,9 @@ export function activePreviewNav(): PreviewNavHandle | null {
  *  elsewhere in the app, so the caller falls back to the app-level meaning. */
 export function commandFocusedPreview(command: keyof PreviewNavHandle): boolean {
   const host = document.activeElement?.closest(`[${PREVIEW_BROWSER_ATTR}]`)
-  const nav = host ? handles.get(host.getAttribute(PREVIEW_BROWSER_ATTR) || '') : undefined
+
+  const nav =
+    host && !isElementInHiddenPane(host) ? handles.get(host.getAttribute(PREVIEW_BROWSER_ATTR) || '') : undefined
 
   nav?.[command]()
 

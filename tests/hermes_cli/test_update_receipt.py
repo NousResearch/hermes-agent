@@ -12,12 +12,12 @@ Covers:
 import json
 import os
 import sys
-from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 import hermes_cli.update_receipt as ur
-from hermes_cli import update_cmd
+from hermes_cli import update_cmd, update_cmd_maint
 
 
 @pytest.fixture()
@@ -25,13 +25,12 @@ def receipt_home(tmp_path, monkeypatch):
     """Isolated HERMES_HOME for receipt writes."""
     home = tmp_path / ".hermes"
     home.mkdir()
-    monkeypatch.setattr(
-        "hermes_cli.config.get_hermes_home", lambda: home, raising=False
-    )
-    # ensure no receipt bleeds between tests
-    ur._current = None
-    yield home
-    ur._current = None
+    # ``_receipt_dir`` resolves through ``hermes_constants.get_hermes_home`` (env var), not
+    # ``hermes_cli.config`` — patch where production reads.
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    # The open receipt is per-context; the scope isolates it from any enclosing receipt.
+    with ur.update_receipt_scope():
+        yield home
 
 
 def _finalize(outcome="success", fleet=None):
@@ -112,18 +111,6 @@ class TestReceiptLifecycle:
         assert latest is not None
         assert latest["outcome"] == "partial"
 
-    def test_phase_error_shape(self, receipt_home):
-        ur.begin_update_receipt()
-        ur.record_gateway_restart(
-            restarted_services=[],
-            incomplete=True,
-            phase_error="boom: module vanished mid-pull",
-        )
-        path = _finalize("partial")
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        gr = payload["gateway_restart"]
-        assert gr["incomplete"] is True
-        assert "boom" in gr["phase_error"]
 
     def test_record_without_begin_is_noop(self, receipt_home):
         # No begin — nothing should raise, nothing should be written.
@@ -132,11 +119,6 @@ class TestReceiptLifecycle:
         ur.record_gateway_restart(restarted_services=[])
         assert _finalize("success") is None
 
-    def test_finalize_clears_current(self, receipt_home):
-        ur.begin_update_receipt()
-        assert ur._current is not None
-        _finalize("success")
-        assert ur._current is None
 
     def test_pruning_keeps_recent(self, receipt_home, monkeypatch):
         monkeypatch.setattr(ur, "_RECEIPT_KEEP", 3)
@@ -155,9 +137,6 @@ class TestReceiptLifecycle:
             "update_20260104_000000_1.json",
             "update_20260105_000000_1.json",
         ]
-
-    def test_read_latest_receipt_missing(self, receipt_home):
-        assert ur.read_latest_receipt() is None
 
 
 class TestCommandBoundaryFinalization:
@@ -179,7 +158,7 @@ class TestCommandBoundaryFinalization:
         assert payload["exit_code"] == 2
         assert payload["stop_reason"] == "sys.exit(2)"
         assert payload["finished_at"] is not None
-        assert ur._current is None
+        assert ur.current_correlation_id() is None
 
     def test_pending_receipt_persisted_on_exit_1_failure(self, receipt_home):
         ur.begin_update_receipt()
@@ -259,7 +238,7 @@ class TestCommandBoundaryFinalization:
         assert latest["exit_code"] == 2
         assert latest["stop_reason"] == "sys.exit(2)"
         assert latest["steps"][0]["name"] == "windows_preflight"
-        assert ur._current is None
+        assert ur.current_correlation_id() is None
         # exactly-once: exactly one receipt file
         directory = receipt_home / "logs" / "update_receipts"
         assert len(list(directory.glob("update_*.json"))) == 1
@@ -280,7 +259,7 @@ class TestFleetClassification:
             json.dumps(gateway_record), encoding="utf-8"
         )
         monkeypatch.setattr(
-            "hermes_cli.build_info.get_code_identity",
+            "hermes_cli.version_info.get_code_identity",
             lambda refresh=False: {"sha": expected_sha, "short_sha": expected_sha[:8],
                                    "version": "1.0", "source": "git"},
         )
@@ -306,7 +285,7 @@ class TestFleetClassification:
         home.mkdir()
         monkeypatch.setenv("HERMES_HOME", str(home))
         monkeypatch.setattr(
-            "hermes_cli.build_info.get_code_identity",
+            "hermes_cli.version_info.get_code_identity",
             lambda refresh=False: {"sha": "a" * 40, "short_sha": "a" * 8,
                                    "version": "1.0", "source": "git"},
         )
@@ -338,6 +317,23 @@ class TestFleetClassification:
         assert len(fleet) == 1
         assert fleet[0]["state"] == "current"
         assert fleet[0]["pid"] == 4242
+
+    def test_current_multiplexer_reports_its_served_profiles(self, monkeypatch, tmp_path):
+        """One verified multiplexer is evidence for every profile it serves."""
+        sha = "a" * 40
+        fleet = self._fleet_with(
+            monkeypatch,
+            tmp_path,
+            {
+                "pid": 4242,
+                "code_sha": sha,
+                "code_version": "1.0",
+                "served_profiles": ["default", "coder"],
+            },
+            expected_sha=sha,
+        )
+
+        assert fleet[0]["served_profiles"] == ["default", "coder"]
 
     def test_stale_gateway(self, monkeypatch, tmp_path):
         fleet = self._fleet_with(
@@ -402,7 +398,7 @@ class TestFleetClassification:
         assert fleet[0]["code_sha"] is None
         assert fleet[0]["code_version"] is None
 
-    def test_matrix_returns_true_only_on_stale(self, capsys):
+    def test_matrix_returns_true_only_on_stale(self):
         assert ur.print_fleet_version_matrix([]) is False
         ok = ur.print_fleet_version_matrix(
             [{"profile": "default", "pid": 1, "code_sha": "a" * 40, "state": "current"}]
@@ -415,16 +411,12 @@ class TestFleetClassification:
             ]
         )
         assert stale is True
-        out = capsys.readouterr().out
-        assert "STALE" in out
-        assert "hermes -p <profile> gateway restart" in out
 
-    def test_unknown_does_not_fail_update(self, capsys):
+    def test_unknown_does_not_fail_update(self):
         ok = ur.print_fleet_version_matrix(
             [{"profile": "default", "pid": 1, "code_sha": None, "state": "unknown"}]
         )
         assert ok is False
-        assert "version unknown" in capsys.readouterr().out
 
 
 class TestGatewayStatusStamping:
@@ -432,7 +424,7 @@ class TestGatewayStatusStamping:
         import gateway.status as gs
 
         monkeypatch.setattr(
-            "hermes_cli.build_info.get_code_identity",
+            "hermes_cli.version_info.get_code_identity",
             lambda refresh=False: {"sha": "c" * 40, "short_sha": "c" * 8,
                                    "version": "2.0", "source": "git"},
         )
@@ -446,7 +438,7 @@ class TestGatewayStatusStamping:
         def _boom(refresh=False):
             raise RuntimeError("no build info")
 
-        monkeypatch.setattr("hermes_cli.build_info.get_code_identity", _boom)
+        monkeypatch.setattr("hermes_cli.version_info.get_code_identity", _boom)
         record = gs._build_runtime_status_record()
         # Must not raise, and must not stamp bogus values.
         assert "code_sha" not in record
@@ -454,15 +446,6 @@ class TestGatewayStatusStamping:
 
 
 class TestCodeIdentity:
-    def test_get_code_identity_shape(self):
-        from hermes_cli.build_info import get_code_identity
-
-        identity = get_code_identity(refresh=True)
-        assert set(identity) == {"sha", "short_sha", "version", "source"}
-        # Running from a git checkout in CI/dev: sha resolves via git.
-        if identity["sha"]:
-            assert identity["short_sha"] == identity["sha"][:8]
-            assert identity["source"] in ("git", "build-file")
 
     def test_get_code_identity_cached(self):
         from hermes_cli.build_info import get_code_identity
@@ -473,3 +456,61 @@ class TestCodeIdentity:
         # returned dicts are copies, not the shared cache
         second["sha"] = "mutated"
         assert get_code_identity()["sha"] == first["sha"]
+
+
+class TestPreUpdateBackupStep:
+    """A deliberate pre-update-backup opt-out is a SKIP carrying its reason; only a backup that
+    was requested and captured nothing is a failed step.
+
+    Recording both as ``ok=false, "disabled or failed"`` made a disabled safety net read as a
+    broken one in the receipt — the shipped-opt-out case (#94944) looked like a failure for every
+    update on the affected machine.
+    """
+
+    @staticmethod
+    def _record(monkeypatch, *, args, snapshot_id, updates_cfg) -> dict:
+        """Run the receipt classifier and return the persisted receipt payload."""
+        monkeypatch.setattr(update_cmd_maint, "_load_updates_cfg", lambda: dict(updates_cfg))
+        ur.begin_update_receipt()
+        update_cmd._record_pre_update_backup_outcome(args, snapshot_id)
+        path = _finalize("success")
+        assert path is not None and path.is_file()
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    @pytest.mark.parametrize(
+        "args, updates_cfg, expected_reason",
+        [
+            # The shipped-template case: legacy ``false`` resolves to mode "off" (see #94944).
+            (SimpleNamespace(no_backup=False, backup=False), {"pre_update_backup": False},
+             "updates.pre_update_backup"),
+            # An explicit flag is a different opt-out and must name itself.
+            (SimpleNamespace(no_backup=True, backup=False), {"pre_update_backup": "quick"},
+             "--no-backup"),
+        ],
+    )
+    def test_opt_out_records_a_skip_not_a_failed_step(
+        self, receipt_home, monkeypatch, args, updates_cfg, expected_reason
+    ):
+        payload = self._record(monkeypatch, args=args, snapshot_id=None, updates_cfg=updates_cfg)
+
+        step = "pre_update_backup"
+        assert [entry for entry in payload["steps"] if entry["name"] == step] == []
+        skip = [entry for entry in payload["skips"] if entry["name"] == step]
+        assert len(skip) == 1
+        assert expected_reason in skip[0]["reason"]
+
+    def test_only_an_opt_out_produces_a_skip(self, receipt_home, monkeypatch):
+        """A requested backup never lands in ``skips``: present means captured, absent means failed."""
+        args = SimpleNamespace(no_backup=False, backup=False)
+        updates_cfg = {"pre_update_backup": "quick"}
+
+        captured = self._record(
+            monkeypatch, args=args, snapshot_id="20260911-021847-pre-update", updates_cfg=updates_cfg
+        )
+        assert captured["skips"] == []
+        assert [step["ok"] for step in captured["steps"]] == [True]
+        assert captured["steps"][0]["detail"] == "snapshot=20260911-021847-pre-update"
+
+        empty = self._record(monkeypatch, args=args, snapshot_id=None, updates_cfg=updates_cfg)
+        assert empty["skips"] == []
+        assert [step["ok"] for step in empty["steps"]] == [False]

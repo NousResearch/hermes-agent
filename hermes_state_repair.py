@@ -580,8 +580,16 @@ def _connect_repair_durable(db_path: Path, *, timeout: float = 5.0) -> sqlite3.C
     no ``checkpoint_fullfsync`` — on Darwin an interrupted ``REINDEX``/``VACUUM``/``writable_schema`` rewrite leaves
     half-written b-tree pages. Autocommit (``isolation_level=None``): DDL and ``VACUUM`` are illegal inside an
     implicit transaction. Barriers are best-effort: on a malformed schema even ``PRAGMA synchronous=FULL`` raises,
-    so whole-file rewrites call :func:`_reapply_durability_barriers` once the schema parses again."""
-    conn = sqlite3.connect(str(db_path), timeout=timeout, isolation_level=None)
+    so whole-file rewrites call :func:`_reapply_durability_barriers` once the schema parses again.
+
+    Tracked (:func:`hermes_cli.sqlite_safe_read.connect_tracked`) because repair connections hold the
+    strongest locks in the process (``locking_mode=EXCLUSIVE``, ``BEGIN IMMEDIATE``); an untracked fd let
+    the byte-level probes ``open()``/``close()`` the live file, which cancels every POSIX advisory lock this
+    process holds on it (sqlite.org/howtocorrupt §2.2) and lets an external writer commit mid-repair (#63386).
+    """
+    from hermes_cli.sqlite_safe_read import connect_tracked
+
+    conn = connect_tracked(db_path, tracking_path=db_path, timeout=timeout, isolation_level=None)
     _reapply_durability_barriers(conn)
     return conn
 

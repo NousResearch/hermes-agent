@@ -53,14 +53,43 @@ def _job_skill_names(job: dict) -> list[str]:
 _MAX_CONTEXT_CHARS = 8000
 
 _SELF_CONTEXT_INTRO = (
-    "The following is this job's most recent output from its previous run. Use it for "
-    "continuity: avoid repeating what was already reported, and continue where the last run "
-    "left off."
+    "The following is this job's most recent non-silent output from a previous run. Use it "
+    "for continuity: avoid repeating what was already reported, and continue where the last "
+    "run left off."
 )
 _UPSTREAM_CONTEXT_INTRO = (
     "The following is the most recent output from a preceding cron job. Use it as context for "
     "your analysis."
 )
+
+
+def _archive_answer(archive: str) -> str | None:
+    """The reusable answer of a stored run: the text after the last ``## Response``.
+
+    Archives without the heading (script-mode runs) stay whole-document. The LAST
+    occurrence is the writer's boundary — the assembled prompt half can itself carry
+    the literal heading (a skill documenting its response format, an injected previous
+    answer quoting it), so an early split would re-inject the prompt noise this
+    extraction exists to drop.
+    ``None`` marks "no usable answer" — a blank or silent response (any form the
+    delivery lane itself suppresses) — so the caller falls through to an older
+    archive instead of injecting prompt noise the job already has.
+    """
+    if "## Response" not in archive:
+        return archive
+    answer = archive.rpartition("## Response")[2].strip()
+    if not answer or _sched._is_cron_silence_response(answer):
+        return None
+    return answer
+
+
+def _clip_to_context_budget(text: str) -> str:
+    """Clip oversized context head+tail; conclusions and summaries sit at the end."""
+    if len(text) <= _MAX_CONTEXT_CHARS:
+        return text
+    keep = _MAX_CONTEXT_CHARS // 2
+    omitted = len(text) - 2 * keep
+    return f"{text[:keep]}\n\n[... {omitted} chars omitted ...]\n\n{text[-keep:]}"
 
 
 def _inject_context_from(job: dict, prompt: str) -> tuple[str, bool]:
@@ -93,7 +122,7 @@ def _inject_context_from(job: dict, prompt: str) -> tuple[str, bool]:
             )
             latest_output = ""
             for output_file in output_files:
-                candidate = output_file.read_text(encoding="utf-8").strip()
+                candidate = output_file.read_text(encoding="utf-8-sig").strip()
                 # Only the run header describes suppression; script/agent payloads can
                 # quote these markers. Keep error documents useful for recovery context.
                 header = candidate.split("\n---\n", 1)[0].split("\n## Prompt", 1)[0]
@@ -102,14 +131,16 @@ def _inject_context_from(job: dict, prompt: str) -> tuple[str, bool]:
                                      "Script gate returned `wakeAgent=false`"))
                     for line in header.splitlines()
                 )
-                if candidate and not silent_audit:
-                    latest_output = candidate
-                    break
-            if len(latest_output) > _MAX_CONTEXT_CHARS:
-                latest_output = (
-                    latest_output[:_MAX_CONTEXT_CHARS] + "\n\n[... output truncated ...]")
+                if not candidate or silent_audit:
+                    continue
+                answer = _archive_answer(candidate)
+                if answer is None:
+                    continue  # [SILENT]/blank response — try an older archive
+                latest_output = answer
+                break
             if not latest_output:
-                continue  # silent skip — empty output
+                continue  # silent skip — no archive with a usable answer
+            latest_output = _clip_to_context_budget(latest_output)
             if is_self:
                 prompt = _prepend_context_block(
                     prompt, "Your previous run's output", _SELF_CONTEXT_INTRO, latest_output)
@@ -201,6 +232,9 @@ _CRON_HINT = (
     "rephrase it, whatever language the rest of your answer uses. "
     "Never combine [SILENT] with content — either report your "
     "findings normally, or say [SILENT] and nothing more. "
+    "FAILURE: If a delegated child fails and this cron run must be "
+    "recorded as failed, put [CRON_FAILURE] on the first line by itself, "
+    "then explain the child failure on following lines. "
     "RECURSION: This is a run of an EXISTING scheduled job — execute "
     "the task now. NEVER create or update a cron job because of "
     "recurring or future-schedule language in the task prompt below; "

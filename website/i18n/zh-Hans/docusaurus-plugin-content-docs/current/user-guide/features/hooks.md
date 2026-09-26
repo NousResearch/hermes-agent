@@ -11,7 +11,7 @@ Hermes 有四套 hook 系统，可在关键生命周期节点运行自定义代�
 | 系统 | 注册方式 | 运行环境 | 使用场景 |
 |------|---------|---------|---------|
 | **[Gateway hooks](#gateway-event-hooks)** | `~/.hermes/hooks/` 下的 `HOOK.yaml` + `handler.py` | 仅 Gateway | 日志、告警、webhook |
-| **[Plugin hooks](#plugin-hooks)** | [插件](/user-guide/features/plugins)中的 `ctx.register_hook()` | CLI + Gateway | 工具拦截、指标采集、护栏 |
+| **[Plugin hooks](#plugin-hooks)** | [插件](./plugins.md)中的 `ctx.register_hook()` | CLI + Gateway | 工具拦截、指标采集、护栏 |
 | **[Shell hooks](#shell-hooks)** | `~/.hermes/config.yaml` 中 `hooks:` 块指向的 shell 脚本 | CLI + Gateway | 用于阻断、自动格式化、上下文注入的即插即用脚本 |
 | **[Outbound webhooks](#outbound-webhooks)** | `~/.hermes/config.yaml` 中的 `hooks.outbound:` 列表 | CLI + Gateway | 将签名后的生命周期事件推送到外部 HTTP endpoint |
 
@@ -352,7 +352,7 @@ Gateway hooks 仅在 **gateway**（Telegram、Discord、Slack、WhatsApp、Teams
 
 ## Plugin Hooks
 
-[插件](/user-guide/features/plugins)可以注册在 **CLI 和 gateway** 会话中均会触发的 hook。这些 hook 通过插件 `register()` 函数中的 `ctx.register_hook()` 以编程方式注册。
+[插件](./plugins.md)可以注册在 **CLI 和 gateway** 会话中均会触发的 hook。这些 hook 通过插件 `register()` 函数中的 `ctx.register_hook()` 以编程方式注册。
 
 ```python
 def register(ctx):
@@ -820,7 +820,7 @@ def my_callback(session_id: str, platform: str, **kwargs):
 
 ---
 
-参见 **[构建插件指南](/developer-guide/plugins)**，获取包含工具 schema、处理器和高级 hook 模式的完整演练。
+参见 **[构建插件指南](../../developer-guide/plugins/index.md)**，获取包含工具 schema、处理器和高级 hook 模式的完整演练。
 
 ---
 

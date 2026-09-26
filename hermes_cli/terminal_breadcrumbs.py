@@ -84,7 +84,8 @@ def write_breadcrumb(session_id: str, cwd: Optional[str] = None) -> None:
         if not terminal_id:
             return
         directory = _breadcrumbs_dir()
-        directory.mkdir(parents=True, exist_ok=True)
+        from hermes_constants import mkdir_under_hermes_home
+        mkdir_under_hermes_home(directory)
         now = time.time()
         payload = {"session_id": session_id, "cwd": cwd or os.getcwd(), "ts": now}
         atomic_json_write(directory / terminal_id, payload, indent=None)
@@ -100,7 +101,7 @@ def read_breadcrumb() -> Optional[dict]:
         if not terminal_id:
             return None
         path = _breadcrumbs_dir() / terminal_id
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
         if not isinstance(data, dict) or not str(data.get("session_id") or "").strip():
             return None
         ts = data.get("ts")

@@ -20,7 +20,6 @@ run that reaches the model — success or not — resets the ladder. Disable wit
 from __future__ import annotations
 
 import logging
-from datetime import timedelta
 from typing import Any, Dict, Optional
 
 from hermes_time import now as _hermes_now
@@ -32,7 +31,9 @@ logger = logging.getLogger("cron.scheduler")
 RETRY_DELAYS_SECONDS: tuple[int, ...] = (300, 900, 1800)
 
 # Persisted on the job while a retry cycle is active: {"attempt": <1-based count of
-# retries already scheduled>}. Cleared by any run that reached the model.
+# retries already scheduled>, "at": <ISO instant of the pending retry>, "expr": <the cron
+# expression it was planned under>}. Cleared by any run
+# that reached the model.
 STATE_KEY = "unreachable_retry"
 
 
@@ -82,6 +83,16 @@ def clear_state(job: Dict[str, Any]) -> None:
     job.pop(STATE_KEY, None)
 
 
+def is_retry_fire(job: Dict[str, Any], next_run: str) -> bool:
+    """True for the exact ladder instant parked by ``plan_retry`` (off the cron lattice).
+
+    The expression fingerprint keeps a direct ``jobs.json`` schedule edit from inheriting the
+    exception, as in ``cron.quota_hold.is_recovery_fire``.
+    """
+    state = job.get(STATE_KEY) or {}
+    return state.get("at") == next_run and state.get("expr") == (job.get("schedule") or {}).get("expr")
+
+
 def plan_retry(job: Dict[str, Any]) -> bool:
     """Called under the jobs lock AFTER ``_advance_after_run`` computed the schedule's
     natural ``next_run_at`` for a failed, flagged run. Pulls ``next_run_at`` earlier to
@@ -103,17 +114,18 @@ def plan_retry(job: Dict[str, Any]) -> bool:
             job.get("name", job.get("id", "?")), attempt, job.get("next_run_at"))
         return False
     delay = RETRY_DELAYS_SECONDS[attempt]
-    retry_dt = _hermes_now() + timedelta(seconds=delay)
-    from cron.jobs import _parse_aware  # late: jobs imports this module's helpers
+    # late: jobs imports this module's helpers
+    from cron.jobs import _instant_at_or_before, _parse_aware, _seconds_after
 
+    retry_dt = _seconds_after(_hermes_now(), delay)
     natural_next = _parse_aware(job.get("next_run_at"))
-    if natural_next is not None and natural_next <= retry_dt:
+    if natural_next is not None and _instant_at_or_before(natural_next, retry_dt):
         # The schedule fires again sooner than the ladder would — no point consuming an
         # attempt; the natural occurrence IS the retry.
         clear_state(job)
         return False
     retry_at = retry_dt.isoformat()
-    job[STATE_KEY] = {"attempt": attempt + 1}
+    job[STATE_KEY] = {"attempt": attempt + 1, "at": retry_at, "expr": job["schedule"].get("expr")}
     job["next_run_at"] = retry_at
     if job.get("state") != "paused":
         job["state"] = "scheduled"

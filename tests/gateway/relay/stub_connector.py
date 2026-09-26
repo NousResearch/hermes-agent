@@ -1,7 +1,6 @@
 """Test-only in-memory stub connector implementing RelayTransport.
 
-MUST stay under tests/ — never under plugins/ or gateway/ (a CI guard in
-test_no_stub_leak.py asserts this). It lets Phase 1 prove the gateway side of
+MUST stay under tests/ — never under plugins/ or gateway/. It lets Phase 1 prove the gateway side of
 the relay end-to-end with zero dependency on the real (Node) connector.
 
 The stub:

@@ -77,7 +77,8 @@ def _pre_verify_nudge(agent, final_response, attempt: int) -> Optional[str]:
 
 
 def _kanban_stop_nudge(agent, messages) -> Optional[str]:
-    """Workers must end with kanban_complete / kanban_block; a narrated stop is recorded
+    """Workers must end with a terminal board tool (kanban_complete / kanban_block /
+    kanban_request_review / kanban_request_changes); a narrated stop is recorded
     as protocol_violation, so nudge once or twice first."""
     try:
         from agent.kanban_stop import build_kanban_stop_nudge
@@ -121,6 +122,8 @@ def apply_stop_gates(
         return StopGateVerdict(
             continue_turn=True, final_response=None,
             pending_verification_response=final_response,
+            # Prefix semantics on purpose: the streamed prefix IS on screen here. The gateway
+            # interim verdict uses _interim_content_fully_streamed instead (#88954).
             pending_verification_response_previewed=agent._interim_content_was_streamed(
                 final_response or ""
             ),
@@ -162,9 +165,9 @@ def apply_stop_gates(
             agent._kanban_stop_nudges,
             os.environ.get("HERMES_KANBAN_TASK", ""),
         )
-        agent._emit_status(
-            "⚠️ Kanban worker tried to exit without "
-            "kanban_complete/kanban_block — nudging to finish"
+        agent._emit_diagnostic_status(
+            "⚠️ Kanban worker tried to exit without a terminal board call "
+            "(kanban_complete/kanban_request_review/kanban_block) — nudging to finish"
         )
         return verdict
     return StopGateVerdict(

@@ -6,6 +6,8 @@ against a temp HERMES_HOME, never mocks — the id→file mapping is the whole p
 
 from __future__ import annotations
 
+import threading
+
 import pytest
 
 from agent import learning_mutations as lm
@@ -51,6 +53,28 @@ def test_edit_memory_replaces_chunk(home):
     assert (home / "memories" / "USER.md").read_text(encoding="utf-8").strip() == "rewritten profile"
 
 
+def test_edit_memory_refuses_an_entry_over_the_memory_tools_limit(home):
+    """Same char cap as the memory tool's replace: an over-limit entry reads as external drift to
+    every later mutation, so the tool's own remove/replace would refuse (with a .bak) until the
+    file is fixed by hand."""
+    from tools.memory_tool import MemoryStore
+
+    result = lm.edit_node("memory:profile:2", "x" * 5000)
+
+    assert not result["ok"] and "Shorten" in result["message"]
+    assert (home / "memories" / "USER.md").read_text(encoding="utf-8") == "user profile note"
+    assert MemoryStore().remove("user", "user profile note")["success"]
+
+    # The cap gates what an edit adds, never a delete: pruning is the way out of a file that is
+    # already over its total (lowered memory_char_limit, well-formed hand edits).
+    from tools.memory_tool import ENTRY_DELIMITER
+
+    path = home / "memories" / "USER.md"
+    path.write_text(ENTRY_DELIMITER.join(f"entry {i} " + "y" * 500 for i in range(4)), encoding="utf-8")
+    assert lm.delete_node("memory:profile:2")["ok"]
+    assert len(MemoryStore._read_file(path)) == 3
+
+
 
 
 
@@ -91,3 +115,141 @@ def test_memory_writes_match_memory_tool_format(home):
 
     assert entries == ["alpha rewritten", "beta note"]
     assert path.read_text(encoding="utf-8") == ENTRY_DELIMITER.join(entries)
+
+    # A Notepad BOM must not make the first card's id permanently "stale": the graph and the
+    # store must parse the file the same way.
+    path.write_text("alpha note\n§\nbeta note", encoding="utf-8-sig")
+    from agent.learning_graph import build_learning_graph
+
+    first = next(n for n in build_learning_graph()["nodes"] if n["kind"] == "memory")
+    assert first["label"] == "alpha note"  # the BOM is not part of the card's title
+    assert lm.edit_node(first["id"], "alpha sans bom")["ok"]
+    assert MemoryStore._read_file(path) == ["alpha sans bom", "beta note"]
+
+
+# ── Locking / drift (issue #119668) ─────────────────────────────────────────
+# A Journey mutation shares MEMORY.md with the live agent's memory tool, so it must
+# take the same lock, re-read under it and honour the drift guard — otherwise a
+# memory the agent stored in the meantime is rewritten away from a stale snapshot.
+
+
+def _race_memory_tool_add(monkeypatch, content: str) -> threading.Thread:
+    """Start a lock-respecting ``memory_tool`` writer that appends *content* the
+    moment the Journey mutation resolves its node id (the read half of its
+    read-modify-write), then give it a moment to land. Under a correct lock the
+    writer blocks until the mutation has written; without one it interleaves and
+    the mutation's write clobbers it."""
+    from agent import learning_graph
+    from tools.memory_tool import MemoryStore
+
+    located, landed = threading.Event(), threading.Event()
+    real_cards = learning_graph._memory_cards
+
+    def _cards_then_let_writer_in():
+        cards = real_cards()
+        located.set()
+        landed.wait(timeout=0.5)
+        return cards
+
+    def _writer():
+        located.wait(timeout=5)
+        MemoryStore().add("memory", content)
+        landed.set()
+
+    monkeypatch.setattr(learning_graph, "_memory_cards", _cards_then_let_writer_in)
+    thread = threading.Thread(target=_writer, daemon=True)
+    thread.start()
+    return thread
+
+
+def test_delete_memory_keeps_concurrent_memory_tool_add(home, monkeypatch):
+    from tools.memory_tool import MemoryStore
+
+    writer = _race_memory_tool_add(monkeypatch, "gamma note")
+    assert lm.delete_node("memory:memory:0")["ok"]
+    writer.join(timeout=5)
+
+    assert MemoryStore._read_file(home / "memories" / "MEMORY.md") == ["beta note", "gamma note"]
+
+
+def test_edit_memory_keeps_concurrent_memory_tool_add(home, monkeypatch):
+    from tools.memory_tool import MemoryStore
+
+    writer = _race_memory_tool_add(monkeypatch, "gamma note")
+    assert lm.edit_node("memory:memory:0", "alpha rewritten")["ok"]
+    writer.join(timeout=5)
+
+    assert MemoryStore._read_file(home / "memories" / "MEMORY.md") == ["alpha rewritten", "beta note", "gamma note"]
+
+
+@pytest.mark.parametrize("mutate", [lambda: lm.delete_node("memory:memory:0"),
+                                    lambda: lm.edit_node("memory:memory:0", "alpha rewritten")],
+                         ids=["delete", "edit"])
+def test_memory_drift_is_refused_with_backup_like_memory_tool(home, mutate):
+    """Hand-edited content that wouldn't round-trip through the § parser is what
+    the memory tool's drift guard exists for: snapshot to .bak, refuse, leave the
+    file untouched. A Journey mutation must not reformat it silently."""
+    from tools.memory_tool_store import _drift_error
+
+    path = home / "memories" / "MEMORY.md"
+    raw = "alpha note\n§\n\n§\nbeta note\n"
+    path.write_text(raw, encoding="utf-8")
+
+    res = mutate()
+
+    assert not res["ok"]
+    assert path.read_text(encoding="utf-8") == raw
+    (backup,) = home.glob("memories/MEMORY.md.bak.*")
+    assert backup.read_text(encoding="utf-8") == raw
+    assert res["message"] == _drift_error(path, str(backup))["error"]
+
+
+def test_unreadable_memory_file_is_refused_unchanged(home):
+    path = home / "memories" / "MEMORY.md"
+    path.write_bytes(b"alpha note\n\xc3\x28\n\xc2\xa7\nbeta")
+
+    res = lm.delete_node("memory:memory:0")
+
+    assert not res["ok"] and "could not be read" in res["message"]
+    assert path.read_bytes() == b"alpha note\n\xc3\x28\n\xc2\xa7\nbeta"
+
+
+# ── Node identity: the card the user clicked, not the index it sat at ────────
+
+
+def _memory_entries(home) -> list[str]:
+    from tools.memory_tool import MemoryStore
+
+    return MemoryStore._read_file(home / "memories" / "MEMORY.md")
+
+
+def _write_memory_file(home, *entries):
+    from tools.memory_tool import ENTRY_DELIMITER
+
+    (home / "memories" / "MEMORY.md").write_text(ENTRY_DELIMITER.join(entries), encoding="utf-8")
+
+
+def _journey_id(home, label: str) -> str:
+    """The node id Journey renders for the card whose text starts with *label*."""
+    from agent.learning_graph import build_learning_graph
+
+    nodes = [n for n in build_learning_graph()["nodes"] if n["kind"] == "memory"]
+    index = next(i for i, entry in enumerate(_memory_entries(home)) if entry.startswith(label))
+    return nodes[index]["id"]
+
+
+@pytest.mark.parametrize("op", ["edit", "delete"])
+def test_mutation_targets_the_clicked_card_when_the_list_shifted_before_submit(home, op):
+    """The window a displayed-index identity cannot see: an earlier entry is removed AFTER the
+    graph is drawn and BEFORE the edit/delete is submitted, so by the time the mutation reads the
+    file that index names somebody else's card."""
+    node_id = _journey_id(home, "beta")  # what Journey showed the user
+    _write_memory_file(home, "beta note", "gamma note")
+
+    mutate = (lambda: lm.edit_node(node_id, "beta rewritten")) if op == "edit" else (lambda: lm.delete_node(node_id))
+    assert mutate()["ok"]
+    assert _memory_entries(home) == (["beta rewritten", "gamma note"] if op == "edit" else ["gamma note"])
+
+    # The clicked card is gone now; its id must not fall back to whatever sits at that index.
+    result = mutate()
+    assert result["ok"] is False and "stale" in result["message"]

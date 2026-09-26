@@ -6,7 +6,6 @@ Split out of :mod:`hermes_cli.plugins`; validation warns and never fails a load.
 from __future__ import annotations
 
 import hashlib
-import importlib.metadata
 import importlib.util
 import logging
 import re
@@ -19,7 +18,7 @@ from utils import fast_safe_load
 from hermes_cli.plugin_capabilities import parse_declared_capabilities as _parse_declared_capabilities
 
 try:
-    import yaml
+    import hermes_yaml as yaml
 except ImportError:  # pragma: no cover – yaml is optional at import time
     yaml = None  # type: ignore[assignment]
 
@@ -36,7 +35,7 @@ _KNOWN_MANIFEST_FIELDS: Set[str] = {
     "pip_dependencies", "provides_browser_providers", "provides_web_providers",
     "manifest_version", "api_version", "requires_plugins", "python_dependencies", "config_schema",
     "license", "homepage", "tags", "capabilities", "emits", "listens", "hermes", "depends",
-    "requires_hermes",
+    "requires_hermes", "python_runtime",
 }
 
 # Highest manifest schema version this Hermes understands.
@@ -46,6 +45,9 @@ _CONFIG_SCHEMA_TYPES: Dict[str, tuple] = {
     "str": (str,), "string": (str,), "int": (int,), "integer": (int,), "float": (int, float),
     "number": (int, float), "bool": (bool,), "boolean": (bool,), "list": (list,), "array": (list,),
     "dict": (dict,), "object": (dict,),
+    # ``secret`` values live in ``.env`` (see hermes_cli.plugins_settings), so a config.yaml copy is
+    # only ever a stray string.
+    "secret": (str,),
 }
 
 
@@ -56,10 +58,25 @@ def _plugins_debug() -> bool:
 
 def _portable_skill_namespace(key: str) -> str:
     """Return a readable, collision-resistant namespace for a portable plugin."""
-    slug = "".join(ch if ch.isascii() and (ch.isalnum() or ch in "_-") else "-" for ch in key.lower())
-    slug = slug.strip("-_") or "plugin"
+    slug = _portable_slug(key)
     digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:8]
     return f"agent-plugin-{slug}-{digest}"
+
+
+def _portable_slug(key: str) -> str:
+    slug = "".join(ch if ch.isascii() and (ch.isalnum() or ch in "_-") else "-" for ch in key.lower())
+    return slug.strip("-_") or "plugin"
+
+
+def portable_mcp_server_name(key: str, server: str) -> str:
+    """Internal name of a portable plugin's MCP server: exactly the name its ``mcp.json`` gives it, the same
+    rule a user's own ``mcp_servers`` block in config.yaml follows. The plugin's skill namespace
+    (``agent-plugin-<slug>-<digest>``) is NOT prepended: it keeps plugin-data and skill names collision-free
+    without coordination, but here it cost ~40 chars of every ``mcp__<server>__<tool>`` name, which providers
+    cap at 64, so the tool verb was hash-clamped away. A duplicate is refused at load (native config first,
+    then first-loaded plugin) with a warning naming both owners; that beats hiding it behind a digest."""
+    del key  # one signature for loader and card; the plugin identity is deliberately not part of the name
+    return _portable_slug(server)
 
 
 def _display_author(value: object) -> str:
@@ -249,10 +266,12 @@ def resolve_plugin_load_order(manifests: Mapping[str, "PluginManifest"]) -> List
 
 
 def _detect_kind_from_source(source_text: str) -> Optional[str]:
-    """Kind implied by source markers (mirrors plugins/memory ``_is_memory_provider_dir``): memory-provider
-    markers -> ``exclusive``; ``register_provider`` + ``ProviderProfile`` -> ``model-provider``; else
-    ``None``. Keeps both kinds out of the general manager's eager import."""
-    if "register_memory_provider" in source_text or "MemoryProvider" in source_text:
+    """Kind implied by source markers (mirrors plugins/memory ``_is_memory_provider_dir`` and
+    plugins/cron_providers ``_is_cron_provider_dir``): memory- or cron-provider markers -> ``exclusive``;
+    ``register_provider`` + ``ProviderProfile`` -> ``model-provider``; else ``None``. Keeps these kinds out
+    of the general manager's eager import (its PluginContext has no ``register_cron_scheduler``, #62951)."""
+    if any(marker in source_text for marker in (
+            "register_memory_provider", "MemoryProvider", "register_cron_scheduler", "CronScheduler")):
         return "exclusive"
     if "register_provider" in source_text and "ProviderProfile" in source_text:
         return "model-provider"
@@ -266,7 +285,7 @@ def _read_source_from_origin(origin: Optional[str], limit: int = 8192) -> str:
             origin = importlib.util.source_from_cache(origin)
         if not origin or not origin.endswith(".py"):
             return ""
-        return Path(origin).read_text(encoding="utf-8", errors="replace")[:limit]
+        return Path(origin).read_text(encoding="utf-8-sig", errors="replace")[:limit]
     except Exception:
         return ""
 
@@ -375,22 +394,28 @@ _VERSION_COMPARATOR_RE = re.compile(r"^\s*(>=|<=|==|!=|>|<)\s*(.+?)\s*$")
 
 
 def running_hermes_version() -> str:
-    """Installed ``hermes-agent`` distribution version, else ``hermes_cli.__version__`` (source checkout)."""
-    try:
-        return importlib.metadata.version("hermes-agent")
-    except Exception:
-        from hermes_cli import __version__
-        return __version__
+    """Base release version of the Hermes code that is running."""
+    from hermes_cli.version_info import get_version_info
+
+    return get_version_info().base_version
+
+
+_VERSION_SEGMENT_RE = re.compile(r"^\d+")
 
 
 def _version_tuple(v: str) -> Optional[tuple]:
-    """``v1.2.3-rc1`` → ``(1, 2, 3)``; ``None`` when a segment is non-numeric."""
+    """``v1.2.3-rc1`` / ``1.2.3rc1`` / ``1.2.3.post1`` → ``(1, 2, 3)``; ``None`` when a segment has no
+    leading digits. PEP 440 pre/post/dev suffixes glued to a segment (``0rc1``) are dropped so an rc
+    *target* still gates and an rc *running* version does not disable every gate."""
     parts = re.split(r"[-+]", str(v).strip().lstrip("v"), 1)[0].split(".")
     parts += ["0"] * (3 - len(parts))
-    try:
-        return tuple(int(x) for x in parts[:3])
-    except ValueError:
-        return None
+    out = []
+    for x in parts[:3]:
+        m = _VERSION_SEGMENT_RE.match(x.strip())
+        if m is None:
+            return None
+        out.append(int(m.group(0)))
+    return tuple(out)
 
 
 def version_satisfies(spec: str, current: str) -> bool:
@@ -411,12 +436,13 @@ def version_satisfies(spec: str, current: str) -> bool:
 
 def requires_hermes_error(manifest: "PluginManifest") -> Optional[str]:
     """Load-blocking reason when the manifest's ``requires_hermes`` rejects the running version."""
-    if not manifest.requires_hermes:
+    spec = manifest.get("requires_hermes", "") if isinstance(manifest, Mapping) else manifest.requires_hermes
+    if not spec:
         return None
     current = running_hermes_version()
-    if version_satisfies(manifest.requires_hermes, current):
+    if version_satisfies(spec, current):
         return None
-    return f"requires hermes {manifest.requires_hermes}, running {current}"
+    return f"requires hermes {spec}, running {current}"
 
 
 def portable_plugin_manifest(child: Path, source: str, prefix: str) -> PluginManifest:
@@ -447,7 +473,7 @@ def _manifest_kind(data: Mapping, key: str, plugin_dir: Path) -> str:
     init_file = plugin_dir / "__init__.py"
     if kind == "standalone" and "kind" not in data and init_file.exists():
         with suppress(Exception):
-            source_text = init_file.read_text(errors="replace", encoding="utf-8")[:8192]
+            source_text = init_file.read_text(errors="replace", encoding="utf-8-sig")[:8192]
             detected = _detect_kind_from_source(source_text)
             if detected:
                 kind = detected
@@ -461,9 +487,13 @@ def parse_manifest_file(
     """Parse one ``plugin.yaml`` into a :class:`PluginManifest`; ``None`` (warned) on failure."""
     try:
         if yaml is None:
-            logger.warning("PyYAML not installed – cannot load %s", manifest_file)
+            logger.warning("ruamel.yaml not installed – cannot load %s", manifest_file)
             return None
-        data = fast_safe_load(manifest_file.read_text(encoding="utf-8")) or {}
+        data = fast_safe_load(manifest_file.read_text(encoding="utf-8-sig")) or {}
+        if not isinstance(data, Mapping):
+            logger.warning("Failed to parse %s: top level must be a mapping, got %s (#14066)",
+                           manifest_file, type(data).__name__)
+            return None
         name = data.get("name", plugin_dir.name)
         key = f"{prefix}/{plugin_dir.name}" if prefix else name
         kind = _manifest_kind(data, key, plugin_dir)
@@ -474,7 +504,9 @@ def parse_manifest_file(
             description=data.get("description", ""), author=_display_author(data.get("author", "")),
             requires_env=data.get("requires_env", []),
             provides_tools=data.get("provides_tools", []),
-            provides_hooks=data.get("provides_hooks", []), source=source, path=str(plugin_dir),
+            # ``hooks:`` is the spelling the bundled manifests carried for months; external copies of it
+            # must keep declaring the same thing (#108371).
+            provides_hooks=data.get("provides_hooks", data.get("hooks", [])), source=source, path=str(plugin_dir),
             kind=kind, key=key, requires_hermes=str(data.get("requires_hermes") or "").strip(),
             capabilities=_parse_declared_capabilities(data.get("capabilities"), name),
             **_parse_manifest_v2_fields(data, key), emits=data.get("emits") or [],

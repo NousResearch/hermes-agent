@@ -144,12 +144,13 @@ def test_desktop_ticker_serves_every_profile_and_yields_to_owning_gateway(monkey
     of its own, so the per-home liveness check alone lets both tickers race for its fires
     (#107485, #108428)."""
     import hermes_cli.profiles as profiles_mod
-    import yaml
+    import hermes_yaml as yaml
 
     _sp, builtin = _providers
     root = tmp_path / ".hermes"
     for name in ("worker", "guest", "solo"):
         (root / "profiles" / name).mkdir(parents=True)
+        (root / "profiles" / name / "config.yaml").write_text("{}\n")  # identity marker: served
     (root / "config.yaml").write_text(yaml.safe_dump({"gateway": {"multiplex_profiles": True}}))
     monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: root)
     monkeypatch.setattr(profiles_mod, "_get_default_hermes_home", lambda: root)

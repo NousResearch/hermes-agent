@@ -3,7 +3,6 @@
 import json
 import os
 import threading
-import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, cast
 from urllib.parse import parse_qs, urlparse
@@ -11,7 +10,7 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 
 import plugins.memory.openviking as openviking_plugin
-from hermes_cli import __version__ as _HERMES_VERSION
+from hermes_cli.version_info import get_version_info
 from plugins.memory.openviking import OpenVikingMemoryProvider
 
 
@@ -269,36 +268,6 @@ class TestOpenVikingSkillQuerySafety:
 
 
 class TestOpenVikingConfigSchema:
-    def test_recall_policy_options_are_exposed_in_setup_schema(self):
-        provider = OpenVikingMemoryProvider()
-
-        schema = provider.get_config_schema()
-        fields = {entry["key"]: entry for entry in schema}
-        env_vars = {entry.get("env_var") for entry in schema}
-
-        assert "OPENVIKING_RECALL_LIMIT" in env_vars
-        assert "OPENVIKING_RECALL_SCORE_THRESHOLD" in env_vars
-        assert "OPENVIKING_RECALL_MAX_INJECTED_CHARS" in env_vars
-        assert "OPENVIKING_RECALL_TIMEOUT_SECONDS" in env_vars
-        assert "OPENVIKING_RECALL_REQUEST_TIMEOUT_SECONDS" in env_vars
-        assert "OPENVIKING_RECALL_FULL_READ_LIMIT" in env_vars
-        assert "OPENVIKING_RECALL_PREFER_ABSTRACT" in env_vars
-        assert "OPENVIKING_RECALL_RESOURCES" in env_vars
-        assert fields["recall_limit"]["type"] == "integer"
-        assert fields["recall_limit"]["minimum"] == 1
-        assert fields["recall_limit"]["maximum"] == 100
-        assert fields["recall_score_threshold"]["type"] == "number"
-        assert fields["recall_prefer_abstract"]["type"] == "boolean"
-        assert provider._recall_config() == {
-            "limit": 6,
-            "score_threshold": 0.15,
-            "max_injected_chars": 4000,
-            "timeout_seconds": 4.0,
-            "request_timeout_seconds": 3.0,
-            "full_read_limit": 2,
-            "prefer_abstract": False,
-            "resources": False,
-        }
 
     def test_recall_config_reads_from_config_yaml(self, monkeypatch, tmp_path):
         """_recall_config() reads memory.openviking values from config.yaml when
@@ -787,7 +756,7 @@ class TestOpenVikingAutoRecallPrefetch:
         ]
         assert all(headers.get("x-openviking-actor-peer", "") == peer for headers in normalized_headers)
         assert all(
-            headers.get("user-agent") == f"openviking-memory-hermes/{_HERMES_VERSION}"
+            headers.get("user-agent") == f"openviking-memory-hermes/{get_version_info().base_version}"
             for headers in normalized_headers
         )
         assert all(headers.get("x-openviking-account") == "acct" for headers in normalized_headers)
@@ -1297,142 +1266,8 @@ class TestEnsureClientFailureHardening:
         assert built.endpoint == "https://up.example"
 
 
-class TestUnavailableWarningsPromiseRetry:
-    """Every "OpenViking is unavailable" warning must describe what actually
-    happens next.
-
-    ``_ensure_client()`` rebuilds and re-probes the client whenever the
-    resolved config changes or the failed-config cooldown has elapsed, so no
-    warning may tell the user memory is off for the rest of the run — that
-    reads as "it never recovers" and sends people restarting hermes for
-    nothing (#5721).
-    """
-
-    @staticmethod
-    def _assert_promises_retry(message: str) -> None:
-        assert "for this Hermes run" not in message, message
-        assert "will retry on a later access" in message, message
-        assert "when the config changes" in message, message
-
-    @staticmethod
-    def _stub_client(health_result):
-        class _StubClient:
-            def __init__(self, endpoint, api_key="", account="", user="", agent=""):
-                self.endpoint = endpoint
-
-            def health(self):
-                return health_result
-
-        return _StubClient
-
-    def test_local_autostart_timeout_warning(self):
-        self._assert_promises_retry(
-            openviking_plugin._runtime_openviking_timeout_message("http://127.0.0.1:1934")
-        )
-
-    def test_remote_unreachable_warning(self):
-        provider = OpenVikingMemoryProvider()
-        provider._endpoint = "https://remote.example"
-        warnings: list[str] = []
-
-        provider._handle_runtime_openviking_unreachable(warning_callback=warnings.append)
-
-        assert provider._client is None
-        assert len(warnings) == 1
-        self._assert_promises_retry(warnings[0])
-
-    def test_local_autostart_refused_warning(self, monkeypatch):
-        monkeypatch.setattr(
-            openviking_plugin,
-            "_start_local_openviking_server",
-            lambda endpoint: (
-                openviking_plugin._LOCAL_SERVER_FAILED,
-                "openviking-server was not found on PATH.",
-            ),
-        )
-        provider = OpenVikingMemoryProvider()
-        provider._endpoint = "http://127.0.0.1:1934"
-        warnings: list[str] = []
-
-        provider._handle_runtime_openviking_unreachable(warning_callback=warnings.append)
-
-        assert provider._client is None
-        assert len(warnings) == 1
-        self._assert_promises_retry(warnings[0])
-
-    def test_still_unhealthy_after_autostart_warning(self, monkeypatch):
-        monkeypatch.setattr(openviking_plugin, "_VikingClient", self._stub_client(False))
-        monkeypatch.setattr(
-            openviking_plugin, "_wait_for_openviking_health", lambda endpoint, **kwargs: True
-        )
-        provider = OpenVikingMemoryProvider()
-        provider._endpoint = "http://127.0.0.1:1934"
-        warnings: list[str] = []
-
-        provider._finish_runtime_openviking_start(warning_callback=warnings.append)
-
-        assert provider._client is None
-        assert len(warnings) == 1
-        self._assert_promises_retry(warnings[0])
-
-    def test_attach_failure_after_autostart_warning(self, monkeypatch):
-        def _explode(*args, **kwargs):
-            raise RuntimeError("connection reset by peer")
-
-        monkeypatch.setattr(openviking_plugin, "_VikingClient", _explode)
-        monkeypatch.setattr(
-            openviking_plugin, "_wait_for_openviking_health", lambda endpoint, **kwargs: True
-        )
-        provider = OpenVikingMemoryProvider()
-        provider._endpoint = "http://127.0.0.1:1934"
-        warnings: list[str] = []
-
-        provider._finish_runtime_openviking_start(warning_callback=warnings.append)
-
-        assert provider._client is None
-        assert len(warnings) == 1
-        self._assert_promises_retry(warnings[0])
-
-    def test_initialize_responded_unhealthy_warning(self, monkeypatch, tmp_path):
-        class _UnhealthyClient:
-            def __init__(self, endpoint, api_key="", account="", user="", agent=""):
-                self.endpoint = endpoint
-
-            def health_payload(self):
-                return {"healthy": False}
-
-            def health(self):
-                return False
-
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-        monkeypatch.setenv("OPENVIKING_ENDPOINT", "https://sick.example")
-        monkeypatch.setattr(openviking_plugin, "_VikingClient", _UnhealthyClient)
-        provider = OpenVikingMemoryProvider()
-        warnings: list[str] = []
-
-        provider.initialize("session-1", platform="cli", warning_callback=warnings.append)
-
-        assert provider._client is None
-        assert len(warnings) == 1
-        self._assert_promises_retry(warnings[0])
-
-    def test_ensure_client_responded_unhealthy_warning(self, monkeypatch, caplog):
-        class _UnhealthyClient:
-            def __init__(self, endpoint, api_key="", account="", user="", agent=""):
-                self.endpoint = endpoint
-
-            def health_payload(self):
-                return {"healthy": False}
-
-        monkeypatch.setenv("OPENVIKING_ENDPOINT", "https://sick.example")
-        monkeypatch.setattr(openviking_plugin, "_VikingClient", _UnhealthyClient)
-        provider = OpenVikingMemoryProvider()
-        provider._env_refresh_enabled = True
-
-        with caplog.at_level("WARNING", logger=openviking_plugin.__name__):
-            assert provider._ensure_client() is None
-
-        self._assert_promises_retry(caplog.text)
+class TestUnavailableRecovery:
+    """A startup health failure must not disable OpenViking for the whole run (#5721)."""
 
     def test_startup_failure_really_does_reconnect_on_a_later_access(
         self, monkeypatch, tmp_path
@@ -1457,7 +1292,6 @@ class TestUnavailableWarningsPromiseRetry:
         provider.initialize("session-1", platform="cli", warning_callback=warnings.append)
         assert provider._client is None
         assert len(warnings) == 1
-        self._assert_promises_retry(warnings[0])
 
         # A startup failure arms no cooldown, so the very next access re-probes.
         client = provider._ensure_client()

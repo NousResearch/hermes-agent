@@ -57,7 +57,7 @@ def main() -> int:
               "https://artificialanalysis.ai and export it.", file=sys.stderr)
         return 2
 
-    catalog = json.loads(CATALOG_PATH.read_text(encoding="utf-8"))
+    catalog = json.loads(CATALOG_PATH.read_text(encoding="utf-8-sig"))
     aa = fetch_aa_models(api_key)
 
     print(f"{'entry':24s} {'catalog q':>9s} {'AA index':>9s}  note")

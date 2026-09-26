@@ -16,6 +16,7 @@ const navigate = vi.fn()
 const selectConnection = vi.fn()
 const selectProfile = vi.fn()
 const getAgentRoster = vi.fn()
+const openWindow = vi.fn()
 
 vi.mock('react-router', () => ({
   useNavigate: () => navigate
@@ -24,7 +25,8 @@ vi.mock('react-router', () => ({
 vi.mock('@/i18n', () => ({
   useI18n: () => ({
     t: {
-      common: { cancel: 'Cancel', delete: 'Delete' },
+      common: { cancel: 'Cancel', confirm: 'Confirm', delete: 'Delete', done: 'Done', loading: 'Loading' },
+      errors: { genericFailure: 'Something went wrong' },
       profiles: {
         actions: 'Actions',
         allProfiles: 'All profiles',
@@ -33,15 +35,27 @@ vi.mock('@/i18n', () => ({
         colorFor: 'Color',
         connectGateway: 'Manage gateways…',
         editSoul: 'Edit SOUL.md…',
+        openInNewWindow: 'Open in new window',
+        setAsDefault: 'Set as default',
         exportProfile: 'Export profile…',
         failedLoadSoul: 'Failed to load SOUL.md',
         failedSaveSoul: 'Failed to save SOUL.md',
         fleet: {
           allOnGateway: 'All profiles on this gateway',
+          connectExistingInstead: 'Connect to existing instead',
           deleteOn: (gateway: string) => ` on ${gateway}`,
           gateway: (gateway: string) => `Profiles on ${gateway}`,
           gatewayUnreachable: (gateway: string) => `${gateway} · unreachable`,
+          installDeviceConfirm: 'Install locally',
+          installDeviceDesc:
+            'This will install Hermes locally, then open a fresh session on this computer. Nothing is installed until you confirm.',
+          installDeviceTitle: 'Switch to This device?',
+          localDevice: 'This device (local backend — installs Hermes if missing, otherwise opens a fresh session)',
           onGateway: (name: string, gateway: string) => `${name} · ${gateway}`,
+          switchDeviceConfirm: 'Switch',
+          switchDeviceDesc:
+            'This opens a fresh session on this computer. The conversation you are in stays on the other gateway.',
+          switchDeviceTitle: 'Switch to This device?',
           switchTo: (name: string, gateway: string) => `Switch to ${name} on ${gateway}`
         },
         importProfile: 'Import profile…',
@@ -75,6 +89,9 @@ vi.mock('@/store/profile', () => ({
   $profileOrder: atom([]),
   $profiles: atom([{ is_default: true, name: 'default' }]),
   $profileScope: atom('default'),
+  // The rail's status summary (profile-dot-state) rides the real session
+  // stores, whose import graph reaches $showAllProfiles through layout state.
+  $showAllProfiles: atom(false),
   ALL_PROFILES: '*',
   normalizeProfileKey: (name: string) => name,
   profileLabel: (profile: { display_name?: string; name: string }) =>
@@ -101,11 +118,15 @@ vi.mock('@/store/profile-share', () => ({
 }))
 
 vi.mock('./use-profile-prewarm', () => ({
-  useProfilePrewarm: () => ({ cancelPrewarm: vi.fn(), startPrewarm: vi.fn() })
+  useProfilePrewarm: () => ({ cancelPrewarm: vi.fn(), notePointerMove: vi.fn(), startPrewarm: vi.fn() })
 }))
 
 vi.mock('./use-profile-rail-refresh-on-active', () => ({
   useProfileRailRefreshOnActive: () => undefined
+}))
+
+vi.mock('@/components/remote-setup/first-run', () => ({
+  FirstRunRemoteSetup: () => 'Connect to existing Hermes'
 }))
 
 vi.mock('@/hermes', () => ({
@@ -203,10 +224,14 @@ async function renderFleet() {
   return view.container
 }
 
+const probeLocalBackend = vi.fn(async () => ({ bootstrapNeeded: false }))
+
 beforeEach(() => {
   getAgentRoster.mockResolvedValue(roster)
+  probeLocalBackend.mockResolvedValue({ bootstrapNeeded: false })
   selectConnection.mockResolvedValue(undefined)
-  ;(window as { hermesDesktop?: unknown }).hermesDesktop = { getAgentRoster }
+  openWindow.mockResolvedValue({ ok: true })
+  ;(window as { hermesDesktop?: unknown }).hermesDesktop = { getAgentRoster, openWindow, probeLocalBackend }
 })
 
 afterEach(() => {
@@ -223,6 +248,41 @@ afterEach(() => {
 })
 
 describe('ProfileRail fleet mode', () => {
+  it.each([false, true])(
+    'keeps right-click launch routes exact without selecting a profile (condensed=%s)',
+    async condensed => {
+      armFleet()
+      activeConnectionId.set('local')
+      profiles.set([
+        { is_default: true, name: 'default' },
+        { is_default: false, name: 'builder' },
+        ...(condensed ? Array.from({ length: 12 }, (_, index) => ({ is_default: false, name: `p${index}` })) : [])
+      ])
+      await renderFleet()
+
+      for (const target of [
+        { label: 'builder', connectionId: null, profile: 'builder' },
+        { label: 'scout · Gateway A', connectionId: 'gateway-a', profile: 'scout' },
+        { label: 'default · Gateway A', connectionId: 'gateway-a', profile: 'default' }
+      ]) {
+        if (condensed) {
+          fireEvent.pointerDown(screen.getByRole('button', { name: 'Profiles' }), { button: 0, ctrlKey: false })
+        }
+
+        fireEvent.contextMenu(
+          screen.getByRole(condensed ? (target.connectionId ? 'menuitem' : 'menuitemradio') : 'button', {
+            name: target.label
+          })
+        )
+        await act(async () => fireEvent.click(screen.getByRole('menuitem', { name: 'Open in new window' })))
+        expect(openWindow).toHaveBeenLastCalledWith({ connectionId: target.connectionId, profile: target.profile })
+        expect(selectProfile).not.toHaveBeenCalled()
+        expect(selectConnection).not.toHaveBeenCalled()
+        fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' })
+      }
+    }
+  )
+
   it('keeps the custom named-profile order when a source becomes inactive', async () => {
     armFleet()
     profiles.set([...profiles.get(), { name: 'editor', is_default: false }])
@@ -309,8 +369,24 @@ describe('ProfileRail fleet mode', () => {
     expect(dividers).toEqual(['local', 'gateway-a', 'gateway-b'])
 
     const local = screen.getByRole('group', { name: 'Profiles on This device' })
-    expect(within(local).getByRole('button', { name: 'default · This device' })).toBeTruthy()
+
+    const localDevice = within(local).getByRole('button', {
+      name: 'This device (local backend — installs Hermes if missing, otherwise opens a fresh session)'
+    })
+
     expect(within(local).getByRole('button', { name: 'builder · This device' })).toBeTruthy()
+
+    // This device is a backend switch that may install (#102826), so its
+    // default pill must not share the home glyph other gateways' defaults use.
+    expect(localDevice.querySelector('.codicon-device-desktop')).toBeTruthy()
+    expect(localDevice.querySelector('.codicon-home')).toBeNull()
+
+    const gatewayB = container.querySelector(
+      '[data-slot="profile-rail-gateway"][data-connection-id="gateway-b"]'
+    ) as HTMLElement
+
+    const gatewayBHome = within(gatewayB).getByRole('button', { name: 'default · Gateway B' })
+    expect(gatewayBHome.querySelector('.codicon-home')).toBeTruthy()
 
     // The active gateway's own squares are unchanged and unqualified.
     expect(screen.getByRole('button', { name: 'scout' })).toBeTruthy()
@@ -345,6 +421,10 @@ describe('ProfileRail fleet mode', () => {
     const builder = screen.getByRole('button', { name: 'builder · This device' })
     fireEvent.click(builder)
 
+    await act(async () => {
+      await Promise.resolve()
+    })
+
     expect(selectConnection).toHaveBeenCalledWith('local', { profile: 'builder' })
     expect(selectProfile).not.toHaveBeenCalled()
     // The dial spinner sits on the clicked square, not in the statusbar.
@@ -358,13 +438,73 @@ describe('ProfileRail fleet mode', () => {
     expect(builder.getAttribute('aria-busy')).toBeNull()
   })
 
-  it('re-homes onto another gateway default from its home square', async () => {
+  it('asks before a fresh session when This device is already installed', async () => {
     armFleet()
     await renderFleet()
 
-    fireEvent.click(screen.getByRole('button', { name: 'default · This device' }))
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: 'This device (local backend — installs Hermes if missing, otherwise opens a fresh session)'
+      })
+    )
+
+    expect(selectConnection).not.toHaveBeenCalled()
+    expect(await screen.findByRole('dialog', { name: 'Switch to This device?' })).toBeTruthy()
+    expect(
+      screen.getByText(
+        'This opens a fresh session on this computer. The conversation you are in stays on the other gateway.'
+      )
+    ).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Switch' }))
+
+    await act(async () => {
+      await Promise.resolve()
+    })
 
     expect(selectConnection).toHaveBeenCalledWith('local', { profile: 'default' })
+  })
+
+  it('confirms before installing and offers connect-to-existing inline', async () => {
+    armFleet()
+    probeLocalBackend.mockResolvedValue({ bootstrapNeeded: true })
+    await renderFleet()
+
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: 'This device (local backend — installs Hermes if missing, otherwise opens a fresh session)'
+      })
+    )
+
+    expect(selectConnection).not.toHaveBeenCalled()
+    expect(
+      await screen.findByText(
+        'This will install Hermes locally, then open a fresh session on this computer. Nothing is installed until you confirm.'
+      )
+    ).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Connect to existing instead' }))
+
+    expect(selectConnection).not.toHaveBeenCalled()
+    expect(await screen.findByText('Connect to existing Hermes')).toBeTruthy()
+  })
+
+  it('does not switch when the fresh-session cue is cancelled', async () => {
+    armFleet()
+    await renderFleet()
+
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: 'This device (local backend — installs Hermes if missing, otherwise opens a fresh session)'
+      })
+    )
+    fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }))
+
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    expect(selectConnection).not.toHaveBeenCalled()
   })
 
   it('keeps the active gateway click on the plain profile path', async () => {
@@ -411,5 +551,26 @@ describe('ProfileRail fleet mode', () => {
 
     expect(screen.getByRole('button', { name: 'Profiles' })).toBeTruthy()
     expect(container.querySelector('[data-slot="profile-rail-rest-square"]')).toBeNull()
+  })
+
+  it('keeps the device glyph on the This device row once the rail condenses', async () => {
+    armFleet()
+    profiles.set([
+      { is_default: true, name: 'default' },
+      ...Array.from({ length: 11 }, (_, index) => ({ is_default: false, name: `p${index + 1}` }))
+    ])
+    await renderFleet()
+
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'Profiles' }), { button: 0, ctrlKey: false })
+
+    const localDevice = await screen.findByRole('menuitem', {
+      name: 'This device (local backend — installs Hermes if missing, otherwise opens a fresh session)'
+    })
+
+    expect(localDevice.querySelector('.codicon-device-desktop')).toBeTruthy()
+    expect(localDevice.querySelector('.codicon-home')).toBeNull()
+
+    const gatewayBHome = screen.getByRole('menuitem', { name: 'default · Gateway B' })
+    expect(gatewayBHome.querySelector('.codicon-home')).toBeTruthy()
   })
 })

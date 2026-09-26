@@ -12,7 +12,9 @@ only HERMES_HOME. And the launch-profile asymmetry: a default-member hosted-room
 from __future__ import annotations
 
 import os
+import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -22,6 +24,12 @@ from tui_gateway import launch_profile_policy as lpp
 A_VAL = "a-only-secret-0001"
 B_VAL = "b-only-secret-0002"
 ENV_VAL = "systemd-injected-0003"
+A_API_KEY = "launch-api-key-0004"
+B_API_KEY = "secondary-api-key-0005"
+A_BASE_URL = "https://launch.example.invalid/v1"
+B_BASE_URL = "https://secondary.example.invalid/v1"
+A_CODEX_URL = "https://launch.example.invalid/codex"
+B_CODEX_URL = "https://secondary.example.invalid/codex"
 
 
 @pytest.fixture
@@ -30,14 +38,23 @@ def two_homes(tmp_path, monkeypatch):
     root = tmp_path / "hermes_home"
     b = root / "profiles" / "b"
     b.mkdir(parents=True)
-    (root / ".env").write_text(f"A_ONLY_TOKEN={A_VAL}\n", encoding="utf-8")
-    (b / ".env").write_text(f"B_ONLY_TOKEN={B_VAL}\n", encoding="utf-8")
+    (root / ".env").write_text(
+        f"A_ONLY_TOKEN={A_VAL}\nHERMES_API_KEY={A_API_KEY}\nHERMES_BASE_URL={A_BASE_URL}\n"
+        f"HERMES_CODEX_BASE_URL={A_CODEX_URL}\n",
+        encoding="utf-8")
+    (b / ".env").write_text(
+        f"B_ONLY_TOKEN={B_VAL}\nHERMES_API_KEY={B_API_KEY}\nHERMES_BASE_URL={B_BASE_URL}\n"
+        f"HERMES_CODEX_BASE_URL={B_CODEX_URL}\n",
+        encoding="utf-8")
     for home in (root, b):
         (home / "config.yaml").write_text(
             "probe:\n  a_ref: ${A_ONLY_TOKEN}\n  b_ref: ${B_ONLY_TOKEN}\n  env_ref: ${INJECTED_TOKEN}\n",
             encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(root))
     monkeypatch.setenv("A_ONLY_TOKEN", A_VAL)  # the launch process loaded its own .env
+    monkeypatch.setenv("HERMES_API_KEY", A_API_KEY)
+    monkeypatch.setenv("HERMES_BASE_URL", A_BASE_URL)
+    monkeypatch.setenv("HERMES_CODEX_BASE_URL", A_CODEX_URL)
     monkeypatch.setenv("INJECTED_TOKEN", ENV_VAL)  # systemd / op run credential injection
     monkeypatch.setattr(server, "_hermes_home", root)
     monkeypatch.setattr(server, "_served_profile_homes", set())
@@ -123,6 +140,156 @@ def test_rpc_scope_reaches_llm_oneshot_and_model_options(two_homes, monkeypatch)
     assert seen["options"] == (b, B_VAL, None)
 
 
+@pytest.mark.parametrize("route", ["session.compress", "slash.compress"])
+def test_manual_compress_routes_bind_the_sessions_full_runtime_scope(two_homes, monkeypatch, route):
+    """Manual compression must resolve secrets from its session across an A→B→A sequence."""
+    from agent.secret_scope import get_secret
+    from hermes_constants import get_hermes_home
+
+    root, b = two_homes
+    seen = []
+
+    def observe_scope():
+        seen.append((Path(get_hermes_home()), get_secret("A_ONLY_TOKEN"), get_secret("B_ONLY_TOKEN")))
+
+    def invoke(profile_home):
+        sid = f"compress-{len(seen)}"
+        agent = SimpleNamespace(_cached_system_prompt="", tools=None)
+        session = {
+            "agent": agent,
+            "profile_home": str(profile_home) if profile_home else None,
+            "history": [{"role": "user", "content": "hello"}],
+            "history_lock": threading.Lock(),
+            "history_version": 0,
+            "running": False,
+            "session_key": sid,
+        }
+        server._sessions[sid] = session
+        try:
+            if route == "session.compress":
+                monkeypatch.setattr(server, "_sess_nowait", lambda params, rid: (session, None))
+                monkeypatch.setattr(server, "_sess", lambda params, rid: (session, None))
+                monkeypatch.setattr(server, "_session_uses_compute_host", lambda value: False)
+
+                def compress_live(*args, **kwargs):
+                    observe_scope()
+                    return server._ok("rid", {"status": "compressed"})
+
+                monkeypatch.setattr(server, "_compress_live", compress_live)
+                response = server._methods["session.compress"]("rid", {"session_id": sid})
+                assert "error" not in response
+            else:
+                def compress_history(*args, **kwargs):
+                    observe_scope()
+                    raise server.CompressionLockHeld("test holder")
+
+                monkeypatch.setattr(server, "_compress_session_history", compress_history)
+                monkeypatch.setattr(
+                    "agent.model_metadata.estimate_request_tokens_rough", lambda *args, **kwargs: 1)
+                server._compress_live_with_feedback(sid, session, agent, "", snapshot_kwargs=True)
+        finally:
+            server._sessions.pop(sid, None)
+
+    invoke(None)
+    _probe("b")  # activate multiplexing and freeze the launch profile's own secret scope
+    invoke(b)
+    invoke(None)
+
+    assert seen == [
+        (root, A_VAL, None),
+        (b, None, B_VAL),
+        (root, A_VAL, None),
+    ]
+    assert os.environ["A_ONLY_TOKEN"] == A_VAL
+    assert "B_ONLY_TOKEN" not in os.environ
+
+
+def test_live_review_binds_runtime_scope_under_multiplex(two_homes, monkeypatch):
+    """Desktop /review is off-turn; start_review must still see the session's secrets (#117544)."""
+    from agent.secret_scope import UnscopedSecretError, get_secret
+    from hermes_constants import get_hermes_home
+    from tui_gateway.transport import StdioTransport
+
+    root, b = two_homes
+    seen = []
+
+    def fake_start_review(agent, snapshot, prompt):
+        seen.append((
+            Path(get_hermes_home()),
+            get_secret("A_ONLY_TOKEN"),
+            get_secret("B_ONLY_TOKEN"),
+            get_secret("HERMES_CODEX_BASE_URL"),
+        ))
+        return {"status": "dispatched", "delegation_id": "deleg_x"}
+
+    def invoke(profile_home):
+        sid = f"review-{len(seen)}"
+        session = {
+            "agent": object(),
+            "profile_home": str(profile_home) if profile_home else None,
+            "history": [{"role": "user", "content": "hi"}],
+            "history_lock": threading.Lock(),
+            "running": False,
+            "session_key": sid,
+            "cwd": "",
+            "source": "desktop",
+            "transport": StdioTransport(lambda: None, threading.Lock()),
+        }
+        server._sessions[sid] = session
+        token = server.bind_transport(session["transport"])
+        try:
+            with (
+                monkeypatch.context() as ctx,
+            ):
+                ctx.setattr(server, "_session_uses_compute_host", lambda value: False)
+                from unittest.mock import patch
+                with patch("agent.review_engine.start_review", fake_start_review):
+                    out = server._live_slash_command_output(sid, session, "review", "")
+            assert out == "Review started. Results will return here."
+        finally:
+            server.reset_transport(token)
+            server._sessions.pop(sid, None)
+
+    invoke(None)
+    _probe("b")
+    with pytest.raises(UnscopedSecretError):
+        get_secret("HERMES_CODEX_BASE_URL")
+    invoke(b)
+    invoke(None)
+
+    assert seen == [
+        (root, A_VAL, None, A_CODEX_URL),
+        (b, None, B_VAL, B_CODEX_URL),
+        (root, A_VAL, None, A_CODEX_URL),
+    ]
+    assert os.environ["HERMES_CODEX_BASE_URL"] == A_CODEX_URL
+
+
+def test_config_show_keeps_each_profiles_values_after_multiplex_activation(two_homes):
+    """A→B→A config.show calls resolve the requested profile instead of running unscoped."""
+    root, b = two_homes
+
+    def displayed_values(profile=None):
+        params = {"profile": profile} if profile else {}
+        response = server._methods["config.show"]("rid", params)
+        assert "error" not in response, response
+        sections = {
+            section["title"]: dict(section["rows"])
+            for section in response["result"]["sections"]
+        }
+        return sections["Model"], sections["Environment"]
+
+    for profile, home, api_key, base_url in (
+        (None, root, A_API_KEY, A_BASE_URL),
+        ("b", b, B_API_KEY, B_BASE_URL),
+        (None, root, A_API_KEY, A_BASE_URL),
+    ):
+        model, environment = displayed_values(profile)
+        assert model["API Key"] == f"****{api_key[-4:]}"
+        assert model["Base URL"] == base_url
+        assert environment["Config File"] == str(home / "config.yaml")
+
+
 def test_launch_profile_agent_build_is_scoped_once_multiplexing(two_homes, monkeypatch):
     """The C6 asymmetry: a default-profile session (``profile_home`` None) in a multiplexing process
     must bind the launch profile's own scope for its agent build instead of running unscoped."""
@@ -140,3 +307,48 @@ def test_launch_profile_agent_build_is_scoped_once_multiplexing(two_homes, monke
     finally:
         server._release_build_profile_scopes(scopes)
     assert current_secret_scope() is None
+
+
+class _MemoryManager:
+    """Stands in for an external memory provider: ``system_prompt_block()`` reads its credential via get_secret."""
+    def build_system_prompt(self):
+        from agent.secret_scope import get_secret
+        from hermes_constants import get_hermes_home
+        return f"{get_hermes_home()}|{get_secret('MEM_PROVIDER_KEY')}"
+
+
+def _prompt_building_session(profile_home, key):
+    import threading
+    from types import SimpleNamespace
+    agent = SimpleNamespace(
+        _memory_manager=_MemoryManager(), _cached_system_prompt="", session_id=key, model="m", tools=[],
+        _session_db=SimpleNamespace(update_system_prompt=lambda sid, prompt: None))
+    agent._build_system_prompt = lambda system_message=None: agent._memory_manager.build_system_prompt()
+    return {"agent": agent, "history": [], "history_lock": threading.Lock(), "history_version": 0,
+            "running": False, "session_key": key, "profile_home": profile_home, "cwd": os.getcwd()}
+
+
+def test_off_turn_prompt_rebuilds_run_under_the_sessions_profile_scope(two_homes, monkeypatch):
+    """Regression for #112927: ``session.context_breakdown`` (Desktop refetches it after every turn) and the
+    model-switch prompt re-persist rebuilt the system prompt with no secret scope, so the external memory
+    provider's ``system_prompt_block()`` hit ``UnscopedSecretError`` on the LAUNCH profile once the process
+    hosted a second home — and for a secondary they resolved the launch profile's credential/home."""
+    import agent.system_prompt as system_prompt
+
+    root, b = two_homes
+    (root / ".env").write_text((root / ".env").read_text() + "MEM_PROVIDER_KEY=launch-mem-key\n")
+    (b / ".env").write_text((b / ".env").read_text() + "MEM_PROVIDER_KEY=b-mem-key\n")
+    monkeypatch.setattr(system_prompt, "build_system_prompt_parts",
+                        lambda agent, system_message=None: {"stable": "", "context": "",
+                                                            "volatile": agent._memory_manager.build_system_prompt()})
+    monkeypatch.setattr("agent.context_file_sources.context_file_sources_for_agent", lambda agent: [])
+    sessions = {"sa": _prompt_building_session(None, "sess-a"), "sb": _prompt_building_session(str(b), "sess-b")}
+    monkeypatch.setattr(server, "_sessions", sessions)
+    assert _probe("b")["b_ref"] == B_VAL  # flips the process to fail-closed multi-profile hosting
+
+    for sid, home, key in (("sa", root, "launch-mem-key"), ("sb", b, "b-mem-key"), ("sa", root, "launch-mem-key")):
+        resp = server._methods["session.context_breakdown"]("rid", {"session_id": sid})
+        assert "error" not in resp, resp
+        server._persist_live_session_system_prompt(sessions[sid])
+        assert sessions[sid]["agent"]._cached_system_prompt == f"{home}|{key}"
+    assert os.environ.get("MEM_PROVIDER_KEY") is None

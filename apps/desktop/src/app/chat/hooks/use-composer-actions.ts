@@ -2,12 +2,11 @@ import { useCallback } from 'react'
 
 import { requestComposerFocus, requestComposerInsert, requestComposerInsertRefs } from '@/app/chat/composer/focus'
 import { droppedFileInlineRef } from '@/app/chat/composer/inline-refs'
-import { pasteSizeLabel } from '@/app/chat/composer/large-paste'
+import { LARGE_PASTE_TITLE_PREVIEW_CHARS, pasteSizeLabel } from '@/app/chat/composer/large-paste'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { useI18n } from '@/i18n'
 import { attachmentId, contextPath, pathLabel } from '@/lib/chat-runtime'
 import { readDesktopFileDataUrlLocalFirst, selectDesktopPaths } from '@/lib/desktop-fs'
-import { desktopGit } from '@/lib/desktop-git'
 import { downscaleDataUrlForPreview } from '@/lib/image-resize'
 import { normalize } from '@/lib/text'
 import {
@@ -76,6 +75,24 @@ async function queuedAttachmentPreview(filePath: string): Promise<{ previewUrl: 
   )
 
   return task
+}
+
+/**
+ * Prefer a cheap object-URL preview when the drop/paste still has a Blob/File
+ * handle. `readFileDataUrl` base64-loads the whole file over IPC (capped at
+ * 16 MB) and was freezing Desktop on Windows Explorer image drops (#63682).
+ * Object URLs skip that read; path-only attaches (paperclip) still fall back
+ * to the IPC data-URL path.
+ */
+export async function resolveImageAttachmentPreview(
+  filePath: string,
+  previewSource?: Blob | null
+): Promise<string> {
+  if (previewSource && previewSource.size > 0) {
+    return URL.createObjectURL(previewSource)
+  }
+
+  return attachmentPreviewDataUrl(filePath)
 }
 
 export interface DroppedFile {
@@ -395,51 +412,6 @@ export function useComposerActions({
     [attachToMain]
   )
 
-  // A pasted GitHub PR-comment deep link → structured `review` attachment.
-  // Optimistic: the card lands immediately with the URL as its ref, then the
-  // background gh resolve fills in author/anchor (label + detail). If gh can't
-  // answer — offline, unauthenticated, foreign repo, remote gateway — the card
-  // downgrades to a plain `url` attachment so the paste is never lost.
-  const attachPrCommentUrl = useCallback(
-    (url: string): boolean => {
-      const id = attachmentId('review', url)
-      const refText = `@url:${formatRefValue(url)}`
-
-      attachToMain({
-        id,
-        kind: 'review',
-        label: url.replace(/^https:\/\/github\.com\//, '').replace(/#.*$/, ''),
-        refText,
-        uploadState: 'uploading'
-      })
-
-      void (async () => {
-        const comment = currentCwd
-          ? await (desktopGit()
-              ?.review.fetchPrComment(currentCwd, url)
-              .catch(() => null) ?? null)
-          : null
-
-        if (comment) {
-          scope.update({
-            id,
-            kind: 'review',
-            label: comment.path
-              ? `${pathLabel(comment.path)}${comment.line ? `:${comment.line}` : ''} — @${comment.author}`
-              : `PR #${comment.prNumber} — @${comment.author}`,
-            detail: JSON.stringify(comment),
-            refText
-          })
-        } else {
-          scope.update({ id, kind: 'url', label: pathLabel(url), refText })
-        }
-      })()
-
-      return true
-    },
-    [attachToMain, currentCwd, scope]
-  )
-
   const pickContextPaths = useCallback(
     async (kind: 'file' | 'folder') => {
       const paths = await selectDesktopPaths({
@@ -511,7 +483,7 @@ export function useComposerActions({
   )
 
   const attachImagePath = useCallback(
-    async (filePath: string) => {
+    async (filePath: string, previewSource?: Blob | null) => {
       if (!filePath) {
         return false
       }
@@ -528,6 +500,18 @@ export function useComposerActions({
       attachToMain(baseAttachment)
 
       try {
+        // OS drops / clipboard blobs pass their File/Blob so preview never
+        // base64-loads the full image over IPC (Windows freeze on Explorer
+        // drag-drop — #63682). Path-only picks keep the queued IPC thumbnail
+        // path; blob previews skip the read entirely.
+        if (previewSource && previewSource.size > 0) {
+          const previewUrl = URL.createObjectURL(previewSource)
+
+          scope.updateIfCurrent(baseAttachment, { previewUrl })
+
+          return true
+        }
+
         const { previewUrl, thumbnailUrl } = await queuedAttachmentPreview(filePath)
 
         if (previewUrl) {
@@ -552,8 +536,8 @@ export function useComposerActions({
   )
 
   const attachImageBlob = useCallback(
-    async (blob: Blob) => {
-      if (blob.size === 0) {
+    async (blob: Blob, isCurrent: () => boolean = () => true) => {
+      if (blob.size === 0 || !isCurrent()) {
         return false
       }
 
@@ -563,6 +547,11 @@ export function useComposerActions({
 
       try {
         const buffer = await blob.arrayBuffer()
+
+        if (!isCurrent()) {
+          return false
+        }
+
         const data = new Uint8Array(buffer)
         const name = blob instanceof File ? blob.name : undefined
         const savedPath = await window.hermesDesktop?.saveImageBuffer(data, blobExtension(blob), name)
@@ -573,7 +562,10 @@ export function useComposerActions({
           return false
         }
 
-        return attachImagePath(savedPath)
+        // Reuse the in-hand blob for the chip preview — do not re-read the
+        // just-written temp file as a data URL. A late component unmount must
+        // not leak the attach: attach only while still current.
+        return isCurrent() ? attachImagePath(savedPath, blob) : false
       } catch (err) {
         notifyError(err, copy.imageAttachFailed)
 
@@ -664,7 +656,8 @@ export function useComposerActions({
           label: `${copy.pastedContent} (${pasteSizeLabel(text)})`,
           detail: contextPath(savedPath, currentCwd),
           refText: `@file:${formatRefValue(savedPath)}`,
-          path: savedPath
+          path: savedPath,
+          titlePreview: text.slice(0, LARGE_PASTE_TITLE_PREVIEW_CHARS)
         })
 
         return true
@@ -755,14 +748,15 @@ export function useComposerActions({
         const isImage = file.type.startsWith('image/') || isImagePath(file.name) || (filePath && isImagePath(filePath))
 
         if (isImage) {
-          // Finder may expose a dropped screenshot through a short-lived
-          // TemporaryItems/NSIRD_screencaptureui path even when the visible
-          // file has already landed on Desktop. Reading that path for the
-          // preview can succeed, then image.attach fails after macOS removes
-          // it before submit. Persist the File bytes into Desktop's durable
-          // composer-image cache first; keep the native path as a compatibility
-          // fallback for older shells that cannot save the buffer.
-          if ((await attachImageBlob(file)) || (filePath && (await attachImagePath(filePath)))) {
+          // Persist the File bytes into Desktop's durable composer-image cache
+          // FIRST: Finder may expose a dropped screenshot through a short-lived
+          // TemporaryItems/NSIRD_screencaptureui path even when the visible file
+          // has already landed on Desktop — reading that path for the preview
+          // can succeed, then image.attach fails after macOS removes it before
+          // submit. attachImageBlob also hands the in-hand blob through for a
+          // non-blocking object-URL chip preview (#63682); the native path stays
+          // the fallback for shells that cannot save the buffer.
+          if ((await attachImageBlob(file)) || (filePath && (await attachImagePath(filePath, file)))) {
             attached = true
 
             continue
@@ -820,7 +814,6 @@ export function useComposerActions({
     attachDroppedItems,
     attachImageBlob,
     attachImagePath,
-    attachPrCommentUrl,
     attachPastedText,
     insertContextPathInlineRef,
     pasteClipboardImage,

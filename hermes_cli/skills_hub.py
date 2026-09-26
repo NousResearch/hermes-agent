@@ -245,10 +245,12 @@ def _full_identifier(identifier: str, sources, c) -> str:
 
 def _resolve_identifier(identifier: str, sources, c) -> tuple:
     """Short-name resolution + (meta, bundle, source). identifier == "" means unresolved."""
-    identifier = _full_identifier(identifier, sources, c)
-    if not identifier:
-        return "", None, None, None
-    return (identifier, *_resolve_source_meta_and_bundle(identifier, sources))
+    from tools.skills_hub import skills_hub_http_session
+    with skills_hub_http_session():
+        identifier = _full_identifier(identifier, sources, c)
+        if not identifier:
+            return "", None, None, None
+        return (identifier, *_resolve_source_meta_and_bundle(identifier, sources))
 
 
 def _is_valid_installed_skill_name(name: str) -> bool:
@@ -675,7 +677,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     """Fetch, quarantine, scan, confirm, and install a skill. ``source_id`` pins resolution to one
     adapter; callers that know the provenance (``do_update``) must pass it so a bare identifier
     cannot resolve to a same-named skill elsewhere."""
-    from tools.skills_hub import HubLockFile, ensure_hub_dirs
+    from tools.skills_hub import HubLockFile, ensure_hub_dirs, skills_hub_http_session
     from tools.skills_hub_install import install_from_quarantine, quarantine_bundle
     from tools.skills_guard import should_allow_install
     c = console or _console
@@ -683,11 +685,13 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     sources = _pinned_sources(c, _sources(), source_id, identifier)
     if sources is None:
         return
-    identifier = _full_identifier(identifier, sources, c)
-    if not identifier:
-        return
-    c.print(f"\n[bold]Fetching:[/] {identifier}")
-    meta, bundle, _matched_source = _resolve_source_meta_and_bundle(identifier, sources)
+    # One pooled guarded client for the whole resolve + fetch fan-out (tree, SKILL.md, N support files).
+    with skills_hub_http_session():
+        identifier = _full_identifier(identifier, sources, c)
+        if not identifier:
+            return
+        c.print(f"\n[bold]Fetching:[/] {identifier}")
+        meta, bundle, _matched_source = _resolve_source_meta_and_bundle(identifier, sources)
     if not bundle:
         _print_fetch_failure(c, sources, identifier, meta=meta, source=_matched_source)
         return
@@ -783,6 +787,7 @@ def do_list(source_filter: str = "all", enabled_only: bool = False,
     from tools.skills_sync import _read_manifest
     from tools.skills_tool import _find_all_skills
     from agent.skill_utils import get_disabled_skill_names
+    from agent.skill_commands import skill_command_collision_note
     c = console or _console
     ensure_hub_dirs()
     hub_installed = {e["name"]: e for e in HubLockFile().list_installed()}
@@ -809,9 +814,12 @@ def do_list(source_filter: str = "all", enabled_only: bool = False,
         counts[source_type] += 1
         enabled_count += is_enabled
         disabled_count += not is_enabled
+        status = "[bold green]enabled[/]" if is_enabled else "[dim red]disabled[/]"
+        # Name taken by a built-in: the skill loads but has no /<name> (see agent.skill_commands).
+        if note := skill_command_collision_note(name):
+            status += f"\n[yellow]{note}[/]"
         table.add_row(name, skill.get("category", ""), source_display,
-                      _trust_cell(trust, source_display),
-                      "[bold green]enabled[/]" if is_enabled else "[dim red]disabled[/]")
+                      _trust_cell(trust, source_display), status)
 
     c.print(table)
     tail = (f"{enabled_count} enabled shown" if enabled_only
@@ -1132,7 +1140,7 @@ def do_tap(action: str, repo: str = "", console: Optional[Console] = None) -> No
 
 def _read_frontmatter(skill_md: str) -> dict:
     """YAML frontmatter of a SKILL.md body ({} when absent/invalid)."""
-    import yaml
+    import hermes_yaml as yaml
     match = re.search(r'\n---\s*\n', skill_md[3:]) if skill_md.startswith("---") else None
     try:
         return (yaml.safe_load(skill_md[3:match.start() + 3]) or {}) if match else {}
@@ -1153,7 +1161,7 @@ def do_publish(skill_path: str, target: str = "github", repo: str = "",
     if not (path / "SKILL.md").exists():
         _print_error(c, f"No SKILL.md found at {path}")
         return
-    skill_md = (path / "SKILL.md").read_text(encoding="utf-8").lstrip("\ufeff")  # tolerate BOM
+    skill_md = (path / "SKILL.md").read_text(encoding="utf-8-sig").lstrip("\ufeff")  # tolerate BOM
     fm = _read_frontmatter(skill_md)
     name = fm.get("name", path.name)
     if not fm.get("description", ""):
@@ -1284,7 +1292,7 @@ def do_snapshot_import(input_path: str, force: bool = False,
         _print_error(c, f"File not found: {inp}")
         return
     try:
-        snapshot = json.loads(inp.read_text(encoding="utf-8"))
+        snapshot = json.loads(inp.read_text(encoding="utf-8-sig"))
     except json.JSONDecodeError:
         _print_error(c, f"Invalid JSON in {inp}")
         return

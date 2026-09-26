@@ -208,7 +208,7 @@ def _chain_runner_and_ctx(followup_return):
     turn_ctx = SimpleNamespace(
         source=topic, session_id="sid", session_key=TOPIC_SESSION_KEY, run_generation=1,
         _interrupt_depth=0, history=[], _status_thread_metadata={"thread_id": "7"},
-        context_prompt=None, result_holder=[None], gateway_review_admission=None)
+        context_prompt=None, result_holder=[None])
     pending_event = SimpleNamespace(
         source=topic, message_id="6002", channel_prompt=None, message_type=None,
         internal=False, metadata={}, reply_expected=None)
@@ -236,7 +236,7 @@ async def test_a_chained_queued_turn_carries_its_own_inbound_id():
     turn_ctx = SimpleNamespace(
         source=topic, session_id="sid", session_key=TOPIC_SESSION_KEY, run_generation=1,
         _interrupt_depth=0, history=[], _status_thread_metadata={"thread_id": "7"},
-        context_prompt=None, result_holder=[None], gateway_review_admission=None)
+        context_prompt=None, result_holder=[None])
     pending_event = SimpleNamespace(
         source=topic, message_id="6002", channel_prompt=None, message_type=None,
         internal=False, metadata={}, reply_expected=None)

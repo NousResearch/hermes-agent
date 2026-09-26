@@ -4104,7 +4104,10 @@ class GatewayTurnMixin:
                 # The follow-up is bound to the OUTER admission like the first turn: ``bind_agent``
                 # then runs per turn, so a first turn's non-terminal candidate never outlives the
                 # follow-up that superseded it, and the spawn Context is the terminal turn's.
-                gateway_review_admission=turn_ctx.gateway_review_admission,
+                # Read like ``TurnRunner._wire_turn_agent_callbacks``: ``TurnContext`` defaults the
+                # field to None, and upstream drives this seam with turn-context doubles carrying
+                # only the fields main reads.
+                gateway_review_admission=getattr(turn_ctx, "gateway_review_admission", None),
             )
         except asyncio.CancelledError:
             await _run_followup_processing_hook(

@@ -1005,6 +1005,55 @@ async def test_queued_followup_turn_carries_the_outer_review_admission(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_queued_followup_runs_unowned_when_the_turn_context_carries_no_admission(
+    monkeypatch,
+):
+    """Upstream drives this seam with turn-context doubles carrying exactly the fields main's
+    function reads; the admission is this branch's field. The seam reads it the way
+    ``TurnRunner._wire_turn_agent_callbacks`` does: absent means an unowned follow-up (None),
+    never an AttributeError that fails an untouched upstream test."""
+    monkeypatch.setattr(BasePlatformAdapter, "__abstractmethods__", frozenset())
+    adapter = BasePlatformAdapter(
+        PlatformConfig(enabled=True, token="***"), Platform.TELEGRAM
+    )
+    session_key = "followup-without-admission"
+    runner = _busy_runner(adapter, types.SimpleNamespace(), session_key)
+    captured = {}
+
+    async def _fake_run_agent(
+        message, context_prompt, history, source, session_id, **kwargs
+    ):
+        captured.update(kwargs)
+        return {"final_response": "follow-up reply", "messages": list(history)}
+
+    async def _noop_refresh(*_args, **_kwargs):
+        return None
+
+    runner._run_agent = _fake_run_agent
+    runner._refresh_agent_cache_message_count = _noop_refresh
+    event = _event()
+    turn_ctx = types.SimpleNamespace(
+        source=event.source,
+        session_id="session-id",
+        session_key=session_key,
+        run_generation=1,
+        _interrupt_depth=0,
+        history=[],
+        _status_thread_metadata={},
+        result_holder=[None],
+        context_prompt="",
+    )
+
+    result = await runner._run_agent_queued_followup(
+        turn_ctx, adapter, "queued text", None, "response", {"interrupted": True}, None
+    )
+
+    assert result["final_response"] == "follow-up reply"
+    assert "gateway_review_admission" in captured
+    assert captured["gateway_review_admission"] is None
+
+
+@pytest.mark.asyncio
 async def test_review_completion_failure_is_logged_with_owner_and_reason(
     monkeypatch, caplog
 ):

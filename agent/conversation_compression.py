@@ -2112,7 +2112,13 @@ def check_compression_model_feasibility(agent: Any) -> None:
                     "long chats, so older messages will be cut without a summary. Run `hermes setup` to add one."
                 )
             _emit_feasibility_notice(agent, msg)
-            logger.warning("No auxiliary LLM provider for compression — summaries will be unavailable.")
+            # Log the SAME message the user gets, not a generic restatement.
+            # This branch is where compression drops middle turns without a
+            # summary, and on a long-running gateway the log is the only
+            # record. A generic line cannot distinguish a configured provider
+            # that failed auth (reauthenticate it) from an install that never
+            # had one (run setup) — which is the whole diagnosis.
+            logger.warning("%s", msg.lstrip("⚠").strip())
             return
         aux_base_url = str(getattr(client, "base_url", ""))
         # client.api_key may be a callable (Entra bearer); the resolver only needs a key

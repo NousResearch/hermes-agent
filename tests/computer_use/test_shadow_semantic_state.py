@@ -127,6 +127,8 @@ def test_shadow_observe_records_section_j_metrics():
 def test_shadow_observe_is_measurement_only():
     cap = CaptureResult(mode="ax", width=W, height=H, elements=_form_elements(),
                         app="TestApp", window_title="Settings")
+    assert cu_tool._shadow_state_observe(cap, None) is None
+    assert cu_tool.get_shadow_state_metrics(None) == {}
     assert cu_tool._shadow_state_observe(cap, "sess-9") is None
     assert cu_tool.get_shadow_state_metrics("no-such-session") == {}
     # Vision-only captures carry no semantic content: nothing recorded, nothing raised.

@@ -727,10 +727,12 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             "        text = text[1:]\n"
             "    text = text.replace('\\r\\n', '\\n')\n"
             "    lines = text.split('\\n')\n"
+            "    if not lines[-1]:\n"
+            "        lines = lines[:-1]\n"
             "    total = len(lines)\n"
             "    sel = lines[offset - 1: offset - 1 + limit]\n"
             "    out = {'total_lines': total, 'encoding': enc,\n"
-            "           'content': '\\n'.join(sel)}\n"
+            "           'content': ''.join(line + '\\n' for line in sel)}\n"
             "    print('HERMES_UTF16:OK')\n"
             "    print(json.dumps(out, ensure_ascii=True))\n"
             "except Exception:\n"
@@ -753,6 +755,18 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             encoding = str(data.get("encoding", "utf-16"))
         except (ValueError, KeyError, TypeError):
             return None
+        if not content:
+            end_line = offset + limit - 1
+            truncated = total_lines > end_line
+            hint_parts = [f"Transcoded from {encoding.upper()} to UTF-8 for display. "
+                          "Text edits via patch/write_file would re-encode as UTF-8."]
+            if truncated:
+                hint_parts.append(
+                    f"Use offset={end_line + 1} to continue reading "
+                    f"(showing {offset}-{end_line} of {total_lines} lines)")
+            return ReadResult(
+                content="", total_lines=total_lines,
+                file_size=file_size, truncated=truncated, hint=" ".join(hint_parts))
         end_line = offset + limit - 1
         truncated = total_lines > end_line
         hint_parts = [f"Transcoded from {encoding.upper()} to UTF-8 for display. "

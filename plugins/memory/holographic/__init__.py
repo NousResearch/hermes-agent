@@ -10,7 +10,7 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
 from tools.registry import tool_error
@@ -191,13 +191,53 @@ class HolographicMemoryProvider(MemoryProvider):
         if is_truthy_value(self._config.get("auto_extract", False)) and self._store and messages:
             self._auto_extract_facts(messages)
 
-    def on_memory_write(self, action: str, target: str, content: str) -> None:
-        """Mirror built-in memory writes as facts."""
-        if action == "add" and self._store and content:
-            try:
-                self._store.add_fact(content, category="user_pref" if target == "user" else "general")
-            except Exception as e:
-                logger.debug("Holographic memory_write mirror failed: %s", e)
+    def on_memory_write(self, action: str, target: str, content: str,
+                        metadata: Optional[Dict[str, Any]] = None) -> None:
+        """Mirror built-in memory writes as facts.
+
+        `add` is a new fact. `replace` and `remove` AMEND one: mirroring only `add` left the
+        superseded text sitting beside the correction, so the store kept feeding later sessions a
+        claim the user had retracted, and the two stores silently diverged.
+
+        The previous text arrives in `metadata` -- "previous_content" (the committed store result)
+        falling back to "old_text" -- and it is what identifies the row to amend. Declaring
+        `metadata` in this signature is load-bearing: the manager inspects the signature and uses
+        the legacy 3-argument call when it is absent, so nothing would ever arrive.
+
+        Known limitation, not introduced here but newly reachable: `facts.content` is UNIQUE across
+        the whole table, so the same text mirrored for two targets ("user" and "memory") is ONE
+        row. Removing it for one target therefore removes it for both. Fixing that properly needs
+        per-target rows, which the store deliberately does not have.
+        """
+        if self._store is None:
+            return
+        info = metadata or {}
+        category = "user_pref" if target == "user" else "general"
+        try:
+            if action == "add":
+                if content:
+                    self._store.add_fact(content, category=category)
+                return
+            if action not in ("replace", "remove"):
+                return
+            previous = info.get("previous_content") or info.get("old_text") or ""
+            fact_id = self._store.fact_id_for_content(previous, category) if previous else None
+            if previous and fact_id is None:
+                # The correction names text nothing mirrors, so it will be recorded as new instead
+                # of amending. That is the benign case (nothing was mirrored yet), but it is also
+                # what a divergence looks like, so say so rather than failing silently.
+                logger.debug("Holographic memory_write %s found no mirrored fact for the previous text", action)
+            if action == "replace":
+                if fact_id is not None and content:
+                    self._store.update_fact(fact_id, content=content)
+                elif content:
+                    # Nothing mirrored to amend: record the new text so the store carries the
+                    # current claim rather than silently keeping none.
+                    self._store.add_fact(content, category=category)
+            elif fact_id is not None:
+                self._store.remove_fact(fact_id)
+        except Exception as e:
+            logger.debug("Holographic memory_write mirror failed: %s", e)
 
     def shutdown(self) -> None:
         # Close on the caller's thread: leaving the shared connection (+ write lock) to GC keeps it alive on a gateway.

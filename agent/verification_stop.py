@@ -118,23 +118,35 @@ def _format_changed_paths(paths: list[str]) -> str:
     return "\n".join(lines)
 
 
-def _workspace_has_runnable_recipe(root: Any) -> bool:
-    """Whether ``hermes verify`` has a runtime recipe here: a saved
-    ``.hermes/environment.json`` or a statically detected recipe with a start
-    command. Fail-silent and cheap — it only decorates the nudge text."""
+_IMPLICIT_COMPOSE_GUIDANCE = (
+    "A Docker Compose recipe was auto-detected without an explicit "
+    ".hermes/environment.json. Run `hermes verify --detect-only --json` first "
+    "and inspect the recipe; do not run the full build/start recipe until the "
+    "project provides an explicit safe manifest."
+)
+
+
+def _workspace_recipe_state(root: Any) -> tuple[bool, bool]:
+    """Return ``(runnable, implicit_compose)`` for nudge wording.
+
+    An explicit manifest is always runnable. An auto-detected Compose recipe is
+    runnable too, but needs a detect-only warning before its mutating build/up
+    recipe is recommended. Fail-silent and cheap: this only decorates the nudge.
+    """
     if not root:
-        return False
+        return False, False
     try:
-        from agent.verify.environment import manifest_path
+        from agent.verify.environment import load_manifest
         from agent.verify.recipes import detect_recipe
 
         root_path = Path(str(root))
-        if manifest_path(root_path).is_file():
-            return True
+        if load_manifest(root_path) is not None:
+            return True, False
         recipe = detect_recipe(root_path)
-        return bool(recipe is not None and recipe.start)
+        runnable = bool(recipe is not None and recipe.start)
+        return runnable, bool(runnable and recipe is not None and recipe.kind == "compose")
     except Exception:
-        return False
+        return False, False
 
 
 def _status_detail(status: dict[str, Any]) -> str:
@@ -171,7 +183,7 @@ def build_verify_on_stop_nudge(
     if str(status.get("status") or "unverified") == "passed":
         return None
     verify_commands = [str(cmd).strip() for cmd in (facts.get("verifyCommands") or []) if str(cmd).strip()]
-    has_recipe = _workspace_has_runnable_recipe(facts.get("root"))
+    has_recipe, implicit_compose = _workspace_recipe_state(facts.get("root"))
 
     # Optional shipped coding guidance, only paid when this evidence gate fires.
     try:
@@ -189,12 +201,16 @@ def build_verify_on_stop_nudge(
             + (", ..." if len(verify_commands) > 3 else "")
             + "), read any failure, repair the code, and summarize what passed."
         )
-        if has_recipe:
+        if implicit_compose:
+            command_instruction += f" {_IMPLICIT_COMPOSE_GUIDANCE}"
+        elif has_recipe:
             command_instruction += (
                 " For a full check including a runtime boot (build + test + "
                 "start + readiness), prefer `hermes verify --json` — a passing "
                 "run records verification evidence for this workspace."
             )
+    elif implicit_compose:
+        command_instruction = _IMPLICIT_COMPOSE_GUIDANCE
     elif has_recipe:
         command_instruction = (
             "No canonical test/lint/build command was detected, but the "

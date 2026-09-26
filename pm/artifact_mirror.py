@@ -24,5 +24,12 @@ def mirror_url(sha256: str) -> str:
 
 
 def pinned_source(url: str, dest: Path, sha256: str) -> Source:
+    from pm.npm_registry import registry_download_url
+
     archive = mirror_url(sha256)
+    routed = registry_download_url(url)
+    # An explicit corporate mirror is the selected transport, not a fallback:
+    # do not escape a closed network to the public registry or archive host.
+    if routed != url:
+        return Source(routed, dest, sha256)
     return Source(url, dest, sha256, fallbacks=() if url == archive else (archive,))

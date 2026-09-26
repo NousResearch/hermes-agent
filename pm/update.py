@@ -211,11 +211,11 @@ def _index_headers(url: str) -> dict:
     return dict(_UA)
 
 
-def _get_json(url: str) -> dict | list:
+def _get_json(url: str, *, supplier_auth: bool = True) -> dict | list:
     from hermes_cli.urllib_security import open_credentialed_url
 
     def request():
-        headers = _index_headers(url)
+        headers = _index_headers(url) if supplier_auth else dict(_UA)
         key = (url, tuple(sorted(headers.items())), "json")
         responses = _index_responses.get()
         if responses is not None and key in responses:
@@ -353,7 +353,9 @@ def github_release_tags(repo: str, *, strip_prefix: str = "") -> list[str]:
 
 
 def npm_dist_tags(name: str) -> dict:
-    return _get_json(f"https://registry.npmjs.org/-/package/{name}/dist-tags")
+    from pm.npm_registry import registry_url
+
+    return _get_json(f"{registry_url()}-/package/{name}/dist-tags", supplier_auth=False)
 
 
 def node_latest_versions() -> list[str]:

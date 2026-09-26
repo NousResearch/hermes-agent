@@ -1078,3 +1078,68 @@ async def test_currency_amounts_stay_on_legacy_path():
     assert bot is not None
     bot.do_api_request.assert_not_awaited()
     bot.send_message.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_math_rewrite_leaves_code_blocks_alone():
+    adapter = _make_adapter()
+    content = (
+        "\\[x^2\\]\n\n"
+        '```python\nprint("\\\\(x^2\\\\)")\n```\n\n'
+        "| col1 | col2 |\n| --- | --- |\n| \\(z\\) | ok |\n\n"
+        "and inline `\\(y\\)` stays too."
+    )
+
+    result = await adapter.send("12345", content)
+
+    assert result.success is True
+    bot = adapter._bot
+    assert bot is not None
+    markdown = bot.do_api_request.await_args.kwargs["api_kwargs"]["rich_message"]["markdown"]
+    assert "$$x^2$$" in markdown
+    assert 'print("\\\\(x^2\\\\)")' in markdown
+    assert "| \\(z\\) | ok |" in markdown
+    assert "$z$" not in markdown
+    assert "`\\(y\\)`" in markdown
+
+
+@pytest.mark.asyncio
+async def test_math_only_inside_code_stays_on_legacy_path():
+    adapter = _make_adapter()
+
+    result = await adapter.send("12345", 'Escape it as:\n\n```tex\n\\(x^2\\)\n```')
+
+    assert result.success is True
+    bot = adapter._bot
+    assert bot is not None
+    bot.send_message.assert_awaited_once()
+    bot.do_api_request.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_math_only_inside_pipe_table_keeps_table_math_verbatim():
+    adapter = _make_adapter()
+
+    result = await adapter.send("12345", "| expr | note |\n| --- | --- |\n| \\(x^2\\) | literal |")
+
+    assert result.success is True
+    bot = adapter._bot
+    assert bot is not None
+    bot.do_api_request.assert_awaited_once()
+    markdown = bot.do_api_request.await_args.kwargs["api_kwargs"]["rich_message"]["markdown"]
+    assert "| \\(x^2\\) | literal |" in markdown
+    assert "$x^2$" not in markdown
+
+
+@pytest.mark.asyncio
+async def test_multiline_display_math_restores_soft_breaks():
+    adapter = _make_adapter()
+
+    result = await adapter.send("12345", "Solve:\n\n\\[\na +\nb\n\\]")
+
+    assert result.success is True
+    bot = adapter._bot
+    assert bot is not None
+    markdown = bot.do_api_request.await_args.kwargs["api_kwargs"]["rich_message"]["markdown"]
+    assert "$$a +\nb$$" in markdown
+    assert "a +  \nb" not in markdown

@@ -869,6 +869,35 @@ def _refresh_cua_driver_after_update() -> None:
         pm.ensure("cua-driver", explicit=True)
 
 
+#: Bound for the Browser Use CLI provision inside `hermes update` (well under the
+#: 600s interactive default - an update must not stall on one optional download).
+_BROWSER_USE_CLI_UPDATE_TIMEOUT_S = 180
+
+
+def _ensure_browser_use_cli_after_update() -> None:
+    """Provision the Browser Use CLI when the default backend would silently downgrade.
+
+    The default backend (unset ``browser.backend``) uses the CLI when runnable and
+    falls back to the built-in tools otherwise, so a missing CLI after an update is
+    a silent downgrade. Explicit backends (including ``off``) and Camofox never need
+    it. Bounded and non-fatal: never raises.
+    """
+    try:
+        from tools.browser_use_cli import _camofox_active, _find_cli, get_browser_backend
+
+        if get_browser_backend() or _camofox_active() or _find_cli() is not None:
+            return
+    except Exception:
+        return
+    try:
+        from hermes_cli.tools_config_post_setup import _ensure_browser_use_cli
+
+        print("\n→ Installing browser-use CLI (default browser backend)...")
+        _ensure_browser_use_cli(timeout_s=_BROWSER_USE_CLI_UPDATE_TIMEOUT_S)
+    except Exception as exc:  # pragma: no cover - defensive; update must not fail
+        print(f"  ⚠ browser-use CLI was not installed: {exc}")
+        print("    Retry with: hermes tools post-setup browser_use_cli")
+
 def _install_default_tools_after_update() -> None:
     """Give an existing install the optional default PM tools (agent-browser + Chromium).
 
@@ -896,6 +925,8 @@ def _install_default_tools_after_update() -> None:
         except (pm.InstallError, OSError) as exc:
             print(f"  ⚠ {name} was not installed: {exc}")
             print(f"    Retry with: hermes pm install {name}")
+
+    _ensure_browser_use_cli_after_update()
 
 
 def _print_checkpoint_footprint_notice() -> None:

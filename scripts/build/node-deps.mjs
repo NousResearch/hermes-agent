@@ -33,6 +33,16 @@ export function npmCommand({ env = process.env } = {}) {
   return [process.execPath, cli]
 }
 
+function readNpmPackageVersion(cli) {
+  try {
+    const packageRoot = join(dirname(realpathSync(cli)), '..')
+    const parsed = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8'))
+    return typeof parsed.version === 'string' && parsed.version.length > 0 ? parsed.version : null
+  } catch {
+    return null
+  }
+}
+
 function completedInstallMatches({ source, receipt, hiddenLock, key, nativeKey }) {
   if (!existsSync(receipt) || !existsSync(hiddenLock)) return false
   const installed = readFileSync(hiddenLock)
@@ -64,7 +74,9 @@ export function prepareNodeDependencies({ source, workspaces, env = process.env,
     return path
   }))].sort()
   const [node, npm] = npmCommand({ env })
-  const npmVersion = execFileSync(node, [npm, '--version'], { cwd: source, env, encoding: 'utf8' }).trim()
+  const manifestVersion = readNpmPackageVersion(npm)
+  const npmVersion = manifestVersion ?? execFileSync(
+    node, [npm, '--version'], { cwd: source, env, encoding: 'utf8' }).trim()
   const { satisfies } = createRequire(npm)('semver')
   for (const [name, version] of [['node', process.versions.node], ['npm', npmVersion]]) {
     const range = manifest.engines?.[name]

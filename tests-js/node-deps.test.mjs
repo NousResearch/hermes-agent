@@ -187,3 +187,108 @@ test('npm configuration name casing does not invalidate a completed install', as
   prepareNodeDependencies({ ...options, env: { ...env, NPM_CONFIG_PREFIX: join(source, 'other-prefix') } })
   expect(existsSync(artifact)).toBe(false)
 }, 30000)
+
+
+function probeNpmFixture(source, { manifestVersion, probeVersion = '10.8.2', probeExit = 0 } = {}) {
+  const root = mkdtempSync(join(tmpdir(), 'hermes npm probe-'))
+  roots.push(root)
+  const npmRoot = join(root, 'npm-package')
+  const cli = join(npmRoot, 'bin/npm-cli.js')
+  mkdirSync(dirname(cli), { recursive: true })
+  if (manifestVersion !== undefined) {
+    json(join(npmRoot, 'package.json'), { name: 'npm', version: manifestVersion })
+  }
+  json(join(root, 'node_modules/semver/package.json'), {
+    name: 'semver', version: '1.0.0', main: 'index.js',
+  })
+  writeFileSync(
+    join(root, 'node_modules/semver/index.js'),
+    'module.exports = { satisfies: () => true }\n',
+  )
+  const events = join(source, 'npm-probe-events.txt')
+  writeFileSync(cli, [
+    "const { appendFileSync } = require('node:fs')",
+    `appendFileSync(${JSON.stringify(events)}, process.argv[2] + '\\n')`,
+    `if (process.argv[2] === '--version') { console.log(${JSON.stringify(probeVersion)}); process.exit(${probeExit}) }`,
+  ].join('\n'))
+  return { root, npmRoot, cli, events }
+}
+
+test.skipIf(process.platform === 'win32')('symlinked npm_execpath uses the resolved package manifest without probing', async () => {
+  const { prepareNodeDependencies } = await import('../scripts/build/node-deps.mjs')
+  const source = fixture()
+  const fake = probeNpmFixture(source, { manifestVersion: '10.8.2', probeExit: 37 })
+  const aliasDir = join(fake.root, 'alias')
+  mkdirSync(aliasDir)
+  const alias = join(aliasDir, 'npm-cli.js')
+  symlinkSync(fake.cli, alias)
+  mkdirSync(join(source, 'node_modules'))
+  writeFileSync(join(source, 'node_modules/.package-lock.json'), '{"packages": {}}')
+  const options = {
+    source,
+    workspaces: ['web'],
+    reuse: true,
+    env: {
+      ...process.env,
+      npm_config_cache: join(source, '.npm-cache'),
+      npm_execpath: alias,
+    },
+  }
+
+  prepareNodeDependencies(options)
+  prepareNodeDependencies({ ...options, install: false })
+
+  expect(readFileSync(fake.events, 'utf8')).toBe('ci\n')
+}, 30000)
+
+test('npm layouts without a readable manifest retain the version-probe fallback', async () => {
+  const { prepareNodeDependencies } = await import('../scripts/build/node-deps.mjs')
+  const source = fixture()
+  const fake = probeNpmFixture(source)
+  mkdirSync(join(source, 'node_modules'))
+  writeFileSync(join(source, 'node_modules/.package-lock.json'), '{"packages": {}}')
+
+  prepareNodeDependencies({
+    source,
+    workspaces: ['web'],
+    reuse: true,
+    env: {
+      ...process.env,
+      npm_config_cache: join(source, '.npm-cache'),
+      npm_execpath: fake.cli,
+    },
+  })
+
+  expect(readFileSync(fake.events, 'utf8')).toBe('--version\nci\n')
+}, 30000)
+
+test('manifest-based versioning reuses receipts produced by the legacy probe', async () => {
+  const { prepareNodeDependencies } = await import('../scripts/build/node-deps.mjs')
+  const source = fixture()
+  const fake = probeNpmFixture(source, { probeVersion: '10.8.2' })
+  mkdirSync(join(source, 'node_modules'))
+  writeFileSync(join(source, 'node_modules/.package-lock.json'), '{"packages": {}}')
+  const options = {
+    source,
+    workspaces: ['web'],
+    reuse: true,
+    env: {
+      ...process.env,
+      npm_config_cache: join(source, '.npm-cache'),
+      npm_execpath: fake.cli,
+    },
+  }
+
+  // Establish the receipt through the old/fallback subprocess version path.
+  prepareNodeDependencies(options)
+  expect(readFileSync(fake.events, 'utf8')).toBe('--version\nci\n')
+
+  // Moving to the manifest path with the same version must preserve the key.
+  json(join(fake.npmRoot, 'package.json'), { name: 'npm', version: '10.8.2' })
+  prepareNodeDependencies({ ...options, install: false })
+  expect(readFileSync(fake.events, 'utf8')).toBe('--version\nci\n')
+
+  // A real npm version change still invalidates that receipt.
+  json(join(fake.npmRoot, 'package.json'), { name: 'npm', version: '10.8.3' })
+  expect(() => prepareNodeDependencies({ ...options, install: false })).toThrow(/disabled/)
+}, 30000)

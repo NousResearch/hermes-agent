@@ -191,3 +191,178 @@ class TestConcurrency:
         finally:
             broken.close()
             sibling.close()
+
+
+class TestProviderShutdown:
+    """Shutdown releases the provider's shared-connection reference; siblings
+    remain usable, and the final shutdown closes the connection."""
+
+    def test_shutdown_keeps_sibling_provider_alive(self, db_path):
+        from plugins.memory.holographic import HolographicMemoryProvider
+
+        a = HolographicMemoryProvider(config={"db_path": str(db_path)})
+        b = HolographicMemoryProvider(config={"db_path": str(db_path)})
+        a.initialize("session-a")
+        b.initialize("session-b")
+        assert MemoryStore._shared[str(db_path)]["refs"] == 2
+
+        a.shutdown()
+        assert MemoryStore._shared[str(db_path)]["refs"] == 1
+        assert b._store is not None
+        b._store.add_fact("write after sibling shutdown")
+        b.shutdown()
+        assert MemoryStore._shared == {}
+
+
+class TestProviderRetrieverDimAgreement:
+    """The provider must pass the store's adopted hrr_dim to its retriever."""
+
+    def test_provider_retriever_uses_store_adopted_dim(self, db_path):
+        from plugins.memory.holographic import HolographicMemoryProvider
+
+        seed = HolographicMemoryProvider(config={"db_path": str(db_path), "hrr_dim": 256})
+        seed.initialize("seed-session")
+        seed._store.add_fact("Peppi works on the backend team.", category="project")
+        seed.shutdown()
+
+        provider = HolographicMemoryProvider(config={"db_path": str(db_path), "hrr_dim": 1024})
+        try:
+            provider.initialize("later-session")
+            assert provider._store.hrr_dim == 256
+            assert provider._retriever.hrr_dim == 256
+            results = provider._retriever.search("backend", min_trust=0.0)
+            assert isinstance(results, list)
+        finally:
+            provider.shutdown()
+
+
+class TestHrrDimPersistence:
+    """The stored hrr_dim remains authoritative across process lifetimes."""
+
+    def test_fresh_store_persists_constructor_dim(self, db_path):
+        store = MemoryStore(db_path, hrr_dim=512)
+        try:
+            row = store._conn.execute(
+                "SELECT value FROM _meta WHERE key = 'hrr_dim'"
+            ).fetchone()
+            assert row is not None
+            assert int(row["value"]) == 512
+        finally:
+            store.close()
+
+    def test_reopen_adopts_persisted_dim_over_new_config(self, db_path):
+        store = MemoryStore(db_path, hrr_dim=256)
+        store.close()
+
+        store2 = MemoryStore(db_path, hrr_dim=1024)
+        try:
+            assert store2.hrr_dim == 256
+        finally:
+            store2.close()
+
+    def test_rebuild_all_vectors_updates_persisted_dim(self, db_path):
+        pytest.importorskip("numpy")
+        store = MemoryStore(db_path, hrr_dim=256)
+        try:
+            store.add_fact("a fact to migrate")
+            store.rebuild_all_vectors(dim=1024)
+            row = store._conn.execute(
+                "SELECT value FROM _meta WHERE key = 'hrr_dim'"
+            ).fetchone()
+            assert int(row["value"]) == 1024
+        finally:
+            store.close()
+
+        store2 = MemoryStore(db_path, hrr_dim=999)
+        try:
+            assert store2.hrr_dim == 1024
+        finally:
+            store2.close()
+
+    def test_rebuild_bank_skips_corrupt_vector_without_crashing(self, db_path):
+        np = pytest.importorskip("numpy")
+
+        store = MemoryStore(db_path, hrr_dim=1024)
+        try:
+            store.add_fact("A fact with a valid 1024-dim vector.", category="mix")
+            bad_vec = np.zeros(256, dtype=np.float64)
+            store._conn.execute(
+                "INSERT INTO facts (content, category, hrr_vector) VALUES (?, ?, ?)",
+                ("A corrupt fact from an old session.", "mix", bad_vec.tobytes()),
+            )
+            store._conn.commit()
+
+            store._rebuild_bank("mix")
+
+            row = store._conn.execute(
+                "SELECT fact_count FROM memory_banks WHERE bank_name = 'cat:mix'"
+            ).fetchone()
+            assert row["fact_count"] == 1
+        finally:
+            store.close()
+
+    def test_second_instance_on_shared_connection_adopts_dim(self, db_path):
+        a = MemoryStore(db_path, hrr_dim=256)
+        try:
+            b = MemoryStore(db_path, hrr_dim=1024)
+            try:
+                assert b.hrr_dim == 256
+                assert a.hrr_dim == b.hrr_dim
+            finally:
+                b.close()
+        finally:
+            a.close()
+
+
+class TestLegacyDatabaseAdoption:
+    """A database created before _meta adopts the dimension of its existing banks."""
+
+    def test_legacy_db_adopts_banks_dim_over_config(self, db_path):
+        pytest.importorskip("numpy")
+        store = MemoryStore(db_path, hrr_dim=256)
+        store.add_fact("An old fact from the 256-dim era.", category="hist")
+        store._conn.execute("DELETE FROM _meta WHERE key = 'hrr_dim'")
+        store._conn.commit()
+        store.close()
+
+        store2 = MemoryStore(db_path, hrr_dim=1024)
+        try:
+            assert store2.hrr_dim == 256, (
+                "legacy banks are 256-dim; adopting the configured 1024 "
+                "would mix dimensions in one database"
+            )
+            row = store2._conn.execute(
+                "SELECT value FROM _meta WHERE key = 'hrr_dim'"
+            ).fetchone()
+            assert int(row["value"]) == 256
+        finally:
+            store2.close()
+
+    def test_interrupted_rebuild_leaves_recoverable_state(self, db_path):
+        np = pytest.importorskip("numpy")
+
+        store = MemoryStore(db_path, hrr_dim=256)
+        store.add_fact("Fact one, fully in the 256 era.", category="mix")
+        store.add_fact("Fact two, about to be half-migrated.", category="mix")
+        new_dim_vec = np.zeros(1024, dtype=np.float64)
+        store._conn.execute(
+            "UPDATE facts SET hrr_vector = ? WHERE rowid = "
+            "(SELECT rowid FROM facts LIMIT 1)",
+            (new_dim_vec.tobytes(),),
+        )
+        store._conn.commit()
+        store.close()
+
+        store2 = MemoryStore(db_path, hrr_dim=256)
+        try:
+            assert store2.hrr_dim == 256
+            store2._rebuild_bank("mix")
+            row = store2._conn.execute(
+                "SELECT fact_count FROM memory_banks WHERE bank_name = 'cat:mix'"
+            ).fetchone()
+            assert row is not None and row["fact_count"] == 1, (
+                "the partial new-dim vector must be quarantined (skipped), "
+                "leaving only the consistent old-dim vector in the bank"
+            )
+        finally:
+            store2.close()

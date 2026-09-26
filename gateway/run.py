@@ -485,7 +485,10 @@ def _ensure_windows_gateway_venv_imports() -> None:
                 return
             candidates.append(committed)
         except Exception:
-            pass
+            # PM-managed: never guess. A failed probe must not fall through
+            # to the legacy block and load the stale tree it exists to
+            # exclude (fail closed, same as the uncommitted arm above).
+            return
     if not candidates:
         if os.environ.get("VIRTUAL_ENV"):
             candidates.append(Path(os.environ["VIRTUAL_ENV"]))

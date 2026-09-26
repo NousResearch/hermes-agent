@@ -716,7 +716,7 @@ hermes usage --json                   # one JSON document on stdout
 Credentials resolve exactly as they do for `/usage` in a session with no live agent (the auth store, then
 the credential pool); the command never adds or refreshes a credential it would not use for chat. Exit code
 `0` on success; `1` with a single stderr line when no credential is configured for the provider, the provider
-has no usage endpoint, or the fetch fails (stdout stays empty).
+has no usage endpoint, the account type cannot report usage, or the fetch fails (stdout stays empty).
 
 `--json` schema (keys are stable; new keys may be added):
 
@@ -738,6 +738,9 @@ has no usage endpoint, or the fetch fails (stdout stays empty).
 
 `used_percent` is `null` when the provider did not report the window; `resets_at` is ISO-8601 UTC or `null`
 (some windows carry a free-text `detail` instead); `plan` is `null` when unknown.
+`unavailable_reason` is retained for schema compatibility and is always `null` in successful CLI output.
+Unavailable accounts follow the same exit-1 contract in `--json` mode: stdout stays empty and the
+explanation is written to stderr; no failure JSON document is emitted.
 
 ## `hermes status`
 

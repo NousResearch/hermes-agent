@@ -313,10 +313,24 @@ _ONE_OFF_COPY: Dict[str, str] = {
         "capacity, or the server runs {model} with a smaller window than Hermes assumes. Wait a "
         "moment and send /retry; if it keeps happening, check the server's context setting."
     ),
+    # Rides failure_reason="truncated": args were cut mid-JSON but the model never reported
+    # an output-length stop, so don't claim it hit one (#91717).
+    "truncated_unreported": (
+        "The model's action arrived cut off partway through, so Hermes didn't run it. Nothing was changed. The model didn't report hitting its output "
+        "limit, so this was most likely a dropped connection or a provider/router cutting the "
+        "reply short. Send /retry; if it keeps happening, ask for the work in smaller steps."
+    ),
     "stream_dropped_tool_call": (
         "The connection to {label} kept dropping while the model was writing a large action, "
         "so nothing was run. Check your network and send /retry; asking for the file in smaller "
         "pieces also helps."
+    ),
+    # Rides failure_reason="truncated": clean EOF (no transport error, no finish_reason)
+    # mid tool-call, retries exhausted — not a network problem on the user's side (#102766).
+    "stream_closed_tool_call": (
+        "{label} kept closing the stream before the model finished writing its action, without "
+        "reporting an error, so nothing was run. This is usually the provider or a proxy in front "
+        "of it cutting long replies short. Send /retry; asking for the work in smaller steps also helps."
     ),
     # Rides failure_reason="loop_error" (advisory; the turn is incomplete, not failed).
     "local_processing_error": (

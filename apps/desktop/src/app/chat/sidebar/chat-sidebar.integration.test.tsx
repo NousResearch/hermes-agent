@@ -278,6 +278,73 @@ describe('ChatSidebar project entry', () => {
 // Messaging platforms group rows by owner the same way recents does once every
 // profile is on screen, so a Telegram thread is attributable to its profile
 // (#87715). The platform's row cap and load-more stay the section's.
+describe('ChatSidebar section labels', () => {
+  const realProject = {
+    id: '/repos/new-project',
+    label: 'new-project',
+    path: '/repos/new-project',
+    repos: [],
+    sessionCount: 0
+  }
+
+  // The synthetic Home bucket the backend emits when no project claimed a
+  // session (no cwd / deleted workspace): one lane, no repo structure.
+  const homeOnly = [
+    {
+      ...realProject,
+      id: '__no_project__',
+      label: 'Home',
+      path: null,
+      isNoProject: true,
+      sessionCount: 2
+    }
+  ]
+
+  afterEach(() => {
+    cleanup()
+    $projectScope.set(ALL_PROJECTS)
+    $projectTree.set([])
+    setSidebarAgentsGrouped(false)
+    $sessions.set([])
+  })
+
+  it('labels the section "Projects" when the grouped tree has a real project', () => {
+    setSidebarAgentsGrouped(true)
+    $projectTree.set([realProject])
+
+    renderSidebar('/', 'chat')
+
+    expect(screen.getByText('Projects')).toBeTruthy()
+    expect(screen.queryByText('Sessions')).toBeNull()
+  })
+
+  it('keeps the "Sessions" label when grouping is on but no projects exist', () => {
+    // The source-filter toggle with an empty tree: the section lists plain
+    // chat sessions, so heading it "Projects" mislabeled them (#62537).
+    setSidebarAgentsGrouped(true)
+    $projectTree.set([])
+    $sessions.set(sessionRows)
+
+    renderSidebar('/', 'chat')
+
+    expect(screen.getByText('Sessions')).toBeTruthy()
+    expect(screen.queryByText('Projects')).toBeNull()
+  })
+
+  it('keeps the "Sessions" label when the grouped tree is only the synthetic Home bucket', () => {
+    // No real projects — every session fell into Home. A lone Home bucket is
+    // the flat session list wearing a project costume, not a switcher.
+    setSidebarAgentsGrouped(true)
+    $projectTree.set(homeOnly)
+    $sessions.set(sessionRows)
+
+    renderSidebar('/', 'chat')
+
+    expect(screen.getByText('Sessions')).toBeTruthy()
+    expect(screen.queryByText('Projects')).toBeNull()
+  })
+})
+
 describe('ChatSidebar messaging owners', () => {
   const telegram = (id: string, profile: string, last_active: number) =>
     makeSessionInfo({ connection_id: 'local', id, last_active, profile, source: 'telegram', title: id })

@@ -143,12 +143,16 @@ describe('actOnActivePreview (drive_preview tool)', () => {
     const send = vi.fn()
 
     cleanups.push(
-      registerPreviewScriptRunner(tabId, async code =>
-        code.includes('"kind":"locate"')
+      registerPreviewScriptRunner(tabId, async code => {
+        if (code.includes('hermes-focus-probe')) {
+          return JSON.stringify({ focused: true, success: true, tag: 'INPUT' })
+        }
+
+        return code.includes('"kind":"locate"')
           ? JSON.stringify({ acted: 'looking at button "Save"', point: { x: 120, y: 80 }, success: true })
           : // `hit` is the page's witness that the real pointerdown arrived.
             JSON.stringify({ elements: [], hit: { tag: 'BUTTON', trusted: true }, success: true })
-      )
+      })
     )
     cleanups.push(registerPreviewInput(tabId, { focus: vi.fn(), send }))
 
@@ -173,6 +177,94 @@ describe('actOnActivePreview (drive_preview tool)', () => {
       y: 80
     })
     expect(result.acted).toBe('clicked button "Save"')
+  })
+
+  /** A driven pane whose post-click focus probe can be answered independently of
+   *  the locate and the read-back. The probe is how a type learns whether the
+   *  located editable actually became document.activeElement. */
+  type SentKey = { keyCode?: string; type: string }
+
+  const withTypedPane = (focus: { focused: boolean; tag?: string }, onSend?: (event: SentKey) => void) => {
+    const tabId = openBrowserTab()
+    const send = vi.fn((event: SentKey) => onSend?.(event))
+
+    cleanups.push(
+      registerPreviewScriptRunner(tabId, async code => {
+        if (code.includes('hermes-focus-probe')) {
+          return JSON.stringify({ focused: focus.focused, success: true, tag: focus.tag ?? 'BODY' })
+        }
+
+        return code.includes('"kind":"locate"')
+          ? JSON.stringify({
+              acted: 'looking at textbox "Comment"',
+              point: { x: 40, y: 20 },
+              success: true,
+              tag: 'TEXTAREA',
+              typable: true
+            })
+          : JSON.stringify({ elements: [], hit: { tag: 'TEXTAREA', trusted: true }, success: true })
+      })
+    )
+    cleanups.push(registerPreviewInput(tabId, { focus: vi.fn(), send }))
+
+    return send
+  }
+
+  const keyEvents = (send: ReturnType<typeof vi.fn>) =>
+    send.mock.calls
+      .map(([event]) => event)
+      .filter(event => event.type === 'keyDown' || event.type === 'char' || event.type === 'keyUp')
+
+  it('refuses to type unless the located editable is document.activeElement', async () => {
+    const send = withTypedPane({ focused: false, tag: 'BODY' })
+
+    const result = await actOnActivePreview({ kind: 'type', ref: '@e1', text: 'hello' })
+
+    // The click may land; the characters must not. Focus stayed off the located
+    // field, so those keystrokes would be page input instead of text.
+    expect(result.success).toBe(false)
+    expect(result.error).toMatch(/not focused/i)
+    expect(result.error).toMatch(/nothing typed/i)
+    expect(keyEvents(send)).toEqual([])
+  })
+
+  it('stops keystrokes still queued when the type times out', async () => {
+    const controller = new AbortController()
+
+    const send = withTypedPane({ focused: true, tag: 'TEXTAREA' }, event => {
+      if (event.type === 'char') {
+        controller.abort('timeout')
+      }
+    })
+
+    const result = await actOnActivePreview({ kind: 'type', ref: '@e1', text: 'abcdefghij' }, controller.signal)
+    const chars = send.mock.calls
+      .map(([event]) => event)
+      .filter(event => event.type === 'char')
+      .map(event => event.keyCode)
+
+    expect(chars.length).toBeGreaterThan(0)
+    expect(chars.length).toBeLessThan('abcdefghij'.length)
+    expect(result.success).toBe(false)
+    expect(result.error).toMatch(/timed out/i)
+  })
+
+  it('stops keystrokes still queued when the type is interrupted', async () => {
+    const controller = new AbortController()
+
+    const send = withTypedPane({ focused: true, tag: 'TEXTAREA' }, event => {
+      if (event.type === 'char') {
+        controller.abort('interrupted')
+      }
+    })
+
+    const result = await actOnActivePreview({ kind: 'type', ref: '@e1', text: 'abcdefghij' }, controller.signal)
+    const chars = send.mock.calls.map(([event]) => event).filter(event => event.type === 'char')
+
+    expect(chars.length).toBeGreaterThan(0)
+    expect(chars.length).toBeLessThan('abcdefghij'.length)
+    expect(result.success).toBe(false)
+    expect(result.error).toMatch(/interrupt/i)
   })
 
   it('types by pressing keys, after selecting whatever the field held', async () => {
@@ -340,7 +432,109 @@ describe('actOnActivePreview (drive_preview tool)', () => {
     expect(result.note).toContain('elements')
   })
 
+  it('refuses to type when a real click leaves focus off the located field', async () => {
+    document.body.innerHTML = '<textarea id="comment">old</textarea><button id="other">Other</button>'
+    document.getElementById('other')!.focus()
+
+    const rect = vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue({
+      bottom: 40,
+      height: 40,
+      left: 0,
+      right: 40,
+      top: 0,
+      width: 40,
+      x: 0,
+      y: 0,
+      toJSON: () => ({})
+    })
+
+    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(callback => {
+      callback(0)
+
+      return 1
+    })
+
+    const send = vi.fn()
+    const tabId = openBrowserTab()
+
+    cleanups.push(
+      registerPreviewScriptRunner(tabId, async code => {
+        const raw = new Function('return ' + code)()
+
+        return types.isPromise(raw) ? await raw : raw
+      })
+    )
+    cleanups.push(registerPreviewInput(tabId, { focus: vi.fn(), send }))
+
+    try {
+      const result = await actOnActivePreview({ kind: 'type', selector: '#comment', text: 'hello' })
+
+      expect(result.success).toBe(false)
+      expect(result.error).toMatch(/not focused/i)
+      expect(result.error).toMatch(/nothing typed/i)
+      expect(keyEvents(send)).toEqual([])
+      expect(document.activeElement).toBe(document.getElementById('other'))
+    } finally {
+      raf.mockRestore()
+      rect.mockRestore()
+      document.body.replaceChildren()
+      delete (window as unknown as { __hermesActHolder?: unknown }).__hermesActHolder
+    }
+  })
+
   it('reports history verbs with no pane to drive', async () => {
     expect((await actOnActivePreview({ kind: 'reload' })).error).toContain('open_preview')
+  })
+
+  const withPressedPane = (tag: string) => {
+    const tabId = openBrowserTab()
+    const send = vi.fn()
+
+    cleanups.push(
+      registerPreviewScriptRunner(tabId, async code =>
+        code.includes('"kind":"locate"')
+          ? JSON.stringify({ acted: `looking at ${tag}`, point: { x: 8, y: 8 }, success: true, tag })
+          : JSON.stringify({ elements: [], success: true })
+      )
+    )
+    cleanups.push(registerPreviewInput(tabId, { focus: vi.fn(), send }))
+
+    return send
+  }
+
+  it('refuses a printable press on body or html unless the caller opts into a shortcut', async () => {
+    for (const tag of ['BODY', 'HTML']) {
+      const send = withPressedPane(tag)
+      const result = await actOnActivePreview({ key: 'x', kind: 'press', selector: tag.toLowerCase() })
+
+      expect(result.success).toBe(false)
+      expect(result.error).toMatch(/shortcut/i)
+      expect(keyEvents(send)).toEqual([])
+    }
+
+    const opted = withPressedPane('BODY')
+
+    const allowed = await actOnActivePreview({
+      allowShortcut: true,
+      key: 'x',
+      kind: 'press',
+      selector: 'body'
+    })
+
+    expect(allowed.success).toBe(true)
+    expect(
+      opted.mock.calls.map(([event]) => event).some(event => event.type === 'keyDown' && event.keyCode === 'x')
+    ).toBe(true)
+  })
+
+  it('still presses a named key on body', async () => {
+    const send = withPressedPane('BODY')
+
+    const result = await actOnActivePreview({ key: 'Escape', kind: 'press', selector: 'body' })
+
+    expect(result.success).toBe(true)
+    expect(
+      send.mock.calls.map(([event]) => event).some(event => event.type === 'keyDown' && event.keyCode === 'Escape')
+    ).toBe(true)
   })
 })

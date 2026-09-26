@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 
 import agent.lsp.manager as manager
 from agent.lsp.manager import LSPService
@@ -93,6 +94,8 @@ def test_delta_baseline_is_capped_by_write_recency(monkeypatch):
     server_diags.clear()
     service.snapshot_baseline("/repo/new.py")
     assert len(service._delta_baseline) == cap
-    assert "/repo/f1.py" not in service._delta_baseline
-    assert service._delta_baseline["/repo/f0.py"] == [{"message": "rewritten"}]
-    assert "/repo/new.py" in service._delta_baseline
+    # Keys are normalized by the production contract (``os.path.abspath``), so the
+    # assertions must normalize too — a raw POSIX literal never matches on Windows.
+    assert os.path.abspath("/repo/f1.py") not in service._delta_baseline
+    assert service._delta_baseline[os.path.abspath("/repo/f0.py")] == [{"message": "rewritten"}]
+    assert os.path.abspath("/repo/new.py") in service._delta_baseline

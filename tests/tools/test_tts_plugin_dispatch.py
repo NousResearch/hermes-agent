@@ -91,12 +91,12 @@ class TestBuiltinAlwaysWins:
     the caller's elif chain handles them natively.
     """
 
-    @pytest.mark.parametrize(
-        "builtin",
-        ["edge", "openai", "elevenlabs", "minimax", "gemini",
-         "mistral", "xai", "piper", "kittentts", "neutts"],
-    )
-    def test_dispatcher_short_circuits_builtin(self, builtin):
+    def test_dispatcher_short_circuits_builtin(self):
+        assert tts_tool.BUILTIN_TTS_PROVIDERS
+        for builtin in tts_tool.BUILTIN_TTS_PROVIDERS:
+            self._assert_short_circuits(builtin)
+
+    def _assert_short_circuits(self, builtin):
         result = tts_tool._dispatch_to_plugin_provider(
             text="hello",
             output_path="/tmp/out.mp3",

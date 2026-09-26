@@ -1440,6 +1440,40 @@ class TestKillProcess:
             registry._running.pop(s.id, None)
             registry._finished.pop(s.id, None)
 
+    def test_get_does_not_block_on_receipt_write(self, registry):
+        """get() answers immediately without blocking while save_completed_result is in flight (#108327)."""
+        import threading
+        release = threading.Event()
+        started = threading.Event()
+        writes = []
+
+        def slow_save(session):
+            started.set()
+            writes.append(session.id)
+            assert release.wait(timeout=10)
+
+        s = _make_session(sid="proc_slow_disk", output="done")
+        s.notify_on_complete = True
+        s.exited = True
+        s.exit_code = 0
+        registry._running[s.id] = s
+
+        with patch.object(registry, "_write_checkpoint"), \
+             patch("tools.process_registry.save_completed_result", slow_save):
+            mover = threading.Thread(target=registry._move_to_finished, args=(s,))
+            mover.start()
+            assert started.wait(timeout=5), "receipt write never started"
+            t0 = time.monotonic()
+            found = registry.get("proc_slow_disk")
+            elapsed = time.monotonic() - t0
+            release.set()
+            mover.join(timeout=10)
+
+        assert found is s
+        assert elapsed < 1.0, f"get() blocked {elapsed:.2f}s behind the receipt write"
+        assert writes == ["proc_slow_disk"]
+        assert registry._finished[s.id] is s
+
 
 # =========================================================================
 # Tool handler

@@ -175,18 +175,65 @@ export function parseCatalog(kind: CatalogKind, data: unknown): CatalogEntry[] {
 }
 
 export async function fetchCatalog(kind: CatalogKind): Promise<CatalogEntry[]> {
-  // These are the same published snapshots as the docs galleries. Never fan
-  // out to repositories, README previews, avatars, or live hub searches.
-  const response = await fetch(`${CATALOG_BASE}/${kind}.json`, {
-    credentials: 'omit',
-    signal: AbortSignal.timeout(60_000)
-  })
-
-  if (!response.ok) {
-    throw new Error(`Catalog HTTP ${response.status}`)
+  // Bound inactivity, not total transfer time: a large skills snapshot can
+  // take minutes on a healthy slow connection. Headers and each body chunk
+  // get the same deadline; an actually stalled download still terminates.
+  const controller = new AbortController()
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const armDeadline = () => {
+    clearTimeout(timer)
+    timer = setTimeout(() => controller.abort(), 60_000)
   }
 
-  return parseCatalog(kind, await response.json())
+  armDeadline()
+
+  try {
+    // Same published snapshots as the docs galleries; no per-entry fan-out.
+    const response = await fetch(`${CATALOG_BASE}/${kind}.json`, {
+      credentials: 'omit',
+      signal: controller.signal
+    })
+
+    if (!response.ok) {
+      throw new Error(`Catalog HTTP ${response.status}`)
+    }
+
+    if (!response.body) {
+      return parseCatalog(kind, await response.json())
+    }
+
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    const chunks: string[] = []
+    armDeadline()
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+
+        if (done) break
+        if (value.byteLength > 0) armDeadline()
+        chunks.push(decoder.decode(value, { stream: true }))
+      }
+    } finally {
+      reader.releaseLock()
+    }
+
+    clearTimeout(timer)
+    chunks.push(decoder.decode())
+
+    return parseCatalog(kind, JSON.parse(chunks.join('')))
+  } catch (error) {
+    // Chromium can turn our abort into "The user aborted a request." The
+    // controller, not that browser-dependent exception name, owns the cause.
+    if (controller.signal.aborted) {
+      throw new Error('Catalog download timed out after 60 seconds without progress. Please try again.')
+    }
+
+    throw error
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 const catalogQuery = (kind: CatalogKind) =>

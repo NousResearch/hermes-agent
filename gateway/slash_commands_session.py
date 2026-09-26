@@ -1042,8 +1042,8 @@ class GatewaySessionCommandsMixin:
         # The child sends the parent's exact system prompt: a row without one makes the branch's
         # first turn rebuild (re-probing the workspace) and forfeits the warm cache the copied
         # transcript buys.
-        parent = await self._session_db.get_session(parent_session_id)
         try:
+            parent = await self._session_db.get_session(parent_session_id)
             await self._session_db.create_session(
                 session_id=new_session_id,
                 source=source.platform.value if source.platform else "gateway",

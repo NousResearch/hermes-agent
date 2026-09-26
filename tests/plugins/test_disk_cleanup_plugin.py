@@ -264,8 +264,9 @@ class TestGitWorktreeFilesNeverCleaned:
 
     def test_scratch_outside_git_trees_still_cleaned(self, _isolate_env):
         """Control: root-level test_* scratch is still auto-deleted — even when HERMES_HOME
-        itself lives inside a git checkout (dotfiles repo); only .git entries strictly below
-        HERMES_HOME mark a file as git-owned."""
+        itself lives inside a git checkout (dotfiles repo); a bare .git at or above HERMES_HOME
+        does not make untracked scratch git-owned — only a .git strictly below HERMES_HOME, or
+        git actually tracking the file, does."""
         dg = _load_lib()
         (_isolate_env.parent / ".git").mkdir()
         scratch = _isolate_env / "test_scratch.py"
@@ -303,14 +304,18 @@ class TestGitWorktreeFilesNeverCleaned:
         assert dg.guess_category(tracked) is None
         assert dg.guess_category(scratch) == "test"
 
-        # A stale pre-fix entry is dropped by quick()'s re-validation, not deleted.
-        dg.save_tracked([{"path": str(tracked), "category": "test",
-                          "timestamp": datetime.now(timezone.utc).isoformat(), "size": 1}])
+        # A stale pre-fix entry is dropped by quick()'s re-validation, not deleted, while
+        # untracked scratch beside it in the same repo is still cleaned.
+        now = datetime.now(timezone.utc).isoformat()
+        dg.save_tracked([{"path": str(p), "category": "test", "timestamp": now, "size": 1}
+                         for p in (tracked, scratch)])
         result = dg.quick()
         assert tracked.exists(), "a git-tracked test file must never be auto-deleted"
-        assert result["deleted"] == 0
+        assert not scratch.exists()
+        assert result["deleted"] == 1
 
         # Committed AFTER first classification in the same process: seen immediately.
+        scratch.write_text("x")
         assert dg.guess_category(scratch) == "test"
         subprocess.run(["git", "-C", str(_isolate_env), "add", "test_untracked.py"], check=True)
         assert dg.guess_category(scratch) is None
@@ -324,25 +329,6 @@ class TestGitWorktreeFilesNeverCleaned:
         subprocess.run(["git", "-C", str(outer), "add", "."], check=True)
         monkeypatch.setenv("HERMES_HOME", str(outer / ".hermes"))
         assert dg.guess_category(nested) is None
-
-    def test_untracked_scratch_beside_tracked_files_is_still_cleaned(self, _isolate_env):
-        """Control for the checkout case: the guard protects what git TRACKS, not the whole
-        home. An untracked ``test_*`` scratch file in the same repo is still disposable, so
-        the fix must not disable cleanup for every file under a git-backed HERMES_HOME."""
-        import subprocess
-
-        dg = _load_lib()
-        subprocess.run(["git", "init", "-q", str(_isolate_env)], check=True)
-        scratch = _isolate_env / "test_scratch.py"
-        scratch.write_text("x")
-
-        assert dg._inside_git_worktree(scratch) is False
-        assert dg.guess_category(scratch) == "test"
-        dg.save_tracked([{"path": str(scratch), "category": "test",
-                          "timestamp": datetime.now(timezone.utc).isoformat(), "size": 1}])
-        result = dg.quick()
-        assert not scratch.exists()
-        assert result["deleted"] == 1
 
 
 class TestStaleCronEntryMigration:

@@ -710,4 +710,7 @@ def test_picker_metadata_uses_one_config_read_for_real_models_dev_lookups(tmp_pa
         model: {"fast": False, "reasoning": model.startswith("openai/")}
         for model in models[:3]
     }
-    assert large_row["featured_models"] == models
+    # #120217: ``providers.lab`` is a user-defined row, so its models: list is an explicit
+    # allow-list and is never shortlisted — the constant-read invariant above is now carried
+    # by the capabilities lookups alone.
+    assert large_row["featured_models"] == []

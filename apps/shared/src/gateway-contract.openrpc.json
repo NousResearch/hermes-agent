@@ -12404,6 +12404,11 @@
             "default": null,
             "title": "Remote"
           },
+          "verified": {
+            "default": false,
+            "title": "Verified",
+            "type": "boolean"
+          },
           "geometry": {
             "title": "Geometry",
             "type": "string"
@@ -12579,6 +12584,11 @@
             "default": null,
             "title": "Remote"
           },
+          "verified": {
+            "default": false,
+            "title": "Verified",
+            "type": "boolean"
+          },
           "geometry": {
             "title": "Geometry",
             "type": "string"
@@ -12737,6 +12747,11 @@
             ],
             "default": null,
             "title": "Remote"
+          },
+          "verified": {
+            "default": false,
+            "title": "Verified",
+            "type": "boolean"
           },
           "geometry": {
             "title": "Geometry",
@@ -12927,6 +12942,11 @@
             ],
             "default": null,
             "title": "Remote"
+          },
+          "verified": {
+            "default": false,
+            "title": "Verified",
+            "type": "boolean"
           },
           "geometry": {
             "title": "Geometry",

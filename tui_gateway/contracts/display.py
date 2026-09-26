@@ -2,7 +2,7 @@
 desktop, its takeover lease, the noVNC ticket and the on-host package install.
 
 Every method rides ``profile`` (the desktop routes through ``requestGatewayForProfile``) and answers
-for THAT profile's screen. The lease is the whole control model: ``holder`` is ``agent`` or
+for THAT profile's screen. The lease fences the viewer and built-in local tools, not independent MCP servers: ``holder`` is ``agent`` or
 ``human``; ``epoch`` moves on every real transition, so a client (or the agent's fence) can tell an
 in-flight result was produced under a lease that has since changed.
 """
@@ -46,6 +46,7 @@ class DisplayStatus(Result):
     display: str | None = None
     socket: str | None = None
     remote: str | None = None
+    verified: bool = False  # local runtime verified; a remote endpoint is configured, not probed
     geometry: str
     install_command: str | None = None
     browser: str | None = None

@@ -265,6 +265,9 @@ def test_observe_status_and_management_for_remote_only(tmp_path, monkeypatch):
     assert result["result"]["ticket"]
     assert result["result"]["supported"] is True
     assert result["result"]["remote"] == "100.65.115.112:5900"
+    status = call("display.status")["result"]
+    assert status["remote"] == result["result"]["remote"]
+    assert not status["verified"] and not status["running"]
     assert "test-status-secret" not in json.dumps(result)
     lease.acquire("one")
     for operation in ("start", "stop", "install"):
@@ -515,3 +518,85 @@ def test_remote_thumbnail_raw_pixels_without_listening_socket(tmp_path, monkeypa
         assert writer.closed
         assert writer.sent[:14] == _VERSION + b"\x01\x01"
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("offered", [[30, 33, 36, 35], [1]])
+def test_unsupported_auth_is_actionable_without_selecting_or_leaking(tmp_path, monkeypatch, offered):
+    from tools.bot_desktop.rfb_auth import authenticate
+    import tui_gateway.server as gateway
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    secret = "never-echo-this-password"
+
+    async def run():
+        exchanges = asyncio.Queue()
+
+        async def serve(reader, writer):
+            writer.write(b"RFB 003.889\n")
+            await writer.drain()
+            banner = await reader.readexactly(12)
+            writer.write(bytes([len(offered), *offered]))
+            await writer.drain()
+            remaining = await reader.read()
+            await exchanges.put((banner, remaining))
+            writer.close()
+            await writer.wait_closed()
+
+        async with await asyncio.start_server(serve, "127.0.0.1", 0) as listener:
+            endpoint = ("127.0.0.1", listener.sockets[0].getsockname()[1])
+            _config(tmp_path, remote_endpoint=f"{endpoint[0]}:{endpoint[1]}",
+                    remote_allow_loopback=True, remote_password=secret)
+            reader, writer = await asyncio.open_connection(*endpoint)
+            try:
+                with pytest.raises(ValueError) as exc:
+                    await authenticate(reader, writer, secret)
+                message = str(exc.value)
+                assert str(offered) in message
+                assert "30/33/35/36" in message and "security review" in message
+                assert "classic VNC password" in message and "security type 2" in message
+                assert "REMOTE host" in message and "Hermes does not change" in message
+                assert len(message) < 2048
+            finally:
+                writer.close()
+                await writer.wait_closed()
+            ws = _Ws()
+            await asyncio.wait_for(display._bridge(ws, {"hermes_home": str(tmp_path)}), 5)
+            code, reason = ws.closes[0]
+            assert code == 4001 and len(reason.encode()) <= 123
+            assert all(str(security_type) in reason for security_type in offered)
+            assert "remote host" in reason and "type 2" in reason and "unsupported" in reason
+            assert "Screen Sharing" in reason
+            result = await asyncio.to_thread(gateway.handle_request, {
+                "jsonrpc": "2.0", "id": 1, "method": "display.thumbnail", "params": {}})
+            assert result["error"]["message"] == message
+            for _ in range(3):
+                # A refusal sends only the negotiated banner, never a selection or credential.
+                assert await _next(exchanges) == (_VERSION, b"")
+            for material in (secret, _CHALLENGE.hex(), vnc_response(secret, _CHALLENGE).hex()):
+                assert material not in message + repr(ws.closes) + json.dumps(result)
+    asyncio.run(run())
+
+
+def test_remote_screen_refuses_local_driver_after_lease_but_does_not_fence_mcp(tmp_path, monkeypatch):
+    from tools.computer_use.tool import handle_computer_use
+    from tools import mcp_tool_handlers
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _config(tmp_path, remote_endpoint="100.64.0.1:5900")
+    lease.acquire("watching-human")
+    assert json.loads(handle_computer_use({"action": "click", "coordinate": [1, 1]}))["code"] == "human_has_control"
+
+    reached = []
+    def acquire(name, timeout):
+        reached.append(name)
+        return None, "inert transport boundary"
+    monkeypatch.setattr(mcp_tool_handlers, "_acquire_call_server", acquire)
+    # Neither an independently configured desktop server nor an unrelated server has a lease mapping.
+    for name in ("independent-desktop", "unrelated-search"):
+        handler = mcp_tool_handlers._make_tool_handler(name, "test", 1)
+        assert handler({}) == "inert transport boundary"
+    assert reached == ["independent-desktop", "unrelated-search"]
+
+    lease.release("watching-human")
+    for action in ("click", "capture"):
+        result = json.loads(handle_computer_use({"action": action, "coordinate": [1, 1]}))
+        assert result["code"] == "remote_screen_not_drivable"
+        assert "gateway host" in result["error"] and "different display" in result["error"]

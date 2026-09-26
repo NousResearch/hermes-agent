@@ -9,7 +9,24 @@ published by the launcher once Xfce's bus exists), ``launcher.pid``, ``launcher.
 machine.
 
 The launcher is ``launcher.sh`` next to this module; :func:`desktop_env` is what cua-driver and headed
-Chromium spawns merge in so the agent acts on this profile's screen and nowhere else.
+Chromium spawns merge in for the LOCAL desktop.
+
+A configured remote endpoint provides viewer + human-takeover parity, NOT remote
+agent-driving parity. Status exposes the endpoint but reports running=False and
+verified=False: availability is established at connect time, never by a status probe.
+The built-in computer_use drives the gateway host, so it refuses while a remote screen
+is configured (after the human lease check). Independently configured MCP servers
+have no target-to-Screen-lease mapping and are NOT fenced by this lease, including
+desktop-control MCP servers. Unrelated MCP calls remain usable during takeover.
+Browser/terminal tools are not redirected to the remote screen either.
+
+Remote authentication supports classic RFB 3.3/3.7/3.8 with security type 2 (VNC
+password); a 3.889 banner is downgraded to 3.8, not Apple authentication. Apple-
+proprietary types 30/33/35/36 are unsupported and not planned without a security
+review. Default macOS Screen Sharing therefore cannot authenticate without the
+type-2 prerequisite: "VNC viewers may control screen with password" in Screen
+Sharing > Computer Settings on the REMOTE host. Whether to enable that setting
+is the user's decision; Hermes does not change host authentication settings.
 """
 
 from __future__ import annotations
@@ -222,6 +239,7 @@ class DesktopStatus:
     memory_available_mb: Optional[int] = None
     memory_limit_mb: Optional[int] = None
     remote: Optional[str] = None
+    verified: bool = False  # local runtime liveness only; remote availability is checked at connect time
 
     def as_dict(self) -> Dict[str, object]:
         return dict(self.__dict__)
@@ -549,7 +567,7 @@ def status(profile: Optional[str] = None) -> DesktopStatus:
         host, port = endpoint
         label = f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
         return DesktopStatus(profile=profile or _profile_name(), supported=True, installed=True,
-                             missing=[], running=True, pid=None, display=None, socket=None,
+                             missing=[], running=False, pid=None, display=None, socket=None,
                              geometry=geometry(), install_command=None, browser=None, remote=label)
     missing: list[str] = missing_binaries() if is_supported_host() else list(REQUIRED_BINARIES)
     pid = _launcher_pid()
@@ -562,6 +580,7 @@ def status(profile: Optional[str] = None) -> DesktopStatus:
         installed=not missing,
         missing=missing,
         running=running,
+        verified=running,
         pid=pid,
         display=env.get("DISPLAY"),
         socket=str(rfb_socket_path()) if rfb_socket_path() else None,

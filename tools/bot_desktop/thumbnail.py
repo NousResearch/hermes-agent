@@ -24,7 +24,10 @@ def thumbnail_data_url(max_size: tuple[int, int] = THUMB_MAX, quality: int = 72)
     if endpoint is not None:
         import asyncio
         from tools.bot_desktop.rfb_thumbnail import grab
-        image = asyncio.run(grab(endpoint, runtime.remote_password()))
+        try:
+            image = asyncio.run(grab(endpoint, runtime.remote_password()))
+        except TimeoutError as exc:
+            raise TimeoutError("remote screen thumbnail timed out while connecting or reading RFB") from exc
     else:
         env = runtime.published_env()
         display = env.get("DISPLAY")

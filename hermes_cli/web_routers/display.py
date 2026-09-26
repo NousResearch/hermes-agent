@@ -96,7 +96,7 @@ async def _bridge(ws: WebSocket, info: dict) -> None:
     from tools.bot_desktop import lease as _lease
     from tools.bot_desktop.rfb_filter import RfbClientFilter
     from tools.bot_desktop import runtime
-    from tools.bot_desktop.rfb_auth import authenticate, ViewerHandshake
+    from tools.bot_desktop.rfb_auth import authenticate, ViewerHandshake, UnsupportedAuthentication
     from tui_gateway.server import _launch_home, _session_profile_runtime_scope
     from pathlib import Path
 
@@ -185,7 +185,13 @@ async def _bridge(ws: WebSocket, info: dict) -> None:
                 _stamp_activity()
                 await ws.send_bytes(viewer_handshake.greeting)
                 authenticated.set()
-            except (OSError, ValueError, TimeoutError, asyncio.IncompleteReadError):
+            except UnsupportedAuthentication as exc:
+                await ws.close(code=_CLOSE_DESKTOP_GONE, reason=exc.close_reason)
+                return
+            except TimeoutError:
+                await ws.close(code=_CLOSE_DESKTOP_GONE, reason="remote screen authentication timed out")
+                return
+            except (OSError, ValueError, asyncio.IncompleteReadError):
                 await ws.close(code=_CLOSE_DESKTOP_GONE, reason="remote screen authentication failed")
                 return
         while True:

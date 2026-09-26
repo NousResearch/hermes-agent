@@ -1141,6 +1141,7 @@ export interface DisplayStatus {
   display?: string | null
   socket?: string | null
   remote?: string | null
+  verified?: boolean
   geometry: string
   install_command?: string | null
   browser?: string | null
@@ -1179,6 +1180,7 @@ export interface DisplayStopResult {
   display?: string | null
   socket?: string | null
   remote?: string | null
+  verified?: boolean
   geometry: string
   install_command?: string | null
   browser?: string | null
@@ -1203,6 +1205,7 @@ export interface DisplayObserveResult {
   display?: string | null
   socket?: string | null
   remote?: string | null
+  verified?: boolean
   geometry: string
   install_command?: string | null
   browser?: string | null
@@ -4282,6 +4285,7 @@ export interface DisplayStatusPayload {
   display?: string | null
   socket?: string | null
   remote?: string | null
+  verified?: boolean
   geometry: string
   install_command?: string | null
   browser?: string | null

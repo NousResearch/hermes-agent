@@ -1214,6 +1214,26 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         method_name, pass_arg = entry
         handler = getattr(self, method_name)
         result = handler(cmd_original) if pass_arg else handler()
+
+        # Command observers fire only at this recognized, canonical dispatch
+        # leaf. Quick aliases and prefix expansion recurse before reaching it,
+        # so each submitted command produces exactly one terminal lifecycle
+        # event without mutable anti-reentry state that could leak on errors.
+        from hermes_cli.plugins import fire_on_quit_hook, fire_post_command_hook
+        hook_kwargs = {
+            "surface": "cli",
+            "command": canonical,
+            "alias_used": _base_word,
+            "args_raw": _slash_args(cmd_original),
+            "session_key": getattr(self, "session_id", None),
+            "platform": "cli",
+        }
+        if canonical == "quit" and result is False:
+            fire_on_quit_hook(**hook_kwargs)
+        else:
+            # Invalid /quit arguments keep the REPL alive and therefore finish
+            # through the ordinary post-dispatch observer rather than on_quit.
+            fire_post_command_hook(**hook_kwargs)
         return result is not False
 
     def _process_unregistered_slash(self, cmd_original: str, cmd_lower: str) -> bool:

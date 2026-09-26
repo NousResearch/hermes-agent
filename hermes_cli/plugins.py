@@ -201,6 +201,12 @@ VALID_HOOKS: Set[str] = {
     # IGNORED in v1 — a plugin returning a directive-shaped dict gets a debug log so future block/rewrite
     # adopters are discoverable once the middleware variant ships against the #64231 taxonomy.
     "pre_command",
+    # HermesCLI-dispatch-local lifecycle observers. They use the same metadata-only
+    # envelope as pre_command (never a HermesCLI/session-DB/prompt object).
+    # post_command fires after a recognized handler unless a successful quit
+    # emits on_quit instead; returns are ignored and control flow is unchanged.
+    "post_command",
+    "on_quit",
 }
 
 # Hooks whose directive the shell-hook response parser has no channel for. VALID_HOOKS doubles as
@@ -1896,27 +1902,67 @@ def iter_hook_callbacks(hook_name: str) -> tuple[Callable, ...]:
     return get_plugin_manager().iter_hook_callbacks(hook_name)
 
 
+def _fire_command_observer(
+    hook_name: str, *, surface: str, command: str, alias_used: str, args_raw: str,
+    session_key: Optional[str] = None, platform: Optional[str] = None,
+) -> List[Any]:
+    """Fire one metadata-only command observer through the already-loaded manager.
+
+    Deliberately avoid the public lazy-discovery helpers here: dispatching a
+    command must not discover a plugin mid-session and thereby change tool or
+    system-prompt registries after the cached prompt prefix was established.
+    The startup/activation paths own discovery. Never raises.
+    """
+    try:
+        manager = get_plugin_manager()
+        if not manager.has_hook(hook_name):
+            return []
+        return manager.invoke_hook(
+            hook_name, surface=surface, command=command, alias_used=alias_used,
+            args_raw=args_raw, session_key=session_key, platform=platform,
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("%s hook dispatch failed (non-fatal): %s", hook_name, exc)
+        return []
+
+
 def fire_pre_command_hook(
     *, surface: str, command: str, alias_used: str, args_raw: str,
     session_key: Optional[str] = None, platform: Optional[str] = None,
 ) -> None:
     """Fire the observer-only ``pre_command`` hook; never raises. Directive-shaped returns are
     logged at debug so future block/rewrite adopters are discoverable."""
-    try:
-        manager = get_plugin_manager()
-        if not manager.has_hook("pre_command"):
-            return
-        results = manager.invoke_hook(
-            "pre_command", surface=surface, command=command, alias_used=alias_used,
-            args_raw=args_raw, session_key=session_key, platform=platform,
-        )
-        for result in results:
-            if isinstance(result, dict) and ("action" in result or "decision" in result):
-                logger.debug("pre_command is observer-only in v1: ignoring directive %r for /%s (surface=%s). "
-                             "Block/rewrite will arrive with the command middleware variant (#64204/#64231).",
-                             result, command, surface)
-    except Exception as exc:  # pragma: no cover - defensive
-        logger.debug("pre_command hook dispatch failed (non-fatal): %s", exc)
+    results = _fire_command_observer(
+        "pre_command", surface=surface, command=command, alias_used=alias_used,
+        args_raw=args_raw, session_key=session_key, platform=platform,
+    )
+    for result in results:
+        if isinstance(result, dict) and ("action" in result or "decision" in result):
+            logger.debug("pre_command is observer-only in v1: ignoring directive %r for /%s (surface=%s). "
+                         "Block/rewrite will arrive with the command middleware variant (#64204/#64231).",
+                         result, command, surface)
+
+
+def fire_post_command_hook(
+    *, surface: str, command: str, alias_used: str, args_raw: str,
+    session_key: Optional[str] = None, platform: Optional[str] = None,
+) -> None:
+    """Fire the HermesCLI-local post-dispatch observer; ignore returns and never raise."""
+    _fire_command_observer(
+        "post_command", surface=surface, command=command, alias_used=alias_used,
+        args_raw=args_raw, session_key=session_key, platform=platform,
+    )
+
+
+def fire_on_quit_hook(
+    *, surface: str, command: str, alias_used: str, args_raw: str,
+    session_key: Optional[str] = None, platform: Optional[str] = None,
+) -> None:
+    """Fire the HermesCLI-local successful-quit observer; ignore returns and never raise."""
+    _fire_command_observer(
+        "on_quit", surface=surface, command=command, alias_used=alias_used,
+        args_raw=args_raw, session_key=session_key, platform=platform,
+    )
 
 
 _thread_tool_whitelist = threading.local()

@@ -404,6 +404,15 @@ class GatewayInboundMixin:
                     _clarify_adapter.resume_typing_for_chat(source.chat_id)
                 except Exception:
                     logger.debug("Failed to resume typing after clarify response", exc_info=True)
+                # A reply that answers a clarify question is intercepted here and never reaches
+                # the normal turn-start reaction hook, so it gets no lifecycle signal at all while
+                # the resumed turn keeps working (#121653). Adapters that opt in apply the same
+                # in-progress reaction here and finalize it once the turn completes.
+                if callable(getattr(type(_clarify_adapter), "ack_clarify_reply", None)):
+                    try:
+                        await _clarify_adapter.ack_clarify_reply(event)
+                    except Exception:
+                        logger.debug("Failed to react to clarify reply", exc_info=True)
                 # A typed answer to a native card (numeric pick, or text after "Other") never
                 # reaches the click handler, so the card would keep its buttons forever.
                 if callable(getattr(type(_clarify_adapter), "retire_clarify_card", None)):

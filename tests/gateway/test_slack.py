@@ -2742,6 +2742,71 @@ class TestReactions:
         # Message ID should be cleaned up
         assert "1234567890.000001" not in adapter._reacting_message_ids
 
+    @pytest.mark.asyncio
+    async def test_clarify_reply_gets_reaction_lifecycle(self, adapter):
+        """A reply intercepted as a clarify answer never reaches on_processing_start (the gateway
+        resumes the existing turn in-band instead), so without ack_clarify_reply it would get no
+        reaction at all and the eyes reaction from ack_clarify_reply would never clear (#121653).
+        Regression: ack_clarify_reply must react to the reply AND on_processing_complete for the
+        turn's own triggering message must finalize the reply's reaction too."""
+        adapter._app.client.reactions_add = AsyncMock()
+        adapter._app.client.reactions_remove = AsyncMock()
+        adapter._app.client.users_info = AsyncMock(
+            return_value={"user": {"profile": {"display_name": "Tyler"}}}
+        )
+
+        question_event = {
+            "text": "what's your favorite color?", "user": "U_USER", "channel": "C123",
+            "channel_type": "im", "ts": "111.000001",
+        }
+        reply_event = {
+            "text": "blue", "user": "U_USER", "channel": "C123",
+            "channel_type": "im", "ts": "222.000002",
+        }
+        await adapter._handle_slack_message(question_event)
+        await adapter._handle_slack_message(reply_event)
+        assert "111.000001" in adapter._reacting_message_ids
+        assert "222.000002" in adapter._reacting_message_ids
+
+        from gateway.platforms.base import SessionSource
+        from gateway.config import Platform
+        from gateway.platforms.event import ProcessingOutcome
+
+        source = SessionSource(
+            platform=Platform.SLACK, chat_id="C123", chat_type="dm", user_id="U_USER")
+        question_msg_event = MessageEvent(
+            text="what's your favorite color?", message_type=MessageType.TEXT, source=source,
+            message_id="111.000001")
+        reply_msg_event = MessageEvent(
+            text="blue", message_type=MessageType.TEXT, source=source, message_id="222.000002")
+
+        # The question starts a turn normally.
+        await adapter.on_processing_start(question_msg_event)
+        # The reply is intercepted as the clarify answer — never on_processing_start.
+        await adapter.ack_clarify_reply(reply_msg_event)
+
+        # Both messages show the in-progress reaction; the reply's marker was consumed so a
+        # (never-happening) second on_processing_start for it can't double-react.
+        add_calls = adapter._app.client.reactions_add.call_args_list
+        assert [c.kwargs["timestamp"] for c in add_calls if c.kwargs["name"] == "eyes"] == [
+            "111.000001", "222.000002"]
+        assert "222.000002" not in adapter._reacting_message_ids
+        assert ("", "C123", "") in adapter._pending_clarify_reactions
+
+        # The turn finishes: the base adapter fires on_processing_complete for the ORIGINAL
+        # question message, since the reply never went through its own turn lifecycle.
+        await adapter.on_processing_complete(question_msg_event, ProcessingOutcome.SUCCESS)
+
+        add_calls = adapter._app.client.reactions_add.call_args_list
+        remove_calls = adapter._app.client.reactions_remove.call_args_list
+        final_by_ts = {c.kwargs["timestamp"]: c.kwargs["name"] for c in add_calls
+                       if c.kwargs["name"] == "white_check_mark"}
+        assert final_by_ts == {"111.000001": "white_check_mark", "222.000002": "white_check_mark"}
+        removed_eyes_ts = {c.kwargs["timestamp"] for c in remove_calls if c.kwargs["name"] == "eyes"}
+        assert removed_eyes_ts == {"111.000001", "222.000002"}
+        # The pending bucket is drained, not leaked.
+        assert ("", "C123", "") not in adapter._pending_clarify_reactions
+
 
 # ---------------------------------------------------------------------------
 # TestThreadReplyHandling

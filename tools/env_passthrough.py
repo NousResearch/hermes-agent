@@ -116,13 +116,19 @@ def _load_config_passthrough() -> frozenset[str]:
 
 
 def is_env_passthrough(var_name: str) -> bool:
-    """True if *var_name* was registered by a skill or listed in config."""
-    return var_name in _get_allowed() or var_name in _load_config_passthrough()
+    """True if *var_name* was registered by a skill or listed in config and is not a
+    Hermes-managed credential NOW. Ownership changes after acceptance (a plugin adapter
+    registering later claims ``<PREFIX>_*_SECRET``), so the refusal applied at registration
+    is re-applied here, where every child builder consumes the allowlist."""
+    return ((var_name in _get_allowed() or var_name in _load_config_passthrough())
+            and not _is_hermes_provider_credential(var_name))
 
 
 def get_all_passthrough() -> frozenset[str]:
-    """Return the union of skill-registered and config-based passthrough vars."""
-    return frozenset(_get_allowed()) | _load_config_passthrough()
+    """Return the union of skill-registered and config-based passthrough vars, minus names
+    that have become Hermes-managed credentials since they were accepted."""
+    return frozenset(name for name in frozenset(_get_allowed()) | _load_config_passthrough()
+                     if not _is_hermes_provider_credential(name))
 
 
 def resolve_passthrough_value(name: str, fallback: str | None = None) -> str | None:

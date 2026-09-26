@@ -195,3 +195,25 @@ test('checkDistBuilt passes when every chunk parses as an ES module', () => {
     fs.rmSync(tempRoot, { recursive: true, force: true })
   }
 })
+
+// Regression for #123216: one bad chunk among many must still fail the check
+// (single child, real node — proves the batched probe actually reports the
+// failing chunk's name).
+test('checkDistBuilt finds the one bad chunk among many', () => {
+  const { tempRoot, distDir } = makeDist(d => {
+    fs.writeFileSync(path.join(d, 'index.html'), '<!doctype html>', 'utf8')
+    fs.mkdirSync(path.join(d, 'assets'))
+    for (let i = 0; i < 50; i++) {
+      fs.writeFileSync(path.join(d, 'assets', `chunk-${i}-abc123.js`), 'export const a = 1', 'utf8')
+    }
+    fs.writeFileSync(path.join(d, 'assets', 'broken-def456.js'), 'let {,:n}=x', 'utf8')
+  })
+  try {
+    const result = checkDistBuilt(distDir)
+    assert.equal(result.ok, false)
+    assert.match(result.error, /not valid ES module syntax/)
+    assert.match(result.error, /broken-def456\.js/)
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})

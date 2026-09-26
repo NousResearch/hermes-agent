@@ -1,6 +1,6 @@
 name: telegram-notify
 repo: https://github.com/madpower2000/hermes-telegram-notify
-sha: ebb460e03fbdfee2a756dfbe2f6059798c1cb8f0
+sha: 78a3c297d5b0a8f2489eb672e814a38f5d2fa210
 description: >-
   Remote Telegram lifecycle notifications for the main Hermes agent: turn
   start, completion with a bounded final answer, interruption/failure, and
@@ -11,7 +11,7 @@ tier: community
 category: automation
 requires_hermes: ">=0.21.5"
 docs_url: https://github.com/madpower2000/hermes-telegram-notify
-version: "1.1.0"
+version: "1.1.1"
 platforms: []
 capabilities:
   provides_tools: []

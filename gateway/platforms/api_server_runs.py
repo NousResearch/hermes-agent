@@ -317,8 +317,9 @@ def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop
     redact_sensitive_text = _api_server.redact_sensitive_text
 
     def _push(event: Dict[str, Any]) -> None:
-        self._set_run_status(
-            run_id, self._run_statuses.get(run_id, {}).get("status", "running"), last_event=event.get("event"))
+        if not str(event.get("event", "")).startswith("research."):
+            self._set_run_status(
+                run_id, self._run_statuses.get(run_id, {}).get("status", "running"), last_event=event.get("event"))
         q = self._run_streams.get(run_id)
         if q is not None:
             with suppress(Exception):
@@ -345,6 +346,10 @@ def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop
                     redact = key in _SUBAGENT_TEXT_KEYS and isinstance(value, str)
                     event[key] = redact_sensitive_text(value, force=True) if redact else value
             _push(event)
+        elif event_type.startswith("research."):
+            # Research events are shaped and bounded by tools.research_trace;
+            # forward only that namespace to the existing durable SSE journal.
+            _push(_run_event(run_id, event_type, **kwargs))
 
     return _callback
 
@@ -501,6 +506,7 @@ class _RunLaunch:
     browser_control_principal: Any
     browser_control_transport_family: Any
     turn_author: Optional[Dict[str, Any]] = None  # memory-attribution label only; grants nothing
+    research_trace_enabled: bool = False
 
     @property
     def approval_session_key(self) -> str:
@@ -728,6 +734,7 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
                 self._run_statuses, self._run_owners)
             return _replay_or_conflict(self, request, outcome, record, gateway_session_key, _openai_error)
         self._run_idempotency_ids.add(run_id)
+    from tools.research_trace import enabled_for_request
     launch = _RunLaunch(
         self, run_id, q, session_id, gateway_session_key, _declared_selected, user_message,
         conversation_history, session_history_delivery,
@@ -738,7 +745,8 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
         request_profile=_api_server._api_request_profile.get(),
         browser_control_principal=_api_server._api_request_browser_control_principal.get(),
         browser_control_transport_family=_api_server._api_request_browser_control_transport_family.get(),
-        turn_author=turn_author)
+        turn_author=turn_author,
+        research_trace_enabled=enabled_for_request(body))
     self._activate_admitted_request()
     # A canonical Bot Chat that a Desktop holds live is that Desktop's to run: executing here would
     # be a second writer beside its lease (#114959). The owner's mailbox takes the turn and its
@@ -770,7 +778,7 @@ def _served_runtime(agent) -> Dict[str, str]:
     """The ``{provider, model}`` pair that actually served the turn. After a ``fallback_providers``
     switch the agent keeps the fallback runtime until the NEXT turn restores the primary, so when
     ``run_conversation()`` returns these attributes name the served pair — the run record's
-    ``model`` field only echoes the request (#102101). Non-string attributes read as ``""``."""
+    ``model`` field only echoes the request (#102101). Non-string attributes read as ``\"\"``."""
     pair = {}
     for key in ("provider", "model"):
         value = getattr(agent, key, "")
@@ -778,7 +786,7 @@ def _served_runtime(agent) -> Dict[str, str]:
     return pair
 
 
-def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_server):
+def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_server, trace_callback=None):
     """Executor-thread body of one run; returns ``(result, usage, served_runtime)``."""
     from gateway.session_context import clear_session_vars
     from gateway.hosted_room_execution_policy import (
@@ -827,9 +835,11 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
             _api_server._publish_turn_process_ownership(agent, effective_task_id)
             # Passed only when set: a human turn keeps today's call shape.
             author_kwargs = {"turn_author": run.turn_author} if run.turn_author is not None else {}
-            r = agent.run_conversation(
-                user_message=run.user_message, conversation_history=run.conversation_history,
-                task_id=effective_task_id, **author_kwargs)
+            from tools.research_trace import trace_context
+            with trace_context(trace_callback if run.research_trace_enabled else None):
+                r = agent.run_conversation(
+                    user_message=run.user_message, conversation_history=run.conversation_history,
+                    task_id=effective_task_id, **author_kwargs)
         finally:
             # Clear ownership now so a later stop can't reap work this run left running.
             _api_server._clear_turn_process_ownership(agent)
@@ -946,6 +956,14 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
             # A worker can finish before its Future is wrapped, so awaiting it
             # need not yield to already-scheduled commentary/tool callbacks.
             loop.call_soon(run.put_event, _run_event(run_id, f"run.{status}", **fields, **extra))
+        if run.research_trace_enabled:
+            _trace_event({"type": "research.completed", "status": status})
+
+    def _trace_event(event: dict[str, Any]) -> None:
+        event = dict(event or {})
+        event_type = event.pop("type", None)
+        if isinstance(event_type, str) and event_type.startswith("research."):
+            self._make_run_event_callback(run_id, loop)(event_type, **event)
 
     try:
         # Shutdown landed between admission and the task's first tick: nothing to
@@ -964,7 +982,8 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
         self._active_run_agents[run_id] = agent
         approval_notify = _make_approval_notify(self, run, _api_server=_api_server)
         result, usage, served_runtime = await _submit_api_worker(
-            loop, lambda: _run_agent_sync(self, run, agent, approval_notify, _api_server=_api_server))
+            loop, lambda: _run_agent_sync(
+                self, run, agent, approval_notify, _api_server=_api_server, trace_callback=_trace_event))
         # Publish request metrics (daily counters + latency) with each completed run (#52323).
         self._record_api_metrics(usage, time.perf_counter() - _run_started_at)
         if not isinstance(result, dict):

@@ -64,6 +64,9 @@ def _connect_patches(mock_proc, mock_fh):
     base = [
         patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True),
         patch.object(Path, "exists", return_value=True),
+        # The preflight validates creds content, not mere existence (#85391);
+        # these connect-path tests assume a completed pairing.
+        patch("plugins.platforms.whatsapp.adapter.has_valid_whatsapp_creds", return_value=True),
         patch.object(Path, "mkdir", return_value=None),
         patch("subprocess.run", return_value=MagicMock(returncode=0)),
         patch("subprocess.Popen", return_value=mock_proc),
@@ -162,6 +165,7 @@ class TestConnectCleanup:
 
         with patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
              patch.object(Path, "exists", autospec=True, side_effect=_path_exists), \
+             patch("plugins.platforms.whatsapp.adapter.has_valid_whatsapp_creds", return_value=True), \
              patch("subprocess.run", return_value=install_result), \
              patch("gateway.status.acquire_scoped_lock", return_value=(True, None)), \
              patch("gateway.status.release_scoped_lock") as mock_release:
@@ -470,7 +474,11 @@ class TestNoCredsPreflight:
         adapter._bridge_script = str(bridge)
         session_dir = tmp_path / "session"
         session_dir.mkdir()
-        (session_dir / "creds.json").write_text("{}", encoding="utf-8")
+        # A genuine pairing carries the Baileys identity keys; the preflight now
+        # validates content, not mere existence (#85391).
+        (session_dir / "creds.json").write_text(
+            '{"noiseKey": "k", "signedIdentityKey": "k"}', encoding="utf-8"
+        )
         adapter._session_path = session_dir
         adapter._bridge_log_fh = None
         adapter._fatal_error_code = None

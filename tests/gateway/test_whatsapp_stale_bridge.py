@@ -90,7 +90,10 @@ def _setup_bridge_dir(tmp_path: Path) -> Path:
     (bridge_dir / "package.json").write_text('{"name": "bridge"}\n', encoding="utf-8")
     session_path = tmp_path / "session"
     session_path.mkdir()
-    (session_path / "creds.json").write_text("{}", encoding="utf-8")
+    (session_path / "creds.json").write_text(
+        '{"noiseKey": {"private": "a"}, "signedIdentityKey": {"private": "b"}}',
+        encoding="utf-8",
+    )
     return bridge_dir
 
 
@@ -101,7 +104,8 @@ def _fresh_node_modules(bridge_dir: Path) -> None:
     nm = bridge_dir / "node_modules"
     nm.mkdir()
     (nm / ".hermes-pkg-hash").write_text(
-        _file_content_hash(bridge_dir / "package.json")
+        _file_content_hash(bridge_dir / "package.json"),
+        encoding="utf-8",
     )
 
 

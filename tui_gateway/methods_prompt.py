@@ -536,7 +536,8 @@ def _lock_in_submit_turn(
             return _err(rid, 5035, "backend is retiring; reconnect to continue"), fields
         # A watch session's run lives in the PARENT turn (own running flag False); typing
         # mid-run would build a second agent racing the child on the same stored session.
-        if session.get("lazy") and _child_run_active(str(session.get("session_key") or "")):
+        if session.get("lazy") and _child_run_active(
+            str(session.get("session_key") or ""), session.get("profile_home") or None):
             return _err(rid, 4009, "subagent still running — wait for it to finish"), fields
         if is_truthy_value(params.get("confirm_truncate")) and not has_truncation:
             return _err(

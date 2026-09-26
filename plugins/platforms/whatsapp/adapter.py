@@ -1004,12 +1004,17 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
 
 
 def interactive_setup() -> None:
-    """Guide the user through WhatsApp setup (CLI helpers lazy-imported)."""
+    """`hermes setup` -> messaging -> WhatsApp: the same pair-first wizard as `hermes whatsapp`.
+
+    WHATSAPP_ENABLED=true is written by that wizard only after the QR scan lands a creds.json. This
+    entry point used to flip the flag with no pairing at all, so the gateway then failed preflight
+    with `whatsapp_not_paired` and the user saw "I set up WhatsApp and nothing happened".
+    """
     from hermes_cli.config import get_env_value, remove_env_value, save_env_value
-    from hermes_cli.cli_output import prompt, prompt_yes_no, print_header, print_info, print_success
+    from hermes_cli.cli_output import prompt, prompt_yes_no, print_header, print_info
+    from hermes_cli.main_platform_setup import cmd_whatsapp
     print_header("WhatsApp")
-    print_info("WhatsApp uses a local Node.js bridge (WhatsApp Web client).")
-    print_info("Start the bridge separately; the gateway connects to it over HTTP.")
+    print_info("WhatsApp pairs through a local Node.js bridge (WhatsApp Web client) that the gateway starts for you.")
     if (get_env_value("WHATSAPP_ENABLED") or "").lower() in {"true", "1", "yes"}:
         print_info("WhatsApp: already enabled")
         if not prompt_yes_no("Reconfigure WhatsApp?", False):
@@ -1018,12 +1023,9 @@ def interactive_setup() -> None:
         save_env_value("WHATSAPP_ENABLED", "false")
         print_info("WhatsApp left disabled")
         return
-    save_env_value("WHATSAPP_ENABLED", "true")
-    print_success("WhatsApp enabled")
-    allowed_users = prompt("Allowed user IDs (comma-separated, leave empty for no allowlist)")
-    if allowed_users:
-        save_env_value("WHATSAPP_ALLOWED_USERS", allowed_users.replace(" ", ""))
-        print_success("WhatsApp allowlist configured")
+    cmd_whatsapp(None)
+    if (get_env_value("WHATSAPP_ENABLED") or "").lower() != "true":
+        return  # pairing did not complete; cmd_whatsapp already said how to retry
     home_channel = prompt("Home chat ID for cron delivery (leave empty to skip)").strip()
     if home_channel:
         save_env_value("WHATSAPP_HOME_CHANNEL", home_channel)

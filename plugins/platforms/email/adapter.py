@@ -16,7 +16,7 @@ from email.header import decode_header
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
-from email.utils import formatdate
+from email.utils import formatdate, parseaddr
 from email import encoders
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -243,9 +243,17 @@ def _strip_html(html: str) -> str:
 
 
 def _extract_email_address(raw: str) -> str:
-    """Extract bare email address from 'Name <addr>' format."""
-    match = re.search(r"<([^>]+)>", raw)
-    return (match.group(1) if match else raw).strip().lower()
+    """Bare address from a From: value, via the stdlib address parser.
+
+    A regex taking the FIRST ``<...>`` pair reads ``"Victim" <victim@example.com>
+    <attacker@evil.test>`` as the victim, so the allowlist and the DMARC
+    alignment check both run against an address the sender never controlled
+    (GHSA-rxqh-5572-8m77). ``parseaddr`` returns ``('', '')`` for that form, so
+    the spoof fails closed to an empty address instead of resolving to a
+    stranger's identity.
+    """
+    _, addr = parseaddr(str(raw or ""))
+    return addr.strip().lower()
 
 
 def _domain_of(address: str) -> str:

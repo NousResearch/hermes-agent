@@ -293,7 +293,11 @@ class SSHEnvironment(BaseEnvironment):
             if not socket.exists():
                 continue
             with contextlib.suppress(OSError, subprocess.SubprocessError):
-                cmd = ["ssh", "-o", f"ControlPath={socket}", "-O", "exit", f"{self.user}@{self.host}"]
+                # "stop", not "exit": every env for this user@host:port (other sessions, other
+                # Hermes processes) rides this master, and "exit" kills their in-flight commands
+                # (rc 255, no output). "stop" closes the socket now and lets the master exit
+                # once those sessions finish; an idle master exits at once.
+                cmd = ["ssh", "-o", f"ControlPath={socket}", "-O", "stop", f"{self.user}@{self.host}"]
                 subprocess.run(cmd, capture_output=True, timeout=5, stdin=subprocess.DEVNULL)
             with contextlib.suppress(OSError):
                 socket.unlink()

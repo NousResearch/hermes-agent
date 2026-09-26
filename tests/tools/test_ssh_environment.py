@@ -281,6 +281,27 @@ class TestSSHProbeOnly:
         assert not first_probe.control_socket.exists()
         assert len(control_exit_calls) == 1
 
+    def test_cleanup_leaves_other_sessions_on_the_shared_master_running(self, monkeypatch, _mock_ssh_runtime):
+        """Every env for one user@host:port shares a ControlMaster, so one env's teardown (idle
+        reaper, another process exiting) must ask it to ``stop``: ``-O exit`` kills the other
+        sessions' in-flight commands with rc 255 and no output."""
+        ctl_cmds = []
+
+        def _fake_run(cmd, **kwargs):
+            if "-O" in cmd:
+                ctl_cmds.append(cmd[cmd.index("-O") + 1])
+            return subprocess.CompletedProcess(cmd, 0)
+
+        monkeypatch.setattr(ssh_env.subprocess, "run", _fake_run)
+        idle = ssh_env.SSHEnvironment(host="example.com", user="alice")
+        busy = ssh_env.SSHEnvironment(host="example.com", user="alice")
+        assert idle.control_socket == busy.control_socket
+        idle.control_socket.touch()
+
+        idle.cleanup()
+
+        assert ctl_cmds == ["stop"]
+
 
 def _setup_ssh_env(monkeypatch, persistent: bool):
     monkeypatch.setenv("TERMINAL_ENV", "ssh")

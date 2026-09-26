@@ -184,7 +184,15 @@ async def _bridge(ws: WebSocket, info: dict) -> None:
                 await writer.drain()  # backpressure toward the browser
 
     async def watch_eviction() -> None:
-        await evicted.wait()
+        # on_change only fires for transitions made in THIS process. A takeover made by another
+        # process (the gateway's agent tools, the CLI) is only seen by re-reading the lease file,
+        # which the input gate already does every _LEASE_REFRESH_S; eviction must follow it too.
+        while not evicted.is_set():
+            try:
+                await asyncio.wait_for(evicted.wait(), timeout=_LEASE_REFRESH_S)
+            except asyncio.TimeoutError:
+                if _should_evict(held, _lease.get(profile_key=profile_home), viewer_id):
+                    evicted.set()
         await ws.close(code=_CLOSE_CONTROL_TAKEN, reason="control-taken")
 
     tasks = [asyncio.create_task(rfb_to_ws()), asyncio.create_task(ws_to_rfb()),

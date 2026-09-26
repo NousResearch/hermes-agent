@@ -776,6 +776,7 @@ const sidebars: SidebarsConfig = {
         'guides/oauth-over-ssh',
         'guides/microsoft-graph-app-registration',
         'guides/operate-teams-meeting-pipeline',
+        'guides/all-gods-must-die',
       ],
     },
     {

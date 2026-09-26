@@ -710,7 +710,7 @@ class TestMarkJobRun:
         updated = get_job(job["id"])
         assert updated is not None
         assert updated["state"] == "completed"
-        assert updated["last_delivery_error"] == "platform 'telegram' not configured"
+        assert updated["last_delivery_error"] == "job_failed"
         # A terminal completion that never reached the user is not a success.
         assert updated["last_status"] == "delivery_failed"
 
@@ -721,7 +721,7 @@ class TestMarkJobRun:
         listed = {j["id"]: j for j in list_jobs(include_disabled=True)}
         assert job["id"] in listed
         assert listed[job["id"]]["state"] == "completed"
-        assert listed[job["id"]]["last_delivery_error"] == "send failed: 502"
+        assert listed[job["id"]]["last_delivery_error"] == "job_failed"
         assert listed[job["id"]]["last_status"] == "delivery_failed"
         # Default (enabled-only) listing hides it, matching paused/disabled jobs.
         assert job["id"] not in {j["id"] for j in list_jobs()}
@@ -738,7 +738,7 @@ class TestMarkJobRun:
         mark_job_run(job["id"], success=False, error="timeout")
         updated = get_job(job["id"])
         assert updated["last_status"] == "error"
-        assert updated["last_error"] == "timeout"
+        assert updated["last_error"] == "job_failed"
 
     def test_delivery_error_tracked_separately(self, tmp_cron_dir):
         """Agent succeeds but delivery fails — surfaced, not hidden behind ok.
@@ -753,7 +753,7 @@ class TestMarkJobRun:
         updated = get_job(job["id"])
         assert updated["last_status"] == "delivery_failed"
         assert updated["last_error"] is None
-        assert updated["last_delivery_error"] == "send failed: 502"
+        assert updated["last_delivery_error"] == "job_failed"
         assert updated["failure_streak"] == 0
 
     def test_success_without_delivery_error_stays_ok(self, tmp_cron_dir):
@@ -774,7 +774,7 @@ class TestMarkJobRun:
         )
         updated = get_job(job["id"])
         assert updated["last_status"] == "error"
-        assert updated["last_error"] == "timeout"
+        assert updated["last_error"] == "job_failed"
         assert updated["failure_streak"] == 1
 
     def test_explicit_status_override_wins_over_delivery_failed(self, tmp_cron_dir):
@@ -787,7 +787,7 @@ class TestMarkJobRun:
         )
         updated = get_job(job["id"])
         assert updated["last_status"] == "blocked_config"
-        assert updated["last_delivery_error"] == "send failed: 502"
+        assert updated["last_delivery_error"] == "job_failed"
 
     def test_failure_streak_increments_and_resets(self, tmp_cron_dir):
         """failure_streak counts consecutive agent failures; success resets."""
@@ -847,7 +847,7 @@ class TestMarkJobRun:
         assert updated["state"] != "completed"
         assert updated["next_run_at"] is None
         assert updated["last_error"]
-        assert "croniter" in updated["last_error"].lower()
+        assert updated["last_error"] == "schedule_failed"
 
 
 class TestAdvanceNextRun:
@@ -1194,7 +1194,7 @@ class TestMarkJobRunConcurrency:
         assert a["repeat"]["completed"] == 1, f"Job A completed count wrong: {a['repeat']['completed']}"
 
         assert b["last_status"] == "error", f"Job B last_status wrong: {b['last_status']}"
-        assert b["last_error"] == "timeout", f"Job B last_error wrong: {b['last_error']}"
+        assert b["last_error"] == "job_failed", f"Job B last_error wrong: {b['last_error']}"
         assert b["last_run_at"] is not None, "Job B last_run_at not set"
         assert b["repeat"]["completed"] == 1, f"Job B completed count wrong: {b['repeat']['completed']}"
 
@@ -1793,7 +1793,7 @@ class TestCompletedOneshotRetentionSweep:
         kept = get_job(recent_id)
         assert kept is not None
         assert kept["state"] == "completed"
-        assert kept["last_delivery_error"] == "boom"
+        assert kept["last_delivery_error"] == "job_failed"
 
     def test_sweep_ignores_recurring_jobs(self, tmp_cron_dir):
         """Old recurring jobs are never candidates, whatever their history."""

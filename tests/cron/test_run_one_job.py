@@ -81,9 +81,8 @@ def test_run_one_job_agent_declared_failure_uses_failure_bookkeeping(monkeypatch
     assert calls[-1] == ("mark", "declared-failure", False)
 
 
-def test_run_one_job_agent_declared_failure_is_delivered_verbatim(monkeypatch):
-    """The agent's own evidence reaches the operator as written, not re-diagnosed by the
-    provider-error heuristics (a child that "timed out" is not a model-service timeout)."""
+def test_run_one_job_agent_declared_failure_keeps_evidence_private(monkeypatch):
+    """Agent-authored evidence is private even when it resembles a provider failure."""
     delivered = []
     evidence = "The export subagent timed out after 30 minutes waiting on the database."
     _patch_pipeline(monkeypatch, final=f"[CRON_FAILURE]\n{evidence}")
@@ -93,8 +92,9 @@ def test_run_one_job_agent_declared_failure_is_delivered_verbatim(monkeypatch):
     s.run_one_job({"id": "verbatim", "name": "nightly export", "deliver": "telegram"})
 
     assert len(delivered) == 1
-    assert evidence.rstrip(".") in delivered[0]
-    assert "model service" not in delivered[0]
+    assert evidence.rstrip(".") not in delivered[0]
+    assert "provider_timeout" in delivered[0]
+    assert "hermes cron runs verbatim" in delivered[0]
 
 
 def test_run_one_job_marker_mentioned_in_report_stays_successful(monkeypatch):
@@ -155,14 +155,14 @@ def test_run_one_job_exception_delivers_failure_alert(monkeypatch):
     assert not delivered[0][1].lstrip("⚠️ ").startswith("Gemini HTTP 503")
     assert "hermes cron run j3" in delivered[0][1]
     assert marked == [
-        (("j3", False, "Gemini HTTP 503 (UNAVAILABLE)"), {"delivery_error": None})
+        (("j3", False, "provider_overloaded"), {"delivery_error": None})
     ]
     assert finished == [
         (
             ("exec-j3",),
             {
                 "success": False,
-                "error": "Gemini HTTP 503 (UNAVAILABLE)",
+                "error": "provider_overloaded",
                 "delivery_outcome": "delivered",
             },
         )
@@ -193,7 +193,7 @@ def test_run_one_job_exception_records_failure_alert_delivery_error(monkeypatch)
 
     assert s.run_one_job({"id": "j4", "deliver": "telegram"}) is False
     assert marked == [
-        (("j4", False, "provider failed"), {"delivery_error": "send failed: 502"})
+        (("j4", False, "job_failed"), {"delivery_error": "send failed: 502"})
     ]
 
 
@@ -247,7 +247,8 @@ def test_escaped_failure_delivery_carries_the_streak_nudge(monkeypatch):
 
     assert ok is False
     assert len(delivered) == 1
-    assert "cannot import name X" in delivered[0]
+    assert "cannot import name X" not in delivered[0]
+    assert "job_failed" in delivered[0]
     assert "hermes cron pause scout" in delivered[0]
 
 
@@ -270,7 +271,8 @@ def test_escaped_failure_delivery_stays_quiet_below_the_threshold(monkeypatch):
 
     assert ok is False
     assert len(delivered) == 1
-    assert "provider failed" in delivered[0]
+    assert "provider failed" not in delivered[0]
+    assert "job_failed" in delivered[0]
     assert "hermes cron pause scout" not in delivered[0]
 
 
@@ -310,7 +312,7 @@ def test_run_one_job_exception_after_delivery_does_not_redeliver(monkeypatch):
     assert delivered == [("j5", "final response")]
     assert mark_calls[0] == (("j5", True, None), {"delivery_error": None})
     assert mark_calls[1] == (
-        ("j5", False, "bookkeeping boom"),
+        ("j5", False, "job_failed"),
         {"delivery_error": None},
     )
 
@@ -351,13 +353,13 @@ def test_run_one_job_keyboard_interrupt_skips_delivery_and_reraises(monkeypatch)
         s.run_one_job({"id": "j6", "name": "interrupt", "deliver": "telegram"})
 
     assert delivered == []
-    assert marked == [(("j6", False, "KeyboardInterrupt"), {})]
+    assert marked == [(("j6", False, "job_failed"), {})]
     assert finished == [
         (
             ("exec-j6",),
             {
                 "success": False,
-                "error": "KeyboardInterrupt",
+                "error": "job_failed",
                 "delivery_outcome": "suppressed",
             },
         )

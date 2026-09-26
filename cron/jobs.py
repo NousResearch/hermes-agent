@@ -507,6 +507,10 @@ def _normalize_job_record(job: Dict[str, Any]) -> Dict[str, Any]:
         name = label_source[:50].strip() or "cron job"
     normalized["name"] = name
     normalized["schedule_display"] = _schedule_display_for_job(normalized)
+    # Historical records may contain arbitrary stderr/exception text.  Normalize it at the
+    # common read boundary so CLI, tools, dashboard/API, and scheduler callers never re-export it.
+    from cron.failure_safety import sanitize_job_failure_fields
+    sanitize_job_failure_fields(normalized)
     # Derived from the scheduler-honoured ``enabled`` flag so a half-paused record cannot render
     # "paused" while still firing. See effective_job_state().
     normalized["state"] = effective_job_state(normalized)
@@ -1905,7 +1909,11 @@ def list_jobs(include_disabled: bool = False) -> List[Dict[str, Any]]:
     except Exception:
         latest = {}
     for job in jobs:
-        job["latest_execution"] = latest.get(job.get("id", ""))
+        execution = latest.get(job.get("id", ""))
+        if execution:
+            from cron.failure_safety import sanitize_execution_failure_fields
+            execution = sanitize_execution_failure_fields(execution)
+        job["latest_execution"] = execution
     return jobs
 
 
@@ -2282,8 +2290,10 @@ def note_fire_forward_failure(job_id: str, detail: str) -> bool:
     the miss is invisible (no execution row, last_status only covers started runs); mark_job_run
     clears it."""
     def apply(jobs, _i, job):
+        from cron.failure_safety import public_cron_failure
+
         job["last_fire_error"] = {
-            "at": _hermes_now().isoformat(), "detail": str(detail or "")[:500]}
+            "at": _hermes_now().isoformat(), "detail": public_cron_failure(detail)}
         save_jobs(jobs)
         return True
 
@@ -2302,7 +2312,11 @@ def _record_run_outcome(
     delivery_failed = isinstance(delivery_error, str) and bool(delivery_error.strip())
     job["last_status"] = status or (
         "error" if not success else ("delivery_failed" if delivery_failed else "ok"))
-    job["last_error"] = None if success else error
+    if success:
+        job["last_error"] = None
+    else:
+        from cron.failure_safety import public_cron_failure
+        job["last_error"] = public_cron_failure(error, no_agent=bool(job.get("no_agent")))
     if success:
         # Healthy run: drop the alert-once dedup markers so a FUTURE break re-alerts, and clear
         # the forward-failure stamp so it only describes CURRENT auto-fire health.
@@ -2313,7 +2327,11 @@ def _record_run_outcome(
         # Consecutive agent-failure streak; delivery failures do NOT count
         # (scheduler._failure_streak_nudge).
         job["failure_streak"] = int(job.get("failure_streak") or 0) + 1
-    job["last_delivery_error"] = delivery_error
+    if delivery_error:
+        from cron.failure_safety import public_cron_failure
+        job["last_delivery_error"] = public_cron_failure(delivery_error)
+    else:
+        job["last_delivery_error"] = None
     # Clear both claims: the run is over, so the job is claimable again.
     job["fire_claim"] = None
     job.pop("pending_slot", None)
@@ -2357,9 +2375,7 @@ def _advance_after_run(job: Dict[str, Any], now: str) -> None:
         # dep into "job completed" and silently drop the schedule.
         job["state"] = "error"
         if not job.get("last_error"):
-            job["last_error"] = (
-                "Failed to compute next run for recurring schedule (is the 'croniter' package "
-                "installed in the gateway's Python env?)")
+            job["last_error"] = "schedule_failed"
         logger.error(
             "Job '%s' (%s) could not compute next_run_at; "
             "leaving enabled and marking state=error so the job is not silently disabled.",

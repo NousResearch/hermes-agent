@@ -111,16 +111,11 @@ def _normalize_error(error: str) -> str:
     return re.sub(r"\s+", " ", str(error or "")).strip().lower()
 
 
-def _redact_error(error: str) -> str:
-    """Redact secrets (best-effort; the scheduler path never fails on it) then bound the length."""
-    text = str(error or "")
-    try:
-        from agent.redact import redact_sensitive_text
+def _public_error(error: str) -> str:
+    """Persist only a closed failure label; raw details belong in the private run log."""
+    from cron.failure_safety import public_cron_failure
 
-        text = redact_sensitive_text(text, force=True)  # persisted to disk: always scrub
-    except Exception:
-        pass
-    return text[:MAX_ERROR_CHARS]
+    return public_cron_failure(error)[:MAX_ERROR_CHARS]
 
 
 def _error_signature(job_id: str, error: str) -> str:
@@ -159,11 +154,13 @@ def upsert_incident(
     ``detected`` so the operator is alerted once more. A changed error text mints a new incident."""
     job_id = str(job_id or "")
     sig = _error_signature(job_id, error)
-    stored_error = _redact_error(error)
+    stored_error = _public_error(error)
     incident_id = _incident_id(job_id, sig)
     now = _hermes_now().isoformat()
     failure_type = failure_type or _classify_failure_type(error)
-    output_file = str(output_file) if output_file is not None else None
+    # ``output_file`` is normally absolute and incident rows are exposed through CLI/API
+    # surfaces. The job id already provides the safe lookup command (`hermes cron runs ID`).
+    output_file = None
 
     with _transaction() as conn:
         row = conn.execute(

@@ -322,12 +322,13 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
         if notice is not None:
             return notice
 
-    # Strip exception wrappers; bound input first so a multi-KB blob can't slow the regexes.
-    cleaned = re.sub(r"^(RuntimeError|Exception|ValueError|HTTPStatusError):\s*", "", text[:2000])
-    cleaned = re.sub(r"\s+", " ", cleaned).strip().rstrip(".")
-    if len(cleaned) > 180:
-        cleaned = cleaned[:177].rstrip() + "..."
-    message = generic_failure_notice(job_name, job_id, cleaned)
+    # Unknown failures cross the public boundary as a closed label.  Redaction regexes are
+    # defense-in-depth, not the security boundary: arbitrary stderr/path/customer text never
+    # becomes notice copy.
+    from cron.failure_safety import public_cron_failure
+    message = generic_failure_notice(
+        job_name, job_id, public_cron_failure(text, no_agent=bool(job.get("no_agent")))
+    )
 
     # Import-class failures (#95294 part 3): a long-lived gateway whose checkout was updated
     # underneath it (interrupted `hermes update`, manual git pull) serves MIXED modules and every
@@ -2728,17 +2729,19 @@ def run_one_job(
         except Exception as handoff_error:
             error = f"Restart-safe cron worker dispatch failed: {handoff_error}"
             logger.error("Job '%s': %s", job["id"], error)
+            from cron.failure_safety import public_cron_failure
+            public_error = public_cron_failure(error, no_agent=bool(job.get("no_agent")))
             claim = job.get("fire_claim")
             owner = str(claim.get("by") or "") if isinstance(claim, dict) else ""
             try:
                 mark_job_run(
                     job["id"],
                     False,
-                    error,
+                    public_error,
                     **({"expected_fire_owner": owner} if owner else {}),
                 )
             finally:
-                finish_execution(execution_id, success=False, error=error)
+                finish_execution(execution_id, success=False, error=public_error)
             return True
     if extra_prompt is None:
         # Gateway-forwarded manual run stamps its prompt on the job via trigger_job; the fire that
@@ -2821,7 +2824,7 @@ def _compose_run_delivery(
     """Text to deliver for a finished run. Returns ``(deliver_content, blocked_config,
     silent_alert, incident_acked, failure_incident_id)``; ``silent_alert``: an alert-once marker
     says the operator was already told, deliver nothing. ``agent_declared``: *error* is the
-    agent's own ``[CRON_FAILURE]`` evidence, delivered verbatim."""
+    agent's own ``[CRON_FAILURE]`` evidence. Evidence is private and never delivered verbatim."""
     err = str(error) if error else ""
     # Failed jobs always deliver, except blocked-config runs, which alert exactly ONCE.
     blocked_config_silent = BLOCKED_CONFIG_SILENT_MARKER in err
@@ -2830,9 +2833,8 @@ def _compose_run_delivery(
     failure_incident_id = None
     if blocked_config and not success:
         # Bypass the generic failure summarizer (its auth/timeout heuristics would mislabel this).
-        _pf_text = re.sub(r"\[blocked_config[^\]]*\]\s*", "", err).strip()
         from cron.scheduler_failure_copy import blocked_config_notice
-        deliver_content = blocked_config_notice(job.get("name") or job["id"], _pf_text)
+        deliver_content = blocked_config_notice(job.get("name") or job["id"])
     elif success:
         deliver_content = final_response
         _resolve_incidents_for_recovered_job(job)
@@ -2846,12 +2848,13 @@ def _compose_run_delivery(
         if incident_acked:
             deliver_content = ""
         elif agent_declared:
-            # The agent already diagnosed the failure in prose; the summarizer's substring
-            # heuristics would re-diagnose it ("timed out" -> blame the model service, "401" ->
-            # "sign in again") and attach the wrong remediation. Deliver the evidence as-is.
+            # Agent-authored evidence is attacker-controlled text too. Preserve it only in the
+            # private run log and cross the chat boundary as a closed failure label.
             from cron.scheduler_failure_copy import generic_failure_notice
+            from cron.failure_safety import public_cron_failure
             deliver_content = generic_failure_notice(
-                job.get("name") or job["id"], job["id"], err.strip().rstrip("."),
+                job.get("name") or job["id"], job["id"],
+                public_cron_failure(err, no_agent=bool(job.get("no_agent"))),
             ) + _failure_streak_nudge(job)
         else:
             from cron.quota_hold import hold_notice
@@ -2951,9 +2954,13 @@ def _save_compose_deliver(
         if not owns_output:
             raise _FireClaimLostDuringSideEffect
         # remove_job() already deleted this job's output dir; saving would re-create an orphan.
+        private_output = output
+        if not d.success:
+            from cron.failure_safety import private_failure_output
+            private_output = private_failure_output(output, d.error)
         output_file = (
             None if self_removal_delivery_allowed(job["id"])
-            else save_job_output(job["id"], output))
+            else save_job_output(job["id"], private_output))
     if verbose and output_file is not None:
         logger.info("Output saved to: %s", output_file)
 
@@ -3034,7 +3041,8 @@ def _finish_interrupted_run(job: dict, execution_id: str, delivery_error: Option
             # mark_job_run also advances next_run_at and the repeat counter, and running that a second time
             # for one run would skip a fire or auto-delete the job early.
             from cron.jobs import update_job
-            update_job(job["id"], {"last_delivery_error": delivery_error})
+            from cron.failure_safety import public_cron_failure
+            update_job(job["id"], {"last_delivery_error": public_cron_failure(delivery_error)})
         except Exception as _rec_err:
             logger.debug(
                 "Failed recording delivery_error for interrupted job %s: %s", job["id"], _rec_err)
@@ -3067,8 +3075,14 @@ def _finish_completed_run(d: _RunDelivery, fire_owner: Optional[str], execution_
     if d.blocked_config:
         mark_kwargs["status"] = "blocked_config"
     # A run that removed its own record has nothing left to mark; the delivery above is its result.
+    from cron.failure_safety import public_cron_failure
+    public_error = (
+        None if d.success else public_cron_failure(
+            d.error, no_agent=bool(job.get("no_agent")), incident_id=d.failure_incident_id
+        )
+    )
     marked = self_removal_delivery_allowed(job["id"]) or mark_job_run(
-        job["id"], d.success, d.error, **mark_kwargs)
+        job["id"], d.success, public_error, **mark_kwargs)
     if fire_owner is not None and not marked:
         finish_execution(
             execution_id, success=False,
@@ -3089,7 +3103,7 @@ def _finish_completed_run(d: _RunDelivery, fire_owner: Optional[str], execution_
         # Failure ping left the process (or had a configured target): mark the incident alerted.
         _mark_incident_alerted(d.failure_incident_id)
     finish_execution(
-        execution_id, success=d.success, error=d.error, delivery_outcome=delivery_outcome)
+        execution_id, success=d.success, error=public_error, delivery_outcome=delivery_outcome)
     return True
 
 
@@ -3326,6 +3340,9 @@ def _run_one_job_body(
         ):
             delivery_error, delivery_outcome = _deliver_crash_failure(
                 job, _err_text, adapters=adapters, loop=loop)
+        from cron.failure_safety import public_cron_failure
+        public_error = public_cron_failure(
+            _err_text, no_agent=bool(job.get("no_agent")))
         try:
             if (
                 not _consume_interrupted_flag(job["id"], execution_token)
@@ -3336,13 +3353,13 @@ def _run_one_job_body(
                     mark_kwargs["expected_fire_owner"] = fire_owner
                 if isinstance(e, Exception):
                     mark_kwargs["delivery_error"] = delivery_error
-                mark_job_run(job["id"], False, _err_text, **mark_kwargs)
+                mark_job_run(job["id"], False, public_error, **mark_kwargs)
         except Exception as record_err:
             # Never let bookkeeping mask the original interruption.
             logger.error("Failed to record interrupted run for job %s: %s", job["id"], record_err)
         try:
             finish_execution(
-                execution_id, success=False, error=_err_text, delivery_outcome=delivery_outcome)
+                execution_id, success=False, error=public_error, delivery_outcome=delivery_outcome)
         except Exception as record_err:
             logger.error("Failed to finish execution record for job %s: %s", job["id"], record_err)
         if not isinstance(e, Exception):

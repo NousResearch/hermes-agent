@@ -495,21 +495,6 @@ class TestUpdate:
         assert not (research / "web-search" / "stale.txt").exists()  # an owned root is still replaced whole
         assert (research / "arxiv" / "SKILL.md").exists()
 
-    def test_an_owned_skill_root_is_still_replaced_whole(self, profile_env):
-        """A listed skill dir holds SKILL.md: it is a root, so files retired upstream disappear."""
-        mf = DistributionManifest(name="one", version="0.1.0",
-                                  distribution_owned=["SOUL.md", "skills/research/web-search/"])
-        staged = _make_staging_dir(profile_env, "one", manifest=mf)
-        (staged / "skills" / "research" / "web-search").mkdir(parents=True)
-        (staged / "skills" / "research" / "web-search" / "SKILL.md").write_text("author\n", encoding="utf-8")
-        plan = install_distribution(str(staged), name="one")
-        stale = plan.target_dir / "skills" / "research" / "web-search" / "stale.txt"
-        stale.write_text("old\n", encoding="utf-8")
-
-        update_distribution("one")
-
-        assert not stale.exists()
-
     def test_an_owned_category_refuses_a_symlinked_subcategory_before_writing(self, profile_env, tmp_path):
         staged, plan = self._owned_category(profile_env, "rb")
         (staged / "skills" / "research" / "papers" / "summarize").mkdir(parents=True)

@@ -163,14 +163,29 @@ def destructive_ops(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     return [op for op in ops if (op or {}).get("action") in _BG_DELETE_ACTIONS]
 
 
+def _background_op_needs_staging(payload: Dict[str, Any]) -> bool:
+    """``replace``/``remove`` are always risky unattended. ``add`` joins them only when it
+    targets USER.md (``target == 'user'``): that store is where personal/consent-sensitive
+    facts land (#116788 — a background pass proposed persisting a fact the user had explicitly
+    asked not to keep), while MEMORY.md adds stay ungated since that store only ever holds
+    low-risk environment/tool notes."""
+    if destructive_ops(payload):
+        return True
+    if payload.get("target") != "user":
+        return False
+    ops = (payload.get("operations") or []) if payload.get("action") == "batch" else [payload]
+    return any((op or {}).get("action") == "add" for op in ops)
+
+
 def _background_delete_gate(store, action, operations, target="memory", content=None,
                             old_text=None) -> Optional[str]:
-    """Fail-closed operation gate for unattended background-review forks (#105921): ``add``
-    stays available (it is all any review prompt asks for), while ``replace``/``remove`` —
-    single or inside a batch — are never applied unattended. The op is staged in the pending
-    store instead of merely denied: the fork's own review summary is never published back, so
-    a plain denial would drop the consolidation request with no surfacing path at all. A
-    staging failure fails closed to a plain denial."""
+    """Fail-closed operation gate for unattended background-review forks (#105921, #116788):
+    ``add`` to MEMORY.md stays available (it is all any review prompt asks for), while
+    ``replace``/``remove`` — single or inside a batch — and any ``add`` to USER.md (target='user')
+    are never applied unattended. The op is staged in the pending store instead of merely denied:
+    the fork's own review summary is never published back, so a plain denial would drop the
+    consolidation request with no surfacing path at all. A staging failure fails closed to a
+    plain denial."""
     from tools.skill_provenance import is_unattended_review
 
     if not is_unattended_review():
@@ -178,7 +193,7 @@ def _background_delete_gate(store, action, operations, target="memory", content=
     payload = ({"action": "batch", "target": target, "operations": operations}
                if operations is not None else
                {"action": action, "target": target, "content": content, "old_text": old_text})
-    if not destructive_ops(payload):
+    if not _background_op_needs_staging(payload):
         return None
     detail = ("; ".join(_batch_op_line(op) for op in operations) if operations is not None
               else _batch_op_line({"action": action, "content": content, "old_text": old_text}))
@@ -193,15 +208,17 @@ def _background_delete_gate(store, action, operations, target="memory", content=
             origin=wa.current_origin())
         return json.dumps({
             "success": True, "staged": True, "proposal_staged": True, "pending_id": record["id"],
-            "message": ("Background review may not delete memory entries unattended. The proposed "
-                        f"{'batch' if operations is not None else action} was staged for your approval — "
-                        "review it with /memory pending (approve to apply, discard to drop)."),
+            "message": ("Background review may not delete memory entries or add to the user profile "
+                        f"unattended. The proposed {'batch' if operations is not None else action} was "
+                        "staged for your approval — review it with /memory pending "
+                        "(approve to apply, discard to drop)."),
         }, ensure_ascii=False)
     except Exception:
         logger.warning("Failed to stage background-review consolidation; denying", exc_info=True)
         return tool_error(
             "Background review may not delete memory entries ('replace'/'remove', including in a "
-            "batch); 'add' is still available.", success=False)
+            "batch) or add to the user profile unattended; 'add' to memory is still available.",
+            success=False)
 
 
 def memory_tool(action: str = None, target: str = "memory", content: str = None, old_text: str = None,

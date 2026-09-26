@@ -409,8 +409,7 @@ async def web_extract_tool(urls: List[Any], format: str = None, char_limit: Opti
             if error_json is not None:
                 return error_json
             results = await _extract_safe_urls(provider, safe_urls, format)
-        # Reconstruct input order across invalid, blocked, and provider entries (providers preserve
-        # the order of the safe URL list they receive).
+        # Reconstruct input order across invalid, blocked, and provider entries.
         if invalid_urls or ssrf_blocked:
             fixed = {**ssrf_blocked, **invalid_urls}
             results = _merge_in_order(len(urls), fixed, safe_indices, safe_urls, results)

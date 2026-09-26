@@ -73,15 +73,41 @@ def _refuse_all(error: str):
     return None, None, None, json.dumps({"success": False, "error": error})
 
 
+def _claimed_urls(fetched: dict) -> tuple:
+    """URLs a provider entry names as its own: ``url``, then ``metadata.sourceURL`` (Keenable and
+    Firecrawl put the REQUESTED url there when ``url`` is the redirect target)."""
+    meta = fetched.get("metadata")
+    return fetched.get("url"), meta.get("sourceURL") if isinstance(meta, dict) else None
+
+
 def _merge_in_order(
     total: int, fixed: Dict[int, dict], fetch_positions: List[int], fetch_urls: List[str], results: List[dict]
 ) -> List[dict]:
-    """Rebuild a ``total``-long result list: *fixed* entries by position, fetched *results* at
-    *fetch_positions* (a short provider list yields ``_NO_RESULT_ERROR`` entries for the rest)."""
+    """Rebuild a ``total``-long result list: *fixed* entries by position, each fetched result at the
+    position of the requested URL it names. List position is not identity: Exa omits failed URLs and
+    Parallel/Tavily append failures after successes. Results naming no requested URL (a redirect
+    target) fill the empty positions in order, then a document replaces an error stub (keyless
+    Parallel reports a redirected page AND a stub for the requested URL); any position still empty
+    gets a ``_NO_RESULT_ERROR`` entry."""
     merged = dict(fixed)
-    for pos, position in enumerate(fetch_positions):
-        missing = _result_entry(fetch_urls[pos], _NO_RESULT_ERROR)
-        merged[position] = results[pos] if pos < len(results) else missing
+    waiting: Dict[str, List[int]] = {}
+    for position, url in zip(fetch_positions, fetch_urls):
+        waiting.setdefault(url, []).append(position)
+    unnamed = []
+    for fetched in results:
+        url = next((u for u in _claimed_urls(fetched) if waiting.get(u)), None)
+        if url is None:
+            unnamed.append(fetched)
+        else:
+            merged[waiting[url].pop(0)] = fetched
+    empty = [p for p in fetch_positions if p not in merged]
+    stubbed = [p for p in fetch_positions if p in merged and merged[p].get("error")]
+    for fetched in unnamed:
+        slots = empty or ([] if fetched.get("error") else stubbed)
+        if slots:
+            merged[slots.pop(0)] = fetched
+    for position, url in zip(fetch_positions, fetch_urls):
+        merged.setdefault(position, _result_entry(url, _NO_RESULT_ERROR))
     return [merged[i] for i in range(total)]
 
 
@@ -182,14 +208,11 @@ async def _dispatch_extract(provider, fetch_urls: List[str], format: Optional[st
 
     # Cache each successful fetch under the REQUESTED url it reports as its own — never by list
     # position: providers omit failed URLs or return successes out of request order, and a positional
-    # write filed one page's text under another URL's key for the whole TTL. ``metadata.sourceURL``
-    # counts because Keenable/Firecrawl put the requested URL there when ``url`` is the redirect target.
+    # write filed one page's text under another URL's key for the whole TTL.
     # An entry naming no requested URL is served but not cached (a miss re-fetches; a mis-key poisons).
     requested = set(fetch_urls)
     for fetched in results:
-        meta = fetched.get("metadata")
-        source = meta.get("sourceURL") if isinstance(meta, dict) else None
-        url = next((u for u in (fetched.get("url"), source) if u in requested), None)
+        url = next((u for u in _claimed_urls(fetched) if u in requested), None)
         _content = fetched.get("raw_content", "") or fetched.get("content", "")
         if url and _content and not fetched.get("error"):
             extract_cache_put(url, _content, fetched.get("title", ""), format=format, provider=provider.name)

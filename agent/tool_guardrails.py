@@ -15,6 +15,7 @@ from typing import Any, Mapping
 
 from utils import safe_json_loads
 from agent.tool_result_classification import file_mutation_result_landed, is_guardrail_refusal
+from tools.tool_search_catalog import TOOL_CALL_NAME
 
 
 IDEMPOTENT_TOOL_NAMES = frozenset({
@@ -279,6 +280,12 @@ _DECISION_MESSAGES: dict[str, str] = {
         "Blocked delegate_task: this turn has already spawned {count} subagents (limit {cap}). "
         "This looks like a runaway delegation loop. Finish the work with the results you have and answer the user."
     ),
+    "bridge_unresolved_cap": (
+        "Blocked {tool_name}: the call could not be resolved to a tool {count} times this turn "
+        "(the 'name' argument was missing or mis-shaped), so the tool never ran. Retrying the same "
+        "shape cannot help. Call the tool directly by name with its arguments nested under "
+        "'arguments', or reply in plain text."
+    ),
 }
 
 _IDENTICAL_CALL_NOTICE = (
@@ -295,11 +302,32 @@ _IDENTICAL_CYCLE_NOTICE = (
     "proceed with what you have.]"
 )
 
-# tool -> (LoopCapConfig field, controller counter attribute, decision code)
+# Tool -> (LoopCapConfig field, controller counter attribute, decision code)
 _LOOP_CAPS: dict[str, tuple[str, str, str]] = {
     "web_search": ("max_web_searches", "_turn_web_search_count", "loop_web_search_cap"),
     "delegate_task": ("max_subagents", "_turn_subagent_count", "loop_subagent_cap"),
 }
+
+# A tool_call the bridge could not even resolve (missing/mis-shaped 'name') is a pure
+# harness-side rejection: the tool never ran, so no legitimate retry exists and the
+# model gains nothing from attempt N+1 that it did not have at attempt 1. It is capped
+# on a plain call count, like the loop caps above, because the block that already
+# exists for this shape (repeated_exact_failure_block) is gated on hard_stop_enabled
+# — which defaults to off on the interactive platforms where this bites (#103752).
+_BRIDGE_UNRESOLVED_CAP = 3
+
+# The parser's marker for the shape that never resolved to a tool. Matched against the
+# tool result, which is a JSON string, so the quotes are the JSON escaping.
+_UNRESOLVED_BRIDGE_MARKER = "requires a 'name'"
+
+
+def _is_unresolved_bridge_rejection(result: str | None) -> bool:
+    """True when a ``tool_call`` failed because the bridge could not resolve it at all.
+
+    Distinguished from a well-formed bridge call whose target tool then failed: those
+    reached a tool, so they must not feed the cap.
+    """
+    return bool(result) and _UNRESOLVED_BRIDGE_MARKER in result
 
 
 class ToolCallGuardrailController:
@@ -335,6 +363,8 @@ class ToolCallGuardrailController:
         self._persisted_result_paths: dict[str, str] = {}
         self._turn_web_search_count = 0
         self._turn_subagent_count = 0
+        # tool_call invocations the bridge could not resolve (never reached a tool).
+        self._bridge_unresolved_count = 0
 
     @property
     def halt_decision(self) -> ToolGuardrailDecision | None:
@@ -360,6 +390,11 @@ class ToolCallGuardrailController:
         # Loop caps apply regardless of hard_stop_enabled (which only governs the detector).
         cap_block = self._check_loop_cap(tool_name, args, signature)
         if cap_block is not None or not self.config.hard_stop_enabled:
+            # The bridge-unresolved cap is also detector-independent: the call never
+            # reaches a tool, so nothing about the turn can make attempt N+1 succeed.
+            if tool_name == TOOL_CALL_NAME and self._bridge_unresolved_count >= _BRIDGE_UNRESOLVED_CAP:
+                return self._decide(
+                    "block", "bridge_unresolved_cap", tool_name, self._bridge_unresolved_count, signature)
             return cap_block or allow
         # A mutation since this call last failed makes the retry a new experiment.
         exact_count = 0 if self._progress_since_failure.get(signature) else self._exact_failure_counts.get(signature, 0)
@@ -381,6 +416,12 @@ class ToolCallGuardrailController:
         warnings = self.config.warnings_enabled
 
         if failed:
+            # An unresolved bridge call never reached a tool: count it toward the cap
+            # that stops the identical-retry loop (#103752). Only the parser's own
+            # "no name" rejection counts, so a well-formed tool_call — including one
+            # whose target tool then failed — is never capped by this.
+            if tool_name == TOOL_CALL_NAME and _is_unresolved_bridge_rejection(result):
+                self._bridge_unresolved_count += 1
             # An identical failing call is only a REPLAY if nothing landed in between;
             # a mutation since the last identical failure restarts the exact-args streak.
             if self._progress_since_failure.pop(signature, False):

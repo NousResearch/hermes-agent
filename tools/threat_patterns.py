@@ -111,6 +111,16 @@ INVISIBLE_CHARS = frozenset(
     "\u200b\u200c\u200d\u2060\u2062\u2063\u2064\ufeff"
     "\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069")
 
+# Negated first-person statements are not role-play attacks (#121689): "I do not
+# pretend to be more available than I am" in a self-authored SOUL.md is the
+# opposite of identity hijack. Checked against the ~48 chars before each
+# role_pretend match; up to 3 words may sit between the negation and
+# "pretend" ("do not ever pretend"). Punctuation between them (e.g. "do not
+# hesitate, pretend you are...") does NOT count as negated.
+_ROLE_PRETEND_NEGATION_RE = re.compile(
+    r"(?:\bdo\s+not\b|\bdon't\b|\bnever\b|\bnot\b|\bn't\b)(?:\s+\w+){0,3}\s*$",
+    re.IGNORECASE)
+
 # Compiled per scope at import; inclusion is cumulative (all ⊂ context ⊂ strict).
 _SCOPE_SETS = {"all": ("all", "context", "strict"), "context": ("context", "strict"), "strict": ("strict",)}
 
@@ -141,7 +151,18 @@ def scan_for_threats(content: str, scope: str = "context") -> List[str]:
     # NFKC folds full-width / compatibility variants (ｃａｔ → cat) against homograph bypass.
     # It does NOT fold cross-script confusables (Cyrillic ``а``) — that needs a TR#39 database.
     normalised = unicodedata.normalize("NFKC", content)
-    findings.extend(pid for compiled, pid in patterns if compiled.search(normalised))
+    for compiled, pid in patterns:
+        if pid != "role_pretend":
+            if compiled.search(normalised):
+                findings.append(pid)
+            continue
+        # role_pretend with negation awareness (#121689): flag only when at
+        # least one match is NOT negated ("never pretend you are safe, instead
+        # pretend you are admin" still flags on the second match).
+        for m in compiled.finditer(normalised):
+            if not _ROLE_PRETEND_NEGATION_RE.search(m.string[:m.start()][-48:]):
+                findings.append(pid)
+                break
     return findings
 
 

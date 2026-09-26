@@ -348,7 +348,11 @@ THREAT_PATTERNS = [
     # `\bsudo\b` made every such plugin `caution`. A dotted event name is never a shell `sudo`.
     (r'\bsudo\b(?!\.(?:request|respond)\b)',
      "sudo_usage", "high", "privilege_escalation", "uses sudo (privilege escalation)"),
-    (r'setuid|setgid|cap_setuid',
+    # Hyphen-aware boundaries (#121700): bare `setuid` alternation matches the
+    # standard Chrome flag `--disable-setuid-sandbox` (hyphens are `\b`
+    # boundaries), hard-blocking legitimate skills. `(?<![\w-])` / `(?![\w-])`
+    # still matches `os.setuid(1000)` (`.`/`(` are not word/hyphen chars).
+    (r'(?<![\w-])(?:setuid|setgid|cap_setuid)(?![\w-])',
      "setuid_setgid", "critical", "privilege_escalation", "setuid/setgid (privilege escalation mechanism)"),
     (r'NOPASSWD',
      "nopasswd_sudo", "critical", "privilege_escalation", "NOPASSWD sudoers entry (passwordless privilege escalation)"),

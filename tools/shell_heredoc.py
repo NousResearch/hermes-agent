@@ -135,8 +135,11 @@ def _scan_heredoc_command_unit(command: str, start: int):
         elif char in "'\"`":
             quote = char
             cursor += 1
-        elif char == "#" and (cursor == start or command[cursor - 1].isspace()
-                              or command[cursor - 1] in ";&|()"):
+        elif char == "#" and (cursor == start or command[cursor - 1] in " \t\n;&|(<>"
+                              # Same bash word-start rule as approval_detection
+                              # (#121759): no .isspace() (\r/NBSP are word chars),
+                              # no `)` (closes `$(...)`).
+                              ):
             comment = True
             cursor += 1
         elif command.startswith("<<<", cursor):

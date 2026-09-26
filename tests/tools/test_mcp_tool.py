@@ -1631,10 +1631,43 @@ class TestHTTPConfig:
 
         async def _test():
             with patch("tools.mcp_tool._MCP_HTTP_AVAILABLE", False):
-                with pytest.raises(ImportError):
+                with pytest.raises(ImportError, match="Upgrade the mcp package"):
                     await server._run_http(config)
 
         asyncio.run(_test())
+
+    @pytest.mark.parametrize("missing, expected", [
+        ("pydantic_core._pydantic_core", "failed to import: ModuleNotFoundError: "
+                                         "No module named 'pydantic_core._pydantic_core'"),
+        ("mcp", "Upgrade the mcp package"),  # the SDK itself is absent: keep the old advice
+    ], ids=["broken-dependency", "sdk-absent"])
+    def test_http_unavailable_names_the_real_sdk_import_failure(self, monkeypatch, missing, expected):
+        """An installed SDK whose import breaks deeper (a pydantic_core built for another
+        Python) must not be reported as "upgrade the mcp package": the message names the
+        underlying ImportError. A genuinely absent SDK module keeps the upgrade advice."""
+        import importlib
+        from tools import mcp_tool
+        from tools.mcp_tool import MCPServerTask
+
+        def _broken_import(module):
+            raise ModuleNotFoundError(f"No module named {missing!r}", name=missing)
+
+        # A fresh, not-yet-attempted SDK import on an interpreter where ``mcp`` is found but breaks.
+        for name, value in (("ClientSession", None), ("_MCP_SDK_IMPORT_ATTEMPTED", False),
+                            ("_MCP_AVAILABLE", True), ("_MCP_HTTP_AVAILABLE", False),
+                            ("_MCP_NEW_HTTP", False), ("_MCP_LEGACY_HTTP", False),
+                            ("_MCP_MESSAGE_HANDLER_SUPPORTED", False),
+                            ("_MCP_LOGGING_CALLBACK_SUPPORTED", False)):
+            monkeypatch.setattr(mcp_tool, name, value)
+        monkeypatch.setattr(mcp_tool, "_MCP_SDK_IMPORT_ERROR", None, raising=False)
+        monkeypatch.setattr(mcp_tool, "importlib",
+                            SimpleNamespace(import_module=_broken_import, util=importlib.util))
+
+        server = MCPServerTask("remote")
+        with pytest.raises(ImportError) as excinfo:
+            asyncio.run(server._run_http({"url": "https://example.com/mcp"}))
+
+        assert expected in str(excinfo.value)
 
     def test_stdio_unavailable_raises_importerror_not_nameerror(self):
         """Regression test for #30904.

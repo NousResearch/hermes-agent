@@ -558,6 +558,9 @@ class MCPServerTransportMixin:
         """Run the server using HTTP/StreamableHTTP (or SSE) transport."""
         _core._ensure_mcp_sdk()
         if not _core._MCP_HTTP_AVAILABLE:
+            if _core._MCP_SDK_IMPORT_ERROR:  # installed but broken: "upgrade mcp" would misdirect
+                raise ImportError(f"MCP server '{self.name}' requires HTTP transport but the mcp SDK "
+                                  f"failed to import: {_core._MCP_SDK_IMPORT_ERROR}")
             raise ImportError(f"MCP server '{self.name}' requires HTTP transport but "
                               "mcp.client.streamable_http is not available. "
                               "Upgrade the mcp package to get HTTP support.")

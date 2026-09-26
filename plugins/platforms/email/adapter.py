@@ -245,12 +245,14 @@ def _strip_html(html: str) -> str:
 def _extract_email_address(raw: str) -> str:
     """Bare address from a From: value, via the stdlib address parser.
 
-    A regex taking the FIRST ``<...>`` pair reads ``"Victim" <victim@example.com>
-    <attacker@evil.test>`` as the victim, so the allowlist and the DMARC
-    alignment check both run against an address the sender never controlled
-    (GHSA-rxqh-5572-8m77). ``parseaddr`` returns ``('', '')`` for that form, so
-    the spoof fails closed to an empty address instead of resolving to a
-    stranger's identity.
+    A regex taking the FIRST ``<...>`` pair reads
+    ``"Victim <victim@example.com>" <attacker@evil.test>`` as the victim,
+    causing allowlist, pairing, and session-identity decisions to use an
+    address the sender does not control (GHSA-rxqh-5572-8m77).
+
+    ``parseaddr`` keeps the quoted text as the display name and returns the
+    actual addr-spec (``attacker@evil.test``), so authorization is evaluated
+    against the real sender identity.
     """
     _, addr = parseaddr(str(raw or ""))
     return addr.strip().lower()

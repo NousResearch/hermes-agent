@@ -201,6 +201,11 @@ VALID_HOOKS: Set[str] = {
     # IGNORED in v1 — a plugin returning a directive-shaped dict gets a debug log so future block/rewrite
     # adopters are discoverable once the middleware variant ships against the #64231 taxonomy.
     "pre_command",
+    # post_compaction: after a successful context compaction. Fires once per compress() call that
+    # made progress. Observer-only (returns ignored). Kwargs: session_id, before_tokens, after_tokens,
+    # messages_removed, reason. Lets plugins/providers re-inject context that compaction summarized
+    # away (#118382).
+    "post_compaction",
 }
 
 # Hooks whose directive the shell-hook response parser has no channel for. VALID_HOOKS doubles as

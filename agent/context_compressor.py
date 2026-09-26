@@ -3182,6 +3182,30 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         self._proactive_prune_rearm_tokens = 0
         self._last_reclaim_block_warn = None
 
+    def _fire_post_compaction_hook(self, messages_before: List[Dict[str, Any]], messages_after: List[Dict[str, Any]]) -> None:
+        """Fire the post_compaction plugin hook (observer-only, returns ignored).
+
+        Runs after a successful compaction so plugins/providers can react
+        (re-inject context, update indices, etc.). Gated on has_hook so
+        the hook dispatch cost is zero when no plugin is listening (#118382).
+        """
+        try:
+            from hermes_cli.lifecycle import has_hook, invoke_hook
+            if has_hook("post_compaction"):
+                before_tokens = estimate_messages_tokens_rough(messages_before)
+                after_tokens = estimate_messages_tokens_rough(messages_after)
+                messages_removed = len(messages_before) - len(messages_after)
+                invoke_hook(
+                    "post_compaction",
+                    session_id=getattr(self, "_session_id", ""),
+                    before_tokens=before_tokens,
+                    after_tokens=after_tokens,
+                    messages_removed=messages_removed,
+                    reason="compaction",
+                )
+        except Exception as exc:
+            logger.debug("post_compaction hook dispatch failed (non-fatal): %s", exc)
+
     def _billed_basis_over_threshold(self, current_tokens: "int | None") -> bool:
         """Whether a provider-billed reading says the session is over threshold.
 
@@ -5377,7 +5401,10 @@ Write only the summary body. Do not include any preamble or prefix."""
             )
         # Phase 4: Assemble compressed message list
         compressed = self._assemble_compressed(messages, compress_start, compress_end, scan, summary)
-        return self._finalize_compressed(compressed, messages, n_messages)
+        result = self._finalize_compressed(compressed, messages, n_messages)
+        if self._last_compression_made_progress:
+            self._fire_post_compaction_hook(messages, result)
+        return result
 
     def _assemble_compressed(
         self, messages: List[Dict[str, Any]], compress_start: int, compress_end: int, scan: "_HandoffScan", summary: str,

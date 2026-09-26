@@ -388,10 +388,26 @@ class TestBuildContextFilesPrompt:
         # order: root before intermediate before cwd
         assert result.index("Root: use Ruff.") < result.index("Packages: pnpm")
         assert result.index("Packages: pnpm") < result.index("Webapp: React 19")
-        # provenance headers point at each source file relative to cwd
-        assert f"## {os.path.join('..', '..', 'AGENTS.md')}" in result
-        assert f"## {os.path.join('..', 'AGENTS.md')}" in result
+        # provenance headers point at each source file relative to cwd, with a
+        # platform-independent forward-slash spelling (#121015)
+        assert "## ../../AGENTS.md" in result
+        assert "## ../AGENTS.md" in result
         assert "## AGENTS.md" in result
+
+    def test_agents_md_chain_labels_use_forward_slashes(self, tmp_path):
+        # The label is prompt display text, so its spelling must not depend on the OS
+        # path separator: on Windows os.path.relpath yields ..\AGENTS.md, which read
+        # as "## ..\AGENTS.md" in the system prompt and made /context disagree with
+        # the hardcoded .cursor/rules/... sibling labels (#121015). POSIX behavior is
+        # exercised by every other chain test; this pins the contract on Windows.
+        (tmp_path / ".git").mkdir()
+        (tmp_path / "AGENTS.md").write_text("Root rules.")
+        pkg = tmp_path / "pkg"
+        pkg.mkdir()
+        (pkg / "AGENTS.md").write_text("Package rules.")
+        result = build_context_files_prompt(cwd=str(pkg), skip_soul=True)
+        assert "## ../AGENTS.md" in result
+        assert "..\\" not in result
 
     def test_agents_md_chain_skips_gaps(self, tmp_path):
         # Intermediate dirs without AGENTS.md contribute nothing.

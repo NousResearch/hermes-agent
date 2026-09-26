@@ -51,6 +51,7 @@ type RfbLike = {
   addEventListener: (type: string, handler: (event: { detail?: { clean?: boolean; reason?: string } }) => void) => void
   disconnect: () => void
   focus: () => void
+  clipboardPasteFrom: (text: string) => void
 }
 
 type ConnState = 'idle' | 'attaching' | 'live' | 'error'
@@ -90,6 +91,9 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
   // Pins the bot's pooled gateway socket for the attach lifetime so display.lease
   // events keep arriving for an inactive registry-routed bot.
   const retention = useRef<(() => void) | null>(null)
+  // Removes the current attach's `paste` listener; torn down on every detach so a stale
+  // one never outlives its RFB client.
+  const pasteCleanup = useRef<(() => void) | null>(null)
   const [conn, setConn] = useState<ConnState>('idle')
   const [error, setError] = useState<null | string>(null)
   const [busy, setBusy] = useState(false)
@@ -160,6 +164,8 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
     socket.current = null
     retention.current?.()
     retention.current = null
+    pasteCleanup.current?.()
+    pasteCleanup.current = null
   }, [])
 
   const attach = useCallback(
@@ -273,6 +279,27 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
           void refresh()
         })
         rfb.current = client
+        // Explicit user paste only: a native `paste` event on the canvas (never polling, never
+        // logged) forwarded as noVNC ClientCutText. `viewOnly` is read live off `client`, so a
+        // paste after control changes hands mid-session is silently dropped, same as the gateway's
+        // own lease-gated RFB filter would drop it.
+        const pasteTarget = canvasHost.current
+
+        const handlePaste = (event: ClipboardEvent) => {
+          if (client.viewOnly) {
+            return
+          }
+
+          const text = event.clipboardData?.getData('text')
+
+          if (text) {
+            event.preventDefault()
+            client.clipboardPasteFrom(text)
+          }
+        }
+
+        pasteTarget.addEventListener('paste', handlePaste)
+        pasteCleanup.current = () => pasteTarget.removeEventListener('paste', handlePaste)
       } catch (err) {
         if (generation === attachGeneration.current) {
           setConn('error')

@@ -81,6 +81,24 @@ function fallbackTimeoutGateway(): OnboardingContext['requestGateway'] {
   }
 }
 
+// A readiness answer from the WRONG backend (local/pooled instead of the
+// configured remote): both checks confidently agree nothing is configured.
+// The renderer cannot tell this apart from a genuinely empty backend, so the
+// background refresh must not trust it (#123339).
+function wrongBackendGateway(): OnboardingContext['requestGateway'] {
+  return async method => {
+    if (method === 'setup.status') {
+      return { provider_configured: false } as never
+    }
+
+    if (method === 'setup.runtime_check') {
+      return { error: 'No inference provider is configured.', ok: false } as never
+    }
+
+    throw new Error(`unexpected gateway method: ${method}`)
+  }
+}
+
 describe('refreshOnboarding', () => {
   it('keeps onboarding work in its initiating lifetime and profile', async () => {
     const { startManualOnboarding, startProviderOAuth, saveOnboardingApiKey, closeManualOnboarding } =
@@ -270,7 +288,39 @@ describe('refreshOnboarding', () => {
     expect($desktopOnboarding.get().configured).toBe(true)
   })
 
-  it('enters setup when the selected OpenRouter credential is genuinely empty', async () => {
+  it('does not downgrade a configured app on a confident not-ready background check (#123339)', async () => {
+    // Force Reload against the wrong (local/pooled) backend answers
+    // confidently unconfigured. Downgrading on that writes configured=false,
+    // wipes the boot cache, and raises the blocking provider picker over a
+    // remote backend that is actually ready.
+    const api = vi.fn()
+
+    installApiMock(api)
+    window.localStorage.setItem('hermes-desktop-onboarded-v1', '1')
+    $desktopOnboarding.set(
+      baseState({
+        configured: true,
+        providers: [makeOAuthProvider('cached')],
+        reason: null,
+        requested: false
+      })
+    )
+
+    const ready = await refreshOnboarding(onboardingContext(wrongBackendGateway()))
+
+    expect(ready).toBe(false)
+    expect(api).not.toHaveBeenCalled()
+    expect($desktopOnboarding.get().configured).toBe(true)
+    expect($desktopOnboarding.get().reason).toBeNull()
+    expect(window.localStorage.getItem('hermes-desktop-onboarded-v1')).toBe('1')
+  })
+
+  it('preserves configured when runtime resolution fails behind a configured setup record', async () => {
+    // setup.status says configured while setup.runtime_check fails: the
+    // checks disagree, so the background round cannot prove the user
+    // unconfigured anything (stale/wrong-backend resolution, #123339) — keep
+    // the verified state and let the submit-time gate open onboarding when the
+    // user actually tries to chat.
     installApiMock(vi.fn())
     window.localStorage.setItem('hermes-desktop-onboarded-v1', '1')
     $desktopOnboarding.set(
@@ -285,9 +335,9 @@ describe('refreshOnboarding', () => {
     const ready = await refreshOnboarding(onboardingContext(emptyOpenRouterGateway()))
 
     expect(ready).toBe(false)
-    expect($desktopOnboarding.get().configured).toBe(false)
-    expect($desktopOnboarding.get().reason).toContain('No usable credentials found for openrouter.')
-    expect(window.localStorage.getItem('hermes-desktop-onboarded-v1')).toBeNull()
+    expect($desktopOnboarding.get().configured).toBe(true)
+    expect($desktopOnboarding.get().reason).toBeNull()
+    expect(window.localStorage.getItem('hermes-desktop-onboarded-v1')).toBe('1')
   })
 
   it('keeps a keyless custom runtime out of setup', async () => {

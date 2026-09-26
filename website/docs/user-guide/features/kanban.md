@@ -1049,11 +1049,28 @@ All of these are gated by the same dashboard plugin auth as the rest of the kanb
 
 ```bash
 hermes kanban swarm "Design a multi-region failover plan" \
-  --workers researcher,architect,sre \
+  --worker researcher:Research the regions \
+  --worker architect:Draft the topology \
+  --worker sre:Validate the failover \
   --verifier reviewer --synthesizer writer
 ```
 
+`--worker` is repeatable and each value is `profile:title` (optionally `:skill,skill`). The profile is a name from `hermes profile list`; an assignee Hermes does not know leaves its card ready forever.
+
 The resulting graph is committed atomically: dispatchers and dashboard readers see either no new swarm or the complete topology, never a partially linked root/worker/verifier graph. It then dispatches normally — workers run in parallel, the verifier wakes after they all finish, and the synthesizer wakes after the verifier marks the work clean.
+
+#### Choose the workspace for a swarm that must deliver something
+
+Every card in the graph shares one workspace, so a single `--workspace` covers the whole swarm. It takes the same values as `hermes kanban create --workspace` (`scratch`, `worktree`, `worktree:<path>`, `dir:<path>`):
+
+```bash
+hermes kanban swarm "Write the Q4 launch brief" \
+  --worker research:Gather the inputs \
+  --verifier reviewer --synthesizer writer \
+  --workspace dir:/abs/path/to/deliverables
+```
+
+**The default is `scratch`, whose directory is deleted when the card completes.** A swarm exists to produce one artifact, so this default is usually wrong: the synthesizer writes its deliverable, the card completes, and the directory is removed — leaving the root blackboard's `deliverable:*` entry pointing at a path that no longer exists. Pass `dir:<path>` (a directory you own) or `worktree` whenever the synthesized output has to survive. Only the scratch directory is swept; `dir:` paths are never touched.
 
 ## `/kanban` slash command {#kanban-slash-command}
 

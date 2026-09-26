@@ -398,11 +398,16 @@ def _cmd_swarm(args: argparse.Namespace) -> int:
         return _err(f"kanban swarm: {exc}", 2)
     if not workers:
         return _err("kanban swarm: at least one --worker is required", 2)
+    try:
+        ws_kind, ws_path = _parse_workspace_flag(getattr(args, "workspace", None))
+    except argparse.ArgumentTypeError as exc:
+        return _err(f"kanban swarm: {exc}", 2)
     with kbc.connect_closing() as conn:
         created = ks.create_swarm(
             conn, goal=args.goal, workers=workers, verifier_assignee=args.verifier,
             synthesizer_assignee=args.synthesizer, tenant=args.tenant,
             created_by=args.created_by or _profile_author(), priority=args.priority,
+            workspace_kind=ws_kind, workspace_path=ws_path,
             idempotency_key=getattr(args, "idempotency_key", None),
         )
     if getattr(args, "json", False):

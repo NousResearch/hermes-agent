@@ -37,6 +37,11 @@ import type { ProfileInfo } from '@/types/hermes'
 
 // Canonical key for a profile: trimmed, empty → "default". Used everywhere we
 // compare a session's owning profile against the live gateway's profile.
+// Case-EXACT on purpose: the key doubles as identity (session and session-tile
+// ownership), where a differing case means a different profile — see
+// session-states.test.ts "keeps profile identity case-exact". Scope/filter
+// sites that must absorb a title-cased display label ('Default' vs the
+// backend's canonical 'default') fold case at the comparison instead.
 export function normalizeProfileKey(name: string | null | undefined): string {
   const value = (name ?? '').trim()
 

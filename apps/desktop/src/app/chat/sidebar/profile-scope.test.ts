@@ -35,4 +35,15 @@ describe('filterSessionsByProfileScope', () => {
 
     expect(filterSessionsByProfileScope(rows, ALL_PROFILES)).toBe(rows)
   })
+
+  it('matches a title-cased scope label to the canonical lowercase id', () => {
+    // Windows presents the default profile dir as 'Default' while the API
+    // canonicalizes to 'default' (hermes_cli.profiles.normalize_profile_name).
+    // The scope comparison folds case; the canonical key itself does not, since
+    // it doubles as the tile/session identity (store/session-states.test.ts).
+    const rows = [row('default-row', 'default'), row('work-row', 'work')]
+
+    expect(filterSessionsByProfileScope(rows, 'Default').map(session => session.id)).toEqual(['default-row'])
+    expect(filterSessionsByProfileScope(rows, 'WORK').map(session => session.id)).toEqual(['work-row'])
+  })
 })

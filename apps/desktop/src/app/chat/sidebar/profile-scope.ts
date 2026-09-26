@@ -13,7 +13,12 @@ export function filterSessionsByProfileScope(sessions: SessionInfo[], profileSco
     return sessions
   }
 
-  const scope = normalizeProfileKey(profileScope)
+  // Case folded here, at the comparison, not inside normalizeProfileKey: the
+  // canonical key is also the tile/session identity, where case is significant
+  // (store/session-states.test.ts). Folding absorbs 'Default' (a title-cased
+  // display label) vs the backend's canonical 'default' — the same alias
+  // hermes_cli.profiles.normalize_profile_name matches case-insensitively.
+  const scope = normalizeProfileKey(profileScope).toLowerCase()
 
-  return sessions.filter(session => normalizeProfileKey(session.profile) === scope)
+  return sessions.filter(session => normalizeProfileKey(session.profile).toLowerCase() === scope)
 }

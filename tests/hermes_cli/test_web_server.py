@@ -4187,6 +4187,34 @@ class TestBulkDeleteSessionsEndpoint:
         finally:
             db.close()
 
+    def test_single_and_bulk_delete_scrub_on_disk_artifacts(self):
+        """Both dashboard delete routes must sweep the session's transcript artifacts with the row:
+        a row-only delete left ``request_dump_<id>_*.json`` (full request bodies) and the older
+        ``session_<id>.json`` snapshot readable after the user removed the session (#55088, #60207),
+        while ``hermes sessions delete`` and the Desktop RPC already cleaned them. A neighbour's
+        files must survive."""
+        from hermes_constants import get_hermes_home
+
+        self._seed(["a", "b", "c"])
+        sessions_dir = get_hermes_home() / "sessions"
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+        for sid in ("a", "b", "c"):
+            (sessions_dir / f"session_{sid}.json").write_text('{"messages": [{"content": "secret"}]}')
+            (sessions_dir / f"{sid}.jsonl").write_text("{}\n")
+            (sessions_dir / f"request_dump_{sid}_001.json").write_text("{}")
+
+        assert self.auth_client.delete("/api/sessions/a").status_code == 200
+        assert self.auth_client.post("/api/sessions/bulk-delete", json={"ids": ["b"]}).json() == {
+            "ok": True, "deleted": 1,
+        }
+
+        for sid in ("a", "b"):
+            assert not (sessions_dir / f"session_{sid}.json").exists(), sid
+            assert not (sessions_dir / f"{sid}.jsonl").exists(), sid
+            assert not (sessions_dir / f"request_dump_{sid}_001.json").exists(), sid
+        assert (sessions_dir / "session_c.json").exists()
+        assert (sessions_dir / "request_dump_c_001.json").exists()
+
 
 class TestDeleteEmptySessionsEndpoint:
     """Tests for ``GET /api/sessions/empty/count`` and

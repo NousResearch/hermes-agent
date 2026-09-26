@@ -672,8 +672,11 @@ Set this to `true` in busy workspaces where Slack's default "the bot remembers t
 :::
 
 :::tip When to use `ignore_other_user_mentions`
-If the model returns a bare silence marker for a message that was not addressed to this bot, the gateway keeps it silent. On a direct message or an explicit mention of the bot, the same marker produces the visible fallback notice.
 Set this to `true` when the bot follows busy threads (via thread auto-engagement or `free_response_channels`) and butts in on messages humans address to each other. It is a narrower tool than `strict_mention`: plain follow-ups in an engaged thread still get answers; only messages that open by @mentioning another person are skipped. **1:1 DMs are unaffected**; group DMs (MPIMs) and channels both apply it, matching the shared-surface policy below. Broadcast tokens (`@here`, `@channel`) and channel references address the room, not a person, so they are never skipped.
+:::
+
+:::note Silence markers on messages not addressed to the bot
+When the bot answers a human message with only a [silence token](index.md#intentional-silence-tokens), Hermes normally posts a short notice instead so a question never goes unanswered. On Slack the token is allowed to stand when the message opened by @mentioning someone else, or was a top-level message in a `free_response_channels` channel without a mention. A 1:1 DM, a mention of the bot, a command, a reaction trigger, or a plain reply in a thread the bot is part of still gets the notice.
 :::
 
 :::info

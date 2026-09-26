@@ -85,14 +85,6 @@ _MODEL_PICKER_ACTION_IDS = (
 )
 
 
-def slack_reply_expected(*, is_one_to_one_dm: bool, is_mentioned: bool, is_command_text: bool) -> bool:
-    """Was this inbound message addressed to the bot? A 1:1 DM, an @mention of this bot or a
-    command expects a reply, so the gateway must not let a bare silence marker vanish it. A message
-    admitted only through a free-response channel, a thread follow-up or ``ignore_other_user_mentions:
-    false`` may stay silent."""
-    return bool(is_one_to_one_dm or is_mentioned or is_command_text)
-
-
 def _slack_unfurl_kwargs(extra: Optional[Dict[str, Any]]) -> Dict[str, bool]:
     """Explicitly configured link-preview controls (omitted key = Slack default). String bools are
     coerced (config tooling persists YAML bools as strings); junk is dropped, NOT coerced to False,
@@ -4203,8 +4195,7 @@ class SlackAdapter(BasePlatformAdapter):
         thread_gated = self._slack_thread_require_mention() and is_thread_reply and not is_mentioned
         if force_process:
             return True
-        free_channel = channel_id not in self._slack_require_mention_channels() and (
-            channel_id in self._slack_free_response_channels() or not self._slack_require_mention())
+        free_channel = self._slack_is_free_channel(channel_id)
         if not free_channel and self._slack_strict_mention() and not is_mentioned:
             return False  # Strict mode: ignore until @-mentioned again
         if thread_gated:
@@ -4671,8 +4662,10 @@ class SlackAdapter(BasePlatformAdapter):
             is_command_text=is_command_text, channel_id=channel_id, team_id=team_id, ts=ts,
             user_id=user_id, thread_ts=thread_ts, is_dm=is_dm, media_urls=media_urls,
             media_types=media_types, media_text_inlined=media_text_inlined, channel_context=channel_context,
-            reply_expected=slack_reply_expected(
-                is_one_to_one_dm=is_one_to_one_dm, is_mentioned=is_mentioned, is_command_text=is_command_text))
+            reply_expected=self._slack_reply_expected(
+                routing_text, {u for u in (bot_uid, self._bot_user_id) if u}, channel_id=channel_id,
+                addressed=is_one_to_one_dm or is_mentioned or is_command_text or force_process,
+                is_thread_reply=is_thread_reply))
         # React only when directly addressed; MPIMs are shared, so they need a
         # mention like any channel.
         if (is_one_to_one_dm or is_mentioned) and self._reactions_enabled():
@@ -6359,6 +6352,24 @@ class SlackAdapter(BasePlatformAdapter):
         of someone other than the bot; ``<!here>``/``<#C…>`` address the room, not a person."""
         match = text and re.match(r"\s*<@([^>|\s]+)(?:\|[^>]*)?>", text)
         return bool(match) and match.group(1) not in self_uids
+
+    def _slack_is_free_channel(self, channel_id: str) -> bool:
+        """Does ``channel_id`` admit messages without an @mention?"""
+        return channel_id not in self._slack_require_mention_channels() and (
+            channel_id in self._slack_free_response_channels() or not self._slack_require_mention())
+
+    def _slack_reply_expected(
+        self, routing_text: str, self_uids: set, *, channel_id: str, addressed: bool,
+        is_thread_reply: bool) -> Optional[bool]:
+        """``MessageEvent.reply_expected`` for an admitted message. False (a bare silence marker may
+        stand) only when it opens by @mentioning someone else, or is a top-level message a
+        free-response channel admitted unaddressed. A plain reply in a thread the bot is part of is
+        None: it is usually meant for the bot, so the gateway keeps its visible fallback (#110952)."""
+        if addressed or self._slack_message_mentions_self(routing_text, self_uids):
+            return True
+        if self._slack_message_addressed_to_other_user(routing_text, self_uids):
+            return False
+        return False if not is_thread_reply and self._slack_is_free_channel(channel_id) else None
 
     def _slack_message_mentions_self(self, text: str, self_uids: set) -> bool:
         """True when ``text`` @-mentions this bot anywhere, in either ``<@U123>`` or

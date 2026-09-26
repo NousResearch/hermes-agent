@@ -1,46 +1,42 @@
-"""The Slack adapter stamps ``reply_expected`` on the event it hands the gateway.
+"""The Slack adapter tells the gateway whether an admitted message was addressed to the bot.
 
-A message admitted only because of a free-response channel, a thread follow-up, or a mention of
-someone else carries ``reply_expected=False``; a 1:1 DM, an @mention of this bot, or a command
-carries ``True``. The gateway lets a bare silence marker stand on ``False`` and keeps the visible
-fallback on ``True`` (see tests/gateway/test_gateway_silence_tokens.py).
+``MessageEvent.reply_expected`` decides whether a bare silence marker may stand
+(tests/gateway/test_gateway_silence_tokens.py). Only a message that opens by @mentioning someone
+else, or a top-level message a free-response channel admitted unaddressed, may stay silent; a plain
+reply in a thread the bot is part of keeps the visible fallback (#110952). Driven through the real
+``_handle_slack_message`` so the admission wiring, not just the rule, is covered.
 """
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from tests.gateway.test_slack_mention import _make_adapter
+from tests.gateway.test_slack_ignore_other_user_mentions import (  # noqa: F401 - fixtures
+    BOT_USER_ID, CHANNEL_ID, OTHER_USER_ID, _redirect_cache, adapter,
+)
+
+THREAD = "1700000000.000010"
 
 
-async def _event(adapter, **kw):
-    # _make_adapter builds the object without __init__; stub the network-backed resolvers only.
-    adapter._resolve_user_name = AsyncMock(return_value="alice")
-    adapter._resolve_channel_name = AsyncMock(return_value="general")
-    adapter._humanize_user_mentions = AsyncMock(side_effect=lambda text, **_: text)
-    adapter._channel_prompt_with_identity = lambda *_a, **_k: None
-    base = dict(
-        event={"user": "U1", "ts": "1.0", "channel": "C1", "text": "hi"}, text="hi", original_text="hi",
-        command_probe_text="hi", is_command_text=False, channel_id="C1", team_id="T1", ts="1.0",
-        user_id="U1", thread_ts=None, is_dm=False, media_urls=[], media_types=[],
-        media_text_inlined=[], channel_context=None,
-    )
-    base.update(kw)
-    return await adapter._build_message_event(**base)
+def _message(text, ts, **extra):
+    return {"channel": CHANNEL_ID, "channel_type": "channel", "user": "U_HUMAN", "text": text, "ts": ts, **extra}
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("reply_expected", [True, False, None])
-async def test_build_message_event_carries_reply_expected(reply_expected):
-    adapter = _make_adapter()
-    ev = await _event(adapter, reply_expected=reply_expected)
-    assert ev.reply_expected is reply_expected
-
-
-def test_reply_expected_rule_matches_addressing():
-    """The value the inbound handler computes: DM, mention of this bot, or a command."""
-    from plugins.platforms.slack.adapter import slack_reply_expected
-    assert slack_reply_expected(is_one_to_one_dm=True, is_mentioned=False, is_command_text=False) is True
-    assert slack_reply_expected(is_one_to_one_dm=False, is_mentioned=True, is_command_text=False) is True
-    assert slack_reply_expected(is_one_to_one_dm=False, is_mentioned=False, is_command_text=True) is True
-    # Admitted via free channel / thread follow-up / peer mention with ignore_other_user_mentions off.
-    assert slack_reply_expected(is_one_to_one_dm=False, is_mentioned=False, is_command_text=False) is False
+@pytest.mark.parametrize("extra, event, expected", [
+    ({}, _message("hi", "1.1", channel="D0001", channel_type="im"), True),
+    ({}, _message(f"<@{BOT_USER_ID}> hi", "1.2"), True),
+    ({}, _message("reaction:added:eyes", "1.3", thread_ts=THREAD, _hermes_force_process=True), True),
+    ({}, _message("done?", "1.4", thread_ts=THREAD), None),
+    ({}, _message(f"<@{OTHER_USER_ID}> can you check?", "1.5", thread_ts=THREAD), False),
+    ({"free_response_channels": CHANNEL_ID}, _message("side chatter", "1.6"), False),
+], ids=["dm", "mention", "reaction", "thread-followup", "peer-addressed", "free-channel-top-level"])
+async def test_admitted_message_carries_whether_it_was_addressed(adapter, extra, event, expected):
+    adapter.config.extra.update(extra)
+    adapter._mentioned_threads.add(THREAD)
+    with patch.object(adapter, "_resolve_user_name", new=AsyncMock(return_value="human")), \
+            patch.object(adapter, "_fetch_thread_context", new=AsyncMock(return_value=None)), \
+            patch.object(adapter, "_fetch_thread_parent_text", new=AsyncMock(return_value="")), \
+            patch.object(adapter, "_has_active_session_for_thread", return_value=False):
+        await adapter._handle_slack_message(event)
+    adapter.handle_message.assert_awaited_once()
+    assert adapter.handle_message.await_args.args[0].reply_expected is expected

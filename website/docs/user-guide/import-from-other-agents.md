@@ -28,9 +28,30 @@ hermes import-agent claude-code --overwrite --yes  # replace conflicts, skip pro
 | `settings.json` → `permissions.deny` (`Bash(...)` rules) | `approvals.deny` in `config.yaml` |
 | `mcpServers` (from `~/.claude.json` and `settings.json`) | `mcp_servers` in `config.yaml` |
 | `skills/<name>/` (dirs with `SKILL.md`) | `~/.hermes/skills/claude-code-imports/<name>/` |
-| `commands/*.md` (slash commands) | Skipped with a note — convert them into skills |
+| `commands/*.md` (portable slash commands) | `skills/claude-code-commands/<name>/SKILL.md` in the selected Hermes home |
 
 Claude's `Bash(npm run test:*)` prefix rules become `npm run test*` globs. Non-`Bash` permission rules (`Read(...)`, `WebFetch`, ...) gate Claude-specific tools and are reported as unmapped rather than imported.
+
+### Portable Claude commands
+
+A static `commands/review.md` becomes the skill `/claude-command-review` in a
+new Hermes session. The instruction body is preserved; an optional `description`
+frontmatter field is carried over. No command is executed during import.
+
+Only top-level Markdown files with alphanumeric, hyphen or underscore names are
+converted. Commands that use Claude argument substitution (`$ARGUMENTS`, `$1`),
+file expansion (`@file`), inline shell execution, or frontmatter beyond
+`description` are reported as skipped for manual conversion. Hooks, nested command
+directories, plugin-cache discovery and supporting-file copying are not included.
+Review relative paths and Claude-specific tool names before using an imported skill.
+Source symlinks and symlinks below the destination home are not followed.
+
+Existing command skills are conflicts on a manual import unless `--overwrite`
+is passed. `--sync` refreshes previously imported commands while the installed
+skill still matches its recorded digest; local edits remain conflicts. Command
+ownership is tracked separately from ordinary skills, even with the same name.
+Use `--sync --dry-run` to preview updates. Review source files before importing:
+command text is copied, not scrubbed for embedded secrets.
 
 ### Codex CLI (`~/.codex`)
 

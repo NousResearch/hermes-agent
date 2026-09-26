@@ -66,7 +66,7 @@ from tools.registry import registry, tool_error
 
 
 def _dumps(payload: Dict[str, Any]) -> str:
-    return json.dumps(payload, indent=2)
+    return json.dumps(payload, indent=2, ensure_ascii=False)
 
 
 def _notify_provider_jobs_changed_safe() -> None:

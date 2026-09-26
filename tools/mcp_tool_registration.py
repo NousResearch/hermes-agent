@@ -435,13 +435,14 @@ def _identity_digest(resolved: list) -> str:
     return hashlib.sha256(json.dumps(resolved, sort_keys=True, default=str).encode()).hexdigest()
 
 
-def _adopter_identity_digest(server_name: str, config: dict) -> str:
+def _adopter_identity_digest(server_name: str, config: dict) -> str | None:
     """Digest of what a connection is opened with that the config does not show, resolved in the
     CURRENT profile's scope by the transport's own resolvers: a stdio child's executable (bare
     ``npx``/``node`` may resolve under the profile's home), env (external secret-source values) and
     default cwd; an HTTP connection's URL and headers after a ``server_json`` live endpoint and
     ``identity_header`` (``value_from: profile``). The transport publishes the digest of the very
-    inputs each attempt connects with; an adopter recomputes it here."""
+    inputs each attempt connects with; an adopter recomputes it here. A resolver failure refuses
+    adoption for this server only (None), never discovery for the whole scope."""
     from tools.mcp_tool_transport import LiveEndpointUnavailable, _connect_inputs
 
     if "url" not in config and not config.get("command"):  # the transport refuses it before resolving
@@ -450,6 +451,10 @@ def _adopter_identity_digest(server_name: str, config: dict) -> str:
         inputs, _ = _connect_inputs(server_name, config)
     except LiveEndpointUnavailable:  # the transport cannot connect either; never equal to a live one
         return ""
+    except Exception as exc:  # fail closed for this server; the others still adopt
+        logger.warning("MCP server '%s': cannot resolve this profile's connection identity (%s); "
+                       "not adopting another profile's connection", server_name, exc)
+        return None
     return _identity_digest(inputs)
 
 
@@ -500,13 +505,17 @@ def _register_connected_into_current_scope(servers: dict) -> int:
     with _core._lock:
         omitted = {_key_name(key) for key, scopes in _core._server_tool_scopes.items()
                    if scope in scopes and _key_name(key) not in servers}
+        # Only a name another profile holds a connection for reaches a cross-profile comparison.
+        foreign = {_key_name(key) for key in _core._servers if _key_scope(key) != scope}
     profile_servers = _config._load_mcp_config() if omitted else {}
 
     # Resolving what this profile would connect with does PATH lookups, secret-scope reads and
-    # live-endpoint probes: do it once per judged name, before taking the global registry lock.
+    # live-endpoint probes: do it only for names that can be compared across profiles, once each,
+    # before taking the global registry lock. A foreign key that appears after the snapshot has
+    # no digest here and is refused until the next pass.
     judged = {**{name: profile_servers.get(name) for name in omitted}, **servers}
     resolved_ids = {name: _adopter_identity_digest(name, config) for name, config in judged.items()
-                    if config is not None and mcp_server_enabled(config)}
+                    if name in foreign and config is not None and mcp_server_enabled(config)}
 
     with _core._lock:
         stale = []

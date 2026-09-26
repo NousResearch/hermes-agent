@@ -1749,6 +1749,21 @@ class TestJobsJsonIdKeyedMap:
         assert json.loads(JOBS_FILE.read_text(encoding="utf-8"))["jobs"] == []
         assert "sk-leaked-value" not in caplog.text
 
+    @pytest.mark.parametrize("bad_jobs", [None, "not-a-list", 42, True])
+    def test_invalid_jobs_field_is_repaired_to_empty_list(self, tmp_cron_dir, bad_jobs, caplog):
+        """A dict root with a scalar jobs value must not escape the load boundary."""
+        import json
+        from cron.jobs import JOBS_FILE, ensure_dirs, load_jobs
+
+        ensure_dirs()
+        JOBS_FILE.write_text(json.dumps({"jobs": bad_jobs}), encoding="utf-8")
+
+        with caplog.at_level("WARNING", logger="cron.jobs"):
+            assert load_jobs() == []
+        assert list_jobs(include_disabled=True) == []
+        assert json.loads(JOBS_FILE.read_text(encoding="utf-8"))["jobs"] == []
+        assert type(bad_jobs).__name__ in caplog.text
+
 
 
 

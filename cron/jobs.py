@@ -1368,6 +1368,12 @@ def load_jobs() -> List[Dict[str, Any]]:
                     ", ".join(map(repr, skipped)))
             jobs = [{**v, "id": v.get("id") or k} for k, v in jobs.items() if isinstance(v, dict)]
             repair = "id-keyed jobs map flattened to list"
+        elif not isinstance(jobs, list):
+            logger.warning(
+                "Replacing invalid jobs.json 'jobs' field (%s) with an empty list",
+                type(jobs).__name__)
+            jobs = []
+            repair = "invalid jobs field replaced with list"
     elif isinstance(data, list):
         jobs = data
         repair = "bare list wrapped as dict"

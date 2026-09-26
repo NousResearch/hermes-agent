@@ -290,9 +290,9 @@ _PRESERVE_SKIP = ("__pycache__", CATALOG_SIDECAR)
 # too), binaries and loadable modules (a Windows .exe/.dll has no execute bit in git), manifests,
 # MCP/dependency metadata and the Desktop/skills/sidecar surfaces. Without the installed revision to
 # compare with, an old copy of any of these is the old version's, not the user's.
-_CODE_SUFFIXES = frozenset({".py", ".pyw", ".js", ".mjs", ".cjs", ".ts", ".mts", ".cts", ".sh", ".bash", ".zsh",
-                            ".fish", ".ps1", ".psm1", ".bat", ".cmd", ".rb", ".pl"})
-_MODULE_SUFFIXES = frozenset({".pyc", ".pyo", ".node", ".wasm"})
+_CODE_SUFFIXES = frozenset({".py", ".pyw", ".pyz", ".pyzw", ".js", ".mjs", ".cjs", ".ts", ".mts", ".cts", ".sh",
+                            ".bash", ".zsh", ".fish", ".ps1", ".psm1", ".bat", ".cmd", ".rb", ".pl"})
+_MODULE_SUFFIXES = frozenset({".pyc", ".pyo", ".pyd", ".node", ".wasm"})
 _REVISION_FILES = frozenset({"plugin.yaml", "plugin.yml", "plugin.json", "mcp.json", "pyproject.toml",
                              "package.json", "package-lock.json", "uv.lock"})
 _REVISION_DIRS = frozenset({"desktop", "skills", "sidecar", "node_modules"})

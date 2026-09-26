@@ -185,3 +185,21 @@ def test_guard_refusal_is_recorded_in_runtime_status_and_cleared_on_default(tmp_
     assert "coder" in gw_status.read_runtime_status(tmp_path / "gateway_state.json")["multiplex_standalone_reason"]
     record_multiplex_decision(MultiplexDecision(True, "default", "unset; default applies"))
     assert gw_status.read_runtime_status(tmp_path / "gateway_state.json")["multiplex_standalone_reason"] is None
+
+
+def test_recorded_standalone_box_needs_the_live_gateway_that_recorded_it(tmp_path, monkeypatch):
+    """`hermes update` / `gateway status` rebuild the STANDALONE box from gateway_state.json. A record
+    left by a gateway that has since died (a profile folded into the multiplexer keeps its old file)
+    must not claim profiles are unserved; the same reason under a live gateway still prints."""
+    from gateway import status as gw_status
+    monkeypatch.setattr(gw_status, "_get_runtime_status_path", lambda: tmp_path / "gateway_state.json")
+    monkeypatch.setattr(mode, "unserved_profiles", lambda: ["coder"])
+    monkeypatch.setattr(gw_status, "_read_process_cmdline", lambda pid: "hermes gateway run")
+    reason = "profile(s) 'coder' (launchd) still run their own gateway"
+    record = {"pid": os.getpid(), "hermes_home": str(tmp_path), "gateway_state": "running",
+              "multiplex_standalone_reason": reason}
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "gateway_state.json").write_text(json.dumps(record))
+    assert any("STANDALONE" in line for line in mode.recorded_standalone_warning_lines())
+    monkeypatch.setattr(gw_status, "_live_pid_from_record", lambda rec: None)
+    assert mode.recorded_standalone_warning_lines() == []

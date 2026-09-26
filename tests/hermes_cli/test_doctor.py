@@ -1420,6 +1420,26 @@ class TestDoctorLegacyCustomProvidersResidue:
 
 
 
+def test_fix_never_reports_a_refused_migration_as_fixed():
+    """``--fix`` counts the config-version drift as fixed only when the on-disk version actually
+    reached the latest; a sub-floor config that ``migrate_config()`` refuses stays a manual issue."""
+    from hermes_cli.config import check_config_version, get_config_path
+
+    cfg = get_config_path()
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    original = "_config_version: 5\nmodel:\n  default: foo/bar\n"
+    cfg.write_text(original, encoding="utf-8")
+    finding = doctor_config.Finding()
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(io.StringIO()):
+        doctor_config._drift_config_version(finding, True, cfg)
+
+    current, latest = check_config_version()
+    assert current < latest and cfg.read_text(encoding="utf-8") == original
+    assert finding.fixed == 0
+    assert finding.manual_issues and "Config migrated" not in buf.getvalue()
+
+
 class TestDoctorDeprecatedConfigAndEnv:
     """Doctor must surface deprecated/legacy config keys and env vars with
     modern replacements as non-failing warnings — without auto-migrating.

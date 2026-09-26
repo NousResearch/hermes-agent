@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import threading
+from collections.abc import Callable
 from typing import Any, Dict, List, Optional
 
 from hermes_cli._subprocess_compat import windows_hide_flags
@@ -185,8 +186,10 @@ class _CuaDriverSession:
     # See #74799.
     _timeout_suspect = False
 
-    def __init__(self, bridge: _AsyncBridge, embedded_daemon: Optional[Any] = None) -> None:
+    def __init__(self, bridge: _AsyncBridge, embedded_daemon: Optional[Any] = None,
+                 transport_start_validator: Optional[Callable[[], None]] = None) -> None:
         self._bridge, self._embedded_daemon, self._session = bridge, embedded_daemon, None
+        self._transport_start_validator = transport_start_validator
         self._lock, self._started = threading.Lock(), False
         # Per-tool capability-token sets from `tools/list` (read via supports_capability). Raw input schemas are
         # the source of truth for action properties: 0.9-era drivers advertise delivery_mode in inputSchema
@@ -292,6 +295,9 @@ class _CuaDriverSession:
 
     def _start_lifecycle_locked(self) -> None:
         """Spawn the lifecycle owner and wait for ready. Caller holds self._lock."""
+        validator = getattr(self, "_transport_start_validator", None)
+        if validator is not None:
+            validator()
         self._ready_event = threading.Event()
         self._setup_error = self._shutdown_event = None
         # The future tracks the WHOLE lifecycle; readiness is signalled via _ready_event.

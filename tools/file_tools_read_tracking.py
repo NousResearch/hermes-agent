@@ -160,7 +160,10 @@ def reset_file_dedup(task_id: str = None):
     files keep returning stubs instead of re-bloating the reclaimed context; the
     generation-read set is cleared so the FIRST unchanged read of each key after
     compaction returns full content the summary may have dropped. Stub-hit counters
-    are cleared so the hard block restarts fresh. write_file baselines survive
+    are cleared so the hard block restarts fresh, and the consecutive-region streak
+    (``last_key``/``consecutive``) is restarted too: the boundary may have evicted the
+    results the streak counted, so a re-armed read must not inherit a count that leads
+    straight to the >=4 BLOCK (#90949). write_file baselines survive
     exactly like the dedup map does — while the file metadata still matches the
     stamp this task recorded; byte identity is checked before overwriting. A baseline
     whose file changed underneath is dropped
@@ -174,6 +177,11 @@ def reset_file_dedup(task_id: str = None):
             if "dedup_hits" in task_data:
                 task_data["dedup_hits"].clear()
             task_data.setdefault("dedup_generation_reads", set()).clear()
+            # The consecutive-read loop detector counts reads whose results the boundary
+            # may have summarised away. Restart the streak so the first reads of the new
+            # generation serve content instead of warning/blocking on a stale count.
+            task_data["last_key"] = None
+            task_data["consecutive"] = 0
         candidates = [(task_data, dict(task_data.get("full_write_baselines", {})))
                       for task_data in targets]
     for task_data, baselines in candidates:

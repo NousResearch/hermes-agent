@@ -100,6 +100,29 @@ def test_cold_worker_bootstrap_reuses_the_requests_cache(tmp_path, monkeypatch):
     assert dict(os.environ) == before
 
 
+def test_stage_runtime_sync_failure_names_the_real_lockfile(tmp_path, monkeypatch):
+    """A stale pm/uv.lock must be nameable in the error (#123171), not the throwaway build snapshot."""
+    from pm.environment import PythonEnvironment
+    from pm.package import InstallError
+    from pm.runtime_stage import stage_runtime
+
+    project = tmp_path / "pm"
+    project.mkdir()
+    (project / "pyproject.toml").write_text('[project]\nname = "pm"\nversion = "0"\n', encoding="utf-8")
+    (project / "uv.lock").write_text("stale\n", encoding="utf-8")
+
+    def fake_run(self, args, *, cwd, timeout):
+        if args[0] == "sync":
+            return subprocess.CompletedProcess(args, 1, "",
+                "error: The lockfile at `uv.lock` needs to be updated, but `--locked` was provided.")
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(PythonEnvironment, "_run", fake_run)
+    with pytest.raises(InstallError) as excinfo:
+        stage_runtime(Path("uv"), Path(sys.executable), tmp_path / "dest", project=project)
+    assert str(project / "uv.lock") in str(excinfo.value)
+
+
 @pytest.mark.platforms("macos", "windows")
 def test_sealed_worker_command_uses_only_its_recorded_site(tmp_path, monkeypatch):
     from pm import paths

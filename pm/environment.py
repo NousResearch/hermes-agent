@@ -57,14 +57,18 @@ class BuildFailure(InstallError):
     """A package's build backend ran and failed."""
 
 
-def classify_uv_failure(stage: str, returncode: int, output: str) -> InstallError:
+def classify_uv_failure(stage: str, returncode: int, output: str, *,
+                        lockfile: Path | None = None) -> InstallError:
     """Turn a failed `uv <stage>` into the right classified error.
 
     Resolver-conflict output → ResolutionConflict; a build backend that ran and
     failed → BuildFailure; anything else (fetch, tooling) → plain InstallError
-    with the tail of the output.
+    with the tail of the output. ``lockfile`` names the real lock a caller is
+    validating, which a build snapshotted into a throwaway directory cannot
+    otherwise identify (#123171).
     """
-    cause = f"uv {stage} exited {returncode}: {output.strip()[-600:]}"
+    where = f" against {lockfile}" if lockfile is not None else ""
+    cause = f"uv {stage} exited {returncode}{where}: {output.strip()[-600:]}"
     lowered = output.lower()
     if any(marker in lowered for marker in _RESOLVER_MARKERS):
         return ResolutionConflict("venv", cause)
@@ -339,7 +343,7 @@ class PythonEnvironment:
     def sync(self, source: Path, *, extras: Sequence[str] = (), groups: Sequence[str] = (),
              timeout: int = 1800, frozen: bool = True, all_extras: bool = False,
              no_install_project: bool = False, locked: bool = False,
-             no_default_groups: bool = False) -> None:
+             no_default_groups: bool = False, lockfile: Path | None = None) -> None:
         """Install the root and every member; resolve only in a writable workspace.
 
         ``frozen=False`` is reserved for the caller-owned generated workspace,
@@ -371,7 +375,8 @@ class PythonEnvironment:
             command += ["--group", group]
         result = self._run(command, cwd=source, timeout=timeout)
         if result.returncode:
-            raise classify_uv_failure("sync", result.returncode, result.stderr or result.stdout)
+            raise classify_uv_failure("sync", result.returncode, result.stderr or result.stdout,
+                                      lockfile=lockfile)
 
     def export_requirements(self, source: Path, out: Path, *, extras: Sequence[str] = (),
                             timeout: int = 1800) -> None:

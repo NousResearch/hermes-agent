@@ -1769,8 +1769,14 @@ class TelegramAdapter(BasePlatformAdapter):
         self._polling_progress_event.set()
         self._polling_last_progress_monotonic = time.monotonic()
         self._polling_network_error_count = 0
+        # Conflict ladder (#82303 / fleett Exp B′): first matching progress may clear the
+        # recovery marker, but never zero `_polling_conflict_count` while count > 0.
+        # getUpdates can succeed between 409s (~5m fleett cadence); zeroing on that
+        # second progress left sticky (1/5) after the finally/marker fix alone.
         if generation == self._polling_conflict_recovery_generation:
             self._polling_conflict_recovery_generation = None
+        elif self._polling_conflict_count > 0:
+            pass  # keep ladder climbing across inter-conflict progress
         else:
             self._polling_conflict_count = 0
         # First proof getUpdates is flowing for this generation: flip a

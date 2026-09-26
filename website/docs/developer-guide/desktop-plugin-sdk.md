@@ -832,9 +832,11 @@ jsx(WorkspacePageHeaderControl, {
 })
 ```
 
-`WorkspacePageHeaderControl` is new in this release. A plugin that must also
-run on older desktop builds, where the import is `undefined`, keeps the raw
-`Contribute` form above.
+`WorkspacePageHeaderControl` is new in this release. Older desktop builds don't
+export it, and a named import of a missing SDK export stops the plugin module
+from loading. A plugin that must also run on older builds either feature-detects
+through a namespace import (`import * as sdk from '@hermes/plugin-sdk'`, then
+`sdk.WorkspacePageHeaderControl ?? …`) or keeps the raw `Contribute` form above.
 
 ### Sidebar nav visibility and order (`SIDEBAR_NAV_PREFS_AREA`)
 

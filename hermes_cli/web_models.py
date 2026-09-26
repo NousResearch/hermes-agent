@@ -64,6 +64,9 @@ class MessagingPlatformUpdate(BaseModel):
 
 class TelegramOnboardingStart(BaseModel):
     bot_name: Optional[str] = None
+    # The profile that owns this process-local pairing. The query scope is also
+    # accepted for older clients; the router requires the two to agree.
+    profile: Optional[str] = None
 
 class TelegramOnboardingApply(BaseModel):
     allowed_user_ids: List[str]

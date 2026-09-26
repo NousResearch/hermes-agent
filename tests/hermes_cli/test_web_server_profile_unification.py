@@ -579,6 +579,7 @@ class TestProfileScopedTelegramOnboarding:
                     poll_token="poll-secret",
                     expires_at="2027-05-18T00:00:00.000Z",
                     expires_at_ts=time.time() + 600,
+                    profile="worker_beta",
                     bot_token="123456:SECRET",
                     bot_username="worker_bot",
                     owner_user_id="123456789",
@@ -621,6 +622,86 @@ class TestProfileScopedTelegramOnboarding:
         default_cfg = _cfg(isolated_profiles["default"])
         assert worker_cfg["platforms"]["telegram"]["enabled"] is True
         assert default_cfg.get("platforms", {}).get("telegram", {}).get("enabled") is not True
+
+    def test_telegram_pairing_is_bound_to_its_profile(self, client, isolated_profiles, monkeypatch):
+        """A pairing created for A cannot be polled, applied, or cancelled through B's scope."""
+        import hermes_cli.web_routers.messaging as messaging_routes
+        import hermes_cli.web_server_messaging as messaging_state
+
+        with messaging_state._telegram_onboarding_lock:
+            messaging_state._telegram_onboarding_pairings.clear()
+
+        def fake_request(method, path, *, body=None, bearer_token=None):
+            if method == "POST":
+                return {
+                    "pairing_id": "pair-alpha",
+                    "poll_token": "poll-alpha",
+                    "suggested_username": "alpha_bot",
+                    "deep_link": "https://t.me/newbot/HermesSetupBot/alpha_bot",
+                    "qr_payload": "https://t.me/newbot/HermesSetupBot/alpha_bot",
+                    "expires_at": "2027-05-18T00:00:00.000Z",
+                }
+            assert method == "GET" and path == "/v1/telegram/pairings/pair-alpha"
+            assert bearer_token == "poll-alpha"
+            return {
+                "status": "ready",
+                "bot_username": "alpha_bot",
+                "owner_user_id": 123456789,
+                "token": "123456:SECRET",
+            }
+
+        monkeypatch.setattr(messaging_state, "_telegram_onboarding_request_sync", fake_request)
+
+        restart_targets = []
+
+        def fake_restart(profile=None, **kwargs):
+            restart_targets.append(profile)
+            return {"restart_started": True}
+
+        monkeypatch.setattr(messaging_routes, "_restart_gateway_after", fake_restart)
+
+        started = client.post(
+            "/api/messaging/telegram/onboarding/start",
+            params={"profile": "default"},
+            json={"bot_name": "Hermes Agent", "profile": "default"},
+        )
+        assert started.status_code == 200
+        assert client.get(
+            "/api/messaging/telegram/onboarding/pair-alpha", params={"profile": "default"}
+        ).json()["status"] == "ready"
+        assert client.get("/api/messaging/telegram/onboarding/pair-alpha").json()["status"] == "ready"
+
+        # B cannot observe, consume, or destroy A's in-memory pairing.
+        assert client.get(
+            "/api/messaging/telegram/onboarding/pair-alpha", params={"profile": "worker_beta"}
+        ).status_code == 400
+        assert client.post(
+            "/api/messaging/telegram/onboarding/pair-alpha/apply",
+            params={"profile": "default"},
+            json={"allowed_user_ids": ["123456789"], "profile": "worker_beta"},
+        ).status_code == 400
+        assert client.post(
+            "/api/messaging/telegram/onboarding/pair-alpha/apply",
+            params={"profile": "worker_beta"},
+            json={"allowed_user_ids": ["123456789"], "profile": "worker_beta"},
+        ).status_code == 400
+        assert client.delete(
+            "/api/messaging/telegram/onboarding/pair-alpha", params={"profile": "worker_beta"}
+        ).status_code == 400
+
+        applied = client.post(
+            "/api/messaging/telegram/onboarding/pair-alpha/apply",
+            params={"profile": "default"},
+            json={"allowed_user_ids": ["123456789"], "profile": "default"},
+        )
+        assert applied.status_code == 200
+        assert restart_targets == ["default"]
+        assert "TELEGRAM_BOT_TOKEN=123456:SECRET" in (
+            isolated_profiles["default"] / ".env"
+        ).read_text(encoding="utf-8")
+        assert "TELEGRAM_BOT_TOKEN" not in (isolated_profiles["worker_beta"] / ".env").read_text(
+            encoding="utf-8"
+        )
 
 
 class TestProfileScopedChatPty:

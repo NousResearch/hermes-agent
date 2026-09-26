@@ -653,6 +653,80 @@ _TELEGRAM_SESSION_NOT_FOUND = "Telegram setup session was not found. Start a new
 _TELEGRAM_INCOMPLETE_RESPONSE = "Telegram setup service returned an incomplete response."
 
 
+def _current_telegram_profile() -> str | None:
+    """The process-local profile that owns an unscoped onboarding request."""
+    from hermes_cli.profiles import get_active_profile_name
+
+    name = (get_active_profile_name() or "").strip()
+    # A custom HERMES_HOME outside the profile tree has no addressable profile
+    # selector. Keep the legacy unscoped meaning for it, but never treat it as a
+    # named profile that another request could claim.
+    return None if name in {"", "custom"} else name
+
+
+def _canonical_telegram_profile(profile: Optional[str]) -> str | None:
+    """Canonicalize a Telegram scope, preserving ``None`` for an omitted scope.
+
+    ``current``/empty is resolved to this process's launch profile. Explicit names
+    are validated and resolved now so a pairing cannot be bound to a display label
+    that later resolves to a different directory.
+    """
+    if profile is None:
+        return None
+    raw = str(profile).strip()
+    if not raw or raw.casefold() == "current":
+        return _current_telegram_profile()
+    try:
+        from hermes_cli.profiles import normalize_profile_name, validate_profile_name
+
+        canonical = normalize_profile_name(raw)
+        validate_profile_name(canonical)
+        _resolve_profile_dir(canonical)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return canonical
+
+
+def _telegram_request_profile(
+    query_profile: Optional[str],
+    body_profile: Optional[str] = None,
+) -> str | None:
+    """Resolve query/body scope, rejecting two different owners.
+
+    An omitted follow-up scope retains the established meaning of the backend's
+    current profile for single-profile and pooled clients. An explicit scope
+    must still match the pairing owner.
+    """
+    query = _canonical_telegram_profile(query_profile)
+    body = _canonical_telegram_profile(body_profile)
+    if query is not None and body is not None and query != body:
+        raise HTTPException(status_code=400, detail="Telegram onboarding profile scopes do not match.")
+    selected = body if body is not None else query
+    return selected if selected is not None else _current_telegram_profile()
+
+
+def _assert_telegram_record_profile(record: _TelegramOnboardingPairing, profile: Optional[str]) -> None:
+    """Fail closed if a process-local pairing is addressed from another profile."""
+    requested = _canonical_telegram_profile(profile)
+    if requested is None:
+        requested = _current_telegram_profile()
+    if record.profile != requested:
+        owner = record.profile or "the dashboard's current profile"
+        target = requested or "an unscoped request"
+        raise HTTPException(
+            status_code=400,
+            detail=f"Telegram setup pairing belongs to {owner}, not {target}.",
+        )
+
+
+def _telegram_record_for_profile(pairing_id: str, profile: Optional[str]) -> _TelegramOnboardingPairing:
+    """Look up a pairing and verify its profile while holding the state lock."""
+    with _telegram_onboarding_lock:
+        record = _telegram_record_or_404(pairing_id)
+        _assert_telegram_record_profile(record, profile)
+        return record
+
+
 def _parse_expiry_ts(value: str) -> float:
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
@@ -695,7 +769,8 @@ async def _telegram_onboarding_request(method: str, path: str, *, body=None, bea
 
 
 @router.post("/api/messaging/telegram/onboarding/start")
-async def start_telegram_onboarding(body: TelegramOnboardingStart):
+async def start_telegram_onboarding(body: TelegramOnboardingStart, profile: Optional[str] = None):
+    record_profile = _telegram_request_profile(profile, body.profile)
     bot_name = (body.bot_name or "Hermes Agent").strip() or "Hermes Agent"
     payload = await _telegram_onboarding_request("POST", "/v1/telegram/pairings", body={"bot_name": bot_name})
 
@@ -709,7 +784,11 @@ async def start_telegram_onboarding(body: TelegramOnboardingStart):
     with _telegram_onboarding_lock:
         _prune_telegram_onboarding_pairings()
         _telegram_onboarding_pairings[pairing_id] = _TelegramOnboardingPairing(
-            poll_token=poll_token, expires_at=expires_at, expires_at_ts=_parse_expiry_ts(expires_at))
+            poll_token=poll_token,
+            expires_at=expires_at,
+            expires_at_ts=_parse_expiry_ts(expires_at),
+            profile=record_profile,
+        )
 
     return {
         "pairing_id": pairing_id, "suggested_username": field("suggested_username"), "deep_link": deep_link,
@@ -718,20 +797,20 @@ async def start_telegram_onboarding(body: TelegramOnboardingStart):
 
 
 @router.get("/api/messaging/telegram/onboarding/{pairing_id}")
-async def get_telegram_onboarding_status(pairing_id: str):
-    with _telegram_onboarding_lock:
-        record = _telegram_record_or_404(pairing_id)
-        if record.bot_token:
-            return _telegram_ready_payload(record)
-        poll_token = record.poll_token
+async def get_telegram_onboarding_status(pairing_id: str, profile: Optional[str] = None):
+    requested_profile = _telegram_request_profile(profile)
+    record = _telegram_record_for_profile(pairing_id, requested_profile)
+    if record.bot_token:
+        return _telegram_ready_payload(record)
+    poll_token = record.poll_token
 
     payload = await _telegram_onboarding_request(
         "GET", f"/v1/telegram/pairings/{urllib.parse.quote(pairing_id, safe='')}", bearer_token=poll_token)
     status = str(payload.get("status") or "").strip()
     if status == "waiting":
         with _telegram_onboarding_lock:
-            current = _telegram_onboarding_pairings.get(pairing_id)
-            expires_at = current.expires_at if current else ""
+            current = _telegram_record_for_profile(pairing_id, requested_profile)
+            expires_at = current.expires_at
         return {"status": "waiting", "expires_at": expires_at}
 
     if status == "ready":
@@ -739,16 +818,15 @@ async def get_telegram_onboarding_status(pairing_id: str):
         if not bot_token:
             raise HTTPException(status_code=502, detail=_TELEGRAM_INCOMPLETE_RESPONSE)
         with _telegram_onboarding_lock:
-            record = _telegram_onboarding_pairings.get(pairing_id)
-            if not record:
-                raise HTTPException(status_code=404, detail=_TELEGRAM_SESSION_NOT_FOUND)
-            record.bot_token = bot_token
-            record.bot_username = str(payload.get("bot_username") or "").strip() or None
-            record.owner_user_id = _normalize_telegram_user_id(payload.get("owner_user_id"))
-            return _telegram_ready_payload(record)
+            current = _telegram_record_for_profile(pairing_id, requested_profile)
+            current.bot_token = bot_token
+            current.bot_username = str(payload.get("bot_username") or "").strip() or None
+            current.owner_user_id = _normalize_telegram_user_id(payload.get("owner_user_id"))
+            return _telegram_ready_payload(current)
 
     if status in {"expired", "claimed"}:
         with _telegram_onboarding_lock:
+            _telegram_record_for_profile(pairing_id, requested_profile)
             _telegram_onboarding_pairings.pop(pairing_id, None)
         raise HTTPException(status_code=410, detail=_telegram_onboarding_error_message(
             status, "Telegram setup is no longer available. Start a new setup."))
@@ -765,14 +843,16 @@ async def apply_telegram_onboarding(pairing_id: str, body: TelegramOnboardingApp
     if not allowed_user_ids:
         raise HTTPException(status_code=400, detail="Add at least one allowed Telegram user ID.")
 
+    requested_profile = _telegram_request_profile(profile, body.profile)
     with _telegram_onboarding_lock:
         record = _telegram_record_or_404(pairing_id)
+        _assert_telegram_record_profile(record, requested_profile)
         bot_token = record.bot_token
         bot_username = record.bot_username
         if not bot_token:
             raise HTTPException(status_code=409, detail="Telegram setup is not ready yet.")
-
-    effective_profile = body.profile or profile
+        # The pairing, not the caller's current scope, owns the write target.
+        effective_profile = record.profile
 
     def _apply():
         with _profile_scope(effective_profile):
@@ -797,9 +877,12 @@ async def apply_telegram_onboarding(pairing_id: str, body: TelegramOnboardingApp
 
 
 @router.delete("/api/messaging/telegram/onboarding/{pairing_id}")
-async def cancel_telegram_onboarding(pairing_id: str):
+async def cancel_telegram_onboarding(pairing_id: str, profile: Optional[str] = None):
     with _telegram_onboarding_lock:
-        _telegram_onboarding_pairings.pop(pairing_id, None)
+        record = _telegram_onboarding_pairings.get(pairing_id)
+        if record is not None:
+            _assert_telegram_record_profile(record, profile)
+            _telegram_onboarding_pairings.pop(pairing_id, None)
     return {"ok": True}
 
 

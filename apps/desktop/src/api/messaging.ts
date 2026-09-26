@@ -86,13 +86,14 @@ export function applyTelegramOnboarding(
   allowedUserIds: string[],
   profile?: null | string
 ): Promise<TelegramOnboardingApplyResponse> {
-  const scope = profileScoped(profile)
-
   return hermesApi<TelegramOnboardingApplyResponse>({
-    ...scope,
+    ...profileScoped(profile),
     path: `/api/messaging/telegram/onboarding/${encodeURIComponent(pairingId)}/apply`,
     method: 'POST',
-    body: { allowed_user_ids: allowedUserIds, profile: scope.profile }
+    // The Electron router translates the profile query for managed SSH. Keep
+    // the local routing label out of the body so it cannot disagree with the
+    // translated query; the backend's pairing record owns the write target.
+    body: { allowed_user_ids: allowedUserIds }
   })
 }
 

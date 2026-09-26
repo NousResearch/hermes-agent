@@ -378,10 +378,8 @@ def _drain_stdout(proc: ProcessHandle, output: _BoundedOutputCollector, stop: "t
             for piece in stream:
                 if piece is not None:
                     output.append(decoder.decode(piece) if isinstance(piece, bytes) else str(piece))
-        elif os.name == "nt":
-            _drain_fd_windows(proc, fd, output, decoder, stop)
         else:
-            _drain_fd_select(proc, fd, output, decoder, stop)
+            drain_fd(proc, fd, output, decoder, stop)
     except Exception:
         pass  # closed fd / broken stream: keep what was captured
     finally:
@@ -392,6 +390,13 @@ def _drain_stdout(proc: ProcessHandle, output: _BoundedOutputCollector, stop: "t
                 output.append(tail)
         except Exception:
             pass
+
+
+def drain_fd(proc, fd: int, sink, decoder, stop: "threading.Event | None" = None) -> None:
+    """Drain one pipe fd of ``proc`` into ``sink`` (anything with ``append(str)``) without ever
+    blocking in ``os.read``: returns at EOF, shortly after ``proc`` exits with the pipe idle, or
+    when ``stop`` is set. Picks the POSIX (``select``) or Windows (``PeekNamedPipe``) poller."""
+    (_drain_fd_windows if os.name == "nt" else _drain_fd_select)(proc, fd, sink, decoder, stop)
 
 
 def _drain_fd_select(proc, fd: int, output: _BoundedOutputCollector, decoder, stop=None) -> None:

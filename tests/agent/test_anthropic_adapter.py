@@ -283,13 +283,10 @@ class TestResolveAnthropicToken:
         # returns nothing, mirroring a Hermes-PKCE-only setup.
         monkeypatch.setattr("agent.anthropic_credentials.read_claude_code_credentials", lambda: None)
 
-        pool_entry = PooledCredential.from_dict("anthropic", {
-            "auth_type": "oauth", "access_token": "pool-oauth-token",
-        })
-        pool = SimpleNamespace(
-            _available_entries=lambda **_kwargs: ([pool_entry], []),
+        monkeypatch.setattr(
+            "agent.anthropic_credentials._read_anthropic_pool_entries_readonly",
+            lambda: [{"auth_type": "oauth", "access_token": "pool-oauth-token"}],
         )
-        monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: pool)
 
         assert resolve_anthropic_token() == "pool-oauth-token"
 
@@ -353,29 +350,88 @@ class TestResolveAnthropicToken:
 
 
     def test_pool_resolution_is_read_only(self, monkeypatch, tmp_path):
-        """The resolver must enumerate the pool read-only — clear_expired and
-        refresh must both be False so a bare resolve never writes auth.json or
-        triggers a network refresh from diagnostic call sites (#50108 MED)."""
+        """A bare resolve must not enter the operational pool loading path."""
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
         monkeypatch.setattr("agent.anthropic_credentials.Path.home", lambda: tmp_path)
         monkeypatch.setattr("agent.anthropic_credentials.read_claude_code_credentials", lambda: None)
 
-        captured = {}
-        pool_entry = PooledCredential.from_dict("anthropic", {
-            "auth_type": "oauth", "access_token": "pool-oauth-token",
-        })
-
-        def _available_entries(**kwargs):
-            captured.update(kwargs)
-            return ([pool_entry], [])
-
-        pool = SimpleNamespace(_available_entries=_available_entries)
-        monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: pool)
+        monkeypatch.setattr(
+            "agent.anthropic_credentials._read_anthropic_pool_entries_readonly",
+            lambda: [{"auth_type": "oauth", "access_token": "pool-oauth-token"}],
+        )
+        monkeypatch.setattr("agent.credential_pool.load_pool", self._assert_not_called)
 
         assert resolve_anthropic_token() == "pool-oauth-token"
-        assert captured == {"clear_expired": False, "refresh": False}
+
+    def test_pool_resolution_does_not_mutate_hermes_home(self, monkeypatch, tmp_path):
+        """#123747: diagnostic token resolution must not enter load_pool's write path."""
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("HOME", str(tmp_path))
+        for name in ("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"):
+            monkeypatch.delenv(name, raising=False)
+        (home / "config.yaml").write_text("model:\n  provider: anthropic\n", encoding="utf-8")
+        (home / "auth.json").write_text(
+            json.dumps({"version": 1, "providers": {}, "credential_pool": {}}), encoding="utf-8"
+        )
+        (home / ".anthropic_oauth.json").write_text(json.dumps({
+            "accessToken": "sk-ant-oat01-example", "refreshToken": "refresh", "expiresAt": 4102444800000,
+        }))
+        monkeypatch.setattr("agent.anthropic_credentials.read_claude_code_credentials", lambda: None)
+        snapshot = lambda: {
+            str(path.relative_to(home)): path.read_bytes() for path in home.rglob("*") if path.is_file()
+        }
+
+        before = snapshot()
+        assert resolve_anthropic_token() == "sk-ant-oat01-example"
+        assert snapshot() == before
+
+    def test_pool_resolution_leaves_malformed_auth_store_untouched(self, monkeypatch, tmp_path):
+        """#123747: read-only diagnostics must not create auth.json.corrupt."""
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("HOME", str(tmp_path))
+        for name in ("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"):
+            monkeypatch.delenv(name, raising=False)
+        (home / "config.yaml").write_text("model:\n  provider: anthropic\n", encoding="utf-8")
+        (home / "auth.json").write_text("{not json", encoding="utf-8")
+        monkeypatch.setattr("agent.anthropic_credentials.read_claude_code_credentials", lambda: None)
+        snapshot = lambda: {
+            str(path.relative_to(home)): path.read_bytes() for path in home.rglob("*") if path.is_file()
+        }
+
+        before = snapshot()
+        assert resolve_anthropic_token() is None
+        assert snapshot() == before
+
+    def test_load_pool_keeps_operational_persistence(self, monkeypatch, tmp_path):
+        """#123747: normal pool loads still seed the Hermes PKCE credential."""
+        from agent.credential_pool import load_pool
+
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("HOME", str(tmp_path))
+        for name in ("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"):
+            monkeypatch.delenv(name, raising=False)
+        (home / "config.yaml").write_text("model:\n  provider: anthropic\n", encoding="utf-8")
+        (home / "auth.json").write_text(
+            json.dumps({"version": 1, "providers": {}, "credential_pool": {}}), encoding="utf-8"
+        )
+        (home / ".anthropic_oauth.json").write_text(json.dumps({
+            "accessToken": "sk-ant-oat01-example", "refreshToken": "refresh", "expiresAt": 4102444800000,
+        }))
+        monkeypatch.setattr("agent.anthropic_credentials.read_claude_code_credentials", lambda: None)
+
+        entries, _pending = load_pool("anthropic")._available_entries(clear_expired=False, refresh=False)
+        assert [entry.access_token for entry in entries] == ["sk-ant-oat01-example"]
+        assert (home / "auth.lock").exists()
+        auth_store = json.loads((home / "auth.json").read_text(encoding="utf-8-sig"))
+        assert auth_store["credential_pool"]["anthropic"][0]["source"] == "hermes_pkce"
 
     def test_prefers_refreshable_claude_code_credentials_over_static_anthropic_token(self, monkeypatch, tmp_path):
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)

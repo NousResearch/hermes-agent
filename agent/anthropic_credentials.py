@@ -639,31 +639,114 @@ def _prefer_refreshable_claude_code_token(env_token: str, creds: Optional[Dict[s
     return None
 
 
+def _read_anthropic_pool_entries_readonly() -> list[Dict[str, Any]]:
+    """Read the effective persisted Anthropic pool without auth-store recovery or pool seeding.
+
+    ``load_pool()`` deliberately repairs and seeds operational state. Diagnostics
+    must not take that path: malformed stores stay unreadable, and the Hermes
+    PKCE singleton is overlaid in memory only when Anthropic is configured.
+    """
+    def _pool_entries(path: Path) -> tuple[Optional[Dict[str, Any]], list[Dict[str, Any]]]:
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            return None, []
+        if not isinstance(raw, dict):
+            return None, []
+        pool = raw.get("credential_pool")
+        entries = pool.get("anthropic") if isinstance(pool, dict) else None
+        return raw, [dict(entry) for entry in entries if isinstance(entry, dict)] if isinstance(entries, list) else []
+
+    home = get_hermes_home()
+    store, entries = _pool_entries(home / "auth.json")
+    try:
+        from hermes_constants import get_default_hermes_root
+        root = get_default_hermes_root()
+    except Exception:
+        root = home
+    if not entries and root != home:
+        root_store, root_entries = _pool_entries(root / "auth.json")
+        if root_store is not None:
+            store, entries = root_store, root_entries
+
+    try:
+        from utils import load_yaml_file_readonly
+
+        config = load_yaml_file_readonly(home / "config.yaml") or {}
+        def _selects_anthropic(slot: Any) -> bool:
+            return isinstance(slot, dict) and str(slot.get("provider") or "").strip().lower() == "anthropic"
+
+        def _moa_selects_anthropic(block: Any) -> bool:
+            return isinstance(block, dict) and (
+                _selects_anthropic(block.get("aggregator"))
+                or any(_selects_anthropic(slot) for slot in block.get("reference_models") or [])
+            )
+
+        auxiliary = config.get("auxiliary") if isinstance(config, dict) else None
+        moa = config.get("moa") if isinstance(config, dict) else None
+        presets = moa.get("presets") if isinstance(moa, dict) else None
+        configured = isinstance(config, dict) and (
+            _selects_anthropic(config.get("model"))
+            or (isinstance(auxiliary, dict) and any(_selects_anthropic(slot) for slot in auxiliary.values()))
+            or _moa_selects_anthropic(moa)
+            or (isinstance(presets, dict) and any(_moa_selects_anthropic(block) for block in presets.values()))
+        )
+    except (OSError, ValueError):
+        configured = False
+    configured |= str((store or {}).get("active_provider") or "").strip().lower() == "anthropic"
+    configured |= any(
+        str(entry.get("source") or "") in {"hermes_pkce", "manual"} for entry in entries
+    )
+    if not configured:
+        return entries
+
+    creds = read_hermes_oauth_credentials()
+    if not creds:
+        return entries
+    payload = {
+        "source": "hermes_pkce",
+        "auth_type": "oauth",
+        "access_token": creds.get("accessToken", ""),
+        "refresh_token": creds.get("refreshToken"),
+        "expires_at_ms": creds.get("expiresAt"),
+    }
+    for index, entry in enumerate(entries):
+        if entry.get("source") == "hermes_pkce":
+            entries[index] = {**entry, **payload}
+            break
+    else:
+        entries.append(payload)
+    return entries
+
+
 def _resolve_anthropic_pool_token(*, skip_borrowed: bool = False) -> Optional[str]:
     """First available Anthropic OAuth token from credential_pool, read-only: enumerates with ``clear_expired=False,
     refresh=False`` (never ``select()``) so diagnostic call sites (account_usage, ``hermes models``) never mutate
     auth.json or hit the network; refresh-on-expiry belongs to the API call path's pool recovery."""
     try:
-        from agent.credential_pool import AUTH_TYPE_OAUTH, load_pool
-        entries, _pending = load_pool("anthropic")._available_entries(clear_expired=False, refresh=False)
+        entries = _read_anthropic_pool_entries_readonly()
     except Exception:
         logger.debug("Failed to read Anthropic credential_pool", exc_info=True)
         return None
     for entry in entries:
-        if skip_borrowed and entry.source == "claude_code":
+        source = str(entry.get("source") or "")
+        if skip_borrowed and source == "claude_code":
             continue
         # access_token may be an explicit null on a persisted entry; None.strip() would crash the resolver.
-        token = (getattr(entry, "access_token", None) or "").strip()
-        if getattr(entry, "auth_type", None) != AUTH_TYPE_OAUTH or not token:
+        token = (entry.get("access_token") or "").strip()
+        auth_type = entry.get("auth_type")
+        if (auth_type != "oauth" and not token.startswith("sk-ant-oat")) or not token:
+            continue
+        if entry.get("last_status") == "dead":
             continue
         # load_pool() re-seeds rows from the singleton files, so a spent-but-uncommitted rotation
         # (possibly from another process) looks healthy here.
-        entry_source_path = spent_rotation_source_path(getattr(entry, "source", None))
+        entry_source_path = spent_rotation_source_path(source)
         if any(
             is_rotation_consumed_uncommitted(secret, source_path=entry_source_path)
-            for secret in (token, getattr(entry, "refresh_token", None))
+            for secret in (token, entry.get("refresh_token"))
         ):
-            logger.debug("Skipping Anthropic pool entry %s: rotated-but-uncommitted credential", getattr(entry, "id", "?"))
+            logger.debug("Skipping Anthropic pool entry %s: rotated-but-uncommitted credential", entry.get("id", "?"))
             continue
         return token
     return None

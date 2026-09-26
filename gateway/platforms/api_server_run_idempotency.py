@@ -18,6 +18,31 @@ logger = logging.getLogger("gateway.platforms.api_server")
 
 TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled", "interrupted"})
 
+#: Sender-visible delivery status (ENUM B) -> the run-facing word stored in
+#: ``status_json["status"]``. Lives next to ``TERMINAL_STATUSES`` so the projection
+#: and the stale-row pruner cannot drift apart: a ``queued``/``running`` delivery
+#: (either word) is never terminal, so a delivery row is never GC-eligible while its
+#: work is still outstanding, while a completed/failed/cancelled/interrupted one is.
+DELIVERY_RUN_STATUS = {
+    "queued": "queued",
+    "running": "running",
+    "delivered": "completed",
+    "acknowledged": "completed",
+    "failed": "failed",
+    "expired": "cancelled",
+    "cancelled": "cancelled",
+    "ambiguous": "interrupted",
+}
+
+
+def run_status_for(delivery_status: str) -> str:
+    """Project a delivery status (ENUM B) into the store's run-facing vocabulary.
+
+    Unknown/absent values degrade to ``queued`` -- the one word that can never make
+    a row GC-eligible, so a typo cannot silently drop an outstanding delivery.
+    """
+    return DELIVERY_RUN_STATUS.get(str(delivery_status or "").lower(), "queued")
+
 _SELECT_BY_KEY = (
     "SELECT fingerprint, run_id, status_json, owner_pid, owner_started, updated_at "
     "FROM run_idempotency WHERE scope=? AND idempotency_key=?")
@@ -223,6 +248,17 @@ class RunIdempotencyStore:
                 "UPDATE run_idempotency SET status_json=?, updated_at=? WHERE run_id=?",
                 (_encode_status(status), time.time(), run_id))
             self._conn.commit()
+
+    def mark_acknowledged(self, run_id: str) -> bool:
+        """Stamp the receiver-written acknowledgement time so the pruner can drop the row
+        on the acknowledged retention window rather than the full one. Returns True if a
+        row was stamped, False if the run_id is unknown."""
+        with self._lock:
+            changed = self._conn.execute(
+                "UPDATE run_idempotency SET acknowledged_at=? WHERE run_id=?",
+                (time.time(), run_id)).rowcount
+            self._conn.commit()
+        return changed == 1
 
     def close(self) -> None:
         with self._lock:

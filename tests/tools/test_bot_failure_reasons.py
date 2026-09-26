@@ -21,8 +21,6 @@ FIXTURE_NO_PROVIDER = (
 FIXTURE_NO_TOKEN = "agent init failed: No access token found for Nous Portal login."
 
 
-
-
 @pytest.mark.parametrize(
     ("text", "code"),
     [

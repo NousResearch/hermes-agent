@@ -137,13 +137,14 @@ from gateway.config import Platform, PlatformConfig
 from gateway.display_config import resolve_display_setting
 from gateway.platforms import api_server_room_dispatch as _room_dispatch
 from gateway.platforms import api_server_room_grants as _room_grants
+from gateway.platforms import api_server_bot_delivery as _bot_delivery
 from gateway.platforms import api_server_runs as _api_runs
 from gateway.platforms.api_server_openai_routes import OpenAICompatRoutesMixin
 from gateway.platforms.api_server_memory_sessions import ApiServerMemorySessions
 from gateway.platforms.base import (
     MEDIA_TAG_CLEANUP_RE, BasePlatformAdapter, SendResult, _terminal_sentinel_start, is_network_accessible,
     validate_media_delivery_path)
-from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
+from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore, run_status_for
 from agent.redact import redact_sensitive_text
 from agent.interrupt_compat import request_hard_interrupt
 from gateway.readiness import collect_runtime_readiness
@@ -1753,6 +1754,14 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             ("POST", "/api/jobs/{job_id}/pause", self._handle_pause_job),
             ("POST", "/api/jobs/{job_id}/resume", self._handle_resume_job),
             ("POST", "/api/jobs/{job_id}/run", self._handle_run_job)]
+        # Hub-authenticated peer-send delivery surface (§1/§3/§4): authenticated by the
+        # gateway's OWN API_SERVER_KEY, not a per-profile key, so a peer reaches a named
+        # profile without that profile's private key.
+        routes.extend([
+            ("POST", "/v1/messages", self._handle_message_send),
+            ("GET", "/v1/messages/{delivery_id}", self._handle_message_status),
+            ("POST", "/v1/messages/{delivery_id}/ack", self._handle_message_ack),
+        ])
         routes.extend(_room_grants._http_routes(self))
         routes.extend(_api_runs._http_routes(self))
         if _CRON_AVAILABLE:
@@ -3355,6 +3364,595 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "user_message": user_message, "runtime_request": runtime_request,
             "lock_active": lock_active, "run_kwargs": run_kwargs}, None
 
+    # ------------------------------------------------------------------
+    # Peer delivery ("bot send"): admission (§4.6), the acceptance receipt
+    # (§3.2) and the in-call turn probe (§2.5, §2.7 curve 1). Additive: a chat
+    # request without the two delivery headers keeps its exact former shape.
+    # ------------------------------------------------------------------
+    BOT_SEND_KEY_HEADER = "Idempotency-Key"
+    BOT_SEND_SENDER_HEADER = "X-Hermes-Sender-Profile"
+    BOT_SEND_WAIT_HEADER = "X-Hermes-Wait-Seconds"
+    #: Delivery statuses (ENUM B) that are terminal: never run another turn.
+    _BOT_SEND_TERMINAL_STATUSES = frozenset(
+        {"delivered", "acknowledged", "failed", "expired", "cancelled", "ambiguous"})
+
+    def _bot_send_request(self, request: "web.Request") -> Optional[Dict[str, Any]]:
+        """Parse a peer-delivery request, or ``None`` for an ordinary chat turn.
+
+        A request is a delivery only when it carries BOTH ``Idempotency-Key`` and
+        ``X-Hermes-Sender-Profile``; every other caller keeps the pre-existing
+        semantics -- no queue record, no idempotency row, no receipt.
+        """
+        key = (request.headers.get(self.BOT_SEND_KEY_HEADER) or "").strip()
+        sender = (request.headers.get(self.BOT_SEND_SENDER_HEADER) or "").strip()
+        if not key or not sender:
+            return None
+        return {
+            "idempotency_key": key,
+            "sender_profile": re.sub(r"[^A-Za-z0-9_.@-]", "_", sender)[:64] or "unknown",
+            "wait_seconds": self._bot_send_wait_seconds(request),
+        }
+
+    def _bot_send_wait_seconds(self, request: "web.Request") -> float:
+        """The caller's budget (``X-Hermes-Wait-Seconds``) in seconds (§2.9)."""
+        raw = (request.headers.get(self.BOT_SEND_WAIT_HEADER) or "").strip()
+        try:
+            return max(0.0, float(raw)) if raw else 0.0
+        except ValueError:
+            return 0.0
+
+    def _bot_send_home(self) -> Path:
+        """The home whose ``runtime/bot_delivery`` queue serves this request.
+
+        A request routed to a named profile queues in THAT profile's home, so the
+        request scope wins over the ambient ``HERMES_HOME``.
+        """
+        from hermes_cli.profiles import get_profile_dir
+        from tools.bot_mode_probe import _default_home
+
+        profile = _api_request_profile.get()
+        if profile and profile != "default":
+            try:
+                return Path(get_profile_dir(profile))
+            except Exception:  # pragma: no cover -- unknown profile name
+                logger.debug("[api_server] unknown delivery profile %r", profile, exc_info=True)
+        return Path(_default_home())
+
+    @staticmethod
+    def _bot_send_target_profile(home: Path) -> str:
+        from tools.bot_mode_probe import _profile_name
+
+        return _profile_name(home)
+
+    @staticmethod
+    def _bot_send_stored_status(stored: Optional[Dict[str, Any]]) -> str:
+        """The delivery status recorded on the idempotency row (§4.5), if any."""
+        projection = (stored or {}).get("status") or {}
+        return str(projection.get("delivery_status") or "")
+
+    def _bot_send_projection(self, request: "web.Request", delivery_id: str,
+                             stored: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """The freshest delivery projection for this id: live row, else the reserve."""
+        return (self._durable_run_status(request, delivery_id)
+                or (stored or {}).get("status") or {})
+
+    @staticmethod
+    def _bot_send_status_record(
+        projection: Dict[str, Any], *, delivery_id: str, idempotency_key: str,
+        target_profile: str, sender_profile: str, session_id: Optional[str],
+    ) -> Dict[str, Any]:
+        """A queue-record-shaped view of a registry row whose queue file is gone.
+
+        The row carries the sender-visible projection (§4.5), so a terminal delivery
+        whose settled file was swept replays honestly instead of looking like a
+        failure -- and never re-runs a turn that already happened.
+        """
+        created = float(projection.get("created_at") or time.time())
+        return {
+            "delivery_id": delivery_id,
+            "idempotency_key": idempotency_key,
+            "fingerprint": None,
+            "sender_profile": sender_profile,
+            "target_profile": target_profile,
+            "target_session_id": projection.get("session_id") or session_id,
+            "message": None,
+            "status": str(projection.get("delivery_status") or "queued"),
+            "status_detail": projection.get("status_detail"),
+            "attempts": int(projection.get("attempts") or 0),
+            "reoffer_count": 0,
+            "queue_position": None,
+            "created_at": int(created * 1e9),
+            "updated_at": int(time.time() * 1e9),
+            "claimed_at": None,
+            "attempts_log": [],
+            "reply": projection.get("reply") or None,
+            "error": projection.get("error") or None,
+            "reason": projection.get("reason") or None,
+            # Which cap refused the send, for the envelope's queue_full detail
+            # (VERIFICATION D6). Absent, the detail defaults to the per-profile cap.
+            "limit_kind": projection.get("limit_kind"),
+            "limit": projection.get("limit"),
+            "sequence": 0,
+        }
+
+    def _bot_send_record_status(
+        self, delivery_id: str, record: Dict[str, Any], *, result: str,
+        reply: Optional[str] = None, error: Optional[str] = None,
+    ) -> None:
+        """Keep the registry row's delivery projection in step with the record (§4.5)."""
+        from tools import bot_delivery_queue as delivery_queue
+
+        status = str(record.get("status") or delivery_queue.STATUS_QUEUED)
+        self._set_run_status(
+            delivery_id, run_status_for(status),
+            kind="bot_send", delivery_status=status,
+            status_detail=record.get("status_detail"), result=result,
+            attempts=int(record.get("attempts", 0)),
+            queued_seconds=round(delivery_queue.queued_seconds(record), 3),
+            reply=reply if reply is not None else (record.get("reply") or ""),
+            error=error if error is not None else (record.get("error") or ""),
+            reason=record.get("reason") or "",
+            session_id=record.get("target_session_id"),
+            retention_until=self._bot_send_retention_until())
+
+    @staticmethod
+    def _bot_send_json(envelope: Dict[str, Any]) -> "web.Response":
+        return web.json_response(envelope)
+
+    @staticmethod
+    def _bot_send_conflict() -> "web.Response":
+        return _error_response(
+            "Idempotency-Key is already used for a different message on this peer.",
+            409, code="idempotency_key_conflict")
+
+    def _bot_send_retention_until(self) -> float:
+        """Registry retention for a delivery row (VERIFICATION D4).
+
+        Every other run row carries the requesting room's retention; delivery rows
+        were reserved with ``retention_until=0``, which does not pin them to that
+        window: the store reaps them on the default age window (``updated_at < now
+        - RETENTION_SECONDS``) and a zero value is never extended by a later write,
+        so a sender still polling ``hermes peer status <delivery_id>`` could get 404
+        "Run not found" for a delivery the receiver had accepted. Pinning the row to
+        the registry's own window -- extended on every status write -- makes the
+        delivery handle live exactly as long as any other run handle.
+        """
+        return time.time() + RunIdempotencyStore.RETENTION_SECONDS
+
+    def _bot_send_receipt(self, delivery_id: str, record: Dict[str, Any], *,
+                          waited: float, home: Any) -> "web.Response":
+        """Hand back the acceptance receipt for a still-queued delivery (§3.2)."""
+        from tools import bot_delivery_queue as delivery_queue
+
+        observed = delivery_queue.STATUS_DETAIL_TARGET_BUSY
+        if record.get("status") == delivery_queue.STATUS_QUEUED:
+            # Report the slot state OBSERVED here, not the one assumed on admission
+            # (VERIFICATION D2). With the slot free the honest cause is "queued
+            # behind earlier deliveries"; claiming "target busy" would be a claim
+            # the sender can disprove from the same second, and it is the claim
+            # that made a 53-deep backlog look like one busy turn.
+            target_profile = str(
+                record.get("target_profile") or self._bot_send_target_profile(home))
+            observed = delivery_queue.observed_detail(home, target_profile)
+            record = delivery_queue.mark_contended(
+                home, delivery_id, status_detail=observed) or record
+        envelope = delivery_queue.build_receipt(
+            record,
+            busy=observed == delivery_queue.STATUS_DETAIL_TARGET_BUSY,
+            waited_seconds=waited)
+        self._bot_send_record_status(delivery_id, record,
+                                     result=delivery_queue.RESULT_RECEIPT)
+        return self._bot_send_json(envelope)
+
+    async def _handle_bot_send(
+        self, request: "web.Request", ctx: Dict[str, Any], bot_send: Dict[str, Any]
+    ) -> "web.Response":
+        """Admission (§4.6) + the in-call turn probe (§2.5, §2.7 curve 1)."""
+        from hermes_cli import delivery_keys
+        from tools import bot_delivery_queue as delivery_queue
+
+        store = getattr(self, "_run_idempotency_store", None)
+        if store is None:  # pragma: no cover -- every real gateway installs one
+            return _error_response("This gateway has no delivery registry.", 503,
+                                   code="delivery_unavailable")
+        home = self._bot_send_home()
+        target_profile = self._bot_send_target_profile(home)
+        sender_profile = bot_send["sender_profile"]
+        session_id = str(ctx["session_id"])
+        message = ctx["user_message"]
+        if not isinstance(message, str):
+            # A queued record must be replayable verbatim by the drainer; multimodal
+            # payloads cannot be fingerprinted yet, so refuse them visibly.
+            return _error_response("A peer delivery requires a text message.", 400,
+                                   code="invalid_payload")
+        try:
+            idempotency_key = delivery_queue.validate_idempotency_key(
+                bot_send["idempotency_key"])
+        except ValueError:
+            return _error_response(
+                "Idempotency-Key must be 1-255 characters without control newlines.",
+                400, code="invalid_idempotency_key")
+
+        scope = self._run_idempotency_scope(request)
+        fingerprint = delivery_keys.delivery_fingerprint(
+            sender_profile, target_profile, session_id, message)
+        delivery_id = delivery_keys.delivery_id_from(scope, idempotency_key)
+
+        # --- step 2: lookup. A duplicate learns the original id; a key whose work
+        # already started is never re-run (§4.6, §4.9).
+        outcome, stored = store.lookup(scope, idempotency_key, fingerprint)
+        if outcome == "conflict":
+            return self._bot_send_conflict()
+        replayed = outcome == "reused" and stored is not None
+        if replayed:
+            record = delivery_queue.read_record(home, delivery_id)
+            if record is not None and record.get("status") != delivery_queue.STATUS_AMBIGUOUS:
+                return self._bot_send_json(
+                    delivery_queue.build_envelope(record, replayed=True))
+            if record is None and self._bot_send_stored_status(stored) in (
+                    self._BOT_SEND_TERMINAL_STATUSES):
+                # Finished (or died) and its settled file has since been swept: replay
+                # the registry's own projection -- never a second turn.
+                return self._bot_send_json(delivery_queue.build_envelope(
+                    self._bot_send_status_record(
+                        self._bot_send_projection(request, delivery_id, stored),
+                        delivery_id=delivery_id, idempotency_key=idempotency_key,
+                        target_profile=target_profile, sender_profile=sender_profile,
+                        session_id=session_id),
+                    replayed=True))
+            # `ambiguous`, or a reservation whose queue record never landed (a crash
+            # between admission steps 4 and 5): exactly ONE recovery replay is
+            # permitted, and only under this same key (§4.9 rules 1-2).
+            if record is not None:
+                recovered = delivery_queue.reoffer_ambiguous(home, delivery_id)
+                if recovered is None:
+                    return self._bot_send_json(delivery_queue.build_envelope(
+                        delivery_queue.read_record(home, delivery_id) or record,
+                        replayed=True))
+
+        # --- step 3: capacity. An overflow takes NO reservation, which is what makes
+        # the sender's next action unambiguous (§2.4, §5.3).
+        try:
+            delivery_queue.check_capacity(
+                home, target_profile=target_profile, sender_profile=sender_profile)
+        except delivery_queue.QueueFullError as exc:
+            return self._bot_send_json(delivery_queue.build_envelope(
+                self._bot_send_status_record(
+                    {"delivery_status": delivery_queue.STATUS_FAILED,
+                     "reason": "queue_full", "created_at": time.time(),
+                     # VERIFICATION D6: name the cap that actually fired (per-sender
+                     # vs per-profile), not the historical per-profile default.
+                     "limit_kind": getattr(exc, "limit_kind", None),
+                     "limit": getattr(exc, "limit", None)},
+                    delivery_id=delivery_id, idempotency_key=idempotency_key,
+                    target_profile=target_profile, sender_profile=sender_profile,
+                    session_id=session_id)))
+
+        # --- step 4: reserve the delivery id as its own registry row (it is also its
+        # run_id, §4.5), then step 5 enqueues: a receipt is never handed out for work
+        # that was not durably recorded (§4.6).
+        reservation = self._set_run_status(
+            delivery_id, run_status_for(delivery_queue.STATUS_QUEUED),
+            kind="bot_send", created_at=time.time(),
+            delivery_status=delivery_queue.STATUS_QUEUED,
+            # The slot state OBSERVED at admission (VERIFICATION D2): the receipt the
+            # sender gets carries this value, so it is measured, never assumed -- a
+            # default of "target busy" is what dressed a queue backlog up as one
+            # busy turn.
+            status_detail=delivery_queue.observed_detail(home, target_profile),
+            result=delivery_queue.RESULT_RECEIPT, attempts=0, queued_seconds=0.0,
+            reply="", error="", reason="", session_id=session_id,
+            model=self._model_name, ttl_seconds=delivery_queue.queue_ttl_seconds(),
+            retention_until=self._bot_send_retention_until())
+        outcome, stored = store.reserve(
+            scope, idempotency_key, fingerprint, delivery_id, reservation,
+            owner_pid=getattr(self, "_run_owner_pid", 0),
+            owner_started=getattr(self, "_run_owner_started", 0),
+            retention_until=self._bot_send_retention_until())
+        if outcome == "conflict":
+            return self._bot_send_conflict()
+        if outcome == "reused":
+            # Lost the 2 -> 4 race against a concurrent first sender.
+            existing = delivery_queue.read_record(home, delivery_id)
+            if existing is not None:
+                return self._bot_send_json(
+                    delivery_queue.build_envelope(existing, replayed=True))
+            return self._bot_send_json(delivery_queue.build_envelope(
+                self._bot_send_status_record(
+                    self._bot_send_projection(request, delivery_id, stored),
+                    delivery_id=delivery_id, idempotency_key=idempotency_key,
+                    target_profile=target_profile, sender_profile=sender_profile,
+                    session_id=session_id),
+                replayed=True))
+        self._run_idempotency_ids.add(delivery_id)
+        try:
+            delivery_queue.admit(
+                home, sender_profile=sender_profile, target_profile=target_profile,
+                target_session_id=session_id, idempotency_key=idempotency_key,
+                fingerprint=fingerprint, delivery_id=delivery_id, message=message)
+        except delivery_queue.QueueFullError as exc:
+            # Lost the 3 -> 5 race: the row stays `receipt`-shaped and a same-key retry
+            # re-admits it under the same delivery_id (rule 1), so nothing is stranded.
+            return self._bot_send_json(delivery_queue.build_envelope(
+                self._bot_send_status_record(
+                    {"delivery_status": delivery_queue.STATUS_FAILED,
+                     "reason": "queue_full", "created_at": time.time(),
+                     # VERIFICATION D6: name the cap that actually fired (per-sender
+                     # vs per-profile), not the historical per-profile default.
+                     "limit_kind": getattr(exc, "limit_kind", None),
+                     "limit": getattr(exc, "limit", None)},
+                    delivery_id=delivery_id, idempotency_key=idempotency_key,
+                    target_profile=target_profile, sender_profile=sender_profile,
+                    session_id=session_id)))
+
+        # --- steps 6-7: probe the turn lock inside the bounded synchronous window,
+        # then run the turn in-call or hand back a receipt (§2.7 curve 1).
+        return await self._bot_send_probe_and_run(
+            request, ctx, bot_send, home=home, delivery_id=delivery_id,
+            target_profile=target_profile)
+
+    async def _bot_send_probe_and_run(
+        self, request: "web.Request", ctx: Dict[str, Any], bot_send: Dict[str, Any],
+        *, home: Path, delivery_id: str, target_profile: str,
+    ) -> "web.Response":
+        """Curve 1: non-blocking turn-lock probes inside ``receipt_after_seconds``."""
+        from tools import bot_delivery_queue as delivery_queue
+        from tools.bot_mode_probe import _hermes_root
+        from tools.bot_relay import TurnBusyError, acquire_turn_lock
+
+        budget = delivery_queue.receipt_after_seconds()
+        if bot_send["wait_seconds"] > 0:
+            # §2.9: never hold the caller (or start a turn) past its own budget.
+            budget = min(budget, bot_send["wait_seconds"])
+        root = _hermes_root(home)
+        started = time.monotonic()
+        deadline = started + budget
+        n = 0
+        while True:
+            try:
+                with acquire_turn_lock(root, target_profile, timeout_seconds=0):
+                    # Under the lock we hold, drain the queue HEAD-FIRST
+                    # (VERIFICATION D1): a foreign head is RUN, never handed back.
+                    # Handing it back is what left the live backlog ownerless -- the
+                    # request that admitted a record is long gone by the time the
+                    # slot frees, so only a queue drainer can finish it.
+                    return await _bot_delivery.drain_under_lock(
+                        self, home=home, target_profile=target_profile,
+                        delivery_id=delivery_id, ctx=ctx,
+                        waited=time.monotonic() - started)
+            except TurnBusyError:
+                pass
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            await asyncio.sleep(min(delivery_queue.probe_delay(n), remaining))
+            n += 1
+        current = delivery_queue.read_record(home, delivery_id)
+        if current is None:  # pragma: no cover -- the drainer took it
+            current = delivery_queue.claim_next(
+                home, target_profile=target_profile, lease_ok=True) or {}
+        return self._bot_send_receipt(
+            delivery_id, current, waited=time.monotonic() - started, home=home)
+
+    async def _bot_send_turn(
+        self, request: "web.Request", ctx: Dict[str, Any], *, home: Path,
+        delivery_id: str, target_profile: str, session_id: str, waited: float,
+    ) -> "web.Response":
+        """Run this delivery's turn under the turn lock, or receipt it honestly.
+
+        Kept as the in-call entry point, but the work is the shared drainer
+        (VERIFICATION D1). One code path runs a delivery whether it was admitted a
+        second ago or has been waiting in the queue since yesterday, so an accepted
+        record can never be left without a runner.
+        """
+        del request, session_id
+        return await _bot_delivery.drain_under_lock(
+            self, home=home, target_profile=target_profile,
+            delivery_id=delivery_id, ctx=ctx, waited=waited)
+
+    # -- Hub-authenticated delivery surface (peer-send spec §1/§3/§4) -------------
+
+    def _check_hub_auth(self, request: "web.Request") -> Optional["web.Response"]:
+        """Validate the Bearer token against the gateway's OWN ``API_SERVER_KEY``.
+
+        The delivery surface must not depend on a named profile's private key (§4): a
+        peer holds this gateway's ROOT key (``hermes peer add --key``), so ``dm`` reaches
+        a named profile whose per-profile key stays private. The session/chat routes keep
+        ``_check_auth`` and keep failing closed for the root key -- exactly as designed.
+        """
+        expected_key = self._api_key
+        if not expected_key:
+            logger.warning("API server rejected hub-authenticated request: no API_SERVER_KEY configured; %s",
+                           self._request_audit_log_suffix(request))
+            return self._auth_failed_response()
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:].strip()
+            if hmac.compare_digest(token.encode(), expected_key.encode()):
+                return None
+        logger.warning("API server rejected invalid hub API key: %s", self._request_audit_log_suffix(request))
+        return self._auth_failed_response()
+
+    async def _bot_send_resolve_session(self, target_profile: str) -> str:
+        """Resolve (or create) the canonical Bot Chat for ``target_profile`` server-side.
+
+        A peer cannot resolve the session through the per-profile ``/api/sessions``
+        mirror without the profile's private key (§4), so the delivery endpoint resolves
+        it here -- inside the target profile's own scope, where its session DB lives.
+        """
+        from tools.bot_mode_probe import BOT_CHAT_TITLE
+
+        db = await self._ensure_session_db_async()
+        if db is None:
+            raise RuntimeError("session database unavailable")
+        existing = await asyncio.to_thread(db.get_session_by_title, BOT_CHAT_TITLE)
+        if existing and existing.get("id"):
+            if existing.get("archived"):
+                try:
+                    await asyncio.to_thread(db.unarchive_recoverable_session, existing["id"])
+                except Exception:
+                    pass
+            return str(existing["id"])
+        # No canonical Bot Chat yet: mint one with the same source the peer CLI uses.
+        session_id = f"api_{int(time.time())}_{uuid.uuid4().hex[:8]}"
+        source = self._normalize_session_source("bot_peer_dm")
+        clean_title = db.sanitize_title(BOT_CHAT_TITLE)
+
+        def _atomic(conn):
+            conn.execute(
+                "INSERT INTO sessions (id, source, model, model_config, system_prompt, started_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (session_id, source, None, None, None, time.time()))
+            if clean_title:
+                conn.execute("UPDATE sessions SET title = ? WHERE id = ?", (clean_title, session_id))
+            row = conn.execute("SELECT id FROM sessions WHERE id = ?", (session_id,)).fetchone()
+            return str(row["id"]) if row else session_id
+
+        return await asyncio.to_thread(db._execute_write, _atomic)
+
+    @staticmethod
+    def _hub_target_profile(body: Dict[str, Any]) -> tuple[str, Optional["web.Response"]]:
+        """Validate and normalize ``target_profile`` from a delivery request body."""
+        raw = str(body.get("target_profile") or "").strip()
+        if not raw or raw == "default":
+            return "default", None
+        if not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", raw):
+            return "", _error_response(
+                "target_profile must match [A-Za-z0-9_.-]{1,64}", 400, code="invalid_target_profile")
+        return raw, None
+
+    async def _handle_message_send(self, request: "web.Request") -> "web.Response":
+        """POST /v1/messages -- hub-authenticated peer-send delivery admission (§1, §3).
+
+        Body: ``{"target_profile": str, "message": str, "session_id": str|None}``.
+        Delivery headers: ``Idempotency-Key``, ``X-Hermes-Sender-Profile``,
+        ``X-Hermes-Wait-Seconds``. When ``Idempotency-Key`` is absent it is derived here
+        (the sender cannot: the session is resolved server-side under hub auth).
+        """
+        from hermes_cli import delivery_keys
+        from tools import bot_delivery_queue as delivery_queue
+
+        auth_err = self._check_hub_auth(request)
+        if auth_err:
+            return auth_err
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        target_profile, perr = self._hub_target_profile(body)
+        if perr:
+            return perr
+        message = body.get("message")
+        if not isinstance(message, str) or not message.strip():
+            return _error_response("message must be a non-empty string", 400, code="invalid_message")
+        message = message.strip()
+        sender = (request.headers.get(self.BOT_SEND_SENDER_HEADER) or "").strip()
+        if not sender:
+            return _error_response(
+                f"{self.BOT_SEND_SENDER_HEADER} header is required", 400, code="missing_sender")
+        sender = re.sub(r"[^A-Za-z0-9_.@-]", "_", sender)[:64] or "unknown"
+        key = (request.headers.get(self.BOT_SEND_KEY_HEADER) or "").strip()
+        requested_session = str(body["session_id"]).strip() if body.get("session_id") else None
+
+        scope = self._profile_scope(target_profile if target_profile != "default" else None)
+        token = _api_request_profile.set(target_profile) if target_profile != "default" else None
+        try:
+            with scope:
+                session_id = requested_session or await self._bot_send_resolve_session(target_profile)
+                if not key:
+                    key = delivery_keys.derive_delivery_key(sender, target_profile, session_id, message)
+                run_kwargs = _bot_delivery.delivery_run_kwargs(
+                    {"message": message, "target_session_id": session_id})
+                ctx = {"session_id": session_id, "user_message": message, "run_kwargs": run_kwargs}
+                bot_send = {
+                    "idempotency_key": key,
+                    "sender_profile": sender,
+                    "wait_seconds": self._bot_send_wait_seconds(request),
+                }
+                return await self._handle_bot_send(request, ctx, bot_send)
+        finally:
+            if token is not None:
+                _api_request_profile.reset(token)
+
+    async def _handle_message_status(self, request: "web.Request") -> "web.Response":
+        """GET /v1/messages/{delivery_id} -- hub-authenticated status read (§3).
+
+        Returns the sender-visible envelope for a delivery_id. Query ``?profile=``
+        names the target profile whose ledger holds the record (default ``default``).
+        """
+        from tools import bot_delivery_queue as delivery_queue
+
+        auth_err = self._check_hub_auth(request)
+        if auth_err:
+            return auth_err
+        delivery_id = request.match_info.get("delivery_id", "")
+        try:
+            key_id = delivery_queue.validate_delivery_id(delivery_id)
+        except ValueError:
+            return _error_response("Invalid delivery_id", 400, code="invalid_delivery_id")
+        profile = (request.query.get("profile") or "default").strip()
+        home = self._bot_send_home_for(profile)
+        record = await asyncio.to_thread(delivery_queue.read_record, home, key_id)
+        if record is None:
+            return _error_response("No such delivery", 404, code="delivery_not_found")
+        return self._bot_send_json(delivery_queue.build_envelope(record, replayed=True))
+
+    async def _handle_message_ack(self, request: "web.Request") -> "web.Response":
+        """POST /v1/messages/{delivery_id}/ack -- receiver-written acknowledgement (§3).
+
+        Moves a ``delivered`` record to ``acknowledged`` (idempotent). Body may carry
+        ``{"profile": str}`` naming the target profile whose ledger holds the record.
+        """
+        from tools import bot_delivery_queue as delivery_queue
+
+        auth_err = self._check_hub_auth(request)
+        if auth_err:
+            return auth_err
+        delivery_id = request.match_info.get("delivery_id", "")
+        try:
+            key_id = delivery_queue.validate_delivery_id(delivery_id)
+        except ValueError:
+            return _error_response("Invalid delivery_id", 400, code="invalid_delivery_id")
+        # ``profile`` is optional; an empty body is a valid ack for the default profile.
+        body: Dict[str, Any] = {}
+        if request.content_length:
+            body, err = await self._read_json_body(request)
+            if err:
+                return err
+        profile = str((body or {}).get("profile") or "default").strip()
+        home = self._bot_send_home_for(profile)
+        record = await asyncio.to_thread(delivery_queue.read_record, home, key_id)
+        if record is None:
+            return _error_response("No such delivery", 404, code="delivery_not_found")
+        if record.get("status") == delivery_queue.STATUS_ACKNOWLEDGED:
+            # Idempotent: a receiver that retries its ack gets the same envelope,
+            # never an error (§3).
+            return self._bot_send_json(delivery_queue.build_envelope(record, replayed=True))
+        if record.get("status") != delivery_queue.STATUS_DELIVERED:
+            return _error_response(
+                f"cannot acknowledge a delivery in status {record.get('status')!r}",
+                409, code="not_delivered")
+        acked = await asyncio.to_thread(delivery_queue.acknowledge, home, key_id)
+        # Mirror the new stage into the run registry and mark it acknowledged for GC.
+        token = _api_request_profile.set(profile) if profile and profile != "default" else None
+        try:
+            self._bot_send_record_status(key_id, acked, result=delivery_queue.RESULT_DELIVERED)
+            store = getattr(self, "_run_idempotency_store", None)
+            if store is not None:
+                store.mark_acknowledged(key_id)
+        finally:
+            if token is not None:
+                _api_request_profile.reset(token)
+        return self._bot_send_json(delivery_queue.build_envelope(acked, replayed=True))
+
+    def _bot_send_home_for(self, profile: str) -> Path:
+        """Resolve the delivery ledger home for a named (or default) profile."""
+        normalized = profile if (profile and profile != "default") else None
+        token = _api_request_profile.set(normalized)
+        try:
+            return self._bot_send_home()
+        finally:
+            _api_request_profile.reset(token)
+
     @staticmethod
     def _session_headers(session_id: str, gateway_session_key: Optional[str]) -> Dict[str, str]:
         """``X-Hermes-Session-Id`` (+ ``X-Hermes-Session-Key`` when declared) response headers."""
@@ -3520,6 +4118,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         ctx, err = await self._prepare_session_chat(request)
         if err is not None:
             return err
+        # A peer delivery rides the same endpoint: the two delivery headers turn this
+        # into a queued, idempotent delivery with an acceptance receipt (§3.2).
+        bot_send = self._bot_send_request(request)
+        if bot_send is not None:
+            return await self._handle_bot_send(request, ctx, bot_send)
         handed_off = await self._answer_through_live_bot_chat(ctx)
         if handed_off is not None:
             return handed_off
@@ -4138,8 +4741,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         confirmed_runtime_lock: bool = False, bind_declared_conversation: bool = False,
         session_history_delivery: str = "", turn_author: Optional[Dict[str, Any]] = None,
         relay_metadata: Optional[Dict[str, Any]] = None, notification_category: str = "result",
-        resume_unanswered_turn: bool = False, approval_notify_callback=None,
-        approval_session_key: Optional[str] = None) -> tuple:
+        resume_unanswered_turn: bool = False, lease_wait_seconds: Optional[float] = None,
+        approval_notify_callback=None, approval_session_key: Optional[str] = None) -> tuple:
         """Create an agent and run one turn in a thread executor -> ``(result, usage)``.
         ``approval_notify_callback`` (with ``approval_session_key``) routes dangerous-command
         approval requests to the caller's stream, keyed like ``/v1/runs`` approvals (#51871).
@@ -4192,6 +4795,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                         from agent.session_persistence import adopt_unanswered_turn
 
                         adopt_unanswered_turn(conversation_history, user_message, agent)
+                    if lease_wait_seconds is not None:
+                        # Bounded lease probe for delivery turns: turn_facade_lease caps its
+                        # acquire_session_turn_lease wait to this budget so a busy session
+                        # yields a receipt quickly instead of a 1800s block.
+                        agent._session_turn_lease_wait_seconds = lease_wait_seconds
                     if active_run_id:
                         self._active_run_agents[active_run_id] = agent
                     effective_task_id = session_id or str(uuid.uuid4())
@@ -4438,6 +5046,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             if self.gateway_runner is not None:
                 self._app["gateway_runner"] = self.gateway_runner
             self._track_background_task(asyncio.create_task(self._sweep_orphaned_runs()))
+            # Trigger 3 for peer deliveries (VERIFICATION D1): every 30s, recover
+            # orphaned claims / expire over-age records and drain any slot that is
+            # free. A slot held by anyone else is never fought for -- that holder
+            # drains when it releases.
+            self._track_background_task(
+                asyncio.create_task(_bot_delivery.sweep_loop(self)))
             # Network-accessible + unsandboxed local terminal backend = host-user RCE surface;
             # warn, don't refuse (the operator may have a firewall / strong key).
             if is_network_accessible(self._host):

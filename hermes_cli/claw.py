@@ -44,7 +44,7 @@ _REPORT_REASON_GROUPS = (
     ("skipped", "  ─ Skipped:", Colors.DIM, ""),
     ("error", "  ✗ Errors:", Colors.RED, "unknown error"))
 # Summary-line counters after the migrated count: (summary key, label).
-_SUMMARY_COUNT_LABELS = (("conflict", "conflict(s)"), ("skipped", "skipped"), ("error", "error(s)"))
+_SUMMARY_COUNT_LABELS = (("archived", "archived"), ("conflict", "conflict(s)"), ("skipped", "skipped"), ("error", "error(s)"))
 
 # A subdir with any of these files is a workspace; the labelled subset is listed by cleanup.
 _WORKSPACE_MARKERS = ("todo.json", "SOUL.md", "MEMORY.md", "USER.md")
@@ -337,18 +337,19 @@ def _preview_migration(run_migrator: Callable[[bool], dict], opts: SimpleNamespa
         return False
     summary = preview_report.get("summary", {})
     count, conflicts = summary.get("migrated", 0), summary.get("conflict", 0)
-    # "Nothing to migrate" means nothing migrated AND nothing blocked by conflicts. With
-    # conflicts, still show the plan and surface the --overwrite guidance instead of bailing.
+    archived = summary.get("archived", 0)
+    # Archival is real work too: an archive-only plan must reach confirmation
+    # and apply without pretending that archived jobs have been activated.
     print()
-    if count == 0 and conflicts == 0:
+    if count == 0 and archived == 0 and conflicts == 0:
         print_info("Nothing to migrate from OpenClaw.")
     else:
-        what = (f"{count} item(s) would be imported" if count > 0
-                else f"{conflicts} conflict(s), nothing would be imported")
+        what = (f"{count} item(s) would be imported, {archived} archived"
+                if count or archived else f"{conflicts} conflict(s), nothing would be imported")
         print_header(f"Migration Preview — {what}")
         print_info("No changes have been made yet. Review the list below:")
     _print_migration_report(preview_report, dry_run=True)
-    if opts.dry_run or (count == 0 and conflicts == 0):
+    if opts.dry_run or (count == 0 and archived == 0 and conflicts == 0):
         return False
     # Modelled on OpenClaw's assertConflictFreePlan(): apply is a safe no-op on conflicts unless
     # the user opts in to overwriting — otherwise "yes, proceed" would silently skip every
@@ -489,7 +490,9 @@ def _print_migration_report(report: dict, dry_run: bool):
     print()
     migrated_heading = f"  ✓ {'Would migrate' if dry_run else 'Migrated'}:"
     for status, heading, heading_color, default_reason in (
-        ("migrated", migrated_heading, Colors.GREEN, None), *_REPORT_REASON_GROUPS):
+        ("migrated", migrated_heading, Colors.GREEN, None),
+        ("archived", f"  ✓ {'Would archive' if dry_run else 'Archived'}:", Colors.GREEN, None),
+        *_REPORT_REASON_GROUPS):
         rows = []
         for item in (i for i in items if i.get("status") == status):
             kind, dest = item.get("kind", "unknown"), item.get("destination", "")

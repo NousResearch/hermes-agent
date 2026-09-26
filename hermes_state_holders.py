@@ -554,15 +554,27 @@ def _psutil_foreign_holders(watched: Set[str]) -> List[Tuple[int, str]]:
         return [(-1, "open-file scan unavailable")]
     holders: List[Tuple[int, str]] = []
     try:
-        for process in psutil.process_iter(["pid", "open_files"]):
+        for process in psutil.process_iter(["pid", "open_files", "cmdline", "name"]):
             info = process.info
             pid = int(info["pid"])
             if pid == os.getpid():
                 continue
             open_files = info.get("open_files")
             if open_files is None:
-                # psutil reports AccessDenied/unsupported attributes as None (or omits
-                # them); neither proves this process has no descriptor on the store.
+                # Unavailable descriptors alone do not implicate unrelated system
+                # daemons. Use the same execution-target matcher as the Linux scan,
+                # never a Hermes substring in an argument or Python -c payload.
+                argv = info.get("cmdline")
+                name = info.get("name")
+                if argv:
+                    if not _looks_like_hermes(argv):
+                        continue
+                elif name and not (
+                    _looks_like_hermes([name]) or _looks_like_python_executable(name)
+                ):
+                    continue
+                # A Hermes target, an interpreter with hidden argv, or a wholly
+                # unidentified process remains plausible; None is not an all-clear.
                 holders.append((pid, "uninspectable holder: open_files unavailable"))
                 continue
             for opened in open_files:

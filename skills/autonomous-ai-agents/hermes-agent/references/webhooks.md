@@ -90,6 +90,14 @@ Full filter syntax: https://hermes-agent.nousresearch.com/docs/user-guide/messag
 hermes webhook list
 ```
 
+### Disable or re-enable a subscription
+```bash
+hermes webhook disable <name>
+hermes webhook enable <name>
+```
+
+Disabling pauses incoming events without deleting the dynamic subscription. It remains visible in `hermes webhook list` and can be re-enabled without restarting the gateway. Static routes from `config.yaml` must be changed in that file.
+
 ### Remove a subscription
 ```bash
 hermes webhook remove <name>
@@ -199,7 +207,7 @@ Each event runs in its own session, so by default the agent in the target chat h
 
 ## How It Works
 
-1. `hermes webhook subscribe` writes to `~/.hermes/webhook_subscriptions.json`
+1. `hermes webhook subscribe`, `disable`, and `enable` update `~/.hermes/webhook_subscriptions.json`
 2. The webhook adapter hot-reloads this file on each incoming request (mtime-gated, negligible overhead)
 3. When a POST arrives matching a route, the adapter formats the prompt and triggers an agent run
 4. The agent's response is delivered to the configured target (Telegram, Discord, GitHub comment, etc.)

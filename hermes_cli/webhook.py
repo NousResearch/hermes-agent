@@ -99,19 +99,29 @@ def webhook_command(args):
     """Entry point for 'hermes webhook' subcommand."""
     sub = getattr(args, "webhook_action", None)
     if not sub:
-        print("Usage: hermes webhook {subscribe|list|remove|test}")
+        print("Usage: hermes webhook {subscribe|list|disable|enable|remove|test}")
         print("Run 'hermes webhook --help' for details.")
         return
     if not _is_webhook_enabled():
         print(_setup_hint())
+        return
+    if sub == "disable":
+        _cmd_set_enabled(args, enabled=False)
+        return
+    if sub == "enable":
+        _cmd_set_enabled(args, enabled=True)
         return
     handler = _ACTIONS.get(sub)
     if handler is not None:
         handler(args)
 
 
+def _normalize_subscription_name(name: str) -> str:
+    return str(name or "").strip().lower().replace(" ", "-")
+
+
 def _cmd_subscribe(args):
-    name = args.name.strip().lower().replace(" ", "-")
+    name = _normalize_subscription_name(args.name)
     if not re.match(r'^[a-z0-9][a-z0-9_-]*$', name):
         print(f"Error: Invalid name '{name}'. Use lowercase alphanumeric with hyphens/underscores.")
         return
@@ -143,6 +153,7 @@ def _cmd_subscribe(args):
         "skills": [s.strip() for s in args.skills.split(",")] if args.skills else [],
         "deliver": args.deliver or "log",
         "profile": profile,
+        "enabled": existing.get("enabled", True),
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
 
     if getattr(args, "deliver_only", False):
@@ -221,12 +232,13 @@ def _cmd_list(args):
         if route.get("cron_job"):
             deliver = f"cron job '{route['cron_job']}'"
         desc = route.get("description", "")
-        print(f"  ◆ {name}")
+        print(f"  ◆ {name} ({'enabled' if route.get('enabled', True) else 'disabled'})")
         if desc:
             print(f"    {desc}")
         profile = route.get("profile", "default")
         print(f"    URL:     {_route_url(name, route)}")
         print(f"    Profile: {profile}")
+        print(f"    Status:  {'enabled' if route.get('enabled', True) else 'disabled'}")
         print(f"    Events:  {events}")
         print(f"    Deliver: {deliver}")
         if route.get("script"):
@@ -235,7 +247,7 @@ def _cmd_list(args):
 
 
 def _cmd_remove(args):
-    name = args.name.strip().lower()
+    name = _normalize_subscription_name(args.name)
     subs = _load_subscriptions()
     if name not in subs:
         print(f"  No subscription named '{name}'.")
@@ -246,9 +258,21 @@ def _cmd_remove(args):
     print(f"  Removed webhook subscription: {name}")
 
 
+def _cmd_set_enabled(args, *, enabled: bool):
+    name = _normalize_subscription_name(args.name)
+    subs = _load_subscriptions()
+    if name not in subs:
+        print(f"  No subscription named '{name}'.")
+        print("  Note: Static routes from config.yaml must be edited in config.yaml.")
+        return
+    subs[name]["enabled"] = enabled
+    _save_subscriptions(subs)
+    print(f"  {'Enabled' if enabled else 'Disabled'} webhook subscription: {name}")
+
+
 def _cmd_test(args):
     """Send a test POST to a webhook route."""
-    name = args.name.strip().lower()
+    name = _normalize_subscription_name(args.name)
     subs = _load_subscriptions()
     if name not in subs:
         print(f"  No subscription named '{name}'.")

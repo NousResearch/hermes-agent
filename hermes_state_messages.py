@@ -776,6 +776,33 @@ class SessionMessagesMixin:
             proved.extend(matches)
         return list(dict.fromkeys(proved))
 
+    def _rewind_superseded_identity_duplicates(self, conn, session_id: str) -> int:
+        """Hide superseded display generations sharing one ``display_identity``.
+
+        A carried copy whose durable original could not be resolved (ambiguous or
+        timestamp-less fallback in :meth:`_resolve_carried_row_ids`) is archived by the
+        blanket ``active = 0, compacted = 1`` update while its copy is inserted live:
+        two display-visible rows for one logical message, rendered twice (#123985).
+        Rows sharing a full content identity *are* one logical message by the display
+        projection's own definition, so keep the newest generation (live first, then
+        highest id — the preference ``_display_rows_from_conn`` uses) and rewind the
+        rest (``active = 0, compacted = 0``). Model-only rows are never display-visible
+        and are left untouched.
+        """
+        cur = conn.execute(
+            f"""UPDATE messages SET active = 0, compacted = 0 WHERE id IN (
+                    SELECT id FROM (
+                        SELECT id, ROW_NUMBER() OVER (
+                            PARTITION BY display_identity ORDER BY active DESC, id DESC
+                        ) AS rn
+                        FROM messages WHERE session_id = ?
+                        AND (active = 1 OR compacted = 1){DISPLAY_VISIBLE_SQL}
+                        AND display_identity IS NOT NULL
+                    ) WHERE rn > 1
+                )""",
+            (session_id,))
+        return cur.rowcount or 0
+
     def _archive_named_rows(
         self, conn, session_id: str, compacted_messages: List[Dict[str, Any]], covered: List[int], *,
         tail_count: int, carried_messages: Optional[List[Dict[str, Any]]], patched_model_config: Any,
@@ -864,9 +891,11 @@ class SessionMessagesMixin:
                 conn, session_id, model_config_patch, on_missing="raise") if patch else None
             proved = self._proved_coverage(conn, session_id, covered_ids, unresolved_held)
             if proved is not None:
-                return self._archive_named_rows(
+                inserted = self._archive_named_rows(
                     conn, session_id, compacted_messages, proved, tail_count=tail_count,
                     carried_messages=carried_messages, patched_model_config=patched_model_config, patch=patch)
+                self._rewind_superseded_identity_duplicates(conn, session_id)
+                return inserted
             tail_ids, tail_tool_calls = ([], 0) if watermark is None else self._tail_rows_after_watermark(
                 conn, "SELECT id, tool_calls FROM messages WHERE session_id = ? AND active = 1 AND id > ? ORDER BY id",
                 (session_id, int(watermark)))
@@ -896,6 +925,7 @@ class SessionMessagesMixin:
                 tool_calls_total += tail_tool_calls
             conn.execute(f"{_SET_COUNTERS_SQL}{', model_config = ?' if patch else ''} WHERE id = ?",
                 (inserted, tool_calls_total, *((patched_model_config,) if patch else ()), session_id))
+            self._rewind_superseded_identity_duplicates(conn, session_id)
             return inserted
         return self._execute_write(_do)
 

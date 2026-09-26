@@ -24,6 +24,7 @@ class _ClarifyEntry:
     question: str
     choices: Optional[List[str]]
     multi_select: bool = False
+    owner_user_id: Optional[str] = field(default=None, kw_only=True)
     event: threading.Event = field(default_factory=threading.Event)
     response: Optional[str] = None
     awaiting_text: bool = False  # set when user picked "Other" or clarify is open-ended
@@ -44,11 +45,11 @@ TEXT_NO_PENDING = "no_pending"
 
 
 def register(clarify_id: str, session_key: str, question: str, choices: Optional[List[str]],
-             multi_select: bool = False) -> _ClarifyEntry:
+             multi_select: bool = False, *, owner_user_id: Optional[str] = None) -> _ClarifyEntry:
     """Register a pending clarify request; caller then blocks on ``wait_for_response``.
     Open-ended (no choices) entries start in text mode: the next message IS the response."""
     entry = _ClarifyEntry(clarify_id, session_key, question, list(choices) if choices else None,
-                          bool(multi_select) and bool(choices), awaiting_text=not bool(choices))
+                          bool(multi_select) and bool(choices), owner_user_id=owner_user_id, awaiting_text=not bool(choices))
     with _lock:
         _entries[clarify_id] = entry
         _session_index.setdefault(session_key, []).append(clarify_id)
@@ -87,11 +88,11 @@ def wait_for_response(clarify_id: str, timeout: float) -> Optional[str]:
     return entry.response
 
 
-def resolve_gateway_clarify(clarify_id: str, response: str) -> bool:
+def resolve_gateway_clarify(clarify_id: str, response: str, *, user_id: Optional[str] = None) -> bool:
     """Unblock the waiter on ``clarify_id``; False if already resolved/expired/unknown."""
     with _lock:
         entry = _entries.get(clarify_id)
-        if entry is None or entry.event.is_set():
+        if entry is None or entry.event.is_set() or (entry.owner_user_id and str(user_id or "") != entry.owner_user_id):
             return False
         entry.response = str(response) if response is not None else ""
         entry.event.set()
@@ -204,15 +205,17 @@ def _coerce_multi_select_text(entry: _ClarifyEntry, text: str) -> Optional[str]:
     return json.dumps(selected, ensure_ascii=False) if selected else None
 
 
-def attempt_text_response_for_session(session_key: str, response: str) -> str:
+def attempt_text_response_for_session(session_key: str, response: str, *, user_id: Optional[str] = None) -> str:
     """Try to resolve the oldest pending clarify from typed text; returns a TEXT_* outcome."""
     entry = get_pending_for_session(session_key, include_choice_prompts=True)
     if entry is None:
         return TEXT_NO_PENDING
+    if entry.owner_user_id and str(user_id or "") != entry.owner_user_id:
+        return TEXT_REJECTED_SELECTION
     coerced, reason = _coerce_text_response_detailed(entry, response)
     if coerced is None:
         return TEXT_REJECTED_SELECTION if reason == "invalid_selection" else TEXT_REJECTED_PROSE
-    if resolve_gateway_clarify(entry.clarify_id, coerced):
+    if resolve_gateway_clarify(entry.clarify_id, coerced, user_id=user_id):
         return TEXT_RESOLVED
     return TEXT_NO_PENDING  # lost a race with a button/callback resolution — no work left
 

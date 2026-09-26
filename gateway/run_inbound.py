@@ -367,6 +367,9 @@ class GatewayInboundMixin:
         """Intercept a reply to a pending clarify prompt; None when the message falls through.
         Free text answers open-ended/"Other" prompts; "2" answers a multi-choice one. Resolved/retained
         replies return "" so adapters don't double-post — the agent produces the next user-facing message."""
+        from gateway.platforms.webhook_actions import consume_poll_reply
+        if consume_poll_reply(self.session_store, _quick_key, event, source):
+            return ""
         try:
             from tools import clarify_gateway as _clarify_mod
             _pending_clarify = _clarify_mod.get_pending_for_session(_quick_key, include_choice_prompts=True)
@@ -390,7 +393,7 @@ class GatewayInboundMixin:
         # they can retry; on timeout the agent unblocks with an empty response.
         if not _raw_clarify_reply or _raw_clarify_reply.startswith("/"):
             return None
-        _text_outcome = _clarify_mod.attempt_text_response_for_session(_quick_key, _raw_clarify_reply)
+        _text_outcome = _clarify_mod.attempt_text_response_for_session(_quick_key, _raw_clarify_reply, user_id=str(source.user_id or ""))
         if _text_outcome == _clarify_mod.TEXT_RESOLVED:
             logger.info(
                 "Gateway intercepted clarify text response (session=%s, id=%s)",

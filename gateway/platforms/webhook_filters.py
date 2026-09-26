@@ -166,7 +166,7 @@ class WebhookRouteProcessor:
             return False
         return all(self.filter_matches(spec, payload, event_type, headers) for spec in filters)
 
-    def run_route_script(self, script_value: Any, payload: dict) -> tuple[bool, Optional[dict]]:
+    def run_route_script(self, script_value: Any, payload: dict, *, preserve_silenced_payload: bool = False) -> tuple[bool, Optional[dict]]:
         """Run a route script and return (should_continue, transformed_payload).
 
         Non-zero exit, empty/``[SILENT]`` stdout, or a ``[SILENT]``/``__hermes_ignore__`` flag drops the
@@ -222,4 +222,4 @@ class WebhookRouteProcessor:
             logger.warning("[webhook] script stdout must be a JSON object or text")
             return False, None
         silenced = transformed.get("[SILENT]") is True or transformed.get("__hermes_ignore__") is True
-        return (False, None) if silenced else (True, transformed)
+        return (False, transformed if preserve_silenced_payload else None) if silenced else (True, transformed)

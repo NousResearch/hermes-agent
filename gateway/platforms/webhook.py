@@ -246,7 +246,14 @@ class WebhookAdapter(BasePlatformAdapter):
         logger.info("[webhook] Listening on %s:%d — routes: %s", self._host or "* (all interfaces, IPv4+IPv6)",
                     self._port, ", ".join(self._routes.keys()) or "(none configured)")
         self._wire_plugin_handlers(None)
+        from gateway.platforms.webhook_actions import restore
+        await restore(self)
         return True
+
+    async def restore_discussion_actions(self) -> None:
+        """Called after destination adapters have connected; never sends another alert."""
+        from gateway.platforms.webhook_actions import restore
+        await restore(self)
 
     async def disconnect(self) -> None:
         await self._coalescer.flush()  # buffered events are dispatched, not dropped, on shutdown/reconnect
@@ -485,7 +492,8 @@ class WebhookAdapter(BasePlatformAdapter):
         delivery = {"deliver": route_config.get("deliver", "log"), "payload": payload, "profile": profile,
                     "deliver_extra": self._render_delivery_extra(route_config.get("deliver_extra", {}), payload),
                     "route": route_name,
-                    "mirror": route_config.get("mirror_to_session") is True}
+                    "mirror": route_config.get("mirror_to_session") is True,
+                    "discussion_actions": route_config.get("discussion_actions") is True}
         logger.info("[webhook] direct-deliver event=%s route=%s target=%s msg_len=%d delivery=%s", event_type,
                     route_name, delivery["deliver"], len(prompt), delivery_id)
         failed = {"status": "error", "error": "Delivery failed", "delivery_id": delivery_id}
@@ -606,8 +614,12 @@ class WebhookAdapter(BasePlatformAdapter):
                 # Shells out (up to its timeout) — worker thread so the loop isn't blocked; to_thread
                 # copies contextvars so the profile scope follows.
                 keep, transformed_payload = await asyncio.to_thread(
-                    self._route_processor.run_route_script, script, payload)
+                    self._route_processor.run_route_script, script, payload,
+                    preserve_silenced_payload=route_config.get("discussion_actions") is True)
                 if not keep:
+                    if route_config.get("discussion_actions") is True and transformed_payload:
+                        from gateway.platforms.webhook_actions import retire
+                        retire(self, transformed_payload, profile)
                     logger.info("[webhook] script ignored event=%s route=%s", event_type, route_name)
                     return web.json_response({"status": "ignored", "reason": "script", "route": route_name})
                 payload = transformed_payload or payload
@@ -879,7 +891,14 @@ class WebhookAdapter(BasePlatformAdapter):
                     return SendResult(success=False, error=f"No chat_id or home channel for {platform_name}")
                 chat_id = home.chat_id
             thread_id = extra.get("message_thread_id") or extra.get("thread_id")  # Telegram forum topics
-            result = await adapter.send(chat_id, content, metadata={"thread_id": thread_id} if thread_id else None)
+            result = None
+            if delivery.get("discussion_actions") is True:
+                from gateway.platforms.webhook_actions import restore
+                await restore(self)
+                from gateway.platforms.webhook_actions import deliver
+                result = await deliver(self, adapter, target_platform, chat_id, thread_id, content, delivery)
+            if result is None:
+                result = await adapter.send(chat_id, content, metadata={"thread_id": thread_id} if thread_id else None)
             if result.success:
                 self._mirror_delivery(platform_name, str(chat_id), content, delivery, thread_id)
             return result

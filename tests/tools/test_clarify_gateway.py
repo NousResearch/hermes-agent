@@ -42,6 +42,14 @@ class TestClarifyPrimitive:
         result = cm.wait_for_response("id1", timeout=10.0)
         assert result == "B"
 
+    def test_bound_owner_is_required_for_button_and_typed_resolution(self):
+        from tools import clarify_gateway as cm
+        cm.register("bound", "session", "Choose", ["A", "B"], owner_user_id="byron")
+        assert not cm.resolve_gateway_clarify("bound", "A", user_id="other")
+        assert cm.attempt_text_response_for_session("session", "A", user_id="other") == cm.TEXT_REJECTED_SELECTION
+        assert cm.attempt_text_response_for_session("session", "B", user_id="byron") == cm.TEXT_RESOLVED
+        assert cm.wait_for_response("bound", timeout=.1) == "B"
+
     def test_first_resolution_wins(self):
         """A late cancellation must not overwrite an already-selected choice."""
         from tools import clarify_gateway as cm

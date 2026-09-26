@@ -140,6 +140,8 @@ module.exports = {
   mac: {
     // The afterSign hook owns notarization, including keychain-profile builds.
     notarize: false,
+    // Electron 44 no longer supports macOS 11 or 12.
+    minimumSystemVersion: '13.0',
     // The packaged client reads this generated app-update.yml by default.
     publish: channelRequest?.receiverCandidate
       ? [{ provider: 'generic', url: `${channelRequest.publicBase}/releases/darwin/stable/`, channel: 'stable' }]

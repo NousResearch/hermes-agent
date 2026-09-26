@@ -1140,3 +1140,221 @@ class TestTeamsRequireMention:
         adapter = self._make_adapter(**extra)
         assert adapter._require_mention is expected
         assert adapter._extra.get("require_mention") == yaml_value  # extras stay readable on the instance
+
+
+# ---------------------------------------------------------------------------
+# Tests: channel-thread context hydration (#122401)
+# ---------------------------------------------------------------------------
+
+class TestTeamsThreadContextHydration:
+    """A reply inside a Teams channel thread hydrates ``MessageEvent.channel_context``
+    from app-only Graph reads (thread root + replies) before the turn; 1:1 chats, group
+    chats and channel root messages stay untouched. The HTTP layer is faked -- no real
+    Graph credentials."""
+
+    TEAM_GUID = "11111111-2222-3333-4444-555555555555"
+    ROOT_ID = "1700000000001"
+    CURRENT_ID = "1700000000099"
+
+    @staticmethod
+    def _graph_msg(mid, text, author="Alice"):
+        return {
+            "id": mid,
+            "createdDateTime": "2026-09-25T10:00:00Z",
+            "body": {"content": text},
+            "from": {"user": {"displayName": author}},
+            "attachments": [],
+        }
+
+    @staticmethod
+    def _getter(calls, root, replies, next_link=None):
+        """Fake Graph HTTP layer: records ``(path, params)``, serves root / replies payloads."""
+        async def fake(path, params):
+            calls.append((path, params))
+            if "/replies" in path or path.startswith("https://"):
+                payload = {"value": replies}
+                if next_link:
+                    payload["@odata.nextLink"] = next_link
+                return payload
+            return root
+        return fake
+
+    def _activity(
+        self, *, conv_type="channel", conversation_id=None, team_id=TEAM_GUID,
+        activity_id=CURRENT_ID, text="based on the above, what is the root cause?",
+    ):
+        activity = MagicMock()
+        activity.text = text
+        activity.id = activity_id
+        activity.from_ = MagicMock()
+        activity.from_.id = "user-1"
+        activity.from_.aad_object_id = "aad-1"
+        activity.from_.name = "Test User"
+        activity.conversation = MagicMock()
+        activity.conversation.id = conversation_id or f"19:thread@thread.v2;messageid={self.ROOT_ID}"
+        activity.conversation.conversation_type = conv_type
+        activity.conversation.name = ""
+        activity.conversation.tenant_id = "tenant-789"
+        activity.attachments = []
+        activity.channel_data = {"team": {"aadGroupId": team_id}, "channel": {"id": "19:chan@thread.v2"}}
+        return activity
+
+    @staticmethod
+    def _ctx(activity):
+        ctx = MagicMock()
+        ctx.activity = activity
+        return ctx
+
+    def _adapter(self, graph_getter=None, **extra):
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant", **extra))
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        adapter.handle_message = AsyncMock()
+        adapter._graph_getter = graph_getter
+        return adapter
+
+    @pytest.mark.anyio
+    async def test_channel_thread_reply_hydrates_root_and_replies_without_current(self):
+        root = self._graph_msg(self.ROOT_ID, "<p>thread root topic</p>", author="Root Author")
+        earlier = self._graph_msg("1700000000002", "earlier reply context", author="Carol")
+        current = self._graph_msg(self.CURRENT_ID, "current mention text", author="Bob")
+        calls = []
+        adapter = self._adapter(self._getter(calls, root, [earlier, current]))
+
+        await adapter._on_message(self._ctx(self._activity()))
+
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.call_args[0][0]
+        assert event.channel_context is not None
+        assert "thread root topic" in event.channel_context
+        assert "earlier reply context" in event.channel_context
+        assert "current mention text" not in event.channel_context
+        assert event.metadata["thread_read_status"] == "success"
+        assert any(path.endswith(f"/messages/{self.ROOT_ID}") for path, _ in calls)
+        assert any(path.endswith("/replies") for path, _ in calls)
+        assert all(params.get("$top") == 50 for path, params in calls if path.endswith("/replies"))
+
+    @pytest.mark.anyio
+    async def test_thread_context_keeps_only_last_replies(self):
+        root = self._graph_msg(self.ROOT_ID, "root topic", author="Root")
+        replies = [self._graph_msg(f"17000000001{i:02d}", f"reply-{i:02d}", author=f"User{i}")
+                   for i in range(15)]
+        replies.append(self._graph_msg(self.CURRENT_ID, "current mention text"))
+        adapter = self._adapter(self._getter([], root, replies))
+
+        await adapter._on_message(self._ctx(self._activity()))
+
+        ctx = adapter.handle_message.call_args[0][0].channel_context
+        assert ctx is not None
+        assert "reply-14" in ctx and "reply-05" in ctx  # last 10 replies survive
+        assert "reply-04" not in ctx                    # older replies are capped out
+        assert "current mention text" not in ctx
+
+    @pytest.mark.anyio
+    async def test_thread_context_enforces_per_message_and_total_caps(self):
+        root = self._graph_msg(self.ROOT_ID, "root topic", author="Root")
+        replies = [self._graph_msg(f"17000000001{i:02d}", f"reply-{i:02d} " + "x" * 600,
+                                   author=f"User{i}") for i in range(12)]
+        adapter = self._adapter(self._getter([], root, replies))
+
+        await adapter._on_message(self._ctx(self._activity()))
+
+        ctx = adapter.handle_message.call_args[0][0].channel_context
+        assert ctx is not None
+        assert "x" * 401 not in ctx        # per-message cap: no 400+ char run survives
+        assert len(ctx) <= 4000 + 32       # total cap (plus truncation-marker slack)
+        assert "reply-11" in ctx           # newest replies survive the total cap
+
+    @pytest.mark.anyio
+    async def test_non_guid_team_id_is_rejected(self):
+        calls = []
+        adapter = self._adapter(self._getter(calls, self._graph_msg(self.ROOT_ID, "root"), []))
+
+        await adapter._on_message(self._ctx(self._activity(team_id="19:team@thread.v2")))
+
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.call_args[0][0]
+        assert event.channel_context is None
+        assert event.metadata["thread_read_status"] == "not_applicable"
+        assert calls == []  # Graph is never queried with the 19:... team id
+
+    @pytest.mark.anyio
+    async def test_non_thread_activities_do_not_hydrate(self):
+        calls = []
+        adapter = self._adapter(self._getter(calls, self._graph_msg(self.ROOT_ID, "root"), []))
+
+        # 1:1 direct message
+        await adapter._on_message(self._ctx(self._activity(
+            conv_type="personal", conversation_id="19:dm@thread.v2", activity_id="a-1")))
+        # group chat carrying thread-shaped ids (chat-type gate must still hold)
+        await adapter._on_message(self._ctx(self._activity(
+            conv_type="groupChat", activity_id="a-2")))
+        # channel ROOT message: no ``;messageid=`` suffix in the conversation id
+        await adapter._on_message(self._ctx(self._activity(
+            conv_type="channel", conversation_id="19:thread@thread.v2", activity_id="a-3")))
+
+        events = [call.args[0] for call in adapter.handle_message.await_args_list]
+        assert len(events) == 3
+        assert all(event.channel_context is None for event in events)
+        assert all(event.metadata.get("thread_read_status") == "not_applicable" for event in events)
+        assert calls == []
+
+    @pytest.mark.anyio
+    async def test_graph_failure_fails_soft_with_one_line_note(self):
+        async def boom(path, params):
+            raise RuntimeError("graph down")
+        adapter = self._adapter(boom)
+
+        await adapter._on_message(self._ctx(self._activity()))
+
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.call_args[0][0]
+        assert event.channel_context is not None
+        assert "unavailable" in event.channel_context.lower()
+        assert event.text == "based on the above, what is the root cause?"
+        assert event.metadata["thread_read_status"] == "failed"
+
+    @pytest.mark.anyio
+    async def test_replies_fetch_stops_after_paging_cap(self):
+        root = self._graph_msg(self.ROOT_ID, "root topic")
+        reply = self._graph_msg("1700000000002", "paged reply")
+        next_link = ("https://graph.microsoft.com/v1.0/teams/t/channels/c/"
+                     "messages/m/replies?$skiptoken=next")
+        calls = []
+
+        async def always_paged(path, params):
+            calls.append((path, params))
+            if path.endswith("/replies") or path.startswith("https://"):
+                return {"value": [reply], "@odata.nextLink": next_link}
+            return root
+
+        adapter = self._adapter(always_paged)
+
+        await adapter._on_message(self._ctx(self._activity()))
+
+        reply_fetches = [path for path, _ in calls
+                         if path.endswith("/replies") or path.startswith("https://")]
+        assert len(reply_fetches) == 3  # initial page + up to 2 more, then stop
+        event = adapter.handle_message.call_args[0][0]
+        assert event.channel_context is not None
+        assert "paged reply" in event.channel_context
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("use_env", [True, False])
+    async def test_opt_out_disables_thread_context(self, monkeypatch, use_env):
+        monkeypatch.delenv("TEAMS_THREAD_CONTEXT", raising=False)
+        if use_env:
+            monkeypatch.setenv("TEAMS_THREAD_CONTEXT", "false")
+            extra = {}
+        else:
+            extra = {"thread_context": False}
+        calls = []
+        adapter = self._adapter(self._getter(calls, self._graph_msg(self.ROOT_ID, "root"), []), **extra)
+
+        await adapter._on_message(self._ctx(self._activity()))
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.channel_context is None
+        assert event.metadata.get("thread_read_status") == "not_applicable"
+        assert calls == []

@@ -359,6 +359,9 @@ def _cmd_create(args: argparse.Namespace) -> int:
     if max_retries is not None and max_retries < 1:
         return _err(f"kanban: --max-retries must be >= 1 (got {max_retries}); "
                     "use 1 to trip on the first failure.", 2)
+    creator_task_id = (os.environ.get("HERMES_KANBAN_TASK")
+                       if is_dispatcher_owned_worker_context() else None)
+    report: dict = {}
     with kbc.connect_closing() as conn:
         task_id = kb.create_task(
             conn, title=args.title, body=body, assignee=args.assignee,
@@ -374,20 +377,35 @@ def _cmd_create(args: argparse.Namespace) -> int:
             goal_max_turns=getattr(args, "goal_max_turns", None),
             completion_contract=getattr(args, "completion_contract", None),
             initial_status=getattr(args, "initial_status", "running"),
-            creator_task_id=(os.environ.get("HERMES_KANBAN_TASK")
-                             if is_dispatcher_owned_worker_context() else None),
+            creator_task_id=creator_task_id,
+            admit_reason=getattr(args, "admit_reason", None),
+            # The refusal has to be able to travel back to the card this one was
+            # filed from (a worker filing follow-up work names itself).
+            admit_origin=(tuple(args.parent or ()) or (creator_task_id,))[0],
+            report=report,
         )
-        task = kb.get_task(conn, task_id)
+        task = None if report.get("disposition") == "comment_on_origin" else kb.get_task(conn, task_id)
     if getattr(args, "json", False):
-        _print_json(_task_to_dict(task))
-    else:
-        print(f"Created {task_id}  ({task.status}, assignee={task.assignee or '-'})")
-        # Warn only for ready+assigned tasks that would sit without a dispatcher (triage/todo idle
-        # by design, unassigned can't dispatch); skipped under --json so stdout stays parseable.
-        if task.status == "ready" and task.assignee:
-            running, message = _check_dispatcher_presence()
-            if not running and message:
-                print(f"\n⚠  {message}", file=sys.stderr)
+        payload: dict = dict(_task_to_dict(task)) if task is not None else {}
+        payload.update({k: v for k, v in report.items() if k != "admit"})
+        if "admit" in report:
+            payload["admit"] = report["admit"]
+        _print_json(payload)
+        return 0
+    if report.get("disposition") == "comment_on_origin":
+        print(f"Deferred: the ready queue is over budget — the filing was recorded "
+              f"as a comment on {report.get('target')} (no new card)")
+        return 0
+    print(f"Created {task_id}  ({task.status}, assignee={task.assignee or '-'})"
+          + ("  [deduped]" if report.get("deduped") else "")
+          + ("  [deferred: over budget — see `hermes kanban queue-state`]"
+             if report.get("disposition") == "parked" else ""))
+    if task.status == "ready" and task.assignee:
+        # Warn only for ready+assigned tasks that would sit without a dispatcher
+        # (triage/todo idle by design, unassigned can't dispatch).
+        running, message = _check_dispatcher_presence()
+        if not running and message:
+            print(f"\n⚠  {message}", file=sys.stderr)
     return 0
 
 
@@ -1151,6 +1169,31 @@ def _cmd_stats(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_queue_state(args: argparse.Namespace) -> int:
+    """Report the ready-queue state the admission mechanism acts on (§5.2).
+
+    Read-only, one command: the numbers (depth, budget, deferred/admitted/
+    bypass counts, ageing) the A7 control and the dashboard need, from the same
+    derivation the kernel gates on — never a re-implementation of it.
+    """
+    from hermes_cli import kanban_db_admission as admission_adm
+    with kbc.connect_closing() as conn:
+        state = admission_adm.queue_state(conn)
+    if _json_out(args, state):
+        return 0
+    print(f"depth {state['depth']}/{state['budget']} ({state['budget_source']})"
+          f"  drain/h {state['drain_per_hour']}  window {state['window_hours']}h")
+    for lane, lane_state in sorted(state["lanes"].items()):
+        print(f"  {lane:24s} {lane_state['depth']}/{lane_state['budget']}")
+    print(f"deferred {state['deferred_count']}  admitted {state['admitted_count']}"
+          f"  fallback {state['fallback_count']}  bypass {state['bypass_count']}"
+          f"  pre-mechanism backlog {state['pre_mechanism_backlog']}")
+    oldest = state["oldest_ready_seconds"]
+    print(f"oldest ready {int(oldest) if oldest is not None else '-'}s  "
+          f"warn {state['ageing_warn_count']}  escalate {state['ageing_escalate_count']}")
+    return 0
+
+
 def _cmd_notify_subscribe(args: argparse.Namespace) -> int:
     delivery_metadata = {
         key: value
@@ -1331,6 +1374,7 @@ _HANDLERS = {
     "reopen-review": _cmd_reopen_review, "promote": _cmd_promote,
     "archive": _cmd_archive, "tail": _cmd_tail, "dispatch": _cmd_dispatch,
     "daemon": _cmd_daemon, "watch": _cmd_watch, "stats": _cmd_stats,
+    "queue-state": _cmd_queue_state,
     "log": _cmd_log, "runs": _cmd_runs, "heartbeat": _cmd_heartbeat,
     "assignees": _cmd_assignees, "notify-subscribe": _cmd_notify_subscribe,
     "notify-list": _cmd_notify_list, "notify-unsubscribe": _cmd_notify_unsubscribe,

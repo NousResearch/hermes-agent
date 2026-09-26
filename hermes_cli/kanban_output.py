@@ -21,6 +21,10 @@ _TASK_DICT_FIELDS = (
     "created_by", "created_at", "started_at", "completed_at", "result",
     "skills", "max_runtime_seconds", "max_retries", "model_override", "provider_override",
     "session_id", "workflow_template_id", "current_step_key", "completion_contract", "last_failure_error",
+    # A4: the dedup key has to be READABLE (a key you cannot see is not a key
+    # you can trust), and the admission state has to be visible so a parked
+    # card reads as parked rather than as an unexplained todo.
+    "idempotency_key", "admit_state", "ready_since",
 )
 _SHOW_RUN_FIELDS = (
     "id", "profile", "step_key", "status", "outcome", "summary", "error",

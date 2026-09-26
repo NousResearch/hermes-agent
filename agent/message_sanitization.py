@@ -224,19 +224,27 @@ def _rebalance_json_closers(raw: str) -> str | None:
     return "".join(out) + "".join(_JSON_CLOSERS[ch] for ch in reversed(stack))
 
 
-def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
-    """Repair malformed tool_call argument JSON (truncation, trailing commas, Python ``None``,
-    control chars); ``"{}"`` if unrepairable so the request succeeds. Repairs log at WARNING."""
-    raw_stripped = raw_args.strip() if isinstance(raw_args, str) else ""
+def _insert_missing_commas(raw: str) -> str:
+    """Insert commas exactly where ``json.loads`` reports one missing ("Expecting ',' delimiter"):
+    a dropped separator between object members or array elements — seen from models/gateways
+    around values containing ``:`` or non-ASCII text (#122711). Parser-guided and bounded;
+    the caller accepts the result only if it parses."""
+    text = raw
+    for _ in range(50):
+        try:
+            json.loads(text, strict=False)
+            return text
+        except json.JSONDecodeError as e:
+            if e.msg != "Expecting ',' delimiter" or e.pos is None or e.pos > len(text):
+                return raw
+            text = text[:e.pos] + "," + text[e.pos:]
+    return raw
 
-    if not raw_stripped:
-        logger.warning("Sanitized empty tool_call arguments for %s", tool_name)
-        return "{}"
 
-    if raw_stripped == "None":
-        logger.warning("Sanitized Python-None tool_call arguments for %s", tool_name)
-        return "{}"
-
+def _repair_json_text(raw_stripped: str, tool_name: str = "?") -> str | None:
+    """The repair pipeline behind :func:`_repair_tool_call_arguments`: control chars, missing
+    commas, trailing commas, truncation. Returns the repaired text, or ``None`` when no pass
+    produced parseable JSON (the caller chooses the fallback). Repairs log at WARNING."""
     # Pass 0: strict=False accepts literal control chars inside strings (the most common
     # local-model case) and re-serialises to wire-valid JSON.
     try:
@@ -247,12 +255,18 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     except (json.JSONDecodeError, TypeError, ValueError):
         pass
 
+    # Pass 1: parser-guided comma insertion for dropped separators (#122711).
+    with_commas = _insert_missing_commas(raw_stripped)
+    if with_commas != raw_stripped and _loads_ok(with_commas):
+        logger.warning("Repaired missing commas in tool_call arguments for %s: %s → %s", tool_name, raw_stripped[:80], with_commas[:80])
+        return with_commas
+
     # Passes 2-4: strip trailing commas, close unclosed structures, trim excess closers
     # (bounded). Bracket counting is string-aware: delimiters inside string values
     # ({"code": "}"}) are not structure, and the closers land in stack order — a truncated
     # {"items": [{"n": 1}, {"n": 2 needs "}]}" appended, and a misnested
     # {"a": [{"b": 1}, {"c": 2}} needs "]" inserted before the misplaced "}".
-    fixed = re.sub(r",\s*([}\]])", r"\1", raw_stripped)
+    fixed = re.sub(r",\s*([}\]])", r"\1", with_commas)
     fixed = _rebalance_json_closers(fixed) or fixed
     for _ in range(50):
         if _loads_ok(fixed) or not (
@@ -275,11 +289,66 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
         )
         return escaped
 
+    # Truncation and a dropped comma can coexist: retry comma insertion on the closed text.
+    with_commas = _insert_missing_commas(fixed)
+    if with_commas != fixed and _loads_ok(with_commas):
+        logger.warning("Repaired missing commas in tool_call arguments for %s: %s → %s", tool_name, raw_stripped[:80], with_commas[:80])
+        return with_commas
+
+    return None
+
+
+def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
+    """Repair malformed tool_call argument JSON (truncation, missing/trailing commas, Python
+    ``None``, control chars); ``"{}"`` if unrepairable so the request succeeds. Repairs log at
+    WARNING."""
+    raw_stripped = raw_args.strip() if isinstance(raw_args, str) else ""
+
+    if not raw_stripped:
+        logger.warning("Sanitized empty tool_call arguments for %s", tool_name)
+        return "{}"
+
+    if raw_stripped == "None":
+        logger.warning("Sanitized Python-None tool_call arguments for %s", tool_name)
+        return "{}"
+
+    repaired = _repair_json_text(raw_stripped, tool_name)
+    if repaired is not None:
+        return repaired
+
     logger.warning(
         "Unrepairable tool_call arguments for %s — replaced with empty object (was: %s)",
         tool_name, raw_stripped[:_FULL_ARGS_LOG_BOUND],
     )
     return "{}"
+
+
+def parse_repaired_json(raw: str) -> Any | None:
+    """Parse model-emitted JSON for *execution* (the ``tool_call`` bridge): only
+    content-complete repairs — literal control chars, dropped separators, trailing
+    commas. Truncation is deliberately NOT auto-closed here: executing a call whose
+    arguments were cut off mid-stream would run it with half the intended payload,
+    so — matching the native path's refusal of truncated args — ``None`` is returned
+    and the caller rejects with the original payload echoed instead of an opaque
+    offset (#122711).
+    """
+    if not isinstance(raw, str):
+        return None
+    stripped = raw.strip()
+    try:
+        return json.loads(stripped, strict=False)
+    except (json.JSONDecodeError, ValueError):
+        pass
+    no_trailing = re.sub(r",\s*([}\]])", r"\1", stripped)
+    for candidate in (no_trailing, _insert_missing_commas(stripped),
+                      _insert_missing_commas(no_trailing)):
+        if candidate == stripped:
+            continue
+        try:
+            return json.loads(candidate, strict=False)
+        except (json.JSONDecodeError, ValueError):
+            continue
+    return None
 
 
 def close_interrupted_tool_sequence(messages: list, final_response: Any = None) -> bool:

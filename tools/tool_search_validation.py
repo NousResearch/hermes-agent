@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from tools.registry import tool_error
 from tools.tool_search_catalog import BRIDGE_TOOL_NAMES, _registry_entry
+from agent.message_sanitization import parse_repaired_json
 
 logger = logging.getLogger("tools.tool_search")
 
@@ -136,6 +137,15 @@ def validate_deferred_call_args(name: str, args: Dict[str, Any]) -> Optional[str
         return None
 
 
+def _payload_snippet(text: Any, limit: int = 200) -> str:
+    """Debuggable rejection tail for unparseable model payload text (#122711): a bounded
+    snippet of what was actually received, not just a JSON error offset."""
+    snippet = text if isinstance(text, str) else repr(text)
+    if len(snippet) > limit:
+        snippet = snippet[:limit] + "…"
+    return snippet
+
+
 def normalize_tool_call_entries(args: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], Optional[str]]:
     """Normalize ``tool_call`` arguments into a ``calls[]`` list of entries.
 
@@ -146,6 +156,7 @@ def normalize_tool_call_entries(args: Dict[str, Any]) -> Tuple[List[Dict[str, An
     or ``([], error_message)``.
     """
     raw_calls = args.get("calls")
+    raw_calls_raw = raw_calls
     if raw_calls is None:
         # Legacy single shape.
         if not str(args.get("name") or "").strip():
@@ -153,11 +164,12 @@ def normalize_tool_call_entries(args: Dict[str, Any]) -> Tuple[List[Dict[str, An
         raw_calls = [{"name": args.get("name"), "arguments": args.get("arguments")}]
     if isinstance(raw_calls, str):
         # Tolerate the model emitting the batch envelope as a JSON string —
-        # mirror the per-entry `arguments` handling below (#114484).
-        try:
-            raw_calls = json.loads(raw_calls)
-        except json.JSONDecodeError as e:
-            return [], f"tool_call 'calls' is not valid JSON: {e}"
+        # mirror the per-entry `arguments` handling below (#114484). Native tool-call
+        # arguments get the `_repair_tool_call_arguments` repair pipeline; the bridge
+        # path must not be stricter than the native one (#122711).
+        raw_calls = parse_repaired_json(raw_calls)
+        if raw_calls is None:
+            return [], f"tool_call 'calls' is not valid JSON (unrepairable): {_payload_snippet(raw_calls_raw)}"
     if isinstance(raw_calls, dict):
         raw_calls = [raw_calls]
     if not isinstance(raw_calls, list) or not raw_calls:
@@ -180,10 +192,10 @@ def normalize_tool_call_entries(args: Dict[str, Any]) -> Tuple[List[Dict[str, An
             # validate_deferred_call_args instead of an opaque JSON parse error.
             raw_args = {}
         if isinstance(raw_args, str):
-            try:
-                raw_args = json.loads(raw_args)
-            except json.JSONDecodeError as e:
-                return [], f"tool_call calls[{position}].arguments is not valid JSON: {e}"
+            raw_args_text = raw_args
+            raw_args = parse_repaired_json(raw_args)
+            if raw_args is None:
+                return [], f"tool_call calls[{position}].arguments is not valid JSON (unrepairable): {_payload_snippet(raw_args_text)}"
         if not isinstance(raw_args, dict):
             return [], f"tool_call calls[{position}].arguments must be an object"
         entries.append({"name": name, "arguments": raw_args})

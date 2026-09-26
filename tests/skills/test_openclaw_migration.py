@@ -5,6 +5,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 
 SCRIPT_PATH = (
     Path(__file__).resolve().parents[2]
@@ -694,6 +696,59 @@ def test_messaging_settings_handles_invalid_utf8_in_telegram_allowlist(tmp_path:
     assert items and items[0]["status"] == "migrated"
     env_text = (target / ".env").read_text(encoding="utf-8")
     assert "123456789" in env_text
+
+
+def test_copy_file_skips_when_source_and_destination_resolve_to_same_file(tmp_path: Path):
+    """When the source workspace contains a symlink that points back into the
+    workspace, ``source_candidate()`` may resolve to a path that is also the
+    destination we are about to write to (or the user pointed
+    ``--workspace-target`` at the source workspace itself).  ``shutil.copy2``
+    raises ``SameFileError`` in that case and used to abort the whole
+    migration -- ~32 items were already applied, but the workspace asset copy
+    failed and the operator had to restore from the pre-migration backup
+    (#24943).
+
+    The defensive path: ``copy_file()`` short-circuits when
+    ``source.resolve() == destination.resolve()`` and records a ``skipped``
+    result rather than raising."""
+    mod = load_module()
+    source = tmp_path / ".openclaw"
+    target = tmp_path / ".hermes"
+    workspace = tmp_path / "workspace"  # also used as workspace_target
+    source.mkdir()
+    target.mkdir()
+    workspace.mkdir()
+
+    # Build a workspace where AGENTS.md is a symlink that ultimately resolves
+    # to the same inode as the file we are about to write.
+    physical_agents = workspace / "AGENTS.md"
+    physical_agents.write_text("# AGENTS\n", encoding="utf-8")
+
+    # The OpenClaw source layout places instructions under workspace/AGENTS.md;
+    # create a symlink at that location pointing at the same physical file.
+    (source / "workspace").mkdir()
+    linked_agents = source / "workspace" / "AGENTS.md"
+    try:
+        linked_agents.symlink_to(physical_agents)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unsupported on this filesystem")
+
+    migrator = mod.Migrator(
+        source_root=source, target_root=target, execute=True,
+        # workspace_target == the dir that already contains the physical file;
+        # destination = workspace_target / AGENTS.md == source resolved.
+        workspace_target=workspace, overwrite=True, migrate_secrets=False,
+        output_dir=None, selected_options={"workspace-agents"},
+    )
+    # Must not raise SameFileError.
+    report = migrator.migrate()
+
+    items = [i for i in report["items"] if i["kind"] == "workspace-agents"]
+    assert items, "expected a workspace-agents record"
+    assert items[0]["status"] == "skipped"
+    assert "same file" in items[0]["reason"].lower()
+    # File must still be there, untouched.
+    assert physical_agents.read_text(encoding="utf-8") == "# AGENTS\n"
 
 
 

@@ -1255,6 +1255,21 @@ class Migrator:
         if not source or not source.exists():
             return
 
+        # Same-file short-circuit: ``shutil.copy2`` raises ``SameFileError`` when
+        # source and destination resolve to the same inode, which happens when
+        # the source workspace contains symlinks pointing back into a workspace
+        # we are also writing to (or when ``--workspace-target`` was pointed at
+        # the source workspace itself).  Treat as a no-op skip rather than
+        # aborting the whole migration -- the file is already where it should
+        # be (#24943).
+        try:
+            same_file = source.resolve() == destination.resolve()
+        except OSError:
+            same_file = False
+        if same_file:
+            self.record(kind, source, destination, "skipped", "Source and destination resolve to the same file")
+            return
+
         if destination.exists():
             if not transform and sha256_file(source) == sha256_file(destination):
                 self.record(kind, source, destination, "skipped", "Target already matches source")

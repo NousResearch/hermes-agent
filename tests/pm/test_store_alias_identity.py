@@ -6,7 +6,7 @@ import pytest
 
 
 @pytest.mark.parametrize("stamp", [None, {}, [], "malformed", "unreadable"])
-def test_home_store_alias_reuses_selected_runtime(tmp_path, monkeypatch, stamp):
+def test_home_store_alias_reuses_selected_runtime(tmp_path, monkeypatch, request, stamp):
     from pm import paths, runtime
 
     project = tmp_path / "project"
@@ -42,6 +42,14 @@ def test_home_store_alias_reuses_selected_runtime(tmp_path, monkeypatch, stamp):
     generation = selected / "generations" / "existing"
     generation.mkdir(parents=True)
     (generation / "pm-runtime.json").write_text("{}")
+    (generation / ".lease-managed").touch()
+
+    def release():
+        held = runtime._HELD.pop(generation, None)
+        if held is not None:
+            held()
+
+    request.addfinalizer(release)
     record = {"inputs": runtime._inputs(project, store.resolve() / "python"),
               "generation": "generations/existing"}
     (selected / "selected.json").write_text(json.dumps(record))
@@ -62,6 +70,12 @@ def test_home_store_alias_reuses_selected_runtime(tmp_path, monkeypatch, stamp):
         assert paths.store_root() == store.resolve()
         assert (selected / "selected.json").read_bytes() == before
     assert validated == [runtime._python(generation)] * 3
+    from hermes_cli.runtime_state import leases_held
+
+    assert leases_held(generation)
+    assert len(list((generation / ".leases").iterdir())) == 1
+    release()
+    assert not leases_held(generation)
     assert list((selected / "generations").iterdir()) == [generation]
 
 

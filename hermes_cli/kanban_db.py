@@ -103,6 +103,23 @@ def _git_out(cwd: Path, *args: str, timeout: int = 30) -> Optional[str]:
 VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done", "archived"}
 VALID_INITIAL_STATUSES = {"running", "blocked"}
 
+_COMPLETABLE_STATUS_SQL = """(
+    status IN ('running', 'ready', 'blocked', 'review')
+    OR (
+        status = 'gave_up'
+        AND EXISTS (
+            SELECT 1 FROM task_comments
+             WHERE task_id = tasks.id
+               AND LOWER(author) = LOWER(tasks.assignee)
+               AND (
+                   LOWER(body) LIKE 'result:%'
+                   OR LOWER(body) LIKE 'evidence:%'
+                   OR LOWER(body) LIKE 'completed:%'
+               )
+        )
+    )
+)"""
+
 # Typed block reasons (routing in ``_route_block``); ``None`` = legacy un-typed.
 VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 
@@ -1073,6 +1090,7 @@ CREATE INDEX IF NOT EXISTS idx_tasks_status          ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_links_child           ON task_links(child_id);
 CREATE INDEX IF NOT EXISTS idx_links_parent          ON task_links(parent_id);
 CREATE INDEX IF NOT EXISTS idx_comments_task         ON task_comments(task_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_comments_task_author  ON task_comments(task_id, author);
 CREATE INDEX IF NOT EXISTS idx_events_task           ON task_events(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_runs_task             ON task_runs(task_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_runs_status           ON task_runs(status);
@@ -2693,6 +2711,17 @@ class EmptyCompletionError(ValueError):
         )
 
 
+class GaveUpWithoutEvidenceError(ValueError):
+    """``complete_task`` refused: task is in 'gave_up' status and lacks structured result evidence."""
+
+    def __init__(self, task_id: str):
+        self.task_id = task_id
+        super().__init__(
+            f"cannot complete gave-up task {task_id} without structured result evidence "
+            f"from the assignee (prefix comment with 'result:', 'evidence:', or 'completed:')"
+        )
+
+
 class ArtifactPreservationError(RuntimeError):
     """Raised when a declared scratch deliverable cannot be preserved."""
 
@@ -2771,7 +2800,7 @@ def complete_task(
         if acceptance is not None and not record_acceptance(conn, task_id, acceptance):
             return False
         trow = conn.execute(
-            "SELECT status, claim_lock, worker_pid, worker_started_at FROM tasks WHERE id = ?",
+            "SELECT status, claim_lock, worker_pid, worker_started_at, assignee FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
         prior_status = trow["status"] if trow else None
@@ -2780,7 +2809,24 @@ def complete_task(
         # _claim_is_live for what "live" means.
         if expected_run_id is None and not force and trow and _claim_is_live(trow):
             raise LiveClaimError(task_id)
-        sql = """
+        if trow and trow["status"] == "gave_up":
+            assignee = trow["assignee"] or ""
+            evidence = conn.execute(
+                """
+                SELECT 1 FROM task_comments
+                 WHERE task_id = ?
+                   AND LOWER(author) = LOWER(?)
+                   AND (
+                       LOWER(body) LIKE 'result:%'
+                       OR LOWER(body) LIKE 'evidence:%'
+                       OR LOWER(body) LIKE 'completed:%'
+                   )
+                """,
+                (task_id, assignee),
+            ).fetchone()
+            if not evidence:
+                raise GaveUpWithoutEvidenceError(task_id)
+        sql = f"""
                 UPDATE tasks
                    SET status       = 'done',
                        result       = ?,
@@ -2791,7 +2837,7 @@ def complete_task(
                        block_kind   = NULL,
                        block_recurrences = 0
                  WHERE id = ?
-                   AND status IN ('running', 'ready', 'blocked', 'review')
+                   AND {_COMPLETABLE_STATUS_SQL}
                 """
         params: tuple = (result, now, task_id)
         if expected_run_id is not None:

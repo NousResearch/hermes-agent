@@ -2218,6 +2218,7 @@ class GatewayTurnMixin:
                     **reply_expected_metadata(event.reply_expected), **diagnostic_metadata(event)},
                 message_type=event.message_type,
                 scheduled_heartbeat=bool(getattr(event, "_heartbeat_session_id", None)),
+                injected_toolsets=(event.metadata or {}).get("plugin_injection_toolsets"),
             )
             _turn_seconds = time.monotonic() - _turn_started_monotonic
 
@@ -4249,10 +4250,13 @@ class GatewayTurnMixin:
         persist_user_display_metadata: Optional[dict] = None,
         reply_expected: Optional[bool] = None,
         scheduled_heartbeat: bool = False,
+        injected_toolsets: Optional[list[str]] = None,
     ) -> Dict[str, Any]:
         """Run the agent; returns the full run_conversation result dict.
 
         Keys: "final_response", "messages", "api_calls", "completed"."""
+        if injected_toolsets is not None and self._get_proxy_url():
+            raise RuntimeError("restricted plugin injection is unavailable through the agent proxy")
         if self._get_proxy_url():
             return await self._run_agent_via_proxy(
                 message=message, context_prompt=context_prompt, history=history, source=source,
@@ -4263,6 +4267,13 @@ class GatewayTurnMixin:
         from run_agent import AIAgent
 
         disp = self._run_agent_display_settings(source)
+        if injected_toolsets is not None:
+            # A delegated turn may only narrow the session's ordinary tools.
+            # It cannot grant a toolset the platform would not have offered.
+            if not set(injected_toolsets).issubset(set(disp.enabled_toolsets)):
+                raise RuntimeError("injected toolset is not enabled for this session")
+            disp = dataclasses.replace(
+                disp, enabled_toolsets=sorted(set(disp.enabled_toolsets) & set(injected_toolsets)))
         if scheduled_heartbeat:
             # A heartbeat is proactive work: tool chrome, drafts, thinking and periodic
             # liveness notices would create a user-visible ping before its final result is known.

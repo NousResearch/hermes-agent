@@ -12,6 +12,7 @@ from gateway.config import GatewayConfig, Platform
 from gateway.platforms.base import (
     BasePlatformAdapter,
     PlatformConfig,
+    SendResult,
 )
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
@@ -452,3 +453,614 @@ def test_install_and_clear_gateway_injector_preserves_newer_owner():
     assert manager.has_gateway_message_injector is True
     assert manager.inject_gateway_message(value="kept") is True
     newer_injector.assert_called_once_with(value="kept")
+
+
+@pytest.mark.asyncio
+async def test_keyed_injection_is_durable_and_replay_does_not_start_second_turn(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    entry = _entry()
+    adapter = _RoutingAdapter()
+    adapter.set_message_handler(AsyncMock(return_value=None))
+    adapter.send = AsyncMock(return_value=SendResult(success=True))
+    runner = _runner(entry, adapter)
+    runner._gateway_loop = asyncio.get_running_loop()
+    runner._thread_metadata_for_source = MagicMock(return_value=None)
+
+    request = dict(session_key=entry.session_key, content="Where is the patch?",
+                   plugin_id="notify-plugin", idempotency_key="evt_123", idle_only=True,
+                   enabled_toolsets=["memory"])
+    assert runner._schedule_plugin_message_injection(**request) is True
+    task = next(iter(runner._background_tasks))
+    await asyncio.gather(task, return_exceptions=True)
+    await asyncio.sleep(0)
+    adapter.send.assert_awaited_once()
+    assert "Delegated request from notify-plugin" in adapter.send.await_args.args[1]
+    from gateway.plugin_injection_ledger import state
+    receipt = state("notify-plugin", "evt_123")
+    assert receipt["state"] == "dispatched"
+    assert runner._schedule_plugin_message_injection(**request) is True
+    await asyncio.sleep(0)
+    adapter.send.assert_awaited_once()
+    # A new runner against the same state.db sees the already claimed key and
+    # cannot start a second turn after an accepted-but-uncertain process exit.
+    replacement = _runner(entry, adapter)
+    replacement._gateway_loop = asyncio.get_running_loop()
+    replacement._thread_metadata_for_source = MagicMock(return_value=None)
+    assert replacement._schedule_plugin_message_injection(**request) is True
+    assert replacement._background_tasks == set()
+    adapter.send.assert_awaited_once()
+    with patch("gateway.run.safe_schedule_threadsafe"):
+        assert runner._schedule_plugin_message_injection(
+            **{**request, "content": "different request"}) is False
+
+
+@pytest.mark.asyncio
+async def test_keyed_injection_refuses_busy_session_without_queuing(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    entry = _entry()
+    adapter = _RoutingAdapter()
+    adapter.set_message_handler(AsyncMock())
+    adapter._active_sessions[entry.session_key] = asyncio.Event()
+    runner = _runner(entry, adapter)
+    runner._gateway_loop = asyncio.get_running_loop()
+
+    assert runner._schedule_plugin_message_injection(
+        session_key=entry.session_key, content="hello", plugin_id="notify-plugin",
+        idempotency_key="evt_busy", idle_only=True) is True
+    task = next(iter(runner._background_tasks))
+    await asyncio.gather(task, return_exceptions=True)
+    from gateway.plugin_injection_ledger import state
+    receipt = state("notify-plugin", "evt_busy")
+    assert receipt["state"] == "deferred"
+    assert receipt["last_error"] == "session busy"
+    adapter._message_handler.assert_not_awaited()
+
+    adapter._active_sessions.clear()
+    adapter.send = AsyncMock(return_value=SendResult(success=True))
+    runner._thread_metadata_for_source = MagicMock(return_value=None)
+    assert runner._schedule_plugin_message_injection(
+        session_key=entry.session_key, content="hello", plugin_id="notify-plugin",
+        idempotency_key="evt_busy", idle_only=True) is True
+    while runner._background_tasks:
+        await asyncio.gather(*list(runner._background_tasks), return_exceptions=True)
+    adapter.send.assert_awaited_once()
+    assert state("notify-plugin", "evt_busy")["state"] == "dispatched"
+
+
+@pytest.mark.asyncio
+async def test_retry_after_busy_race_does_not_repeat_telegram_notice(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    entry = _entry()
+    adapter = _RoutingAdapter()
+    adapter.set_message_handler(AsyncMock(return_value=None))
+    sends = 0
+
+    async def send(chat_id, content, reply_to=None, metadata=None):
+        nonlocal sends
+        sends += 1
+        if sends == 1:
+            adapter._active_sessions[entry.session_key] = asyncio.Event()
+        return SendResult(success=True)
+
+    adapter.send = send
+    runner = _runner(entry, adapter)
+    runner._gateway_loop = asyncio.get_running_loop()
+    runner._thread_metadata_for_source = MagicMock(return_value=None)
+    request = dict(session_key=entry.session_key, content="Question",
+                   plugin_id="notify-plugin", idempotency_key="evt_race", idle_only=True)
+
+    assert runner._schedule_plugin_message_injection(**request) is True
+    while runner._background_tasks:
+        await asyncio.gather(*list(runner._background_tasks), return_exceptions=True)
+    from gateway.plugin_injection_ledger import state
+    assert state("notify-plugin", "evt_race")["state"] == "notice_deferred"
+    assert sends == 1
+
+    adapter._active_sessions.clear()
+    assert runner._schedule_plugin_message_injection(**request) is True
+    while runner._background_tasks:
+        await asyncio.gather(*list(runner._background_tasks), return_exceptions=True)
+    assert state("notify-plugin", "evt_race")["state"] == "dispatched"
+    assert sends == 1
+    assert runner._schedule_plugin_message_injection(**request) is True
+    assert sends == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("after_notice", [False, True])
+async def test_deferred_key_is_bound_to_original_session_generation(
+    tmp_path, monkeypatch, after_notice,
+):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    entry = _entry()
+    adapter = _RoutingAdapter()
+    adapter.set_message_handler(AsyncMock())
+    if not after_notice:
+        adapter._active_sessions[entry.session_key] = asyncio.Event()
+    sends = []
+
+    async def send(chat_id, content, reply_to=None, metadata=None):
+        sends.append(content)
+        if after_notice:
+            adapter._active_sessions[entry.session_key] = asyncio.Event()
+        return SendResult(success=True)
+
+    adapter.send = send
+    runner = _runner(entry, adapter)
+    runner._gateway_loop = asyncio.get_running_loop()
+    runner._thread_metadata_for_source = MagicMock(return_value=None)
+    request = dict(session_key=entry.session_key, content="Question",
+                   plugin_id="notify-plugin", idempotency_key="evt_generation", idle_only=True)
+
+    assert runner._schedule_plugin_message_injection(**request) is True
+    while runner._background_tasks:
+        await asyncio.gather(*list(runner._background_tasks), return_exceptions=True)
+    from gateway.plugin_injection_ledger import state
+    assert state("notify-plugin", "evt_generation")["session_id"] == "session-42"
+    assert state("notify-plugin", "evt_generation")["state"] == (
+        "notice_deferred" if after_notice else "deferred")
+
+    adapter._active_sessions.clear()
+    entry.session_id = "session-after-new"
+    assert runner._schedule_plugin_message_injection(**request) is True
+    while runner._background_tasks:
+        await asyncio.gather(*list(runner._background_tasks), return_exceptions=True)
+    assert state("notify-plugin", "evt_generation")["state"] == "refused"
+    assert state("notify-plugin", "evt_generation")["last_error"] == "session generation changed"
+    assert len(sends) == (1 if after_notice else 0)
+    adapter._message_handler.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pre_turn_state,expected_notice_count", [
+    ("scheduled", 1), ("notice_sent", 0),
+])
+async def test_dead_owner_pre_turn_state_resumes_once(
+    tmp_path, monkeypatch, pre_turn_state, expected_notice_count,
+):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    entry = _entry()
+    adapter = _RoutingAdapter()
+    adapter.set_message_handler(AsyncMock(return_value=None))
+    adapter.send = AsyncMock(return_value=SendResult(success=True))
+    runner = _runner(entry, adapter)
+    runner._gateway_loop = asyncio.get_running_loop()
+    runner._thread_metadata_for_source = MagicMock(return_value=None)
+    request = dict(session_key=entry.session_key, content="Question",
+                   plugin_id="notify-plugin", idempotency_key="evt_crash")
+    from gateway import plugin_injection_ledger as ledger
+    from hermes_cli.sqlite_util import transaction
+    assert ledger.claim("notify-plugin", "evt_crash", entry.session_key, "Question") == "new"
+    assert ledger.bind_session("notify-plugin", "evt_crash", entry.session_id) is True
+    with transaction(ledger._connect()) as conn:
+        conn.execute("""
+            UPDATE plugin_injections SET state=?, owner_pid=99999999, owner_started_at=1
+            WHERE plugin_id='notify-plugin' AND idempotency_key='evt_crash'
+        """, (pre_turn_state,))
+
+    assert runner._schedule_plugin_message_injection(**request) is True
+    while runner._background_tasks:
+        await asyncio.gather(*list(runner._background_tasks), return_exceptions=True)
+    assert ledger.state("notify-plugin", "evt_crash")["state"] == "dispatched"
+    assert adapter.send.await_count == expected_notice_count
+    assert runner._schedule_plugin_message_injection(**request) is True
+    assert adapter.send.await_count == expected_notice_count
+
+
+def test_injection_status_closes_its_database_connection(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    from gateway import plugin_injection_ledger as ledger
+    ledger.claim("notify-plugin", "evt_close", "session-key", "Question")
+    original_connect = ledger._connect
+    closed = []
+
+    class TrackedConnection:
+        def __init__(self):
+            self.connection = original_connect()
+
+        def execute(self, *args):
+            return self.connection.execute(*args)
+
+        def close(self):
+            closed.append(True)
+            self.connection.close()
+
+    monkeypatch.setattr(ledger, "_connect", TrackedConnection)
+    assert ledger.state("notify-plugin", "evt_close")["state"] == "scheduled"
+    assert closed == [True]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("final_succeeds", [True, False])
+async def test_keyed_injection_reports_actual_final_delivery(tmp_path, monkeypatch, final_succeeds):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    entry = _entry()
+    adapter = _RoutingAdapter()
+
+    async def answer(event):
+        event._heartbeat_execution_started = True
+        return "Daphne's answer"
+
+    sent = []
+
+    async def send(chat_id, content, reply_to=None, metadata=None):
+        sent.append(content)
+        if len(sent) == 1:
+            return SendResult(success=True)
+        return SendResult(success=final_succeeds, error=None if final_succeeds else "send_path_degraded")
+
+    adapter.set_message_handler(answer)
+    adapter.send = send
+    runner = _runner(entry, adapter)
+    runner._gateway_loop = asyncio.get_running_loop()
+    runner._thread_metadata_for_source = MagicMock(return_value=None)
+
+    assert runner._schedule_plugin_message_injection(
+        session_key=entry.session_key, content="Question", plugin_id="notify-plugin",
+        idempotency_key="evt_answer") is True
+    while runner._background_tasks:
+        await asyncio.gather(*list(runner._background_tasks), return_exceptions=True)
+    while adapter._background_tasks:
+        await asyncio.gather(*list(adapter._background_tasks), return_exceptions=True)
+    from gateway.plugin_injection_ledger import state
+    receipt = state("notify-plugin", "evt_answer")
+    assert sent[:2] == ["Delegated request from notify-plugin:\n\nQuestion", "Daphne's answer"]
+    assert receipt["state"] == "turn_complete"
+    assert receipt["response"] == "Daphne's answer"
+    assert receipt["delivery_state"] == ("delivered" if final_succeeds else "failed")
+
+
+@pytest.mark.asyncio
+async def test_missing_injected_toolset_fails_before_agent_creation():
+    runner = _runner(_entry())
+    runner._get_proxy_url = MagicMock(return_value=None)
+    runner._run_agent_display_settings = MagicMock(
+        return_value=SimpleNamespace(enabled_toolsets=["messaging", "mempalace"]))
+    runner._run_agent_build_turn_context = MagicMock()
+
+    with pytest.raises(RuntimeError, match="not enabled"):
+        await runner._run_agent_inner(
+            message="delegated question", context_prompt="", history=[],
+            source=_entry().origin, session_id="session-42",
+            injected_toolsets=["mempalace-coordination"])
+    runner._run_agent_build_turn_context.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_plugin_context_exposes_keyed_gateway_receipt(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(yaml.safe_dump({
+        "plugins": {"entries": {"notify-plugin": {"allow_gateway_injection": True}}}}))
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    entry = _entry()
+    adapter = _RoutingAdapter()
+    adapter.set_message_handler(AsyncMock(return_value=None))
+    adapter.send = AsyncMock(return_value=SendResult(success=True))
+    runner = _runner(entry, adapter)
+    runner._gateway_loop = asyncio.get_running_loop()
+    runner._thread_metadata_for_source = MagicMock(return_value=None)
+    manager = PluginManager()
+    context = PluginContext(
+        PluginManifest(name="notify-plugin", key="notify-plugin", source="user"), manager)
+
+    with patch("hermes_cli.plugins.get_plugin_manager", return_value=manager):
+        runner._install_plugin_message_injector()
+        assert context.inject_message(
+            "Question", session_key=entry.session_key, idempotency_key="evt_api",
+            idle_only=True, enabled_toolsets=["memory"]) is True
+        while runner._background_tasks:
+            await asyncio.gather(*list(runner._background_tasks), return_exceptions=True)
+        assert context.injection_status("evt_api")["state"] == "dispatched"
+        assert context.injection_status("missing") is None
+        runner._clear_plugin_message_injector()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("notice_succeeds", [True, False])
+async def test_session_notice_is_bound_to_delivered_turn_and_ledgered(
+    tmp_path, monkeypatch, notice_succeeds,
+):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(yaml.safe_dump({
+        "plugins": {"entries": {"notify-plugin": {"allow_gateway_injection": True}}}}))
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    entry = _entry()
+    adapter = _RoutingAdapter()
+
+    async def answer(event):
+        event._heartbeat_execution_started = True
+        return "The exact answer"
+
+    sent = []
+
+    async def send(chat_id, content, reply_to=None, metadata=None):
+        sent.append(content)
+        success = notice_succeeds if len(sent) >= 3 else True
+        return SendResult(success=success, error=None if success else "send_path_degraded")
+
+    adapter.set_message_handler(answer)
+    adapter.send = send
+    runner = _runner(entry, adapter)
+    runner._gateway_loop = asyncio.get_running_loop()
+    runner._thread_metadata_for_source = MagicMock(return_value=None)
+    manager = PluginManager()
+    context = PluginContext(
+        PluginManifest(name="notify-plugin", key="notify-plugin", source="user"), manager)
+
+    with patch("hermes_cli.plugins.get_plugin_manager", return_value=manager):
+        runner._install_plugin_message_injector()
+        assert context.inject_message(
+            "Question", session_key=entry.session_key,
+            idempotency_key="evt_notice") is True
+        while runner._background_tasks or adapter._background_tasks:
+            await asyncio.gather(*list(runner._background_tasks | adapter._background_tasks),
+                                 return_exceptions=True)
+        receipt = context.injection_status("evt_notice")
+        assert receipt["delivery_state"] == "delivered"
+        assert context.send_session_notice(
+            entry.session_key, "Approve digest abc", idempotency_key="evt_notice") is True
+        while runner._background_tasks:
+            await asyncio.gather(*list(runner._background_tasks), return_exceptions=True)
+        receipt = context.injection_status("evt_notice")
+        assert receipt["notice_state"] == "ledgered"
+        assert receipt["notice_delivery_state"] == (
+            "delivered" if notice_succeeds else "failed")
+        assert sent[2] == "Approve digest abc"
+        send_count = len(sent)
+        assert context.send_session_notice(
+            entry.session_key, "Approve digest abc", idempotency_key="evt_notice") is True
+        assert len(sent) == send_count
+        assert context.send_session_notice(
+            "agent:main:telegram:dm:other", "Approve digest abc",
+            idempotency_key="evt_notice") is False
+        assert context.send_session_notice(
+            entry.session_key, "different text", idempotency_key="evt_notice") is False
+        runner._clear_plugin_message_injector()
+
+
+@pytest.mark.asyncio
+async def test_session_notice_refuses_changed_session_generation(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    from gateway import delivery_ledger as delivery
+    from gateway import plugin_injection_ledger as injection
+    entry = _entry()
+    assert injection.claim("notify-plugin", "evt_generation_notice", entry.session_key,
+                           "Question") == "new"
+    assert injection.bind_session("notify-plugin", "evt_generation_notice", entry.session_id)
+    delivery.record_obligation(
+        obligation_id="answer-1", session_key=entry.session_key,
+        platform="telegram", chat_id="42", thread_id=None, content="Answer")
+    delivery.mark_delivered("answer-1")
+    injection.advance("notify-plugin", "evt_generation_notice", "turn_complete",
+                      obligation_id="answer-1")
+
+    adapter = _RoutingAdapter()
+    adapter.send = AsyncMock(return_value=SendResult(success=True))
+    runner = _runner(entry, adapter)
+    runner._gateway_loop = asyncio.get_running_loop()
+    entry.session_id = "session-after-new"
+
+    assert runner._schedule_plugin_session_notice(
+        session_key=entry.session_key, content="Approve digest abc",
+        plugin_id="notify-plugin", idempotency_key="evt_generation_notice") is True
+    while runner._background_tasks:
+        await asyncio.gather(*list(runner._background_tasks), return_exceptions=True)
+    assert injection.state("notify-plugin", "evt_generation_notice")["notice_state"] == "refused"
+    adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transient", ["draining", "adapter_unavailable"])
+async def test_session_notice_retries_transient_pre_delivery_failure(
+    tmp_path, monkeypatch, transient,
+):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    from gateway import delivery_ledger as delivery
+    from gateway import plugin_injection_ledger as injection
+    entry = _entry()
+    key = f"evt_notice_retry_{transient}"
+    assert injection.claim("notify-plugin", key, entry.session_key, "Question") == "new"
+    assert injection.bind_session("notify-plugin", key, entry.session_id)
+    delivery.record_obligation(
+        obligation_id="answer-1", session_key=entry.session_key,
+        platform="telegram", chat_id="42", thread_id=None, content="Answer")
+    delivery.mark_delivered("answer-1")
+    injection.advance("notify-plugin", key, "turn_complete", obligation_id="answer-1")
+
+    adapter = _RoutingAdapter()
+    adapter.send = AsyncMock(return_value=SendResult(success=True))
+    runner = _runner(entry, adapter if transient == "draining" else None)
+    runner._gateway_loop = asyncio.get_running_loop()
+    runner._thread_metadata_for_source = MagicMock(return_value=None)
+    if transient == "draining":
+        runner._draining = True
+
+    request = dict(session_key=entry.session_key, content="Approve digest abc",
+                   plugin_id="notify-plugin", idempotency_key=key)
+    assert runner._schedule_plugin_session_notice(**request) is True
+    while runner._background_tasks:
+        await asyncio.gather(*list(runner._background_tasks), return_exceptions=True)
+    assert injection.state("notify-plugin", key)["notice_state"] == "deferred"
+    adapter.send.assert_not_awaited()
+
+    runner._draining = False
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    assert runner._schedule_plugin_session_notice(**request) is True
+    while runner._background_tasks:
+        await asyncio.gather(*list(runner._background_tasks), return_exceptions=True)
+    receipt = injection.state("notify-plugin", key)
+    assert receipt["notice_delivery_state"] == "delivered"
+    adapter.send.assert_awaited_once()
+
+
+def test_dead_notice_scheduler_reclaims_only_before_delivery_ledger(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    from gateway import delivery_ledger as delivery
+    from gateway import plugin_injection_ledger as injection
+    from hermes_cli.sqlite_util import transaction
+    session_key = "agent:main:telegram:dm:42"
+    assert injection.claim("notify-plugin", "evt_notice_crash", session_key, "Question") == "new"
+    assert injection.bind_session("notify-plugin", "evt_notice_crash", "session-42")
+    delivery.record_obligation(
+        obligation_id="answer-1", session_key=session_key,
+        platform="telegram", chat_id="42", thread_id=None, content="Answer")
+    delivery.mark_delivered("answer-1")
+    injection.advance("notify-plugin", "evt_notice_crash", "turn_complete",
+                      obligation_id="answer-1")
+
+    claim = lambda: injection.claim_notice(
+        "notify-plugin", "evt_notice_crash", session_key, "Approve digest abc")
+    assert claim() == "new"
+    with transaction(injection._connect()) as conn:
+        conn.execute("""
+            UPDATE plugin_injections SET notice_owner_pid=99999999,
+                notice_owner_started_at=1 WHERE idempotency_key='evt_notice_crash'
+        """)
+    assert claim() == "new"  # killed before any ledger row; safe to schedule
+    notice_id = injection.state("notify-plugin", "evt_notice_crash")["notice_obligation_id"]
+    delivery.record_obligation(
+        obligation_id=notice_id, session_key=session_key, platform="telegram",
+        chat_id="42", thread_id=None, content="Approve digest abc")
+    with transaction(injection._connect()) as conn:
+        conn.execute("""
+            UPDATE plugin_injections SET notice_owner_pid=99999999,
+                notice_owner_started_at=1 WHERE idempotency_key='evt_notice_crash'
+        """)
+    assert claim() == "existing"  # ledger now owns recovery; never send twice
+
+@pytest.mark.asyncio
+async def test_keyed_injection_is_scoped_to_immutable_profile_manager_owner(tmp_path, monkeypatch):
+    """Two profile managers may reuse a plugin key across A→B→A and a restart."""
+    from dataclasses import replace
+    from gateway import plugin_injection_ledger as ledger
+
+    launch = tmp_path / "launch"
+    home_a, home_b = tmp_path / "profile-a", tmp_path / "profile-b"
+    for home in (launch, home_a, home_b):
+        home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(launch))
+    manager_a = PluginManager(scope_key=str(home_a))
+    manager_b = PluginManager(scope_key=str(home_b))
+    entry_a = _entry()
+    entry_b = replace(entry_a, session_key="agent:main:telegram:dm:43", session_id="session-43",
+                      origin=replace(entry_a.origin, chat_id="43", user_id="43"))
+    adapter_a, adapter_b = _RoutingAdapter(), _RoutingAdapter()
+    for adapter in (adapter_a, adapter_b):
+        adapter.send = AsyncMock(return_value=SendResult(success=True))
+        adapter.set_message_handler(AsyncMock(return_value=None))
+    runner_a, runner_b = _runner(entry_a, adapter_a), _runner(entry_b, adapter_b)
+    for runner in (runner_a, runner_b):
+        runner._gateway_loop = asyncio.get_running_loop()
+        runner._thread_metadata_for_source = MagicMock(return_value=None)
+    manager_a.set_gateway_message_injector(runner_a, runner_a._schedule_plugin_message_injection)
+    manager_b.set_gateway_message_injector(runner_b, runner_b._schedule_plugin_message_injection)
+    request_a = dict(session_key=entry_a.session_key, content="Question A",
+                     plugin_id="notify-plugin", idempotency_key="same-key", idle_only=True)
+    request_b = dict(session_key=entry_b.session_key, content="Question B",
+                     plugin_id="notify-plugin", idempotency_key="same-key", idle_only=True)
+
+    assert manager_a.inject_gateway_message(**request_a)
+    await asyncio.gather(*runner_a._background_tasks, return_exceptions=True)
+    assert manager_b.inject_gateway_message(**request_b)
+    await asyncio.gather(*runner_b._background_tasks, return_exceptions=True)
+    assert ledger.state("notify-plugin", "same-key", owner_home=manager_a.scope_key)["session_id"] == "session-42"
+    assert ledger.state("notify-plugin", "same-key", owner_home=manager_b.scope_key)["session_id"] == "session-43"
+    assert ledger.state("notify-plugin", "same-key") is None  # launch scope sees neither
+    context_a = PluginContext(PluginManifest(name="notify-plugin", key="notify-plugin", source="user"), manager_a)
+    context_b = PluginContext(PluginManifest(name="notify-plugin", key="notify-plugin", source="user"), manager_b)
+    with patch.object(PluginContext, "_gateway_injection_allowed", return_value=True):
+        assert context_a.injection_status("same-key")["session_id"] == "session-42"
+        assert context_b.injection_status("same-key")["session_id"] == "session-43"
+    state_a = ledger.state("notify-plugin", "same-key", owner_home=home_a)["state"]
+    ledger.advance("notify-plugin", "same-key", "turn_failed", owner_home=home_b)
+    assert ledger.state("notify-plugin", "same-key", owner_home=home_a)["state"] == state_a
+    assert manager_a.inject_gateway_message(**request_a)  # A replay after B, no second turn
+    assert not runner_a._background_tasks
+    assert ledger.bind_session("notify-plugin", "same-key", "session-99",
+                               owner_home=manager_a.scope_key) is False
+    assert ledger.state("notify-plugin", "same-key", owner_home=manager_b.scope_key)["session_id"] == "session-43"
+
+    # A restarted manager has the same immutable principal and sees its old row.
+    restarted_a = PluginManager(scope_key=str(home_a))
+    restarted_a.set_gateway_message_injector(runner_a, runner_a._schedule_plugin_message_injection)
+    assert restarted_a.inject_gateway_message(**request_a)
+    assert not runner_a._background_tasks
+    assert ledger.claim("notify-plugin", "deferred", entry_a.session_key, "retry",
+                        owner_home=manager_a.scope_key) == "new"
+    ledger.advance("notify-plugin", "deferred", "deferred", owner_home=manager_a.scope_key)
+    assert ledger.claim("notify-plugin", "deferred", entry_a.session_key, "retry",
+                        owner_home=restarted_a.scope_key) == "retry"
+    assert ledger.state("notify-plugin", "deferred", owner_home=manager_b.scope_key) is None
+
+
+def test_legacy_unscoped_injection_row_is_quarantined(tmp_path, monkeypatch):
+    import sqlite3
+    from gateway import plugin_injection_ledger as ledger
+
+    home = tmp_path / "launch"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    with sqlite3.connect(home / "state.db") as conn:
+        conn.execute("""CREATE TABLE plugin_injections (
+            plugin_id TEXT NOT NULL, idempotency_key TEXT NOT NULL,
+            session_key TEXT NOT NULL, content_sha256 TEXT NOT NULL,
+            state TEXT NOT NULL, created_at REAL NOT NULL, updated_at REAL NOT NULL,
+            PRIMARY KEY (plugin_id, idempotency_key))""")
+        conn.execute("""INSERT INTO plugin_injections VALUES
+            ('notify-plugin', 'old-key', 'old-session', 'hash', 'dispatched', 1, 1)""")
+    assert ledger.state("notify-plugin", "old-key") is None
+    ledger.advance("notify-plugin", "old-key", "turn_complete")
+    with sqlite3.connect(home / "state.db") as conn:
+        assert conn.execute("SELECT state FROM plugin_injections_legacy").fetchone()[0] == "dispatched"
+    with pytest.raises(ValueError, match="unscoped legacy"):
+        ledger.claim("notify-plugin", "old-key", "new-session", "new request")
+
+
+def test_profile_scoped_notice_ids_and_updates_do_not_alias(tmp_path, monkeypatch):
+    from gateway import delivery_ledger as delivery
+    from gateway import plugin_injection_ledger as injection
+
+    launch, home_a, home_b = (tmp_path / name for name in ("launch", "a", "b"))
+    for home in (launch, home_a, home_b):
+        home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(launch))
+    managers = (PluginManager(scope_key=str(home_a)), PluginManager(scope_key=str(home_b)))
+    session_key = "agent:main:telegram:dm:42"
+    delivery.record_obligation(obligation_id="answer", session_key=session_key,
+                               platform="telegram", chat_id="42", thread_id=None, content="Answer")
+    delivery.mark_delivered("answer")
+    for manager in managers:
+        owner = manager.scope_key
+        assert injection.claim("notify-plugin", "same", session_key, "Question", owner_home=owner) == "new"
+        assert injection.bind_session("notify-plugin", "same", "session-42", owner_home=owner)
+        injection.advance("notify-plugin", "same", "turn_complete", obligation_id="answer", owner_home=owner)
+        assert injection.claim_notice("notify-plugin", "same", session_key, "Notice", owner_home=owner) == "new"
+    first, second = (injection.state("notify-plugin", "same", owner_home=m.scope_key) for m in managers)
+    assert first["notice_obligation_id"] != second["notice_obligation_id"]
+    injection.mark_notice("notify-plugin", "same", "deferred", owner_home=managers[0].scope_key)
+    assert injection.state("notify-plugin", "same", owner_home=managers[1].scope_key)["notice_state"] == "queued"
+    injection.release_notice_claim("notify-plugin", "same", owner_home=managers[1].scope_key)
+    assert injection.state("notify-plugin", "same", owner_home=managers[0].scope_key)["notice_state"] == "deferred"
+    assert injection.state("notify-plugin", "same", owner_home=managers[1].scope_key)["notice_state"] is None

@@ -2,6 +2,7 @@
 import os
 import sqlite3
 import time
+from contextlib import contextmanager
 
 import pytest
 
@@ -82,3 +83,19 @@ def test_status_rejects_oversized_batch_and_is_profile_scoped(tmp_path):
     assert SessionDB(tmp_path / 'A' / 'state.db', read_only=True).get_session_turn_statuses(['same']) == {'same': True}
     with pytest.raises(ValueError):
         a.get_session_turn_statuses([str(i) for i in range(101)])
+
+def test_status_cooperative_deadline_does_not_bound_connection_checkout(tmp_path, monkeypatch):
+    db = SessionDB(tmp_path / 'state.db')
+    db.create_session('waiting', source='cli')
+    original = db._read_ctx
+
+    @contextmanager
+    def delayed_checkout():
+        time.sleep(0.6)
+        with original() as conn:
+            yield conn
+
+    monkeypatch.setattr(db, '_read_ctx', delayed_checkout)
+    started = time.monotonic()
+    assert db.get_session_turn_statuses(['waiting']) == {'waiting': None}
+    assert time.monotonic() - started >= 0.5

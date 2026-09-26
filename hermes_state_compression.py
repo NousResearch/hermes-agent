@@ -539,9 +539,16 @@ class SessionCompressionMixin:
         True means an unexpired live holder, False means no effective lease, and
         None means missing/indeterminate. Never returns a holder or claims a lease.
         At most 100 IDs and 100 ancestry steps per ID; a read snapshot keeps the
-        lineage and lease rows coherent. The 0.5s work budget is cooperative:
-        SQLite lock waits or connection checkout can exceed it; after such a wait
-        remaining results stay unknown. Callers must treat None as potentially active.
+        lineage and lease rows coherent. The 0.5s work budget is cooperative,
+        NOT a wall-clock bound: connection checkout, the fallback writer lock,
+        SQLite busy waits, and even individual statements may block beyond it.
+        In particular, do not call this synchronously from a latency-sensitive
+        request path expecting a 0.5s timeout. For a bounded caller, run the
+        read in an independently owned, capacity-limited background worker and
+        return unknown on the caller's deadline; that worker may still be running
+        and must own its DB handle until it exits. Never close its connection on
+        the timeout or start unlimited abandoned workers. After a late wait,
+        remaining results stay unknown. Treat None as potentially active.
         """
         from hermes_state import _compression_lock_holder_process_is_dead
         ids = list(session_ids)

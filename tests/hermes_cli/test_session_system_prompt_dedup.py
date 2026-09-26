@@ -220,6 +220,39 @@ def test_recovery_cleanup_keeps_tool_pins_and_drops_dangling_pin_refs(tmp_path):
         assert db.get_session("legacy")["tool_names"] == '["read_file"]'
 
 
+# A legacy inline name list that happens to be as long as a pin hash (64 chars) is still a list.
+_LEGACY_LIST_64 = json.dumps(["read_file", "write_file", "patch", "search_files", "terminal"])
+
+
+def test_recovery_cleanup_keeps_a_legacy_tool_list_as_long_as_a_pin_hash(tmp_path):
+    from hermes_cli.session_recovery import _cleanup_partial_orphans
+
+    assert len(_LEGACY_LIST_64) == 64
+    with SessionDB(db_path=tmp_path / "state.db") as db:
+        db.create_session("legacy", "tui")
+        db._conn.execute("UPDATE sessions SET tool_names = ? WHERE id = 'legacy'", (_LEGACY_LIST_64,))
+        db._conn.commit()
+    conn = sqlite3.connect(str(tmp_path / "state.db"), isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    result = _cleanup_partial_orphans(conn)
+    conn.close()
+
+    assert result["session_prompt_refs_cleared"] == 0
+    with SessionDB(db_path=tmp_path / "state.db") as db:
+        assert db.get_session("legacy")["tool_names"] == _LEGACY_LIST_64
+
+
+def test_profile_move_keeps_a_legacy_tool_list_as_long_as_a_pin_hash(tmp_path):
+    with SessionDB(db_path=tmp_path / "source.db") as source, SessionDB(db_path=tmp_path / "target.db") as target:
+        source.create_session("legacy", "tui")
+        source._conn.execute("UPDATE sessions SET tool_names = ? WHERE id = 'legacy'", (_LEGACY_LIST_64,))
+        source._conn.commit()
+
+        assert target.import_moved_session(source.export_session_for_move("legacy"), profile_name="work") == "imported"
+
+        assert target.get_session("legacy")["tool_names"] == _LEGACY_LIST_64
+
+
 def test_imported_prompts_are_deduplicated(tmp_path):
     prompt = "shared imported prompt"
     source = SessionDB(db_path=tmp_path / "source.db")

@@ -2139,6 +2139,16 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         # logs immediately.
         self._last_no_entries_log_at = None
 
+        entry = self._pick_and_rotate(available, count=count)
+        self._current_id = entry.id
+        return entry, pending_refresh
+
+    def _pick_and_rotate(self, available: List[PooledCredential], *, count: bool) -> PooledCredential:
+        """Apply the pool strategy to a non-empty ``available`` list; called under ``self._lock``.
+
+        The one place strategy lives, so a subclass can change how an entry is picked and
+        how the pool rotates without re-implementing availability and refresh.
+        """
         if self._strategy == STRATEGY_RANDOM:
             entry = random.choice(available)
         elif self._strategy == STRATEGY_LEAST_USED and len(available) > 1:
@@ -2156,8 +2166,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             self._entries = [replace(candidate, priority=idx) for idx, candidate in enumerate(rotated)]
             self._persist()
             entry = self._find(lambda candidate: candidate.id == entry.id) or entry
-        self._current_id = entry.id
-        return entry, pending_refresh
+        return entry
 
     def peek(self) -> Optional[PooledCredential]:
         with self._lock:

@@ -998,6 +998,12 @@ def build_cache_parity_fork(
     review_agent._end_session_on_close = False
     review_agent._session_db = None
     review_agent.session_id = agent.session_id
+    # Slot-keyed caches (xAI) must not see the fork under the parent's key: the fork's divergent
+    # stream evicts the parent's conversation slot. The resolver derives ``<scope>::<tag>`` for
+    # slot-keyed providers only; content-addressed ones keep the shared scope below.
+    review_agent._prompt_cache_fork_tag = (
+        "review" if write_origin == "background_review" else str(write_origin or "fork")
+    )
     # Same model only: share the warm cached system prompt (~26% cost cut; a rebuilt prompt misses
     # the byte-exact prefix key) and pin session_start so any re-render (compression, plugin
     # hooks) stays byte-identical.

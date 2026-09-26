@@ -577,3 +577,32 @@ def test_routed_fork_does_not_inherit_cache_scope():
         "Routed fork must not inherit the parent's cache scope — its prefix "
         "is cache-cold on the different model regardless."
     )
+
+
+def test_same_model_fork_on_xai_gets_derived_cache_scope():
+    """xAI's cache key selects ONE server slot: a fork under the parent's inherited scope
+    evicts the parent (grok-4.7, ~160k context: the parent's next call read 1,152 of 162k).
+    The fork is tagged and the resolver derives ``<parent scope>::<tag>`` on xAI only; on
+    content-addressed providers the #109964 inheritance is unchanged."""
+    import run_agent
+    from agent.background_review import build_cache_parity_fork
+    from agent.prompt_cache_scope import resolve_prompt_cache_scope
+
+    for write_origin, tag in (("background_review", "review"), ("side_question", "side_question")):
+        agent = _make_agent_stub(run_agent.AIAgent)
+        agent.provider, agent.model = "xai-oauth", "grok-4.7"
+        captured = {}
+        with patch.object(run_agent, "AIAgent", _make_recorder_class(captured)):
+            fork, _rt, routed = build_cache_parity_fork(
+                agent, max_iterations=5, write_origin=write_origin
+            )
+
+        assert not routed
+        fork.provider = captured["init_kwargs"].get("provider")
+        fork.model = captured["init_kwargs"].get("model")
+        parent_scope = resolve_prompt_cache_scope(agent)
+        assert fork.session_id == agent.session_id  # transcript identity unchanged
+        assert fork._prompt_cache_fork_tag == tag
+        assert resolve_prompt_cache_scope(fork) == f"{parent_scope}::{tag}"
+        fork.provider, fork.model = "anthropic", "claude-opus-4-8"
+        assert resolve_prompt_cache_scope(fork) == parent_scope

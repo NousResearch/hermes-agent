@@ -18,7 +18,7 @@ def test_tools_configure_uses_live_session_profile(tmp_path, monkeypatch, explic
     monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
     config = {"platform_toolsets": {"cli": ["terminal", "web"]}}
     for path in (home, profile):
-        (path / "config.yaml").write_text(yaml.safe_dump(config))
+        (path / "config.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
     launch_before = (home / "config.yaml").read_bytes()
     seen = []
     monkeypatch.setattr(server, "_reset_session_agent", lambda *_: seen.append(get_hermes_home()) or {})
@@ -29,7 +29,9 @@ def test_tools_configure_uses_live_session_profile(tmp_path, monkeypatch, explic
     response = server._methods["tools.configure"](1, params)
     assert "error" not in response
     assert (home / "config.yaml").read_bytes() == launch_before
-    assert "terminal" not in yaml.safe_load((profile / "config.yaml").read_text())["platform_toolsets"]["cli"]
+    assert "terminal" not in yaml.safe_load(
+        (profile / "config.yaml").read_text(encoding="utf-8")
+    )["platform_toolsets"]["cli"]
     assert seen == [profile]
     assert get_hermes_home() == home
     worker_before = (profile / "config.yaml").read_bytes()
@@ -88,3 +90,33 @@ def test_rebuild_preparation_failure_keeps_reachable_owner(tmp_path, monkeypatch
         for agent in built:
             if agent._session_db is not db and agent._owns_session_db:
                 agent._session_db.close()
+
+
+def test_bot_capability_refresh_preserves_bound_turn_session_route(monkeypatch):
+    """A first-turn capability refresh must not erase its async delivery route."""
+    from gateway.session_context import get_session_env, reset_session_vars, set_session_vars
+    from tui_gateway import server
+
+    old = SimpleNamespace(_session_title_hint="Bot Chat", _session_db=None)
+    replacement = SimpleNamespace(_session_title_hint="")
+    session = {
+        "agent": old,
+        "session_key": "durable-bot-session",
+        "bot_caps_seen": "before",
+        "source": "desktop",
+    }
+    monkeypatch.setattr("tools.bot_mode_probe.capability_fingerprint", lambda _home: "after")
+    monkeypatch.setattr(server, "_rebuild_session_agent", lambda *_a, **_kw: replacement)
+    monkeypatch.setattr(server, "_emit", lambda *_a, **_kw: None)
+
+    set_session_vars(
+        session_key="durable-bot-session", session_id="agent-session",
+        source="desktop", ui_session_id="ui-tab")
+    try:
+        server._sync_bot_capabilities("ui-tab", session)
+
+        assert get_session_env("HERMES_SESSION_KEY") == "durable-bot-session"
+        assert get_session_env("HERMES_UI_SESSION_ID") == "ui-tab"
+        assert replacement._session_title_hint == "Bot Chat"
+    finally:
+        reset_session_vars()

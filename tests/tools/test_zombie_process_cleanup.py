@@ -45,7 +45,7 @@ class TestAgentCloseRecoverableKeepsProcesses:
         def get_session(self, _session_id):
             return dict(self._row)
 
-    def _agent(self, end_reason, *, end_session_on_close=True):
+    def _agent(self, end_reason, *, end_session_on_close=True, booked_reason=""):
         from unittest.mock import patch
         with patch("run_agent.AIAgent.__init__", return_value=None):
             from run_agent import AIAgent
@@ -57,6 +57,7 @@ class TestAgentCloseRecoverableKeepsProcesses:
             agent.client = None
             agent._session_db = self._StubSessionDB(end_reason)
             agent._end_session_on_close = end_session_on_close
+            agent._booked_end_reason = booked_reason
             return agent
 
     def _close_with_registry(self, agent):
@@ -96,6 +97,22 @@ class TestAgentCloseRecoverableKeepsProcesses:
             "owned", source="agent_close", consume_output=True,
         )
         registry.kill_all.assert_not_called()
+
+    def test_booked_deliberate_end_kills_owned_processes(self):
+        """The cron shape: the scheduler books the reason and releases the shared handle before
+        the agent teardown, so it hands the booked reason over — a deliberate end still kills."""
+        registry = self._close_with_registry(
+            self._agent("", end_session_on_close=False, booked_reason="cron_complete"))
+        registry.kill_process.assert_called_once_with(
+            "owned", source="agent_close", consume_output=True,
+        )
+        registry.kill_all.assert_not_called()
+
+    def test_booked_automatic_end_keeps_processes(self):
+        """A booked accidental end still keeps the session's background work alive."""
+        registry = self._close_with_registry(
+            self._agent("", end_session_on_close=False, booked_reason="agent_close"))
+        registry.kill_process.assert_not_called()
 
 
 class TestAgentCloseMethod:

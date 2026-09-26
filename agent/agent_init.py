@@ -617,6 +617,10 @@ _SESSION_STATE: Dict[str, Any] = {
     # False on helper agents (compression / hygiene / review forks) that hand the session to
     # a continuation row that must stay open.
     "_end_session_on_close": True,
+    # End stamp booked by a finalizer OUTSIDE the agent (cron scheduler) that ends the session
+    # row itself and releases the shared handle before close(); the close-time process gate
+    # decides keep/kill on it instead of re-reading a row it can no longer reach (#94736).
+    "_booked_end_reason": "",
     # True on the background review fork: never persist or publish session lifecycle hooks,
     # so its harness turn can't hijack or appear under the live session.
     "_persist_disabled": False,

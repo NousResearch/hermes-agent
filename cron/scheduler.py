@@ -2140,9 +2140,13 @@ def _finalize_cron_session(session_db, agent, job_id: str, job_name: str, cron_s
         # released below, that second end_session() would reopen the just-closed
         # SQLite handle (#94736). The reason is durably booked, so disarm only the
         # agent's redundant row-finalization; its resource teardown still runs in
-        # _teardown_cron_agent.
+        # _teardown_cron_agent. Because the handle is gone by then, the close-time
+        # process gate cannot re-read the row either — hand it the booked reason,
+        # or a deliberate cron end reads as a handed-forward close and keeps the
+        # session's live background work alive.
         if agent is not None:
             agent._end_session_on_close = False
+            agent._booked_end_reason = _end_reason
     except (Exception, KeyboardInterrupt) as e:
         logger.debug("Job '%s': failed to end session: %s", job_id, e)
     try:

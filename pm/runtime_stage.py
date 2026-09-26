@@ -37,7 +37,12 @@ def stage_runtime(uv: Path, python: Path, destination: Path, *,
             shutil.copyfile(project / name, snapshot / name)
         environment.create()
         if wheelhouse is None:
-            environment.sync(snapshot, locked=True, no_default_groups=True,
+            # Install exactly what ``pm/uv.lock`` pins with ``--frozen`` (the sync default), not
+            # ``--locked``: the committed lock is the source of truth for this staging path, and
+            # ``--locked``'s freshness check spuriously fails when a configured pip mirror rewrites
+            # the resolved registry URL — even though every pinned version, hash and size is
+            # identical (#123943). Hash verification still guarantees integrity.
+            environment.sync(snapshot, no_default_groups=True,
                              no_install_project=True, timeout=600)
         else:
             environment.install_wheelhouse(snapshot, wheelhouse, timeout=600)

@@ -239,7 +239,11 @@ describe('personalityNamesFromConfig', () => {
       agent: { personalities: { agent_persona: 'a', shared: 'agent' } }
     })
 
-    expect(new Set(names)).toEqual(new Set(['root_persona', 'shared', 'agent_persona']))
+    // Direct array equality pins membership, dedupe, AND order in one assertion:
+    // `available_personalities()` inserts the root block before `agent.personalities`,
+    // and a clashing name keeps its first-insert (root) position, so the GUI listing
+    // must match that exact order.
+    expect(names).toEqual(['root_persona', 'shared', 'agent_persona'])
   })
 
   it('ignores non-object or array blocks', () => {

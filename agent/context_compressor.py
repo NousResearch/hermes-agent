@@ -1944,8 +1944,12 @@ _SECTION_INSTRUCTIONS: Dict[bool, Dict[str, str]] = {
             "Write the summary in the same language the user was using in the "
             "conversation — do not translate or switch to English. "
         ),
-        "historical_task": """[THE SINGLE MOST IMPORTANT FIELD. Capture the user's most recent unfulfilled
-input verbatim — the exact words they used. This includes:
+        "historical_task": """[THE SINGLE MOST IMPORTANT FIELD. Identify the user's most recent unfulfilled
+input precisely, but summarize it in your own words rather than copying long
+passages from the transcript. The compressor inserts a bounded, redacted
+snapshot of the real latest user turn after generation, so the model must not
+reproduce it.
+This includes:
 - Explicit task assignments ("<specific user task>")
 - Questions awaiting an answer ("<specific user question>")
 - Decisions awaiting input ("<option A or B?>")
@@ -1957,14 +1961,14 @@ rare case where the last exchange was fully resolved and the user said
 something like "thanks, that's all".
 If multiple items are outstanding, list only the ones NOT yet completed.
 This historical snapshot must identify the latest unresolved user input precisely. Examples:
-"User asked: '<exact latest user request>'"
-"User asked: '<exact latest user question>' — needs investigation + answer"
+"User asked for <specific task and constraints>"
+"User asked <specific question> — needs investigation + answer"
 "User chose <option>; awaiting implementation of <specific next step>"
 If the user's most recent message was a reverse signal (stop, undo, roll
 back, never mind, just verify, change of topic) that supersedes earlier
-work, write the reverse signal verbatim and DO NOT carry forward the
-cancelled task. Example: "User asked: '<exact reverse signal>' — earlier
-in-flight work is cancelled."
+work, describe the reverse signal accurately and DO NOT carry forward the
+cancelled task. The compressor inserts the source-grounded snapshot afterward.
+Example: "User asked to stop the prior task — earlier work is cancelled."
 If no outstanding task exists, write "None."]""",
         "goal": "[What the user is trying to accomplish overall]",
         "constraints": (

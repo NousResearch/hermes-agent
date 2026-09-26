@@ -3356,6 +3356,24 @@ class _StreamingCall(StreamingWaitMonitor):
             return _build_partial_stream_stub(
                 role, full_content, full_reasoning, model_name, usage_obj, dropped_tool_names=_dropped_names or None,
                 clean_eof=True)
+        if has_truncated_tool_args and finish_reason not in (None, "length"):
+            # A terminal finish_reason (e.g. "stop") arrived alongside a tool call whose
+            # arguments never parsed as valid JSON — _assemble_tool_calls flagged it after
+            # _repair_tool_call_arguments gave up. Falling through would stamp "length" and
+            # dispatch the call anyway, executing the tool with corrupt/empty args and
+            # silently dropping the intended payload (a write_file that never lands, #119389).
+            # Treat it like the finish_reason=None mid-drop: return a partial-stream stub so the
+            # loop retries with chunking guidance instead of running the tool. A real
+            # finish_reason="length" is a genuine output cap, left to the max_tokens-boost path
+            # (matches interruptible_streaming_api_call's #74798 recovery branch).
+            _dropped_names = [(tool_calls_acc[idx]["function"]["name"] or "?") for idx in sorted(tool_calls_acc)]
+            logger.warning(
+                "Stream finished with %r but a tool call's arguments were unrepairable "
+                "(tools=%s); returning a partial-stream stub for retry instead of dispatching "
+                "corrupt arguments.",
+                finish_reason, _dropped_names)
+            return _build_partial_stream_stub(
+                role, full_content, full_reasoning, model_name, usage_obj, dropped_tool_names=_dropped_names or None)
         if finish_reason is None and (content_parts or reasoning_parts) and not tool_calls_acc and usage_obj is None:
             # Text-only (or reasoning-only) drop: otherwise the partial text is stamped "stop"
             # and the next step is lost — for reasoning-only, the clean-stop promotion in

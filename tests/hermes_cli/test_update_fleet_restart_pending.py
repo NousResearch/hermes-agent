@@ -1068,3 +1068,189 @@ def test_second_profile_attaches_to_completed_host_restart(monkeypatch):
     # A stamp for other code proves nothing about this checkout.
     host_obligation.mark_host_restart_completed("def456")
     assert update_cmd_fleet._fleet_restart_skip_reason(None) is None
+
+
+# ── `gateway run` self-check race (#117953) ──
+#
+# `_warn_pending_fleet_restart_on_startup()` was called unconditionally at the very top of
+# `main()`, before any gateway-specific code runs. A freshly exec'd `gateway run` process hits
+# that call before it has bound a control socket or written its own `gateway_state.json` stamp,
+# so its own coverage row is missing and it warns about itself on every single restart. Same for
+# `gateway restart`'s manual/no-service-manager fallback (`_cmd_restart`/`_restart_all` in
+# hermes_cli/gateway.py), which calls `run_gateway()` in-process in that same invocation. The fix
+# skips the immediate check for either invocation shape and defers it into
+# gateway/run_startup.py, right after that process's own stamp succeeds.
+
+
+@pytest.mark.parametrize(
+    "argv, expected",
+    [
+        (["hermes", "gateway", "run"], True),
+        (["hermes", "gateway"], True),  # bare `gateway` defaults to `run`
+        (["hermes", "-p", "ops", "gateway", "run"], True),
+        (["hermes", "gateway", "restart"], True),  # manual fallback calls run_gateway() in-process
+        (["hermes", "gateway", "status"], False),
+        (["hermes", "dashboard"], False),
+        (["hermes", "doctor"], False),
+        (["hermes", "update"], False),
+    ],
+    ids=["run", "bare-gateway", "profile-flag", "restart", "status", "dashboard", "doctor", "update"],
+)
+def test_gateway_run_argv_is_classified_as_daemon_start(monkeypatch, argv, expected):
+    monkeypatch.setattr(hermes_main.sys, "argv", argv)
+    assert hermes_main._looks_like_gateway_run_invocation() is expected
+
+
+@pytest.mark.parametrize(
+    "argv, expected",
+    [
+        (["hermes", "gateway", "run"], False),  # deferred to gateway/run_startup.py instead
+        (["hermes", "gateway", "restart"], False),  # same deferral: may run_gateway() in-process
+        (["hermes", "update"], False),  # `hermes update` reports this itself
+        (["hermes", "gateway", "status"], True),
+        (["hermes", "dashboard"], True),
+        (["hermes", "doctor"], True),
+    ],
+    ids=["gateway-run", "gateway-restart", "update", "gateway-status", "dashboard", "doctor"],
+)
+def test_should_warn_pending_fleet_restart_at_startup(monkeypatch, argv, expected):
+    monkeypatch.setattr(hermes_main.sys, "argv", argv)
+    assert hermes_main._should_warn_pending_fleet_restart_at_startup() is expected
+
+
+def test_startup_warn_kept_when_own_gateway_row_not_yet_stamped(monkeypatch, capsys):
+    """Documents the race the fix works around: `_warn_pending_fleet_restart_on_startup()`
+    itself is unchanged and still warns when the invoking gateway's own coverage row is
+    entirely absent (nothing has stamped it yet) — the fix is calling it later, not weakening
+    this check."""
+    disk_sha = "e" * 40
+    update_cmd._write_fleet_restart_pending_marker(expected_sha=disk_sha, runtimes=[{"kind": "gateway", "profile": "default"}])
+    _patch_marker_sha(monkeypatch, disk_sha)
+    monkeypatch.setattr("hermes_cli.update_receipt.collect_fleet_versions", lambda **kwargs: [])
+
+    update_cmd._warn_pending_fleet_restart_on_startup()
+
+    assert "did not restart running gateways" in capsys.readouterr().err
+
+
+def test_startup_warn_discharged_once_own_stamp_exists(monkeypatch, capsys):
+    """The other half of the fix's premise: once the gateway's own runtime-status stamp is
+    visible (as it is by the time gateway/run_startup.py calls this, post-write), the same
+    marker/receipt state no longer warns."""
+    disk_sha = "e" * 40
+    update_cmd._write_fleet_restart_pending_marker(expected_sha=disk_sha, runtimes=[{"kind": "gateway", "profile": "default"}])
+    _patch_marker_sha(monkeypatch, disk_sha)
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **kwargs: [
+            {"profile": "default", "pid": 42, "code_sha": disk_sha, "code_version": "0.21.0", "state": "current"}
+        ],
+    )
+
+    update_cmd._warn_pending_fleet_restart_on_startup()
+
+    assert capsys.readouterr().err == ""
+
+
+# ── #117953 composed boot-decision coverage: argv classification + the actual warn call ──
+#
+# The two halves above (`_should_warn_pending_fleet_restart_at_startup` and
+# `_warn_pending_fleet_restart_on_startup`) are exercised separately elsewhere in this file.
+# These compose them the way `main()` actually does -- decide, then conditionally warn -- for
+# both boot paths #117953 named: `hermes dashboard` (unchanged, immediate) and `hermes gateway
+# run` (deferred to gateway/run_startup.py; see tests/gateway/test_fleet_restart_warning_boot_order.py
+# for the real end-to-end wiring). A regression that flips one function's return value in a way
+# neither isolated test happens to cover could still slip through without this composition.
+
+
+def _boot_decision(monkeypatch, argv):
+    """What `main()` actually does for a non-`update` invocation: decide, then conditionally warn."""
+    monkeypatch.setattr(hermes_main.sys, "argv", argv)
+    if hermes_main._should_warn_pending_fleet_restart_at_startup():
+        update_cmd_fleet._warn_pending_fleet_restart_on_startup()
+
+
+def test_dashboard_boot_path_warns_for_stale_sibling_gateway(monkeypatch, capsys):
+    disk_sha = "e" * 40
+    update_cmd._write_fleet_restart_pending_marker(expected_sha=disk_sha, runtimes=[{"kind": "gateway", "profile": "default"}])
+    _patch_marker_sha(monkeypatch, disk_sha)
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **kwargs: [{"profile": "default", "pid": 42, "code_sha": "0" * 40, "code_version": "0.20.0", "state": "stale"}],
+    )
+
+    _boot_decision(monkeypatch, ["hermes", "dashboard"])
+
+    assert "did not restart running gateways" in capsys.readouterr().err
+
+
+def test_dashboard_boot_path_silent_when_fleet_current(monkeypatch, capsys):
+    disk_sha = "e" * 40
+    update_cmd._write_fleet_restart_pending_marker(expected_sha=disk_sha, runtimes=[{"kind": "gateway", "profile": "default"}])
+    _patch_marker_sha(monkeypatch, disk_sha)
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **kwargs: [{"profile": "default", "pid": 42, "code_sha": disk_sha, "code_version": "0.21.0", "state": "current"}],
+    )
+
+    _boot_decision(monkeypatch, ["hermes", "dashboard"])
+
+    assert capsys.readouterr().err == ""
+
+
+def test_gateway_run_boot_path_skips_the_immediate_check_that_would_have_false_positived(monkeypatch, capsys):
+    """Proves the skip is a real deferral, not accidental total suppression: with the SAME
+    marker/fleet state that `hermes dashboard` correctly warns on above, `gateway run`'s argv
+    makes `main()` skip calling the checker here at all -- it runs later, post-stamp, in
+    gateway/run_startup.py instead. The underlying primitive is untouched and still warns when
+    invoked directly, proving nothing was weakened, only relocated."""
+    disk_sha = "e" * 40
+    update_cmd._write_fleet_restart_pending_marker(expected_sha=disk_sha, runtimes=[{"kind": "gateway", "profile": "default"}])
+    _patch_marker_sha(monkeypatch, disk_sha)
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **kwargs: [],  # own row not yet visible -- exactly the pre-stamp race window
+    )
+
+    _boot_decision(monkeypatch, ["hermes", "gateway", "run"])
+
+    assert capsys.readouterr().err == ""
+
+    update_cmd_fleet._warn_pending_fleet_restart_on_startup()
+
+    assert "did not restart running gateways" in capsys.readouterr().err
+
+
+def test_receipt_only_stale_runtime_caught_regardless_of_boot_path(monkeypatch, capsys):
+    """No marker at all -- the fallback path reads `update_receipts/latest.json` directly. A
+    receipt whose post-restart `fleet` matrix records a stale OTHER profile must still be caught
+    by every boot path's decision. #117953 was specifically the marker self-race; this pins
+    that the receipt-only sibling fallback was not narrowed by the same change."""
+    disk_sha = "e" * 40
+    _patch_marker_sha(monkeypatch, disk_sha)
+    receipt_dir = get_hermes_home() / "logs" / "update_receipts"
+    receipt_dir.mkdir(parents=True)
+    (receipt_dir / "latest.json").write_text(
+        json.dumps({
+            "outcome": "partial",
+            "exit_code": 1,
+            "plan": {"runtimes": [{"kind": "gateway", "profile": "other", "code_sha": "0" * 40, "pid": 1}]},
+            "fleet": [{"profile": "other", "pid": 999999, "code_sha": "0" * 40, "state": "stale"}],
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("hermes_cli.update_receipt.collect_fleet_versions", lambda **kwargs: [])
+    assert not update_cmd_fleet._fleet_restart_obligation_armed()
+
+    for argv in (["hermes", "dashboard"], ["hermes", "doctor"]):
+        _boot_decision(monkeypatch, argv)
+        assert "did not restart running gateways" in capsys.readouterr().err, argv
+
+    # `gateway run` defers instead of skipping outright: the same receipt state must still be
+    # caught once the deferred call actually runs (simulating gateway/run_startup.py post-stamp).
+    monkeypatch.setattr(hermes_main.sys, "argv", ["hermes", "gateway", "run"])
+    assert hermes_main._should_warn_pending_fleet_restart_at_startup() is False
+
+    update_cmd_fleet._warn_pending_fleet_restart_on_startup()
+
+    assert "did not restart running gateways" in capsys.readouterr().err

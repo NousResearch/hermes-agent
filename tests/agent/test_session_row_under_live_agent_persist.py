@@ -102,6 +102,28 @@ def test_flush_fails_closed_when_row_cannot_be_recreated(monkeypatch):
         assert agent._flush_messages_to_session_db(turn3, turn2) is True
         assert [r["content"] for r in db.get_messages("sess-gone")] == ["a", "b", "c"]
 
+        # The heal recreates the row but its single retry write fails (lock/lease/disk): the next
+        # flush finds a live row (no FK, no heal) and must still replay the history prefix.
+        retry = _make_agent(db, "sess-retry")
+        t1 = [{"role": "user", "content": "one"}, {"role": "assistant", "content": "a1"}]
+        assert retry._flush_messages_to_session_db(t1, []) is True
+        assert db.delete_session("sess-retry") is True
+        real_append, calls = db.append_messages_batch, []
+
+        def _fk_then_locked(*a, **kw):
+            calls.append(1)
+            if len(calls) == 2:
+                raise _sqlite3.OperationalError("database is locked")
+            return real_append(*a, **kw)  # call 1 hits the real FK error -> heal
+
+        monkeypatch.setattr(db, "append_messages_batch", _fk_then_locked)
+        t2 = t1 + [{"role": "user", "content": "two"}]
+        assert retry._flush_messages_to_session_db(t2, t1) is False
+        t3 = t2 + [{"role": "assistant", "content": "a2"}]
+        assert retry._flush_messages_to_session_db(t3, t2) is True
+        assert [r["content"] for r in db.get_messages("sess-retry")] == ["one", "a1", "two", "a2"]
+        monkeypatch.undo()
+
         # FK failure while the session row still exists (e.g. a sessions-table FK): no heal, and
         # no replay of the history prefix onto the live transcript.
         live = _make_agent(db, "sess-fk-live")

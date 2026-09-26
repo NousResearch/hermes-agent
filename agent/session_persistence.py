@@ -335,6 +335,9 @@ def _db_flush_failed(agent, e: Exception, batch_rows: List[Dict[str, Any]], adop
         if adoption_budget <= 0 or not _db_flush_session_row_gone(agent, agent.session_id):
             return None
         _strip_persistence_markers(messages)
+        # The durable history prefix is gone with the row: keep a replay pending until a write succeeds, so
+        # a failed recreate or a failed retry write can't let a later flush stamp that prefix durable.
+        agent._session_row_replay_pending = agent.session_id
         agent._flushed_db_message_ids = set()
         agent._last_flushed_db_idx = 0
         agent._session_db_created = False
@@ -351,8 +354,7 @@ def _db_flush_failed(agent, e: Exception, batch_rows: List[Dict[str, Any]], adop
         if not agent._session_db_created:
             # Row creation failed too (transient store trouble): don't append into a guaranteed
             # rollback — keep the batch unmarked so the next flush retries the whole thing. That flush
-            # recreates the row up front (no FK error, no heal), so it must replay the history prefix itself.
-            agent._session_row_replay_pending = agent.session_id
+            # recreates the row up front (no FK error, no heal); the pending replay covers the history prefix.
             logger.warning("Session DB row for %s is missing and could not be recreated; will retry next flush",
                            getattr(agent, "session_id", None))
             return None
@@ -440,7 +442,6 @@ class SessionPersistenceMixin:
 
     def _flush_messages_to_session_db_unlocked(
         self, messages: List[Dict], conversation_history: Optional[List[Dict]] = None, _adoption_budget: int = 1,
-        _replay_history: bool = False,
     ):
         """Persist un-flushed messages to SQLite. Dedup is the intrinsic ``_DB_PERSISTED_MARKER`` on each written
         dict — not positional slices (drift after sequence repair) nor an ``id(msg)`` set (address reuse). The
@@ -462,7 +463,8 @@ class SessionPersistenceMixin:
         try:
             if not self._session_db_created:  # retry row creation if the earlier attempt failed transiently
                 self._ensure_db_session()
-            replay = _replay_history or getattr(self, "_session_row_replay_pending", None) == self.session_id
+            # getattr: object.__new__ test agents flush without running AIAgent init.
+            replay = getattr(self, "_session_row_replay_pending", None) == self.session_id
             batch_rows, batch_msgs = _db_flush_collect(self, messages, conversation_history, replay)
             _db_flush_write(self, batch_rows, batch_msgs, messages)
             self._session_row_replay_pending = None
@@ -476,10 +478,8 @@ class SessionPersistenceMixin:
             retry = _db_flush_failed(self, e, batch_rows, _adoption_budget, messages)
             if retry is None:
                 return False
-            # A recreated row lost the history prefix too: replay it rather than stamping it durable, but keep
-            # the history set so a muted notification turn hides only its own rows.
-            return self._flush_messages_to_session_db_unlocked(
-                messages, conversation_history, _adoption_budget=0, _replay_history=retry == "healed")
+            # After a heal the pending replay re-sends the history prefix instead of stamping it durable.
+            return self._flush_messages_to_session_db_unlocked(messages, conversation_history, _adoption_budget=0)
 
     def _get_messages_up_to_last_assistant(self, messages: List[Dict]) -> List[Dict]:
         """Messages before the last assistant turn (rollback point for a malformed final answer); all if none."""

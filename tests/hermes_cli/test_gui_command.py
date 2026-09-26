@@ -1299,13 +1299,17 @@ def test_stop_desktop_processes_locking_build_posix_swap_bypasses_early_return(t
     assert main_desktop._stop_desktop_processes_locking_build(desktop_dir, also_posix=True) == [100]
 
 
-@pytest.mark.platforms("posix")  # Windows must stop the exe-locking ancestor too
-def test_posix_swap_spares_the_desktop_driving_this_update(tmp_path, monkeypatch):
+@pytest.mark.parametrize("host, also_posix", [("linux", True), ("win32", False), ("win32", True)])
+def test_the_stop_spares_the_desktop_driving_this_update(tmp_path, monkeypatch, host, also_posix):
     """A historical Desktop runs `hermes update` as a piped child and relaunches
-    itself afterwards; stopping it breaks the update's stdout (EPIPE). Its
-    renderer/GPU/zygote helpers run the same exe but are not our ancestors;
-    stopping them leaves a main process that can neither draw nor quit. Only an
-    unrelated Desktop from the same release tree is stopped."""
+    itself afterwards; stopping it breaks the update's stdout (EPIPE). On Windows
+    a Desktop's own backend runs the launch-time update tail, and stopping that
+    Desktop killed the tail with it before it could clear its markers, so every
+    launch repeated it (#123499). Its renderer/GPU/zygote helpers run the same
+    exe but are not our ancestors; stopping them leaves a main process that can
+    neither draw nor quit. Only an unrelated Desktop from the same release tree
+    is stopped, at the pack-time call and the swap alike."""
+    monkeypatch.setattr(main_desktop.sys, "platform", host)
     root = _make_desktop_tree(tmp_path)
     desktop_dir = root / "apps" / "desktop"
     live_exe = desktop_dir / "release" / _packaged_exe_rel()
@@ -1351,7 +1355,67 @@ def test_posix_swap_spares_the_desktop_driving_this_update(tmp_path, monkeypatch
 
     monkeypatch.setitem(sys.modules, "psutil", _FakePsutil)
 
-    assert main_desktop._stop_desktop_processes_locking_build(desktop_dir, also_posix=True) == [300]
+    assert main_desktop._stop_desktop_processes_locking_build(desktop_dir, also_posix=also_posix) == [300]
+
+
+def _ancestry(monkeypatch, *parents):
+    """Install a fake psutil whose view of this process's ancestors is *parents* (outermost last)."""
+    monkeypatch.setitem(sys.modules, "psutil", types.SimpleNamespace(
+        Process=lambda pid: types.SimpleNamespace(parents=lambda: list(parents))))
+
+
+def _proc(pid, exe):
+    return types.SimpleNamespace(pid=pid, exe=lambda: exe)
+
+
+def test_desktop_ancestor_names_only_a_desktop_from_this_release_tree(tmp_path, monkeypatch):
+    desktop_dir = _make_desktop_tree(tmp_path) / "apps" / "desktop"
+    live_exe = desktop_dir / "release" / _packaged_exe_rel()
+    live_exe.parent.mkdir(parents=True)
+    live_exe.write_text("old", encoding="utf-8")
+    elsewhere = tmp_path / "other" / "Hermes.exe"
+
+    _ancestry(monkeypatch, _proc(40, str(tmp_path / "python.exe")), _proc(41, str(live_exe)))
+    assert main_desktop._desktop_ancestor_in(desktop_dir) == 41
+    _ancestry(monkeypatch, _proc(40, str(tmp_path / "python.exe")), _proc(42, str(elsewhere)))
+    assert main_desktop._desktop_ancestor_in(desktop_dir) is None
+
+
+def test_windows_build_under_its_own_desktop_skips_instead_of_killing_it(tmp_path, monkeypatch, capsys):
+    """#123499: a Desktop's backend runs the interrupted-update tail at launch. Packing there
+    can only end in a promotion the Desktop's exe lock refuses, and stopping that Desktop
+    kills the tail first. The build is skipped, so the tail finishes and clears its markers."""
+    monkeypatch.setattr(main_desktop.sys, "platform", "win32")
+    desktop_dir = _make_desktop_tree(tmp_path) / "apps" / "desktop"
+    monkeypatch.setattr(main_desktop, "_desktop_ancestor_in", lambda d: 4242)
+    monkeypatch.setattr(main_desktop, "_stop_desktop_processes_locking_build",
+                        lambda *a, **k: pytest.fail("must not stop the Desktop running this build"))
+    monkeypatch.setattr("pm.progress.run_contained", lambda *a, **k: pytest.fail("must not pack"))
+
+    assert main_desktop.build_prepared_desktop(desktop_dir, source_mode=False, npm="npm", env={}) is None
+    assert "Skipped rebuilding the desktop app" in capsys.readouterr().out
+    assert not list(desktop_dir.glob(f"{main_desktop._DESKTOP_STAGING_PREFIX}*"))
+
+
+@pytest.mark.parametrize("host, source_mode", [("linux", False), ("win32", True)])
+def test_the_skip_is_only_for_a_windows_packaged_build(tmp_path, monkeypatch, host, source_mode):
+    """POSIX can rename a running app away and the Desktop relaunches itself, and a
+    source build never touches release/: both still build under a Desktop ancestor."""
+    monkeypatch.setattr(main_desktop.sys, "platform", host)
+    desktop_dir = _make_desktop_tree(tmp_path) / "apps" / "desktop"
+    monkeypatch.setattr(main_desktop, "_desktop_ancestor_in", lambda d: 4242)
+    monkeypatch.setattr(main_desktop, "_stop_desktop_processes_locking_build", lambda *a, **k: [])
+    monkeypatch.setattr("pm.ensure", lambda tool, base_env: types.SimpleNamespace(env=base_env))
+
+    class _Packed(Exception):
+        pass
+
+    def _run(*a, **k):
+        raise _Packed
+
+    monkeypatch.setattr("pm.progress.run_contained", _run)
+    with pytest.raises(_Packed):
+        main_desktop.build_prepared_desktop(desktop_dir, source_mode=source_mode, npm="npm", env={})
 
 
 def test_gui_failed_pack_leaves_previous_app_untouched(tmp_path, monkeypatch, capsys):

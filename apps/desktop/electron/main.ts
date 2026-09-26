@@ -432,7 +432,7 @@ import {
 import { createQuickEntryShortcut, quickEntryWindowBounds, sanitizeQuickEntrySettings } from './quick-entry'
 import { createQuitFinalization } from './quit-finalization'
 import { type ActiveWork, backendOwnedByApp, mergeActiveWork, normalizeActiveWork, quitPromptFor } from './quit-guard'
-import { backendQuitNeedsWait, createQuitTeardownCoordinator, type QuitTeardownTask } from './quit-teardown'
+import { backendQuitNeedsWait, backendTeardownOptions, createQuitTeardownCoordinator, type QuitTeardownTask } from './quit-teardown'
 import * as remoteLifecycle from './remote-lifecycle'
 import {
   attachPowerResumeRemoteRevalidation,
@@ -3566,7 +3566,10 @@ function isLightVariant(): boolean {
 /** Invalidate connections and wait for every owned backend before the swap. */
 async function teardownBundledBackend(): Promise<void> {
   isQuittingForHandoff = true
-  const results = await Promise.allSettled([teardownPrimaryBackendAndWait(), stopAllPoolBackends()])
+  const results = await Promise.allSettled([
+    teardownPrimaryBackendAndWait(backendTeardownOptions('reconnect')),
+    stopAllPoolBackends()
+  ])
   const errors = results.filter(result => result.status === 'rejected').map(result => result.reason)
 
   if (errors.length) {
@@ -4165,7 +4168,7 @@ function reapOrphanedBackendsOnce() {
 // `hermes update`; neither venv scans nor a second fleet stop belong here.
 async function stopBackendsForUpdate(): Promise<void> {
   if (IS_WINDOWS) {
-    await Promise.all([teardownPrimaryBackendAndWait(), stopAllPoolBackends()])
+    await Promise.all([teardownPrimaryBackendAndWait(backendTeardownOptions('reconnect')), stopAllPoolBackends()])
   }
 }
 
@@ -4196,7 +4199,8 @@ async function releaseBackendLock(updateRoot: string, tag: string): Promise<{ un
     }
   }
 
-  await Promise.all([teardownPrimaryBackendAndWait(), stopAllPoolBackends()])
+  // No backend comes back after an uninstall: stay silent, like a quit.
+  await Promise.all([teardownPrimaryBackendAndWait(backendTeardownOptions('quit')), stopAllPoolBackends()])
 
   // Uninstall deletes the whole runtime. Drain separately-running gateways
   // through the CLI, rather than targeting a gateway worker by PID.
@@ -12269,7 +12273,7 @@ const backendShutdown = createBackendShutdownCoordinator(async (): Promise<void>
   const ownedChildren = IS_WINDOWS ? collectOwnedBackendChildren() : []
   const localShutdown = localBackendLifecycle.shutdown()
   const primary = backendConnectionState.getProcess()
-  const primaryStop = teardownPrimaryBackendAndWait()
+  const primaryStop = teardownPrimaryBackendAndWait(backendTeardownOptions('quit'))
   const pooledStops = stopAllPoolBackends()
 
   if (poolIdleReaper) {

@@ -3,7 +3,7 @@ import sys
 
 import pytest
 
-from hermes_cli import config, update_cmd
+from hermes_cli import config, update_cmd, update_cmd_config
 
 
 @pytest.mark.parametrize('case,expected', [
@@ -24,7 +24,7 @@ def test_migration_policy(monkeypatch, capsys, case, expected):
         assert kwargs == {'raise_on_parse_error': True}
         if case == 'read-error':
             raise RuntimeError('cannot read config')
-        return (4 if case == 'ahead' else 3 if case == 'current' else 2, 3)
+        return (4 if case == 'ahead' else 3 if case == 'current' or calls else 2, 3)
 
     def migrate(*, interactive, quiet):
         calls.append((interactive, quiet))
@@ -44,6 +44,8 @@ def test_migration_policy(monkeypatch, capsys, case, expected):
     monkeypatch.setattr(config, 'check_config_version', version)
     monkeypatch.setattr(config, 'migrate_config', migrate)
     monkeypatch.setattr(update_cmd, '_migrate_sibling_profile_configs', lambda: [])
+    monkeypatch.setattr('hermes_cli.profiles.get_active_profile_name', lambda: 'default')
+    monkeypatch.setattr(update_cmd_config, '_validate_profile_configs', lambda: [('default', [])])
     monkeypatch.setattr(sys.stdin, 'isatty', lambda: case != 'noninteractive')
     monkeypatch.setattr(sys.stdout, 'isatty', lambda: case != 'noninteractive')
     monkeypatch.setattr('builtins.input', prompt)
@@ -54,6 +56,9 @@ def test_migration_policy(monkeypatch, capsys, case, expected):
     assert bool(prompts) is (case in {'tty-yes', 'tty-decline', 'eof', 'unicode'})
     assert bool(gateway_prompts) is (case == 'gateway')
     output = capsys.readouterr().out
+    if case != 'read-error':
+        assert '→ Validating configuration...' in output
+        assert 'default: valid' in output
     if named:
         assert 'NEW_TOKEN' in output and 'new.option' in output
         assert 'new credential' in output and 'new option' in output
@@ -68,7 +73,8 @@ def test_migration_policy(monkeypatch, capsys, case, expected):
     elif case == 'migration-error':
         assert 'Config format update failed: cannot write config' in output
     else:
-        assert 'v2 → v3' in output and 'no new settings to configure' in output
+        assert 'default: migrated v2 → v3' in output
+        assert 'no new settings' not in output.lower()
         if case == 'warnings':
             assert 'setting reset' in output and 'personality reset' in output
 
@@ -91,3 +97,23 @@ def test_update_copies_bundled_skill_bytes_to_default_active_and_sibling(tmp_pat
     witness = next(bundled.rglob('SKILL.md'))
     for profile in homes:
         assert (profile / 'skills' / witness.relative_to(bundled)).read_bytes() == witness.read_bytes()
+
+
+def test_validation_status_is_explicit_per_profile(capsys):
+    """Migration and validation are separate, positively stated statuses."""
+
+    class Issue:
+        def __init__(self, severity):
+            self.severity = severity
+
+    update_cmd_config._print_config_validation_status([
+            ("default", []),
+            ("coder", [Issue("warning")]),
+            ("author", [Issue("error"), Issue("warning")]),
+    ])
+    out = capsys.readouterr().out
+
+    assert "→ Validating configuration..." in out
+    assert "default: valid" in out
+    assert "coder: valid with 1 warning(s)" in out
+    assert "author: invalid (1 error(s), 1 warning(s))" in out

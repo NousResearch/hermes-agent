@@ -28,6 +28,51 @@ def _run_migrate_config_fresh(*, interactive: bool = False, quiet: bool = False)
     stop_for_relaunch(incomplete=True)
 
 
+def _validate_profile_configs() -> list[tuple[str, list]]:
+    """Validate every on-disk profile config against the running code.
+
+    Returns a list of (profile_name, issues) pairs with the default profile first.
+    Validation is deliberately separate from migration so the updater can state
+    explicitly that both operations happened.
+    """
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_cli.config import validate_config_structure
+    from hermes_cli.profiles import get_profile_dir, list_profile_names
+
+    candidates: list[tuple[str, Path]] = []
+    for name in list_profile_names():
+        home = get_profile_dir(name)
+        if (home / "config.yaml").is_file():
+            candidates.append((name, home))
+
+    results: list[tuple[str, list]] = []
+    for name, home in candidates:
+        token = set_hermes_home_override(home)
+        try:
+            results.append((name, validate_config_structure()))
+        finally:
+            reset_hermes_home_override(token)
+    return results
+
+
+def _print_config_validation_status(results: list[tuple[str, list]]) -> None:
+    """Render validation as an explicit status per profile."""
+    print()
+    print("→ Validating configuration...")
+    for name, issues in results:
+        errors = sum(getattr(issue, "severity", "") == "error" for issue in issues)
+        warnings = sum(getattr(issue, "severity", "") == "warning" for issue in issues)
+        if errors:
+            detail = f"{errors} error(s)"
+            if warnings:
+                detail += f", {warnings} warning(s)"
+            print(f"  ⚠️  {name}: invalid ({detail})")
+        elif warnings:
+            print(f"  ✓ {name}: valid with {warnings} warning(s)")
+        else:
+            print(f"  ✓ {name}: valid")
+
+
 def _migrate_sibling_profile_configs() -> list[tuple[str, int, int]]:
     """Migrate every SIBLING profile's config.yaml (the shared checkout serves all profiles). Per
     sibling (active skipped): scope via the context-local HERMES_HOME override (never ``os.environ``)
@@ -153,9 +198,11 @@ def _check_and_apply_config_migration(
     from hermes_cli.update_cmd import _migrate_sibling_profile_configs
     from hermes_cli.config import check_config_version, migrate_config
     print()
-    print("→ Checking configuration for new options...")
-    from hermes_cli.config import get_missing_env_vars, get_missing_config_fields
-    # A config-check failure must not break an otherwise-successful update.
+    print("→ Checking configuration updates...")
+    from hermes_cli.profiles import get_active_profile_name
+    active_profile = get_active_profile_name()
+    # A config-check failure must not break an otherwise-successful update; it still fails
+    # when the pulled tree is internally inconsistent, hence the try.
     try:
         from hermes_cli.config import get_missing_env_vars, get_missing_config_fields
         # Log, point at the manual command, and return. See #91360.
@@ -176,10 +223,11 @@ def _check_and_apply_config_migration(
         # Only the format version changed (defaults merge transparently); prompting
         # would look like a no-op on yes — apply silently and say what happened.
         print()
-        print(f"  ℹ Updating config format (v{current_ver} → v{latest_ver})…")
+        print(f"  ℹ Config format migration required: v{current_ver} → v{latest_ver}")
         try:
             _mig_results = migrate_config(interactive=False, quiet=True)
-            print("  ✓ Config format updated (no new settings to configure)")
+            after_ver, _ = check_config_version(raise_on_parse_error=True)
+            print(f"  ✓ {active_profile}: migrated v{current_ver} → v{after_ver}")
             # quiet=True also mutes steps that RESET/REMOVE a setting; re-surface them so an
             # unattended update never silently changes config (config_added holds only mutations here).
             # In this branch missing_config is empty, so config_added can only contain migration-step
@@ -224,7 +272,15 @@ def _check_and_apply_config_migration(
     # migration per sibling home via the context-local HERMES_HOME override (never os.environ).
     with _best_effort('Sibling config migration failed: %s'):
         for _name, _from_ver, _to_ver in _migrate_sibling_profile_configs():
-            print(f"  ✓ Profile '{_name}': config format updated (v{_from_ver} → v{_to_ver})")
+            print(f"  ✓ {_name}: migrated v{_from_ver} → v{_to_ver}")
+
+    try:
+        _print_config_validation_status(_validate_profile_configs())
+    except Exception as exc:
+        logger.debug("Config validation during update failed: %s", exc)
+        print()
+        print("→ Validating configuration...")
+        print(f"  ⚠️  Validation failed: {exc}")
 
     _restore_snapshot_safety_nets(pre_update_snapshot_id)
 

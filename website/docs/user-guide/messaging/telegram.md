@@ -1215,6 +1215,12 @@ gateway:
           - "123456789"
         group_user_allowed_commands:
           - status
+
+        # Optional: replace the built-in refusal reply for non-admins.
+        # Omitted (or null) = built-in text. Any other string = that exact text.
+        # Set it to "" or "silent" to deny the command with NO reply at all —
+        # for bots that must expose no command surface to end users.
+        command_denied_message: "🚫 That command is not available here."
 ```
 
 **Behavior:**
@@ -1225,6 +1231,7 @@ gateway:
 - **Backward compat:** if `allow_admin_from` is not set for a scope, slash command gating is disabled for that scope. Existing installs keep working with no changes.
 - DM admin status does not imply group admin status. Each scope has its own admin list.
 - If only `group_allow_admin_from` is set, DM scope stays in unrestricted (backward-compat) mode.
+- `command_denied_message` (optional): replaces the built-in refusal text sent to non-admins. The default refusal names internal config keys (`allow_admin_from`, `user_allowed_commands`), which reads badly in client-facing channels — set your own message, or use `""`/`"silent"` to drop refused commands with no reply. Admins and the always-allowed floor are unaffected.
 
 Use `/whoami` to see the active scope, your tier (admin / user / unrestricted), and which slash commands you can run.
 

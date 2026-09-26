@@ -1098,6 +1098,43 @@ describe('overlayLiveLanes', () => {
     expect(overlaid.sessionCount).toBe(2)
   })
 
+  it.each([null, '/www/app'])('evicts older compressed segments from lanes (cwd=%s)', cwd => {
+    const stale = makeCwdSession(cwd, {
+      id: 'mid',
+      _lineage_root_id: 'root',
+      _lineage_ids: ['root', 'mid']
+    })
+
+    const keep = makeCwdSession(cwd, { id: 'keep' })
+
+    const project = cwd
+      ? projectNode({
+          id: cwd,
+          sessionCount: 2,
+          repos: [
+            {
+              id: cwd,
+              label: 'app',
+              path: cwd,
+              sessionCount: 2,
+              groups: [lane({ id: cwd, label: 'app', path: cwd, sessions: [stale, keep] })]
+            }
+          ]
+        })
+      : homeNode([stale, keep])
+
+    // Delete/archive records the current tip and root, not every older segment
+    // that a project snapshot or an in-flight session refresh can still hold.
+    const removed = new Set(['root', 'tip'])
+    const overlaid = overlayLiveLanes(project, [stale], removed)
+
+    expect(overlaid.repos.flatMap(repo => repo.groups.flatMap(group => group.sessions.map(row => row.id)))).toEqual([
+      'keep'
+    ])
+    expect(overlaid.sessionCount).toBe(1)
+    expect(overlayLiveLanes(project, [], new Set(['unrelated']))).toBe(project)
+  })
+
   it('never lists a chat owned by a named project in Home, even while its live copy is detached', () => {
     // #77591: the snapshot assigns the chat to p_app, but session.info can land
     // with an empty cwd + root. Home must defer to the one owner, including by
@@ -1231,6 +1268,17 @@ describe('overlayLiveLanes', () => {
 })
 
 describe('overlayLivePreviews', () => {
+  it('evicts older compressed segments from both snapshot and live previews', () => {
+    const snapshot = makeCwdSession('/www/app', { id: 'mid', _lineage_root_id: 'root' })
+    const live = makeCwdSession('/www/app', { id: 'next', _lineage_root_id: 'root' })
+    const keep = makeCwdSession('/www/app', { id: 'keep' })
+    const project = projectNode({ id: '/www/app', previewSessions: [snapshot, keep] })
+
+    const previews = overlayLivePreviews([project], [live], [], 3, { removed: new Set(['root', 'tip']) })
+
+    expect(previews['/www/app'].map(session => session.id)).toEqual(['keep'])
+  })
+
   it.each([null, '/work/repos/app'])(
     'shows a backend-owned sibling worktree session only under its repo project (git_repo_root=%s)',
     gitRepoRoot => {

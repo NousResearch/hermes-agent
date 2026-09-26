@@ -6,12 +6,15 @@ run at picker time on multi-GB files.
 
 from __future__ import annotations
 
+import logging
 import re
 import struct
 from dataclasses import dataclass, field
 from pathlib import Path
 
 _GGUF_MAGIC = b"GGUF"
+
+logger = logging.getLogger(__name__)
 
 # Split GGUF naming: "<stem>-00001-of-00003.gguf"; the part suffix is not part of the model id.
 SPLIT_PART_RE = re.compile(r"-(\d{5})-of-(\d{5})\.gguf$")
@@ -35,7 +38,25 @@ _GGML_TYPE_SIZES = {
     39: (17, 32),  # MXFP4 — 32 elements per 17-byte block (gpt-oss family)
 }
 
-# GGUF metadata value types -> struct format; STRING (8) and ARRAY (9) are variable-length.
+# Quant types above every entry in ggml-common.h's table at the time the pinned engine was built:
+# structurally valid GGUF (fork engines keep the format forward-compatible) that stock llama.cpp
+# cannot execute. A header carrying one stays parseable — the tensor is skipped unpriced and the
+# caller decides admission. Types BELOW the table but absent from it are corruption: hard error.
+_QUANT_EXPERIMENTAL_MIN = 84
+
+
+def _unknown_tensor_type(ttype: int, name: str, path) -> "str | None":
+    """None = a forward-compat quant type: structurally valid GGUF this stock engine cannot
+    execute, skip the tensor and keep the header parseable (the caller decides admission).
+    A str = hard parse error, unpriceable and unloadable anywhere."""
+    if ttype >= _QUANT_EXPERIMENTAL_MIN:
+        logger.warning("%s: tensor '%s' uses ggml type %d, above this engine build's type table; "
+                       "stock llama.cpp cannot execute it — a fork engine is required",
+                       path.name, name, ttype)
+        return None
+    return f"unknown ggml tensor type {ttype} in {path}"
+
+
 _V_STRING, _V_ARRAY = 8, 9
 _SCALAR_FMT = {
     0: "<B", 1: "<b", 2: "<H", 3: "<h",       # uint8 int8 uint16 int16
@@ -56,8 +77,12 @@ class GGUFHeader:
     version: int
     metadata: dict = field(default_factory=dict)
     n_tensors: int = 0
-    tensor_bytes: int = 0          # exact sum over the tensor table
+    tensor_bytes: int = 0          # exact sum over the tensor table (tensors with forward-compat
+                                   # quant types are skipped, so the sum under-counts — see
+                                   # has_unknown_quant_types before pricing from it)
     embd_table_bytes: int = 0      # token_embd.weight (duplicated host-side when fully offloaded)
+    has_unknown_quant_types: bool = False  # a forward-compat quant type this stock engine cannot
+                                           # execute was seen; the file is parseable but not runnable
 
     # ── typed accessors ──────────────────────────────────────
 
@@ -181,6 +206,7 @@ def read_gguf_header(path: str | Path) -> GGUFHeader:
 
         tensor_bytes = 0
         embd_bytes = 0
+        unknown_quant = False
         for _ in range(n_tensors):
             name = read_str(f)
             (n_dims,) = read(f, "<I")
@@ -189,7 +215,13 @@ def read_gguf_header(path: str | Path) -> GGUFHeader:
             f.read(8)  # offset
             size = _GGML_TYPE_SIZES.get(ttype)
             if size is None:
-                raise ValueError(f"unknown ggml tensor type {ttype} in {path}")
+                # Forward-compatible file (known experimental quant family): keep parsing — every
+                # consumer still needs the metadata — and skip the unpriceable tensor's bytes.
+                note = _unknown_tensor_type(ttype, name, path)
+                if note is None:
+                    unknown_quant = True
+                    continue
+                raise ValueError(note)
             block_bytes, block_elems = size
             elems = 1
             for d in dims:
@@ -201,4 +233,5 @@ def read_gguf_header(path: str | Path) -> GGUFHeader:
 
     return GGUFHeader(path=str(path), version=version, metadata=metadata,
                       n_tensors=n_tensors, tensor_bytes=tensor_bytes,
-                      embd_table_bytes=embd_bytes)
+                      embd_table_bytes=embd_bytes,
+                      has_unknown_quant_types=unknown_quant)

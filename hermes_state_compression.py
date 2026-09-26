@@ -565,16 +565,25 @@ class SessionCompressionMixin:
     def acquire_session_turn_lease(
         self, session_id: str, holder: str, *, ttl_seconds: float = 300.0,
         wait_seconds: float = 1800.0, poll_interval_seconds: float = 1.0, on_wait=None,
-        wait_notice_interval_seconds: float = 15.0, should_abort=None, acquire_patience_s: float = 0.5,
+        wait_notice_interval_seconds: float = 15.0, wait_notice_backoff: float = 2.0,
+        wait_notice_max_interval_seconds: float = 300.0, should_abort=None, acquire_patience_s: float = 0.5,
     ) -> bool:
         """Wait for a cross-process turn lease without holding a SQLite lock. ``on_wait(elapsed)`` is
-        best-effort: called when the first attempt fails and about every ``wait_notice_interval_seconds``
-        after. ``should_abort()`` True (e.g. ``/stop``) returns False at once."""
+        best-effort: called when the first attempt fails, again after ``wait_notice_interval_seconds``,
+        then at gaps growing by ``wait_notice_backoff`` x (capped at ``wait_notice_max_interval_seconds``).
+        Messaging surfaces post each notice as a new message, so a fixed 15s cadence floods a long wait;
+        the defaults give 0, 15, 45, 105, 225, 465s... ``wait_notice_backoff <= 1`` keeps the fixed
+        cadence. ``should_abort()`` True (e.g. ``/stop``) returns False at once."""
         from hermes_state import classify_persistence_error
         deadline = time.monotonic() + max(0.0, float(wait_seconds))
         wait_started = None
         last_notice_at = None
         notice_every = max(0.0, float(wait_notice_interval_seconds))
+        notice_backoff = max(1.0, float(wait_notice_backoff or 1.0))
+        # The cap is a ceiling: a cap below the base interval wins over the interval.
+        notice_cap = max(0.0, float(wait_notice_max_interval_seconds))
+        if notice_cap > 0.0:
+            notice_every = min(notice_every, notice_cap)
         while True:
             if should_abort is not None:
                 try:
@@ -604,6 +613,10 @@ class SessionCompressionMixin:
                     on_wait(max(0.0, now - wait_started))
                 except Exception:
                     logger.debug("session turn lease on_wait callback failed", exc_info=True)
+                # Grow the gap only after an interval notice (not the immediate first one):
+                # 0, +I, +I*b, +I*b^2 ... capped.
+                if last_notice_at is not None and notice_every > 0.0:
+                    notice_every = min(notice_cap, notice_every * notice_backoff)
                 last_notice_at = now
             time.sleep(min(max(0.01, float(poll_interval_seconds)), remaining))
 

@@ -1924,6 +1924,21 @@ DEFAULT_CONFIG = {
         # claim_expires NULL with a dead worker) that TTL/crash/stale recovery can't see. False
         # keeps orphans frozen for manual forensics.
         "reconcile_orphans": True,
+        # Pool-health admission gate. Before spawning a worker whose profile resolves to the shared
+        # claude relay pool (claude-apr / claude-bpr / claude-apx-* / claude-bpx-*), the dispatcher
+        # GETs this URL and skips the spawn when eligible_count < pool_min_eligible. Spawning into
+        # an exhausted pool is a guaranteed 429: measured 2026-09-22, 3,706 such runs in 7d, 42% of
+        # which ran >2min (loading skills+card+repo, making real calls) before dying with no output.
+        # Any probe failure — unreachable, timeout, non-200, malformed body — FAILS OPEN and admits
+        # the spawn, so the gate can never become a new outage. "" disables the gate entirely.
+        # Non-pool providers (openai-codex, anthropic, ...) never probe and are unaffected.
+        "pool_health_url": "http://127.0.0.1:18810/health",
+        # Minimum eligible pool upstreams required to admit a pool-bound spawn.
+        "pool_min_eligible": 1,
+        # Tick-level circuit breaker: when this many runs have closed 'rate_limited' within the
+        # last 10 minutes, hold ALL pool-bound spawns for one window (the pool is down for
+        # everyone, not just one card). 0 disables the circuit.
+        "rate_limit_trip": 5,
         # Notify subscriptions survive `done` (completion is reversible) and are removed on archive.
         # On boards that never archive, the notifier GC purges subscriptions for tasks done with no
         # activity for this many days so stale rows aren't scanned forever. 0 = off.

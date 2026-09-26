@@ -79,6 +79,246 @@ _RESPAWN_GUARD_SUCCESS_WINDOW = 3600  # 1 hour
 # ``HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS``.
 DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS = 300  # 5 minutes
 
+# Escalating per-task backoff after CONSECUTIVE rate-limited runs. The flat
+# cooldown above worked but never escalated, so a task re-probed an exhausted
+# pool every 5 minutes forever: measured 2026-09-22 over 7d, 3,706 rate_limited
+# runs with ZERO inter-retry gaps below 304s and 1,538 clustered at the floor.
+# 42% of those runs lived >2min (they boot, load skills+card+repo, call, die at
+# 429), so each pointless probe costs real tokens. Ladder = step N of this
+# tuple, then the last value forever.
+RATE_LIMIT_BACKOFF_LADDER = (300, 900, 2700, 7200)  # 5m, 15m, 45m, 2h (cap)
+
+# Providers that resolve to the shared claude relay pool. A worker on one of
+# these cannot run when the pool reports no eligible upstream, so spawning it is
+# a guaranteed 429. Everything else (openai-codex, anthropic, ...) is unaffected
+# and never probes the pool.
+_POOL_PROVIDER_RE = re.compile(r"^claude-(?:apr|bpr|apx|bpx)(?:-\w+)?$", re.IGNORECASE)
+
+DEFAULT_POOL_HEALTH_URL = "http://127.0.0.1:18810/health"
+DEFAULT_POOL_MIN_ELIGIBLE = 1
+DEFAULT_POOL_HEALTH_TIMEOUT = 3.0
+
+# Tick-level circuit: >= this many rate_limited closes inside the window holds
+# ALL pool-bound spawns for one window.
+DEFAULT_RATE_LIMIT_TRIP = 5
+DEFAULT_RATE_LIMIT_TRIP_WINDOW = 600  # 10 minutes
+
+# One log line per STATE CHANGE, not per tick: a 60s dispatcher that logged
+# every skip would emit 1,440 identical lines/day per profile.
+_POOL_GATE_STATE: dict[str, bool] = {}
+
+
+def is_pool_provider(provider: Optional[str]) -> bool:
+    """True when ``provider`` resolves to the shared claude relay pool."""
+    if not provider or not isinstance(provider, str):
+        return False
+    return bool(_POOL_PROVIDER_RE.match(provider.strip()))
+
+
+def pool_admits_spawn(
+    provider: Optional[str],
+    *,
+    health_url: str = DEFAULT_POOL_HEALTH_URL,
+    min_eligible: int = DEFAULT_POOL_MIN_ELIGIBLE,
+    timeout: float = DEFAULT_POOL_HEALTH_TIMEOUT,
+) -> bool:
+    """Admission gate: may a worker on ``provider`` be spawned right now?
+
+    Non-pool providers are admitted without any probe. For pool providers, GET
+    ``health_url`` and admit only when ``eligible_count >= min_eligible``.
+
+    FAILS OPEN on every error path (unreachable, timeout, non-200, malformed
+    body, missing key). This gate exists to stop waste, and must never become a
+    new outage: if we cannot prove the pool is empty, we let the spawn through.
+    """
+    if not is_pool_provider(provider):
+        return True
+
+    import json as _json
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(health_url, timeout=timeout) as resp:
+            if getattr(resp, "status", 200) != 200:
+                _kb._log.warning(
+                    "kanban pool gate: %s returned HTTP %s — failing OPEN",
+                    health_url, getattr(resp, "status", "?"),
+                )
+                return True
+            payload = _json.loads(resp.read().decode("utf-8", "replace"))
+        eligible = payload["eligible_count"]
+        if not isinstance(eligible, (int, float)) or isinstance(eligible, bool):
+            raise TypeError(f"eligible_count is {type(eligible).__name__}")
+    except Exception as exc:
+        # Unreachable / timeout / bad JSON / missing key -> admit.
+        _kb._log.warning(
+            "kanban pool gate: health probe %s failed (%s) — failing OPEN", health_url, exc,
+        )
+        return True
+
+    admitted = int(eligible) >= int(min_eligible)
+    prev = _POOL_GATE_STATE.get(str(provider))
+    if prev != admitted:
+        _POOL_GATE_STATE[str(provider)] = admitted
+        if admitted:
+            _kb._log.info(
+                "kanban pool gate: %s ADMITTING again (eligible=%s >= %s)",
+                provider, int(eligible), min_eligible,
+            )
+        else:
+            _kb._log.warning(
+                "kanban pool gate: holding %s spawns — pool eligible=%s < %s (%s)",
+                provider, int(eligible), min_eligible, health_url,
+            )
+    return admitted
+
+
+def rate_limit_backoff_seconds(consecutive: int) -> int:
+    """Seconds to hold a task after ``consecutive`` trailing rate_limited runs."""
+    try:
+        n = int(consecutive)
+    except (TypeError, ValueError):
+        return 0
+    if n <= 0:
+        return 0
+    idx = min(n, len(RATE_LIMIT_BACKOFF_LADDER)) - 1
+    return RATE_LIMIT_BACKOFF_LADDER[idx]
+
+
+def consecutive_rate_limited_runs(conn: sqlite3.Connection, task_id: str) -> int:
+    """Count TRAILING rate_limited closed runs; any other outcome resets to 0."""
+    rows = conn.execute(
+        "SELECT outcome FROM task_runs WHERE task_id = ? AND ended_at IS NOT NULL "
+        "ORDER BY ended_at DESC, id DESC LIMIT ?",
+        (task_id, len(RATE_LIMIT_BACKOFF_LADDER) + 1),
+    ).fetchall()
+    streak = 0
+    for r in rows:
+        if r["outcome"] != "rate_limited":
+            break
+        streak += 1
+    return streak
+
+
+def resolve_task_provider(row: Any, assignee: str) -> Optional[str]:
+    """Provider a spawn of ``row`` would use: the card's ``provider_override``
+    when set, else the assignee profile's configured ``model.provider``.
+
+    Returns None when it cannot be determined — callers treat that as non-pool
+    (fail open), because guessing "pool" would block spawns we cannot justify.
+    """
+    try:
+        override = row["provider_override"]
+    except (KeyError, IndexError, TypeError):
+        override = None
+    if override and str(override).strip():
+        return str(override).strip()
+
+    if not assignee:
+        return None
+    try:
+        import yaml  # noqa: PLC0415
+
+        from hermes_cli.profiles import get_profile_dir  # noqa: PLC0415
+
+        cfg_path = Path(get_profile_dir(assignee)) / "config.yaml"
+        if not cfg_path.exists():
+            return None
+        with open(cfg_path, encoding="utf-8") as fh:
+            data = yaml.safe_load(fh) or {}
+        model = data.get("model") if isinstance(data, dict) else None
+        if isinstance(model, dict):
+            prov = model.get("provider")
+            if prov and str(prov).strip():
+                return str(prov).strip()
+    except Exception:
+        return None
+    return None
+
+
+def _kanban_pool_settings() -> tuple[str, int, int]:
+    """``(health_url, min_eligible, trip)`` from ``kanban.*`` config.
+
+    Explicit reads with per-key fallbacks — a uniform loop here would silently
+    ship the knobs inert if config.yaml omits the section.
+    """
+    url, min_elig, trip = (
+        DEFAULT_POOL_HEALTH_URL, DEFAULT_POOL_MIN_ELIGIBLE, DEFAULT_RATE_LIMIT_TRIP,
+    )
+    try:
+        from hermes_cli.config import load_config  # noqa: PLC0415
+
+        cfg = load_config()
+        kcfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
+        if not isinstance(kcfg, dict):
+            return url, min_elig, trip
+        raw_url = kcfg.get("pool_health_url", url)
+        url = "" if raw_url is None else str(raw_url).strip()
+        try:
+            min_elig = int(kcfg.get("pool_min_eligible", min_elig))
+        except (TypeError, ValueError):
+            pass
+        try:
+            trip = int(kcfg.get("rate_limit_trip", trip))
+        except (TypeError, ValueError):
+            pass
+    except Exception:
+        pass
+    return url, min_elig, trip
+
+
+def _pool_admission_gate(
+    conn: sqlite3.Connection, row: Any, assignee: str,
+) -> Optional[str]:
+    """Reason to HOLD this spawn, or None to admit.
+
+    Only pool-bound cards are ever held; everything else returns None without
+    touching the network. Disabled entirely when ``kanban.pool_health_url`` is
+    empty. Both sub-gates fail open on any error.
+    """
+    try:
+        provider = resolve_task_provider(row, assignee)
+        if not is_pool_provider(provider):
+            return None
+        health_url, min_eligible, trip = _kanban_pool_settings()
+        if not health_url:
+            return None
+        # Board-wide circuit first: cheap local SQL, and when the pool is down
+        # for everyone it is the more accurate description of the hold.
+        if trip > 0 and rate_limit_circuit_open(conn, trip=trip):
+            return "rate_limit_circuit"
+        if not pool_admits_spawn(
+            provider, health_url=health_url, min_eligible=min_eligible,
+        ):
+            return "pool_unavailable"
+    except Exception as exc:  # never let the gate break a tick
+        _kb._log.warning("kanban pool gate: admission check failed (%s) — failing OPEN", exc)
+        return None
+    return None
+
+
+def rate_limit_circuit_open(
+    conn: sqlite3.Connection,
+    *,
+    now: Optional[int] = None,
+    trip: int = DEFAULT_RATE_LIMIT_TRIP,
+    window: int = DEFAULT_RATE_LIMIT_TRIP_WINDOW,
+) -> bool:
+    """True when >= ``trip`` runs closed ``rate_limited`` within ``window``.
+
+    Board-wide signal that the pool is down for everyone, not just one card.
+    """
+    if trip <= 0:
+        return False
+    if now is None:
+        now = int(time.time())
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM task_runs "
+        "WHERE outcome = 'rate_limited' AND ended_at IS NOT NULL AND ended_at >= ?",
+        (int(now) - int(window),),
+    ).fetchone()
+    return int(row["n"] if row else 0) >= int(trip)
+
 # Within this window a GitHub PR URL in a comment blocks re-spawn.
 _RESPAWN_GUARD_PR_WINDOW = 86400  # 24 hours
 
@@ -145,6 +385,12 @@ class DispatchResult:
     """Task ids whose workers bailed on a provider rate-limit / quota wall
     (EX_TEMPFAIL sentinel exit) and were released to ``ready`` WITHOUT counting
     a failure — a long quota window must never trip the circuit breaker."""
+    pool_gated: list[tuple[str, str, str]] = field(default_factory=list)
+    """``(task_id, assignee, reason)`` for pool-bound spawns held this tick: the
+    relay pool reported no eligible upstream, or the board-wide rate-limit
+    circuit is open. NOT a failure — nothing about the card changed and it is
+    retried on a later tick once the pool recovers. Spawning anyway is a
+    guaranteed 429 that still costs a worker boot and real tokens."""
     skipped_locked: bool = False
     """True when another process held the board's dispatch lock: this tick did
     no DB writes; the lock holder is making progress on the same board."""
@@ -1541,11 +1787,21 @@ def check_respawn_guard(
             # the stamped rate-limit text doesn't re-trap the task.
             return None
         ended_at = latest_run["ended_at"]
-        if ended_at is not None and (now - int(ended_at)) < rl_cooldown:
+        # ESCALATING hold: the flat cooldown re-probed an exhausted pool every
+        # 5 minutes forever. Scale by the CONSECUTIVE rate-limited streak so a
+        # persistently throttled card backs off to 2h instead of burning a
+        # worker (and real tokens) 12x/hour. A single rate-limit keeps the
+        # historical 300s, so nothing regresses for a one-off throttle.
+        streak = consecutive_rate_limited_runs(conn, task_id)
+        hold = rate_limit_backoff_seconds(streak) if streak > 1 else rl_cooldown
+        if ended_at is not None and (now - int(ended_at)) < hold:
+            # Reason string unchanged ("rate_limit_cooldown"): it is a public
+            # value asserted by existing tests, surfaced in `kanban diag` and
+            # persisted in task_events. Only the DURATION escalates.
             return "rate_limit_cooldown"
-        # Cooldown elapsed — return early so blocker_auth doesn't catch the
+        # Hold elapsed — return early so blocker_auth doesn't catch the
         # stamped rate-limit text; this path intentionally retries forever
-        # (spaced by the cooldown) until quota returns or a real run supersedes it.
+        # (spaced by the ladder) until quota returns or a real run supersedes it.
         return None
 
     # 2. Quota / auth blocker: retrying immediately will not help.  A plain
@@ -2036,6 +2292,17 @@ def _dispatch_lane_task(
         if not dry_run:
             with _kb.write_txn(conn):
                 _kb._append_event(conn, task_id, "respawn_guarded", {"reason": guard_reason})
+        return False
+
+    # Pool-health admission gate (+ board-wide rate-limit circuit). Checked
+    # AFTER the respawn guard and BEFORE any claim, so a gated card is never
+    # claimed, never gets a run row, and never spends a retry: spawning a
+    # pool-bound worker into an exhausted relay pool is a guaranteed 429 that
+    # still pays for the worker boot, the skill+card+repo load and real API
+    # calls before dying with no output.
+    gate = _pool_admission_gate(conn, row, assignee)
+    if gate is not None:
+        result.pool_gated.append((task_id, assignee, gate))
         return False
 
     def _count_spawn(name: str) -> None:

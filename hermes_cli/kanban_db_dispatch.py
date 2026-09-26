@@ -2907,11 +2907,21 @@ def _tick_spawn_budget(
 
 
 def _lane_rows(conn: sqlite3.Connection, status: str) -> list[sqlite3.Row]:
-    """Unclaimed rows of one lane in dispatch order."""
+    """Unclaimed rows of one lane in dispatch order.
+
+    Priority 0 is claimed FIRST — the P0/P1/P2 convention already used
+    board-wide in card titles and by every operator setting ``priority``.
+    Bug #edd065da: this read ``priority DESC`` (numerically higher claimed
+    first), so a default-priority-0 card — the vast majority of the board —
+    dispatched dead last, and a card an EM manually reclaimed to free a slot
+    for a priority-0 release blocker re-claimed that same slot ahead of it
+    for carrying a higher number. ``priority ASC`` matches the external
+    convention (P0-critical dispatches before P3-low).
+    """
     return conn.execute(
         "SELECT id, assignee FROM tasks "
         f"WHERE status = '{status}' AND claim_lock IS NULL "
-        "ORDER BY priority DESC, created_at ASC"
+        "ORDER BY priority ASC, created_at ASC"
     ).fetchall()
 
 

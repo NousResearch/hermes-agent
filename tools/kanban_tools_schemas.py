@@ -406,8 +406,9 @@ KANBAN_CREATE_SCHEMA = _schema(
                 "Defaults to HERMES_TENANT env if set."
         )),
         "priority": _prop("integer", (
-                "Dispatcher tiebreaker. Higher = picked sooner "
-                "when multiple ready tasks share an assignee."
+                "Dispatcher tiebreaker. Lower = picked sooner "
+                "(P0 dispatches before P3) when multiple ready "
+                "tasks share an assignee."
         )),
         "workspace_kind": {
             "type": "string",

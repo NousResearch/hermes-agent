@@ -2330,8 +2330,42 @@ class _CronRunScope:
             self._var_map[name].set("")
 
 
-def _reload_dotenv_and_publish_delivery_target(job: dict) -> None:
-    """Re-read .env for this run and publish the auto-deliver target into the session ContextVars."""
+def _bind_cron_delivery_target_hint(prompt: str, target: Optional[dict]) -> str:
+    """Tell a cron worker where nested status emitters must report.
+
+    Cron execution deliberately has no ``HERMES_SESSION_*`` sender identity;
+    delivery metadata lives in the separate ``HERMES_CRON_AUTO_DELIVER_*``
+    ContextVars. Surface that distinction to the model so a helper process
+    emitting ACKs or heartbeats cannot infer a foreign chat from task text.
+    """
+    if not target:
+        return prompt
+    # thread_id: use "" (never null) so the JSON hint matches the
+    # HERMES_CRON_AUTO_DELIVER_THREAD_ID ContextVar representation exactly, so
+    # a worker echoing either form produces the same value.
+    target_json = json.dumps(
+        {
+            "platform": str(target.get("platform") or ""),
+            "chat_id": str(target.get("chat_id") or ""),
+            "thread_id": str(target.get("thread_id") or ""),
+        },
+        separators=(",", ":"),
+    )
+    routing = (
+        f"CRON DELIVERY TARGET (authoritative): {target_json}. "
+        "If this task launches a subprocess or helper that emits status, ACK, "
+        "heartbeat, failure, or completion messages, route those messages only "
+        "to this target. In shell commands, read the same target from "
+        "HERMES_CRON_AUTO_DELIVER_PLATFORM, HERMES_CRON_AUTO_DELIVER_CHAT_ID, "
+        "and HERMES_CRON_AUTO_DELIVER_THREAD_ID. Never infer or hardcode a "
+        "delivery target from task content or referenced work."
+    )
+    return f"[IMPORTANT: {routing}]\n\n{prompt}"
+
+
+def _reload_dotenv_and_publish_delivery_target(job: dict) -> Optional[dict]:
+    """Re-read .env for this run and publish the auto-deliver target into the session ContextVars;
+    returns that target (None when the job has none)."""
     # Reset the secret-source cache FIRST or a Bitwarden/BSM-backed secret is never re-resolved
     # (only the placeholder reloads -> 401s).
     from hermes_cli.env_loader import load_hermes_dotenv, reset_secret_source_cache
@@ -2347,6 +2381,7 @@ def _reload_dotenv_and_publish_delivery_target(job: dict) -> None:
         _VAR_MAP["HERMES_CRON_AUTO_DELIVER_THREAD_ID"].set(
             "" if delivery_target.get("thread_id") is None else str(delivery_target["thread_id"])
         )
+    return delivery_target
 
 
 @dataclass
@@ -2507,7 +2542,9 @@ def run_job(
         scope.enter()
         if scope.workdir:
             logger.info("Job '%s': using task-scoped workdir %s", job_id, scope.workdir)
-        _reload_dotenv_and_publish_delivery_target(job)
+        # The ContextVars alone are invisible to the model: tell the worker turn where nested
+        # status/ACK/heartbeat emitters must report, so it never infers a chat from task text.
+        agent_prompt = _bind_cron_delivery_target_hint(prompt, _reload_dotenv_and_publish_delivery_target(job))
 
         jc = _load_cron_job_config(job, job_id, job_name)
         _cfg = jc.cfg
@@ -2525,7 +2562,7 @@ def run_job(
         _audit = _FireAudit(job, job_id, model)
 
         result = _run_agent_with_watchdog(
-            agent, prompt, job, job_id, job_name, scope.task_id, cancel_event,
+            agent, agent_prompt, job, job_id, job_name, scope.task_id, cancel_event,
             worker_state=_worker_state)
         final_response = _final_response_from_result(result, job_id, job_name, AIAgent)
         if (setup.fallback_notice and final_response.strip() and not _is_cron_silence_response(final_response)

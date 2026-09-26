@@ -38,6 +38,7 @@ describe('direct vs delegated execution', () => {
     const prompt = routinePrompt('research', 'Digest', 'Summarize findings', 'default')
 
     expect(prompt).toMatch(/hermes -p 'research' chat/)
+    expect(prompt).toMatch(/--create-if-missing/)
     expect(prompt).toMatch(/\[Scheduled routine\] Summarize findings/)
   })
 
@@ -59,6 +60,7 @@ describe('delegated arguments stay literal shell values', () => {
       'chat',
       '-c',
       `Routine: ${title}`,
+      '--create-if-missing',
       '-q',
       `[Scheduled routine] ${instruction}`
     ])

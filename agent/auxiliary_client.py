@@ -4275,10 +4275,13 @@ def _failed_backend_skip(
 def _try_main_agent_model_fallback(
     failed_provider: str, task: str = None, reason: str = "error",
     failed_model: Optional[str] = None, failed_base_url: str = "", failure_scope: Any = None,
+    main_runtime: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Optional[Any], Optional[str], str]:
     """Last-resort fallback to the main agent provider + model after the configured chain is exhausted.
     ``failed_model`` scoping per ``_failed_backend_skip``; same-URL custom endpoints serve many models,
-    so a hung aux model says nothing about the main model's health. Returns (client, model, label) or (None, None, "")."""
+    so a hung aux model says nothing about the main model's health. ``main_runtime`` carries the main
+    agent's already-resolved endpoint: without it a bare ``custom`` main provider re-resolves from the
+    name alone and lands on an unrelated API-key provider. Returns (client, model, label) or (None, None, "")."""
     main_provider = (_read_main_provider() or "").strip()
     main_model = (_read_main_model() or "").strip()
     if main_provider.lower() == "moa":
@@ -4305,7 +4308,8 @@ def _try_main_agent_model_fallback(
         _log_skip_unhealthy(main_provider, task, base_url=main_base_url)
         return None, None, ""
     try:
-        client, resolved_model = resolve_provider_client(provider=main_provider, model=main_model)
+        client, resolved_model = resolve_provider_client(
+            provider=main_provider, model=main_model, main_runtime=main_runtime)
     except Exception:
         client, resolved_model = None, None
     if client is None:
@@ -7727,7 +7731,8 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
     elif fb_client is None and not explicit_auth_with_task_chain:
         fb_client, fb_model, fb_label = _try_main_agent_model_fallback(
             resolved_provider, task, reason=reason, failed_model=_chain_failed_model,
-            failed_base_url=route.base_info, failure_scope=_chain_failure_scope)
+            failed_base_url=route.base_info, failure_scope=_chain_failure_scope,
+            main_runtime=route.main_runtime)
     # Ordered walk: a candidate that returns None was quarantined (dead credential or a capacity
     # error such as a quota 429) and is now unhealthy, so re-walking the CONFIGURED chains first
     # lands on the next entry, then discovery where the selection policy allows it (#106367).

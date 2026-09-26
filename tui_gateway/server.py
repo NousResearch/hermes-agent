@@ -1744,8 +1744,11 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
         with (contextlib.nullcontext(db) if db is not None else _session_db(session)) as db:
             if db is not None:
                 from agent.context_compressor import _DB_PERSISTED_MARKER
+                # Same stale-key hazard as the submit row: this durable pivot must land in the session the
+                # live agent writes to, or a model switch between turns on a rotated session files the notice
+                # under a parent the conversation no longer reads from (#123545).
                 entry["_row_id"] = db.append_message(
-                    session_id=session_key, role="user", content=marker, display_kind="model_switch")
+                    _submit_row_target_key(session), role="user", content=marker, display_kind="model_switch")
                 entry[_DB_PERSISTED_MARKER] = True
     except Exception:
         logger.debug("failed to persist model switch marker", exc_info=True)

@@ -10412,7 +10412,10 @@ def test_config_set_model_switches_agent_without_touching_env(monkeypatch):
         assert session["history"][-1]["role"] == "user"
         assert "changed to anthropic/claude-sonnet-4.6" in session["history"][-1]["content"]
         assert db.messages[-1] == {
-            "session_id": "session-key",
+            # The agent's own db handle belongs to the agent's live session id, not the gateway's
+            # session_key — the same `getattr(agent, "session_id", None) or session_key` the sibling
+            # system-prompt persist uses one screen up (#123545: these two must not diverge).
+            "session_id": agent.session_id,
             "role": "user",
             "content": session["history"][-1]["content"],
         }

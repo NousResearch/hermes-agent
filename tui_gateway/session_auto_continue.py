@@ -302,7 +302,10 @@ def _persist_queued_user_row(session: dict, envelope: dict, display_kind: str | 
                 if db is None:
                     return
                 try:
-                    db.set_user_message_content(session.get("session_key"), staged["_row_id"], envelope["text"])
+                    # The staged dict records the session its row was written under; a rotated-away
+                    # ``session_key`` misses that row's session_id and the merge update no-ops.
+                    db.set_user_message_content(
+                        _submit_row_owner_key(staged, session), staged["_row_id"], envelope["text"])
                 except Exception:
                     logger.debug("queued-prompt row merge update failed", exc_info=True)
                     return
@@ -340,7 +343,10 @@ def _replace_queued_user_row_for_turn(session: dict, queued: dict) -> dict | Non
         if db is None:
             return
         try:
-            db.deactivate_message(session.get("session_key"), early["_row_id"])
+            # The accept-time dict records the session its row was written under; a rotated-away
+            # ``session_key`` would miss it and leave that row ACTIVE beside its replacement in the
+            # continuation — the [uA, uB, aA] shape this function exists to prevent.
+            db.deactivate_message(_submit_row_owner_key(early, session), early["_row_id"])
         except Exception:
             # Both rows briefly active merges in projection but never loses the message; deleting or
             # losing text would be worse.

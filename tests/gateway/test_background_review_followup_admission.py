@@ -456,9 +456,11 @@ class _TrackingRLock:
         self._lock = threading.RLock()
         self._owner = None
         self._depth = 0
+        self.acquisitions = 0
 
     def __enter__(self):
         self._lock.acquire()
+        self.acquisitions += 1
         owner = threading.get_ident()
         if self._owner == owner:
             self._depth += 1
@@ -1152,4 +1154,196 @@ def test_finish_logs_a_spawn_failure_with_owner_and_reason(monkeypatch, caplog):
     assert session_id not in lines[0]
     assert "private reply body" not in lines[0]
     agent._spawn_background_review.assert_not_called()
+    assert review_admission.other_live_turn(session_id, None, profile_key) is False
+
+
+def test_stale_probe_state_and_fresh_fence_state_cannot_deadlock(monkeypatch):
+    """A review admitting under the state its turn captured must never wedge against the fence
+    of a later activation of the same session key.
+
+    Turn N wires its follow-up probe against the ``FollowupAdmissionState`` live at the time; the
+    session goes idle (cleanup pops the store entry) and turn N+1 — on a rotated session id, so
+    the live-turn registry does not refuse the review first — wires a fresh state with its own
+    cancel fence. The review holds turn N's state lock and, on the old code, the process-wide
+    registry lock while its probe reaches ``has_pending_message``, which took the CURRENT store
+    entry's lock; the gateway loop, inside a fenced slot write under that fresh lock, ran the
+    cancel callback into the registry lock. Two threads, two locks, opposite order: the gateway
+    event loop froze for every session the process serves.
+    """
+    monkeypatch.setattr(BasePlatformAdapter, "__abstractmethods__", frozenset())
+    monkeypatch.setattr(
+        background_review, "_interrupt_background_review", lambda _agent: None
+    )
+    adapter = BasePlatformAdapter(
+        PlatformConfig(enabled=True, token="***"), Platform.TELEGRAM
+    )
+    session_key = "rotated-session-key"
+    profile_key = review_admission.current_profile_key()
+
+    old_state = adapter.followup_admission_state(session_key)
+    agent_n = _wire_with_adapter(adapter, session_key)
+    agent_n.session_id = "sid-old"
+    agent_n._background_review_agent = None
+    agent_n._background_review_run = None
+    agent_n._background_review_lock = threading.Lock()
+    assert agent_n.followup_pending_lock is old_state.lock
+
+    guard = asyncio.Event()
+    adapter._active_sessions[session_key] = guard
+    adapter._cleanup_finished_session_task(session_key, guard)
+    assert adapter._existing_followup_admission_state(session_key) is None
+
+    agent_n1 = _wire_with_adapter(adapter, session_key)
+    agent_n1.session_id = "sid-new"
+    new_state = adapter.followup_admission_state(session_key)
+    assert new_state is not old_state and callable(new_state.cancel_review)
+
+    run = background_review.prepare_background_review_run(
+        agent_n,
+        admission_gate=lambda: review_admission.foreground_block_reason(
+            agent_n, None, profile_key, "sid-old"
+        ),
+        admission_lock=old_state.lock,
+        foreground_admission_lock=review_admission.admission_lock(),
+        session_id="sid-old",
+        profile_key=profile_key,
+    )
+    assert run is not None
+
+    review_in_probe = threading.Event()
+    gateway_holds_fresh_state = threading.Event()
+    original_probe = adapter.has_pending_message
+
+    def _probe(key):
+        review_in_probe.set()
+        gateway_holds_fresh_state.wait(timeout=5.0)
+        return original_probe(key)
+
+    adapter.has_pending_message = _probe
+
+    def _mutation():
+        gateway_holds_fresh_state.set()
+        review_in_probe.wait(timeout=5.0)
+        return True
+
+    admitted, fenced = [], []
+    review_thread = threading.Thread(
+        target=lambda: admitted.append(run.begin_request(object())),
+        name="review-begin_request",
+        daemon=True,
+    )
+    gateway_thread = threading.Thread(
+        target=lambda: fenced.append(
+            adapter.apply_followup_queue_mutation(session_key, _mutation)
+        ),
+        name="gateway-slot-write",
+        daemon=True,
+    )
+    review_thread.start()
+    gateway_thread.start()
+    review_thread.join(timeout=5.0)
+    gateway_thread.join(timeout=5.0)
+    try:
+        assert not review_thread.is_alive(), "review wedged inside the host probe"
+        assert not gateway_thread.is_alive(), "gateway slot write wedged behind the review"
+        assert fenced == [True]
+        # The rotated session's live turn is another registry owner: the review is admitted.
+        assert admitted == [True]
+    finally:
+        # A wedged run still owns the registry lock; finishing it would hang the test too.
+        if not (review_thread.is_alive() or gateway_thread.is_alive()):
+            background_review.finish_background_review_run(agent_n, run)
+
+
+def test_pending_probe_takes_no_lock_from_a_replaced_admission_state(monkeypatch):
+    """``has_pending_message`` acquires nothing: the per-turn probe closure already runs under the
+    state lock its turn captured, and the store entry may since have been replaced by a later
+    activation of the same key. Taking that entry's lock from a stale probe is a lock-order
+    inversion against the gateway fence (state lock, then registry lock)."""
+    monkeypatch.setattr(BasePlatformAdapter, "__abstractmethods__", frozenset())
+    adapter = BasePlatformAdapter(
+        PlatformConfig(enabled=True, token="***"), Platform.TELEGRAM
+    )
+    session_key = "replaced-admission-state"
+    old_state = adapter.followup_admission_state(session_key)
+    old_state.lock = old_lock = _TrackingRLock()
+    agent = _wire_with_adapter(adapter, session_key)
+    adapter._followup_admission_store().pop(session_key)
+    new_state = adapter.followup_admission_state(session_key)
+    new_state.lock = new_lock = _TrackingRLock()
+    adapter._pending_messages[session_key] = _event(text="queued")
+
+    with old_lock:
+        assert adapter.has_pending_message(session_key) is True
+        assert agent.followup_pending_callback() is True
+    assert new_lock.acquisitions == 0
+    assert old_lock.held_by_current_thread() is False
+
+
+@pytest.mark.asyncio
+async def test_inline_dispatched_nested_turn_completes_its_review_ownership(monkeypatch):
+    """/retry typed while the outgoing turn's reply is on the wire is dispatched inline (every
+    recognised command bypasses the active-session guard) and nests a second agent turn through
+    the runner's idle path. That turn parks its review-ownership completion on the live session
+    Event — which the outgoing task already read once, the moment its own handler returned — so
+    the inline dispatcher must complete it with its send outcome. Otherwise the session's
+    live-turn token leaks for the process lifetime and every later automatic review is refused
+    as ``live_turn_active``.
+    """
+    from gateway.run_turn import _GatewayReviewAdmission
+
+    monkeypatch.setattr(BasePlatformAdapter, "__abstractmethods__", frozenset())
+    adapter = BasePlatformAdapter(
+        PlatformConfig(enabled=True, token="***"), Platform.TELEGRAM
+    )
+    monkeypatch.setattr(adapter.config, "typing_indicator", False, raising=False)
+    runner = object.__new__(GatewayRunner)
+    session_id = "inline-nested-session"
+    session_key = "inline-nested-key"
+    profile_key = review_admission.current_profile_key()
+    adapter._active_sessions[session_key] = asyncio.Event()
+    finishes, sends = [], []
+
+    async def _resolve(event, _source):
+        return event.source, types.SimpleNamespace(session_id=session_id), session_key
+
+    async def _prepare(*_args):
+        return "reply", []
+
+    runner._hmwa_resolve_session = _resolve
+    runner._hmwa_prepare_turn = _prepare
+    runner._delivery_adapter_for = lambda _source: adapter
+    original_finish = _GatewayReviewAdmission.finish
+
+    def _finish(self, *, delivery_succeeded, cause=None):
+        finishes.append((self.token, delivery_succeeded, cause))
+        return original_finish(self, delivery_succeeded=delivery_succeeded, cause=cause)
+
+    monkeypatch.setattr(_GatewayReviewAdmission, "finish", _finish)
+
+    async def _handler(event):
+        turn = (
+            _event(text="retried prompt")
+            if (event.text or "").startswith("/retry")
+            else event
+        )
+        return await runner._handle_message_with_agent(
+            turn, turn.source, session_key, run_generation=len(sends) + 1
+        )
+
+    async def _send(chat_id, content, reply_to=None, metadata=None):
+        sends.append(content)
+        if len(sends) == 1:
+            # The user's /retry lands while this (outgoing) reply is being sent.
+            await adapter._handle_message_while_active(_event(text="/retry"), session_key)
+        return SendResult(success=True, message_id=f"sent-{len(sends)}")
+
+    adapter.set_message_handler(_handler)
+    adapter.send = _send
+
+    await adapter._process_message_background(_event(text="first"), session_key)
+
+    assert sends == ["reply", "reply"]
+    assert [ok for _token, ok, _cause in finishes] == [True, True]
+    assert len({token for token, _ok, _cause in finishes}) == 2
     assert review_admission.other_live_turn(session_id, None, profile_key) is False

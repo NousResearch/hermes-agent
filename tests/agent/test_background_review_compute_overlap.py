@@ -556,8 +556,17 @@ def test_live_turn_starting_after_early_gate_fences_the_prepared_review(
     assert review_admission.REASON_LIVE_TURN in caplog.text
 
 
-def test_foreground_registration_and_review_publication_are_linearized_without_sleep():
-    """Force a live turn into the old sample-to-publication gap."""
+def test_live_turn_registering_during_the_foreground_probe_is_refused_at_publication():
+    """Force a live turn into the sample-to-publication gap while the registry lock is free.
+
+    The foreground sample runs the host probe, which takes the gateway's per-session state
+    lock, so the process-wide registry lock must NOT be held across it: the gateway fence takes
+    a state lock and THEN the registry lock, and a probe holding both in the other order wedged
+    the event loop behind a review. The gap that leaves is closed at publication instead — the
+    registry lock is taken for a live-turn re-check and the publication together — so a turn
+    that registered during the probe refuses the review, and a turn registering after the
+    publication finds a fork to cancel.
+    """
 
     class TrackingRLock:
         def __init__(self):
@@ -585,12 +594,15 @@ def test_foreground_registration_and_review_publication_are_linearized_without_s
             return self._owner == threading.get_ident()
 
     session_id = "forced-registry-race"
+    profile = "/profile"
     live_registered = threading.Event()
     live_finished = threading.Event()
-    published_while_live = []
+    published = []
     cancelled_forks = []
     live_tokens = []
     live_threads = []
+    registry_held_in_probe = []
+    registered_before_probe_returned = []
     review_agent = object()
     original_lock = review_admission._lock
     admission_lock = TrackingRLock()
@@ -598,51 +610,51 @@ def test_foreground_registration_and_review_publication_are_linearized_without_s
 
     class ObservedRun(background_review_module._BackgroundReviewRun):
         def __setattr__(self, name, value):
-            if (
-                name == "_review_agent"
-                and value is review_agent
-                and getattr(self, "_observe_publication", False)
-            ):
-                published_while_live.append(live_registered.is_set())
+            if name == "_review_agent" and value is review_agent:
+                published.append(live_registered.is_set())
             super().__setattr__(name, value)
 
     def register_and_cancel_live_turn():
         with admission_lock:
-            token = review_admission.note_turn_started(session_id, "/profile")
-            live_tokens.append(token)
+            live_tokens.append(review_admission.note_turn_started(session_id, profile))
             live_registered.set()
             cancelled_forks.append(run.cancel())
         live_finished.set()
 
     def foreground_gate():
-        assert review_admission.other_live_turn(session_id, None, "/profile") is False
+        registry_held_in_probe.append(admission_lock.held_by_current_thread())
         live_thread = threading.Thread(target=register_and_cancel_live_turn)
         live_threads.append(live_thread)
         live_thread.start()
-        # The fixed path owns the registry lock and must not wait for the contender. The old path
-        # did not, so force the live token into its stale sample-to-publication window.
-        if not admission_lock.held_by_current_thread():
-            assert live_registered.wait(timeout=10.0)
+        # A contender registers while the probe runs; it must never wait behind the probe, so
+        # the wait is bounded rather than blocking on the (old) lock-holding path.
+        registered_before_probe_returned.append(live_registered.wait(timeout=3.0))
         return None
 
     try:
         run = ObservedRun(
             admission_gate=foreground_gate,
+            live_turn_gate=lambda: review_admission.live_turn_block_reason(
+                session_id, None, profile
+            ),
             foreground_admission_lock=review_admission.admission_lock(),
         )
-        run._observe_publication = True
 
-        assert run.begin_request(review_agent) is True
+        admitted = run.begin_request(review_agent)
         assert len(live_threads) == 1
         assert live_finished.wait(timeout=10.0)
         live_threads[0].join(timeout=10.0)
 
-        assert published_while_live == [False]
-        assert cancelled_forks == [review_agent]
+        assert registry_held_in_probe == [False]
+        assert registered_before_probe_returned == [True]
+        assert admitted is False
+        assert run.refused_reason == review_admission.REASON_LIVE_TURN
+        assert published == []
+        assert cancelled_forks == [None]
         assert run.cancel_requested.is_set()
     finally:
         for token in live_tokens:
-            review_admission.note_turn_finished(session_id, token, "/profile")
+            review_admission.note_turn_finished(session_id, token, profile)
         review_admission._lock = original_lock
 
 

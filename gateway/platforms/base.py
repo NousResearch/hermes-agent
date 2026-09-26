@@ -3526,22 +3526,52 @@ class BasePlatformAdapter(ABC):
             ttl = 0
         return response.text, int(ttl or 0)
 
-    async def _dispatch_inline_reply(self, event: MessageEvent, *, log_cmd: Optional[str] = None) -> None:
+    async def _dispatch_inline_reply(
+        self, event: MessageEvent, *, log_cmd: Optional[str] = None,
+        session_key: Optional[str] = None,
+    ) -> None:
         """Call the handler and send its reply inline, with retry, threading and
-        ephemeral deletion — no session lifecycle (active-session bypass paths)."""
+        ephemeral deletion — no session lifecycle (active-session bypass paths).
+
+        This IS the delivery owner of an agent turn the handler nests meanwhile (/retry typed
+        while the outgoing turn's reply is on the wire re-runs the prompt through the runner's
+        idle path): the gateway parks that turn's review-ownership completion on the live session
+        Event, which the outgoing task read once, the moment its own handler returned. Only a
+        completion that appeared during this handler call is taken — the outgoing turn's own,
+        still parked while its handler runs, is never touched — and it completes with this
+        send's outcome, so the nested turn's live-turn token never outlives its delivery.
+        """
         thread_meta = _thread_metadata_for_event(event)
-        response = await self._message_handler(event)
-        text, eph_ttl = self._unwrap_ephemeral(response)
-        if not text:
-            return
-        if log_cmd is not None:
-            logger.info("[%s] Sending command '/%s' response (%d chars) to %s", self.name, log_cmd,
-                        len(text), event.source.chat_id)
-        result = await self._send_with_retry(
-            chat_id=event.source.chat_id, content=text, reply_to=_reply_anchor_for_event(event),
-            metadata=_mark_notify_metadata(thread_meta))
-        if eph_ttl > 0 and result.success and result.message_id:
-            self._schedule_ephemeral_delete(event.source.chat_id, result.message_id, eph_ttl)
+        if session_key is None:
+            session_key = self._event_session_key(event)
+        guard = self._active_sessions.get(session_key)
+        parked = getattr(guard, "_gateway_review_delivery_complete", None)
+        review_delivery_complete = None
+        delivery_succeeded = False
+        try:
+            try:
+                response = await self._message_handler(event)
+            finally:
+                nested = getattr(guard, "_gateway_review_delivery_complete", None)
+                review_delivery_complete = self._take_review_delivery_callback(
+                    event, guard if nested is not parked else None)
+            text, eph_ttl = self._unwrap_ephemeral(response)
+            if not text:
+                delivery_succeeded = True  # nothing to deliver: the reply went out on its own
+                return
+            if log_cmd is not None:
+                logger.info("[%s] Sending command '/%s' response (%d chars) to %s", self.name, log_cmd,
+                            len(text), event.source.chat_id)
+            result = await self._send_with_retry(
+                chat_id=event.source.chat_id, content=text, reply_to=_reply_anchor_for_event(event),
+                metadata=_mark_notify_metadata(thread_meta))
+            delivery_succeeded = bool(result.success)
+            if eph_ttl > 0 and result.success and result.message_id:
+                self._schedule_ephemeral_delete(event.source.chat_id, result.message_id, eph_ttl)
+        finally:
+            if callable(review_delivery_complete):
+                await self._complete_review_delivery(
+                    review_delivery_complete, delivery_succeeded=delivery_succeeded)
 
     def _media_delivery_scope(self, source: Optional[SessionSource]):
         """Routed home + terminal policy for post-handler text, media and error delivery;
@@ -4015,7 +4045,7 @@ class BasePlatformAdapter(ABC):
         try:
             # Send BEFORE cancelling so cancellation side effects can't drop the "/new"
             # confirmation.
-            await self._dispatch_inline_reply(event, log_cmd=cmd)
+            await self._dispatch_inline_reply(event, log_cmd=cmd, session_key=session_key)
             await self.cancel_session_processing(session_key, release_guard=False, discard_pending=False)
         except Exception:
             # On failure restore the original guard so the session isn't left half-reset.
@@ -4091,7 +4121,7 @@ class BasePlatformAdapter(ABC):
                 else:
                     logger.debug("[%s] Command '/%s' bypassing active-session guard for %s",
                                  self.name, cmd, session_key)
-                    await self._dispatch_inline_reply(event)
+                    await self._dispatch_inline_reply(event, session_key=session_key)
             except Exception as e:
                 logger.error("[%s] Command '/%s' dispatch failed: %s", self.name, cmd, e, exc_info=True)
             return
@@ -4111,7 +4141,7 @@ class BasePlatformAdapter(ABC):
             if _has_text_clarify:
                 logger.debug("[%s] Routing message to clarify text-intercept for %s", self.name, session_key)
                 try:
-                    await self._dispatch_inline_reply(event)
+                    await self._dispatch_inline_reply(event, session_key=session_key)
                 except Exception as e:
                     logger.error("[%s] Clarify text-intercept dispatch failed: %s", self.name, e, exc_info=True)
                 return
@@ -4517,18 +4547,43 @@ class BasePlatformAdapter(ABC):
 
     @staticmethod
     def _take_review_delivery_callback(
-        event: MessageEvent, interrupt_event: asyncio.Event) -> Optional[Callable[..., Any]]:
+        event: MessageEvent, interrupt_event: Optional[asyncio.Event]) -> Optional[Callable[..., Any]]:
         """Detach THIS turn's review-ownership completion from both carriers (Event first). Taken
         the moment the handler returns: a drain handoff re-uses the session Event, and the
-        follow-up turn attaches its own callback there while this turn is still unwinding."""
+        follow-up turn attaches its own callback there while this turn is still unwinding. An
+        inline dispatch passes the Event only when a completion appeared during its own call."""
         callback = None
         for carrier in (interrupt_event, event):
+            if carrier is None:
+                continue
             found = getattr(carrier, "_gateway_review_delivery_complete", None)
             with contextlib.suppress(Exception):
                 delattr(carrier, "_gateway_review_delivery_complete")
             if callback is None and callable(found):
                 callback = found
         return callback
+
+    async def _complete_review_delivery(
+        self, callback: Callable[..., Any], *, delivery_succeeded: bool,
+        cause: Optional[str] = None,
+    ) -> None:
+        """Complete one turn's gateway review ownership with its delivery outcome.
+
+        ``finish()`` released ownership and dropped the candidate before the spawn hop, so a
+        failure here silently disables the review: one owner-tagged line, never fatal."""
+        from agent.review_admission import REASON_COMPLETION_ERROR
+
+        try:
+            result = callback(delivery_succeeded=delivery_succeeded, cause=cause)
+            if inspect.isawaitable(result):
+                await asyncio.wait_for(result, timeout=_POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS)
+        except Exception:
+            logger.warning(
+                "[%s] Background review delivery completion failed (owner=%s, reason=%s)",
+                self.name,
+                getattr(getattr(callback, "__self__", None), "owner_tag", "unbound"),
+                REASON_COMPLETION_ERROR, exc_info=True,
+            )
 
     def _finish_session_task(self, session_key: str, interrupt_event: asyncio.Event) -> None:
         """End-of-task guard/ownership reconciliation. A late ``_pending_messages`` arrival must not
@@ -4679,27 +4734,13 @@ class BasePlatformAdapter(ABC):
             await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_thread_metadata)
             await self._fire_post_delivery_callback(session_key, interrupt_event)
             if callable(review_delivery_complete):
-                from agent.review_admission import REASON_COMPLETION_ERROR, REASON_PENDING_HANDOFF
+                from agent.review_admission import REASON_PENDING_HANDOFF
 
-                try:
-                    _review_result = review_delivery_complete(
-                        delivery_succeeded=bool(processing_ok and not pending_handoff),
-                        cause=REASON_PENDING_HANDOFF if pending_handoff else None,
-                    )
-                    if inspect.isawaitable(_review_result):
-                        await asyncio.wait_for(
-                            _review_result,
-                            timeout=_POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS,
-                        )
-                except Exception:
-                    # finish() released ownership and dropped the candidate before the spawn hop, so
-                    # a failure here silently disables the review: one owner-tagged line, never fatal.
-                    logger.warning(
-                        "[%s] Background review delivery completion failed (owner=%s, reason=%s)",
-                        self.name,
-                        getattr(getattr(review_delivery_complete, "__self__", None), "owner_tag", "unbound"),
-                        REASON_COMPLETION_ERROR, exc_info=True,
-                    )
+                await self._complete_review_delivery(
+                    review_delivery_complete,
+                    delivery_succeeded=bool(processing_ok and not pending_handoff),
+                    cause=REASON_PENDING_HANDOFF if pending_handoff else None,
+                )
             # Callback work or a late refresh may have recreated typing — one final bounded stop.
             await self._stop_typing_refresh(
                 event.source.chat_id, None, metadata=_thread_metadata, stop_attempts=1)
@@ -4781,16 +4822,18 @@ class BasePlatformAdapter(ABC):
         return self._pending_messages.pop(session_key, None)
 
     def has_pending_message(self, session_key: str) -> bool:
-        """Return whether a session has a queued message without consuming it."""
-        state = self._existing_followup_admission_state(session_key)
-        if state is None:
-            pending = getattr(self, "_pending_messages", None) or {}
-            debounce = getattr(self, "_text_debounce", None) or {}
-            return session_key in pending or session_key in debounce
-        with state.lock:
-            pending = getattr(self, "_pending_messages", None) or {}
-            debounce = getattr(self, "_text_debounce", None) or {}
-            return session_key in pending or session_key in debounce
+        """Return whether a session has a queued message without consuming it.
+
+        Lock-free on purpose. The per-turn review probe already runs under the
+        ``FollowupAdmissionState`` lock its turn captured, and that lock — not this read — is what
+        orders a slot write against the review's publication (``_record_and_fence_followup_locked``
+        bumps the epoch under it). The store entry may since have been replaced by a later
+        activation of the same key, whose lock the gateway loop holds while it cancels through the
+        review registry; a stale probe taking that lock is a lock-order inversion.
+        """
+        pending = getattr(self, "_pending_messages", None) or {}
+        debounce = getattr(self, "_text_debounce", None) or {}
+        return session_key in pending or session_key in debounce
 
     def build_source(
         self, chat_id: str, chat_name: Optional[str] = None, chat_type: str = "dm",

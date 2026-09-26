@@ -28,11 +28,13 @@ class _BackgroundReviewRun:
     """Per-review cancellation and request-completion handshake.
 
     ``admission_gate`` (automatic reviews only) is the foreground-ownership probe, re-evaluated
-    HERE, inside the admission lock. The pre-spawn checks cannot be the last word: building the
-    fork takes real time, and a gateway follow-up queued in that window only becomes a live turn
-    after it is delivered — so without this gate the review would still get its full-transcript
-    request onto the wire first. Automatic admission takes the follow-up lock, then the foreground
-    registry lock, then the run lock. /refine passes no gate: an explicit review is never preempted.
+    HERE, at admission. The pre-spawn checks cannot be the last word: building the fork takes
+    real time, and a gateway follow-up queued in that window only becomes a live turn after it is
+    delivered — so without this gate the review would still get its full-transcript request onto
+    the wire first. Automatic admission takes the follow-up lock, samples the gate with no other
+    lock held (the host probe takes gateway state), then the foreground registry lock for the
+    live-turn re-check (``live_turn_gate``, registry reads only) and the publication, then the
+    run lock. /refine passes no gate: an explicit review is never preempted.
     """
 
     def __init__(
@@ -41,6 +43,7 @@ class _BackgroundReviewRun:
         admission_lock: Any = None,
         foreground_admission_lock: Any = None,
         followup_cancellable: bool = True,
+        live_turn_gate: Optional[Callable[[], Optional[str]]] = None,
     ) -> None:
         self.cancel_requested = threading.Event()
         self.request_done = threading.Event()
@@ -50,6 +53,7 @@ class _BackgroundReviewRun:
         self.lease_yield_reason: Optional[str] = None
         self._lock = threading.Lock()
         self._admission_gate = admission_gate
+        self._live_turn_gate = live_turn_gate
         self._admission_lock = admission_lock
         self._foreground_admission_lock = foreground_admission_lock
         self._followup_cancellable = followup_cancellable
@@ -62,28 +66,37 @@ class _BackgroundReviewRun:
     def begin_request(self, review_agent: Any) -> bool:
         """Atomically admit the first provider-capable review phase.
 
-        The admission scopes are held for the whole sample -> publication window, so a queue
-        insertion or a live-turn registration either lands first (and the gate refuses) or finds a
-        published fork to cancel. The RUN lock is taken only for the flag reads and the
-        publication, never across ``_foreground_reason()``: the host probe takes the gateway's
-        per-session admission lock, and the gateway's queue fence takes that same lock and THEN
-        cancels (which takes the run lock). Holding the run lock across the probe inverts those two
-        orders and wedges the gateway event loop behind a review.
+        The follow-up admission scope is held for the whole sample -> publication window, so a
+        queue insertion either lands first (and the gate refuses) or finds a published fork to
+        cancel. The foreground registry lock is NOT held across the gate: the host probe takes
+        the gateway's per-session state lock, and the gateway's queue fence holds a state lock
+        while it cancels through the registry — a later activation of the same session key owns
+        a fresh state, so a probe holding the registry lock and reaching that state inverts the
+        two orders and wedges the gateway event loop behind a review. The registry lock is taken
+        only for ``live_turn_gate`` (registry reads) together with the publication, so a live-turn
+        registration either lands before that re-check (and refuses) or after the publication
+        (and finds the fork). The RUN lock is taken only for the flag reads and the publication,
+        never across either gate: the fence takes the run lock after its state lock.
         """
         admission_scope = self._admission_lock or nullcontext()
         foreground_scope = self._foreground_admission_lock or nullcontext()
-        with admission_scope, foreground_scope:
+        with admission_scope:
             if self._fenced():
                 return False
-            if reason := self._foreground_reason():
+            if reason := self._gate_reason(self._admission_gate):
                 self._refuse(reason)
                 return False
-            with self._lock:
-                # Re-read under the publication lock: a cancel may have landed while the probe ran.
-                if self.cancel_requested.is_set() or self._request_finished:
+            with foreground_scope:
+                if reason := self._gate_reason(self._live_turn_gate):
+                    self._refuse(reason)
                     return False
-                self._review_agent = review_agent
-                return True
+                with self._lock:
+                    # Re-read under the publication lock: a cancel may have landed while the
+                    # gates ran.
+                    if self.cancel_requested.is_set() or self._request_finished:
+                        return False
+                    self._review_agent = review_agent
+                    return True
 
     def _fenced(self) -> bool:
         """Whether this run is already cancelled or past its request phase."""
@@ -97,12 +110,12 @@ class _BackgroundReviewRun:
             self.refused_reason = reason
             self.cancel_requested.set()
 
-    def _foreground_reason(self) -> Optional[str]:
-        """Body-free reason the foreground owns the session, failing safe on probe errors."""
-        if self._admission_gate is None:
+    def _gate_reason(self, gate: Optional[Callable[[], Optional[str]]]) -> Optional[str]:
+        """Body-free reason ``gate`` refuses the review, failing safe on probe errors."""
+        if gate is None:
             return None
         try:
-            return self._admission_gate()
+            return gate()
         except Exception:  # noqa: BLE001 — unknown foreground state blocks lower-priority work
             from agent.review_admission import REASON_ADMISSION_FAILURE
 
@@ -238,6 +251,7 @@ def prepare_background_review_run(
     followup_cancellable: bool = True,
     session_id: Optional[str] = None,
     profile_key: Optional[str] = None,
+    live_turn_gate: Optional[Callable[[], Optional[str]]] = None,
 ) -> Optional[_BackgroundReviewRun]:
     """Install a unique run token on the parent before ``Thread.start()``."""
     run = _BackgroundReviewRun(
@@ -245,6 +259,7 @@ def prepare_background_review_run(
         admission_lock,
         foreground_admission_lock,
         followup_cancellable,
+        live_turn_gate=live_turn_gate,
     )
     review_session_id = str(
         session_id if session_id is not None else getattr(agent, "session_id", None) or ""
@@ -1896,6 +1911,13 @@ def spawn_background_review_thread(
             followup_cancellable=automatic,
             session_id=review_session_id,
             profile_key=profile_key,
+            live_turn_gate=(
+                lambda: review_admission.live_turn_block_reason(
+                    review_session_id, None, profile_key
+                )
+                if automatic
+                else None
+            ),
         )
         if review_run is None:
             raise RuntimeError("background review already active for this session")

@@ -227,6 +227,22 @@ def followup_pending(agent: Any) -> bool:
     return _followup_block_reason(agent) is not None
 
 
+def live_turn_block_reason(
+    session_id: Any,
+    turn_token: Optional[int] = None,
+    profile_key: Optional[str] = None,
+) -> Optional[str]:
+    """``REASON_LIVE_TURN`` while a turn other than ``turn_token`` is live on the session.
+
+    Registry-only: it reads no host state, so a caller may hold :func:`admission_lock` across it.
+    ``_BackgroundReviewRun.begin_request`` re-checks with it under that lock, right before it
+    publishes a fork.
+    """
+    if other_live_turn(session_id, turn_token, profile_key):
+        return REASON_LIVE_TURN
+    return None
+
+
 def foreground_block_reason(
     agent: Any,
     turn_token: Optional[int] = None,
@@ -238,16 +254,18 @@ def foreground_block_reason(
     ``profile_key`` is the profile the review belongs to (its spawning turn's). Pass it whenever
     the check may run off the turn's thread — the idle-queue dispatcher and the review fork are
     outside the gateway's per-turn profile scope, so "current" is not their answer.
+
+    Runs the host follow-up probe, which takes gateway state locks: never call this while
+    holding :func:`admission_lock` (the gateway fence takes a state lock, then this registry).
     """
-    if other_live_turn(
+    reason = live_turn_block_reason(
         session_id
         if session_id is not None
         else getattr(agent, "session_id", None) or "",
         turn_token,
         profile_key,
-    ):
-        return REASON_LIVE_TURN
-    return _followup_block_reason(agent)
+    )
+    return reason or _followup_block_reason(agent)
 
 
 def replay_token_budget(task_cfg: Optional[Dict[str, Any]]) -> int:

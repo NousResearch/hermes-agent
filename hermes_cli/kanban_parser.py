@@ -185,6 +185,9 @@ _SPECS = [
              help="Per-task runtime cap. Accepts seconds (300) or durations (90s, "
                   "30m, 2h, 1d). When exceeded, the dispatcher SIGTERMs (then "
                   "SIGKILLs) the worker and re-queues the task."),
+        _arg("--research-budget", metavar="JSON",
+             help="Optional JSON object overriding the worker's research collection budget "
+                  "(for example: '{\"web_search_max\":8,\"browser_extract_max\":4}')."),
         _arg("--created-by", default="user", help="Author name recorded on the task (default: user)"),
         _arg("--skill", action="append", default=[], dest="skills",
              help="Skill to force-load into the worker (repeatable). The kanban "

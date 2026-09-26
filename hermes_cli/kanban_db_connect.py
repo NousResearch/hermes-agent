@@ -815,6 +815,9 @@ _RENAMED_TASK_COLUMNS = (
 # column existed.
 _LATER_TASK_COLUMNS = (
     ("max_runtime_seconds", "max_runtime_seconds INTEGER"),
+    # Typed JSON object overriding the profile research collection policy for
+    # this task's worker run; NULL preserves profile/default behavior.
+    ("research_budget", "research_budget TEXT"),
     ("last_heartbeat_at", "last_heartbeat_at INTEGER"),
     ("current_run_id", "current_run_id INTEGER"),
     ("workflow_template_id", "workflow_template_id TEXT"),

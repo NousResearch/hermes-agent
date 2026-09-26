@@ -169,6 +169,11 @@ jobs:
           RELEASE_MODE: ${{ inputs.release }}
         run: |
           set -euo pipefail
+          # Forks do not necessarily mirror upstream release tags. The update
+          # contract is defined by official released versions, so fetch those
+          # tags into this ephemeral checkout before resolving any baseline.
+          git fetch --force https://github.com/NousResearch/hermes-agent.git \
+            '+refs/tags/*:refs/tags/*'
           [[ "$TAG_COUNT" =~ ^(10|[1-9])$ ]] || { echo "tag-count must be 1-10, got: $TAG_COUNT" >&2; exit 1; }
           if [ -n "$INSTALL_REF" ]; then
             [[ "$INSTALL_REF" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$ ]] || { echo 'install-ref must be an exact release tag' >&2; exit 1; }

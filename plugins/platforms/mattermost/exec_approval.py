@@ -20,14 +20,15 @@ from typing import Any, Dict, List, Optional, Tuple
 # choices resolve_gateway_approval accepts — vocabulary shared with the base adapter.
 VALID_CHOICES = {"once", "session", "always", "deny"}
 
-# base-adapter style ("primary"/"danger"/"") → Mattermost Blocks semantic style
-_STYLE_MAP = {"primary": "primary", "danger": "danger", "": "default"}
-
 # Post-action response strings (update replaces the card; empty props clear the buttons).
 _APPROVED_TPL = "✅ Approved by {who} ({choice}) — run continues."
 _DENIED_TPL = "❌ Denied by {who} — the command will NOT run."
 _ALREADY_TPL = "⌛ This approval was already resolved or expired."
 _UNAUTHORIZED = "⛔ You are not allowed to answer approval prompts."
+
+# Header-style ntfy publish: this server rejects JSON-body publishing (HTTP 40024, live-verified)
+# but fully supports the X-Actions header — including the view action that deep-links to the card.
+_NTFY_TITLE = "Venom needs your approval"
 
 
 def approval_actions_config(extra: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -56,24 +57,24 @@ def callback_path(secret: str) -> str:
 
 
 def build_approval_props(prompt, callback_url: str) -> Dict[str, Any]:
-    """``props`` for the approval post: one text block (the shared prompt wording) plus a
-    horizontal container of buttons, with the matching ``mm_blocks_actions`` registry."""
-    buttons: List[Dict[str, Any]] = []
-    registry: Dict[str, Any] = {}
+    """``props`` for the approval post, using legacy attachment actions — the interactive
+    format every Mattermost renders natively. (Native ``mm_blocks`` requires the server-side
+    ``MmBlocksEnabled`` feature flag; on servers without it the blocks props are silently
+    stripped and the card degrades to plain text — observed live on Mattermost 11.9.0.)
+    Callback payload and post-action response are identical for both formats."""
+    actions: List[Dict[str, Any]] = []
     for label, choice, style in prompt.actions:
-        action_id = f"approve_{choice}"
-        buttons.append({"type": "button", "text": label, "style": _STYLE_MAP.get(style, "default"),
-                       "action_id": action_id})
-        registry[action_id] = {
-            "type": "external", "url": callback_url,
-            "context": {"session_key": prompt.session_key, "choice": choice},
-        }
+        actions.append({
+            "id": f"approve_{choice}", "name": label, "type": "button",
+            "integration": {"url": callback_url,
+                            "context": {"session_key": prompt.session_key, "choice": choice}},
+        })
     return {
-        "mm_blocks": [
-            {"type": "text", "text": prompt.text},
-            {"type": "container", "flow": "horizontal", "gap": "small", "content": buttons},
-        ],
-        "mm_blocks_actions": registry,
+        "attachments": [{
+            "color": "#FF851B",  # MTK ops orange; the button row's accent bar
+            "text": prompt.text,
+            "actions": actions,
+        }],
     }
 
 
@@ -114,18 +115,23 @@ def action_response(verdict: str, fields: Optional[Dict[str, Any]], choice: str 
     return {"update": {"message": text, "props": {}}}
 
 
-def build_ntfy_escalation(command: str, permalink: str) -> Dict[str, Any]:
-    """JSON body for an ntfy publish: high-priority doorbell that deep-links to the card."""
+def build_ntfy_escalation(command: str, permalink: str) -> Tuple[str, Dict[str, str]]:
+    """Header-style ntfy publish for the T+escalate nudge → (message body, headers).
+
+    ``Actions`` uses the short ``view`` form: ``view, <label>, <url>[, clear=true]`` — verified
+    working against the MTK ntfy server (JSON-body publish is rejected there, live-tested).
+    """
     snippet = (command or "").strip()
-    if len(snippet) > 160:
-        snippet = snippet[:157] + "..."
-    return {
-        "title": "Venom needs your approval",
-        "message": snippet or "A flagged command is waiting for your OK.",
-        "priority": "high",
-        "tags": ["warning"],
-        "actions": [{"action": "view", "label": "Open in Mattermost", "url": permalink, "clear": True}],
+    if len(snippet) > 400:
+        snippet = snippet[:397] + "..."
+    message = snippet or "A flagged command is waiting for your OK."
+    headers = {
+        "Title": _NTFY_TITLE,
+        "Priority": "high",
+        "Tags": "warning",
+        "Actions": f"view, Open in Mattermost, {permalink}, clear=true",
     }
+    return message, headers
 
 
 def new_secret() -> str:

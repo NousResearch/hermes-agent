@@ -48,7 +48,13 @@ def _start_wait(owner, entry, source, adapter, record, profile):
     async def wait():
         with owner._profile_scope(profile):
             remaining = max(0.0, record["expiresAt"] - time.time())
-            response = await asyncio.to_thread(clarify_gateway.wait_for_response, cid, remaining or .001)
+            try:
+                response = await asyncio.to_thread(clarify_gateway.wait_for_response, cid, remaining or .001)
+            except asyncio.CancelledError:
+                # Cancelling a to_thread await does not stop its blocking worker. Unblock that
+                # worker while leaving the durable pending binding available for restart.
+                clarify_gateway.resolve_gateway_clarify(cid, "", user_id=str(source.user_id))
+                raise
             current = owner.gateway_runner.session_store.get_session_metadata(entry.session_key, KEY)
             if not current or current.get("clarifyId") != cid or current.get("state") != "pending":
                 return
@@ -61,6 +67,7 @@ def _start_wait(owner, entry, source, adapter, record, profile):
                     owner.gateway_runner.session_store.set_session_metadata(entry.session_key, KEY, current)
                     return
                 current["state"] = "answered"
+                current["response"] = response
                 # Persist the claimed response before admission so replay never grants a second action.
                 owner.gateway_runner.session_store.set_session_metadata(entry.session_key, KEY, current)
                 refs = json.dumps(current["binding"], sort_keys=True, separators=(",", ":"))

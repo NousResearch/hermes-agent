@@ -48,6 +48,9 @@ def test_action_owner_binding_delivery_dedup_and_admission(tmp_path, monkeypatch
         assert result.success
         assert (await actions.deliver(owner, target, Platform.WHATSAPP, "byron", None, "Same alert", delivery)).success
         assert target.send_clarify.await_count == 1
+        other_alert = {"payload": {"discussion_action": {**refs, "eventId": "another-alert"}}}
+        assert await actions.deliver(owner, target, Platform.WHATSAPP, "byron", None, "Another task needs input", other_alert) is None
+        assert target.send_clarify.await_count == 1
         record = owner.gateway_runner.session_store.get_session_metadata(entry.session_key, actions.KEY)
         assert not clarify.resolve_gateway_clarify(record["clarifyId"], actions.CHOICES[0], user_id="other")
         assert clarify.resolve_gateway_clarify(record["clarifyId"], actions.CHOICES[0], user_id="byron")

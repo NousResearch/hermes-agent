@@ -6,6 +6,8 @@ maps. Split out of ``hermes_cli.models``.
 
 from __future__ import annotations
 
+import re
+from collections.abc import Iterable
 from typing import NamedTuple
 
 
@@ -131,6 +133,38 @@ def _xai_curated_models() -> list[str]:
     except Exception:
         pass
     return _xai_finalize_catalog(list(_XAI_STATIC_FALLBACK))
+
+
+_OPENAI_NON_CHAT_MARKERS = (
+    "audio", "image", "realtime", "live", "transcribe", "tts", "whisper", "embedding",
+    "moderation", "dall-e", "sora", "computer-use", "search-preview",
+)
+_OPENAI_DATED_SNAPSHOT_RE = re.compile(r"-\d{4}-\d{2}-\d{2}$")
+_OPENAI_GPT_VERSION_RE = re.compile(r"^gpt-(\d+)(?:\.(\d+))?")
+OPENAI_MIN_CHAT_VERSION = (5, 5)
+
+
+def openai_chat_models(model_ids: Iterable[str]) -> list[str]:
+    """Return current OpenAI chat models, newest family first.
+
+    The version floor keeps the picker focused without requiring a new allowlist entry for each
+    GPT release. Static provider catalogs remain unchanged because model routing also uses them to
+    recognize older models that users may still select explicitly.
+    """
+    keep: list[tuple[tuple[int, int], str]] = []
+    for mid in model_ids:
+        low = mid.lower()
+        match = _OPENAI_GPT_VERSION_RE.match(low)
+        if not match or _OPENAI_DATED_SNAPSHOT_RE.search(low):
+            continue
+        if any(marker in low for marker in _OPENAI_NON_CHAT_MARKERS):
+            continue
+        version = (int(match.group(1)), int(match.group(2) or 0))
+        if version < OPENAI_MIN_CHAT_VERSION:
+            continue
+        keep.append((version, mid))
+    keep.sort(key=lambda item: (tuple(-part for part in item[0]), item[1]))
+    return [mid for _version, mid in keep]
 
 
 # Native OpenAI Chat Completions (api.openai.com); also the head of the Copilot list.

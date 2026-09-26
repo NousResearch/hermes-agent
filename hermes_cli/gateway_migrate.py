@@ -575,9 +575,19 @@ _PREFLIGHT_CHECKS: tuple[Callable[[MigrationPlan, dict[str, object]], None], ...
 
 
 def _load_profile_configs(plan: MigrationPlan) -> dict[str, object]:
+    """Load config only for profiles the converged multiplexer will actually serve.
+
+    Parked profiles stay in ``plan.profiles`` so migration can remove their stale standalone
+    process/service footprint, but they are intentionally inert: config loading discovers plugins
+    in that profile's scope. Using ``expected_served_names`` keeps preflight on the same roster the
+    post-migration verification already uses.
+    """
     configs: dict[str, object] = {}
+    expected = plan.expected_served_names
     with _multiplex_read_mode():
         for profile in plan.profiles:
+            if profile.name not in expected:
+                continue
             try:
                 configs[profile.name] = _profile_gateway_config(profile.home)
             except Exception as exc:  # unreadable config is itself a blocker, not a crash

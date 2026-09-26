@@ -154,21 +154,32 @@ def test_dry_run_and_blocked_preflight_change_nothing(fleet, capsys):
     assert "nothing will be changed" in capsys.readouterr().out
 
 
-def test_parked_profile_remains_in_migration_inventory(fleet):
+def test_parked_profile_remains_in_migration_inventory_but_skips_config_preflight(fleet, monkeypatch):
     home = fleet.root / "profiles/coder"
     (home / "gateway.parked").touch()
+    loaded = []
+    real_load = gm._profile_gateway_config
 
+    def tracked_load(profile_home):
+        loaded.append(profile_home)
+        return real_load(profile_home)
+
+    monkeypatch.setattr(gm, "_profile_gateway_config", tracked_load)
     plan = gm.build_migration_plan()
     inventory = {p.name: p for p in plan.standalone_secondaries}
     assert "coder" in inventory
     assert inventory["coder"].home == home
     assert inventory["coder"].pid == fleet.pids["coder"]
     assert inventory["coder"].services == [("systemd", False)]
+    assert home not in loaded  # config loading discovers plugins in that profile's scope
 
-    # Parking must not hide migration preflight conflicts either.
+    # A parked profile is not in the post-migration served roster, so its credentials are not a
+    # current collision. It must remain config-inert until the operator starts it again.
     (home / ".env").write_text("TELEGRAM_BOT_TOKEN=111111:default-token\n", encoding="utf-8")
+    loaded.clear()
     blocked = gm.build_migration_plan()
-    assert any("'coder'" in reason and "credential" in reason for reason in blocked.blockers)
+    assert home not in loaded
+    assert not any("'coder'" in reason and "credential" in reason for reason in blocked.blockers)
 
 
 def test_migration_removes_parked_footprint_without_waiting_for_it_to_serve(fleet, monkeypatch):

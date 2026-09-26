@@ -1,9 +1,8 @@
 import { translateNow } from '@/i18n'
 import { summarizeShellCommand } from '@/lib/summarize-command'
 import { firstStringField } from '@/lib/text'
-import { extractToolErrorMessage } from '@/lib/tool-result-summary'
 
-import { fileEditBasename, isFileEditTool, parseMaybeObject } from './fallback-model'
+import { fileEditBasename, isFileEditTool, parseMaybeObject, toolCallFailed } from './fallback-model'
 import { skillActivityTitle } from './skill-activity'
 
 /**
@@ -171,16 +170,7 @@ export function summarizeToolRun(tools: readonly ToolCallLike[], live: boolean):
     return group ? [clause(category, group, category === liveCategory)] : []
   })
 
-  const failed = tools.filter(tool => {
-    const result = parseMaybeObject(tool.result)
-
-    // Explicit success beats stale envelope errors, as in individual rows.
-    return (
-      result.success !== true &&
-      result.ok !== true &&
-      Boolean(tool.isError || result.success === false || result.ok === false || extractToolErrorMessage(tool.result))
-    )
-  }).length
+  const failed = tools.filter(toolCallFailed).length
 
   if (failed) {
     clauses.push(translateNow('assistant.tool.failedCalls', failed))

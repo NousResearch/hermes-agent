@@ -155,6 +155,107 @@ def _forward_relay_fronted_run(job: Dict[str, Any], extra_prompt: Optional[str] 
     })
 
 
+def _live_gateway_adapters():
+    """Live platform adapters owned by this process, or None.
+
+    Mirrors the runner lookup in ``_run_claimed_job``: a manual run fired from
+    inside the gateway shares its adapters (delivery works); the CLI has none.
+    """
+    try:
+        runner_ref = getattr(sys.modules.get("gateway.run"), "_gateway_runner_ref", None)
+        runner = runner_ref() if callable(runner_ref) else None
+        return getattr(runner, "adapters", None) or None
+    except Exception:
+        return None
+
+
+def _multiplex_routed_delivery_platforms(job: Dict[str, Any]) -> set:
+    """Job delivery platforms reachable ONLY via the primary gateway's
+    ``profile_routes`` (not connected in this process's own config).
+
+    A satellite profile holds no platform credentials by design; the
+    multiplexer's ticker delivers through the primary's live adapters (#69377,
+    #97476). An out-of-process manual run has no such adapter, so delivery
+    there always fails - detect it here, before the agent turn (#120330).
+    Fails open: any lookup error means "not routed", keeping the old path.
+    """
+    try:
+        from cron.scheduler_delivery import _resolve_delivery_targets
+        targets = _resolve_delivery_targets(job) or []
+    except Exception:
+        return set()
+    names = {str(t.get("platform") or "").lower()
+             for t in targets if isinstance(t, dict) and t.get("platform")}
+    names.discard("local")
+    if not names:
+        return set()
+    try:
+        from gateway.config import load_gateway_config
+        connected = {str(p.value).lower()
+                     for p in load_gateway_config().get_connected_platforms()}
+    except Exception:
+        return set()
+    names -= connected
+    if not names:
+        return set()
+    try:
+        from cron.scheduler_preflight import _delivery_platform_routed_from_primary_gateway
+        return {n for n in names if _delivery_platform_routed_from_primary_gateway(n)}
+    except Exception:
+        return set()
+
+
+def _multiplex_serves_current_profile() -> bool:
+    """True when a running multiplexer already ticks this profile's store."""
+    try:
+        from hermes_cli.gateway import named_profile_served_by_running_multiplexer
+        return bool(named_profile_served_by_running_multiplexer())
+    except Exception:
+        return False
+
+
+def _divert_multiplex_routed_run(
+    job: Dict[str, Any], extra_prompt: Optional[str] = None,
+) -> Optional[str]:
+    """Divert a manual run whose delivery only exists behind the multiplexer's
+    ``profile_routes``: this process has no live adapter for it, so an
+    in-process run burns the agent turn and records ``delivery_failed``
+    (#120330). Served profile: mark due (the ticker fires it with live
+    adapters); unserved: fail fast before the turn. None = run in-process.
+    """
+    if _live_gateway_adapters():
+        return None  # in-gateway run: delivery works, run now
+    routed = _multiplex_routed_delivery_platforms(job)
+    if not routed:
+        return None
+    names = ", ".join(sorted(f"'{n}'" for n in routed))
+    if not _multiplex_serves_current_profile():
+        return tool_error(
+            f"This job delivers via platform {names}, which this profile reaches "
+            "only through the multiplexing gateway's profile_routes (no local "
+            "credentials). Start the gateway - its ticker owns that delivery and "
+            "will fire the job on schedule.",
+            success=False)
+    try:
+        from cron.jobs import trigger_job
+        trigger_job(job["id"], extra_prompt=extra_prompt)
+    except ValueError as exc:
+        return tool_error(str(exc), success=False)
+    except Exception as exc:
+        return tool_error(f"Could not mark job due for the scheduler tick: {exc}",
+                          success=False)
+    _notify_provider_jobs_changed_safe()
+    return _dumps({
+        "success": True,
+        "job": _refreshed_job_view(job["id"]),
+        "note": (
+            f"This job delivers via platform {names} through the multiplexing "
+            "gateway's profile_routes, which has no sender in this process. It "
+            "was marked due and will run on the next scheduler tick, where the "
+            "gateway's live adapters own that delivery."),
+    })
+
+
 def _manual_run_delivery_note(deliver: str, refreshed: Dict[str, Any]) -> str:
     """Parenthetical delivery note for a manual run's summary; follows the refreshed record's
     ``last_delivery_error`` so the summary never claims success over a failed delivery.
@@ -706,6 +807,11 @@ def _action_run(job: Dict[str, Any], a: Dict[str, Any]) -> str:
         forwarded = _forward_relay_fronted_run(job, extra_prompt=extra_prompt)
         if forwarded is not None:
             return forwarded
+        # Multiplex-routed delivery (profile_routes) has no sender in this
+        # process either - mark due / fail fast BEFORE the agent turn (#120330).
+        diverted = _divert_multiplex_routed_run(job, extra_prompt=extra_prompt)
+        if diverted is not None:
+            return diverted
         exec_result = _execute_job_now(job, extra_prompt=extra_prompt)
     # A claimed direct run advances next_run_at and may race an external provider's
     # one-shot for the same occurrence; a lost consumed fire cannot re-arm itself, so

@@ -368,6 +368,13 @@ class StreamFallbackMixin:
                 # actually carried the final response, vs. unrelated commentary delivered during a session
                 # split (#14238).
                 self._delivered_commentary_texts.append(text)
+                # #122905: interim sends were otherwise invisible at INFO, so a long turn's
+                # actual delivery order couldn't be reconstructed from the log.
+                logger.info(
+                    "[%s] Sending interim message seq=%d (%d chars) to %s",
+                    getattr(self.adapter, "name", "?"), len(self._delivered_commentary_texts),
+                    len(text), self.chat_id,
+                )
             return result.success
         except Exception as e:
             logger.error("Commentary send error: %s", e)

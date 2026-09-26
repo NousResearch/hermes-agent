@@ -1,15 +1,19 @@
 ---
-sidebar_position: 0
-title: "Run Nemotron 3 Ultra free in Hermes Agent"
-description: "Try NVIDIA Nemotron 3 Ultra on Nous Portal — free June 4–18 — with day 0 support in Hermes Agent"
+sidebar_position: 99
+title: "Run Nemotron 3 Ultra free in Hermes Agent (expired)"
+description: "This free-tier promotion ended June 18, 2026. Nemotron 3 Ultra remains available on Nous Portal at standard rates."
 ---
 
 # Run Nemotron 3 Ultra free in Hermes Agent
 
-Nous Research has been inducted into the **Nemotron Coalition** of leading AI labs working with **NVIDIA** to advance open frontier foundation models. In honor of this, we've partnered with **Nebius** to provide **Nemotron 3 Ultra** free on [Nous Portal](https://portal.nousresearch.com) for two weeks (**June 4th – June 18th**). Follow the instructions below to try the model in your Hermes Agent today.
+:::caution Offer expired
+The free `nvidia/nemotron-3-ultra:free` tier promotion ended on **June 18, 2026**. The model remains available on [Nous Portal](https://portal.nousresearch.com) at standard rates. See the [general provider setup guide](/docs/guides/run-hermes-with-nous-portal) for current options.
+:::
 
-:::info Limited-time offer
-The `nvidia/nemotron-3-ultra:free` tier is available from **June 4th to June 18th**. The `:free` tag is what keeps it on the no-cost plan — pick that exact variant.
+Nous Research has been inducted into the **Nemotron Coalition** of leading AI labs working with **NVIDIA** to advance open frontier foundation models. In honor of this, we partnered with **Nebius** to provide **Nemotron 3 Ultra** free on [Nous Portal](https://portal.nousresearch.com) for two weeks (**June 4th – June 18th, 2026**). The instructions below are preserved for reference.
+
+:::info This offer has ended
+The `nvidia/nemotron-3-ultra:free` tier was available from **June 4th to June 18th, 2026**. The `:free` tag kept it on the no-cost plan during the promotion.
 :::
 
 Pick whichever install fits you. The **desktop app** is the easiest — no terminal required. If you live in a terminal, the **command-line** install is right below it.

@@ -41,6 +41,13 @@ def _reset_migration_counters(monkeypatch):
     yield
 
 
+@pytest.fixture(autouse=True)
+def _brussels_profile(monkeypatch):
+    """The profile zone these rows are scheduled in. The pinned clock alone does not set it: with
+    no zone configured, cron occurrences follow the host's zone, and the suite runs on UTC."""
+    monkeypatch.setenv("HERMES_TIMEZONE", "Europe/Brussels")
+
+
 # Europe/Brussels is +02:00 on this date; the legacy row was written by a
 # build that scheduled everything at the UTC offset.
 _BRUSSELS_NOW = datetime.fromisoformat("2026-09-02T06:05:00+02:00")

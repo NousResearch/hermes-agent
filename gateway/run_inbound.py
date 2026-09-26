@@ -1062,11 +1062,22 @@ class GatewayInboundMixin:
                 if plugin_handler:
                     # The agent-turn path binds HERMES_SESSION_* via _set_session_env; this dispatch
                     # sits before it, so a handler reading get_session_env() would see an empty or a
-                    # foreign (cron agent's os.environ) session (#108698). No session_entry exists yet,
-                    # so session_key is derived from source. Sync handlers run on the gateway pool
-                    # (contextvars carried), never the loop thread: blocking I/O there starves the
-                    # liveness watchdog and the process exits 75 mid-handler (#105279).
-                    _plugin_context = build_session_context(source, self.config)
+                    # foreign (cron agent's os.environ) session (#108698). Resolve session_entry so
+                    # session_id and session_key are both bound for plugins (#123245). Sync handlers run
+                    # on the gateway pool (contextvars carried), never the loop thread: blocking I/O
+                    # there starves the liveness watchdog and the process exits 75 mid-handler (#105279).
+                    _session_entry = None
+                    if hasattr(self, "async_session_store") and self.async_session_store:
+                        try:
+                            _session_entry = await self.async_session_store.get_or_create_session(source)
+                        except Exception:
+                            pass
+                    elif hasattr(self, "session_store") and self.session_store:
+                        try:
+                            _session_entry = self.session_store.get_or_create_session(source)
+                        except Exception:
+                            pass
+                    _plugin_context = build_session_context(source, self.config, _session_entry)
                     _plugin_context.session_key = self._session_key_for_source(source)
                     user_args = event.get_command_args().strip()
                     with self._session_env_scope(_plugin_context):

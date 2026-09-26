@@ -1,0 +1,35 @@
+name: aphrodite
+repo: https://github.com/PlayForm/Aphrodite-Hermes
+sha: 3baf19a4639f365de368a9bb40b33cce776ba4bc
+description: CCR compression plugin - 28-type classifier, 13 tools, dylib hot-reload, context engine, TOML-driven templates.
+maintainer: NikolaRHristov
+tier: community
+category: tools
+requires_hermes: ">=0.16.0"
+docs_url: https://github.com/PlayForm/Aphrodite-Hermes#readme
+version: "2.1.5"
+capabilities:
+  provides_tools:
+  - aphrodite_retrieve
+  - aphrodite_compress
+  - aphrodite_stats
+  - aphrodite_rebuild
+  - aphrodite_files
+  - aphrodite_diff
+  - aphrodite_search
+  - aphrodite_directive
+  - aphrodite_test
+  - aphrodite_catalog
+  - aphrodite_reclassify
+  - aphrodite_prefetch
+  - aphrodite_prefetch_status
+  provides_hooks:
+  - on_session_start
+  - transform_tool_result
+  - pre_llm_call
+  - transform_terminal_output
+  - post_llm_call
+  - pre_tool_call
+  provides_middleware: []
+  requires_env:
+  - APHRODITE_API_KEY

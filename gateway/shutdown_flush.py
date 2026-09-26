@@ -132,11 +132,13 @@ def spool_dropped_transcript_message(session_id: str, message: Dict[str, Any]) -
         return None
 
 
-def drain_transcript_spool(session_id: str, replay) -> tuple[int, int]:
+def drain_transcript_spool(session_id: str, replay, *, db_known_failing: bool = False) -> tuple[int, int]:
     """Replay cap-dropped transcript messages spooled for *session_id*; return ``(replayed,
     remaining)``. ``replay(message_dict)`` runs per message in drop order; a spool file is deleted
     only after its replay succeeds. The first failure stops the drain (the DB is likely still
-    unhealthy) and keeps the rest for retry.
+    unhealthy) and keeps the rest for retry. With ``db_known_failing`` (the caller's last write
+    already failed and is being logged/escalated) a replay failure is expected and logs at DEBUG,
+    so a stalled session does not add one WARNING per append on top of its ERROR (#114266).
     """
     try:
         candidates = list(_get_flush_dir().glob("pending-*.json"))
@@ -146,10 +148,13 @@ def drain_transcript_spool(session_id: str, replay) -> tuple[int, int]:
     entries = []
     for path in candidates:
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload = json.loads(path.read_text(encoding="utf-8-sig"))
         except Exception:
             continue
-        if (payload.get("reason") != TRANSCRIPT_CAP_DROP_REASON
+        # A parseable non-object file (scalar/list) cannot be attributed to any session: skip it
+        # like unparseable JSON instead of letting ``.get`` abort the whole drain.
+        if (not isinstance(payload, dict)
+                or payload.get("reason") != TRANSCRIPT_CAP_DROP_REASON
                 or payload.get("session_key") != session_id):
             continue
         message = (payload.get("data") or {}).get("message")
@@ -163,8 +168,9 @@ def drain_transcript_spool(session_id: str, replay) -> tuple[int, int]:
         try:
             replay(message)
         except Exception as exc:
-            logger.warning("Replay of spooled transcript message %s for %s failed; "
-                           "keeping spool file for retry: %s", path, session_id, exc)
+            (logger.debug if db_known_failing else logger.warning)(
+                "Replay of spooled transcript message %s for %s failed; "
+                "keeping spool file for retry: %s", path, session_id, exc)
             remaining = len(ordered) - idx
             break
         path.unlink(missing_ok=True)
@@ -222,10 +228,12 @@ def recover_pending_to_db(session_db=None, *, session_resolver=None) -> int:
         for path in flush_files:
             # One unparseable payload or rejected append must only skip THIS file: the file is
             # never unlinked, so aborting the pass would re-poison every later boot.
+            # utf-8-sig: our BOM-tolerant read fix for flush files.
             try:
-                payload = json.loads(path.read_text(encoding="utf-8"))
-                # Agent-history snapshots are for manual operator recovery, not automatic DB
-                # insertion.
+                payload = json.loads(path.read_text(encoding="utf-8-sig"))
+                # Agent-history snapshots use a different schema (reason +
+                # messages list) and are meant for manual operator recovery,
+                # not automatic DB insertion. Skip them silently.
                 if payload.get("reason") == "shutdown-with-unpersisted-agent-history":
                     continue
                 if _recover_one_payload(session_db, path, payload,

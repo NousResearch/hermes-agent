@@ -1,9 +1,11 @@
-import { atom } from 'nanostores'
+import { replaceEqualDeep } from '@tanstack/react-query'
+import { atom, computed } from 'nanostores'
 
 import type { NewSessionPlacement } from '@/app/chat/new-session-drag'
 import {
   liveSessionProjectId,
   NO_PROJECT_ID,
+  projectOwnerBySessionId,
   type SidebarProjectTree
 } from '@/app/chat/sidebar/projects/workspace-groups'
 import type { HermesGitBaseBranch, HermesGitBranch } from '@/global'
@@ -13,7 +15,7 @@ import { desktopDefaultCwd, isDesktopFsRemoteMode, selectDesktopPaths, writeDesk
 import { desktopGit } from '@/lib/desktop-git'
 import { isMissingRestEndpoint, isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { isUnderPath } from '@/lib/path-compare'
-import { persistentAtom } from '@/lib/persisted'
+import { revealFile } from '@/store/file-actions'
 import { $gateway, activeGateway, ensureActiveGatewayOpen } from '@/store/gateway'
 import { $sidebarShowAllSessions, setSidebarAgentsGrouped } from '@/store/layout'
 import { notify } from '@/store/notifications'
@@ -24,10 +26,13 @@ import {
   normalizeProfileKey,
   requestFreshSession
 } from '@/store/profile'
+import { $projectScope, ALL_PROJECTS } from '@/store/project-scope'
 import {
+  $currentCwd,
   $selectedStoredSessionId,
   $sessions,
   sessionMatchesStoredId,
+  setCurrentCwd,
   setSessions,
   workspaceCwdForNewSession
 } from '@/store/session'
@@ -48,6 +53,11 @@ export const $activeProjectId = atom<null | string>(null)
 // source of project membership — the desktop no longer derives it.
 export const $projectTree = atom<SidebarProjectTree[]>([])
 export const $projectTreeLoading = atom(false)
+// Backend-resolved session -> project owner, the ONE authority the row
+// classifiers (filter, bucket, color, label) and the lane overlay share, so a
+// sibling worktree the git probe assigned to its repo project never re-files
+// under an umbrella folder by cwd.
+export const $projectOwnerBySessionId = computed($projectTree, projectOwnerBySessionId)
 
 // False when the connected backend predates the projects.* JSON-RPC surface
 // (same semver label, older install). Null until the first probe.
@@ -70,22 +80,6 @@ function projectsStaleBackendError(): Error {
 // True while the disk scan is in flight (drives the "finding repos" hint).
 export const $reposScanning = atom(false)
 
-// ── Project scope (the "you're inside a project" view, mirroring profile scope)─
-// The sidebar's grouped view is a project switcher: ALL_PROJECTS shows the
-// project overview (a list you drill into), and a concrete id means you've
-// "entered" that project so only its worktrees/branches/sessions show. This is
-// pure view state (localStorage), distinct from the durable active-project
-// pointer in projects.db — though entering a project also makes it active so new
-// chats land there, exactly as selecting a profile does.
-export const ALL_PROJECTS = '__all_projects__'
-
-const PROJECT_SCOPE_KEY = 'hermes.desktop.projectScope'
-
-export const $projectScope = persistentAtom<string>(PROJECT_SCOPE_KEY, ALL_PROJECTS, {
-  decode: raw => raw || ALL_PROJECTS,
-  encode: value => value || ALL_PROJECTS
-})
-
 // Enter a project: scope the sidebar to it and make it the active project
 // (best-effort — the durable pointer is nice-to-have, the view scope is the
 // point). Never opens a session.
@@ -98,10 +92,6 @@ export function enterProject(id: string): void {
   if (id.startsWith('p_')) {
     void setActiveProject(id).catch(() => undefined)
   }
-}
-
-export function exitProjectScope(): void {
-  $projectScope.set(ALL_PROJECTS)
 }
 
 // A project's working root: its primary folder, else the first repo that has
@@ -166,6 +156,23 @@ export function resolveNewSessionCwd(): string {
   }
 
   return workspaceCwdForNewSession()
+}
+
+// Entering a project moves the live workspace only when main holds a fresh
+// draft: the draft has no folder of its own yet, and the project root is where
+// its first message should run. A stored conversation keeps its cwd — entering
+// is a scope switch, and moving the workspace under the selected chat re-pointed
+// Files/Review and the composer's Git context at the project while the
+// transcript stayed on the old session (#72772). The next new chat still lands
+// in the project through resolveNewSessionCwd.
+export function followEnteredProjectCwd(cwd: string): void {
+  const target = cwd.trim()
+
+  if (!target || $selectedStoredSessionId.get() || target === $currentCwd.get()) {
+    return
+  }
+
+  setCurrentCwd(target)
 }
 
 // The project (explicit or auto) that owns `cwd`, by longest path match across
@@ -402,7 +409,10 @@ let projectTreeRefreshGeneration = 0
 
 function applyProjectTreePayload(res: ProjectTreePayload): void {
   const scoped = new Set(res.scoped_session_ids ?? [])
-  $projectTree.set(res.projects ?? [])
+  // The tree refreshes on every sessions.changed and window focus, and most of
+  // those answers are unchanged. Keep unchanged nodes by reference so the
+  // entered project doesn't refetch and rebuild on a no-op (#77591).
+  $projectTree.set(replaceEqualDeep($projectTree.get(), res.projects ?? []))
   $activeProjectId.set(res.active_id ?? null)
   const tombstones = $removedSessionIds.get()
 
@@ -1106,7 +1116,7 @@ function openSessionBelongsToProject(projectId: string, projects: ProjectInfo[])
 
   const open = $sessions.get().find(s => sessionMatchesStoredId(s, openId))
 
-  return Boolean(open && liveSessionProjectId(open, projects) === projectId)
+  return Boolean(open && liveSessionProjectId(open, projects, $projectOwnerBySessionId.get()) === projectId)
 }
 
 // Optimistic: drop the project from the cached tree + list the instant it's
@@ -1386,9 +1396,11 @@ export async function removeWorktreePath(
 }
 
 // Reveal a project/worktree path in the OS file manager (git-GUI standard).
+// Routes through `revealFile` so a path that is not on this computer toasts
+// instead of silently showing nothing.
 export async function revealPath(path: null | string): Promise<void> {
   if (path) {
-    await window.hermesDesktop?.revealPath?.(path)
+    await revealFile(path)
   }
 }
 

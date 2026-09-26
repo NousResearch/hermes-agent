@@ -234,14 +234,19 @@ Restore just one file from a checkpoint without affecting the rest of the direct
 
 ## Safety and Performance Guards
 
+### Container Backends
+
+With a container terminal backend (`docker`, `singularity`, `modal`, `daytona`, `vercel_sandbox`, or a container plugin), file paths belong to the sandbox rather than the host. Hermes therefore does not take checkpoints or record the agent-write ledger for those paths, and `/rollback` explains the limitation: it still lists existing host checkpoints but refuses diff and restore, on the CLI and in messaging-gateway chats alike; `/diff session` answers with the same reason. The TUI and Desktop behave the same: `/rollback list` still works while `/rollback diff` and `/rollback <N>` are refused with that reason. Local and SSH backends are unaffected. To point `terminal.cwd` at the container-side view of a mounted directory see [`terminal.docker_mount_cwd_to_workspace`](./configuration.md).
+
 - **Git availability** — if `git` is not found on `PATH`, checkpoints are transparently disabled.
 - **Directory scope** — Hermes skips overly broad directories (root `/`, home `$HOME`).
 - **Repository size** — directories with more than 50,000 files are skipped.
 - **Per-file size cap** — files larger than `max_file_size_mb` (default 10 MB) are excluded from the snapshot. Prevents accidentally swallowing datasets, model weights, or generated media.
-- **Total store size cap** — when the store exceeds `max_total_size_mb` (default 500 MB), each checkpoint drops the oldest commit of every project that still has more than one snapshot (one round per checkpoint), and the periodic prune repeats drop → gc → re-measure until the store fits. A project is never reduced below one snapshot, so a store of many large projects can legitimately sit above the cap.
+- **Total store size cap** — when the store exceeds `max_total_size_mb` (default 500 MB), the oldest commit per project is dropped round-robin. Each drop is reclaimed before deciding whether another is necessary. Every project keeps at least one snapshot. A failed Git operation stops pruning and is reported; maintenance never discards more history to compensate for failed reclamation.
 - **Real pruning, off the hot path** — `max_snapshots` and the size cap are enforced by rewriting the per-project ref at checkpoint time (cheap); the store is then marked `.gc-pending` and the periodic prune runs `git gc --prune=now` once, so loose objects don't accumulate and a tool call never waits on a full repack.
+- **Concurrent operations** — snapshots, restores, diffs and maintenance use one process-shared store lock. An operation reports a busy store rather than running GC over another process's unpublished objects. A restore applies its selected tree before pruning the safety snapshot's history.
 - **No-change snapshots** — if there are no changes since the last snapshot, the checkpoint is skipped.
-- **Non-fatal errors** — all errors inside the Checkpoint Manager are logged at debug level; your tools continue to run.
+- **Non-fatal errors** — snapshot failures do not block your tools. Pruning failures are logged as warnings; explicit maintenance reports an error count.
 
 ## Where Checkpoints Live
 
@@ -259,6 +264,8 @@ Restore just one file from a checkpoint without affecting the rest of the direct
 ```
 
 Each `<hash>` is derived from the absolute path of the working directory. You normally never need to touch these manually — use `hermes checkpoints status` / `prune` / `clear` instead.
+
+The sibling `.checkpoints.lock` coordinates processes and survives a store clear. Do not remove it while Hermes is running.
 
 ### Migration from v1
 

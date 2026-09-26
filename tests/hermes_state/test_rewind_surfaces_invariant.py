@@ -49,7 +49,7 @@ def _rewind_via(surface: str, db: SessionDB, sid: str, n: int):
         store._lazy = lambda name, factory: factory()
         store._clear_dirty_transcript = lambda _sid: None
         return store.rewind_session(sid, n)
-    warm = db.get_messages_as_conversation(sid)
+    warm = db.get_resume_conversations(sid)[0]  # the live process holds the alternation-repaired projection
     user_turns = sum(1 for m in warm if m.get("role") == "user")
     ordinal = user_turns - n
     if surface == "cli":
@@ -134,3 +134,20 @@ def test_out_of_range_target_changes_nothing_on_every_surface(db, surface):
                 db.rewind_user_turn(sid + "-empty", -1, warm_history=[])
         assert _active_rows(db, sid + "-empty") == []
     assert _active_rows(db, sid) == before
+
+
+@pytest.mark.parametrize("surface", SURFACES)
+def test_undo_after_an_unanswered_turn_rewinds_the_merged_turn_on_every_surface(db, surface):
+    """#115493: a turn that ended with no assistant reply leaves a stored ``user;user`` pair that live replay
+    merges into one turn. /undo 1 takes back that merged turn (both stored rows) instead of refusing with
+    "history changed" forever, and /undo 1 again reaches the turn before it."""
+    sid = f"wedged-{surface}"
+    db.create_session(sid, source="cli")
+    for role, content in (("user", "q1"), ("assistant", "a1"), ("user", "q2_failed"), ("user", "q3"),
+                          ("assistant", "a3")):
+        db.append_message(sid, role, content)
+    assert len([m for m in db.get_resume_conversations(sid)[0] if m["role"] == "user"]) == 2
+    assert _rewind_via(surface, db, sid, 1) is not None
+    assert [c for _i, _r, c, a in _active_rows(db, sid) if a] == ["q1", "a1"]
+    assert _rewind_via(surface, db, sid, 1) is not None
+    assert [c for _i, _r, c, a in _active_rows(db, sid) if a] == []

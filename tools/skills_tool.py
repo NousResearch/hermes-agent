@@ -27,6 +27,7 @@ from tools.skills_tool_plugin import (  # noqa: F401
     _serve_plugin_skill, _serve_skill_file, _truncate_description)
 from tools.skills_tool_dedup import (  # noqa: F401
     _check_skill_view_dedup, _record_skill_view, reset_skill_view_dedup)
+from tools.skill_provenance import is_background_review
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +114,7 @@ def _skill_utils_delegate(attr: str):
 skill_matches_platform = _skill_utils_delegate("skill_matches_platform")
 # Offer-time relevance gate (kanban/docker/s6), NOT hard compatibility; explicit loads bypass it.
 skill_matches_environment = _skill_utils_delegate("skill_matches_environment")
+skill_matches_apps = _skill_utils_delegate("skill_matches_apps")
 _parse_frontmatter = _skill_utils_delegate("parse_frontmatter")
 _get_disabled_skill_names = _skill_utils_delegate("get_disabled_skill_names")
 
@@ -202,7 +204,7 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                 continue
             try:
                 frontmatter, body = _parse_frontmatter(_read_skill_text(skill_md)[:4000])
-                if not skill_matches_platform(frontmatter) or not skill_matches_environment(frontmatter):
+                if not skill_matches_platform(frontmatter) or not skill_matches_environment(frontmatter) or not skill_matches_apps(frontmatter):
                     continue
                 name = frontmatter.get("name", skill_md.parent.name)[:MAX_NAME_LENGTH]
                 if name in seen_names or name in disabled:
@@ -380,7 +382,7 @@ def _skill_linked_files(skill_dir: Optional[Path]) -> dict:
     for sub, globs, recursive, files_only in _LINKED_FILE_SPECS if skill_dir else ():
         base = skill_dir / sub
         found = [
-            str(f.relative_to(skill_dir)) for g in globs if base.exists()
+            f.relative_to(skill_dir).as_posix() for g in globs if base.exists()
             for f in (base.rglob(g) if recursive else base.glob(g))
             if not files_only or f.is_file()]
         if found:
@@ -628,6 +630,34 @@ def skill_view(
                 org_provenance, header = _org_provenance_header(skill_dir, active_skills_dir)
             except Exception:
                 logger.debug("Could not resolve org provenance for %s", skill_name, exc_info=True)
+
+        # ── pm tool deps (`deps: [ffmpeg]` frontmatter) ──────────────
+        # Loading the skill IS the activation moment: ensure each declared
+        # pm package now so the skill's commands work when the model runs
+        # them. Failure never blocks the skill content — the note carries
+        # the remedy.
+        deps_note = None
+        declared_deps = frontmatter.get("deps") or []
+        if isinstance(declared_deps, str):
+            declared_deps = [declared_deps]
+        if isinstance(declared_deps, list) and declared_deps:
+            failed_deps = []
+            for dep in [str(d).strip() for d in declared_deps if str(d).strip()]:
+                try:
+                    import pm
+
+                    pm.ensure(dep)
+                except Exception as exc:
+                    failed_deps.append(f"{dep}: {exc}")
+            if failed_deps:
+                deps_note = (
+                    "Tool dependencies could not be installed — "
+                    + "; ".join(failed_deps)
+                    + ". Run `hermes pm install "
+                    + " ".join(str(d) for d in declared_deps)
+                    + "` and reload."
+                )
+
         result = {
             "success": True, "name": skill_name, "description": frontmatter.get("description", ""),
             "tags": tags, "related_skills": related_skills, "content": header + rendered_content,
@@ -639,6 +669,8 @@ def skill_view(
             # Internal: absolute source path for the repeat-view dedup fingerprint.
             "_source_path": str(skill_md),
             **readiness_extras}
+        if deps_note:
+            result["deps_note"] = deps_note
         _mark_background_review_read(skill_md)
         if frontmatter.get("compatibility"):  # agentskills.io optional fields
             result["compatibility"] = frontmatter["compatibility"]
@@ -695,13 +727,18 @@ def _skill_view_with_bump(args, **kw):
     session returns a short stub (cache cleared on context compression)."""
     name = args.get("name", "")
     task_id = kw.get("task_id")
-    if (stub := _check_skill_view_dedup(task_id, name, args.get("file_path"))) is not None:
+    # The background-review fork shares the parent's task_id (prefix-cache parity). A stub there
+    # (a) skips the read-mark its read-before-write guard requires and (b) lets it patch from a
+    # possibly-pruned transcript copy (#95976). No dedup in the fork; None also keeps its views
+    # out of the parent's bucket.
+    dedup_task_id = None if is_background_review() else task_id
+    if (stub := _check_skill_view_dedup(dedup_task_id, name, args.get("file_path"))) is not None:
         return stub
     result = skill_view(name, file_path=args.get("file_path"), task_id=task_id)
     with suppress(Exception):
         parsed = json.loads(result)
         if isinstance(parsed, dict) and parsed.get("success"):
-            _record_skill_view(task_id, name, args.get("file_path"), parsed)
+            _record_skill_view(dedup_task_id, name, args.get("file_path"), parsed)
             if resolved := parsed.get("name") or name:  # qualified forms return the canonical name
                 from tools.skill_usage import bump_use, bump_view
                 bump_view(str(resolved))

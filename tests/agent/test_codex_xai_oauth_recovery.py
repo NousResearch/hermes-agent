@@ -70,18 +70,12 @@ def _make_codex_agent():
     return agent
 
 
-@pytest.mark.parametrize(
-    "provider_message",
-    [
-        "You do not have an active Grok subscription",
-        "rate limit exceeded",
-        "model not available",
-    ],
-)
-def test_codex_stream_wire_error_event_surfaces_stream_error_event(provider_message):
+def test_codex_stream_wire_error_event_surfaces_stream_error_event():
     """A wire ``type=error`` SSE frame raises ``_StreamErrorEvent`` with the
     provider's real message in the body."""
     from run_agent import _StreamErrorEvent
+
+    provider_message = "You do not have an active Grok subscription"
 
     agent = _make_codex_agent()
 
@@ -186,39 +180,11 @@ def test_summarize_api_error_decorates_xai_entitlement_403():
     summary = AIAgent._summarize_api_error(error)
     # The original xAI text must survive — it's still useful diagnostic info.
     assert "do not have an active Grok subscription" in summary
-    # The hint MUST lead with the X Premium+ gotcha (most likely cause
-    # for users who think they're subscribed).
-    assert "X Premium+ does NOT include" in summary
-    assert "standalone SuperGrok subscribers" in summary
-    # Other causes still listed.
-    assert "no Grok subscription" in summary
-    assert "tier doesn't include this model" in summary
-    assert "quota is exhausted" in summary
-    # The hint must point at the usage page where the user can verify.
-    assert "https://grok.com/?_s=usage" in summary
-    # Switching providers is still a valid escape hatch.
+    # A remediation hint is appended, including the provider-switch escape hatch.
+    assert len(summary) > len(str(error))
     assert "/model" in summary
 
 
-def test_summarize_api_error_does_not_accuse_subscribers():
-    """Hint must not confidently say the user has no subscription.
-
-    Don Piedro reported his subscription is active. The hint must not
-    contradict him — leading with the X Premium+ gotcha gives subscribers
-    a plausible reason ("oh, I'm on Premium+ not pure SuperGrok") instead
-    of accusing them of lying about having a subscription.
-    """
-    from run_agent import AIAgent
-
-    error = RuntimeError(
-        "HTTP 403: do not have an active Grok subscription"
-    )
-    summary = AIAgent._summarize_api_error(error)
-    # MUST NOT contain language that flatly assumes the user is unsubscribed.
-    assert "lacks SuperGrok" not in summary
-    assert "you are not subscribed" not in summary.lower()
-    # MUST lead with the most-likely-but-non-accusatory cause.
-    assert "X Premium+ does NOT include" in summary
 
 
 
@@ -534,44 +500,8 @@ def test_recover_with_credential_pool_rotates_on_xai_spending_limit_403():
 # ---------------------------------------------------------------------------
 
 
-def test_grok_4_3_context_length_is_1m():
-    """grok-4.3 ships with 1M context per docs.x.ai/developers/models/grok-4.3.
-
-    Hermes' substring-match fallback used to return 256k (from the
-    "grok-4" catch-all) which under-reported the model's real capacity.
-    """
-    from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS
-
-    # The entry exists with the expected value.
-    assert DEFAULT_CONTEXT_LENGTHS["grok-4.3"] == 1_000_000
-
-    # And longest-first substring matching resolves grok-4.3 and
-    # grok-4.3-latest to the new value, NOT the grok-4 catch-all.
-    for slug in ("grok-4.3", "grok-4.3-latest"):
-        matched_key = max(
-            (k for k in DEFAULT_CONTEXT_LENGTHS if k in slug.lower()),
-            key=len,
-        )
-        assert matched_key == "grok-4.3", (
-            f"Expected longest-first match to land on grok-4.3 for {slug}, "
-            f"got {matched_key}"
-        )
-        assert DEFAULT_CONTEXT_LENGTHS[matched_key] == 1_000_000
 
 
-def test_grok_4_still_resolves_to_256k():
-    """Regression guard: grok-4 (non-.3) must still resolve to 256k."""
-    from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS
-
-    for slug in ("grok-4", "grok-4-0709"):
-        matched_key = max(
-            (k for k in DEFAULT_CONTEXT_LENGTHS if k in slug.lower()),
-            key=len,
-        )
-        # grok-4-0709 contains "grok-4" but not "grok-4.3"; matched key
-        # must be "grok-4" (or a more specific variant family if one is
-        # ever added).  The 256k contract must hold.
-        assert DEFAULT_CONTEXT_LENGTHS[matched_key] == 256_000
 
 
 

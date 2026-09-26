@@ -250,13 +250,14 @@ def _mcp_error(code, message="boom"):
     ``.error.code`` attribute ``_is_method_not_found_error`` inspects survives
     unchanged, which is the point of the structural check.
     """
-    from mcp.shared.exceptions import MCPError
-    return MCPError(code=code, message=message)
+    exceptions = pytest.importorskip("mcp.shared.exceptions", reason="MCP SDK not installed")
+    return exceptions.MCPError(code=code, message=message)
 
 
 class TestMethodNotFoundDetection:
     """``_is_method_not_found_error`` underpins the ping→list_tools fallback."""
 
+    @pytest.mark.usefixtures("require_mcp_2_sdk")
     def test_structural_code_match(self):
         from tools.mcp_tool_errors import _is_method_not_found_error
         assert _is_method_not_found_error(_mcp_error(-32601)) is True
@@ -323,6 +324,7 @@ class TestKeepaliveProbeFallback:
         task.session.list_tools.assert_not_called()
         assert task._ping_unsupported is False
 
+    @pytest.mark.usefixtures("require_mcp_2_sdk")
     async def test_no_ping_no_tools_propagates_method_not_found(self):
         """A server advertising neither working ping nor tools has no cheaper
         probe — the -32601 must propagate rather than calling list_tools on a

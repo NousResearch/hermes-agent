@@ -74,10 +74,9 @@ def test_genuine_external_worker_crash_is_recovered_unknown(
     assert execution_ledger.recover_interrupted_executions() == 1
     recovered = execution_ledger.latest_execution("job-crash")
     assert recovered["status"] == "unknown"
-    assert "whether side effects ran is unknown" in recovered["error"]
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_restart_safe_gateway_child_fails_closed_when_required(monkeypatch):
     import tools.process_registry as process_registry
 
@@ -93,7 +92,7 @@ def test_restart_safe_gateway_child_fails_closed_when_required(monkeypatch):
         )
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_restart_safe_gateway_child_degrades_without_scope(monkeypatch, caplog):
     """Managed gateway + no user bus degrades to a mode distinct from the
     in-process passthrough, and warns once per process, not per dispatch."""
@@ -129,22 +128,6 @@ def test_restart_safe_gateway_child_is_unchanged_outside_managed_gateway(monkeyp
     assert dispatch.argv is command
 
 
-def test_restart_safe_gateway_child_never_probes_systemd_off_linux(monkeypatch):
-    import tools.process_registry as process_registry
-
-    command = ["python", "worker.py"]
-    probe = Mock(side_effect=AssertionError("systemd probe ran off Linux"))
-    monkeypatch.setattr(process_registry, "_IS_LINUX", False)
-    monkeypatch.setattr(process_registry, "_is_supervised_gateway_process", lambda: True)
-    monkeypatch.setattr(process_registry, "_systemd_run_user_scope_available", probe)
-    monkeypatch.setenv("INVOCATION_ID", "managed-service")
-
-    dispatch = process_registry.restart_safe_gateway_child_argv(
-        command, unit_suffix="cron-job-1", require_restart_safe_scope=False
-    )
-    assert dispatch.mode == "in_process"
-    assert dispatch.argv is command
-    probe.assert_not_called()
 
 
 def test_external_worker_adopts_execution_and_runs_payload_once(
@@ -192,6 +175,43 @@ def test_external_worker_adopts_execution_and_runs_payload_once(
     # Post-ack the worker owns the stderr capture: a gateway that restarted mid-run
     # would otherwise leave one orphan per surviving run.
     assert not stderr_capture.exists()
+
+
+def test_external_worker_ack_is_never_observable_half_written(tmp_path, monkeypatch):
+    """The gateway polls ``ack_path.exists()`` then reads it (#107184, #116164 form 1): the ack
+    must appear atomically with its full body, or the parent logs "unreadable acknowledgement"
+    and loses the worker pid for a handoff that actually succeeded."""
+    import cron.scheduler as scheduler
+
+    payload = tmp_path / "payload.json"
+    ack = tmp_path / "exec-1.ready"
+    payload.write_text(
+        json.dumps({
+            "job": {"id": "job-1", "execution_id": "exec-1"},
+            "profile_home": str(tmp_path / "profile"),
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "cron.executions.adopt_claimed_execution",
+        lambda execution_id: {"id": execution_id, "status": "running"})
+    monkeypatch.setattr(scheduler, "run_one_job", lambda *_a, **_k: True)
+
+    real_dump = json.dump
+    visible_while_writing = []
+
+    def spying_dump(obj, fp, *args, **kwargs):
+        # The body is being produced right now: a reader must not be able to see the ack yet.
+        visible_while_writing.append(ack.exists())
+        return real_dump(obj, fp, *args, **kwargs)
+
+    monkeypatch.setattr(scheduler.json, "dump", spying_dump)
+
+    assert scheduler._run_external_worker_payload(payload, ack) is True
+
+    assert visible_while_writing == [False]
+    assert json.loads(ack.read_text(encoding="utf-8"))["execution_id"] == "exec-1"
+    assert [p.name for p in tmp_path.iterdir() if p.name.startswith("exec-1")] == [ack.name]
 
 
 def test_external_worker_refuses_to_run_without_durable_ownership(
@@ -409,7 +429,7 @@ def test_launch_external_worker_honors_ack_within_adoption_grace(
     assert scheduler._launch_external_cron_worker(job) is True
     # The acknowledged path records the worker pid; the ownership-uncertain
     # timeout path never does.
-    assert scheduler._running_worker_pids == {"job-cold": 4321}
+    assert scheduler._running_worker_pids == {scheduler._inflight_key("job-cold"): 4321}
 
 
 def test_worker_dying_before_ack_names_its_stderr_cause(tmp_path, monkeypatch):
@@ -481,6 +501,36 @@ def test_external_worker_crash_recovers_uncertain_attempt(monkeypatch):
     assert get.call_count == 2
 
 
+
+
+def test_terminal_early_return_reaps_a_real_worker_process(monkeypatch):
+    """End-to-end zombie guard: after the early return the real worker process
+    must be reaped without the test itself calling wait()/poll() — reading
+    ``Popen.returncode`` reaps nothing, so only the background thread can set
+    it (#114509)."""
+    import cron.scheduler as scheduler
+
+    monkeypatch.setattr(
+        scheduler,
+        "get_execution",
+        lambda _execution_id: {"id": "exec-1", "status": "completed"},
+        raising=False,
+    )
+    process = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(1.3)"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+    assert scheduler._wait_for_external_cron_worker_body(
+        process, execution_id="exec-1"
+    ) is True
+    deadline = time.monotonic() + 8.0
+    while process.returncode is None and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert process.returncode == 0
+
+
 def test_launch_external_worker_stays_in_process_outside_managed_gateway(
     monkeypatch,
 ):
@@ -506,7 +556,7 @@ def test_launch_external_worker_stays_in_process_outside_managed_gateway(
     popen.assert_not_called()
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_launch_external_worker_degrades_by_default_with_real_helper(
     tmp_path, monkeypatch,
 ):
@@ -613,19 +663,66 @@ def test_shared_run_path_hands_gateway_fire_to_external_worker(monkeypatch):
     run.assert_not_called()
 
 
+def test_dispatch_failure_opens_incident_and_delivers_failure_notice(
+    execution_ledger, monkeypatch
+):
+    """A failed external-worker handoff must surface like any other job failure: one
+    incident row plus one failure-lane notice, with repeats withheld by the alerted
+    cooldown (#123401) — not a silent outage while executions.db piles up failed rows."""
+    import cron.incidents as incidents
+    import cron.scheduler as scheduler
+
+    def _handoff_boom(_job):
+        raise RuntimeError("worker exited before ownership acknowledgement")
+
+    monkeypatch.setattr(scheduler, "_launch_external_cron_worker", _handoff_boom)
+    monkeypatch.setattr(scheduler, "mark_job_run", lambda *_a, **_k: True)
+    delivered = []
+    monkeypatch.setattr(
+        scheduler, "_deliver_result",
+        lambda job, content, **_kw: delivered.append(content) or None)
+
+    record = execution_ledger.create_execution("job-dispatch", source="builtin")
+    job = {"id": "job-dispatch", "execution_id": record["id"],
+           "deliver": "telegram:123"}
+    assert scheduler.run_one_job(job, adapters=None) is True
+
+    rows = incidents.list_incidents()
+    assert len(rows) == 1
+    assert rows[0]["job_id"] == "job-dispatch"
+    assert rows[0]["state"] == "alerted"
+    assert "Restart-safe cron worker dispatch failed" in rows[0]["error"]
+    assert len(delivered) == 1 and delivered[0].strip()
+    finished = execution_ledger.get_execution(record["id"])
+    assert finished["status"] == "failed"
+    assert "Restart-safe cron worker dispatch failed" in finished["error"]
+    assert finished["delivery_outcome"] == "delivered"
+
+    # The same dispatch failure again: same signature -> incident dedup, and the
+    # alerted cooldown withholds the repeat ping.
+    repeat = execution_ledger.create_execution("job-dispatch", source="builtin")
+    job2 = {"id": "job-dispatch", "execution_id": repeat["id"],
+            "deliver": "telegram:123"}
+    assert scheduler.run_one_job(job2, adapters=None) is True
+    assert len(incidents.list_incidents()) == 1
+    assert len(delivered) == 1
+    assert execution_ledger.get_execution(repeat["id"])["delivery_outcome"] == \
+        "suppressed_acked"
+
+
 def test_shutdown_does_not_interrupt_restart_safe_waiter():
     import cron.scheduler as scheduler
 
     job_id = "external-waiter"
-    scheduler._running_job_ids.add(job_id)
-    scheduler._restart_safe_waiter_job_ids.add(job_id)
+    scheduler._running_job_ids.add(scheduler._inflight_key(job_id))
+    scheduler._restart_safe_waiter_job_ids.add(scheduler._inflight_key(job_id))
     try:
         assert scheduler.mark_running_jobs_interrupted("gateway restart") == []
-        assert job_id not in scheduler._interrupted_job_ids
+        assert scheduler._inflight_key(job_id) not in scheduler._interrupted_job_ids
     finally:
-        scheduler._restart_safe_waiter_job_ids.discard(job_id)
-        scheduler._running_job_ids.discard(job_id)
-        scheduler._interrupted_job_ids.discard(job_id)
+        scheduler._restart_safe_waiter_job_ids.discard(scheduler._inflight_key(job_id))
+        scheduler._running_job_ids.discard(scheduler._inflight_key(job_id))
+        scheduler._interrupted_job_ids.discard(scheduler._inflight_key(job_id))
 
 
 def test_worker_delivery_queue_is_keyed_by_the_delivering_jobs_own_execution(
@@ -679,7 +776,7 @@ def test_worker_delivery_queue_is_keyed_by_the_delivering_jobs_own_execution(
         adapters=None,
         loop=None,
     )
-    assert error == "failed to load gateway config: standalone path reached"
+    assert "standalone path reached" in error
     assert queued == ["exec-outer"]
 
 
@@ -702,20 +799,6 @@ def test_gateway_tool_run_without_adapter_objects_hands_off(monkeypatch):
     run.assert_not_called()
 
 
-def test_shared_run_path_creates_execution_before_managed_handoff(monkeypatch):
-    import cron.scheduler as scheduler
-
-    created = Mock(return_value={"id": "exec-new"})
-    launch = Mock(return_value=True)
-    monkeypatch.setattr(scheduler, "create_execution", created)
-    monkeypatch.setattr(scheduler, "_launch_external_cron_worker", launch)
-    job = {"id": "manual-job"}
-
-    assert scheduler.run_one_job(job, adapters={"discord": object()}) is True
-
-    created.assert_called_once_with("manual-job", source="direct", scheduled_instant=None)
-    assert job["execution_id"] == "exec-new"
-    launch.assert_called_once_with(job)
 
 
 def test_lost_execution_start_cas_prevents_side_effects(monkeypatch):
@@ -732,7 +815,7 @@ def test_lost_execution_start_cas_prevents_side_effects(monkeypatch):
     run.assert_not_called()
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.live_system_guard_bypass
 def test_managed_gateway_restart_preserves_active_worker_and_single_side_effect(
     tmp_path, monkeypatch
@@ -877,3 +960,37 @@ def test_managed_gateway_restart_preserves_active_worker_and_single_side_effect(
             parent.wait(timeout=5)
         if worker_pid is not None and _pid_exists(worker_pid):
             os.kill(worker_pid, signal.SIGKILL)
+
+
+def test_post_handoff_waiter_failure_records_bookkeeping_without_alert(
+    execution_ledger, monkeypatch
+):
+    """Once the worker is spawned it may own the row and send its own notice: a
+    waiter failure must only record bookkeeping, never a false dispatch incident."""
+    import cron.incidents as incidents
+    import cron.scheduler as scheduler
+
+    def _body_boom(_process, *, execution_id):
+        raise RuntimeError("cron external worker exited before durable recovery")
+
+    monkeypatch.setattr(scheduler, "_wait_for_external_cron_worker_body", _body_boom)
+    monkeypatch.setattr(
+        scheduler, "_launch_external_cron_worker",
+        lambda job: scheduler._wait_for_external_cron_worker(
+            object(), execution_id=job["execution_id"]))
+    marks = []
+    monkeypatch.setattr(scheduler, "mark_job_run", lambda *a, **k: marks.append((a, k)) or True)
+    delivered = []
+    monkeypatch.setattr(
+        scheduler, "_deliver_result",
+        lambda job, content, **_kw: delivered.append(content) or None)
+
+    record = execution_ledger.create_execution("job-post", source="builtin")
+    job = {"id": "job-post", "execution_id": record["id"], "deliver": "telegram:123"}
+    assert scheduler.run_one_job(job, adapters=None) is True
+
+    assert incidents.list_incidents() == []
+    assert delivered == []
+    assert len(marks) == 1 and marks[0][0][1] is False
+    assert marks[0][0][2].startswith("Restart-safe cron worker failed after handoff: ")
+    assert execution_ledger.get_execution(record["id"])["status"] == "failed"

@@ -1,0 +1,56 @@
+.status-drawer {
+  display: grid;
+  grid-template-rows: 1fr;
+  /* Quick lift, then a soft landing. */
+  transition: grid-template-rows 260ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.status-drawer-clip {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.status-drawer-content {
+  /* The dock supplies the slide; this is only a small drift for the exit. */
+  visibility: visible;
+  opacity: 1;
+  transform: translateY(0);
+  transition: opacity 90ms ease-out, transform 260ms cubic-bezier(0.16, 1, 0.3, 1), visibility 0s;
+}
+
+.status-drawer[data-collapsed] {
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 200ms cubic-bezier(0.4, 0, 0.2, 1) 70ms;
+}
+
+.status-drawer[data-collapsed] .status-drawer-content {
+  visibility: hidden;
+  opacity: 0.078;
+  transform: translateY(0.5rem);
+  /* Let the labels fade and drift before folding. Retain a faint trace through
+     the overlapping slide instead of flashing an empty panel, then hide it. */
+  transition: opacity 90ms ease-out, transform 150ms ease-in, visibility 0s 270ms;
+}
+
+.status-drawer-toggle {
+  opacity: 0.35;
+  transition: opacity 120ms ease-out, color 120ms ease-out;
+}
+
+.status-drawer-toggle:is(:hover, :focus-visible) {
+  opacity: 1;
+}
+
+/* Hidden content stays mounted, keeping the grip available to reopen it. */
+[data-slot='composer-dock']:not(:has([data-slot='composer-status-stack'], .coding-status-bar)) .status-drawer-toggle {
+  display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .status-drawer,
+  .status-drawer[data-collapsed],
+  .status-drawer-content,
+  .status-drawer[data-collapsed] .status-drawer-content {
+    transition: none;
+  }
+}

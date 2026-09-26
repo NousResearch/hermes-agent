@@ -14,8 +14,8 @@ You can also point Hermes at **external skill directories** — additional folde
 
 See also:
 
-- [Bundled Skills Catalog](/reference/skills-catalog)
-- [Official Optional Skills Catalog](/reference/optional-skills-catalog)
+- [Bundled Skills Catalog](../../reference/skills-catalog.md)
+- [Official Optional Skills Catalog](../../reference/optional-skills-catalog.md)
 
 ## Browse and install in Desktop
 
@@ -23,10 +23,7 @@ Open **Capabilities → Skills** and switch between **Installed** and **Browse**
 Search stays at the top; the tab switch and actions share one row.
 **Installed** reads the selected profile's actual skills and enabled state;
 it is not inferred from the public catalog. **Browse** is a native catalog UI,
-not an embedded website or a second, smaller catalog. Cards are the default;
-the list and card icons at the right of the filters switch layouts without
-clearing search or filters. The choice is remembered across Skills and Plugins.
-Click a card for details or use its Install button directly.
+not an embedded website or a second, smaller catalog.
 
 Desktop and the public [Skills Hub](/skills) read the same published CDN
 snapshot: [`/docs/api/skills.json`](https://hermes-agent.nousresearch.com/docs/api/skills.json).
@@ -70,11 +67,11 @@ card to copy its CLI install command instead.
 
 By default every profile is seeded with the bundled skill catalog, and each `hermes update` adds any newly bundled skills. If you want a profile with **no bundled skills** — and that stays empty across updates — you have two paths:
 
-**At install time** (applies to the default `~/.hermes` profile):
-
-```bash
-curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --no-skills
-```
+**At install time** (applies to the default `~/.hermes` profile): the
+installer has no `--no-skills` flag. Its setup stage asks whether to seed the
+bundled catalog when you pick the Blank Slate setup; answering no writes the
+opt-out marker described below. Non-interactive installs seed the catalog, so
+run `hermes skills opt-out` afterwards if you want the profile empty.
 
 **At profile-create time** (named profiles):
 
@@ -90,7 +87,7 @@ hermes skills opt-out --remove   # also delete UNMODIFIED bundled skills (confir
 hermes skills opt-in --sync      # undo: remove the marker and re-seed now
 ```
 
-All three paths write a `.no-bundled-skills` marker into the profile directory. While the marker is present, the installer, `hermes update`, and any skill sync all skip bundled-skill seeding for that profile. Delete the marker (or run `hermes skills opt-in`) to re-enable.
+All of these paths write a `.no-bundled-skills` marker into the profile directory. While the marker is present, the installer, `hermes update`, and any skill sync all skip bundled-skill seeding for that profile. Delete the marker (or run `hermes skills opt-in`) to re-enable.
 
 :::note Safe by default
 `hermes skills opt-out` only stops *future* seeding — it never deletes anything already on disk. The optional `--remove` flag deletes bundled skills **only** when they are unmodified (byte-identical to the version Hermes installed). Skills you have edited, skills installed from the hub, and skills you wrote yourself are always kept.
@@ -125,7 +122,7 @@ Parsing stops at the first token that isn't an installed skill, so arguments
 that happen to start with `/` (like file paths) are never swallowed:
 
 ```bash
-/ocr-and-documents /tmp/scan.pdf extract the tables   # loads one skill; /tmp/scan.pdf is the argument
+/ocr-and-documents ~/.hermes/cache/scratch/scan.pdf extract the tables   # loads one skill; ~/.hermes/cache/scratch/scan.pdf is the argument
 ```
 
 For combinations you use repeatedly, prefer a [skill bundle](#skill-bundles) —
@@ -328,7 +325,7 @@ required_environment_variables:
 
 When a missing value is encountered, Hermes asks for it securely only when the skill is actually loaded in the local CLI. You can skip setup and keep using the skill. Messaging surfaces never ask for secrets in chat — they tell you to use `hermes setup` or `~/.hermes/.env` locally instead.
 
-Once set, declared env vars are **automatically passed through** to `execute_code` and `terminal` sandboxes — the skill's scripts can use `$TENOR_API_KEY` directly. For non-skill env vars, use the `terminal.env_passthrough` config option. See [Environment Variable Passthrough](/user-guide/security#environment-variable-passthrough) for details.
+Once set, declared env vars are **automatically passed through** to `execute_code` and `terminal` sandboxes — the skill's scripts can use `$TENOR_API_KEY` directly. For non-skill env vars, use the `terminal.env_passthrough` config option. See [Environment Variable Passthrough](../security.md#environment-variable-passthrough) for details.
 
 ### Skill Config Settings
 
@@ -346,7 +343,7 @@ metadata:
 
 Settings are stored under `skills.config` in your config.yaml. `hermes config migrate` prompts for unconfigured settings, and `hermes config show` displays them. When a skill loads, its resolved config values are injected into the context so the agent knows the configured values automatically.
 
-See [Skill Settings](/user-guide/configuration#skill-settings) and [Creating Skills — Config Settings](/developer-guide/creating-skills#config-settings-configyaml) for details.
+See [Skill Settings](../configuration.md#skill-settings) and [Creating Skills — Config Settings](../../developer-guide/creating-skills.md#config-settings-configyaml) for details.
 
 ## Skill Directory Structure
 
@@ -523,6 +520,8 @@ Trust is a repo-level decision, but a repo's skill content changes with every `g
 
 Cron jobs and other non-interactive surfaces inherit your interactive trust decision — they never prompt and never auto-trust. The project root resolves from the surface's working directory (a cron job's `workdir`, via the same mechanism the terminal tool uses). A cron job whose `workdir` is inside a repo you previously trusted loads that repo's project skills; a job in an untrusted or undecided repo loads none.
 
+In the TUI and Desktop the project root follows each **session's workspace** (the directory shown in the sidebar / set with the workspace picker), so starting `hermes --tui` inside a trusted repo registers its project skills as slash commands even when `terminal.cwd` is left at the default placeholder `.`; two sessions open in two repos each see their own.
+
 ## Skill Bundles
 
 Skill bundles are tiny YAML files that group several skills under a single slash command. When you run `/<bundle-name>`, every skill listed in the bundle loads at once — useful when a particular task always benefits from the same set of skills together.
@@ -641,10 +640,12 @@ holds a small set of files named by topic (a decision table, a recipe, provider 
 extended in place rather than accumulated one file per session. Skills also do not
 restate what is already loaded every turn (the repo's `AGENTS.md`, tool schemas).
 
-`skill_manage` runs an advisory linter on `create` and on `references/` writes and
-returns its findings in the tool result. Two rules exist specifically for this shape:
-`incident-log-shape` (a body dense in PR/issue numbers) and `references-sprawl` (more
-than 60 reference files). They warn; they never block a write.
+`skill_manage` runs an advisory linter on `create`, on `SKILL.md` patches, and on `references/`
+writes and returns its findings in the tool result. Three rules exist specifically for this shape:
+`incident-log-shape` (a body dense in PR/issue numbers), `references-sprawl` (more
+than 60 reference files), and `oversized-body` (a `SKILL.md` body past ~24k chars — `skill_view`
+loads the whole file and it stays in context for the rest of the session). They warn; they never
+block a write.
 
 ### Actions
 
@@ -671,7 +672,7 @@ The targeted `patch` is preferred for updates — it's more token-efficient than
 ### Gating agent skill writes (`skills.write_approval`)
 
 By default the agent writes skills freely — including from the [background
-self-improvement review](/user-guide/features/memory#controlling-memory-writes-write_approval)
+self-improvement review](./memory.md#controlling-memory-writes-write_approval)
 that runs after a turn. If you'd rather approve every skill write first
 (small models that misjudge what they learned, secure environments, or just
 wanting eyes on the self-improvement loop), turn on the write-approval gate:
@@ -699,11 +700,11 @@ reviewed with the same familiar approve/deny flow as dangerous commands:
 The review surface works in the interactive CLI and on messaging platforms
 (diff output is truncated for chat bubbles — read the full diff on the CLI or
 in the pending JSON file). Memory writes have the same gate under
-`memory.write_approval` — see [Controlling memory writes](/user-guide/features/memory#controlling-memory-writes-write_approval).
+`memory.write_approval` — see [Controlling memory writes](./memory.md#controlling-memory-writes-write_approval).
 
 > The separate `skills.guard_agent_created` setting is a content scanner
 > (dangerous-pattern heuristics), not an approval gate — the two are
-> independent. See [Guard on agent-created skill writes](/user-guide/configuration#guard-on-agent-created-skill-writes).
+> independent. See [Guard on agent-created skill writes](../configuration.md#guard-on-agent-created-skill-writes).
 
 ## Skills Hub
 

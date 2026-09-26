@@ -21,7 +21,7 @@ Make a verified AI presenter video from script + image.
 | License | MIT |
 | Platforms | linux, macos |
 | Tags | `video`, `presenter`, `avatar`, `lipsync`, `tts`, `captions`, `creative` |
-| Related skills | [`hyperframes`](/docs/user-guide/skills/optional/creative/creative-hyperframes), [`kanban-video-orchestrator`](/docs/user-guide/skills/optional/creative/creative-kanban-video-orchestrator), [`comfyui`](/docs/user-guide/skills/optional/creative/creative-comfyui) |
+| Related skills | [`hyperframes`](../../optional/creative/creative-hyperframes.md), [`kanban-video-orchestrator`](../../optional/creative/creative-kanban-video-orchestrator.md), [`comfyui`](../../optional/creative/creative-comfyui.md) |
 
 ## Reference: full SKILL.md
 

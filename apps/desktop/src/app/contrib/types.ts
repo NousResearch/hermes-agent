@@ -16,6 +16,7 @@ export type SidebarActions = Pick<
   | 'onDeleteSession'
   | 'onLoadMoreMessaging'
   | 'onLoadMoreSessions'
+  | 'onRetrySessions'
   | 'onManageCronJob'
   | 'onNavigate'
   | 'onNewSessionInWorkspace'
@@ -60,6 +61,7 @@ export type ChatActions = Pick<
  * the latest closure.
  */
 export interface WiringActions extends SidebarActions, ChatActions {
+  followDefaultModel: () => void
   /** Imperative access to the live gateway for controller-owned callbacks.
    *  Rendered surfaces subscribe to the active `$gateway` atom directly. */
   getGateway: () => ComponentProps<typeof ChatView>['gateway']

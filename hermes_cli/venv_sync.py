@@ -371,6 +371,22 @@ def relaunch_command(
             options.append(original[index])
             index += 1
     prefix = f"import sys, runpy; sys.path.insert(0, {str(root)!r}); sys.argv = {argv!r}; "
+    # -I discards the caller's PYTHONPATH, so the caller's body would run with
+    # only the checkout root on sys.path; the committed generation's
+    # site-packages is otherwise added one statement later, by the agent import
+    # itself. A probe that imports a third-party module first (webui's
+    # `import yaml` before `from run_agent import AIAgent`) therefore reads a
+    # wrong answer about a runtime that is in fact usable. Re-add the managed
+    # dependency path explicitly: user site and any hostile PYTHONPATH stay
+    # ignored, exactly what -I is kept for.
+    try:
+        from pm.environments import committed_venv, site_packages
+
+        selected = committed_venv(root)
+        if selected is not None:
+            prefix += f"sys.path.append({str(site_packages(selected))!r}); "
+    except Exception:
+        pass  # No committed generation readable: the body keeps the legacy path.
     if argv[0] == "-c":
         body = f"exec({original[index + 1]!r})"
     elif module and module != "__main__":

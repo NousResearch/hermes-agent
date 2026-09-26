@@ -1659,7 +1659,11 @@ def link_tasks(
             expected_child_run_id is None
             or child["current_run_id"] != expected_child_run_id
         ):
-            raise ValueError(f"cannot link {parent_id} -> {child_id}: child is already running")
+            raise ValueError(
+                f"cannot link {parent_id} -> {child_id}: child is already running — "
+                "declare parents at kanban_create so the dependency gates it, "
+                "or have the owning worker self-link with its expected_child_run_id"
+            )
         if _would_cycle(conn, parent_id, child_id):
             raise ValueError(f"linking {parent_id} -> {child_id} would create a cycle")
         _link(conn, parent_id, child_id)

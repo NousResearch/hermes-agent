@@ -458,7 +458,7 @@ Dispatcher-owned workers receive their task lifecycle tools automatically.
 | `kanban_attach_url` | Attach a file to a task by URL. | `url` |
 | `kanban_attachments` | List a task's attachments. | — |
 | `kanban_create` | (Orchestrators) fan out into child tasks with an `assignee`, optional `parents`, `skills`, etc. Returns `gated: true` + `gated_by` when an open parent parked the new card in `todo`. | `title`, `assignee` |
-| `kanban_link` | (Orchestrators) add a `parent_id → child_id` dependency edge after the fact. Returns `gated: true` when the child was `ready` and got demoted back to `todo` because the parent is not done — the child will only run after the parent completes. Refused with `child is already running` when the child is already claimed — an edge added after the claim cannot serialise the run (a worker may still link its *own* running card ahead of a `kind=dependency` block). | `parent_id`, `child_id` |
+| `kanban_link` | (Orchestrators) add a `parent_id → child_id` dependency edge after the fact. Returns `gated: true` when the child was `ready` and got demoted back to `todo` because the parent is not done — the child will only run after the parent completes. Refused with `child is already running — declare parents at kanban_create so the dependency gates it, or have the owning worker self-link with its expected_child_run_id` when the child is already claimed — an edge added after the claim cannot serialise the run (a worker may still link its *own* running card ahead of a `kind=dependency` block). | `parent_id`, `child_id` |
 | `kanban_unblock` | (Orchestrators) restore a blocked task to its source phase (`review` or `ready`), or `todo` while a parent remains open. | `task_id` |
 
 A typical worker turn looks like:

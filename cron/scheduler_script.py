@@ -317,10 +317,46 @@ def _resolve_script_path(script_path: str) -> tuple[Optional[Path], Optional[str
     return path, None
 
 
+def _posix_store_python_script_interpreter() -> tuple[str, dict[str, str]] | None:
+    """Run a POSIX cron script on the committed env when this process is the store Python.
+
+    The store interpreter is a bare CPython. Windows already overlays the committed
+    generation; POSIX used ``sys.executable`` directly, so a ``.py`` script lost every
+    dependency the moment the launcher switched off the venv python. The committed
+    env's own interpreter loads that generation, without putting Hermes site-packages
+    on ``PYTHONPATH`` for the script's children.
+    """
+    if sys.platform == "win32":
+        return None
+    from hermes_cli._launchers import resolve_store_python
+    from pm.environments import committed_venv, venv_python
+
+    repo = Path(__file__).resolve().parents[1]
+    managed = resolve_store_python(repo)
+    if managed is None:
+        return None
+    try:
+        if Path(sys.executable).resolve() != Path(managed).resolve():
+            return None
+    except OSError:
+        return None
+    environment = committed_venv(repo)
+    if environment is None:
+        return None
+    python = venv_python(environment)
+    try:
+        if not python.is_file():
+            return None
+    except OSError:
+        return None
+    return str(python), {}
+
+
 def _script_argv(path: Path) -> tuple[Optional[list[str]], dict[str, str], Optional[str]]:
     """``(argv, env_overlay, error)`` for a validated script. Interpreter by extension — the
     shebang is deliberately NOT honoured (small, auditable surface): ``.sh``/``.bash`` → bash,
-    else ``sys.executable`` (Windows uv-venv overlay gets the .pth bootstrap)."""
+    else the committed env when this process is the store Python, else ``sys.executable``
+    (Windows uv-venv overlay gets the .pth bootstrap)."""
     if path.suffix.lower() in {".sh", ".bash"}:
         # which() finds Git Bash on Windows; None there → clear error instead of a "[WinError 2]".
         _bash = shutil.which("bash") or ("/bin/bash" if os.path.isfile("/bin/bash") else None)
@@ -331,6 +367,10 @@ def _script_argv(path: Path) -> tuple[Optional[list[str]], dict[str, str], Optio
                 "or rewrite the script as Python (.py)."
             )
         return [_bash, str(path)], {}, None
+    committed = _posix_store_python_script_interpreter()
+    if committed is not None:
+        python_exe, env_overlay = committed
+        return [python_exe, str(path)], env_overlay, None
     python_exe, env_overlay = _windows_cron_python_invocation(sys.executable)
     if env_overlay:
         return _windows_cron_bootstrap_argv(python_exe, env_overlay, str(path)), env_overlay, None

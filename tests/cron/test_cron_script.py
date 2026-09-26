@@ -725,3 +725,54 @@ class TestScriptTimeoutTreeKill:
                     psutil.Process(gpid).kill()
                 except psutil.NoSuchProcess:
                     pass
+
+
+@pytest.mark.platforms("posix")
+def test_store_python_script_uses_committed_interpreter(cron_env, tmp_path, monkeypatch):
+    """A gateway whose executable is the bare store Python must run .py scripts
+    on the committed dependency interpreter, which is where requests and the
+    rest of the installed lock actually live."""
+    import cron.scheduler_script as sched_script
+    from cron import scheduler as sched_mod
+
+    script = cron_env / "scripts" / "probe.py"
+    script.write_text('print("ok")\n', encoding="utf-8")
+
+    store = tmp_path / "tools" / "python" / "bin" / "python3"
+    store.parent.mkdir(parents=True)
+    store.write_text("", encoding="utf-8")
+    generation = tmp_path / "generation"
+    env_python = generation / "bin" / "python"
+    env_python.parent.mkdir(parents=True)
+    env_python.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(sched_script.sys, "executable", str(store))
+    monkeypatch.setattr("hermes_cli._launchers.resolve_store_python", lambda _root: store)
+    monkeypatch.setattr("pm.environments.committed_venv", lambda _root: generation)
+    monkeypatch.setattr("pm.environments.venv_python", lambda env: env / "bin" / "python")
+
+    captured = {}
+
+    class FakeProc:
+        def __init__(self, argv, **kwargs):
+            captured["argv"] = argv
+            self.returncode = 0
+
+        def poll(self):
+            return self.returncode
+
+        def communicate(self, timeout=None):
+            return ("ok\n", "")
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+    monkeypatch.setattr(sched_script.subprocess, "Popen", FakeProc)
+    monkeypatch.setattr(sched_mod.subprocess, "Popen", FakeProc)
+
+    success, output = sched_script._run_job_script("probe.py")
+
+    assert success is True
+    assert output == "ok"
+    assert captured["argv"][0] == str(env_python)
+    assert captured["argv"][1] == str(script.resolve())

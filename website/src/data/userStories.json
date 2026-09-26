@@ -1,5 +1,38 @@
 [
   {
+    "id": "adspirer-local-florist-use-case",
+    "source": "blog",
+    "author": "Adspirer",
+    "url": "https://www.adspirer.com/docs/guides/hermes-advertising-assistant#a-neighborhood-florist-plans-a-local-campaign",
+    "date": "2026-09-20",
+    "category": "marketing",
+    "headline": "Illustrative use case: a neighborhood florist plans its local advertising",
+    "quote": "Illustrative use case: a neighborhood florist knows its customers but has little time to learn advertising. With Hermes and Adspirer, the owners can work toward a local campaign plan: research relevant keywords, draft ads, review the delivery area and budget, then approve creation before a separate launch decision.",
+    "size": "md"
+  },
+  {
+    "id": "adspirer-owner-growth-assistant-use-case",
+    "source": "blog",
+    "author": "Adspirer",
+    "url": "https://www.adspirer.com/docs/guides/hermes-advertising-assistant#a-local-service-owner%E2%80%99s-personal-growth-assistant",
+    "date": "2026-09-20",
+    "category": "personal-assistant",
+    "headline": "Illustrative use case: an advertising brief while the owner handles customer jobs",
+    "quote": "Illustrative use case: a plumbing business owner spends the day on customer jobs. A proposed Hermes schedule uses Adspirer to prepare a short advertising brief with spend, tracked leads, unusual changes, and one recommended next action. The owner keeps control of campaign edits and budgets.",
+    "size": "md"
+  },
+  {
+    "id": "adspirer-agency-worklist-use-case",
+    "source": "blog",
+    "author": "Adspirer",
+    "url": "https://www.adspirer.com/docs/guides/hermes-advertising-assistant#a-small-agency-prioritizes-client-work",
+    "date": "2026-09-20",
+    "category": "business-ops",
+    "headline": "Illustrative use case: a small agency prioritizes advertising work across clients",
+    "quote": "Illustrative use case: a small agency asks Hermes and Adspirer to review connected client accounts and prepare a prioritized worklist. Reports keep account identities, currencies, and reporting periods separate, and proposed campaign changes go to the operator for review.",
+    "size": "md"
+  },
+  {
     "id": "reddit-riceinmybelly-solo-jobsite",
     "source": "reddit",
     "author": "u/riceinmybelly",

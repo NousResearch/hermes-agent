@@ -213,7 +213,9 @@ def _hermes_version() -> str:
 # Default settings
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8642
-_BIND_ATTEMPTS = 5  # EADDRINUSE retries while a restart's predecessor releases the port (#91547)
+# Allow slow listener teardown without reaching the gateway's default 30s
+# connect timeout (which would bypass the parked fallback).
+_BIND_RETRY_DELAYS = (1, 2, 4, 8, 8)
 
 
 def listen_address(extra: Dict[str, Any]) -> tuple[str, int]:
@@ -4464,19 +4466,26 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             # up to ~60s. Platform-dependent SO_REUSEADDR and the macOS TIME_WAIT rebind live in
             # start_tcp_site; the loop below covers a predecessor still holding the port for a moment.
             try:
+                # A restart's predecessor may still be releasing its listener.
                 # aiohttp registers a site with its runner before binding, so a failed start leaves the
                 # site registered: rebuild the runner per attempt rather than reach into its internals.
-                for attempt in range(_BIND_ATTEMPTS):
+                for attempt in range(len(_BIND_RETRY_DELAYS) + 1):
                     try:
                         self._site = await start_tcp_site(self._runner, self._host, self._port, log_tag=self.name)
                         break
                     except OSError as exc:
-                        if exc.errno != errno.EADDRINUSE or attempt == _BIND_ATTEMPTS - 1:
+                        if exc.errno != errno.EADDRINUSE or attempt == len(_BIND_RETRY_DELAYS):
                             raise
+                        delay = _BIND_RETRY_DELAYS[attempt]
+                        logger.info(
+                            "[%s] Port %s:%d is still in use; retrying bind in %ss "
+                            "(retry %d/%d)",
+                            self.name, self._host, self._port, delay,
+                            attempt + 1, len(_BIND_RETRY_DELAYS))
                         await self._runner.cleanup()
                         self._runner = web.AppRunner(self._app)
                         await self._runner.setup()
-                        await asyncio.sleep(0.2 * (attempt + 1))
+                        await asyncio.sleep(delay)
             except OSError as exc:
                 await self._runner.cleanup()
                 self._runner = None
@@ -4484,8 +4493,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 if getattr(exc, "errno", None) == errno.EADDRINUSE:
                     # Config error: non-retryable, or the reconnect watcher leaks fds forever.
                     self._set_fatal_error(
-                        # A port conflict is a configuration error, not a transient blip — another process
-                        # holds the port for its lifetime. A bare ``return False`` makes the reconnect
+                        # A conflict that outlasts the bounded startup retries needs operator attention.
+                        # A bare ``return False`` makes the reconnect
                         # watcher in gateway.run treat it as retryable and loop forever at the backoff cap
                         # (observed: 1568+ retries over 5 days across multi-profile setups all defaulting
                         # to the same port, #52132), filling errors.log and leaking the adapter's ResponseStore

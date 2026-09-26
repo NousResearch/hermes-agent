@@ -435,7 +435,7 @@ def _identity_digest(resolved: list) -> str:
     return hashlib.sha256(json.dumps(resolved, sort_keys=True, default=str).encode()).hexdigest()
 
 
-def _resolved_identity(server_name: str, config: dict) -> str:
+def _adopter_identity_digest(server_name: str, config: dict) -> str:
     """Digest of what a connection is opened with that the config does not show, resolved in the
     CURRENT profile's scope by the transport's own resolvers: a stdio child's executable (bare
     ``npx``/``node`` may resolve under the profile's home), env (external secret-source values) and
@@ -505,7 +505,7 @@ def _register_connected_into_current_scope(servers: dict) -> int:
     # Resolving what this profile would connect with does PATH lookups, secret-scope reads and
     # live-endpoint probes: do it once per judged name, before taking the global registry lock.
     judged = {**{name: profile_servers.get(name) for name in omitted}, **servers}
-    resolved_ids = {name: _resolved_identity(name, config) for name, config in judged.items()
+    resolved_ids = {name: _adopter_identity_digest(name, config) for name, config in judged.items()
                     if config is not None and mcp_server_enabled(config)}
 
     with _core._lock:

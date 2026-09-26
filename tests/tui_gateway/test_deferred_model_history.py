@@ -153,3 +153,28 @@ def test_model_hydration_discards_stale_results_and_closes_owned_db(tmp_path, mo
         assert closed.wait(5)
         server._sessions.pop("hydrating", None)
         original_close()
+
+
+def test_hydrated_resume_under_turn_isolation_builds_no_parent_agent(tmp_path, monkeypatch):
+    # The compute host owns the turn's AIAgent; building one here would make
+    # _session_uses_compute_host() False and run the resumed chat in-process.
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session("stored", source="desktop")
+    db.append_message("stored", "user", "model context")
+    builds = []
+    session = {"history": [], "history_lock": threading.RLock(), "resume_hydrating": True,
+               "resume_history_ready": threading.Event(), "agent_ready": threading.Event(),
+               "resume_message_count": 1, "agent": None}
+    monkeypatch.setitem(server._sessions, "iso-hydrating", session)
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"dashboard": {"turn_isolation": True}})
+    monkeypatch.setattr(server, "_emit", lambda *args: None)
+    monkeypatch.setattr(server, "_start_agent_build", lambda *args: builds.append(args))
+    try:
+        server._schedule_resume_hydration("iso-hydrating", "stored", db, model_history_only=True)
+        assert session["resume_history_ready"].wait(5)
+        assert [m["content"] for m in session["history"]] == ["model context"]
+        assert builds == []
+        assert server._session_uses_compute_host(session)
+    finally:
+        server._sessions.pop("iso-hydrating", None)
+        db.close()

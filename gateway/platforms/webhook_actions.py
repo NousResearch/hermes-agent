@@ -133,13 +133,20 @@ async def deliver(owner, adapter, platform, chat_id, thread_id, content, deliver
     store = owner.gateway_runner.session_store
     previous = store.get_session_metadata(entry.session_key, KEY)
     if previous and previous.get("binding") == refs:
-        return SendResult(success=True)
-    if previous and previous.get("state") == "pending" and previous.get("expiresAt", 0) > time.time():
+        if previous.get("deliveryConfirmed") is True:
+            return SendResult(success=True)
+        if previous.get("deliveryOutcome") != "failed":
+            return SendResult(success=False, error="Discussion delivery outcome is unverified")
+        clarify_gateway.resolve_gateway_clarify(previous["clarifyId"], "", user_id=str(source.user_id))
+        clarify_gateway.clear_session(entry.session_key)
+    if previous and previous.get("state") == "pending" and previous.get("deliveryOutcome") != "failed" and previous.get("expiresAt", 0) > time.time():
         return None  # Deliver the actual alert as text; a second poll would bind to the wrong FIFO reply.
-    cid = hashlib.sha256(json.dumps([entry.session_id, refs], sort_keys=True).encode()).hexdigest()[:24]
+    attempt = (previous or {}).get("deliveryAttempt", 0) + 1
+    cid = hashlib.sha256(json.dumps([entry.session_id, refs, attempt], sort_keys=True).encode()).hexdigest()[:24]
     record = {"binding": refs, "clarifyId": cid, "sessionId": entry.session_id,
               "userId": str(source.user_id), "profile": profile or "default",
               "question": content, "state": "pending", "expiresAt": time.time() + 300,
+              "deliveryAttempt": attempt, "deliveryOutcome": "started", "deliveryConfirmed": False,
               "sourceOccurredAt": stamp(delivery.get("payload", {}).get("occurredAt")) or time.time()}
     old_polls = list((previous or {}).get("previousPollIds", []))
     if previous and previous.get("messageId"):
@@ -157,6 +164,8 @@ async def deliver(owner, adapter, platform, chat_id, thread_id, content, deliver
     current = store.get_session_metadata(entry.session_key, KEY)
     if current and current.get("clarifyId") == cid:
         current["messageId"] = result.message_id
+        current["deliveryConfirmed"] = result.success is True
+        current["deliveryOutcome"] = "delivered" if result.success else "failed"
         store.set_session_metadata(entry.session_key, KEY, current)
     if not result.success:
         clarify_gateway.resolve_gateway_clarify(cid, "", user_id=str(source.user_id))

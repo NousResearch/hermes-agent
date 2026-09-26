@@ -856,7 +856,8 @@ class TestPreflightCompression:
     def test_rough_over_threshold_waits_one_request_then_real_usage_compresses(self, agent):
         """Real usage decides, the estimate only decides whether to wait for it: a whole-history
         rough estimate over threshold with no anchor defers ONE request; the provider's real
-        prompt count then drives the next gate — over threshold compresses, under does not."""
+        prompt count then drives the next gate — over threshold compresses (at the end of the
+        turn that reported it, so the next reply starts compacted), under does not."""
         agent.compression_enabled = True
         agent.context_compressor.context_length = 200_000
         agent.context_compressor.threshold_tokens = 100_000
@@ -879,16 +880,22 @@ class TestPreflightCompression:
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
-            mock_compress.return_value = (
-                [{"role": "user", "content": f"{SUMMARY_PREFIX}\nPrevious conversation"}],
-                "new system prompt",
-            )
+            def _fake_compress(*_a, **_kw):
+                # Arm the same real-usage latch the real path arms after a compaction.
+                agent.context_compressor.awaiting_real_usage_after_compression = True
+                return (
+                    [{"role": "user", "content": f"{SUMMARY_PREFIX}\nPrevious conversation"}],
+                    "new system prompt",
+                )
+
+            mock_compress.side_effect = _fake_compress
             r1 = agent.run_conversation("hello", conversation_history=big_history)
-            assert mock_compress.call_count == 0, "estimate alone must not compress before real usage"
+            assert mock_compress.call_count == 1, "the reply's real usage drives the turn-end pass"
+            assert mock_compress.call_args.kwargs["approx_tokens"] >= 105_000
             agent.run_conversation("again", conversation_history=r1["messages"])
 
+        # The second reply reported 50K real usage: under threshold, no further compaction.
         assert mock_compress.call_count == 1
-        assert mock_compress.call_args.kwargs["approx_tokens"] >= 105_000
 
     def test_no_preflight_when_under_threshold(self, agent):
         """When history fits within context, no preflight compression needed."""

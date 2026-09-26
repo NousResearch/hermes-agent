@@ -1861,6 +1861,11 @@ display:
   #   false: Only keep/send the final response
   # interim_assistant_messages: true
 
+  # External editor auto-submit behavior (classic CLI only).
+  # When true (default), Ctrl+G save-and-quit submits the edited draft.
+  # When false, Ctrl+G returns the draft to the input area; press Enter to send.
+  editor_auto_submit: true
+
   # Opt-in: hide automatic warning/diagnostic notifications (compression, retry
   # and fallback notices, credit/subagent failure lines, inactivity and watchdog
   # stalls, media-delivery fallbacks, cron failure alerts) on this surface.

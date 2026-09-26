@@ -198,6 +198,8 @@ async function detectRemotePlatform(ssh, explicitHermesPath = '') {
       throw cause
     }
 
+    const kind = cause?.kind
+
     // detail is remote-controlled output headed for the UI: redact + strip control chars.
     const detail = redactSecrets(String(cause?.message || cause || ''))
       // eslint-disable-next-line no-control-regex -- deliberately strip control chars from remote output
@@ -205,10 +207,10 @@ async function detectRemotePlatform(ssh, explicitHermesPath = '') {
       .trim()
 
     const error: any = new Error(
-      `The remote operating system is not supported by Desktop SSH.${detail ? ` (probe: ${detail.slice(0, 300)})` : ''}`
+      `${kind ? 'The Windows remote probe failed.' : 'The remote operating system is not supported by Desktop SSH.'}${detail ? ` (probe: ${detail.slice(0, 300)})` : ''}`
     )
 
-    error.kind = 'unsupported-platform'
+    error.kind = kind || 'unsupported-platform'
     error.cause = cause
     throw error
   }

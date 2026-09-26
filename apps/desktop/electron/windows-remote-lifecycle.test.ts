@@ -268,6 +268,29 @@ test('platform detection surfaces transport failures as themselves, not unsuppor
   )
 })
 
+test('platform detection preserves typed Windows probe failures', async () => {
+  const probeErr: any = new Error('PowerShell remote command failed with exit code 1')
+  probeErr.kind = 'exec-failed'
+
+  await assert.rejects(
+    detectRemotePlatform(
+      sshWith(async command => {
+        if (command.startsWith('uname ')) {
+          throw new Error('PowerShell does not recognize uname')
+        }
+
+        throw probeErr
+      })
+    ),
+    (err: any) =>
+      err.kind === 'exec-failed' &&
+      err.cause === probeErr &&
+      /Windows remote probe failed/.test(err.message) &&
+      /PowerShell remote command failed/.test(err.message) &&
+      !/operating system is not supported/.test(err.message)
+  )
+})
+
 test('helper command uses the fixed remote Python entry point and quotes path data', () => {
   const command = helperCommand({ python: "C:\\Program Files\\Hermes's\\python.exe" }, 'inspect', [
     'C:\\x y\\hermes.exe'

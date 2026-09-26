@@ -4,7 +4,13 @@ import type { HermesConnection } from '@/global'
 
 import { $activeGatewayProfile } from './profile'
 import { $selectedStoredSessionId, setConnection } from './session'
-import { $sessionTiles, openSessionTile } from './session-states'
+import {
+  $sessionTiles,
+  closeSessionTile,
+  dropTilesForProfile,
+  openSessionTile,
+  reopenLastClosedTile
+} from './session-states'
 
 const profile = 'connection-scope-regression'
 const local = {
@@ -120,5 +126,67 @@ describe('session tiles across registered backend switches (#120106)', () => {
       'legacy-local',
       'legacy-unknown-owner'
     ])
+  })
+
+  it('drops an id-less remote profile without deleting same-named local tabs', () => {
+    const name = 'direct-remote-delete-regression'
+    const localProfile = { ...local, profile: name } as HermesConnection
+    const directRemote = {
+      baseUrl: 'https://legacy.example:8443',
+      mode: 'remote',
+      profile: name
+    } as HermesConnection
+    $activeGatewayProfile.set(name)
+    setConnection(localProfile)
+    openSessionTile('local-keep', 'right')
+    openSessionTile('local-bot', 'right', undefined, undefined, {
+      workspaceMode: 'bots',
+      workspaceOwnerKey: `local::${name}`,
+      ownerRoute: { connectionId: 'local', profile: name }
+    })
+
+    setConnection(directRemote)
+    openSessionTile('remote-closed', 'right')
+    closeSessionTile('remote-closed')
+    openSessionTile('remote-open', 'right')
+
+    dropTilesForProfile(name)
+    expect($sessionTiles.get().map(tile => tile.storedSessionId)).toEqual(['local-bot'])
+    reopenLastClosedTile()
+    expect($sessionTiles.get().map(tile => tile.storedSessionId)).toEqual(['local-bot'])
+    const persisted = JSON.parse(window.localStorage.getItem('hermes.desktop.sessionTiles.v2') || '{}')
+    expect(persisted[`conn:url:${directRemote.baseUrl}::${name}`]).toBeUndefined()
+    expect(persisted[name]?.map((tile: { storedSessionId: string }) => tile.storedSessionId)).toEqual(['local-keep'])
+    expect(persisted.__bots_workspace__?.map((tile: { storedSessionId: string }) => tile.storedSessionId)).toEqual([
+      'local-bot'
+    ])
+
+    setConnection(localProfile)
+    expect($sessionTiles.get().map(tile => tile.storedSessionId)).toEqual(['local-keep', 'local-bot'])
+  })
+
+  it('drops ambient registered-remote tabs and bots without touching local ones', () => {
+    const name = 'ambient-remote-delete-regression'
+    $activeGatewayProfile.set(name)
+    setConnection({ ...local, profile: name } as HermesConnection)
+    openSessionTile('local-keep', 'right')
+    openSessionTile('local-bot', 'right', undefined, undefined, {
+      workspaceMode: 'bots',
+      workspaceOwnerKey: `local::${name}`,
+      ownerRoute: { connectionId: 'local', profile: name }
+    })
+
+    setConnection({ ...remote, profile: name } as HermesConnection)
+    openSessionTile('remote-open', 'right')
+    openSessionTile('remote-bot', 'right', undefined, undefined, {
+      workspaceMode: 'bots',
+      workspaceOwnerKey: `homelab::${name}`,
+      ownerRoute: { connectionId: 'homelab', profile: name }
+    })
+
+    dropTilesForProfile(name)
+    expect($sessionTiles.get().map(tile => tile.storedSessionId)).toEqual(['local-bot'])
+    setConnection({ ...local, profile: name } as HermesConnection)
+    expect($sessionTiles.get().map(tile => tile.storedSessionId)).toEqual(['local-keep', 'local-bot'])
   })
 })

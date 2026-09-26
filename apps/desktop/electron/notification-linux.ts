@@ -27,7 +27,7 @@ interface Connection {
 // Electron's Linux presenter uses synchronous libnotify calls for capabilities,
 // show AND close. Keep all of those off the main thread by using async D-Bus,
 // rather than timing a native call that prevents its own watchdog from running.
-export function createLinuxNotifications() {
+export function createLinuxNotifications(appName = 'Hermes') {
   let connection: Connection | undefined
   let retryAfter = 0
   let pending = 0
@@ -250,7 +250,7 @@ export function createLinuxNotifications() {
               member: 'Notify',
               signature: 'susssasa{sv}i',
               body: [
-                'Hermes',
+                appName,
                 0,
                 options.icon || '',
                 options.title,

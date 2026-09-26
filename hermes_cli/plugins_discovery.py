@@ -7,12 +7,14 @@ Split out of :mod:`hermes_cli.plugins`. Names that tests patch on the origin
 from __future__ import annotations
 
 import importlib.metadata
+import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 from hermes_constants import get_hermes_home
+from hermes_cli.agent_plugins import PLUGIN_SCHEMA_V1
 from hermes_cli.config import cfg_get
 from hermes_cli.plugin_capabilities import VALID_CAPABILITY_IDS
 from hermes_cli.plugin_capabilities import parse_declared_capabilities as _parse_declared_capabilities
@@ -27,12 +29,24 @@ logger = logging.getLogger("hermes_cli.plugins")
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"
 ENTRY_POINT_CAPABILITIES_GROUP = "hermes_agent.plugin_capabilities"
 
-# Per-harness manifest directories plugin repos ship for OTHER agent harnesses (e.g. obra/superpowers keeps one
-# plugin.json per harness). Their plugin.json is not an Agent Plugins v1 manifest and can never validate, so
-# parsing it on every discovery pass only spams warnings (#101962).
-_FOREIGN_HARNESS_MANIFEST_DIRS = frozenset({
-    ".claude-plugin", ".codex-plugin", ".cursor-plugin", ".devin-plugin", ".kimi-plugin",
-})
+
+def _declares_v1_schema(manifest_file: Path) -> bool:
+    """Whether a ``plugin.json`` declares the Agent Plugins v1 ``$schema``.
+
+    Plugin repos ship one manifest per agent harness they support (obra/superpowers
+    ships six), and a foreign one can never validate — parsing it on every discovery
+    pass only spams warnings (#101962). Which harness a directory belongs to is
+    therefore read off the manifest itself; a hand-maintained directory-name set
+    lags behind every plugin that adopts a new harness.
+
+    An unreadable or malformed ``plugin.json`` reports True: "cannot be read" is not
+    "known not to be v1", and only the latter may be skipped silently.
+    """
+    try:
+        data = json.loads(manifest_file.read_text(encoding="utf-8-sig"))
+    except (OSError, UnicodeError, ValueError):
+        return True
+    return isinstance(data, dict) and data.get("$schema") == PLUGIN_SCHEMA_V1
 
 
 def _select_entry_point_group(entry_points: Any, group: str) -> list:
@@ -128,9 +142,6 @@ def scan_directory(
         if child.name.startswith("__") and child.name.endswith("__"):
             logger.debug("Skipping dunder plugin path %s", child)
             continue
-        if child.name in _FOREIGN_HARNESS_MANIFEST_DIRS:
-            logger.debug("Skipping %s (foreign-harness manifest convention)", child)
-            continue
         # pathlib.Path.is_dir() swallows OSError, but injected Path-likes
         # and test doubles can still raise. Fail closed per child.
         try:
@@ -143,6 +154,13 @@ def scan_directory(
             # stat() raises (not "False") on an unsearchable directory — Windows ACLs (WinError 5) or a
             # mode-000 dir; one such plugin must not abort discovery for every other plugin (#111804).
             logger.warning("Skipping unreadable plugin directory %s: %s", child, exc)
+            continue
+        # A harness manifest sits one level inside the plugin that ships it, so only a
+        # NESTED non-v1 plugin.json is the foreign-harness convention. At depth 0 the
+        # directory IS the plugin the user dropped in, and a bad manifest there is a
+        # real problem worth warning about rather than a convention to absorb.
+        if has_portable and depth >= 1 and not _declares_v1_schema(portable_file):
+            logger.debug("Skipping %s (foreign-harness manifest convention)", child)
             continue
         if manifest_file is not None:
             manifest = parse_manifest_file(manifest_file, child, source, prefix)

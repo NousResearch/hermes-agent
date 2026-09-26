@@ -180,6 +180,54 @@ class TestForeignHarnessManifestDirs:
             for r in caplog.records
         )
 
+    def test_harness_detection_is_not_a_directory_name_list(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """A harness directory Hermes has never heard of is skipped silently.
+
+        The convention is the LAYOUT (a manifest nested inside the plugin that
+        ships it) plus a manifest that does not declare the v1 ``$schema`` — not
+        any particular directory name, so a plugin adopting a new harness keeps
+        working without a matching entry somewhere in Hermes."""
+        import os
+        hermes_home = Path(os.environ["HERMES_HOME"])  # set by hermetic conftest fixture
+        sp = hermes_home / "plugins" / "superpowers"
+        (sp / ".hermes-plugin").mkdir(parents=True)
+        (sp / ".hermes-plugin" / "plugin.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "name": "superpowers",
+                    "version": "6.3.0",
+                    "description": "multi-harness plugin",
+                }
+            )
+        )
+        # A harness name absent from any hard-coded list, and a capability-shaped
+        # manifest (not the bare {name, version} the listed harnesses use).
+        future = sp / ".harness-from-the-future"
+        future.mkdir(parents=True)
+        (future / "plugin.json").write_text(
+            json.dumps(
+                {
+                    "schemaVersion": 1,
+                    "displayName": "Superpowers",
+                    "compat": {"source": "native", "manifestDir": ".harness-from-the-future"},
+                    "capabilities": {"skills": [{"id": "tdd", "path": "skills/tdd/SKILL.md"}]},
+                }
+            )
+        )
+
+        with caplog.at_level("WARNING", logger="hermes_cli.plugins"):
+            mgr = PluginManager()
+            mgr.discover_and_load()
+
+        assert "superpowers/.hermes-plugin" in mgr._plugins
+        assert not [k for k in mgr._plugins if "harness-from-the-future" in k]
+        parse_warnings = [
+            r for r in caplog.records if "Failed to parse" in r.getMessage()
+        ]
+        assert parse_warnings == []
+
 
 # ── Kind parsing ───────────────────────────────────────────────────────────
 

@@ -1391,9 +1391,13 @@ def load_jobs() -> List[Dict[str, Any]]:
             ", ".join(sorted({type(j).__name__ for j in junk})))
         jobs = [j for j in jobs if isinstance(j, dict)]
         repair = repair or "non-object entries dropped"
-    # Persist even an empty result, or an all-junk store repeats the repair on every tick; the
-    # save's shrink-merge still keeps any valid job a sibling wrote meanwhile.
+    # Persist even an empty result, or an all-junk store repeats the repair on every tick.
     if repair:
+        if not getattr(_jobs_lock_state, "depth", 0):
+            # An unlocked snapshot may predate a locked writer's update to a job it already holds
+            # (the shrink-merge only restores missing ids), so re-read and repair under the lock.
+            with _jobs_lock():
+                return load_jobs()
         save_jobs(jobs)
         logger.warning("Auto-repaired jobs.json (%s)", repair)
     _record_load_stamp(pre_read_stamp)

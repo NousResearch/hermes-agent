@@ -2062,6 +2062,42 @@ describe('overlayConcurrentMessageChanges', () => {
 
     expect(overlayConcurrentMessageChanges(page, [page[0]], [page[0], errored]).at(-1)).toBe(errored)
   })
+
+  // The committed row and the settled live row capture the same reply at two
+  // moments while it was still streaming, so one is routinely a prefix of the
+  // other (#123993): accept either as a forward extension, as the sibling
+  // removeRepresentedLocalLiveProjection already does.
+  it('folds a settled live row that lags behind the committed row into one reply', () => {
+    const page = [
+      msg('3-user', 'user', 'prompt b', { rowId: 3 }),
+      msg('4-assistant', 'assistant', 'A2 finished while away', { rowId: 4 })
+    ]
+
+    const current = [page[0], msg('assistant-stream-1-2', 'assistant', 'A2 finished', { pending: false })]
+
+    const overlaid = overlayConcurrentMessageChanges(page, [], current)
+
+    expect(overlaid.map(message => [message.id, chatMessageText(message)])).toEqual([
+      ['3-user', 'prompt b'],
+      ['4-assistant', 'A2 finished while away']
+    ])
+  })
+
+  it('folds a settled live row that ran past the committed row into one reply', () => {
+    const page = [
+      msg('3-user', 'user', 'prompt b', { rowId: 3 }),
+      msg('4-assistant', 'assistant', 'A2 finished', { rowId: 4 })
+    ]
+
+    const current = [page[0], msg('assistant-stream-1-2', 'assistant', 'A2 finished while away', { pending: false })]
+
+    const overlaid = overlayConcurrentMessageChanges(page, [], current)
+
+    expect(overlaid.map(message => [message.id, chatMessageText(message)])).toEqual([
+      ['3-user', 'prompt b'],
+      ['4-assistant', 'A2 finished']
+    ])
+  })
 })
 
 describe('preserveEquivalentTranscript', () => {

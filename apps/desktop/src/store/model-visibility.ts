@@ -144,6 +144,19 @@ export function seedKnownModels(providers: readonly ModelOptionProvider[]): void
   persistKnownModels(allFamilyKeys(providers))
 }
 
+/** Back to "never customized": the curated defaults apply again and the known
+ *  snapshot starts over. The snapshot records what was LISTED at each persist,
+ *  not what the user chose, so a model hidden when it was recorded (e.g. by the
+ *  one-time adoption above) stays hidden through every later catalog change.
+ *  This is the user's way out of that without a global storage-key bump; Edit
+ *  Models reaches it through `resetModelVisibilityKeepingCustoms`. */
+export function resetModelVisibility(): void {
+  $visibleModels.set(null)
+  persistString(STORAGE_KEY, null)
+  $knownModels.set(null)
+  persistString(KNOWN_STORAGE_KEY, null)
+}
+
 export function setModelVisibilityOpen(open: boolean): void {
   $modelVisibilityOpen.set(open)
 }

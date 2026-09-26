@@ -580,6 +580,15 @@ Examples:
 
 In practice, you usually do not need to call the prefixed name manually — Hermes sees the tool and chooses it during normal reasoning.
 
+### Server instructions
+
+- **Server instructions.** A server's MCP `initialize` response may carry an `instructions` string describing how its tools are meant to be used (Context7: "call `resolve-library-id` before `query-docs`"; a knowledge-base server: "search it before external lookup"). Hermes adds one `## Instructions from MCP server "<name>"` section per connected server to the system prompt, only for servers that contribute at least one tool the current agent can see. The text is screened by the shared context threat scanner first — a finding withholds that server's instructions (logged as a warning) while its tools keep working. The block is built once per session with the rest of the prompt; a server that connects late shows up on the next new session or compaction. `mcp.server_instructions: false` keeps the tools and drops the prose.
+
+```yaml
+mcp:
+  server_instructions: true     # initialize `instructions` → system prompt section per server
+```
+
 ### Tool-result sanitization and `_meta`
 
 Two behaviors apply to every MCP tool result before the model sees it:

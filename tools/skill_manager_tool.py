@@ -391,9 +391,15 @@ def _attach_lint_findings(result: Dict[str, Any], skill_md: Path, before: Option
     patch reports the line it crossed rather than re-listing the skill's standing findings."""
     try:
         from tools.skill_linter import lint_content, lint_skill  # local import: optional path
-        findings = lint_skill(skill_md)
+        try:
+            from tools.project_leak_scan import session_tokens  # local import: optional path
+            project_tokens = session_tokens()
+        except Exception:
+            project_tokens = ()
+        findings = lint_skill(skill_md, project_tokens)
         if before is not None:
-            standing = {f.rule for f in lint_content(before, skill_dir=skill_md.parent)}
+            standing = {f.rule for f in lint_content(
+                before, skill_dir=skill_md.parent, project_tokens=project_tokens)}
             findings = [f for f in findings if f.rule not in standing]
     except Exception:
         findings = None

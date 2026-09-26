@@ -2368,6 +2368,14 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
     def _persist_consecutive_overload_aborts(self) -> None:
         self._durable_write("set_compression_overload_streak", "compression overload streak", self._consecutive_overload_aborts)
 
+    def _increment_consecutive_overload_aborts(self) -> None:
+        """Count one overload abort. The bound row is bumped atomically and is authoritative, so two
+        agents on one session cannot lose a strike; memory-only when unbound or the row is missing."""
+        found, streak = self._durable_read(
+            "increment_compression_overload_streak", "compression overload streak increment", int, 0,
+        )
+        self._consecutive_overload_aborts = streak if found and streak else self._consecutive_overload_aborts + 1
+
     def _load_ineffective_compression_count(self) -> None:
         """Load the durable anti-thrash strike count so a restart never disarms a guard."""
         self._load_durable("_ineffective_compression_count", "get_compression_ineffective_count", "compression ineffective count", int, 0)
@@ -4160,8 +4168,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         elif kind.empty_content:
             self._last_summary_empty_content_failure = True
         elif kind.overloaded:
-            self._consecutive_overload_aborts += 1
-            self._persist_consecutive_overload_aborts()
+            self._increment_consecutive_overload_aborts()
             # Sustained-overload escalation (#123167): keep aborting only while a retry could still
             # succeed soon (#115906); once every recent attempt has aborted, stop treating the
             # overload as terminal so compress() commits the deterministic fallback instead of

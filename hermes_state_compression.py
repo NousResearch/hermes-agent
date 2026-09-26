@@ -448,6 +448,18 @@ class SessionCompressionMixin:
         if session_id:
             self._write_session_column("compression_overload_streak", session_id, max(0, int(streak)))
 
+    def increment_compression_overload_streak(self, session_id: str) -> Optional[int]:
+        """Atomically bump the overload streak and return the new value (None when no row).
+        One UPDATE ... RETURNING, so concurrent agents on one session cannot lose a strike."""
+        if not session_id:
+            return None
+        def _do(conn):
+            row = conn.execute(
+                "UPDATE sessions SET compression_overload_streak = compression_overload_streak + 1"
+                " WHERE id = ? RETURNING compression_overload_streak", (session_id,)).fetchone()
+            return None if row is None else int(row[0])
+        return self._execute_write(_do)
+
     def refresh_compression_lock(self, session_id: str, holder: str, ttl_seconds: float = 300.0) -> bool:
         """Extend the compression lock lease if ``holder`` still owns it. Ownership is decided by ``holder``
         alone, deliberately NOT ``expires_at``: a live owner whose refresher stalled past its TTL must be

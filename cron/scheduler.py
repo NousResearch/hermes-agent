@@ -2734,14 +2734,8 @@ def run_one_job(
             # incident and leave through the job's failure lane (#123401). Without
             # this the outage is silent — no cron_incidents row, no ping — while
             # executions.db keeps piling up failed rows.
-            delivery_error = None
-            delivery_outcome = "failed"
-            try:
-                delivery_error, delivery_outcome = _deliver_crash_failure(
-                    job, error, adapters=adapters, loop=loop)
-            except Exception as notice_exc:
-                logger.error(
-                    "Dispatch-failure notice failed for job %s: %s", job["id"], notice_exc)
+            delivery_error, delivery_outcome = _deliver_crash_failure(
+                job, error, adapters=adapters, loop=loop)
             try:
                 mark_job_run(
                     job["id"],

@@ -1843,6 +1843,53 @@ def configured_max_in_progress() -> Optional[int]:
     return ival if ival >= 1 else None
 
 
+def resolve_dispatch_caps(max_spawn_override: Optional[int] = None) -> dict:
+    """Every ``kanban.*`` concurrency cap, resolved once for ALL dispatch callers.
+
+    ``dispatch_once`` treats ``None`` as "no cap", so each entry point had to
+    remember to read config for itself. The CLI, the standalone daemon and the
+    gateway ticker each did; the dashboard's ``POST /dispatch`` nudge did not —
+    it hardcoded ``max=8`` and passed no in-progress caps at all, so one UI
+    nudge could exceed ``max_in_progress`` / ``max_in_progress_per_profile``
+    and over-spawn workers into provider rate limits (#81381).
+
+    Fixing only the nudge leaves the next caller to rediscover the same trap,
+    so resolution lives here instead: the caps are a property of the config,
+    not of whichever surface happens to be asking.
+
+    ``max_spawn_override`` is the explicit per-call signal (CLI ``--max``,
+    dashboard ``?max=``) and wins over ``kanban.max_spawn``. It deliberately
+    does NOT widen the in-progress caps, which bound the host.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+        cfg = load_config_readonly() or {}
+        kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
+        if not isinstance(kanban_cfg, dict):
+            kanban_cfg = {}
+    except Exception:
+        kanban_cfg = {}
+
+    def _cap(key: str) -> Optional[int]:
+        raw = kanban_cfg.get(key)
+        if raw is None:
+            return None
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            return None
+        return value if value >= 1 else None
+
+    return {
+        # Explicit config wins, else the memory-derived default; unbounded
+        # fan-out swap-thrashes small hosts.
+        "max_in_progress": resolve_max_in_progress(_cap("max_in_progress")),
+        "max_in_progress_per_profile": _cap("max_in_progress_per_profile"),
+        "max_spawn": max_spawn_override if max_spawn_override is not None else _cap("max_spawn"),
+        "default_assignee": (kanban_cfg.get("default_assignee") or "").strip() or None,
+    }
+
+
 def count_running_tasks(conn: sqlite3.Connection) -> int:
     """Number of tasks in ``status='running'``.
 
@@ -2943,12 +2990,14 @@ def run_daemon(
         try:
             # Re-resolved every tick (config load is mtime-cached) so operator
             # edits apply without a restart.
-            max_in_progress = resolve_max_in_progress(configured_max_in_progress())
+            caps = resolve_dispatch_caps(max_spawn)
             with contextlib.closing(_kbc.connect()) as conn:
                 res = dispatch_once(
                     conn,
-                    max_spawn=max_spawn,
-                    max_in_progress=max_in_progress,
+                    max_spawn=caps["max_spawn"],
+                    max_in_progress=caps["max_in_progress"],
+                    max_in_progress_per_profile=caps["max_in_progress_per_profile"],
+                    default_assignee=caps["default_assignee"],
                     failure_limit=failure_limit,
                 )
             if on_tick is not None:

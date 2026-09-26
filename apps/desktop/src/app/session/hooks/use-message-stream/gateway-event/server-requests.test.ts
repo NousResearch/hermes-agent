@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
-import { setActiveSessionId, setSessions } from '@/store/session'
-import { $sessionTiles } from '@/store/session-states'
+import { setActiveSessionId, setSelectedStoredSessionId, setSessions } from '@/store/session'
+import { $sessionStates, $sessionTiles } from '@/store/session-states'
 import { $toursEnabled } from '@/store/tours'
 import type { SessionInfo } from '@/types/hermes'
 
@@ -100,7 +100,7 @@ describe('preview action request routing', () => {
   })
 
   it('leaves scoped pane reads unanswered in a window showing another session', async () => {
-    const reads = ['preview.read', 'terminal.read', 'window.read'].map(method =>
+    const reads = ['preview.read', 'terminal.read'].map(method =>
       deliver(method, { session_id: 'session-a' }, 'session-b')
     )
 
@@ -110,6 +110,18 @@ describe('preview action request routing', () => {
       expect(handled).toBe(true)
       expect(respond).not.toHaveBeenCalled()
     }
+  })
+
+  it('answers window.read empty instead of stalling when no window claims the session (#121609)', async () => {
+    // window.read has no per-window pane: an unclaimed request used to wait
+    // out the tool's full 30s deadline because silence was the "not mine"
+    // signal. Pane-owned reads still wait for their owner (#113348).
+    const { handled, respond } = deliver('window.read', { session_id: 'session-a' }, 'session-b')
+
+    await Promise.resolve()
+
+    expect(handled).toBe(true)
+    expect(respond).toHaveBeenCalledWith({ value: '' })
   })
 
   it("answers pane reads for a session hosted in one of this window's tiles", async () => {
@@ -137,6 +149,76 @@ describe('preview action request routing', () => {
     const { respond } = deliver('preview.act', { action: 'elements' }, null)
 
     expect(JSON.parse(respond.mock.calls[0][0].value)).toMatchObject({ success: false })
+  })
+})
+
+describe('window.read claim tolerance (#121609)', () => {
+  beforeEach(() => {
+    setSessions([
+      { id: 'stored-a', title: 'HUD conversation', _lineage_root_id: 'root-a' } as SessionInfo
+    ])
+  })
+
+  afterEach(() => {
+    setSessions([])
+    setActiveSessionId(null)
+    setSelectedStoredSessionId(null)
+    $sessionStates.set({})
+    $sessionTiles.set([])
+  })
+
+  it('claims when the window shows the conversation under its stored id while the backend asks about the runtime id', () => {
+    // The HUD state: active is the pre-handoff runtime (or nothing), but this
+    // window has the conversation selected and its runtime id lineage-maps.
+    setSelectedStoredSessionId('stored-a')
+
+    expect(previewSessionRoute({ activeSessionId: 'runtime-x', replayed: false, sessionId: 'root-a' })).toBe('run')
+    expect(previewSessionRoute({ activeSessionId: null, replayed: false, sessionId: 'root-a' })).toBe('run')
+    // Plain stored-id ask (no rotation): selected matches directly.
+    expect(previewSessionRoute({ activeSessionId: 'runtime-x', replayed: false, sessionId: 'stored-a' })).toBe('run')
+  })
+
+  it('maps an unknown runtime id through the session-state cache to the shown conversation', () => {
+    // A resume rebound the runtime without this window re-deriving lineage:
+    // the state cache records which stored id the runtime id belongs to.
+    setSelectedStoredSessionId('stored-a')
+    $sessionStates.set({ 'runtime-rotated': createClientSessionState('stored-a') })
+
+    expect(previewSessionRoute({ activeSessionId: 'runtime-rotated', replayed: false, sessionId: 'runtime-rotated' })).toBe('run')
+  })
+
+  it('claims for a tile whose stored session lineage-matches the asked id', () => {
+    $sessionTiles.set([{ runtimeId: 'tile-runtime', storedSessionId: 'stored-a' } as never])
+
+    expect(previewSessionRoute({ activeSessionId: 'session-b', replayed: false, sessionId: 'root-a' })).toBe('run')
+    expect(previewSessionRoute({ activeSessionId: 'session-b', replayed: false, sessionId: 'stored-a' })).toBe('run')
+  })
+
+  it('never claims a conversation this window does not show', () => {
+    setSelectedStoredSessionId('stored-a')
+
+    expect(previewSessionRoute({ activeSessionId: 'session-b', replayed: false, sessionId: 'session-unrelated' })).toBe('ignore')
+    expect(previewSessionRoute({ activeSessionId: 'session-b', replayed: false, sessionId: 'root-other' })).toBe('ignore')
+  })
+
+  it('claims nothing without a shown conversation — a background session stays unclaimed', () => {
+    // No selection, no tiles: the tolerant branch must stay inert so a window
+    // midsession cannot answer for a background conversation it never showed.
+    expect(previewSessionRoute({ activeSessionId: 'session-b', replayed: false, sessionId: 'root-a' })).toBe('ignore')
+  })
+
+  it('lets a shown-conversation window answer a window.read end to end without a resume', async () => {
+    // The filed repro: HUD mode / post-handoff main window — no runtime claim,
+    // only the stored selection. The request now answers (empty here, because
+    // the test window exposes no readWindowBelow bridge) instead of stalling.
+    setSelectedStoredSessionId('stored-a')
+
+    const { handled, respond } = deliver('window.read', { session_id: 'root-a' }, 'runtime-x')
+
+    await Promise.resolve()
+
+    expect(handled).toBe(true)
+    expect(respond).toHaveBeenCalledTimes(1)
   })
 })
 

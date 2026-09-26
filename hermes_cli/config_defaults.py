@@ -292,6 +292,11 @@ DEFAULT_CONFIG = {
         # Menlo, Consolas, monospace"). Lets users use a Nerd Font without patching the app.
         "font_family": "",
         "timeout": 180,
+        # Foreground cap (seconds) for turns delivered over a human messaging channel (Discord,
+        # Telegram, Slack, ...). While a foreground call runs that chat cannot answer new
+        # messages, so a longer call there becomes a tracked background process. Only ever
+        # LOWERS the general cap (TERMINAL_MAX_FOREGROUND_TIMEOUT); 0 disables it.
+        "gateway_max_foreground_timeout": 600,
         # Seconds between SIGTERM and escalated SIGKILL for host process trees (browser daemons). 0
         # = SIGTERM only.
         "daemon_term_grace_seconds": 2.0,

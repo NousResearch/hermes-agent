@@ -75,6 +75,42 @@ def _safe_parse_import_env(name: str, default: Any, converter, type_label: str):
 # Hard cap on foreground timeout; override via TERMINAL_MAX_FOREGROUND_TIMEOUT env var.
 FOREGROUND_MAX_TIMEOUT = _safe_parse_import_env("TERMINAL_MAX_FOREGROUND_TIMEOUT", 600, int, "integer")
 
+# Foreground cap for turns delivered over a human MESSAGING channel (Discord, Telegram, Slack, ...):
+# ``terminal.gateway_max_foreground_timeout``, bridged to TERMINAL_GATEWAY_MAX_FOREGROUND_TIMEOUT
+# and re-read per call. While a foreground call runs, that chat cannot answer new messages; a CLI
+# user can Ctrl-C, a chat user cannot. So a raised general cap (3600 s for long CLI builds) must not
+# let a model hold a chat session for an hour. It only ever LOWERS the general cap; 0 disables it.
+GATEWAY_FOREGROUND_MAX_TIMEOUT_DEFAULT = 600
+
+
+def _is_messaging_gateway_turn() -> bool:
+    """True inside a human messaging-channel turn (the per-turn ContextVar the gateway binds, so
+    concurrent sessions never leak into each other). Cron jobs bind a delivery platform but have no
+    human waiting, so they are excluded."""
+    try:
+        from gateway.session_context import get_session_env, session_is_messaging_surface
+        from utils import is_truthy_value
+
+        return session_is_messaging_surface() and not is_truthy_value(get_session_env("HERMES_CRON_SESSION"))
+    except Exception:
+        return False
+
+
+def _gateway_foreground_max_timeout() -> int:
+    return _safe_parse_import_env(
+        "TERMINAL_GATEWAY_MAX_FOREGROUND_TIMEOUT", GATEWAY_FOREGROUND_MAX_TIMEOUT_DEFAULT, int, "integer",
+    )
+
+
+def _effective_foreground_max_timeout() -> "tuple[int, bool]":
+    """``(cap, gateway_capped)`` for THIS call; ``gateway_capped`` is True when the messaging cap binds."""
+    cap = FOREGROUND_MAX_TIMEOUT
+    if _is_messaging_gateway_turn():
+        gw = _gateway_foreground_max_timeout()
+        if 0 < gw < cap:
+            return gw, True
+    return cap, False
+
 # Disk usage warning threshold (in GB)
 DISK_USAGE_WARNING_THRESHOLD_GB = _safe_parse_import_env("TERMINAL_DISK_WARNING_GB", 500.0, float, "number")
 
@@ -807,7 +843,7 @@ def _command_requires_pipe_stdin(command: str) -> bool:
 
 
 from tools.terminal_tool_guards import (
-    _foreground_background_guidance, _safe_command_preview, _validate_workdir,
+    _foreground_background_guidance, _gateway_polling_loop_guidance, _safe_command_preview, _validate_workdir,
     gateway_lifecycle_block, self_repo_block,
 )
 from tools.terminal_tool_background import _YIELDED_NOTE, spawn_background_process, yield_to_background_handler
@@ -957,6 +993,8 @@ class _ExecPlan:
     # Set when a foreground call asked for more than FOREGROUND_MAX_TIMEOUT and was promoted to a
     # tracked background process instead of being refused (the requested seconds, for the note).
     promoted_from_foreground_timeout: Optional[int] = None
+    # The cap that triggered the promotion (the messaging-gateway cap may be tighter than the general one).
+    promoted_cap: Optional[int] = None
 
 
 _PROMOTED_NOTE = (
@@ -1030,6 +1068,8 @@ def _plan_execution(
     if timeout is not None and timeout <= 0:
         raise _Rejected(tool_error(f"timeout must be a positive number of seconds (got {timeout})."))
     promoted = None
+    fg_cap, gateway_capped = _effective_foreground_max_timeout()
+    effective_timeout = timeout or config["timeout"]
     if not background:
         # An over-cap foreground timeout is a bounded job the caller wants to wait for (test suites,
         # builds). Refusing it only bought a mechanical retry: 454 refusals in one run, every one
@@ -1039,15 +1079,23 @@ def _plan_execution(
         # The detachment guidance applies whether or not the call is promoted: a promoted `cmd &`
         # would start a tracked shell that exits at once while its payload runs untracked.
         guidance = _foreground_background_guidance(command)
+        # In a chat turn a foreground polling loop is refused, not promoted: promoting would keep
+        # the loop's own sleeps alive in the background, where the schema says polling must not go.
+        if not guidance and _is_messaging_gateway_turn():
+            guidance = _gateway_polling_loop_guidance(command)
         if guidance:
             raise _Rejected(_error_json(guidance, status="error"))
-        if timeout and timeout > FOREGROUND_MAX_TIMEOUT:
+        if timeout and timeout > fg_cap:
             promoted = timeout
+        elif gateway_capped and effective_timeout > fg_cap:
+            # A long configured default (terminal.timeout) must not smuggle an over-cap wait into
+            # a chat turn when the model omits timeout.
+            effective_timeout = fg_cap
 
     return _ExecPlan(
         config=config, env_type=env_type, effective_task_id=effective_task_id,
-        image=image, cwd=cwd, host_cwd=host_cwd, effective_timeout=timeout or config["timeout"],
-        promoted_from_foreground_timeout=promoted,
+        image=image, cwd=cwd, host_cwd=host_cwd, effective_timeout=effective_timeout,
+        promoted_from_foreground_timeout=promoted, promoted_cap=fg_cap if promoted else None,
     )
 
 
@@ -1058,7 +1106,7 @@ _PROMOTED_NOTE_POLL_ONLY = (
 )
 
 
-def _with_promoted_note(result_json: str, requested_timeout: int) -> str:
+def _with_promoted_note(result_json: str, requested_timeout: int, cap: Optional[int] = None) -> str:
     """Attach the foreground->background promotion note to a spawn result (unchanged on error). The
     note only promises a notification when the spawn actually kept notify_on_complete (finite sessions
     such as one-shot runners cannot route one back; the spawn already said so and cleared the flag)."""
@@ -1069,7 +1117,7 @@ def _with_promoted_note(result_json: str, requested_timeout: int) -> str:
     if not isinstance(data, dict) or data.get("error"):
         return result_json
     template = _PROMOTED_NOTE if data.get("notify_on_complete") else _PROMOTED_NOTE_POLL_ONLY
-    data["promoted_from_foreground"] = template.format(requested=requested_timeout, cap=FOREGROUND_MAX_TIMEOUT)
+    data["promoted_from_foreground"] = template.format(requested=requested_timeout, cap=cap or FOREGROUND_MAX_TIMEOUT)
     return json.dumps(data, ensure_ascii=False)
 
 
@@ -1352,7 +1400,7 @@ def terminal_tool(
                 persist_on_release=persist_on_release,
             )
             if plan.promoted_from_foreground_timeout is not None:
-                result = _with_promoted_note(result, plan.promoted_from_foreground_timeout)
+                result = _with_promoted_note(result, plan.promoted_from_foreground_timeout, plan.promoted_cap)
             return result
         return _run_foreground(
             command, env, plan,
@@ -1399,7 +1447,7 @@ TERMINAL_SCHEMA = {
             },
             "timeout": {
                 "type": "integer",
-                "description": f"Max seconds to wait (default: 180, foreground max: {FOREGROUND_MAX_TIMEOUT}). Returns INSTANTLY when command finishes — set high for long tasks, you won't wait unnecessarily. A foreground timeout above {FOREGROUND_MAX_TIMEOUT}s runs the command as a tracked background process with notify_on_complete=true instead (the result says so; do not re-run it).",
+                "description": f"Max seconds to wait (default: 180, foreground max: {FOREGROUND_MAX_TIMEOUT}). Returns INSTANTLY when command finishes — set high for long tasks, you won't wait unnecessarily. A foreground timeout above {FOREGROUND_MAX_TIMEOUT}s runs the command as a tracked background process with notify_on_complete=true instead (the result says so; do not re-run it). In messaging-gateway sessions (Discord, Telegram, ...) the cap is terminal.gateway_max_foreground_timeout (default 600s) because the chat cannot answer while a foreground call runs.",
                 "minimum": 1
             },
             "workdir": {

@@ -848,17 +848,20 @@ class ResponsesApiTransport(ProviderTransport):
         )
 
     def validate_response(self, response: Any) -> bool:
-        """True if response.output is a non-empty list, or a terminal content_filter refusal.
+        """True if output is non-empty or a terminal content_filter refusal.
 
         An incomplete/content_filter response with no output must reach normalization,
-        not a retry. Does NOT check output_text fallback — the caller handles that.
+        not a retry. Failed/cancelled responses must reach fallback even with output.
+        Does NOT check output_text fallback — the caller handles that.
         """
         if response is None:
+            return False
+        status = str(getattr(response, "status", "") or "").strip().lower()
+        if status in {"failed", "cancelled"}:
             return False
         output = getattr(response, "output", None)
         if isinstance(output, list) and output:
             return True
-        status = str(getattr(response, "status", "") or "").strip().lower()
         details = getattr(response, "incomplete_details", None)
         raw_reason = details.get("reason") if isinstance(details, dict) else getattr(details, "reason", "")
         return status == "incomplete" and str(raw_reason or "").strip().lower() == "content_filter"

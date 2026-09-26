@@ -2130,16 +2130,29 @@ def trigger_job(job_id: str, extra_prompt: Optional[str] = None) -> Optional[Dic
             f"Create a new occurrence with 'hermes cron resume {name} "
             "--run-now' or '--at <ISO-8601>'.")
     manual_run_at = _hermes_now().isoformat()
-    return update_job(job["id"], {
-        "enabled": True,
-        "state": "scheduled",
-        "paused_at": None,
-        "paused_reason": None,
-        "next_run_at": manual_run_at,
-        # Run-now intent, so cron expression/TZ repair guards don't treat it as stale state.
-        "manual_run_at": manual_run_at,
-        "manual_run_prompt": (extra_prompt or None),
-    })
+    with _jobs_lock():
+        # A trigger stamped over an in-flight run never fires: the tick skips the job as already
+        # running, and that run's completion recomputes next_run_at and drops the manual stamp.
+        # The fire claim (heartbeated for the whole run) covers runs owned by other processes;
+        # a bare one-shot run_claim is not proof of a live run (a dead tick leaves it behind).
+        current = get_job(job["id"])
+        if current is not None and (
+            _job_running_in_this_process(job["id"])
+            or _claim_is_live(current.get("fire_claim"), _hermes_now(), FIRE_CLAIM_TTL_SECONDS)
+        ):
+            raise ValueError(
+                f"Cannot run: job '{current.get('name', job_id)}' is already running; "
+                "not started again.")
+        return update_job(job["id"], {
+            "enabled": True,
+            "state": "scheduled",
+            "paused_at": None,
+            "paused_reason": None,
+            "next_run_at": manual_run_at,
+            # Run-now intent, so cron expression/TZ repair guards don't treat it as stale state.
+            "manual_run_at": manual_run_at,
+            "manual_run_prompt": (extra_prompt or None),
+        })
 
 
 def _claim_owner_is_dead(claim: Dict[str, Any]) -> bool:

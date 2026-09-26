@@ -2197,6 +2197,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
 
     def _reset_session_compaction_state(self) -> None:
         """Shared per-session reset for /new, /reset and session end."""
+        self._pending_skill_view_results.clear()
         # A handoff may carry role="user" only for alternation, so role alone can't prove a human turn existed.
         self._previous_summary = self._summary_has_user_turn = self._last_summary_error = None
         self._last_aux_model_failure_error = self._last_aux_model_failure_model = None
@@ -2754,6 +2755,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         self.summary_model = summary_model_override or ""
         self._session_db: Any = None
         self._session_id: str = ""
+        self._pending_skill_view_results: dict[str, dict[str, Any]] = {}
         # Per-session state (also reset by /new, /reset and session end).
         self._reset_session_compaction_state()
         # Terminal summary failures (access/quota, network, empty content, finish_reason=length): compress()
@@ -3169,6 +3171,140 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
                 result, prune_boundary, protect_tail_tokens, call_id_to_tool, min_prune_chars,
             )
         return result, pruned
+
+    def track_skill_view_result(
+        self, call_id: str, args: dict[str, Any], result: str, model_content: Any,
+    ) -> bool:
+        """Hold a successful skill_view result until a later provider request carries it."""
+        if not isinstance(call_id, str) or not call_id or not isinstance(result, str):
+            return False
+        try:
+            parsed, _ = json.JSONDecoder().raw_decode(result.lstrip())
+        except (TypeError, ValueError):
+            return False
+        if not isinstance(parsed, dict) or parsed.get("success") is not True:
+            return False
+        body = parsed.get("content")
+        if not isinstance(body, str) or not body or not isinstance(model_content, str):
+            return False
+        name = args.get("name") if isinstance(args, dict) else None
+        file_path = args.get("file_path") if isinstance(args, dict) else None
+        if not isinstance(name, str) or not name:
+            return False
+        self._pending_skill_view_results[call_id] = {
+            "name": name,
+            "file_path": file_path if isinstance(file_path, str) else None,
+            "body": body,
+            "content": model_content,
+        }
+        return True
+
+    def pending_skill_view_results(self) -> list[tuple[str, dict[str, Any]]]:
+        """Snapshot pending call IDs and their exact per-resource content."""
+        return list(self._pending_skill_view_results.items())
+
+    def pending_skill_view_resource_labels(self) -> list[str]:
+        """Human-readable identities; omitted file_path means the main SKILL.md."""
+        labels = []
+        for entry in self._pending_skill_view_results.values():
+            label = f"{entry['name']} ({entry['file_path'] or 'SKILL.md'})"
+            if label not in labels:
+                labels.append(label)
+        return labels
+
+    def restore_pending_skill_view_results(self, messages: list[dict[str, Any]]) -> list[str]:
+        """Restore full safe tool-result text after tool/output/context budgeting."""
+        missing = []
+        for call_id, entry in self._pending_skill_view_results.items():
+            tool_message = next((
+                message for message in reversed(messages)
+                if isinstance(message, dict)
+                and message.get("role") == "tool"
+                and message.get("tool_call_id") == call_id
+            ), None)
+            if tool_message is None:
+                missing.append(call_id)
+                continue
+            tool_message["content"] = entry["content"]
+        return missing
+
+    @staticmethod
+    def _payload_contains_skill_result(payload: Any, call_id: str, exact_content: str, api_mode: str) -> bool:
+        if not isinstance(payload, dict):
+            return False
+        if api_mode in ("anthropic_messages", "bedrock_converse"):
+            messages = payload.get("messages")
+            if not isinstance(messages, list):
+                return False
+            for message in messages:
+                if not isinstance(message, dict) or message.get("role") != "user":
+                    continue
+                blocks = message.get("content")
+                if not isinstance(blocks, list):
+                    continue
+                for block in blocks:
+                    if not isinstance(block, dict):
+                        continue
+                    if api_mode == "anthropic_messages":
+                        if block.get("type") != "tool_result" or block.get("tool_use_id") != call_id:
+                            continue
+                        content = block.get("content")
+                        if isinstance(content, str) and exact_content in content:
+                            return True
+                        if isinstance(content, list) and any(
+                            isinstance(part, dict) and part.get("type") == "text"
+                            and isinstance(part.get("text"), str) and exact_content in part["text"]
+                            for part in content
+                        ):
+                            return True
+                    else:
+                        result = block.get("toolResult")
+                        if not isinstance(result, dict) or result.get("toolUseId") != call_id:
+                            continue
+                        content = result.get("content")
+                        if isinstance(content, list) and any(
+                            isinstance(part, dict) and isinstance(part.get("text"), str)
+                            and exact_content in part["text"] for part in content
+                        ):
+                            return True
+            return False
+        shape = {
+            "codex_responses": ("input", "type", "function_call_output", "call_id", "output"),
+            "chat_completions": ("messages", "role", "tool", "tool_call_id", "content"),
+        }.get(api_mode)
+        if not isinstance(payload, dict) or shape is None:
+            return False
+        key, kind, expected, identity, content = shape
+        items = payload.get(key)
+        if not isinstance(items, (list, tuple)):
+            return False
+        return any(
+            isinstance(item, dict)
+            and item.get(kind) == expected
+            and item.get(identity) == call_id
+            and isinstance(item.get(content), str)
+            and exact_content in item[content]
+            for item in items
+        )
+
+    def skill_view_results_missing_from(self, payload: Any, *, api_mode: str | None = None) -> list[tuple[str, dict[str, Any]]]:
+        """Pending results absent from the active API's corresponding tool outputs."""
+        mode = self.api_mode if api_mode is None else api_mode
+        return [
+            (call_id, entry) for call_id, entry in self._pending_skill_view_results.items()
+            if not self._payload_contains_skill_result(payload, call_id, entry["content"], mode)
+        ]
+
+    def acknowledge_skill_view_results(self, payload: Any, *, api_mode: str | None = None) -> list[str]:
+        """Forget only results proven present in a completed serialized model request."""
+        mode = self.api_mode if api_mode is None else api_mode
+        delivered = [
+            call_id for call_id, entry in self._pending_skill_view_results.items()
+            if self._payload_contains_skill_result(payload, call_id, entry["content"], mode)
+        ]
+        for call_id in delivered:
+            self._pending_skill_view_results.pop(call_id, None)
+        return delivered
 
     def _reset_proactive_prune_rearm(self) -> None:
         """Fully rearm the proactive prune and let a future lockout warn again.

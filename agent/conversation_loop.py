@@ -37,7 +37,9 @@ from agent.turn_context import PreflightCompressionTimedOut, build_turn_context
 from agent.turn_retry_state import TurnRetryState
 # Phase helpers of the turn loop, bound at import so a source-tree swap cannot load a
 # skewed phase mid-turn.
-from agent.turn_api_call import handle_api_interrupt, nous_rate_limit_guard, perform_api_call
+from agent.turn_api_call import (
+    SkillReloadDeliveryBlocked, handle_api_interrupt, nous_rate_limit_guard, perform_api_call,
+)
 from agent.turn_api_error import handle_api_error
 from agent.turn_api_request import build_api_request
 from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, failed_turn_notice, site_copy
@@ -1482,6 +1484,15 @@ def _run_api_retry_loop(agent, s: _LoopState) -> Optional[Dict[str, Any]]:
                 return _rc.result
             if _rc.action == "break":
                 return None
+        except SkillReloadDeliveryBlocked as blocked:
+            from agent.turn_context_compaction import _refund_api_call
+
+            s.api_call_count = _refund_api_call(agent, s.api_call_count)
+            return _partial_turn_result(
+                str(blocked), s.messages, s.api_call_count, failed=True,
+                turn_exit_reason="skill_reload_delivery_blocked",
+                failure_reason="skill_reload_delivery", failure_retryable=False,
+            )
         except InterruptedError:
             if _run_phase(handle_api_interrupt, agent, s).action == "break":
                 return None

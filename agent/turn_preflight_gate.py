@@ -29,7 +29,7 @@ def run_preflight_gate(
     """Run the pre-API guard chain in the original order. ``_last_preflight_pressure`` is
     consumed here (set to None) and re-armed only by a compression pass, so a blocked
     preflight never compares against a stale figure."""
-    from agent.conversation_loop import _ollama_context_limit_error
+    from agent.conversation_loop import _ollama_context_limit_error, _partial_turn_result
 
     v = PreflightGateVerdict(
         action="fallthrough", pending_moa_prepared_request=pending_moa_prepared_request,
@@ -87,7 +87,7 @@ def run_preflight_gate(
             f"{_last_preflight_pressure:,}",
             f"{request_pressure_tokens:,}",
         )
-    return run_preflight_compression(
+    verdict = run_preflight_compression(
         agent, v, compressor=_compressor, request_pressure_tokens=request_pressure_tokens,
         provider_overflow_preflight=_provider_overflow_preflight,
         # An anchored figure is real usage + delta: never deferred. Only a whole-context rough
@@ -100,3 +100,32 @@ def run_preflight_gate(
         user_message=user_message, max_compression_attempts=max_compression_attempts,
         effective_task_id=effective_task_id,
     )
+    pending = getattr(_compressor, "pending_skill_view_results", lambda: [])()
+    context_length = int(getattr(_compressor, "context_length", 0) or 0)
+    if (
+        verdict.action == "fallthrough"
+        and pending
+        and context_length > 0
+        and isinstance(request_pressure_tokens, int)
+        and request_pressure_tokens > context_length
+    ):
+        labels = getattr(_compressor, "pending_skill_view_resource_labels", lambda: [])()
+        label_text = ", ".join(labels) or "reloaded Skill resource"
+        reason = (
+            f"Required skill_view resource(s) {label_text} cannot fit within the model context window "
+            f"(~{request_pressure_tokens:,} tokens vs {context_length:,}). No model request was sent; "
+            "reduce other context or start a new session."
+        )
+        from agent.turn_context_compaction import _refund_api_call
+
+        verdict.api_call_count = _refund_api_call(agent, verdict.api_call_count)
+        with suppress(Exception):
+            agent._persist_session(verdict.messages, verdict.conversation_history)
+        verdict.action = "return"
+        verdict.result = _partial_turn_result(
+            reason, verdict.messages, verdict.api_call_count,
+            failed=True, turn_exit_reason="skill_reload_context_budget_exceeded",
+            failure_reason="context_overflow", failure_retryable=False,
+        )
+        return verdict
+    return verdict

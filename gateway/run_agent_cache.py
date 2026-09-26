@@ -42,6 +42,22 @@ def _tuple_agent(entry: Any) -> Any:
     return entry[0] if isinstance(entry, tuple) and entry else None
 
 
+def _reap_source_for_interrupt(interrupt_reason: str) -> str:
+    """Reap source for ``_interrupt_running_turn``'s abandoned-turn reaper.
+
+    Lifecycle interrupts — eviction (the session ends while its turn runs) and ``/new`` (the
+    conversation is reset) — reap as a lifecycle sweep so the turn's ``persist_on_release``
+    jobs survive them (#41225), exactly like the release() ``kill_all`` / turn-timeout /
+    ``agent_close`` sweeps already do. A deliberate operator stop (``/stop``) keeps the
+    operator source (not in ``ProcessRegistry._LIFECYCLE_KILL_SOURCES``) and still kills
+    persisted jobs. Imported lazily: ``gateway.run`` constants live behind the import cycle.
+    """
+    from gateway.run import _INTERRUPT_REASON_EVICTED, _INTERRUPT_REASON_RESET
+    if interrupt_reason in (_INTERRUPT_REASON_RESET, _INTERRUPT_REASON_EVICTED):
+        return "gateway_turn_lifecycle"
+    return "gateway_turn_interrupt"
+
+
 class GatewayAgentCacheMixin:
     """Agent cache, session model overrides, turn leases, run generations and conversation-scope reset for GatewayRunner."""
 
@@ -471,7 +487,7 @@ class GatewayAgentCacheMixin:
                 target=copy_context().run,
                 args=(_reap_gateway_turn_processes, _process_task_id, _process_baseline),
                 kwargs={
-                    "source": "gateway_turn_interrupt",
+                    "source": _reap_source_for_interrupt(interrupt_reason),
                     "is_still_current": lambda: self._is_session_run_current(session_key, _generation_at_interrupt),
                 },
                 name=f"gateway-turn-reaper-{_process_task_id[:12]}",

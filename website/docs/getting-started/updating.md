@@ -221,6 +221,14 @@ git stash apply stash@{0}
 
 You can pass `--keep-stash` to a terminal `hermes update` too if you want the same never-reapply behavior interactively.
 
+To review every parked Hermes update stash without changing it, run:
+
+```bash
+hermes update --list-autostashes
+```
+
+The command lists each stash's immutable commit SHA, creation time, tracked and untracked file counts, and a five-path preview. When a retained update receipt names the exact stash SHA, it also reports why that stash was parked; older stashes without a matching retained receipt are reported as unknown rather than guessed. The output includes manual inspect, apply, and drop commands. It is read-only and never applies or removes a stash.
+
 ### Preview-only: `hermes update --check`
 
 `hermes update --check` compares the checkout with its source-channel target

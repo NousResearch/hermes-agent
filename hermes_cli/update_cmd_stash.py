@@ -4,6 +4,7 @@ Split out of ``update_cmd.py``; names are re-imported there so ``hermes_cli.upda
 Origin helpers are imported lazily per function (no cycle; test patches on the origin stay effective).
 """
 
+import json
 import logging
 import re
 import subprocess
@@ -25,6 +26,23 @@ _AUTOSTASH_NAME_PREFIX = "hermes-update-autostash-"
 _AUTOSTASH_WARN_AGE_DAYS = 7
 
 _STASH_LEFT_IN_PLACE = "  The stash was left in place. You can remove it manually after checking the result."
+
+
+def _parse_autostash_subject(subject: str) -> Optional[tuple[str, datetime]]:
+    """Return the producer timestamp only when the complete stash message matches its contract."""
+    _prefix, separator, message = subject.partition(": ")
+    message = message if separator else subject
+    match = re.fullmatch(
+        rf"{re.escape(_AUTOSTASH_NAME_PREFIX)}(\d{{8}}-\d{{6}})", message,
+    )
+    if match is None:
+        return None
+    stamp = match.group(1)
+    try:
+        created_at = datetime.strptime(stamp, "%Y%m%d-%H%M%S").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+    return stamp, created_at
 
 
 def _git_quiet(git_cmd: list[str], args: list[str], cwd: Path, **kwargs):
@@ -138,6 +156,123 @@ def _resolve_stash_selector(git_cmd: list[str], cwd: Path, stash_ref: str) -> Op
     return None
 
 
+def _autostash_receipt_match(stash_ref: str) -> Optional[dict[str, str]]:
+    """Newest retained receipt disposition for exactly ``stash_ref``."""
+    from hermes_cli.update_receipt import _profile_homes
+
+    pattern = re.compile(
+        r"^(parked|restored|discarded): ([0-9a-fA-F]{40,64})(?: \((.*)\))?$"
+    )
+    matches: list[dict[str, str]] = []
+    for profile, home in _profile_homes():
+        receipt_dir = home / "logs" / "update_receipts"
+        if not receipt_dir.is_dir():
+            continue
+        for path in receipt_dir.glob("update_*.json"):
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, TypeError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            for step in payload.get("steps") or []:
+                if not isinstance(step, dict) or step.get("name") != "local_changes_stash":
+                    continue
+                match = pattern.fullmatch(str(step.get("detail") or "").strip())
+                if match is None or match.group(2).lower() != stash_ref.lower():
+                    continue
+                matches.append({
+                    "profile": profile,
+                    "started_at": str(payload.get("started_at") or "unknown time"),
+                    "outcome": str(payload.get("outcome") or "unknown"),
+                    "disposition": match.group(1),
+                    "detail": match.group(3) or "",
+                    "path": path.name,
+                })
+    if not matches:
+        return None
+    return max(matches, key=lambda item: (item["started_at"], item["path"]))
+
+
+def _stash_payload_paths(
+    git_cmd: list[str], cwd: Path, stash_ref: str,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Tracked and untracked paths saved by one stash commit."""
+    tracked = _git_paths_z(git_cmd, ["diff", "--name-only", "-z", f"{stash_ref}^1", stash_ref], cwd)
+    untracked_parent = _git_quiet(
+        git_cmd, ["rev-parse", "--verify", f"{stash_ref}^3"], cwd,
+        text=True, encoding="utf-8", errors="surrogateescape",
+    )
+    untracked = set()
+    if untracked_parent is not None and untracked_parent.returncode == 0:
+        untracked = _git_paths_z(git_cmd, ["ls-tree", "-r", "--name-only", "-z", f"{stash_ref}^3"], cwd) or set()
+    return tuple(sorted(tracked or set())), tuple(sorted(untracked))
+
+
+def _receipt_reason(receipt: Optional[dict[str, str]]) -> str:
+    if receipt is None:
+        return "unknown — legacy stash or receipt unavailable"
+    disposition = receipt["disposition"]
+    detail = receipt["detail"]
+    if disposition == "restored":
+        return "restored — stash cleanup incomplete"
+    if disposition == "discarded":
+        return "discarded — receipt and stash state disagree"
+    return f"parked — {detail}" if detail else "parked"
+
+
+def _print_update_autostash_inventory(git_cmd: list[str], cwd: Path) -> int:
+    """Print a read-only inventory of Hermes update autostashes; return the count."""
+    stash_list = _git_quiet(
+        git_cmd,
+        ["stash", "list", "--format=%gd%x09%H%x09%cI%x09%s"],
+        cwd,
+        text=True,
+        encoding="utf-8",
+        errors="surrogateescape",
+    )
+    if stash_list is None or stash_list.returncode != 0:
+        print("Could not list Git stashes for this Hermes checkout.")
+        return 0
+
+    entries: list[tuple[str, str, str]] = []
+    for line in stash_list.stdout.splitlines():
+        fields = line.split("\t", 3)
+        if len(fields) != 4 or _parse_autostash_subject(fields[3]) is None:
+            continue
+        selector, stash_ref, created_at, _subject = fields
+        entries.append((selector, stash_ref, created_at))
+
+    if not entries:
+        print("No Hermes update autostashes found.")
+        return 0
+
+    print(f"Hermes update autostashes ({len(entries)}):")
+    for selector, stash_ref, created_at in entries:
+        tracked, untracked = _stash_payload_paths(git_cmd, cwd, stash_ref)
+        receipt = _autostash_receipt_match(stash_ref)
+        print()
+        print(f"{selector}  {stash_ref}  {created_at}")
+        print(f"  Files: {len(tracked)} tracked, {len(untracked)} untracked")
+        preview = [("tracked", path) for path in tracked] + [("untracked", path) for path in untracked]
+        for kind, path in preview[:5]:
+            print(f"    {kind}: {json.dumps(path, ensure_ascii=True)}")
+        if len(preview) > 5:
+            print(f"    ... {len(preview) - 5} more")
+        print(f"  Reason: {_receipt_reason(receipt)}")
+        if receipt is not None:
+            print(
+                f"  Receipt: {receipt['profile']}, {receipt['started_at']}, "
+                f"outcome {receipt['outcome']}"
+            )
+        selector_match = re.fullmatch(r"stash@\{(\d+)\}", selector)
+        drop_target = selector_match.group(1) if selector_match else selector
+        print(f"  Inspect: git stash show --stat {stash_ref}")
+        print(f"  Apply:   git stash apply {stash_ref}")
+        print(f"  Drop:    git stash drop {drop_target}")
+    return len(entries)
+
+
 def _warn_orphaned_update_autostashes(git_cmd: list[str], cwd: Path) -> int:
     """Print a notice for update autostashes older than the warn threshold; return the count (0 on any git failure).
 
@@ -158,14 +293,10 @@ def _warn_orphaned_update_autostashes(git_cmd: list[str], cwd: Path) -> int:
         stale: list[tuple[str, str]] = []
         for line in stash_list.stdout.splitlines():
             selector, _, subject = line.strip().partition(" ")
-            pos = subject.find(_AUTOSTASH_NAME_PREFIX)
-            if pos < 0:
+            parsed = _parse_autostash_subject(subject)
+            if parsed is None:
                 continue
-            stamp = subject[pos + len(_AUTOSTASH_NAME_PREFIX):][:15]  # "YYYYMMDD-HHMMSS"
-            try:
-                stash_time = datetime.strptime(stamp, "%Y%m%d-%H%M%S").replace(tzinfo=timezone.utc)
-            except ValueError:
-                continue  # age unknown — leave it alone rather than guess
+            stamp, stash_time = parsed
             if stash_time < cutoff:
                 stale.append((selector, stamp))
         if not stale:
@@ -178,8 +309,8 @@ def _warn_orphaned_update_autostashes(git_cmd: list[str], cwd: Path) -> int:
         )
         for selector, stamp in stale:
             print(f"    {selector}  ({_AUTOSTASH_NAME_PREFIX}{stamp})")
-        print("  These hold local changes stashed by earlier updates and never")
-        print("  restored. Review with: git stash show -p <entry>")
+        print("  These are local changes saved by earlier updates and still retained.")
+        print("  Inspect details with: hermes update --list-autostashes")
         print("  Restore with: git stash apply <entry>   Discard with: git stash drop <entry>")
         return len(stale)
     except Exception as exc:

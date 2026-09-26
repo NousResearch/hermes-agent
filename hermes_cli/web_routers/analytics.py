@@ -310,3 +310,105 @@ async def get_models_analytics(
     """Return model analytics without blocking the serving event loop."""
     with corrupt_store_as_status(_session_db_path_for_profile(profile)):
         return await asyncio.to_thread(_get_models_analytics, days, profile)
+
+
+_MODEL_USAGE_BUCKET_SQL = {
+    "hour": "strftime('%Y-%m-%dT%H:00:00Z', {timestamp}, 'unixepoch')",
+    "day": "strftime('%Y-%m-%d', {timestamp}, 'unixepoch')",
+}
+
+
+def _get_model_usage_timeline(days: int = 30, bucket: str = "day", profile: Optional[str] = None):
+    """Per-model historical usage buckets.
+
+    ``session_model_usage`` is cumulative per session/model/task, so rows written
+    before per-call event recording can only be placed at ``last_seen``.  The
+    response makes that provenance explicit rather than implying exact timing.
+    """
+    event_bucket_sql = _MODEL_USAGE_BUCKET_SQL[bucket].format(timestamp="occurred_at")
+    aggregate_bucket_sql = _MODEL_USAGE_BUCKET_SQL[bucket].format(timestamp="last_seen")
+    db = _open_session_db_for_profile(profile, read_only=True)
+    try:
+        cutoff = time.time() - (days * 86400)
+        rows = [dict(row) for row in db._conn.execute(f"""
+            WITH usage_rows AS (
+                SELECT {event_bucket_sql} AS bucket_start,
+                       model,
+                       billing_provider AS provider,
+                       input_tokens, output_tokens, cache_read_tokens,
+                       cache_write_tokens, reasoning_tokens, api_call_count,
+                       'exact' AS provenance
+                  FROM api_call_usage
+                 WHERE occurred_at > ?
+                UNION ALL
+                SELECT {aggregate_bucket_sql} AS bucket_start,
+                       u.model,
+                       u.billing_provider AS provider,
+                       u.input_tokens, u.output_tokens, u.cache_read_tokens,
+                       u.cache_write_tokens, u.reasoning_tokens, u.api_call_count,
+                       'estimated' AS provenance
+                  FROM session_model_usage AS u
+                 WHERE u.last_seen > ?
+                   AND NOT EXISTS (
+                       SELECT 1 FROM api_call_usage AS e
+                        WHERE e.session_id = u.session_id
+                          AND e.model = u.model
+                          AND e.billing_provider = u.billing_provider
+                          AND e.billing_base_url = u.billing_base_url
+                          AND e.billing_mode = u.billing_mode
+                          AND e.task = u.task
+                   )
+            )
+            SELECT bucket_start,
+                   model,
+                   provider,
+                   SUM(input_tokens) AS input_tokens,
+                   SUM(output_tokens) AS output_tokens,
+                   SUM(cache_read_tokens) AS cache_read_tokens,
+                   SUM(cache_write_tokens) AS cache_write_tokens,
+                   SUM(reasoning_tokens) AS reasoning_tokens,
+                   SUM(api_call_count) AS api_calls,
+                   CASE WHEN MIN(provenance) = MAX(provenance) THEN MIN(provenance) ELSE 'mixed' END AS provenance
+              FROM usage_rows
+             GROUP BY bucket_start, model, provider
+             ORDER BY model, provider, bucket_start
+        """, (cutoff, cutoff)).fetchall()]
+    finally:
+        db.close()
+
+    by_model: Dict[tuple[str, str], List[Dict[str, Any]]] = {}
+    for row in rows:
+        point = {
+            "start": row["bucket_start"],
+            "input_tokens": int(row["input_tokens"] or 0),
+            "output_tokens": int(row["output_tokens"] or 0),
+            "cache_read_tokens": int(row["cache_read_tokens"] or 0),
+            "cache_write_tokens": int(row["cache_write_tokens"] or 0),
+            "reasoning_tokens": int(row["reasoning_tokens"] or 0),
+            "api_calls": int(row["api_calls"] or 0),
+            "provenance": row["provenance"],
+        }
+        point["total_tokens"] = sum(point[name] for name in (
+            "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens",
+        ))
+        by_model.setdefault((row["model"], row["provider"]), []).append(point)
+
+    return {
+        "period_days": days,
+        "bucket": bucket,
+        "series": [
+            {"model": model, "provider": provider, "points": points}
+            for (model, provider), points in by_model.items()
+        ],
+    }
+
+
+@router.get("/api/analytics/model-usage")
+async def get_model_usage_timeline(
+    days: int = Query(30, ge=1, le=365),
+    bucket: str = Query("day", pattern="^(hour|day)$"),
+    profile: Optional[str] = None,
+):
+    """Local-only model usage timeline; pre-event history is labeled estimated."""
+    with corrupt_store_as_status(_session_db_path_for_profile(profile)):
+        return await asyncio.to_thread(_get_model_usage_timeline, days, bucket, profile)

@@ -70,6 +70,13 @@ _MODEL_USAGE_UPSERT_SQL = """INSERT INTO session_model_usage (
                    cost_source = COALESCE(excluded.cost_source, cost_source),
                    last_seen = excluded.last_seen"""
 
+_API_CALL_USAGE_INSERT_SQL = """INSERT INTO api_call_usage (
+                   session_id, occurred_at, model, billing_provider, billing_base_url, billing_mode,
+                   task, api_call_count, input_tokens, output_tokens, cache_read_tokens,
+                   cache_write_tokens, reasoning_tokens, estimated_cost_usd, actual_cost_usd,
+                   cost_status, cost_source, provenance
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'exact')"""
+
 
 # Kwargs forwarded verbatim from update_token_counts / record_auxiliary_usage into
 # _record_model_usage (the per-route attribution row).
@@ -359,12 +366,19 @@ class SessionUsageMixin:
         sess = dict(row) if (row is not None and not task) else {}
         counts = [v or 0 for v in (input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens)]
         now = time.time()
+        resolved_model = model or sess.get("model") or "unknown"
+        resolved_provider = billing_provider or sess.get("billing_provider") or ""
+        resolved_base_url = billing_base_url or sess.get("billing_base_url") or ""
+        resolved_mode = billing_mode or sess.get("billing_mode") or ""
         conn.execute(_MODEL_USAGE_UPSERT_SQL, (
-            session_id, model or sess.get("model") or "unknown",
-            billing_provider or sess.get("billing_provider") or "",
-            billing_base_url or sess.get("billing_base_url") or "",
-            billing_mode or sess.get("billing_mode") or "", task or "", api_call_count or 0, *counts,
+            session_id, resolved_model, resolved_provider, resolved_base_url, resolved_mode,
+            task or "", api_call_count or 0, *counts,
             float(estimated_cost_usd or 0.0), float(actual_cost_usd or 0.0), cost_status, cost_source, now, now))
+        conn.execute(_API_CALL_USAGE_INSERT_SQL, (
+            session_id, now, resolved_model, resolved_provider, resolved_base_url, resolved_mode,
+            task or "", api_call_count or 0, *counts, float(estimated_cost_usd or 0.0),
+            float(actual_cost_usd or 0.0), cost_status, cost_source,
+        ))
 
     def record_auxiliary_usage(
         self, session_id: str, task: str, *, model: Optional[str]=None, billing_provider: Optional[str]=None,

@@ -1,0 +1,92 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: scholarflow
+description: Citation-verified academic research — multi-provider paper search, a Zotero-synced library, corpus building, War Room debates, and manuscript drafting.
+source: https://scholarflowresearch.com/.well-known/scholarflow-agent.md
+
+# ScholarFlow (scholarflowresearch.com) is a hosted academic research
+# platform that exposes a user-scoped MCP server: 30 tools covering search
+# across 8 scholarly providers (Semantic Scholar, OpenAlex, PubMed, arXiv,
+# CrossRef, Europe PMC, ERIC, Perplexity), library + Zotero PDF archiving,
+# RIS/BibTeX import, a pgvector research corpus with OKF markdown export,
+# multi-persona "War Room" evidence debates, and a document
+# critique/rewrite pipeline. Every tool is scoped to the account that owns
+# the token — agents act on the user's own library, never a shared store.
+#
+# The server speaks MCP over SSE with HEADER-ONLY token auth
+# (X-Hermes-Auth). The catalog's http transport shape has no headers field,
+# so this entry bridges via mcp-remote (stdio), which injects the header
+# and substitutes ${SCHOLARFLOW_PAT} from the environment at connect time.
+# Nothing to git-clone — npx resolves the package — so no install block.
+#
+# The server's always-current self-description (endpoint, auth scheme, full
+# tool list, one-time human setup) is public at the `source:` URL above.
+transport:
+  type: stdio
+  command: "npx"
+  # Pinned per catalog dependency policy: exact version, released 2026-02-05
+  # (well past the 2-week cooldown). The catalog never auto-updates; bumping
+  # the pin is a PR to this manifest.
+  args:
+    - "-y"
+    - "mcp-remote@0.1.38"
+    - "https://backend-production-2eff.up.railway.app/mcp/sse"
+    - "--header"
+    - "X-Hermes-Auth:${SCHOLARFLOW_PAT}"
+    - "--transport"
+    - "sse-only"
+  version: "0.1.38"
+
+auth:
+  type: api_key
+  env:
+    - name: SCHOLARFLOW_PAT
+      prompt: "ScholarFlow agent token, starts with sft_ (create one at https://scholarflowresearch.com/settings/integrations/agent)"
+      required: true
+      secret: true
+
+# Tool selection at install time:
+# The read/search/save surface is default-enabled. Tools that start
+# long-running or LLM-spending jobs on the user's ScholarFlow account
+# (domain_research_start, war_room_start/continue, the doc_* rewrite
+# pipeline, and the LLM synthesis/drafting tools) are unchecked so a casual
+# install gets a safe, read-mostly surface; users opt in per their needs at
+# the checklist or later via `hermes mcp configure scholarflow`.
+tools:
+  default_enabled:
+    - search_papers
+    - list_papers
+    - get_paper
+    - add_paper
+    - save_selected
+    - import_reference_file
+    - sync_zotero
+    - zotero_archive_pdfs
+    - backfill_searchable
+    - query_corpus
+    - query_graph
+    - okf_read
+    - okf_lint
+    - export_document
+    - war_room_status
+    - domain_research_status
+
+post_install: |
+  One-time setup on the ScholarFlow side (point-and-click, ~2 minutes):
+
+  1. You already created your agent token at
+     https://scholarflowresearch.com/settings/integrations/agent and pasted
+     it here. Everything the agent does is scoped to that account.
+  2. Connect your Zotero at Settings -> Integrations -> Zotero so papers and
+     PDFs the agent saves land in YOUR Zotero library (ScholarFlow indexes
+     text; your Zotero keeps the files).
+  3. Optional: install the ScholarFlow Obsidian plugin to sync your notes
+     vault (linked from the same Integrations page).
+
+  Tools like domain_research_start, war_room_start, and the doc_* rewrite
+  pipeline start long-running jobs on your account — enable them in the
+  checklist when you want them.
+
+  Start a new Hermes session to load the ScholarFlow tools.

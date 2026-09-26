@@ -1705,18 +1705,20 @@ Shell hooks are registered by calling `agent.shell_hooks.register_from_config(cf
 ### Configuration schema
 
 ```yaml
+hooks_max_timeout: 300           # Per-profile cap for a shell hook's timeout; raise for trusted long-running gates
+
 hooks:
   <event_name>:                  # Must be in VALID_HOOKS
     - matcher: "<regex>"         # Optional; used for pre/post_tool_call only
       command: "<shell command>" # Required; runs via shlex.split, shell=False
-      timeout: <seconds>         # Optional; default 60, capped at 300
+      timeout: <seconds>         # Optional; default 60, capped at hooks_max_timeout
       fail_closed: <bool>        # Optional; default false. pre_tool_call only.
                                  # `failClosed` also accepted (Cursor/Claude Code compat)
 
 hooks_auto_accept: false         # See "Consent model" below
 ```
 
-Event names must be one of the [plugin hook events](#plugin-hooks); typos produce a "Did you mean X?" warning and are skipped. Unknown keys inside a single entry are ignored; missing `command` is a skip-with-warning. `timeout > 300` is clamped with a warning. `fail_closed: true` on an event other than `pre_tool_call` warns and is ignored (only blocking-capable events can fail closed).
+Event names must be one of the [plugin hook events](#plugin-hooks); typos produce a "Did you mean X?" warning and are skipped. Unknown keys inside a single entry are ignored; missing `command` is a skip-with-warning. `timeout > hooks_max_timeout` is clamped with a warning. `hooks_max_timeout` defaults to 300 seconds and is a per-profile setting; raise it only for trusted long-running hooks. `fail_closed: true` on an event other than `pre_tool_call` warns and is ignored (only blocking-capable events can fail closed).
 
 On Windows, a `command` that starts with an existing script file — the `~/.hermes/agent-hooks/x.sh` shape the examples below use — is spawned through that file's own interpreter (Git Bash for `.sh`/`.bash`, the running Hermes Python for `.py`), because `CreateProcess` has no shebang support and rejects a bare script with `WinError 193`. Every other command, and every POSIX platform, passes `argv` straight to `Popen`, where the kernel already honours the shebang.
 

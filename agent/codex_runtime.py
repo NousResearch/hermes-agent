@@ -12,6 +12,7 @@ import os
 import threading
 import time
 from contextlib import suppress
+from copy import copy
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List
 
@@ -714,7 +715,8 @@ def _turn_result(interrupt: tuple[bool, Any], messages: List[Dict[str, Any]], *,
 # --- Event-driven Responses streaming -----------------------------------------
 # The SDK's ``responses.stream(...)`` helper rebuilds a typed Response from ``response.completed.response.output``
 # and crashes when it is null. We consume raw ``responses.create(stream=True)`` SSE events and assemble the final
-# response from ``output_item.done``, so the terminal ``output`` may be null / [] / a string / absent.
+# response from item events. Valid terminal messages fill gaps; null / [] / a string / absent
+# terminal ``output`` still leaves the collected items intact.
 
 
 def _event_field(event: Any, name: str, default: Any = None) -> Any:
@@ -779,18 +781,18 @@ def _output_text_of(item: Any) -> str:
 class _CodexResponseAssembler:
     """Assemble a Response-shaped ``SimpleNamespace`` from raw Responses SSE events.
 
-    Only ``usage`` / ``status`` / ``id`` are read from the terminal frame — never ``response.output``. Output
-    items come from ``output_item.done``, or are synthesized from text deltas, or settled from function calls
-    announced via ``output_item.added`` but never confirmed (some backends omit per-item done events on success)."""
+    Item events own the accumulated output. Valid terminal message items may supply missing
+    messages/metadata, never erase collected output. Message phases and deltas are scoped to
+    item identity. Announced function calls settle only after an observed response.completed."""
 
     has_tool_calls = first_delta_fired = saw_terminal = False
     next_output_sequence = 0
     active_message_phase: str | None = None
     # Reasoning summary parts carry no separator; a summary_index change is where the blank line belongs.
     active_summary_index: Any = None
-    terminal_status: str = "completed"
+    terminal_status: str = "in_progress"
     terminal_usage = terminal_response_id = terminal_incomplete_details = terminal_error = None
-    # terminal_status defaults to "completed", so settlement needs an explicitly observed response.completed frame.
+    # A missing terminal frame is not success; only an observed completion can settle pending calls.
     saw_response_completed = False
 
     def __init__(self, *, model, on_text_delta, on_reasoning_delta, on_commentary_message, on_first_delta):
@@ -805,9 +807,36 @@ class _CodexResponseAssembler:
         # first-observed (sequence, output_index) per announced item id so a later .done keeps its announced position.
         self.pending_function_calls: Dict[str, Dict[str, Any]] = {}
         self.announced_output_order: Dict[str, tuple] = {}
+        self.message_keys_by_index: Dict[Any, Any] = {}
+        self.message_phases: Dict[Any, Any] = {}
+        self.message_deltas: Dict[Any, list] = {}
+        self.message_announcements: Dict[Any, tuple] = {}
+        self.message_done_positions: Dict[Any, int] = {}
+        self.delivered_commentary: set = set()
+        self.active_message_key = None
 
     def _safe(self, cb: Callable | None, label: str, *args: Any) -> None:
         _call_guarded(cb, f"Codex stream {label} raised", args=args)
+
+    def _message_key(self, event: Any, item: Any = None, *, use_active: bool = True) -> Any:
+        item_id = _event_field(item, "id") if item is not None else _event_field(event, "item_id")
+        index = _event_field(event, "output_index")
+        if isinstance(item_id, str) and item_id:
+            key = ("id", item_id)
+            if isinstance(index, int) and not isinstance(index, bool) and index >= 0:
+                self.message_keys_by_index[index] = key
+            return key
+        if isinstance(index, int) and not isinstance(index, bool) and index >= 0:
+            return self.message_keys_by_index.get(index, ("index", index))
+        return self.active_message_key if use_active else None
+
+    @staticmethod
+    def _copy_message(item: Any, **updates: Any) -> Any:
+        # Never annotate/mutate the provider's SDK object or raw JSON frame in place.
+        result = SimpleNamespace(**item) if isinstance(item, dict) else copy(item)
+        for name, value in updates.items():
+            setattr(result, name, value)
+        return result
 
     def _on_item_added(self, event: Any, event_type: str) -> None:
         item = _event_field(event, "item")
@@ -821,6 +850,18 @@ class _CodexResponseAssembler:
         if item_id and item_id not in self.announced_output_order:
             self.announced_output_order[item_id] = (self.next_output_sequence, _event_field(event, "output_index"))
             self.next_output_sequence += 1
+        self.active_message_key = None
+        if item_type == "message":
+            key = self._message_key(event, item, use_active=False)
+            if key is None:
+                key = ("anonymous", self.next_output_sequence)
+            sequence, index = self.announced_output_order.get(item_id, (None, _event_field(event, "output_index")))
+            if sequence is None:
+                sequence, self.next_output_sequence = self.next_output_sequence, self.next_output_sequence + 1
+            self.active_message_key = key
+            self.message_phases[key] = _message_phase(item)
+            self.message_deltas.setdefault(key, [])
+            self.message_announcements[key] = (item, index, sequence)
         if "function_call" in str(item_type):
             self.has_tool_calls = True
             if item_id:
@@ -834,14 +875,18 @@ class _CodexResponseAssembler:
         delta_text = _event_field(event, "delta", "")
         if not delta_text:
             return
-        # Harmony commentary/analysis text is mid-turn narration, never the final answer: route to the
-        # reasoning callback, keep only the item for replay.
-        if self.active_message_phase == "commentary":
-            self.commentary_text_deltas.append(delta_text)
+        key = self._message_key(event)
+        # Explicit item identity must not inherit another item's active phase.
+        phase = self.message_phases.get(key) if key is not None else self.active_message_phase
+        if key is not None:
+            self.message_deltas.setdefault(key, []).append(delta_text)
+        if phase == "commentary":
+            if key is None:
+                self.commentary_text_deltas.append(delta_text)
             # Legacy fallback when no first-class commentary consumer is installed.
             if self.on_commentary_message is None:
                 self._safe(self.on_reasoning_delta, "on_reasoning_delta", delta_text)
-        elif self.active_message_phase == "analysis":
+        elif phase == "analysis":
             self._safe(self.on_reasoning_delta, "on_reasoning_delta", delta_text)
         else:
             self.text_deltas.append(delta_text)
@@ -885,41 +930,92 @@ class _CodexResponseAssembler:
             self.active_summary_index = summary_index
         self._safe(self.on_reasoning_delta, "on_reasoning_delta", reasoning_text)
 
-    def _on_item_done(self, event: Any, event_type: str) -> None:
+    def _on_item_done(self, event: Any, event_type: str, *, message_key: Any = None) -> None:
         done_item = _event_field(event, "item")
         if done_item is None:
             return
-        self.output_items.append(done_item)
-        # Reuse the announced position when known (fresh tail sequence for unannounced items); the .done
-        # event's own output_index wins over the announced one.
-        done_id = str(_event_field(done_item, "id", ""))
-        announced_sequence, announced_index = self.announced_output_order.get(done_id, (None, None))
-        if announced_sequence is None:
-            announced_sequence, self.next_output_sequence = self.next_output_sequence, self.next_output_sequence + 1
-        self.output_indexes.append(_event_field(event, "output_index", announced_index))
-        self.output_sequences.append(announced_sequence)
-        # Confirmed by the authoritative done event; never settle it twice.
-        self.pending_function_calls.pop(done_id, None)
+        is_message = _event_field(done_item, "type") == "message"
+        key = (message_key or self._message_key(event, done_item)) if is_message else None
+        if is_message:
+            phase = _message_phase(done_item) or self.message_phases.get(key)
+            done_item = self._copy_message(done_item, **({"phase": phase} if phase else {}))
+            if key is not None:
+                self.message_phases[key] = phase
+        position = self.message_done_positions.get(key) if key is not None else None
+        if position is not None:
+            # A terminal snapshot only fills absent data. It cannot overwrite a completed
+            # item or produce a second copy of a message already delivered from .done.
+            prior = self.output_items[position]
+            updates = {}
+            if not _message_phase(prior) and _message_phase(done_item):
+                updates["phase"] = _message_phase(done_item)
+            if not _event_field(prior, "content") and isinstance(_event_field(done_item, "content"), list):
+                updates["content"] = _event_field(done_item, "content")
+            done_item = self._copy_message(prior, **updates)
+            self.output_items[position] = done_item
+        else:
+            position = len(self.output_items)
+            self.output_items.append(done_item)
+            done_id = str(_event_field(done_item, "id", ""))
+            sequence, index = self.announced_output_order.get(done_id, (None, None))
+            if key in self.message_announcements:
+                _, index, sequence = self.message_announcements[key]
+            if sequence is None:
+                sequence, self.next_output_sequence = self.next_output_sequence, self.next_output_sequence + 1
+            self.output_indexes.append(_event_field(event, "output_index", index))
+            self.output_sequences.append(sequence)
+            if key is not None:
+                self.message_done_positions[key] = position
+            self.pending_function_calls.pop(done_id, None)
         if _message_phase(done_item) == "commentary" and self.on_commentary_message is not None:
-            commentary_text = "".join(self.commentary_text_deltas).strip() or _output_text_of(done_item)
-            if commentary_text:
-                self._safe(self.on_commentary_message, "on_commentary_message", commentary_text)
-            self.commentary_text_deltas = []
+            delivery_key = key if key is not None else ("position", position)
+            if delivery_key not in self.delivered_commentary:
+                deltas = self.message_deltas.get(key, []) if key is not None else self.commentary_text_deltas
+                commentary = _output_text_of(done_item) or "".join(deltas).strip()
+                if commentary:
+                    self._safe(self.on_commentary_message, "on_commentary_message", commentary)
+                    self.delivered_commentary.add(delivery_key)
+            if key is None:
+                self.commentary_text_deltas = []
 
     def _on_terminal(self, event: Any, event_type: str) -> bool:
         self.saw_terminal = True
+        self.terminal_status = event_type.removeprefix("response.")
         resp_obj = _event_field(event, "response")
         if resp_obj is not None:
             self.terminal_usage, self.terminal_response_id = _event_field(resp_obj, "usage"), _event_field(resp_obj, "id")
             rstatus = _event_field(resp_obj, "status")
-            if isinstance(rstatus, str):
-                self.terminal_status = rstatus
+            if isinstance(rstatus, str) and rstatus.strip():
+                self.terminal_status = rstatus.strip().lower()
             if event_type == "response.incomplete":
                 self.terminal_incomplete_details = _event_field(resp_obj, "incomplete_details")
             elif event_type == "response.failed":
                 self.terminal_error = _event_field(resp_obj, "error")
         self.saw_response_completed = self.saw_response_completed or event_type == "response.completed"
-        self.terminal_status = self.terminal_status or event_type.removeprefix("response.")
+        # Some relays omit .done but supply a valid final snapshot. Only message
+        # items are backfilled here; pending function-call settlement remains separately gated.
+        terminal_output = _event_field(resp_obj, "output")
+        if isinstance(terminal_output, list):
+            # With neither an item ID nor an index on earlier messages, a terminal
+            # snapshot cannot prove which message is new. Never dedupe by matching prose.
+            ambiguous_messages = any(
+                _event_field(item, "type") == "message"
+                and not (isinstance(_event_field(item, "id"), str) and _event_field(item, "id"))
+                and index is None
+                for item, index in zip(self.output_items, self.output_indexes)
+            )
+            for index, item in enumerate(terminal_output):
+                if (
+                    _event_field(item, "type") != "message"
+                    or _event_field(item, "role", "assistant") not in {None, "assistant"}
+                    or not isinstance(_event_field(item, "content"), list)
+                ):
+                    continue
+                frame = {"item": item, "output_index": index}
+                key = self._message_key(frame, item, use_active=False)
+                if ambiguous_messages and key not in self.message_done_positions:
+                    continue
+                self._on_item_done(frame, "response.output_item.done")
         return True
 
     # Exact-type handlers first, then substring-matched ones in priority order. ``error`` frames
@@ -942,10 +1038,10 @@ class _CodexResponseAssembler:
         handler = self._EXACT_HANDLERS.get(event_type) or next((h for m, h in self._FUZZY_HANDLERS if m(event_type)), None)
         return bool(handler(self, event, event_type)) if handler is not None else False
 
-    def _settled_output(self) -> List[Any]:
+    def _settled_output(self, *, settle_pending: bool = True) -> List[Any]:
         """Merge .done items with settled pending calls, keeping stream order."""
         indexed = list(zip(self.output_indexes, self.output_sequences, self.output_items))
-        for pending in self.pending_function_calls.values():
+        for pending in self.pending_function_calls.values() if settle_pending else ():
             item = pending["item"]
             indexed.append((pending.get("output_index"), pending["sequence"], SimpleNamespace(
                 type="function_call", id=_event_field(item, "id", None), call_id=_event_field(item, "call_id", None),
@@ -963,15 +1059,20 @@ class _CodexResponseAssembler:
         return [entry[2] for entry in indexed]
 
     def result(self) -> SimpleNamespace:
-        # With only plain text deltas (no tool calls), synthesize one message item.
-        output: List[Any] = list(self.output_items)
+        # Preserve item-scoped partial text and phase even when .done was omitted.
+        for key, (item, index, _) in list(self.message_announcements.items()):
+            deltas = self.message_deltas.get(key, [])
+            if key not in self.message_done_positions and deltas:
+                recovered = self._copy_message(
+                    item, status=self.terminal_status,
+                    content=[SimpleNamespace(type="output_text", text="".join(deltas))],
+                )
+                self._on_item_done({"item": recovered, "output_index": index}, "response.output_item.done", message_key=key)
+        output: List[Any] = self._settled_output(settle_pending=self.saw_response_completed)
+        # Legacy streams with no item identity still retain their collected text.
         if not output and self.text_deltas and not self.has_tool_calls:
             content = [SimpleNamespace(type="output_text", text="".join(self.text_deltas))]
-            output = [SimpleNamespace(type="message", role="assistant", status="completed", content=content)]
-        # Done items stay authoritative; settlement only fills the gap left by backends that omit
-        # per-item done events on a successful completion.
-        if self.pending_function_calls and self.saw_response_completed:
-            output = self._settled_output()
+            output = [SimpleNamespace(type="message", role="assistant", status=self.terminal_status, content=content)]
         # No terminal frame AND no usable content = truncated / rejected stream.
         if not self.saw_terminal and not output:
             raise RuntimeError("Codex Responses stream did not emit a terminal response")
@@ -986,8 +1087,8 @@ def _consume_codex_event_stream(
     on_first_delta=None, on_event=None, interrupt_check=None,
 ) -> SimpleNamespace:
     """Consume a Codex Responses SSE stream into a Response-shaped ``SimpleNamespace`` (see
-    :class:`_CodexResponseAssembler`; ``status`` is ``completed`` when the stream ended with content but no
-    terminal frame; ``model`` comes from kwargs).
+    :class:`_CodexResponseAssembler`; a stream ending without a terminal frame retains
+    ``status=in_progress`` rather than inventing completion; ``model`` comes from kwargs).
 
     Callbacks: ``on_text_delta`` per output_text delta, suppressed once a function_call is seen;
     ``on_reasoning_delta`` for reasoning and ``phase=analysis`` deltas (also commentary without a commentary

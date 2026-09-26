@@ -556,10 +556,28 @@ export function isDesktopSlashCommand(command: string): boolean {
 
 /** Gates discovery in the popover/completions. */
 export function isDesktopSlashSuggestion(command: string): boolean {
+  return isDesktopSlashSuggestionWithOptions(command, {})
+}
+
+/**
+ * Same gate, with the one escape hatch the composer needs: an alias the user
+ * typed EXACTLY (`/reset`, not a browsing prefix) must surface, or the empty
+ * "no matches" popover reads as "this command doesn't exist" while Enter still
+ * executes it (#57641). Gated on `isDesktopSlashCommand` so aliases whose
+ * canonical has no desktop surface (e.g. `/reload_mcp`) stay hidden.
+ */
+export function isDesktopSlashSuggestionWithOptions(
+  command: string,
+  options: { exactAlias?: string } = {}
+): boolean {
   const normalized = normalizeCommand(command)
 
   // Aliases stay hidden so the popover isn't cluttered with duplicates.
   if (isAliasCommand(normalized)) {
+    if (options.exactAlias != null) {
+      return normalizeCommand(options.exactAlias) === normalized && isDesktopSlashCommand(normalized)
+    }
+
     return false
   }
 

@@ -2365,6 +2365,60 @@ def test_load_enabled_toolsets_folds_project_into_focus_posture(monkeypatch):
     assert server._load_enabled_toolsets("tui") == ["coding", "figma", "project"]
 
 
+def test_load_enabled_toolsets_honors_disabled_project_on_focus_path(monkeypatch):
+    """#54433: focus/coding posture must not re-add `project` when disabled."""
+    monkeypatch.delenv("HERMES_TUI_TOOLSETS", raising=False)
+
+    import agent.coding_context as cc
+
+    monkeypatch.setattr(cc, "coding_selection", lambda **_: ["coding", "figma"])
+    monkeypatch.setattr(server, "_load_disabled_toolsets", lambda: ["project"])
+
+    result = server._load_enabled_toolsets("tui")
+    assert result == ["coding", "figma"]
+    assert "project" not in result
+
+
+def test_load_enabled_toolsets_honors_disabled_project_on_configured_fallback(
+    monkeypatch,
+):
+    """#54433: configured/fallback path must not re-add disabled `project`."""
+    monkeypatch.delenv("HERMES_TUI_TOOLSETS", raising=False)
+
+    import agent.coding_context as cc
+    import hermes_cli.tools_config as tools_config_mod
+
+    monkeypatch.setattr(cc, "coding_selection", lambda **_: None)
+    monkeypatch.setattr(
+        tools_config_mod,
+        "_get_platform_tools",
+        lambda *_args, **_kwargs: {"memory", "web"},
+    )
+    monkeypatch.setattr(server, "_load_disabled_toolsets", lambda: ["project"])
+
+    result = server._load_enabled_toolsets("tui")
+    assert result == ["memory", "web"]
+    assert "project" not in result
+
+
+def test_with_session_toolsets_keeps_desktop_ui_when_project_disabled(monkeypatch):
+    """#54433: a disabled name is subtracted from the client-surface fold-in, but
+    ``desktop_ui`` — the client's own control surface — survives the subtraction."""
+    monkeypatch.setattr(server, "_load_disabled_toolsets", lambda: ["project"])
+
+    assert server._with_session_toolsets(["memory"], "desktop") == [
+        "memory",
+        "desktop_ui",
+    ]
+    # Nothing disabled: the fold-in keeps both client-surface toolsets.
+    monkeypatch.setattr(server, "_load_disabled_toolsets", lambda: None)
+    assert server._with_session_toolsets(["memory"], "desktop") == [
+        "memory",
+        "desktop_ui",
+        "project",
+    ]
+
+
 def test_load_enabled_toolsets_rejects_disabled_mcp_env(monkeypatch, capsys):
     monkeypatch.setenv("HERMES_TUI_TOOLSETS", "mcp-off")
     monkeypatch.setitem(

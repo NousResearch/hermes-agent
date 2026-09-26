@@ -563,6 +563,9 @@ export interface Translations {
     copyDetailFailed: string
     backendOutOfDateTitle: string
     backendOutOfDateMessage: string
+    desktopOutOfDateTitle: string
+    desktopOutOfDateMessage: string
+    updateDesktopApp: string
     installMethodUnsupportedTitle: string
     updateHermes: string
     updateReadyTitle: string
@@ -3671,6 +3674,7 @@ export interface Translations {
     replaceCurrent: string
     pasteApiKey: string
     localApiKeyPlaceholder: string
+    localModelNamePlaceholder: string
     couldNotSave: string
     connecting: string
     update: string
@@ -4321,6 +4325,7 @@ export interface Translations {
       openSafetySettings: string
       run: string
       command: string
+      commandDetails: string
       moreOptions: string
       allowSession: string
       alwaysAllowMenu: string

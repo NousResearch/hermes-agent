@@ -3564,6 +3564,14 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     cmd = _restart_safe_worker_argv(task, cmd)
     from tools.process_registry import systemd_user_bus_env
     env = systemd_user_bus_env(env)
+    # ``sys.executable -m hermes_cli.main`` has no launcher bootstrap. The
+    # sanitizer strips this checkout from PYTHONPATH (user children must not
+    # see it) and PYTHONSAFEPATH drops the workspace cwd, so a bundled
+    # interpreter exits before hermes_cli.main can fix its own path. Re-pin
+    # only this checkout onto the already-sanitized env.
+    from cron.scheduler_worker_env import pin_hermes_tree_on_pythonpath
+    env = pin_hermes_tree_on_pythonpath(
+        env, Path(__file__).resolve().parent.parent)
     log_f = _open_worker_log(task, board)
     try:
         proc = subprocess.Popen(  # noqa: S603 -- argv is a fixed list built above

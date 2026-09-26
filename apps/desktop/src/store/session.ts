@@ -683,6 +683,27 @@ export function mergeSessionPage(
   // another profile is a DIFFERENT session and must survive the dedupe.
   const incomingLineageKeys = new Set(merged.map(lineageIdentity))
 
+  // Absorption filter: a survivor whose id appears ANYWHERE inside an
+  // incoming row's compression lineage is not a separate session anymore —
+  // the backend now serves that conversation as the chain's projected row.
+  // `mergeSessionPage`'s own survivors come from the tip-rotation dedup
+  // (#43483), but that only catches a lineage match through the root key.
+  // When a reorganized chain mints a FRESH root id (manual compression-chain
+  // repair, #85331), an old segment row in the keep set (it was the
+  // working/selected session at refresh time) produced the exact signal of a
+  // legitimately-kept row: absent from the incoming page, unmatched by
+  // lineage key. It survived as a title-less ghost. The incoming rows carry
+  // `_lineage_ids` — every id the chain has answered to — so matching a
+  // survivor id against that list identifies absorption WITHOUT evicting a
+  // genuinely-pinned row aged off the page: a pinned row's id never appears
+  // inside another session's lineage. Like the identity and lineage keys
+  // above, members are qualified by the owning row's profile — stored ids
+  // are only unique per-profile (#92454), so a bare-id match would evict a
+  // kept twin in another profile whose id merely coincides with a lineage.
+  const incomingLineageIdMembers = new Set(
+    merged.flatMap(session => (session._lineage_ids ?? []).map(id => `${profileKeyOf(session)}::${id}`))
+  )
+
   const survivors = previous.filter(
     session =>
       // The keep-list answers "live, not listed yet" — a hidden row (canonical
@@ -691,6 +712,7 @@ export function mergeSessionPage(
       !session.hidden &&
       !incomingIds.has(identity(session)) &&
       !incomingLineageKeys.has(lineageIdentity(session)) &&
+      !incomingLineageIdMembers.has(identity(session)) &&
       (keep.has(session.id) || (session._lineage_root_id != null && keep.has(session._lineage_root_id)))
   )
 

@@ -245,6 +245,10 @@ export const ru = defineLocale({
     backendOutOfDateTitle: 'Устаревший бэкенд',
     backendOutOfDateMessage:
       'Ваш бэкенд Hermes старше этой сборки приложения и может работать некорректно. Обновите их, чтобы они совпали.',
+    desktopOutOfDateTitle: 'Устаревшее приложение',
+    desktopOutOfDateMessage:
+      'Это приложение Hermes старше подключённого бэкенда и может работать некорректно. Обновите приложение, чтобы они совпали.',
+    updateDesktopApp: 'Обновить приложение',
     installMethodUnsupportedTitle: 'Неподдерживаемый способ установки',
     updateHermes: 'Обновить Hermes',
     updateReadyTitle: 'Обновление готово',
@@ -390,6 +394,8 @@ export const ru = defineLocale({
       'session.focusSearch': 'Поиск по сеансам',
       'session.togglePin': 'Закрепить / открепить текущий сеанс',
       'session.archive': 'В архив текущий сеанс',
+      'conversation.scrollPageUp': 'Прокрутить диалог на страницу вверх',
+      'conversation.scrollPageDown': 'Прокрутить диалог на страницу вниз',
       'workspace.newWorktree': 'Новый worktree',
       'workspace.openFolder': 'Открыть папку как проект',
       'composer.focus': 'Сфокусировать композер',

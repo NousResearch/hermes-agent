@@ -2281,6 +2281,7 @@ export interface ProjectTreeLane {
   path?: string | null
   isMain?: boolean
   isKanban?: boolean
+  isGit?: boolean
   sessions?: ProjectTreeSession[]
 }
 /** ``methods_projects._project_tree_row`` + ``project_tree.stamp_profile``: the minimal row the sidebar renders, stamped with the profile it belongs to. */
@@ -4219,6 +4220,7 @@ export interface PreviewActRequestParams {
   to?: string | null
   amount?: number | null
   max?: number | null
+  allow_shortcut?: boolean | null
 }
 /** ``tools/tour_tool.py`` field set. */
 export interface TourRequestParams {

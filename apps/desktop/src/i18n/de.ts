@@ -492,6 +492,10 @@ export const deOverrides = {
     backendOutOfDateTitle: 'Backend veraltet',
     backendOutOfDateMessage:
       'Ihr Hermes-Backend ist älter als dieser Desktop-Build und funktioniert möglicherweise nicht richtig. Aktualisieren Sie, um beide abzugleichen.',
+    desktopOutOfDateTitle: 'Hermes-App veraltet',
+    desktopOutOfDateMessage:
+      'Diese Hermes-App ist älter als das verbundene Backend und funktioniert möglicherweise nicht richtig. Aktualisieren Sie die App, um beide abzugleichen.',
+    updateDesktopApp: 'App aktualisieren',
     installMethodUnsupportedTitle: 'Nicht unterstützte Installationsmethode',
     updateHermes: 'Hermes aktualisieren',
     updateReadyTitle: 'Update bereit',
@@ -4793,6 +4797,7 @@ export const deOverrides = {
     replaceCurrent: 'Aktuellen Wert ersetzen',
     pasteApiKey: 'API-Key einfügen',
     localApiKeyPlaceholder: 'API-Key (optional – nur falls Ihr Endpunkt einen benötigt)',
+    localModelNamePlaceholder: 'Modellname (z. B. command-a-plus-05-2026)',
     couldNotSave: 'Anmeldedaten konnten nicht gespeichert werden.',
     connecting: 'Verbinden',
     update: 'Aktualisieren',

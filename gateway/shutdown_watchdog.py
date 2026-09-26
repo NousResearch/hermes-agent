@@ -4,8 +4,10 @@ A frozen asyncio loop takes every asyncio-based recovery path down with it, and 
 KeepAlive only restarts a *dead* process. Hence: (1) an OS-thread shutdown watchdog that dumps
 stacks and ``os._exit``s past ``restart_drain_timeout + grace``; (2) a heartbeat file at
 ``<HERMES_HOME>/state/gateway.heartbeat`` so supervisors can tell "process alive" from "loop
-frozen"; (3) a lifetime thread watchdog that hard-exits when the loop is too frozen to run its
-own callbacks; (4) a self-rescheduling floor timer that keeps the selector timeout finite."""
+frozen"; (3) a lifetime thread watchdog that writes the all-threads stack dump to
+``logs/gateway-loop-liveness.log`` (as well as stderr) and hard-exits when the loop is too frozen
+to run its own callbacks; (4) a self-rescheduling floor timer that keeps the selector timeout
+finite."""
 
 from __future__ import annotations
 
@@ -43,6 +45,9 @@ DEFAULT_LOOP_WATCHDOG_TIMEOUT_S = 10.0
 DEFAULT_LOOP_WATCHDOG_MAX_STRIKES = 3
 _HEARTBEAT_RELATIVE = ("state", "gateway.heartbeat")
 _WATCHDOG_DUMP_RELATIVE = ("logs", "gateway-shutdown-watchdog.log")
+# One dump file per watchdog path, never shared: an operator reading the file that matches the
+# recorded exit reason gets only that path's evidence. Parity is in the format, not the file.
+_LOOP_LIVENESS_DUMP_RELATIVE = ("logs", "gateway-loop-liveness.log")
 
 
 def _coerce_float(value: Any, default: float, floor: float = 0.0) -> float:
@@ -128,6 +133,11 @@ def start_loop_liveness_watchdog(
                     "Gateway event loop missed %d consecutive liveness probes; dumping all thread "
                     "stacks and exiting with code %d so the service supervisor can restart it.",
                     strikes, exit_code)
+            with contextlib.suppress(Exception):  # forensic parity with the armed shutdown path:
+                # the stderr dump below only survives if a supervisor captured stdio (a Windows
+                # launcher with a hidden console loses it), so persist the same evidence on disk.
+                write_loop_liveness_dump(strikes, probe_interval_s=probe_interval,
+                                         probe_timeout_s=probe_timeout)
             try:
                 faulthandler.dump_traceback(all_threads=True)
             except Exception:
@@ -202,6 +212,11 @@ def get_shutdown_watchdog_dump_path(home: Optional[Path] = None) -> Path:
     return _home(home).joinpath(*_WATCHDOG_DUMP_RELATIVE)
 
 
+def get_loop_liveness_dump_path(home: Optional[Path] = None) -> Path:
+    """``<HERMES_HOME>/logs/gateway-loop-liveness.log`` — the loop-liveness wedge dump."""
+    return _home(home).joinpath(*_LOOP_LIVENESS_DUMP_RELATIVE)
+
+
 def write_loop_heartbeat(
     *, pid: Optional[int] = None, start_time: Optional[float] = None,
     home: Optional[Path] = None, extra: Optional[Dict[str, Any]] = None) -> Path:
@@ -233,15 +248,17 @@ def resolve_shutdown_watchdog_delay(
     return _coerce_float(drain_timeout, 0.0) + grace
 
 
-def _write_watchdog_dump(dump_path: Path, *, delay_s: float,
-                         snapshot: Optional[Dict[str, Any]]) -> None:
-    """Best-effort faulthandler + metadata dump before hard-exit."""
+def _append_faulthandler_dump(dump_path: Path, header: Dict[str, Any]) -> None:
+    """Append one JSON header + a full all-threads faulthandler dump to ``dump_path``; never raises.
+
+    Shared forensic core of both watchdog paths (armed shutdown watchdog, loop liveness). No fsync:
+    the write is only as durable as the page cache, and that is deliberate — the filesystem that
+    wedged the loop must not become the reason the process cannot exit.
+    """
     try:
         dump_path.parent.mkdir(parents=True, exist_ok=True)
     except OSError:
         return
-    header = {"event": "shutdown_watchdog_fired", "pid": os.getpid(), "delay_s": delay_s,
-              "fired_at": datetime.now(timezone.utc).isoformat(), "snapshot": snapshot or {}}
     with contextlib.suppress(Exception), open(dump_path, "a", encoding="utf-8") as fh:
         fh.write(json.dumps(header, default=str) + "\n--- faulthandler dump (all threads) ---\n")
         fh.flush()
@@ -251,11 +268,37 @@ def _write_watchdog_dump(dump_path: Path, *, delay_s: float,
             fh.write("(faulthandler.dump_traceback failed)\n")
         fh.write("--- end dump ---\n")
         fh.flush()
+
+
+def _write_watchdog_dump(dump_path: Path, *, delay_s: float,
+                         snapshot: Optional[Dict[str, Any]]) -> None:
+    """Best-effort faulthandler + metadata dump before hard-exit."""
+    _append_faulthandler_dump(dump_path, {
+        "event": "shutdown_watchdog_fired", "pid": os.getpid(), "delay_s": delay_s,
+        "fired_at": datetime.now(timezone.utc).isoformat(), "snapshot": snapshot or {}})
     with contextlib.suppress(Exception):  # stderr too: journald/launchd get it if disk is wedged
         sys.stderr.write(f"Gateway shutdown watchdog fired after {delay_s:.0f}s "
                          f"(pid={os.getpid()}); dumping all thread stacks.\n")
         sys.stderr.flush()
         faulthandler.dump_traceback(all_threads=True)
+
+
+def write_loop_liveness_dump(strikes: int, *, probe_interval_s: float, probe_timeout_s: float,
+                             home: Optional[Path] = None) -> Path:
+    """Append the loop-liveness wedge dump to ``logs/gateway-loop-liveness.log``; return its path.
+
+    Parity with the armed shutdown-watchdog dump: the stderr dump that follows survives only if a
+    supervisor captured stdio (a Windows launcher with a hidden console loses it), so the same
+    all-threads evidence is persisted on disk. Inline by design — the armed path already dumps to
+    this same disk, so no thread or lock is inserted between the wedge and ``os._exit``. Never
+    raises; the caller re-checks ``stop_event`` afterwards so a late ``stop()`` still wins.
+    """
+    path = get_loop_liveness_dump_path(home)
+    _append_faulthandler_dump(path, {
+        "event": "loop_liveness_watchdog", "pid": os.getpid(), "strikes": strikes,
+        "probe_interval_s": probe_interval_s, "probe_timeout_s": probe_timeout_s,
+        "fired_at": datetime.now(timezone.utc).isoformat()})
+    return path
 
 
 def arm_shutdown_watchdog(

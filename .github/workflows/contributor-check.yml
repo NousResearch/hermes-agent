@@ -39,7 +39,7 @@ jobs:
 
           # An email is mapped if it has a file in contributors/emails/
           # (one file per email — conflict-free) or an entry in the frozen
-          # legacy AUTHOR_MAP in scripts/release.py.
+          # legacy AUTHOR_MAP in scripts/releases/authors_legacy.py.
           MISSING=""
           while IFS= read -r email; do
             # Skip teknium and bot emails
@@ -56,7 +56,7 @@ jobs:
               continue  # mapped via the contributors directory
             fi
 
-            if ! grep -qF "\"${email}\"" scripts/release.py 2>/dev/null; then
+            if ! grep -qF "\"${email}\"" scripts/releases/authors_legacy.py 2>/dev/null; then
               AUTHOR=$(git log --author="$email" --format='%an' -1)
               MISSING="${MISSING}\n  ${email} (${AUTHOR})"
             fi
@@ -67,7 +67,7 @@ jobs:
             echo "⚠️  New contributor email(s) without a mapping:"
             echo -e "$MISSING"
             echo ""
-            echo "Add a mapping file (do NOT edit AUTHOR_MAP in release.py):"
+            echo "Add a mapping file (do NOT edit AUTHOR_MAP in scripts/releases/authors_legacy.py):"
             echo "  python3 scripts/audit_pr_attribution.py --fix   # auto-resolve + create files"
             echo "or manually:"
             echo -e "$MISSING" | while read -r line; do
@@ -81,7 +81,7 @@ jobs:
 
             # Emit review_status for unmapped emails
             DETAIL=$(echo -e "$MISSING" | sed '/^$/d; s/^  //')
-            HOW_TO_FIX=$'Run from the PR branch:\n```\npython3 scripts/audit_pr_attribution.py --fix\ngit add contributors && git commit -m "chore: map contributor emails" && git push\n```\nOr map one email manually (do NOT edit AUTHOR_MAP in release.py):\n```\npython3 scripts/add_contributor.py <email> <github-username>\n```\nTo find the GitHub username for an email:\n```\ngh api \'search/users?q=EMAIL+in:email\' --jq \'.items[0].login\'\n```\n'
+            HOW_TO_FIX=$'Run from the PR branch:\n```\npython3 scripts/audit_pr_attribution.py --fix\ngit add contributors && git commit -m "chore: map contributor emails" && git push\n```\nOr map one email manually (do NOT edit AUTHOR_MAP in scripts/releases/authors_legacy.py):\n```\npython3 scripts/add_contributor.py <email> <github-username>\n```\nTo find the GitHub username for an email:\n```\ngh api \'search/users?q=EMAIL+in:email\' --jq \'.items[0].login\'\n```\n'
             REVIEW_STATUS=$(jq -nc \
               --arg detail "$DETAIL" \
               --arg how_to_fix "$HOW_TO_FIX" \

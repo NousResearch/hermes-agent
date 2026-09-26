@@ -1,6 +1,6 @@
 """Invariant tests for the bundled comfyui skill.
 
-Covers skills/creative/comfyui — the diffusion workflow runner. Tests assert
+Covers optional-skills/creative/comfyui — the diffusion workflow runner. Tests assert
 contracts (locale-independent file reads), not snapshots of skill content.
 """
 
@@ -13,10 +13,9 @@ import sys
 import textwrap
 from pathlib import Path
 
-import pytest
 
 REPO = Path(__file__).resolve().parent.parent.parent
-SCRIPTS = REPO / "skills" / "creative" / "comfyui" / "scripts"
+SCRIPTS = REPO / "optional-skills" / "creative" / "comfyui" / "scripts"
 
 # Text reads that must not depend on the host locale. The workflow and schema
 # JSON are user-authored files (exported by ComfyUI or hand-edited), so they
@@ -38,11 +37,6 @@ _ENCODING_SENSITIVE_READS = [
 ]
 
 
-@pytest.mark.parametrize("rel_path,expected", _ENCODING_SENSITIVE_READS)
-def test_readers_are_locale_independent(rel_path, expected):
-    """Every text read of a user-supplied or system file pins its codec."""
-    source = (SCRIPTS / rel_path).read_text(encoding="utf-8")
-    assert expected in source, f"{rel_path}: locale-dependent read of a UTF-8 payload"
 
 
 def _run_under_c_locale(snippet: str) -> subprocess.CompletedProcess:

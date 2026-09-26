@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { DesktopAgentRoster, DesktopRegistryConnection } from '@/global'
 
-import { buildRestGroups, countRestAgents, fleetRouteKey } from './fleet-rail'
+import { buildRestGroups, countRestAgents } from './fleet-rail'
 
 const connections: DesktopRegistryConnection[] = [
   { id: 'pandora', kind: 'remote', label: 'Pandora', url: 'https://pandora.example' },
@@ -12,11 +12,41 @@ const connections: DesktopRegistryConnection[] = [
 
 const roster: DesktopAgentRoster = {
   agents: [
-    { connectionId: 'pandora', connectionKind: 'remote', connectionLabel: 'Pandora', profile: 'default', handle: 'hermes-pandora' },
-    { connectionId: 'pandora', connectionKind: 'remote', connectionLabel: 'Pandora', profile: 'scout', handle: 'scout' },
-    { connectionId: 'pandora', connectionKind: 'remote', connectionLabel: 'Pandora', profile: 'omer', handle: 'omer-pandora' },
-    { connectionId: 'local', connectionKind: 'local', connectionLabel: 'This device', profile: 'default', handle: 'hermes' },
-    { connectionId: 'local', connectionKind: 'local', connectionLabel: 'This device', profile: 'omer', handle: 'omer-this-device' }
+    {
+      connectionId: 'pandora',
+      connectionKind: 'remote',
+      connectionLabel: 'Pandora',
+      profile: 'default',
+      handle: 'hermes-pandora'
+    },
+    {
+      connectionId: 'pandora',
+      connectionKind: 'remote',
+      connectionLabel: 'Pandora',
+      profile: 'scout',
+      handle: 'scout'
+    },
+    {
+      connectionId: 'pandora',
+      connectionKind: 'remote',
+      connectionLabel: 'Pandora',
+      profile: 'omer',
+      handle: 'omer-pandora'
+    },
+    {
+      connectionId: 'local',
+      connectionKind: 'local',
+      connectionLabel: 'This device',
+      profile: 'default',
+      handle: 'hermes'
+    },
+    {
+      connectionId: 'local',
+      connectionKind: 'local',
+      connectionLabel: 'This device',
+      profile: 'omer',
+      handle: 'omer-this-device'
+    }
   ],
   sources: [
     { connectionId: 'pandora', kind: 'remote', label: 'Pandora', reachable: true },
@@ -38,9 +68,18 @@ describe('buildRestGroups', () => {
   it('carries each gateway default as its own square plus named profiles alphabetically', () => {
     const [local] = buildRestGroups({ activeConnectionId: 'pandora', connections, roster })
 
-    expect(local.defaultAgent).toMatchObject({ connectionId: 'local', profile: 'default', isDefault: true, handle: 'hermes' })
+    expect(local.defaultAgent).toMatchObject({
+      connectionId: 'local',
+      profile: 'default',
+      isDefault: true,
+      handle: 'hermes'
+    })
     expect(local.named.map(agent => agent.profile)).toEqual(['omer'])
-    expect(local.named[0]).toMatchObject({ connectionLabel: 'This device', handle: 'omer-this-device', isDefault: false })
+    expect(local.named[0]).toMatchObject({
+      connectionLabel: 'This device',
+      handle: 'omer-this-device',
+      isDefault: false
+    })
 
     const [pandora] = buildRestGroups({ activeConnectionId: 'local', connections, roster })
     expect(pandora.named.map(agent => agent.profile)).toEqual(['omer', 'scout'])
@@ -88,6 +127,22 @@ describe('buildRestGroups', () => {
     expect(bare.named).toEqual([])
   })
 
+  it('keeps an expired Cloud source visible but not reachable even with cached profiles', () => {
+    const expired: DesktopAgentRoster = {
+      ...roster,
+      sources: roster.sources.map(source =>
+        source.connectionId === 'pandora'
+          ? { ...source, reachable: false, error: 'OAuth expired', needsSignIn: true }
+          : source
+      )
+    }
+
+    const groups = buildRestGroups({ activeConnectionId: 'local', connections, roster: expired })
+    const cloud = groups.find(group => group.connectionId === 'pandora')
+    expect(cloud).toMatchObject({ reachable: false, error: 'OAuth expired', needsSignIn: true })
+    expect(cloud?.named.map(agent => agent.profile)).toEqual(['omer', 'scout'])
+  })
+
   it('shows every gateway with just its default before the roster has loaded', () => {
     const groups = buildRestGroups({ activeConnectionId: 'pandora', connections, roster: null })
 
@@ -98,7 +153,13 @@ describe('buildRestGroups', () => {
   })
 
   it('skips a registration the roster collapsed into another (same backend, two addresses)', () => {
-    const twin: DesktopRegistryConnection = { id: 'pandora-lan', kind: 'remote', label: 'Pandora LAN', url: 'http://10.0.0.2' } as DesktopRegistryConnection
+    const twin: DesktopRegistryConnection = {
+      id: 'pandora-lan',
+      kind: 'remote',
+      label: 'Pandora LAN',
+      url: 'http://10.0.0.2'
+    } as DesktopRegistryConnection
+
     const groups = buildRestGroups({ activeConnectionId: 'local', connections: [...connections, twin], roster })
 
     expect(groups.map(group => group.connectionId)).toEqual(['pandora', 'vps'])
@@ -109,6 +170,5 @@ describe('buildRestGroups', () => {
 
     // local: default + omer; vps: default
     expect(countRestAgents(groups)).toBe(3)
-    expect(fleetRouteKey('local', 'omer')).toBe('local::omer')
   })
 })

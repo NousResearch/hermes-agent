@@ -105,7 +105,7 @@ async def test_blocked_loop_after_expiry_dumps_diagnostics(monkeypatch):
     with pytest.raises(_asyncio.TimeoutError):
         await task
 
-    assert dumps == [("telegram-init", 0.05)]
+    assert dumps == [("telegram", 0.05)]
     hung.cancel()
 
 

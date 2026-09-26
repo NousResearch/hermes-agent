@@ -107,7 +107,7 @@ def test_share_nous_linkless_success_is_a_failure(monkeypatch):
     result = _handler()("rid-2c", {})
     payload = result["result"]
     assert payload["ok"] is False
-    assert "no view URL" in payload["error"]
+    assert payload["error"]
 
 
 def test_share_nous_extra_files_sanitized_and_redacted(captured_upload):

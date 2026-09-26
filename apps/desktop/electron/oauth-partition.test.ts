@@ -68,9 +68,7 @@ describe('resolveOauthPartition (#92183 per-connection cookie jars)', () => {
       remote('conn-b', 'https://gw-b.example.com')
     ])
 
-    expect(resolveOauthPartition('https://gw-a.example.com/api/status', { registry: reg })).toBe(
-      LEGACY_OAUTH_PARTITION
-    )
+    expect(resolveOauthPartition('https://gw-a.example.com/api/status', { registry: reg })).toBe(LEGACY_OAUTH_PARTITION)
     expect(resolveOauthPartition('https://gw-b.example.com/api/status', { registry: reg })).not.toBe(
       LEGACY_OAUTH_PARTITION
     )
@@ -100,12 +98,10 @@ describe('resolveOauthPartition (#92183 per-connection cookie jars)', () => {
     )
     expect(resolveOauthPartition('not a url', { registry: reg })).toBe(LEGACY_OAUTH_PARTITION)
     expect(resolveOauthPartition('', { registry: reg })).toBe(LEGACY_OAUTH_PARTITION)
-    expect(resolveOauthPartition('https://gw-a.example.com', { registry: null as any })).toBe(
-      LEGACY_OAUTH_PARTITION
-    )
-    expect(resolveOauthPartition('https://gw-a.example.com', { registry: { primary: 'x', connections: 'junk' } as any })).toBe(
-      LEGACY_OAUTH_PARTITION
-    )
+    expect(resolveOauthPartition('https://gw-a.example.com', { registry: null as any })).toBe(LEGACY_OAUTH_PARTITION)
+    expect(
+      resolveOauthPartition('https://gw-a.example.com', { registry: { primary: 'x', connections: 'junk' } as any })
+    ).toBe(LEGACY_OAUTH_PARTITION)
   })
 
   it('does not treat a hostname PREFIX as a base-url match', () => {
@@ -133,6 +129,24 @@ describe('resolveOauthPartition (#92183 per-connection cookie jars)', () => {
     expect(got.startsWith('persist:')).toBe(true)
     expect(got).not.toMatch(/[\s/€]/)
     expect(resolveOauthPartition('https://gw-a.example.com', { registry: reg })).toBe(got)
+  })
+
+  it('keeps the on-disk path component colon-free and %-free (Windows cookie-store regression)', () => {
+    // Electron escapes ':' in a partition name to '%3A' for the folder name.
+    // A Windows profile folder containing '%3A' gets a cookie store that reads
+    // empty and never persists, so every cookie-auth connection would 401 and
+    // re-prompt for sign-in on each dial. The partition path component must
+    // therefore never need escaping, for ANY connection id.
+    for (const id of ['10-0-0-88-9119', 'we ird/id:€', 'a:b/c%3Ad']) {
+      const reg = registry('local', [remote(id, 'https://gw-a.example.com')])
+
+      const pathComponent = resolveOauthPartition('https://gw-a.example.com/api/auth/ws-ticket', {
+        registry: reg
+      }).slice('persist:'.length)
+
+      expect(pathComponent).not.toContain(':')
+      expect(pathComponent).not.toContain('%')
+    }
   })
 
   it('breaks same-URL ties deterministically (identical jar for identical gateway)', () => {

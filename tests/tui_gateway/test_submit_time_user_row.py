@@ -1,6 +1,8 @@
 """prompt.submit writes the user's message at send time, and the turn that follows adopts that row instead of
 writing a second one (#111868: a Desktop freeze during a slow first agent build left a session row with no message)."""
 
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 from types import SimpleNamespace
 
 from agent.turn_context import _stage_turn_user_message
@@ -188,6 +190,110 @@ def test_failed_build_drops_the_staged_row_and_a_later_turn_never_adopts_it(monk
         rows = db.get_messages_as_conversation(key, include_inactive=True)
         assert [(r["role"], r["content"]) for r in rows] == [
             ("user", "please refactor the login page"), ("user", "please refactor the login page")]
+    finally:
+        server._sessions.pop(sid, None)
+        db.close()
+
+
+def test_mixed_client_busy_queue_keeps_origin_on_each_replaced_row(monkeypatch, tmp_path):
+    """An intervening TUI submit cannot merge onto or relabel a Desktop row."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid, key = _desktop_session(monkeypatch, db)
+    session = server._sessions[sid]
+    session["source"] = "slack"
+    session["running"] = True
+    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "queue")
+    dispatched = []
+
+    def run(_rid, _sid, live, text, **_kwargs):
+        dispatched.append((text, dict(live.get("_submit_user_row") or {}), live.get("client_surface")))
+        live["running"] = False
+
+    monkeypatch.setattr(server, "_run_prompt_submit", run)
+    try:
+        for surface, text in (("desktop", "Desktop one"), (None, "TUI one"),
+                              ("desktop", "Desktop two")):
+            params = {"session_id": sid, "text": text, "queued": True}
+            if surface:
+                params["surface"] = surface
+            reply = server._methods["prompt.submit"]("r", params)
+            assert reply["result"]["status"] == "queued"
+        queue = [session["queued_prompt"], *session.get("queued_prompts", [])]
+        assert [q["text"] for q in queue] == ["Desktop one", "TUI one", "Desktop two"]
+        assert [q["_submit_user_row"].get("_client_surface") for q in queue] == [
+            "desktop", "", "desktop"]
+        assert [r["content"] for r in db.get_messages_as_conversation(key)] == [
+            "Desktop one", "TUI one", "Desktop two"]
+        session["running"] = False
+        while session.get("queued_prompt"):
+            assert server._drain_queued_prompt("drain", sid, session)
+        assert [(text, row.get("content"), row.get("_client_surface"))
+                for text, row, _ in dispatched] == [
+            ("Desktop one", "Desktop one", "desktop"),
+            ("TUI one", "TUI one", ""),
+            ("Desktop two", "Desktop two", "desktop")]
+        assert dispatched[1][2] == "desktop"  # mutable session field is deliberately stale
+        assert [r["content"] for r in db.get_messages_as_conversation(key)] == [
+            "Desktop one", "TUI one", "Desktop two"]
+    finally:
+        server._sessions.pop(sid, None)
+        db.close()
+
+
+def test_simultaneous_mixed_client_queue_never_combines_text(monkeypatch, tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid, key = _desktop_session(monkeypatch, db)
+    session = server._sessions[sid]
+    session["running"] = True
+    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "queue")
+    ready = Barrier(2)
+
+    def send(surface, text):
+        ready.wait(timeout=10)
+        return server._methods["prompt.submit"](
+            text, {"session_id": sid, "text": text, "queued": True,
+                   **({"surface": surface} if surface else {})})
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(send, "desktop", "Desktop only"),
+                       pool.submit(send, None, "TUI only")]
+            assert [f.result(timeout=30)["result"]["status"] for f in futures] == ["queued", "queued"]
+        queue = [session["queued_prompt"], *session.get("queued_prompts", [])]
+        assert {e["text"]: e["_submit_user_row"]["_client_surface"] for e in queue} == {
+            "Desktop only": "desktop", "TUI only": ""}
+        assert {r["content"] for r in db.get_messages_as_conversation(key)} == {
+            "Desktop only", "TUI only"}
+    finally:
+        server._sessions.pop(sid, None)
+        db.close()
+
+
+def test_regular_desktop_submit_marks_its_own_staged_row(monkeypatch, tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid, key = _desktop_session(monkeypatch, db)
+    session = server._sessions[sid]
+    captured = []
+
+    class InlineThread:
+        def __init__(self, target, **kwargs):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    monkeypatch.setattr(server.threading, "Thread", InlineThread)
+    monkeypatch.setattr(server, "_start_agent_build", lambda *args: None)
+    monkeypatch.setattr(server, "_restart_completed_failed_agent_build", lambda *args: False)
+    monkeypatch.setattr(server, "_run_after_agent_ready", lambda *args: captured.append(
+        dict(session.get("_submit_user_row") or {})))
+    try:
+        reply = server._methods["prompt.submit"](
+            "r", {"session_id": sid, "text": "Desktop normal", "surface": "desktop"})
+        assert reply["result"]["status"] == "streaming"
+        assert captured[0]["_client_surface"] == "desktop"
+        assert captured[0]["_row_id"] == reply["result"]["user_row_id"]
+        assert db.get_messages_as_conversation(key)[0]["content"] == "Desktop normal"
     finally:
         server._sessions.pop(sid, None)
         db.close()

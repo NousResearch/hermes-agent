@@ -8,6 +8,7 @@ import contextlib
 import logging
 import json
 import threading
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Optional
 from utils import atomic_json_write
@@ -350,6 +351,28 @@ class SessionPersistenceMixin:
         """For a routing entry whose row has ended: ``"prune"``, a replacement entry (repoint), or
         None (keep as-is)."""
         from gateway.session_lifecycle import _now
+        if row.get("end_reason") == "compression":
+            # A crash may leave the durable route on the ended parent while the
+            # atomic compression transaction has already published its child.
+            # Keep the ORIGINAL route (including receiving-bot proof and consent
+            # context), never rebuild it from an unattributed transcript row.
+            db = self._db_for_key(key)
+            try:
+                if db is None:
+                    return None
+                tip_id = db.get_compression_tip(entry.session_id)
+                tip = db.get_session(tip_id) if tip_id and tip_id != entry.session_id else None
+                lineage = db.get_compression_lineage(entry.session_id)
+                original = json.loads(row.get("origin_json") or "null")
+                if (tip and entry.session_key == key and row.get("session_key") == key
+                        and tip.get("ended_at") is None and tip.get("session_key") == key
+                        and tip.get("origin_json") == row.get("origin_json")
+                        and entry.origin is not None and original == entry.origin.to_dict()
+                        and lineage and lineage[-1] == tip_id and tip_id in lineage):
+                    return replace(entry, session_id=tip_id)
+            except Exception as exc:
+                logger.debug("Compression route verification failed for %s: %s", key, exc)
+                return None  # indeterminate: do not discard the only route
         recovered_entry = None
         if entry.origin is not None:
             try:

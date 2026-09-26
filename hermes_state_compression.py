@@ -216,15 +216,16 @@ class SessionCompressionMixin:
                    system_prompt_hash, tool_names,
                    parent_session_id, cwd, git_branch, git_repo_root,
                    profile_name, user_id, session_key, chat_id, chat_type,
-                   thread_id, display_name, origin_json, started_at
-                ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   thread_id, display_name, origin_json, started_at, slack_sync, slack_sync_revoking
+                ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 child_session_id, source, model, json.dumps(model_config) if model_config else None,
                 system_prompt_hash, parent["tool_names"], parent_session_id, cwd or parent["cwd"], parent["git_branch"],
                 parent["git_repo_root"],
                 profile_name or parent["profile_name"] or self._own_profile_name(),
                 parent["user_id"], parent["session_key"], parent["chat_id"], parent["chat_type"],
-                parent["thread_id"], parent["display_name"], parent["origin_json"], time.time()),
+                parent["thread_id"], parent["display_name"], parent["origin_json"], time.time(),
+                parent["slack_sync"], parent["slack_sync_revoking"]),
         )
 
     def publish_compression_child(
@@ -264,7 +265,8 @@ class SessionCompressionMixin:
             parent = conn.execute(
                 """SELECT ended_at, end_reason, cwd, git_branch, git_repo_root,
                           user_id, session_key, chat_id, chat_type,
-                          thread_id, display_name, origin_json, profile_name, tool_names
+                          thread_id, display_name, origin_json, profile_name, tool_names,
+                          slack_sync, slack_sync_revoking
                    FROM sessions WHERE id = ?""",
                 (parent_session_id,),
             ).fetchone()

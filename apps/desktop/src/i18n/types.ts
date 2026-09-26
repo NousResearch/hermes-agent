@@ -3089,6 +3089,9 @@ export interface Translations {
       markUnread: string
       markRead: string
       unreadFailed: string
+      startSlackSync: string
+      stopSlackSync: string
+      slackSyncFailed: string
       copyId: string
       export: string
       branchFrom: string

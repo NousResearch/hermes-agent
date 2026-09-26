@@ -448,6 +448,10 @@ def get_profiles_sessions(
                 limit=per_profile, offset=0, order_by_last_active=order == "recent",
                 # Same SQL-level blob skip as /api/sessions.
                 compact_rows=not full, include_pinned=True, **filters)
+            from hermes_cli.slack_desktop_sync import availability
+            for row in rows:
+                row["slack_sync_available"] = availability(db, row)
+                row["slack_sync"] = bool(row.get("slack_sync"))
             totals[name] = db.session_count(exclude_children=True, **filters)
             merged.extend(_tag_rows(rows, name, now))
         _read_profile_db(name, home, errors, _read)
@@ -508,6 +512,11 @@ def get_profiles_sessions_sidebar(
         # page, and a total that shrank when you scrolled would be worse than no total at all.
         slices = {"recents": _slice(db, "recents"), "usage": db.usage_totals(),
                   "cron": _slice(db, "cron"), "messaging": _slice(db, "messaging")}
+        from hermes_cli.slack_desktop_sync import availability
+        for key in slice_scope:
+            for row in slices[key]:
+                row["slack_sync_available"] = availability(db, row)
+                row["slack_sync"] = bool(row.get("slack_sync"))
         _sidebar_profile_cache_put(cache_key, slices)
         return slices
 
@@ -519,7 +528,10 @@ def get_profiles_sessions_sidebar(
         db_path = Path(home) / "state.db"
         if not db_path.exists():
             continue
-        profile_cache_key = (str(db_path), _sidebar_db_fingerprint(db_path), cap["recents"],
+        credential_fingerprint = (
+            _stat_fingerprint(Path(home) / '.env'),
+            _stat_fingerprint(Path(home) / 'slack_tokens.json'))
+        profile_cache_key = (str(db_path), (_sidebar_db_fingerprint(db_path), credential_fingerprint), cap["recents"],
                              tuple(recents_exclude_list), cap["cron"], cap["messaging"],
                              tuple(messaging_exclude_list))
         slices = _sidebar_profile_cache_get(profile_cache_key)

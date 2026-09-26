@@ -134,7 +134,7 @@ def _ac_inflight_original(session: dict) -> str:
 
 
 def _enqueue_prompt(session: dict, text: Any, transport: Any, image_paths: list[str] | None = None,
-                    turn_author: dict | None = None) -> dict | None:
+                    turn_author: dict | None = None, client_surface: str = "") -> dict | None:
     """Queue a message for the next turn. Text-only arrivals share a slot and merge losslessly (like the
     consecutive-user merge in ``repair_message_sequence``); image-bearing and authored ones stay separate
     envelopes so attachment chronology and the sender survive. ``transport`` is pinned so the drained turn
@@ -150,10 +150,12 @@ def _enqueue_prompt(session: dict, text: Any, transport: Any, image_paths: list[
     if text_only and not turn_author and text.strip() == _ac_inflight_original(session) != "":
         return None
     queued = {"text": text, "transport": transport, **({"image_paths": image_paths} if image_paths else {}),
-              **({"turn_author": turn_author} if turn_author else {})}
+              **({"turn_author": turn_author} if turn_author else {}),
+              **({"_client_surface": client_surface} if client_surface else {})}
     existing = session.get("queued_prompt")
     if (existing and text_only and not turn_author and isinstance(existing.get("text"), str)
             and not existing.get("image_paths") and not existing.get("turn_author")
+            and existing.get("_client_surface", "") == client_surface
             and not session.get("queued_prompts")):
         prev = existing["text"]
         existing["text"] = f"{prev}\n\n{text}" if prev and text else (prev or text)
@@ -308,7 +310,9 @@ def _persist_queued_user_row(session: dict, envelope: dict, display_kind: str | 
                     return
             staged["content"] = envelope["text"]
         return
-    staged = _write_submit_user_row(session, envelope.get("text"), display_kind)
+    staged = _write_submit_user_row(
+        session, envelope.get("text"), display_kind,
+        client_surface=envelope.get("_client_surface", ""))
     if staged is not None:
         envelope["_submit_user_row"] = staged
         if display_kind:
@@ -331,7 +335,9 @@ def _replace_queued_user_row_for_turn(session: dict, queued: dict) -> dict | Non
         return None  # no accept-time row (write failed / pre-feature envelope): the turn persists as before
     # Append the replacement FIRST: if that write fails nothing is deactivated, the accept-time row
     # stays active (the message stays visible) and the turn's crash persist persists it as before.
-    _persist_submit_user_row(session, queued.get("text"), queued.get("_queued_display_kind"))
+    _persist_submit_user_row(
+        session, queued.get("text"), queued.get("_queued_display_kind"),
+        client_surface=queued.get("_client_surface", ""))
     fresh = session.get("_submit_user_row")
     if not (isinstance(fresh, dict) and isinstance(fresh.get("_row_id"), int)):
         return None  # re-append wrote nothing: keep the accept-time row active
@@ -349,7 +355,8 @@ def _replace_queued_user_row_for_turn(session: dict, queued: dict) -> dict | Non
 
 
 def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any, queued: bool = False,
-                        turn_author: dict | None = None, display_kind: str | None = None) -> dict | None:
+                        turn_author: dict | None = None, display_kind: str | None = None,
+                        client_surface: str = "") -> dict | None:
     """Apply ``display.busy_input_mode`` to a mid-turn prompt instead of rejecting it (rejection made clients busy-retry
     and drop sends): ``interrupt`` (default) → redirect, falling back to hard interrupt + queue; ``queue`` → queue only;
     ``steer`` → inject after the current atomic action. ``queued=True`` (client queue drain) forces queue mode: a "run
@@ -385,7 +392,9 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any,
             if image_paths:
                 session["attached_images"] = image_paths + list(session.get("attached_images", []))
             return None
-        envelope = _enqueue_prompt(session, text, transport, image_paths=image_paths, turn_author=turn_author)
+        envelope = _enqueue_prompt(
+            session, text, transport, image_paths=image_paths, turn_author=turn_author,
+            client_surface=client_surface)
         # Durable AT ACCEPT (not when the turn runs): a cold resume sees the queued message and a
         # backend restart cannot lose it. Lives on the envelope, never the shared session slot.
         if envelope is not None:

@@ -19,6 +19,7 @@ vi.mock('@/components/pane-shell/tree/store', () => ({
 vi.mock('@/hermes', () => ({
   renameSession: vi.fn(),
   setApiRequestProfile: vi.fn(),
+  setSessionSlackSyncRemote: vi.fn(() => Promise.resolve({ ok: true })),
   setSessionUnreadRemote: vi.fn(() => Promise.resolve({ ok: true }))
 }))
 vi.mock('@/i18n', () => ({
@@ -55,6 +56,9 @@ vi.mock('@/i18n', () => ({
           export: 'Export',
           hideTabBar: 'Hide tab bar',
           markRead: 'Mark as read',
+          startSlackSync: 'Sync to Slack thread',
+          stopSlackSync: 'Stop Slack sync',
+          slackSyncFailed: 'Could not update Slack sync',
           pin: 'Pin',
           rename: 'Rename',
           renameDesc: 'Leave empty to clear.',
@@ -91,7 +95,7 @@ vi.mock('@/store/session', () => ({
   $sessions: atom<unknown[]>([]),
   $unreadFinishedSessionIds: atom<string[]>([]),
   markSessionRead: vi.fn(),
-  sessionMatchesStoredId: vi.fn(() => false),
+  sessionMatchesStoredId: vi.fn((row: { id: string }, id: string) => row.id === id),
   sessionPinId: vi.fn((s: { id: string }) => s.id),
   setSessions: vi.fn()
 }))
@@ -124,6 +128,216 @@ function renderMenu() {
 }
 
 describe('SessionActionsMenu', () => {
+  it('targets only the row with the matching profile and connection when IDs collide', async () => {
+    const { $sessions, setSessions } = await import('@/store/session')
+    const { setSessionSlackSyncRemote } = await import('@/hermes')
+    vi.mocked(setSessionSlackSyncRemote).mockClear()
+    vi.mocked(setSessions).mockClear()
+    $sessions.set([
+      { id: 's1', profile: 'other', connection_id: 'remote-a', slack_sync_available: true, slack_sync: true },
+      { id: 's1', profile: 'poweronline', connection_id: 'remote-b', slack_sync_available: true, slack_sync: false },
+      { id: 's1', profile: 'poweronline', connection_id: 'remote-a', slack_sync_available: true, slack_sync: false }
+    ])
+    render(
+      <SessionActionsMenu connectionId="remote-a" profile="poweronline" sessionId="s1" title="Target">
+        <button aria-label="Session actions" type="button">⋮</button>
+      </SessionActionsMenu>
+    )
+    const trigger = screen.getByRole('button', { name: 'Session actions' })
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(trigger)
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Sync to Slack thread' }))
+    await waitFor(() => expect(setSessionSlackSyncRemote).toHaveBeenCalledWith('s1', true, {
+      connectionId: 'remote-a', profile: 'poweronline'
+    }))
+    const update = vi.mocked(setSessions).mock.calls.at(-1)?.[0]
+    expect(typeof update).toBe('function')
+    expect((update as (rows: unknown[]) => unknown[])($sessions.get())).toEqual([
+      $sessions.get()[0], $sessions.get()[1], { ...$sessions.get()[2], slack_sync: true }
+    ])
+    $sessions.set([])
+  })
+
+  it('fails closed when the menu does not identify a unique owner', async () => {
+    const { $sessions } = await import('@/store/session')
+    const { setSessionSlackSyncRemote } = await import('@/hermes')
+    vi.mocked(setSessionSlackSyncRemote).mockClear()
+    $sessions.set([
+      { id: 's1', profile: 'default', connection_id: 'remote-a', slack_sync_available: true },
+      { id: 's1', profile: 'default', connection_id: 'remote-b', slack_sync_available: true }
+    ])
+    renderMenu()
+    const trigger = screen.getByRole('button', { name: 'Session actions' })
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(trigger)
+    expect(screen.queryByRole('menuitem', { name: 'Sync to Slack thread' })).toBeNull()
+    expect(setSessionSlackSyncRemote).not.toHaveBeenCalled()
+    $sessions.set([])
+  })
+
+  it('hides consent even for a sole eligible ID match when the menu has no owner', async () => {
+    const { $sessions } = await import('@/store/session')
+    const { setSessionSlackSyncRemote } = await import('@/hermes')
+    vi.mocked(setSessionSlackSyncRemote).mockClear()
+    $sessions.set([{ id: 's1', profile: 'default', connection_id: 'local', slack_sync_available: true }])
+    renderMenu()
+    const trigger = screen.getByRole('button', { name: 'Session actions' })
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(trigger)
+    expect(screen.queryByRole('menuitem', { name: 'Sync to Slack thread' })).toBeNull()
+    expect(setSessionSlackSyncRemote).not.toHaveBeenCalled()
+    $sessions.set([])
+  })
+
+  it('hides context-menu consent when its connection was omitted despite a sole match', async () => {
+    const { $sessions } = await import('@/store/session')
+    $sessions.set([{ id: 's1', profile: 'default', connection_id: 'local', slack_sync_available: true }])
+    render(
+      <SessionContextMenu profile="default" sessionId="s1" title="Thread">
+        <button type="button">Thread</button>
+      </SessionContextMenu>
+    )
+    fireEvent.contextMenu(screen.getByRole('button', { name: 'Thread' }))
+    expect(screen.queryByRole('menuitem', { name: 'Sync to Slack thread' })).toBeNull()
+    $sessions.set([])
+  })
+
+  it('never PATCHes a different owner when the row changes after the menu opens', async () => {
+    const { $sessions } = await import('@/store/session')
+    const { setSessionSlackSyncRemote } = await import('@/hermes')
+    vi.mocked(setSessionSlackSyncRemote).mockClear()
+    $sessions.set([{ id: 's1', profile: 'work', connection_id: 'remote-a', slack_sync_available: true }])
+    render(
+      <SessionActionsMenu connectionId="remote-a" profile="work" sessionId="s1" title="Remote">
+        <button aria-label="Session actions" type="button">⋮</button>
+      </SessionActionsMenu>
+    )
+    const trigger = screen.getByRole('button', { name: 'Session actions' })
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(trigger)
+    const item = await screen.findByRole('menuitem', { name: 'Sync to Slack thread' })
+    // Keep the stale item reference to exercise the click-time guard.
+    $sessions.set([{ id: 's1', profile: 'default', connection_id: 'local', slack_sync_available: true }])
+    fireEvent.click(item)
+    expect(setSessionSlackSyncRemote).not.toHaveBeenCalled()
+    $sessions.set([])
+  })
+
+  it('does not offer consent for a row whose owning profile is unknown', async () => {
+    const { $sessions } = await import('@/store/session')
+    $sessions.set([{ id: 's1', connection_id: 'remote-a', slack_sync_available: true }])
+    renderMenu()
+    const trigger = screen.getByRole('button', { name: 'Session actions' })
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(trigger)
+    expect(screen.queryByRole('menuitem', { name: 'Sync to Slack thread' })).toBeNull()
+    $sessions.set([])
+  })
+
+  it('pins an untagged local row to local even when the active connection is remote', async () => {
+    const { $connection, $sessions } = await import('@/store/session')
+    const { setSessionSlackSyncRemote } = await import('@/hermes')
+    vi.mocked(setSessionSlackSyncRemote).mockClear()
+    $connection.set({ mode: 'remote' })
+    $sessions.set([
+      { id: 's1', profile: 'default', connection_id: 'remote-active', slack_sync_available: true, slack_sync: true },
+      { id: 's1', profile: 'default', slack_sync_available: true, slack_sync: false }
+    ])
+    render(
+      <SessionActionsMenu connectionId="local" profile="default" sessionId="s1" title="Local">
+        <button aria-label="Session actions" type="button">⋮</button>
+      </SessionActionsMenu>
+    )
+    const trigger = screen.getByRole('button', { name: 'Session actions' })
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(trigger)
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Sync to Slack thread' }))
+    await waitFor(() => expect(setSessionSlackSyncRemote).toHaveBeenCalledWith('s1', true, {
+      connectionId: 'local', profile: 'default'
+    }))
+    $connection.set(null)
+    $sessions.set([])
+  })
+
+  it('only offers Slack sync on an eligible conversation and writes its owning profile', async () => {
+    const { $sessions } = await import('@/store/session')
+    const { setSessionSlackSyncRemote } = await import('@/hermes')
+    $sessions.set([{ id: 's1', profile: 'poweronline', connection_id: 'remote-a', slack_sync_available: true, slack_sync: false }])
+    render(
+      <SessionActionsMenu connectionId="remote-a" profile="poweronline" sessionId="s1" title="Thread">
+        <button aria-label="Session actions" type="button">⋮</button>
+      </SessionActionsMenu>
+    )
+
+    const trigger = screen.getByRole('button', { name: 'Session actions' })
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(trigger)
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Sync to Slack thread' }))
+    await waitFor(() => expect(setSessionSlackSyncRemote).toHaveBeenCalledWith('s1', true, {
+      connectionId: 'remote-a', profile: 'poweronline'
+    }))
+
+    cleanup()
+    $sessions.set([{ id: 's1', profile: 'poweronline', slack_sync_available: false }])
+    render(
+      <SessionActionsMenu connectionId="local" profile="poweronline" sessionId="s1" title="Thread">
+        <button aria-label="Session actions" type="button">⋮</button>
+      </SessionActionsMenu>
+    )
+    const otherTrigger = screen.getByRole('button', { name: 'Session actions' })
+    fireEvent.pointerDown(otherTrigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(otherTrigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(otherTrigger)
+    expect(screen.queryByRole('menuitem', { name: 'Sync to Slack thread' })).toBeNull()
+    cleanup()
+    $sessions.set([{ id: 's1', profile: 'poweronline', connection_id: 'remote-a', slack_sync_available: true, slack_sync: true }])
+    render(
+      <SessionActionsMenu connectionId="remote-a" profile="poweronline" sessionId="s1" title="Thread">
+        <button aria-label="Session actions" type="button">⋮</button>
+      </SessionActionsMenu>
+    )
+    const enabledTrigger = screen.getByRole('button', { name: 'Session actions' })
+    fireEvent.pointerDown(enabledTrigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(enabledTrigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(enabledTrigger)
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Stop Slack sync' }))
+    await waitFor(() => expect(setSessionSlackSyncRemote).toHaveBeenCalledWith('s1', false, {
+      connectionId: 'remote-a', profile: 'poweronline'
+    }))
+    $sessions.set([])
+  })
+
+  it('keeps opt-out available after an enabled thread loses bot eligibility', async () => {
+    const { $sessions } = await import('@/store/session')
+    const { setSessionSlackSyncRemote } = await import('@/hermes')
+    vi.mocked(setSessionSlackSyncRemote).mockClear()
+    $sessions.set([{
+      id: 's1', profile: 'default', connection_id: 'local',
+      slack_sync_available: false, slack_sync: true
+    }])
+    render(
+      <SessionActionsMenu connectionId="local" profile="default" sessionId="s1" title="Thread">
+        <button aria-label="Session actions" type="button">⋮</button>
+      </SessionActionsMenu>
+    )
+    const trigger = screen.getByRole('button', { name: 'Session actions' })
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(trigger)
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Stop Slack sync' }))
+    await waitFor(() => expect(setSessionSlackSyncRemote).toHaveBeenCalledWith('s1', false, {
+      connectionId: 'local', profile: 'default'
+    }))
+    $sessions.set([])
+  })
+
   it('opens the dropdown on click', async () => {
     renderMenu()
 

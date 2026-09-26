@@ -287,7 +287,7 @@ def _load_sa_credentials_from(sa_value: Optional[str]) -> Any:
 
 
 class _ThreadCountStore:
-    """Persisted per-(chat_id, thread_name) inbound counter driving the DM main-flow vs
+    """Persisted per-(chat_id, thread_name) inbound counter driving the main-flow vs
     side-thread heuristic (0: Chat auto-created the thread for a top-level message; >=1:
     user engaged an existing thread). Persisted because a restart that wiped counts would
     demote active side-threads to main flow and leak context. Format
@@ -410,8 +410,9 @@ class GoogleChatAdapter(BasePlatformAdapter):
         self._shutting_down = False
         self._typing_messages: Dict[str, str] = {}
         self._clarify_state, self._rate_limit_hits = {}, {}
-        # Last inbound thread per space: DMs get a NEW thread per top-level message but users
-        # see one conversation, so thread_id leaves the source (stable session key) and is cached here.
+        # Last inbound side-thread per space: Chat gives every top-level message (DM or space) a NEW thread
+        # but users see one conversation, so main-flow messages drop thread_id (stable session key) and
+        # only side-threads are cached here.
         self._last_inbound_thread: Dict[str, str] = {}
         from hermes_constants import get_hermes_home as _get_hermes_home
         self._thread_count_store = _ThreadCountStore(_get_hermes_home() / "google_chat_thread_counts.json")
@@ -945,21 +946,16 @@ class GoogleChatAdapter(BasePlatformAdapter):
 
         # PRE-increment count (persisted) drives the main-flow-vs-side-thread heuristic.
         prev_thread_count = self._thread_count_store.incr(space_name, thread_name) if thread_name and space_name else 0
-        # DMs: prev_count == 0 → Chat auto-created this thread for a top-level message: share one
-        # DM session, reply top-level (thread.name would render an expandable thread); >= 1 → user
-        # engaged an existing thread: isolate + reply in-thread. Groups: always isolate + in-thread.
-        if chat_type == "dm":
-            is_side_thread = prev_thread_count > 0
-            session_thread_id = thread_name if is_side_thread else None
-            # Outbound cache only for side-threads so main-flow replies land top-level.
-            if thread_name and space_name and is_side_thread:
-                self._last_inbound_thread[space_name] = thread_name
-            elif space_name:
-                self._last_inbound_thread.pop(space_name, None)
-        else:
-            session_thread_id = thread_name
-            if thread_name and space_name:
-                self._last_inbound_thread[space_name] = thread_name
+        # DMs and in-line threaded spaces alike: prev_count == 0 → Chat auto-created this thread for a top-level
+        # message: keep the space-level session (no thread_id), reply top-level (thread.name would render an
+        # expandable thread); >= 1 → user engaged an existing thread: isolate + reply in-thread.
+        is_side_thread = prev_thread_count > 0
+        session_thread_id = thread_name if is_side_thread else None
+        # Outbound cache only for side-threads so main-flow replies land top-level.
+        if thread_name and space_name and is_side_thread:
+            self._last_inbound_thread[space_name] = thread_name
+        elif space_name:
+            self._last_inbound_thread.pop(space_name, None)
         source = self.build_source(
             chat_id=space_name, chat_name=space.get("displayName") or space.get("name") or "", chat_type=chat_type,
             # Email is the canonical id (allowlists use emails); the ``users/{id}``
@@ -1207,7 +1203,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
                            chat_id: Optional[str] = None) -> Optional[str]:
         """Thread to reply under, or None: ``metadata['thread_id']`` → ``thread_name`` /
         ``thread_ts`` aliases → ``reply_to`` when already a ``spaces/X/threads/Y`` name →
-        ``_last_inbound_thread[chat_id]`` (else DM replies land top-level). Cron deliveries
+        ``_last_inbound_thread[chat_id]`` (else main-flow replies land top-level). Cron deliveries
         (``job_id`` in metadata) skip the last fallback so output is not buried in a stale thread."""
         if metadata:
             for key in ("thread_id", "thread_name", "thread_ts"):

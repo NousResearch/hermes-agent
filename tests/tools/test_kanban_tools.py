@@ -580,6 +580,24 @@ def test_create_explicit_scratch_ignores_ambient_board_project(
     assert create() == (("worktree", project_id) if target_scoped else ("scratch", None))
 
 
+def test_unknown_board_is_refused_not_created(worker_env):
+    """A board slug that names no board is an error, never a new empty board the
+    card silently lands on (the CLI's --board and the dashboard refuse it too)."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    kb.create_board("research")
+    boards_before = [b["slug"] for b in kb.list_boards()]
+    for handler, args in (
+        (kt._handle_create, {"title": "summarise the papers", "assignee": "peer"}),
+        (kt._handle_show, {"task_id": worker_env}),
+    ):
+        result = json.loads(handler({**args, "board": "reserch"}))
+        assert "reserch" in result.get("error", ""), result
+    assert [b["slug"] for b in kb.list_boards()] == boards_before
+    assert not kb.board_dir("reserch").exists()
+
+
 def test_link_running_child_allows_owner_but_rejects_foreign(monkeypatch, worker_env):
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc

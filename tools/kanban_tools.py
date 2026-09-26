@@ -290,6 +290,13 @@ def _board(board: Optional[str], *, quiet_close: bool = False):
     overrides it per call. ``quiet_close`` swallows close() errors (best-effort bridges)."""
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc
+    slug = kb._normalize_board_slug(board)
+    # connect() creates whatever board it is named, so a mistyped slug would get a
+    # fresh empty board that the dispatcher runs and nobody looks at. Refuse it, as
+    # `hermes kanban --board` and the dashboard do.
+    if slug and slug != kb.DEFAULT_BOARD and not kb.board_exists(slug):
+        existing = ", ".join(b["slug"] for b in kb.list_boards(include_archived=False))
+        raise _Reject(f"board {slug!r} does not exist. Existing boards: {existing}. Nothing changed.")
     conn = kbc.connect(board=board)
     try:
         yield kb, conn

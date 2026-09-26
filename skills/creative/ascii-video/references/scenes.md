@@ -5,9 +5,9 @@
 ## Scene Design Philosophy
 
 Scenes are storytelling units, not effect demos. Every scene needs:
-- A **concept** — what is happening visually? Not "plasma + rings" but "emergence from void" or "crystallization"
-- An **arc** — how does it change over its duration? Build, decay, transform, reveal?
-- A **role** — how does it serve the larger video narrative? Opening tension, peak energy, resolution?
+- A **concept**: what is happening visually? Not "plasma + rings" but "emergence from void" or "crystallization"
+- An **arc**: how does it change over its duration? Build, decay, transform, reveal?
+- A **role**: how does it serve the larger video narrative? Opening tension, peak energy, resolution?
 
 The design patterns below provide compositional techniques. The scene examples show them in practice at increasing complexity. The protocol section covers the technical contract.
 
@@ -57,11 +57,11 @@ def fx_example(r, f, t, S):
 
 ## Directional Parameter Arcs
 
-Parameters should *go somewhere* over the scene's duration — not oscillate aimlessly with `sin(t * N)`.
+Parameters should *go somewhere* over the scene's duration: not oscillate aimlessly with `sin(t * N)`.
 
-**Bad:** `twist = 3.0 + 2.0 * math.sin(t * 0.6)` — wobbles back and forth, feels aimless.
+**Bad:** `twist = 3.0 + 2.0 * math.sin(t * 0.6)`, wobbles back and forth, feels aimless.
 
-**Good:** `twist = 2.0 + progress * 5.0` — starts gentle, ends intense. The scene *builds*.
+**Good:** `twist = 2.0 + progress * 5.0`. Starts gentle, ends intense. The scene *builds*.
 
 Use `progress = min(local / duration, 1.0)` (0→1 over the scene) to drive directional change:
 
@@ -90,8 +90,8 @@ Oscillation is fine for *secondary* parameters (saturation shimmer, hue drift). 
 
 Each scene should be built around a *visual idea*, not an effect name.
 
-**Bad:** "fx_plasma_cascade" — named after the effect. No concept.
-**Good:** "fx_emergence" — a point of light expands into a field. The name tells you *what happens*.
+**Bad:** "fx_plasma_cascade", named after the effect. No concept.
+**Good:** "fx_emergence", a point of light expands into a field. The name tells you *what happens*.
 
 Good scene concepts have:
 1. A **visual metaphor** (emergence, descent, collision, entropy)
@@ -104,7 +104,7 @@ Good scene concepts have:
 | Emergence | Birth, expansion | zoom-out | Past frames expand outward |
 | Descent | Falling, acceleration | zoom-in | Past frames rush toward center |
 | Inferno | Rising fire | shift-up | Past frames rise with the flames |
-| Entropy | Decay, dissolution | none | Clean, no persistence — things disappear |
+| Entropy | Decay, dissolution | none | Clean, no persistence: things disappear |
 | Crescendo | Accumulation | zoom + hue_shift | Everything compounds and shifts |
 
 ## Compositional Techniques
@@ -147,7 +147,7 @@ combined = wave_a * 0.5 + wave_b * 0.5 + np.abs(wave_a - wave_b) * (1 - collisio
 
 ### Progressive Fragmentation
 
-Voronoi with cell count increasing over time — visual shattering:
+Voronoi with cell count increasing over time: visual shattering:
 
 ```python
 n_pts = int(8 + progress * 30)  # 8 cells → 38 cells
@@ -197,10 +197,10 @@ For a 15-second crescendo, 7 layers entering every 2 seconds works well. Use dif
 ## Scene Ordering
 
 For a multi-scene reel or video:
-- **Vary mood between adjacent scenes** — don't put two calm scenes next to each other
-- **Randomize order** rather than grouping by type — prevents "effect demo" feel
-- **End on the strongest scene** — crescendo or something with a clear payoff
-- **Open with energy** — grab attention in the first 2 seconds
+- **Vary mood between adjacent scenes**: don't put two calm scenes next to each other
+- **Randomize order** rather than grouping by type: prevents "effect demo" feel
+- **End on the strongest scene**: crescendo or something with a clear payoff
+- **Open with energy**: grab attention in the first 2 seconds
 
 ---
 
@@ -467,7 +467,7 @@ energy = features["rms"]
 # Find timestamps where energy drops significantly -> natural break points
 ```
 
-### `render_clip()` — The Render Loop
+### `render_clip()`: The Render Loop
 
 This function renders one scene to a clip file:
 
@@ -591,13 +591,13 @@ CLI: `python reel.py --test-frame 10.0`
 
 For each scene:
 
-1. **Choose 2-3 grid sizes** — different scales create interference
-2. **Choose different value fields** per layer — don't use the same effect on every grid
-3. **Choose different hue fields** per layer — or at minimum different hue offsets
-4. **Choose different palettes** per layer — mixing PAL_RUNE with PAL_BLOCKS looks different from PAL_RUNE with PAL_DENSE
-5. **Choose a blend mode** that matches the energy — screen for bright, difference for psychedelic, exclusion for subtle
-6. **Add conditional effects** on beat — kaleidoscope, mirror, glitch
-7. **Configure feedback** for trailing/recursive looks — or None for clean cuts
+1. **Choose 2-3 grid sizes**: different scales create interference
+2. **Choose different value fields** per layer: don't use the same effect on every grid
+3. **Choose different hue fields** per layer: or at minimum different hue offsets
+4. **Choose different palettes** per layer: mixing PAL_RUNE with PAL_BLOCKS looks different from PAL_RUNE with PAL_DENSE
+5. **Choose a blend mode** that matches the energy: screen for bright, difference for psychedelic, exclusion for subtle
+6. **Add conditional effects** on beat: kaleidoscope, mirror, glitch
+7. **Configure feedback** for trailing/recursive looks: or None for clean cuts
 8. **Set gamma** if using destructive shaders (solarize, posterize)
 9. **Test with --test-frame** at the scene's midpoint before full render
 
@@ -609,7 +609,7 @@ Copy-paste-ready scene functions at increasing complexity. Each is a complete, w
 
 ---
 
-### Minimal — Single Grid, Single Effect
+### Minimal: Single Grid, Single Effect
 
 ### Breathing Plasma
 
@@ -658,7 +658,7 @@ def fx_sdf_rings(r, f, t, S):
 
 ---
 
-### Standard — Two Grids + Blend
+### Standard: Two Grids + Blend
 
 ### Tunnel Through Noise
 
@@ -718,7 +718,7 @@ def fx_organic_warp(r, f, t, S):
 
 ---
 
-### Complex — Three Grids + Conditional + Feedback
+### Complex: Three Grids + Conditional + Feedback
 
 ### Psychedelic Cathedral
 
@@ -844,7 +844,7 @@ def fx_morphing_journey(r, f, t, S):
 
 ---
 
-### Specialized — Unique State Patterns
+### Specialized: Unique State Patterns
 
 ### Game of Life with Ghost Trails
 

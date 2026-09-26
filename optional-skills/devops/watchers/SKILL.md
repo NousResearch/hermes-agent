@@ -33,7 +33,7 @@ A watcher is just a script that:
 3. Writes the new watermark back
 4. Prints new items to stdout (or nothing on no-change)
 
-The scripts below handle all three. The agent runs them via the terminal tool — from a cron job, a webhook, or an interactive chat — and reports what's new.
+The scripts below handle all three. The agent runs them via the terminal tool, from a cron job, a webhook, or an interactive chat, and reports what's new.
 
 ## Ready-made scripts
 
@@ -47,10 +47,10 @@ All three live in `$HERMES_HOME/skills/devops/watchers/scripts/` once the skill 
 
 All three:
 
-- First run records a baseline — never replays existing feed
+- First run records a baseline, never replays existing feed
 - Watermark is a bounded ID set (max 500) to cap memory
 - Output format: `## <title>\n<url>\n\n<optional body>` per item
-- Empty stdout on no-new — the caller treats that as silent
+- Empty stdout on no-new, the caller treats that as silent
 - Non-zero exit on fetch errors
 
 ## Usage
@@ -106,7 +106,7 @@ All three scripts use the same template: load watermark, fetch, diff, save, emit
 ## Common Pitfalls
 
 1. **Printing a "no new items" header every tick.** Callers rely on empty stdout = silent. If you print anything on an empty delta, you spam the channel. The shipped scripts handle this; custom scripts must too.
-2. **Expecting the first run to emit items.** It won't — first run records a baseline. If you need an initial digest, delete the state file after the first run or add a `--prime-with-latest N` flag in your own script.
+2. **Expecting the first run to emit items.** It won't, first run records a baseline. If you need an initial digest, delete the state file after the first run or add a `--prime-with-latest N` flag in your own script.
 3. **Unbounded watermark growth.** The shared helper caps at 500 IDs. Raise it for high-churn feeds; lower it on constrained filesystems.
 4. **Putting the state dir where the agent's sandbox can't write.** `$HERMES_HOME/watcher-state/` is always writable. Docker/Modal backends may not see arbitrary host paths.
 

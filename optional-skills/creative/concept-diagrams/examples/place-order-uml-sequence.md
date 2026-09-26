@@ -1,16 +1,16 @@
-# Place Order — UML Sequence Diagram
+# Place Order, UML Sequence Diagram
 
-A UML sequence diagram for the 'Place Order' use case in an e-commerce system. Six lifelines (:Customer, :ShoppingCart, :OrderController, :PaymentGateway, :InventorySystem, :EmailService) interact across 14 numbered messages. An **alt** combined fragment (amber) covers the three conditional outcomes — payment authorized, payment failed, and item unavailable. A **par** combined fragment (teal) nested inside the success branch shows concurrent email confirmation and stock-level update. Demonstrates activation bars, two distinct arrowhead types, UML pentagon fragment tags, and guard conditions.
+A UML sequence diagram for the 'Place Order' use case in an e-commerce system. Six lifelines (:Customer, :ShoppingCart, :OrderController, :PaymentGateway, :InventorySystem, :EmailService) interact across 14 numbered messages. An **alt** combined fragment (amber) covers the three conditional outcomes, payment authorized, payment failed, and item unavailable. A **par** combined fragment (teal) nested inside the success branch shows concurrent email confirmation and stock-level update. Demonstrates activation bars, two distinct arrowhead types, UML pentagon fragment tags, and guard conditions.
 
 ## Key Patterns Used
 
-- **6 lifelines at equal spacing**: Lifeline centers placed at x=90, 190, 290, 390, 490, 590 (100px apart) so the first box left-edge lands at x=40 and the last right-edge lands at x=640 — exactly filling the safe area
+- **6 lifelines at equal spacing**: Lifeline centers placed at x=90, 190, 290, 390, 490, 590 (100px apart) so the first box left-edge lands at x=40 and the last right-edge lands at x=640, exactly filling the safe area
 - **Two-row actor headers**: Each lifeline box shows `":"` (small, tertiary color) on one line and the class name (slightly larger, bold) on a second line, matching the UML anonymous-instance notation `:ClassName`
-- **Two separate arrowhead markers**: `#arr-call` is a filled triangle (`<polygon>`) for synchronous calls; `#arr-ret` is an open chevron (`fill="none"`) for dashed return messages — both use `context-stroke` to inherit line color
+- **Two separate arrowhead markers**: `#arr-call` is a filled triangle (`<polygon>`) for synchronous calls; `#arr-ret` is an open chevron (`fill="none"`) for dashed return messages, both use `context-stroke` to inherit line color
 - **Activation bars**: Narrow 8px-wide rectangles (`class="activation"`) layered on top of lifeline stems to show object execution periods; OrderController's bar spans the entire interaction; shorter bars mark PaymentGateway, InventorySystem, and EmailService during their active windows
-- **Combined fragment pentagon tag**: Each `alt` / `par` frame uses a `<polygon>` dog-eared label shape in the top-left corner — points follow the pattern `(x,y) (x+w,y) (x+w+6,y+6) (x+w+6,y+18) (x,y+18)` creating the characteristic UML notch
+- **Combined fragment pentagon tag**: Each `alt` / `par` frame uses a `<polygon>` dog-eared label shape in the top-left corner, points follow the pattern `(x,y) (x+w,y) (x+w+6,y+6) (x+w+6,y+18) (x,y+18)` creating the characteristic UML notch
 - **Nested par inside alt**: The `par` rect (teal) sits inside branch 1 of the `alt` rect (amber); inner rect uses inset x/y (+15/+2) so both borders remain visible and distinguishable
-- **Guard conditions**: Italic text in `[square brackets]` placed immediately after each alt frame divider line, or just inside the top frame for branch 1 — rendered with a dedicated `guard-lbl` class (italic, amber color)
+- **Guard conditions**: Italic text in `[square brackets]` placed immediately after each alt frame divider line, or just inside the top frame for branch 1, rendered with a dedicated `guard-lbl` class (italic, amber color)
 - **Alt branch dividers**: Solid horizontal lines (`.frag-alt-div`) span the full alt rect width to separate the three branches; par branch separator uses a dashed line (`.frag-par-div`) per UML spec
 - **Lifeline end caps**: Short 14px horizontal tick marks at y=590 (bottom of all lifeline stems) to formally terminate each lifeline
 - **Message sequence annotation**: A faint counter row below the legend (①–③ / ④–⑩ / ⑪–⑫ / ⑬–⑭) explains the four message groups without adding noise to the diagram body
@@ -301,25 +301,25 @@ Add these classes to the hosting page `<style>` block (in addition to the standa
 
 | Element | Color | Reason |
 |---------|-------|--------|
-| Actor header boxes | Neutral (`var(--bg-secondary)`) | Structural / non-semantic — all lifelines share one style |
+| Actor header boxes | Neutral (`var(--bg-secondary)`) | Structural / non-semantic, all lifelines share one style|
 | Activation bars | Neutral (`var(--bg-secondary)`) | Show execution periods without adding semantic color |
-| Synchronous call arrows | `var(--text-primary)` + filled triangle | High contrast for calls — the primary interaction direction |
-| Return / dashed arrows | `var(--text-secondary)` + open chevron | Lower contrast for returns — secondary flow direction |
-| `alt` fragment | Amber (`#FAEEDA` / `#854F0B`) | Warning / conditional — matches `c-amber` semantic meaning |
+| Synchronous call arrows | `var(--text-primary)` + filled triangle | High contrast for calls, the primary interaction direction|
+| Return / dashed arrows | `var(--text-secondary)` + open chevron | Lower contrast for returns, secondary flow direction|
+| `alt` fragment | Amber (`#FAEEDA` / `#854F0B`) | Warning / conditional, matches `c-amber` semantic meaning|
 | Guard condition text | Amber italic | Belongs visually to the alt fragment |
-| `par` fragment | Teal (`#E1F5EE` / `#0F6E56`) | Concurrent success path — matches `c-teal` semantic meaning |
+| `par` fragment | Teal (`#E1F5EE` / `#0F6E56`) | Concurrent success path, matches `c-teal` semantic meaning|
 | Alt branch dividers | Amber solid line | Continuity with the alt frame color |
 | Par branch divider | Teal dashed line | UML spec: par branches separated by dashed lines |
 
 ## Layout Notes
 
 - **ViewBox**: 680×648 (standard width; height = lifeline bottom y=590 + legend + annotation + 16px buffer)
-- **Lifeline spacing formula**: `(safe_area_width) / (n_lifelines − 1) = 600 / 5 = 120px` — but use `spacing = 100px` starting at `x=90` so that first box left = 40 and last box right = 640 exactly
-- **Actor box split-label trick**: Two separate `<text>` elements per box — one for `":"` (10px, tertiary color) and one for the class name (11.5px bold, primary color) — avoids the 14px font needing ~150px+ per box for long names like "OrderController"
+- **Lifeline spacing formula**: `(safe_area_width) / (n_lifelines − 1) = 600 / 5 = 120px`, but use `spacing = 100px` starting at `x=90` so that first box left = 40 and last box right = 640 exactly
+- **Actor box split-label trick**: Two separate `<text>` elements per box, one for `":"` (10px, tertiary color) and one for the class name (11.5px bold, primary color), avoids the 14px font needing ~150px+ per box for long names like "OrderController"
 - **Pentagon tag formula**: For a fragment starting at `(fx, fy)`, the tag polygon points are `(fx,fy) (fx+w,fy) (fx+w+6,fy+6) (fx+w+6,fy+18) (fx,fy+18)` where `w` = approximate text width of the keyword + 8px padding each side
-- **Nested fragment inset**: The `par` rect uses `x = alt_x + 15` and `y = alt_y_current + 2` so both borders remain simultaneously visible — inset enough to separate visually, not so much that it wastes vertical space
-- **Activation bar placement**: `x = lifeline_cx − 4`, `width = 8` — centered on the lifeline and narrow enough not to obscure the dashed stem behind it
+- **Nested fragment inset**: The `par` rect uses `x = alt_x + 15` and `y = alt_y_current + 2` so both borders remain simultaneously visible, inset enough to separate visually, not so much that it wastes vertical space
+- **Activation bar placement**: `x = lifeline_cx − 4`, `width = 8`: centered on the lifeline and narrow enough not to obscure the dashed stem behind it
 - **Message label y-offset**: All labels are placed at `y = arrow_y − 5` to sit just above the arrow line; this applies to both left-going and right-going arrows since `text-anchor="middle"` handles horizontal centering automatically
-- **Return arrows entering activation bars**: End `x1/x2` at lifeline center (e.g. x=294 for OrderController) rather than the bar edge (x=286) — the small overlap is intentional and clarifies the target object
+- **Return arrows entering activation bars**: End `x1/x2` at lifeline center (e.g. x=294 for OrderController) rather than the bar edge (x=286), the small overlap is intentional and clarifies the target object
 - **Alt guard label placement**: Branch 1 guard goes at `y = frame_top + 13` to the right of the pentagon tag; subsequent branch guards go at `divider_y + 14` so they sit just inside the new branch
-- **Lifeline end cap pattern**: `<line x1="cx−7" y1="590" x2="cx+7" y2="590" stroke-width="1.5"/>` — a simple symmetric tick, no special marker needed
+- **Lifeline end cap pattern**: `<line x1="cx−7" y1="590" x2="cx+7" y2="590" stroke-width="1.5"/>`: a simple symmetric tick, no special marker needed

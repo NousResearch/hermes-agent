@@ -37,8 +37,8 @@ You should see {{EXPECTED_OUTPUT}}.
 
 Key config files and settings:
 
-- `{{CONFIG_FILE}}` — {{WHAT_IT_CONTROLS}}
-- Env var `{{VAR}}` — {{WHAT_IT_CONTROLS}}
+- `{{CONFIG_FILE}}`, {{WHAT_IT_CONTROLS}}
+- Env var `{{VAR}}`, {{WHAT_IT_CONTROLS}}
 
 ## Where to Go Next
 

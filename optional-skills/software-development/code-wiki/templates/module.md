@@ -10,8 +10,8 @@
 
 ## Key Files
 
-- [`{{PATH_1}}`]({{LINK_1}}) — {{WHAT_IT_DOES}}
-- [`{{PATH_2}}`]({{LINK_2}}) — {{WHAT_IT_DOES}}
+- [`{{PATH_1}}`]({{LINK_1}}), {{WHAT_IT_DOES}}
+- [`{{PATH_2}}`]({{LINK_2}}), {{WHAT_IT_DOES}}
 
 ## Public API
 
@@ -20,9 +20,9 @@
 {{ONE_LINE_DESCRIPTION}}
 
 **Parameters:**
-- `{{PARAM}}` ({{TYPE}}) — {{DESCRIPTION}}
+- `{{PARAM}}` ({{TYPE}}), {{DESCRIPTION}}
 
-**Returns:** {{TYPE}} — {{DESCRIPTION}}
+**Returns:** {{TYPE}}, {{DESCRIPTION}}
 
 ## Internal Structure
 

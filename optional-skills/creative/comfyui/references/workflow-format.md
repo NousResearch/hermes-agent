@@ -1,6 +1,6 @@
 # ComfyUI Workflow JSON Format
 
-## Two Formats — Only API Format Is Executable
+## Two Formats, Only API Format Is Executable
 
 **API format** is required for `/api/prompt` and every script in this skill.
 The web UI also produces an "editor format" used for visual editing, which
@@ -40,7 +40,7 @@ Top-level keys are string node IDs. Each node has `class_type` and `inputs`:
 
 ### Editor Format (not directly executable)
 
-Has `nodes[]` and `links[]` arrays — the visual graph. To convert: open in
+Has `nodes[]` and `links[]` arrays, the visual graph. To convert: open in
 ComfyUI's web UI and use **Workflow → Export (API)** (newer UI) or the
 "Save (API Format)" button (older UI).
 
@@ -182,19 +182,19 @@ that `run_workflow.py` reads to inject values from `--args`.
 
 For unknown workflows:
 
-1. **Prompt text** — any `CLIPTextEncode.text`. Use connection tracing back
+1. **Prompt text**: any `CLIPTextEncode.text`. Use connection tracing back
    from `KSampler.positive` / `.negative` to disambiguate (don't trust
    meta-title alone).
-2. **Seed** — `KSampler.seed` / `KSamplerAdvanced.noise_seed` / `RandomNoise.noise_seed`.
-3. **Dimensions** — `Empty*LatentImage.width/height` (must be multiples of 8).
-4. **Steps / CFG** — `KSampler.steps`, `KSampler.cfg`. Steps 20–50 typical.
+2. **Seed**: `KSampler.seed` / `KSamplerAdvanced.noise_seed` / `RandomNoise.noise_seed`.
+3. **Dimensions**: `Empty*LatentImage.width/height` (must be multiples of 8).
+4. **Steps / CFG**: `KSampler.steps`, `KSampler.cfg`. Steps 20–50 typical.
    CFG 5–15 typical (Flux uses guidance, not CFG).
-5. **Model / checkpoint** — `CheckpointLoaderSimple.ckpt_name`. Filename must
+5. **Model / checkpoint**: `CheckpointLoaderSimple.ckpt_name`. Filename must
    match an installed file *exactly*.
-6. **LoRA** — `LoraLoader.lora_name`, `.strength_model`.
-7. **Images for img2img / inpaint** — `LoadImage.image`. Server-side filename
+6. **LoRA**: `LoraLoader.lora_name`, `.strength_model`.
+7. **Images for img2img / inpaint**: `LoadImage.image`. Server-side filename
    after upload.
-8. **Denoise** — `KSampler.denoise`. 0.0–1.0; 1.0 = ignore input image,
+8. **Denoise**: `KSampler.denoise`. 0.0–1.0; 1.0 = ignore input image,
    0.0 = pass through. Sweet spot for img2img: 0.4–0.7.
 
 ## Output Nodes
@@ -218,7 +218,7 @@ After execution, fetch outputs from `/history/{prompt_id}` (local) or
 
 Some saved JSON files wrap the workflow under a `"prompt"` key (matching
 the `/api/prompt` payload shape). The skill's `_common.unwrap_workflow()`
-handles this — pass any of:
+handles this, pass any of:
 
 - raw API format: `{"3": {...}, "4": {...}}`
 - wrapped: `{"prompt": {"3": {...}}, "client_id": "..."}`

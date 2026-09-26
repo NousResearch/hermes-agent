@@ -95,22 +95,22 @@ pygount --format=summary . 2>/dev/null
 ## 6. Interpreting Results
 
 The summary table columns:
-- **Language** — detected programming language
-- **Files** — number of files of that language
-- **Code** — lines of actual code (executable/declarative)
-- **Comment** — lines that are comments or documentation
-- **%** — percentage of total
+- **Language**: detected programming language
+- **Files**: number of files of that language
+- **Code**: lines of actual code (executable/declarative)
+- **Comment**: lines that are comments or documentation
+- **%**: percentage of total
 
 Special pseudo-languages:
-- `__empty__` — empty files
-- `__binary__` — binary files (images, compiled, etc.)
-- `__generated__` — auto-generated files (detected heuristically)
-- `__duplicate__` — files with identical content
-- `__unknown__` — unrecognized file types
+- `__empty__`: empty files
+- `__binary__`: binary files (images, compiled, etc.)
+- `__generated__`: auto-generated files (detected heuristically)
+- `__duplicate__`: files with identical content
+- `__unknown__`: unrecognized file types
 
 ## Pitfalls
 
-1. **Always exclude .git, node_modules, venv** — without `--folders-to-skip`, pygount will crawl everything and may take minutes or hang on large dependency trees.
-2. **Markdown shows 0 code lines** — pygount classifies all Markdown content as comments, not code. This is expected behavior.
-3. **JSON files show low code counts** — pygount may count JSON lines conservatively. For accurate JSON line counts, use `wc -l` directly.
-4. **Large monorepos** — for very large repos, consider using `--suffix` to target specific languages rather than scanning everything.
+1. **Always exclude .git, node_modules, venv**: without `--folders-to-skip`, pygount will crawl everything and may take minutes or hang on large dependency trees.
+2. **Markdown shows 0 code lines**: pygount classifies all Markdown content as comments, not code. This is expected behavior.
+3. **JSON files show low code counts**: pygount may count JSON lines conservatively. For accurate JSON line counts, use `wc -l` directly.
+4. **Large monorepos**: for very large repos, consider using `--suffix` to target specific languages rather than scanning everything.

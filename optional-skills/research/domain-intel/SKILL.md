@@ -11,14 +11,14 @@ metadata:
     related_skills: []
 ---
 
-# Domain Intelligence — Passive OSINT
+# Domain Intelligence, Passive OSINT
 
 Passive domain reconnaissance using only Python stdlib.
 **Zero dependencies. Zero API keys. Works on Linux, macOS, and Windows.**
 
 ## Helper script
 
-This skill includes `scripts/domain_intel.py` — a complete CLI tool for all domain intelligence operations.
+This skill includes `scripts/domain_intel.py`: a complete CLI tool for all domain intelligence operations.
 
 ```bash
 # Subdomain discovery via Certificate Transparency logs
@@ -77,27 +77,27 @@ python SKILL_DIR/scripts/domain_intel.py bulk example.com github.com --checks ss
 Pure Python stdlib (`socket`, `ssl`, `urllib`, `json`, `concurrent.futures`).
 Works identically on Linux, macOS, and Windows with no dependencies.
 
-- **crt.sh queries** use HTTPS (port 443) — works behind most firewalls
-- **WHOIS queries** use TCP port 43 — may be blocked on restrictive networks
-- **DNS queries** use Google DoH (HTTPS) for MX/NS/TXT — firewall-friendly
-- **SSL checks** connect to the target on port 443 — the only "active" operation
+- **crt.sh queries** use HTTPS (port 443), works behind most firewalls
+- **WHOIS queries** use TCP port 43, may be blocked on restrictive networks
+- **DNS queries** use Google DoH (HTTPS) for MX/NS/TXT, firewall-friendly
+- **SSL checks** connect to the target on port 443, the only "active" operation
 
 ## Data sources
 
-All queries are **passive** — no port scanning, no vulnerability testing:
+All queries are **passive**: no port scanning, no vulnerability testing:
 
-- **crt.sh** — Certificate Transparency logs (subdomain discovery, HTTPS only)
-- **WHOIS servers** — Direct TCP to 100+ authoritative TLD registrars
-- **Google DNS-over-HTTPS** — MX, NS, TXT, CNAME resolution (firewall-friendly)
-- **System DNS** — A/AAAA record resolution
+- **crt.sh**: Certificate Transparency logs (subdomain discovery, HTTPS only)
+- **WHOIS servers**: Direct TCP to 100+ authoritative TLD registrars
+- **Google DNS-over-HTTPS**: MX, NS, TXT, CNAME resolution (firewall-friendly)
+- **System DNS**: A/AAAA record resolution
 - **SSL check** is the only "active" operation (TCP connection to target:443)
 
 ## Notes
 
-- WHOIS queries use TCP port 43 — may be blocked on restrictive networks
-- Some WHOIS servers redact registrant info (GDPR) — mention this to the user
-- crt.sh can be slow for very popular domains (thousands of certs) — set reasonable expectations
-- The availability check is heuristic-based (3 passive signals) — not authoritative like a registrar API
+- WHOIS queries use TCP port 43, may be blocked on restrictive networks
+- Some WHOIS servers redact registrant info (GDPR), mention this to the user
+- crt.sh can be slow for very popular domains (thousands of certs), set reasonable expectations
+- The availability check is heuristic-based (3 passive signals), not authoritative like a registrar API
 
 ---
 

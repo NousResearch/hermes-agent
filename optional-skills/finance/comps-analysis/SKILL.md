@@ -13,7 +13,7 @@ metadata:
 
 ## Environment
 
-This skill assumes **headless openpyxl** — you are producing an .xlsx file on disk.
+This skill assumes **headless openpyxl**: you are producing an .xlsx file on disk.
 Follow the `excel-author` skill's conventions for cell coloring, formulas, named ranges, and sensitivity tables.
 Recalculate before delivery: `python /path/to/excel-author/scripts/recalc.py ./out/model.xlsx`.
 
@@ -75,9 +75,9 @@ Start with headers that force strategic thinking about what matters, input clean
 ## ⚠️ CRITICAL: Formulas Over Hardcodes + Step-by-Step Verification
 
 **Formulas, not hardcodes:**
-- Every derived value (margin, multiple, statistic) MUST be an Excel formula referencing input cells — never a pre-computed number pasted in
+- Every derived value (margin, multiple, statistic) MUST be an Excel formula referencing input cells, never a pre-computed number pasted in
 - When using Python/openpyxl to build the sheet: write `cell.value = "=E7/C7"` (formula string), NOT `cell.value = 0.687` (computed result)
-- The only hardcoded values should be raw input data (revenue, EBITDA, share price, etc.) — and every one of those gets a cell comment with its source
+- The only hardcoded values should be raw input data (revenue, EBITDA, share price, etc.), and every one of those gets a cell comment with its source
 - Why: the model must update automatically when an input changes. A hardcoded margin is a silent bug waiting to happen.
 
 **Verify step-by-step with the user:**
@@ -85,7 +85,7 @@ Start with headers that force strategic thinking about what matters, input clean
 - After entering raw inputs → show the user the input block and confirm sources/periods before building formulas
 - After building operating metrics formulas → show the calculated margins and sanity-check with the user before moving to valuation
 - After building valuation multiples → show the multiples and confirm they look reasonable before adding statistics
-- Do NOT build the entire sheet end-to-end and then present it — catch errors early by confirming each section
+- Do NOT build the entire sheet end-to-end and then present it, catch errors early by confirming each section
 
 ---
 
@@ -113,8 +113,8 @@ Row 3: As of [Period] | All figures in [USD Millions/Billions] except per-share 
 - **Font size**: 11pt for data cells, 12pt for headers
 - **Bold text**: Section headers, company names, statistic labels
 
-**Default Color & Shading — Professional Blue/Grey Palette (minimal is better):**
-- **Keep it restrained** — only blues and greys. Do NOT introduce greens, oranges, reds, or multiple accent colors. A clean comps sheet uses 3-4 colors total.
+**Default Color & Shading, Professional Blue/Grey Palette (minimal is better):**
+- **Keep it restrained**: only blues and greys. Do NOT introduce greens, oranges, reds, or multiple accent colors. A clean comps sheet uses 3-4 colors total.
 - **Section headers** (e.g., "OPERATING STATISTICS & FINANCIAL METRICS"):
   - Dark blue background (`#1F4E79` or `#17365D` navy)
   - White bold text
@@ -645,11 +645,11 @@ After completing a comp analysis, ask:
 The best comp analyses evolve with each iteration. Save templates, learn from feedback, and refine the structure based on what decision-makers actually use.
 
 
-## Data sources — MCP first, web fallback
+## Data sources, MCP first, web fallback
 
 Many passages below say "use the S&P Kensho MCP / Daloopa MCP / FactSet MCP". Those are commercial financial-data MCPs from the original Cowork plugin context. In Hermes:
 
-- **If you have any structured financial-data MCP configured** (Hermes supports MCP — see `native-mcp` skill), prefer it for point-in-time comps, precedent transactions, and filings.
+- **If you have any structured financial-data MCP configured** (Hermes supports MCP, see `native-mcp` skill), prefer it for point-in-time comps, precedent transactions, and filings.
 - **Otherwise**, fall back to:
   - `web_search` / `web_extract` against SEC EDGAR (`https://www.sec.gov/cgi-bin/browse-edgar`) for US filings
   - Company IR pages for press releases, earnings decks

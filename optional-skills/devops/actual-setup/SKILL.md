@@ -18,7 +18,7 @@ provider. Actual turns the user's own hardware into a private inference cluster
 and exposes an OpenAI-compatible API two ways: a hosted end-to-end-encrypted
 relay at `https://api.actual.inc` (authenticated with an `ac_` key), and a local
 on-device daemon at `http://127.0.0.1:8080` (no auth on loopback). This skill
-does not install the Actual daemon for the user — device authorization requires
+does not install the Actual daemon for the user: device authorization requires
 a human in a browser.
 
 ## When to Use
@@ -32,7 +32,7 @@ a human in a browser.
 
 - Hermes has **first-class `actual` provider support** (provider id `actual`,
   aliases `actual-computer`, `actualcomputer`, `aci`). Do NOT configure Actual
-  as a `custom_providers` / `providers.actual.*` entry on current Hermes — the
+  as a `custom_providers` / `providers.actual.*` entry on current Hermes: the
   built-in provider owns the name and handles base-url normalization, the
   Responses transport, and local no-auth automatically.
 - Relay mode: an Actual account and an `ac_` inference key from
@@ -41,14 +41,14 @@ a human in a browser.
   (`curl -fsSL "https://actual.inc/install" | bash`) and completed device
   authorization by running `actual` once and opening the printed
   `https://actual.inc/device?code=...` URL in a browser. Relay that URL to the
-  user and WAIT — never invent an email or authorize on their behalf. Codes
+  user and WAIT. Never invent an email or authorize on their behalf. Codes
   expire in 5 minutes; re-run `actual` for a fresh one.
 
 ## How to Run
 
 ### Relay / API mode
 
-1. Put the key in `.env` (secrets only — never config.yaml):
+1. Put the key in `.env` (secrets only: never config.yaml):
    append `ACTUAL_API_KEY=ac_...` to `~/.hermes/.env`.
 2. Verify the key and discover models with `terminal`:
    ```bash
@@ -76,13 +76,13 @@ a human in a browser.
    actual models load "qwen2.5-0.5b-instruct-q4_k_m"   # load by installed name
    ```
 3. Point Hermes at the daemon. `ACTUAL_BASE_URL` with a loopback host flips the
-   built-in provider into local no-auth mode automatically — no key needed:
+   built-in provider into local no-auth mode automatically: no key needed:
    append `ACTUAL_BASE_URL=http://127.0.0.1:8080` to `~/.hermes/.env`, then:
    ```bash
    hermes config set model.provider actual
    hermes config set model.default "INSTALLED_MODEL_NAME"
    ```
-4. Verify (reduced toolset — see context-window pitfall below):
+4. Verify (reduced toolset: see context-window pitfall below):
    ```bash
    hermes chat -Q -q "Reply with exactly: LOCAL_OK" --provider actual -m INSTALLED_NAME -t file,web
    ```
@@ -96,7 +96,7 @@ a human in a browser.
 | Key env var | `ACTUAL_API_KEY` (`ac_...`) |
 | Base URL env var | `ACTUAL_BASE_URL` (loopback host ⇒ local no-auth mode) |
 | Provider id / aliases | `actual` / `actual-computer`, `actualcomputer`, `aci` |
-| Transport | Responses API (`codex_responses`) — built-in, do not override |
+| Transport | Responses API (`codex_responses`), built-in, do not override |
 | Cluster pinning | `X-Cluster-ID` header via `providers.actual.extra_headers` in config.yaml |
 | Model size guide | 0.5B Q4_K_M ~470MB (toy), 7-8B Q4_K_M ~4.5GB (daily driver), 32B ~20GB |
 
@@ -112,7 +112,7 @@ a human in a browser.
 2. **Context-window overflow on small local models.** Hermes' default toolset
    is ~26k tokens of schemas plus a ~9k-token system prompt. A model loaded
    with a 32k context overflows before the first turn, and llama.cpp-family
-   servers emit a bare `data: [DONE]` — Hermes reports
+   servers emit a bare `data: [DONE]`: Hermes reports
    `Provider returned an empty stream with no finish_reason`. This is NOT an
    SSE bug. Fixes: restrict tools (`-t file,web`), load the model with a
    larger `n_ctx`, or pick a >=64k-context model for the full toolset.

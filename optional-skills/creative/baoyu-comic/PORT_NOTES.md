@@ -1,4 +1,4 @@
-# Port Notes — baoyu-comic
+# Port Notes: baoyu-comic
 
 Ported from [JimLiu/baoyu-skills](https://github.com/JimLiu/baoyu-skills) v1.56.1.
 
@@ -10,32 +10,32 @@ Ported from [JimLiu/baoyu-skills](https://github.com/JimLiu/baoyu-skills) v1.56.
 |--------|----------|--------|
 | Metadata namespace | `openclaw` | `hermes` (with `tags` + `homepage`) |
 | Trigger | Slash commands / CLI flags | Natural language skill matching |
-| User config | EXTEND.md file (project/user/XDG paths) | Removed — not part of Hermes infra |
+| User config | EXTEND.md file (project/user/XDG paths) | Removed, not part of Hermes infra|
 | User prompts | `AskUserQuestion` (batched) | `clarify` tool (one question at a time) |
-| Image generation | baoyu-imagine (Bun/TypeScript, supports `--ref`) | `image_generate` — **prompt-only**, returns a URL; no reference image input; agent must download the URL to the output directory |
-| PDF assembly | `scripts/merge-to-pdf.ts` (Bun + `pdf-lib`) | Removed — the PDF merge step is out of scope for this port; pages are delivered as PNGs only |
+| Image generation | baoyu-imagine (Bun/TypeScript, supports `--ref`) | `image_generate`, **prompt-only**: returns a URL; no reference image input; agent must download the URL to the output directory|
+| PDF assembly | `scripts/merge-to-pdf.ts` (Bun + `pdf-lib`) | Removed, the PDF merge step is out of scope for this port; pages are delivered as PNGs only|
 | Platform support | Linux/macOS/Windows/WSL/PowerShell | Linux/macOS only |
 | File operations | Generic instructions | Hermes file tools (`write_file`, `read_file`) |
 
 ### Structural removals
 
 - **`references/config/` directory** (removed entirely):
-  - `first-time-setup.md` — blocking first-time setup flow for EXTEND.md
-  - `preferences-schema.md` — EXTEND.md YAML schema
-  - `watermark-guide.md` — watermark config (tied to EXTEND.md)
+  - `first-time-setup.md`: blocking first-time setup flow for EXTEND.md
+  - `preferences-schema.md`, EXTEND.md YAML schema
+  - `watermark-guide.md`: watermark config (tied to EXTEND.md)
 - **`scripts/` directory** (removed entirely): upstream's `merge-to-pdf.ts` depended on `pdf-lib`, which is not declared anywhere in the Hermes repo. Rather than add a new dependency, the port drops PDF assembly and delivers per-page PNGs.
 - **Workflow Step 8 (Merge to PDF)** removed from `workflow.md`; Step 9 (Completion report) renumbered to Step 8.
-- **Workflow Step 1.1** — "Load Preferences (EXTEND.md)" section removed from `workflow.md`; steps 1.2/1.3 renumbered to 1.1/1.2.
-- **Generic "User Input Tools" and "Image Generation Tools" preambles** — SKILL.md no longer lists fallback rules for multiple possible tools; it references `clarify` and `image_generate` directly.
+- **Workflow Step 1.1**: "Load Preferences (EXTEND.md)" section removed from `workflow.md`; steps 1.2/1.3 renumbered to 1.1/1.2.
+- **Generic "User Input Tools" and "Image Generation Tools" preambles**: SKILL.md no longer lists fallback rules for multiple possible tools; it references `clarify` and `image_generate` directly.
 
 ### Image generation strategy changes
 
 `image_generate`'s schema accepts only `prompt` and `aspect_ratio` (`landscape` | `portrait` | `square`). Upstream's reference-image flow (`--ref characters.png` for character consistency, plus user-supplied refs for style/palette/scene) does not map to this tool, so the workflow was restructured:
 
 - **Character sheet PNG** is still generated for multi-page comics, but it is repositioned as a **human-facing review artifact** (for visual verification) and a reference for later regenerations / manual prompt edits. Page prompts themselves are built from the **text descriptions** in `characters/characters.md` (embedded inline during Step 5). `image_generate` never sees the PNG as a visual input.
-- **User-supplied reference images** are reduced to `style` / `palette` / `scene` trait extraction — traits are embedded in the prompt body; the image files themselves are kept only for provenance under `refs/`.
-- **Page prompts** now mandate that character descriptions are embedded inline (copied from `characters/characters.md`) — this is the only mechanism left to enforce cross-page character consistency.
-- **Download step** — after every `image_generate` call, the returned URL is fetched to disk (e.g., `curl -fsSL "<url>" -o <target>.png`) and verified before the workflow advances.
+- **User-supplied reference images** are reduced to `style` / `palette` / `scene` trait extraction, traits are embedded in the prompt body; the image files themselves are kept only for provenance under `refs/`.
+- **Page prompts** now mandate that character descriptions are embedded inline (copied from `characters/characters.md`), this is the only mechanism left to enforce cross-page character consistency.
+- **Download step**: after every `image_generate` call, the returned URL is fetched to disk (e.g., `curl -fsSL "<url>" -o <target>.png`) and verified before the workflow advances.
 
 ### SKILL.md reductions
 

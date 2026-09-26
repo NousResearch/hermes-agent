@@ -12,7 +12,7 @@ metadata:
 
 ---
 
-# Pinecone Research — Agent RAG & Long-Term Memory
+# Pinecone Research, Agent RAG & Long-Term Memory
 
 Use Pinecone as a retrieval-augmented generation (RAG) backend for agent
 conversations: persist embeddings, retrieve relevant context from past
@@ -95,11 +95,11 @@ results = all_memory.similarity_search("relevant query", k=10)
 
 ## Best practices
 
-1. **Namespace by session or user** — isolate data for multi-tenant agents
-2. **Batch upserts** — 100–200 vectors per batch for efficiency
-3. **Metadata filtering** — tag vectors with session ID, timestamp, topic
-4. **Prune old memory** — delete stale namespaces to control costs
-5. **Use serverless** — auto-scaling, pay-per-use pricing
+1. **Namespace by session or user**: isolate data for multi-tenant agents
+2. **Batch upserts**: 100–200 vectors per batch for efficiency
+3. **Metadata filtering**: tag vectors with session ID, timestamp, topic
+4. **Prune old memory**: delete stale namespaces to control costs
+5. **Use serverless**: auto-scaling, pay-per-use pricing
 
 ## Resources
 

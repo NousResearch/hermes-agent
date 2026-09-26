@@ -23,7 +23,7 @@ map:
       group: broadcast-lib
 ```
 
-Every field except `schemaVersion` is optional, and the file itself is optional. For editor autocomplete, point at the published JSON Schema — no install needed:
+Every field except `schemaVersion` is optional, and the file itself is optional. For editor autocomplete, point at the published JSON Schema, no install needed:
 
 ```jsonc
 { "$ref": "https://unpkg.com/@coldtea/pr-lens-schema/json-schema/config.schema.json" }

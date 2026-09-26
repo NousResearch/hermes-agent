@@ -7408,7 +7408,7 @@ You can quickly smoke‑test with a trivial policy:
 
 Generated strategies are **Python functions**. To keep execution safe and prevent reward hacking:
 
-* **Module whitelist check** — only allow Python stdlib symbols:
+* **Module whitelist check**: only allow Python stdlib symbols:
 
 * **Block disallowed imports** (e.g., NumPy):
 
@@ -11767,9 +11767,9 @@ If you're new, follow our step-by-step [Fine-tuning Guide](https://docs.unsloth.
 
 #### 📂 Container Structure
 
-* `/workspace/work/` — Your mounted work directory
-* `/workspace/unsloth-notebooks/` — Example fine-tuning notebooks
-* `/home/unsloth/` — User home directory
+* `/workspace/work/`, Your mounted work directory
+* `/workspace/unsloth-notebooks/`, Example fine-tuning notebooks
+* `/home/unsloth/`, User home directory
 
 #### Setting up SSH Key
 

@@ -21,13 +21,13 @@ The goal is to preserve Claude Design's useful design behavior and taste while r
 
 ## When To Use This Skill vs `popular-web-designs` vs `design-md`
 
-Hermes has three design-related skills under `skills/creative/`. They do different jobs — load the right one (or combine them):
+Hermes has three design-related skills under `skills/creative/`. They do different jobs: load the right one (or combine them):
 
 | Skill | What it gives you | Use when the user wants... |
 |---|---|---|
-| **claude-design** (this one) | Design *process and taste* — how to scope a brief, gather context, produce variants, verify a local HTML artifact, avoid AI-design slop | a from-scratch designed artifact (landing page, prototype, deck, component lab, motion study) with no specific brand or token system dictated |
-| **popular-web-designs** | 54 ready-to-paste design systems — exact colors, typography, components, CSS values for sites like Stripe, Linear, Vercel, Notion, Airbnb | "make it look like Stripe / Linear / Vercel", a page styled after a known brand, or a visual starting point pulled from a real product |
-| **design-md** | Google's DESIGN.md spec format — author/validate/diff/export design-token files, WCAG contrast checking, Tailwind/DTCG export | a formal, persistent, machine-readable design-system *spec file* (tokens + rationale) that lives in a repo and gets consumed by agents over time |
+| **claude-design** (this one) | Design *process and taste*: how to scope a brief, gather context, produce variants, verify a local HTML artifact, avoid AI-design slop | a from-scratch designed artifact (landing page, prototype, deck, component lab, motion study) with no specific brand or token system dictated |
+| **popular-web-designs** | 54 ready-to-paste design systems: exact colors, typography, components, CSS values for sites like Stripe, Linear, Vercel, Notion, Airbnb | "make it look like Stripe / Linear / Vercel", a page styled after a known brand, or a visual starting point pulled from a real product |
+| **design-md** | Google's DESIGN.md spec format: author/validate/diff/export design-token files, WCAG contrast checking, Tailwind/DTCG export | a formal, persistent, machine-readable design-system *spec file* (tokens + rationale) that lives in a repo and gets consumed by agents over time |
 
 Rule of thumb:
 
@@ -167,24 +167,24 @@ When proceeding with assumptions, label only the important ones.
 
 ## Surface-First: Commit to a Composition Before Touching Tokens
 
-The single highest-leverage anti-slop rule. Most AI design slop is **compositional, not cosmetic** — the model reaches for a centered hero + three equal-weight feature cards for *every* surface, then decorates. Recoloring or restyling that layout never fixes it, because the layout was wrong before a single color was chosen.
+The single highest-leverage anti-slop rule. Most AI design slop is **compositional, not cosmetic**: the model reaches for a centered hero + three equal-weight feature cards for *every* surface, then decorates. Recoloring or restyling that layout never fixes it, because the layout was wrong before a single color was chosen.
 
-Before you write any colors, type scale, or components, **commit out loud to exactly one surface archetype.** This conditions generation on a high-level plan first, which collapses the entropy of what gets produced — the same reason a chain-of-thought step improves reasoning.
+Before you write any colors, type scale, or components, **commit out loud to exactly one surface archetype.** This conditions generation on a high-level plan first, which collapses the entropy of what gets produced: the same reason a chain-of-thought step improves reasoning.
 
 The seven surfaces:
 
-1. **Monitor** — the user is watching state change (dashboards, status pages, observability). Density, glanceable hierarchy, no marketing framing.
-2. **Operate** — the user is taking action on things (consoles, admin panels, queues, inboxes). Action affordances and selection state dominate.
-3. **Compare** — the user is weighing options against each other (pricing, plans, spec tables, search results). Aligned columns, parity of structure, one differentiator emphasized.
-4. **Configure** — the user is setting things up (settings, forms, wizards, onboarding). Progressive disclosure, clear save/validation states, low decoration.
-5. **Decide / Learn** — the user is being convinced or taught (landing pages, docs, marketing). One idea lands per section; this is the ONLY surface where a hero is usually correct.
-6. **Explore** — the user is browsing an open space (galleries, maps, search-and-filter, catalogs). Filters, result grids, and zoom/peek are the composition.
-7. **Command / Inspect** — the user is driving by keyboard or drilling into one object (command bars, inspectors, detail panes, property editors). Speed and focus over breadth.
+1. **Monitor**: the user is watching state change (dashboards, status pages, observability). Density, glanceable hierarchy, no marketing framing.
+2. **Operate**: the user is taking action on things (consoles, admin panels, queues, inboxes). Action affordances and selection state dominate.
+3. **Compare**: the user is weighing options against each other (pricing, plans, spec tables, search results). Aligned columns, parity of structure, one differentiator emphasized.
+4. **Configure**: the user is setting things up (settings, forms, wizards, onboarding). Progressive disclosure, clear save/validation states, low decoration.
+5. **Decide / Learn**: the user is being convinced or taught (landing pages, docs, marketing). One idea lands per section; this is the ONLY surface where a hero is usually correct.
+6. **Explore**: the user is browsing an open space (galleries, maps, search-and-filter, catalogs). Filters, result grids, and zoom/peek are the composition.
+7. **Command / Inspect**: the user is driving by keyboard or drilling into one object (command bars, inspectors, detail panes, property editors). Speed and focus over breadth.
 
 Rules:
 
 - State the surface in one line before designing (e.g. "This is a **Monitor** surface, so density and glanceability beat a hero").
-- A dashboard is a Monitor surface, not a Decide surface — do not give it a centered hero and three feature cards.
+- A dashboard is a Monitor surface, not a Decide surface: do not give it a centered hero and three feature cards.
 - If a screen genuinely spans two surfaces, name the **primary** one and treat the other as secondary; do not average them into mush.
 - The hero-plus-three-cards composition is correct for **Decide/Learn only**. Reaching for it anywhere else is the #1 tell.
 
@@ -353,9 +353,9 @@ If the prototype is meant to model a product flow, design the flow, not just the
 
 When exploring, default to at least three options:
 
-1. **Conservative** — closest to existing patterns / lowest risk
-2. **Strong-fit** — best interpretation of the brief
-3. **Divergent** — more novel, useful for discovering taste boundaries
+1. **Conservative**: closest to existing patterns / lowest risk
+2. **Strong-fit**: best interpretation of the brief
+3. **Divergent**: more novel, useful for discovering taste boundaries
 
 Variations can explore:
 
@@ -435,30 +435,30 @@ Minimal is not automatically good. Dense is not automatically cluttered. Choose 
 
 ## Slop Diagnostic: Score Before You Fix
 
-AI design slop has a tiny, predictable failure distribution — designers asked to label AI UIs collapse the "this is AI" signal down to about ten tells. Before polishing or repairing an artifact, run this as an explicit self-audit and write a short report. **Diagnose first, treat second** — auditing and fixing in one breath fails, because the model's prior outweighs the instruction and it repeats the mistake (recolors when it needed re-layout, polishes type on a composition problem).
+AI design slop has a tiny, predictable failure distribution: designers asked to label AI UIs collapse the "this is AI" signal down to about ten tells. Before polishing or repairing an artifact, run this as an explicit self-audit and write a short report. **Diagnose first, treat second**, auditing and fixing in one breath fails, because the model's prior outweighs the instruction and it repeats the mistake (recolors when it needed re-layout, polishes type on a composition problem).
 
 The ten tells (presence of each = one point of slop; lower is better):
 
-1. **Tech gradient** — blue/violet/indigo glossy gradient on everything.
-2. **Generic tech hue** — the default accent is indigo/violet (not chosen for the brand, just the model's favorite).
-3. **Feature-tile grid** — icon + heading + sentence × 3, all equal weight, nothing prioritized.
-4. **Accent rail** — a colored left strip on cards: decoration pretending to be organization.
-5. **Unearned blur** — glassmorphism with no real depth/elevation system behind it.
-6. **Monument stat** — oversized numbers filling space that should carry product story.
-7. **Icon topper** — a rounded-square icon centered above every heading (Tailwind-template filler).
-8. **Center stack** — everything centered because no real composition was committed to.
-9. **Default type** — Inter (or system-ui) used by default rather than chosen.
-10. **Wrong surface** — the composition doesn't match the surface (e.g. a hero on a Monitor surface). This is the root cause behind most of the others.
+1. **Tech gradient**: blue/violet/indigo glossy gradient on everything.
+2. **Generic tech hue**: the default accent is indigo/violet (not chosen for the brand, just the model's favorite).
+3. **Feature-tile grid**: icon + heading + sentence × 3, all equal weight, nothing prioritized.
+4. **Accent rail**: a colored left strip on cards: decoration pretending to be organization.
+5. **Unearned blur**: glassmorphism with no real depth/elevation system behind it.
+6. **Monument stat**: oversized numbers filling space that should carry product story.
+7. **Icon topper**: a rounded-square icon centered above every heading (Tailwind-template filler).
+8. **Center stack**: everything centered because no real composition was committed to.
+9. **Default type**: Inter (or system-ui) used by default rather than chosen.
+10. **Wrong surface**: the composition doesn't match the surface (e.g. a hero on a Monitor surface). This is the root cause behind most of the others.
 
 How to run it:
 
 - Score the artifact out of 10 (10 = maximum slop). State the score and list which tells fired, in one short report.
-- Treat the report as **context, not a to-do list** — it tells you *where* to spend repair effort, it does not dictate edits.
+- Treat the report as **context, not a to-do list**: it tells you *where* to spend repair effort. It does not dictate edits.
 - Then repair, matched to the diagnosis:
-  - tells 3, 8, 10 → **re-layout / re-compose** (revisit the surface choice — do not recolor).
+  - tells 3, 8, 10 → **re-layout / re-compose** (revisit the surface choice: do not recolor).
   - tells 1, 2, 9 → **recolor / re-typeset** (palette and type are genuinely the problem here).
   - tells 4, 5, 6, 7 → **remove the decoration**; replace it with real hierarchy (scale, weight, spacing).
-- Re-score after repairing. Do not declare done while compositional tells (3, 8, 10) are still firing — those are causes, the rest are usually symptoms.
+- Re-score after repairing. Do not declare done while compositional tells (3, 8, 10) are still firing: those are causes, the rest are usually symptoms.
 
 The point of separating diagnosis from treatment: let the audit complain first, then fix only what it complained about, in the register the complaint calls for.
 

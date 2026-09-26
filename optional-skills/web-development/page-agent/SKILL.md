@@ -13,17 +13,17 @@ metadata:
 
 # page-agent
 
-alibaba/page-agent (https://github.com/alibaba/page-agent, 17k+ stars, MIT) is an in-page GUI agent written in TypeScript. It lives inside a webpage, reads the DOM as text (no screenshots, no multi-modal LLM), and executes natural-language instructions like "click the login button, then fill username as John" against the current page. Pure client-side — the host site just includes a script and passes an OpenAI-compatible LLM endpoint.
+alibaba/page-agent (https://github.com/alibaba/page-agent, 17k+ stars, MIT) is an in-page GUI agent written in TypeScript. It lives inside a webpage, reads the DOM as text (no screenshots, no multi-modal LLM), and executes natural-language instructions like "click the login button, then fill username as John" against the current page. Pure client-side, the host site just includes a script and passes an OpenAI-compatible LLM endpoint.
 
 ## When to use this skill
 
 Load this skill when a user wants to:
 
-- **Ship an AI copilot inside their own web app** (SaaS, admin panel, B2B tool, ERP, CRM) — "users on my dashboard should be able to type 'create invoice for Acme Corp and email it' instead of clicking through five screens"
-- **Modernize a legacy web app** without rewriting the frontend — page-agent drops on top of existing DOM
-- **Add accessibility via natural language** — voice / screen-reader users drive the UI by describing what they want
+- **Ship an AI copilot inside their own web app** (SaaS, admin panel, B2B tool, ERP, CRM), "users on my dashboard should be able to type 'create invoice for Acme Corp and email it' instead of clicking through five screens"
+- **Modernize a legacy web app** without rewriting the frontend, page-agent drops on top of existing DOM
+- **Add accessibility via natural language**: voice / screen-reader users drive the UI by describing what they want
 - **Demo or evaluate page-agent** against a local (Ollama) or hosted (Qwen, OpenAI, OpenRouter) LLM
-- **Build interactive training / product demos** — let an AI walk a user through "how to submit an expense report" live in the real UI
+- **Build interactive training / product demos**: let an AI walk a user through "how to submit an expense report" live in the real UI
 
 ## When NOT to use this skill
 
@@ -37,9 +37,9 @@ Load this skill when a user wants to:
 - An OpenAI-compatible LLM endpoint: Qwen (DashScope), OpenAI, Ollama, OpenRouter, or anything speaking `/v1/chat/completions`
 - Browser with devtools (for debugging)
 
-## Path 1 — 30-second demo via CDN (no install)
+## Path 1, 30-second demo via CDN (no install)
 
-Fastest way to see it work. Uses alibaba's free testing LLM proxy — **for evaluation only**, subject to their terms.
+Fastest way to see it work. Uses alibaba's free testing LLM proxy, **for evaluation only**: subject to their terms.
 
 Add to any HTML page (or paste into the devtools console as a bookmarklet):
 
@@ -55,7 +55,7 @@ Bookmarklet form (drop into bookmarks bar, click on any page):
 javascript:(function(){var s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/page-agent@1.8.0/dist/iife/page-agent.demo.js';document.head.appendChild(s);})();
 ```
 
-## Path 2 — npm install into your own web app (production use)
+## Path 2: npm install into your own web app (production use)
 
 Inside an existing web project (React / Vue / Svelte / plain):
 
@@ -63,7 +63,7 @@ Inside an existing web project (React / Vue / Svelte / plain):
 npm install page-agent
 ```
 
-Wire it up with your own LLM endpoint — **never ship the demo CDN to real users**:
+Wire it up with your own LLM endpoint, **never ship the demo CDN to real users**:
 
 ```javascript
 import { PageAgent } from 'page-agent'
@@ -93,13 +93,13 @@ Provider examples (any OpenAI-compatible endpoint works):
 
 **Key config fields** (passed to `new PageAgent({...})`):
 
-- `model`, `baseURL`, `apiKey` — LLM connection
-- `language` — UI language (`en-US`, `zh-CN`, etc.)
-- Allowlist and data-masking hooks exist for locking down what the agent can touch — see https://alibaba.github.io/page-agent/ for the full option list
+- `model`, `baseURL`, `apiKey`, LLM connection
+- `language`, UI language (`en-US`, `zh-CN`: etc.)
+- Allowlist and data-masking hooks exist for locking down what the agent can touch, see https://alibaba.github.io/page-agent/ for the full option list
 
-**Security.** Don't put your `apiKey` in client-side code for a real deployment — proxy LLM calls through your backend and point `baseURL` at your proxy. The demo CDN exists because alibaba runs that proxy for evaluation.
+**Security.** Don't put your `apiKey` in client-side code for a real deployment, proxy LLM calls through your backend and point `baseURL` at your proxy. The demo CDN exists because alibaba runs that proxy for evaluation.
 
-## Path 3 — clone the source repo (contributing, or hacking on it)
+## Path 3: clone the source repo (contributing, or hacking on it)
 
 Use this when the user wants to modify page-agent itself, test it against arbitrary sites via a local IIFE bundle, or develop the browser extension.
 
@@ -166,7 +166,7 @@ After Path 1 or Path 2:
 1. Open the page in a browser with devtools open
 2. You should see a floating panel. If not, check the console for errors (most common: CORS on the LLM endpoint, wrong `baseURL`, or a bad API key)
 3. Type a simple instruction matching something visible on the page ("click the Login link")
-4. Watch the Network tab — you should see a request to your `baseURL`
+4. Watch the Network tab, you should see a request to your `baseURL`
 
 After Path 3:
 1. `npm run dev:demo` prints `Accepting connections at http://localhost:5174`
@@ -175,13 +175,13 @@ After Path 3:
 
 ## Pitfalls
 
-- **Demo CDN in production** — don't. It's rate-limited, uses alibaba's free proxy, and their terms forbid production use.
-- **API key exposure** — any key passed to `new PageAgent({apiKey: ...})` ships in your JS bundle. Always proxy through your own backend for real deployments.
+- **Demo CDN in production**: don't. It's rate-limited, uses alibaba's free proxy, and their terms forbid production use.
+- **API key exposure**: any key passed to `new PageAgent({apiKey: ...})` ships in your JS bundle. Always proxy through your own backend for real deployments.
 - **Non-OpenAI-compatible endpoints** fail silently or with cryptic errors. If your provider needs native Anthropic/Gemini formatting, use an OpenAI-compatibility proxy (LiteLLM, OpenRouter) in front.
-- **CSP blocks** — sites with strict Content-Security-Policy may refuse to load the CDN script or disallow inline eval. In that case, self-host from your origin.
-- **Restart dev server** after editing `.env` in Path 3 — Vite only reads env at startup.
-- **Node version** — the repo declares `^22.13.0 || >=24`. Node 20 will fail `npm ci` with engine errors.
-- **npm 10 vs 11** — docs say npm 11+; npm 10.9 actually works fine.
+- **CSP blocks**: sites with strict Content-Security-Policy may refuse to load the CDN script or disallow inline eval. In that case, self-host from your origin.
+- **Restart dev server** after editing `.env` in Path 3, Vite only reads env at startup.
+- **Node version**: the repo declares `^22.13.0 || >=24`. Node 20 will fail `npm ci` with engine errors.
+- **npm 10 vs 11**: docs say npm 11+; npm 10.9 actually works fine.
 
 ## Reference
 

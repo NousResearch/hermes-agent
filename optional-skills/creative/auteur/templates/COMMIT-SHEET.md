@@ -1,6 +1,6 @@
-# COMMIT-SHEET — <project>
+# COMMIT-SHEET, <project>
 
-> Seven decisions before the first line of code. A generic answer ("modern, clean") means the decision hasn't been made — stop and make it. Filled example answers below each field: ✗ is what slop looks like, ✓ is the bar.
+> Seven decisions before the first line of code. A generic answer ("modern, clean") means the decision hasn't been made, stop and make it. Filled example answers below each field: ✗ is what slop looks like, ✓ is the bar.
 
 ## 1. Peak / Signature
 <!-- direct: the ONE wow moment. build: the one element a visitor describes to a friend. -->
@@ -11,10 +11,10 @@
 ## 2. Color
 <!-- primary as OKLCH + tier (restrained / committed / full-palette / drenched) + why it's not lavender, not cream, not the category reflex
      + the BACKGROUND LIGHTNESS as a number: target mean L, and one line on why the page lives at that level.
-     "Dark because it's premium" is not a reason — it is the single most common place this skill drifts. -->
+     "Dark because it's premium" is not a reason, it is the single most common place this skill drifts. -->
 …
 > ✗ "purple gradient, feels techy" · "dark theme, feels premium"
-> ✓ "oklch(0.58 0.19 35) burnt terracotta, tier: committed (~40% of surface). Not the AI lavender; not wellness-beige — terracotta is pulled from the product's clay housing. Background L ≈ 0.55: the machine is photographed in a daylit workshop, and a black page would make the clay read as ceramic-shop-at-night"
+> ✓ "oklch(0.58 0.19 35) burnt terracotta, tier: committed (~40% of surface). Not the AI lavender; not wellness-beige, terracotta is pulled from the product's clay housing. Background L ≈ 0.55: the machine is photographed in a daylit workshop, and a black page would make the clay read as ceramic-shop-at-night"
 
 ## 3. Type
 <!-- display + text pair on a contrast axis + why not Inter -->
@@ -35,7 +35,7 @@
 
 ## 6. Reflex check
 <!-- (a) what a generic AI does for this category; (b) what a generic AI avoiding (a) does; (c) our argued deviation from both.
-     If recon ran, (a) is evidence, not a guess — cite what design/refs/REFERENCES.md showed repeatedly. -->
+     If recon ran, (a) is evidence, not a guess, cite what design/refs/REFERENCES.md showed repeatedly. -->
 a) …
 b) …
 c) …

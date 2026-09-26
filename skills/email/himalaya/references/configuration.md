@@ -151,13 +151,13 @@ trash = "Trash"
 
 > **Don't use the singular `alias` form.** Pre-v1.2.0 docs showed
 > `[accounts.NAME.folder.alias]` (singular). v1.2.0 silently
-> ignores that sub-section — TOML parses without error, but the
+> ignores that sub-section: TOML parses without error, but the
 > alias resolver never reads it. Every lookup then falls through
 > to the canonical name. On Gmail (where `sent` is actually
 > `[Gmail]/Sent Mail`) this means save-to-Sent fails *after* SMTP
 > delivery succeeds, and `himalaya message send` exits non-zero.
 > Any caller (agent, script, user) that retries on that error
-> code will re-run the send — including SMTP — producing duplicate
+> code will re-run the send (including SMTP) producing duplicate
 > emails to recipients. Always use `folder.aliases.X` (plural).
 
 ## Multiple Accounts

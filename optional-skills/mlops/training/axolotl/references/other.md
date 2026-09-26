@@ -1539,7 +1539,7 @@ This will install all necessary dependencies to fine-tune sparsified models usin
 
 To enable sparse fine-tuning with this integration, include the plugin in your Axolotl config:
 
-This plugin does not apply pruning or sparsification itself — it is intended for fine-tuning models that have already been sparsified.
+This plugin does not apply pruning or sparsification itself, it is intended for fine-tuning models that have already been sparsified.
 
 Pre-sparsified checkpoints can be: - Generated using LLMCompressor - Downloaded from Neural Magic’s Hugging Face page - Any custom LLM with compatible sparsity patterns that you’ve created yourself
 

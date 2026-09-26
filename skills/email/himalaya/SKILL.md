@@ -90,21 +90,21 @@ folder.aliases.trash = "Trash"
 
 > **Heads up on the alias syntax.** Pre-v1.2.0 docs used a
 > `[accounts.NAME.folder.alias]` sub-section (singular `alias`).
-> v1.2.0 silently ignores that form — TOML parses fine, but the
+> v1.2.0 silently ignores that form: TOML parses fine, but the
 > alias resolver never reads it, so every lookup falls through to
 > the canonical name. On Gmail this means save-to-Sent fails *after*
 > SMTP delivery succeeds, and `himalaya message send` exits non-zero.
 > Any caller (agent, script, user) that retries on that exit code
-> will re-run the entire send — including SMTP — producing duplicate
+> will re-run the entire send (including SMTP) producing duplicate
 > emails to recipients. Always use `folder.aliases.X` (plural, dotted
 > keys, directly under `[accounts.NAME]`).
 
 ## Hermes Integration Notes
 
 - **Reading, listing, searching, moving, deleting** all work directly through the terminal tool
-- **Composing/replying/forwarding** — piped input (`cat << EOF | himalaya template send`) is recommended for reliability. Interactive `$EDITOR` mode works with `pty=true` + background + process tool, but requires knowing the editor and its commands
+- **Composing/replying/forwarding**: piped input (`cat << EOF | himalaya template send`) is recommended for reliability. Interactive `$EDITOR` mode works with `pty=true` + background + process tool, but requires knowing the editor and its commands
 - Use `--output json` for structured output that's easier to parse programmatically
-- The `himalaya account configure` wizard requires interactive input — use PTY mode: `terminal(command="himalaya account configure", pty=true)`
+- The `himalaya account configure` wizard requires interactive input: use PTY mode: `terminal(command="himalaya account configure", pty=true)`
 
 ## Common Operations
 
@@ -176,7 +176,7 @@ Your reply here.
 EOF
 ```
 
-Reply-all (interactive — needs $EDITOR, use template approach above instead):
+Reply-all (interactive: needs $EDITOR, use template approach above instead):
 
 ```bash
 himalaya message reply 42 --all
@@ -191,7 +191,7 @@ himalaya template forward 42 | sed 's/^To:.*/To: newrecipient@example.com/' | hi
 
 ### Write a New Email
 
-**Non-interactive (use this from Hermes)** — pipe the message via stdin:
+**Non-interactive (use this from Hermes)**: pipe the message via stdin:
 
 ```bash
 cat << 'EOF' | himalaya template send

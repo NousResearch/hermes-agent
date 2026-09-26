@@ -12,7 +12,7 @@ metadata:
     related_skills: [domain-intel, arxiv]
 ---
 
-# OSINT Investigation — Public Records Cross-Reference
+# OSINT Investigation, Public Records Cross-Reference
 
 Investigative framework for public-records OSINT: government contracts,
 corporate filings, lobbying, sanctions, offshore leaks, property records,
@@ -33,18 +33,18 @@ the original didn't address.
 
 Use when the user asks for:
 
-- "follow the money" — government contracts, lobbying → legislation, sanctions
-- corporate due diligence — who controls company X, where are they
+- "follow the money", government contracts, lobbying → legislation, sanctions
+- corporate due diligence, who controls company X, where are they
   incorporated, who serves on their boards, what filings have they made
-- sanctions screening — is entity X on OFAC SDN, ICIJ offshore leaks
-- pay-to-play investigation — contractors with offshore ties, lobbying
+- sanctions screening, is entity X on OFAC SDN, ICIJ offshore leaks
+- pay-to-play investigation, contractors with offshore ties, lobbying
   clients winning awards
-- property ownership — find recorded deeds/mortgages by name or address
+- property ownership, find recorded deeds/mortgages by name or address
   (NYC; for other counties point users at the relevant recorder)
-- litigation history — find federal + state court opinions and PACER dockets
+- litigation history, find federal + state court opinions and PACER dockets
 - multi-source entity resolution where naming varies (LLC suffixes, abbreviations)
 - evidence-chain construction with explicit confidence levels
-- "what's been said about X" — international news (GDELT) + Wikipedia
+- "what's been said about X", international news (GDELT) + Wikipedia
   narrative + Wayback Machine to recover dead URLs
 
 Do NOT use this skill for:
@@ -53,7 +53,7 @@ Do NOT use this skill for:
 - domain/infrastructure OSINT → `domain-intel` skill
 - academic literature → `arxiv` skill
 - social-media profile discovery → `sherlock` skill (optional)
-- US **federal** campaign finance — FEC is intentionally NOT covered here
+- US **federal** campaign finance, FEC is intentionally NOT covered here
   (the API is unreliable for ad-hoc contributor-name queries on the free
   DEMO_KEY tier). For federal donations, point users at
   https://www.fec.gov/data/ directly.
@@ -89,7 +89,7 @@ cat SKILL_DIR/references/sources/gdelt.md           # global news monitoring
 Each entry follows a 9-section template: summary, access, schema, coverage,
 cross-reference keys, data quality, acquisition, legal, references.
 
-The **cross-reference potential** section maps join keys between sources — read
+The **cross-reference potential** section maps join keys between sources, read
 those first to pick the right pair.
 
 ### 2. Acquire data
@@ -194,8 +194,8 @@ right_name, left_normalized, right_normalized, left_row, right_row`.
 
 ### 4. Statistical timing correlation (optional)
 
-Test whether two time series cluster suspiciously close together — e.g.
-lobbying filings near contract awards — using a permutation test:
+Test whether two time series cluster suspiciously close together, e.g.
+lobbying filings near contract awards, using a permutation test:
 
 ```bash
 python SKILL_DIR/scripts/timing_analysis.py \
@@ -209,7 +209,7 @@ python SKILL_DIR/scripts/timing_analysis.py \
     --out data/timing.json
 ```
 
-The script's column flags are intentionally generic — the original tool was
+The script's column flags are intentionally generic, the original tool was
 written for donations vs awards, but it works for any (event, payee) time
 series joined through cross-links. Null hypothesis: event timing is
 independent of award dates. One-tailed p-value = fraction of permutations
@@ -264,7 +264,7 @@ uses stdlib only and writes a normalized CSV. Update the source list in the
 - `timing_analysis.py` uses Python's `random` for permutations. For
   reproducibility, pass `--seed N`.
 - `fetch_*.py` scripts use `urllib.request` and respect `Retry-After`. Heavy
-  bulk usage may still violate ToS — read each source's legal section first.
+  bulk usage may still violate ToS, read each source's legal section first.
 
 ## Legal note
 

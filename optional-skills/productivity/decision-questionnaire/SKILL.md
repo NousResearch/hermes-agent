@@ -29,7 +29,7 @@ Ported from mattpocock/skills' MIT-licensed `to-questionnaire` skill.
 - Preparing for a meeting where specific answers must come back
 
 Do NOT use when the answer is discoverable from the environment (codebase,
-docs, web) — find it yourself first.
+docs, web), find it yourself first.
 
 ## Core Principle: Interview the Send, Not the Subject
 
@@ -96,14 +96,14 @@ Every question gets an answer stub (`>`) directly beneath it.
 
 ## Pitfalls
 
-1. **Grilling the user about the subject.** They can't answer it — that's
+1. **Grilling the user about the subject.** They can't answer it, that's
    why the document exists. Only interview the send.
 2. **Compound questions.** One idea per question; split "and/or" questions.
 3. **Burying the critical question.** Most-important-first; async
    recipients fade.
 4. **Context dump.** One orienting paragraph, not the whole history.
 5. **Skipping the "why this matters" line on ambiguous questions.** It's
-   what turns a throwaway answer into a useful one — but don't add it to
+   what turns a throwaway answer into a useful one, but don't add it to
    questions that are already unambiguous.
 
 ## Verification

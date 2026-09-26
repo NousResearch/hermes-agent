@@ -1,4 +1,4 @@
-# Wayback Machine — Internet Archive CDX
+# Wayback Machine, Internet Archive CDX
 
 ## 1. Summary
 
@@ -52,7 +52,7 @@ sources point to URLs that no longer exist.
 - Captures vary in completeness (HTML may be saved without CSS/JS)
 - Some content is excluded by domain owner request (DMCA, etc.)
 - Coverage of "deep links" (URLs with query strings) is uneven
-- Time resolution is per-capture, not continuous — gaps are common
+- Time resolution is per-capture, not continuous, gaps are common
 
 ## 7. Acquisition Script
 
@@ -81,7 +81,7 @@ python3 SKILL_DIR/scripts/fetch_wayback.py --url "example.com" \
 ## 8. Legal & Licensing
 
 - Internet Archive captures are made under fair-use research provisions
-- Replay URLs are stable references — citing them is encouraged
+- Replay URLs are stable references, citing them is encouraged
 - Internet Archive non-profit terms of use govern content
 - Some content is rights-restricted; replay may be blocked even if the
   CDX entry shows it as captured

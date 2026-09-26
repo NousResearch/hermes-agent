@@ -13,22 +13,22 @@ metadata:
 
 # Sketch
 
-Use this skill when the user wants to **see a design direction before committing** to one — exploring a UI/UX idea as disposable HTML mockups. The point is to generate 2-3 interactive variants so the user can compare visual directions side-by-side, not to produce shippable code.
+Use this skill when the user wants to **see a design direction before committing** to one, exploring a UI/UX idea as disposable HTML mockups. The point is to generate 2-3 interactive variants so the user can compare visual directions side-by-side, not to produce shippable code.
 
 Load this when the user says things like "sketch this screen", "show me what X could look like", "compare layout A vs B", "give me 2-3 takes on this UI", "let me see some variants", "mockup this before I build".
 
 ## When NOT to use this
 
-- User wants a production component — use `claude-design` or build it properly
-- User wants a polished one-off HTML artifact (landing page, deck) — `claude-design`
-- User wants a diagram — `excalidraw`, `architecture-diagram`
-- The design is already locked — just build it
+- User wants a production component, use `claude-design` or build it properly
+- User wants a polished one-off HTML artifact (landing page, deck), `claude-design`
+- User wants a diagram, `excalidraw`, `architecture-diagram`
+- The design is already locked, just build it
 
 ## If the user has the full GSD system installed
 
-If `gsd-sketch` shows up as a sibling skill (installed via `npx get-shit-done-cc --hermes`), you can use **`gsd-sketch`** for the fuller workflow: persistent `.planning/sketches/` with MANIFEST, frontier mode analysis, consistency audits across past sketches, and integration with the rest of GSD. This skill is the lightweight standalone version — one-off sketching without the state machinery.
+If `gsd-sketch` shows up as a sibling skill (installed via `npx get-shit-done-cc --hermes`), you can use **`gsd-sketch`** for the fuller workflow: persistent `.planning/sketches/` with MANIFEST, frontier mode analysis, consistency audits across past sketches, and integration with the rest of GSD. This skill is the lightweight standalone version, one-off sketching without the state machinery.
 
-> **Note:** The upstream GSD project ([gsd-build/get-shit-done](https://github.com/gsd-build/get-shit-done)) is **archived / no longer maintained** on GitHub. The npm package (`get-shit-done-cc`) still installs, but treat it as an archived community project — this standalone `sketch` skill is the maintained path and needs nothing extra.
+> **Note:** The upstream GSD project ([gsd-build/get-shit-done](https://github.com/gsd-build/get-shit-done)) is **archived / no longer maintained** on GitHub. The npm package (`get-shit-done-cc`) still installs, but treat it as an archived community project, this standalone `sketch` skill is the maintained path and needs nothing extra.
 
 ## Core method
 
@@ -38,17 +38,17 @@ intake  →  variants  →  head-to-head  →  pick winner (or iterate)
 
 ### 1. Intake (skip if the user already gave you enough)
 
-Before generating variants, get three things — one question at a time, not all at once:
+Before generating variants, get three things, one question at a time, not all at once:
 
-1. **Feel.** "What should this feel like? Adjectives, emotions, a vibe." — *"calm, editorial, like Linear"* tells you more than *"minimal"*.
-2. **References.** "What apps, sites, or products capture the feel you're imagining?" — actual references beat abstract descriptions.
-3. **Core action.** "What's the single most important thing a user does on this screen?" — the variants should all serve this well; if they don't, they're just decoration.
+1. **Feel.** "What should this feel like? Adjectives, emotions, a vibe.", *"calm, editorial, like Linear"* tells you more than *"minimal"*.
+2. **References.** "What apps, sites, or products capture the feel you're imagining?", actual references beat abstract descriptions.
+3. **Core action.** "What's the single most important thing a user does on this screen?", the variants should all serve this well; if they don't, they're just decoration.
 
 Reflect each answer briefly before the next question. If the user already gave you all three upfront, skip straight to variants.
 
 ### 2. Variants (2-3, never 1, rarely 4+)
 
-Produce **2-3 variants** in one go. Each variant is a complete, standalone HTML file. Don't describe variants — build them. The point is comparison.
+Produce **2-3 variants** in one go. Each variant is a complete, standalone HTML file. Don't describe variants, build them. The point is comparison.
 
 Each variant should take a **different design stance**, not different pixel values. Three good variant axes:
 
@@ -58,7 +58,7 @@ Each variant should take a **different design stance**, not different pixel valu
 - **Layout:** single-column / sidebar / split-pane
 - **Grounding:** card-based / bare-content / document-style
 
-Pick one axis and pull apart from it. Two variants that differ only in accent color are wasted effort — the user can't distinguish them.
+Pick one axis and pull apart from it. Two variants that differ only in accent color are wasted effort, the user can't distinguish them.
 
 **Variant naming:** describe the stance, not the number.
 
@@ -79,22 +79,22 @@ sketches/
 
 Each variant is a **single self-contained HTML file**:
 
-- Inline `<style>` — no build step, no external CSS
+- Inline `<style>`: no build step, no external CSS
 - System fonts or one Google Font via `<link>`
 - Tailwind via CDN (`<script src="https://cdn.tailwindcss.com"></script>`) is fine
-- Realistic fake content — actual sentences, actual names, not "Lorem ipsum"
+- Realistic fake content, actual sentences, actual names, not "Lorem ipsum"
 - **Interactive**: links clickable, hovers real, at least one state transition (open/close, filter, toggle). A frozen static image is a worse spike than a sloppy animated one.
 
 Open it in a browser. If it looks broken, fix it before showing the user.
 
-**Verify variants visually — use Hermes' browser tools.** Don't just write HTML and hope it renders; load each variant and look at it:
+**Verify variants visually, use Hermes' browser tools.** Don't just write HTML and hope it renders; load each variant and look at it:
 
 ```
 browser_navigate(url="file:///absolute/path/to/sketches/001-calm-editorial/index.html")
 browser_vision(question="Does this layout look clean and readable? Any visible bugs (overlapping text, unstyled elements, broken images)?")
 ```
 
-`browser_vision` returns an AI description of what's actually on the page plus a screenshot path — catches layout bugs that pure source inspection misses (e.g. a font import that silently failed, a flex container that collapsed). Fix and re-navigate until each variant looks right.
+`browser_vision` returns an AI description of what's actually on the page plus a screenshot path, catches layout bugs that pure source inspection misses (e.g. a font import that silently failed, a flex container that collapsed). Fix and re-navigate until each variant looks right.
 
 **Default CSS reset + system font stack** for fast starts:
 
@@ -138,7 +138,7 @@ One sentence on the principle driving this variant.
 
 ### 5. Head-to-head
 
-After all variants are built, present them as a comparison. Don't just list — **opinionate**:
+After all variants are built, present them as a comparison. Don't just list, **opinionate**:
 
 ```markdown
 ## Three takes on the home screen
@@ -172,7 +172,7 @@ If the user has an existing theme (colors, fonts, tokens), put shared tokens in 
 }
 ```
 
-Don't over-tokenize a throwaway sketch — three colors and one font is usually enough.
+Don't over-tokenize a throwaway sketch, three colors and one font is usually enough.
 
 ## Interactivity bar
 
@@ -188,11 +188,11 @@ More than that is over-engineering a throwaway. Less than that is a screenshot.
 
 If sketches already exist and the user says "what should I sketch next?":
 
-- **Consistency gaps** — two winning variants from different sketches made independent choices that haven't been composed together yet
-- **Unsketched screens** — referenced but never explored
-- **State coverage** — happy path sketched, but not empty / loading / error / 1000-items
-- **Responsive gaps** — validated at one viewport; does it hold at mobile / ultrawide?
-- **Interaction patterns** — static layouts exist; transitions, drag, scroll behavior don't
+- **Consistency gaps**: two winning variants from different sketches made independent choices that haven't been composed together yet
+- **Unsketched screens**: referenced but never explored
+- **State coverage**: happy path sketched, but not empty / loading / error / 1000-items
+- **Responsive gaps**: validated at one viewport; does it hold at mobile / ultrawide?
+- **Interaction patterns**: static layouts exist; transitions, drag, scroll behavior don't
 
 Propose 2-4 named candidates. Let the user pick.
 
@@ -201,7 +201,7 @@ Propose 2-4 named candidates. Let the user pick.
 - Create `sketches/` (or `.planning/sketches/` if the user is using GSD conventions) in the repo root
 - One subdir per variant: `NNN-stance-name/index.html` + `README.md`
 - Tell the user how to open them: `open sketches/001-calm-editorial/index.html` on macOS, `xdg-open` on Linux, `start` on Windows
-- Keep variants disposable — a sketch that you felt the need to preserve should be promoted into real project code, not curated as an asset
+- Keep variants disposable, a sketch that you felt the need to preserve should be promoted into real project code, not curated as an asset
 
 **Typical tool sequence for one variant:**
 
@@ -217,4 +217,4 @@ Repeat for each variant, then present the comparison table.
 
 ## Attribution
 
-Adapted from the GSD (Get Shit Done) project's `/gsd-sketch` workflow — MIT © 2025 Lex Christopherson ([gsd-build/get-shit-done](https://github.com/gsd-build/get-shit-done)). The upstream GSD repo is now **archived/unmaintained** on GitHub; the `get-shit-done-cc` npm package still installs (`npx get-shit-done-cc --hermes --global`) and ships persistent sketch state, theme/variant pattern references, and consistency-audit workflows, but treat it as an archived community project.
+Adapted from the GSD (Get Shit Done) project's `/gsd-sketch` workflow, MIT © 2025 Lex Christopherson ([gsd-build/get-shit-done](https://github.com/gsd-build/get-shit-done)). The upstream GSD repo is now **archived/unmaintained** on GitHub; the `get-shit-done-cc` npm package still installs (`npx get-shit-done-cc --hermes --global`) and ships persistent sketch state, theme/variant pattern references, and consistency-audit workflows, but treat it as an archived community project.

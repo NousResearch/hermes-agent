@@ -15,7 +15,7 @@ metadata:
 
 Produce a .pptx file on disk using `python-pptx`. Use when you need to deliver a deck as a file artifact, not drive a live PowerPoint session.
 
-Adapted from Anthropic's `pptx-author` and `pitch-deck` skills in [anthropics/financial-services](https://github.com/anthropics/financial-services). The MCP / Office-JS branches of the originals are dropped — this assumes headless Python.
+Adapted from Anthropic's `pptx-author` and `pitch-deck` skills in [anthropics/financial-services](https://github.com/anthropics/financial-services). The MCP / Office-JS branches of the originals are dropped: this assumes headless Python.
 
 For the broader, already-shipped PowerPoint authoring skill (slides, speaker notes, embeds, media), see the built-in `powerpoint` skill. This skill is a lighter-weight pattern tuned for model-backed decks (pitch decks, IC memos, earnings notes) where every number must trace to a source workbook.
 
@@ -42,7 +42,7 @@ If a figure on a slide came from `./out/model.xlsx`, footnote the sheet and cell
 Revenue: $1,250M  (Source: model.xlsx, Inputs!C3)
 ```
 
-Never transcribe numbers from memory or from a summary — open the workbook, read the named range, and bind the deck value to it programmatically when you can.
+Never transcribe numbers from memory or from a summary: open the workbook, read the named range, and bind the deck value to it programmatically when you can.
 
 ### Use the firm template when one is mounted
 If `./templates/firm-template.pptx` exists, load it so the deck inherits branded colors, fonts, and master layouts.
@@ -142,7 +142,7 @@ Then build deck content using those values:
 slide.shapes.title.text = f"Implied share price of ${implied_mid:.2f} (base case)"
 ```
 
-Remember to recalculate the workbook before reading it — openpyxl only sees computed values if something has already calculated the sheet. Run the recalc helper in the `excel-author` skill first, or open/save through a real Excel session.
+Remember to recalculate the workbook before reading it: openpyxl only sees computed values if something has already calculated the sheet. Run the recalc helper in the `excel-author` skill first, or open/save through a real Excel session.
 
 ## Slide-type checklist for pitch decks
 
@@ -154,7 +154,7 @@ A typical banking pitch deck follows this structure. Not prescriptive, but usefu
 4. Situation overview
 5. Company snapshot (the target)
 6. Market / sector context
-7. Valuation summary (football field) — the money slide
+7. Valuation summary (football field): the money slide
 8. Trading comps detail
 9. Precedent transactions detail
 10. DCF summary
@@ -164,9 +164,9 @@ A typical banking pitch deck follows this structure. Not prescriptive, but usefu
 
 ## When NOT to use this skill
 
-- Users in a live PowerPoint session with an Office MCP available — drive their live doc instead.
-- Non-financial slideware (quarterly all-hands, marketing decks) — use the broader `powerpoint` skill.
-- Decks with heavy animation, transitions, or speaker notes — use the broader `powerpoint` skill.
+- Users in a live PowerPoint session with an Office MCP available: drive their live doc instead.
+- Non-financial slideware (quarterly all-hands, marketing decks): use the broader `powerpoint` skill.
+- Decks with heavy animation, transitions, or speaker notes: use the broader `powerpoint` skill.
 
 ## Attribution
 

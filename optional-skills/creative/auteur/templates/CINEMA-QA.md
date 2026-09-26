@@ -1,4 +1,4 @@
-# CINEMA-QA — <project>
+# CINEMA-QA, <project>
 
 > Fill every row with PASS/FAIL + evidence (metric value or screenshot filename). Any FAIL loops back to its phase. Ship only on all-PASS.
 

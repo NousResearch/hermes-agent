@@ -76,16 +76,16 @@ imsg watch --chat-id 1 --attachments
 
 ## Service Options
 
-- `--service imessage` — Force iMessage (requires recipient has iMessage)
-- `--service sms` — Force SMS (green bubble)
-- `--service auto` — Let Messages.app decide (default)
+- `--service imessage`: Force iMessage (requires recipient has iMessage)
+- `--service sms`: Force SMS (green bubble)
+- `--service auto`: Let Messages.app decide (default)
 
 ## Rules
 
 1. **Always confirm recipient and message content** before sending
 2. **Never send to unknown numbers** without explicit user approval
 3. **Verify file paths** exist before attaching
-4. **Don't spam** — rate-limit yourself
+4. **Don't spam**: rate-limit yourself
 
 ## Example Workflow
 

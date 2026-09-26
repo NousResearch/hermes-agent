@@ -29,8 +29,8 @@ Requires the codex CLI and a git repository.
 - Codex installed: `npm install -g @openai/codex`
 - OpenAI auth configured: either `OPENAI_API_KEY` or Codex OAuth credentials
   from the Codex CLI login flow
-- **Must run inside a git repository** — Codex refuses to run outside one
-- Use `pty=true` in terminal calls — Codex is an interactive terminal app
+- **Must run inside a git repository**. Codex refuses to run outside one
+- Use `pty=true` in terminal calls. Codex is an interactive terminal app
 
 For Hermes itself, `model.provider: openai-codex` uses Hermes-managed Codex
 OAuth from `~/.hermes/auth.json` after `hermes auth add openai-codex`. For the
@@ -142,10 +142,10 @@ terminal(command="gh pr comment 86 --body '<review>'", workdir="~/project")
 
 ## Rules
 
-1. **Always use `pty=true`** — Codex is an interactive terminal app and hangs without a PTY
-2. **Git repo required** — Codex won't run outside a git directory. Use `mktemp -d && git init` for scratch
-3. **Use `exec` for one-shots** — `codex exec "prompt"` runs and exits cleanly
-4. **`--sandbox workspace-write` for building** — auto-approves changes within the sandbox (`--full-auto` is deprecated for this)
-5. **Background for long tasks** — use `background=true` and monitor with `process` tool
-6. **Don't interfere** — monitor with `poll`/`log`, be patient with long-running tasks
-7. **Parallel is fine** — run multiple Codex processes at once for batch work
+1. **Always use `pty=true`**: Codex is an interactive terminal app and hangs without a PTY
+2. **Git repo required**: Codex won't run outside a git directory. Use `mktemp -d && git init` for scratch
+3. **Use `exec` for one-shots**: `codex exec "prompt"` runs and exits cleanly
+4. **`--sandbox workspace-write` for building**: auto-approves changes within the sandbox (`--full-auto` is deprecated for this)
+5. **Background for long tasks**: use `background=true` and monitor with `process` tool
+6. **Don't interfere**: monitor with `poll`/`log`, be patient with long-running tasks
+7. **Parallel is fine**: run multiple Codex processes at once for batch work

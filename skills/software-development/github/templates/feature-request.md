@@ -24,7 +24,7 @@
 
 <!-- How big is this? What areas of the codebase would it touch? -->
 
-Small / Medium / Large — <!-- explanation -->
+Small / Medium / Large: <!-- explanation -->
 
 ## Additional Context
 

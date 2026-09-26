@@ -23,7 +23,7 @@ The CLI (npm `@blackbox_ai/blackbox-cli`, binary `blackbox`) is a TypeScript cod
 - Blackbox CLI installed: `npm install -g @blackbox_ai/blackbox-cli` (binary: `blackbox`)
 - API key from [app.blackbox.ai/dashboard](https://app.blackbox.ai/dashboard)
 - Configured: run `blackbox configure` and enter your API key
-- Use `pty=true` in terminal calls — Blackbox CLI is an interactive terminal app
+- Use `pty=true` in terminal calls: Blackbox CLI is an interactive terminal app
 
 ## One-Shot Tasks
 
@@ -99,7 +99,7 @@ process(action="list")
 
 ## Multi-Model Mode
 
-Blackbox's unique feature is running the same task through multiple models and judging the results. Configure which models to use via `blackbox configure` — select multiple providers to enable the Chairman/judge workflow where the CLI evaluates outputs from different models and picks the best one.
+Blackbox's unique feature is running the same task through multiple models and judging the results. Configure which models to use via `blackbox configure`: select multiple providers to enable the Chairman/judge workflow where the CLI evaluates outputs from different models and picks the best one.
 
 ## Key Flags
 
@@ -119,9 +119,9 @@ Blackbox's unique feature is running the same task through multiple models and j
 ## Vision Support
 
 Blackbox automatically detects images in input and can switch to multimodal analysis. VLM modes:
-- `"once"` — Switch model for current query only
-- `"session"` — Switch for entire session
-- `"persist"` — Stay on current model (no switch)
+- `"once"`: Switch model for current query only
+- `"session"`: Switch for entire session
+- `"persist"`: Stay on current model (no switch)
 
 ## Token Limits
 
@@ -134,10 +134,10 @@ Control token usage via `.blackboxcli/settings.json`:
 
 ## Rules
 
-1. **Always use `pty=true`** — Blackbox CLI is an interactive terminal app and will hang without a PTY
-2. **Use `workdir`** — keep the agent focused on the right directory
-3. **Background for long tasks** — use `background=true` and monitor with `process` tool
-4. **Don't interfere** — monitor with `poll`/`log`, don't kill sessions because they're slow
-5. **Report results** — after completion, check what changed and summarize for the user
-6. **Credits cost money** — Blackbox uses a credit-based system; multi-model mode consumes credits faster
-7. **Check prerequisites** — verify `blackbox` CLI is installed before attempting delegation
+1. **Always use `pty=true`**: Blackbox CLI is an interactive terminal app and will hang without a PTY
+2. **Use `workdir`**: keep the agent focused on the right directory
+3. **Background for long tasks**: use `background=true` and monitor with `process` tool
+4. **Don't interfere**: monitor with `poll`/`log`, don't kill sessions because they're slow
+5. **Report results**: after completion, check what changed and summarize for the user
+6. **Credits cost money**: Blackbox uses a credit-based system; multi-model mode consumes credits faster
+7. **Check prerequisites**: verify `blackbox` CLI is installed before attempting delegation

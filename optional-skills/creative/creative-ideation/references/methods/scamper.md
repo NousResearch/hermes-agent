@@ -11,25 +11,25 @@ Bob Eberle, 1971, building on Alex Osborn's brainstorming checklist (1953). Seve
 
 ## Don't use when
 
-- Blank page — SCAMPER amplifies a base; doesn't generate from nothing
+- Blank page, SCAMPER amplifies a base; doesn't generate from nothing
 - You need depth in one direction (SCAMPER produces breadth)
 - The problem is analyzing an existing system, not modifying it
 
 ## The seven operators
 
-**S — Substitute.** Replace a component, material, person, place, or process. *(Steel→aluminum, scheduled meetings→async docs, human→model, recipe ingredient swap.)*
+**S, Substitute.** Replace a component, material, person, place, or process. *(Steel→aluminum, scheduled meetings→async docs, human→model, recipe ingredient swap.)*
 
-**C — Combine.** Merge two things. Functions, parts, audiences, formats. *(Phone+camera+GPS→smartphone. Memoir+cookbook→food memoir. Programmer+linguist→compiler designer.)*
+**C, Combine.** Merge two things. Functions, parts, audiences, formats. *(Phone+camera+GPS→smartphone. Memoir+cookbook→food memoir. Programmer+linguist→compiler designer.)*
 
-**A — Adapt.** Borrow from another field. *(Velcro from burrs. Toyota's just-in-time from supermarket restocking. Graphic novel from cinematic technique.)*
+**A, Adapt.** Borrow from another field. *(Velcro from burrs. Toyota's just-in-time from supermarket restocking. Graphic novel from cinematic technique.)*
 
-**M — Modify (or Magnify / Minify).** Change a property — scale, frequency, intensity, color, weight, shape. *(Twitter that posts once a year. Novel as one page. Same content as comic, song, sculpture.)*
+**M, Modify (or Magnify / Minify).** Change a property, scale, frequency, intensity, color, weight, shape. *(Twitter that posts once a year. Novel as one page. Same content as comic, song, sculpture.)*
 
-**P — Put to other uses.** Use the existing thing for a different purpose. *(Aspirin: pain reliever → stroke prevention. Blockchain: cryptocurrency → supply chain. Sweater: garment → kiln cushioning.)*
+**P, Put to other uses.** Use the existing thing for a different purpose. *(Aspirin: pain reliever → stroke prevention. Blockchain: cryptocurrency → supply chain. Sweater: garment → kiln cushioning.)*
 
-**E — Eliminate.** Remove a component. **Usually the highest-leverage cell.** *(Eliminate UI: CLI/API as product. Eliminate menu: omakase, single-dish restaurant. Eliminate explanation: Eno's *Music for Airports*.)*
+**E, Eliminate.** Remove a component. **Usually the highest-leverage cell.** *(Eliminate UI: CLI/API as product. Eliminate menu: omakase, single-dish restaurant. Eliminate explanation: Eno's *Music for Airports*.)*
 
-**R — Reverse / Rearrange.** Invert relationships, change sequence, turn inside out. *(Priceline reverses seller/buyer. Wikipedia reverses expert/amateur. *Memento* reverses time order.)*
+**R, Reverse / Rearrange.** Invert relationships, change sequence, turn inside out. *(Priceline reverses seller/buyer. Wikipedia reverses expert/amateur. *Memento* reverses time order.)*
 
 ## Procedure
 
@@ -43,13 +43,13 @@ Bob Eberle, 1971, building on Alex Osborn's brainstorming checklist (1953). Seve
 
 **Base**: a web app that tracks reading progress across books.
 
-- S: track your *boredom*, not progress — when did you stop and why?
+- S: track your *boredom*, not progress, when did you stop and why?
 - C: tracker + bookstore (already done; weak)
 - A: gym-app habit tracking (slop; reading is not fitness)
-- M: track only one book at a time, in extreme detail — every paragraph, every margin note
-- P: not tracking *your* reading but tracking *the book's* — which paragraphs do most readers stop on?
-- E: eliminate the tracking — keep the database of paragraphs as a "this is where I cried" annotation layer
-- R: instead of you tracking the book, the book tracks you — delivers itself in chunks based on your demonstrated rhythm
+- M: track only one book at a time, in extreme detail, every paragraph, every margin note
+- P: not tracking *your* reading but tracking *the book's*, which paragraphs do most readers stop on?
+- E: eliminate the tracking, keep the database of paragraphs as a "this is where I cried" annotation layer
+- R: instead of you tracking the book, the book tracks you, delivers itself in chunks based on your demonstrated rhythm
 
 Strongest cells: S, P, R. Elaborate P: a site where the unit of attention is the *paragraph* across the readerly population, not the book. Discard the rest.
 

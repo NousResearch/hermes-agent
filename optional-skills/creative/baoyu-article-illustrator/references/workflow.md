@@ -2,15 +2,15 @@
 
 ## Step 1: Detect Reference Images
 
-If the user provides reference images (local path or URL), the goal is to produce **textual descriptions** that can be embedded in prompts — `image_generate` doesn't accept reference-image inputs, and Hermes' text file tools can't read or write binaries.
+If the user provides reference images (local path or URL), the goal is to produce **textual descriptions** that can be embedded in prompts, `image_generate` doesn't accept reference-image inputs, and Hermes' text file tools can't read or write binaries.
 
 **Tool rules**:
 
 | Task | Tool | Notes |
 |------|------|-------|
 | Analyze a reference image | `vision_analyze` | Accepts URL or local path. Ask for style, palette, composition, subject. |
-| Write the text description | `write_file` | Sidecar `.md` files only — never try to `write_file` a PNG/JPG. |
-| (Optional) Keep a local copy of the binary | `terminal` | `cp "$src" "{output-dir}/references/NN-ref-{slug}.{ext}"` — purely for the record; the skill itself doesn't read the binary. |
+| Write the text description | `write_file` | Sidecar `.md` files only, never try to `write_file` a PNG/JPG.|
+| (Optional) Keep a local copy of the binary | `terminal` | `cp "$src" "{output-dir}/references/NN-ref-{slug}.{ext}"`: purely for the record; the skill itself doesn't read the binary.|
 
 | Input Type | Action |
 |------------|--------|
@@ -45,7 +45,7 @@ usage_hint: style                 # direct | style | palette
 
 | Input | Output Directory | Source-save path |
 |-------|------------------|------------------|
-| Article file path | `{article-dir}/imgs/` (default) | — (read article via `read_file`) |
+| Article file path | `{article-dir}/imgs/` (default) |, (read article via `read_file`)|
 | Pasted content | `illustrations/{topic-slug}/` (cwd) | `source-{slug}.{ext}` (save via `write_file`) |
 
 If the user explicitly asked for a different layout (e.g., images in the article's folder, or an `illustrations/` subdirectory), honor that.
@@ -115,8 +115,8 @@ Use the `clarify` tool. Since `clarify` handles one question at a time, ask the 
 
 Based on Step 2 content analysis, recommend a preset first (sets both type & style). Look up [style-presets.md](style-presets.md) "Content Type → Preset Recommendations" table.
 
-- [Recommended preset] — [brief: type + style + why]
-- [Alternative preset] — [brief]
+- [Recommended preset], [brief: type + style + why]
+- [Alternative preset], [brief]
 - Or choose type manually: infographic / scene / flowchart / comparison / framework / timeline / mixed
 
 **If user picks a preset → skip Q3** (type & style both resolved).
@@ -124,10 +124,10 @@ Based on Step 2 content analysis, recommend a preset first (sets both type & sty
 
 ### Q2: Density
 
-- minimal (1-2) — Core concepts only
-- balanced (3-5) — Major sections
-- per-section — At least 1 per section/chapter (Recommended)
-- rich (6+) — Comprehensive coverage
+- minimal (1-2), Core concepts only
+- balanced (3-5), Major sections
+- per-section, At least 1 per section/chapter (Recommended)
+- rich (6+), Comprehensive coverage
 
 ### Q3: Style (skip if preset chosen in Q1)
 
@@ -157,9 +157,9 @@ Style selection based on Type × Style compatibility matrix ([styles.md](styles.
 If the preset did not specify a palette, offer:
 
 - Default (use style's built-in colors) (Recommended)
-- `macaron` — soft pastel blocks on warm cream
-- `warm` — warm earth tones, no cool colors
-- `neon` — vibrant neon on dark backgrounds
+- `macaron`: soft pastel blocks on warm cream
+- `warm`: warm earth tones, no cool colors
+- `neon`: vibrant neon on dark backgrounds
 
 **Skip if**: preset already resolved palette, or user specified a palette in the request.
 
@@ -252,7 +252,7 @@ For each illustration in the outline:
 6. **Prompt quality requirements** (all REQUIRED):
    - `Layout`: Describe overall composition (grid / radial / hierarchical / left-right / top-down)
    - `ZONES`: Describe each visual area with specific content, not vague descriptions
-   - `LABELS`: Use **actual numbers, terms, metrics, quotes from the article** — NOT generic placeholders
+   - `LABELS`: Use **actual numbers, terms, metrics, quotes from the article**, NOT generic placeholders
    - `COLORS`: Specify hex codes from palette (or style default) with semantic meaning
    - `STYLE`: Describe line treatment, texture, mood, character rendering per style rules
    - `ASPECT`: Specify ratio (e.g., `16:9`)

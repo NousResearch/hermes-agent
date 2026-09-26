@@ -19,7 +19,7 @@ real-time brain and body metrics from a BCI wearable. Use this to give
 cognitively-aware responses, suggest interventions, and track mental performance
 over time.
 
-> **⚠️ Research Use Only** — NeuroSkill is an open-source research tool. It is
+> **⚠️ Research Use Only**, NeuroSkill is an open-source research tool. It is
 > NOT a medical device and has NOT been cleared by the FDA, CE, or any regulatory
 > body. Never use these metrics for clinical diagnosis or treatment.
 
@@ -45,7 +45,7 @@ npx neuroskill status --json      # Machine-parseable JSON
 If `npx neuroskill status` returns an error, tell the user:
 - Make sure the NeuroSkill desktop app is open
 - Ensure the BCI device is powered on and connected via Bluetooth
-- Check signal quality — green indicators in NeuroSkill (≥0.7 per electrode)
+- Check signal quality, green indicators in NeuroSkill (≥0.7 per electrode)
 - If `command not found`, install Node.js 20+
 
 ---
@@ -134,10 +134,10 @@ Also includes: `device` (state, battery, firmware), `signal_quality` (per-electr
 ### Interpreting the Output
 
 Parse the JSON and translate metrics into natural language. Never report raw
-numbers alone — always give them meaning:
+numbers alone, always give them meaning:
 
 **DO:**
-> "Your focus is solid right now at 0.70 — that's flow state territory. Heart
+> "Your focus is solid right now at 0.70, that's flow state territory. Heart
 > rate is steady at 68 bpm and your FAA is positive, which suggests good
 > approach motivation. Great time to tackle something complex."
 
@@ -151,7 +151,7 @@ Key interpretation thresholds (see `references/metrics.md` for the full guide):
 - **Relaxation < 0.30** → stress intervention needed
 - **Cognitive Load > 0.70 sustained** → mind dump or break
 - **TBR > 1.5** → theta-dominant, reduced executive control
-- **FAA < 0** → withdrawal/negative affect — consider FAA rebalancing
+- **FAA < 0** → withdrawal/negative affect, consider FAA rebalancing
 - **SNR < 3 dB** → unreliable signal, suggest electrode repositioning
 
 ---
@@ -168,7 +168,7 @@ npx neuroskill session 0 --json | jq '{focus: .metrics.focus, trend: .trends.foc
 Returns full metrics with **first-half vs second-half trends** (`"up"`, `"down"`, `"flat"`).
 Use this to describe how a session evolved:
 
-> "Your focus started at 0.64 and climbed to 0.76 by the end — a clear upward trend.
+> "Your focus started at 0.64 and climbed to 0.76 by the end, a clear upward trend.
 > Cognitive load dropped from 0.38 to 0.28, suggesting the task became more automatic
 > as you settled in."
 
@@ -228,10 +228,10 @@ Returns metric deltas with absolute change, percentage change, and direction for
 ~50 metrics. Also includes `insights.improved[]` and `insights.declined[]` arrays,
 sleep staging for both sessions, and a UMAP job ID.
 
-Interpret comparisons with context — mention trends, not just deltas:
+Interpret comparisons with context, mention trends, not just deltas:
 > "Yesterday you had two strong focus blocks (10am and 2pm). Today you've had one
 > starting around 11am that's still going. Your overall engagement is higher today
-> but there have been more stress spikes — your stress index jumped 15% and
+> but there have been more stress spikes, your stress index jumped 15% and
 > FAA dipped negative more often."
 
 ```bash
@@ -320,7 +320,7 @@ npx neuroskill status --json
 
 Inject a brief state summary:
 > "Quick check-in: focus is building at 0.62, relaxation is good at 0.55, and your
-> FAA is positive — approach motivation is engaged. Looks like a solid start."
+> FAA is positive, approach motivation is engaged. Looks like a solid start."
 
 ### When to Proactively Mention State
 
@@ -331,17 +331,17 @@ Mention cognitive state **only** when:
 - User is about to do something cognitively demanding and asks for readiness
 
 **Do NOT** interrupt flow state to report metrics. If focus > 0.75, protect the
-session — silence is the correct response.
+session, silence is the correct response.
 
 ---
 
 ## 10. Suggesting Protocols
 
 When metrics indicate a need, suggest a protocol from `references/protocols.md`.
-Always ask before starting — never interrupt flow state:
+Always ask before starting, never interrupt flow state:
 
 > "Your focus has been declining for the past 15 minutes and TBR is climbing past
-> 1.5 — signs of theta dominance and mental fatigue. Want me to walk you through
+> 1.5, signs of theta dominance and mental fatigue. Want me to walk you through
 > a Theta-Beta Neurofeedback Anchor? It's a 90-second exercise that uses rhythmic
 > counting and breath to suppress theta and lift beta."
 
@@ -438,7 +438,7 @@ npx neuroskill sleep --json
 → Report sleep architecture (N3%, REM%, efficiency), compare to healthy targets,
   and note any issues (high wake epochs, low REM).
 
-**"Mark this moment — I just had a breakthrough"**
+**"Mark this moment, I just had a breakthrough"**
 ```bash
 npx neuroskill label "breakthrough"
 ```
@@ -448,7 +448,7 @@ npx neuroskill label "breakthrough"
 
 ## References
 
-- [NeuroSkill Paper — arXiv:2603.03212](https://arxiv.org/abs/2603.03212) (Kosmyna & Hauptmann, MIT Media Lab)
+- [NeuroSkill Paper, arXiv:2603.03212](https://arxiv.org/abs/2603.03212) (Kosmyna & Hauptmann, MIT Media Lab)
 - [NeuroSkill Desktop App](https://github.com/NeuroSkill-com/skill) (GPLv3)
 - [NeuroLoop CLI Companion](https://github.com/NeuroSkill-com/neuroloop) (GPLv3)
 - [MIT Media Lab Project](https://www.media.mit.edu/projects/neuroskill/overview/)

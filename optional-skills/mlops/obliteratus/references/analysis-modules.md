@@ -1,4 +1,4 @@
-# OBLITERATUS Analysis Modules — Reference
+# OBLITERATUS Analysis Modules, Reference
 
 OBLITERATUS includes 28 analysis modules for mechanistic interpretability of refusal in LLMs.
 These modules help understand how and where refusal behaviors are encoded before performing abliteration.
@@ -61,7 +61,7 @@ face counts, and intersection patterns.
 ## Probing & Classification
 
 ### 11. Activation Probing (`activation_probing.py`)
-Post-excision verification — probes for residual refusal concepts after
+Post-excision verification, probes for residual refusal concepts after
 abliteration to ensure complete removal.
 
 ### 12. Probing Classifiers (`probing_classifiers.py`)
@@ -69,7 +69,7 @@ Trains linear classifiers to detect refusal in activations. Used both
 before (to verify refusal exists) and after (to verify it's gone).
 
 ### 13. Activation Patching (`activation_patching.py`)
-Interchange interventions — swaps activations between refused and complied
+Interchange interventions, swaps activations between refused and complied
 runs to identify causal components.
 
 ### 14. Tuned Lens (`tuned_lens.py`)
@@ -93,7 +93,7 @@ Creates and applies inference-time steering vectors for reversible refusal
 modification. Includes `SteeringVectorFactory` and `SteeringHookManager`.
 
 ### 18. LEACE Concept Erasure (`leace.py`)
-Linear Erasure via Closed-form Estimation — mathematically optimal linear
+Linear Erasure via Closed-form Estimation, mathematically optimal linear
 concept removal. Available as both analysis module and direction extraction method.
 
 ### 19. Sparse Surgery (`sparse_surgery.py`)

@@ -1,4 +1,4 @@
-# TRIZ — Theory of Inventive Problem Solving
+# TRIZ, Theory of Inventive Problem Solving
 
 Genrich Altshuller, 1946–. Soviet engineering invention method derived from analysis of hundreds of thousands of patents. 40 inventive principles + contradiction matrix + Ideal Final Result. Used by Samsung, Intel, Boeing, P&G.
 
@@ -23,46 +23,46 @@ The **Ideal Final Result**: the desired function performed without the system th
 
 ## The 40 inventive principles
 
-1. **Segmentation** — divide into independent parts, increase divisibility
-2. **Taking out** — extract the disturbing part; separate only what's needed
-3. **Local quality** — make different parts have different properties
-4. **Asymmetry** — replace symmetrical with asymmetrical
-5. **Merging** — bring identical/similar objects closer; parallelize operations
-6. **Universality** — one part performs multiple functions
-7. **Nested doll** — place objects one inside another (matryoshka)
-8. **Anti-weight** — compensate weight by combining with lift / hydro/aerodynamic forces
-9. **Preliminary anti-action** — preload with opposite stress
-10. **Preliminary action** — perform required action in advance
-11. **Beforehand cushioning** — emergency means in advance
-12. **Equipotentiality** — change conditions so object need not be raised/lowered
-13. **The other way round** — invert action; movable parts fixed and vice versa
-14. **Spheroidality / curvature** — replace linear with curved; flat with spherical
-15. **Dynamics** — make rigid moveable; let parts shift configuration
-16. **Partial or excessive actions** — slightly less or slightly more if 100% is hard
-17. **Another dimension** — move 1D→2D→3D; tilt; use the other side
-18. **Mechanical vibration** — oscillate, ultrasonics
-19. **Periodic action** — periodic instead of continuous; vary frequency; pauses
-20. **Continuity of useful action** — eliminate idle running
-21. **Skipping** — perform fast through dangerous stages
-22. **Blessing in disguise** — use harmful factors to obtain a positive effect
-23. **Feedback** — introduce or modify feedback
-24. **Intermediary** — use an intermediary article or process
-25. **Self-service** — make the object service itself; use waste resources
-26. **Copying** — cheap copies instead of fragile/expensive originals
-27. **Cheap short-living** — disposable instead of durable
-28. **Mechanics substitution** — replace mechanical with sensory (optical, acoustic, EM)
-29. **Pneumatics and hydraulics** — replace solid with gas/liquid; inflatable
-30. **Flexible shells and thin films** — instead of 3D structures
-31. **Porous materials** — make porous; use pores to introduce useful substance
-32. **Color changes** — change color or transparency
-33. **Homogeneity** — interacting objects from same material
-34. **Discarding and recovering** — portions disappear after use; restore consumables
-35. **Parameter changes** — physical state, concentration, density, flexibility, temperature
-36. **Phase transitions** — exploit phenomena at phase changes
-37. **Thermal expansion** — different coefficients of thermal expansion
-38. **Strong oxidants** — oxygen-enriched, ozonized
-39. **Inert atmosphere** — inert environment or vacuum
-40. **Composite materials** — uniform → composite
+1. **Segmentation**: divide into independent parts, increase divisibility
+2. **Taking out**: extract the disturbing part; separate only what's needed
+3. **Local quality**: make different parts have different properties
+4. **Asymmetry**: replace symmetrical with asymmetrical
+5. **Merging**: bring identical/similar objects closer; parallelize operations
+6. **Universality**: one part performs multiple functions
+7. **Nested doll**: place objects one inside another (matryoshka)
+8. **Anti-weight**: compensate weight by combining with lift / hydro/aerodynamic forces
+9. **Preliminary anti-action**: preload with opposite stress
+10. **Preliminary action**: perform required action in advance
+11. **Beforehand cushioning**: emergency means in advance
+12. **Equipotentiality**: change conditions so object need not be raised/lowered
+13. **The other way round**: invert action; movable parts fixed and vice versa
+14. **Spheroidality / curvature**: replace linear with curved; flat with spherical
+15. **Dynamics**: make rigid moveable; let parts shift configuration
+16. **Partial or excessive actions**: slightly less or slightly more if 100% is hard
+17. **Another dimension**: move 1D→2D→3D; tilt; use the other side
+18. **Mechanical vibration**: oscillate, ultrasonics
+19. **Periodic action**: periodic instead of continuous; vary frequency; pauses
+20. **Continuity of useful action**: eliminate idle running
+21. **Skipping**: perform fast through dangerous stages
+22. **Blessing in disguise**: use harmful factors to obtain a positive effect
+23. **Feedback**: introduce or modify feedback
+24. **Intermediary**: use an intermediary article or process
+25. **Self-service**: make the object service itself; use waste resources
+26. **Copying**: cheap copies instead of fragile/expensive originals
+27. **Cheap short-living**: disposable instead of durable
+28. **Mechanics substitution**: replace mechanical with sensory (optical, acoustic, EM)
+29. **Pneumatics and hydraulics**: replace solid with gas/liquid; inflatable
+30. **Flexible shells and thin films**: instead of 3D structures
+31. **Porous materials**: make porous; use pores to introduce useful substance
+32. **Color changes**: change color or transparency
+33. **Homogeneity**: interacting objects from same material
+34. **Discarding and recovering**: portions disappear after use; restore consumables
+35. **Parameter changes**: physical state, concentration, density, flexibility, temperature
+36. **Phase transitions**: exploit phenomena at phase changes
+37. **Thermal expansion**: different coefficients of thermal expansion
+38. **Strong oxidants**: oxygen-enriched, ozonized
+39. **Inert atmosphere**: inert environment or vacuum
+40. **Composite materials**: uniform → composite
 
 ## Procedure
 
@@ -87,7 +87,7 @@ The **Ideal Final Result**: the desired function performed without the system th
 
 ## Anti-slop notes
 
-- Don't present the 40 principles as a generative checklist — that's SCAMPER. TRIZ's value is the contradiction lens + patent-derived priors.
+- Don't present the 40 principles as a generative checklist, that's SCAMPER. TRIZ's value is the contradiction lens + patent-derived priors.
 - Translate principle to mechanism, don't stop at the principle name.
 - Don't claim TRIZ where it doesn't apply (artistic, social, preference contradictions).
 - Don't invent principles in Altshuller's style.

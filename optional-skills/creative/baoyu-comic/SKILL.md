@@ -23,7 +23,7 @@ Trigger this skill when the user asks to create a knowledge/educational comic, b
 
 ## Reference Images
 
-Hermes' `image_generate` tool is **prompt-only** — it accepts a text prompt and an aspect ratio, and returns an image URL. It does **NOT** accept reference images. When the user supplies a reference image, use it to **extract traits in text** that get embedded in every page prompt:
+Hermes' `image_generate` tool is **prompt-only**: it accepts a text prompt and an aspect ratio, and returns an image URL. It does **NOT** accept reference images. When the user supplies a reference image, use it to **extract traits in text** that get embedded in every page prompt:
 
 **Intake**: Accept file paths when the user provides them (or pastes images in conversation).
 - File path(s) → copy to `refs/NN-ref-{slug}.{ext}` alongside the comic output for provenance
@@ -88,7 +88,7 @@ Details: [references/partial-workflows.md](references/partial-workflows.md)
   | `concept-story` | manga + warm | Visual symbol system, growth arc, dialogue+action balance |
   | `four-panel` | minimalist + neutral + four-panel layout | 起承转合 structure, B&W + spot color, stick-figure characters |
 
-  Full rules at `references/presets/<preset>.md` — load the file when a preset is picked.
+  Full rules at `references/presets/<preset>.md`: load the file when a preset is picked.
 
 - **Compatibility matrix** and **content-signal → preset** table live in [references/auto-selection.md](references/auto-selection.md). Read it before recommending combinations in Step 2.
 
@@ -170,11 +170,11 @@ Input → Analyze → [Check Existing?] → [Confirm: Style + Reviews] → Story
 
 Use the `clarify` tool to confirm options. Since `clarify` handles one question at a time, ask the most important question first and proceed sequentially. See [references/workflow.md](references/workflow.md) for the full Step 2 question set.
 
-**Timeout handling (CRITICAL)**: `clarify` can return `"The user did not provide a response within the time limit. Use your best judgement to make the choice and proceed."` — this is NOT user consent to default everything.
+**Timeout handling (CRITICAL)**: `clarify` can return `"The user did not provide a response within the time limit. Use your best judgement to make the choice and proceed."`: this is NOT user consent to default everything.
 
 - Treat it as a default **for that one question only**. Continue asking the remaining Step 2 questions in sequence; each question is an independent consent point.
-- **Surface the default to the user visibly** in your next message so they have a chance to correct it: e.g. `"Style: defaulted to ohmsha preset (clarify timed out). Say the word to switch."` — an unreported default is indistinguishable from never having asked.
-- Do NOT collapse Step 2 into a single "use all defaults" pass after one timeout. If the user is genuinely absent, they will be equally absent for all five questions — but they can correct visible defaults when they return, and cannot correct invisible ones.
+- **Surface the default to the user visibly** in your next message so they have a chance to correct it: e.g. `"Style: defaulted to ohmsha preset (clarify timed out). Say the word to switch."`: an unreported default is indistinguishable from never having asked.
+- Do NOT collapse Step 2 into a single "use all defaults" pass after one timeout. If the user is genuinely absent, they will be equally absent for all five questions, but they can correct visible defaults when they return, and cannot correct invisible ones.
 
 ### Step 7: Image Generation
 
@@ -182,7 +182,7 @@ Use Hermes' built-in `image_generate` tool for all image rendering. Its schema a
 
 **Prompt file requirement (hard)**: write each image's full, final prompt to a standalone file under `prompts/` (naming: `NN-{type}-[slug].md`) BEFORE calling `image_generate`. The prompt file is the reproducibility record.
 
-**Aspect ratio mapping** — the storyboard's `aspect_ratio` field maps to `image_generate`'s format as follows:
+**Aspect ratio mapping**: the storyboard's `aspect_ratio` field maps to `image_generate`'s format as follows:
 
 | Storyboard ratio | `image_generate` format |
 |------------------|-------------------------|
@@ -190,7 +190,7 @@ Use Hermes' built-in `image_generate` tool for all image rendering. Its schema a
 | `4:3`, `16:9`, `3:2` | `landscape` |
 | `1:1` | `square` |
 
-**Download step** — after every `image_generate` call:
+**Download step**: after every `image_generate` call:
 1. Read the URL from the tool result
 2. Fetch the image bytes using an **absolute** output path, e.g.
    `curl -fsSL "<url>" -o /abs/path/to/comic/<slug>/NN-page-<slug>.png`
@@ -198,9 +198,9 @@ Use Hermes' built-in `image_generate` tool for all image rendering. Its schema a
 
 **Never rely on shell CWD persistence for `-o` paths.** The terminal tool's persistent-shell CWD can change between batches (session expiry, `TERMINAL_LIFETIME_SECONDS`, a failed `cd` that leaves you in the wrong directory). `curl -o relative/path.png` is a silent footgun: if CWD has drifted, the file lands somewhere else with no error. **Always pass a fully-qualified absolute path to `-o`**, or pass `workdir=<abs path>` to the terminal tool. Incident Apr 2026: pages 06-09 of a 10-page comic landed at the repo root instead of `comic/<slug>/` because batch 3 inherited a stale CWD from batch 2 and `curl -o 06-page-skills.png` wrote to the wrong directory. The agent then spent several turns claiming the files existed where they didn't.
 
-**7.1 Character sheet** — generate it (to `characters/characters.png`, aspect `landscape`) when the comic is multi-page with recurring characters. Skip for simple presets (e.g., four-panel minimalist) or single-page comics. The prompt file at `characters/characters.md` must exist before invoking `image_generate`. The rendered PNG is a **human-facing review artifact** (so the user can visually verify character design) and a reference for later regenerations or manual prompt edits — it does **not** drive Step 7.2. Page prompts are already written in Step 5 from the **text descriptions** in `characters/characters.md`; `image_generate` cannot accept images as visual input.
+**7.1 Character sheet**: generate it (to `characters/characters.png`: aspect `landscape`) when the comic is multi-page with recurring characters. Skip for simple presets (e.g., four-panel minimalist) or single-page comics. The prompt file at `characters/characters.md` must exist before invoking `image_generate`. The rendered PNG is a **human-facing review artifact** (so the user can visually verify character design) and a reference for later regenerations or manual prompt edits, it does **not** drive Step 7.2. Page prompts are already written in Step 5 from the **text descriptions** in `characters/characters.md`; `image_generate` cannot accept images as visual input.
 
-**7.2 Pages** — each page's prompt MUST already be at `prompts/NN-{cover|page}-[slug].md` before invoking `image_generate`. Because `image_generate` is prompt-only, character consistency is enforced by **embedding character descriptions (sourced from `characters/characters.md`) inline in every page prompt during Step 5**. The embedding is done uniformly whether or not a PNG sheet is produced in 7.1; the PNG is only a review/regeneration aid.
+**7.2 Pages**: each page's prompt MUST already be at `prompts/NN-{cover|page}-[slug].md` before invoking `image_generate`. Because `image_generate` is prompt-only, character consistency is enforced by **embedding character descriptions (sourced from `characters/characters.md`) inline in every page prompt during Step 5**. The embedding is done uniformly whether or not a PNG sheet is produced in 7.1; the PNG is only a review/regeneration aid.
 
 **Backup rule**: existing `prompts/…md` and `…png` files → rename with `-backup-YYYYMMDD-HHMMSS` suffix before regenerating.
 
@@ -238,10 +238,10 @@ Full step-by-step workflow (analysis, storyboard, review gates, regeneration var
 ## Pitfalls
 
 - Image generation: 10-30 seconds per page; auto-retry once on failure
-- **Always download** the URL returned by `image_generate` to a local PNG — downstream tooling (and the user's review) expects files in the output directory, not ephemeral URLs
-- **Use absolute paths for `curl -o`** — never rely on persistent-shell CWD across batches. Silent footgun: files land in the wrong directory and subsequent `ls` on the intended path shows nothing. See Step 7 "Download step".
+- **Always download** the URL returned by `image_generate` to a local PNG, downstream tooling (and the user's review) expects files in the output directory, not ephemeral URLs
+- **Use absolute paths for `curl -o`**: never rely on persistent-shell CWD across batches. Silent footgun: files land in the wrong directory and subsequent `ls` on the intended path shows nothing. See Step 7 "Download step".
 - Use stylized alternatives for sensitive public figures
 - **Step 2 confirmation required** - do not skip
 - **Steps 4/6 conditional** - only if user requested in Step 2
 - **Step 7.1 character sheet** - recommended for multi-page comics, optional for simple presets. The PNG is a review/regeneration aid; page prompts (written in Step 5) use the text descriptions in `characters/characters.md`, not the PNG. `image_generate` does not accept images as visual input
-- **Strip secrets** — scan source content for API keys, tokens, or credentials before writing any output file
+- **Strip secrets**: scan source content for API keys, tokens, or credentials before writing any output file

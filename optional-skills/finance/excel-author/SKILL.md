@@ -15,7 +15,7 @@ metadata:
 
 Produce an .xlsx file on disk using `openpyxl`. Follow the banker-grade conventions below so the model is auditable, flexible, and reviewable by someone other than the person who built it.
 
-Adapted from Anthropic's `xlsx-author` and `audit-xls` skills in the [anthropics/financial-services](https://github.com/anthropics/financial-services) repo. The MCP / Office-JS / Cowork-specific branches of the originals are dropped — this skill assumes headless Python.
+Adapted from Anthropic's `xlsx-author` and `audit-xls` skills in the [anthropics/financial-services](https://github.com/anthropics/financial-services) repo. The MCP / Office-JS / Cowork-specific branches of the originals are dropped, this skill assumes headless Python.
 
 ## Output contract
 
@@ -32,9 +32,9 @@ pip install "openpyxl>=3.0"
 ## Core conventions (non-negotiable)
 
 ### Blue / black / green cell color
-- **Blue** (`Font(color="0000FF")`) — hardcoded input a human entered. Revenue drivers, WACC inputs, terminal growth, market data.
-- **Black** (default) — formula. Every derived cell is a live Excel formula.
-- **Green** (`Font(color="006100")`) — link to another sheet or external file.
+- **Blue** (`Font(color="0000FF")`), hardcoded input a human entered. Revenue drivers, WACC inputs, terminal growth, market data.
+- **Black** (default), formula. Every derived cell is a live Excel formula.
+- **Green** (`Font(color="006100")`), link to another sheet or external file.
 
 A reviewer can then scan the sheet and immediately see what's an assumption vs. what's computed.
 
@@ -52,7 +52,7 @@ ws["D20"] = "=D19*(1+$B$8)"
 The only hardcoded numbers permitted:
 1. Raw historical inputs (actual revenues, reported EBITDA, etc.)
 2. Assumption drivers the user is meant to flex (growth rates, WACC inputs, terminal g)
-3. Current market data (share price, debt balance) — with a cell comment documenting source + date
+3. Current market data (share price, debt balance), with a cell comment documenting source + date
 
 If you catch yourself computing a value in Python and writing the result, stop.
 
@@ -160,10 +160,10 @@ for col in range(1, 9):  # A..H
 
 Build with loops, not hardcoded formulas per cell. Rules:
 
-- **Odd number of rows/cols** (5×5 or 7×7) — guarantees a true center cell.
+- **Odd number of rows/cols** (5×5 or 7×7), guarantees a true center cell.
 - **Center cell = base case.** The middle row/col header must equal the model's actual WACC and terminal g so the center output equals the base-case implied share price. That's the sanity check.
 - **Highlight the center cell** with medium-blue fill (`"BDD7EE"`) and bold.
-- Populate every cell with a full recalculation formula — never an approximation.
+- Populate every cell with a full recalculation formula, never an approximation.
 
 ```python
 # 5x5 WACC (rows) x terminal growth (cols) sensitivity
@@ -235,9 +235,9 @@ Checkpoint pattern:
 
 ## When NOT to use this skill
 
-- Users in a live Excel session with an Office MCP available — drive their live workbook instead.
-- Pure tabular data export with no formulas — `csv` or `pandas.to_excel` is simpler.
-- Dashboards / charts with heavy interactivity — use a real BI tool.
+- Users in a live Excel session with an Office MCP available, drive their live workbook instead.
+- Pure tabular data export with no formulas, `csv` or `pandas.to_excel` is simpler.
+- Dashboards / charts with heavy interactivity, use a real BI tool.
 
 ## Attribution
 

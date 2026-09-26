@@ -8,7 +8,7 @@ tags: [polymarket, prediction-markets, market-data, trading]
 platforms: [linux, macos, windows]
 ---
 
-# Polymarket — Prediction Market Data
+# Polymarket: Prediction Market Data
 
 Query prediction market data from Polymarket using their public REST APIs.
 All endpoints are read-only and require zero authentication.
@@ -35,18 +35,18 @@ See `references/api-endpoints.md` for the full endpoint reference with curl exam
 
 ## Three Public APIs
 
-1. **Gamma API** at `gamma-api.polymarket.com` — Discovery, search, browsing
-2. **CLOB API** at `clob.polymarket.com` — Real-time prices, orderbooks, history
-3. **Data API** at `data-api.polymarket.com` — Trades, open interest
+1. **Gamma API** at `gamma-api.polymarket.com`: Discovery, search, browsing
+2. **CLOB API** at `clob.polymarket.com`: Real-time prices, orderbooks, history
+3. **Data API** at `data-api.polymarket.com`: Trades, open interest
 
 ## Typical Workflow
 
 When a user asks about prediction market odds:
 
 1. **Search** using the Gamma API public-search endpoint with their query
-2. **Parse** the response — extract events and their nested markets
+2. **Parse** the response: extract events and their nested markets
 3. **Present** market question, current prices as percentages, and volume
-4. **Deep dive** if asked — use clobTokenIds for orderbook, conditionId for history
+4. **Deep dive** if asked: use clobTokenIds for orderbook, conditionId for history
 
 ## Presenting Results
 
@@ -55,7 +55,7 @@ Format prices as percentages for readability:
 - Always show the market question and probability
 - Include volume when available
 
-Example: `"Will X happen?" — 65.2% Yes ($1.2M volume)`
+Example: `"Will X happen?": 65.2% Yes ($1.2M volume)`
 
 ## Parsing Double-Encoded Fields
 
@@ -65,14 +65,14 @@ inside JSON responses (double-encoded). When processing with Python, parse them 
 
 ## Rate Limits
 
-Generous — unlikely to hit for normal usage:
+Generous: unlikely to hit for normal usage:
 - Gamma: 4,000 requests per 10 seconds (general)
 - CLOB: 9,000 requests per 10 seconds (general)
 - Data: 1,000 requests per 10 seconds (general)
 
 ## Limitations
 
-- This skill is read-only — it does not support placing trades
+- This skill is read-only: it does not support placing trades
 - Trading requires wallet-based crypto authentication (EIP-712 signatures)
 - Some new markets may have empty price history
 - Geographic restrictions apply to trading but read-only data is globally accessible

@@ -34,7 +34,7 @@ the whisper/STT tooling, ffmpeg for everything deterministic).
 
 ## Hermes adaptations (read first)
 
-- **Skill dir resolution** — upstream hardcoded its own agent's skills path.
+- **Skill dir resolution**: upstream hardcoded its own agent's skills path.
   In Hermes the loader expands `${HERMES_SKILL_DIR}` to this skill's installed
   directory, so every command below uses that token directly:
 
@@ -42,9 +42,9 @@ the whisper/STT tooling, ffmpeg for everything deterministic).
   SKILL_DIR="${HERMES_SKILL_DIR}"
   ```
 
-  Shell variables do not persist between tool calls — re-paste the assignment
+  Shell variables do not persist between tool calls, re-paste the assignment
   (or the expanded path) in each terminal call that uses it.
-- **Capability mapping** — where the references say "a voice generation
+- **Capability mapping**: where the references say "a voice generation
   capability", use `text_to_speech` (OpenAI/Edge/ElevenLabs per user config);
   "presenter/avatar generation" → FAL image-to-video families (Kling, Wan,
   MiniMax H3 etc.) through the configured video tooling, or an avatar/lipsync
@@ -52,23 +52,23 @@ the whisper/STT tooling, ffmpeg for everything deterministic).
   tooling or `faster-whisper` in a venv; "deterministic compositor" → ffmpeg
   filtergraphs, or the `hyperframes` skill when installed (the editing
   reference has a HyperFrames section that maps directly onto it).
-- **Visual QA** — do the "normal-speed visual review" steps with
+- **Visual QA**: do the "normal-speed visual review" steps with
   `vision_analyze` on the generated contact sheet plus sampled frames
   (identity, mouth timing, hands, blinking, continuity). Numeric checks come
   from the scripts' ffprobe output.
-- **Paid-generation consent** — remote avatar/TTS generation is billable.
+- **Paid-generation consent**: remote avatar/TTS generation is billable.
   Follow the upstream operating rules: before the first paid call state the
   uploaded assets, requested seconds, known cost, pilot size, and retry
   ceiling, and get the user's explicit go-ahead. Never upload the presenter
   image to a remote provider before `remote_upload_approved` is true in
   `job.json`.
-- **Consent flags live under `input`** — `rights_confirmed`,
+- **Consent flags live under `input`**: `rights_confirmed`,
   `adult_presenter_confirmed`, `remote_upload_approved`, and
   `voice_clone_approved` sit inside the `input` object of `job.json` (init
   flags set them; hand-editing must target `input.*`, not the job root).
   `manual_input_review.*` sits at the root. `preflight.py` distinguishes
   `errors` (block everything) from `remote_blockers` (block only remote
-  generation) — local script/audio work may proceed while remote is blocked.
+  generation), local script/audio work may proceed while remote is blocked.
 
 ## Workflow
 
@@ -86,7 +86,7 @@ the whisper/STT tooling, ffmpeg for everything deterministic).
    Use `--script` for an existing script file; other flags: `--voice-sample`,
    `--supporting-media`, `--width`, `--height`, `--fps`, `--watermark`,
    `--cta`. For an existing job, read `job.json` + QA reports and resume from
-   the earliest unfinished state — never regenerate accepted work.
+   the earliest unfinished state, never regenerate accepted work.
 
 2. **Manual input review.** Actually look at the presenter image
    (`vision_analyze`) and listen to any voice sample; record findings by
@@ -112,23 +112,23 @@ the whisper/STT tooling, ffmpeg for everything deterministic).
 
    Proceed only when `ok: true`; do remote generation only when
    `remote_ready: true`. Note: preflight also updates `job.json` in place
-   (records the report path) — re-read it after running rather than editing
+   (records the report path), re-read it after running rather than editing
    a stale copy.
 
-3. **Lock content and audio** — read `references/generation.md`. Script →
+3. **Lock content and audio**: read `references/generation.md`. Script →
    full narration via `text_to_speech` → ASR-verify the narration against the
    script → record real durations. The locked audio is the master clock for
    everything downstream.
 
-4. **Plan and generate the presenter** — read `references/generation.md`.
+4. **Plan and generate the presenter**: read `references/generation.md`.
    Short low-cost pilot first; full run only after the pilot passes identity
    and mouth-timing review.
 
-5. **Edit** — read `references/editing.md`. Deterministic timeline driven by
+5. **Edit**: read `references/editing.md`. Deterministic timeline driven by
    the locked audio; captions and keyword callouts only after audio and media
    are final.
 
-6. **Verify and deliver** — read `references/qa-recovery.md`, render, then:
+6. **Verify and deliver**: read `references/qa-recovery.md`, render, then:
 
    ```bash
    bash "$SKILL_DIR/scripts/finalize_delivery.sh" \
@@ -152,7 +152,7 @@ the whisper/STT tooling, ffmpeg for everything deterministic).
 - Mute video sources in the final composition; only the approved narration
   and intentional mix tracks carry audio.
 - Preserve provider request bodies and task IDs (minus credentials/expiring
-  URLs). Poll interrupted work before resubmitting — avoid double billing.
+  URLs). Poll interrupted work before resubmitting, avoid double billing.
 - Stop after three rejected paid candidates and summarize the failure mode.
 - Do not claim completion until the final files fully decode and the contact
   sheet or full playback has been reviewed.
@@ -165,11 +165,11 @@ no music/CTA unless requested; language inferred from the request.
 
 ## Reference routing
 
-- `references/generation.md` — intake, content, voice, capability selection,
+- `references/generation.md`, intake, content, voice, capability selection,
   presenter prompts, paid generation, provider changes.
-- `references/editing.md` — timeline contract, openings/closes, captions,
+- `references/editing.md`, timeline contract, openings/closes, captions,
   keyword-callout presets, HyperFrames composition, exports.
-- `references/qa-recovery.md` — technical acceptance, visual acceptance, and
+- `references/qa-recovery.md`, technical acceptance, visual acceptance, and
   recovery for lip-sync/identity/hands/exposure/freeze/caption/audio faults.
 
 ## Pitfalls
@@ -177,7 +177,7 @@ no music/CTA unless requested; language inferred from the request.
 - `preflight.py` requires ffprobe; on a bare box install ffmpeg first.
 - The consent booleans set by init flags land under `input.*`; editing them
   at the job-json root silently does nothing (preflight keeps blocking).
-- `finalize_delivery.sh` needs bash + jq + awk and a fully decodable input —
+- `finalize_delivery.sh` needs bash + jq + awk and a fully decodable input,
   a truncated render fails the decode check by design, not by accident.
 - Long avatar clips drift: prefer one continuous presenter source sliced on
   the audio timeline over many regenerated chapter clips (identity drift

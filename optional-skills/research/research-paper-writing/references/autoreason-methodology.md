@@ -2,7 +2,7 @@
 
 Complete reference for the autoreason iterative refinement method, derived from experimental results across subjective writing tasks, competitive programming, and four model tiers. Use this when any output (paper draft, experiment script, analysis, task definition) needs iterative improvement.
 
-**Source**: [NousResearch/autoreason](https://github.com/NousResearch/autoreason) — "Autoreason: When Iterative LLM Refinement Works and Why It Fails"
+**Source**: [NousResearch/autoreason](https://github.com/NousResearch/autoreason), "Autoreason: When Iterative LLM Refinement Works and Why It Fails"
 
 ---
 
@@ -42,7 +42,7 @@ Is the task objectively verifiable (code, math, factual)?
 | **Single pass** | Frontier models, template tasks, tight budgets | Mid-tier models where quality ceiling is low | 1 call |
 | **Critique-and-revise** | Concrete technical requirements (system design, specifications) | Weak models (degrades output), unconstrained subjective tasks | 2 calls |
 | **Autoreason** | Mid-tier models, constrained scope, tasks with genuine tradeoffs | Weak models (Llama 8B), frontier + unconstrained | ~6 calls |
-| **Best-of-N** | Almost never recommended | Weak models especially — worse than single pass | N calls |
+| **Best-of-N** | Almost never recommended | Weak models especially, worse than single pass| N calls |
 
 ### Why Each Strategy Fails
 
@@ -108,7 +108,7 @@ Every role is a **fresh, isolated agent** with no shared context:
 | **Final evaluation judges** | 7 | Higher statistical power for final comparison |
 | **Max tokens** | 4096 | Standard; 8192 for long-form (papers) |
 | **Judge type** | Chain-of-thought | 3x faster convergence on some tasks. Always use. |
-| **Tiebreak** | Conservative (incumbent wins) | Prevents false positives — A must be genuinely beaten |
+| **Tiebreak** | Conservative (incumbent wins) | Prevents false positives, A must be genuinely beaten|
 | **Max passes** | 25 (constrained), 50 (remedy) | Safety cap; most converge by pass 10-15 |
 
 ### Prompts
@@ -145,7 +145,7 @@ User: [TASK] + [VERSION X] + [VERSION Y]
 (labels randomized — synthesizer doesn't know which is incumbent)
 ```
 
-#### Judge (Chain-of-Thought) — ALWAYS USE THIS VERSION
+#### Judge (Chain-of-Thought), ALWAYS USE THIS VERSION
 ```
 System: You are an independent evaluator. Think carefully before deciding.
 
@@ -239,7 +239,7 @@ Frontier models (Sonnet 4.6):
 | Llama 8B | Don't use autoreason | Model too weak |
 | Gemini Flash | Sonnet 4 | Cross-model evaluation works |
 | Haiku 3.5 | Sonnet 4 | Strong external eval is the mechanism |
-| Haiku 3.5 | Haiku 3.5 (same) | Still works — tournament structure provides value even without strong judges (20.7 vs 18.3 avg Borda) |
+| Haiku 3.5 | Haiku 3.5 (same) | Still works, tournament structure provides value even without strong judges (20.7 vs 18.3 avg Borda)|
 | Sonnet 4 | Sonnet 4 (same) | Same-model judges work at this tier |
 | Sonnet 4.6 | Sonnet 4.6 (same) | Only with scope constraints |
 
@@ -264,7 +264,7 @@ The same model (Sonnet 4.6) goes from **last place** (unconstrained) to **first 
 
 | Constraint | Why It Fails | What Happens |
 |-----------|-------------|-------------|
-| Word count alone | Not a scope constraint | False convergence — rejected for length, not quality |
+| Word count alone | Not a scope constraint | False convergence, rejected for length, not quality|
 | "Be concise" | Too vague | Ignored after 2-3 passes |
 | "Be comprehensive" | Anti-constraint | Invites scope creep |
 | No constraints at all | Unbounded improvement space | Synthesis dominates, no convergence |
@@ -329,7 +329,7 @@ Calls 3-6: Reason-informed revisions
   - Sees test results from public (visible) test cases
 ```
 
-**Key difference**: The code strategy replaces the judge panel with test-suite evaluation (objective ground truth). The structured analysis step (Call 2) is what drives recovery — it forces reasoning about *why* the approach failed before attempting fixes.
+**Key difference**: The code strategy replaces the judge panel with test-suite evaluation (objective ground truth). The structured analysis step (Call 2) is what drives recovery, it forces reasoning about *why* the approach failed before attempting fixes.
 
 **Results**: Recovery is the mechanism. Among problems where both autoreason and single-pass failed initially, autoreason recovered 62% vs single-pass's 43% (McNemar p=0.041, Cohen's h=0.32).
 
@@ -349,7 +349,7 @@ The paper itself was refined using autoreason (Section 8 of the paper):
 
 1. **Ground-truth critic is essential**: Without ground-truth access, Opus hallucinated a fabricated ablation study, fake confidence intervals, wrong model names, and incorrect role descriptions. With ground-truth access, the critic caught all four on pass 1.
 
-2. **Judge panel integrity matters**: A broken parser in one judge (Gemini output format mismatch) reduced the panel from 3 to 2 judges. This prevented convergence for 11+ passes. Fixing to 3 working judges, the same incumbent converged in 2 passes. A broken judge doesn't add noise — it prevents equilibrium.
+2. **Judge panel integrity matters**: A broken parser in one judge (Gemini output format mismatch) reduced the panel from 3 to 2 judges. This prevented convergence for 11+ passes. Fixing to 3 working judges, the same incumbent converged in 2 passes. A broken judge doesn't add noise, it prevents equilibrium.
 
 ### Recommended Setup for Paper Refinement
 

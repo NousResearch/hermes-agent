@@ -1,7 +1,7 @@
 # Design System: Airbnb
 
 
-> **Hermes Agent — Implementation Notes**
+> **Hermes Agent: Implementation Notes**
 >
 > The original site uses proprietary fonts. For self-contained HTML output, use these CDN substitutes:
 > - **Primary:** `DM Sans` | **Mono:** `system monospace stack`
@@ -15,21 +15,21 @@
 
 ## 1. Visual Theme & Atmosphere
 
-Airbnb's website is a warm, photography-forward marketplace that feels like flipping through a travel magazine where every page invites you to book. The design operates on a foundation of pure white (`#ffffff`) with the iconic Rausch Red (`#ff385c`) — named after Airbnb's first street address — serving as the singular brand accent. The result is a clean, airy canvas where listing photography, category icons, and the red CTA button are the only sources of color.
+Airbnb's website is a warm, photography-forward marketplace that feels like flipping through a travel magazine where every page invites you to book. The design operates on a foundation of pure white (`#ffffff`) with the iconic Rausch Red (`#ff385c`) (named after Airbnb's first street address) serving as the singular brand accent. The result is a clean, airy canvas where listing photography, category icons, and the red CTA button are the only sources of color.
 
-The typography uses Airbnb Cereal VF — a custom variable font that's warm and approachable, with rounded terminals that echo the brand's "belong anywhere" philosophy. The font operates in a tight weight range: 500 (medium) for most UI, 600 (semibold) for emphasis, and 700 (bold) for primary headings. Slight negative letter-spacing (-0.18px to -0.44px) on headings creates a cozy, intimate reading experience rather than the compressed efficiency of tech companies.
+The typography uses Airbnb Cereal VF: a custom variable font that's warm and approachable, with rounded terminals that echo the brand's "belong anywhere" philosophy. The font operates in a tight weight range: 500 (medium) for most UI, 600 (semibold) for emphasis, and 700 (bold) for primary headings. Slight negative letter-spacing (-0.18px to -0.44px) on headings creates a cozy, intimate reading experience rather than the compressed efficiency of tech companies.
 
-What distinguishes Airbnb is its palette-based token system (`--palette-*`) and multi-layered shadow approach. The primary card shadow uses a three-layer stack (`rgba(0,0,0,0.02) 0px 0px 0px 1px, rgba(0,0,0,0.04) 0px 2px 6px, rgba(0,0,0,0.1) 0px 4px 8px`) that creates a subtle, warm lift. Combined with generous border-radius (8px–32px), circular navigation controls (50%), and a category pill bar with horizontal scrolling, the interface feels tactile and inviting — designed for browsing, not commanding.
+What distinguishes Airbnb is its palette-based token system (`--palette-*`) and multi-layered shadow approach. The primary card shadow uses a three-layer stack (`rgba(0,0,0,0.02) 0px 0px 0px 1px, rgba(0,0,0,0.04) 0px 2px 6px, rgba(0,0,0,0.1) 0px 4px 8px`) that creates a subtle, warm lift. Combined with generous border-radius (8px–32px), circular navigation controls (50%), and a category pill bar with horizontal scrolling, the interface feels tactile and inviting: designed for browsing, not commanding.
 
 **Key Characteristics:**
 - Pure white canvas with Rausch Red (`#ff385c`) as singular brand accent
-- Airbnb Cereal VF — custom variable font with warm, rounded terminals
+- Airbnb Cereal VF: custom variable font with warm, rounded terminals
 - Palette-based token system (`--palette-*`) for systematic color management
 - Three-layer card shadows: border ring + soft blur + stronger blur
 - Generous border-radius: 8px buttons, 14px badges, 20px cards, 32px large elements
 - Circular navigation controls (50% radius)
-- Photography-first listing cards — images are the hero content
-- Near-black text (`#222222`) — warm, not cold
+- Photography-first listing cards: images are the hero content
+- Near-black text (`#222222`): warm, not cold
 - Luxe Purple (`#460479`) and Plus Magenta (`#92174d`) for premium tiers
 
 ## 2. Color Palette & Roles
@@ -45,7 +45,7 @@ What distinguishes Airbnb is its palette-based token system (`--palette-*`) and 
 - **Plus Magenta** (`#92174d`): `--palette-bg-primary-plus`, Airbnb Plus tier branding
 
 ### Text Scale
-- **Near Black** (`#222222`): `--palette-text-primary`, primary text — warm, not cold
+- **Near Black** (`#222222`): `--palette-text-primary`, primary text, warm, not cold
 - **Focused Gray** (`#3f3f3f`): `--palette-text-focused`, focused state text
 - **Secondary Gray** (`#6a6a6a`): Secondary text, descriptions
 - **Disabled** (`rgba(0,0,0,0.24)`): `--palette-text-material-disabled`, disabled state
@@ -88,7 +88,7 @@ What distinguishes Airbnb is its palette-based token system (`--palette-*`) and 
 | Micro Uppercase | Airbnb Cereal VF | 8px (0.50rem) | 700 | 1.25 (tight) | 0.32px | `text-transform: uppercase` |
 
 ### Principles
-- **Warm weight range**: 500–700 dominate. No weight 300 or 400 for headings — Airbnb's type is always at least medium weight, creating a warm, confident voice.
+- **Warm weight range**: 500–700 dominate. No weight 300 or 400 for headings, Airbnb's type is always at least medium weight, creating a warm, confident voice.
 - **Negative tracking on headings**: -0.18px to -0.44px letter-spacing on display creates intimate, cozy headings rather than cold, compressed ones.
 - **"salt" OpenType feature**: Stylistic alternates on specific UI elements (badges, captions) create subtle glyph variations that add visual interest.
 - **Variable font precision**: Cereal VF enables continuous weight interpolation, though the design system uses discrete stops at 500, 600, and 700.
@@ -151,9 +151,9 @@ What distinguishes Airbnb is its palette-based token system (`--palette-*`) and 
 - Full-width footer with link columns
 
 ### Whitespace Philosophy
-- **Travel-magazine spacing**: Generous vertical padding between sections creates a leisurely browsing pace — you're meant to scroll slowly, like browsing a magazine.
+- **Travel-magazine spacing**: Generous vertical padding between sections creates a leisurely browsing pace, you're meant to scroll slowly, like browsing a magazine.
 - **Photography density**: Listing cards are packed relatively tightly, but each image is large enough to feel immersive.
-- **Search bar prominence**: The search bar gets maximum vertical space in the header — finding your destination is the primary action.
+- **Search bar prominence**: The search bar gets maximum vertical space in the header, finding your destination is the primary action.
 
 ### Border Radius Scale
 - Subtle (4px): Small links
@@ -177,23 +177,23 @@ What distinguishes Airbnb is its palette-based token system (`--palette-*`) and 
 ## 7. Do's and Don'ts
 
 ### Do
-- Use `#222222` (warm near-black) for text — never pure `#000000`
-- Apply Rausch Red (`#ff385c`) only for primary CTAs and brand moments — it's the singular accent
-- Use Airbnb Cereal VF at weight 500–700 — the warm weight range is intentional
+- Use `#222222` (warm near-black) for text: never pure `#000000`
+- Apply Rausch Red (`#ff385c`) only for primary CTAs and brand moments: it's the singular accent
+- Use Airbnb Cereal VF at weight 500–700: the warm weight range is intentional
 - Apply the three-layer card shadow for all elevated surfaces
 - Use generous border-radius: 8px for buttons, 20px for cards, 50% for controls
-- Use photography as the primary visual content — listings are image-first
+- Use photography as the primary visual content: listings are image-first
 - Apply negative letter-spacing (-0.18px to -0.44px) on headings for intimacy
 - Use circular (50%) buttons for carousel/navigation controls
 
 ### Don't
-- Don't use pure black (`#000000`) for text — always `#222222` (warm)
-- Don't apply Rausch Red to backgrounds or large surfaces — it's an accent only
-- Don't use thin font weights (300, 400) for headings — 500 minimum
-- Don't use heavy shadows (>0.1 opacity as primary layer) — keep them warm and graduated
-- Don't use sharp corners (0–4px) on cards — the generous rounding (20px+) is core
+- Don't use pure black (`#000000`) for text: always `#222222` (warm)
+- Don't apply Rausch Red to backgrounds or large surfaces: it's an accent only
+- Don't use thin font weights (300, 400) for headings: 500 minimum
+- Don't use heavy shadows (>0.1 opacity as primary layer): keep them warm and graduated
+- Don't use sharp corners (0–4px) on cards: the generous rounding (20px+) is core
 - Don't introduce additional brand colors beyond the Rausch/Luxe/Plus system
-- Don't override the palette token system — use `--palette-*` variables consistently
+- Don't override the palette token system: use `--palette-*` variables consistently
 
 ## 8. Responsive Behavior
 
@@ -209,7 +209,7 @@ What distinguishes Airbnb is its palette-based token system (`--palette-*`) and 
 | Large Desktop | 1440–1920px | 5-column grid |
 | Ultra-wide | >1920px | Maximum grid width |
 
-*Note: Airbnb has 61 detected breakpoints — one of the most granular responsive systems observed, reflecting their obsession with layout at every possible screen size.*
+*Note: Airbnb has 61 detected breakpoints, one of the most granular responsive systems observed, reflecting their obsession with layout at every possible screen size.*
 
 ### Touch Targets
 - Circular nav buttons: adequate 50% radius sizing
@@ -250,10 +250,10 @@ What distinguishes Airbnb is its palette-based token system (`--palette-*`) and 
 - "Design a heart/wishlist button: transparent background, 50% radius, white heart icon with dark shadow outline."
 
 ### Iteration Guide
-1. Start with white — the photography provides all the color
-2. Rausch Red (#ff385c) is the singular accent — use sparingly for CTAs only
-3. Near-black (#222222) for text — the warmth matters
-4. Three-layer shadows create natural, warm lift — always use all three layers
+1. Start with white: the photography provides all the color
+2. Rausch Red (#ff385c) is the singular accent: use sparingly for CTAs only
+3. Near-black (#222222) for text: the warmth matters
+4. Three-layer shadows create natural, warm lift: always use all three layers
 5. Generous radius: 8px buttons, 20px cards, 50% controls
-6. Cereal VF at 500–700 weight — no thin weights for any heading
-7. Photography is hero — every listing card is image-first
+6. Cereal VF at 500–700 weight: no thin weights for any heading
+7. Photography is hero: every listing card is image-first

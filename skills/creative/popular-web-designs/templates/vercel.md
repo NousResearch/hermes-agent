@@ -1,7 +1,7 @@
 # Design System: Vercel
 
 
-> **Hermes Agent — Implementation Notes**
+> **Hermes Agent: Implementation Notes**
 >
 > The original site uses proprietary fonts. For self-contained HTML output, use these CDN substitutes:
 > - **Primary:** `Geist` | **Mono:** `Geist Mono`
@@ -15,33 +15,33 @@
 
 ## 1. Visual Theme & Atmosphere
 
-Vercel's website is the visual thesis of developer infrastructure made invisible — a design system so restrained it borders on philosophical. The page is overwhelmingly white (`#ffffff`) with near-black (`#171717`) text, creating a gallery-like emptiness where every element earns its pixel. This isn't minimalism as decoration; it's minimalism as engineering principle. The Geist design system treats the interface like a compiler treats code — every unnecessary token is stripped away until only structure remains.
+Vercel's website is the visual thesis of developer infrastructure made invisible: a design system so restrained it borders on philosophical. The page is overwhelmingly white (`#ffffff`) with near-black (`#171717`) text, creating a gallery-like emptiness where every element earns its pixel. This isn't minimalism as decoration; it's minimalism as engineering principle. The Geist design system treats the interface like a compiler treats code, every unnecessary token is stripped away until only structure remains.
 
-The custom Geist font family is the crown jewel. Geist Sans uses aggressive negative letter-spacing (-2.4px to -2.88px at display sizes), creating headlines that feel compressed, urgent, and engineered — like code that's been minified for production. At body sizes, the tracking relaxes but the geometric precision persists. Geist Mono completes the system as the monospace companion for code, terminal output, and technical labels. Both fonts enable OpenType `"liga"` (ligatures) globally, adding a layer of typographic sophistication that rewards close reading.
+The custom Geist font family is the crown jewel. Geist Sans uses aggressive negative letter-spacing (-2.4px to -2.88px at display sizes), creating headlines that feel compressed, urgent, and engineered: like code that's been minified for production. At body sizes, the tracking relaxes but the geometric precision persists. Geist Mono completes the system as the monospace companion for code, terminal output, and technical labels. Both fonts enable OpenType `"liga"` (ligatures) globally, adding a layer of typographic sophistication that rewards close reading.
 
-What distinguishes Vercel from other monochrome design systems is its shadow-as-border philosophy. Instead of traditional CSS borders, Vercel uses `box-shadow: 0px 0px 0px 1px rgba(0,0,0,0.08)` — a zero-offset, zero-blur, 1px-spread shadow that creates a border-like line without the box model implications. This technique allows borders to exist in the shadow layer, enabling smoother transitions, rounded corners without clipping, and a subtler visual weight than traditional borders. The entire depth system is built on layered, multi-value shadow stacks where each layer serves a specific purpose: one for the border, one for soft elevation, one for ambient depth.
+What distinguishes Vercel from other monochrome design systems is its shadow-as-border philosophy. Instead of traditional CSS borders, Vercel uses `box-shadow: 0px 0px 0px 1px rgba(0,0,0,0.08)`: a zero-offset, zero-blur, 1px-spread shadow that creates a border-like line without the box model implications. This technique allows borders to exist in the shadow layer, enabling smoother transitions, rounded corners without clipping, and a subtler visual weight than traditional borders. The entire depth system is built on layered, multi-value shadow stacks where each layer serves a specific purpose: one for the border, one for soft elevation, one for ambient depth.
 
 **Key Characteristics:**
-- Geist Sans with extreme negative letter-spacing (-2.4px to -2.88px at display) — text as compressed infrastructure
+- Geist Sans with extreme negative letter-spacing (-2.4px to -2.88px at display): text as compressed infrastructure
 - Geist Mono for code and technical labels with OpenType `"liga"` globally
 - Shadow-as-border technique: `box-shadow 0px 0px 0px 1px` replaces traditional borders throughout
 - Multi-layer shadow stacks for nuanced depth (border + elevation + ambient in single declarations)
-- Near-pure white canvas with `#171717` text — not quite black, creating micro-contrast softness
+- Near-pure white canvas with `#171717` text: not quite black, creating micro-contrast softness
 - Workflow-specific accent colors: Ship Red (`#ff5b4f`), Preview Pink (`#de1d8d`), Develop Blue (`#0a72ef`)
-- Focus ring system using `hsla(212, 100%, 48%, 1)` — a saturated blue for accessibility
+- Focus ring system using `hsla(212, 100%, 48%, 1)`: a saturated blue for accessibility
 - Pill badges (9999px) with tinted backgrounds for status indicators
 
 ## 2. Color Palette & Roles
 
 ### Primary
-- **Vercel Black** (`#171717`): Primary text, headings, dark surface backgrounds. Not pure black — the slight warmth prevents harshness.
+- **Vercel Black** (`#171717`): Primary text, headings, dark surface backgrounds. Not pure black, the slight warmth prevents harshness.
 - **Pure White** (`#ffffff`): Page background, card surfaces, button text on dark.
 - **True Black** (`#000000`): Secondary use, `--geist-console-text-color-default`, used in specific console/code contexts.
 
 ### Workflow Accent Colors
-- **Ship Red** (`#ff5b4f`): `--ship-text`, the "ship to production" workflow step — warm, urgent coral-red.
-- **Preview Pink** (`#de1d8d`): `--preview-text`, the preview deployment workflow — vivid magenta-pink.
-- **Develop Blue** (`#0a72ef`): `--develop-text`, the development workflow — bright, focused blue.
+- **Ship Red** (`#ff5b4f`): `--ship-text`, the "ship to production" workflow step, warm, urgent coral-red.
+- **Preview Pink** (`#de1d8d`): `--preview-text`, the preview deployment workflow, vivid magenta-pink.
+- **Develop Blue** (`#0a72ef`): `--develop-text`, the development workflow, bright, focused blue.
 
 ### Console / Code Colors
 - **Console Blue** (`#0070f3`): `--geist-console-text-color-blue`, syntax highlighting blue.
@@ -68,7 +68,7 @@ What distinguishes Vercel from other monochrome design systems is its shadow-as-
 - **Badge Blue Text** (`#0068d6`): Pill badge text, darker blue for readability.
 
 ### Shadows & Depth
-- **Border Shadow** (`rgba(0, 0, 0, 0.08) 0px 0px 0px 1px`): The signature — replaces traditional borders.
+- **Border Shadow** (`rgba(0, 0, 0, 0.08) 0px 0px 0px 1px`): The signature, replaces traditional borders.
 - **Subtle Elevation** (`rgba(0, 0, 0, 0.04) 0px 2px 2px`): Minimal lift for cards.
 - **Card Stack** (`rgba(0,0,0,0.08) 0px 0px 0px 1px, rgba(0,0,0,0.04) 0px 2px 2px, rgba(0,0,0,0.04) 0px 8px 8px -8px, #fafafa 0px 0px 0px 1px`): Full multi-layer card shadow.
 - **Ring Border** (`rgb(235, 235, 235) 0px 0px 0px 1px`): Light gray ring-border for tabs and images.
@@ -104,10 +104,10 @@ What distinguishes Vercel from other monochrome design systems is its shadow-as-
 | Micro Badge | Geist | 7px (0.44rem) | 700 | 1.00 (tight) | normal | `text-transform: uppercase`, tiny badges |
 
 ### Principles
-- **Compression as identity**: Geist Sans at display sizes uses -2.4px to -2.88px letter-spacing — the most aggressive negative tracking of any major design system. This creates text that feels _minified_, like code optimized for production. The tracking progressively relaxes as size decreases: -1.28px at 32px, -0.96px at 24px, -0.32px at 16px, and normal at 14px.
-- **Ligatures everywhere**: Every Geist text element enables OpenType `"liga"`. Ligatures aren't decorative — they're structural, creating tighter, more efficient glyph combinations.
+- **Compression as identity**: Geist Sans at display sizes uses -2.4px to -2.88px letter-spacing, the most aggressive negative tracking of any major design system. This creates text that feels _minified_, like code optimized for production. The tracking progressively relaxes as size decreases: -1.28px at 32px, -0.96px at 24px, -0.32px at 16px, and normal at 14px.
+- **Ligatures everywhere**: Every Geist text element enables OpenType `"liga"`. Ligatures aren't decorative, they're structural, creating tighter, more efficient glyph combinations.
 - **Three weights, strict roles**: 400 (body/reading), 500 (UI/interactive), 600 (headings/emphasis). No bold (700) except for tiny micro-badges. This narrow weight range creates hierarchy through size and tracking, not weight.
-- **Mono for identity**: Geist Mono in uppercase with `"tnum"` or `"liga"` serves as the "developer console" voice — compact technical labels that connect the marketing site to the product.
+- **Mono for identity**: Geist Mono in uppercase with `"tnum"` or `"liga"` serves as the "developer console" voice, compact technical labels that connect the marketing site to the product.
 
 ## 4. Component Stylings
 
@@ -116,7 +116,7 @@ What distinguishes Vercel from other monochrome design systems is its shadow-as-
 **Primary White (Shadow-bordered)**
 - Background: `#ffffff`
 - Text: `#171717`
-- Padding: 0px 6px (minimal — content-driven width)
+- Padding: 0px 6px (minimal, content-driven width)
 - Radius: 6px (subtly rounded)
 - Shadow: `rgb(235, 235, 235) 0px 0px 0px 1px` (ring-border)
 - Hover: background shifts to `var(--ds-gray-1000)` (dark)
@@ -145,7 +145,7 @@ What distinguishes Vercel from other monochrome design systems is its shadow-as-
 
 ### Cards & Containers
 - Background: `#ffffff`
-- Border: via shadow — `rgba(0, 0, 0, 0.08) 0px 0px 0px 1px`
+- Border: via shadow, `rgba(0, 0, 0, 0.08) 0px 0px 0px 1px`
 - Radius: 8px (standard), 12px (featured/image cards)
 - Shadow stack: `rgba(0,0,0,0.08) 0px 0px 0px 1px, rgba(0,0,0,0.04) 0px 2px 2px, #fafafa 0px 0px 0px 1px`
 - Image cards: `1px solid #ebebeb` with 12px top radius
@@ -154,7 +154,7 @@ What distinguishes Vercel from other monochrome design systems is its shadow-as-
 ### Inputs & Forms
 - Radio: standard styling with focus `var(--ds-gray-200)` background
 - Focus shadow: `1px 0 0 0 var(--ds-gray-alpha-600)`
-- Focus outline: `2px solid var(--ds-focus-color)` — consistent blue focus ring
+- Focus outline: `2px solid var(--ds-focus-color)`, consistent blue focus ring
 - Border: via shadow technique, not traditional border
 
 ### Navigation
@@ -196,7 +196,7 @@ What distinguishes Vercel from other monochrome design systems is its shadow-as-
 ### Spacing System
 - Base unit: 8px
 - Scale: 1px, 2px, 3px, 4px, 5px, 6px, 8px, 10px, 12px, 14px, 16px, 32px, 36px, 40px
-- Notable gap: jumps from 16px to 32px — no 20px or 24px in primary scale
+- Notable gap: jumps from 16px to 32px, no 20px or 24px in primary scale
 
 ### Grid & Container
 - Max content width: approximately 1200px
@@ -206,9 +206,9 @@ What distinguishes Vercel from other monochrome design systems is its shadow-as-
 - Code/dashboard screenshots as full-width or contained with border
 
 ### Whitespace Philosophy
-- **Gallery emptiness**: Massive vertical padding between sections (80px–120px+). The white space IS the design — it communicates that Vercel has nothing to prove and nothing to hide.
+- **Gallery emptiness**: Massive vertical padding between sections (80px–120px+). The white space IS the design, it communicates that Vercel has nothing to prove and nothing to hide.
 - **Compressed text, expanded space**: The aggressive negative letter-spacing on headlines is counterbalanced by generous surrounding whitespace. The text is dense; the space around it is vast.
-- **Section rhythm**: White sections alternate with white sections — there's no color variation between sections. Separation comes from borders (shadow-borders) and spacing alone.
+- **Section rhythm**: White sections alternate with white sections, there's no color variation between sections. Separation comes from borders (shadow-borders) and spacing alone.
 
 ### Border Radius Scale
 - Micro (2px): Inline code snippets, small spans
@@ -237,30 +237,30 @@ What distinguishes Vercel from other monochrome design systems is its shadow-as-
 ### Decorative Depth
 - Hero gradient: soft, pastel multi-color gradient wash behind hero content (barely visible, atmospheric)
 - Section borders: `1px solid #171717` (full dark line) between major sections
-- No background color variation — depth comes entirely from shadow layering and border contrast
+- No background color variation: depth comes entirely from shadow layering and border contrast
 
 ## 7. Do's and Don'ts
 
 ### Do
 - Use Geist Sans with aggressive negative letter-spacing at display sizes (-2.4px to -2.88px at 48px)
 - Use shadow-as-border (`0px 0px 0px 1px rgba(0,0,0,0.08)`) instead of traditional CSS borders
-- Enable `"liga"` on all Geist text — ligatures are structural, not optional
+- Enable `"liga"` on all Geist text: ligatures are structural, not optional
 - Use the three-weight system: 400 (body), 500 (UI), 600 (headings)
 - Apply workflow accent colors (Red/Pink/Blue) only in their workflow context
 - Use multi-layer shadow stacks for cards (border + elevation + ambient + inner highlight)
-- Keep the color palette achromatic — grays from `#171717` to `#ffffff` are the system
-- Use `#171717` instead of `#000000` for primary text — the micro-warmth matters
+- Keep the color palette achromatic: grays from `#171717` to `#ffffff` are the system
+- Use `#171717` instead of `#000000` for primary text: the micro-warmth matters
 
 ### Don't
-- Don't use positive letter-spacing on Geist Sans — it's always negative or zero
-- Don't use weight 700 (bold) on body text — 600 is the maximum, used only for headings
-- Don't use traditional CSS `border` on cards — use the shadow-border technique
+- Don't use positive letter-spacing on Geist Sans: it's always negative or zero
+- Don't use weight 700 (bold) on body text: 600 is the maximum, used only for headings
+- Don't use traditional CSS `border` on cards: use the shadow-border technique
 - Don't introduce warm colors (oranges, yellows, greens) into the UI chrome
 - Don't apply the workflow accent colors (Ship Red, Preview Pink, Develop Blue) decoratively
-- Don't use heavy shadows (> 0.1 opacity) — the shadow system is whisper-level
-- Don't increase body text letter-spacing — Geist is designed to run tight
-- Don't use pill radius (9999px) on primary action buttons — pills are for badges/tags only
-- Don't skip the inner `#fafafa` ring in card shadows — it's the glow that makes the system work
+- Don't use heavy shadows (> 0.1 opacity): the shadow system is whisper-level
+- Don't increase body text letter-spacing: Geist is designed to run tight
+- Don't use pill radius (9999px) on primary action buttons: pills are for badges/tags only
+- Don't skip the inner `#fafafa` ring in card shadows: it's the glow that makes the system work
 
 ## 8. Responsive Behavior
 
@@ -315,9 +315,9 @@ What distinguishes Vercel from other monochrome design systems is its shadow-as-
 - "Design a workflow section showing three steps: Develop (text color #0a72ef), Preview (#de1d8d), Ship (#ff5b4f). Each step: 14px Geist Mono uppercase label + 24px Geist weight 600 title + 16px weight 400 description in #4d4d4d."
 
 ### Iteration Guide
-1. Always use shadow-as-border instead of CSS border — `0px 0px 0px 1px rgba(0,0,0,0.08)` is the foundation
+1. Always use shadow-as-border instead of CSS border: `0px 0px 0px 1px rgba(0,0,0,0.08)` is the foundation
 2. Letter-spacing scales with font size: -2.4px at 48px, -1.28px at 32px, -0.96px at 24px, normal at 14px
 3. Three weights only: 400 (read), 500 (interact), 600 (announce)
-4. Color is functional, never decorative — workflow colors (Red/Pink/Blue) mark pipeline stages only
+4. Color is functional, never decorative: workflow colors (Red/Pink/Blue) mark pipeline stages only
 5. The inner `#fafafa` ring in card shadows is what gives Vercel cards their subtle inner glow
 6. Geist Mono uppercase for technical labels, Geist Sans for everything else

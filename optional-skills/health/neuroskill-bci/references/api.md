@@ -283,4 +283,4 @@ npx neuroskill sessions --json | jq '{start: .sessions[0].start_utc, end: .sessi
 - **Local database**: `~/.skill/YYYYMMDD/` (SQLite + HNSW index)
 - **ZUNA embeddings**: 128-D vectors, 5-second epochs
 - **Labels**: Stored in SQLite, indexed with bge-small-en-v1.5 embeddings
-- **All data is local** — nothing is sent to external servers
+- **All data is local**: nothing is sent to external servers

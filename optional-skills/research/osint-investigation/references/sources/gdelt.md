@@ -1,4 +1,4 @@
-# GDELT — Global News Monitoring
+# GDELT, Global News Monitoring
 
 ## 1. Summary
 
@@ -15,7 +15,7 @@ organizations.
 - **DOC 2.0 API:** `https://api.gdeltproject.org/api/v2/doc/doc`
 - **Events / GKG 2.0:** `https://api.gdeltproject.org/api/v2/events/events`
 - **Auth:** None
-- **Rate limit:** **1 request per 5 seconds** for the DOC API — strict
+- **Rate limit:** **1 request per 5 seconds** for the DOC API, strict
 
 The fetch script automatically retries after a 6-second sleep when a
 429 is received.
@@ -52,7 +52,7 @@ Key fields emitted by `fetch_gdelt.py`:
 
 Join key: entity name appearing in article title or full-text. GDELT also
 extracts named entities into a separate stream (GKG) not exposed by this
-fetcher — query GDELT directly for entity-level filtering.
+fetcher, query GDELT directly for entity-level filtering.
 
 ## 6. Data Quality
 
@@ -60,9 +60,9 @@ fetcher — query GDELT directly for entity-level filtering.
   site name + delimiter + article title; sometimes a generic page title)
 - Sentiment / tone is computed by GDELT, not source-supplied
 - Some domains are oversampled (newswires, aggregators)
-- Source country is inferred from domain registration / TLD — can be
+- Source country is inferred from domain registration / TLD, can be
   wrong for international news sites with country-neutral domains
-- Article URLs can rot — pair with Wayback Machine to preserve content
+- Article URLs can rot, pair with Wayback Machine to preserve content
 
 ## 7. Acquisition Script
 
@@ -93,7 +93,7 @@ See https://blog.gdeltproject.org/gdelt-doc-2-0-api-debuts/ for syntax.
 ## 8. Legal & Licensing
 
 - GDELT data is provided free for academic and journalistic use
-- Article URLs link out to original publishers — copyright remains with
+- Article URLs link out to original publishers, copyright remains with
   the publisher
 - GDELT is NOT a content archive; it's a metadata index
 

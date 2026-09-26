@@ -1,4 +1,4 @@
-# Motion Reference — auteur skill
+# Motion Reference: auteur skill
 
 Numeric, enforceable animation rules distilled from 13 motion sources. Every number is exact. Conflicts are resolved; only the winning rule appears.
 
@@ -8,21 +8,21 @@ Numeric, enforceable animation rules distilled from 13 motion sources. Every num
 
 Animate only when the motion answers one of these six questions:
 
-1. **Hierarchy** — does it show what matters most?
-2. **Storytelling** — does it narrate a sequence?
-3. **Feedback** — does it confirm an action?
-4. **State transition** — does it show what changed?
-5. **Spatial consistency** — does it orient the user in space?
-6. **Preventing jarring change** — does it smooth a discontinuity?
+1. **Hierarchy**: does it show what matters most?
+2. **Storytelling**: does it narrate a sequence?
+3. **Feedback**: does it confirm an action?
+4. **State transition**: does it show what changed?
+5. **Spatial consistency**: does it orient the user in space?
+6. **Preventing jarring change**: does it smooth a discontinuity?
 
 "Looks cool" is not a reason. If none of the six apply, delete the animation.
 
-**Frequency decision framework** — stop at the first row that matches:
+**Frequency decision framework**: stop at the first row that matches:
 
 | How often the user triggers this | Rule |
 |---|---|
 | 100+ times/day (keyboard shortcuts, command palette) | Zero animation, ever |
-| Tens/day (hover, list navigation) | Drastically reduce — near zero |
+| Tens/day (hover, list navigation) | Drastically reduce: near zero |
 | Occasional (modal, drawer, toast) | Standard motion allowed |
 | Rare / first-time experience | Can add delight |
 
@@ -35,7 +35,7 @@ Apply this before writing any transition. A command palette toggle with a 200ms 
 **The resolved policy** (Emil over raphaelsalaja for UI):
 
 - **Enter → `ease-out`**. Arrives fast, settles gently. Feels faster than `ease-in` at identical duration.
-- **Exit → `ease-out`** (same as enter for UI menus, drawers, toasts — this is the system-response model).
+- **Exit → `ease-out`** (same as enter for UI menus, drawers, toasts: this is the system-response model).
 - **`ease-in` is banned on all UI motion.** Reserve it exclusively for Web Audio gain envelopes (exponential release before silence).
 - **Marquee / progress bars / time representation → `linear`** only. Never use linear for positional motion.
 - **On-screen morph (element repositions while visible) → `ease-in-out`.**
@@ -57,7 +57,7 @@ For spring-like bounces without a spring library, use `linear()` with sampled ke
 
 ## Duration
 
-Default table — apply literally, justify any deviation in a comment:
+Default table: apply literally, justify any deviation in a comment:
 
 | Element | Duration |
 |---|---|
@@ -67,7 +67,7 @@ Default table — apply literally, justify any deviation in a comment:
 | Modal / drawer enter | 200–500 ms |
 | Marketing / explanatory sequences | Longer allowed |
 
-**Hard rule: any UI transition over 300 ms requires a written justification** (comment in code or design note). No exceptions. If the animation feels slow, shorten the duration first — do not sharpen the curve as the primary fix.
+**Hard rule: any UI transition over 300 ms requires a written justification** (comment in code or design note). No exceptions. If the animation feels slow, shorten the duration first: do not sharpen the curve as the primary fix.
 
 Similar elements must use identical timing. `button-primary 200ms` vs `button-secondary 150ms` is a fail.
 
@@ -77,7 +77,7 @@ Modal exit is faster than enter (release snap): enter 200 ms, exit 150 ms.
 
 ## Spring vs easing
 
-Decision table — pick one row and commit:
+Decision table: pick one row and commit:
 
 | Motion type | Best choice | Why |
 |---|---|---|
@@ -87,7 +87,7 @@ Decision table — pick one row and commit:
 | High-frequency (typing, fast toggles) | None | Adds noise, makes UI feel slower |
 
 **Spring parameters:**
-- Gesture / drag: `stiffness: 500, damping: 30` — balanced, no excessive bounce.
+- Gesture / drag: `stiffness: 500, damping: 30`; balanced, no excessive bounce.
 - Apple-style (preferred for simplicity): `{ type: "spring", duration: 0.5, bounce: 0.2 }`.
 - Bounce > 0.3 only for drag-to-dismiss and explicitly playful contexts. Never in standard UI.
 - Preserve velocity on flick: `animate(target, { x: 0 }, { type: "spring", velocity: info.velocity.x })`.
@@ -111,9 +111,9 @@ button:active {
 }
 ```
 
-`whileTap={{ scale: 0.8 }}` is a P1 fail — too exaggerated.
+`whileTap={{ scale: 0.8 }}` is a P1 fail: too exaggerated.
 
-**Origin-aware popovers and dropdowns** — the element must scale from its trigger, not from its own center:
+**Origin-aware popovers and dropdowns**: the element must scale from its trigger, not from its own center:
 
 ```css
 /* When using Radix UI */
@@ -127,7 +127,7 @@ button:active {
 }
 ```
 
-**Modals are exempt from origin-awareness** — keep `transform-origin: center` on modals. They represent a system interrupt, not a trigger-anchored element.
+**Modals are exempt from origin-awareness**: keep `transform-origin: center` on modals. They represent a system interrupt, not a trigger-anchored element.
 
 Never set `transform-origin: center` on trigger-anchored popovers, tooltips, or dropdowns.
 
@@ -137,14 +137,14 @@ Never set `transform-origin: center` on trigger-anchored popovers, tooltips, or 
 
 **GPU-composited properties only: `transform` and `opacity`.** Animating `width`, `height`, `top`, `left`, `margin`, or `padding` forces layout → paint → composite on every frame. This is unanimously banned across all 13 sources.
 
-**`window.addEventListener('scroll', …)` is banned** — jank-prone, no batching, blocks main thread. Use instead:
+**`window.addEventListener('scroll', …)` is banned**: jank-prone, no batching, blocks main thread. Use instead:
 
 - Framer Motion: `useScroll()` + `useTransform()`
 - GSAP: `ScrollTrigger`
 - Vanilla: `IntersectionObserver`
 - CSS: `animation-timeline: view()`
 
-**Framer Motion shorthands (`x`, `y`, `scale` as separate props) are not hardware-accelerated under load** — they run on the main thread via rAF. For pinned sections and scroll-scrubbed animations, use full transform strings or GSAP:
+**Framer Motion shorthands (`x`, `y`, `scale` as separate props) are not hardware-accelerated under load**: they run on the main thread via rAF. For pinned sections and scroll-scrubbed animations, use full transform strings or GSAP:
 
 ```tsx
 // Weak under scroll load:
@@ -155,7 +155,7 @@ Never set `transform-origin: center` on trigger-anchored popovers, tooltips, or 
 // or migrate to GSAP for the section
 ```
 
-**Never drive a child's transform via a CSS variable on a parent** — causes style-recalc storm on all children. Set `transform` directly on the target element.
+**Never drive a child's transform via a CSS variable on a parent**: causes style-recalc storm on all children. Set `transform` directly on the target element.
 
 **Continuous values (mouse position, scroll progress, pointer physics) → `useMotionValue` + `useTransform`, never `useState`.** `useState` triggers a React re-render per scroll tick; `useMotionValue` updates the DOM directly.
 
@@ -171,9 +171,9 @@ const opacity = useTransform(scrollY, [0, 300], [1, 0]);
 
 `useEffect` animations must always include cleanup (`gsap.context()` + `ctx.revert()`, or Motion's unsubscribe).
 
-`will-change: transform` — use sparingly, only on elements that are actively animating. It promotes to a GPU layer immediately; overuse wastes VRAM.
+`will-change: transform`: use sparingly, only on elements that are actively animating. It promotes to a GPU layer immediately; overuse wastes VRAM.
 
-Grain / noise filter overlays: only on `position: fixed; inset: 0; pointer-events: none; z-index: 60` pseudo-elements. Never on scrolling containers — continuous GPU repaints destroy mobile FPS.
+Grain / noise filter overlays: only on `position: fixed; inset: 0; pointer-events: none; z-index: 60` pseudo-elements. Never on scrolling containers: continuous GPU repaints destroy mobile FPS.
 
 ### Fullscreen passes are priced per pixel, not per object
 
@@ -182,23 +182,23 @@ A scene rarely dies of geometry. Hundreds of thousands of triangles, thousands o
 | Pass | ~cost / frame | |
 |---|---|---|
 | chromatic aberration + grain | 8ms | the "free" cinematic layer is the most expensive thing on the page |
-| bloom | 7ms | at half-res; dropping to quarter-res saved 0.7ms — the cost is compositing over the frame, not the blur |
+| bloom | 7ms | at half-res; dropping to quarter-res saved 0.7ms: the cost is compositing over the frame, not the blur |
 | custom transition shader | 5ms | |
 | depth of field | 17ms | over the entire budget alone; it was cut, not optimized |
 
-Read the **order**, not the absolutes — your GPU differs, and summing these is meaningless because passes overlap. Three rules follow:
+Read the **order**, not the absolutes: your GPU differs, and summing these is meaningless because passes overlap. Three rules follow:
 
-- **Pixel count is the main lever — for pages that have these passes.** A scene carrying DoF + bloom + grain runs 60fps at 2MP and 30fps at 4.5MP. A scene with no fullscreen pass barely notices: measured on three showcase sites at 4× CPU throttle, DPR 1 → 2 moved minFps by 0–1 (53→54, 53→53, 54→54), because there the ceiling is the main thread, not fillrate. Still measure at DPR 2 — the day a bloom lands, the honest number is already the one you have been quoting. Cap `renderer.setPixelRatio(Math.min(devicePixelRatio, 2))`, and when a scene is over budget, cut resolution or a pass before you cut geometry.
-- **Measure by ablation** — switch passes off one at a time and re-measure. Intuition is wrong about which one hurts: shadows usually turn out nearly free, and the effect that "barely does anything" is often the 8ms one.
+- **Pixel count is the main lever: for pages that have these passes.** A scene carrying DoF + bloom + grain runs 60fps at 2MP and 30fps at 4.5MP. A scene with no fullscreen pass barely notices: measured on three showcase sites at 4× CPU throttle, DPR 1 → 2 moved minFps by 0–1 (53→54, 53→53, 54→54), because there the ceiling is the main thread, not fillrate. Still measure at DPR 2: the day a bloom lands, the honest number is already the one you have been quoting. Cap `renderer.setPixelRatio(Math.min(devicePixelRatio, 2))`, and when a scene is over budget, cut resolution or a pass before you cut geometry.
+- **Measure by ablation**: switch passes off one at a time and re-measure. Intuition is wrong about which one hurts: shadows usually turn out nearly free, and the effect that "barely does anything" is often the 8ms one.
 - **Measure the production build.** A dev server costs roughly 2× per frame (HMR client, unminified bundles, no asset pipeline), so its numbers describe a page nobody will load. `motionqa.mjs` flags a detected dev server, but it cannot detect every one of them.
 
 ---
 
 ## Stagger and orchestration
 
-- **Stagger delay: 30–80 ms between items.** Upper bound is 50 ms per item for lists — anything longer makes the reveal feel broken.
+- **Stagger delay: 30–80 ms between items.** Upper bound is 50 ms per item for lists: anything longer makes the reveal feel broken.
 - Stagger is decorative. **It must never block interaction.** The list is interactive from the moment it renders; the stagger is cosmetic only.
-- **Reveal animations must enhance an already-visible default.** Content must be readable with JavaScript disabled, because CSS transitions pause in hidden tabs — a section that starts `opacity: 0` via JS will ship blank in that case.
+- **Reveal animations must enhance an already-visible default.** Content must be readable with JavaScript disabled, because CSS transitions pause in hidden tabs: a section that starts `opacity: 0` via JS will ship blank in that case.
 
 ```tsx
 // Motion RevealStagger skeleton (feature lists, testimonials, logo walls):
@@ -211,8 +211,8 @@ transition={{ duration: 0.6, delay: i * 0.06, ease: [0.16, 1, 0.3, 1] }}
 `staggerChildren` in Framer Motion requires parent and child to be in the same Client Component tree. Async data → pass through props into a centralized parent Motion wrapper.
 
 **Library routing:**
-- Framer Motion — UI components, Bento layouts, state-change animations.
-- GSAP + ScrollTrigger — full-page scrolltelling, pinned sections, horizontal pans.
+- Framer Motion: UI components, Bento layouts, state-change animations.
+- GSAP + ScrollTrigger: full-page scrolltelling, pinned sections, horizontal pans.
 - Never mix GSAP/Three.js and Framer Motion in the same component tree.
 
 ---
@@ -222,7 +222,7 @@ transition={{ duration: 0.6, delay: i * 0.06, ease: [0.16, 1, 0.3, 1] }}
 Page-level constraints that most motion guidance omits:
 
 - **Max 3 distinct scroll-triggered animation families per page.** (A "family" = a combination of easing + distance + direction. Three fade-up variants count as one if identical.)
-- **Each additional scroll reveal must differ from the previous in at least one dimension** — easing, distance, or direction. Uniform fade-in on every section is a fail.
+- **Each additional scroll reveal must differ from the previous in at least one dimension**: easing, distance, or direction. Uniform fade-in on every section is a fail.
 - **Marquee: max 1 per page.**
 - **One primary "wow" peak per page.** Supporting scenes run at lower visual intensity. Two hero-level spectacles compete and cancel each other.
 - If a storyboard scene claims intensity >4, the scene must visibly move. If it can't (asset missing, perf budget), downshift the scene's intensity honestly instead of faking it with decoration.
@@ -231,15 +231,15 @@ Page-level constraints that most motion guidance omits:
 
 ## Modals, drawers, toasts
 
-- **Modals:** `transform-origin: center`. Enter 200 ms `ease-out`; exit 150 ms (faster, release snap). Spring is wrong here — use easing.
-- **Drawers / toasts:** CSS `transition`, not `@keyframes` — these are rapidly triggered and must retarget smoothly on re-trigger. `@starting-style { opacity: 0; transform: translateY(100%); }` for CSS-only entry without JS.
-- **Tooltips:** suppress delay and animation on subsequent hovers — after the first tooltip, all are instant:
+- **Modals:** `transform-origin: center`. Enter 200 ms `ease-out`; exit 150 ms (faster, release snap). Spring is wrong here: use easing.
+- **Drawers / toasts:** CSS `transition`, not `@keyframes`: these are rapidly triggered and must retarget smoothly on re-trigger. `@starting-style { opacity: 0; transform: translateY(100%); }` for CSS-only entry without JS.
+- **Tooltips:** suppress delay and animation on subsequent hovers: after the first tooltip, all are instant:
   ```css
   [data-instant] { transition-duration: 0ms; }
   ```
 - **Drag-to-dismiss:** use momentum, not distance threshold. `Math.abs(distance) / elapsedTime > 0.11` → dismiss. A flick is enough.
 - Enable pointer capture during drag so motion continues after the cursor leaves the element.
-- Multi-touch protection: `if (isDragging) return;` — ignore new touch points after drag begins.
+- Multi-touch protection: `if (isDragging) return;`: ignore new touch points after drag begins.
 
 ---
 
@@ -271,7 +271,7 @@ Page-level constraints that most motion guidance omits:
 
 ## Hover
 
-Gate all hover effects behind the pointer media query — touch devices fire false hover states on tap:
+Gate all hover effects behind the pointer media query: touch devices fire false hover states on tap:
 
 ```css
 @media (hover: hover) and (pointer: fine) {
@@ -288,14 +288,14 @@ No hover animation outside this gate. Ever.
 
 ## Sound
 
-Sound is a parallel channel to motion — it follows the same budget discipline.
+Sound is a parallel channel to motion: it follows the same budget discipline.
 
 **Use sound only for:**
 - Confirmation (payment completed, file uploaded, form submitted)
 - Error state
 - Notification / alert
 
-**Never use sound for:** typing, hover, scroll events, keyboard navigation — keyboard nav with click sounds becomes unbearable immediately.
+**Never use sound for:** typing, hover, scroll events, keyboard navigation; keyboard nav with click sounds becomes unbearable immediately.
 
 **Implementation rules:**
 
@@ -323,9 +323,9 @@ function playConfirm() {
 
 - Default volume: **0.3**. Never 1.0.
 - Envelope decay: **`exponentialRampToValueAtTime(0.001, t)`**, not `linearRampToValueAtTime(0, t)`. Linear sounds mechanical; exponential matches human perception. Always call `setValueAtTime` before ramping.
-- `prefers-reduced-motion` doubles as reduced-sound — if the media query matches, skip playback entirely.
+- `prefers-reduced-motion` doubles as reduced-sound: if the media query matches, skip playback entirely.
 - Provide an explicit sound toggle in settings: `<SoundProvider enabled={soundEnabled} />`.
-- Sound weight must match action weight: soft click for toggle, success chime for purchase. A loud buzzer for form validation is punishing — never do this.
+- Sound weight must match action weight: soft click for toggle, success chime for purchase. A loud buzzer for form validation is punishing: never do this.
 - Click/tap sounds: 5–15 ms duration, bandpass filter 3 000–6 000 Hz, Q 2–5.
 - Rapid re-trigger: `audio.currentTime = 0` before `play()`.
 
@@ -335,7 +335,7 @@ function playConfirm() {
 
 | Pattern | Why it fails |
 |---|---|
-| `transition: all` | Animates every property including layout — unbounded |
+| `transition: all` | Animates every property including layout: unbounded |
 | `scale(0)` entrance | Nothing appears from nothing; start at 0.95 |
 | `ease-in` on UI | Feels slower than ease-out at identical duration |
 | Animation on 100+/day actions | Accumulates into constant noise |

@@ -1,6 +1,6 @@
 # Leverage Points
 
-Donella Meadows, 1997/1999. 12 places to intervene in a system, in increasing order of effectiveness. Most policy interventions happen at the bottom of the list (parameters); the actually transformative ones happen at the top (paradigms) — and are the most resisted.
+Donella Meadows, 1997/1999. 12 places to intervene in a system, in increasing order of effectiveness. Most policy interventions happen at the bottom of the list (parameters); the actually transformative ones happen at the top (paradigms), and are the most resisted.
 
 ## When to use
 
@@ -17,29 +17,29 @@ Donella Meadows, 1997/1999. 12 places to intervene in a system, in increasing or
 
 ## The 12 levels (least → most powerful)
 
-**12. Constants, parameters, numbers** — subsidies, taxes, standards, prices. Most policy fights happen here. Rarely change behavior.
+**12. Constants, parameters, numbers**: subsidies, taxes, standards, prices. Most policy fights happen here. Rarely change behavior.
 
-**11. Sizes of buffers** — stabilizing stocks relative to flows. Big buffer = stable but inflexible.
+**11. Sizes of buffers**: stabilizing stocks relative to flows. Big buffer = stable but inflexible.
 
-**10. Structure of stocks and flows** — transport networks, supply chains, age structures. Hard to change once built; high leverage in original design.
+**10. Structure of stocks and flows**: transport networks, supply chains, age structures. Hard to change once built; high leverage in original design.
 
-**9. Lengths of delays** — relative to rate of system change. Delays usually can't be shortened; the leverage is in *slowing the system to match the delays*.
+**9. Lengths of delays**: relative to rate of system change. Delays usually can't be shortened; the leverage is in *slowing the system to match the delays*.
 
-**8. Strength of negative feedback loops** — relative to disturbance corrected against. Strengthen with: preventive medicine, pollution taxes, FOIA, whistleblower protection.
+**8. Strength of negative feedback loops**: relative to disturbance corrected against. Strengthen with: preventive medicine, pollution taxes, FOIA, whistleblower protection.
 
-**7. Gain around positive feedback loops** — *Reducing* gain on a positive loop is more leveraged than strengthening the negative loop counter-acting it. Progressive tax weakens "success-to-the-successful" loops directly.
+**7. Gain around positive feedback loops**: *Reducing* gain on a positive loop is more leveraged than strengthening the negative loop counter-acting it. Progressive tax weakens "success-to-the-successful" loops directly.
 
-**6. Information flows** — who has access to what. Adding a feedback loop where one didn't exist. (Toxic Release Inventory: pure disclosure dropped emissions 40%.)
+**6. Information flows**: who has access to what. Adding a feedback loop where one didn't exist. (Toxic Release Inventory: pure disclosure dropped emissions 40%.)
 
-**5. Rules** — incentives, punishments, constraints. Constitutions, laws, terms of service. *"If you want to understand the deepest malfunctions of systems, pay attention to the rules, and to who has power over them."*
+**5. Rules**: incentives, punishments, constraints. Constitutions, laws, terms of service. *"If you want to understand the deepest malfunctions of systems, pay attention to the rules, and to who has power over them."*
 
-**4. Power to add, change, evolve, or self-organize** — biological evolution, technical advance, social revolution. Suppressing variety to maintain control is a system crime.
+**4. Power to add, change, evolve, or self-organize**: biological evolution, technical advance, social revolution. Suppressing variety to maintain control is a system crime.
 
-**3. Goals of the system** — what is it *for*? Shareholder return vs employee welfare = different systems with same physical structure. *"Everything further down the list will be twisted to conform to that goal."*
+**3. Goals of the system**: what is it *for*? Shareholder return vs employee welfare = different systems with same physical structure. *"Everything further down the list will be twisted to conform to that goal."*
 
-**2. Mindset / paradigm** — unstated assumptions that generate the goals. "Growth is good", "markets are efficient". Hard to change in cultures (generations); change in individuals all at once (a click).
+**2. Mindset / paradigm**: unstated assumptions that generate the goals. "Growth is good", "markets are efficient". Hard to change in cultures (generations); change in individuals all at once (a click).
 
-**1. Power to transcend paradigms** — hold any paradigm lightly. The capacity to *switch*. Personal practice, not policy.
+**1. Power to transcend paradigms**: hold any paradigm lightly. The capacity to *switch*. Personal practice, not policy.
 
 ## Procedure
 
@@ -53,13 +53,13 @@ Donella Meadows, 1997/1999. 12 places to intervene in a system, in increasing or
 
 **System**: 50-person tech company with chronic burnout despite generous benefits.
 - Level 12 (PTO): fine, no help.
-- Level 8 (negative feedback): weak — burnout invisible until people quit.
-- Level 6 (info flows): obscured — managers don't see workload signals.
+- Level 8 (negative feedback): weak, burnout invisible until people quit.
+- Level 6 (info flows): obscured, managers don't see workload signals.
 - Level 5 (rules): implicitly reward overwork.
 - Level 3 (goal): "ship features fast."
 - Level 2 (paradigm): "engineering output is linearly proportional to hours worked."
 
-Recommendation: combine level-8 (mandatory monthly burnout-explicit 1:1s — feasible) + level-3 (explicit goal change to "build sustainable engineering org" — slow but high-leverage). Skip level 12.
+Recommendation: combine level-8 (mandatory monthly burnout-explicit 1:1s, feasible) + level-3 (explicit goal change to "build sustainable engineering org", slow but high-leverage). Skip level 12.
 
 ## Anti-slop notes
 

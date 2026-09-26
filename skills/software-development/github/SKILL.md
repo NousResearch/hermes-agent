@@ -17,7 +17,7 @@ metadata:
 Work GitHub end to end with the `gh` CLI (REST fallback where noted): auth,
 issues, the PR lifecycle, issue-to-PR delivery, code review, and repo
 management. This skill consolidates six former skills; each workflow lives
-complete in its reference file — ALWAYS read the matching reference before
+complete in its reference file: ALWAYS read the matching reference before
 starting that workflow, the body below only routes.
 
 ## Routing
@@ -38,14 +38,14 @@ Supporting assets: `scripts/gh-env.sh` + `scripts/git-credential-token.py`
 
 ## Core discipline (applies to every workflow)
 
-- Preflight once per session: `gh auth status` — if it fails, go to
+- Preflight once per session: `gh auth status`, if it fails, go to
   `references/auth.md` before anything else.
 - Prefer `gh` over raw REST; drop to `gh api` only for endpoints the
   porcelain lacks (the cheatsheet lists them).
 - Never report CI green without checking `gh pr checks` yourself; never
   claim merged without verifying `state,mergedAt`.
 - Read full context before writing: `gh issue view --comments` /
-  `gh pr view --comments` — decisions live in threads, not titles.
+  `gh pr view --comments`: decisions live in threads, not titles.
 - Sweep for duplicates before creating anything:
   `gh pr list --search` / `gh issue list --search`.
 

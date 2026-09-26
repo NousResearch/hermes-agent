@@ -2064,6 +2064,7 @@ export const frOverrides = {
       inheritMainEffort: 'hériter · effort du modèle principal',
       providerDefault: '(par défaut du fournisseur)',
       fallbackAdd: 'Ajouter un secours',
+      overrideAdd: 'Ajouter un remplacement de modèle',
       fallbackEmpty: "Aucun modèle de secours — le modèle par défaut est utilisé sauf en cas d'échec.",
       notInCatalog:
         "n'est pas dans la liste des modèles de ce fournisseur — les appels peuvent basculer sur un secours.",

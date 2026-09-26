@@ -11,6 +11,7 @@ import type { ConfigFieldSchema } from '@/types/hermes'
 import { ComboboxInput } from './combobox-input'
 import { CONTROL_TEXT, EMPTY_SELECT_VALUE, FIELD_DESCRIPTIONS, FIELD_LABELS, FREE_INPUT_KEYS } from './constants'
 import { FallbackModelsField } from './fallback-models-field'
+import { ReasoningOverridesField } from './reasoning-overrides-field'
 import { fieldCopyForSchemaKey } from './field-copy'
 import { ListRow, ToggleRow } from './primitives'
 import { SearchableSelect } from './searchable-select'
@@ -103,6 +104,12 @@ export function ConfigField({
   // dedicated structured editor instead.
   if (schemaKey === 'fallback_providers') {
     return wideRow(<FallbackModelsField onChange={onChange} value={value} />)
+  }
+
+  // `agent.reasoning_overrides` is a `{model: effort}` map the config file already
+  // honours but the generic branches would stringify; render the structured editor (#117908).
+  if (schemaKey === 'agent.reasoning_overrides') {
+    return wideRow(<ReasoningOverridesField onChange={onChange} value={value} />)
   }
 
   if (schema.type === 'boolean') {

@@ -1789,6 +1789,7 @@ export const en: Translations = {
       inheritMainEffort: 'inherit · main model effort',
       providerDefault: '(provider default)',
       fallbackAdd: 'Add fallback',
+      overrideAdd: 'Add model override',
       fallbackEmpty: 'No fallback models — the default model is used unless it fails.',
       notInCatalog: "isn't in this provider's model list — calls may fall back to a backup.",
       moaTitle: 'Mixture of Agents',

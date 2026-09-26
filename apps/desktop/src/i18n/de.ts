@@ -2061,6 +2061,7 @@ export const deOverrides = {
       inheritMainEffort: 'übernehmen · Aufwand des Hauptmodells',
       providerDefault: '(Anbietervorgabe)',
       fallbackAdd: 'Fallback hinzufügen',
+      overrideAdd: 'Modell-Override hinzufügen',
       fallbackEmpty: 'Keine Fallback-Modelle — es wird das Standardmodell verwendet, außer es schlägt fehl.',
       notInCatalog:
         'ist nicht in der Modellliste dieses Anbieters enthalten — Aufrufe können auf ein Backup ausweichen.',

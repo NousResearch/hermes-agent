@@ -1,4 +1,4 @@
-import { useStore } from '@nanostores/react'
+﻿import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 
@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { getGlobalModelOptions } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { Plus, X } from '@/lib/icons'
+import { ArrowUp, Plus, X } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { $customModels, withCustomModels } from '@/store/custom-models'
 
@@ -59,7 +59,7 @@ function entriesEqual(a: FallbackEntry[], b: FallbackEntry[]): boolean {
 }
 
 /**
- * Structured editor for the top-level `fallback_providers` config list — a
+ * Structured editor for the top-level `fallback_providers` config list 鈥?a
  * chain of `{provider, model}` pairs tried in order when the default model
  * fails. Replaces the generic comma-string `list` input, which stringified the
  * objects to "[object Object], [object Object]".
@@ -121,6 +121,22 @@ export function FallbackModelsField({
   const updateRow = (index: number, patch: Partial<FallbackEntry>) =>
     commit(rows.map((entry, i) => (i === index ? { ...entry, ...patch } : entry)))
 
+  // Reorder in place: the chain is tried top-down, so fixing the order must not
+  // require delete + re-add in sequence (#117908). End rows keep the control but
+  // disabled, so the row layout never shifts under the pointer.
+  const moveRow = (index: number, delta: -1 | 1) => {
+    const target = index + delta
+
+    if (target < 0 || target >= rows.length) {
+      return
+    }
+
+    const next = [...rows]
+    next[index] = rows[target]
+    next[target] = rows[index]
+    commit(next)
+  }
+
   return (
     <div className="grid w-full gap-1.5">
       {rows.length === 0 && <p className="text-xs text-muted-foreground">{m.fallbackEmpty}</p>}
@@ -157,6 +173,24 @@ export function FallbackModelsField({
               variant="ghost"
             >
               <X className="size-3.5" />
+            </Button>
+            <Button
+              aria-label={t.sidebar.gatewayGroups.moveUp}
+              disabled={index === 0}
+              onClick={() => moveRow(index, -1)}
+              size="icon-xs"
+              variant="ghost"
+            >
+              <ArrowUp className="size-3.5" />
+            </Button>
+            <Button
+              aria-label={t.sidebar.gatewayGroups.moveDown}
+              disabled={index === rows.length - 1}
+              onClick={() => moveRow(index, 1)}
+              size="icon-xs"
+              variant="ghost"
+            >
+              <ArrowUp className="size-3.5 rotate-180" />
             </Button>
           </div>
         )

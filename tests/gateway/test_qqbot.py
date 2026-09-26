@@ -159,7 +159,7 @@ class TestVoiceAttachmentTempCleanup:
         assert not os.path.exists(seen["wav_path"])
 
 
-class TestVoiceAttachmentForceSTTAndFallback:
+class TestVoiceAttachmentPreferSTTAndFallback:
     def _make_adapter(self, **extra):
         from gateway.platforms.qqbot import QQAdapter
         return QQAdapter(_make_config(**extra))
@@ -187,8 +187,8 @@ class TestVoiceAttachmentForceSTTAndFallback:
         assert transcript == "QQ default text"
         adapter._http_client.get.assert_not_called()
 
-    def test_force_stt_invokes_external_stt(self):
-        adapter = self._make_adapter(app_id="a", client_secret="b", force_stt=True)
+    def test_prefer_stt_invokes_external_stt(self):
+        adapter = self._make_adapter(app_id="a", client_secret="b", prefer_stt=True)
         self._setup_download_mocks(adapter)
 
         with mock.patch("tools.url_safety.is_safe_url", return_value=True):
@@ -204,8 +204,8 @@ class TestVoiceAttachmentForceSTTAndFallback:
             )
         assert transcript == "High precision Gemini transcript"
 
-    def test_force_stt_falls_back_to_qq_asr_on_stt_failure(self):
-        adapter = self._make_adapter(app_id="a", client_secret="b", force_stt=True)
+    def test_prefer_stt_falls_back_to_qq_asr_on_stt_failure(self):
+        adapter = self._make_adapter(app_id="a", client_secret="b", prefer_stt=True)
         self._setup_download_mocks(adapter)
 
         with mock.patch("tools.url_safety.is_safe_url", return_value=True):

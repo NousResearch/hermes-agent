@@ -22,6 +22,11 @@ def test_bulk_delete_sessiondb_work_runs_off_event_loop(monkeypatch):
     db_modes: list[bool] = []
 
     class _DB:
+        def session_turn_lease_holder(self, session_id):
+            # The guard reads the lease on the same thread as the rest of the store work.
+            db_threads.append(threading.get_ident())
+            return None
+
         def delete_sessions(self, ids):
             db_threads.append(threading.get_ident())
             assert ids == ["one", "two"]
@@ -43,7 +48,7 @@ def test_bulk_delete_sessiondb_work_runs_off_event_loop(monkeypatch):
         )
     )
 
-    assert result == {"ok": True, "deleted": 2}
+    assert result == {"ok": True, "deleted": 2, "skipped_active": {}}
     assert db_modes == [False]
     assert db_threads
     assert all(thread_id != loop_thread for thread_id in db_threads)

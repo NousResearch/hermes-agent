@@ -1,6 +1,7 @@
 """Focused tests for API server session-control endpoints."""
 
 import asyncio
+import os
 import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1294,3 +1295,37 @@ async def test_interim_commentary_reaches_session_sse_and_responses_stream(adapt
     monkeypatch.setattr("run_agent.AIAgent", CapturingAgent)
     adapter._create_agent(session_id="gated", interim_assistant_callback=lambda *_a, **_k: None)
     assert captured["interim_assistant_callback"] is None
+
+
+@pytest.mark.asyncio
+async def test_delete_session_refuses_while_a_turn_holds_the_lease(adapter, session_db):
+    """Removing the row under a live turn drops that turn's transcript (#123583): the endpoint
+    must refuse while the conversation's turn lease is live instead of deleting."""
+    session_db.create_session("live", source="test")
+    holder = f"pid={os.getpid()}:turn=api:platform=test"
+    assert session_db.try_acquire_session_turn_lease("live", holder, ttl_seconds=300)
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.delete("/api/sessions/live")
+        assert resp.status == 409, await resp.text()
+        data = await resp.json()
+
+    assert data["error"]["code"] == "session_active_turn"
+    assert holder in data["error"]["message"]
+    assert session_db.get_session("live") is not None
+
+
+@pytest.mark.asyncio
+async def test_delete_session_still_removes_a_session_with_no_lease(adapter, session_db):
+    """Control: the guard must not break the ordinary delete."""
+    session_db.create_session("idle", source="test")
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.delete("/api/sessions/idle")
+        assert resp.status == 200, await resp.text()
+        data = await resp.json()
+
+    assert data["deleted"] is True
+    assert session_db.get_session("idle") is None

@@ -26,6 +26,7 @@ from hermes_cli.web_routers._common import (
     CORRUPT_STORE_DETAIL, corrupt_store_as_status, log as _log, destructive_profile, http_failure,
 )
 from hermes_state import is_malformed_db_error
+from hermes_state_compression import active_turn_lease_detail
 from hermes_state_errors import StateDbReplacedError, is_transient_sqlite_error
 from hermes_state_health import STORAGE_CORRUPT, note_storage_error, storage_state
 
@@ -434,9 +435,23 @@ async def bulk_delete_sessions_endpoint(body: BulkDeleteSessions):
     if len(body.ids) > 500:
         raise HTTPException(status_code=400, detail="ids must contain at most 500 entries")
     profile = destructive_profile(body.profile, "POST /api/sessions/bulk-delete")
-    deleted = await asyncio.to_thread(
-        _with_db, profile, lambda db: db.delete_sessions(body.ids), read_only=False)
-    return {"ok": True, "deleted": deleted}
+
+    def _delete(db):
+        # Rows a turn still owns are skipped, not deleted (#123583): removing one makes the live
+        # agent's next flush fail its FK and silently drop that turn's transcript. They are
+        # reported back so a caller can retry instead of believing the whole selection is gone.
+        skipped_active = {}
+        deletable = []
+        for sid in body.ids:
+            holder = db.session_turn_lease_holder(sid)
+            if holder:
+                skipped_active[sid] = holder
+            else:
+                deletable.append(sid)
+        deleted = db.delete_sessions(deletable) if deletable else 0
+        return {"ok": True, "deleted": deleted, "skipped_active": skipped_active}
+
+    return await asyncio.to_thread(_with_db, profile, _delete, read_only=False)
 
 
 @manage_router.post("/api/sessions/import")
@@ -712,6 +727,12 @@ async def delete_session_endpoint(session_id: str, profile: Optional[str] = None
         sid = _resolve_session_id(db, session_id)
         if not sid:
             return {"ok": True, "already_absent": True}
+        # A row a turn still owns must not be removed: the live agent's next flush would then
+        # fail its FK and silently drop that turn's transcript (#123583). The agent-side
+        # self-heal covers the idle case; this refusal covers the mid-turn race.
+        holder = db.session_turn_lease_holder(sid)
+        if holder:
+            raise HTTPException(status_code=409, detail=active_turn_lease_detail(sid, holder))
         db.delete_session(sid)
         return {"ok": True}
 

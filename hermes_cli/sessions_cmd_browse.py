@@ -1,7 +1,7 @@
 """Interactive picker for ``hermes sessions browse``: curses UI with live search filtering and ``d``
 delete-with-confirmation; numbered-list fallback when curses is unavailable (Windows, etc.)."""
 
-from typing import Optional
+from typing import Optional, Tuple
 
 from hermes_cli.timefmt import relative_time as _relative_time
 
@@ -67,7 +67,8 @@ class _CursesBrowser:
     """State + render loop for the curses picker. ``run`` is the wrapper target."""
 
     def __init__(self, curses, sessions, delete_fn):
-        self.curses, self.sessions, self.delete_fn = curses, sessions, delete_fn  # delete_fn None => no delete
+        # delete_fn(session_id) -> (ok, detail); None => no delete
+        self.curses, self.sessions, self.delete_fn = curses, sessions, delete_fn
         self.result = None
         self.cursor = self.scroll = 0
         self.search = ""
@@ -152,8 +153,9 @@ class _CursesBrowser:
             target, self.confirm_delete = self.confirm_delete, None
             if key not in {ord("y"), ord("Y")}:
                 return False
-            if not self.delete_fn(target["id"]):
-                self.flash = "Delete failed."
+            ok, detail = self.delete_fn(target["id"])
+            if not ok:
+                self.flash = detail or "Delete failed."
                 return False
             self.sessions[:] = [s for s in self.sessions if s["id"] != target["id"]]
             self._refilter(reset_cursor=False)
@@ -247,16 +249,26 @@ def _session_browse_picker(sessions: list, session_db=None) -> Optional[str]:
         return None
     _annotate_session_statuses(sessions, session_db)
 
-    def _delete_session(session_id: str) -> bool:
+    def _delete_session(session_id: str) -> Tuple[bool, str]:
         try:
             from hermes_cli.sessions_cmd import get_hermes_home
             sessions_dir = get_hermes_home() / "sessions"
         except Exception:
             sessions_dir = None
+        # Same guard as non-interactive `hermes sessions delete` (#123583): the picker must not
+        # pull a row out from under a turn that still owns the conversation, or that turn's
+        # transcript is dropped by the live agent's failing FK flush.
+        from hermes_state_compression import active_turn_lease_detail
         try:
-            return bool(session_db.delete_session(session_id, sessions_dir=sessions_dir))
+            holder = session_db.session_turn_lease_holder(session_id)
         except Exception:
-            return False
+            holder = None
+        if holder:
+            return False, active_turn_lease_detail(session_id, holder)
+        try:
+            return bool(session_db.delete_session(session_id, sessions_dir=sessions_dir)), ""
+        except Exception:
+            return False, ""
     try:  # curses first; any failure (no curses module, odd terminal) falls back
         import curses
         browser = _CursesBrowser(curses, sessions, _delete_session if session_db is not None else None)

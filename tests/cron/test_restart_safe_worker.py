@@ -501,6 +501,80 @@ def test_external_worker_crash_recovers_uncertain_attempt(monkeypatch):
     assert get.call_count == 2
 
 
+def _run_worker_that_dies_after_adoption(tmp_path, monkeypatch, before_exit=""):
+    """Fire a real job through the gateway handoff to a stand-in worker that adopts the execution,
+    acknowledges, runs *before_exit*, then dies without terminalizing it (an OOM kill)."""
+    import cron.scheduler as scheduler
+    from cron.executions import get_execution
+    from cron.jobs import claim_job_for_fire, create_job, get_job
+    from tools.process_registry import GatewayChildDispatch
+
+    script = (
+        "import json, os, sys\n"
+        "from pathlib import Path\n"
+        "from cron.executions import adopt_claimed_execution\n"
+        "from cron.jobs import mark_job_run\n"
+        "job = json.loads(Path(sys.argv[2]).read_text())['job']\n"
+        "assert adopt_claimed_execution(job['execution_id']) is not None\n"
+        "ack = Path(sys.argv[4])\n"
+        "ack.with_suffix('.tmp').write_text("
+        "json.dumps({'pid': os.getpid(), 'execution_id': job['execution_id']}))\n"
+        "os.replace(ack.with_suffix('.tmp'), ack)\n"
+        f"{before_exit}"
+        "os._exit(9)\n"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        "tools.process_registry.restart_safe_gateway_child_argv",
+        lambda command, **_kwargs: GatewayChildDispatch(
+            "direct", [sys.executable, "-c", script, *command[3:]]),
+    )
+    deliveries = []
+    monkeypatch.setattr(
+        scheduler, "_deliver_result", lambda _job, _content, **kwargs: deliveries.append(kwargs))
+    monkeypatch.setattr(scheduler, "_running_worker_pids", {})
+
+    job = create_job(prompt="work", schedule="every 1h", name="oom-killed")
+    claimed = claim_job_for_fire(job["id"], return_job=True)
+    assert scheduler.run_one_job(claimed) is True
+    return get_job(job["id"]), get_execution(claimed["execution_id"]), deliveries
+
+
+def test_worker_dying_after_adoption_records_the_unknown_run_on_the_job(tmp_path, monkeypatch):
+    """Recovery leaves the dead worker's execution ``unknown`` (#120328), but the job itself kept no
+    trace of the run: no last_run_at/last_status, no incident, no failure notice, and a stale
+    fire_claim. The waiter must record it through the normal failure path."""
+    from cron.incidents import list_incidents
+
+    job, execution, deliveries = _run_worker_that_dies_after_adoption(tmp_path, monkeypatch)
+
+    assert execution["status"] == "unknown"
+    assert job["last_status"] == "error"
+    assert job["last_error"] == execution["error"]
+    assert job["last_run_at"]
+    assert job["fire_claim"] is None
+    assert [incident["job_id"] for incident in list_incidents()] == [job["id"]]
+    assert [delivery["for_failure"] for delivery in deliveries] == [True]
+
+
+def test_worker_dying_after_recording_its_run_is_not_marked_twice(tmp_path, monkeypatch):
+    """The worker records the job before terminalizing its execution; dying between the two still
+    leaves the execution ``unknown``, but the job already holds the run's real outcome."""
+    from cron.incidents import list_incidents
+
+    job, execution, deliveries = _run_worker_that_dies_after_adoption(
+        tmp_path,
+        monkeypatch,
+        "mark_job_run(job['id'], True, expected_fire_owner=job['fire_claim']['by'])\n",
+    )
+
+    assert execution["status"] == "unknown"
+    assert job["last_status"] == "ok"
+    assert job["fire_claim"] is None
+    assert list_incidents() == []
+    assert deliveries == []
+
+
 
 
 def test_terminal_early_return_reaps_a_real_worker_process(monkeypatch):
@@ -661,6 +735,16 @@ def test_shared_run_path_hands_gateway_fire_to_external_worker(monkeypatch):
 
     launch.assert_called_once_with(job)
     run.assert_not_called()
+
+
+def test_failed_unknown_outcome_bookkeeping_still_reports_the_handoff(monkeypatch):
+    import cron.scheduler as scheduler
+
+    monkeypatch.setattr(scheduler, "_launch_external_cron_worker", Mock(return_value=True))
+    monkeypatch.setattr(
+        scheduler, "_record_unknown_worker_outcome", Mock(side_effect=RuntimeError("store locked")))
+
+    assert scheduler.run_one_job({"id": "job-1", "execution_id": "exec-1"}) is True
 
 
 def test_shutdown_does_not_interrupt_restart_safe_waiter():

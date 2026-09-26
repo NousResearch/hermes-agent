@@ -1,9 +1,9 @@
-"""Regression test for the thinking-only prefill reaching the wire.
+"""Regression tests for thinking-only recovery and legacy prefill sanitation.
 
 A thinking-only response (reasoning tokens, no visible text) that is NOT a clean
-``stop`` (a clean-stop reasoning-only reply is promoted to the answer up front) makes the loop
-append an empty assistant turn and re-send so the model continues its own
-reasoning. On providers that don't echo reasoning back, the API copy has its
+``stop`` (a clean-stop reasoning-only reply is promoted to the answer up front) used to
+append an empty assistant turn and re-send. On providers that don't echo reasoning back,
+the API copy has its
 reasoning fields stripped before ``_drop_thinking_only_and_merge_users`` runs,
 so the drop pass used to see a bare ``{"role": "assistant", "content": ""}``
 and let it through. Gemini rejects that with
@@ -76,7 +76,7 @@ def _sent_messages(create_mock, call_index):
 class TestThinkingPrefillTrailingTurn:
 
     def test_request_after_prefills_does_not_end_on_assistant(self, loop_agent):
-        # Two thinking-only responses queue two prefill stubs, then the model
+        # Two thinking-only responses trigger two recovery retries, then the model
         # finally produces text. The third request is the one that used to go
         # out ending on a model turn.
         loop_agent.client.chat.completions.create.side_effect = [
@@ -94,7 +94,7 @@ class TestThinkingPrefillTrailingTurn:
 
         create = loop_agent.client.chat.completions.create
         assert create.call_count >= 3, (
-            "Two thinking-only responses should each trigger a prefill retry."
+            "Two thinking-only responses should each trigger a recovery retry."
         )
 
         final_request = _sent_messages(create, 2)
@@ -127,10 +127,8 @@ class TestThinkingPrefillTrailingTurn:
             f"Empty assistant stub(s) reached the wire: {empty_assistants}"
         )
 
-    def test_prefill_row_keeps_reasoning_out_of_content(self, loop_agent):
-        """The prefill stub carries the model's reasoning in its reasoning fields only: its
-        ``content`` stays empty when appended, and no transcript row ever stores the
-        chain-of-thought as an ordinary reply (#111761)."""
+    def test_thinking_retry_does_not_append_recovery_rows(self, loop_agent):
+        """Failed reasoning stays out of live history as well as visible content (#111761)."""
         import agent.turn_empty_response as ter
 
         reasoning = "Let me work through the request step by step."
@@ -153,12 +151,10 @@ class TestThinkingPrefillTrailingTurn:
         ):
             result = loop_agent.run_conversation("do the thing")
 
-        stubs = [m for m in appended if m.get("_thinking_prefill")]
-        assert len(stubs) == 1
-        assert not (stubs[0].get("content") or "").strip()
-        assert stubs[0]["reasoning"] == reasoning
+        assert not appended
         assert not any(
-            m.get("role") == "assistant" and m.get("content") == reasoning for m in result["messages"]
+            reasoning in (m.get("reasoning") or "") or m.get("content") == reasoning
+            for m in result["messages"]
         )
 
     def test_internal_marker_never_reaches_the_wire(self, loop_agent):

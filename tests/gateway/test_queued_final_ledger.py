@@ -123,6 +123,107 @@ async def test_a_delivered_queued_final_is_recorded_and_marked_delivered():
 
 
 @pytest.mark.asyncio
+async def test_voice_caption_records_one_delivered_obligation_without_text_resend(tmp_path):
+    from gateway.run import GatewayRunner
+    adapter = _telegram_adapter()
+    adapter._should_auto_tts_for_chat = lambda _chat: True
+    audio = tmp_path / "answer.ogg"
+    audio.write_bytes(b"audio")
+    adapter._synthesize_auto_tts = AsyncMock(return_value=([str(audio)], str(audio)))
+    adapter.play_tts = AsyncMock(return_value=SendResult(success=True, message_id="voice-1"))
+    outcome = {}
+
+    delivered = await GatewayRunner._deliver_queued_first_response(
+        _runner(), TEXT, source=_source(), adapter=adapter, session_key=SESSION_KEY,
+        inbound_message_id=INBOUND_ID, message_type=MessageType.VOICE,
+        deliver_media=False, delivery_result=outcome)
+
+    assert delivered is True
+    assert outcome["queued_voice_delivered"] is True
+    assert adapter.play_tts.await_args.kwargs["caption"] == TEXT
+    adapter.send.assert_not_awaited()
+    rows = _rows()
+    assert len(rows) == 1
+    assert rows[0]["state"] == "delivered"
+    assert rows[0]["obligation_id"] == dl.compute_obligation_id(SESSION_KEY, INBOUND_ID, TEXT)
+
+
+@pytest.mark.asyncio
+async def test_refused_voice_caption_falls_back_to_one_ledgered_text_send(tmp_path):
+    from gateway.run import GatewayRunner
+    adapter = _telegram_adapter()
+    adapter._should_auto_tts_for_chat = lambda _chat: True
+    audio = tmp_path / "answer.ogg"
+    audio.write_bytes(b"audio")
+    adapter._synthesize_auto_tts = AsyncMock(return_value=([str(audio)], str(audio)))
+    adapter.play_tts = AsyncMock(return_value=SendResult(success=False, error="audio refused"))
+    outcome = {}
+
+    delivered = await GatewayRunner._deliver_queued_first_response(
+        _runner(), TEXT, source=_source(), adapter=adapter, session_key=SESSION_KEY,
+        inbound_message_id=INBOUND_ID, message_type=MessageType.VOICE,
+        deliver_media=False, delivery_result=outcome)
+
+    assert delivered is True
+    assert "queued_voice_delivered" not in outcome
+    adapter.send.assert_awaited_once()
+    assert adapter.send.await_args.kwargs["content"] == TEXT
+    rows = _rows()
+    assert len(rows) == 1
+    assert rows[0]["state"] == "delivered"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("already_streamed", [True, False])
+async def test_queued_streamed_or_reconciled_voice_speaks_without_duplicating_text(
+    tmp_path, already_streamed,
+):
+    from gateway.run import GatewayRunner
+    adapter = _telegram_adapter()
+    adapter._should_auto_tts_for_chat = lambda _chat: True
+    audio = tmp_path / "answer.ogg"
+    audio.write_bytes(b"audio")
+    adapter._synthesize_auto_tts = AsyncMock(return_value=([str(audio)], str(audio)))
+    adapter.play_tts = AsyncMock(return_value=SendResult(success=True, message_id="voice-1"))
+    adapter.edit_message.return_value = SendResult(success=True, message_id="stream-1")
+    outcome = {}
+    consumer = None if already_streamed else SimpleNamespace(message_id="stream-1", _turn_split_delivery=False)
+
+    delivered = await GatewayRunner._deliver_queued_first_response(
+        _runner(), TEXT, source=_source(), adapter=adapter, session_key=SESSION_KEY,
+        inbound_message_id=INBOUND_ID, message_type=MessageType.VOICE,
+        text_already_delivered=already_streamed, stream_consumer=consumer,
+        deliver_media=False, delivery_result=outcome)
+
+    assert delivered is True
+    assert outcome["queued_voice_delivered"] is True
+    assert adapter.play_tts.await_args.kwargs["caption"] is None
+    adapter.send.assert_not_awaited()
+    assert _rows() == []  # visible text already landed; audio without caption owes no text retry
+
+
+@pytest.mark.asyncio
+async def test_queued_streamed_voice_failure_keeps_delivered_text_without_resend(tmp_path):
+    from gateway.run import GatewayRunner
+    adapter = _telegram_adapter()
+    adapter._should_auto_tts_for_chat = lambda _chat: True
+    audio = tmp_path / "answer.ogg"
+    audio.write_bytes(b"audio")
+    adapter._synthesize_auto_tts = AsyncMock(return_value=([str(audio)], str(audio)))
+    adapter.play_tts = AsyncMock(return_value=SendResult(success=False, error="audio refused"))
+    outcome = {}
+
+    delivered = await GatewayRunner._deliver_queued_first_response(
+        _runner(), TEXT, source=_source(), adapter=adapter, session_key=SESSION_KEY,
+        inbound_message_id=INBOUND_ID, message_type=MessageType.VOICE,
+        text_already_delivered=True, deliver_media=False, delivery_result=outcome)
+
+    assert delivered is True
+    assert "queued_voice_delivered" not in outcome
+    adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_forum_topic_turns_are_identified_by_their_inbound_id_not_the_reply_anchor():
     """Telegram forum topics route by topic metadata and never reply, so the anchor is None for
     every message in the topic. Two turns answering with the same text must still get two rows,

@@ -15,11 +15,14 @@ from plugins.platforms.telegram.adapter import TelegramAdapter
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("voice_accepted", [True, False])
-async def test_queued_voice_first_reply_speaks_once_with_text_fallback(tmp_path, monkeypatch, voice_accepted):
+@pytest.mark.parametrize("already_streamed", [True, False])
+async def test_queued_voice_first_reply_speaks_once_with_text_fallback(
+    tmp_path, monkeypatch, voice_accepted, already_streamed,
+):
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token", extra={}))
     source = SessionSource(platform=Platform.TELEGRAM, chat_id="chat-1", chat_type="dm")
     runner = object.__new__(GatewayRunner)
-    runner._run_agent_stream_confirmed_final_delivery = lambda *_a, **_kw: False
+    runner._run_agent_stream_confirmed_final_delivery = lambda *_a, **_kw: already_streamed
     runner._is_intentional_silence = lambda *_a: False
     runner._pop_post_delivery_callback = lambda *_a: None
     turn_ctx = SimpleNamespace(
@@ -40,8 +43,8 @@ async def test_queued_voice_first_reply_speaks_once_with_text_fallback(tmp_path,
     )
 
     adapter.play_tts.assert_awaited_once()
-    assert adapter.play_tts.await_args.kwargs["caption"] == "The answer"
-    assert adapter.send_final_ledgered.await_count == (0 if voice_accepted else 1)
+    assert adapter.play_tts.await_args.kwargs["caption"] == (None if already_streamed else "The answer")
+    assert adapter.send_final_ledgered.await_count == (0 if voice_accepted or already_streamed else 1)
     assert result["already_sent"] is True
     assert not audio.exists()
     # An early return to the normal completion path must not speak an accepted

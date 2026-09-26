@@ -392,6 +392,14 @@ _GATEWAY_AUTH_ERROR_RE = re.compile(
 _GATEWAY_RATE_LIMIT_RE = re.compile(
     r"(rate\s+limit|rate-limited|\b429\b|quota|usage\s+limit)", re.IGNORECASE)
 
+_GATEWAY_MODEL_NOT_FOUND_RE = re.compile(
+    r"model['\"]?\s+\S+?\s+not\s+found|\"model\"\s*:\s*\S+?\s*not\s+found",
+    re.IGNORECASE,
+)
+# llama.cpp's 400 envelope: {"error": {"message": "model 'x' not found", ...}} - a
+# configured model the serving endpoint does not have. Distinct from auth (fix: /login),
+# rate-limit (fix: wait) and policy (fix: rephrase): the fix is picking an available model.
+
 # Connection-failure markers: the first 8 also anchor the provider-failure envelope shape below.
 _CONNECTION_ERROR_MARKERS = (
     r"(?:\w+\.)?(?:api\s*)?connection\s*(?:error|timeout)", r"(?:\w+\.)?connect\s*(?:error|timeout)",
@@ -632,6 +640,8 @@ _PROVIDER_ERROR_REPLIES = (
                              "or ask whoever runs this bot to run `hermes doctor` on the host."),
     (_GATEWAY_PROVIDER_POLICY_RE, "⚠️ The AI model service rejected this request. Try rephrasing your "
                                   "message, or use /model to switch models."),
+    (_GATEWAY_MODEL_NOT_FOUND_RE, "⚠️ That model isn't available from the model service. Use /model to see "
+                                  "what is, or run `hermes doctor` on the host."),
     (_GATEWAY_CONNECTION_INTERRUPTED_RE, "⚠️ The connection to the AI model service was interrupted mid-request — "
                                          "usually transient. Use /retry to try again; if it keeps happening, run "
                                          "`hermes doctor` on the host."),

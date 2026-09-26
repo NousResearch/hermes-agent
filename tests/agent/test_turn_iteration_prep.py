@@ -66,6 +66,23 @@ def test_restart_refunds_are_bounded_per_turn(flag):
     assert agent.steered == (["last correction"] if flag == "restart_with_redirected_messages" else [])
 
 
+def test_fallback_restart_cap_scales_with_chain_length():
+    """The rebuilt cap is ``max_retries`` × fallback-chain length: each chain entry is a
+    provider the turn may try and each gets the whole per-call retry budget, so a chain
+    longer than ``max_retries`` is not truncated mid-chain (a 5-entry chain with the
+    default ``api_max_retries=3`` previously ended after the 4th entry)."""
+    chain = MAX_RETRIES + 2
+    limit = MAX_RETRIES * chain
+    agent = _agent()
+    agent._fallback_chain = [{"provider": f"p{i}", "model": "m"} for i in range(chain)]
+    restart_count, verdicts = 0, []
+    while len(verdicts) < limit + 5 and (not verdicts or verdicts[-1].action != "break"):
+        verdicts.append(_apply(agent, "restart_with_rebuilt_messages", restart_count))
+        restart_count = verdicts[-1].restart_count
+    assert [v.action for v in verdicts] == ["continue"] * limit + ["break"]
+    assert agent.iteration_budget.refunds == limit
+
+
 def _interrupted_agent(tool_interrupt_reason):
     agent = SimpleNamespace(
         _interrupt_requested=True, _tool_interrupt_reason=tool_interrupt_reason, quiet_mode=True,

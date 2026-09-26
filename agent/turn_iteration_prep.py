@@ -427,10 +427,11 @@ def apply_retry_restarts(
     assistant item; ``restart_with_rebuilt_messages`` is the single consumer that clears
     ``_preflight_compression_blocked`` so the fallback gets a fresh preflight (#84733).
 
-    The two refunding restart paths (redirect and rebuilt-for-fallback) are bounded by
-    ``max_retries`` via ``restart_count`` (a per-turn accumulator) so a runaway
-    interrupt/redirect that keeps re-arming a restart flag cannot refund the budget
-    forever and hold the turn lease indefinitely."""
+    The two refunding restart paths (redirect and rebuilt-for-fallback) are bounded via
+    ``restart_count`` (a per-turn accumulator) so a runaway interrupt/redirect that keeps
+    re-arming a restart flag cannot refund the budget forever and hold the turn lease
+    indefinitely: redirect restarts by ``max_retries``, rebuilt-for-fallback by
+    ``max_retries`` × fallback-chain length (every entry is a provider this turn may try)."""
 
     from agent.conversation_loop import (
         _HANDOFF_SKIP_FINAL_RESPONSE, _should_skip_model_call_for_reference_handoff
@@ -508,15 +509,25 @@ def apply_retry_restarts(
 
     if _retry.restart_with_rebuilt_messages:
         restart_count += 1
-        if restart_count > max_retries:
+        # Each chain entry is a provider this turn is allowed to try and each gets the whole
+        # per-call retry budget, so the real bound is max_retries × chain length. A flat
+        # max_retries cap truncated any chain longer than it (a 5-entry chain with the
+        # default api_max_retries=3 ended the turn after the 4th entry). Still a backstop: _fallback_index
+        # only advances, so the chain ends the escalation loop on its own; the cap covers
+        # a mid-turn model switch that resets the index.
+        _chain_len = len(getattr(agent, "_fallback_chain", None) or [])
+        _restart_limit = max_retries * max(1, _chain_len)
+        if restart_count > _restart_limit:
             # A stall/failure keeps re-escalating to the fallback chain: stop refunding the
             # iteration budget and re-issuing, or a runaway turn holds the turn lease
             # indefinitely (rebuilt restarts previously had no bound).
             _turn_exit_reason = "rebuilt_restart_limit_exceeded"
             logger.warning(
-                "Rebuilt-message restart limit (%s) exceeded; ending turn instead of "
-                "refunding the iteration budget indefinitely.",
+                "Rebuilt-message restart limit (%s = %s retries × %s chain entries) "
+                "exceeded; ending turn instead of refunding the iteration budget indefinitely.",
+                _restart_limit,
                 max_retries,
+                max(1, _chain_len),
             )
             return _verdict("break")
         # A stall/failure escalated to the fallback chain: re-issue against the

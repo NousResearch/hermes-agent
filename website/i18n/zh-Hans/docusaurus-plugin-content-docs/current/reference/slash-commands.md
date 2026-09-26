@@ -112,7 +112,7 @@ Hermes 有两个斜杠命令入口，均由 `hermes_cli/commands.py` 中的中�
 | `/insights` | 显示用量洞察和分析（最近 30 天） |
 | `/platforms`（别名：`/gateway`） | 显示 gateway/消息平台状态（仅限 CLI 摘要视图）。 |
 | `/paste` | 附加剪贴板图片 |
-| `/copy [number]` | 将最后一条助手回复复制到剪贴板（或用数字指定倒数第 N 条）。仅限 CLI。 |
+| `/copy [number]` | 将最后一条助手回复复制到剪贴板；带数字时复制从会话开头数起的第 N 条（`/copy 1` 为第一条）。仅限 CLI。 |
 | `/image <path>` | 为下一条 prompt 附加本地图片文件。 |
 | `/debug` | 上传调试报告（系统信息 + 日志）并获取可分享链接。消息平台中也可用。 |
 | `/profile` | 显示活动 profile 名称和主目录 |

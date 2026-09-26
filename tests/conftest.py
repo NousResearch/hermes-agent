@@ -245,7 +245,7 @@ from tests._fixtures.platform_gating import _platforms_gate_reason, _reject_cont
 
 
 @pytest.fixture(autouse=True)
-def _hermetic_environment(tmp_path, monkeypatch):
+def _hermetic_environment(tmp_path, tmp_path_factory, monkeypatch):
     """Blank out all credential/behavioral env vars so local and CI match.
 
     Also redirects HOME and HERMES_HOME to per-test tempdirs so code that
@@ -293,6 +293,26 @@ def _hermetic_environment(tmp_path, monkeypatch):
     (fake_hermes_home / "memories").mkdir()
     (fake_hermes_home / "skills").mkdir()
     monkeypatch.setenv("HERMES_HOME", str(fake_hermes_home))
+    # Bare launchctl resolves to a test-owned stub on Darwin. Absolute host
+    # paths remain blocked by the inherited macOS sandbox, while tests of harmless
+    # command discovery can exercise PATH resolution without touching the live
+    # service manager. The safety helper is intentionally inert elsewhere.
+    if sys.platform == "darwin":
+        fake_bin = tmp_path_factory.getbasetemp() / "launchctl-bin"
+        fake_bin.mkdir(exist_ok=True)
+        fake_launchctl = fake_bin / "launchctl"
+        fake_launchctl.write_text(
+            "#!/bin/sh\n"
+            "echo 'pytest live-system guard: launchctl blocked' >&2\n"
+            "exit 126\n",
+            encoding="utf-8",
+        )
+        fake_launchctl.chmod(0o755)
+        original_path = os.environ.get("PATH", "")
+        monkeypatch.setenv(
+            "PATH",
+            os.pathsep.join(filter(None, [str(fake_bin), original_path])),
+        )
     # A test that pins the process home (hermes_constants.pin_process_hermes_home) must not
     # leak that module-global into the next test's routed-profile decisions.
     try:
@@ -1087,9 +1107,10 @@ def pytest_configure(config):  # noqa: D401 — pytest hook
     _relocate_basetemp_outside_operator_home(config)
     config.addinivalue_line(
         "markers",
-        f"{_LIVE_SYSTEM_GUARD_BYPASS_MARK}: bypass the live-system guard "
+        f"{_LIVE_SYSTEM_GUARD_BYPASS_MARK}: bypass signal/process guards "
         "(only for tests that genuinely need real os.kill / subprocess "
-        "behaviour — e.g. PTY tests that signal their own child).",
+        "behaviour — e.g. PTY tests that signal their own child); "
+        "launchctl remains blocked and must be faked.",
     )
     config.addinivalue_line(
         "markers", "allow_real_home_io: explicitly bypass the test-only home I/O guard."

@@ -124,19 +124,37 @@ def _search_stdout_and_limit(result: ExecuteResult) -> tuple[str, Optional[str]]
 _SEARCH_OUTPUT_RE = re.compile(r'^([A-Za-z]:)?[^\s:][^\n]*?[:\-]\d|^[^\s:][^\s]*$')
 
 
-def _split_tool_diagnostics(output: str) -> tuple[str, str]:
+def _split_tool_diagnostics(output: str, output_mode: str = "content") -> tuple[str, str]:
     """Separate rg/grep diagnostic lines from real match output → ``(diagnostics, payload)``.
     ``_exec`` merges stderr into stdout; classifying by SHAPE lets the exit-2 guard
     tell a pure failure (no payload) from a partial one (one unreadable file, others
-    matched) and guarantees error text is never parsed as a match."""
+    matched) and guarantees error text is never parsed as a match.
+
+    In ``files_only`` mode the shape regex's second alternative
+    (``^[^\\s:][^\\s]*$``) rejects any path containing whitespace, silently
+    dropping results for directories like ``"Obsidian Vault"`` (issue #91698).
+    In that mode ``rg -l`` / ``grep -l`` emit one bare path per line with no
+    line-number suffix, so we classify every non-diagnostic-prefixed line as
+    a path — spaces included."""
     diagnostics: list[str] = []
     payload: list[str] = []
     for line in output.split('\n'):
-        if not line.strip():
+        stripped = line.strip()
+        if not stripped:
             continue
         # Prefix check first: a match path can contain "-<digit>" (".../pytest-686/...").
         if line.lstrip().startswith(("rg: ", "grep: ")):
             diagnostics.append(line)
+        elif output_mode == "files_only":
+            # In files_only mode every non-diagnostic line is a path.
+            # rg's regex-parse-error block emits indented caret lines and a
+            # trailing "error: ..." line without the tool prefix; those start
+            # with whitespace or "error:" and are not valid paths, so filter
+            # them out.
+            if stripped.startswith("error:") or line != line.lstrip():
+                diagnostics.append(line)
+            else:
+                payload.append(line)
         elif line == "--" or _SEARCH_OUTPUT_RE.match(line):
             payload.append(line)
         else:
@@ -203,7 +221,7 @@ def _parse_search_output(result, output_mode: str, limit: int, offset: int,
     errors (one unreadable file), so an error is surfaced only when exit==2 AND no
     usable payload remains. ``warning`` is attached to files_only/content results."""
     stdout, limit_reason = _search_stdout_and_limit(result)
-    diagnostics, payload = _split_tool_diagnostics(stdout)
+    diagnostics, payload = _split_tool_diagnostics(stdout, output_mode)
     if result.exit_code == 2 and not payload.strip():
         error_msg = diagnostics.strip() or result.stdout.strip() or "Search error"
         return SearchResult(error=f"Search failed: {error_msg}", total_count=0)

@@ -790,4 +790,20 @@ export const ga: Translations = {
     logTruncated: "(taispeántar an 100 KB deireanach — loga iomlán ag ",
     logAt: ")",
   },
+  // ── Chat: mobile clipboard paste ──
+  chat: {
+    paste: {
+      button: "Greamaigh",
+      confirmPrompt: "Greamaigh {preview} sa teirminéal? Seoltar greamú il-líne líne ar líne.",
+      failures: {
+        insecureContext: "Níl greamú ar fáil thar nasc HTTP simplí. Coinnigh an teirminéal brúite agus roghnaigh Greamaigh, nó oscail an deais thar HTTPS.",
+        permissionDenied: "Diúltaíodh rochtain ar an ngearrthaisce. Coinnigh an teirminéal brúite agus roghnaigh Greamaigh.",
+        unsupported: "Ní nochtann an brabhsálaí seo API an ghearrthaisce. Coinnigh an teirminéal brúite agus roghnaigh Greamaigh.",
+        notConnected: "Níl an comhrá ceangailte — níor seoladh an greamú. Athcheangail agus triail arís.",
+        tooLarge: "Tá inneachar an ghearrthaisce ró-mhór le greamú. Cóipeáil cuid níos lú.",
+      },
+      imageUploadFailed: "Theip ar an íomhá a uaslódáil: {message}",
+      imageNotConnected: "Íomhá uaslódáilte, ach níl an comhrá ceangailte — bain triail eile as arís.",
+    },
+  },
 };

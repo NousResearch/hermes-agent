@@ -781,4 +781,20 @@ export const zhHant: Translations = {
     logTruncated: "（顯示最後 100 KB — 完整日誌位於 ",
     logAt: "）",
   },
+  // ── Chat: mobile clipboard paste ──
+  chat: {
+    paste: {
+      button: "貼上",
+      confirmPrompt: "要將 {preview} 貼到終端嗎？多行貼上會逐行送出。",
+      failures: {
+        insecureContext: "一般 HTTP 連線下無法使用貼上。請長按終端並選擇「貼上」，或透過 HTTPS 開啟面板。",
+        permissionDenied: "剪貼簿存取被拒絕。請改為長按終端並選擇「貼上」。",
+        unsupported: "此瀏覽器未提供剪貼簿 API。請改為長按終端並選擇「貼上」。",
+        notConnected: "聊天未連線——貼上未送出。請重新連線後再試。",
+        tooLarge: "剪貼簿內容過大，無法貼上。請複製較小的片段。",
+      },
+      imageUploadFailed: "圖片上傳失敗：{message}",
+      imageNotConnected: "圖片已上傳，但聊天尚未連線 — 請再試一次。",
+    },
+  },
 };

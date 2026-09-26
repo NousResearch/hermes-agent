@@ -782,4 +782,20 @@ export const hu: Translations = {
     logTruncated: "(az utolsó 100 KB látható — teljes napló: ",
     logAt: ")",
   },
+  // ── Chat: mobile clipboard paste ──
+  chat: {
+    paste: {
+      button: "Beillesztés",
+      confirmPrompt: "Beilleszti a következőt a terminálba: {preview}? A többsoros beillesztés soronként kerül elküldésre.",
+      failures: {
+        insecureContext: "Beillesztés egyszerű HTTP-kapcsolat felett nem érhető el. Tartsd nyomva a terminált, és válaszd a Beillesztés lehetőséget, vagy nyisd meg a panelt HTTPS-en.",
+        permissionDenied: "A vágólaphoz való hozzáférés megtagadva. Tartsd nyomva a terminált, és válaszd a Beillesztés lehetőséget.",
+        unsupported: "Ez a böngésző nem biztosítja a vágólap API-t. Tartsd nyomva a terminált, és válaszd a Beillesztés lehetőséget.",
+        notConnected: "A csevegés nincs csatlakoztatva — a beillesztés nem lett elküldve. Csatlakozz újra, és próbáld megint.",
+        tooLarge: "A vágólap tartalma túl nagy a beillesztéshez. Másolj kisebb részt.",
+      },
+      imageUploadFailed: "Képfeltöltés nem sikerült: {message}",
+      imageNotConnected: "A kép feltöltve, de a csevegés nincs csatlakoztatva — próbáld újra.",
+    },
+  },
 };

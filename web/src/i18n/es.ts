@@ -782,4 +782,20 @@ export const es: Translations = {
     logTruncated: "(mostrando los últimos 100 KB — registro completo en ",
     logAt: ")",
   },
+  // ── Chat: mobile clipboard paste ──
+  chat: {
+    paste: {
+      button: "Pegar",
+      confirmPrompt: "¿Pegar {preview} en el terminal? Un pegado de varias líneas se envía línea por línea.",
+      failures: {
+        insecureContext: "Pegar no está disponible con una conexión HTTP simple. Mantén pulsado el terminal y elige Pegar, o abre el panel mediante HTTPS.",
+        permissionDenied: "Se denegó el acceso al portapapeles. Mantén pulsado el terminal y elige Pegar.",
+        unsupported: "Este navegador no expone la API del portapapeles. Mantén pulsado el terminal y elige Pegar.",
+        notConnected: "El chat no está conectado: no se envió el pegado. Vuelve a conectar e inténtalo de nuevo.",
+        tooLarge: "El contenido del portapapeles es demasiado grande para pegarlo. Copia una sección más pequeña.",
+      },
+      imageUploadFailed: "Error al subir la imagen: {message}",
+      imageNotConnected: "Imagen subida, pero el chat no está conectado: inténtalo de nuevo.",
+    },
+  },
 };

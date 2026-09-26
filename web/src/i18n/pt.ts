@@ -783,4 +783,20 @@ export const pt: Translations = {
     logTruncated: "(a mostrar os últimos 100 KB — registo completo em ",
     logAt: ")",
   },
+  // ── Chat: mobile clipboard paste ──
+  chat: {
+    paste: {
+      button: "Colar",
+      confirmPrompt: "Colar {preview} no terminal? Uma colagem com várias linhas é enviada linha a linha.",
+      failures: {
+        insecureContext: "A colagem não está disponível numa ligação HTTP simples. Toque sem soltar no terminal e escolha Colar, ou abra o painel em HTTPS.",
+        permissionDenied: "O acesso à área de transferência foi negado. Toque sem soltar no terminal e escolha Colar.",
+        unsupported: "Este navegador não expõe a API da área de transferência. Toque sem soltar no terminal e escolha Colar.",
+        notConnected: "O chat não está ligado — a colagem não foi enviada. Volte a ligar e tente novamente.",
+        tooLarge: "O conteúdo da área de transferência é demasiado grande para colar. Copie uma secção mais pequena.",
+      },
+      imageUploadFailed: "Falha no carregamento da imagem: {message}",
+      imageNotConnected: "Imagem carregada, mas a conversa não está ligada — tente novamente.",
+    },
+  },
 };

@@ -782,4 +782,20 @@ export const fr: Translations = {
     logTruncated: "(affichage des derniers 100 KB — log complet à ",
     logAt: ")",
   },
+  // ── Chat: mobile clipboard paste ──
+  chat: {
+    paste: {
+      button: "Coller",
+      confirmPrompt: "Coller {preview} dans le terminal ? Un collage multiligne est envoyé ligne par ligne.",
+      failures: {
+        insecureContext: "Le collage n’est pas disponible sur une connexion HTTP simple. Appuyez longuement sur le terminal et choisissez Coller, ou ouvrez le tableau de bord en HTTPS.",
+        permissionDenied: "L’accès au presse-papiers a été refusé. Appuyez longuement sur le terminal et choisissez Coller.",
+        unsupported: "Ce navigateur n’expose pas l’API presse-papiers. Appuyez longuement sur le terminal et choisissez Coller.",
+        notConnected: "Le chat n’est pas connecté — le collage n’a pas été envoyé. Reconnectez-vous et réessayez.",
+        tooLarge: "Le contenu du presse-papiers est trop volumineux pour être collé. Copiez une section plus petite.",
+      },
+      imageUploadFailed: "Échec de l’envoi de l’image : {message}",
+      imageNotConnected: "Image envoyée, mais le chat n’est pas connecté — réessayez.",
+    },
+  },
 };

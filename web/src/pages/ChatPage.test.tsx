@@ -92,6 +92,16 @@ const uploadChatImage = vi.hoisted(() =>
   vi.fn(async () => ({ path: "/tmp/pasted.png" })),
 );
 
+// QA pass: the reconnect gate as a mutable flag, so `driveImageAttach`'s two
+// sends can straddle a state change (healthy → reconnecting) inside the 100ms
+// burst gap. `shouldBlockPtyInput` is a one-line pure predicate; stubbing it
+// keeps the test about the *call sites* in ChatPage, which is what B2 changed.
+let ptyInputBlocked = false;
+vi.mock("@/lib/pty-reconnect", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/pty-reconnect")>()),
+  shouldBlockPtyInput: () => ptyInputBlocked,
+}));
+
 vi.mock("@/lib/chatImagePaste", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/chatImagePaste")>()),
   uploadChatImage,
@@ -128,6 +138,25 @@ vi.mock("@/i18n", () => ({
         closeModelTools: "Close model tools",
         modelToolsSheetSubtitle: "Tools",
         modelToolsSheetTitle: "Model",
+      },
+      common: {
+        cancel: "Cancel",
+        confirm: "Confirm",
+      },
+      chat: {
+        paste: {
+          button: "Paste",
+          confirmPrompt: "Paste {preview} into the terminal?",
+          failures: {
+            insecureContext: "Paste needs a secure context.",
+            permissionDenied: "Clipboard access was denied.",
+            unsupported: "Clipboard API unavailable.",
+            notConnected: "Chat is not connected.",
+            tooLarge: "Clipboard contents are too large.",
+          },
+          imageUploadFailed: "Image upload failed: {message}",
+          imageNotConnected: "Image uploaded, but chat is not connected.",
+        },
       },
     },
   }),
@@ -700,5 +729,236 @@ describe("ChatPage PTY ticket connect deadline", () => {
     // force-close a wedged handshake — the two must not both fire.
     await advance(PTY_TICKET_TIMEOUT_MS);
     expect(apiMocks.buildWsUrl).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("ChatPage mobile paste affordance", () => {
+  function stubPointerCoarse(coarse: boolean) {
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      addEventListener() {},
+      matches: query.includes("pointer: coarse") ? coarse : false,
+      media: query,
+      removeEventListener() {},
+    }));
+  }
+
+  async function renderChat() {
+    const { default: ChatPage } = await import("./ChatPage");
+    await render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <ChatPage isActive />
+      </MemoryRouter>,
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+  }
+
+  it("shows the paste control on a coarse pointer", async () => {
+    stubPointerCoarse(true);
+    await renderChat();
+    expect(container.querySelector('[aria-label="Paste"]')).not.toBeNull();
+  });
+
+  it("omits the paste control for a fine pointer", async () => {
+    stubPointerCoarse(false);
+    await renderChat();
+    expect(container.querySelector('[aria-label="Paste"]')).toBeNull();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The double-tap guard, at the control itself.
+//
+// The lib-level suite proves `withPasteInFlightGuard` collapses two
+// overlapping invocations into one send. That is the gate; these are the two
+// things only the real component can show: the button actually calls through
+// the guarded callback (so the gate is on the live path, not installed
+// somewhere decorative), and the in-flight state reaches the DOM as
+// `disabled` so the control is honest about being busy.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("ChatPage paste control double-tap guard", () => {
+  function stubPointerCoarse(coarse: boolean) {
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      addEventListener() {},
+      matches: query.includes("pointer: coarse") ? coarse : false,
+      media: query,
+      removeEventListener() {},
+    }));
+  }
+
+  /** A clipboard whose read resolves only when the returned resolver is called. */
+  function stubSlowClipboard(text: string) {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const readText = vi.fn(async () => {
+      await gate;
+      return text;
+    });
+    Object.defineProperty(window.navigator, "clipboard", {
+      configurable: true,
+      value: { readText, writeText: vi.fn(async () => {}) },
+    });
+    return { readText, release };
+  }
+
+  async function renderCoarseChat() {
+    stubPointerCoarse(true);
+    const { default: ChatPage } = await import("./ChatPage");
+    await render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <ChatPage isActive />
+      </MemoryRouter>,
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+    return container.querySelector<HTMLButtonElement>('[aria-label="Paste"]');
+  }
+
+  it("marks the control disabled while a paste is in flight", async () => {
+    const clipboard = stubSlowClipboard("hello world");
+    const button = await renderCoarseChat();
+    expect(button).not.toBeNull();
+    expect(button!.disabled).toBe(false);
+
+    await act(async () => {
+      button!.click();
+    });
+
+    // The clipboard read is still pending, so the control is busy and says so.
+    await vi.waitFor(() => expect(button!.disabled).toBe(true));
+
+    await act(async () => {
+      clipboard.release();
+    });
+    // Released when the paste finishes — not left dead.
+    await vi.waitFor(() => expect(button!.disabled).toBe(false));
+  });
+
+  it("sends ONE paste for a double-tap on the real control", async () => {
+    const clipboard = stubSlowClipboard("hello world");
+    const button = await renderCoarseChat();
+
+    await act(async () => {
+      button!.click();
+      button!.click();
+    });
+    // Two taps, one clipboard read: the guard collapsed them before the
+    // clipboard was touched, not after the send. The lib suite pins the
+    // resulting single send; this pins that the button is wired to the
+    // guarded callback at all.
+    expect(clipboard.readText).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      clipboard.release();
+    });
+    await vi.waitFor(() => expect(button!.disabled).toBe(false));
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// QA pass — B2's second half: `driveImageAttach` owns the two raw
+// `ws.send()` calls (`/image <path>` then `\r`), and a lib-level test cannot
+// reach them. The gate is flipped to refusing *between* the two sends, which is
+// the only way to prove the `\r` is gated in its own right rather than riding
+// along on the first send's check.
+//
+// `shouldBlockPtyInput` is stubbed to a mutable flag so the reconnect state can
+// change mid-burst. Everything else is the real component: the real
+// upload → `driveImageAttach` pipeline, the real 100ms gap, the real banner.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("ChatPage driveImageAttach reconnect gate (B2)", () => {
+  beforeEach(() => {
+    ptyInputBlocked = false;
+    uploadChatImage.mockReset();
+    uploadChatImage.mockResolvedValue({ path: "/tmp/pasted.png" });
+  });
+
+  async function renderOpenChat() {
+    const { default: ChatPage } = await import("./ChatPage");
+    await render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <ChatPage isActive />
+      </MemoryRouter>,
+    );
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = FakeWebSocket.instances[0];
+    await act(async () => socket.onopen?.());
+    socket.send.mockClear();
+    return socket;
+  }
+
+  function dispatchImagePaste() {
+    const host = container.querySelector(".hermes-chat-xterm-host");
+    expect(host).not.toBeNull();
+    const paste = new Event("paste", { bubbles: true, cancelable: true });
+    const file = new File([new Uint8Array([1, 2, 3])], "shot.png", {
+      type: "image/png",
+    });
+    Object.defineProperty(paste, "clipboardData", {
+      value: {
+        files: [file],
+        items: [{ getAsFile: () => file, kind: "file", type: "image/png" }],
+      },
+    });
+    host!.dispatchEvent(paste);
+  }
+
+  it("sends neither /image nor \\r while the gate refuses, even with an OPEN socket", async () => {
+    // The NS-591 half-open shape: the browser still reports the socket OPEN
+    // while the reconnect logic already considers it unusable. A readyState-only
+    // guard sails straight through this.
+    const socket = await renderOpenChat();
+    expect(socket.readyState).toBe(FakeWebSocket.OPEN);
+
+    ptyInputBlocked = true;
+    dispatchImagePaste();
+
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain(
+        "Image uploaded, but chat is not connected",
+      ),
+    );
+    // Not one byte on the wire.
+    expect(socket.send).not.toHaveBeenCalled();
+  });
+
+  it("gates the \\r follow-up independently of the /image send", async () => {
+    const socket = await renderOpenChat();
+
+    // Healthy at the moment of the first send...
+    ptyInputBlocked = false;
+    dispatchImagePaste();
+    await vi.waitFor(() =>
+      expect(socket.send).toHaveBeenCalledWith("/image /tmp/pasted.png"),
+    );
+    // ...then the reconnect starts during the 100ms gap before the `\r`. The
+    // `\r` must consult the gate itself, not trust the first send.
+    ptyInputBlocked = true;
+
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain(
+        "Image uploaded, but chat is not connected",
+      ),
+    );
+    expect(socket.send).not.toHaveBeenCalledWith("\r");
+  });
+
+  it("does not over-block: both sends land on a healthy open socket", async () => {
+    const socket = await renderOpenChat();
+
+    ptyInputBlocked = false;
+    dispatchImagePaste();
+
+    await vi.waitFor(() =>
+      expect(socket.send).toHaveBeenCalledWith("\r"),
+    );
+    expect(socket.send).toHaveBeenCalledWith("/image /tmp/pasted.png");
+    expect(container.textContent).not.toContain(
+      "Image uploaded, but chat is not connected",
+    );
   });
 });

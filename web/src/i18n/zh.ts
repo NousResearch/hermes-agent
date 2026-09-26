@@ -777,4 +777,20 @@ export const zh: Translations = {
     logTruncated: "（显示最后 100 KB — 完整日志位于 ",
     logAt: "）",
   },
+  // ── Chat: mobile clipboard paste ──
+  chat: {
+    paste: {
+      button: "粘贴",
+      confirmPrompt: "将 {preview} 粘贴到终端？多行粘贴会逐行提交。",
+      failures: {
+        insecureContext: "普通 HTTP 连接下无法使用粘贴。请长按终端并选择“粘贴”，或通过 HTTPS 打开面板。",
+        permissionDenied: "剪贴板访问被拒绝。请改为长按终端并选择“粘贴”。",
+        unsupported: "此浏览器未提供剪贴板 API。请改为长按终端并选择“粘贴”。",
+        notConnected: "聊天未连接——粘贴未发送。请重新连接后重试。",
+        tooLarge: "剪贴板内容过大，无法粘贴。请复制较小的片段。",
+      },
+      imageUploadFailed: "图片上传失败：{message}",
+      imageNotConnected: "图片已上传，但聊天未连接 — 请重试。",
+    },
+  },
 };

@@ -909,4 +909,31 @@ export interface Translations {
       confirmManyTitle?: string;
     };
   };
+
+  // ── Chat: mobile clipboard paste ──
+  chat: {
+    paste: {
+      /** Coarse-pointer paste control label. Plain text — no emoji: they
+       *  render inconsistently across the platforms this targets. */
+      button: string;
+      /** Confirmation prompt for a multi-line paste (FR-8).
+       *  "{preview}" = the truncated clipboard text. */
+      confirmPrompt: string;
+      /** One message per `PasteFailure` reason (FR-9) — never a silent no-op. */
+      failures: {
+        insecureContext: string;
+        permissionDenied: string;
+        unsupported: string;
+        notConnected: string;
+        tooLarge: string;
+      };
+      /** Image-attach failures. "{message}" = the upload error, rendered
+       *  literally (it may contain `$` substitution patterns). */
+      imageUploadFailed: string;
+      /** The image uploaded, but the PTY gate refused to carry the
+       *  `/image` command — a reconnecting socket stays `readyState` OPEN, so
+       *  this is the only signal the user gets. */
+      imageNotConnected: string;
+    };
+  };
 }

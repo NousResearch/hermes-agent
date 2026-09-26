@@ -11,11 +11,16 @@ import pytest
 from hermes_cli import backup
 
 
+@pytest.fixture(params=["home", "x#y"])
+def home_name(request):
+    return request.param
+
+
 @pytest.fixture(params=["snapshot", "import"])
-def restore_case(tmp_path, monkeypatch, request):
+def restore_case(tmp_path, monkeypatch, request, home_name):
     import hermes_cli.gateway as gateway
 
-    home = tmp_path / "home"
+    home = tmp_path / home_name
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)

@@ -14,6 +14,7 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[2]
+LAYERED_ICON = "icon.icon"  # apps/desktop/assets/icon.icon: the macOS 26 Icon Composer package
 
 
 @pytest.fixture(scope="module")
@@ -140,8 +141,8 @@ def test_canary_changes_only_desktop_background_preserving_art_and_native_geomet
     stable = generate("v1.2.3")
     canary = generate("v1.2.3+canary.20260911T010203Z")
     for path in (stable / "apps/desktop").rglob("*"):
-        if not path.is_file():
-            continue
+        if not path.is_file() or LAYERED_ICON in path.parts:
+            continue  # the layered macOS icon carries its flavor in icon.json, tested below
         original_frames = list(frames(path))
         canary_frames = list(frames(canary / path.relative_to(stable)))
         assert len(original_frames) == len(canary_frames)
@@ -168,6 +169,8 @@ def test_commit_icons_are_red_and_print_only_the_actual_seven_digit_prefix(gener
             continue
         rel = path.relative_to(first)
         assert path.read_bytes() == (same_prefix / rel).read_bytes(), rel
+        if LAYERED_ICON in path.parts:
+            continue  # the layered macOS icon carries its flavor in icon.json, tested below
         first_frames = list(frames(path))
         other_frames = list(frames(changed / rel))
         stable_frames = list(frames(stable / rel))
@@ -211,6 +214,86 @@ def test_commit_icons_are_red_and_print_only_the_actual_seven_digit_prefix(gener
                     assert (min(pixel) > 240) == bool(row & (1 << (4 - x))), (name, digit, x, y)
             assert judged >= 18, (name, digit, judged)
     assert_unbranded_outputs(stable, first)
+
+
+def load_generator(monkeypatch):
+    import importlib.util
+    import types
+
+    monkeypatch.setitem(sys.modules, "resvg_py", types.ModuleType("resvg_py"))
+    spec = importlib.util.spec_from_file_location("generate_icons", ROOT / "scripts/generate_icons.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def manifest_fills(package):
+    """(light, dark) fill colours of an Icon Composer package as 0..1 RGB tuples."""
+    import json
+
+    manifest = json.loads((package / "icon.json").read_text(encoding="utf-8"))
+    fills = {}
+    for spec in manifest["fill-specializations"]:
+        prefix, _, channels = spec["value"]["solid"].partition(":")
+        assert prefix == "srgb"
+        fills[spec.get("appearance", "light")] = tuple(float(v) for v in channels.split(","))[:3]
+    layers = [layer for group in manifest["groups"] for layer in group["layers"]]
+    # A fixed "image-name" makes actool ignore the per-appearance images, so
+    # every layer must pick its image through specializations only, and each
+    # must carry a dark one — otherwise dark mode shows the black girl on the
+    # dark fill.
+    assert not any("image-name" in layer for layer in layers)
+    for layer in layers:
+        assert {spec.get("appearance") for spec in layer["image-name-specializations"]} >= {None, "dark"}
+    referenced = {spec["value"] for layer in layers for spec in layer["image-name-specializations"]}
+    assert referenced == {p.name for p in (package / "Assets").iterdir()}, "every layer image is referenced, none dangle"
+    return fills["light"], fills["dark"]
+
+
+def test_layered_macos_icon_border_hugs_the_system_mask_and_flavor_stays_in_the_fill(generate, monkeypatch):
+    """macOS 26 masks the layers itself: the border layer must be a band of the
+    brand thickness measured perpendicular to Apple's mask everywhere along it,
+    reaching the canvas edge so the mask supplies the outline. Build flavors
+    recolour the fill in icon.json only; the ring and the girl never change."""
+    module = load_generator(monkeypatch)
+    stable = generate("v1.2.3") / "apps/desktop/assets" / LAYERED_ICON
+    canary = generate("v1.2.3+canary.20260911T010203Z") / "apps/desktop/assets" / LAYERED_ICON
+    commit = generate(commit="0123456" + "a" * 33) / "apps/desktop/assets" / LAYERED_ICON
+
+    canvas = module.ICON_CANVAS
+    thickness = canvas * module.BORDER_FRACTION
+    outline = module.mac_mask_outline(float(canvas), 160)
+    for name, ink in (("border-light.png", (0, 0, 0)), ("border-dark.png", (255, 255, 255))):
+        layer = Image.open(stable / "Assets" / name).convert("RGBA")
+        assert layer.size == (canvas, canvas)
+        assert layer.getpixel((0, 0))[3] == 255 and layer.getpixel((canvas - 1, canvas - 1))[3] == 255
+        for (xi, yi), (xo, yo) in zip(module.offset_inward(outline, thickness - 1.5),
+                                      module.offset_inward(outline, thickness + 1.5), strict=True):
+            inside = layer.getpixel((int(xi), int(yi)))
+            assert inside[3] >= 250 and inside[:3] == ink, (name, xi, yi, inside)
+            assert layer.getpixel((int(xo), int(yo)))[3] <= 5, (name, xo, yo)
+
+    for name in ("border-light.png", "border-dark.png", "art-light.png", "art-dark.png"):
+        assert (stable / "Assets" / name).read_bytes() == (canary / "Assets" / name).read_bytes(), name
+    for name in ("border-light.png", "border-dark.png"):
+        assert (stable / "Assets" / name).read_bytes() == (commit / "Assets" / name).read_bytes(), name
+    for name in ("art-light.png", "art-dark.png"):
+        # The commit badge is the only difference, and it lives in the top quarter.
+        plain = Image.open(stable / "Assets" / name).convert("RGBA")
+        badged = Image.open(commit / "Assets" / name).convert("RGBA")
+        changed = ImageChops.difference(plain, badged).convert("L").getbbox()
+        assert changed is not None and changed[3] <= canvas * 0.25 + 3, (name, changed)
+
+    light, dark = manifest_fills(stable)
+    assert light == (1.0, 1.0, 1.0) and max(dark) < 0.1
+    for package, low, high in ((canary, 0.10, 0.18), (commit, -0.05, 0.05)):
+        light, dark = manifest_fills(package)
+        for fill, dark_fill in ((light, False), (dark, True)):
+            hue, saturation, value = colorsys.rgb_to_hsv(*fill)
+            hue = hue - 1 if hue > 0.5 else hue  # red straddles the hue wrap
+            assert low < hue < high and saturation > 0.6, (package, fill)
+            assert (value < 0.4) if dark_fill else (value > 0.8), (package, fill)
 
 
 @pytest.mark.parametrize("tag,commit", [

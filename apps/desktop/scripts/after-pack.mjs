@@ -13,7 +13,7 @@
 
 import path from 'node:path'
 import fs from 'node:fs'
-import { mkdir, readdir } from 'node:fs/promises'
+import { copyFile, mkdir, readdir } from 'node:fs/promises'
 import { runPython } from '../../../scripts/build/python.mjs'
 
 import { batchSignAppTree } from './batch-sign-binaries.mjs'
@@ -21,6 +21,18 @@ import { rehashPayloadDigests } from './payload-digests.mjs'
 import { resolveSigningIdentity, signNestedChromium } from './sign-nested-chromium.mjs'
 import { signWheelZipMembers } from './sign-wheel-zips.mjs'
 import { sanitizeTree } from './sanitize-pe-signatures.mjs'
+
+/**
+ * Put our full-resolution `assets/icon.icns` back as the bundle's legacy icon.
+ * When `mac.icon` is the Icon Composer package, electron-builder replaces the
+ * bundled `icon.icns` with actool's 256px fallback; macOS <= 15 shows that
+ * file, so it must be the 16→1024 artwork the generator produced.
+ * @param {{ appOutDir: string, packager: { appInfo: { productFilename: string } } }} context
+ * @param {string} [appDir] the apps/desktop directory
+ */
+export async function restoreLegacyMacIcon({ appOutDir, packager }, appDir = path.resolve(import.meta.dirname, '..')) {
+  await copyFile(path.join(appDir, 'assets', 'icon.icns'), path.join(packager.getResourcesDir(appOutDir), 'icon.icns'))
+}
 
 /**
  * Restore the empty app-level localizations dropped during Electron extraction.
@@ -57,6 +69,7 @@ export default async function afterPack(context) {
       path.resolve(import.meta.dirname, '../../../scripts/bundles/payload.py'), 'relocate', payload], { stdio: 'inherit' })
   }
   if (platform === 'darwin') {
+    await restoreLegacyMacIcon(context)
     await restoreMacLocaleMarkers(context)
     if (fs.existsSync(payload)) {
       const entitlements = path.join(import.meta.dirname, '..', 'electron', 'entitlements.mac.inherit.plist')

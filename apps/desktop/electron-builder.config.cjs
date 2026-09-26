@@ -51,6 +51,7 @@ function mustStoreMsix(value) {
 // with the .appinstaller generator so the manifest and the App Installer can
 // never drift (see scripts/msix-shared.mjs).
 const { OUT_OF_STORE_PUBLISHER, channelBuildRequest, stageChannelManifest } = require('../../scripts/msix-shared.mjs')
+const { macIconResource } = require('./scripts/mac-icon.cjs')
 const channelRequest = channelBuildRequest()
 
 /** @typedef {import("app-builder-lib").Configuration} Configuration */
@@ -138,6 +139,13 @@ module.exports = {
     unpack: ['**/*.node', '**/prebuilds/**', 'dist/**']
   },
   mac: {
+    // macOS 26 masks every icon into its own squircle: the layered Icon
+    // Composer package lets the system do that with the ring following the
+    // outline, while `assets/icon.icns` stays the artwork for macOS <= 15.
+    // electron-builder compiles `.icon` with actool >= 26 only, so hosts
+    // without Xcode 26 fall back to the .icns alone (see scripts/mac-icon.cjs);
+    // after-pack.mjs restores our full-resolution .icns either way.
+    icon: macIconResource(__dirname),
     // The afterSign hook owns notarization, including keychain-profile builds.
     notarize: false,
     // The packaged client reads this generated app-update.yml by default.

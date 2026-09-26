@@ -998,6 +998,27 @@ jobs:
           printf '%s\n' "$APPLE_API_KEY_P8" > "$RUNNER_TEMP/apple-api-key.p8"
           echo "APPLE_API_KEY=$RUNNER_TEMP/apple-api-key.p8" >> "$GITHUB_ENV"
 
+      - name: Select Xcode 26 for the macOS 26 layered icon
+        # electron-builder compiles apps/desktop/assets/icon.icon to Assets.car
+        # with actool, which only Xcode >= 26 ships; the runner image keeps an
+        # older Xcode selected. Without this the config silently packages the
+        # .icns alone (apps/desktop/scripts/mac-icon.cjs), so assert it here.
+        shell: bash
+        run: |
+          xcode="$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)"
+          if [ -z "$xcode" ]; then
+            echo "::error::no Xcode 26 on this runner; the macOS 26 layered icon cannot be compiled"
+            exit 1
+          fi
+          echo "DEVELOPER_DIR=$xcode/Contents/Developer" >> "$GITHUB_ENV"
+          export DEVELOPER_DIR="$xcode/Contents/Developer"
+          version="$(actool --version | python3 -c 'import plistlib, sys; print(plistlib.loads(sys.stdin.buffer.read())["com.apple.actool.version"]["short-bundle-version"])')"
+          echo "actool $version from $xcode"
+          case "$version" in
+            2[6-9].*|[3-9][0-9].*) ;;
+            *) echo "::error::actool $version cannot compile .icon packages (need >= 26)"; exit 1 ;;
+          esac
+
       - name: Build and package
         shell: bash
         timeout-minutes: 330

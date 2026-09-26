@@ -1,0 +1,63 @@
+{
+  "fill-specializations": [
+    {
+      "value": {
+        "solid": "srgb:1.00000,1.00000,1.00000,1.00000"
+      }
+    },
+    {
+      "appearance": "dark",
+      "value": {
+        "solid": "srgb:0.05098,0.06667,0.09020,1.00000"
+      }
+    }
+  ],
+  "groups": [
+    {
+      "lighting": "individual",
+      "specular": false,
+      "translucency": {
+        "enabled": false,
+        "value": 0
+      },
+      "shadow": {
+        "kind": "none",
+        "opacity": 0
+      },
+      "blur-material": null,
+      "layers": [
+        {
+          "name": "border",
+          "image-name-specializations": [
+            {
+              "value": "border-light.png"
+            },
+            {
+              "appearance": "dark",
+              "value": "border-dark.png"
+            }
+          ],
+          "glass": false,
+          "hidden": false
+        },
+        {
+          "name": "art",
+          "image-name-specializations": [
+            {
+              "value": "art-light.png"
+            },
+            {
+              "appearance": "dark",
+              "value": "art-dark.png"
+            }
+          ],
+          "glass": false,
+          "hidden": false
+        }
+      ]
+    }
+  ],
+  "supported-platforms": {
+    "squares": "shared"
+  }
+}

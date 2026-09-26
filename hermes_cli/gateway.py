@@ -2894,12 +2894,16 @@ def legacy_launchd_labels_for_install(exclude=()) -> list[str]:
     enumerates, let alone restarts, another install's fleet (#41403).
     """
     import plistlib
-    import pwd
 
     from hermes_constants import get_default_hermes_root
 
     try:
-        home = Path(pwd.getpwuid(os.getuid()).pw_dir)  # windows-footgun: ok — POSIX launchd (macOS) helper, never invoked on Windows
+        # ``pwd`` is POSIX-only. The update restart pass reaches this helper on every host, so the
+        # import lives inside the guard: a host without ``pwd`` has no LaunchAgents to read and
+        # answers "no legacy units", the same fail-closed answer an unreadable account home gets.
+        import pwd
+
+        home = Path(pwd.getpwuid(os.getuid()).pw_dir)  # windows-footgun: ok — guarded above; POSIX launchd (macOS) helper
         root = get_default_hermes_root().resolve()
     except Exception:
         return []

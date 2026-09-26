@@ -1,11 +1,76 @@
-"""Helpers for reading the effective fallback provider chain from config."""
+"""Helpers for reading the effective fallback provider chain from config, and for deciding which
+primary-resolution failures are allowed to walk it."""
 
 from __future__ import annotations
 
+import errno
 import logging
-from typing import Any
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
+
+_TRANSIENT_NET_EXC_NAMES = frozenset({
+    "ConnectError", "ConnectTimeout", "ReadTimeout", "WriteTimeout", "PoolTimeout", "NetworkError",
+    "TimeoutException", "ClientConnectorError", "ClientConnectorDNSError", "ServerTimeoutError",
+    "ClientOSError"})
+_DNS_FAILURE_NEEDLES = ("nodename nor servname", "name or service not known")
+_TRANSIENT_OSERROR_NEEDLES = _DNS_FAILURE_NEEDLES + (
+    "temporary failure in name resolution", "network is unreachable")
+_TRANSIENT_HTTP_NEEDLES = _TRANSIENT_OSERROR_NEEDLES + (
+    "failed to resolve", "connection refused", "timed out", "timeout")
+_TRANSIENT_ERRNOS = frozenset({
+    errno.ECONNREFUSED, errno.ECONNRESET, errno.EHOSTUNREACH, errno.ENETUNREACH, errno.ENETDOWN,
+    errno.ETIMEDOUT, errno.EAGAIN})
+
+
+def is_transient_provider_resolve_error(exc: BaseException) -> bool:
+    """True when primary provider resolution failed for a transient network reason (DNS blip,
+    ConnectError, a token refresh that timed out...). Must be eligible for ``fallback_providers``
+    like AuthError, else a healthy fallback rung is never tried and the caller dies before the
+    first model call. Shared by every resolution-time fallback walker (gateway/oneshot, TUI,
+    interactive CLI, cron)."""
+    import socket
+
+    # gaierror carries EAI_* codes, plain OSError carries errno — never mix the namespaces (raw
+    # literals like {8, 7, 11} are macOS-only and wrong on Linux).
+    eai_transient = {
+        getattr(socket, n) for n in ("EAI_NONAME", "EAI_AGAIN", "EAI_FAIL", "EAI_NODATA")
+        if hasattr(socket, n)
+    }
+    # Walk the cause chain; callers wrap raw transport errors.
+    seen: set[int] = set()
+    cur: Optional[BaseException] = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        module = type(cur).__module__ or ""
+        msg = str(cur).lower()
+        if type(cur).__name__ in _TRANSIENT_NET_EXC_NAMES:
+            return True
+        if any(m in module for m in ("httpx", "httpcore", "aiohttp")) and any(
+            needle in msg for needle in _TRANSIENT_HTTP_NEEDLES):
+            return True
+        if isinstance(cur, OSError):
+            if isinstance(cur, socket.gaierror):
+                if cur.errno in eai_transient:
+                    return True
+            elif getattr(cur, "errno", None) in _TRANSIENT_ERRNOS:
+                return True
+            if any(needle in msg for needle in _TRANSIENT_OSERROR_NEEDLES):
+                return True
+        # Bare exceptions that carry the raw DNS text (format_runtime_provider_error).
+        if any(needle in msg for needle in _DNS_FAILURE_NEEDLES):
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return False
+
+
+def is_fallback_eligible_resolution_error(exc: BaseException) -> bool:
+    """Primary-resolution failures that walk the fallback chain: any ``AuthError`` (missing /
+    expired credentials, quota, cooled-down pool) or a transient network failure. Anything else
+    is misconfiguration (unknown provider, bad base_url...) and must propagate unchanged."""
+    from hermes_cli.auth_constants import AuthError
+
+    return isinstance(exc, AuthError) or is_transient_provider_resolve_error(exc)
 
 
 def _normalized_base_url(value: Any) -> str:

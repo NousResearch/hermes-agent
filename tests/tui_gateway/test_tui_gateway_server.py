@@ -20036,6 +20036,30 @@ class TestResolveRuntimeWithFallback:
         assert resolution.selected_model == "deepseek-v4-pro"
         assert resolution.used_fallback is True
 
+    def test_unreachable_primary_tries_fallback_chain(self, monkeypatch):
+        """A transport error (provider unreachable) from primary walks the chain like AuthError."""
+        import httpx
+
+        fallback_runtime = {"provider": "deepseek", "api_key": "fb-tok"}
+
+        def fake_resolve(**kwargs):
+            if kwargs.get("requested") == "nous":
+                raise httpx.ReadTimeout("portal token refresh timed out")
+            return fallback_runtime
+
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            fake_resolve,
+        )
+        monkeypatch.setattr(
+            server,
+            "_load_fallback_model",
+            lambda: [{"provider": "deepseek", "model": "deepseek-v4-pro"}],
+        )
+        resolution = server._resolve_runtime_with_fallback({"requested": "nous"})
+        assert resolution.runtime == fallback_runtime
+        assert resolution.used_fallback is True
+
 
     def test_auth_error_skips_provider_only_fallback(self, monkeypatch):
         """Auth fallback requires one complete provider/model pair."""

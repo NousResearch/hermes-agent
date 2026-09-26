@@ -437,9 +437,14 @@ def is_rate_limited_auth_error(error: Exception) -> bool:
 def primary_failure_wording(error: Exception) -> tuple[str, str]:
     """``(log_phrase, user_phrase)`` for a primary-provider failure that triggers the fallback
     chain. A 429/quota AuthError leaves the credentials valid; labelling it "auth failed" sends
-    operators hunting for an expired token (#117482), so it reads as quota at every surface."""
+    operators hunting for an expired token (#117482), so it reads as quota at every surface. The
+    same goes for a transient network failure (portal timeout, DNS blip): it reads as unreachable."""
     if is_rate_limited_auth_error(error):
         return "rate-limited (429)", "Primary provider quota exhausted"
+    if not isinstance(error, AuthError):
+        from hermes_cli.fallback_config import is_transient_provider_resolve_error
+        if is_transient_provider_resolve_error(error):
+            return "unreachable", "Primary provider unreachable"
     return "auth failed", "Primary auth failed"
 
 

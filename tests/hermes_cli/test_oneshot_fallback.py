@@ -4,6 +4,7 @@ A quota-exhausted / expired primary raises ``AuthError`` from ``resolve_runtime_
 ``AIAgent`` exists, so the mid-session ``fallback_model`` wiring never gets a chance. The shared
 ``resolve_runtime_with_fallback`` helper gives oneshot the gateway's resolution-time behaviour."""
 
+import httpx
 import pytest
 
 from hermes_cli.auth import AuthError
@@ -64,6 +65,78 @@ class TestResolveRuntimeWithFallback:
             _, entry = resolve_runtime_with_fallback(_CFG, requested="openai-codex")
         assert entry["provider"] == "openai"
         assert any(r.levelname == "WARNING" and "anthropic" in r.getMessage() for r in caplog.records)
+
+    @pytest.mark.parametrize("transport_exc", [
+        httpx.ReadTimeout("portal token refresh timed out"),
+        httpx.ConnectTimeout("connect timed out"),
+        httpx.ConnectError("connection refused"),
+    ])
+    def test_unreachable_primary_walks_chain(self, monkeypatch, caplog, transport_exc):
+        """A primary whose credential endpoint is unreachable (e.g. Nous Portal token refresh timing out
+        during an outage) raises a transport error, not AuthError -- it must still reach the fallback chain."""
+        def fake_resolve(**kw):
+            if kw.get("requested") == "nous":
+                raise transport_exc
+            return {"provider": kw["requested"]}
+
+        monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", fake_resolve)
+        with caplog.at_level("WARNING", logger="hermes_cli.runtime_provider"):
+            runtime, entry = resolve_runtime_with_fallback(_CFG, requested="nous")
+        assert (runtime["provider"], entry["model"]) == ("anthropic", "claude-x")
+        assert any("unreachable" in r.getMessage() for r in caplog.records)
+
+    def test_wrapped_transport_error_walks_chain(self, monkeypatch):
+        """Transport errors re-raised inside another exception are recognised via the cause chain."""
+        def fake_resolve(**kw):
+            if kw.get("requested") == "nous":
+                try:
+                    raise httpx.ReadTimeout("timed out")
+                except httpx.ReadTimeout as exc:
+                    raise RuntimeError("credential refresh failed") from exc
+            return {"provider": kw["requested"]}
+
+        monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", fake_resolve)
+        _, entry = resolve_runtime_with_fallback(_CFG, requested="nous")
+        assert entry["provider"] == "anthropic"
+
+    def test_unreachable_primary_re_raised_when_chain_exhausted(self, monkeypatch):
+        def fake_resolve(**kw):
+            if kw.get("requested") == "nous":
+                raise httpx.ReadTimeout("primary unreachable")
+            raise AuthError("fallback down")
+
+        monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", fake_resolve)
+        with pytest.raises(httpx.ReadTimeout, match="primary unreachable"):
+            resolve_runtime_with_fallback(_CFG, requested="nous")
+
+    def test_non_network_error_is_not_treated_as_unreachable(self, monkeypatch):
+        """An HTTP response the resolver chose not to map to AuthError is not a network failure and
+        keeps propagating as before."""
+        request = httpx.Request("POST", "https://portal.example/api/oauth/token")
+        status_exc = httpx.HTTPStatusError("boom", request=request, response=httpx.Response(500, request=request))
+
+        def fake_resolve(**kw):
+            raise status_exc
+
+        monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", fake_resolve)
+        with pytest.raises(httpx.HTTPStatusError):
+            resolve_runtime_with_fallback(_CFG, requested="nous")
+
+
+def test_primary_failure_wording_distinguishes_unreachable():
+    from hermes_cli.auth import primary_failure_wording
+
+    assert primary_failure_wording(httpx.ReadTimeout("t")) == ("unreachable", "Primary provider unreachable")
+    assert primary_failure_wording(AuthError("expired")) == ("auth failed", "Primary auth failed")
+
+
+def test_cron_and_interactive_walkers_share_one_classifier():
+    """One transient-network classifier for every resolution-time walker, so cron and the
+    gateway/CLI/TUI cannot drift apart again."""
+    from cron.scheduler_preflight import _is_transient_provider_resolve_error
+    from hermes_cli.fallback_config import is_transient_provider_resolve_error
+
+    assert _is_transient_provider_resolve_error is is_transient_provider_resolve_error
 
 
 def test_run_agent_falls_back_when_primary_resolution_raises_auth_error(monkeypatch):

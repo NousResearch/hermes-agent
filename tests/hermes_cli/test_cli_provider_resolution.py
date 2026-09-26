@@ -361,10 +361,14 @@ def _quota_auth_error():
     (_quota_auth_error, "quota exhausted", "auth failed"),
     (lambda: __import__("hermes_cli.auth", fromlist=["AuthError"]).AuthError(
         "no key", provider="openai-codex", code="missing_api_key"), "Primary auth failed", "quota exhausted"),
+    # An unreachable primary (Nous Portal refresh timing out) is neither bad credentials nor quota.
+    (lambda: __import__("httpx").ReadTimeout("portal token refresh timed out"),
+     "Primary provider unreachable", "auth failed"),
 ])
 def test_fallback_runtime_labels_quota_outage_and_bad_credentials_distinctly(monkeypatch, tmp_path, exc_factory, expected, absent):
     """A 429 at credential resolution is quota, not bad credentials (#117482); a real
-    credential failure keeps the auth-failed wording."""
+    credential failure keeps the auth-failed wording; a network failure reaches the fallback too
+    and reads as unreachable."""
     from hermes_cli.cli_agent_setup_mixin import CLIAgentSetupMixin
 
     home = tmp_path / "hermes"

@@ -356,13 +356,14 @@ class CLIAgentSetupMixin:
             logger.debug("free tier availability notice skipped: %s", exc)
 
     def _resolve_fallback_runtime(self, primary_exc):
-        """Primary provider resolution failed: on an AuthError try each fallback entry in
-        order and switch the CLI's requested_provider/model to the first that resolves.
-        None when the error is not auth-related or no fallback resolves."""
+        """Primary provider resolution failed: on an AuthError or a transient network failure try
+        each fallback entry in order and switch the CLI's requested_provider/model to the first that
+        resolves. None when the error is misconfiguration or no fallback resolves."""
         from cli import _cprint, logger
-        from hermes_cli.auth import AuthError, primary_failure_wording
+        from hermes_cli.auth import primary_failure_wording
+        from hermes_cli.fallback_config import is_fallback_eligible_resolution_error
         from hermes_cli.runtime_provider import resolve_runtime_provider
-        if not isinstance(primary_exc, AuthError):
+        if not is_fallback_eligible_resolution_error(primary_exc):
             return None
         _fb_chain = self._fallback_model if isinstance(self._fallback_model, list) else []
         for _fb in _fb_chain:

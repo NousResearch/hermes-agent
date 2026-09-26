@@ -1,5 +1,5 @@
-"""Cron pre-run preflight: transient provider-resolution error classification, provider-key /
-delivery-target / skills checks, and the shared-route adapter view used by satellite profiles.
+"""Cron pre-run preflight: provider-key / delivery-target / skills checks, and the shared-route
+adapter view used by satellite profiles.
 
 Split out of ``cron.scheduler``. Import names from this module directly (``cron.scheduler`` only
 imports the few it calls itself). Origin-resident helpers and sibling split modules are reached
@@ -8,13 +8,17 @@ late-bound (``_sched`` / module refs at the bottom) so monkeypatching the defini
 
 from __future__ import annotations
 
-import errno
 import json
 import logging
 import os
 from typing import Optional
 
 from cron.env_settings import cron_env_setting
+# The transient-network classifier lives in ``hermes_cli.fallback_config`` so every
+# resolution-time fallback walker shares it; re-exported here under its original name.
+from hermes_cli.fallback_config import (  # noqa: F401
+    is_transient_provider_resolve_error as _is_transient_provider_resolve_error,
+)
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("cron.scheduler")
@@ -23,59 +27,6 @@ logger = logging.getLogger("cron.scheduler")
 # alert-once dedup. ``:silent`` = already alerted on a previous tick — do not deliver again.
 BLOCKED_CONFIG_MARKER = "[blocked_config]"
 BLOCKED_CONFIG_SILENT_MARKER = "[blocked_config:silent]"
-
-_TRANSIENT_NET_EXC_NAMES = frozenset({
-    "ConnectError", "ConnectTimeout", "ReadTimeout", "WriteTimeout", "PoolTimeout", "NetworkError",
-    "TimeoutException", "ClientConnectorError", "ClientConnectorDNSError", "ServerTimeoutError",
-    "ClientOSError"})
-_DNS_FAILURE_NEEDLES = ("nodename nor servname", "name or service not known")
-_TRANSIENT_OSERROR_NEEDLES = _DNS_FAILURE_NEEDLES + (
-    "temporary failure in name resolution", "network is unreachable")
-_TRANSIENT_HTTP_NEEDLES = _TRANSIENT_OSERROR_NEEDLES + (
-    "failed to resolve", "connection refused", "timed out", "timeout")
-_TRANSIENT_ERRNOS = frozenset({
-    errno.ECONNREFUSED, errno.ECONNRESET, errno.EHOSTUNREACH, errno.ENETUNREACH, errno.ENETDOWN,
-    errno.ETIMEDOUT, errno.EAGAIN})
-
-
-def _is_transient_provider_resolve_error(exc: BaseException) -> bool:
-    """True when primary provider resolution failed for a transient network reason (DNS blip,
-    ConnectError...). Must be eligible for ``fallback_providers`` like AuthError, else a healthy
-    fallback rung is never tried and the job dies before the first model call."""
-    import socket
-
-    # gaierror carries EAI_* codes, plain OSError carries errno — never mix the namespaces (raw
-    # literals like {8, 7, 11} are macOS-only and wrong on Linux).
-    eai_transient = {
-        getattr(socket, n) for n in ("EAI_NONAME", "EAI_AGAIN", "EAI_FAIL", "EAI_NODATA")
-        if hasattr(socket, n)
-    }
-    # Walk the cause chain; the scheduler wraps raw transport errors.
-    seen: set[int] = set()
-    cur: Optional[BaseException] = exc
-    while cur is not None and id(cur) not in seen:
-        seen.add(id(cur))
-        module = type(cur).__module__ or ""
-        msg = str(cur).lower()
-        if type(cur).__name__ in _TRANSIENT_NET_EXC_NAMES:
-            return True
-        if any(m in module for m in ("httpx", "httpcore", "aiohttp")) and any(
-            needle in msg for needle in _TRANSIENT_HTTP_NEEDLES):
-            return True
-        if isinstance(cur, OSError):
-            if isinstance(cur, socket.gaierror):
-                if cur.errno in eai_transient:
-                    return True
-            elif getattr(cur, "errno", None) in _TRANSIENT_ERRNOS:
-                return True
-            if any(needle in msg for needle in _TRANSIENT_OSERROR_NEEDLES):
-                return True
-        # Bare exceptions that carry the raw DNS text (format_runtime_provider_error).
-        if any(needle in msg for needle in _DNS_FAILURE_NEEDLES):
-            return True
-        cur = cur.__cause__ or cur.__context__
-    return False
-
 
 def _cron_preflight_enabled(cfg: dict) -> bool:
     """Preflight is ON unless ``cron.preflight`` is literally ``false``."""

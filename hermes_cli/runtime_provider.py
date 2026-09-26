@@ -1121,19 +1121,24 @@ def resolve_runtime_with_fallback(config: Optional[Dict[str, Any]], *, requested
     """``resolve_runtime_provider`` plus resolution-time fallback: ``(runtime, fallback_entry_or_None)``.
 
     Only an ``AuthError`` from the primary (missing/expired credentials, exhausted quota, cooled-down pool)
-    walks ``get_fallback_chain(config)`` in order and returns the first entry that resolves — the single
-    resolution-time walker shared by the gateway and oneshot. ``ValueError``/other errors are genuine
-    misconfiguration (unknown ``--provider`` ...) and propagate unchanged, so a typo is never silently
-    rerouted onto a provider the operator did not ask for. When every entry fails, the *primary* error is
+    or a transient network failure (``is_transient_provider_resolve_error``: a token refresh that timed
+    out during a provider outage, a DNS blip...) walks ``get_fallback_chain(config)`` in order and
+    returns the first entry that resolves — the single resolution-time walker shared by the gateway
+    and oneshot. ``ValueError``/other errors are genuine misconfiguration (unknown ``--provider`` ...)
+    and propagate unchanged, so a typo is never silently rerouted onto a provider the operator did not
+    ask for. When every entry fails, the *primary* error is
     re-raised: a fallback entry's failure is not what the operator configured first (#81209). The entry's
     ``model`` is the model the caller must send.
     """
     from hermes_cli.auth import AuthError, primary_failure_wording
+    from hermes_cli.fallback_config import (
+        effective_runtime_provider, get_fallback_chain, is_fallback_eligible_resolution_error, resolve_entry_api_key)
     try:
         return resolve_runtime_provider(requested=requested, target_model=target_model,
                                         explicit_base_url=explicit_base_url, explicit_api_key=explicit_api_key), None
-    except AuthError as primary_exc:
-        from hermes_cli.fallback_config import effective_runtime_provider, get_fallback_chain, resolve_entry_api_key
+    except Exception as primary_exc:
+        if not is_fallback_eligible_resolution_error(primary_exc):
+            raise
         for entry in get_fallback_chain(config):
             provider = (entry.get("provider") or "").strip().lower()
             model = (entry.get("model") or "").strip()

@@ -153,6 +153,21 @@ def test_unified_never_recommends_a_below_floor_dense_model():
         assert predicted_decode_tok_s(entry, choice.variant, budget) >= PLEASANT_FLOOR_TOK_S
 
 
+def test_unknown_vram_keeps_ram_fallback_explicit():
+    """When no supported VRAM probe answers, preserve RAM-based fitting and mark it unknown."""
+    budget = HardwareBudget(
+        usable_vram_bytes=int(64 * _GIB * 0.8),
+        total_device_bytes=64 * _GIB,
+        ram_available_bytes=0,
+        uma=True,
+        vram_known=False,
+    )
+    picked = recommended_entry(budget)
+    assert picked is not None
+    assert picked[0].id
+    assert budget.vram_known is False
+
+
 def test_quality_decides_where_speed_permits():
     """On big discrete hardware every resident entry clears the floor, so
     the pick must be the highest-quality fitting entry — the axis that

@@ -7,6 +7,7 @@ import { type ChatMessage, textPart } from '@/lib/chat-messages'
 import { optimisticAttachmentRef } from '@/lib/chat-runtime'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { setMutableRef } from '@/lib/mutable-ref'
+import { refreshIfTranscriptStale } from '@/lib/stale-transcript-guard'
 import {
   isVoicePlaybackActive,
   markVoicePlaybackInterrupted,
@@ -17,6 +18,7 @@ import {
   $composerAttachments,
   type ComposerAttachment,
   mainComposerScope,
+  revokeDiscardedAttachmentPreviews,
   terminalContextBlocksFromDraft
 } from '@/store/composer'
 import { $hudMode } from '@/store/hud'
@@ -36,6 +38,10 @@ import {
 import { $sessionStates } from '@/store/session-states'
 import type { SessionInfo } from '@/types/hermes'
 
+import {
+  profileScopeForTranscriptSession,
+  resolveActiveTranscriptSession
+} from '../../../contrib/hooks/use-background-sync'
 import type { ClientSessionState } from '../../../types'
 import { sessionContextDrift } from '../session-context-drift'
 import { resolveSessionProfile } from '../use-session-actions/utils'
@@ -431,7 +437,6 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         }
       }
 
-
       // Idempotent optimistic insert — re-running with the resolved sessionId
       // after createBackendSessionForSend just overwrites with the same id.
       const seedOptimistic = (sid: string) => {
@@ -485,7 +490,11 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
       // After sync rewrites refs, refresh the optimistic message in place so the
       // transcript shows the resolved @file: ref rather than the local path.
-      const rewriteOptimistic = (sid: string) =>
+      // Sync replaces blob: previews with workspace-resolvable refs, so any
+      // blob: URL the rewritten refs no longer retain is this consumer's last
+      // reference — release it (#63682 ownership handoff).
+      const rewriteOptimistic = (sid: string, syncedAttachments: ComposerAttachment[] = attachments) => {
+        revokeDiscardedAttachmentPreviews(attachments, syncedAttachments)
         updateSessionState(
           sid,
           state => ({
@@ -494,8 +503,14 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           }),
           targetStoredSessionId
         )
+      }
 
       const dropOptimistic = (sid: null | string) => {
+        // The optimistic bubble is gone, so its blob: previews die with it —
+        // unless a rejected-submit restore already re-loaded the attachments
+        // into the composer, which re-owns those URLs (#63682 handoff).
+        revokeDiscardedAttachmentPreviews(attachments, usingComposerAttachments ? $composerAttachments.get() : [])
+
         if (!sid) {
           if (targetIsCurrentView()) {
             scope.setMessages(current => current.filter(m => m.id !== optimisticId))
@@ -809,8 +824,53 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         // the gateway receives @file: paths that resolve in its workspace.
         // Images keep their inline bounded thumbnail — see optimisticAttachmentRef.
         attachmentRefs = syncedAttachments.map(optimisticAttachmentRef).filter((r): r is string => Boolean(r))
-        rewriteOptimistic(liveSessionId)
+        rewriteOptimistic(liveSessionId, syncedAttachments)
         const text = buildContextText(syncedAttachments)
+
+        // Another Desktop window may own a newer transcript while this one
+        // still shows an open-time snapshot. Refuse the send and refresh
+        // rather than forking the session (#65047).
+        const guardStoredId = targetStoredSessionId ?? selectedStoredSessionIdRef.current
+
+        if (guardStoredId && liveSessionId) {
+          const localSnapshot = updateSessionState(liveSessionId, state => state, targetStoredSessionId)
+
+          const refreshed = await refreshIfTranscriptStale(guardStoredId, localSnapshot.messages, {
+            excludeMessageId: optimisticId,
+            profile: profileScopeForTranscriptSession(resolveActiveTranscriptSession(guardStoredId, liveSessionId))
+          })
+
+          if (sessionDriftReason()) {
+            return abortForSessionSwitch(liveSessionId)
+          }
+
+          if (refreshed) {
+            updateSessionState(
+              liveSessionId,
+              state => ({
+                ...state,
+                awaitingResponse: false,
+                busy: false,
+                messages: refreshed,
+                pendingBranchGroup: null
+              }),
+              targetStoredSessionId
+            )
+
+            if (targetIsCurrentView()) {
+              scope.setMessages(() => refreshed)
+              notify({
+                kind: 'warning',
+                message: copy.staleSessionBody,
+                title: copy.staleSessionTitle
+              })
+            }
+
+            releaseBusy()
+
+            return false
+          }
+        }
 
         const submitParams = (targetId: string) => ({
           session_id: targetId,

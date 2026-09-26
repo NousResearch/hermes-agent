@@ -114,6 +114,49 @@ class PluginWorld:
         assert result.returncode == 0, result.stderr
 
 
+def publish_plugins(world: PluginWorld, plugins: dict[str, list[str]]) -> Path:
+    """Enable exactly ``plugins`` (name → declared requirements) and publish the generation PM
+    builds for them. Each plugin imports its requirements, leaves an ``imported`` marker, and
+    ``request(specs)`` asks ``install_specs`` for more on its own behalf."""
+    from pm import client
+
+    for name, requirements in plugins.items():
+        plugin = world.home / "plugins" / name
+        if plugin.is_dir():
+            continue
+        plugin.mkdir(parents=True)
+        (plugin / "plugin.yaml").write_text(yaml.safe_dump(
+            {"name": name, "version": "1.0", "python_dependencies": requirements}), encoding="utf-8")
+        modules = [spec.split("=")[0].split("<")[0].split(">")[0].replace("-", "_") for spec in requirements]
+        (plugin / "__init__.py").write_text(
+            "".join(f"import {module}\n" for module in modules)
+            + "from pathlib import Path\nPath(__file__).with_name('imported').touch()\n"
+            "def register(ctx):\n    pass\n"
+            "def request(specs):\n    from tools.lazy_deps import install_specs\n    return install_specs(specs)\n",
+            encoding="utf-8")
+    (world.home / "config.yaml").write_text(yaml.safe_dump(
+        {"plugins": {"enabled": sorted(plugins), "disabled": []}}), encoding="utf-8")
+    client.sync_venv(explicit=True)
+    return world.selected()
+
+
+@pytest.fixture
+def boot(plugin_world, monkeypatch):
+    """``boot(environment)``: this test process imports from ``environment`` the way a Hermes process
+    booted on it does. Adoption rewrites sys.path and PATH (monkeypatch restores both); modules
+    imported from the world are forgotten afterwards, so a later test imports its own."""
+    from pm.environments import site_packages, venv_bin_dir
+
+    def run_from(environment: Path) -> None:
+        monkeypatch.setenv("PATH", os.pathsep.join([str(venv_bin_dir(environment)), os.defpath]))
+        monkeypatch.syspath_prepend(str(site_packages(environment)))
+
+    yield run_from
+    for name, module in list(sys.modules.items()):
+        if str(getattr(module, "__file__", None) or "").startswith(str(plugin_world.root)):
+            del sys.modules[name]
+
+
 @pytest.fixture
 def plugin_world(tmp_path, monkeypatch, isolated_python):
     from pm import client, paths

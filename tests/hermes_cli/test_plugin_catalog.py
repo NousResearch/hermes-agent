@@ -96,7 +96,7 @@ def test_find_removed_matches_name_or_normalized_repo(tmp_path):
 
 @pytest.mark.parametrize("stale", [False, True])
 def test_live_catalog_falls_back_to_in_tree_and_unions_removals(tmp_path, monkeypatch, stale):
-    """Network failure → in-tree entries; a cached live doc contributes entries AND removals."""
+    """Offline live pins expire, but a cached removal keeps blocking installs."""
     import httpx
 
     requests = []
@@ -123,8 +123,11 @@ def test_live_catalog_falls_back_to_in_tree_and_unions_removals(tmp_path, monkey
     # trigger a real retry once that window has passed.
     monkeypatch.setattr(pc, "_live_fetch_failed_until", 0.0)
     entries = pc.load_catalog_live()
-    assert [e.name for e in entries] == ["live-only"]
-    assert entries[0].description == "café"
+    if stale:
+        assert [e.name for e in entries] == [e.name for e in pc.load_catalog()]
+    else:
+        assert [e.name for e in entries] == ["live-only"]
+        assert entries[0].description == "café"
     assert bool(requests) is stale
     assert pc.find_removed("pulled-live").reason == "cve"
     cache.write_text("{", encoding="utf-8-sig")

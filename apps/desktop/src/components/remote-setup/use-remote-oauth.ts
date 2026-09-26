@@ -104,6 +104,10 @@ export function useRemoteOAuth(options: RemoteOAuthOptions): RemoteOAuth {
   }
 
   const signOut = async (): Promise<void> => {
+    if (!url) {
+      return
+    }
+
     const target: number = targetSeq.current
     const seq: number = ++loginSeq.current
     const current = (): boolean => target === targetSeq.current && seq === loginSeq.current

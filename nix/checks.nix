@@ -421,7 +421,7 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
                 # IS the default package, so a launcher that pinned the plain
                 # default would look correct while it shipped a second
                 # runtime to anyone who customises theirs.
-                extraDependencyGroups = [ "hindsight" ];
+                extraDependencyGroups = [ "honcho" ];
                 backend = {
                   mode = "serve";
                   port = 9231;

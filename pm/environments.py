@@ -80,7 +80,8 @@ def record_activation_inputs(stamps: Path, mtimes: dict[str, int], project_root:
         os.utime(stamp, ns=(mtime, mtime))
 
 
-def base_venv(project_root: Path) -> Path:
+def payload_venv(project_root: Path) -> Path | None:
+    """The environment a sealed payload ships beside its tree, or ``None``."""
     root = Path(project_root).resolve()
     manifest_path = root.parent / "manifest.json"
     if manifest_path.is_file():
@@ -90,7 +91,11 @@ def base_venv(project_root: Path) -> Path:
             if not venv.is_relative_to(root.parent):
                 raise RuntimeError("payload environment escapes its root")
             return venv
-    return project_venv_dir(root) or root / "venv"
+    return None
+
+
+def base_venv(project_root: Path) -> Path:
+    return payload_venv(project_root) or project_venv_dir(Path(project_root).resolve()) or Path(project_root).resolve() / "venv"
 
 
 def store_root(project_root: Path) -> Path:
@@ -152,11 +157,25 @@ def selected_venv(project_root: Path) -> Path:
     ``flush_before_selecting``, so the ``pyvenv.cfg`` probe below is a sanity
     check against a vanished tree, not the durability guarantee.
     """
+    return _recorded_venv(project_root) or base_venv(project_root)
+
+
+def committed_venv(project_root: Path) -> Path | None:
+    """The environment PM committed for this install (or a sealed payload's own), else ``None``.
+
+    Unlike ``selected_venv`` this never answers with the in-tree ``venv``/``.venv``: that tree
+    predates PM and is built for whichever interpreter created it, so loading it from PM's store
+    Python mixes ABIs (compiled modules vanish) and PM deletes it once a generation is committed.
+    """
+    return _recorded_venv(project_root) or payload_venv(project_root)
+
+
+def _recorded_venv(project_root: Path) -> Path | None:
     path = runtime_facts_path(project_root)
     try:
         data = json.loads(path.read_text(encoding="utf-8-sig"))
     except FileNotFoundError:
-        return base_venv(project_root)
+        return None
     except (OSError, ValueError) as exc:
         raise RuntimeError(f"cannot read dependency environment: {path}") from exc
     try:
@@ -165,7 +184,7 @@ def selected_venv(project_root: Path) -> Path:
     except AttributeError as exc:
         raise RuntimeError(f"invalid dependency environment record: {path}") from exc
     if value is None:
-        return base_venv(project_root)
+        return None
     if not isinstance(value, str):
         raise RuntimeError("invalid dependency environment path")
     environment = Path(value).resolve()
@@ -258,6 +277,20 @@ def running_from_selected_environment(project_root: Path) -> bool:
     return any(Path(entry).resolve() == selected for entry in sys.path if entry)
 
 
+def _require_own_dependencies(project_root: Path) -> None:
+    """With nothing committed, an interpreter keeps the packages it booted with.
+
+    PM's store Python boots with none, so for it there is nothing to keep: refuse instead of
+    running on whatever PYTHONPATH it inherited (historically the pre-PM in-tree venv).
+    """
+    import sys
+
+    if sys.prefix != sys.base_prefix:
+        return  # a venv interpreter (developer .venv, test env) carries its own packages
+    if Path(sys.base_prefix).resolve().is_relative_to(store_root(project_root).resolve()):
+        raise RuntimeError("no dependency environment is committed for this install")
+
+
 def activate_dependencies(project_root: Path) -> None:
     """Select the committed tree at process boot, before third-party imports.
 
@@ -275,20 +308,24 @@ def activate_dependencies(project_root: Path) -> None:
         with runtime_lock(project_root) as held:
             if held:
                 recover_publication(project_root)
-            environment = selected_venv(project_root)
+            environment = committed_venv(project_root)
+            if environment is None:
+                return _require_own_dependencies(project_root)
             release = lease_generation(environment)
             # Without the lock, an installer may commit a new generation between the
             # read and the lease, leaving the leased one unselected and collectable.
-            while not held and (current := selected_venv(project_root)) != environment:
+            while not held and (current := committed_venv(project_root)) not in (None, environment):
                 release()
                 environment, release = current, lease_generation(current)
             selected = site_packages(environment)
             if not selected.is_dir() and not runtime_facts_path(project_root).is_file():
                 return
     else:
-        # Older installs and sealed payloads still select once, before imports.
+        # Sealed payloads still select once, before imports.
         # Never consult VIRTUAL_ENV: it can describe the invoking shell's Python.
-        environment = base_venv(project_root)
+        environment = payload_venv(project_root)
+        if environment is None:
+            return _require_own_dependencies(project_root)
         selected = site_packages(environment)
         if not selected.is_dir():
             return  # External/Nix interpreter owns its original sys.path.
@@ -316,10 +353,13 @@ def activation_environment(project_root: Path) -> dict[str, str]:
     from pm.registry import all_packages
 
     env = env_for(*all_packages())
-    selected = site_packages(selected_venv(project_root))
+    environment = committed_venv(project_root)
     env.pop("PYTHONHOME", None)
     env.pop("VIRTUAL_ENV", None)
-    env["PYTHONPATH"] = os.pathsep.join([str(project_root.resolve()), str(selected)])
+    # Nothing committed: the child's own hermes_bootstrap decides (a bare store Python refuses),
+    # rather than inheriting the pre-PM in-tree venv from here.
+    env["PYTHONPATH"] = os.pathsep.join([str(project_root.resolve()),
+                                         *([str(site_packages(environment))] if environment else [])])
     # The child-process sentinel. Its VALUE is the installed-state file this
     # environment was composed against, so a consumer learns that it inherited
     # an activated shell and which checkout/profile that shell came from. Its

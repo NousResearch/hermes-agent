@@ -492,6 +492,10 @@ export const deOverrides = {
     backendOutOfDateTitle: 'Backend veraltet',
     backendOutOfDateMessage:
       'Ihr Hermes-Backend ist älter als dieser Desktop-Build und funktioniert möglicherweise nicht richtig. Aktualisieren Sie, um beide abzugleichen.',
+    desktopOutOfDateTitle: 'Hermes-App veraltet',
+    desktopOutOfDateMessage:
+      'Diese Hermes-App ist älter als das verbundene Backend und funktioniert möglicherweise nicht richtig. Aktualisieren Sie die App, um beide abzugleichen.',
+    updateDesktopApp: 'App aktualisieren',
     installMethodUnsupportedTitle: 'Nicht unterstützte Installationsmethode',
     updateHermes: 'Hermes aktualisieren',
     updateReadyTitle: 'Update bereit',
@@ -909,6 +913,8 @@ export const deOverrides = {
         agentSuccess: name => `Agent-Plugin ${name} installiert`,
         desktopSuccess: name => `Desktop-Plugin ${name} installiert`,
         agentFailed: 'Installation des Agent-Plugins fehlgeschlagen',
+        installUncertain:
+          'Hermes wartet nicht mehr auf das Installationsergebnis, aber das Plugin wird möglicherweise noch installiert. Schließe dieses Fenster und aktualisiere die Pluginliste, bevor du die Installation erneut startest.',
         desktopFailed: 'Installation des Desktop-Plugins fehlgeschlagen',
         missingEnv: (name, vars) =>
           `${name} ist installiert, benötigt aber einen Schlüssel, um zu funktionieren: ${vars}. Fügen Sie ihn jetzt hinzu, sonst schlagen die Tools des Plugins fehl.`
@@ -3527,7 +3533,24 @@ export const deOverrides = {
       gatewayUnreachable: gateway => `${gateway} · nicht erreichbar`,
       onGateway: (name, gateway) => `${name} · ${gateway}`,
       switchTo: (name, gateway) => `Zu ${name} auf ${gateway} wechseln`,
-      deleteOn: gateway => ` auf ${gateway}`
+      deleteOn: gateway => ` auf ${gateway}`,
+      localDevice:
+        'Dieses Gerät (lokales Backend — installiert Hermes, falls es fehlt, sonst öffnet es eine neue Sitzung)',
+      switchDeviceTitle: 'Zu diesem Gerät wechseln?',
+      switchDeviceDesc:
+        'Das öffnet eine neue Sitzung auf diesem Computer. Das aktuelle Gespräch bleibt auf dem anderen Gateway.',
+      switchDeviceConfirm: 'Wechseln',
+      installDeviceTitle: 'Zu diesem Gerät wechseln?',
+      installDeviceDesc:
+        'Hermes wird lokal installiert und danach eine neue Sitzung auf diesem Computer geöffnet. Ohne Bestätigung startet keine Installation.',
+      installDeviceConfirm: 'Lokal installieren',
+      connectExistingInstead: 'Stattdessen vorhandenes verbinden'
+    },
+    status: {
+      unread: (count: number) => (count === 1 ? '1 ungelesene Sitzung' : `${count} ungelesene Sitzungen`),
+      needsInput: (count: number) =>
+        count === 1 ? '1 Sitzung wartet auf Ihre Antwort' : `${count} Sitzungen warten auf Ihre Antwort`,
+      working: (count: number) => (count === 1 ? '1 laufende Sitzung' : `${count} laufende Sitzungen`)
     },
     remoteOverride: {
       menuItem: 'Mit Remote-Host verbinden…',
@@ -4023,6 +4046,7 @@ export const deOverrides = {
       branchFrom: 'Branch',
       rename: 'Umbenennen…',
       archive: 'Archivieren',
+      unarchive: 'Archivierung aufheben',
       newWindow: 'Neues Fenster',
       openInTerminal: 'Im Terminal öffnen',
       hideTabBar: 'Tab-Leiste ausblenden',
@@ -4425,7 +4449,8 @@ export const deOverrides = {
       copyFailure: 'Kriterium konnte nicht in die Zwischenablage kopiert werden',
       continuationFailed: 'Ziel-Fortsetzung konnte nicht übermittelt werden',
       continuationQueued: 'Ziel fortgesetzt — Fortsetzung in der Warteschlange, bis die aktuelle Runde endet',
-      continuationBusy: 'Ziel fortgesetzt — Session ist beschäftigt, /interrupt zum Fortsetzen der aktuellen Runde',
+      continuationBusy:
+        'Ziel fortgesetzt — Session ist beschäftigt; stoppe zuerst die aktuelle Antwort (Stopp-Button oder Esc), um fortzufahren',
       controlUnavailable: msg => `Session-Steuerung nicht verfügbar: ${msg}`,
       dismissError: 'Fehler verwerfen',
       add: 'Hinzufügen'
@@ -4481,19 +4506,25 @@ export const deOverrides = {
   },
   updates: {
     discontinuedTitle: 'Dieser Hermes-Build wird nicht mehr unterstützt',
-    discontinuedBody: 'Dieser Hermes-Build wird nicht mehr unterstützt und funktioniert möglicherweise nicht mehr — deinstallieren Sie ihn. Ihre Daten bleiben auf dem Datenträger.',
+    discontinuedBody:
+      'Dieser Hermes-Build wird nicht mehr unterstützt und funktioniert möglicherweise nicht mehr — deinstallieren Sie ihn. Ihre Daten bleiben auf dem Datenträger.',
     channels: { stable: 'Stabil', canary: 'Canary' },
     appName: 'Hermes',
     availableBodyRelease: tag => `Version ${tag} ist bereit zur Installation.`,
     releaseAvailable: tag => `Version ${tag} ist verfügbar.`,
     checkingShort: 'Wird geprüft…',
-    availableBodyAppInstaller: 'Eine neue Hermes-Version ist bereit. Hermes wird geschlossen, Windows schließt das Update ab und Hermes startet automatisch neu.',
-    applyingBodyAppInstaller: 'Hermes wird geschlossen und Windows schließt das Update ab. Danach startet Hermes automatisch neu.',
-    applyingCloseAppInstaller: 'Dieses Fenster schließt sich, Windows schließt das Update ab und Hermes startet automatisch neu.',
+    availableBodyAppInstaller:
+      'Eine neue Hermes-Version ist bereit. Hermes wird geschlossen, Windows schließt das Update ab und Hermes startet automatisch neu.',
+    applyingBodyAppInstaller:
+      'Hermes wird geschlossen und Windows schließt das Update ab. Danach startet Hermes automatisch neu.',
+    applyingCloseAppInstaller:
+      'Dieses Fenster schließt sich, Windows schließt das Update ab und Hermes startet automatisch neu.',
     checkUnknownTitleAppInstaller: 'Update-Check fehlgeschlagen',
-    checkUnknownBodyAppInstaller: 'Windows konnte gerade nicht nach Updates suchen. Updates werden auch beim Neustart von Hermes automatisch installiert.',
+    checkUnknownBodyAppInstaller:
+      'Windows konnte gerade nicht nach Updates suchen. Updates werden auch beim Neustart von Hermes automatisch installiert.',
     versionDetailsTitle: 'Versionsdetails',
-    versionDetailsBody: 'Diese Installation wird außerhalb der App verwaltet. Aktualisieren Sie sie auf dieselbe Weise, wie Sie sie installiert haben.',
+    versionDetailsBody:
+      'Diese Installation wird außerhalb der App verwaltet. Aktualisieren Sie sie auf dieselbe Weise, wie Sie sie installiert haben.',
     versionDetailsVersion: 'Version',
     versionDetailsCommit: 'Commit',
     versionDetailsBuildOrigin: 'Build-Ursprung',
@@ -4515,11 +4546,11 @@ export const deOverrides = {
     versionUnavailable: 'Version nicht verfügbar',
     bundleOutOfSync: 'App-Build ist veraltet',
     bundleOutOfSyncDesc:
-        'Die Hermes-Laufzeit wurde aktualisiert, die Desktop-App selbst ist aber noch ein älterer Build – neue Oberflächenfunktionen (wie der Bot-Modus) fehlen, bis sie aktualisiert wird. Führen Sie das Update unten aus, um die App neu zu bauen. Falls das die Warnung nicht behebt, installieren Sie den neuesten Desktop-Installer neu.',
+      'Die Hermes-Laufzeit wurde aktualisiert, die Desktop-App selbst ist aber noch ein älterer Build – neue Oberflächenfunktionen (wie der Bot-Modus) fehlen, bis sie aktualisiert wird. Führen Sie das Update unten aus, um die App neu zu bauen. Falls das die Warnung nicht behebt, installieren Sie den neuesten Desktop-Installer neu.',
     bundleOutOfSyncAction: 'Installer herunterladen',
     bundleSwapPending: 'Neustart zum Abschließen des Updates',
     bundleSwapPendingDesc:
-        'Die aktualisierte App ist bereits installiert — Hermes muss nur noch neu gestartet werden, um sie zu laden. Chats und Einstellungen bleiben unberührt.',
+      'Die aktualisierte App ist bereits installiert — Hermes muss nur noch neu gestartet werden, um sie zu laden. Chats und Einstellungen bleiben unberührt.',
     bundleSwapPendingAction: 'Hermes neu starten',
     checkNow: 'Jetzt prüfen',
     seeWhatsNew: 'Neuigkeiten ansehen',
@@ -4573,9 +4604,13 @@ export const deOverrides = {
     maybeLater: 'Später',
     moreChanges: count => `+ ${count} weitere Änderung${count === 1 ? '' : 'en'} enthalten.`,
     manualTitle: 'Über Ihr Terminal aktualisieren',
+    manualUnavailableTitle: 'Aktualisierung hier nicht möglich',
     manualBody:
       'Sie haben Hermes über die Befehlszeile installiert, daher laufen Updates auch dort. Fügen Sie dies in Ihr Terminal ein:',
     manualPickedUp: 'Hermes übernimmt die neue Version beim nächsten Start.',
+    manualBodyBackend:
+      'Das Hermes-Backend wird außerhalb dieser App verwaltet. Führen Sie dies auf dem Server aus, der es hostet:',
+    manualPickedUpBackend: 'Das Backend lädt die neue Version, sobald das Update abgeschlossen ist.',
     guiSkewTitle: 'Desktop-App aktualisieren',
     guiSkewBody:
       'Das Backend wurde aktualisiert, aber dieses Desktop-App-Paket nicht. Aktualisieren oder installieren Sie die Hermes-Desktop-App neu (Ihr AppImage / .deb / .rpm), um beide abzugleichen.',
@@ -4773,6 +4808,7 @@ export const deOverrides = {
     replaceCurrent: 'Aktuellen Wert ersetzen',
     pasteApiKey: 'API-Key einfügen',
     localApiKeyPlaceholder: 'API-Key (optional – nur falls Ihr Endpunkt einen benötigt)',
+    localModelNamePlaceholder: 'Modellname (z. B. command-a-plus-05-2026)',
     couldNotSave: 'Anmeldedaten konnten nicht gespeichert werden.',
     connecting: 'Verbinden',
     update: 'Aktualisieren',
@@ -4926,6 +4962,7 @@ export const deOverrides = {
       search: 'Modelle durchsuchen',
       noModels: 'Keine Modelle gefunden',
       editModels: 'Modelle bearbeiten…',
+      followDefault: 'Standard aus den Einstellungen verwenden',
       refreshModels: 'Modelle aktualisieren',
       fast: 'Schnell'
     },
@@ -5061,7 +5098,8 @@ export const deOverrides = {
         title: 'Kontext-Verbrauch',
         tokenSummary: (used, max) => `${used} / ${max} Tokens`
       },
-      session: 'Session',
+      focusedSince: 'Fokussiert seit',
+      focusedSinceTitle: 'Zeit seit dem Fokussieren dieses Chats — nicht die Laufzeit eines Turns',
       yoloOn: 'YOLO an — gefährliche Befehle werden automatisch genehmigt. Shift+Klick schaltet global um.',
       yoloOff: 'YOLO aus. Shift+Klick schaltet global um.',
       modelNone: 'keines',
@@ -5876,6 +5914,9 @@ export const deOverrides = {
     sessionUnavailable: 'Session nicht verfügbar',
     createSessionFailed: 'Neue Session konnte nicht erstellt werden',
     promptFailed: 'Prompt fehlgeschlagen',
+    staleSessionTitle: 'Chat veraltet',
+    staleSessionBody:
+      'Dieses Fenster war hinter einer anderen Ansicht desselben Chats. Die neuesten Nachrichten wurden geladen. Senden Sie erneut, wenn Sie noch möchten.',
     providerCredentialRequired:
       'Fügen Sie Anmeldedaten für einen Anbieter hinzu, bevor Sie Ihre erste Nachricht senden.',
     emptySlashCommand: 'leerer Slash-Befehl',
@@ -5921,6 +5962,8 @@ export const deOverrides = {
     deleteFailed: 'Löschen fehlgeschlagen',
     archived: 'Archiviert',
     archiveFailed: 'Archivieren fehlgeschlagen',
+    restored: 'Wiederhergestellt',
+    unarchiveFailed: 'Archivierung aufheben fehlgeschlagen',
     cwdChangeFailed: 'Arbeitsverzeichnis-Änderung fehlgeschlagen',
     cwdStagedTitle: 'Arbeitsverzeichnis bereitgestellt',
     cwdStagedMessage: 'Starten Sie das Desktop-Backend neu, um cwd-Änderungen auf diese aktive Session anzuwenden.',

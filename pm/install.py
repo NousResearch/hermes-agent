@@ -542,6 +542,28 @@ def _member_inputs(plugins: PluginInput | None) -> dict:
     raise TypeError(f"{type(plugins).__name__} changes plugin state; only a sync may carry it")
 
 
+def _still_declared(package, recorded: list[str]) -> list[str]:
+    """The recorded extras this tree still declares.
+
+    An extra the source removed (``hindsight``) would otherwise ride the ledger
+    into every later ``uv sync`` and fail it with "Extra is not defined". Only
+    recorded extras are pruned; an explicitly requested unknown extra still fails.
+    Membership uses PEP 685 names (uv matches ``foo_bar`` to ``foo-bar``); the
+    recorded spelling is what reaches uv.
+    """
+    import re
+    from pm.features import declared_extras
+
+    def normalized(name: str) -> str:
+        return re.sub(r"[-_.]+", "-", name).lower()
+
+    root = package.project_root()
+    if not (root / "pyproject.toml").is_file():
+        return list(recorded)
+    declared = {normalized(extra) for extra in declared_extras(root)}
+    return [extra for extra in recorded if normalized(extra) in declared]
+
+
 def venv_is_current(*, extras: list[str] | None = None, plugins: Members | Candidates | None = None,
                     project_root: Path | None = None) -> bool:
     """Probe the requested union without changing recorded dependency state."""
@@ -559,7 +581,7 @@ def venv_is_current(*, extras: list[str] | None = None, plugins: Members | Candi
             or not isinstance(fact.get("extras"), list)
             or any(not isinstance(extra, str) for extra in fact["extras"])):
         raise ValueError("invalid recorded dependency state")
-    enabled = sorted(set(fact["extras"]) | set(extras or []))
+    enabled = sorted(set(_still_declared(package, fact["extras"])) | set(extras or []))
     stamp = package.expected_stamp(enabled, **_member_inputs(plugins))
     return _runtime_state_matches(fact, stamp, project_root=root)
 
@@ -651,18 +673,19 @@ def _target_selection(package, fact: dict, *, extras, inputs: dict, repair: bool
         return enabled, stamp, {"repair": True}
     # The first writable generation replaces, rather than layers on,
     # the payload. Retain its extras until a recorded selection owns them.
-    enabled = sorted(set(fact.get("extras", shipped or [])) | set(extras or []))
+    enabled = sorted(set(_still_declared(package, fact.get("extras", shipped or []))) | set(extras or []))
     return enabled, package.expected_stamp(enabled, **inputs), inputs
 
 
 def _commit_selection(package, facts: Facts, change, *, enabled: list[str], stamp: str, inputs: dict,
-                      current: bool, repair: bool, explicit: bool) -> None:
+                      current: bool, repair: bool, explicit: bool, skip_invalid_secondary: bool = False) -> None:
     """Build (unless current), publish the plugin change, then record the selection."""
     from pm import receipt
     from hermes_cli.runtime_state import finish_publication, recover_publication
 
     try:
-        result = {} if current else (package.apply(enabled, explicit=explicit, **inputs) or {})
+        result = {} if current else (package.apply(enabled, explicit=explicit,
+                                                   skip_invalid_secondary=skip_invalid_secondary, **inputs) or {})
         if not repair and package.expected_stamp(enabled, **inputs) != stamp:
             raise ValueError("Dependency inputs changed while preparing publication; retry.")
         if change is not None:
@@ -681,7 +704,8 @@ def _commit_selection(package, facts: Facts, change, *, enabled: list[str], stam
 
 
 def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False,
-              plugins: PluginInput | None = None, repair: bool = False) -> None:
+              plugins: PluginInput | None = None, repair: bool = False,
+              evict_incompatible_plugins: bool = False) -> None:
     """Make the venv match uv.lock + the enabled extras. Extras union into
     the installed state (one ledger); no-op when the stamp already matches.
     ``repair`` restores the recorded dependency graph into a fresh generation,
@@ -690,6 +714,9 @@ def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False,
     `hermes update`) — those are the remedy the lazy-install policy points
     at, so the policy does not apply to them. ``plugins`` names the one
     source of plugin members (see pm.plugin_inputs); None discovers them from config.
+    ``evict_incompatible_plugins`` is the update's contract: a discovered plugin that
+    keeps the environment from building is disabled instead of failing the sync
+    (see pm.plugin_eviction).
 
     Lazy installs OFF = the frozen feature set: when
     security.allow_lazy_installs is false AND the bundle's
@@ -710,6 +737,8 @@ def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False,
     try:
         if repair and (extras is not None or plugins is not None):
             raise ValueError("repair restores the recorded environment; it cannot change features or plugins")
+        if evict_incompatible_plugins and (repair or plugins is not None or not explicit):
+            raise ValueError("only an explicit sync of the discovered plugin selection may disable plugins")
         shipped, frozen = _feature_policy(extras, repair=repair)
         package = get_package("venv")
         from hermes_cli.runtime_state import recover_publication
@@ -719,6 +748,12 @@ def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False,
             change = _publication(plugins)
             if isinstance(change, StagedPlugin) and not change.active:
                 _publish_inactive(change)
+            elif evict_incompatible_plugins:
+                from pm.plugin_eviction import sync_evicting
+
+                facts = Facts(paths.runtime_facts_path())
+                fact = facts.get("venv") or _facts().get("venv") or {}
+                sync_evicting(package, facts, fact, extras=extras, shipped=shipped, frozen=frozen, explicit=explicit)
             else:
                 inputs = {"plugin_dirs": change.members} if change is not None else _member_inputs(plugins)
                 facts = Facts(paths.runtime_facts_path(), strict=repair)

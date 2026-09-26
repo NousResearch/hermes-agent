@@ -84,6 +84,13 @@ export function transcriptRowContentKey(message: ChatMessage): string {
     .join('|')}`
 }
 
+function isAnswerableClarifyMessage(message: ChatMessage): boolean {
+  return (
+    message.pending === true &&
+    message.parts.some(part => part.type === 'tool-call' && part.toolName === 'clarify' && part.result === undefined)
+  )
+}
+
 export function suppressTranscriptForView(
   state: ClientSessionState,
   cutoff: TranscriptViewCutoff | null
@@ -93,15 +100,28 @@ export function suppressTranscriptForView(
   }
 
   if (cutoff.cutoffIds.size === 0) {
-    // Fail-closed: the gate was armed before any cached row existed, so there
-    // is no unproven prefix to hide selectively — everything stays off the
-    // view until REST authority lands (#73646).
-    return { ...state, messages: [] }
+    // Fail-closed for history: the gate was armed before any cached row
+    // existed, so there is no unproven prefix to hide selectively (#73646).
+    // A clarify row published from the activate snapshot is not that prefix.
+    const messages = state.messages.filter(isAnswerableClarifyMessage)
+
+    return messages.length === state.messages.length ? state : { ...state, messages }
   }
 
-  const messages = state.messages.filter(
-    message => !cutoff.cutoffIds.has(message.id) && !(cutoff.cutoffKeys?.has(transcriptRowContentKey(message)) ?? false)
-  )
+  const messages = state.messages.filter(message => {
+    if (cutoff.cutoffIds.has(message.id)) {
+      return false
+    }
+
+    // Content fingerprints hide a re-sequenced copy of the unproven prefix.
+    // They must not hide the snapshot clarify row, whose parts can match a
+    // cached question that is itself still suppressed by id.
+    if (isAnswerableClarifyMessage(message)) {
+      return true
+    }
+
+    return !(cutoff.cutoffKeys?.has(transcriptRowContentKey(message)) ?? false)
+  })
 
   if (messages.length === state.messages.length) {
     return state

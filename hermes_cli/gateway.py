@@ -970,10 +970,78 @@ def launch_detached_gateway_restart_by_cmdline(old_pid: int, run_argv: list[str]
 
 def launch_detached_profile_gateway_restart(profile: str, old_pid: int) -> bool:
     """Relaunch a manually-run profile gateway after its current PID exits."""
-    return old_pid > 0 and _spawn_gateway_restart_watcher(old_pid, _gateway_run_args_for_profile(profile))
+    return old_pid > 0 and _spawn_gateway_restart_watcher(
+        old_pid,
+        _gateway_run_args_for_profile(profile),
+        host=profile == "default",
+    )
 
 
-def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str]) -> bool:
+GATEWAY_RESTART_WATCHER_TIMEOUT_S = 120
+"""How long the detached restart watcher waits for the old PID to exit before giving up.
+
+``hermes update``'s post-relaunch liveness check budgets against this: the watcher spawns the new
+gateway only AFTER the old PID is gone, so a verification window shorter than this can expire
+before the relaunch it is verifying has even started (#107002).
+"""
+
+
+def _restart_argv_is_host_gateway(argv: list[str]) -> bool:
+    """True when *argv* relaunches the host multiplexer, not a named profile's own gateway.
+
+    ``--profile <name>`` (other than default) is that profile. A selector-less argv is
+    decided by ALREADY-SETTLED identity, never ambient coordinates alone (#93943):
+
+    1. this process's own settled multiplex verdict (``is_multiplex_active`` — set by
+       boot after ``resolve_multiplex_mode``; the gateway replaying its own restart);
+    2. the live host gateway's published rendezvous record (proof the RUNNING owner
+       settled multiplex — the update/fleet process replaying a foreign gateway's
+       captured argv has no settled flag of its own);
+    3. only then the compatibility default-root comparison.
+    """
+    if not argv or "gateway" not in argv:
+        return False
+    for flag in ("--profile", "-p"):
+        if flag in argv:
+            idx = argv.index(flag)
+            name = argv[idx + 1] if idx + 1 < len(argv) else ""
+            return name == "default"
+    if any(part == "--profile=default" for part in argv):
+        return True
+    if any(part.startswith("--profile=") and not part.endswith("=default") for part in argv):
+        return False
+    try:
+        from agent.secret_scope import is_multiplex_active
+        if is_multiplex_active():
+            return True
+    except Exception:
+        pass
+    # The publishing gateway's SETTLED served set, not this process's ambient home:
+    # a host launched from a named profile must be replayed as the host even though
+    # the replaying process (the updater) sits on the named profile's home.
+    try:
+        from gateway import host_rendezvous as hr
+        record = hr.read_record(hr.ROLE_GATEWAY)
+        if record is not None and hr.liveness_is_proven(record) and len(record.profiles) > 1:
+            return True
+    except Exception:
+        pass
+    try:
+        from hermes_constants import get_default_hermes_root, get_hermes_home
+        return get_hermes_home().resolve() == get_default_hermes_root().resolve()
+    except Exception:
+        return False
+
+
+def _host_gateway_watcher_env() -> dict[str, str]:
+    """Scrubbed default-profile env for a detached host-gateway respawn watcher."""
+    from tools.environments.local import host_gateway_child_env
+    env = host_gateway_child_env()
+    env.pop("_HERMES_GATEWAY", None)
+    return env
+
+
+def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: bool | None = None) -> bool:
     """Spawn the detached watcher that respawns ``run_argv`` once ``old_pid`` exits. Watcher and respawn
     both need platform-appropriate detach: POSIX setsid; on Windows ``start_new_session`` does NOT detach
     (the watcher would die with the CLI console), so ``windows_detach_popen_kwargs()`` supplies flags."""
@@ -1013,7 +1081,7 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str]) -> bool:
         cmd = sys.argv[2:]
         _respawn_cwd = {respawn_cwd_literal}
         _respawn_env_overlay = {respawn_env_literal}
-        deadline = time.monotonic() + 120
+        deadline = time.monotonic() + {watcher_timeout_literal}
         while time.monotonic() < deadline:
             # ``os.kill(pid, 0)`` is not a no-op on Windows — use the cross-platform existence check.
             from gateway.status import _pid_exists
@@ -1073,13 +1141,20 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str]) -> bool:
                 except OSError:
                     pass
         """
-    ).strip().format(respawn_cwd_literal=json.dumps(respawn_cwd), respawn_env_literal=json.dumps(respawn_env_overlay))
+    ).strip().format(respawn_cwd_literal=json.dumps(respawn_cwd), respawn_env_literal=json.dumps(respawn_env_overlay),
+                     watcher_timeout_literal=json.dumps(GATEWAY_RESTART_WATCHER_TIMEOUT_S))
 
     watcher_argv = [sys.executable, "-c", watcher, str(old_pid), *run_argv]
     devnull = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+    # Host respawn must not inherit a named launcher's dotenv. The watcher copies os.environ
+    # into the gateway child, so the scrub has to be the watcher's own environ.
+    watcher_env = _host_gateway_watcher_env() if (
+        _restart_argv_is_host_gateway(run_argv) if host is None else host
+    ) else None
+    popen_env = {"env": watcher_env} if watcher_env is not None else {}
     # Same detach for the watcher itself, so closing the terminal doesn't kill it.
     try:
-        subprocess.Popen(watcher_argv, **devnull, **windows_detach_popen_kwargs())
+        subprocess.Popen(watcher_argv, **devnull, **popen_env, **windows_detach_popen_kwargs())
     except OSError:
         # Parent job object rejected CREATE_BREAKAWAY_FROM_JOB; retry without it (Windows only —
         # ``start_new_session=True`` cannot raise OSError on POSIX).
@@ -1088,7 +1163,7 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str]) -> bool:
             else {"start_new_session": True}
         )
         try:
-            subprocess.Popen(watcher_argv, **devnull, **fallback_kwargs)
+            subprocess.Popen(watcher_argv, **devnull, **popen_env, **fallback_kwargs)
         except OSError:
             return False
     return True
@@ -5090,6 +5165,9 @@ def _install_systemd_from_cli(args, *, force: bool, system: bool, run_as_user) -
 def _cmd_install(args):
     if is_managed():
         managed_error("install gateway service")
+        return
+    if getattr(args, "if_missing", False) and _is_service_installed():
+        print("✓ Gateway service already installed")
         return
     force = getattr(args, "force", False)
     # `--force` doubles as the reinstall flag here; a served profile's unit would only ever exit 78.

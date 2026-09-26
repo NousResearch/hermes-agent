@@ -34,20 +34,20 @@ from hermes_cli.version_info import get_version_info
 # ``import anthropic`` is deliberately NOT at module top: the SDK costs ~220 ms of imports and
 # every usage site is a cold user-triggered path. ``...`` = not yet tried; None = tried, missing.
 _anthropic_sdk: Any = ...
+# Why the lazy install did not make the SDK importable. A completed install that needs a restart
+# (PM activates a new dependency environment only at boot) must not be reported as "install it".
+_anthropic_install_error: Optional[Exception] = None
 
 
 def _get_anthropic_sdk():
     """Return the ``anthropic`` SDK module, importing lazily. None if not installed."""
-    global _anthropic_sdk
+    global _anthropic_sdk, _anthropic_install_error
     if _anthropic_sdk is ...:
         try:
             from pm import ensure_import
             ensure_import("anthropic")
-        except ImportError:
-            pass
-        except Exception:
-            # InstallError — fall through to ImportError handling below
-            pass
+        except Exception as exc:  # the import below decides; exc explains a miss
+            _anthropic_install_error = exc
         try:
             import anthropic as _sdk
             _anthropic_sdk = _sdk
@@ -59,6 +59,9 @@ def _get_anthropic_sdk():
 def _require_sdk(purpose: str, verb: str = "Install it with"):
     """``_get_anthropic_sdk()`` or ImportError naming the feature that needs it."""
     sdk = _get_anthropic_sdk()
+    if sdk is None and _anthropic_install_error is not None:
+        raise ImportError(f"The 'anthropic' package is required for {purpose}: "
+                          f"{_anthropic_install_error}") from _anthropic_install_error
     if sdk is None:
         raise ImportError(f"The 'anthropic' package is required for {purpose}. {verb}: "
                           f"{install_hint('anthropic')}")

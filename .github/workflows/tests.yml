@@ -44,7 +44,7 @@ jobs:
       - name: Set up locked Python and test dependencies
         uses: ./.github/actions/setup-pm
         with:
-          extras: '["all", "anthropic", "bedrock", "mistral", "fal", "modal", "daytona", "hindsight", "parallel-web"]'
+          extras: '["all", "anthropic", "bedrock", "mistral", "fal", "modal", "daytona", "parallel-web"]'
           test-environment: 'true'
           prune-python-cache: true
 
@@ -143,7 +143,7 @@ jobs:
         uses: ./.github/actions/setup-pm
         with:
           toolchain: all
-          extras: '["all", "anthropic", "bedrock", "mistral", "fal", "modal", "daytona", "hindsight", "parallel-web"]'
+          extras: '["all", "anthropic", "bedrock", "mistral", "fal", "modal", "daytona", "parallel-web"]'
           test-environment: 'true'
           prune-python-cache: true
 
@@ -180,7 +180,8 @@ jobs:
         # and must not share interpreter state.
         # tests/e2e/core/upgrade runs in its own job (e2e-upgrade) below.
         run: |
-          scripts/run_tests.sh --include-integration tests/e2e
+          mapfile -t files < <(find tests/e2e -name 'test_*.py' -not -path 'tests/e2e/core/upgrade/*' | sort)
+          scripts/run_tests.sh --include-integration "${files[@]}"
         env:
           # An e2e file is a process tree, not one CPU-bound pytest worker. With
           # 32 files at once the hosted run starved live children before their

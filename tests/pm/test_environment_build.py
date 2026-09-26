@@ -677,7 +677,14 @@ def test_explicit_workspace_preserves_seed_and_replays_copied_members(locked_pro
     assert document["project"] == tomllib.loads(project.read_text(encoding="utf-8-sig"))["project"]
     [relative] = document["tool"]["uv"]["workspace"]["members"]
     copied = recorded / relative / "pyproject.toml"
-    assert copied.read_bytes() == before_member
+    copied_document = tomllib.loads(copied.read_text(encoding="utf-8-sig"))
+    expected = tomllib.loads(before_member.decode("utf-8"))
+    # A virtual member is renamed to its unique key (uv rejects two members with
+    # one [project].name); everything the plugin declared must survive verbatim.
+    assert copied_document["project"]["name"].startswith("hermes-plugin-member-")
+    del copied_document["project"]["name"]
+    del expected["project"]["name"]
+    assert copied_document == expected
     assert copied.resolve().is_relative_to(recorded.resolve())
     (original_member / "pyproject.toml").unlink()
     assert workspace.members_stamp([original_member]) != stamp

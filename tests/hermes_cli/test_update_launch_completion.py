@@ -143,7 +143,7 @@ def test_first_launch_syncs_without_marker_then_uses_completion_fact(tmp_path, m
     # It is obsolete after successful sync, not the trigger for that sync.
     (root / ".update-incomplete").write_text("pid=-1\n")
     assert venv_sync.prepare_launch(root, []) == Path(sys.executable)
-    assert calls == [(["all"], {"explicit": True, "project_root": root})]
+    assert calls == [(["all"], {"explicit": True, "project_root": root, "evict_incompatible_plugins": True})]
     assert not (root / ".update-incomplete").exists()
     assert any("source_completion.py" in str(part) for cmd in completion_tail for part in cmd)
     assert venv_sync.prepare_launch(root, []) is None

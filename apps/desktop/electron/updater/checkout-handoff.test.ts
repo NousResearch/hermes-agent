@@ -63,9 +63,15 @@ it.each([true, false])(
   async (remote: boolean): Promise<void> => {
     const { root, deps } = handoffFixture(remote)
     const spawned: string[][] = []
+    const spawnOptions: Parameters<typeof updaterProcess.spawnUpdaterProcess>[2][] = []
     vi.spyOn(updaterProcess, 'spawnUpdaterProcess').mockImplementation(
-      (_command: string, args: string[]): updaterProcess.UpdaterChild => {
+      (
+        _command: string,
+        args: string[],
+        options: Parameters<typeof updaterProcess.spawnUpdaterProcess>[2]
+      ): updaterProcess.UpdaterChild => {
         spawned.push(args)
+        spawnOptions.push(options)
 
         return { unref: (): void => {} }
       }
@@ -75,6 +81,9 @@ it.each([true, false])(
       expect(await createCheckoutStrategy(deps).apply()).toMatchObject({ ok: true, handedOff: true })
       expect(spawned).toHaveLength(1)
       const args: string[] = spawned[0]!
+      // The Windows cmd wrapper must inherit its hidden console; the POSIX
+      // script needs to outlive Electron as a detached child (#116161).
+      expect(spawnOptions[0]?.detached).toBe(!IS_WINDOWS)
       expect(args).toContain(IS_WINDOWS ? '-Branch' : '--branch')
 
       if (remote) {

@@ -159,7 +159,7 @@ def approval_callback(cli, command: str, description: str) -> str:
         cprint(f"\n{_DIM}  ⏱ Timeout — denying command{_RST}")
         return "timeout"
 
-def clarify_callback(cli, question, choices, multi_select=False):
+def clarify_callback(cli, question, choices, multi_select=False, timeout=None, auto_select=True):
     """Prompt for clarifying question through the TUI.
 
     Sets up the interactive selection UI, then blocks until the user
@@ -173,7 +173,7 @@ def clarify_callback(cli, question, choices, multi_select=False):
 
     # Canonical clarify timeout, shared with the gateway/TUI path. `<= 0`
     # means unlimited (never auto-skip mid-think) → a null deadline.
-    timeout = resolve_clarify_timeout(CLI_CONFIG)
+    timeout = resolve_clarify_timeout(CLI_CONFIG) if timeout is None else timeout
     response_queue = queue.Queue()
     is_open_ended = not choices
     effective_multi = multi_select and not is_open_ended

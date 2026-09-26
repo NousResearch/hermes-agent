@@ -42,8 +42,27 @@ def _assistant_row_missing_visible_text(msg: dict) -> bool:
     return not flatten_message_text(msg.get("content")).strip()
 
 
+def _extract_partial_summary(final_response: Any, max_chars: int = 4096) -> Optional[str]:
+    """The worker's own account of how far it got, for a budget-exhausted run.
+
+    Budget exhaustion still leaves a final message: ``_handle_max_iterations``
+    asks the model to summarise what it completed before the budget ran out.
+    Discarding it threw away the only record of that work — the run's ``summary``
+    stayed NULL and the operator saw a timed-out card with no account of what
+    happened. Returns None when there is genuinely nothing to carry (so callers
+    never write an empty summary over a real one).
+    """
+    text = flatten_message_text(final_response).strip()
+    if not text:
+        return None
+    # Cap matches _CTX_MAX_FIELD_BYTES so a long final message cannot exceed what
+    # the run/event columns are dimensioned for.
+    return text[:max_chars]
+
+
 def _record_kanban_budget_exhausted(
-    kanban_task: str, api_call_count: int, max_iterations: int, logger: logging.Logger
+    kanban_task: str, api_call_count: int, max_iterations: int, logger: logging.Logger,
+    partial_summary: Optional[str] = None,
 ) -> None:
     """Record a terminal ``timed_out`` outcome for a kanban worker out of budget.
 
@@ -54,6 +73,10 @@ def _record_kanban_budget_exhausted(
     This is a bounded fallback (#87096): the CAS invariant in ``_end_run`` (``WHERE ended_at IS NULL``)
     guarantees idempotence — if another path already closed the run this is a no-op — so it is safe to call
     from multiple exit paths.
+
+    ``partial_summary`` carries the worker's final message through to the closed
+    run (see ``_record_task_failure``), so exhausted budget no longer destroys the
+    only evidence of the work done.
     """
     try:
         from hermes_cli import kanban_db as _kb
@@ -71,6 +94,7 @@ def _record_kanban_budget_exhausted(
                 outcome="timed_out",
                 release_claim=True,
                 end_run=True,
+                partial_summary=partial_summary,
                 event_payload_extra={"budget_used": api_call_count, "budget_max": max_iterations},
             )
         finally:
@@ -177,7 +201,12 @@ def _resolve_budget_fallback(
     # closed via ``_record_task_failure`` (compare-and-swap receipt path) which is a no-op if another path
     # closed it — the CAS invariant in ``_end_run`` (``WHERE ended_at IS NULL``) guarantees idempotence.
     if _kanban_task:
-        _record_kanban_budget_exhausted(_kanban_task, api_call_count, agent.max_iterations, logger)
+        _record_kanban_budget_exhausted(
+            _kanban_task, api_call_count, agent.max_iterations, logger,
+            # final_response holds the model's "what I completed" summary; pass it
+            # so the closed run keeps the worker's partial findings.
+            partial_summary=_extract_partial_summary(final_response),
+        )
     return final_response, _turn_exit_reason, preserved_verification_fallback
 
 

@@ -189,6 +189,9 @@ def test_pending_response_records_kanban_timeout(monkeypatch):
         outcome="timed_out",
         release_claim=True,
         end_run=True,
+        # The worker's preserved final message rides along as the run's partial
+        # findings — exhausted budget must not discard the work done.
+        partial_summary="composed report",
         event_payload_extra={"budget_used": 60, "budget_max": 60},
     )
 

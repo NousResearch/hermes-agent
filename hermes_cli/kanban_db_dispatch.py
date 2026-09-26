@@ -1345,6 +1345,7 @@ def _record_task_failure(
     end_run: bool = False,
     event_payload_extra: Optional[dict] = None,
     infrastructure: bool = False,
+    partial_summary: Optional[str] = None,
 ) -> bool:
     """Record a non-success outcome and maybe trip the circuit breaker; every
     non-success path funnels through here so ``consecutive_failures`` stays
@@ -1363,6 +1364,13 @@ def _record_task_failure(
     with ``infrastructure: true`` but ``consecutive_failures`` is left alone and
     the breaker never trips; the card stays retryable and
     :func:`check_respawn_guard` spaces the retries.
+
+    ``partial_summary``: the worker's own account of how far it got, recorded on
+    the closed run and in both terminal events. A worker that dies of budget
+    exhaustion has still done work — its final message is evidence a human (or
+    the next worker) needs. Without this the run row's ``summary`` stayed NULL
+    and that work was silently discarded; the caller owns the extraction, this
+    only carries it through.
     """
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
@@ -1409,8 +1417,11 @@ def _record_task_failure(
                 detail = {"failures": failures, "retry_status": retry_status}
                 if infrastructure:
                     detail["infrastructure"] = True
+                if partial_summary:
+                    detail["partial_summary"] = partial_summary
                 run_id = _kb._end_run(
-                    conn, task_id, outcome=outcome, status=outcome, error=error, metadata=detail,
+                    conn, task_id, outcome=outcome, status=outcome, error=error,
+                    metadata=detail, summary=partial_summary,
                 )
                 _kb._append_event(conn, task_id, outcome, {"error": error, **detail}, run_id=run_id)
             return False
@@ -1433,6 +1444,10 @@ def _record_task_failure(
             "trigger_outcome": outcome,
             "retry_status": retry_status,
         }
+        if partial_summary:
+            # Same reason as the untripped path: the worker's partial work is
+            # evidence even when the breaker gives up on the card.
+            payload["partial_summary"] = partial_summary
         run_id = None
         if end_run:
             # Only the spawn path has an open run to close.
@@ -1444,7 +1459,9 @@ def _record_task_failure(
                     "effective_limit": effective_limit,
                     "limit_source": limit_source,
                     "retry_status": retry_status,
+                    **({"partial_summary": partial_summary} if partial_summary else {}),
                 },
+                summary=partial_summary,
             )
         if force_trip:
             # The caller applied its own bounded policy, so the counter cannot

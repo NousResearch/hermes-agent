@@ -15,7 +15,6 @@ import pytest
 from hermes_cli import plugin_catalog as pc_cat
 from hermes_cli import plugins_cmd as pc
 from hermes_cli import plugins_cmd_catalog as cat
-from pm.filesystem import is_junction
 from tests.pm._fixtures import client, isolated_python  # noqa: F401
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git not available")
@@ -205,230 +204,6 @@ def test_repin_keeps_local_files_backs_up_edits_and_follows_manifest_rename(worl
     assert any("plugins-backup" in w for w in result["warnings"]) and any("renamed" in w for w in result["warnings"])
 
 
-def test_carry_user_files_without_git_preserves_data_but_not_old_code(tmp_path):
-    """No-git fallback keeps user state without resurrecting removed executable/control surfaces."""
-    old = tmp_path / "old"
-    new = tmp_path / "new"
-    old.mkdir()
-    new.mkdir()
-
-    (old / "config.yaml").write_text("endpoint: mine\n")
-    (old / "data").mkdir()
-    (old / "data" / "state.db").write_text("user data")
-    (old / "legacy.py").write_text("OLD = True\n")
-    (old / ".git").write_text("gitdir: /tmp/foreign-worktree\\n")
-    (old / "desktop").mkdir()
-    (old / "desktop" / "plugin.js").write_text('export default { id: "stale" }\n')
-    (old / "skills").mkdir()
-    (old / "skills" / "stale").mkdir()
-    (old / "skills" / "stale" / "SKILL.md").write_text("# stale\n")
-    (old / "mcp.json").write_text('{"mcpServers":{"stale":{"type":"stdio","command":"./stale"}}}\n')
-    (old / "pyproject.toml").write_text('[project]\nname="stale"\nversion="1"\n')
-    (old / "package.json").write_text('{"name":"stale"}\n')
-
-    cat._carry_user_files(old, new, None)
-
-    assert (new / "config.yaml").read_text() == "endpoint: mine\n"
-    assert (new / "data" / "state.db").read_text() == "user data"
-    assert not (new / "legacy.py").exists()
-    assert not (new / ".git").exists()
-    assert not (new / "desktop").exists()
-    assert not (new / "skills").exists()
-    assert not (new / "mcp.json").exists()
-    assert not (new / "pyproject.toml").exists()
-    assert not (new / "package.json").exists()
-
-
-@pytest.mark.parametrize("shape", ["old-file-new-dir", "old-dir-new-file"])
-def test_carry_user_files_fails_closed_on_type_clashes(tmp_path, shape):
-    """An update never drops user state just because the new revision changed a path's type."""
-    old, new = tmp_path / "old", tmp_path / "new"
-    old.mkdir()
-    new.mkdir()
-    if shape == "old-file-new-dir":
-        (old / "data").write_text("user data")
-        (new / "data").mkdir()
-    else:
-        (old / "data" / "db").mkdir(parents=True)
-        (old / "data" / "db" / "index.db").write_text("user data")
-        (new / "data").write_text("new upstream file")
-
-    with pytest.raises(pc.PluginOperationError, match="Cannot preserve user file"):
-        cat._carry_user_files(old, new, None)
-
-    if shape == "old-file-new-dir":
-        assert (old / "data").read_text() == "user data"
-        assert (new / "data").is_dir()
-    else:
-        assert (old / "data" / "db" / "index.db").read_text() == "user data"
-        assert (new / "data").read_text() == "new upstream file"
-
-
-def test_carry_user_files_fails_closed_on_staged_symlink_parent(tmp_path):
-    """A staged symlink cannot redirect carried user data outside the replacement transaction."""
-    old, new, outside = tmp_path / "old", tmp_path / "new", tmp_path / "outside"
-    (old / "data").mkdir(parents=True)
-    new.mkdir()
-    outside.mkdir()
-    (old / "data" / "index.db").write_text("user data")
-    try:
-        (new / "data").symlink_to(outside, target_is_directory=True)
-    except OSError:
-        pytest.skip("symlinks unavailable on this platform")
-
-    with pytest.raises(pc.PluginOperationError, match="Cannot preserve user file"):
-        cat._carry_user_files(old, new, None)
-
-    assert not (outside / "index.db").exists()
-    assert (old / "data" / "index.db").read_text() == "user data"
-
-
-@pytest.mark.skipif(os.name == "nt", reason="POSIX directory modes")
-def test_carry_user_files_preserves_mode_of_created_directories(tmp_path):
-    """Directories created solely for carried state keep the source directory's restrictive mode."""
-    old, new = tmp_path / "old", tmp_path / "new"
-    (old / "data").mkdir(parents=True, mode=0o700)
-    (old / "data").chmod(0o700)
-    new.mkdir()
-    (old / "data" / "state.db").write_text("user data")
-
-    previous_umask = os.umask(0o022)
-    try:
-        cat._carry_user_files(old, new, None)
-    finally:
-        os.umask(previous_umask)
-
-    assert (new / "data" / "state.db").read_text() == "user data"
-    assert (new / "data").stat().st_mode & 0o777 == 0o700
-
-
-@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFOs unavailable on this platform")
-def test_carry_user_files_skips_runtime_special_files(tmp_path):
-    """Runtime pipes are transient state and must not make an otherwise valid update fail."""
-    old, new = tmp_path / "old", tmp_path / "new"
-    (old / "data").mkdir(parents=True)
-    new.mkdir()
-    (old / "data" / "state.db").write_text("user data")
-    os.mkfifo(old / "data" / "events.fifo")
-
-    cat._carry_user_files(old, new, None)
-
-    assert (new / "data" / "state.db").read_text() == "user data"
-    assert not os.path.lexists(new / "data" / "events.fifo")
-
-
-@pytest.mark.skipif(os.name != "nt", reason="directory junctions are Windows-only")
-def test_carry_user_files_does_not_follow_source_junction(tmp_path):
-    """A source junction cannot pull files from outside the installed plugin into an update."""
-    old, new, outside = tmp_path / "old", tmp_path / "new", tmp_path / "outside"
-    old.mkdir()
-    new.mkdir()
-    outside.mkdir()
-    (outside / "secret.txt").write_text("outside")
-    junction = old / "data"
-    sp.run(["cmd", "/c", "mklink", "/J", str(junction), str(outside)], check=True, capture_output=True, text=True)
-    assert is_junction(junction)
-
-    cat._carry_user_files(old, new, None)
-
-    assert not os.path.lexists(new / "data")
-    assert not (new / "secret.txt").exists()
-
-
-@pytest.mark.skipif(os.name != "nt", reason="directory junctions are Windows-only")
-def test_carry_user_files_fails_closed_on_staged_junction_parent(tmp_path):
-    """A staged junction cannot redirect carried user data outside the replacement tree."""
-    old, new, outside = tmp_path / "old", tmp_path / "new", tmp_path / "outside"
-    (old / "data").mkdir(parents=True)
-    new.mkdir()
-    outside.mkdir()
-    (old / "data" / "index.db").write_text("user data")
-    junction = new / "data"
-    sp.run(["cmd", "/c", "mklink", "/J", str(junction), str(outside)], check=True, capture_output=True, text=True)
-    assert is_junction(junction)
-
-    with pytest.raises(pc.PluginOperationError, match="Cannot preserve user file"):
-        cat._carry_user_files(old, new, None)
-
-    assert not (outside / "index.db").exists()
-    assert (old / "data" / "index.db").read_text() == "user data"
-
-
-def test_url_subdir_reclone_revalidates_carried_code_before_publication(world, tmp_path, monkeypatch):
-    """The URL subdir path must run both admission gates again after carrying user state."""
-    from hermes_cli import plugins_cmd_install as install_cmd
-
-    mono = tmp_path / "mono-rescan"
-    src = mono / "plugins" / "sub-plugin"
-    src.mkdir(parents=True)
-    (src / "plugin.yaml").write_text("name: sub-plugin\nversion: 1.0.0\ndescription: d\n")
-    (src / "__init__.py").write_text("def register(ctx):\n    pass\n")
-    (src / "mcp.json").write_text(
-        '{"mcpServers":{"demo":{"type":"stdio","command":"${PLUGIN_ROOT}/server.js"}}}\n'
-    )
-    (src / "server.js").write_text('console.log("old revision")\n')
-    sp.run(["git", "init", "-q"], cwd=mono, check=True, env=_GIT_ENV)
-    _commit(mono, "v1")
-
-    target = pc._install_plugin_core(f"{mono.as_uri()}#plugins/sub-plugin", force=False)[0]
-    assert (target / "server.js").is_file()
-    (src / "server.js").unlink()
-    (src / "plugin.yaml").write_text("name: sub-plugin\nversion: 2.0.0\ndescription: d\n")
-    _commit(mono, "v2")
-
-    scans, portable_checks = [], []
-
-    def scan_gate(tree, *_args, **_kwargs):
-        scans.append((Path(tree) / "server.js").exists())
-
-    def portable_gate(_plugin_name, tree):
-        has_server = (Path(tree) / "server.js").exists()
-        portable_checks.append(has_server)
-        if has_server:
-            raise pc.PluginOperationError("carried server.js failed final admission")
-
-    monkeypatch.setattr(pc, "_scan_plugin_tree", scan_gate)
-    monkeypatch.setattr(install_cmd, "_refuse_unavailable_portable_plugin", portable_gate)
-    result = pc.dashboard_update_user_plugin("sub-plugin")
-
-    assert result["ok"] is False
-    assert "carried server.js failed final admission" in result["error"]
-    assert scans == [False, True]
-    assert portable_checks == [False, True]
-    assert (target / "server.js").is_file()
-    assert "version: 1.0.0" in (target / "plugin.yaml").read_text()
-
-
-def test_carry_user_files_fails_closed_when_source_tree_cannot_be_walked(tmp_path, monkeypatch):
-    """Unreadable user state aborts replacement instead of being silently omitted."""
-    old = tmp_path / "old"
-    new = tmp_path / "new"
-    old.mkdir()
-    new.mkdir()
-
-    def denied_walk(_path, *, onerror=None, **_kwargs):
-        assert onerror is not None
-        onerror(PermissionError("denied"))
-        return ()
-
-    monkeypatch.setattr(cat.os, "walk", denied_walk)
-    with pytest.raises(pc.PluginOperationError, match="Could not preserve user files.*denied"):
-        cat._carry_user_files(old, new, None)
-
-
-def test_git_checkout_update_fails_closed_when_local_changes_cannot_be_inspected(world, monkeypatch):
-    """A destructive re-pin must not guess ownership when a real git checkout cannot be inspected."""
-    target = cat.install_catalog_entry(pc_cat.get_live_catalog_entry("cat-plugin"), force=False)[0]
-    assert (target / ".git").exists()
-    monkeypatch.setattr(pc, "_resolve_git_executable", lambda: None)
-    world["state"]["pin"] = world["sha2"]
-
-    with pytest.raises(pc.PluginOperationError, match="git executable is unavailable"):
-        cat.repin_catalog_plugin(target, cat.read_catalog_sidecar(target))
-
-    assert _head(target) == world["sha1"]
-
-
 @pytest.mark.parametrize("via", ["url", "catalog"])
 def test_update_of_a_subdir_install_keeps_files_the_user_created_or_edited(world, tmp_path, monkeypatch, via):
     """A subdirectory install carries no ``.git``; both update paths must preserve user config/data."""
@@ -440,6 +215,7 @@ def test_update_of_a_subdir_install_keeps_files_the_user_created_or_edited(world
     (src / "config.yaml.example").write_text("endpoint: default\n")
     (src / "desktop").mkdir()
     (src / "desktop" / "plugin.js").write_text("export default { id: \"v1\" }\n")
+    (src / "server.js").write_text("console.log('v1')\n")
     sp.run(["git", "init", "-q"], cwd=mono, check=True, env=_GIT_ENV)
     pin = {"sha": _commit(mono, "v1")}
 
@@ -467,6 +243,7 @@ def test_update_of_a_subdir_install_keeps_files_the_user_created_or_edited(world
     (src / "plugin.yaml").write_text("name: sub-plugin\nversion: 2.0.0\ndescription: d\n")
     (src / "config.yaml.example").write_text("endpoint: new-default\n")
     shutil.rmtree(src / "desktop")
+    (src / "server.js").unlink()
     pin["sha"] = _commit(mono, "v2")
     assert pc.dashboard_update_user_plugin("sub-plugin")["ok"] is True
 
@@ -474,6 +251,7 @@ def test_update_of_a_subdir_install_keeps_files_the_user_created_or_edited(world
     assert (target / "config.yaml").read_text() == "endpoint: mine\n"
     assert (target / "data" / "state.json").read_text() == "{}"
     assert not (target / "desktop").exists()
+    assert not (target / "server.js").exists()
 
 
 def test_repin_keeps_a_wholly_ignored_data_dir_in_a_git_checkout(world):

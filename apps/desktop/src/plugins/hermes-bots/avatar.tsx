@@ -6,9 +6,11 @@
  * Render-only. The editor UI that picks these lives in `avatar-picker.tsx`.
  */
 
+import { useEffect, useState, type ComponentType } from 'react'
 import * as sdk from '@hermes/plugin-sdk'
 import { profileColor } from '@hermes/plugin-sdk'
 
+import { blobatarExpressionFor, blobatarMotionComponent, type BlobatarProps } from './avatar-motion'
 import type { AvatarAppearance, AvatarShape, BotMeta, FaceMood } from './types'
 
 // Deterministic blob avatars (name → face). Feature-detected: older SDKs
@@ -191,7 +193,7 @@ export function blobShapeString(seedPart: string, kind: string) {
 
 /** Static SVG markup for a blob face, tagged data-bot-face so the roster's
  *  PNG backfill (pushLocalAvatars → rasterizeSvgToPng) still finds it. */
-function blobMarkup(shape: null | string | undefined, name: string, size: number) {
+export function blobMarkup(shape: null | string | undefined, name: string, size: number) {
   if (!blobatarSvg) {
     return null
   }
@@ -1014,11 +1016,60 @@ export function BotFace({ shape, color, image, size = 36, name = 'agent', mood =
   }
 
   // Blobatar shapes: the library draws the whole face (body + eyes + its own
-  // name-derived palette). Inline SVG via innerHTML so the roster PNG
-  // backfill's `svg[data-bot-face=…]` query still finds it; the math clock
-  // ignores it (no data-hb-math). Falls back to the legacy math face when the
-  // SDK predates the export.
+  // name-derived palette). When the motion layer is present, render the
+  // library's own animated component — pure-CSS idle motion (blink, gaze,
+  // breathe, bob; zero JS per frame) plus the mood's expression pose — through
+  // the same `data-bot-face` hook the roster PNG backfill queries. Falls back
+  // to the static string renderer (identical face, no motion) on an older SDK.
+  // The layer resolves once via a dynamic import; the first paint may take the
+  // static path and the effect flips subsequent renders to animated — for a
+  // 34px avatar the one-frame static flash is invisible, while the cached
+  // promise keeps every later face synchronous.
+  const [motion, setMotion] = useState<{
+    Face: ComponentType<BlobatarProps> | null
+    expression: unknown
+  }>({ Face: null, expression: undefined })
+
+  useEffect(() => {
+    if (!isBlobShape(shape)) {
+      return
+    }
+
+    let cancelled = false
+
+    void Promise.all([blobatarMotionComponent(), blobatarExpressionFor(mood)]).then(
+      ([Face, expression]) => {
+        if (!cancelled) {
+          setMotion({ expression, Face })
+        }
+      }
+    )
+
+    return () => {
+      cancelled = true
+    }
+  }, [isBlobShape(shape), mood])
+
   if (isBlobShape(shape)) {
+    const { Face: MotionFace, expression } = motion
+
+    if (MotionFace) {
+      // data-bot-face rides through to the library's own <svg> (it spreads
+      // unknown props), keeping the roster PNG backfill query working on the
+      // animated path exactly as the static one did.
+      return (
+        <MotionFace
+          animate="always"
+          aria-hidden
+          {...(expression ? { expression } : {})}
+          data-bot-face={name}
+          name={name}
+          size={size}
+          style={{ display: 'block', lineHeight: 0 }}
+        />
+      )
+    }
+
     const markup = blobMarkup(shape, name, size)
 
     if (markup) {

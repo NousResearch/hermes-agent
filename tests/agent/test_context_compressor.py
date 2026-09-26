@@ -1062,13 +1062,15 @@ class TestSustainedOverloadEscalation:
         c.summary_model = "test/auxiliary"
         return c
 
-    def test_first_overloads_still_abort_then_third_commits_fallback(self):
+    @pytest.mark.parametrize("access_error", [False, True], ids=["overload", "403_overloaded"])
+    def test_first_overloads_still_abort_then_third_commits_fallback(self, access_error):
         c = self._compressor(abort_on_summary_failure=False)
         # A stale terminal flag from one earlier network failure (only a success clears it) must
         # not pin the long-lived compressor in abort mode: the latest failure class decides.
         c._last_summary_network_failure = True
         msgs = self._msgs(12)
-        with patch("agent.context_compressor.call_llm", side_effect=self._err()):
+        err = StubProviderError("Error code: 403 - provider overloaded", status_code=403) if access_error else self._err()
+        with patch("agent.context_compressor.call_llm", side_effect=err):
             first = c.compress(msgs, current_tokens=999999, force=True)
             second = c.compress(msgs, current_tokens=999999, force=True)
             # First two: preserve the transcript unchanged (#115906 semantics).
@@ -1076,6 +1078,12 @@ class TestSustainedOverloadEscalation:
             assert c._last_compress_aborted is True
             third = c.compress(msgs, current_tokens=999999, force=True)
 
+        if access_error:
+            # An auth/quota error that also says "overloaded" never escalates (#29559).
+            assert third == msgs
+            assert c._last_compress_aborted is True
+            assert c._last_compression_telemetry["failure_class"] == "summary_auth_failure"
+            return
         # Third: sustained overload escalates — bounded fallback beats a deferred total wipe.
         assert third != msgs
         assert c._last_compress_aborted is False

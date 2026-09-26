@@ -4181,8 +4181,12 @@ Write only the summary body. Do not include any preamble or prefix."""
             if self._last_summary_overload_degraded:
                 # The latest failure class decides: a stale network/empty/truncated/auth flag from
                 # an earlier failure (only a success clears those) must not keep aborting forever.
+                # An auth/quota flag set by THIS error stays: a 403/402 that also says "overloaded"
+                # must keep aborting, never commit the lossy fallback (#29559).
+                keep_auth = _is_summary_access_or_quota_error(e)
                 for flag, _class, _msg in _TERMINAL_SUMMARY_FAILURES:
-                    setattr(self, flag, False)
+                    if not (keep_auth and flag == "_last_summary_auth_failure"):
+                        setattr(self, flag, False)
         logger.warning(
             "Failed to generate context summary: %s. Further summary attempts paused for %d seconds.", e,
             _transient_cooldown,

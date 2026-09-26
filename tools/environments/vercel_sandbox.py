@@ -344,45 +344,49 @@ class VercelSandboxEnvironment(BaseEnvironment):
         del timeout
         sandbox, workspace_root, lock = self._require_sandbox(), self._workspace_root, self._lock
 
+        # Guarded by ``lock`` so cancel() and dispatch agree on whether the shell
+        # has taken ownership of (opened + unlinked) the staged stdin file.
+        state = {"cancelled": False, "staged": None, "dispatched": False}
+
         def cancel() -> None:
-            # Do not dispatch a second command here: the pinned 0.7.2 SDK has no
-            # per-command timeout, so cleanup could block the synchronous kill path.
-            # Once the staged file is opened below it is unlinked before user code;
-            # stopping the captured sandbox contains the pre-dispatch race.
             with lock:
+                state["cancelled"] = True
+                if state["staged"] and not state["dispatched"]:
+                    # Staged but never dispatched: scrub the payload (may hold a
+                    # sudo password) before stopping. Once dispatched the user
+                    # shell unlinks it itself, so kill() sends no extra command.
+                    with contextlib.suppress(Exception):
+                        sandbox.write_files([{"path": state["staged"], "content": b"", "mode": 0o600}])
                 self._stop_sandbox(sandbox)
 
         def exec_fn() -> tuple[str, int]:
-            remote_stdin = None
-            try:
-                command = cmd_string
-                if stdin_data is not None:
-                    temp_dir = self.get_temp_dir().rstrip("/") or "/"
-                    remote_stdin = f"{temp_dir}/.hermes-stdin-{uuid.uuid4().hex}"
-                    _retry_vercel_call(
-                        "stdin upload",
-                        lambda: sandbox.write_files([{
-                            "path": remote_stdin,
-                            "content": stdin_data.encode("utf-8", "surrogateescape"),
-                            "mode": 0o600,
-                        }]),
-                        attempts=_WRITE_RETRY_ATTEMPTS,
-                    )
-                    quoted_stdin = shlex.quote(remote_stdin)
-                    command = (
-                        f"exec 0< {quoted_stdin} || exit $?\n"
-                        f"rm -f -- {quoted_stdin} || exit $?\n"
-                        f"{cmd_string}"
-                    )
-                result = sandbox.run_command(
-                    "bash", ["-lc" if login else "-c", command], cwd=workspace_root)
-                return _result_parts(result)
-            except Exception:
-                # If dispatch failed before the shell could open+unlink the staging
-                # file, fail closed by stopping this captured sandbox. Hermes never
-                # reuses a terminal Vercel sandbox on the next execute.
-                self._stop_sandbox(sandbox)
-                raise
+            command = cmd_string
+            if stdin_data is not None:
+                temp_dir = self.get_temp_dir().rstrip("/") or "/"
+                remote_stdin = f"{temp_dir}/.hermes-stdin-{uuid.uuid4().hex}"
+                _retry_vercel_call(
+                    "stdin upload",
+                    lambda: sandbox.write_files([{
+                        "path": remote_stdin,
+                        "content": stdin_data.encode("utf-8", "surrogateescape"),
+                        "mode": 0o600,
+                    }]),
+                    attempts=_WRITE_RETRY_ATTEMPTS,
+                )
+                quoted_stdin = shlex.quote(remote_stdin)
+                command = (
+                    f"exec 0< {quoted_stdin} || exit $?\n"
+                    f"rm -f -- {quoted_stdin} || exit $?\n"
+                    f"{cmd_string}"
+                )
+                with lock:
+                    state["staged"] = remote_stdin
+            with lock:
+                if state["cancelled"]:
+                    return ("", 130)
+                state["dispatched"] = True
+            return _result_parts(sandbox.run_command(
+                "bash", ["-lc" if login else "-c", command], cwd=workspace_root))
         return _ThreadedProcessHandle(exec_fn, cancel_fn=cancel)
 
     def cleanup(self):

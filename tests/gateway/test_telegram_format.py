@@ -222,8 +222,51 @@ class TestItalicNewlineBug:
         assert "Item one" in result
         assert "Item two" in result
         assert "Item three" in result
-        # Should NOT contain _ (italic markers) wrapping list items
-        assert "_" not in result or "Item" not in result.split("_")[1] if "_" in result else True
+        # Leading * bullet should be normalized to unicode bullet •
+        assert "• Item one" in result
+        assert "• Item two" in result
+        assert "• Item three" in result
+
+    def test_bullet_list_with_inline_italic_and_bold(self, adapter):
+        """Bullet lists containing italic or bold elements must parse cleanly."""
+        text = "* Item one with *italic* words\n* Item two with **bold** words\n   * Nested item with ***bolditalic***"
+        result = adapter.format_message(text)
+        assert "• Item one with _italic_ words" in result
+        assert "• Item two with *bold* words" in result
+        assert "   • Nested item with *_bolditalic_*" in result
+
+    def test_bullet_normalization_skips_fenced_code(self, adapter):
+        """Bullet markers inside a fenced block are literal source, never rewritten to •.
+
+        Fenced spans are stashed behind placeholders in step (1) before the step (4b)
+        bullet rewrite, so a code sample keeps the characters the reader expects.
+        """
+        fenced = "Contoh markdown:\n\n```\n* item satu\n* item dua\n```\n"
+        assert "* item satu" in adapter.format_message(fenced)
+        assert "• item satu" not in adapter.format_message(fenced)
+
+        c_sample = "```c\n* ptr = 42;\n```\n"
+        assert "* ptr = 42;" in adapter.format_message(c_sample)
+        assert "• ptr = 42;" not in adapter.format_message(c_sample)
+
+        yaml_sample = "```yaml\n* star\n```\n"
+        assert "* star" in adapter.format_message(yaml_sample)
+
+    def test_bullet_normalization_skips_inline_code(self, adapter):
+        """A single backtick span is protected the same way as a fenced block."""
+        result = adapter.format_message("Gunakan `* item` untuk bullet")
+        assert "`* item`" in result
+        assert "• item" not in result
+
+    def test_indented_code_block_is_not_protected(self, adapter):
+        """Pre-existing limitation, pinned so a future change is a visible decision.
+
+        format_message() only protects fenced blocks and inline code. A 4-space indented
+        code block therefore goes through the same rewrites as prose — including the
+        step (4b) bullet rewrite (and, before this PR, the italic conversion).
+        """
+        result = adapter.format_message("Example:\n\n    * not a bullet\n")
+        assert "    • not a bullet" in result
 
 
 # =========================================================================

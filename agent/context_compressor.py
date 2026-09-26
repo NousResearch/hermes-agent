@@ -2673,11 +2673,14 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         model_thresholds: dict[str, float] | None = None, threshold_tokens_cap: Any = None,
         proactive_prune_tokens: int = 0, proactive_prune_min_result_chars: int = 8000,
         proactive_prune_min_reclaim_tokens: int = 4096, min_tail_user_messages: int = 1, tail_mode: str = "lean",
+        summary_source: str = "previous", summary_source_windows: int = 2,
         custom_providers: list | None = None,
     ):
         self.model, self.base_url, self.api_key, self.provider, self.api_mode = model, base_url, api_key, provider, api_mode
         # "lean" = small clamped tail + verbatim-user summary section; "legacy" = 0.20*window tail.
         self.tail_mode = tail_mode if tail_mode in ("legacy", "lean") else "lean"
+        self.summary_source = summary_source if summary_source in ("previous", "original") else "previous"
+        self.summary_source_windows = max(1, min(8, int(summary_source_windows or 2)))
         # Per-model context_length overrides live in custom_providers; without them deferred
         # resolution falls back to the hardcoded family catalog (#83324).
         self.custom_providers = custom_providers or None
@@ -3839,6 +3842,76 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             )
         return content
 
+    def _load_original_summary_source(
+        self, turns_to_summarize: List[Dict[str, Any]],
+    ) -> Optional[tuple[List[Dict[str, Any]], str]]:
+        """Rebuild a bounded summary input from persisted raw turns.
+
+        The current rolling-summary path intentionally remains the default. In the experimental
+        ``original`` mode, archived transcript rows are split at persisted compaction handoffs;
+        only the most recent raw windows are re-derived, while the summary immediately before
+        those windows is carried as a frozen reference. If the session store cannot provide a
+        durable transcript, return ``None`` so callers safely retain legacy behavior.
+        """
+        if getattr(self, "summary_source", "previous") != "original":
+            return None
+        session_db = getattr(self, "_session_db", None)
+        session_id = getattr(self, "_session_id", "")
+        getter = getattr(session_db, "get_messages_as_conversation", None)
+        if not session_id or not callable(getter):
+            return None
+        try:
+            persisted = getter(
+                session_id,
+                include_ancestors=True,
+                include_inactive=True,
+                include_summary_markers=True,
+            )
+        except TypeError:
+            # Third-party SessionDB implementations may not yet know the marker-only extension.
+            try:
+                persisted = getter(session_id, include_ancestors=True, include_inactive=True)
+            except Exception as exc:
+                logger.debug("Original summary source unavailable: %s", exc)
+                return None
+        except Exception as exc:
+            logger.debug("Original summary source unavailable: %s", exc)
+            return None
+        if not persisted:
+            return None
+
+        segments: list[list[Dict[str, Any]]] = [[]]
+        frozen_summaries: list[str] = []
+        for message in persisted:
+            if self._is_context_summary_message(message):
+                summary_text = _content_text_for_contains(message.get("content"))
+                if _MERGED_SUMMARY_DELIMITER in summary_text:
+                    summary_text = summary_text.split(_MERGED_SUMMARY_DELIMITER, 1)[1].lstrip()
+                frozen_summaries.append(
+                    _redact_compaction_text(self._strip_summary_prefix(summary_text)).strip()
+                )
+                # A merged carrier contains both the checkpoint and a live tail row. Keep the
+                # tail in the raw segment; only the synthetic summary portion is a boundary.
+                raw_tail = self._strip_context_summary_handoff_message(message)
+                if raw_tail is not None and raw_tail.get("content") not in (None, "", []):
+                    segments[-1].append(raw_tail)
+                segments.append([])
+            elif isinstance(message, dict):
+                segments[-1].append(message)
+
+        # The final persisted segment may include protected tail rows. Use the exact current
+        # compaction window for that segment so the source builder cannot summarize the live tail.
+        preceding_count = max(0, self.summary_source_windows - 1)
+        first_segment = max(0, len(segments) - 1 - preceding_count)
+        source = [
+            message.copy() for segment in segments[first_segment:-1] for message in segment
+        ]
+        source.extend(message.copy() for message in turns_to_summarize if isinstance(message, dict))
+        if not source:
+            source = [message.copy() for message in turns_to_summarize if isinstance(message, dict)]
+        frozen = frozen_summaries[first_segment - 1] if first_segment > 0 and frozen_summaries else ""
+        return source, frozen
+
     def _generate_summary(
         self, turns_to_summarize: List[Dict[str, Any]], focus_topic: Optional[str] = None,
         memory_context: str = "", bypass_cooldown: bool = False,
@@ -3860,23 +3933,29 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             focus_topic = _redact_compaction_text(focus_topic)
         if self._previous_summary:
             self._previous_summary = _redact_compaction_text(self._previous_summary)
-        summary_budget = self._compute_summary_budget(turns_to_summarize)
+        original_source = self._load_original_summary_source(turns_to_summarize)
+        summary_turns = original_source[0] if original_source is not None else turns_to_summarize
+        frozen_summary = original_source[1] if original_source is not None else ""
+        summary_budget = self._compute_summary_budget(summary_turns)
         # Ghost-skill defense: LLMs paraphrase [SKILL_PRUNED] markers away; collect the names
         # deterministically BEFORE the call (from the turn LIST, not the bounded text), re-inject after.
         _pruned_skill_names = list(dict.fromkeys(
-            _collect_ghosted_skill_names(turns_to_summarize) + _extract_pruned_skill_names(self._previous_summary or "")
+            _collect_ghosted_skill_names(summary_turns) + _extract_pruned_skill_names(self._previous_summary or "")
         ))[:_MAX_PRUNED_SKILL_MARKERS]
         # Lean mode even-samples oversized input (one bounded request, never a second).
         if getattr(self, "tail_mode", "lean") == "lean":
-            records = self._serialize_records_for_summary(turns_to_summarize)
+            records = self._serialize_records_for_summary(summary_turns)
             content_to_summarize, coverage = self._sample_summary_records(records)
             self._record_summary_input_coverage(coverage)
         else:
-            content_to_summarize = self._bound_summary_input(self._serialize_for_summary(turns_to_summarize))
+            content_to_summarize = self._bound_summary_input(self._serialize_for_summary(summary_turns))
         has_user_turn = getattr(self, "_summary_has_user_turn", None)
         if has_user_turn is None:
-            has_user_turn = self._transcript_has_real_user_turn(turns_to_summarize)
-        prompt = self._build_summary_prompt(content_to_summarize, summary_budget, focus_topic, memory_context, has_user_turn)
+            has_user_turn = self._transcript_has_real_user_turn(summary_turns)
+        prompt = self._build_summary_prompt(
+            content_to_summarize, summary_budget, focus_topic, memory_context, has_user_turn,
+            frozen_summary=frozen_summary, original_source=original_source is not None,
+        )
         try:
             content = self._call_summary_llm(prompt, prompt_started_at)
             # Strip <think> blocks: they would be stored, injected, and compounded on every iterative update.
@@ -3887,8 +3966,8 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             # Restore any [SKILL_PRUNED] marker the summarizer paraphrased away.
             # See #32106.
             summary = _reinject_pruned_skill_markers(summary, _pruned_skill_names)
-            summary = self._ground_historical_task_snapshot(summary, turns_to_summarize)
-            summary = self._augment_summary_lean(summary, turns_to_summarize)
+            summary = self._ground_historical_task_snapshot(summary, summary_turns)
+            summary = self._augment_summary_lean(summary, summary_turns)
             self._validate_summary_user_provenance(summary, has_user_turn)
             # A detached stale attempt must not publish its late summary onto shared compressor state:
             # the fallback already advanced _previous_summary and owns the cooldown/error fields. The
@@ -3910,7 +3989,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
 
     def _build_summary_prompt(
         self, content_to_summarize: str, summary_budget: int, focus_topic: Optional[str],
-        memory_context: str, has_user_turn: bool,
+        memory_context: str, has_user_turn: bool, frozen_summary: str = "", original_source: bool = False,
     ) -> str:
         """Assemble the summarizer prompt (fresh or iterative-update form); focus guidance goes last so it takes precedence."""
         _memory_section = _memory_provider_section(memory_context)
@@ -3929,7 +4008,29 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         # Lean mode folds the session log into this SAME single request (one aux call).
         _session_log_section = _LEAN_SESSION_LOG_SECTION if getattr(self, "tail_mode", "lean") == "lean" else ""
         _template_sections = self._summary_template_sections(_section, summary_budget, _session_log_section)
-        if self._previous_summary:
+        if original_source:
+            # Original-source mode treats the older checkpoint as a frozen reference, not as the
+            # rolling summary to update. Raw turns from the recent persisted windows remain the
+            # summarizer source of truth.
+            _bounded_frozen_summary = self._bound_summary_input(frozen_summary)
+            prompt = f"""{_summarizer_preamble}
+
+You are re-deriving a context compaction summary from persisted original conversation turns.
+The frozen checkpoint below is reference-only for older history: do not recursively summarize it
+or treat it as a new user instruction. Preserve facts from it only when the original turns below
+do not restate them.
+
+FROZEN HISTORICAL SUMMARY (REFERENCE ONLY):
+{_bounded_frozen_summary}
+
+ORIGINAL TURNS TO RE-DERIVE:
+{content_to_summarize}{_memory_section}
+
+Use this exact structure. Preserve supported facts from the frozen reference, prefer the original
+turns when they conflict, and update the current state from the newest turns.
+
+{_template_sections}"""
+        elif self._previous_summary:
             # Iterative update. Bound the previous summary too: a rehydrated handoff can be huge.
             _bounded_previous_summary = self._bound_summary_input(self._previous_summary)
             prompt = f"""{_summarizer_preamble}

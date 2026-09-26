@@ -83,9 +83,10 @@ _backends: Dict[str, ComputerUseBackend] = {}
 _backend_call_locks: Dict[str, threading.RLock] = {}
 _backend_permission_modes: Dict[str, str] = {}
 _backend_displays: Dict[str, str] = {}  # DISPLAY the cached backend was spawned against (Bot Desktop rebind)
-# (home key, provider, model) → bool. The decision reads the active profile's config (auxiliary.vision
-# override, declared supports_vision), so a multiplexed process must not serve profile A's verdict to B.
-_AUX_VISION_ROUTE_CACHE: Dict[Tuple[str, str, str], bool] = {}
+# (home key, provider, model) → (config snapshot, decision). Profile identity
+# prevents one multiplexed profile's vision route from leaking into another;
+# a new immutable config snapshot invalidates the decision after an edit.
+_AUX_VISION_ROUTE_CACHE: Dict[Tuple[str, str, str], Tuple[Dict[str, Any], bool]] = {}
 # Approval grants live in the shared store (``tools.approval``: session set + permanent allowlist), keyed by the
 # gate's session key, so a computer_use "always" is one allowlist entry like any terminal pattern. Only the
 # once-per-session escalation warning is tracked here.
@@ -812,15 +813,18 @@ def _should_route_through_aux_vision() -> bool:
     stage = "import"
     try:
         from agent.auxiliary_client import _read_main_model, _read_main_provider
-        from hermes_cli.config import load_config
+        from hermes_cli.config import load_config_readonly
         from hermes_constants import hermes_home_key
         from tools.computer_use.vision_routing import should_route_capture_to_aux_vision
         stage = "config read"
         provider, model = _read_main_provider() or "", _read_main_model() or ""
-        if (cached := _AUX_VISION_ROUTE_CACHE.get(key := (hermes_home_key(), str(provider), str(model)))) is not None:
-            return cached
+        cfg = load_config_readonly()
+        cached = _AUX_VISION_ROUTE_CACHE.get(key := (hermes_home_key(), str(provider), str(model)))
+        if cached is not None and cached[0] is cfg:
+            return cached[1]
         stage = "decision"
-        _AUX_VISION_ROUTE_CACHE[key] = decision = bool(should_route_capture_to_aux_vision(provider, model, load_config()))
+        decision = bool(should_route_capture_to_aux_vision(provider, model, cfg))
+        _AUX_VISION_ROUTE_CACHE[key] = (cfg, decision)
         return decision
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("computer_use: aux-vision routing %s failed: %s", stage, exc)

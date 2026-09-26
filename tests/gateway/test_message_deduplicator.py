@@ -9,6 +9,7 @@ The fix checks TTL at query time: if the entry's timestamp plus TTL is in
 the past, the entry is treated as expired and the message is allowed through.
 """
 
+import json
 import time
 
 from gateway.platforms.helpers import MessageDeduplicator
@@ -56,5 +57,53 @@ class TestMessageDeduplicatorTTL:
         assert len(dedup._seen) == 4
         assert "old-0" not in dedup._seen
         assert "new-0" in dedup._seen
+
+
+class TestMessageDeduplicatorPersistence:
+    """Optional state round-trip so a delivery replayed after a restart is still dropped (#119848)."""
+
+    def _dedup_with_state(self, monkeypatch, tmp_path, **kwargs):
+        monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+        return MessageDeduplicator(state_filename="seen.json", **kwargs)
+
+    def test_save_and_load_round_trip(self, monkeypatch, tmp_path):
+        dedup = self._dedup_with_state(monkeypatch, tmp_path, ttl_seconds=3600)
+        dedup.is_duplicate("msg-1")
+        dedup.save_state()
+
+        reloaded = self._dedup_with_state(monkeypatch, tmp_path, ttl_seconds=3600)
+        reloaded.load_state()
+        assert reloaded.is_duplicate("msg-1") is True
+
+    def test_load_drops_expired_entries(self, monkeypatch, tmp_path):
+        state = {"message_ids": {"fresh": time.time() - 10, "stale": time.time() - 7200}}
+        (tmp_path / "seen.json").write_text(json.dumps(state), encoding="utf-8")
+
+        dedup = self._dedup_with_state(monkeypatch, tmp_path, ttl_seconds=3600)
+        dedup.load_state()
+        assert "fresh" in dedup._seen
+        assert "stale" not in dedup._seen
+
+    def test_load_keeps_bounded_newest_entries(self, monkeypatch, tmp_path):
+        now = time.time()
+        state = {"message_ids": {f"m-{i}": now - i for i in range(1200)}}
+        (tmp_path / "seen.json").write_text(json.dumps(state), encoding="utf-8")
+
+        dedup = self._dedup_with_state(monkeypatch, tmp_path, max_size=1000, ttl_seconds=3600)
+        dedup.load_state()
+        assert len(dedup._seen) == 1000
+        assert "m-0" in dedup._seen          # newest survives
+        assert "m-1199" not in dedup._seen   # oldest evicted
+
+    def test_missing_state_file_is_silent(self, monkeypatch, tmp_path):
+        dedup = self._dedup_with_state(monkeypatch, tmp_path)
+        dedup.load_state()
+        assert dedup.is_duplicate("msg-1") is False
+
+    def test_no_state_filename_is_inert(self):
+        dedup = MessageDeduplicator()
+        assert dedup.is_duplicate("msg-1") is False
+        dedup.save_state()  # no path configured: no-op, no error
+        assert dedup.is_duplicate("msg-1") is True
 
 

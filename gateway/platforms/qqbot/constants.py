@@ -27,7 +27,10 @@ ONBOARD_POLL_INTERVAL = 2.0  # seconds between poll_bind_result calls
 ONBOARD_API_TIMEOUT = 10.0
 
 MAX_MESSAGE_LENGTH = 4000
-DEDUP_WINDOW_SECONDS = 300
+# QQ recycles WS sessions roughly every 10 minutes and a Resume can replay
+# messages delivered before the last acked seq, so the dedup window must
+# outlive several recycle cycles for the replay to be dropped (#119848).
+DEDUP_WINDOW_SECONDS = 3600
 DEDUP_MAX_SIZE = 1000
 
 # QQ Bot message types / file media types

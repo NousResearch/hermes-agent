@@ -1231,30 +1231,44 @@ def _copilot_cli_config_tokens() -> list[str]:
     return list(tokens.values()) if isinstance(tokens, dict) else []
 
 
-def _resolve_copilot_catalog_api_key() -> str:
-    """Best-effort GitHub token for the Copilot catalog: env vars / ``gh auth token`` via
-    ``resolve_api_key_provider_credentials``, then ``auth.json`` ``credential_pool.copilot[]``, then
-    ``~/.copilot/config.json`` ``copilotTokens`` (the ACP CLI's own store). Without the latter two,
-    keyless users see the picker fall back to the stale curated list on a silent 401."""
-    def _pool_token() -> str:
-        from hermes_cli.auth import read_credential_pool
-
-        return _first_exchangeable_copilot_token(
-            entry.get("access_token") for entry in read_credential_pool("copilot") if isinstance(entry, dict))
-
-    sources = (
-        lambda: _api_key_credentials("copilot")[0],
-        _pool_token,
-        lambda: _first_exchangeable_copilot_token(_copilot_cli_config_tokens()),
-    )
-    for source in sources:
-        try:
-            token = source()
-        except Exception:
-            continue
+def _resolve_copilot_catalog_api_key_candidates() -> list[str]:
+    """Resolve catalog credentials, retaining raw pool tokens if exchange fails."""
+    try:
+        token = _api_key_credentials("copilot")[0]
         if token:
-            return token
-    return ""
+            return [token]
+    except Exception:
+        pass
+
+    raw_fallbacks: list[str] = []
+    try:
+        from hermes_cli.auth import read_credential_pool
+        from hermes_cli.copilot_auth import validate_copilot_token
+
+        raw_tokens = [
+            str(entry.get("access_token") or "").strip()
+            for entry in read_credential_pool("copilot") if isinstance(entry, dict)
+        ]
+        if token := _first_exchangeable_copilot_token(raw_tokens):
+            return [token]
+        for raw in raw_tokens:
+            if raw and validate_copilot_token(raw)[0] and raw not in raw_fallbacks:
+                raw_fallbacks.append(raw)
+    except Exception:
+        pass
+    # Preserve the CLI store fallback introduced after the original PR.
+    try:
+        if token := _first_exchangeable_copilot_token(_copilot_cli_config_tokens()):
+            return [token]
+    except Exception:
+        pass
+    return raw_fallbacks
+
+
+def _resolve_copilot_catalog_api_key() -> str:
+    """Return the first catalog credential for single-key callers."""
+    candidates = _resolve_copilot_catalog_api_key_candidates()
+    return candidates[0] if candidates else ""
 
 
 def _model_dedup_key(model_id: str) -> str:
@@ -1359,12 +1373,13 @@ class CuratedFallbackModels(list[str]):
 def _copilot_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]:
     if normalized == "copilot-acp" and (live := _copilot_acp_session_models(force_refresh)):
         return live
-    try:
-        live = _fetch_github_models(_resolve_copilot_catalog_api_key())
+    for api_key in _resolve_copilot_catalog_api_key_candidates():
+        try:
+            live = _fetch_github_models(api_key)
+        except Exception:
+            continue
         if live:
             return live
-    except Exception:
-        pass
     return CuratedFallbackModels(_PROVIDER_MODELS.get("copilot", []))
 
 

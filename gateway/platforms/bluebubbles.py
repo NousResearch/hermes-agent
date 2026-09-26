@@ -126,6 +126,10 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self.require_mention = str(_require_mention).strip().lower() in TRUTHY_STRINGS
         self._mention_patterns = self._compile_mention_patterns(
             extra["mention_patterns"] if "mention_patterns" in extra else _get_scoped_secret("BLUEBUBBLES_MENTION_PATTERNS"))
+        # None preserves stock behavior; a configured empty set deliberately denies every chat.
+        self._allowed_chats: Optional[frozenset[str]] = (
+            self._parse_allowed_chats(extra.get("allowed_chats")) if "allowed_chats" in extra else None
+        )
         self.client: Optional[httpx.AsyncClient] = None
         self._runner = None
         self._private_api_enabled: Optional[bool] = None
@@ -155,6 +159,29 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             if match := pattern.match(stripped):
                 return stripped[match.end():].lstrip(" ,:-") or text
         return text
+
+    @staticmethod
+    def _parse_allowed_chats(raw: Any) -> frozenset[str]:
+        """Normalize an exact chat-GUID allowlist from config.yaml."""
+        if isinstance(raw, str):
+            text = raw.strip()
+            if not text:
+                return frozenset()
+            try:
+                parsed = json.loads(text)
+            except (TypeError, ValueError):
+                parsed = [part.strip() for part in text.replace("\n", ",").split(",")]
+        elif isinstance(raw, (list, tuple, set, frozenset)):
+            parsed = raw
+        elif raw is None:
+            parsed = ()
+        else:
+            logger.warning("[bluebubbles] ignoring invalid allowed_chats value; denying all chats")
+            parsed = ()
+        if not isinstance(parsed, (list, tuple, set, frozenset)):
+            logger.warning("[bluebubbles] allowed_chats must be a list; denying all chats")
+            parsed = ()
+        return frozenset(str(item).strip() for item in parsed if str(item).strip())
 
     async def _api_json(self, method: str, path: str, **kwargs) -> Dict[str, Any]:
         """Authenticated request to the BlueBubbles REST API; raises on HTTP errors, returns decoded JSON."""
@@ -543,13 +570,23 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 or request.headers.get("x-guid") or request.headers.get("x-bluebubbles-guid"))
 
     def _resolve_chat_and_sender(self, payload: Dict[str, Any], record: Dict[str, Any]):
-        """Returns ``(chat_guid, chat_identifier, sender)`` from the many BlueBubbles payload shapes."""
-        chat_guid = self._value(record.get("chatGuid"), payload.get("chatGuid"), record.get("chat_guid"),
-                                payload.get("chat_guid"), payload.get("guid"))
+        """Returns ``(chat_guid, chat_identifier, sender)`` from the many BlueBubbles payload shapes.
+
+        With no chat gate, retain the legacy top-level ``payload.guid`` fallback exactly. A configured
+        gate uses only unambiguous chat GUID fields so a message GUID cannot satisfy chat admission.
+        """
+        chat_guid = self._value(
+            record.get("chatGuid"), payload.get("chatGuid"), record.get("chat_guid"),
+            payload.get("chat_guid"), payload.get("guid") if self._allowed_chats is None else None,
+        )
         # BlueBubbles v1.9+ payloads omit top-level chatGuid; it's nested under data.chats[0].guid.
         _chats = record.get("chats") or []
         if not chat_guid and _chats and isinstance(_chats[0], dict):
             chat_guid = _chats[0].get("guid") or _chats[0].get("chatGuid")
+        if not chat_guid and self._allowed_chats is not None:
+            legacy_guid = self._value(payload.get("guid"))
+            if legacy_guid and ";" in legacy_guid:
+                chat_guid = legacy_guid
         chat_identifier = self._value(record.get("chatIdentifier"), record.get("identifier"),
                                       payload.get("chatIdentifier"), payload.get("identifier"))
         handle = record.get("handle")
@@ -580,6 +617,9 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             return _ok()
         text = self._value(record.get("text"), record.get("message"), record.get("body")) or ""
         chat_guid, chat_identifier, sender = self._resolve_chat_and_sender(payload, record)
+        if self._allowed_chats is not None and chat_guid not in self._allowed_chats:
+            logger.debug("[bluebubbles] ignoring message from a chat outside allowed_chats")
+            return _ok()
         session_chat_id = chat_guid or chat_identifier
         is_group = bool(record.get("isGroup")) or (";+;" in (chat_guid or ""))
         # Mention gate BEFORE the attachment downloads: an unmentioned group message must not

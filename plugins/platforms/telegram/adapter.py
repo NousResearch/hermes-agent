@@ -4544,6 +4544,9 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def _handle_model_picker_callback(self, query, data: str, chat_id: str) -> None:
         """Handle model picker callbacks (mp:/mpg:/mpv:/mm:/mc:/mb/mx/mg:)."""
+        # A group member who is not allowlisted must not switch the owner's model from their picker.
+        if not await self._callback_authorized(query, self._callback_ctx(query), _UNAUTHORIZED):
+            return
         state = self._model_picker_state.get(chat_id)
         if not state:
             await query.answer(text="Picker expired — use /model again.")

@@ -387,3 +387,206 @@ def test_skill_reload_resources_reach_distinct_requests_under_pressure_then_recl
     assert reclaimed_count > 0
     assert not _contains_decoded(reclaimed, MAIN_BODY)
     assert not _contains_decoded(reclaimed, REFERENCE_BODY), "normal pressure reclamation still treated delivered file_path content as pending"
+
+
+@pytest.mark.parametrize("api", ["codex", "chat"])
+@pytest.mark.parametrize("case", ["valid", "suffix", "missing", "wrong_id", "no_id", "wrong_role", "assistant_full", "assistant_body", "partial_metadata", "partial_other", "unknown", "cross_api"])
+def test_delivery_requires_corresponding_complete_tool_result(api, case):
+    from agent.context_compressor import ContextCompressor
+
+    compressor = ContextCompressor(model=MODEL, quiet_mode=True,
+                                   api_mode="codex_responses" if api == "codex" else "chat_completions")
+    body = "Synthetic delivery instructions."
+    exact = json.dumps({"success": True, "content": body})
+    for call_id in ("first", "second"):
+        assert compressor.track_skill_view_result(call_id, {"name": "fixture"}, exact, exact)
+    key, identity, kind, expected, content = (
+        ("input", "call_id", "type", "function_call_output", "output") if api == "codex"
+        else ("messages", "tool_call_id", "role", "tool", "content")
+    )
+    item = {kind: expected, identity: "first", content: exact}
+    payload: dict = {key: [item]}
+    if case == "suffix":
+        item[content] += "\nAdditional explanation."
+    elif case == "missing":
+        payload[key] = []
+    elif case == "wrong_id":
+        item[identity] = "unrelated"
+    elif case == "no_id":
+        del item[identity]
+    elif case == "wrong_role":
+        item[kind] = "assistant"
+    elif case.startswith("assistant_"):
+        payload[key] = [{"role": "assistant", "content": exact if case == "assistant_full" else body}]
+    elif case.startswith("partial_"):
+        item[content] = body
+        if case == "partial_metadata":
+            payload["metadata"] = {"quoted": exact}
+        else:
+            payload[key].append({kind: expected, identity: "unrelated", content: exact})
+    elif case == "unknown":
+        payload = {"metadata": {key: [item]}}
+    elif case == "cross_api":
+        payload[key] = []
+        if api == "codex":
+            payload["messages"] = [{"role": "tool", "tool_call_id": "first", "content": exact}]
+        else:
+            payload["input"] = [{"type": "function_call_output", "call_id": "first", "output": exact}]
+    valid = case in ("valid", "suffix")
+    assert [cid for cid, _ in compressor.skill_view_results_missing_from(payload)] == (
+        ["second"] if valid else ["first", "second"]
+    )
+    assert compressor.acknowledge_skill_view_results(payload) == (["first"] if valid else [])
+    assert [cid for cid, _ in compressor.pending_skill_view_results()] == (
+        ["second"] if valid else ["first", "second"]
+    )
+    compressor.on_session_reset()
+    assert not compressor.pending_skill_view_results()
+    assert compressor.track_skill_view_result("end", {"name": "fixture"}, exact, exact)
+    compressor.on_session_end("synthetic-session", [])
+    assert not compressor.pending_skill_view_results()
+
+
+def _chat_delivery_response(skill_name, first, streaming):
+    message = {"role": "assistant", "content": None if first else "Done."}
+    if first:
+        message["tool_calls"] = [{"id": "delivery-call", "type": "function", "function": {
+            "name": "skill_view", "arguments": json.dumps({"name": skill_name})}}]
+    response = {"id": "chatcmpl-delivery", "object": "chat.completion", "created": 0,
+                "model": MODEL, "choices": [{"index": 0, "message": message,
+                "finish_reason": "tool_calls" if first else "stop"}],
+                "usage": {"prompt_tokens": 128, "completion_tokens": 8, "total_tokens": 136}}
+    if not streaming:
+        return httpx.Response(200, json=response)
+    delta = dict(message)
+    if first:
+        delta["tool_calls"] = [dict(message["tool_calls"][0], index=0)]
+    chunks = [dict(response, object="chat.completion.chunk", choices=[{
+        "index": 0, "delta": delta, "finish_reason": None}]),
+        dict(response, object="chat.completion.chunk", choices=[{
+            "index": 0, "delta": {}, "finish_reason": "tool_calls" if first else "stop"}])]
+    return httpx.Response(200, headers={"Content-Type": "text/event-stream"},
+                          content="".join(f"data: {json.dumps(c)}\n\n" for c in chunks) + "data: [DONE]\n\n")
+
+
+@pytest.mark.parametrize("api_mode", ["codex_responses", "chat_completions"])
+@pytest.mark.parametrize("streaming", [True, False])
+@pytest.mark.parametrize("case", ["valid", "suffix", "wrong_id", "no_id", "wrong_role", "missing",
+                                  "assistant_full", "assistant_body", "partial_metadata", "http_error", "interrupt", "cross_api"])
+def test_identity_survives_real_request_pipeline(hermes_home, monkeypatch, api_mode, streaming, case):
+    from copy import deepcopy
+    from agent import auxiliary_client
+    from hermes_cli.plugins import get_plugin_manager
+    from run_agent import AIAgent
+
+    skill_name = _write_skill(hermes_home)
+    requests, mutations, pending_at_http = [], [], []
+    agent = None
+
+    def respond(request):
+        payload = json.loads(request.content)
+        requests.append(payload)
+        if len(requests) > 1:
+            assert agent is not None
+            pending_at_http.append([cid for cid, _ in getattr(agent, "context_compressor").pending_skill_view_results()])
+            if case == "http_error":
+                return httpx.Response(400, json={"error": {"message": "Synthetic failure", "type": "invalid_request_error"}})
+        if api_mode == "chat_completions":
+            assert request.url.path.endswith("/chat/completions")
+            return _chat_delivery_response(skill_name, len(requests) == 1, payload.get("stream"))
+        assert request.url.path.endswith("/responses")
+        output = ([_function_call("delivery-call", {"name": skill_name})] if len(requests) == 1
+                  else [{"type": "message", "id": "msg_delivery", "role": "assistant", "status": "completed",
+                         "content": [{"type": "output_text", "text": "Done.", "annotations": []}]}])
+        response = _response(output, len(requests), input_tokens=128)
+        return _stream_response(response) if payload.get("stream") else httpx.Response(200, json=response)
+
+    def mutate(*, request, next_call=None, **_context):
+        payload = deepcopy(request)
+        key, identity, kind, expected, content = (
+            ("input", "call_id", "type", "function_call_output", "output") if api_mode == "codex_responses"
+            else ("messages", "tool_call_id", "role", "tool", "content")
+        )
+        for item in list(payload.get(key, [])):
+            if item.get(kind) != expected or item.get(identity) != "delivery-call":
+                continue
+            exact = item[content]
+            mutations.append(exact)
+            if case == "wrong_id":
+                item[identity] = "other-call"
+            elif case == "no_id":
+                del item[identity]
+            elif case == "wrong_role":
+                item[kind] = "assistant"
+            elif case == "missing":
+                payload[key].remove(item)
+            elif case.startswith("assistant_"):
+                item[content] = "Removed."
+                payload[key].append({"role": "assistant", "content": exact if case == "assistant_full" else MAIN_BODY})
+            elif case == "partial_metadata":
+                item[content] = MAIN_BODY
+                payload["metadata"] = {"quoted": exact}
+            elif case == "cross_api":
+                payload[key].remove(item)
+                if api_mode == "codex_responses":
+                    payload["messages"] = [{"role": "tool", "tool_call_id": "delivery-call", "content": exact}]
+                else:
+                    payload["input"] = [{"type": "function_call_output", "call_id": "delivery-call", "output": exact}]
+            elif case == "suffix":
+                item[content] += "\nAdditional explanation."
+        return next_call(payload) if next_call is not None else {"request": payload}
+
+    _patch_synthetic_http(monkeypatch, AIAgent, auxiliary_client, respond)
+    agent = AIAgent(model=MODEL, provider="custom", api_mode=api_mode,
+                    base_url="https://mock.openai.test/v1", api_key="synthetic-test-key",
+                    enabled_toolsets=["skills"], max_iterations=2, quiet_mode=True,
+                    skip_context_files=True, skip_memory=True)
+    agent._persist_session = lambda *a, **k: None
+    agent._save_trajectory = lambda *a, **k: None
+    agent._cleanup_task_resources = lambda *a, **k: None
+    setattr(agent, "_disable_streaming", not streaming)
+    compressor = getattr(agent, "context_compressor")
+    if case == "interrupt":
+        track = compressor.track_skill_view_result
+
+        def track_then_interrupt(*args, **kwargs):
+            tracked = track(*args, **kwargs)
+            agent.interrupt()
+            return tracked
+
+        monkeypatch.setattr(compressor, "track_skill_view_result", track_then_interrupt)
+    monkeypatch.setitem(get_plugin_manager()._middleware, "llm_execution", [mutate])
+    try:
+        result = agent.run_conversation("Read the synthetic skill.")
+        pending = [cid for cid, _ in compressor.pending_skill_view_results()]
+    finally:
+        with suppress(Exception):
+            agent.close()
+    if case == "interrupt":
+        assert len(requests) == 1
+        assert pending == ["delivery-call"]
+        assert result.get("turn_exit_reason") == "interrupted_by_user"
+        compressor.on_session_reset()
+        assert not compressor.pending_skill_view_results()
+        return
+    assert mutations, "real middleware was not exercised"
+    if case in ("valid", "suffix", "http_error"):
+        assert len(requests) == 2
+        assert pending_at_http == [["delivery-call"]], "acknowledged before successful HTTP response"
+        if case == "http_error":
+            assert pending == ["delivery-call"]
+            assert not result.get("completed")
+        else:
+            assert result.get("completed"), result
+            assert pending == []
+    else:
+        assert len(requests) == 1, "invalid tool result reached HTTP"
+        assert pending == ["delivery-call"]
+        assert not result.get("completed"), result
+        preflight_cases = {"no_id", "wrong_role", "partial_metadata", "cross_api"}
+        if api_mode == "codex_responses" and case in preflight_cases:
+            # Existing transport validation rejects these before the Skill guard.
+            assert result.get("error"), result
+            assert "Codex Responses" in result["error"], result
+        else:
+            assert result.get("turn_exit_reason") == "skill_reload_delivery_blocked", result

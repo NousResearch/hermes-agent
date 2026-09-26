@@ -100,7 +100,7 @@ def perform_api_call(
         # that middleware and transport normalization, immediately before dispatch.
         compressor = getattr(agent, "context_compressor", None)
         missing_results = getattr(compressor, "skill_view_results_missing_from", None)
-        missing: Any = missing_results(next_api_kwargs) if callable(missing_results) else []
+        missing: Any = missing_results(next_api_kwargs, api_mode=agent.api_mode) if callable(missing_results) else []
         if missing:
             labels = list(dict.fromkeys(
                 f"{entry.get('name', 'skill')} ({entry.get('file_path') or 'SKILL.md'})"
@@ -143,7 +143,7 @@ def perform_api_call(
                 getattr(agent, "context_compressor", None), "acknowledge_skill_view_results", None
             )
             if callable(_acknowledge):
-                _acknowledge(next_api_kwargs)
+                _acknowledge(next_api_kwargs, api_mode=agent.api_mode)
         return response
 
     from hermes_cli.middleware import run_llm_execution_middleware

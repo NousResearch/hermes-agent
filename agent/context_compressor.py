@@ -3229,33 +3229,78 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         return missing
 
     @staticmethod
-    def _payload_contains_skill_result(payload: Any, exact_content: str) -> bool:
-        if isinstance(payload, str):
-            return exact_content in payload
-        if isinstance(payload, dict):
-            return any(
-                ContextCompressor._payload_contains_skill_result(value, exact_content)
-                for value in payload.values()
-            )
-        if isinstance(payload, (list, tuple)):
-            return any(
-                ContextCompressor._payload_contains_skill_result(value, exact_content)
-                for value in payload
-            )
-        return False
+    def _payload_contains_skill_result(payload: Any, call_id: str, exact_content: str, api_mode: str) -> bool:
+        if not isinstance(payload, dict):
+            return False
+        if api_mode in ("anthropic_messages", "bedrock_converse"):
+            messages = payload.get("messages")
+            if not isinstance(messages, list):
+                return False
+            for message in messages:
+                if not isinstance(message, dict) or message.get("role") != "user":
+                    continue
+                blocks = message.get("content")
+                if not isinstance(blocks, list):
+                    continue
+                for block in blocks:
+                    if not isinstance(block, dict):
+                        continue
+                    if api_mode == "anthropic_messages":
+                        if block.get("type") != "tool_result" or block.get("tool_use_id") != call_id:
+                            continue
+                        content = block.get("content")
+                        if isinstance(content, str) and exact_content in content:
+                            return True
+                        if isinstance(content, list) and any(
+                            isinstance(part, dict) and part.get("type") == "text"
+                            and isinstance(part.get("text"), str) and exact_content in part["text"]
+                            for part in content
+                        ):
+                            return True
+                    else:
+                        result = block.get("toolResult")
+                        if not isinstance(result, dict) or result.get("toolUseId") != call_id:
+                            continue
+                        content = result.get("content")
+                        if isinstance(content, list) and any(
+                            isinstance(part, dict) and isinstance(part.get("text"), str)
+                            and exact_content in part["text"] for part in content
+                        ):
+                            return True
+            return False
+        shape = {
+            "codex_responses": ("input", "type", "function_call_output", "call_id", "output"),
+            "chat_completions": ("messages", "role", "tool", "tool_call_id", "content"),
+        }.get(api_mode)
+        if not isinstance(payload, dict) or shape is None:
+            return False
+        key, kind, expected, identity, content = shape
+        items = payload.get(key)
+        if not isinstance(items, (list, tuple)):
+            return False
+        return any(
+            isinstance(item, dict)
+            and item.get(kind) == expected
+            and item.get(identity) == call_id
+            and isinstance(item.get(content), str)
+            and exact_content in item[content]
+            for item in items
+        )
 
-    def skill_view_results_missing_from(self, payload: Any) -> list[tuple[str, dict[str, Any]]]:
-        """Pending resources not present verbatim in the request about to be sent."""
+    def skill_view_results_missing_from(self, payload: Any, *, api_mode: str | None = None) -> list[tuple[str, dict[str, Any]]]:
+        """Pending results absent from the active API's corresponding tool outputs."""
+        mode = self.api_mode if api_mode is None else api_mode
         return [
             (call_id, entry) for call_id, entry in self._pending_skill_view_results.items()
-            if not self._payload_contains_skill_result(payload, entry["content"])
+            if not self._payload_contains_skill_result(payload, call_id, entry["content"], mode)
         ]
 
-    def acknowledge_skill_view_results(self, payload: Any) -> list[str]:
+    def acknowledge_skill_view_results(self, payload: Any, *, api_mode: str | None = None) -> list[str]:
         """Forget only results proven present in a completed serialized model request."""
+        mode = self.api_mode if api_mode is None else api_mode
         delivered = [
             call_id for call_id, entry in self._pending_skill_view_results.items()
-            if self._payload_contains_skill_result(payload, entry["content"])
+            if self._payload_contains_skill_result(payload, call_id, entry["content"], mode)
         ]
         for call_id in delivered:
             self._pending_skill_view_results.pop(call_id, None)

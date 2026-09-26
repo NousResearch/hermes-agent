@@ -1136,6 +1136,21 @@ def build_turn_context(
     # no-op once titled; it ensures the session row itself.
     _maybe_title_session_at_turn_start(agent, messages)
 
+    # Proactive feature suggestion (PR-B): advisory text appended to the same
+    # API-only sidecar as prefetch context. Never touches stored content or
+    # the system prompt; non-fatal; off by default (proactive_features.enabled).
+    if getattr(agent, "_feature_router", None) is not None:
+        try:
+            _fq = original_user_message if isinstance(original_user_message, str) else ""
+            _fs = agent._feature_router.on_turn_start(_fq)
+            if _fs:
+                ext_prefetch_cache = (
+                    ext_prefetch_cache + "\n\n" + _fs
+                    if ext_prefetch_cache else _fs
+                )
+        except Exception:
+            pass
+
     # Sidecar skipped for codex_app_server/MoA; list content carries its context as a part in every mode.
     if 0 <= current_turn_user_idx < len(messages) and messages[current_turn_user_idx].get("role") == "user":
         if isinstance(messages[current_turn_user_idx].get("content"), list):

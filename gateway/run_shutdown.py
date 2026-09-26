@@ -1428,6 +1428,7 @@ class GatewayShutdownMixin:
             )
         watcher_env = drop_bridged_env(watcher_env)
         watcher_env.pop("_HERMES_GATEWAY", None)
+        watcher_env.pop("HERMES_DELEGATED_CHILD_CONTEXT", None)
         return watcher_env
 
     @staticmethod

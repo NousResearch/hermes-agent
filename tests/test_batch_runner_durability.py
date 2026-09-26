@@ -37,6 +37,35 @@ class TestTrajectoryWriteDurability:
     the checkpoint claiming completion with no trajectory data on disk.
     """
 
+    @pytest.mark.parametrize("tail", [b'{"prompt": "unfinished', b'{"prompt": "\xe4', b'{"prompt": "' + b'x' * 8192 + b'\xe4', b'{"prompt": "complete"}'],
+                             ids=["partial-json", "partial-utf8", "partial-utf8-long-row", "complete-json"])
+    @pytest.mark.parametrize("discard", [False, True])
+    @pytest.mark.parametrize("prefix", [b'', b'{"prompt": "earlier"}\n'], ids=["first-row", "later-row"])
+    def test_resume_after_unterminated_row(self, tmp_path, monkeypatch, tail, discard, prefix):
+        runner = _make_runner(tmp_path, monkeypatch)
+        output = runner.output_dir / "batch_0.jsonl"
+        output.write_bytes(prefix + tail)
+        expected = {"earlier"} if prefix else set()
+        if tail.endswith(b"}"):
+            expected.add("complete")
+        assert runner._scan_completed_prompts_by_content() == expected
+        monkeypatch.setattr(batch_runner, "_process_single_prompt", lambda *args: {
+            "success": True,
+            "trajectory": [{"role": "user", "content": "hi"}],
+            "reasoning_stats": {"has_any_reasoning": not discard},
+            "tool_stats": {}, "metadata": {}, "completed": True,
+            "api_calls": 1, "toolsets_used": [],
+        })
+
+        result = _process_batch_worker((0, [(0, {"prompt": "hi"})], runner.output_dir, set(), {}))
+
+        assert result["completed_prompts"] == [0]
+        expected.add("hi")
+        assert runner._scan_completed_prompts_by_content() == expected
+        rows = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
+        assert len(rows) == len(expected)
+        assert runner._apply_resume() is False
+
     def test_trajectory_entry_is_synced_to_disk(self, tmp_path, monkeypatch):
         """_process_batch_worker should flush+fsync the trajectory file."""
         prompt_result = {

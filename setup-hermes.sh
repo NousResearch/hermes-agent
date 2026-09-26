@@ -221,7 +221,7 @@ if ! "$boot_py" -I -X utf8 hermes_cli/_launchers.py "$bin_dir"; then
     echo -e "${RED}✗${NC} launcher publication failed" >&2
     exit 1
 fi
-echo -e "${GREEN}✓${NC} Published Hermes commands in $bin_dir"
+echo -e "${GREEN}✓${NC} Launcher setup completed"
 
 if [ "$os" != win32 ]; then
     # Determine the appropriate shell config file

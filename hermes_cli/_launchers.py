@@ -11,11 +11,16 @@ interpreter before it publishes either command.
 
 from __future__ import annotations
 
+import ast
+import base64
 import json
 import os
+import re
 import shlex
 import sys
+from io import BytesIO
 from pathlib import Path
+from zipfile import BadZipFile, ZipFile
 
 if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -92,10 +97,11 @@ def _is_windows() -> bool:
     return os.name == "nt"
 
 
-def resolve_store_python(repo_root: Path) -> Path | None:
+def resolve_store_python(repo_root: Path, *, windows: bool | None = None) -> Path | None:
     """Read PM's committed Python tool, without adopting unrecorded bytes."""
     runtime = store_root(repo_root)
-    rel = "python.exe" if _is_windows() else "bin/python3"
+    windows = _is_windows() if windows is None else windows
+    rel = "python.exe" if windows else "bin/python3"
 
     facts = runtime / "facts.json"
     if facts.is_file():
@@ -181,13 +187,19 @@ def mint_launcher(
     out_dir: Path,
     python_exe: Path,
     site_packages: Path | None,
+    *,
+    windows: bool | None = None,
 ) -> Path | None:
     """Write a native launcher with the shared bootstrap script, or return None."""
     module, func = ENTRY_POINTS[name]
     out_dir = Path(out_dir)
-    script = _launcher_script(name, Path(repo_root), site_packages)
+    repo_root = Path(repo_root).resolve()
+    windows = _is_windows() if windows is None else windows
+    if windows and _has_foreign_windows_launcher(name, out_dir, repo_root):
+        return None
+    script = _launcher_script(name, repo_root, site_packages)
 
-    if not _is_windows():
+    if not windows:
         return _mint_shell_launcher(name, out_dir, python_exe, script)
 
     script_maker_cls = _load_script_maker()
@@ -263,7 +275,7 @@ def mint_launcher(
         "@echo off\r\n"
         f'"{python_exe}" -I -c "{code}" %*\r\n'
     )
-    return _write_atomic(out_dir / f"{name}.cmd", lambda p: p.write_text(body, encoding="utf-8"))
+    return _write_atomic(out_dir / f"{name}.cmd", lambda p: p.write_bytes(body.encode("utf-8")))
 
 
 def _launcher_script(name: str, repo_root: Path, dependencies: Path | None) -> str:
@@ -317,21 +329,145 @@ def _mint_shell_launcher(name: str, out_dir: Path, python_exe: Path, script: str
     return _write_shell(out_dir / name, [str(python_exe), "-I", "-c", script])
 
 
+def _windows_launcher_targets(name: str, out_dir: Path) -> tuple[Path, Path]:
+    return Path(out_dir) / f"{name}.exe", Path(out_dir) / f"{name}.cmd"
+
+
+def _launcher_present(target: Path) -> bool:
+    return target.exists() or target.is_symlink()
+
+
+def _windows_script_has_owner(script: str, root: Path, name: str, *, venv_bound: bool = False) -> bool:
+    """Recognize known launcher programs; unknown code is never ownership proof."""
+    try:
+        actual = ast.parse(script)
+    except SyntaxError:
+        return False
+    if ast.dump(actual) == ast.dump(ast.parse(_launcher_script(name, root, None))):
+        return True
+
+    module, func = ENTRY_POINTS[name]
+    entry = f"from {module} import {func}\nsys.exit({func}())\n"
+    simple_pm = ("import sys\n"
+                 f"sys.path.insert(0, {str(Path(root).resolve())!r})\n"
+                 "import hermes_bootstrap\n" + entry)
+    if ast.dump(actual) == ast.dump(ast.parse(simple_pm)):
+        return True
+    if not venv_bound:
+        return False
+
+    # Older distlib console scripts use only stdlib imports, an optional
+    # __main__ guard and argv[0] normalization. Reject every other statement,
+    # including additional sys.path mutations or entry-point rebinding.
+    guard = ast.parse("__name__ == '__main__'", mode="eval").body
+    normalize = ast.parse(
+        "sys.argv[0] = re.sub(r'(-script\\.pyw|\\.exe)?$', '', sys.argv[0])"
+    ).body[0]
+    body = []
+    for statement in actual.body:
+        if (isinstance(statement, ast.Import)
+                and all(alias.name in {"re", "sys"} and alias.asname is None
+                        for alias in statement.names)):
+            continue
+        if (isinstance(statement, ast.If) and not statement.orelse
+                and ast.dump(statement.test) == ast.dump(guard)):
+            body.extend(child for child in statement.body
+                        if ast.dump(child) != ast.dump(normalize))
+        else:
+            body.append(statement)
+    return ast.dump(ast.Module(body=body, type_ignores=[])) == ast.dump(ast.parse(entry))
+
+
+def _owns_windows_launcher(target: Path, root: Path) -> bool:
+    """Read the entry script and its install binding; the store is shared."""
+    name = target.stem
+    if name not in ENTRY_POINTS:
+        return False
+    try:
+        data = target.read_bytes()
+        if target.suffix.lower() == ".exe":
+            with ZipFile(BytesIO(data)) as archive:
+                if archive.namelist() != ["__main__.py"]:
+                    return False
+                script = archive.read("__main__.py").decode("utf-8")
+                prefix = data[:archive.infolist()[0].header_offset]
+            if _windows_script_has_owner(script, root, name):
+                return True
+            # Pre-PM distlib scripts have no source-root literal. Their actual
+            # shebang binds them to this install's private venv, not PM's
+            # machine-wide interpreter (which other checkouts also use).
+            shebang = prefix.splitlines()[-1].decode("utf-8") if prefix else ""
+            match = re.fullmatch(r'#!(?:"([^"\r\n]+)"|([^\s\r\n]+))(?:[ \t].*)?', shebang, re.I)
+            if match is None:
+                return False
+            import ntpath
+            from hermes_constants import project_venv_dir
+
+            interpreter = ntpath.normcase(match.group(1) or match.group(2))
+            venvs = {root / "venv", root / ".venv"}
+            if (installed := project_venv_dir(root)) is not None:
+                venvs.add(installed)
+            return any(
+                interpreter == ntpath.normcase(str(venv / "Scripts" / "python.exe"))
+                and exe_is_venv_bound(target, venv)
+                and _windows_script_has_owner(script, root, name, venv_bound=True)
+                for venv in venvs
+            )
+        if target.suffix.lower() == ".cmd":
+            # Only decode an executed -c argument, never a comment or echo.
+            lines = [line for line in data.decode("utf-8-sig").splitlines() if line.strip()]
+            if len(lines) != 2 or lines[0].strip().lower() != "@echo off":
+                return False
+            command = lines[1]
+            match = re.fullmatch(
+                r"\"[^\"\r\n]+\" -I -c \"import base64; exec\(base64\.b64decode\('([A-Za-z0-9+/=]+)'\)\)\" %\*",
+                command,
+            )
+            if match is None:
+                return False
+            script = base64.b64decode(match.group(1), validate=True).decode("utf-8")
+            return _windows_script_has_owner(script, root, name)
+    except (OSError, UnicodeError, ValueError, KeyError, BadZipFile, IndexError):
+        return False
+    return False
+
+
+def _has_foreign_windows_launcher(name: str, out_dir: Path, root: Path) -> bool:
+    return any(
+        _launcher_present(target) and not _owns_launcher(target, root)
+        for target in _windows_launcher_targets(name, out_dir)
+    )
+
+
 def _owns_launcher(target: Path, root: Path) -> bool:
-    """Recognize our old source/venv launchers, never a mere mention in a comment."""
+    """Recognize our source/venv launchers, never a mere mention in a comment."""
     if target.is_symlink():
         return target.resolve().is_relative_to(root)
+    if target.suffix.lower() in {".exe", ".cmd"}:
+        return _owns_windows_launcher(target, root)
     try:
         tokens = shlex.split(target.read_text(encoding="utf-8-sig"), comments=True)
     except (OSError, UnicodeError, ValueError):
         return False
-    paths = {str(root / p) for p in (
-        "hermes", "run_agent.py", "venv/bin/python", "venv/bin/python3",
-        ".hermes/bin/hermes", ".hermes/bin/hermes-acp",
+    # Recognize complete executable command shapes, never path mentions in
+    # arguments to unrelated programs such as echo/printf.
+    commands = {str(root / path) for path in (
+        "hermes", "run_agent.py", ".hermes/bin/hermes", ".hermes/bin/hermes-acp",
     )}
-    # Current store launchers pass this Python bootstrap as one shell argument.
-    bootstrap = f"sys.path.insert(0, {str(root)!r})"
-    if paths.intersection(tokens) or any(bootstrap in token for token in tokens):
+    if any(tokens == ["exec", command, "$@"] for command in commands):
+        return True
+    if tokens == ["exec", str(root / ".hermes/bin/hermes"), "--run-module", "run_agent", "$@"]:
+        return True
+    interpreters = {str(root / path) for path in (
+        "venv/bin/python", "venv/bin/python3", ".venv/bin/python", ".venv/bin/python3",
+    )}
+    if (len(tokens) == 4 and tokens[0] == "exec" and tokens[1] in interpreters
+            and tokens[2] in {str(root / "hermes"), str(root / "run_agent.py")}
+            and tokens[3] == "$@"):
+        return True
+    if (len(tokens) == 6 and tokens[0] == "exec" and tokens[2:4] == ["-I", "-c"]
+            and tokens[5] == "$@" and target.name in ENTRY_POINTS
+            and _windows_script_has_owner(tokens[4], root, target.name)):
         return True
     # The historical updater wrote ACP as a sibling-hermes forwarder. Adopt
     # it only when that sibling demonstrably belongs to this installation.
@@ -362,26 +498,87 @@ def _publish_conveniences(root: Path, out_dir: Path, names, *, create: bool = Tr
     return published
 
 
-def stage_launcher(name: str, repo_root: Path, out_dir: Path) -> Path | None:
+def stage_launcher(
+    name: str, repo_root: Path, out_dir: Path, *, windows: bool | None = None,
+) -> Path | None:
     """Publish one launcher bound to store Python, or refuse missing tools."""
-    repo_root = Path(repo_root)
-    store_python = resolve_store_python(repo_root)
+    repo_root = Path(repo_root).resolve()
+    native_windows = _is_windows()
+    windows = native_windows if windows is None else windows
+    store_python = (resolve_store_python(repo_root) if windows == native_windows else
+                    resolve_store_python(repo_root, windows=windows))
     if store_python is not None:
-        path = mint_launcher(name, repo_root, out_dir, store_python, None)
-        if path is not None and path.suffix == ".cmd":
-            # cmd.exe prefers .exe. An older launcher must not shadow the
-            # newly published command when distlib is unavailable.
-            try:
-                (Path(out_dir) / f"{name}.exe").unlink(missing_ok=True)
-            except OSError:
-                return None
+        if windows and _has_foreign_windows_launcher(name, Path(out_dir), repo_root):
+            return None
+        path = mint_launcher(name, repo_root, out_dir, store_python, None, windows=windows)
+        if path is not None and windows and path.suffix.lower() == ".cmd":
+            # cmd.exe prefers .exe. Retire only this install's stale native
+            # launcher; an unrelated exe is never cleanup collateral.
+            exe = Path(out_dir) / f"{name}.exe"
+            if _launcher_present(exe):
+                if not _owns_launcher(exe, repo_root):
+                    return None
+                try:
+                    exe.unlink()
+                except OSError:
+                    return None
         return path
     return None
+
+
+def _ensure_windows_install_launchers(repo_root: Path, out_dir: Path) -> list[str]:
+    """Windows publication path, explicit so its ownership policy can be simulated."""
+    root = Path(repo_root).resolve()
+    local = root / ".hermes" / "bin"
+    local.mkdir(parents=True, exist_ok=True)
+    written = [str(path) for name in WINDOWS_BIN_LAUNCHERS
+               if (path := stage_launcher(name, root, local, windows=True)) is not None]
+    if Path(out_dir).resolve() == local:
+        return written
+    if len(written) != len(WINDOWS_BIN_LAUNCHERS):
+        return []
+    Path(out_dir).mkdir(parents=True, exist_ok=True)
+    return [str(path) for name in WINDOWS_BIN_LAUNCHERS
+            if (path := stage_launcher(name, root, Path(out_dir), windows=True)) is not None]
+
+
+def _windows_publication_status(
+    repo_root: Path, out_dir: Path, written: list[str],
+) -> tuple[bool, set[str]]:
+    """Separate a safe foreign-owner skip from a failed Windows publication."""
+    root = Path(repo_root).resolve()
+    local = root / ".hermes" / "bin"
+    local_ready = all(
+        any(target.is_file() and _owns_launcher(target, root)
+            for target in _windows_launcher_targets(name, local))
+        for name in WINDOWS_BIN_LAUNCHERS
+    )
+    if not local_ready:
+        return False, set()
+
+    written_names = {Path(path).stem for path in written}
+    if Path(out_dir).resolve() == local:
+        return written_names == set(WINDOWS_BIN_LAUNCHERS), set()
+
+    skipped = set()
+    for name in WINDOWS_BIN_LAUNCHERS:
+        if name in written_names:
+            if not any(target.is_file() and _owns_launcher(target, root)
+                       for target in _windows_launcher_targets(name, Path(out_dir))):
+                return False, set()
+            continue
+        if _has_foreign_windows_launcher(name, Path(out_dir), root):
+            skipped.add(name)
+        else:
+            return False, set()
+    return True, skipped
 
 
 def ensure_install_launchers(repo_root: Path, out_dir: Path) -> list[str]:
     """Publish exact-install commands; conveniences follow them across Python repins."""
     root = Path(repo_root).resolve()
+    if _is_windows():
+        return _ensure_windows_install_launchers(root, Path(out_dir))
     local = root / ".hermes" / "bin"
     local.mkdir(parents=True, exist_ok=True)
     written = [str(path) for name in WINDOWS_BIN_LAUNCHERS
@@ -390,11 +587,7 @@ def ensure_install_launchers(repo_root: Path, out_dir: Path) -> list[str]:
         return written
     if len(written) != len(WINDOWS_BIN_LAUNCHERS):
         return []
-    if not _is_windows():
-        return [str(path) for path in _publish_conveniences(root, Path(out_dir), WINDOWS_BIN_LAUNCHERS)]
-    Path(out_dir).mkdir(parents=True, exist_ok=True)
-    return [str(path) for name in WINDOWS_BIN_LAUNCHERS
-            if (path := stage_launcher(name, root, Path(out_dir))) is not None]
+    return [str(path) for path in _publish_conveniences(root, Path(out_dir), WINDOWS_BIN_LAUNCHERS)]
 
 
 def expose_cli(project_root: Path | None = None, *, create: bool = True) -> dict:
@@ -523,7 +716,8 @@ def _expose_windows_user_bin(root: Path, *, create: bool) -> dict:
             return {"ok": True, "written": [path.name for path, changed in published.items() if changed]}
         directory.mkdir(parents=True, exist_ok=True)
         written = ensure_install_launchers(root, directory)
-        if len(written) != len(WINDOWS_BIN_LAUNCHERS):
+        ready, _skipped = _windows_publication_status(root, directory, written)
+        if not ready:
             return {"ok": False, "error": "source launcher publication failed"}
         return {"ok": True, "path": _register_windows_user_path(directory),
                 "written": [Path(path).name for path in written]}
@@ -604,6 +798,41 @@ if __name__ == "__main__":
         parser.exit(1, "hermes: store interpreter is missing; finish pm install before publishing launchers\n")
     args.out_dir.mkdir(parents=True, exist_ok=True)
     written = ensure_install_launchers(repo_root, args.out_dir)
-    if len(written) != len(ENTRY_POINTS):
-        parser.exit(1, "hermes: launcher publication failed\n")
+    if _is_windows():
+        ready, skipped_names = _windows_publication_status(repo_root, args.out_dir, written)
+        if not ready:
+            parser.exit(1, "hermes: launcher publication failed\n")
+        if skipped_names:
+            print(
+                "hermes: leaving launcher(s) owned by another install unchanged: "
+                + ", ".join(sorted(skipped_names)),
+                file=sys.stderr,
+            )
+            print(f"Run this checkout directly with {repo_root / '.hermes' / 'bin' / 'hermes'}.",
+                  file=sys.stderr)
+    else:
+        local = repo_root / ".hermes" / "bin"
+        local_ready = all(
+            (launcher := local / name).is_file() and os.access(launcher, os.X_OK)
+            for name in ENTRY_POINTS
+        )
+        if not local_ready:
+            parser.exit(1, "hermes: local launcher publication failed\n")
+
+        expected = set(ENTRY_POINTS)
+        written_names = {Path(path).name for path in written}
+        skipped_names = {
+            name for name in expected
+            if ((target := args.out_dir / name).exists() or target.is_symlink())
+            and not _owns_launcher(target, repo_root)
+        }
+        if written_names & skipped_names or written_names | skipped_names != expected:
+            parser.exit(1, "hermes: launcher publication failed\n")
+        if skipped_names:
+            print(
+                "hermes: leaving launcher(s) owned by another install unchanged: "
+                + ", ".join(sorted(skipped_names)),
+                file=sys.stderr,
+            )
+            print(f"Run this checkout directly with {local / 'hermes'}.", file=sys.stderr)
     print("\n".join(written))

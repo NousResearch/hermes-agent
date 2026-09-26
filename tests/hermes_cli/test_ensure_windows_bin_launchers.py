@@ -141,10 +141,18 @@ def test_legacy_venv_trampoline_is_replaced_by_store_launcher(
     store, _entry = _make_store(tmp_path, monkeypatch)
     bin_dir = home / "bin"
     bin_dir.mkdir()
-    venv_python = str(root / "venv" / "Scripts" / "python.exe")
+    venv_python = root / "venv" / "Scripts" / "python.exe"
+    from io import BytesIO
+    from zipfile import ZipFile
+
     for name in _WINDOWS_BIN_LAUNCHERS:
+        module = "hermes_cli.main" if name == "hermes" else "acp_adapter.entry"
+        payload = BytesIO()
+        with ZipFile(payload, "w") as archive:
+            archive.writestr("__main__.py", f"import sys\nfrom {module} import main\n"
+                             "if __name__ == '__main__':\n    sys.exit(main())\n")
         (bin_dir / f"{name}.exe").write_bytes(
-            b"MZ legacy trampoline " + venv_python.encode("utf-8")
+            f'#!"{venv_python}"\n'.encode("utf-8") + payload.getvalue()
         )
 
     restored = ensure_windows_bin_launchers(root, windows=True, user_path_entries=[])

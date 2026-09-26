@@ -1090,3 +1090,48 @@ def test_ignore_human_mentions_preserves_forwarded_messages():
     msg = _group_message(text, entities=[_mention_entity(text, "@alice")])
     msg.forward_origin = SimpleNamespace(type="user", sender_user=SimpleNamespace(id=333))
     assert adapter._should_process_message(msg) is True
+
+
+def test_ignore_human_mentions_preserves_wake_word_with_human_mention():
+    """Regression for #103799: a wake-word/mention-pattern address must survive the gate.
+
+    The message addresses the bot by wake word (``hermes``) AND a human (``@alice``);
+    the bot was explicitly addressed, so it is not human-only and must be processed.
+    """
+    adapter = _make_adapter(
+        ignore_human_mentions=True, mention_patterns=["hermes"], require_mention=True,
+    )
+    text = "hermes, please look at @alice's proposal"
+    msg = _group_message(text, entities=[_mention_entity(text, "@alice")])
+    assert adapter._should_process_message(msg) is True
+
+    # A plain human-only mention is still ignored.
+    plain_text = "please review @alice's proposal"
+    plain = _group_message(plain_text, entities=[_mention_entity(plain_text, "@alice")])
+    assert adapter._should_process_message(plain) is False
+
+
+def test_ignore_human_mentions_still_schedules_identity_recheck_for_other_bot():
+    """Regression for #103799: other-bot + human mention must still schedule the stale-handle recheck.
+
+    The human-mention gate returned before ``_explicit_bot_mentions_exclude_self`` ran, so
+    the TTL-guarded getMe that recovers a renamed handle was never scheduled.
+    """
+    async def _run():
+        adapter = _make_adapter(
+            require_mention=True, exclusive_bot_mentions=True, ignore_human_mentions=True,
+        )
+        adapter._bot = _IdentityBot(cached="old_helper_bot", server="new_helper_bot")
+        adapter._background_tasks = set()
+        text = "please review @new_helper_bot and @alice"
+        message = _group_message(
+            text, entities=_mention_entities(text, ["@new_helper_bot", "@alice"]),
+        )
+
+        assert adapter._should_process_message(message) is False
+        await asyncio.gather(*list(adapter._background_tasks))
+
+        assert adapter._bot.get_me_calls == 1
+        assert adapter._current_bot_username() == "new_helper_bot"
+
+    asyncio.run(_run())

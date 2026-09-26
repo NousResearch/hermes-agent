@@ -164,11 +164,16 @@ def snapshot_paths(root: Optional[Path], *, complete_package: bool = False) -> L
     if root is None:
         return []
     root = Path(root)  # gone from disk -> []; the complete_package fill may still recover it
-    files = ([root] if root.is_file()
-             else sorted(p for p in root.rglob("*") if p.is_file()
-                         and not any(part in _SNAPSHOT_EXCLUDE_DIRS
-                                     for part in p.relative_to(root).parts[:-1]))
-             if root.is_dir() else [])
+    files = []
+    if root.is_file():
+        files = [root]
+    elif root.is_dir():
+        for directory, dirs, names in os.walk(root):
+            # Prune before descending: filtering rglob's results still scans
+            # every generated file in large dependency trees on each mutation.
+            dirs[:] = [name for name in dirs if name not in _SNAPSHOT_EXCLUDE_DIRS]
+            files.extend(path for name in names if (path := Path(directory) / name).is_file())
+        files.sort()
     out = [{"path": str(f), "sha256": _store_blob(f.read_bytes())} for f in files]
     return fill_snapshot_from_curator_backup(root, out) if complete_package else out
 

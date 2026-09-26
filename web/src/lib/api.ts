@@ -627,6 +627,12 @@ export const api = {
     fetchJSON<AuxiliaryModelsResponse>(
       appendProfileParam("/api/model/auxiliary", profile),
     ),
+  getReasoningEffort: (profile = getManagementProfile()) =>
+    fetchJSON<{ main_raw: string; delegation_raw: string }>(appendProfileParam("/api/model/reasoning-effort", profile)),
+  setReasoningEffort: (scope: "main" | "delegation", effort: string, profile = getManagementProfile()) =>
+    fetchJSON<{ ok: boolean; scope: "main" | "delegation"; raw: string }>(appendProfileParam("/api/model/reasoning-effort", profile), {
+      method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ scope, effort, profile: profile || undefined }),
+    }),
   getMoaModels: () => fetchJSON<MoaConfigResponse>("/api/model/moa"),
   saveMoaModels: (body: MoaConfigResponse) =>
     fetchJSON<MoaConfigResponse & { ok: boolean }>("/api/model/moa", {
@@ -2577,11 +2583,22 @@ export interface AuxiliaryTaskAssignment {
   provider: string;
   model: string;
   base_url: string;
+  reasoning_effort?: string;
+}
+
+export interface DelegationModelAssignment {
+  provider: string;
+  model: string;
+  reasoning_effort: string;
+  max_iterations: number;
+  max_concurrent_children: number;
+  max_spawn_depth: number;
 }
 
 export interface AuxiliaryModelsResponse {
   tasks: AuxiliaryTaskAssignment[];
   main: { provider: string; model: string };
+  delegation: DelegationModelAssignment;
 }
 
 export interface MoaModelSlot {
@@ -2619,7 +2636,7 @@ export interface MoaConfigResponse {
 
 export interface ModelAssignmentRequest {
   confirm_expensive_model?: boolean;
-  scope: "main" | "auxiliary";
+  scope: "main" | "auxiliary" | "delegation";
   provider: string;
   model: string;
   /** Optional OpenAI-compatible endpoint URL for custom/local main providers. */

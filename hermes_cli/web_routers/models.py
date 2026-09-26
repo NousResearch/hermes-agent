@@ -18,7 +18,7 @@ from hermes_cli.web_server_config import (
 )
 from agent.model_metadata import is_local_endpoint
 from starlette.concurrency import run_in_threadpool
-from hermes_cli.web_models import ModelAssignment, MoaConfigPayload, MoaModelSlot
+from hermes_cli.web_models import ModelAssignment, MoaConfigPayload, MoaModelSlot, ReasoningEffortUpdate
 from hermes_cli.web_routers._common import _CONFIG_MUTATION_LOCK, config_write_scope, http_failure
 
 _log = logging.getLogger("hermes_cli.web_server")
@@ -28,6 +28,7 @@ router = APIRouter()
 _config_profile_scope = late("_config_profile_scope", "hermes_cli.web_server_profiles")
 _profile_scope = late("_profile_scope", "hermes_cli.web_server_profiles")
 load_config = late("load_config", "hermes_cli.config")
+read_user_config_raw = late("read_user_config_raw", "hermes_cli.config")
 save_config = late("save_config", "hermes_cli.config")
 
 
@@ -234,7 +235,53 @@ def get_auxiliary_models(profile: Optional[str] = None):
             })
 
         model, provider = _main_model_fields(cfg.get("model", {}))
-        return {"tasks": tasks, "main": {"provider": str(provider or ""), "model": str(model or "")}}
+        main = {"provider": str(provider or ""), "model": str(model or "")}
+        dcfg = cfg.get("delegation", {}) if isinstance(cfg.get("delegation"), dict) else {}
+        delegation = {
+            "provider": str(dcfg.get("provider", "") or provider),
+            "model": str(dcfg.get("model", "") or model),
+            # Empty is an explicit inheritance state, not the parent's rendered value.
+            "reasoning_effort": str(dcfg.get("reasoning_effort", "") or ""),
+            "max_iterations": int(dcfg.get("max_iterations", 250) or 250),
+            "max_concurrent_children": int(dcfg.get("max_concurrent_children", 10) or 10),
+            "max_spawn_depth": int(dcfg.get("max_spawn_depth", 1) or 1),
+        }
+        return {"tasks": tasks, "main": main, "delegation": delegation}
+
+
+@router.get("/api/model/reasoning-effort")
+def get_reasoning_effort(profile: Optional[str] = None):
+    # Raw config is required: merged defaults cannot distinguish inheritance from an
+    # explicitly saved value equal to the default.
+    with _profile_scope(profile):
+        cfg = read_user_config_raw()
+        agent = cfg.get("agent", {}) if isinstance(cfg.get("agent"), dict) else {}
+        delegation = cfg.get("delegation", {}) if isinstance(cfg.get("delegation"), dict) else {}
+        return {"main_raw": str(agent.get("reasoning_effort", "") or ""),
+                "delegation_raw": str(delegation.get("reasoning_effort", "") or "")}
+
+
+@router.put("/api/model/reasoning-effort")
+def set_reasoning_effort(body: ReasoningEffortUpdate, profile: Optional[str] = None):
+    # Raw config distinguishes inheritance from an explicitly saved default value.
+    profile_scope = _profile_scope(body.profile or profile)
+    with profile_scope, _CONFIG_MUTATION_LOCK:
+        cfg = read_user_config_raw()
+        section_name = "agent" if body.scope == "main" else "delegation"
+        section = cfg.setdefault(section_name, {})
+        if not isinstance(section, dict):
+            section = cfg[section_name] = {}
+        if body.effort:
+            section["reasoning_effort"] = body.effort
+        else:
+            section.pop("reasoning_effort", None)
+        save_config(cfg)
+        readback = read_user_config_raw()
+        rb_section = readback.get(section_name, {}) if isinstance(readback.get(section_name), dict) else {}
+        raw = str(rb_section.get("reasoning_effort", "") or "")
+        if raw != body.effort:
+            raise HTTPException(status_code=500, detail="saved reasoning effort could not be verified")
+        return {"ok": True, "scope": body.scope, "raw": raw}
 
 
 @router.get("/api/model/moa")
@@ -317,8 +364,12 @@ async def set_model_assignment(body: ModelAssignment, profile: Optional[str] = N
     provider, model = (body.provider or "").strip(), (body.model or "").strip()
     base_url, api_key = (body.base_url or "").strip(), (body.api_key or "").strip()
 
-    if scope not in {"main", "auxiliary"}:
-        raise HTTPException(status_code=400, detail="scope must be 'main' or 'auxiliary'")
+    if scope not in {"main", "auxiliary", "delegation"}:
+        raise HTTPException(status_code=400, detail="scope must be 'main', 'auxiliary', or 'delegation'")
+    if scope == "delegation" and task:
+        raise HTTPException(status_code=400, detail="task is not supported for delegation assignments")
+    if scope == "delegation" and api_key:
+        raise HTTPException(status_code=400, detail="API keys are not accepted for delegation; use the provider's configured credentials")
 
     with http_failure("POST /api/model/set failed", 500, detail="Failed to save model assignment"):
         # Expensive-model warning runs BEFORE the profile scope is entered: _profile_scope
@@ -339,16 +390,32 @@ async def set_model_assignment(body: ModelAssignment, profile: Optional[str] = N
         reasoning_effort = body.reasoning_effort if "reasoning_effort" in body.model_fields_set else _UNSET
 
         def _apply_assignment():
-            # Same RMW span as PUT /api/config: applyMainModel fires this while the
-            # settings-page autosave is in flight — hold the mutation lock. switch_model's
-            # catalog fetches / endpoint probes are network I/O, so they run BEFORE the lock;
-            # only load→apply→save holds it.
-            with _profile_scope(body.profile or profile):
-                prepared = (_prepare_main_assignment(load_config(), provider, model, base_url, api_key)
-                            if scope == "main" else None)
-                with _CONFIG_MUTATION_LOCK:
-                    return _apply_model_assignment_sync(
-                        scope, provider, model, task, base_url, api_key,
-                        reasoning_effort=reasoning_effort, prepared=prepared)
+            # Network/catalog work must finish before entering the config mutation lock;
+            # only load→apply→save is serialized with dashboard config autosave.
+            if scope == "main":
+                with _profile_scope(body.profile or profile):
+                    prepared = _prepare_main_assignment(load_config(), provider, model, base_url, api_key)
+            else:
+                prepared = None
+
+            with _CONFIG_MUTATION_LOCK, _profile_scope(body.profile or profile):
+                if scope == "delegation":
+                    cfg = read_user_config_raw()
+                    delegation = cfg.setdefault("delegation", {})
+                    if not isinstance(delegation, dict):
+                        delegation = cfg["delegation"] = {}
+                    if provider: delegation["provider"] = provider
+                    else: delegation.pop("provider", None)
+                    if model: delegation["model"] = model
+                    else: delegation.pop("model", None)
+                    # Delegation uses the selected provider's existing credentials; endpoint
+                    # overrides are intentionally not supported by this dashboard panel.
+                    delegation.pop("base_url", None)
+                    delegation.pop("api_key", None)
+                    save_config(cfg)
+                    return {"ok": True, "scope": scope, "provider": provider, "model": model}
+                return _apply_model_assignment_sync(
+                    scope, provider, model, task, base_url, api_key,
+                    reasoning_effort=reasoning_effort, prepared=prepared)
 
         return await asyncio.to_thread(_apply_assignment)

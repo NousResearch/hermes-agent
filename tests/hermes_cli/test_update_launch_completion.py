@@ -291,3 +291,30 @@ def test_launch_under_the_owning_update_does_not_run_the_tail_again(tmp_path, mo
     assert completion_tail == []
     assert pending.is_file(), "the owning update's obligation was discharged by its own tail"
 
+
+@pytest.mark.parametrize("marker", ["HERMES_SUPERVISED_CHILD", "HERMES_S6_SUPERVISED_CHILD"])
+def test_supervised_launch_does_not_repay_a_pending_tail(
+    tmp_path, monkeypatch, completion_tail, marker
+):
+    """A supervised start retries the tail on every manager restart (#123340).
+
+    systemd/launchd/Windows-task/s6 launchers all export a supervised-child marker and
+    restart the gateway under a policy; with a marker that never clears, each boot would
+    rebuild the completion environment until the disk fills. The obligation must stay
+    with the CLI (`hermes update` / `hermes pm install`), not the supervised process.
+    """
+    import pm
+
+    root = _self_checkout(tmp_path, monkeypatch)
+    pending = venv_sync.completion_pending_path(root)
+    pending.parent.mkdir(parents=True)
+    pending.write_text("owed\n")
+    monkeypatch.setattr(pm, "venv_is_current", lambda **kw: True)
+    monkeypatch.setenv(marker, "1")
+
+    assert venv_sync.prepare_launch(root, ["gateway", "run"]) is None
+    assert completion_tail == []
+    assert pending.is_file(), (
+        "a supervised child discharged an obligation the CLI still owes"
+    )
+

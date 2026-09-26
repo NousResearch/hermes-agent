@@ -25,6 +25,7 @@ from tools.browser_supervisor_dialogs import (
     DialogSupervisionMixin, PendingDialog,
 )
 from tools.browser_supervisor_frames import FrameInfo, FrameTrackingMixin
+from hermes_cli.browser_connect import is_browser_debug_ready as _is_browser_debug_ready
 
 # ``websockets`` costs ~22 ms at import and is only needed once a supervisor connects.
 if TYPE_CHECKING:
@@ -37,6 +38,51 @@ logger = logging.getLogger(__name__)
 # once its process exits; leave enough room for the former without leaking a
 # supervisor thread and warnings forever for the latter.
 MAX_POST_ATTACH_RECONNECT_FAILURES = 5
+
+# A browser launched moments ago has not opened its DevTools listener yet, so the first
+# WebSocket handshake races the process start and loses. Polling the HTTP endpoint first
+# turns those refusals into a wait instead of a burned retry budget (#121432).
+CDP_READY_POLL_INTERVAL_S = 0.25
+CDP_READY_POLL_TIMEOUT_S = 10.0
+
+
+def _is_connection_refused(exc: BaseException) -> bool:
+    """Whether ``exc`` is the OS reporting nothing is listening on the port yet.
+
+    This is the cold-start signature (``Errno 111`` on Linux, ``10061`` on Windows): the
+    browser process exists but has not opened its DevTools listener. Any other failure
+    (auth, TLS, protocol) is not something waiting will fix.
+    """
+    import errno
+    for candidate in (exc, getattr(exc, "__cause__", None), getattr(exc, "__context__", None)):
+        if candidate is None:
+            continue
+        if isinstance(candidate, ConnectionRefusedError):
+            return True
+        if getattr(candidate, "errno", None) == errno.ECONNREFUSED:
+            return True
+    return False
+
+
+async def _await_cdp_endpoint_ready(cdp_url: str, *, timeout: float | None = None) -> None:
+    """Wait until the CDP endpoint's HTTP surface answers, so the first handshake is not a race.
+
+    Best-effort by design: a remote or unusual endpoint that never answers the probe is left
+    to the existing WebSocket ladder rather than being declared unready.
+    """
+    probe_url = cdp_url
+    for ws_scheme, http_scheme in (("wss://", "https://"), ("ws://", "http://")):
+        if probe_url.startswith(ws_scheme):
+            probe_url = http_scheme + probe_url[len(ws_scheme):]
+            break
+    probe_url = probe_url.split("/devtools/", 1)[0].rstrip("/")
+    budget = CDP_READY_POLL_TIMEOUT_S if timeout is None else timeout
+    deadline = time.monotonic() + budget
+    while time.monotonic() < deadline:
+        ready = await asyncio.to_thread(_is_browser_debug_ready, probe_url, 1.0)
+        if ready:
+            return
+        await asyncio.sleep(CDP_READY_POLL_INTERVAL_S)
 
 
 def _redact_cdp_error_text(exc: object) -> str:
@@ -378,6 +424,14 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             try:
                 self._ws = await asyncio.wait_for(websockets.connect(self.cdp_url, **connect_kwargs), timeout=10.0)
             except Exception as e:
+                if _is_connection_refused(e) and not self._ready_event.is_set():
+                    # Nothing has ever attached, so a refusal means the browser process is
+                    # still coming up. Wait on its HTTP surface rather than spending the retry
+                    # budget on a race it was always going to lose (#121432).
+                    with contextlib.suppress(Exception):
+                        await _await_cdp_endpoint_ready(self.cdp_url)
+                    if self._stop_requested:
+                        return
                 if self._fail_start(e):
                     return
                 reconnect_failures += 1

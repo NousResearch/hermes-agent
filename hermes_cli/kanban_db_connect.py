@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import json
+import os
 import random
 import re
 import secrets
@@ -157,6 +159,40 @@ def _cross_process_init_lock(path: Path):
             handle.close()
 
 
+def _read_dispatch_lock_holder(db_path: Path) -> dict:
+    """Best-effort contention snapshot, never evidence that a lock is held.
+
+    Read only after a failed acquire. An older dispatcher, a racing release,
+    or a partial write can leave no usable stamp; report unknown in that case.
+    Byte zero is reserved for the Windows byte-range lock.
+    """
+    try:
+        with db_path.with_name(db_path.name + ".dispatch.lock").open("rb") as handle:
+            handle.seek(1)
+            stamp = json.loads(handle.read(4096))
+        if not isinstance(stamp, dict):
+            return {}
+        pid, started, site = stamp["pid"], stamp["monotonic"], stamp["acquire_site"]
+        if type(pid) is not int or pid <= 0 or type(started) not in (int, float):
+            return {}
+        age = time.monotonic() - started
+        if not 0 <= age < float("inf") or not isinstance(site, str):
+            return {}
+        return {"pid": pid, "age_seconds": age, "acquire_site": site}
+    except (OSError, ValueError, KeyError, OverflowError):
+        return {}
+
+
+def format_dispatch_lock_skip(holder: dict) -> str:
+    """Shared human-readable board-lock skip diagnostic for CLI and logs."""
+    age = holder.get("age_seconds")
+    age_text = f"{age:.1f}s" if age is not None else "unknown"
+    return (
+        f"skipped: board dispatcher lock held by pid {holder.get('pid', 'unknown')} "
+        f"for {age_text}; acquire site={holder.get('acquire_site', 'unknown')}"
+    )
+
+
 @contextlib.contextmanager
 def _dispatch_tick_lock(db_path: Path):
     """Non-blocking single-writer guard around one dispatcher tick; yields
@@ -193,11 +229,28 @@ def _dispatch_tick_lock(db_path: Path):
         acquired = True
         handle = None
     try:
+        if acquired and handle is not None:
+            try:
+                # Keep byte zero for msvcrt; never replace/unlink a lock inode.
+                handle.truncate(1)
+                handle.write(json.dumps({
+                    "pid": os.getpid(),
+                    "monotonic": time.monotonic(),
+                    "acquire_site": "hermes_cli.kanban_db_connect:_dispatch_tick_lock",
+                }).encode("utf-8"))
+                handle.flush()
+            except OSError:
+                _kb._log.debug("Could not stamp board dispatch lock", exc_info=True)
         yield acquired
     finally:
         if handle is not None:
             try:
                 if acquired:
+                    try:
+                        handle.truncate(1)
+                        handle.flush()
+                    except OSError:
+                        _kb._log.debug("Could not clear board dispatch lock stamp", exc_info=True)
                     _unlock(handle)
             except (OSError, AttributeError):
                 pass

@@ -145,6 +145,8 @@ class DispatchResult:
     """Task ids whose workers bailed on a provider rate-limit / quota wall
     (EX_TEMPFAIL sentinel exit) and were released to ``ready`` WITHOUT counting
     a failure — a long quota window must never trip the circuit breaker."""
+    lock_holder: dict = field(default_factory=dict)
+    """Best-effort pid, age_seconds and acquire_site snapshot on contention."""
     skipped_locked: bool = False
     """True when another process held the board's dispatch lock: this tick did
     no DB writes; the lock holder is making progress on the same board."""
@@ -1964,7 +1966,10 @@ def dispatch_once(
         return result
     with _kbc._dispatch_tick_lock(db_path) as held:
         if not held:
-            result = DispatchResult(skipped_locked=True)
+            result = DispatchResult(
+                skipped_locked=True, lock_holder=_kbc._read_dispatch_lock_holder(db_path),
+            )
+            _kb._log.warning("%s (board=%s)", _kbc.format_dispatch_lock_skip(result.lock_holder), db_path)
         else:
             result = _locked_tick()
             # Still under the dispatch lock: periodic PASSIVE WAL checkpoint.

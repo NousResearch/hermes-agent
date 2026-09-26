@@ -266,7 +266,9 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         sentinel = _new_sentinel(_BYTES_SENTINEL_PREFIX)
         mark = f"echo {sentinel}"
         rest = "".join(f"{mark}; {cmd}; " for cmd in more)
-        result = self._exec(f"{mark}; {body}; __hb=$?; {rest}{mark}; echo $__hb")
+        # xtrace off first: a traced ``+ echo <sentinel>`` line is an extra separator, and the
+        # traces of the transport commands would land inside the payload segments.
+        result = self._exec(f"{{ set +x; }} 2>/dev/null; {mark}; {body}; __hb=$?; {rest}{mark}; echo $__hb")
         segments = _split_segments(result.stdout or "", sentinel)
         if len(segments) != len(more) + 3:
             return None, None, result

@@ -127,7 +127,20 @@ public static class HermesMarkerNoFollow {
     'Write-Output $result'
   ].join(';')
 
-  return powerShellCommand(script)
+  // The probe script's EncodedCommand payload grew past what a Windows
+  // OpenSSH exec channel reliably delivers as a single argv command
+  // (empirically ~2.5k base64 chars; #118987): the remote truncates the tail
+  // and PowerShell fails with ParserError: Missing closing '}', which reads
+  // like a corrupt remote install. Ship the encoded script over the SSH
+  // stdin channel instead — the same transport helper() and
+  // atomicWindowsSpawn() already use — and keep only a tiny runner in argv.
+  const runner = [
+    '$ErrorActionPreference="Stop"',
+    '$code=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd().Trim()))',
+    'Invoke-Expression $code'
+  ].join(';')
+
+  return { command: powerShellCommand(runner), stdinData: encodedPowerShell(script) }
 }
 
 /**
@@ -139,8 +152,10 @@ async function assertWindowsRemoteInstallUpdateClear(ssh, hermesHome) {
   let observation = ''
 
   try {
+    const probe = windowsUpdateMarkerProbeCommand(hermesHome)
+
     observation =
-      String(await ssh.exec(windowsUpdateMarkerProbeCommand(hermesHome)))
+      String(await ssh.exec(probe.command, { stdinData: probe.stdinData }))
         .replace(/^\uFEFF/, '')
         .trim()
         .split(/\r?\n/)
@@ -777,5 +792,6 @@ export {
   psLiteral,
   reusableWindowsLock,
   terminateOwnedWindowsDashboardForUpdate,
-  validLock
+  validLock,
+  windowsUpdateMarkerProbeCommand
 }

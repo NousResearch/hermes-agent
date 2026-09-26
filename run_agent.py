@@ -89,7 +89,8 @@ def _gateway_origin_json(agent: "AIAgent") -> Optional[str]:
     chat_id = getattr(agent, "_chat_id", None)
     session_key = getattr(agent, "_gateway_session_key", None)
     user_id = getattr(agent, "_user_id", None)
-    if not (chat_id or session_key or user_id):
+    delegated_profile = getattr(agent, "_delegated_profile", None)
+    if not (chat_id or session_key or user_id or delegated_profile):
         return None
     origin: Dict[str, Any] = {
         "platform": getattr(agent, "platform", None) or "", "chat_id": chat_id,
@@ -98,6 +99,9 @@ def _gateway_origin_json(agent: "AIAgent") -> Optional[str]:
     }
     if getattr(agent, "_user_id_alt", None):
         origin["user_id_alt"] = agent._user_id_alt
+    if delegated_profile:
+        origin["delegated_profile"] = delegated_profile
+        origin["delegate_identity"] = getattr(agent, "_delegate_identity", None) or f"profile:{delegated_profile}"
     profile = getattr(agent, "_profile_name", None)
     if not profile:
         try:
@@ -354,8 +358,11 @@ class AIAgent(
             # Persist the profile name explicitly, including "default": profile-keyed consumers treat NULL
             # as unowned.
             try:
-                from hermes_cli.profiles import get_active_profile_name
-                profile_for_session = get_active_profile_name()
+                if self._session_db and hasattr(self._session_db, "_own_profile_name"):
+                    profile_for_session = self._session_db._own_profile_name()
+                else:
+                    from hermes_cli.profiles import get_active_profile_name
+                    profile_for_session = get_active_profile_name()
             except Exception:
                 # Persist the profile name EXPLICITLY, including "default". NULL used to stand in for the
                 # default profile, but the #94724 legacy-owner backfill already stamps literal "default"

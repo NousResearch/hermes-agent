@@ -484,6 +484,7 @@ def _resolve_child_runtime(
     override_base_url: Optional[str], override_api_key: Optional[str], override_api_mode: Optional[str],
     override_acp_command: Optional[str], override_acp_args: Optional[List[str]],
     routing_cfg: Optional[Dict[str, Any]] = None,
+    profile_name: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Child credentials, transport and routing (config override > parent inherit) as ``AIAgent`` kwargs. Rules that
     are easy to break: api_mode is re-derived (not inherited) when the child's provider differs from the parent's
@@ -574,8 +575,14 @@ def _resolve_child_runtime(
     except Exception as exc:
         logger.debug("Could not load delegation reasoning_effort: %s", exc)
 
+    if profile_name:
+        # Profile-targeted child: strictly target-owned credentials or keyless sentinel. Never borrow parent key.
+        child_api_key = override_api_key if override_api_key is not None else ""
+    else:
+        child_api_key = override_api_key or parent_api_key
+
     kwargs: Dict[str, Any] = {
-        "base_url": effective_base_url, "api_key": override_api_key or parent_api_key, "model": effective_model,
+        "base_url": effective_base_url, "api_key": child_api_key, "model": effective_model,
         "provider": effective_provider, "requested_provider": effective_requested_provider,
         "capabilities": _inherit_parent_capabilities(parent_agent, override_provider, override_base_url),
         "api_mode": effective_api_mode, "acp_command": effective_acp_command, "acp_args": effective_acp_args,

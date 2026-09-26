@@ -11,7 +11,11 @@ the delegation call and the summary result, never the child's intermediate
 tool calls or reasoning.
 """
 
+from dataclasses import dataclass
+import hashlib
 import logging
+from pathlib import Path
+import re
 import time
 import weakref
 from typing import Any, Dict, List, Optional
@@ -87,15 +91,6 @@ def _open_child_session_db(parent_agent) -> Any:
     a background child still flushes (transcript silently dropped). It MUST open the same db FILE as the parent's
     handle (non-launch profiles), else lineage / session_search break; released by the child's close() via
     _owns_session_db."""
-    # Each child gets a DEDICATED SessionDB connection instead of the parent's live object. The parent's
-    # handle is owned by the parent's lifecycle (cron run_job's finally block, gateway session end, /new)
-    # and can be closed while a fire-and-forget background child is still flushing on a daemon thread —
-    # every subsequent flush then hits the closed handle and the child's transcript is silently dropped
-    # (#81267). It MUST point at the same database FILE as the parent's handle: parents can hold non-default
-    # per-profile handles (tui_gateway opens SessionDB(db_path=<profile>/ state.db) for non-launch
-    # profiles), and a bare SessionDB() would write the child's transcript into the launch profile's db,
-    # breaking parent_session_id lineage and session_search. AsyncSessionDB wrappers (gateway) forward
-    # .db_path via __getattr__, so this works through them.
     parent_session_db = getattr(parent_agent, "_session_db", None)
     if parent_session_db is None:
         return None
@@ -153,6 +148,194 @@ def _apply_child_compression_cap(child, delegation_cfg: dict) -> None:
         cc._apply_threshold_tokens_cap()
 
 
+def _extract_task_profile_target(task: Dict[str, Any]) -> Optional[str]:
+    """Extract the requested profile target name from the task payload.
+    
+    Explicit task['profile'] takes precedence over '@<name>:' in goal.
+    """
+    explicit = (task.get("profile") or "").strip().lower()
+    if explicit:
+        return explicit
+
+    goal = task.get("goal") or ""
+    m = re.match(r"^\s*@([a-zA-Z0-9_\-]+)\s*:", goal)
+    if m:
+        return m.group(1).lower()
+
+    return None
+
+
+@dataclass(frozen=True)
+class ProfileRealization:
+    name: str
+    path: Path
+    device_inode: tuple[int, int]
+    config_mtime_ns: int
+    config_hash: str
+    credentials: Dict[str, Any]
+
+    def __getitem__(self, key: str) -> Any:
+        return self.credentials[key]
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self.credentials.get(key, default)
+
+    def verify(self) -> tuple[bool, Optional[str]]:
+        """Verify that the on-disk profile realization has not disappeared, been recreated, or modified."""
+        if not self.path.is_dir():
+            return False, f"Delegation refused: target profile '{self.name}' directory at '{self.path}' no longer exists"
+        try:
+            stat_res = self.path.stat()
+            cur_inode = (stat_res.st_dev, stat_res.st_ino)
+            if cur_inode != self.device_inode:
+                return False, f"Delegation refused: target profile '{self.name}' directory was replaced or recreated (generation mismatch)"
+        except OSError as exc:
+            return False, f"Delegation refused: target profile '{self.name}' directory is inaccessible: {exc}"
+
+        cfg_path = self.path / "config.yaml"
+        if not cfg_path.is_file():
+            return False, f"Delegation refused: target profile '{self.name}' config.yaml is missing"
+        try:
+            cur_stat = cfg_path.stat()
+            if cur_stat.st_mtime_ns != self.config_mtime_ns:
+                with open(cfg_path, "rb") as f:
+                    cur_hash = hashlib.sha256(f.read()).hexdigest()
+                if cur_hash != self.config_hash:
+                    return False, f"Delegation refused: target profile '{self.name}' config.yaml was modified after admission"
+        except OSError as exc:
+            return False, f"Delegation refused: target profile '{self.name}' config.yaml could not be read: {exc}"
+
+        return True, None
+
+
+def _resolve_delegated_profile_authority(
+    candidate: str, delegation_cfg: Dict[str, Any], parent_agent
+) -> tuple[Optional[ProfileRealization], Optional[str]]:
+    """Resolve, authorize, and pin an explicitly requested Hermes profile target.
+
+    Enforces #93943: ambient profile existence must not grant capability. The operator
+    must explicitly list allowed delegation targets in delegation.allowed_profiles.
+    Returns (profile_realization, None) on success, or (None, typed_refusal_string) on failure.
+    """
+    from hermes_cli.profiles import get_profile_dir, profile_exists
+    from hermes_yaml import safe_load, YAMLError
+
+    # 1. Check Operator Grant / Allowlist (Fail closed)
+    allowed_list = delegation_cfg.get("allowed_profiles")
+    if allowed_list is None:
+        allowed_list = delegation_cfg.get("profiles")
+
+    if isinstance(allowed_list, str):
+        if allowed_list.strip() == "*":
+            allowed_set = {"*"}
+        else:
+            allowed_set = {allowed_list.strip().lower()}
+    elif isinstance(allowed_list, dict):
+        allowed_set = {str(k).strip().lower() for k in allowed_list.keys()}
+    elif isinstance(allowed_list, (list, tuple, set)):
+        allowed_set = {str(p).strip().lower() for p in allowed_list}
+    else:
+        return None, f"Delegation refused: profile '{candidate}' requested, but delegation.allowed_profiles is not configured (no profiles are granted for delegation)"
+    
+    if candidate not in allowed_set and "*" not in allowed_set:
+        return None, f"Delegation refused: profile '{candidate}' is not in delegation.allowed_profiles"
+
+    # 2. Check Profile Existence
+    if not profile_exists(candidate):
+        return None, f"Delegation refused: target profile '{candidate}' does not exist"
+
+    # 3. Resolve Credentials and Configuration with Inode Pinning
+    try:
+        pdir = get_profile_dir(candidate)
+        if not pdir.is_dir():
+            return None, f"Delegation refused: target profile '{candidate}' directory does not exist"
+        dir_stat = pdir.stat()
+        device_inode = (dir_stat.st_dev, dir_stat.st_ino)
+
+        cfg_path = pdir / "config.yaml"
+        if not cfg_path.is_file():
+            return None, f"Delegation refused: target profile '{candidate}' config.yaml is missing"
+
+        cfg_stat = cfg_path.stat()
+        config_mtime_ns = cfg_stat.st_mtime_ns
+        with open(cfg_path, "rb") as f:
+            raw_bytes = f.read()
+        config_hash = hashlib.sha256(raw_bytes).hexdigest()
+
+        cfg = safe_load(raw_bytes.decode("utf-8"))
+        if not isinstance(cfg, dict):
+            return None, f"Delegation refused: target profile '{candidate}' config.yaml is not a valid dictionary"
+
+        model_cfg = cfg.get("model", {})
+        if isinstance(model_cfg, str):
+            model = model_cfg
+            provider = cfg.get("provider")
+        elif isinstance(model_cfg, dict):
+            model = model_cfg.get("default")
+            provider = model_cfg.get("provider") or cfg.get("provider")
+        else:
+            model = None
+            provider = cfg.get("provider")
+
+        if not (isinstance(model, str) and model.strip()):
+            return None, f"Delegation refused: target profile '{candidate}' specifies no model"
+
+        if not (isinstance(provider, str) and provider.strip()):
+            return None, f"Delegation refused: target profile '{candidate}' specifies no provider (cannot ambiently inherit parent provider)"
+
+        providers = cfg.get("providers", {})
+        prov_cfg = providers.get(provider, {}) if (isinstance(providers, dict) and provider) else {}
+
+        base_url = prov_cfg.get("base_url")
+        api_key = prov_cfg.get("api_key")
+        api_mode = prov_cfg.get("api_mode")
+        req_overrides = prov_cfg.get("request_overrides")
+
+        # Determine if provider is explicitly keyless or requires an API key
+        KEYLESS_PROVIDERS = frozenset({"ollama", "llama_cpp", "llamacpp", "local"})
+        is_keyless = (
+            provider.lower() in KEYLESS_PROVIDERS
+            or bool(prov_cfg.get("no_auth"))
+            or (base_url and ("localhost" in base_url or "127.0.0.1" in base_url) and api_key is None)
+        )
+
+        if not is_keyless:
+            if not api_key or not isinstance(api_key, str) or not api_key.strip():
+                return None, f"Delegation refused: target profile '{candidate}' has no API key configured for provider '{provider}'"
+        else:
+            # For keyless providers, ensure api_key is an empty string sentinel, not None or parent fallback
+            api_key = api_key if (isinstance(api_key, str) and api_key) else ""
+
+        creds_dict = {
+            "model": model,
+            "provider": provider,
+            "base_url": base_url,
+            "api_key": api_key,
+            "api_mode": api_mode,
+            "profile": candidate,
+            "profile_dir": pdir,
+            "request_overrides": req_overrides,
+            "routing_cfg": cfg,
+            "is_keyless": is_keyless,
+        }
+
+        realization = ProfileRealization(
+            name=candidate,
+            path=pdir,
+            device_inode=device_inode,
+            config_mtime_ns=config_mtime_ns,
+            config_hash=config_hash,
+            credentials=creds_dict,
+        )
+        return realization, None
+
+    except YAMLError:
+        return None, f"Delegation refused: target profile '{candidate}' config.yaml is invalid YAML"
+    except Exception as exc:
+        logger.warning("Failed to resolve credentials for profile %s: %s", candidate, exc)
+        return None, f"Delegation refused: target profile '{candidate}' configuration could not be read"
+
+
 def _build_child_agent(
     task_index: int,
     goal: str,
@@ -178,12 +361,23 @@ def _build_child_agent(
     routing_cfg: Optional[Dict[str, Any]] = None,
     # Legacy; accepted for wire compat but ignored (capability is depth-derived).
     role: str = "leaf",
+    profile_name: Optional[str] = None,
+    profile_realization: Optional[ProfileRealization] = None,
 ):
     """Build (don't run) a child AIAgent on the main thread. override_* (from delegation config) replace parent
     inheritance so children can run on a different provider:model pair."""
     import uuid as _uuid
     from run_agent import AIAgent
     from agent.delegation_context import delegated_child_context
+
+    target_profile_dir = None
+    if profile_realization is not None:
+        ok, err = profile_realization.verify()
+        if not ok:
+            raise ValueError(err)
+        target_profile_dir = profile_realization.path
+    elif profile_name:
+        raise ValueError(f"Delegation refused: profile '{profile_name}' has no verified realization")
     # Role is depth-derived: a child may delegate iff the kill switch is on and
     # depth budget remains below max_spawn_depth. The `role` arg is ignored.
     child_depth = getattr(parent_agent, "_delegate_depth", 0) + 1
@@ -222,6 +416,7 @@ def _build_child_agent(
         override_acp_command=override_acp_command,
         override_acp_args=override_acp_args,
         routing_cfg=routing_cfg,
+        profile_name=profile_name,
     )
     if override_request_overrides is not None:
         # honored whenever set, incl. the inherit branch where
@@ -238,7 +433,9 @@ def _build_child_agent(
                 enabled_toolsets=child_toolsets, disabled_toolsets=child_disabled_toolsets, quiet_mode=True,
                 ephemeral_system_prompt=child_prompt, log_prefix=f"[subagent-{task_index}]", platform="subagent",
                 side_agent=True,
-                skip_context_files=True, skip_memory=True, clarify_callback=None,
+                skip_context_files=False if target_profile_dir is not None else True,
+                skip_memory=False if target_profile_dir is not None else True,
+                clarify_callback=None,
                 thinking_callback=(
                     (lambda text: _safe_progress(child_progress_cb, "_thinking", text) if text else None)
                     if child_progress_cb else None
@@ -255,6 +452,11 @@ def _build_child_agent(
                     release_or_close(child_session_db)
             raise
     child._print_fn = getattr(parent_agent, "_print_fn", None)
+    if target_profile_dir is not None:
+        child._delegated_profile = profile_name
+        child._delegate_identity = f"profile:{profile_name}"
+        child._profile_dir = target_profile_dir
+        child._profile_realization = profile_realization
     _apply_child_cache_ttl(child)
     if child_session_db is not None:
         child._owns_session_db = True  # released by the child's close(), never by the parent
@@ -273,8 +475,12 @@ def _build_child_agent(
         child._delegate_parent_ref = None  # non-weakref-able test doubles
     # Sidebar marker: subagent sessions stay out of session pickers even when a
     # parent delete orphans them (mirrors /branch's ``_branched_from``).
-    if parent_sid and getattr(child, "_session_init_model_config", None) is not None:
-        child._session_init_model_config["_delegate_from"] = parent_sid
+    if getattr(child, "_session_init_model_config", None) is not None:
+        if parent_sid:
+            child._session_init_model_config["_delegate_from"] = parent_sid
+        if profile_name:
+            child._session_init_model_config["delegated_profile"] = profile_name
+            child._session_init_model_config["delegate_identity"] = f"profile:{profile_name}"
     # Shared pool lets children rotate credentials on rate limits.
     child_pool = _resolve_child_credential_pool(
         rt["provider"], parent_agent, rt["base_url"], effective_requested_provider=rt.get("requested_provider"),
@@ -371,28 +577,70 @@ def _build_children(
     ``(children, None)`` or ``([], error)`` on an explicit-pin preflight failure."""
     from tools.delegation_live_log import wrap_progress_callback
     from tools.delegation_output_schema import append_output_contract
-    overrides = {
-        "override_provider": creds["provider"], "override_base_url": creds["base_url"],
-        "override_api_key": creds["api_key"], "override_api_mode": creds["api_mode"],
-        "override_request_overrides": creds.get("request_overrides"),
-        "override_acp_command": creds.get("command"),
-        "override_acp_args": creds.get("args"),
-        "routing_cfg": routing_cfg,
-    }
+
+    # Phase 1: Preflight authority & admission for ALL tasks in batch
+    # If any task fails admission, refuse immediately before constructing any child
+    task_realizations: List[Optional[ProfileRealization]] = []
+    for t in task_list:
+        _target_profile = _extract_task_profile_target(t)
+        if _target_profile:
+            _realization, _err = _resolve_delegated_profile_authority(_target_profile, routing_cfg, parent_agent)
+            if _err:
+                return [], _err
+            task_realizations.append(_realization)
+        else:
+            task_realizations.append(None)
+
+    # Phase 2: Construct children with admitted profile realizations
     children = []
     for i, t in enumerate(task_list):
         _task_schema = task_schemas[i] if i < len(task_schemas) else None
         _child_context = t.get("context")
         if _task_schema is not None:
             _child_context = append_output_contract(_child_context, _task_schema)
+
+        _realization = task_realizations[i]
+        if _realization is not None:
+            _task_creds = _realization.credentials
+            _creds_source = _task_creds
+            task_overrides = {
+                "override_provider": _creds_source.get("provider"),
+                "override_base_url": _creds_source.get("base_url"),
+                "override_api_key": _creds_source.get("api_key"),
+                "override_api_mode": _creds_source.get("api_mode"),
+                "override_request_overrides": _creds_source.get("request_overrides"),
+                "override_acp_command": _creds_source.get("command"),
+                "override_acp_args": _creds_source.get("args"),
+                "routing_cfg": _creds_source.get("routing_cfg") or routing_cfg,
+                "profile_name": _realization.name,
+                "profile_realization": _realization,
+            }
+        else:
+            _creds_source = creds
+            task_overrides = {
+                "override_provider": _creds_source.get("provider"),
+                "override_base_url": _creds_source.get("base_url"),
+                "override_api_key": _creds_source.get("api_key"),
+                "override_api_mode": _creds_source.get("api_mode"),
+                "override_request_overrides": _creds_source.get("request_overrides"),
+                "override_acp_command": _creds_source.get("command"),
+                "override_acp_args": _creds_source.get("args"),
+                "routing_cfg": routing_cfg,
+                "profile_name": None,
+                "profile_realization": None,
+            }
         try:
             child = _build_child_preserving_parent_tools(
                 task_index=i, goal=t["goal"], context=_child_context,
                 toolsets=None,  # always inherit the parent's toolsets
-                model=creds["model"], max_iterations=max_iterations, task_count=len(task_list),
-                parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **overrides,
+                model=_creds_source.get("model") or creds["model"], max_iterations=max_iterations, task_count=len(task_list),
+                parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **task_overrides,
             )
         except ValueError as exc:
+            for _, _, constructed in children:
+                if hasattr(constructed, "close"):
+                    with _quiet("Could not close constructed child on aborted batch: %s"):
+                        constructed.close()
             return [], str(exc)
         if _task_schema is not None:
             with _quiet("Could not attach output schema to child %d", i):
@@ -684,6 +932,12 @@ DELEGATE_TASK_SCHEMA = {
                             "is enabled; otherwise the whole call returns as one message). Tasks sharing a group return "
                             "together in ONE message; ungrouped tasks return individually as each finishes. This does not "
                             "order execution; if B needs A's output, dispatch B after A returns.",
+                        ),
+                        "profile": _p(
+                            "string",
+                            "Optional Hermes profile name (e.g. 'eeyore', 'piglet', 'tigger'). Automatically routes "
+                            "model, host endpoint, memory, and context to that profile when permitted by "
+                            "delegation.allowed_profiles. Can also be auto-detected from an @<profile>: prefix in goal.",
                         ),
                     },
                     "required": ["goal"],

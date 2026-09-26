@@ -135,6 +135,9 @@ interface GuestContextMenuParams {
 
 interface PreviewPaneProps {
   embedded?: boolean
+  /** Closes this preview's tab. Offered by body states that are a dead end
+   *  (a file that no longer exists) so the way out is not only the strip. */
+  onClose?: () => void
   onRestartServer?: (url: string, context?: string) => Promise<string>
   reloadRequest?: number
   /** The preview tab this pane renders. Keys the per-tab console store the
@@ -237,7 +240,14 @@ function PreviewLoadError({
   )
 }
 
-export function PreviewPane({ embedded = false, onRestartServer, reloadRequest = 0, tabId, target }: PreviewPaneProps) {
+export function PreviewPane({
+  embedded = false,
+  onClose,
+  onRestartServer,
+  reloadRequest = 0,
+  tabId,
+  target
+}: PreviewPaneProps) {
   const { t } = useI18n()
   const copy = t.preview.web
   // The console store belongs to the TAB, not this render: the toggles live on
@@ -1391,9 +1401,10 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
           )}
           {!isWebPreview &&
             (target.kind === 'artifact' ? (
-              <ArtifactPreview target={target} />
+              <ArtifactPreview onClose={onClose} target={target} />
             ) : (
               <LocalFilePreview
+                onClose={onClose}
                 onSelectRendered={canRenderHtmlFile ? () => selectRenderMode('preview') : undefined}
                 reloadKey={localReloadKey}
                 target={target}

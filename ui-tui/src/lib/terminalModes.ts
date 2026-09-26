@@ -25,6 +25,20 @@ type ResettableStream = Pick<NodeJS.WriteStream, 'isTTY' | 'write'> & {
   fd?: number
 }
 
+/** Native mode leaves its frame in the primary buffer; wipe it on exit so the shell prompt starts clean. */
+export function clearNativeTuiFrame(stream: ResettableStream = process.stdout): boolean {
+  if (!stream.isTTY) {
+    return false
+  }
+
+  try {
+    stream.write('\x1b[2J\x1b[H')
+    return true
+  } catch {
+    return false
+  }
+}
+
 // OSC 10/11 set the terminal's DEFAULT foreground/background — so every cell,
 // including text rendered with no explicit color (markdown body, borders,
 // third-party output), takes the skin instead of the host profile's defaults.

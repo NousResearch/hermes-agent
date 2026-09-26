@@ -1657,3 +1657,19 @@ class TestVaultRedactionRegistry:
         R.register_vault_redaction_value("20")
         R.register_vault_redaction_value("09")
         assert R.redact_for_egress(text) == baseline
+
+    def test_known_secret_short_value_is_scrubbed(self):
+        """An OTP code (6 digits) or a card CVC (3) is shorter than the floor but is exactly
+        what this registry exists to protect: a caller that can vouch for the value registers
+        it as a known secret, bypassing the length floor."""
+        from agent import redact as R
+        R.register_vault_redaction_value("123456", known_secret=True)  # OTP
+        R.register_vault_redaction_value("313", known_secret=True)     # CVC
+        out = R.redact_registered_vault_values("echo OTP=123456 CVC=313 back")
+        assert "123456" not in out and "313" not in out
+        assert out.count("«redacted-vault-secret»") == 2
+
+    def test_known_secret_short_value_scrubbed_at_egress(self):
+        from agent import redact as R
+        R.register_vault_redaction_value("123456", known_secret=True)
+        assert "123456" not in R.redact_for_egress("code=123456")

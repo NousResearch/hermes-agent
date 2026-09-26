@@ -43,15 +43,18 @@ def _vault_scope() -> str:
     return str(get_hermes_home())
 
 
-def register_vault_redaction_value(value) -> None:
+def register_vault_redaction_value(value, *, known_secret: bool = False) -> None:
     """Register an exact vault secret value for model-facing redaction.
 
     Called by the vault fill path BEFORE the injection happens, so no later browser tool result
     can echo the value back into model context. Also registers the form a text input normalizes
     it to (CR/LF stripped), since that is what the page holds.
 
-    Values shorter than ``_VAULT_REDACTION_MIN_LENGTH`` are ignored: the scrub is a plain
-    substring replace, and a short key (a card expiry month) rips through ordinary text.
+    Values shorter than ``_VAULT_REDACTION_MIN_LENGTH`` are ignored unless the caller can vouch
+    for the value (``known_secret=True``): the scrub is a plain substring replace, and an
+    ambiguous short key (a card expiry month) rips through ordinary text (#120655) — but a value
+    the caller knows is a secret (an OTP code, a card CVC, a password) must stay registered even
+    though it is short, or the registry drops exactly the secrets it exists to protect.
     """
     if not isinstance(value, str) or not value:
         return
@@ -59,7 +62,7 @@ def register_vault_redaction_value(value) -> None:
     with _VAULT_REDACTION_LOCK:
         bucket = _VAULT_REDACTION_VALUES.setdefault(_vault_scope(), {})
         for v in (value, normalized):
-            if v and len(v) >= _VAULT_REDACTION_MIN_LENGTH:
+            if v and (known_secret or len(v) >= _VAULT_REDACTION_MIN_LENGTH):
                 bucket.pop(v, None)  # re-registering refreshes recency
                 bucket[v] = None
         while len(bucket) > _VAULT_REDACTION_MAX_PER_PROFILE:

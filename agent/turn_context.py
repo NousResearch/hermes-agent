@@ -157,9 +157,9 @@ def append_notes_to_multimodal_content(content: Any, notes: Optional[str]) -> bo
     return False
 
 
-# Surfaces whose sessions must not be auto-titled: cron names its own session and
-# its opener is a delivery hint; subagent sessions are hidden from every picker.
-_UNTITLED_PLATFORMS = frozenset({"cron", "subagent"})
+# Cron sessions are never auto-titled: cron names its own session and its opener is a delivery hint.
+# Subagent runs get a cheap ``Subagent: <goal>`` title instead of a model call (apply_subagent_title).
+_UNTITLED_PLATFORMS = frozenset({"cron"})
 
 
 def _maybe_title_session_at_turn_start(agent: Any, messages: List[Any]) -> None:
@@ -168,11 +168,12 @@ def _maybe_title_session_at_turn_start(agent: Any, messages: List[Any]) -> None:
     session_id = getattr(agent, "session_id", None)
     if not session_db or not session_id:
         return
-    if str(getattr(agent, "platform", "") or "").lower() in _UNTITLED_PLATFORMS:
+    platform = str(getattr(agent, "platform", "") or "").lower()
+    if platform in _UNTITLED_PLATFORMS:
         return
     try:
         from agent.message_content import flatten_message_text
-        from agent.title_generator import maybe_auto_title
+        from agent.title_generator import apply_subagent_title, maybe_auto_title
 
         # Turn's user message as text; image-only turns yield "" and are skipped.
         user_text = ""
@@ -194,6 +195,9 @@ def _maybe_title_session_at_turn_start(agent: Any, messages: List[Any]) -> None:
                 ensure()
             if not getattr(agent, "_session_db_created", False):
                 return
+        if platform == "subagent":
+            apply_subagent_title(session_db, session_id, user_text)
+            return
         # Snapshot runtime identity so the background titler can skip if the user
         # switches models before it fires.
         # ``session_id`` rides along so the background titler's OpenCode request carries the

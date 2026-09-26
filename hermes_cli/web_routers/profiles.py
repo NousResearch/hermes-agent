@@ -27,6 +27,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, HTTPException, Query
 
+from hermes_cli.session_listing import subagent_listing_scope
 from hermes_cli.web_deps import late
 from hermes_cli.config import get_process_hermes_home
 from hermes_cli.profiles import ProfileIdentitySettlementPending
@@ -483,12 +484,16 @@ def get_profiles_sessions(
     errors: List[Dict[str, str]] = []
     now = time.time()
     for name, home in targets:
-        def _read(db, name=name):
+        def _read(db, name=name, home=home):
+            include_subagents, exclude = subagent_listing_scope(
+                home, source=filters["source"], sources=filters["sources"],
+                exclude_sources=filters["exclude_sources"])
+            scoped = {**filters, "exclude_sources": exclude, "include_subagents": include_subagents}
             rows = db.list_sessions_rich(
                 limit=per_profile, offset=0, order_by_last_active=order == "recent",
                 # Same SQL-level blob skip as /api/sessions.
-                compact_rows=not full, include_pinned=True, **filters)
-            totals[name] = db.session_count(exclude_children=True, **filters)
+                compact_rows=not full, include_pinned=True, **scoped)
+            totals[name] = db.session_count(exclude_children=True, **scoped)
             merged.extend(_tag_rows(rows, name, now))
         _read_profile_db(name, home, errors, _read)
 
@@ -534,19 +539,22 @@ def get_profiles_sessions_sidebar(
     errors: List[Dict[str, str]] = []
     now = time.time()
 
-    def _slice(db, key):
+    def _slice(db, key, recents_subagents=(False, None)):
         source, exclude = slice_scope[key]
+        # Only recents takes subagent runs (sessions.show_subagents); cron/messaging keep shape.
+        include_subagents, exclude = recents_subagents if key == "recents" else (False, exclude)
         # include_pinned: a pinned conversation must reach the sidebar even when it has aged
         # past the window, or its Pinned row renders empty.
         return db.list_sessions_rich(
             source=source, exclude_sources=exclude or None, limit=cap[key], offset=0,
             min_message_count=1, include_archived=False, archived_only=False,
-            order_by_last_active=True, compact_rows=True, include_pinned=True)
+            order_by_last_active=True, compact_rows=True, include_pinned=True,
+            include_subagents=include_subagents)
 
-    def _build_slices(db, cache_key):
+    def _build_slices(db, cache_key, recents_subagents):
         # ``usage`` is aggregated in SQL rather than over the recents window: the window is a
         # page, and a total that shrank when you scrolled would be worse than no total at all.
-        slices = {"recents": _slice(db, "recents"), "usage": db.usage_totals(),
+        slices = {"recents": _slice(db, "recents", recents_subagents), "usage": db.usage_totals(),
                   "cron": _slice(db, "cron"), "messaging": _slice(db, "messaging")}
         _sidebar_profile_cache_put(cache_key, slices)
         return slices
@@ -560,13 +568,15 @@ def get_profiles_sessions_sidebar(
         db_path = _profile_state_db(home)
         if not db_path.exists():
             continue
+        recents_subagents = subagent_listing_scope(home, exclude_sources=recents_exclude_list or None)
         profile_cache_key = (str(db_path), _sidebar_db_fingerprint(db_path), cap["recents"],
                              tuple(recents_exclude_list), cap["cron"], cap["messaging"],
-                             tuple(messaging_exclude_list))
+                             tuple(messaging_exclude_list), recents_subagents[0])
         slices = _sidebar_profile_cache_get(profile_cache_key)
         if slices is None:
-            slices = _read_profile_db(name, home, errors,
-                                      lambda db: _build_slices(db, profile_cache_key))
+            slices = _read_profile_db(
+                name, home, errors,
+                lambda db: _build_slices(db, profile_cache_key, recents_subagents))
             if slices is None:
                 continue
         # Heal already gave up and this read found no rows. That is not "no

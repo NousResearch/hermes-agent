@@ -13092,6 +13092,72 @@
         "title": "ErrorSurface",
         "type": "object"
       },
+      "FailedDelegation": {
+        "additionalProperties": false,
+        "description": "``async_delegation.failed_delegations_for_session`` row: one failed task of an async delegation.",
+        "properties": {
+          "delegation_id": {
+            "title": "Delegation Id",
+            "type": "string"
+          },
+          "task_index": {
+            "default": 0,
+            "title": "Task Index",
+            "type": "integer"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "goal": {
+            "default": "",
+            "title": "Goal",
+            "type": "string"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error"
+          },
+          "dispatched_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Dispatched At"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Completed At"
+          }
+        },
+        "required": [
+          "delegation_id",
+          "status"
+        ],
+        "title": "FailedDelegation",
+        "type": "object"
+      },
       "FileAttachParams": {
         "additionalProperties": false,
         "description": "``path`` when the file is gateway-visible, else ``data_url`` carries the bytes; ``name`` labels\nan uploaded file.",
@@ -32863,7 +32929,7 @@
       },
       "SubagentListResult": {
         "additionalProperties": false,
-        "description": "``delegations`` is reserved for async delegation records and is currently always empty.",
+        "description": "``delegations``: recently failed async delegation tasks for the session (durable store), newest first.",
         "properties": {
           "subagents": {
             "items": {
@@ -32874,8 +32940,7 @@
           },
           "delegations": {
             "items": {
-              "additionalProperties": true,
-              "type": "object"
+              "$ref": "#/components/schemas/FailedDelegation"
             },
             "title": "Delegations",
             "type": "array"

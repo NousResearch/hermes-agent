@@ -1417,6 +1417,54 @@ def test_link_tasks_archived_parent_is_terminal_no_gate(kanban_home):
         assert "dependency_wait" not in [e.kind for e in kb.list_events(conn, child)]
 
 
+def test_link_tasks_unknown_id_names_the_board_it_lives_on(kanban_home):
+    """Regression test for issue #124396.
+
+    Boards are separate DBs, so an id that merely lives on another board reads
+    exactly like a typo. The error must say where the id is instead.
+    """
+    kb.create_board("tech", name="Tech Board")
+    with kbc.connect(board="tech") as other:
+        foreign = kb.create_task(other, title="lives on tech")
+
+    with kbc.connect() as conn:
+        child = kb.create_task(conn, title="local child")
+        with pytest.raises(ValueError) as ei:
+            kb.link_tasks(conn, parent_id=foreign, child_id=child)
+        assert "unknown task(s)" in str(ei.value)
+        assert f"{foreign} exists on board 'Tech Board'." in str(ei.value)
+        assert "cannot cross boards" in str(ei.value)
+        assert conn.execute(
+            "SELECT 1 FROM task_links WHERE parent_id = ? OR child_id = ?",
+            (foreign, foreign),
+        ).fetchall() == []
+
+
+def test_link_tasks_unknown_id_stays_terse_when_nowhere(kanban_home):
+    """An id missing everywhere keeps the original one-line error."""
+    with kbc.connect() as conn:
+        child = kb.create_task(conn, title="local child")
+        with pytest.raises(ValueError) as ei:
+            kb.link_tasks(conn, parent_id="t_nowhere", child_id=child)
+        assert str(ei.value) == "unknown task(s): t_nowhere"
+
+
+def test_create_task_unknown_parent_names_the_board_it_lives_on(kanban_home):
+    """The create-with-parents lane shares the cross-board hint (#124396)."""
+    kb.create_board("tech", name="Tech Board")
+    with kbc.connect(board="tech") as other:
+        foreign = kb.create_task(other, title="lives on tech")
+
+    with kbc.connect() as conn:
+        with pytest.raises(ValueError) as ei:
+            kb.create_task(conn, title="local", parents=(foreign,))
+        assert "unknown parent task(s)" in str(ei.value)
+        assert f"{foreign} exists on board 'Tech Board'." in str(ei.value)
+        assert conn.execute(
+            "SELECT id FROM tasks WHERE title = 'local'"
+        ).fetchall() == []
+
+
 def test_unlink_tasks_triggers_recompute_ready(kanban_home):
     """Regression test for issue #22459.
 

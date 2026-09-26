@@ -228,6 +228,17 @@ providers:
       openai_native_compaction: true
 ```
 
+**`chat_template_reasoning`**: some OpenAI-compatible servers take thinking controls only through the model's chat template and ignore the top-level `reasoning_effort` field. OpenVINO Model Server is one; vLLM and llama.cpp setups can behave the same way. Declare the capability on the model, and `/reasoning` is sent as `chat_template_kwargs.enable_thinking` (plus `chat_template_kwargs.reasoning_effort` when thinking is on) instead:
+
+```yaml
+providers:
+  ovms:
+    api: http://127.0.0.1:8000/v3
+    models:
+      OpenVINO/Qwen3-8B-int4-ov:
+        chat_template_reasoning: true
+```
+
 For a gateway that resolves a bare model alias only after receiving the
 request, opt the alias into prompt-cache markers with the per-model
 `prompt_caching` capability:

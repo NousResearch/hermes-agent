@@ -27,6 +27,23 @@ def _looks_like_ollama_endpoint(base_url: str | None) -> bool:
     return bool(host) and (host == "ollama.com" or host.endswith(".ollama.com") or "ollama" in host.split("."))
 
 
+def _reads_chat_template_reasoning(model: str | None, base_url: str | None) -> bool:
+    """True when the custom-provider entry declares ``chat_template_reasoning: true`` for this model.
+
+    Some OpenAI-compatible servers take thinking controls only through the chat template:
+    OpenVINO Model Server ignores top-level ``reasoning_effort`` and honours
+    ``chat_template_kwargs.enable_thinking`` / ``.reasoning_effort`` (#99820). The endpoint cannot be
+    recognised from its URL, so the user declares it per model, like ``prompt_caching``.
+    """
+    try:
+        from hermes_cli.config import get_custom_provider_model_capability
+
+        return get_custom_provider_model_capability(
+            model=model or "", base_url=base_url or "", capability="chat_template_reasoning") is True
+    except Exception:
+        return False
+
+
 class CustomProfile(ProviderProfile):
     """Custom/Ollama local provider — think=false and num_ctx support."""
 
@@ -70,7 +87,14 @@ class CustomProfile(ProviderProfile):
         # think=True (Ollama-only flag).
         if reasoning_config and isinstance(reasoning_config, dict):
             effort = (reasoning_config.get("effort") or "").strip().lower()
-            if effort == "none" or reasoning_config.get("enabled", True) is False:
+            disabled = effort == "none" or reasoning_config.get("enabled", True) is False
+            if (disabled or effort) and _reads_chat_template_reasoning(ctx.get("model"), ctx.get("base_url")):
+                template_kwargs: dict[str, Any] = {"enable_thinking": not disabled}
+                if not disabled:
+                    template_kwargs["reasoning_effort"] = clamp_effort(effort, OPENAI_COMPAT_WIRE_EFFORTS)
+                extra_body["chat_template_kwargs"] = template_kwargs
+                return extra_body, top_level
+            if disabled:
                 # See #14820.
                 top_level["reasoning_effort"] = "none"
                 if _looks_like_ollama_endpoint(ctx.get("base_url")):

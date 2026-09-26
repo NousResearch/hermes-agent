@@ -235,3 +235,43 @@ class TestCustomResponsesEffortVocabulary:
             },
         )
         assert (effort, enabled) == ("xhigh", True)
+
+
+def _declare_chat_template_reasoning(model: str, base_url: str, enabled: bool = True) -> None:
+    import yaml
+    from hermes_constants import get_hermes_home
+
+    home = get_hermes_home()
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(yaml.safe_dump({
+        "providers": {"ovms": {"api": base_url, "models": {model: {"chat_template_reasoning": enabled}}}},
+    }))
+
+
+@pytest.mark.parametrize("reasoning, expected", [
+    ({"enabled": True, "effort": "low"}, {"enable_thinking": True, "reasoning_effort": "low"}),
+    ({"enabled": False}, {"enable_thinking": False}),
+])
+def test_a_chat_template_reasoning_model_gets_its_thinking_controls_in_chat_template_kwargs(
+    custom_profile, reasoning, expected,
+):
+    """OpenVINO Model Server ignores top-level ``reasoning_effort`` and honours only
+    ``chat_template_kwargs`` (#99820). A model declared ``chat_template_reasoning: true`` on its
+    custom provider must carry /reasoning there, on the same route and model id the config names."""
+    base_url = "http://127.0.0.1:8000/v3"
+    _declare_chat_template_reasoning("OpenVINO/Qwen3-8B-int4-ov", base_url)
+    extra_body, top_level = custom_profile.build_api_kwargs_extras(
+        reasoning_config=reasoning, model="OpenVINO/Qwen3-8B-int4-ov", base_url=base_url,
+    )
+    assert extra_body.get("chat_template_kwargs") == expected
+    assert "reasoning_effort" not in top_level
+
+
+def test_an_undeclared_model_keeps_top_level_reasoning_effort(custom_profile):
+    base_url = "http://127.0.0.1:8000/v3"
+    _declare_chat_template_reasoning("OpenVINO/Qwen3-8B-int4-ov", base_url)
+    extra_body, top_level = custom_profile.build_api_kwargs_extras(
+        reasoning_config={"enabled": True, "effort": "low"}, model="some-other-model", base_url=base_url,
+    )
+    assert top_level == {"reasoning_effort": "low"}
+    assert "chat_template_kwargs" not in extra_body

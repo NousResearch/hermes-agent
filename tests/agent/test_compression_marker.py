@@ -9,6 +9,7 @@ returns to ``agent/`` strings.
 from __future__ import annotations
 
 import pathlib
+import re
 import tokenize
 
 from agent.compression_marker import (
@@ -19,7 +20,8 @@ from agent.compression_marker import (
 )
 
 AGENT_ROOT = pathlib.Path(__file__).resolve().parents[2] / "agent"
-IMITABLE_MARKERS = ("...[truncated]", "…[truncated]", "... [truncated]", "… [truncated]")
+# Any "...[<words> truncated]" variant, not just the bare one (e.g. "...[fallback summary truncated]").
+IMITABLE_MARKER_RE = re.compile(r"(?:\.\.\.|…)\s?\[[^\]\n]*truncated\]")
 
 
 class TestElide:
@@ -71,8 +73,7 @@ def test_no_imitable_truncation_marker_in_agent_strings():
             for tok in tokenize.generate_tokens(fh.readline):
                 if tok.type != tokenize.STRING:
                     continue
-                for literal in IMITABLE_MARKERS:
-                    if literal in tok.string:
-                        rel = path.relative_to(AGENT_ROOT.parent)
-                        offenders.append(f"{rel}:{tok.start[0]}: {literal}")
+                for match in IMITABLE_MARKER_RE.finditer(tok.string):
+                    rel = path.relative_to(AGENT_ROOT.parent)
+                    offenders.append(f"{rel}:{tok.start[0]}: {match.group()}")
     assert not offenders, "imitable truncation markers in agent/ strings:\n" + "\n".join(offenders)

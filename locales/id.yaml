@@ -1,14 +1,10 @@
-# Katalog pesan-statis Hermes -- Bahasa Indonesia (terjemahan dari bahasa Inggris)
+# Hermes static-message catalog -- Indonesian (Indonesia)
 #
-# Hanya pesan statis yang menghadap pengguna dari prompt persetujuan CLI dan beberapa
-# balasan perintah garis miring (slash-command) gateway yang ada di sini. Output buatan agen, baris
-# log, pelacakan balik (traceback) kesalahan, output alat, dan deskripsi perintah garis miring tetap
-# dalam bahasa Inggris dan TIDAK diterjemahkan -- lihat agent/i18n.py untuk rasionalisasi cakupannya.
-#
-# Kunci-kuncinya adalah jalur bertitik; penyarangan di bawah ini murni untuk kemudahan membaca. Nilai mungkin
-# berisi token {placeholder} untuk substitusi str.format. Saat menambahkan
-# kunci baru, tambahkan ke SETIAP file lokal (en/zh/ja/de/es/fr/tr/uk/id) pada commit yang sama --
-# tests/agent/test_i18n.py memastikan kesetaraan katalog.
+# Mirrors locales/en.yaml key-for-key.  Only user-facing static prose is
+# translated: command names, /slash commands, config keys, paths, URLs, model
+# IDs, provider names, emojis and {placeholder} tokens are kept verbatim so
+# interpolation and identifiers keep working.  tests/agent/test_i18n.py asserts
+# key parity and placeholder parity against en.yaml.
 
 approval:
   # Prompt persetujuan CLI -- ditampilkan saat perintah berbahaya membutuhkan tinjauan pengguna.

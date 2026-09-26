@@ -59,3 +59,57 @@ def test_auxiliary_owned_refresh_does_not_spend_borrowed_rotation(tmp_path, monk
     retry.close()
     assert borrowed.read_bytes() == before
     assert aux._refresh_anthropic_credentials("unrelated-api-key") is False
+
+
+def _seed_two_healthy(tmp_path, monkeypatch):
+    import time as _time
+    monkeypatch.setattr(ac.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(ac, "_first_env", lambda *names: "")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "auth.json").write_text(json.dumps({"credential_pool": {"anthropic": [
+        {"id": "a", "source": "manual:hermes_pkce", "auth_type": "oauth",
+         "access_token": "token-a", "refresh_token": "refresh-a",
+         "expires_at": int(_time.time()*1000)+3600000, "priority": 0},
+        {"id": "b", "source": "manual:hermes_pkce", "auth_type": "oauth",
+         "access_token": "token-b", "refresh_token": "refresh-b",
+         "expires_at": int(_time.time()*1000)+3600000, "priority": 1},
+    ]}}))
+
+
+def test_retry_401_attributes_to_stale_key_not_healthy_current(tmp_path, monkeypatch):
+    """Regression for #122601: a retry 401 from a stale explicit key must not
+    quarantine the healthy entry the first recovery rotated to."""
+    _seed_two_healthy(tmp_path, monkeypatch)
+
+    def _err():
+        return AuthenticationError("revoked", response=httpx.Response(
+            401, request=httpx.Request("POST", "https://api.anthropic.com/v1/messages")), body={})
+
+    route = SimpleNamespace(client=SimpleNamespace(api_key="stale-revoked-token"),
+        task="approval", tag="", resolved_provider="anthropic",
+        base_info="https://api.anthropic.com", resolved_model="fixture",
+        final_model="fixture", main_runtime=None)
+    calls = []
+    real_recover = aux._recover_provider_pool
+    def _spy(provider, exc, **kwargs):
+        calls.append(dict(kwargs))
+        return real_recover(provider, exc, **kwargs)
+    monkeypatch.setattr(aux, "_recover_provider_pool", _spy)
+
+    gen = aux._ladder_credential_rungs(_err(), route, {}, False)
+    step = next(gen)
+    assert step.kind == "retry_same_provider"
+    try:
+        gen.throw(_err())
+    except StopIteration as stop:
+        result = stop.value
+    else:
+        pytest.fail("ladder should finish after the retry 401")
+    assert result[0] is None
+    assert len(calls) == 2
+    assert calls[1].get("failed_api_key") == "stale-revoked-token"
+
+    from agent.credential_pool import load_pool
+    pool = load_pool("anthropic")
+    states = {(e.label or e.id): e.last_status for e in pool._entries}
+    assert all(status is None for status in states.values()), states

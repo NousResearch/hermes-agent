@@ -7626,11 +7626,15 @@ def _ladder_credential_rungs(
                 return (yield _LadderStep(
                     "retry_same_provider", (resolved_provider, route.resolved_model))), None
             except Exception as retry2_err:
-                # Rotated key also hit a wall: mark it now so concurrent processes skip it,
-                # then fall through to the provider fallback.
+                # Attribute the retry failure to the key the retry actually sent
+                # (#122601): the retry rebuilds from the same explicit key, so a
+                # stale key that matched no entry must rotate without marking
+                # again — falling back to current() would quarantine the healthy
+                # entry the first recovery just rotated to.
                 if (_is_payment_error(retry2_err) or _is_auth_error(retry2_err)
                         or _is_rate_limit_error(retry2_err)):
-                    _recover_provider_pool(pool_provider, retry2_err)
+                    _recover_provider_pool(
+                        pool_provider, retry2_err, failed_api_key=_client_api_key)
                     first_err = retry2_err
                 else:
                     raise

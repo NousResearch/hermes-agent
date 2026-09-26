@@ -3,6 +3,7 @@ anthropic_messages converter rebuilds signed thinking blocks from it, so the sum
 must keep it; a strict chat-completions route drops it on the wire via the same kwargs
 builder the main loop uses (hermes-agent#70233)."""
 
+import copy
 import json
 
 import pytest
@@ -63,7 +64,7 @@ class TestSummaryPrefixParity:
             ]},
             {"role": "tool", "tool_call_id": "t1", "content": "  r  "},
         ]
-        snapshot = [dict(m) for m in history]
+        snapshot = copy.deepcopy(history)
         out = _iteration_summary_api_messages(agent, history)
 
         assistant = next(m for m in out if m.get("role") == "assistant")
@@ -86,7 +87,9 @@ class TestSummaryPrefixParity:
                  "function": {"name": "f", "arguments": '{"k": "v\ud800"}'}},
             ]},
             {"role": "tool", "tool_call_id": "t1", "content": "r"},
+            {"role": "user", "content": [{"type": "text", "text": "part \ud800"}]},
         ]
+        snapshot = copy.deepcopy(history)
         out = _iteration_summary_api_messages(agent, history)
         # Main path's third pass rewrites lone surrogates to U+FFFD; anything else diverges the
         # prefix or makes the SDK's ensure_ascii=False utf-8 encode raise.
@@ -95,8 +98,8 @@ class TestSummaryPrefixParity:
         assert assistant["content"] == "ok \ufffd"
         # Canonicalization runs first, so argument surrogates are already ASCII \udXXX escapes.
         assert assistant["tool_calls"][0]["function"]["arguments"] == '{"k":"v\\ud800"}'
+        assert out[-1]["content"][0]["text"] == "part \ufffd"
         json.dumps(out, ensure_ascii=False).encode("utf-8")
-        # The sanitizer is in-place: history must keep its stored bytes.
-        assert history[0]["content"] == "clip \ud800 paste"
-        assert history[1]["content"] == "ok \ud83d"
-        assert history[1]["tool_calls"][0]["function"]["arguments"] == '{"k": "v\ud800"}'
+        # The sanitizer is in-place and list-content parts are shared nested dicts:
+        # history must keep its stored bytes.
+        assert history == snapshot

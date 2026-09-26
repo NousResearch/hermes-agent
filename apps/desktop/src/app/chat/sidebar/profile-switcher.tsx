@@ -330,8 +330,12 @@ export function ProfileRail() {
   // Observe both widths: adding/removing a profile need not resize the viewport.
   useResizeObserver(measureScroll, scrollRef, scrollContentRef)
 
-  // A locale switch can reverse direction without changing either width.
-  useEffect(measureScroll, [locale, measureScroll])
+  // The provider applies document direction in its effect; measure next frame.
+  useEffect(() => {
+    const frame = requestAnimationFrame(measureScroll)
+
+    return () => cancelAnimationFrame(frame)
+  }, [locale, measureScroll])
 
   const switchToRest = (agent: FleetAgent) => {
     const commitRestSwitch = (target: FleetAgent) => {

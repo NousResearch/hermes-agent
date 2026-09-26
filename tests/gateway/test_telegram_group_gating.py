@@ -40,6 +40,7 @@ def _make_adapter(
     guest_mode=None,
     observe_unmentioned_group_messages=None,
     bots_require_mention=None,
+    ignore_human_mentions=None,
     bot_username="hermes_bot",
 ):
     from plugins.platforms.telegram.adapter import TelegramAdapter
@@ -85,6 +86,8 @@ def _make_adapter(
         extra["observe_unmentioned_group_messages"] = observe_unmentioned_group_messages
     if bots_require_mention is not None:
         extra["bots_require_mention"] = bots_require_mention
+    if ignore_human_mentions is not None:
+        extra["ignore_human_mentions"] = ignore_human_mentions
 
     adapter = object.__new__(TelegramAdapter)
     adapter.platform = Platform.TELEGRAM
@@ -171,6 +174,17 @@ def _bot_command_entity(text, command):
     """
     offset = text.index(command)
     return SimpleNamespace(type="bot_command", offset=offset, length=len(command))
+
+
+def _text_mention_entity(text, mention, *, user_id=222, is_bot=False):
+    """Entity Telegram emits when a user without a public username is @mentioned."""
+    offset = text.index(mention)
+    return SimpleNamespace(
+        type="text_mention",
+        offset=offset,
+        length=len(mention),
+        user=SimpleNamespace(id=user_id, is_bot=is_bot),
+    )
 
 
 def test_unmentioned_group_messages_can_be_observed_without_dispatching():
@@ -1012,3 +1026,112 @@ def test_sibling_bot_explicit_mention_still_dispatches_and_is_not_observed():
     human = _group_message("hermes, hello")
     assert adapter._should_process_message(human) is True
     assert adapter._should_observe_unmentioned_group_message(human) is False
+def test_ignore_human_mentions_suppresses_human_mention_in_free_response():
+    adapter = _make_adapter(ignore_human_mentions=True, free_response_chats=["-100"])
+    text = "hi @alice"
+    msg = _group_message(text, entities=[_mention_entity(text, "@alice")])
+    assert adapter._should_process_message(msg) is False
+
+
+def test_ignore_human_mentions_disabled_preserves_respond_by_default():
+    adapter = _make_adapter(free_response_chats=["-100"])
+    text = "hi @alice"
+    msg = _group_message(text, entities=[_mention_entity(text, "@alice")])
+    assert adapter._should_process_message(msg) is True
+
+
+def test_ignore_human_mentions_preserves_direct_bot_mention():
+    adapter = _make_adapter(ignore_human_mentions=True)
+    text = "hi @hermes_bot"
+    msg = _group_message(text, entities=[_mention_entity(text, "@hermes_bot")])
+    assert adapter._should_process_message(msg) is True
+
+
+def test_ignore_human_mentions_preserves_mixed_human_and_bot_mention():
+    adapter = _make_adapter(ignore_human_mentions=True)
+    text = "hi @alice @hermes_bot"
+    msg = _group_message(
+        text, entities=[_mention_entity(text, "@alice"), _mention_entity(text, "@hermes_bot")],
+    )
+    assert adapter._should_process_message(msg) is True
+
+
+def test_ignore_human_mentions_handles_text_mention_entity():
+    adapter = _make_adapter(ignore_human_mentions=True, free_response_chats=["-100"])
+    text = "hi Alice"
+    msg = _group_message(text, entities=[_text_mention_entity(text, "Alice", user_id=222)])
+    assert adapter._should_process_message(msg) is False
+
+
+def test_ignore_human_mentions_preserves_reply_to_bot():
+    adapter = _make_adapter(ignore_human_mentions=True, free_response_chats=["-100"])
+    text = "hi @alice"
+    msg = _group_message(text, entities=[_mention_entity(text, "@alice")], reply_to_bot=True)
+    assert adapter._should_process_message(msg) is True
+
+
+def test_ignore_human_mentions_handles_caption_entities():
+    adapter = _make_adapter(ignore_human_mentions=True, free_response_chats=["-100"])
+    caption = "check @alice"
+    msg = _group_message("", caption=caption, caption_entities=[_mention_entity(caption, "@alice")])
+    assert adapter._should_process_message(msg) is False
+
+
+def test_message_mentions_human_only_ignores_other_bot_handles():
+    adapter = _make_adapter(ignore_human_mentions=True)
+    text = "hi @other_bot"
+    msg = _group_message(text, entities=[_mention_entity(text, "@other_bot")])
+    assert adapter._message_mentions_human_only(msg) is False
+
+
+def test_ignore_human_mentions_preserves_forwarded_messages():
+    adapter = _make_adapter(ignore_human_mentions=True, free_response_chats=["-100"])
+    text = "hi @alice"
+    msg = _group_message(text, entities=[_mention_entity(text, "@alice")])
+    msg.forward_origin = SimpleNamespace(type="user", sender_user=SimpleNamespace(id=333))
+    assert adapter._should_process_message(msg) is True
+
+
+def test_ignore_human_mentions_preserves_wake_word_with_human_mention():
+    """Regression for #103799: a wake-word/mention-pattern address must survive the gate.
+
+    The message addresses the bot by wake word (``hermes``) AND a human (``@alice``);
+    the bot was explicitly addressed, so it is not human-only and must be processed.
+    """
+    adapter = _make_adapter(
+        ignore_human_mentions=True, mention_patterns=["hermes"], require_mention=True,
+    )
+    text = "hermes, please look at @alice's proposal"
+    msg = _group_message(text, entities=[_mention_entity(text, "@alice")])
+    assert adapter._should_process_message(msg) is True
+
+    # A plain human-only mention is still ignored.
+    plain_text = "please review @alice's proposal"
+    plain = _group_message(plain_text, entities=[_mention_entity(plain_text, "@alice")])
+    assert adapter._should_process_message(plain) is False
+
+
+def test_ignore_human_mentions_still_schedules_identity_recheck_for_other_bot():
+    """Regression for #103799: other-bot + human mention must still schedule the stale-handle recheck.
+
+    The human-mention gate returned before ``_explicit_bot_mentions_exclude_self`` ran, so
+    the TTL-guarded getMe that recovers a renamed handle was never scheduled.
+    """
+    async def _run():
+        adapter = _make_adapter(
+            require_mention=True, exclusive_bot_mentions=True, ignore_human_mentions=True,
+        )
+        adapter._bot = _IdentityBot(cached="old_helper_bot", server="new_helper_bot")
+        adapter._background_tasks = set()
+        text = "please review @new_helper_bot and @alice"
+        message = _group_message(
+            text, entities=_mention_entities(text, ["@new_helper_bot", "@alice"]),
+        )
+
+        assert adapter._should_process_message(message) is False
+        await asyncio.gather(*list(adapter._background_tasks))
+
+        assert adapter._bot.get_me_calls == 1
+        assert adapter._current_bot_username() == "new_helper_bot"
+
+    asyncio.run(_run())

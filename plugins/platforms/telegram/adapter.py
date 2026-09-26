@@ -5761,6 +5761,18 @@ class TelegramAdapter(BasePlatformAdapter):
             "bots_require_mention", "TELEGRAM_BOTS_REQUIRE_MENTION", "false"
         )
 
+    def _telegram_ignore_human_mentions(self) -> bool:
+        """Return whether group messages that @mention humans (but not this bot) are ignored.
+
+        Opt-in via ``telegram.ignore_human_mentions`` in config.yaml. Defaults to
+        False, preserving the existing respond-by-default behaviour (#64388)."""
+        configured = self.config.extra.get("ignore_human_mentions")
+        if configured is None:
+            return False
+        if isinstance(configured, str):
+            return configured.strip().lower() in {"true", "1", "yes", "on"}
+        return bool(configured)
+
     def _telegram_free_response_chats(self) -> set[str]:
         return self._extra_str_set("free_response_chats", "TELEGRAM_FREE_RESPONSE_CHATS")
 
@@ -6049,6 +6061,51 @@ class TelegramAdapter(BasePlatformAdapter):
         if bot_username:
             return bot_username in self._extract_bot_mention_usernames(message, bot_username)
         return False
+
+    def _message_mentions_human_only(self, message: Message) -> bool:
+        """Return True when the message @mentions human users and does not address this bot.
+
+        Human mentions come from ``mention`` entities whose handle is neither this
+        bot nor another bot (``...bot``), or from ``text_mention`` entities whose
+        target user is not a bot. ``_message_mentions_bot`` covers this-bot
+        addressing via ``mention``/``text_mention``/``/cmd@botname`` and
+        ``_message_matches_mention_patterns`` covers a configured wake word, so a
+        message that also addresses the bot returns False here (mixed mentions and
+        wake-word addresses preserve the direct-address exception)."""
+        # Forwarded messages carry the original sender's entities: a mention inside
+        # forwarded content reflects the original author's addressing, not the
+        # forwarder's, so never treat it as a human-only mention.
+        if getattr(message, "forward_origin", None) is not None or getattr(message, "forward_from", None) is not None:
+            return False
+        if not self._bot:
+            return False
+        bot_username = (self._current_bot_username() or "").lstrip("@").lower()
+        bot_id = getattr(self._bot, "id", None)
+        mentions_human = False
+        for source_text, entities in self._entity_sources(message):
+            for entity in entities:
+                entity_type = self._entity_type(entity)
+                if entity_type == "text_mention":
+                    user = getattr(entity, "user", None)
+                    if user and getattr(user, "id", None) != bot_id and not getattr(user, "is_bot", False):
+                        mentions_human = True
+                    continue
+                if entity_type != "mention":
+                    continue
+                span = self._entity_span(source_text, entity)
+                if span is None:
+                    continue
+                handle = span.strip().lstrip("@").lower()
+                if not handle or handle == bot_username:
+                    continue
+                if self._FOREIGN_BOT_HANDLE_RE.fullmatch(handle):
+                    continue  # another bot, not a human
+                mentions_human = True
+        return (
+            mentions_human
+            and not self._message_mentions_bot(message)
+            and not self._message_matches_mention_patterns(message)
+        )
 
     def _schedule_bot_identity_recheck(self) -> None:
         """Fire a TTL-guarded identity refresh in the background when routing is about to discard a
@@ -6376,6 +6433,10 @@ class TelegramAdapter(BasePlatformAdapter):
             return False
         chat_id_str = self._chat_id_str(message)
         if self._telegram_exclusive_bot_mentions() and self._explicit_bot_mentions_exclude_self(message):
+            return False
+        # After the exclusive-mention gate so its stale-handle recheck still fires for a
+        # message naming another bot, and wake-word addresses are not human-only anyway.
+        if self._telegram_ignore_human_mentions() and not self._is_reply_to_bot(message) and self._message_mentions_human_only(message):
             return False
         # Resolve once; _message_mentions_bot is not re-called below in guest mode.
         guest_mention = self._is_guest_mention(message)

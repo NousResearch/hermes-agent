@@ -419,10 +419,34 @@ _ENDPOINT_UNREACHABLE_MARKERS = (
 _GATEWAY_ENDPOINT_UNREACHABLE_RE = re.compile(
     "(" + "|".join(_ENDPOINT_UNREACHABLE_MARKERS) + ")", re.IGNORECASE)
 
+def _venv_matches_running_python(venv_dir: Path) -> bool:
+    """True when *venv_dir* was built for the interpreter running this process.
+
+    A pre-pm ``<repo>/venv`` built for another minor version only *looks* usable:
+    the pure-Python halves import, then the ``cp3xx`` native extension fails
+    (``No module named 'pydantic_core._pydantic_core'``), which takes MCP
+    discovery, the hosted room worker and Group Chat down with it. Under pm the
+    store python already has its own dependency generation on ``sys.path``.
+    Never inject a venv across ABIs.
+    """
+    try:
+        text = (venv_dir / "pyvenv.cfg").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    match = re.search(r"^version_info\s*=\s*(\d+)\.(\d+)", text, re.MULTILINE)
+    if not match:
+        return False
+    return (int(match.group(1)), int(match.group(2))) == sys.version_info[:2]
+
+
 def _ensure_windows_gateway_venv_imports() -> None:
     """Make detached Windows gateway runs see the Hermes venv packages.
 
-    Patched before MCP discovery so tool injection does not depend on launchers preserving PYTHONPATH."""
+    Patched before MCP discovery so tool injection does not depend on launchers
+    preserving PYTHONPATH. Only a venv sharing this interpreter's ABI qualifies
+    (``_venv_matches_running_python``); on a pm install the store python's own
+    dependency generation is already on ``sys.path``, and adding a foreign venv
+    would shadow it with unloadable extensions."""
     if sys.platform != "win32":
         return
 
@@ -442,6 +466,9 @@ def _ensure_windows_gateway_venv_imports() -> None:
         if venv_key in seen:
             continue
         seen.add(venv_key)
+
+        if not _venv_matches_running_python(resolved_venv):
+            continue
 
         site_packages = resolved_venv / "Lib" / "site-packages"
         if not site_packages.exists():

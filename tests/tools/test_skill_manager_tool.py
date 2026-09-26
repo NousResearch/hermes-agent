@@ -304,6 +304,140 @@ class TestEditSkill:
         content = (tmp_path / "my-skill" / "SKILL.md").read_text()
         assert "A test skill" in content
 
+# ---------------------------------------------------------------------------
+# Profiles that install skills as per-skill symlinks into a shared tree
+# ---------------------------------------------------------------------------
+
+
+@contextmanager
+def _symlinked_skill_lane(tmp_path):
+    """A profile whose skills root holds real category dirs and SYMLINKED skills.
+
+    The profile installs every skill as a per-skill symlink into the shared tree
+    (``profiles/<p>/skills/<cat>/<skill>`` -> ``<shared>/<cat>/<skill>``), so its
+    skills are links, not directories. Yields ``(lane_root, canonical_skill_dir)``
+    with both skill-dir lookups patched to the lane root.
+    """
+    canonical = tmp_path / "shared" / "ops" / "linked-skill"
+    canonical.mkdir(parents=True)
+    (canonical / "SKILL.md").write_text(VALID_SKILL_CONTENT)
+    lane_root = tmp_path / "lane" / "skills"
+    (lane_root / "ops").mkdir(parents=True)
+    (lane_root / "ops" / "linked-skill").symlink_to(canonical, target_is_directory=True)
+    with patch("tools.skill_manager_tool.SKILLS_DIR", lane_root), \
+         patch("agent.skill_utils.get_all_skills_dirs", return_value=[lane_root]):
+        yield lane_root, canonical
+
+
+class TestSymlinkedSkillDirs:
+    """skill_manage must resolve the same skills skill_view resolves.
+
+    ``Path.rglob`` does not descend into symlinked directories, so the write path
+    saw none of that profile's skills while the read path (``iter_skill_index_files``,
+    which walks with ``followlinks=True``) resolved all of them. Every write failed
+    with "not found in active profile", and the error even named the profiles that
+    DO "have" the skill, because a profile whose skills root IS a symlink works
+    with rglob.
+    """
+
+    def test_find_skill_resolves_per_skill_symlink(self, tmp_path):
+        with _symlinked_skill_lane(tmp_path) as (lane_root, _canonical):
+            found = _find_skill("linked-skill")
+        assert found is not None, "a lane's symlinked skill must be discoverable"
+        assert found["path"] == lane_root / "ops" / "linked-skill"
+
+    def test_find_skill_resolves_categorized_name_for_symlink(self, tmp_path):
+        with _symlinked_skill_lane(tmp_path) as (lane_root, _canonical):
+            found = _find_skill("ops/linked-skill")
+        assert found is not None, "categorized form must resolve through a symlink too"
+        assert found["path"] == lane_root / "ops" / "linked-skill"
+
+    def test_patch_edits_canonical_file_behind_symlink(self, tmp_path):
+        with _symlinked_skill_lane(tmp_path) as (_lane_root, canonical):
+            result = _patch_skill("linked-skill", "Do the thing.", "Do the new thing.")
+        assert result["success"] is True, result.get("error")
+        assert "Do the new thing." in (canonical / "SKILL.md").read_text()
+
+    def test_write_file_lands_in_canonical_dir_behind_symlink(self, tmp_path):
+        with _symlinked_skill_lane(tmp_path) as (lane_root, canonical):
+            result = _write_file("linked-skill", "references/notes.md", "lane note")
+            lane_side = lane_root / "ops" / "linked-skill" / "references" / "notes.md"
+        assert result["success"] is True, result.get("error")
+        assert (canonical / "references" / "notes.md").read_text() == "lane note"
+        assert lane_side.read_text() == "lane note", "same file through the link"
+
+    def test_dispatcher_patches_through_symlink(self, tmp_path):
+        """The model-facing entry point, not only the private helper."""
+        with _symlinked_skill_lane(tmp_path) as (_lane_root, canonical):
+            raw = skill_manage(action="patch", name="linked-skill",
+                               old_string="Do the thing.", new_string="Do the new thing.")
+        result = json.loads(raw)
+        assert result["success"] is True, result.get("error")
+        assert "Do the new thing." in (canonical / "SKILL.md").read_text()
+
+    def test_whole_root_symlink_still_resolves(self, tmp_path):
+        """No behaviour change for a profile whose skills root IS the symlink."""
+        shared = tmp_path / "shared-root"
+        (shared / "cat" / "rooted-skill").mkdir(parents=True)
+        (shared / "cat" / "rooted-skill" / "SKILL.md").write_text(VALID_SKILL_CONTENT)
+        root_link = tmp_path / "linked-root"
+        root_link.symlink_to(shared, target_is_directory=True)
+        with patch("tools.skill_manager_tool.SKILLS_DIR", root_link), \
+             patch("agent.skill_utils.get_all_skills_dirs", return_value=[root_link]):
+            bare = _find_skill("rooted-skill")
+            categorized = _find_skill("cat/rooted-skill")
+        assert bare is not None and bare["path"] == root_link / "cat" / "rooted-skill"
+        assert categorized is not None, "categorized form must keep resolving here"
+
+
+    def test_find_skill_resolves_symlinked_category_dir(self, tmp_path):
+        """The category-level shape too: ``skills/<cat>`` itself a link into the shared tree.
+
+        Per-skill links are one shape; a whole category dir linked in is the other, and
+        rglob saw neither. Both go through the same ``os.walk(followlinks=True)`` index.
+        """
+        shared = tmp_path / "shared" / "ops"
+        (shared / "cat-linked-skill").mkdir(parents=True)
+        (shared / "cat-linked-skill" / "SKILL.md").write_text(VALID_SKILL_CONTENT)
+        lane_root = tmp_path / "lane" / "skills"
+        lane_root.mkdir(parents=True)
+        (lane_root / "ops").symlink_to(shared, target_is_directory=True)
+        with patch("tools.skill_manager_tool.SKILLS_DIR", lane_root), \
+             patch("agent.skill_utils.get_all_skills_dirs", return_value=[lane_root]):
+            bare = _find_skill("cat-linked-skill")
+            categorized = _find_skill("ops/cat-linked-skill")
+            raw = skill_manage(action="patch", name="cat-linked-skill",
+                               old_string="Do the thing.", new_string="Do the new thing.")
+        assert bare is not None and bare["path"] == lane_root / "ops" / "cat-linked-skill"
+        assert categorized is not None, "categorized form must resolve through a category link"
+        assert json.loads(raw)["success"] is True, json.loads(raw).get("error")
+        assert "Do the new thing." in (shared / "cat-linked-skill" / "SKILL.md").read_text()
+
+    def test_dangling_skill_link_is_ignored_without_raising(self, tmp_path):
+        """A link whose target is gone is skipped, and must not take the walk down with it.
+
+        Lane skills are re-pointed as skills move between the shared tree and the lane, so
+        a stale link is a state the walk has to survive: one broken entry here must not
+        cost the home every other skill's write path.
+        """
+        lane_root = tmp_path / "lane" / "skills"
+        real_cat = lane_root / "ops"
+        real_cat.mkdir(parents=True)
+        (real_cat / "dead-skill").symlink_to(tmp_path / "gone", target_is_directory=True)
+        real = real_cat / "live-skill"
+        real.mkdir()
+        (real / "SKILL.md").write_text(VALID_SKILL_CONTENT)
+        canonical = tmp_path / "shared" / "linked-skill"
+        canonical.mkdir(parents=True)
+        (canonical / "SKILL.md").write_text(VALID_SKILL_CONTENT_2)
+        (real_cat / "linked-skill").symlink_to(canonical, target_is_directory=True)
+        with patch("tools.skill_manager_tool.SKILLS_DIR", lane_root), \
+             patch("agent.skill_utils.get_all_skills_dirs", return_value=[lane_root]):
+            assert _find_skill("dead-skill") is None, "a dangling link is not a skill"
+            assert _find_skill("live-skill") is not None
+            assert _find_skill("linked-skill") is not None
+
+
 class TestPatchSkill:
     def test_patch_unique_match(self, tmp_path):
         with _skill_dir(tmp_path):

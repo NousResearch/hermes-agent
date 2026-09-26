@@ -915,9 +915,9 @@
     display: flex;
     align-items: center;
     gap: 0.35rem;
-    /* Hold the select's 7.5rem floor: without it the column shrinks below the
-       select and the control overruns its neighbour. */
-    min-width: 7.5rem;
+    /* Size to content and never shrink: the select's own 7.5rem floor is the
+       real minimum, and a shrunken column lets it overrun the next one. */
+    flex: 0 0 auto;
     color: var(--ifm-color-emphasis-600);
     font-size: 0.68rem;
     text-transform: uppercase;
@@ -944,9 +944,28 @@
   .filterPanel { display: none; }
 }
 
-/* Below ~820px the uppercase labels leave no room for the select's own value. */
+/* Below ~820px the uppercase labels leave no room for the select's own value.
+   Hide them visually only — `display: none` would also drop the select's
+   accessible name, since the label element is what names it. */
 @media (max-width: 820px) {
-  .compactSelect > span { display: none; }
+  /* Tight band: the columns cannot hold their content width here, so let them
+     shrink back to the select's own 7.5rem floor. */
+  .compactSelect {
+    flex-shrink: 1;
+    min-width: 7.5rem;
+  }
+
+  .compactSelect > span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
+  }
 }
 
 @media (max-width: 600px) {

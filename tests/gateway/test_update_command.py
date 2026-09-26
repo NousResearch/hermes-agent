@@ -93,10 +93,15 @@ class TestHandleUpdateCommand:
 
     @pytest.mark.asyncio
     async def test_resolve_hermes_bin_module_argv(self):
-        """_resolve_hermes_bin uses the running interpreter's module argv when hermes_cli is
+        """_resolve_hermes_bin uses this install's own launcher argv when hermes_cli is
         importable, even when PATH also offers a ``hermes`` binary (#111569: a PATH-first
-        lookup would re-exec an attacker-planted executable on /update and /restart)."""
-        import sys
+        lookup would re-exec an attacker-planted executable on /update and /restart).
+
+        The argv is the installation-bound launcher form rather than a frozen
+        ``sys.executable -m hermes_cli.main`` string: the module form only imported via
+        the re-exec'd child's cwd, which the POSIX restart's ``bash -c`` child and the
+        Windows restart watcher do not share (#122299).
+        """
         from gateway.run import _resolve_hermes_bin
 
         fake_spec = MagicMock()
@@ -104,7 +109,10 @@ class TestHandleUpdateCommand:
              patch("importlib.util.find_spec", return_value=fake_spec):
             result = _resolve_hermes_bin()
 
-        assert result == [sys.executable, "-m", "hermes_cli.main"]
+        assert result is not None
+        assert result[0] != "/tmp/attacker/hermes"
+        # Never the cwd-dependent module form, which is what #122299 was.
+        assert result[1:3] != ["-m", "hermes_cli.main"]
 
     @pytest.mark.asyncio
     async def test_resolve_hermes_bin_falls_back_to_path_then_none(self):

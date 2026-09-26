@@ -1553,16 +1553,27 @@ def test_connect_heals_reduced_tasks_schema_seeded_by_external_harness(kanban_ho
 
 def test_resolve_hermes_argv_prefers_module_form_over_path_shim(monkeypatch):
     """A `hermes` on PATH must not shadow the running install (#111569):
-    the module argv wins whenever ``hermes_cli`` is importable; only an
-    explicit ``$HERMES_BIN`` overrides it."""
+    the install's own argv wins whenever ``hermes_cli`` is importable; only an
+    explicit ``$HERMES_BIN`` overrides it.
+
+    The argv is the installation-bound launcher form, not the frozen
+    ``sys.executable -m hermes_cli.main`` string: that form resolved
+    ``hermes_cli`` only through the child's cwd, so it died from the worker's
+    per-task workspace (#122299). The behavioural contract — a real child from a
+    foreign cwd importing the checkout — lives in
+    ``test_kanban_worker_spawn_bare_interpreter.py``.
+    """
     import shutil
-    import sys
     from hermes_cli import kanban_db_dispatch as kbd
 
     monkeypatch.delenv("HERMES_BIN", raising=False)
     monkeypatch.setattr(shutil, "which", lambda name: "/tmp/planted/hermes")
     monkeypatch.setattr(kbd, "_safe_which_no_cwd", lambda name: "/tmp/planted/hermes")
-    assert kbd._resolve_hermes_argv() == [sys.executable, "-m", "hermes_cli.main"]
+
+    argv = kbd._resolve_hermes_argv()
+    assert argv[0] != "/tmp/planted/hermes"
+    # Never the cwd-dependent module form, which is what #122299 was.
+    assert argv[1:3] != ["-m", "hermes_cli.main"]
 
     monkeypatch.setenv("HERMES_BIN", "/opt/hermes/bin/hermes")
     assert kbd._resolve_hermes_argv() == ["/opt/hermes/bin/hermes"]

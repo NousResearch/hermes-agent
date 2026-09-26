@@ -2443,9 +2443,39 @@ def _rotate_worker_log(
 
 
 def _module_hermes_argv() -> list[str]:
-    """Interpreter-bound Hermes CLI invocation (``hermes_cli.main`` is the
-    console-script target — there is no top-level ``hermes`` package)."""
-    return [sys.executable, "-m", "hermes_cli.main"]
+    """This install's own Hermes CLI argv, valid from ANY child cwd.
+
+    ``hermes_cli.main`` is the console-script target (there is no top-level
+    ``hermes`` package) and this interpreter is exactly this install — but the
+    bare ``[sys.executable, "-m", "hermes_cli.main"]`` form only imported because
+    ``python -m`` puts the CURRENT WORKING DIRECTORY on ``sys.path[0]``. The
+    dispatcher spawns every worker with ``cwd=<task workspace>`` (see
+    ``_default_spawn``), so that implicit entry is gone and the worker died with
+    ``ModuleNotFoundError: No module named 'hermes_cli'`` before running a single
+    turn (#122299).
+
+    A resolver-side import probe cannot catch that: ``find_spec("hermes_cli")`` in
+    ``_resolve_hermes_argv`` runs in the PARENT, whose ``sys.path`` the launcher
+    prelude already repaired, so it answers a question about the dispatcher while
+    gating a decision about the child.
+
+    ``runtime_command`` is this tree's sanctioned installation-bound launch form and
+    the same one the gateway's own service spawns use
+    (``hermes_cli/gateway.py::_gateway_run_args_for_profile``). Its bootstrap runs
+    under ``-I`` (no user site, no inherited ``PYTHONPATH``/``PYTHONHOME``/
+    ``VIRTUAL_ENV``) and inserts THIS checkout on ``sys.path`` in-process before
+    running the module, so the import survives a foreign cwd, a rotted editable
+    install, ``PYTHONSAFEPATH`` and the subprocess-env factory stripping
+    Hermes-owned PYTHONPATH entries (``tools/environments/local_pythonpath.py``) —
+    none of which a PYTHONPATH prepend can promise.
+
+    The interpreter is still this install's own (PM store Python, else
+    ``sys.executable``), never a PATH lookup, so the ``#111569`` precedence in
+    ``_resolve_hermes_argv`` is unchanged.
+    """
+    from hermes_cli._launchers import runtime_command
+
+    return runtime_command(Path(__file__).resolve().parent.parent)
 
 
 def _absolute_hermes_path(path: str) -> str:
@@ -2509,14 +2539,18 @@ def _hermes_path_argv(path: str) -> list[str]:
 def _resolve_hermes_argv() -> list[str]:
     """Resolve the ``hermes`` invocation as argv for ``Popen``: ``$HERMES_BIN``
     (path-like -> absolute; bare names keep PATH semantics, never a
-    same-directory file), then the running interpreter's ``sys.executable -m
-    hermes_cli.main`` (exactly this install; also covers shim-less cron,
-    systemd ``User=``, launchd), then ``which("hermes")`` (Windows: safe PATH
-    search, batch shims fall back to the module form) only when ``hermes_cli``
-    is not importable. The module argv must win over PATH: a PATH-first lookup
-    lets an attacker-planted ``hermes`` shadow the running install (#111569).
-    Mirrors ``gateway.run._resolve_hermes_bin``; local because ``hermes_cli``
-    sits below ``gateway`` in the dependency order.
+    same-directory file), then this install's own interpreter-bound entry argv
+    (``hermes_cli._launchers.runtime_command`` — exactly this install; also
+    covers shim-less cron, systemd ``User=``, launchd), then ``which("hermes")``
+    (Windows: safe PATH search, batch shims fall back to the module form) only
+    when ``hermes_cli`` is not importable. The install's own form must win over
+    PATH: a PATH-first lookup lets an attacker-planted ``hermes`` shadow the
+    running install (#111569). Mirrors ``gateway.run._resolve_hermes_bin``; local
+    because ``hermes_cli`` sits below ``gateway`` in the dependency order.
+
+    ``find_spec`` here gates only "is this install's own tree available" — it is
+    NOT a claim about the child, which starts in a per-task workspace cwd. The
+    child's import is made unconditional by ``_module_hermes_argv``.
     """
     import importlib.util
     import shutil

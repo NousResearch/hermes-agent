@@ -2932,14 +2932,28 @@ def _get_channel_override(
 
 
 def _resolve_hermes_bin() -> Optional[list[str]]:
-    """Hermes update/restart argv: the running interpreter's ``python -m hermes_cli.main``
-    (exactly this install), else ``hermes`` on PATH, else None. The module argv must win: a
-    PATH-first lookup lets an attacker-planted ``hermes`` shadow the running install when
-    /update or /restart re-execs it (#111569)."""
+    """Hermes update/restart argv: this install's own interpreter-bound entry form
+    (exactly this install), else ``hermes`` on PATH, else None. The module entry must win
+    over PATH: a PATH-first lookup lets an attacker-planted ``hermes`` shadow the running
+    install when /update or /restart re-execs it (#111569).
+
+    The argv is built through ``runtime_command`` rather than a bare
+    ``[sys.executable, "-m", "hermes_cli.main"]``: that form only imported because
+    ``python -m`` puts the CURRENT WORKING DIRECTORY on ``sys.path[0]``, and neither
+    consumer starts in this checkout — the POSIX restart's ``bash -c`` child and the
+    Windows restart watcher both inherit an arbitrary cwd, so the re-exec died with
+    ``ModuleNotFoundError: No module named 'hermes_cli'`` (#122299, same defect class as
+    the kanban worker spawn). ``runtime_command`` runs under ``-I`` and inserts this
+    checkout on ``sys.path`` in-process, so the import no longer depends on cwd,
+    ``PYTHONSAFEPATH``, a rotted editable mapping, or inherited PYTHONPATH entries.
+    ``find_spec`` here still answers "is this the install's own tree" (the #111569
+    precedence), never "can the child import it" — the child's import is now unconditional.
+    """
     try:
         import importlib.util
         if importlib.util.find_spec("hermes_cli") is not None:
-            return [sys.executable, "-m", "hermes_cli.main"]
+            from hermes_cli._launchers import runtime_command
+            return runtime_command(Path(__file__).resolve().parent.parent)
     except Exception:
         pass
     import shutil

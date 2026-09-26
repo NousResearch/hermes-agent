@@ -3818,6 +3818,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             return err
         try:
             body = await request.json()
+            if not isinstance(body, dict):
+                raise ValueError("Request body must be a JSON object")
             name = (body.get("name") or "").strip()
             schedule = (body.get("schedule") or "").strip()
             prompt = body.get("prompt", "")
@@ -3864,6 +3866,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             return err
         try:
             body = await request.json()
+            if not isinstance(body, dict):
+                raise ValueError("Request body must be a JSON object")
             # Whitelist allowed fields to prevent arbitrary key injection
             sanitized = {k: v for k, v in body.items() if k in self._UPDATE_ALLOWED_FIELDS}
             if not sanitized:
@@ -3874,6 +3878,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 prompt_err = self._validate_cron_prompt(sanitized["prompt"])
                 if prompt_err:
                     return prompt_err
+        except ValueError as e:
+            return web.json_response({"error": str(e)}, status=400)
         except Exception as e:
             return self._cron_error_response(e)
         return self._job_response(lambda jid: _cron_update(jid, sanitized), job_id, notify=True)
@@ -3951,7 +3957,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             body = {}
             with suppress(Exception):
                 body = await request.json()
-            job_id = (body or {}).get("job_id")
+            job_id = body.get("job_id") if isinstance(body, dict) else None
             if not job_id:
                 return web.json_response({"error": "missing job_id"}, status=400)
             # `hermes pause` ESTOP: refuse the fire and ask NAS to retry later.

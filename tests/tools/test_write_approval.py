@@ -367,6 +367,9 @@ def _recording_manager():
     return mgr, provider
 
 
+_SKILL = "---\nname: my-skill\ndescription: d\n---\n\nbody\n"
+
+
 def test_skill_approve_mirrors_to_external_provider(hermes_home):
     # A staged skill write bypasses the agent-loop bridge (correctly — it has
     # not committed). Approving it replays via apply_skill_pending, and THAT

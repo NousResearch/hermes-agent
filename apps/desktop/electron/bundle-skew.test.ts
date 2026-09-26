@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path'
 
 import { afterAll, describe, expect, it } from 'vitest'
 
-import { detectBundleSkew, isFallbackCommit, type RunGit, RUNTIME_PATHS } from './bundle-skew'
+import { createBundleSkewProbe, detectBundleSkew, isFallbackCommit, type RunGit, RUNTIME_PATHS } from './bundle-skew'
 
 const REPO = '/repo'
 const STAMP = { commit: 'a'.repeat(40), source: 'ci' }
@@ -168,6 +168,127 @@ describe('detectBundleSkew', () => {
       desktopCommitsBehind: 2,
       outOfSync: true
     })
+  })
+})
+
+const NOT_STALE = { desktopCommitsBehind: null, outOfSync: false }
+
+/**
+ * A git fake that records every subcommand, so a probe test can count the
+ * expensive spawns (merge-base, rev-list) separately from the cheap HEAD
+ * resolution (rev-parse).
+ */
+function gitScripted(options: {
+  count?: string
+  head?: string | (() => string)
+  revParseCode?: number | (() => number)
+}): { calls: string[][]; git: RunGit } {
+  const calls: string[][] = []
+
+  const git: RunGit = async args => {
+    calls.push(args)
+
+    if (args[0] === 'rev-parse') {
+      const code = typeof options.revParseCode === 'function' ? options.revParseCode() : (options.revParseCode ?? 0)
+
+      if (code !== 0) {
+        return { code, stderr: 'fatal: bad revision', stdout: '' }
+      }
+
+      const head = typeof options.head === 'function' ? options.head() : (options.head ?? 'a'.repeat(40))
+
+      return { code, stderr: '', stdout: `${head}\n` }
+    }
+
+    if (args[0] === 'merge-base') {
+      return { code: 0, stderr: '', stdout: '' }
+    }
+
+    if (args[0] === 'rev-list') {
+      return { code: 0, stderr: '', stdout: options.count ?? '2\n' }
+    }
+
+    return { code: 1, stderr: '', stdout: '' }
+  }
+
+  return { calls, git }
+}
+
+function spawnsOf(calls: string[][], verb: string): number {
+  return calls.filter(args => args[0] === verb).length
+}
+
+describe('createBundleSkewProbe', () => {
+  // The piling-up process bug: focus, the update poller and checkUpdates can
+  // all fire before the first probe answers, and each used to spawn its own
+  // merge-base/rev-list pair.
+  it('shares a single probe across concurrent callers', async () => {
+    const { calls, git } = gitScripted({ count: '3\n' })
+    const probe = createBundleSkewProbe({ stamp: STAMP, runGit: git, repoRoot: REPO })
+
+    const [first, second] = await Promise.all([probe(), probe()])
+
+    expect(first).toEqual({ desktopCommitsBehind: 3, outOfSync: true })
+    expect(second).toEqual(first)
+    expect(spawnsOf(calls, 'rev-list')).toBe(1)
+    expect(spawnsOf(calls, 'merge-base')).toBe(1)
+  })
+
+  it('caches the result for an unchanged HEAD and respawns nothing but rev-parse', async () => {
+    const { calls, git } = gitScripted({ count: '2\n' })
+    const probe = createBundleSkewProbe({ stamp: STAMP, runGit: git, repoRoot: REPO })
+
+    const first = await probe()
+    const afterFirst = calls.length
+    const second = await probe()
+
+    expect(second).toEqual(first)
+    expect(calls.slice(afterFirst).map(args => args[0])).toEqual(['rev-parse'])
+    expect(spawnsOf(calls, 'rev-list')).toBe(1)
+  })
+
+  it('reruns the probe when HEAD moves', async () => {
+    let head = 'a'.repeat(40)
+    const { calls, git } = gitScripted({ count: '1\n', head: () => head })
+    const probe = createBundleSkewProbe({ stamp: STAMP, runGit: git, repoRoot: REPO })
+
+    await probe()
+
+    expect(spawnsOf(calls, 'rev-list')).toBe(1)
+
+    head = 'b'.repeat(40)
+
+    expect(await probe()).toEqual({ desktopCommitsBehind: 1, outOfSync: true })
+    expect(spawnsOf(calls, 'rev-list')).toBe(2)
+  })
+
+  it('gives up at the timeout, resolves not-stale and aborts the git call', async () => {
+    let signal: AbortSignal | undefined
+
+    const git: RunGit = (_args, options) => {
+      signal = options.signal
+
+      return new Promise(() => {})
+    }
+
+    const probe = createBundleSkewProbe({ stamp: STAMP, runGit: git, repoRoot: REPO, timeoutMs: 25 })
+
+    expect(await probe()).toEqual(NOT_STALE)
+    expect(signal?.aborted).toBe(true)
+  })
+
+  it('reports not-stale on an unanswerable HEAD without caching the failure', async () => {
+    let revParseCode = 128
+    const { calls, git } = gitScripted({ count: '2\n', revParseCode: () => revParseCode })
+    const probe = createBundleSkewProbe({ stamp: STAMP, runGit: git, repoRoot: REPO })
+
+    expect(await probe()).toEqual(NOT_STALE)
+    expect(spawnsOf(calls, 'rev-list')).toBe(0)
+
+    revParseCode = 0
+
+    expect(await probe()).toEqual({ desktopCommitsBehind: 2, outOfSync: true })
+    expect(spawnsOf(calls, 'rev-list')).toBe(1)
   })
 })
 

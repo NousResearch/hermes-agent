@@ -66,6 +66,17 @@ acceptance, unreadable policy or GitHub API failures. A repository without requi
 checks needs a local-only contract. `gh` must be authenticated with read access to
 the repository's checks and rules; no remote writes are performed by this gate.
 
+**GitLab.** Declare `gitlab:HOST/GROUP/PROJECT` (or an exact
+`https://HOST/GROUP/PROJECT/-/merge_requests/N` URL). The first matching
+`metadata.published_pr` MR URL binds the card; completion then needs the MR's
+head pipeline for the **current** head SHA to be `success` (failed, canceled,
+skipped, running, manual, missing or stale pipelines cannot complete). Declare
+`gitlab-merged:HOST/…` (or append `#merged` to the MR URL) when the merge itself
+is the completion condition: a green pipeline on an open MR then stays
+`pending` until the MR is merged, so a worker's `kanban_complete` is refused and
+whoever merges completes the card. `glab` must be authenticated for `HOST` with
+read access; the gate is read-only. Receipts use the same `pr_acceptance` event.
+
 Rejection retains the active card and workspace. Durable `pr_acceptance` events
 store PR URL, SHA, required contexts, check IDs/URLs, classifications and recovery
 instructions; `last_failure_error` surfaces the next step. Fix failures, rerun

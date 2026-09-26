@@ -4756,6 +4756,11 @@ Write only the summary body. Do not include any preamble or prefix."""
         else:
             replay = _fresh_compaction_message_copy(inflight)
         replay.pop(_COMPACTION_TAIL_MARKER, None)
+        # A restated row is NEW at the compaction boundary: never persist the
+        # in-flight turn's original timestamp, or timestamp-ordered views show
+        # the question after its own answer (#121064). Dropping it lets the
+        # store stamp compaction time (its monotonic now_ts orders it last).
+        replay.pop("timestamp", None)
         if isinstance(replay.get("content"), str):
             # Plain text: rebuild from the header-stripped task text so a
             # task surviving several compactions never stacks headers.

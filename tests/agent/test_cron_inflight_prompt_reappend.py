@@ -303,6 +303,47 @@ def test_restatement_survives_repeated_compactions_without_stacking():
         assert last.rfind(JOB_SENTINEL) > last.rfind(_SUMMARY_END_MARKER), cycle
 
 
+def test_replay_row_does_not_carry_the_original_timestamp():
+    """#121064: the standalone replay row is a NEW row at the compaction
+    boundary. Persisting it with the in-flight turn's original timestamp
+    puts the question after its own answer in timestamp-ordered views."""
+    import time
+
+    from agent.context_compressor import (
+        _INFLIGHT_TASK_REPLAY_HEADER,
+        COMPRESSED_SUMMARY_METADATA_KEY,
+    )
+
+    old_ts = 1757577257.0
+    carrier = {
+        "role": "assistant",
+        "content": SUMMARY_PREFIX + "\n## Summary\nran steps.\n\n" + _SUMMARY_END_MARKER,
+        COMPRESSED_SUMMARY_METADATA_KEY: True,
+    }
+    compressed = [
+        {"role": "system", "content": "You are Hermes."},
+        carrier,
+        {
+            "role": "assistant",
+            "content": "step 0",
+            "tool_calls": [{"id": "c0", "function": {"name": "terminal", "arguments": "{}"}}],
+        },
+        {"role": "tool", "tool_call_id": "c0", "content": "tool output 0"},
+    ]
+    inflight = {"role": "user", "content": JOB_SENTINEL, "timestamp": old_ts}
+    before = time.time()
+    out = _make_compressor()._reappend_inflight_user_task(compressed, inflight)
+    replays = [
+        m for m in out
+        if m is not carrier and _INFLIGHT_TASK_REPLAY_HEADER in _text(m)
+    ]
+    assert len(replays) == 1, "expected one standalone replay row"
+    assert replays[0].get("timestamp", before) >= before, (
+        "replay row kept the original task timestamp — it must be stamped "
+        "at compaction time (#121064)"
+    )
+
+
 def test_flagged_scaffolding_row_is_never_the_inflight_task():
     """A trailing user-role scaffolding row flagged synthetic (todo snapshot)
     must not be mistaken for the live request and replayed as an instruction."""

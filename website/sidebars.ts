@@ -676,6 +676,7 @@ const sidebars: SidebarsConfig = {
             'user-guide/messaging/discord',
             'user-guide/messaging/slack',
             'user-guide/messaging/whatsapp',
+            'user-guide/messaging/whatsapp-agent',
             'user-guide/messaging/whatsapp-cloud',
             'user-guide/messaging/signal',
             'user-guide/messaging/email',

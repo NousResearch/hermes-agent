@@ -1,0 +1,15 @@
+name: whatsapp-agent-platform
+label: WhatsApp Agent
+kind: platform
+version: 1.0.0
+description: Official personal WhatsApp Agent Platform transport using long polling.
+requires_env:
+  - name: WHATSAPP_AGENT_TOKEN
+    description: API key from WhatsApp Settings > Agents > agent chat info
+    prompt: WhatsApp Agent API key
+    password: true
+optional_env:
+  - name: WHATSAPP_AGENT_ALLOWED_USERS
+    description: Creator's user:<id> from inbound updates (optional; platform enforces creator only)
+    prompt: Allowed WhatsApp Agent user ID (optional)
+    password: false

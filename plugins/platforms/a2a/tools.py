@@ -105,8 +105,15 @@ def _send_task(agent_label: str, peer: dict, message: str, context_id: str) -> t
         card = None
     ctx = context_id or protocol.new_context_id()
     safe_message = security.redact_outbound(message)
+    # Select the verb from the fetched card: v0.3 gateways require "message/send";
+    # only v1.0 cards (with supportedInterfaces) use "SendMessage".
+    method = "SendMessage"
+    if isinstance(card, dict):
+        pv = str(card.get("protocolVersion", "") or "")
+        if pv.startswith("0.") or not card.get("supportedInterfaces"):
+            method = "message/send"
     # v1.0: contextId lives inside the Message, not at the params top level.
-    rpc_body = {"jsonrpc": "2.0", "id": protocol.new_task_id(), "method": "SendMessage",
+    rpc_body = {"jsonrpc": "2.0", "id": protocol.new_task_id(), "method": method,
                 "params": {"message": protocol.text_message(protocol.ROLE_USER, safe_message, context_id=ctx)}}
     iface = _select_jsonrpc_interface(card)
     tenant = str(iface["tenant"]) if iface and iface.get("tenant") else str(peer.get("tenant") or "")

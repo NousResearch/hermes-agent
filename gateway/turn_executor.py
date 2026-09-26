@@ -12,6 +12,8 @@ class _UnboundedThreadExecutor(concurrent.futures.Executor):
     ``ThreadPoolExecutor(max_workers=None)`` is NOT unbounded (it is ``min(32, cpu_count + 4)``),
     which is the same silent queue at a larger number. Exposes ``_threads`` and ``_shutdown`` like
     ``ThreadPoolExecutor`` so ``_stop_pool`` / ``_shutdown_executor`` join and count its workers.
+    Not ``tools.daemon_pool.DaemonThreadPoolExecutor(sys.maxsize)``: that keeps idle workers alive
+    until shutdown, whereas here each thread exits when its turn ends.
     """
 
     def __init__(self, thread_name_prefix: str = ""):
@@ -22,17 +24,9 @@ class _UnboundedThreadExecutor(concurrent.futures.Executor):
         self._n = 0
 
     def submit(self, fn, /, *args, **kwargs):
-        with self._lock:
-            if self._shutdown:
-                raise RuntimeError("cannot schedule new futures after shutdown")
-            self._n += 1
-            n = self._n
         fut: concurrent.futures.Future = concurrent.futures.Future()
-        started = threading.Event()
 
         def _run():
-            # Wait until submit() has registered this thread, so the discard below never races the add.
-            started.wait()
             try:
                 if not fut.set_running_or_notify_cancel():
                     return
@@ -41,19 +35,25 @@ class _UnboundedThreadExecutor(concurrent.futures.Executor):
                 except BaseException as exc:  # noqa: BLE001 - mirror ThreadPoolExecutor
                     fut.set_exception(exc)
             finally:
+                # Blocks until submit() has registered this thread, so the discard never races the add.
                 with self._lock:
                     self._threads.discard(threading.current_thread())
 
-        t = threading.Thread(target=_run, name=f"{self._prefix}_{n}", daemon=True)
-        # Start BEFORE registering: an unbounded pool can hit the OS thread limit, and an unstarted
-        # thread left in _threads would make shutdown's join() raise and skip the quiesce decision.
-        t.start()
+        # One critical section for check + start + register (as ThreadPoolExecutor.submit does), so a
+        # concurrent shutdown() either refuses this item or sees its thread; never a live, uncounted one.
         with self._lock:
+            if self._shutdown:
+                raise RuntimeError("cannot schedule new futures after shutdown")
+            self._n += 1
+            t = threading.Thread(target=_run, name=f"{self._prefix}_{self._n}", daemon=True)
+            # Start BEFORE registering: at the OS thread limit start() raises, and an unstarted thread
+            # left in _threads would make shutdown's join() raise and skip the quiesce decision.
+            t.start()
             self._threads.add(t)
-        started.set()
         return fut
 
     def shutdown(self, wait: bool = True, *, cancel_futures: bool = False):
+        # cancel_futures is accepted for API parity only: there is no queue, so nothing is pending.
         with self._lock:
             self._shutdown = True
             threads = list(self._threads)

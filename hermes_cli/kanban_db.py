@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import mimetypes
 import os
 import re
 import secrets
@@ -3116,8 +3117,8 @@ def _insert_completion_attachment(
     conn.execute(
         "INSERT INTO task_attachments "
         "(task_id, filename, stored_path, content_type, size, uploaded_by, created_at) "
-        "VALUES (?, ?, ?, NULL, ?, ?, ?)",
-        (task_id, filename, stored_path, size, uploaded_by, created_at),
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (task_id, filename, stored_path, mimetypes.guess_type(filename)[0], size, uploaded_by, created_at),
     )
     _append_event(conn, task_id, "attached", {"filename": filename, "size": size, "by": uploaded_by})
 

@@ -13,7 +13,7 @@ allowlists the public ones.
   POST /auth/native/refresh    desktop-held refresh token rotation
   GET  /api/auth/providers     list registered providers (login bootstrap)
   GET  /api/auth/me            current Session as JSON (auth-required)
-  POST /api/auth/ws-ticket     single-use WS upgrade ticket (auth-required)
+  POST /api/auth/ws-ticket     single-use WS upgrade ticket (auth-required; session token on loopback)
 """
 from __future__ import annotations
 
@@ -458,11 +458,26 @@ async def api_auth_me(request: Request):
 @router.post("/api/auth/ws-ticket", name="auth_ws_ticket")
 async def api_auth_ws_ticket(request: Request):
     """Mint a 30s single-use ticket for a WS upgrade (browsers cannot set
-    ``Authorization`` on the upgrade); one ticket per WS."""
-    sess = _require_session(request)
-    from hermes_cli.dashboard_auth.ws_tickets import TTL_SECONDS, mint_ticket
-    ticket = mint_ticket(user_id=sess.user_id, provider=sess.provider)
-    _audit(request, AuditEvent.WS_TICKET_MINTED, provider=sess.provider, user_id=sess.user_id)
+    ``Authorization`` on the upgrade); one ticket per WS.
+
+    Gated mode: the verified cookie session is the identity. Loopback /
+    ``--insecure``: the ``X-Hermes-Session-Token`` header authorizes the mint,
+    so a client never has to put the long-lived token in a WS URL (URLs land in
+    proxy logs, browser history and error reports). Such a ticket carries no
+    user identity, exactly like the legacy ``?token=`` upgrade it replaces.
+    """
+    from hermes_cli.dashboard_auth.ws_tickets import (
+        SESSION_TOKEN_PROVIDER, TTL_SECONDS, mint_ticket)
+    if getattr(request.app.state, "auth_required", False):
+        sess = _require_session(request)
+        user_id, provider = sess.user_id, sess.provider
+    else:
+        from hermes_cli.web_server import _has_valid_session_token
+        if not _has_valid_session_token(request):
+            raise _http(401, "Unauthorized")
+        user_id, provider = "", SESSION_TOKEN_PROVIDER
+    ticket = mint_ticket(user_id=user_id, provider=provider)
+    _audit(request, AuditEvent.WS_TICKET_MINTED, provider=provider, user_id=user_id)
     return {"ticket": ticket, "ttl_seconds": TTL_SECONDS}
 
 

@@ -334,16 +334,15 @@ def _permanent_set() -> set:
     """
     from hermes_constants import get_hermes_home_override, hermes_home_key
     if get_hermes_home_override() is None:
-        return _permanent_approved
-    home_key = hermes_home_key()
-    approved = _permanent_approved_by_home.get(home_key)
-    if approved is None:
-        try:
-            approved = _read_permanent_allowlist()
-        except Exception as e:
-            logger.warning("Failed to load permanent allowlist: %s", e)
+        home_key = ""
+        approved = _permanent_approved
+    else:
+        home_key = hermes_home_key()
+        approved = _permanent_approved_by_home.get(home_key)
+        if approved is None:
             approved = set()
-        _permanent_approved_by_home[home_key] = approved
+            _permanent_approved_by_home[home_key] = approved
+    _sync_permanent_with_file(home_key, approved)
     return approved
 
 
@@ -431,14 +430,61 @@ def _baseline_key() -> str:
     return "" if get_hermes_home_override() is None else hermes_home_key()
 
 
+# ``(config_path, cache_sig)`` the governing set was last synchronised against, per
+# profile home — the same signature ``load_config`` caches on, so an edit to either
+# config.yaml or the managed overlay invalidates. The path is part of the marker
+# because a changed HERMES_HOME must re-sync even when neither file exists.
+_permanent_sig_by_home: dict[str, tuple] = {}
+
+
+def _config_file_marker() -> tuple | None:
+    """``(path, signature)`` of the active profile's config inputs, or None when the
+    files cannot be stat'ed (sync skipped; retried on the next call)."""
+    try:
+        from hermes_cli.config import _load_config_cache_sig, get_config_path
+        config_path = get_config_path()
+        _, cache_sig = _load_config_cache_sig(config_path)
+        return (str(config_path), cache_sig)
+    except Exception:
+        return None
+
+
+def _sync_permanent_with_file(home_key: str, approved: set) -> None:
+    """Re-read ``command_allowlist`` when the config file changed since the last sync.
+
+    Deleting an entry from config.yaml is the documented way to withdraw a standing
+    approval; without this the in-memory set kept honouring it until restart. The
+    merge mirrors ``save_permanent_allowlist``: what is on disk now, plus what this
+    process approved since its own baseline — so a pending ``[a]lways`` survives the
+    sync while a revoked baseline entry is dropped. Callers hold ``_lock``.
+    """
+    marker = _config_file_marker()
+    if marker is None or _permanent_sig_by_home.get(home_key) == marker:
+        return
+    try:
+        on_disk = _read_permanent_allowlist()
+    except Exception as e:
+        logger.warning("Failed to load permanent allowlist: %s", e)
+        return
+    baseline = _permanent_baseline_by_home.get(home_key, set())
+    merged = on_disk | (approved - baseline)
+    approved.clear()
+    approved.update(merged)
+    _permanent_baseline_by_home[home_key] = set(on_disk)
+    _permanent_sig_by_home[home_key] = marker
+
 def load_permanent_allowlist() -> set:
     """Load ``command_allowlist`` from config and sync it into the approval state
     so is_approved() honors 'always' choices from previous sessions."""
     try:
         patterns = _read_permanent_allowlist()
-        load_permanent(patterns)
+        marker = _config_file_marker()
         with _lock:
-            _permanent_baseline_by_home[_baseline_key()] = set(patterns)
+            key = _baseline_key()
+            _permanent_baseline_by_home[key] = set(patterns)
+            if marker is not None:
+                _permanent_sig_by_home[key] = marker
+        load_permanent(patterns)
         return patterns
     except Exception as e:
         logger.warning("Failed to load permanent allowlist: %s", e)
@@ -455,7 +501,9 @@ def save_permanent_allowlist(patterns: set):
     resurrected the ones removed. The result written is ``what is on disk now``
     plus ``what this process approved since its own baseline``; revoked entries are
     also dropped from the governing permanent set so ``is_approved()`` stops
-    honouring them. Nothing re-reads the file on the approval hot path.
+    honouring them. The approval hot path re-reads the file when it changes
+    (``_permanent_set``), so a revocation takes effect on the next check rather
+    than waiting for a write or a restart.
 
     ``patterns`` may only ADD: an entry left out of it is not removed, because the
     on-disk list wins for anything this process did not approve itself. Remove
@@ -472,6 +520,9 @@ def save_permanent_allowlist(patterns: set):
             config["command_allowlist"] = sorted(merged)
             save_config(config)
             _permanent_baseline_by_home[key] = set(merged)
+            marker = _config_file_marker()
+            if marker is not None:
+                _permanent_sig_by_home[key] = marker
             governing = _permanent_set()
             governing.clear()
             governing.update(merged)

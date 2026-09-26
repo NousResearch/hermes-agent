@@ -37,6 +37,8 @@ _PROVIDER_FILTER_VALUES = frozenset(v.lower() for v in GITHUB_TAP_PROVIDERS.valu
 
 _API = "https://api.github.com/repos"
 _ACCEPT_JSON = "application/vnd.github.v3+json"
+# Concurrent blob fetches per skill install: far below GitHub's secondary limit on concurrent requests.
+_BLOB_FETCH_WORKERS = 8
 
 
 def github_provider_for(repo: str) -> Optional[str]:
@@ -330,7 +332,7 @@ class GitHubSource(SkillSource):
         An empty ``skill_path`` is the repo-root skill layout, so the whole repo root is its directory."""
         prefix = f"{skill_path}/" if skill_path else ""
         symlinked: set = set()
-        complete = True
+        blobs: List[Tuple[str, str]] = []
         for rel_path, item_path, regular in _tree_members(entries, prefix):
             if not regular:
                 symlinked.add(rel_path)
@@ -342,7 +344,8 @@ class GitHubSource(SkillSource):
             except ValueError:
                 logger.warning("Rejected unsafe file path in skill bundle: %s", item_path)
                 return None
-            complete &= self._add_support_file(repo, item_path, rel_path, files, item_path, ref=ref)
+            blobs.append((item_path, rel_path))
+        complete = self._fetch_tree_blobs(repo, blobs, ref, files)
         for rel_path in sorted(referenced):
             # A SKILL.md-linked support path that isn't in the tree is a dangling link — a repo-only dev
             # tool, prose over-match, or a file the author forgot to push. Warn and install without it
@@ -356,6 +359,32 @@ class GitHubSource(SkillSource):
             if rel_path not in files:
                 logger.warning(
                     "Referenced skill support file is missing; continuing without it: %s%s", prefix, rel_path)
+        return complete
+
+    def _fetch_tree_blobs(
+        self, repo: str, blobs: List[Tuple[str, str]], ref: Optional[str], files: Dict[str, Union[str, bytes]],
+    ) -> bool:
+        """Fetch ``(item_path, rel_path)`` blobs into ``files`` in tree order; False when any fetch failed.
+        One round-trip at a time made a 199-file upstream skill take ~7 minutes on a high-latency link
+        (#107548), so the fetches share a bounded pool. Its workers run in the caller's context and so
+        keep the pooled SSRF-safe client and the profile scope. An interrupt (Ctrl+C) returns at once:
+        queued fetches are cancelled and in-flight ones finish on daemon workers."""
+        if not blobs:
+            return True
+        from tools.daemon_pool import DaemonThreadPoolExecutor
+
+        pool = DaemonThreadPoolExecutor(max_workers=min(len(blobs), _BLOB_FETCH_WORKERS))
+        try:
+            contents = list(pool.map(lambda blob: self._fetch_file_bytes(repo, blob[0], ref=ref), blobs))
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
+        complete = True
+        for (item_path, rel_path), content in zip(blobs, contents):
+            if content is None:
+                logger.warning("Failed to fetch referenced skill support file; continuing without it: %s", item_path)
+                complete = False
+            else:
+                files[rel_path] = content
         return complete
 
     def inspect(self, identifier: str) -> Optional[SkillMeta]:

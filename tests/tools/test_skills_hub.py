@@ -2,6 +2,7 @@
 
 import json
 import os
+import threading
 import time
 from typing import List, Optional
 from unittest.mock import patch, MagicMock
@@ -2161,3 +2162,43 @@ class TestGitHubSourceFetchMissingReferencedFile:
         assert bundle.files["references/guide.md"] == b"# guide"
         # …and the missing one is warned about and skipped, not fatal.
         assert "references/missing.md" not in bundle.files
+
+
+class TestGitHubSourceFetchTreeBlobs:
+    """Regression for #107548: a skill's tree blobs are fetched concurrently, in the caller's context."""
+
+    def test_blobs_are_fetched_concurrently_in_the_callers_context(self):
+        from tools.skills_hub import _skills_hub_http_client
+        md = "---\nname: demo\ndescription: demo\n---\n\nBody\n"
+        paths = ["bin/a.mjs", "bin/b.mjs", "assets/c.html"]
+        tree_entries = [{"path": f"skills/demo/{path}", "type": "blob", "mode": "100644"} for path in paths]
+        # Every blob request must be in flight at once: a sequential fetch leaves the first one
+        # waiting at the barrier until it times out.
+        barrier = threading.Barrier(len(paths), timeout=5)
+        client = object()
+        seen_clients = []
+
+        def fetch_bytes(repo, path, ref=None):
+            seen_clients.append(_skills_hub_http_client.get())
+            try:
+                barrier.wait()
+            except threading.BrokenBarrierError:
+                return None
+            return path.encode()
+
+        source = GitHubSource(auth=MagicMock(spec=GitHubAuth))
+        token = _skills_hub_http_client.set(client)
+        try:
+            with patch.object(source, "_fetch_file_content", return_value=md), \
+                 patch.object(source, "_get_repo_tree", return_value=("main", tree_entries)), \
+                 patch.object(source, "_fetch_file_bytes", side_effect=fetch_bytes):
+                bundle = source.fetch("owner/repo/skills/demo")
+        finally:
+            _skills_hub_http_client.reset(token)
+
+        assert bundle is not None
+        assert list(bundle.files) == ["SKILL.md", *paths]
+        assert bundle.files["bin/b.mjs"] == b"skills/demo/bin/b.mjs"
+        assert bundle.metadata["source_revision"] == "main"
+        # The workers use the caller's pooled SSRF-safe client, not a bare one-shot request.
+        assert seen_clients == [client] * len(paths)

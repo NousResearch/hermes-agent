@@ -160,7 +160,7 @@ export const routedToScope = (query: { queryKey: readonly unknown[] }): boolean 
 /** One live `task_events` frame → precise cache invalidation: the board, plus
  *  each touched task's detail. The polls (8s board / 4s drawer) stay as the
  *  fallback — the socket just makes the board feel instant. */
-function onEventsFrame(scope: string, slug: string, data: unknown): void {
+function onEventsFrame(scope: string, slug: string, data: unknown, selectedSlug = slug): void {
   const frame = data as { cursor?: unknown; events?: CompletionEvent[] }
 
   if (typeof frame?.cursor === 'number') {
@@ -179,6 +179,9 @@ function onEventsFrame(scope: string, slug: string, data: unknown): void {
 
   for (const taskId of new Set(events.map(event => event.task_id).filter(Boolean))) {
     void queryClient.invalidateQueries({ queryKey: taskKey(scope, slug, taskId!) })
+    if (selectedSlug !== slug) {
+      void queryClient.invalidateQueries({ queryKey: taskKey(scope, selectedSlug, taskId!) })
+    }
   }
 
   // Completion notification (after invalidation so notify failure
@@ -229,9 +232,10 @@ export function bindApi(
 
   const dial = (scope: string, slug: string, since: number | undefined) => {
     const generation = socketGeneration
+    const selectedSlug = $boardSlug.get()
 
     return socket(eventsUrl(slug, since), data => {
-      if (generation === socketGeneration) onEventsFrame(scope, slug, data)
+      if (generation === socketGeneration) onEventsFrame(scope, slug, data, selectedSlug)
     })
   }
 

@@ -35,6 +35,36 @@ afterEach(() => {
 })
 
 describe('default board event notifications', () => {
+  it('refreshes an open alias-keyed task drawer on a live event', async () => {
+    const { QueryObserver } = await import('@tanstack/react-query')
+    const { taskKey } = await import('./api')
+    let frame!: (data: unknown) => void
+    dispose = bindApi(
+      (async (path: string) => (path === '/boards' ? { current: 'drawer-board' } : { latest_event_id: 100 })) as never,
+      { get: (_key, fallback) => fallback, set: vi.fn(), remove: vi.fn() },
+      (_path, callback) => {
+        frame = callback
+        return vi.fn()
+      }
+    )
+    let revision = 1
+    const observer = new QueryObserver(queryClient, {
+      queryKey: taskKey('local', '', 'task'),
+      queryFn: async () => ({ revision }),
+      staleTime: Infinity
+    })
+    const unsubscribe = observer.subscribe(() => undefined)
+    try {
+      await vi.waitFor(() => expect(observer.getCurrentResult().data).toEqual({ revision: 1 }))
+      await vi.waitFor(() => expect(frame).toBeTypeOf('function'))
+      revision = 2
+      frame({ cursor: 101, events: [{ id: 101, kind: 'updated', task_id: 'task' }] })
+      await vi.waitFor(() => expect(observer.getCurrentResult().data).toEqual({ revision: 2 }))
+    } finally {
+      unsubscribe()
+    }
+  })
+
   it.each(['empty', 'rejected'])('preserves the live alias socket when board resolution is %s', async mode => {
     const rest = vi.fn(async (path: string) => {
       if (path === '/boards') {

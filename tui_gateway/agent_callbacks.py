@@ -152,6 +152,9 @@ def _agent_cbs(sid: str) -> dict:
         # manage_connections card. Fire-and-forget: the tool thread waits on its own operation
         # (tools/connectors/run.py), and the card drives it through connection.respond by op_id.
         "connection_callback": lambda payload: _emit("connection.request", sid, dict(payload)) and None,
+        # pen_canvas (desktop GUI): a long design render can outlive the tool's bounded wait.
+        "pen_canvas_callback": lambda action, args: _ask(
+            "pen.tool", sid, {"action": action, "args": args or {}}, timeout=120),
         # tour (desktop GUI): renderer drives driver.js and answers the ``tour`` request.
         "tour_callback": lambda payload: _tour_request(sid, payload)}
 

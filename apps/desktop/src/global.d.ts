@@ -199,6 +199,42 @@ declare global {
         onShown: (callback: () => void) => () => void
       }
       getBootProgress: () => Promise<DesktopBootProgress>
+      pen?: {
+        status: () => Promise<PenStatus>
+        open: (options?: { name?: string; path?: string; sessionId?: string }) => Promise<PenOpenResult>
+        close: (options?: { keep?: boolean }) => Promise<void>
+        tool: (name: string, payload?: Record<string, unknown>) => Promise<PenToolResult>
+        session: (sessionId: string) => Promise<null | { closed?: boolean; docId: string; path?: null | string; width?: number }>
+        adopt: (sessionId: string) => Promise<boolean>
+        restore: (sessionId: string) => Promise<null | { doc?: PenDocumentInfo; docId?: string; url?: string }>
+        library: () => Promise<{
+          items: Array<{
+            docId: null | string
+            folder: string
+            modifiedAt: number
+            name: string
+            open: boolean
+            path: string
+            previewPath: null | string
+            sessionId: null | string
+            size: number
+          }>
+          root: string
+        }>
+        libraryDelete: (target: string) => Promise<boolean>
+        libraryRename: (target: string, nextName: string) => Promise<null | string>
+        reveal: (target: string) => Promise<void>
+        onEvent: (callback: (payload: { event: string; payload: unknown }) => void) => () => void
+        import: {
+          pick: (guestId: number, active: boolean) => Promise<void>
+          hoverPathEntry: (guestId: number, index: null | number) => Promise<void>
+          selectPathEntry: (guestId: number, index: number) => Promise<void>
+          run: (guestId: number, options?: PenImportOptions) => Promise<PenImportResult>
+          onPicker: (callback: (payload: { guestId: number; state: null | PenImportPickerState }) => void) => () => void
+          onAction: (callback: (payload: { action: 'import' | 'screenshot'; guestId: number }) => void) => () => void
+          onProgress: (callback: (payload: { fraction: number; guestId: number }) => void) => () => void
+        }
+      }
       getConnectionConfig: (profile?: null | string) => Promise<DesktopConnectionConfig>
       saveConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
       applyConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
@@ -1318,6 +1354,70 @@ export interface DesktopBootProgress {
   /** Structured HTTP status when the boot failure carried one (e.g. 503). */
   statusCode?: number | null
   timestamp: number
+}
+
+// Pen canvas types — renderer view of electron/pen/.
+
+export interface PenDocumentInfo {
+  docId: string
+  fileURI: string
+  displayName: string
+}
+
+export interface PenStatus {
+  available: boolean
+  running: boolean
+  openDocuments: PenDocumentInfo[]
+}
+
+export interface PenOpenResult {
+  doc: PenDocumentInfo
+  /** Hosted editor URL the pen tile mounts in its <webview>. */
+  url: string
+}
+
+export interface PenToolResult {
+  success: boolean
+  result?: unknown
+  error?: string
+}
+
+/** A picked element on a preview page — pen.dev's `BrowserViewPick`, the parts the strip shows. */
+export interface PenImportPick {
+  element: {
+    tag: string
+    width: number
+    height: number
+    /** DevTools-style descriptor, e.g. `div#hero.container.flex`. */
+    label?: string
+    selector?: string
+    componentName?: string
+  }
+  /** Ancestor chain, outermost first; `pathIndex` is the live selection. */
+  path: Array<{ label: string; componentName?: string }>
+  pathIndex: number
+}
+
+/** `pick` undefined: the crosshair is up, waiting for a click. */
+export interface PenImportPickerState {
+  pick: PenImportPick | undefined
+}
+
+export interface PenImportOptions {
+  mode?: 'page' | 'selection'
+  selector?: string
+  /** The canvas was opened for this import; its empty starter frame makes way. */
+  fresh?: boolean
+}
+
+export interface PenImportResult {
+  success: boolean
+  imported?: 'page' | 'selection'
+  element?: string
+  /** Top-level canvas nodes the import added. */
+  nodes?: Array<{ id: string; name: string }>
+  warnings?: string[]
+  error?: string
 }
 
 // First-launch install ("bootstrap") event types -- emitted by

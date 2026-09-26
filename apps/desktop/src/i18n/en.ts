@@ -2675,6 +2675,15 @@ export const en: Translations = {
     tokens: value => `${value} tok`
   },
 
+  penLibrary: {
+    title: 'Canvases',
+    searchPlaceholder: 'Search canvases…',
+    empty: 'No canvases yet',
+    delete: 'Delete canvas',
+    confirmDelete: 'Delete',
+    cancelDelete: 'Keep'
+  },
+
   commandCenter: {
     close: 'Close command center',
     paletteTitle: 'Command palette',
@@ -3456,6 +3465,9 @@ export const en: Translations = {
     kindImage: 'image',
     kindFile: 'file',
     kindLink: 'link',
+    kindCanvas: 'Pen',
+    tabCanvases: 'Pens',
+    openCanvas: 'Open canvas',
     chat: 'Chat',
     copyUrl: 'Copy URL',
     copyPath: 'Copy path'
@@ -3919,6 +3931,26 @@ export const en: Translations = {
       tip: skill => `You mentioned “${skill}” — click to lead with that skill`,
       done: skill => `Added /${skill}`,
       doneTip: 'The skill loads when you send'
+    },
+    penSuggestions: {
+      reopen: 'Reopen {name}',
+      reopenTip: 'This chat has a canvas — click to bring it back',
+      untitledCanvas: 'canvas',
+      newCanvas: 'New canvas',
+      newCanvasTip: 'Slide out a blank pen.dev canvas beside the chat',
+      openFile: 'Open a .pen file',
+      openFileTip: 'Pick one of your pen.dev designs to open beside the chat',
+      working: 'Opening canvas…',
+      workingTip: 'Click to cancel',
+      done: 'Canvas open',
+      doneTip: 'Design away — Hermes can draw on it too',
+      openFailed: 'Could not open the canvas',
+      importWeb: 'Import {name} to canvas',
+      importWebTip: 'Bring the live page onto a pen.dev canvas as editable layers',
+      importWorking: 'Importing…',
+      importDone: 'Imported',
+      importDoneTip: 'The page is on the canvas — Hermes can work on it too',
+      importFailed: 'Could not import the page'
     },
     githubSuggestions: {
       label: 'Set up GitHub',
@@ -4752,6 +4784,25 @@ export const en: Translations = {
     terminalCloseOthers: 'Close others',
     terminalCloseAll: 'Close all',
     addToChat: 'Add to chat'
+  },
+
+  pen: {
+    openFailed: 'Could not open the canvas',
+    import: 'Import to canvas',
+    importPickElement: 'Pick an element',
+    importPicking: 'Stop picking',
+    importPickHint: 'Click an element · Enter imports · Esc stops',
+    importPage: 'Whole page',
+    importSelection: 'Import',
+    importCancel: 'Cancel',
+    importing: 'Importing to the canvas…',
+    importProgress: percent => `Capturing… ${percent}%`,
+    imported: 'Page imported to the canvas',
+    importedElement: label => `Imported ${label} to the canvas`,
+    importFailed: 'Could not import to the canvas',
+    importUndo: 'Undo',
+    importUndoFailed: 'Could not undo the import',
+    showCanvas: 'Show canvas'
   },
 
   preview: {

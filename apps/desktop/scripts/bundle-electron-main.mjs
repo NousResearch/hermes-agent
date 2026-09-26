@@ -75,6 +75,15 @@ export async function bundleElectronMain({ source, out, stamp, dev = false }) {
     format: 'cjs',
     outfile: join(out, 'preview-guest-preload.js'),
   })
+  // app.pen.dev MessagePort relay (electron/pen/web-bridge.ts). .cjs because
+  // the package is "type": "module" and an unsandboxed preload loads through
+  // Node's resolver.
+  await build({
+    ...common,
+    entryPoints: [join(source, 'apps/desktop/electron/pen-web-preload.ts')],
+    format: 'cjs',
+    outfile: join(out, 'pen-web-preload.cjs'),
+  })
 }
 
 if (isMain(import.meta.url)) {

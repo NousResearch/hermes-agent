@@ -19221,6 +19221,31 @@
         "title": "PeerRouteStatus",
         "type": "object"
       },
+      "PenToolRequestParams": {
+        "additionalProperties": false,
+        "description": "``tools/pen_canvas_tool.py`` field set: ``args`` is the editor's own MCP tool payload.",
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "action": {
+            "title": "Action",
+            "type": "string"
+          },
+          "args": {
+            "additionalProperties": true,
+            "title": "Args",
+            "type": "object"
+          }
+        },
+        "required": [
+          "session_id",
+          "action"
+        ],
+        "title": "PenToolRequestParams",
+        "type": "object"
+      },
       "PendingApproval": {
         "additionalProperties": true,
         "description": "One unresolved ``tools/approval.py`` gateway queue entry as ``server._approval_request_payload``\nrenders it (command redacted; ``choices`` precomputed). The key set is owned by the approval tool.",
@@ -37504,6 +37529,24 @@
           "name": "params",
           "schema": {
             "$ref": "#/components/schemas/DisplayInstallSudoParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ValueResult"
+        }
+      }
+    },
+    {
+      "name": "pen.tool",
+      "summary": "Run one pen.dev canvas operation in the desktop renderer (JSON text answer).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/PenToolRequestParams"
           }
         }
       ],

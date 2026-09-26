@@ -210,6 +210,17 @@ server_request("tour", params=TourRequestParams, result=ValueResult,
                doc="Drive a guided tour highlight in the desktop renderer.")
 
 
+class PenToolRequestParams(ServerRequestParams):
+    """``tools/pen_canvas_tool.py`` field set: ``args`` is the editor's own MCP tool payload."""
+
+    action: str
+    args: dict[str, JsonValue] = Field(default_factory=dict)
+
+
+server_request("pen.tool", params=PenToolRequestParams, result=ValueResult,
+               doc="Run one pen.dev canvas operation in the desktop renderer (JSON text answer).")
+
+
 # ── withdrawal ────────────────────────────────────────────────────────────────────────────────
 
 

@@ -10,13 +10,13 @@ import {
   closePreviewMatching,
   closeRightRail,
   completePreviewServerRestart,
-  openPreview,
   progressPreviewServerRestart,
-  renderedHtmlTarget,
   requestPreviewReload
 } from '@/store/preview'
 import { $activeSessionId, $currentCwd } from '@/store/session'
 import { $focusedRuntimeId, $sessionTiles } from '@/store/session-states'
+
+import { openAgentPreview } from './open-agent-preview'
 
 type EventHandler = (event: GatewayEvent) => void
 
@@ -88,22 +88,7 @@ export function usePreviewRouting({ baseHandleGatewayEvent, currentCwd, requestG
         const target = typeof url === 'string' ? url.trim() : ''
 
         if (target && (!event.session_id || sessionIsOnScreen(event.session_id))) {
-          void normalizeOrLocalPreviewTarget(target, $currentCwd.get() || currentCwd || undefined).then(
-            async resolved => {
-              if (!resolved) {
-                return
-              }
-
-              const trimmedLabel = typeof label === 'string' ? label.trim() : ''
-              // The agent's loopback is the GATEWAY's loopback. Give the pane a
-              // URL this machine can load, keeping the original as the label so
-              // the user still sees the address the agent named.
-              const url = resolved.kind === 'url' ? await reachablePreviewUrl(resolved.url) : resolved.url
-              const reached = url === resolved.url ? resolved : { ...resolved, label: resolved.label || target, url }
-
-              openPreview(renderedHtmlTarget(trimmedLabel ? { ...reached, label: trimmedLabel } : reached))
-            }
-          )
+          void openAgentPreview(target, typeof label === 'string' ? label : undefined, currentCwd)
         }
 
         return

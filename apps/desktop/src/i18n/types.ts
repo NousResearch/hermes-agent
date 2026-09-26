@@ -2282,6 +2282,15 @@ export interface Translations {
     tokens: (value: number | string) => string
   }
 
+  penLibrary: {
+    title: string
+    searchPlaceholder: string
+    empty: string
+    delete: string
+    confirmDelete: string
+    cancelDelete: string
+  }
+
   commandCenter: {
     close: string
     paletteTitle: string
@@ -2901,6 +2910,9 @@ export interface Translations {
     kindImage: string
     kindFile: string
     kindLink: string
+    kindCanvas: string
+    tabCanvases: string
+    openCanvas: string
     chat: string
     copyUrl: string
     copyPath: string
@@ -3256,6 +3268,26 @@ export interface Translations {
       tip: (skill: string) => string
       done: (skill: string) => string
       doneTip: string
+    }
+    penSuggestions: {
+      reopen: string
+      reopenTip: string
+      untitledCanvas: string
+      newCanvas: string
+      newCanvasTip: string
+      openFile: string
+      openFileTip: string
+      working: string
+      workingTip: string
+      done: string
+      doneTip: string
+      openFailed: string
+      importWeb: string
+      importWebTip: string
+      importWorking: string
+      importDone: string
+      importDoneTip: string
+      importFailed: string
     }
     githubSuggestions: {
       label: string
@@ -4021,6 +4053,26 @@ export interface Translations {
     terminalCloseOthers: string
     terminalCloseAll: string
     addToChat: string
+  }
+
+  pen: {
+    openFailed: string
+    /** Import from the web — the preview strip's control and its status. */
+    import: string
+    importPickElement: string
+    importPicking: string
+    importPickHint: string
+    importPage: string
+    importSelection: string
+    importCancel: string
+    importing: string
+    importProgress: (percent: number) => string
+    imported: string
+    importedElement: (label: string) => string
+    importFailed: string
+    importUndo: string
+    importUndoFailed: string
+    showCanvas: string
   }
 
   preview: {

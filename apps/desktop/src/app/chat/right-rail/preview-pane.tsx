@@ -32,6 +32,13 @@ import { rafCoalesce } from '@/lib/raf-coalesce'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import {
+  $penImport,
+  hoverPenImportPath,
+  importFromPreviewStrip,
+  selectPenImportPath,
+  togglePenImportPick
+} from '@/store/pen-import'
+import {
   $browserPages,
   $previewServerRestart,
   commitBrowserTabLocation,
@@ -69,6 +76,7 @@ import {
 import { type ConsoleEntry } from './preview-console-state'
 import { previewConsoleState } from './preview-console-store'
 import { LocalFilePreview, PreviewEmptyState, PreviewModeSwitcher } from './preview-file'
+import { registerPreviewImport } from './preview-import'
 import { type PreviewInputEvent, registerPreviewInput, toWebviewInputSpace } from './preview-input'
 import { PREVIEW_BROWSER_ATTR, registerPreviewNav } from './preview-nav'
 import { registerPreviewPageReader } from './preview-reader'
@@ -264,6 +272,7 @@ export function PreviewPane({
   const consoleHeight = useStore(consoleState.$height)
   const consoleOpen = useStore(consoleState.$open)
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
+  const penImport = useStore($penImport)
   const [currentUrl, setCurrentUrl] = useState(target.url)
   const liveUrlRef = useRef(currentUrl)
   liveUrlRef.current = currentUrl
@@ -807,6 +816,31 @@ export function PreviewPane({
       return webview.executeJavaScript(code)
     })
   }, [isWebPreview, tabId])
+
+  // Publish the IMPORT handle for this tab: who the <webview> guest is and
+  // what it shows, so pen.dev's capturer (in main) can be pointed at it — by
+  // the strip's control and by the agent's pen_canvas(action='import').
+  const loadingRef = useRef(loading)
+
+  loadingRef.current = loading
+
+  useEffect(() => {
+    if (!isWebPreview || isRemoteHtml || !tabId) {
+      return
+    }
+
+    return registerPreviewImport(tabId, {
+      guestId: () => {
+        try {
+          return webviewRef.current?.getWebContentsId?.()
+        } catch {
+          return undefined
+        }
+      },
+      loading: () => loadingRef.current,
+      page: () => guestPage(webviewRef.current, liveUrlRef.current)
+    })
+  }, [isRemoteHtml, isWebPreview, tabId])
 
   // Publish the INPUT channel for this tab. Same idea as the script runner, but
   // it carries real Chromium input rather than script — the agent's clicks and
@@ -1372,6 +1406,15 @@ export function PreviewPane({
             onToggleConsole={() => consoleState.setOpen(open => !open)}
             onToggleDevTools={toggleDevTools}
             url={currentUrl}
+            {...(tabId && window.hermesDesktop?.pen
+              ? {
+                  importState: penImport?.tabId === tabId ? penImport : undefined,
+                  onImport: (mode: 'page' | 'selection') => void importFromPreviewStrip(tabId, mode),
+                  onImportHoverPath: (index: null | number) => hoverPenImportPath(tabId, index),
+                  onImportSelectPath: (index: number) => selectPenImportPath(tabId, index),
+                  onToggleImport: () => void togglePenImportPick(tabId)
+                }
+              : {})}
           />
         )}
 

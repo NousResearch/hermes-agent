@@ -265,7 +265,7 @@ def tree_digest(root: Path, *, modes: bool = False) -> str:
     by posix relpath, hash `relpath\\0<content>` per entry. No mtimes, no
     mode bits. Symlinks contribute their LINK TARGET TEXT (os.readlink),
     not the target's bytes — the link is the data. Directory symlinks and
-    junctions are not followed.
+    junctions are not followed. FIFOs, sockets and devices are skipped.
 
     *modes* also hashes each entry's kind (link or file) and owner execute
     bit, as git records them: a plugin publication baseline must see a
@@ -290,7 +290,10 @@ def tree_digest(root: Path, *, modes: bool = False) -> str:
         dirnames[:] = descend
         for fname in filenames:
             path = Path(dirpath) / fname
-            files.append((path.relative_to(root).as_posix(), path))
+            # A FIFO, socket or device is a runtime endpoint, not package bytes: opening one to
+            # hash it blocks until its other end shows up (a plugin's data/events.fifo hung update).
+            if path.is_symlink() or stat.S_ISREG(path.lstat().st_mode):
+                files.append((path.relative_to(root).as_posix(), path))
     files.sort(key=lambda item: item[0])
 
     digest = hashlib.sha256()

@@ -450,3 +450,34 @@ def test_tree_digest_ignores_pycache(pm_env, monkeypatch):
     # contribute nothing in either direction.
     (tree / "Lib" / "os.py").write_text("print('stdlib')")
     assert tree_digest(tree) == before
+
+
+@pytest.mark.platforms("posix")
+def test_tree_digest_skips_runtime_endpoints(tmp_path, monkeypatch):
+    """A FIFO or socket in a plugin tree is a runtime endpoint, not package bytes.
+    Opening a FIFO to hash it blocks until its writer shows up (a plugin's
+    data/events.fifo hung `hermes plugins update` in the carry baseline), and
+    opening a socket raises; the digest must do neither, and must not bind them."""
+    import os
+    import socket
+    import threading
+
+    tree = tmp_path / "plugin"
+    (tree / "data").mkdir(parents=True)
+    (tree / "data" / "state.db").write_bytes(b"state")
+    before = tree_digest(tree, modes=True)
+
+    fifo = tree / "data" / "events.fifo"
+    os.mkfifo(fifo)
+    monkeypatch.chdir(tree / "data")  # bind by a short name: macOS caps sun_path at ~104 bytes
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+        sock.bind("control")
+
+    digests = []
+    worker = threading.Thread(target=lambda: digests.append(tree_digest(tree, modes=True)), daemon=True)
+    worker.start()
+    worker.join(5)
+    if worker.is_alive():
+        os.close(os.open(fifo, os.O_WRONLY))  # pair the blocked reader so the thread can exit
+        pytest.fail("tree_digest blocked opening the FIFO")
+    assert digests == [before]

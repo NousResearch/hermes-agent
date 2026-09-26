@@ -8,6 +8,7 @@ import json
 import os
 import shutil
 import subprocess as sp
+import threading
 from pathlib import Path
 
 import pytest
@@ -544,6 +545,33 @@ def test_carry_without_the_installed_revision_does_not_resurrect_removed_scripts
                                  "tool.exe"]
     assert sorted(p.name for p in new.iterdir()) == ["notes.txt"]
     assert (backup / "setup.sh").stat().st_mode & 0o100
+
+
+@pytest.mark.platforms("posix")
+def test_carry_baseline_does_not_wait_on_a_fifo(tmp_path):
+    """A plugin's ``data/events.fifo`` is a runtime endpoint. The carry's baseline digest is taken before the
+    walk classifies the tree, so it must skip the FIFO too: opening it blocks until a writer shows up, and
+    ``hermes plugins update`` hung there (@ehz0ah's repro on 26c7659f82)."""
+    old, new, backup = tmp_path / "old", tmp_path / "new", tmp_path / "backup"
+    (old / "data").mkdir(parents=True)
+    new.mkdir()
+    (old / "plugin.yaml").write_text("name: p\n")
+    (new / "plugin.yaml").write_text("name: p\n")
+    (old / "data" / "state.db").write_bytes(b"state")
+    fifo = old / "data" / "events.fifo"
+    os.mkfifo(fifo)
+
+    carries = []
+    worker = threading.Thread(target=lambda: carries.append(cat._UserFileCarry(old, backup)), daemon=True)
+    worker.start()
+    worker.join(10)
+    if worker.is_alive():
+        os.close(os.open(fifo, os.O_WRONLY))  # pair the blocked reader so the thread can exit
+        pytest.fail("_UserFileCarry blocked opening the FIFO")
+
+    carries[0](new)
+    assert (new / "data" / "state.db").read_bytes() == b"state"
+    assert not os.path.lexists(new / "data" / "events.fifo")
 
 
 def test_update_without_the_installed_revision_does_not_resurrect_a_removed_binary(world, tmp_path, monkeypatch):

@@ -2730,15 +2730,36 @@ def run_one_job(
             logger.error("Job '%s': %s", job["id"], error)
             claim = job.get("fire_claim")
             owner = str(claim.get("by") or "") if isinstance(claim, dict) else ""
+            delivery_error = None
+            delivery_outcome = "suppressed"
             try:
+                delivery_error, delivery_outcome = _deliver_crash_failure(
+                    job, error, adapters=adapters, loop=loop)
+            except Exception as deliver_err:
+                logger.error("Failed to deliver crash failure for job %s dispatch: %s", job["id"], deliver_err)
+            try:
+                mark_kwargs = {}
+                if owner:
+                    mark_kwargs["expected_fire_owner"] = owner
+                if delivery_error is not None:
+                    mark_kwargs["delivery_error"] = delivery_error
                 mark_job_run(
                     job["id"],
                     False,
                     error,
-                    **({"expected_fire_owner": owner} if owner else {}),
+                    **mark_kwargs,
                 )
-            finally:
-                finish_execution(execution_id, success=False, error=error)
+            except Exception as record_err:
+                logger.error("Failed to record failed dispatch for job %s: %s", job["id"], record_err)
+            try:
+                finish_execution(
+                    execution_id,
+                    success=False,
+                    error=error,
+                    delivery_outcome=delivery_outcome,
+                )
+            except Exception as record_err:
+                logger.error("Failed to finish execution record for job %s: %s", job["id"], record_err)
             return True
     if extra_prompt is None:
         # Gateway-forwarded manual run stamps its prompt on the job via trigger_job; the fire that

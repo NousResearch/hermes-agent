@@ -414,3 +414,68 @@ def test_run_one_job_installs_secret_scope_under_multiplex(monkeypatch, tmp_path
     # And it was torn down after the full lifecycle returned (no leak).
     assert ss.current_secret_scope() is None
 
+
+def test_run_one_job_external_worker_dispatch_failure_creates_incident_and_delivers(monkeypatch):
+    """When restart-safe external worker dispatch raises, run_one_job must record an incident,
+    deliver the crash failure notice, and record the failed execution with delivery outcome."""
+    dispatch_err = RuntimeError("cron external worker exited before ownership acknowledgement (exit 1)")
+    monkeypatch.setattr(s, "_launch_external_cron_worker", lambda job: (_ for _ in ()).throw(dispatch_err))
+
+    upsert_calls = []
+    def fake_upsert(job, err_text, **kw):
+        upsert_calls.append((job["id"], err_text))
+        return False, "inc-123"
+
+    delivered = []
+    def fake_deliver(job, content, **kw):
+        delivered.append((job["id"], content))
+        return None
+
+    marked = []
+    def fake_mark(jid, ok, err=None, **kw):
+        marked.append((jid, ok, err, kw))
+
+    finished = []
+    def fake_finish(exec_id, **kw):
+        finished.append((exec_id, kw))
+
+    monkeypatch.setattr(s, "_upsert_incident_for_failure", fake_upsert)
+    monkeypatch.setattr(s, "_deliver_result", fake_deliver)
+    monkeypatch.setattr(s, "mark_job_run", fake_mark)
+    monkeypatch.setattr(s, "finish_execution", fake_finish)
+
+    job = {
+        "id": "watchdog-job",
+        "name": "login watchdog",
+        "deliver": "telegram",
+        "execution_id": "exec-dispatch-fail",
+        "fire_claim": {"by": "scheduler-primary"},
+    }
+
+    ok = s.run_one_job(job)
+
+    assert ok is True
+    # Incident upsert was called with the dispatch failure text
+    assert len(upsert_calls) == 1
+    assert upsert_calls[0][0] == "watchdog-job"
+    assert "Restart-safe cron worker dispatch failed" in upsert_calls[0][1]
+
+    # Failure was delivered to destination
+    assert len(delivered) == 1
+    assert delivered[0][0] == "watchdog-job"
+    assert "Restart-safe cron worker dispatch failed" in delivered[0][1]
+
+    # Job run was marked failed
+    assert len(marked) == 1
+    assert marked[0][0] == "watchdog-job"
+    assert marked[0][1] is False
+    assert "Restart-safe cron worker dispatch failed" in marked[0][2]
+    assert marked[0][3].get("expected_fire_owner") == "scheduler-primary"
+
+    # Execution was finished as failed with delivery outcome
+    assert len(finished) == 1
+    assert finished[0][0] == "exec-dispatch-fail"
+    assert finished[0][1]["success"] is False
+    assert finished[0][1]["delivery_outcome"] == "delivered"
+
+

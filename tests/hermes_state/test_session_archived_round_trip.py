@@ -53,6 +53,18 @@ def test_export_all_round_trips_compacted_history(tmp_path):
         assert _shape(dst) == live_before, "archived turns must not re-enter live model context"
         # Session counters count live rows only.
         assert dst.get_session(STRANDED_ID)["message_count"] == len(live_before)
+
+        # Hand-edited/foreign JSONL: string flags ("0" is truthy) and null for live rows must not
+        # flip archived rows live or live rows archived.
+        for msg in payload[0]["messages"]:
+            msg["active"], msg["compacted"] = (str(msg["active"]) if not msg["active"] else None,
+                                               str(msg["compacted"]))
+        edited = SessionDB(db_path=tmp_path / "edited.db")
+        try:
+            assert edited.import_sessions(payload)["ok"]
+            assert _shape(edited, include_inactive=True) == all_before
+        finally:
+            edited.close()
     finally:
         src.close()
         dst.close()

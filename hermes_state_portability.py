@@ -549,23 +549,25 @@ class SessionPortabilityMixin:
         sanitized_messages = [
             {**msg, **{key: _json_value(msg.get(key)) for key in _IMPORT_MESSAGE_JSON_FIELDS}} for msg in messages
         ]
-        total_messages, total_tool_calls = self._insert_message_rows(
-            conn, session_id, sanitized_messages, prune_checkpoints=False)
         # A row exported archived (``include_inactive``) must stay archived: inserted live, compacted or
-        # rewound turns would re-enter model context. Session counters count live rows only.
-        archived = [msg for msg in sanitized_messages if "active" in msg and not msg["active"] and "_row_id" in msg]
+        # rewound turns would re-enter model context. Flags are coerced like the int session columns, so a
+        # hand-edited "0" archives and a missing/null/unparsable flag imports live (older exports have none).
+        live: List[Dict[str, Any]] = []
+        archived: List[Dict[str, Any]] = []
+        for msg in sanitized_messages:
+            (live if self._coerce_or(msg.get("active"), int, 1) else archived).append(msg)
+        self._insert_message_rows(conn, session_id, sanitized_messages, prune_checkpoints=False)
         if archived:
             conn.executemany("UPDATE messages SET active = 0, compacted = ? WHERE id = ?",
-                             [(1 if msg.get("compacted") else 0, msg["_row_id"]) for msg in archived])
-            total_messages -= len(archived)
-            total_tool_calls -= sum(_tool_calls_count(_parse_tool_calls(msg.get("tool_calls"))) for msg in archived)
+                             [(1 if self._coerce_or(msg.get("compacted"), int, 0) else 0, msg["_row_id"])
+                              for msg in archived])
         # Pruning keys on live rows, so it runs only now: while every row was still live, an archived row's
         # newer checkpoint would strip the newest live one, and archived rows keep theirs as in the donor.
-        archived_ids = {id(msg) for msg in archived}
-        self._prune_shadowed_checkpoints(conn, session_id,
-                                         [msg for msg in sanitized_messages if id(msg) not in archived_ids])
+        self._prune_shadowed_checkpoints(conn, session_id, live)
+        # Session counters count live rows only.
         conn.execute("UPDATE sessions SET message_count = ?, tool_call_count = ? WHERE id = ?",
-                     (total_messages, total_tool_calls, session_id))
+                     (len(live), sum(_tool_calls_count(_parse_tool_calls(msg.get("tool_calls"))) for msg in live),
+                      session_id))
 
     @staticmethod
     def _attach_import_parents(conn, parent_updates: List[tuple]) -> int:

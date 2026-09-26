@@ -76,6 +76,7 @@ import { setHermesConfigCache, useHermesConfigRecord } from '../hooks/use-config
 import { AppearanceExtraSlot } from './appearance-contrib'
 import type { AppearanceSubpageId } from './appearance-subpages'
 import { ChatFontSetting } from './chat-font-setting'
+import { ComposerListsSetting } from './composer-lists-setting'
 import { MODE_OPTIONS } from './constants'
 import { setNested } from './helpers'
 import { MinimizeToTraySetting } from './minimize-to-tray-setting'
@@ -935,6 +936,8 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
           )}
 
           {show('general') && <ResumeLastSessionSetting />}
+
+          {show('general') && <ComposerListsSetting />}
 
           {show('chat-display') && (
             <ToggleRow

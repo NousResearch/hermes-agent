@@ -222,3 +222,76 @@ class TestZaiFullKwargsIntegration:
         )
         assert kwargs["reasoning_effort"] == "max"
         assert kwargs["extra_body"]["thinking"] == {"type": "enabled"}
+
+
+class TestZaiFetchModels:
+    """``fetch_models`` appends universally-free models and forwards base_url.
+
+    Z.AI's ``/v1/models`` omits a handful of Flash models that nonetheless
+    accept real API calls.  China API keys are rejected by the international
+    endpoint, so the free-model append must survive an empty/None live
+    result, and the resolved China ``base_url`` must reach the base class.
+    """
+
+    def test_appends_free_models_to_live(self, zai_profile, monkeypatch):
+        from providers.base import ProviderProfile
+        from plugins.model_providers.zai import ZAI_FREE_MODELS
+
+        def fake_fetch(self, *, api_key=None, base_url=None, timeout=8.0):
+            return ["glm-5", "glm-4-9b"]
+
+        monkeypatch.setattr(ProviderProfile, "fetch_models", fake_fetch)
+        models = zai_profile.fetch_models(api_key="k")
+        assert "glm-5" in models
+        assert "glm-4v-flash" in models
+        assert "glm-4.5-flash" in models
+        # Every verified free model is present.
+        assert set(ZAI_FREE_MODELS) <= set(models)
+
+    def test_dedup_when_live_already_lists_free_model(self, zai_profile, monkeypatch):
+        from providers.base import ProviderProfile
+
+        def fake_fetch(self, *, api_key=None, base_url=None, timeout=8.0):
+            return ["glm-5", "glm-4v-flash"]
+
+        monkeypatch.setattr(ProviderProfile, "fetch_models", fake_fetch)
+        models = zai_profile.fetch_models(api_key="k")
+        assert models.count("glm-4v-flash") == 1
+
+    def test_empty_or_none_live_still_returns_free_models(self, zai_profile, monkeypatch):
+        from providers.base import ProviderProfile
+        from plugins.model_providers.zai import ZAI_FREE_MODELS
+
+        expected = sorted(ZAI_FREE_MODELS)
+
+        def fake_fetch_empty(self, *, api_key=None, base_url=None, timeout=8.0):
+            return []
+
+        monkeypatch.setattr(ProviderProfile, "fetch_models", fake_fetch_empty)
+        assert sorted(zai_profile.fetch_models(api_key="k")) == expected
+
+        def fake_fetch_none(self, *, api_key=None, base_url=None, timeout=8.0):
+            return None
+
+        monkeypatch.setattr(ProviderProfile, "fetch_models", fake_fetch_none)
+        # China keys: live fetch rejects → None; free models still surface.
+        assert sorted(zai_profile.fetch_models(api_key="china-key")) == expected
+
+    def test_forwards_base_url_to_super(self, zai_profile, monkeypatch):
+        """The resolved China endpoint must reach the base implementation."""
+        from providers.base import ProviderProfile
+
+        seen = {}
+
+        def fake_fetch(self, *, api_key=None, base_url=None, timeout=8.0):
+            seen["api_key"] = api_key
+            seen["base_url"] = base_url
+            return ["glm-5"]
+
+        monkeypatch.setattr(ProviderProfile, "fetch_models", fake_fetch)
+        zai_profile.fetch_models(
+            api_key="china-key",
+            base_url="https://open.bigmodel.cn/api/paas/v4",
+        )
+        assert seen["api_key"] == "china-key"
+        assert seen["base_url"] == "https://open.bigmodel.cn/api/paas/v4"

@@ -235,19 +235,21 @@ def codex_model_provider_id(requested_provider: str) -> Optional[str]:
 # ── identity recovery (bare "custom" -> durable ``custom:<name>``) ─────────────────────────
 
 
-def _find_custom_identity(matches: Callable[[Dict[str, Any]], bool]) -> Optional[str]:
-    """First entry in ``providers:`` then legacy ``custom_providers:`` where ``matches(entry)``
-    holds, as its canonical ``custom:<name>`` slug."""
+def _matching_custom_identities(matches: Callable[[Dict[str, Any]], bool]) -> list[str]:
+    """Canonical identities for configured custom entries accepted by ``matches``."""
     rp = _rp()
     try:
         config = rp.load_config()
     except Exception:
-        return None
+        return []
+    identities: list[str] = []
     providers = config.get("providers")
     if isinstance(providers, dict):
+        from hermes_cli.config import is_provider_enabled
+
         for ep_name, entry in providers.items():
-            if isinstance(entry, dict) and matches(entry):
-                return custom_provider_slug(str(ep_name), str(ep_name))
+            if isinstance(entry, dict) and is_provider_enabled(entry) and matches(entry):
+                identities.append(custom_provider_slug(str(ep_name), str(ep_name)))
     try:
         custom_providers = rp.get_compatible_custom_providers(config)
     except Exception:
@@ -255,8 +257,14 @@ def _find_custom_identity(matches: Callable[[Dict[str, Any]], bool]) -> Optional
     for entry in custom_providers or []:
         name = entry.get("name") if isinstance(entry, dict) else None
         if isinstance(name, str) and name.strip() and matches(entry):
-            return custom_provider_slug(name, str(entry.get("provider_key", "") or ""))
-    return None
+            identities.append(custom_provider_slug(name, str(entry.get("provider_key", "") or "")))
+    return list(dict.fromkeys(identities))
+
+
+def _find_custom_identity(matches: Callable[[Dict[str, Any]], bool]) -> Optional[str]:
+    """Configured custom-provider identity accepted by ``matches``, only when unique."""
+    identities = _matching_custom_identities(matches)
+    return identities[0] if len(identities) == 1 else None
 
 
 def find_custom_provider_identity(base_url: str) -> Optional[str]:
@@ -273,6 +281,18 @@ def _model_id_matches(value: Any, target: str) -> bool:
     return isinstance(value, str) and value.strip().lower() == target
 
 
+def _entry_serves_model(entry: Dict[str, Any], target: str) -> bool:
+    if any(_model_id_matches(entry.get(key), target) for key in ("model", "default_model")):
+        return True
+    models = entry.get("models")
+    if isinstance(models, dict):
+        return any(str(mid).strip().lower() == target for mid in models)
+    if isinstance(models, list):
+        return any(_model_id_matches(item.get("id") or item.get("name") if isinstance(item, dict) else item, target)
+                   for item in models)
+    return False
+
+
 def find_custom_provider_identity_by_model(model: str) -> Optional[str]:
     """Map a model id back to the ``custom:<name>`` entry that serves it — companion to
     :func:`find_custom_provider_identity` for persistence paths where no base_url survived the
@@ -280,40 +300,69 @@ def find_custom_provider_identity_by_model(model: str) -> Optional[str]:
     target = str(model or "").strip().lower()
     if not target:
         return None
+    return _find_custom_identity(lambda entry: _entry_serves_model(entry, target))
 
-    def _entry_serves_model(entry: Dict[str, Any]) -> bool:
-        if any(_model_id_matches(entry.get(key), target) for key in ("model", "default_model")):
-            return True
-        models = entry.get("models")
-        if isinstance(models, dict):
-            return any(str(mid).strip().lower() == target for mid in models)
-        if isinstance(models, list):
-            return any(_model_id_matches(item.get("id") or item.get("name") if isinstance(item, dict) else item, target)
-                       for item in models)
-        return False
 
-    return _find_custom_identity(_entry_serves_model)
+def _configured_custom_identity(candidate: Any) -> Optional[str]:
+    """Canonical identity for an explicitly named configured entry, if one exists."""
+    candidate_norm = _normalize_custom_provider_name(str(candidate or ""))
+    if not candidate_norm or candidate_norm in {"auto", "openrouter", "custom"}:
+        return None
+    rp = _rp()
+    try:
+        entry = rp._get_named_custom_provider(str(candidate))
+    except Exception:
+        return None
+    if entry is None:
+        return None
+    return custom_provider_slug(
+        str(entry.get("name") or candidate_norm),
+        str(entry.get("provider_key") or ""),
+    )
 
 
 def canonical_custom_identity(*, base_url: Optional[str] = None, config_provider: Optional[str] = None,
-                              model: Optional[str] = None) -> Optional[str]:
-    """Recover the durable menu identity for a bare custom provider. Match a configured
-    endpoint first, then the ownership-checked managed server, then a configured model or
-    provider. Every session persistence/restore path shares this lookup."""
+                              model: Optional[str] = None,
+                              requested_provider: Optional[str] = None) -> Optional[str]:
+    """Recover the durable menu identity for a bare custom provider.
+
+    ``requested_provider`` is the authoritative pre-canonicalization identity and wins because
+    multiple accounts may intentionally share one endpoint URL. Legacy recovery must be unique;
+    ambiguity raises rather than silently selecting the current default account.
+    """
     rp = _rp()
+    identity = _configured_custom_identity(requested_provider)
+    if identity:
+        return identity
+    requested = str(requested_provider or "").strip()
+    if requested and requested.lower() not in {"custom", "auto", "openrouter"}:
+        return requested
+    target_model = str(model or "").strip().lower()
     if base_url:
-        identity = find_custom_provider_identity(base_url)
-        if identity:
-            return identity
+        target_url = _normalize_base_url_for_match(base_url)
+        matches_url = lambda entry: _normalize_base_url_for_match(_entry_url(entry)) == target_url
+        identities = _matching_custom_identities(matches_url)
+        if len(identities) > 1 and target_model:
+            narrowed = _matching_custom_identities(
+                lambda entry: matches_url(entry) and _entry_serves_model(entry, target_model))
+            if len(narrowed) == 1:
+                return narrowed[0]
+        if len(identities) > 1:
+            raise ValueError("Ambiguous custom provider identity; select a named provider to resume this session.")
+        if identities:
+            return identities[0]
         # The managed server has no custom-provider config entry. Recover its menu key
         # from the ownership-checked endpoint, never from a model name or a fixed port.
         from hermes_cli.local_runtime.endpoint import _state_endpoint
         endpoint = _state_endpoint()
         if endpoint and _normalize_base_url_for_match(base_url) == _normalize_base_url_for_match(endpoint["base_url"]):
             return "llamacpp"
-    identity = find_custom_provider_identity_by_model(model) if model else None
-    if identity:
-        return identity
+    identities = _matching_custom_identities(
+        lambda entry: _entry_serves_model(entry, target_model)) if target_model else []
+    if len(identities) > 1:
+        raise ValueError("Ambiguous custom provider identity; select a named provider to resume this session.")
+    if identities:
+        return identities[0]
     candidate = str(config_provider or "").strip()
     if not candidate:
         try:
@@ -322,25 +371,7 @@ def canonical_custom_identity(*, base_url: Optional[str] = None, config_provider
             candidate = ""
     if not candidate:
         candidate = os.environ.get("HERMES_INFERENCE_PROVIDER", "").strip()
-    candidate_norm = _normalize_custom_provider_name(candidate)
-    # A bare/non-routable candidate cannot heal a bare custom override.
-    if not candidate_norm or candidate_norm in {"custom", "auto", "openrouter"}:
-        return None
-    # Only when it resolves to a configured entry — never invent a ``custom:<x>`` resolution
-    # can't honor. ``candidate`` may be the entry's DISPLAY NAME, not the durable identity of a
-    # keyed ``providers:`` entry — re-resolve via its endpoint so every path returns the same
-    # config-key slug.
-    try:
-        entry = rp._get_named_custom_provider(candidate)
-    except Exception:
-        return None
-    if entry is None:
-        return None
-    try:
-        identity = find_custom_provider_identity(str(entry.get("base_url") or ""))
-    except Exception:
-        return None
-    return identity or custom_provider_slug(candidate_norm)
+    return _configured_custom_identity(candidate)
 
 
 def is_routable_provider(provider: Optional[str]) -> bool:
@@ -519,6 +550,16 @@ def _opencode_family_for_custom(requested_provider: str, base_url: str) -> Optio
     return None
 
 
+def _configured_runtime_identity(requested_provider: str, custom_provider: Dict[str, Any]) -> str:
+    """Stable requested identity for a resolved named custom entry."""
+    if _normalize_custom_provider_name(requested_provider or "") != "custom":
+        return requested_provider
+    return custom_provider_slug(
+        str(custom_provider.get("name") or requested_provider),
+        str(custom_provider.get("provider_key") or ""),
+    )
+
+
 def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: Optional[str] = None,
                                   explicit_base_url: Optional[str] = None,
                                   target_model: Optional[str] = None) -> Optional[Dict[str, Any]]:
@@ -545,6 +586,7 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
     custom_provider = custom_provider or rp._get_named_custom_provider(requested_provider)
     if not custom_provider:
         return None
+    runtime_identity = _configured_runtime_identity(requested_provider, custom_provider)
     base_url = ((explicit_base_url or "").strip() or custom_provider.get("base_url", "")).rstrip("/")
     if not base_url:
         return None
@@ -554,6 +596,7 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
     )
     if pool_result:
         # The pool doesn't know the custom_providers fields — propagate them here too.
+        pool_result["requested_provider"] = runtime_identity
         _apply_custom_provider_extras(custom_provider, target_model, pool_result)
         return pool_result
     explicit_key = (explicit_api_key or "").strip()
@@ -575,7 +618,7 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
             api_key = token_provider
     result = _custom_runtime(rp, base_url, api_key, custom_provider.get("api_mode"),
                              source=f"custom_provider:{custom_provider.get('name', requested_provider)}",
-                             requested_provider=requested_provider)
+                             requested_provider=runtime_identity)
     _apply_custom_provider_extras(custom_provider, target_model, result)
     # OpenCode-family custom providers (opencode-go/zen names, or opencode.ai hosts) serve models
     # on different API surfaces — a static api_mode 503s for /v1/responses-only models. Re-derive

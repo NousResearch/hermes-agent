@@ -174,8 +174,15 @@ def _model_picker_context(agent):
     if str(provider or "").strip().lower() == "custom":
         try:
             from hermes_cli.runtime_provider import canonical_custom_identity
-            provider = canonical_custom_identity(
-                base_url=base_url or None, config_provider=ctx.current_provider, model=model or None) or provider
+            requested_provider = str(getattr(agent, "requested_provider", "") or "").strip()
+            identity_kwargs = {
+                "base_url": base_url or None,
+                "config_provider": ctx.current_provider,
+                "model": model or None,
+            }
+            if requested_provider:
+                identity_kwargs["requested_provider"] = requested_provider
+            provider = canonical_custom_identity(**identity_kwargs) or provider
         except Exception:
             logger.debug("custom provider identity recovery failed (model picker)", exc_info=True)
     return ctx.with_overrides(

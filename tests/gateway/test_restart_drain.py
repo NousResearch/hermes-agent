@@ -408,6 +408,7 @@ async def test_shutdown_notification_uses_persisted_origin_for_colon_ids():
             origin=source,
             platform=source.platform,
             chat_type=source.chat_type,
+            active_turn_token="turn-1",
         )
     }
     runner.adapters = {gateway_run.Platform.MATRIX: adapter}
@@ -416,6 +417,30 @@ async def test_shutdown_notification_uses_persisted_origin_for_colon_ids():
 
     assert adapter.send.await_count == 1
 
+
+@pytest.mark.asyncio
+async def test_shutdown_notification_ignores_persisted_session_without_active_turn():
+    """A finished persisted session must not be treated as an active shutdown target."""
+    runner, adapter = make_restart_runner()
+    adapter.send = AsyncMock()
+    source = make_restart_source(chat_id="!room123:example.org", chat_type="group")
+    source.platform = gateway_run.Platform.MATRIX
+    session_key = build_session_key(source)
+    runner._running_agents[session_key] = MagicMock()
+    runner.session_store._entries = {
+        session_key: SessionEntry(
+            session_key=session_key,
+            session_id="sess-1",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            origin=source,
+            platform=source.platform,
+            chat_type=source.chat_type,
+            active_turn_token=None,
+        )
+    }
+
+    assert await runner._shutdown_notification_target(session_key) is None
 
 @pytest.mark.asyncio
 async def test_drain_suppress_skips_home_channel_keeps_session_ping(tmp_path, monkeypatch):

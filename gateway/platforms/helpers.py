@@ -403,6 +403,19 @@ def is_table_atom(text: str) -> bool:
 _SENTENCE_END_NEWLINE_RE = re.compile(r'[。！？.!?]\n')
 
 
+def continuation_start(text: str, cut: int) -> int:
+    """Where a new message continuing *text* starts when ``text[:cut]`` is already on screen in an
+    earlier message (a frozen preview, a sealed stream). Chunk boundaries land wherever a throttle
+    tick or a token ended, so a cut inside a word is backed up to that word's start: the word is
+    re-sent whole instead of split across two messages. A cut already on a word boundary stays
+    (backing up would repeat a whole word); so does one long token with no boundary to back up to."""
+    if 0 < cut < len(text) and not text[cut].isspace() and not text[cut - 1].isspace():
+        boundary = max(text.rfind(' ', 0, cut), text.rfind('\n', 0, cut))
+        if boundary >= 0:
+            return boundary + 1
+    return cut
+
+
 def _cp_budget(text, budget, len_fn):
     """Code-point count of the longest prefix of *text* within *budget* ``len_fn`` units
     (callers guarantee ``len_fn(text) > budget``, so plain ``len`` needs no search)."""

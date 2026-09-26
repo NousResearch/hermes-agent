@@ -43,6 +43,7 @@ import {
 type IconComponent = React.ComponentType<{ className?: string }>
 
 const VIEW_ICONS: Record<Exclude<JarvisShellView, 'profile'>, IconComponent> = {
+  prompts: MessageCircle,
   jarvis: LayoutDashboard,
   tasks: CheckCircle2,
   agents: Users,

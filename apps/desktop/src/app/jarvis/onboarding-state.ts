@@ -4,6 +4,7 @@ import { getApiRequestConnection, getApiRequestProfile } from '@/hermes'
 
 import { isJarvisComputerMode, type JarvisComputerMode } from './computer-capabilities'
 import { isJarvisConnectionId, type JarvisConnectionId } from './connections-catalog'
+import { type CzesiekPersonality, normalizePersonality } from './personality'
 
 export const JARVIS_ONBOARDING_VERSION = 3
 export const JARVIS_ONBOARDING_STATE_KEY = 'ai-evolution-jarvis-onboarding-v1'
@@ -45,6 +46,7 @@ export interface JarvisOnboardingScope {
 }
 
 export interface JarvisOnboardingSelections {
+  personality?: CzesiekPersonality
   accessOpened?: boolean
   approvalsMode?: JarvisApprovalProductMode
   computerMode?: JarvisComputerMode
@@ -150,6 +152,9 @@ function sanitizeSelections(value: unknown): JarvisOnboardingSelections {
 
   const raw = value as Record<string, unknown>
   const selections: JarvisOnboardingSelections = {}
+  if (raw.personality && typeof raw.personality === 'object') {
+    selections.personality = normalizePersonality(raw.personality)
+  }
   const accessOpened = safeBoolean(raw.accessOpened)
   const engine = safeString(raw.engine)
   const model = safeString(raw.model)

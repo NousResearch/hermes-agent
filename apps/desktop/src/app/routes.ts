@@ -14,6 +14,7 @@ export const SESSION_IMPORT_ROUTE = '/session-import'
 export const SKILLS_ROUTE = '/skills'
 export const MESSAGING_ROUTE = '/messaging'
 export const WEBHOOKS_ROUTE = '/webhooks'
+export const PROMPTS_ROUTE = '/prompts'
 export const ARTIFACTS_ROUTE = '/artifacts'
 export const CONNECTIONS_ROUTE = '/connections'
 export const CRON_ROUTE = '/cron'
@@ -24,6 +25,7 @@ export const STARMAP_ROUTE = '/starmap'
 export type AppView =
   | 'session-import'
   | 'agents'
+  | 'prompts'
   | 'artifacts'
   | 'chat'
   | 'command-center'
@@ -44,6 +46,7 @@ export type AppView =
 export type AppRouteId =
   | 'session-import'
   | 'agents'
+  | 'prompts'
   | 'artifacts'
   | 'command-center'
   | 'connections'
@@ -63,6 +66,7 @@ export interface AppRoute {
 }
 
 export const APP_ROUTES = [
+  { id: 'prompts', path: PROMPTS_ROUTE, view: 'prompts' },
   { id: 'session-import', path: SESSION_IMPORT_ROUTE, view: 'session-import' },
   { id: 'new', path: NEW_CHAT_ROUTE, view: 'chat' },
   { id: 'settings', path: SETTINGS_ROUTE, view: 'settings' },

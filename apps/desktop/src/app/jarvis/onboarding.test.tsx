@@ -1,4 +1,5 @@
 import { cleanup, configure, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { StrictMode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as HermesApi from '@/hermes'
@@ -123,6 +124,32 @@ function persistReadyApprovalsState() {
     })
   )
 }
+
+it('keeps setup usable after StrictMode remount and loads providers for the required step', async () => {
+  render(
+    <StrictMode>
+      <I18nProvider configClient={null} initialLocale="pl">
+        <JarvisOnboarding
+          scope={TEST_SCOPE}
+          loadConfig={async () => ({})}
+          loadModelOptions={async () => ({
+            provider: 'openrouter',
+            model: 'demo',
+            providers: [{ slug: 'openrouter', name: 'OpenRouter', authenticated: true, models: ['demo'] }]
+          })}
+          onComplete={vi.fn()}
+        />
+      </I18nProvider>
+    </StrictMode>
+  )
+  await waitFor(() =>
+    expect((screen.getByRole('button', { name: pl.jarvisOnboarding.actions.next }) as HTMLButtonElement).disabled).toBe(
+      false
+    )
+  )
+  fireEvent.click(screen.getByRole('button', { name: /Silnik|Własne API/ }))
+  await waitFor(() => expect(screen.getByRole('button', { name: /OpenRouter.*1/ })).toBeTruthy())
+})
 
 function persistReadyComputerState() {
   window.localStorage.setItem(
@@ -428,7 +455,7 @@ describe('Agent CzesiekOnboarding', () => {
     expect(screen.getByRole('button', { name: 'Dalej' })).toHaveProperty('disabled', true)
   })
 
-  it('opens secure setup without completing access, then refresh validation unlocks Next', async () => {
+  it('allows skipping access while secure setup and refresh still validate credentials', async () => {
     const loadModelOptions = vi
       .fn()
       .mockResolvedValueOnce({
@@ -446,12 +473,12 @@ describe('Agent CzesiekOnboarding', () => {
 
     await screen.findByRole('heading', { name: 'Dostępy' })
     await waitFor(() => expect(readStoredOnboardingState()?.selections?.engine).toBe('fireworks'))
-    expect(screen.getByRole('button', { name: 'Dalej' })).toHaveProperty('disabled', true)
+    expect(screen.getByRole('button', { name: 'Dalej' })).toHaveProperty('disabled', false)
 
     fireEvent.click(screen.getByRole('button', { name: 'Otwórz bezpieczną konfigurację dostawcy' }))
     expect(startManualOnboarding).toHaveBeenCalledWith(null, TEST_SCOPE)
     expect(await screen.findByText(/Bezpieczna konfiguracja została otwarta/)).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Dalej' })).toHaveProperty('disabled', true)
+    expect(screen.getByRole('button', { name: 'Dalej' })).toHaveProperty('disabled', false)
 
     fireEvent.click(screen.getByRole('button', { name: 'Odśwież i sprawdź dostęp' }))
 
@@ -570,7 +597,12 @@ describe('Agent CzesiekOnboarding', () => {
     expect(requestGateway).toHaveBeenNthCalledWith(2, 'reload.env')
     expect(saveConfig).toHaveBeenNthCalledWith(
       1,
-      { approvals: { mode: 'smart' }, custom_prompt: expect.stringContaining('Cześkiem'), stt: { enabled: false }, voice: { auto_tts: false, engine: 'classic' } },
+      {
+        approvals: { mode: 'smart' },
+        custom_prompt: expect.stringContaining('Cześkiem'),
+        stt: { enabled: false },
+        voice: { auto_tts: false, engine: 'classic' }
+      },
       TEST_SCOPE
     )
     expect(saveConfig).toHaveBeenNthCalledWith(

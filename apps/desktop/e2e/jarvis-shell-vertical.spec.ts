@@ -60,6 +60,7 @@ const MAIN_VIEWS = [
   { view: 'agents', hash: '#/agents' },
   { view: 'messaging', hash: '#/messaging' },
   { view: 'webhooks', hash: '#/webhooks' },
+  { view: 'prompts', hash: '#/prompts' },
   { view: 'artifacts', hash: '#/artifacts' },
   { view: 'memory', hash: '#/starmap?view=list' },
   { view: 'starmap', hash: '#/starmap' },
@@ -240,6 +241,28 @@ test.describe('Jarvis product shell', () => {
 
   test('the Core renders on the home view', async () => {
     await expect(fixture!.page.locator('[data-testid="jarvis-core"]')).toBeVisible()
+  })
+
+  test('saved prompts survive reopening and can be inserted into chat', async () => {
+    const page = fixture!.page
+    await page.locator('[data-jarvis-nav-view="prompts"]').click()
+    const form = page.locator('section[aria-label="Moje prompty"]')
+    await form.locator('form input').fill('Plan E2E')
+    await form.locator('textarea').fill('Zaplanuj tydzien i zapytaj o priorytety.')
+    await form.locator('button[type="submit"]').click()
+    await page.locator('[data-jarvis-nav-view="jarvis"]').click()
+    await page.locator('[data-jarvis-nav-view="prompts"]').click()
+    await page.getByRole('button', { name: 'Plan E2E', exact: true }).click()
+    await expect(form.locator('textarea')).toHaveValue('Zaplanuj tydzien i zapytaj o priorytety.')
+    await form.locator('form button').nth(1).click()
+    await expect.poll(() => page.evaluate(() => window.location.hash)).toBe('#/')
+    const composer = page.locator('textarea, [contenteditable="true"]').first()
+    await expect.poll(async () => await composer.inputValue().catch(() => composer.textContent())).toContain('Zaplanuj tydzien')
+    await page.locator('[data-jarvis-nav-view="prompts"]').click()
+    await page.getByRole('button', { name: 'Plan E2E', exact: true }).click()
+    await form.locator('form button').last().click()
+    await expect(page.getByRole('button', { name: 'Plan E2E', exact: true })).toHaveCount(0)
+    await page.locator('[data-jarvis-nav-view="jarvis"]').click()
   })
 
   test('every nav entry routes and marks itself current', async () => {

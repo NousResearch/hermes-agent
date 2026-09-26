@@ -20,6 +20,7 @@ import { JarvisShell } from './jarvis/shell'
 import {
   AGENTS_ROUTE,
   ARTIFACTS_ROUTE,
+  PROMPTS_ROUTE,
   COMMAND_CENTER_ROUTE,
   CONNECTIONS_ROUTE,
   CRON_ROUTE,
@@ -34,6 +35,7 @@ import {
 } from './routes'
 
 const JARVIS_VIEW_TARGETS: Record<JarvisShellView, string> = {
+  prompts: PROMPTS_ROUTE,
   jarvis: NEW_CHAT_ROUTE,
   tasks: CRON_ROUTE,
   agents: AGENTS_ROUTE,
@@ -68,6 +70,7 @@ function jarvisViewForLocation(pathname: string, search: string): JarvisShellVie
   // One entry per page: every Capabilities tab (skills, toolsets, MCP) is "tools".
   const byPath: Partial<Record<string, JarvisShellView>> = {
     [AGENTS_ROUTE]: 'agents',
+    [PROMPTS_ROUTE]: 'prompts',
     [ARTIFACTS_ROUTE]: 'artifacts',
     [COMMAND_CENTER_ROUTE]: 'insights',
     [CONNECTIONS_ROUTE]: 'connections',

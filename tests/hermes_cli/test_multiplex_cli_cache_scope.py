@@ -250,7 +250,8 @@ def test_active_skin_is_per_profile_and_leaves_launch_slot_alone(homes):
             assert skin_engine.get_active_skin().name == "mono"  # B's own display.skin, never A's
         with _Scoped(a):
             assert skin_engine.get_active_skin().name == "ares"
-        assert skin_engine.get_active_skin_name() == "default"  # routed turns never touch the launch slot
+        assert skin_engine._active_skin_name == "default"  # routed turns never touch the launch slot
+        assert skin_engine.get_active_skin_name() == "ares"  # unrouted: the launch home's own display.skin
     finally:
         skin_engine._active_skin = None
         skin_engine._active_skin_name = "default"

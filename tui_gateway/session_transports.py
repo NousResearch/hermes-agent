@@ -47,6 +47,16 @@ def _session_client_answers_requests(sid: str) -> bool:
     return not clients or any(server_requests.answers_requests(peer) for peer in clients)
 
 
+
+def _session_client_attached(sid: str) -> bool:
+    """Approval presence probe: whether *sid* still has a transport that can display a prompt. False once
+    every client disconnected (the session is parked on the drop sentinel, or its fan-out holds only closed
+    peers), which holds the approval countdown until a client reattaches and gets the ``open_requests``
+    replay. The stdio TUI is always attached."""
+    session = _sessions.get(sid)
+    transport = (session or {}).get("transport")
+    return transport is not None and not _transport_is_dead(transport)
+
 def _warn_foreign_login(session: dict, transport) -> None:
     """Ownership is not enforced; a second login sharing a session is only logged, and the agent keeps the
     creator's user id."""

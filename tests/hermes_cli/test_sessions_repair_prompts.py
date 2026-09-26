@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from agent.prompt_builder import SKILL_SAFETY_HEADING
 from hermes_cli import sessions_cmd
 from hermes_cli.sessions_cmd import _cmd_repair_prompts
 from hermes_state import SessionDB
@@ -14,7 +15,7 @@ from hermes_state import SessionDB
 HEALTHY = (
     "You are Hermes.\n"
     "<available_skills>\n  dogfood: exploratory QA of web apps\n</available_skills>\n"
-    "## Skill Safety Rule\nReload [SKILL_PRUNED] placeholders with skill_view.\n"
+    f"{SKILL_SAFETY_HEADING}\nReload [SKILL_PRUNED] placeholders with skill_view.\n"
 )
 DEGRADED = "You are Hermes.\n(reduced maintenance build without the skills index)\n"
 
@@ -68,14 +69,19 @@ def test_unpinned_row_is_unverifiable_and_apply_json_clears_only_verified(db, mo
     assert [row["id"] for row in payload["unverifiable"]] == ["old-unpinned"]
     assert db.get_session(unverifiable)["system_prompt"] == DEGRADED
     assert not (db.get_session(verified)["system_prompt"] or "")
+    assert db.get_session(verified)["tool_names"]  # the skill_manage pin survives the clear
     assert db.get_session(healthy)["system_prompt"] == HEALTHY
 
 
-def test_reduced_surface_and_memory_only_pin_left_alone(db, monkeypatch, capsys):
+def test_reduced_memory_only_and_zero_skills_rows_left_alone(db, monkeypatch, capsys):
     reduced = db.create_session("reduced-1", "telegram", system_prompt=DEGRADED)
     db.update_session_tool_names(reduced, _pin("todo", "web_search"))
     memory = db.create_session("memory-only-1", "telegram", system_prompt=DEGRADED)
     db.update_session_tool_names(memory, _pin("memory"))
+    # Zero skills installed + no skill_manage: the real builder emits neither skills marker.
+    zero_skills = "You are Hermes.\nNo skills are installed.\n"
+    readonly = db.create_session("zero-skills-readonly", "telegram", system_prompt=zero_skills)
+    db.update_session_tool_names(readonly, _pin("terminal", "skills_list", "skill_view"))
 
     payload = _apply_json(db, monkeypatch, capsys)
 
@@ -84,15 +90,17 @@ def test_reduced_surface_and_memory_only_pin_left_alone(db, monkeypatch, capsys)
     assert db.get_session(reduced)["system_prompt"] == DEGRADED
     assert db.get_session(memory)["system_prompt"] == DEGRADED
     assert db.get_session(memory)["tool_names"]
+    assert db.get_session(readonly)["system_prompt"] == zero_skills
 
 
-def test_healthy_prompt_without_skill_manage_is_not_cleared(db, monkeypatch, capsys):
-    # Zero skills installed + no skill_manage: the real builder emits neither skills marker.
-    healthy = "You are Hermes.\nNo skills are installed.\n"
-    readonly = db.create_session("zero-skills-readonly", "telegram", system_prompt=healthy)
-    db.update_session_tool_names(readonly, _pin("terminal", "skills_list", "skill_view"))
+def test_explicit_session_id_clears_memory_only_row_and_rejects_unknown_id(db, monkeypatch, capsys):
+    memory = db.create_session("memory-only-1", "telegram", system_prompt=DEGRADED)
+    db.update_session_tool_names(memory, _pin("memory"))
+    monkeypatch.setattr(sessions_cmd, "_confirm_prompt", lambda _prompt: True)
 
-    payload = _apply_json(db, monkeypatch, capsys)
+    assert _cmd_repair_prompts(db, _args(session_id="memory-only", apply=True)) == 0
+    assert not (db.get_session(memory)["system_prompt"] or "")
 
-    assert payload["cleared"] == []
-    assert db.get_session(readonly)["system_prompt"] == healthy
+    capsys.readouterr()
+    assert _cmd_repair_prompts(db, _args(session_id="no-such-session", apply=True)) == 1
+    assert "No session matches" in capsys.readouterr().out

@@ -537,8 +537,9 @@ function Get-Uv {
 # on Windows; every other member is extracted and any other failure fails the
 # stage. The Python runs from a temp .py file -- Windows PowerShell 5.1's
 # legacy native argument passing mangles the quotes a `python -c` payload
-# needs -- and stderr keeps flowing so the install log shows why a failure
-# happened. Exit code in $LASTEXITCODE; no stdout.
+# needs -- and stderr keeps flowing to the installer's stderr / bootstrap
+# log, so a failure shows why it happened. Exit code in $LASTEXITCODE; no
+# stdout.
 function Invoke-PythonTarExtract {
     param(
         [Parameter(Mandatory = $true)][string]$Archive,

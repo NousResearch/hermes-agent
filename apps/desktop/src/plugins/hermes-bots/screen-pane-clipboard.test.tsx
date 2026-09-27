@@ -145,7 +145,7 @@ it('drops a paste while this viewer only watches (no lease)', async () => {
   view.unmount()
 })
 
-it('drops a paste over the bridge\'s 256 KiB cut-text cap instead of forwarding it', async () => {
+it("drops a paste over the bridge's 256 KiB cut-text cap instead of forwarding it", async () => {
   const view = render(<BotScreenPane bot={bot} />)
   await waitFor(() => expect(rfbs).toHaveLength(1))
   await waitFor(() => expect(rfbs[0].viewOnly).toBe(false))

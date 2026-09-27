@@ -1,12 +1,14 @@
 """Head-only SKILL.md reads: correctness, escalation ladder, fallback, and the write ceiling.
 
 Skill discovery scans every SKILL.md once per pass and only needs the routing fields in the
-frontmatter (name/description/platforms/environments) — over 131 installed skills the last of them
-ended within 422 bytes. The old path read the whole file and sliced it (`read_text()[:4000]`), so
-cost scaled with file size: 3.03ms vs 0.76ms over 131 skills. These tests pin the head read, its
+frontmatter (name/description/platforms/environments) — over 155 installed skills every frontmatter
+closed inside the first window (median 277 B, max 3,188 B). The old path read the whole file and
+sliced it (`read_text()[:4000]`), so cost scaled with file size: read time 5.8 ms vs 2.4 ms and
+2,286 KB vs 593 KB read over those 155 SKILL.md. These tests pin the head read, its
 escalation for long frontmatter, the whole-file fallback for unclosed frontmatter, the CRLF case
 that must NOT fall back (a Windows-written SKILL.md is the population the utf-8-sig decoding exists
-for), and the frontmatter ceiling enforced at the write boundary.
+for), the discovery call site that must keep using it, and the frontmatter ceiling enforced at the
+write boundary.
 """
 
 import builtins
@@ -217,3 +219,24 @@ def test_validate_frontmatter_still_allows_editing_an_existing_oversized_skill()
 
 def test_validate_frontmatter_accepts_a_normal_skill():
     assert _validate_frontmatter("---\nname: fine\ndescription: short and fine\n---\nbody") is None
+
+
+def test_discovery_call_site_uses_the_head_read(tmp_path, monkeypatch):
+    """The wiring, not only the helper: reverting the call site to ``[:4000]`` must fail here.
+
+    ``read_skill_head``'s own tests cover the helper, but a whole-file read parked at the
+    discovery call site (`_read_skill_text(skill_md)[:4000]`) would leave them all green —
+    the change would silently stop applying while the helper stayed correct.
+    """
+    from tools import skills_tool
+
+    skill = tmp_path / "skills" / "wired-skill"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(
+        "---\nname: wired-skill\ndescription: wired through discovery\n---\n" + BIG_BODY, encoding="utf-8")
+    monkeypatch.setattr(skills_tool, "_skill_search_dirs", lambda: ([], [tmp_path / "skills"], None))
+    monkeypatch.setattr(skills_tool, "_SKILLS_CACHE", {})
+    _forbid_whole_file_read(monkeypatch)  # a whole-file read on the discovery path IS the regression
+
+    found = skills_tool._find_all_skills(skip_disabled=True)
+    assert [s["name"] for s in found] == ["wired-skill"]

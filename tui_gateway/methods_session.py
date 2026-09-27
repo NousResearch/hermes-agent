@@ -7,7 +7,6 @@ server.py the same way (tests monkeypatching ``server.X`` still intercept)."""
 import contextlib
 
 from .method_ctx import HandlerRegistry, bind_module
-from hermes_state_errors import SessionActiveWriteGuardError
 
 _registry = HandlerRegistry()
 method = _registry.method
@@ -1075,6 +1074,8 @@ def _(rid, params: dict, session: dict) -> dict:
 @method("session.delete")
 def _(rid, params: dict) -> dict:
     """Delete a stored session + transcripts; refused while live here (FK trips on the agent's next flush)."""
+    from hermes_state_errors import SessionActiveWriteGuardError  # body runs on server.py globals
+
     if not (target := params.get("session_id", "")):
         return _err(rid, 4006, "session_id required")
     snapshot, err = _snapshot_sessions(rid)

@@ -378,8 +378,8 @@ class TestDispatchDefersToGatewayAuthorization(unittest.TestCase):
 
     def test_only_a_missing_auth_results_header_warns_with_the_opt_out_hint(self):
         """A granted sender's mail with no Authentication-Results suggests a server that never stamps it, so the drop
-        warns with the opt-out hint; a stamp only from another authserv-id warns to check authserv_id; an explicit
-        failing verdict is routine forgery and stays at debug."""
+        warns with the opt-out hint; no stamp from the pinned authserv-id warns to check authserv_id; a listed sender's
+        failing verdict warns without a hint; forged stranger mail under open access stays at debug."""
         from plugins.platforms.email.adapter import _UNTRUSTED_AUTHSERV_REASON
 
         adapter_log = "plugins.platforms.email.adapter"
@@ -391,10 +391,15 @@ class TestDispatchDefersToGatewayAuthorization(unittest.TestCase):
                                                    env={"EMAIL_ALLOWED_USERS": self.STRANGER}), [])
         self.assertIn("authserv_id", logs.output[0])
         self.assertNotIn("require_authenticated_sender", logs.output[0])
-        for label, env in {"open access": {"EMAIL_ALLOW_ALL_USERS": "true"},
-                           "listed sender": {"EMAIL_ALLOWED_USERS": self.STRANGER}}.items():
-            with self.subTest(label), self.assertNoLogs(adapter_log, level="WARNING"):
-                self.assertEqual(self._reached_gateway(authenticated=False, auth_reason="dmarc=fail", env=env), [])
+        with self.assertNoLogs(adapter_log, level="WARNING"):
+            self.assertEqual(self._reached_gateway(authenticated=False, auth_reason="dmarc=fail",
+                                                   env={"EMAIL_ALLOW_ALL_USERS": "true"}), [])
+        # A listed contact's failing mail (broken DKIM, a forwarder) is worth seeing, but the opt-out is wrong advice.
+        with self.assertLogs(adapter_log, level="WARNING") as logs:
+            self.assertEqual(self._reached_gateway(authenticated=False, auth_reason="dmarc=fail",
+                                                   env={"EMAIL_ALLOWED_USERS": self.STRANGER}), [])
+        self.assertIn("dmarc=fail", logs.output[0])
+        self.assertNotIn("require_authenticated_sender", logs.output[0])
 
     def test_mail_the_gateway_admits_or_answers_reaches_it(self):
         cases = {

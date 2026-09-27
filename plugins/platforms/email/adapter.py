@@ -66,6 +66,12 @@ _AUTH_METHOD_RE = re.compile(r"\s*(dmarc|dkim|spf)\s*=\s*([a-z]+)", re.IGNORECAS
 # server which never stamps the header (the opt-out case), rather than at the message itself.
 _NO_AUTH_RESULTS_REASON = "no Authentication-Results header"
 _UNTRUSTED_AUTHSERV_REASON = "no Authentication-Results from trusted authserv-id"
+# Operator-fixable reasons a granted sender's mail fails authentication, and the fix each log line names.
+_DROP_HINTS = {
+    _NO_AUTH_RESULTS_REASON: " If your mail server does not stamp Authentication-Results, set "
+    "platforms.email.require_authenticated_sender: false (or EMAIL_TRUST_FROM_HEADER=true) to accept the risk.",
+    _UNTRUSTED_AUTHSERV_REASON: " Check that platforms.email.authserv_id (EMAIL_AUTHSERV_ID) names your mail server.",
+}
 # One token of a clause: a property we read (``header.from=x``; the value may be or contain a quoted-string), or
 # any other whitespace-delimited token consumed whole, so text inside quotes or other values is never read as a prop.
 _QUOTED = r'"(?:[^"\\]|\\.)*"'
@@ -728,20 +734,14 @@ class EmailAdapter(BasePlatformAdapter):
             return False
         # Reject spoofed senders (GHSA-rxqh-5572-8m77): every grant keys on the attacker-controlled From:, and a pairing
         # code or decline is mailed back to it; fail-closed. Open access is no exception: the session and every reply
-        # key on From:, so a forged one lands in that address's conversation and makes the agent mail it. Only a granted
-        # sender's mail with no Authentication-Results at all warns, since that suggests a server that never stamps it and
-        # the opt-out hint fits; so does one whose only stamp is from another authserv-id (a mis-pinned authserv_id). An explicit failing verdict (dmarc=fail, misaligned SPF/DKIM, ...) is routine forgery,
-        # even when From: is an allowlisted address or open access grants everyone; the hint would be wrong advice.
+        # key on From:, so a forged one lands in that address's conversation and makes the agent mail it.
+        # Warn only where the operator can act: a known misconfiguration, or a listed contact's own mail failing.
+        # Forged stranger mail (open access grants everyone) stays at debug.
         if self._require_authenticated_sender and not msg_data.get("sender_authenticated", False):
             auth_reason = msg_data.get("auth_reason", "no verdict")
-            if granted and auth_reason == _NO_AUTH_RESULTS_REASON:
-                logger.warning("[Email] Dropping sender with unauthenticated From: %s (%s). If your mail server does not "
-                               "stamp Authentication-Results, set platforms.email.require_authenticated_sender: false "
-                               "(or EMAIL_TRUST_FROM_HEADER=true) to accept the risk.", sender_addr, auth_reason)
-            elif granted and auth_reason == _UNTRUSTED_AUTHSERV_REASON:
-                logger.warning("[Email] Dropping sender with unauthenticated From: %s (%s). Check that "
-                               "platforms.email.authserv_id (EMAIL_AUTHSERV_ID) names your mail server.",
-                               sender_addr, auth_reason)
+            hint = _DROP_HINTS.get(auth_reason, "")
+            if granted and (hint or sender_addr.lower() in listed):
+                logger.warning("[Email] Dropping sender with unauthenticated From: %s (%s).%s", sender_addr, auth_reason, hint)
             else:
                 logger.debug("[Email] Dropping %s sender with unauthenticated From: %s (%s)",
                              "authorized" if granted else "unknown", sender_addr, auth_reason)

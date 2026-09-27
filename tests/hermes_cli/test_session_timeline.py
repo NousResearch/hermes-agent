@@ -212,3 +212,87 @@ def test_timeline_sql_never_reads_tool_columns_or_writes(timeline_store, monkeyp
         assert accesses
     finally:
         reader.close()
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_adjacent_pages_cross_long_tool_turn_without_gaps_and_survive_compaction(timeline_store, legacy, monkeypatch):
+    db, client, _ = timeline_store
+    sid = "timeline-root"
+    rows = [{"role": "user", "content": "long turn", "timestamp": 1}]
+    for i in range(150):
+        rows.extend([
+            {"role": "assistant", "content": f"step {i}", "timestamp": i + 2,
+             "tool_calls": [{"id": f"call-{i}", "type": "function",
+                             "function": {"name": "terminal", "arguments": "{}"}}]},
+            {"role": "tool", "content": f"result {i}", "timestamp": i + 2,
+             "tool_name": "terminal", "tool_call_id": f"call-{i}"},
+        ])
+    rows.extend([{"role": "user", "content": "last ask", "timestamp": 999},
+                 {"role": "assistant", "content": "last answer", "timestamp": 1000}])
+    db.append_messages_batch(sid, rows)
+    original = db.get_messages(sid)
+    # Every request hydrates at most its bounded selected payloads.
+    hydrated = []
+    decode = SessionDB._row_to_message_dict
+    def counted(self, row, *args, **kwargs):
+        hydrated.append(row["id"])
+        return decode(self, row, *args, **kwargs)
+    monkeypatch.setattr(SessionDB, "_row_to_message_dict", counted)
+    if legacy:
+        db._write_sql("UPDATE messages SET display_identity = NULL, display_order = NULL WHERE session_id = ?", (sid,))
+    url = f"/api/sessions/{sid}/messages/around"
+    def read(**params):
+        hydrated.clear()
+        response = client.get(url, params=params)
+        assert response.status_code == 200, response.text
+        page = response.json()
+        assert len(hydrated) == len(page["messages"]) <= 120
+        return page
+    first = read(row_id=original[0]["id"])
+    # Replace the active tail while a client still holds the old logical cursor.
+    db.archive_and_compact(sid, original[100:])
+    if legacy:
+        db._write_sql("UPDATE messages SET display_identity = NULL, display_order = NULL WHERE session_id = ?", (sid,))
+    second = read(after_cursor=first["pagination"]["last_cursor"])
+    third = read(after_cursor=second["pagination"]["last_cursor"])
+    combined = first["messages"] + second["messages"] + third["messages"]
+    assert [m["content"] for m in combined] == [m["content"] for m in rows]
+    assert first["pagination"]["has_older"] is False
+    assert first["pagination"]["leading_prompt_row_id"] == original[0]["id"]
+    assert third["pagination"]["has_newer"] is False
+    assert second["pagination"]["leading_prompt_row_id"] == original[0]["id"]
+    backward = read(before_cursor=third["pagination"]["first_cursor"])
+    assert [m["content"] for m in backward["messages"]] == [m["content"] for m in second["messages"]]
+    backward = read(before_cursor=backward["pagination"]["first_cursor"])
+    assert [m["content"] for m in backward["messages"]] == [m["content"] for m in first["messages"]]
+    assert backward["pagination"]["has_older"] is False
+
+
+@pytest.mark.parametrize("params", [{}, {"row_id": 1, "after_cursor": 1},
+                                     {"before_cursor": 1, "after_cursor": 1},
+                                     {"before_cursor": 0}, {"after_cursor": 1, "limit": 121}])
+def test_adjacent_page_addresses_are_exclusive_and_bounded(timeline_store, params):
+    _, client, _ = timeline_store
+    assert client.get("/api/sessions/timeline-root/messages/around", params=params).status_code == 422
+
+
+def test_adjacent_page_keeps_exact_profile_ownership(timeline_store):
+    db, client, home = timeline_store
+    sid = "timeline-root"
+    db.append_messages_batch(sid, [{"role": "user", "content": "default ask"},
+                                   {"role": "assistant", "content": "default reply"}])
+    work = home / "profiles" / "work"
+    work.mkdir(parents=True)
+    with SessionDB(db_path=work / "state.db") as other:
+        other.create_session(session_id=sid, source="desktop")
+        other.append_messages_batch(sid, [{"role": "user", "content": "work ask"},
+                                          {"role": "assistant", "content": "work reply"}])
+    for profile in ("default", "work", "default"):
+        url = f"/api/sessions/{sid}/messages/around"
+        first = client.get(url, params={"profile": profile, "row_id": 1, "limit": 1}).json()
+        page = client.get(url, params={"profile": profile,
+                         "after_cursor": first["pagination"]["last_cursor"]}).json()
+        assert [m["content"] for m in page["messages"]] == [f"{profile} reply"]
+    db._write_sql("UPDATE sessions SET profile_name = 'wrong-owner' WHERE id = ?", (sid,))
+    assert client.get(url, params={"after_cursor": 1}).status_code == 404
+    assert client.get("/api/sessions/timeline-ro/messages/around?after_cursor=1").status_code == 404

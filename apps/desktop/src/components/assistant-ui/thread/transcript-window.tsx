@@ -11,6 +11,9 @@ export interface TranscriptWindowValue {
   returnToLatest?: () => void
   isHistorical?: boolean
   newerAvailable?: boolean
+  revealNewer?: (beforeChange?: () => void) => Promise<boolean>
+  historyError?: 'unavailable' | 'failed' | null
+  leadingRowId?: number | null
   /** Exactly the selected bounded source slice, not the full live store. */
   currentMessages?: readonly ChatMessage[]
   /** Pull a page, capturing the reader immediately before the prepend commits.
@@ -26,6 +29,9 @@ const DEFAULT_TRANSCRIPT_WINDOW: Required<TranscriptWindowValue> = {
   returnToLatest: () => {},
   isHistorical: false,
   newerAvailable: false,
+  revealNewer: async () => false,
+  historyError: null,
+  leadingRowId: null,
   currentMessages: []
 }
 

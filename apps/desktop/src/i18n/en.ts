@@ -4988,6 +4988,10 @@ export const en: Translations = {
     thread: {
       loadingSession: 'Loading session',
       showEarlier: 'Show earlier messages',
+      showLater: 'Show later messages',
+      jumpToLatest: 'Jump to latest',
+      historyLoadFailed: 'Could not load history. Try again.',
+      historyPagingUnavailable: 'Update the backend to browse adjacent history pages.',
       loadingResponse: 'Hermes is loading a response',
       loadingLocalModel: model => `Loading ${model} into memory`,
       processingPrompt: 'Processing prompt',

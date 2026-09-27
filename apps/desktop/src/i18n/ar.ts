@@ -3215,6 +3215,10 @@ export const ar = defineLocale({
     thread: {
       loadingSession: 'جار تحميل الجلسة...',
       showEarlier: 'عرض الرسائل الأقدم',
+      showLater: 'عرض الرسائل التالية',
+      jumpToLatest: 'الانتقال إلى أحدث الرسائل',
+      historyLoadFailed: 'تعذر تحميل السجل. حاول مرة أخرى.',
+      historyPagingUnavailable: 'حدّث الخادم لتصفح صفحات السجل المتجاورة.',
       loadingResponse: 'جار تحميل الرد...',
       resumeWhenBackgroundDone: count =>
         count === 1 ? 'سيُستأنف عند انتهاء المهمة الخلفية' : `سيُستأنف عند انتهاء ${count} مهام خلفية`,

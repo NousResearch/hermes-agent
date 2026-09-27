@@ -587,7 +587,7 @@ export const frOverrides = {
 
   nvidiaEglFallbackBanner: {
     message: reason =>
-      `Rendu logiciel actif — solution de repli EGL NVIDIA activée (${reason}). L'accélération GPU est désactivée pour la stabilité ; définissez HERMES_DESKTOP_NVIDIA_SWIFTSHADER=0 pour vous en désinscrire.`
+      `Rendu logiciel actif — solution de repli EGL NVIDIA activée (${reason}). L'accélération GPU est désactivée pour la stabilité. HERMES_DESKTOP_NVIDIA_SWIFTSHADER=0 désactive cette solution de repli.`
   },
   billingBlock: {
     titleNous: 'Plus de crédits Nous',

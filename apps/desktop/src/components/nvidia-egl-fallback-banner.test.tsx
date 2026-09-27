@@ -24,6 +24,7 @@ it('surfaces a persistent notice when the main process reports an active NVIDIA 
   const [toast] = notify.mock.calls[0]
   expect(toast.durationMs).toBe(0)
   expect(toast.message).toContain('NVIDIA driver 580 (>= 580)')
+  expect(toast.id).toBe('nvidia-egl-fallback')
 })
 
 it('stays silent when the main process reports no fallback', async () => {

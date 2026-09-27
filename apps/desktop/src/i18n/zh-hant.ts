@@ -311,7 +311,7 @@ export const zhHant = defineLocale({
 
   nvidiaEglFallbackBanner: {
     message: reason =>
-      `軟體繪圖已啟用 — 已觸發 NVIDIA EGL 後援方案（${reason}）。為求穩定已停用 GPU 加速；設定 HERMES_DESKTOP_NVIDIA_SWIFTSHADER=0 可取消。`
+      `軟體繪圖已啟用 — 已觸發 NVIDIA EGL 後援方案（${reason}）。為求穩定已停用 GPU 加速。設定 HERMES_DESKTOP_NVIDIA_SWIFTSHADER=0 可關閉此後援方案。`
   },
 
   billingBlock: {

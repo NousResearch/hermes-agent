@@ -588,7 +588,7 @@ export const esOverrides = {
 
   nvidiaEglFallbackBanner: {
     message: reason =>
-      `Renderizado por software activo — se activó la alternativa EGL de NVIDIA (${reason}). La aceleración por GPU se desactivó por estabilidad; usa HERMES_DESKTOP_NVIDIA_SWIFTSHADER=0 para desactivarla.`
+      `Renderizado por software activo — se activó la alternativa EGL de NVIDIA (${reason}). La aceleración por GPU se desactivó por estabilidad. HERMES_DESKTOP_NVIDIA_SWIFTSHADER=0 desactiva esta alternativa.`
   },
   billingBlock: {
     titleNous: 'Sin créditos de Nous',

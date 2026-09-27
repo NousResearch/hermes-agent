@@ -321,7 +321,7 @@ export const ru = defineLocale({
 
   nvidiaEglFallbackBanner: {
     message: reason =>
-      `Включён программный рендеринг — сработал откат NVIDIA EGL (${reason}). GPU-ускорение отключено для стабильности; чтобы отказаться, установите HERMES_DESKTOP_NVIDIA_SWIFTSHADER=0.`
+      `Включён программный рендеринг — сработал откат NVIDIA EGL (${reason}). GPU-ускорение отключено для стабильности. HERMES_DESKTOP_NVIDIA_SWIFTSHADER=0 отключает этот откат.`
   },
 
   billingBlock: {

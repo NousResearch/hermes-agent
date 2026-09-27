@@ -636,7 +636,7 @@ export const en: Translations = {
 
   nvidiaEglFallbackBanner: {
     message: reason =>
-      `Software rendering active — NVIDIA EGL fallback engaged (${reason}). GPU acceleration is disabled for stability; set HERMES_DESKTOP_NVIDIA_SWIFTSHADER=0 to opt out.`
+      `Software rendering active — NVIDIA EGL fallback engaged (${reason}). GPU acceleration is disabled for stability. HERMES_DESKTOP_NVIDIA_SWIFTSHADER=0 disables this fallback.`
   },
 
   billingBlock: {

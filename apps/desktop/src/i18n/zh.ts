@@ -351,7 +351,7 @@ export const zh = defineLocale({
 
   nvidiaEglFallbackBanner: {
     message: reason =>
-      `软件渲染已启用 — 已触发 NVIDIA EGL 回退（${reason}）。为稳定性已禁用 GPU 加速；设置 HERMES_DESKTOP_NVIDIA_SWIFTSHADER=0 可取消。`
+      `软件渲染已启用 — 已触发 NVIDIA EGL 回退（${reason}）。为稳定性已禁用 GPU 加速。HERMES_DESKTOP_NVIDIA_SWIFTSHADER=0 可关闭此回退。`
   },
 
   billingBlock: {

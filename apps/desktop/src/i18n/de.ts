@@ -588,7 +588,7 @@ export const deOverrides = {
 
   nvidiaEglFallbackBanner: {
     message: reason =>
-      `Software-Rendering aktiv — NVIDIA-EGL-Fallback aktiviert (${reason}). GPU-Beschleunigung ist zur Stabilität deaktiviert; mit HERMES_DESKTOP_NVIDIA_SWIFTSHADER=0 abwählen.`
+      `Software-Rendering aktiv — NVIDIA-EGL-Fallback aktiviert (${reason}). GPU-Beschleunigung ist zur Stabilität deaktiviert. HERMES_DESKTOP_NVIDIA_SWIFTSHADER=0 deaktiviert diesen Fallback.`
   },
   billingBlock: {
     titleNous: 'Keine Nous-Credits mehr',

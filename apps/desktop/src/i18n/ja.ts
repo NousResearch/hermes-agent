@@ -322,7 +322,7 @@ export const ja = defineLocale({
 
   nvidiaEglFallbackBanner: {
     message: reason =>
-      `ソフトウェアレンダリングが有効です — NVIDIA EGL フォールバックが作動しました（${reason}）。安定性のため GPU アクセラレーションは無効化されています。無効にするには HERMES_DESKTOP_NVIDIA_SWIFTSHADER=0 を設定してください。`
+      `ソフトウェアレンダリングが有効です — NVIDIA EGL フォールバックが作動しました（${reason}）。安定性のため GPU アクセラレーションは無効化されています。HERMES_DESKTOP_NVIDIA_SWIFTSHADER=0 でこのフォールバックを無効にできます。`
   },
 
   billingBlock: {

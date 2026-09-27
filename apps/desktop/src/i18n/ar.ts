@@ -317,7 +317,7 @@ export const ar = defineLocale({
 
   nvidiaEglFallbackBanner: {
     message: reason =>
-      `العرض البرمجي نشط — تم تفعيل الحل البديل لـ NVIDIA EGL (${reason}). تم تعطيل تسريع GPU من أجل الاستقرار؛ لإلغاء ذلك اضبط HERMES_DESKTOP_NVIDIA_SWIFTSHADER=0.`
+      `العرض البرمجي نشط — تم تفعيل الحل البديل لـ NVIDIA EGL (${reason}). تم تعطيل تسريع GPU من أجل الاستقرار. يعطّل HERMES_DESKTOP_NVIDIA_SWIFTSHADER=0 هذا الحل البديل.`
   },
   titlebar: {
     hideSidebar: 'إخفاء الشريط الجانبي',

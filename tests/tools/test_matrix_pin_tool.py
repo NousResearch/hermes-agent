@@ -145,9 +145,11 @@ async def test_aborted_pin_waits_until_owner_cannot_begin_a_write(
     def dispatch():
         try:
             with _registered_tool_worker(agent) as worker.tid:
-                return json.loads(registry.dispatch(
+                pin_response = registry.dispatch(
                     "matrix_pin", {"action": action, "event_id": "$event"},
-                ))
+                )
+                assert isinstance(pin_response, str)
+                return json.loads(pin_response)
         except asyncio.CancelledError:
             return "cancelled"
         finally:
@@ -183,8 +185,10 @@ async def test_aborted_pin_waits_until_owner_cannot_begin_a_write(
         "cancel": "cancelled",
     }
     if stage == "dispatch" and abort != "cancel":
+        before_write_error = expected[abort]
+        assert isinstance(before_write_error, dict)
         expected[abort] = {
-            "error": f"{expected[abort]['error']} after the change was sent to the homeserver",
+            "error": f"{before_write_error['error']} after the change was sent to the homeserver",
             "outcome": "unknown",
             "next_step": "Read the current pins with matrix_read kind=pins before retrying",
         }
@@ -232,7 +236,9 @@ async def test_repeated_cancellation_waits_for_owning_task_cleanup(action, same_
     async def dispatch():
         args = {"action": action, "event_id": "$event"}
         if same_loop:
-            return await registry.get_entry("matrix_pin").handler(args)
+            pin_entry = registry.get_entry("matrix_pin")
+            assert pin_entry is not None
+            return await pin_entry.handler(args)
         return await asyncio.to_thread(registry.dispatch, "matrix_pin", args)
 
     from hermes_constants import get_hermes_home
@@ -308,7 +314,9 @@ async def test_interrupted_pin_never_writes_after_pending_work_resumes(
 
     async def dispatch_on_owner_loop():
         worker_ids.append(threading.get_ident())
-        return await registry.get_entry("matrix_pin").handler({"action": action, "event_id": "$event"})
+        pin_entry = registry.get_entry("matrix_pin")
+        assert pin_entry is not None
+        return await pin_entry.handler({"action": action, "event_id": "$event"})
 
     _admin_config(profile_home)
     home_token = set_hermes_home_override(profile_home)
@@ -358,12 +366,16 @@ async def test_matrix_pin_uses_current_session_owner_and_validates_event_id(inva
         transport_adapter=adapter, transport_loop=asyncio.get_running_loop(),
     )
     try:
-        accepted = json.loads(await asyncio.to_thread(
+        accepted_raw = await asyncio.to_thread(
             registry.dispatch, "matrix_pin", {"action": "pin", "event_id": "$event"},
-        ))
-        invalid = json.loads(await asyncio.to_thread(
+        )
+        assert isinstance(accepted_raw, str)
+        accepted = json.loads(accepted_raw)
+        invalid_raw = await asyncio.to_thread(
             registry.dispatch, "matrix_pin", {"action": "pin", "event_id": invalid_id},
-        ))
+        )
+        assert isinstance(invalid_raw, str)
+        invalid = json.loads(invalid_raw)
     finally:
         clear_session_vars(tokens)
 
@@ -379,6 +391,9 @@ async def test_matrix_pin_uses_current_session_owner_and_validates_event_id(inva
 
 
 def test_matrix_pin_is_restricted_to_explicit_matrix_admin_toolset():
+    import model_tools
+
+    original_tool_loop = model_tools._tool_loop
     config = {"platform_toolsets": {
         "matrix": ["hermes-matrix", "matrix_admin"],
         "telegram": ["hermes-telegram", "matrix_admin"],
@@ -391,8 +406,13 @@ def test_matrix_pin_is_restricted_to_explicit_matrix_admin_toolset():
 
     tokens = set_session_vars(platform="cli", chat_id="!room:server")
     try:
-        result = json.loads(registry.dispatch("matrix_pin", {"action": "pin", "event_id": "$event"}))
+        pin_response = registry.dispatch("matrix_pin", {"action": "pin", "event_id": "$event"})
+        assert isinstance(pin_response, str)
+        result = json.loads(pin_response)
     finally:
         clear_session_vars(tokens)
+        tool_loop = model_tools._tool_loop
+        if tool_loop is not None and tool_loop is not original_tool_loop:
+            tool_loop.close()
 
     assert result == {"error": "Matrix pin actions require a live Matrix session"}

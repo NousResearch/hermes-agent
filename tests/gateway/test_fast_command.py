@@ -316,3 +316,69 @@ async def test_plugin_command_retains_session_context(monkeypatch, kind):
     assert handled is True
     assert result == "ok"
     assert seen == [("intended-chat", "durable-chat", "physical-chat", "durable-chat")]
+
+
+@pytest.mark.asyncio
+async def test_plugin_control_and_turn_route_share_durable_identity_after_rotation(monkeypatch):
+    """A control command must affect the next turn even when the physical session rotates."""
+    runner = _make_runner()
+    runner._draining = False
+    runner._hm_quick_commands = lambda: {}
+    runner._session_key_for_source = lambda _source: "durable-chat"
+    physical_session = ["physical-before"]
+    runner.session_store = SimpleNamespace(
+        peek_session_id=lambda _key: physical_session[0]
+    )
+    runner.config.get_connected_platforms = lambda: []
+    runner._run_in_executor_with_context = asyncio.to_thread
+
+    disabled = {}
+
+    def veto_off(args, *, session_key=None, **_context):
+        assert args == ""
+        disabled[session_key] = True
+        return "routing disabled"
+
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_command_handler", lambda _name: veto_off)
+    source = _make_source()
+    event = MessageEvent(text="/veto-off", source=source)
+    handled, result, _command = await runner._hm_dispatch_quick_and_plugin_commands(
+        event, source, "veto-off"
+    )
+
+    assert handled is True
+    assert result == "routing disabled"
+    assert disabled == {"durable-chat": True}
+
+    route_contexts = []
+
+    def apply_route(route, **context):
+        route_contexts.append(context)
+        assert disabled.get(context["session_key"]) is True
+        return SimpleNamespace(changed=False, payload=route, trace=[])
+
+    monkeypatch.setattr("hermes_cli.middleware.apply_turn_route_middleware", apply_route)
+    physical_session[0] = "physical-after"
+    runtime_kwargs = {
+        "api_key": "test-key",
+        "base_url": "https://example.invalid/v1",
+        "provider": "custom",
+        "requested_provider": "custom:alpha",
+        "api_mode": "chat_completions",
+        "args": [],
+        "capabilities": {},
+    }
+    route = runner._resolve_turn_agent_config(
+        "next user turn",
+        "test-model",
+        runtime_kwargs,
+        session_id=physical_session[0],
+        session_key="durable-chat",
+        source=source,
+        conversation_history=[{"role": "user", "content": "before"}],
+        internal=False,
+    )
+
+    assert route["model"] == "test-model"
+    assert route_contexts[0]["session_id"] == "physical-after"
+    assert route_contexts[0]["session_key"] == "durable-chat"

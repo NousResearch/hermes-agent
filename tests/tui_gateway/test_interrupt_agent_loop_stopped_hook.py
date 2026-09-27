@@ -160,3 +160,40 @@ def test_interrupt_hook_profile_field_hidden_from_narrow_callbacks(tmp_path, mon
         "session_key": "launch-session", "platform": "tui",
         "reason": "user_stop", "invalidation_reason": "session_interrupt",
     }]
+
+
+@patch("hermes_cli.plugins.invoke_hook")
+def test_interrupt_rpc_path_fires_hook_in_session_profile_scope(
+    mock_invoke_hook, tmp_path, monkeypatch
+):
+    """The session.interrupt RPC handler itself (not just the helper) dispatches
+    the hook inside the session's profile scope; same-key stores disambiguate.
+
+    Test lifted from kokhlo's #125081 (verified-red there against pristine main)
+    with attribution, consolidated here per their offer.
+    """
+    from tui_gateway import server
+
+    launch = tmp_path / "launch"
+    selected = tmp_path / "selected"
+    launch.mkdir()
+    selected.mkdir()
+    sid = "profiled-tab"
+    session = _make_session(running=True)
+    session["profile_home"] = str(selected)
+    session["_sid"] = sid
+    server._sessions[sid] = session
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    try:
+        response = server.handle_request({
+            "id": "intr",
+            "method": "session.interrupt",
+            "params": {"session_id": sid},
+        })
+        assert response["result"]["status"] == "interrupted"
+        calls = _hook_calls(mock_invoke_hook)
+        assert len(calls) == 1
+        assert calls[0].kwargs["profile_home"] == str(selected)
+        assert calls[0].kwargs["session_key"] == "agent:main:tui:dm:s1"
+    finally:
+        server._sessions.pop(sid, None)

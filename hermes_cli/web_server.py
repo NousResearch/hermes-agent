@@ -95,26 +95,6 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
     """
     from cron.scheduler_provider import InProcessCronScheduler, resolve_cron_scheduler
 
-    # A live gateway on THIS backend's HERMES_HOME owns cron delivery with live platform
-    # adapters (#52202): let it tick, and start nothing here. Without this, the fail-open
-    # paths below (profile enumeration failure, empty served set, external provider) start
-    # an ungated single-store ticker that races the gateway's tick-lock; when the desktop
-    # wins, delivery has no live adapter and the cold send hangs until script_timeout.
-    try:
-        from hermes_constants import get_hermes_home
-        from hermes_cli.profiles import _check_gateway_running
-
-        if _check_gateway_running(Path(get_hermes_home())):
-            _log.info(
-                "Desktop cron scheduler not started: live gateway owns cron on this "
-                "HERMES_HOME; the gateway ticks with live adapters"
-            )
-            return
-    except Exception:
-        # Liveness probe failed: fall through to the existing per-tick gating, which
-        # still stands down profile-by-profile for gateway-owned homes.
-        _log.warning("Desktop cron: gateway-ownership probe failed; using per-tick gating only", exc_info=True)
-
     provider = resolve_cron_scheduler()
 
     start_kwargs: dict = {"interval": interval}
@@ -152,6 +132,27 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
         except Exception:
             # Fail open to the single-store ticker so the active profile keeps firing.
             _log.exception("Desktop cron: profile enumeration failed; ticking active profile only")
+
+    # A live gateway on THIS backend's HERMES_HOME owns cron delivery with live platform
+    # adapters (#52202). The per-tick ``profile_gate`` already stands down while it runs and
+    # resumes once it stops (Desktop's own gateway stop, a crash), so only the fail-open paths
+    # (profile enumeration failure, empty served set, external provider) bail out here: their
+    # ungated single-store ticker would race the gateway's tick-lock, and when the desktop wins,
+    # delivery has no live adapter and the cold send hangs until script_timeout.
+    if "profile_gate" not in start_kwargs:
+        try:
+            from hermes_constants import get_hermes_home
+            from hermes_cli.profiles import _check_gateway_running
+
+            if _check_gateway_running(Path(get_hermes_home())):
+                _log.info(
+                    "Desktop cron scheduler not started: live gateway owns cron on this "
+                    "HERMES_HOME; the gateway ticks with live adapters"
+                )
+                return
+        except Exception:
+            # Liveness probe failed: start the ticker rather than silently stand down.
+            _log.warning("Desktop cron: gateway-ownership probe failed; starting the ticker", exc_info=True)
 
     _log.info("Desktop cron scheduler started (provider=%s, interval=%ds)", provider.name, interval)
     provider.start(stop_event, **start_kwargs)

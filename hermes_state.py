@@ -1048,6 +1048,16 @@ class SessionDB(
                                 "still be open — refusing to retry the write",
                                 self.db_path, exc_info=True,
                             )
+                            # The transaction state of this connection is now
+                            # ambiguous (conn.in_transaction may still be True), and
+                            # the next BEGIN IMMEDIATE on it would raise a misleading
+                            # "cannot start a transaction within a transaction". Retire
+                            # the connection the same way close() does — release the
+                            # guard first, then a quiet close — so a later write goes
+                            # through a proven-fresh reopen instead of inheriting it.
+                            conn, self._conn = self._conn, None
+                            _lockguard.release(self._wal_lock_guard)
+                            self._close_connection_quietly(conn)
                         raise
                 # Success — periodic best-effort checkpoint + FTS merge.
                 self._write_count += 1

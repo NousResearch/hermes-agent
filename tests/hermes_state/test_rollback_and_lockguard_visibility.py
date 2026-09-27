@@ -223,3 +223,93 @@ class TestFailedRollbackStopsRetries:
 
         assert calls["n"] == 1
         assert "rollback failed" in caplog.text
+
+# ---------------------------------------------------------------------------
+# 3. Review follow-ups (andrexibiza, both P1): strict failure must unwind
+#    partial guard ownership; a failed rollback must retire the connection
+#    instead of leaving an ambiguous-transaction handle installed.
+# ---------------------------------------------------------------------------
+
+class TestStrictFailureUnwindsPartialOwnership:
+    def test_strict_raise_restores_handles_baseline_and_releases(self, tmp_path, monkeypatch):
+        """First identity arms, second refuses, strict raises: _HANDLES returns
+        to baseline and a subsequent full hold/release leaves no residue."""
+        if not lg.supported():
+            pytest.skip("OFD locks unavailable on this platform")
+
+        db = tmp_path / "state.db"
+        db.touch()
+        (tmp_path / "state.db-shm").touch()
+        os_mod = __import__("os")
+        fd = os_mod.open(db, os_mod.O_RDWR)  # descriptors the guard can see
+        fd_shm = os_mod.open(tmp_path / "state.db-shm", os_mod.O_RDWR)
+        try:
+            real_ofd_lock = lg._ofd_lock
+
+            def refuse_shm_range(fd_, lock_type, start, length, *, cmd=None):
+                # Deterministic two-identity split: the main-file range arms,
+                # the -shm DMS byte refuses (EAGAIN under a foreign EXCLUSIVE
+                # holder -> _ofd_lock returns False and the range is skipped).
+                if cmd is None and start == lg._SHM_DMS_BYTE:
+                    raise BlockingIOError()
+                return real_ofd_lock(fd_, lock_type, start, length, cmd=cmd)
+
+            monkeypatch.setattr(lg, "_ofd_lock", refuse_shm_range)
+
+            baseline = dict(lg._HANDLES)
+            ranges = lg._guard_ranges(db)
+            assert len(ranges) == 2, "fixture must present both guard identities"
+
+            with pytest.raises(lg.WalGuardArmedIncompleteError):
+                lg.hold(db, strict=True)
+
+            assert dict(lg._HANDLES) == baseline, "strict failure leaked a handle count"
+
+            # A later real hold/release cycle must leave no residual count either
+            # (the refusal is per-range, so the main-file identity still arms).
+            held = lg.hold(db, strict=False)
+            try:
+                assert held
+            finally:
+                lg.release(held)
+            assert dict(lg._HANDLES) == baseline
+        finally:
+            os_mod.close(fd)
+            os_mod.close(fd_shm)
+
+
+class TestFailedRollbackRetiresConnection:
+    def test_second_write_after_failed_rollback_uses_fresh_connection(self, db, monkeypatch, caplog):
+        """Two-call witness: the first write hits a failed rollback and must
+        fail with the ORIGINAL error; the second write on the same SessionDB
+        goes through a proven-fresh connection — never a 'cannot start a
+        transaction within a transaction' inherited from the ambiguous one."""
+        calls = {"n": 0}
+
+        def flaky(conn):
+            calls["n"] += 1
+            raise sqlite3.OperationalError("database is locked")
+
+        real_conn = db._conn
+        monkeypatch.setattr(db, "_conn", _RollbackBreakingConn(real_conn, None), raising=False)
+
+        with caplog.at_level(logging.WARNING, logger="hermes_state"):
+            with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+                db._execute_write(flaky)
+
+        assert calls["n"] == 1
+        assert "rollback failed" in caplog.text
+        # The ambiguous-transaction connection was retired, not left installed:
+        # the handle holds no connection until the next write reopens one.
+        assert db._conn is None
+
+        # Second write: fresh connection, clean BEGIN IMMEDIATE, real commit —
+        # never an inherited "cannot start a transaction within a transaction".
+        db._execute_write(
+            lambda conn: conn.execute(
+                "CREATE TABLE IF NOT EXISTS _witness(v TEXT)"
+            ) and conn.execute("INSERT INTO _witness VALUES ('after-retire')")
+        )
+        assert db._conn is not None and db._conn is not real_conn
+        row = db._conn.execute("SELECT v FROM _witness").fetchone()
+        assert row is not None and row[0] == "after-retire"

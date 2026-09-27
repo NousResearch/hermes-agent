@@ -166,12 +166,14 @@ def hold(db_path, held: Optional[Held] = None, *, strict: bool = False) -> Held:
     if not supported():
         return held
     ranges = _guard_ranges(db_path)
+    newly_held: list = []  # identities THIS call armed (not pre-existing in `held`)
     try:
         with _LOCK:
             for fd, ident in _own_fds_for(set(ranges)):
                 start, length = ranges[ident]
                 if _ofd_lock(fd, _F_RDLCK, start, length) and ident not in held:
                     held[ident] = ranges[ident]
+                    newly_held.append(ident)
                     _HANDLES[ident] = _HANDLES.get(ident, 0) + 1
     except OSError:
         # Supported runtime that FAILED to arm (e.g. EACCES): distinct from the best-effort
@@ -195,6 +197,17 @@ def hold(db_path, held: Optional[Held] = None, *, strict: bool = False) -> Held:
             os.fspath(db_path), len(unguarded), len(ranges),
         )
         if strict:
+            # The raise must not strand what THIS call armed: unwind the handle-count deltas
+            # and unlock the ranges this call owns before propagating (release() skips the
+            # POSIX-relock/OFD-unlock handoff when another in-process handle still holds the
+            # range, so partial ownership from a failed strict call cannot leak a stale
+            # refcount a later real handle would have to release against).
+            if newly_held:
+                unwind: Held = {ident: held.pop(ident) for ident in newly_held}
+                try:
+                    release(unwind)
+                except Exception:  # pragma: no cover - release() already swallows OSError
+                    logger.debug("lockguard strict-unwind of %d range(s) failed", len(unwind))
             raise WalGuardArmedIncompleteError(
                 f"WAL lock guard could not arm {len(unguarded)} of {len(ranges)} ranges for "
                 f"{os.fspath(db_path)} — refusing to run an unguarded state writer on a "

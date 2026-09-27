@@ -65,6 +65,49 @@ def test_unlocked_reader_releases_a_lease_the_installer_moved_away_from(generati
     assert len(list((state / "environments" / "second" / ".leases").iterdir())) == 1
 
 
+def test_unlocked_reader_refuses_a_generation_swapped_in_for_another_interpreter(generations, monkeypatch):
+    """The lost-lock loop can still replace the leased generation right up to the moment it is
+    activated. The ABI check must guard the generation the loop actually settles on, not just
+    the first read -- otherwise a race with an installer publishing a foreign-interpreter build
+    lands its site-packages on this process's sys.path with no check at all."""
+    from hermes_cli import runtime_state
+    from pm.environments import activate_dependencies, site_packages
+
+    repo, state, select = generations
+    select("first")
+    second = state / "environments" / "second" / "venv"
+    (second / "pyvenv.cfg").write_text("version = 9.9", encoding="utf-8")
+    real_lease = runtime_state.lease_generation
+    leased = []
+
+    def racing_lease(environment):
+        # The installer commits a generation built for another interpreter between the
+        # reader's selection read and its lease.
+        if not leased:
+            select("second")
+        leased.append(environment)
+        return real_lease(environment)
+
+    @contextlib.contextmanager
+    def lost_lock(project, **kwargs):
+        yield False
+
+    monkeypatch.setattr(runtime_state, "runtime_lock", lost_lock)
+    monkeypatch.setattr(runtime_state, "lease_generation", racing_lease)
+    # Activation rewrites this process's import path and environment; keep it scoped.
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    for key in ("PYTHONPATH", "PATH", "VIRTUAL_ENV"):
+        monkeypatch.setenv(key, os.environ.get(key, ""))
+
+    try:
+        activate_dependencies(repo)
+    except RuntimeError as exc:
+        assert "9.9" in str(exc)
+
+    assert str(site_packages(second)) not in sys.path
+    assert not any((second.parent / ".leases").iterdir()), "the foreign lease must be released"
+
+
 def test_release_removes_the_lease_file(generations):
     from hermes_cli.runtime_state import lease_generation
 

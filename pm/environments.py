@@ -227,7 +227,7 @@ def venv_python_version(venv: Path) -> tuple[int, int] | None:
     try:
         for line in (venv / "pyvenv.cfg").read_text(encoding="utf-8-sig").splitlines():
             key, _, value = line.partition("=")
-            if key.strip() != "version":
+            if key.strip() not in ("version", "version_info"):
                 continue
             major, _, rest = value.strip().partition(".")
             minor, _, _ = rest.partition(".")
@@ -311,9 +311,18 @@ def activate_dependencies(project_root: Path) -> None:
             environment = committed_venv(project_root)
             if environment is None:
                 return _require_own_dependencies(project_root)
+            release = lease_generation(environment)
+            # Without the lock, an installer may commit a new generation between the
+            # read and the lease, leaving the leased one unselected and collectable.
+            while not held and (current := committed_venv(project_root)) not in (None, environment):
+                release()
+                environment, release = current, lease_generation(current)
+            # Checked on the generation actually about to be selected -- the loop above can
+            # still swap in a different one after an initial match.
             built = venv_python_version(environment)
             running = (sys.version_info.major, sys.version_info.minor)
             if built is not None and built != running:
+                release()
                 if sys.prefix != sys.base_prefix:
                     return  # a venv interpreter (developer .venv, test env) carries its own packages
                 raise RuntimeError(
@@ -321,12 +330,6 @@ def activate_dependencies(project_root: Path) -> None:
                     f"{built[0]}.{built[1]} but this process runs "
                     f"{running[0]}.{running[1]}"
                 )
-            release = lease_generation(environment)
-            # Without the lock, an installer may commit a new generation between the
-            # read and the lease, leaving the leased one unselected and collectable.
-            while not held and (current := committed_venv(project_root)) not in (None, environment):
-                release()
-                environment, release = current, lease_generation(current)
             selected = site_packages(environment)
             if not selected.is_dir() and not runtime_facts_path(project_root).is_file():
                 return

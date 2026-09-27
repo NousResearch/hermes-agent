@@ -88,6 +88,17 @@ def test_site_packages_follows_the_venv_python_not_the_caller(tmp_path):
         assert site_packages(venv).is_dir()
 
 
+def test_venv_python_version_reads_the_version_info_key_uv_writes(tmp_path):
+    """uv writes ``version_info = 3.14.7`` with no ``version`` key. On a Windows layout
+    there is no ``lib/python3*`` fallback, so this key is the only signal available --
+    a generation built by uv for another interpreter must still be detected."""
+    venv = tmp_path / "venv"
+    (venv / "Lib" / "site-packages").mkdir(parents=True)
+    (venv / "pyvenv.cfg").write_text("home = C:\\Python314\nversion_info = 3.14.7\n", encoding="utf-8")
+
+    assert venv_python_version(venv) == (3, 14)
+
+
 def test_venv_python_version_falls_back_to_the_lib_directory(tmp_path):
     venv = tmp_path / "venv"
     (venv / "lib" / "python3.12" / "site-packages").mkdir(parents=True)

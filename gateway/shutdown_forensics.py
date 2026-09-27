@@ -50,7 +50,8 @@ def _read_proc_field(pid: int, key: str) -> Optional[str]:
 
 def _proc_summary(pid: int) -> Dict[str, Any]:
     """Compact /proc/<pid> identity (pid, name, state, ppid, uid). Never reads cmdline/argv —
-    those bytes are not safe to persist (tokens, URIs, ``-e KEY=`` overlays)."""
+    those bytes are not safe to persist (tokens, URIs, ``-e KEY=`` overlays). On non-Linux,
+    ``name`` falls back to psutil; other fields stay unset rather than blocking or raising."""
     summary: Dict[str, Any] = {"pid": pid}
     if pid <= 0:
         return summary
@@ -62,7 +63,16 @@ def _proc_summary(pid: int) -> Dict[str, Any]:
             summary["ppid"] = int(ppid)
     if (uid := _read_proc_field(pid, "Uid")) is not None:
         summary["uid"] = uid.split()[0] if uid else uid  # "real effective saved fs"
+    if "name" not in summary and pid > 0:
+        # Non-Linux (macOS/BSD): /proc is absent, so the summary above is pid-only. psutil (already
+        # a gateway dependency) resolves the name without touching argv; guarded so a psutil-less
+        # import or a raced PID degrades to the historical "?" instead of raising.
+        with contextlib.suppress(Exception):
+            import psutil
+
+            summary["name"] = psutil.Process(pid).name()
     return summary
+
 
 
 def _read_marker(path: Path) -> Optional[str]:

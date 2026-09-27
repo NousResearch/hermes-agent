@@ -17,6 +17,7 @@ Główne [AGENTS.md](../AGENTS.md) zawiera zasady wspólne, a
 | Zadania cykliczne | `cron/` | [`cron/AGENTS.md`](../cron/AGENTS.md) |
 | Rozszerzenia i umiejętności | `plugins/`, `skills/` | [`plugins/AGENTS.md`](../plugins/AGENTS.md), [`skills/AGENTS.md`](../skills/AGENTS.md) |
 | Panel webowy | `web/`, `hermes_cli/web_routers/` | [`web/AGENTS.md`](../web/AGENTS.md) |
+| Strona sprzedażowa Cześka | `sales-site/dist/` | [`sales-site/README.md`](../sales-site/README.md); osobna statyczna strona, bez zmian w aplikacji |
 | Testy i pipeline | `tests/`, `tests-js/`, `.github/workflows/`, `scripts/` | [testowanie w głównym AGENTS](../AGENTS.md#testing-applies-everywhere) |
 
 Najkrótsza ścieżka zmiany: znajdź właściciela zachowania w tabeli → przeczytaj

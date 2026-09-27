@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from gateway.platforms.base import BasePlatformAdapter
@@ -30,7 +31,7 @@ class MatrixInboundEventMixin(BasePlatformAdapter):
     async def _build_inbound_event(
         self, room_id: str, sender: str, event_id: str, body: str, source_content: dict, relates_to: dict,
         ctx: Optional[tuple] = None, *, reply_parent: MatrixEventContext | None = None,
-        **extra) -> Optional[MessageEvent]:
+        event_ts: float = 0.0, **extra) -> Optional[MessageEvent]:
         """Gate + normalise an inbound event into a MessageEvent (None => drop). Text body may
         still change (reply-fallback strip); ``extra`` carries media fields / message_type.
         ``ctx`` is a pre-resolved ``_resolve_message_context`` result (media path gates before
@@ -65,6 +66,7 @@ class MatrixInboundEventMixin(BasePlatformAdapter):
             extra["message_type"] = MessageType.COMMAND if body.startswith("/") else MessageType.TEXT
         else:
             body = _inbound_media_caption(media_msgtype, body, source_content, relates_to)
+        timestamp = datetime.fromtimestamp(event_ts, tz=timezone.utc) if event_ts else datetime.now(timezone.utc)
         event = MessageEvent(
             text=body, source=source, raw_message=source_content, message_id=event_id,
             reply_to_message_id=reply.event_id, reply_to_text=reply.text, reply_to_author_id=reply.author_id,
@@ -72,7 +74,7 @@ class MatrixInboundEventMixin(BasePlatformAdapter):
             reply_to_is_own_message=reply.is_own_message,
             reply_to_author_authorized=reply.author_authorized,
             # Top-level sender fields mirror source.* — downstream prompt code reads them.
-            user_id=sender, user_name=display_name, **extra)
+            user_id=sender, user_name=display_name, timestamp=timestamp, **extra)
         if reply.media_path and reply.event_id and reply.media_content_id:
             event._quoted_media_dependencies = (
                 QuotedMediaDependency(

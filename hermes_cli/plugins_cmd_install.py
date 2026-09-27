@@ -421,18 +421,13 @@ def cmd_install(
     else:
         console.print("[yellow]Warning:[/yellow] custom (unreviewed) source — not from the Hermes catalog.")
     if entry is not None and entry.known_issues:
-        # #124037: catalog entries may document known traps (unsupported
-        # install-method/mode combinations, retired lazy-install paths, ...).
-        # A trap the catalog itself documents must not be installed silently —
-        # non-interactive (non-TTY) runs fail closed; interactive runs require
-        # explicit confirmation.
+        # #124058: informational only — the catalog documents traps
+        # (unsupported install-method/mode combinations, retired lazy-install
+        # paths, ...) that the user should see before installing. They never
+        # block the install; the guard belongs at the mode-selection seam
+        # (#122341 / #123771 remove the root cause on main).
         for issue in entry.known_issues:
             console.print(f"[yellow]Known issue:[/yellow] {issue}")
-        console.print(
-            "[bold red]This catalog entry documents known issues. "
-            "Install proceeds only with explicit confirmation.[/bold red]")
-        if not (_pc()._is_tty() and _pc()._ask_yes("  Continue install anyway? [y/N]: ")):
-            _pc()._fail(console, "[red]Install cancelled — the catalog entry documents known issues.[/red]")
     if allow_removed:
         console.print(
             "[bold red]WARNING:[/bold red] [red]--allow-removed set — skipping the catalog kill-list check. "
@@ -556,14 +551,12 @@ def dashboard_install_plugin(
         if entry is None:
             return {"ok": False, "error": f"'{catalog_name}' is not in the Hermes plugin catalog."}
         if entry.known_issues:
-            # #124037: no GUI bypass — an entry whose own catalog documents
-            # known traps is refused outright on this non-interactive path.
-            return {
-                "ok": False,
-                "error": "refused: this catalog entry documents known issues that cannot be confirmed "
-                         f"in a non-interactive install: {'; '.join(entry.known_issues)}",
-                "known_issues": list(entry.known_issues),
-            }
+            # #124058: informational only — a documented trap must not install
+            # silently, but the gate belongs at the mode-selection seam, not
+            # the install entry (teknium1 review on #124037; #122341/#123771
+            # remove the root cause). Surface the text; never refuse.
+            for issue in entry.known_issues:
+                warnings.append(f"Known issue: {issue}")
         identifier = entry.install_identifier
     else:
         warnings.append("Custom (unreviewed) source — not from the Hermes catalog.")
@@ -618,4 +611,5 @@ def dashboard_install_plugin(
         "python_dependencies": deps,
         "missing_env": [s["name"] for s in _pc()._missing_env_specs(installed_manifest)],
         "after_install_path": str(ap) if ap.exists() else None, "enabled": enable, **activated,
+        "known_issues": list(entry.known_issues) if entry else [],
     }

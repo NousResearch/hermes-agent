@@ -91,7 +91,7 @@ class PluginCatalogEntry:
     title: str = ""              # human name ("NVIDIA App"); empty = derived from ``name``
     onboarding: bool = False     # curated: offered on the desktop onboarding card
     capabilities: CatalogCapabilities = field(default_factory=CatalogCapabilities)
-    known_issues: List[str] = field(default_factory=list)  # #124037: gates install; drivers come from plugin-catalog/*.yaml
+    known_issues: List[str] = field(default_factory=list)  # #124058: informational; drivers come from plugin-catalog/*.yaml
 
     @property
     def install_identifier(self) -> str:
@@ -501,4 +501,9 @@ def entry_capability_summary(entry: PluginCatalogEntry) -> str:
         bits.append(f"Platforms: {', '.join(entry.platforms)}.")
     if entry.requires_hermes:
         bits.append(f"Requires Hermes {entry.requires_hermes}.")
+    if entry.known_issues:
+        # #124058: informational — the catalog documents traps (unsupported
+        # install-method/mode combinations); surface them at install prompts
+        # without blocking the install.
+        bits.append(f"Known issues: {'; '.join(entry.known_issues)}.")
     return " ".join(bits)

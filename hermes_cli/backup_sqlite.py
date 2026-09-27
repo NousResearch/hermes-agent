@@ -65,7 +65,20 @@ def _safe_copy_db(src: Path, dst: Path, *, timeout_seconds: float = 10.0) -> boo
             else:
                 busy_deadline = now + max(0.0, timeout_seconds)
 
-        conn.backup(backup_conn, pages=256, progress=_check_backup_progress, sleep=0.1)
+        # Pin one read snapshot for the whole copy. Without an explicit
+        # transaction, each backup step opens and releases its own implicit
+        # read transaction, so a writer checkpoint between steps invalidates
+        # the WAL frames the next step needs: it keeps re-reading the same
+        # range and `remaining` never moves -- indefinitely, under a
+        # continuously busy WAL writer, without ever reporting
+        # SQLITE_BUSY/SQLITE_LOCKED to the progress callback above.
+        conn.execute("BEGIN")
+        conn.execute("SELECT 1 FROM sqlite_master LIMIT 1")
+        try:
+            conn.backup(backup_conn, pages=256, progress=_check_backup_progress, sleep=0.1)
+        finally:
+            with suppress(Exception):
+                conn.execute("ROLLBACK")
         return True
     except Exception as exc:
         logger.warning("SQLite safe copy failed for %s: %s", src, exc)

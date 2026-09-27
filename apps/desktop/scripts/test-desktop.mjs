@@ -334,12 +334,11 @@ function validateBundle() {
     die(`Missing packaged app binary: ${APP.binary}`)
   }
 
-  // Negative assertion: the OLD fat-installer factory payload must NOT be
-  // present anymore. If a stray ship of hermes_cli sneaks back in we want
-  // to fail loudly rather than re-introduce the 400MB delta we just removed.
-  const staleFactoryMarker = path.join(APP.resourcesPath, 'hermes-agent', 'hermes_cli', 'main.py')
-  if (exists(staleFactoryMarker)) {
-    die(`Thin-installer regression: factory-payload file should NOT be in the package: ${staleFactoryMarker}`)
+  if (PLATFORM === 'win32') {
+    const runtime = path.join(APP.resourcesPath, 'runtime')
+    for (const file of ['manifest.json', 'python/python.exe', 'agent/hermes_cli/main.py']) {
+      if (!exists(path.join(runtime, file))) die(`Missing bundled runtime: ${file}`)
+    }
   }
 
   // Positive assertion: install-stamp.json carries a sane commit + branch

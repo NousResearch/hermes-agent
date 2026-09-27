@@ -57,7 +57,7 @@
  *   - electronPlatformName: 'win32' | 'darwin' | 'linux'
  *   - arch:                 Arch enum (0=ia32, 1=x64, 2=armv7l, 3=arm64, 4=universal)
  */
-import { existsSync, rmSync, renameSync } from 'node:fs'
+import { existsSync, rmSync, renameSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { Arch } from 'electron-builder'
 import { stageNodePty, stageGetWindows } from './stage-native-deps.mjs'
@@ -113,6 +113,15 @@ export function preserveRollbackBackup(appOutDir, productExeName = 'Hermes.exe')
 export default async function beforePack(context) {
   const appOutDir = context && context.appOutDir
   const platformName = context && context.electronPlatformName
+  if (platformName === 'win32') {
+    const root = context.packager.projectDir
+    const runtime = JSON.parse(readFileSync(path.join(root, 'build/runtime/manifest.json'), 'utf8'))
+    const stamp = JSON.parse(readFileSync(path.join(root, 'build/install-stamp.json'), 'utf8'))
+    if (runtime.platform !== 'win32' || runtime.arch !== Arch[context.arch] || runtime.commit !== stamp.commit) {
+      throw new Error('Re-stage the Windows runtime for this commit and architecture before packaging.')
+    }
+  }
+
   try {
     // Windows: keep the previous working build as rollback material for the
     // post-build integrity gate (#69179) instead of destroying it. Falls

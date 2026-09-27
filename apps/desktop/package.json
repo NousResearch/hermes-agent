@@ -82,7 +82,8 @@
     "test:e2e:visual": "npm run build && WLR_BACKENDS=headless WLR_NO_HARDWARE_CURSORS=1 cage -- npx playwright test e2e/ --reporter=list",
     "test:e2e:update-snapshots": "npm run build && WLR_BACKENDS=headless WLR_NO_HARDWARE_CURSORS=1 cage -- npx playwright test e2e/ --reporter=list --update-snapshots",
     "repro:short-session-hang": "node scripts/run-short-session-hang-repro.mjs",
-    "repro:short-session-hang:test": "node --test scripts/run-short-session-hang-repro.test.mjs"
+    "repro:short-session-hang:test": "node --test scripts/run-short-session-hang-repro.test.mjs",
+    "stage:runtime:win": "node scripts/stage-windows-runtime.mjs"
   },
   "dependencies": {
     "@assistant-ui/core": "0.2.23",
@@ -299,7 +300,13 @@
         "nsis",
         "msi"
       ],
-      "signAndEditExecutable": false
+      "signAndEditExecutable": false,
+      "extraResources": [
+        {
+          "from": "build/runtime",
+          "to": "runtime"
+        }
+      ]
     },
     "linux": {
       "category": "Development",

@@ -83,6 +83,27 @@ def _leaked_tool_call_text(text: str) -> bool:
     lead_in = text[:match.start()].strip().splitlines()
     return bool(lead_in) and bool(_SHELL_JSON_LEAK_LEADIN_PATTERN.search(lead_in[-1].strip()))
 
+
+# A leaked ``to=functions.<name>`` marker plus the JSON arguments blob that precedes it
+# (the leak format emits the arguments, then the control-token slot, then junk words).
+_LEAKED_CALL_TAIL_RE = re.compile(
+    r"\s*\{[\s\S]*?\}\s*to\s*=\s*functions\.[A-Za-z_][\w.]*[^\n]*", re.IGNORECASE,
+)
+# Marker with no JSON blob in front (or non-JSON narration between): still take the
+# whole marker line — the junk that follows the marker belongs to the leaked slot.
+_LEAKED_MARKER_LINE_RE = re.compile(
+    r"(?:^|[\s>|])to\s*=\s*functions\.[A-Za-z_][\w.]*[^\n]*", re.IGNORECASE,
+)
+
+
+def _strip_leaked_tool_call_text(text: str) -> str:
+    """Remove leaked tool-call markup (arguments JSON + ``to=functions.<name>`` + the
+    junk tokens in the control-token slots) from commentary text, keeping any real
+    narration around it. Safe on clean text (returns it unchanged)."""
+    cleaned = _LEAKED_CALL_TAIL_RE.sub("", text)
+    cleaned = _LEAKED_MARKER_LINE_RE.sub("", cleaned)
+    return cleaned.strip("\n")
+
 # The Codex backend rejects literal Harmony wire tokens (``invalid_prompt: Request
 # blocked.``). Fullwidth bars survive format-character stripping and stay legible.
 _HARMONY_CONTROL_TOKEN_RE = re.compile(r"<\|(start|end|channel|message|constrain|return|call)\|>")
@@ -1131,7 +1152,24 @@ class _OutputScan:
             return
         # commentary/analysis text is mid-turn narration, never the final answer: route it
         # to the reasoning channel; the exact item is still preserved for replay/cache.
-        (self.reasoning_parts if is_commentary_phase else self.content_parts).append(message_text)
+        if is_commentary_phase:
+            # The leak detector's ``not tool_calls`` guard exists because a leak beside a
+            # real call is late narration about it, not a failed call. Commentary routing
+            # has no such ambiguity: this channel never carries final answers, and the
+            # junk tokens here reach messaging-platform users as the live turn preview
+            # whether or not a structured call exists (#125458). Drop the leak markers;
+            # keep any surrounding narration.
+            stripped = _strip_leaked_tool_call_text(message_text)
+            if stripped != message_text:
+                logger.warning(
+                    "Codex commentary text contained leaked tool-call markup (%d chars stripped); "
+                    "removed so it is neither previewed nor persisted.", len(message_text) - len(stripped),
+                )
+            message_text = stripped
+            if message_text:
+                self.reasoning_parts.append(message_text)
+        else:
+            self.content_parts.append(message_text)
         item_id = getattr(item, "id", None)
         self.message_items_raw.append(_message_item(
             [{"type": "output_text", "text": message_text}], status=_normalize_responses_message_status(item_status),

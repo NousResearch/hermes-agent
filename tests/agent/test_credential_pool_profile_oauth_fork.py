@@ -160,10 +160,13 @@ def test_strip_helper_drops_cloned_nous_refresh_grant(tmp_path, fleet):
 
     agent_key-only nous rows carry no single-use grant and must survive both strip and heal.
     """
+    from agent.credential_pool import load_pool
     from hermes_cli.auth import heal_forked_single_use_oauth_grants, strip_cloned_single_use_oauth_grants
-    pdir = tmp_path / "p"
-    pdir.mkdir()
     grant = {"access_token": "AT1", "refresh_token": "RT1", "agent_key": "AK"}
+    root_store = json.loads((fleet["root"] / "auth.json").read_text())
+    root_store["providers"]["nous"] = dict(grant)
+    (fleet["root"] / "auth.json").write_text(json.dumps(root_store))
+    pdir = _profile(fleet, "nousstrip")
     ak_row = {"id": "ak", "source": "device_code", "auth_type": "oauth", "agent_key": "PAK"}
     (pdir / "auth.json").write_text(json.dumps({
         "version": 1,
@@ -174,6 +177,12 @@ def test_strip_helper_drops_cloned_nous_refresh_grant(tmp_path, fleet):
     store = json.loads((pdir / "auth.json").read_text())
     assert (summary["pool"], summary["providers"]) == (["nous"], ["nous"])
     assert store["credential_pool"]["nous"] == [ak_row] and "nous" not in store["providers"]
+    # Mixed shape: the surviving ak row keeps the profile "owning" nous, so the next load must
+    # not re-seed root's single-use RT from the global-root providers fallback (fork again).
+    fleet["use"](pdir)
+    load_pool("nous")
+    rows = json.loads((pdir / "auth.json").read_text())["credential_pool"]["nous"]
+    assert all(row.get("refresh_token") != "RT1" for row in rows), rows
 
     # Heal: a fork living only in the providers block (flat nous tokens, shared RT) is dropped.
     (fleet["root"] / "auth.json").write_text(json.dumps({"version": 1, "providers": {"nous": dict(grant)}}))

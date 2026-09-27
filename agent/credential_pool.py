@@ -837,10 +837,7 @@ def _profile_owns_pool_provider(provider: str) -> bool:
     """
     # Classic mode (profile == root) has no root fallback, so the answer is always "owns";
     # skip the per-call auth.json re-read on this hot load_pool path.
-    try:
-        if auth_mod._global_auth_file_path() is None:
-            return True
-    except Exception:
+    if auth_mod._global_auth_file_path() is None:
         return True
     try:
         pool = _load_auth_store().get("credential_pool")
@@ -2605,7 +2602,16 @@ def _seed_anthropic_singletons(seed: _Seeder) -> None:
 
 
 def _seed_nous_singleton(seed: _Seeder, auth_store: Dict[str, Any]) -> None:
-    state = _load_provider_state(auth_store, "nous")
+    state, source_path = _load_provider_state_with_source(auth_store, "nous")
+    global_root = _global_auth_file_path()
+    if (
+        source_path is not None and global_root is not None and _same_path(source_path, global_root)
+        and _profile_owns_pool_provider("nous")
+    ):
+        # A profile that owns local nous rows (e.g. an agent_key-only row surviving a
+        # fork strip/heal) must not re-seed root's single-use refresh token into its
+        # own pool from the global-root fallback: that re-creates the fork.
+        return
     has_runtime_material = bool(
         isinstance(state, dict)
         and (str(state.get("access_token") or "").strip() or str(state.get("agent_key") or "").strip())

@@ -220,13 +220,12 @@ class DebPackage(Package):
     def _untar_payload(self, payload: bytes, staged: Path) -> None:
         import io
         import stat as stat_mod
-        import tarfile
 
-        from pm.store import extract_tar
+        from pm.store import extract_tar, tarfile_with_filters
 
         try:
             extract_tar(io.BytesIO(payload), staged)
-        except tarfile.FilterError as exc:
+        except tarfile_with_filters().FilterError as exc:
             member = exc.tarinfo.name if exc.tarinfo is not None else "?"
             raise InstallError(self.name, f"unsafe member {member!r}: {exc}") from exc
         real_staged = os.path.realpath(staged)

@@ -191,12 +191,25 @@ def hash_url(url: str) -> str:
     return retry_network(request)
 
 
-def _tar_filter(member, dest: str):
+def tarfile_with_filters():
+    """The stdlib `tarfile`, or the vendored 3.11.4 copy when the interpreter
+    predates the extraction-filter API (CPython 3.11.0-3.11.3: no
+    `extractall(filter=...)`, `data_filter`, `FilterError`, `TarInfo.replace`).
+    PM bootstraps on any supported Python >= 3.11, so both callers and the
+    except-clause in pm.package must go through this accessor."""
+    import tarfile
+
+    if not hasattr(tarfile, "data_filter"):
+        from pm import tarfile_compat
+
+        return tarfile_compat
+    return tarfile
+
+
+def _tar_filter(member, dest: str, tarfile):
     """The stdlib 'data' filter, with symlink targets resolved from the link's own
     directory. Bootstrap interpreters (Ubuntu 22.04 ships 3.10) resolve them from
     the archive root and reject python-build-standalone's terminfo links."""
-    import tarfile
-
     if member.issym():
         if os.path.isabs(member.linkname):
             raise tarfile.AbsoluteLinkError(member)
@@ -213,12 +226,13 @@ def _tar_filter(member, dest: str):
 def extract_tar(archive: Path | IO[bytes], dest: Path, *, git_msys: bool = False) -> None:
     """Extract a tarball (a path, or an open stream such as a .deb's data.tar)
     with the one containment policy every PM tar consumer shares. Unsafe
-    members raise tarfile.FilterError.
+    members raise the FilterError family -- from the stdlib on 3.11.4+, or
+    from the vendored tarfile on 3.11.0-3.11.3.
 
     MSYS Git ships dev/fd links and etc/mtab into /proc; those aren't usable
     on Windows. Skip only those known links, never a filter error or failed file write.
     """
-    import tarfile
+    tarfile = tarfile_with_filters()
 
     dest.mkdir(parents=True, exist_ok=True)
     real_dest = os.path.realpath(dest)
@@ -230,9 +244,9 @@ def extract_tar(archive: Path | IO[bytes], dest: Path, *, git_msys: bool = False
                 or (m.name == "etc/mtab" and m.linkname == "/proc/mounts")
             )))
             for member in members:
-                tf.extract(member, dest, filter=lambda item, path: _tar_filter(item, real_dest))
+                tf.extract(member, dest, filter=lambda item, path: _tar_filter(item, real_dest, tarfile))
         else:
-            tf.extractall(dest, filter=lambda member, path: _tar_filter(member, real_dest))
+            tf.extractall(dest, filter=lambda member, path: _tar_filter(member, real_dest, tarfile))
 
 
 def extract(archive: Path, dest: Path) -> None:

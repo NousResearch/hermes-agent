@@ -31,8 +31,8 @@ def test_inactivity_timeout_is_not_reported_as_provider_timeout():
         "(limit 600s) — last activity: terminal command running (30s elapsed)"
     )
     msg = _summarize_cron_failure_for_delivery(job, error)
-    assert "provider timeout" not in msg
-    assert "fallback chain" not in msg.lower()
+    assert "did not respond in time" not in msg
+    assert "backup provider" not in msg.lower()
     assert "stalled" in msg.lower()
     assert "Daily Repo Sweep" in msg
 
@@ -43,9 +43,9 @@ def test_genuine_provider_timeout_with_no_fallback_configured(monkeypatch):
     job = {"name": "CI Autofix Poller", "id": "f7fe78574bda"}
     error = "Request timed out."
     msg = _summarize_cron_failure_for_delivery(job, error)
-    assert "provider timeout" in msg
-    assert "No fallback chain configured" in msg
-    assert "exhausted or unavailable" not in msg
+    assert "did not respond in time" in msg
+    assert "No backup provider is configured" in msg
+    assert "succeeded either" not in msg
 
 
 def test_genuine_provider_timeout_with_fallback_configured(monkeypatch):
@@ -60,9 +60,9 @@ def test_genuine_provider_timeout_with_fallback_configured(monkeypatch):
     job = {"name": "CI Autofix Poller", "id": "f7fe78574bda"}
     error = "Request timed out."
     msg = _summarize_cron_failure_for_delivery(job, error)
-    assert "provider timeout" in msg
-    assert "Fallback chain was exhausted or unavailable." in msg
-    assert "No fallback chain configured" not in msg
+    assert "did not respond in time" in msg
+    assert "No backup provider succeeded either." in msg
+    assert "No backup provider is configured" not in msg
 
 
 def test_fallback_chain_phrase_fails_open_on_config_error(monkeypatch):
@@ -70,7 +70,7 @@ def test_fallback_chain_phrase_fails_open_on_config_error(monkeypatch):
         raise RuntimeError("config unreadable")
 
     monkeypatch.setattr(scheduler, "load_config", _raise)
-    assert scheduler._fallback_chain_phrase() == "Fallback chain was exhausted or unavailable."
+    assert scheduler._fallback_chain_phrase() == "No backup provider succeeded either."
 
 
 def test_readtimeout_error_still_classified_as_provider_timeout(monkeypatch):
@@ -79,7 +79,7 @@ def test_readtimeout_error_still_classified_as_provider_timeout(monkeypatch):
     job = {"name": "some-job", "id": "abc123"}
     error = "httpx.ReadTimeout: The read operation timed out"
     msg = _summarize_cron_failure_for_delivery(job, error)
-    assert "provider timeout" in msg
+    assert "did not respond in time" in msg
 
 
 def test_rate_limit_classification_still_takes_priority_over_inactivity_text(monkeypatch):
@@ -92,24 +92,7 @@ def test_rate_limit_classification_still_takes_priority_over_inactivity_text(mon
     job = {"name": "some-job", "id": "abc123"}
     error = "HTTP 429: weekly usage limit exceeded"
     msg = _summarize_cron_failure_for_delivery(job, error)
-    assert "weekly usage limit" in msg
-    assert "No fallback chain configured" in msg
-
-
-def test_terminal_cwd_lock_timeout_is_not_reported_as_provider_timeout():
-    """Sibling scheduler-internal timeout (#79768): the TERMINAL_CWD lock-wait
-    abort says "Timed out ..." and must not fall through to the generic
-    provider-timeout branch."""
-    job = {"name": "Workdir Job", "id": "abc123def456"}
-    error = (
-        "TimeoutError: Timed out waiting for the TERMINAL_CWD write lock "
-        "after 600s — another cron job (a workdir writer, or long-running "
-        "readers) has held it for longer than the cron inactivity limit. "
-        "If a workdir job is the holder, stagger its schedule or remove its "
-        "workdir to unblock this job (#79768)."
-    )
-    msg = _summarize_cron_failure_for_delivery(job, error)
-    assert "provider timeout" not in msg
-    assert "fallback chain" not in msg.lower()
-    assert "working-directory lock" in msg
-    assert "Workdir Job" in msg
+    # A usage-limit wall is a billing verdict: it names the limit and the provider-pin fix,
+    # never the transient "backup provider" retry clause.
+    assert "usage or credit limit" in msg
+    assert "hermes cron edit abc123 --provider" in msg

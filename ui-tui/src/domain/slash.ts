@@ -8,8 +8,6 @@ export const sessionScopedModelArg = (value: string) => {
   return kept.length ? `${kept.join(' ')} --session` : ''
 }
 
-export const looksLikeSlashCommand = (text: string) => /^\/[^\s/]*(?:\s|$)/.test(text)
-
 // A `/` means two different things depending on where it sits:
 //
 //  - At position 0 it's a COMMAND invocation the TUI executes
@@ -45,12 +43,6 @@ export const inlineSlashTrigger = (text: string): { query: string; start: number
   const query = match[1] ?? ''
 
   return { query, start: text.length - query.length - 1 }
-}
-
-export const parseSlashCommand = (cmd: string) => {
-  const [name = '', ...rest] = cmd.slice(1).split(/\s+/)
-
-  return { arg: rest.join(' '), cmd, name: name.toLowerCase() }
 }
 
 /**

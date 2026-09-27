@@ -50,7 +50,6 @@ OPENVIKING_ENDPOINT=http://127.0.0.1:1933
 # OPENVIKING_API_KEY=...
 # OPENVIKING_ACCOUNT=default
 # OPENVIKING_USER=default
-# OPENVIKING_AGENT=hermes
 ```
 
 ## Config
@@ -73,11 +72,46 @@ profile's `.env`:
 | `OPENVIKING_API_KEY` | (none) | User/admin API key for authenticated servers |
 | `OPENVIKING_ACCOUNT` | `default` | Tenant account for local/trusted mode |
 | `OPENVIKING_USER` | `default` | Tenant user for local/trusted mode |
-| `OPENVIKING_AGENT` | `hermes` | Hermes peer ID in OpenViking, used for peer-scoped memories |
+| `OPENVIKING_AGENT` | (none) | Optional peer ID for separate assistant context |
 
 When `OPENVIKING_API_KEY` is set, Hermes lets OpenViking derive account/user
 identity from the key. In local or trusted deployments without an API key,
 Hermes sends `OPENVIKING_ACCOUNT` and `OPENVIKING_USER` as identity headers.
+Hermes also sends `User-Agent: openviking-memory-hermes/<version>` on
+OpenViking requests. This standard harness identifier contains the Hermes
+version, but no per-user identifier, and does not add a separate request.
+
+### Optional peer identity
+
+New connections use the OpenViking user's memory directory by default. Setup
+does not ask for a peer ID. Without a configured peer, Hermes sends neither
+`X-OpenViking-Actor-Peer` nor assistant-message `peer_id`.
+
+For separate assistant context, set the existing `agent` field in the active
+profile's `config.yaml`:
+
+```yaml
+memory:
+  openviking:
+    agent: work-assistant
+```
+
+Existing non-empty `OPENVIKING_AGENT`, YAML `agent`, and linked OpenViking
+`actor_peer_id` or legacy `agent_id` values retain their behavior. Resolution
+order remains environment, linked OpenViking config, then Hermes YAML. To use
+no peer, remove the peer value from each configured source and start a new
+Hermes session.
+
+Upgrades do not move or delete existing memories. Installations that relied
+on the old implicit `hermes` peer now use user memory for new writes. Without
+a peer ID, default OpenViking search covers user memory and existing peer
+memories under the same OpenViking user. Old peer memories stay at their
+existing paths and remain searchable. Ranking and result limits determine
+which memories are returned. Keep a peer ID if you need the narrower view.
+
+Set `agent: hermes` to restore peer-scoped writes. Memories written at user
+scope before this change stay there and remain searchable. This setting
+changes future writes, not the location of existing memories.
 
 ## Tools
 
@@ -86,29 +120,46 @@ Hermes sends `OPENVIKING_ACCOUNT` and `OPENVIKING_USER` as identity headers.
 | `viking_search` | Semantic search with fast/deep/auto modes |
 | `viking_read` | Read content at a viking:// URI (abstract/overview/full) |
 | `viking_browse` | Filesystem-style navigation (list/tree/stat) |
-| `viking_remember` | Store a fact directly with OpenViking `content/write` |
+| `viking_remember` | Submit a fact through OpenViking session memory extraction |
 | `viking_forget` | Delete one exact `viking://` memory file URI |
 | `viking_add_resource` | Ingest URLs/docs into the knowledge base |
 
 ## Memory Writes And Deletes
 
-`viking_remember` writes directly to OpenViking with `POST /api/v1/content/write`
-and `mode=create`. It creates peer-scoped memory files under explicit-uid
-`viking://user/<user>/peers/${OPENVIKING_AGENT}/memories/...` URIs, where
-`<user>` is resolved client-side from `/api/v1/system/status` (server-asserted
-current user). Hermes caches a confirmed user only for the active connection.
-If the probe fails, Hermes uses the configured user, or `default`, for that
-operation and retries the probe later. Explicit-uid URIs are canonical and
-work under every OpenViking auth mode and version; the `viking://~` alias only
-expands for USER/ADMIN roles, not the default dev mode.
-Explicit remembers do not depend on session commit extraction.
+`viking_remember` creates a one-shot `hermes-remember-<random>` OpenViking
+session, adds the fact as one message, and commits the session with no retained
+tail. The session remains available in OpenViking for audit. OpenViking then
+classifies the source and can add, merge, or skip a memory through its normal
+extraction pipeline. The tool returns the one-shot session ID and the
+extraction task ID when the server provides one. Extraction continues
+asynchronously after the tool returns.
+
+The tool returns `status: submitted` because extraction can add a memory, merge
+the fact into an existing memory, or produce no memory operation. It does not
+promise that OpenViking created a distinct memory file. The fact is submitted
+as an unchanged `user` message so OpenViking owns the final classification.
+The legacy `category` argument is still accepted from existing callers but is
+not advertised or used. The one-shot session is separate from the live Hermes
+conversation, so an explicit remember does not commit or rotate the active
+conversation session.
+
+If the message request or commit fails, the error includes the canonical
+session URI, the failed stage, the observed message status, and an `ov session
+commit <session-id>` recovery command. Inspect the session first. An archive
+means the commit completed. A non-empty live `messages.jsonl` with no archive
+means the message was accepted but still needs a commit. An empty live file
+without an archive is ambiguous and must not trigger an automatic resubmission.
+Use the same OpenViking profile and credentials as Hermes for manual recovery.
+OpenViking server auto-commit is disabled by default, so an accepted message
+whose explicit commit fails normally remains live and unextracted until it is
+manually committed.
 
 Hermes built-in `memory` tool additions are mirrored to OpenViking after the
 local memory operation succeeds:
 
 | Hermes action | OpenViking operation |
 |---------------|----------------------|
-| `add` | `content/write` with `mode=create` under the configured peer memory namespace |
+| `add` | `content/write` with `mode=create` under user memory, or the configured peer memory directory |
 
 Built-in `replace` and `remove` operations are not mirrored because Hermes
 native memory entries do not yet carry stable OpenViking file URIs. Use

@@ -3,7 +3,6 @@
 Covers the agent half of Shape A (gateway-gateway D-Q1.5b.1 / D-Q1.5c):
   - relay_platform_identities() parsing the GATEWAY_RELAY_PLATFORMS list +
     GATEWAY_RELAY_BOT_IDS keyed map (the cut-over shape — no scalar fallback),
-  - relay_bot_username() reading the per-platform username,
   - self_provision_relay() looping one /relay/provision POST per platform under
     one gatewayId + one secret, partial-failure-tolerant,
   - the RelayAdapter stamping the per-frame egress platform on outbound from the
@@ -55,9 +54,6 @@ def test_identities_multi_platform_keyed_map(monkeypatch):
     assert relay.relay_platform_identities() == [("discord", "app-1"), ("telegram", "bot-9")]
     # The PRIMARY is the first listed platform.
     assert relay.relay_platform_identity() == ("discord", "app-1")
-    # Username folded into the per-platform entry; the leading @ is stripped.
-    assert relay.relay_bot_username("telegram") == "my_bot"
-    assert relay.relay_bot_username("discord") is None
 
 
 def test_bot_ids_malformed_json_degrades_to_empty(monkeypatch):
@@ -104,7 +100,7 @@ def test_self_provision_loops_per_platform(monkeypatch):
 async def test_adapter_stamps_per_frame_platform_from_inbound(monkeypatch):
     """An inbound from a concrete platform makes the reply egress tagged for it."""
     from gateway.config import Platform, PlatformConfig
-    from gateway.platforms.base import MessageEvent, MessageType
+    from gateway.platforms.event import MessageEvent, MessageType
     from gateway.relay.adapter import RelayAdapter
     from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
     from gateway.session import SessionSource

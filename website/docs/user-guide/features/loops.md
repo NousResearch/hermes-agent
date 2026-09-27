@@ -28,8 +28,8 @@ When the work should run **unattended** — overnight, on a real schedule, survi
 What you'll see:
 
 1. **Loop accepted** — `↻ Loop set (every 5m): check the deploy status…`
-2. **First wakeup in 5m** — while the session is idle, Hermes injects the wakeup and runs a normal turn against current state.
-3. **Repeat** — every 5 minutes, until a stop condition fires or you stop it.
+2. **First wakeup fires right away** — on the next idle poll (gateway: the next 15s watcher scan), Hermes injects the wakeup and runs a normal turn against current state.
+3. **Repeat** — every 5 minutes after that, until a stop condition fires or you stop it.
 
 Loop a slash command just as easily:
 
@@ -61,7 +61,7 @@ A loop ends when any of these fires:
 |---|---|
 | The agent decides it's done | The wakeup prompt teaches the agent to end its reply with `LOOP_COMPLETE` on its own line when the task is finished or moot. |
 | A run cap | `--times N` — stop after N wakeups. |
-| An evidence-based condition | `--until <condition>` — after each wakeup, the same auxiliary judge that powers `/goal` checks the reply against your condition (fail-open: a broken judge never wedges the loop). |
+| An evidence-based condition | `--until <condition>` — after each wakeup, the same auxiliary judge that powers `/goal` checks the reply against your condition. If the judge rules the condition unachievable, the loop **pauses** with the reason instead of re-firing until the tick budget (fail-open: a broken judge never wedges the loop). |
 | You | `/loop stop` (or `/loop pause` to keep it around). |
 | The backstop budget | `loops.max_ticks` (default 100) pauses the loop so an unattended session can't burn tokens forever. `0` = unlimited. |
 
@@ -76,14 +76,14 @@ Examples:
 
 | Command | What it does |
 |---|---|
-| `/loop [interval] <prompt> [--times N] [--until <cond>]` | Start (or replace) the loop for this session. |
+| `/loop [interval] <prompt> [--times N] [--until <cond>]` | Start (or replace) the loop for this session. The first wakeup fires immediately; later ones follow the cadence. |
 | `/loop` or `/loop status` | Show cadence, ticks fired, and time to the next wakeup. |
 | `/loop pause` | Stop firing without losing the loop. |
 | `/loop resume` | Pick it back up. |
 | `/loop stop` | End the loop. |
 | `/proactive …` | Alias for `/loop` (Claude Code parity). |
 
-Works on the CLI, the TUI (`hermes --tui`), the web dashboard chat, the desktop app, and every gateway platform (Telegram, Discord, Slack, WhatsApp, …). On messaging platforms the gateway fires wakeups even between your messages — the loop belongs to the chat's session, and its results arrive as ordinary replies.
+Works on the CLI, the TUI (`hermes --tui`), the web dashboard chat, the desktop app, and every gateway platform (Telegram, Discord, Slack, WhatsApp, …). On messaging platforms the gateway fires wakeups even between your messages — the loop belongs to the chat's session, and its results arrive as ordinary replies — also when that session is open in the TUI / Desktop app, which leaves the routed wakeup to the gateway.
 
 ## Mixing with `/goal`
 
@@ -93,7 +93,7 @@ A real user message always wins over both — wakeups only fire while the sessio
 
 ## Behavior details
 
-- **A wakeup is a normal user-role turn.** No system-prompt mutation, no toolset swap — prompt caching stays intact.
+- **A wakeup is a normal user-role turn.** No system-prompt mutation, no toolset swap — prompt caching stays intact. In the messaging gateway a wakeup is not a reply to the message that set the loop, so its output is posted to the chat/topic without quoting that message.
 - **Survives `/resume` and compression.** Loop state persists per session and migrates across context-compression boundaries, same as `/goal`.
 - **One loop per session.** Setting a new `/loop` replaces the old one. Run several loops by running several sessions (or use cron for a fleet of schedules).
 - **Interrupting a wakeup turn (Ctrl+C) pauses the loop** — recoverable with `/loop resume`, so cancel actually means cancel.
@@ -110,7 +110,7 @@ loops:
   self_paced_ceiling_seconds: 900  # self-paced max backoff
 ```
 
-The `--until` judge routes through the `goal_judge` auxiliary task, so `auxiliary.goal_judge.*` overrides (provider, model, max_tokens) apply to loop conditions too.
+The `--until` judge routes through the `goal_judge` auxiliary task, so `auxiliary.goal_judge.*` routing overrides (provider, model) apply to loop conditions too.
 
 ## `/loop` vs `/goal` vs cron
 

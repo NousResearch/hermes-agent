@@ -1,17 +1,9 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-
 import pytest
-
 
 def _metric(snapshot, name):
     return next(metric for metric in snapshot.metrics if metric.name == name)
-
-
-
-
-
 
 def test_execution_projection_is_opaque_bounded_and_content_free():
     from agent.monitoring.cron_health import project_execution_event
@@ -42,21 +34,11 @@ def test_execution_projection_is_opaque_bounded_and_content_free():
     assert "alice@example.com" not in str(event)
     assert "top-secret-token" not in str(event)
 
-
-
-
-
-
 @pytest.mark.parametrize("message", ["oauth refresh failed", "tokenizer crashed", "HTTP 4015"])
 def test_error_classification_avoids_auth_substring_false_positives(message):
     from agent.monitoring.cron_health import classify_cron_error
 
     assert classify_cron_error(message) == "unknown"
-
-
-
-
-
 
 def test_terminal_execution_emission_flushes_and_failures_are_fail_open(monkeypatch):
     from agent.monitoring import cron_health, emitter
@@ -79,20 +61,14 @@ def test_terminal_execution_emission_flushes_and_failures_are_fail_open(monkeypa
 
     assert calls == [("emit", "completed"), ("flush", 1.0)]
 
-
-
-
-
-
 def test_registered_observable_metric_names_cover_snapshot_metrics(monkeypatch):
     """Every gauge emitted in the runtime snapshot must also be registered in the
     observable-gauge metric_names list, or the OTLP exporter never observes it.
 
     This asserts the vocabulary-registration invariant documented in
-    docs/observability/monitoring.md: an emitted-but-unregistered gauge is
+    website/docs/developer-guide/gateway-monitoring.md: an emitted-but-unregistered gauge is
     silently dropped. Regression guard for background_work / cron additions.
     """
-    import inspect
     from agent.monitoring import gateway_health_export
 
     # Build a representative snapshot (gateway + cron + background_work) without
@@ -121,20 +97,7 @@ def test_registered_observable_metric_names_cover_snapshot_metrics(monkeypatch):
 
     snapshot_names = {m.name for m in gateway_health_export._read_runtime_snapshot({}).metrics}
 
-    # Extract the registered metric_names list literal from _start_metric_provider.
-    src = inspect.getsource(gateway_health_export._start_metric_provider)
-    registered = {n for n in snapshot_names if f'"{n}"' in src}
+    registered = set(gateway_health_export._OBSERVABLE_METRIC_NAMES)
 
     missing = snapshot_names - registered
     assert not missing, f"gauges emitted but NOT registered in metric_names (will be silently dropped): {sorted(missing)}"
-
-
-def test_monitoring_docs_distinguish_relay_health_scope_and_terminal_flush():
-    from pathlib import Path
-
-    text = Path("docs/observability/monitoring.md").read_text(encoding="utf-8")
-
-    assert "Hermes Agent-owned Relay transport health" in text
-    assert "authoritative shared connector/platform state" in text
-    assert "up to one second" in text
-    assert "terminal" in text

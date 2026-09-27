@@ -10,11 +10,8 @@ import asyncio
 
 import pytest
 
-from tools.mcp_tool import (
-    MCPServerTask,
-    _handshake_rejected_as_modern,
-    _JSONRPC_UNSUPPORTED_PROTOCOL_VERSION,
-)
+from tools.mcp_tool import MCPServerTask
+from tools.mcp_tool_errors import _handshake_rejected_as_modern, _JSONRPC_UNSUPPORTED_PROTOCOL_VERSION
 
 
 class _Err(Exception):
@@ -142,3 +139,49 @@ class TestModernRejectionClassifier:
         assert _handshake_rejected_as_modern(Exception("Unsupported protocol version"))
         assert _handshake_rejected_as_modern(Exception("Unknown method: initialize"))
         assert not _handshake_rejected_as_modern(Exception("connection reset by peer"))
+
+
+class _EchoingStatelessSession(_Session):
+    """A stateless server that answers the legacy ``initialize`` 200 but names a protocolVersion
+    outside the SDK's handshake set (#113359): the SDK raises RuntimeError AFTER the wire exchange
+    succeeded, and the server has no ``server/discover``. Exposes the SDK's manual-handshake
+    surface (``send_request`` / ``adopt`` / ``send_notification``)."""
+
+    def __init__(self, disc):
+        super().__init__(init=RuntimeError("Unsupported protocol version from the server: 2026-07-28"), disc=disc)
+        self.adopted = None
+
+    async def send_request(self, request, result_type):
+        self.calls.append(("send_request", request.method))
+        import mcp.types as types
+        return types.InitializeResult(
+            protocolVersion="2026-07-28", capabilities=types.ServerCapabilities(tools=types.ToolsCapability()),
+            serverInfo=types.Implementation(name="StatelessServer", version="ESF"))
+
+    def adopt(self, result):
+        self.calls.append("adopt")
+        self.adopted = result
+
+    async def send_notification(self, notification):
+        self.calls.append(("notify", notification.method))
+
+
+class TestModernVersionEchoedToLegacyHandshake:
+    """#113359: a stateless server that accepts ``initialize`` but reports 2026-07-28 and 400s
+    ``server/discover`` must still connect — the handshake succeeded on the wire."""
+
+    def test_auto_completes_the_handshake_at_the_offered_version_when_discover_fails(self):
+        from tools import mcp_tool as _core
+        s = _EchoingStatelessSession(disc=_Err(-32603, "Server returned an error response"))
+        out = _run(_task()._negotiate_session(s, 5))
+        assert out.capabilities.tools is not None
+        assert s.calls == ["initialize", "discover", ("send_request", "initialize"), "adopt",
+                           ("notify", "notifications/initialized")]
+        assert s.adopted.protocol_version == _core.LATEST_HANDSHAKE_VERSION  # later requests stay legacy-shaped
+
+    def test_genuine_unsupported_version_error_never_re_handshakes(self):
+        s = _Session(init=_Err(_JSONRPC_UNSUPPORTED_PROTOCOL_VERSION, "unsupported protocol version"),
+                     disc=_Err(-32603, "Server returned an error response"))
+        with pytest.raises(_Err, match="Server returned an error response"):
+            _run(_task()._negotiate_session(s, 5))
+        assert s.calls == ["initialize", "discover"]

@@ -19,6 +19,7 @@ export const $changeEventsAvailable = atom(false)
 export const $cronChangeTick = atom(0)
 export const $sessionsChangeTick = atom(0)
 export const $platformsChangeTick = atom(0)
+export const $projectsChangeTick = atom(0)
 export const $pairingChangeTick = atom(0)
 
 /** `pet.info.meta`-shaped payload carried on `pet.changed` — lets the pet skip
@@ -32,6 +33,12 @@ export interface PetChangeMeta {
 }
 
 export const $petChange = atom<{ meta?: PetChangeMeta; tick: number }>({ tick: 0 })
+
+/** `setup.ready` — the boot bootstrap (free-tier identity + provider resolution)
+ *  finished, so inference readiness and the free-tier verdict may have just
+ *  changed. One-shot: the status snapshot re-reads both legs once instead of
+ *  waiting for its next ambient tick. */
+export const $setupReadyTick = atom(0)
 
 export function setChangeEventsAvailable(available: boolean): void {
   $changeEventsAvailable.set(available)
@@ -53,8 +60,16 @@ export function notifyPlatformsChanged(): void {
   $platformsChangeTick.set($platformsChangeTick.get() + 1)
 }
 
+export function notifyProjectsChanged(): void {
+  $projectsChangeTick.set($projectsChangeTick.get() + 1)
+}
+
 export function notifyPairingChanged(): void {
   $pairingChangeTick.set($pairingChangeTick.get() + 1)
+}
+
+export function notifySetupReady(): void {
+  $setupReadyTick.set($setupReadyTick.get() + 1)
 }
 
 /** Reset on gateway wipe/reconnect — a new backend re-advertises capability on

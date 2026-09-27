@@ -5,18 +5,10 @@ import sys
 
 
 def should_use_color() -> bool:
-    """Return True when colored output is appropriate.
-
-    Respects the NO_COLOR environment variable (https://no-color.org/)
-    and TERM=dumb, in addition to the existing TTY check.
-    """
-    if os.environ.get("NO_COLOR") is not None:
+    """Return True when colored output is appropriate."""
+    if os.environ.get("NO_COLOR") is not None or os.environ.get("TERM") == "dumb":
         return False
-    if os.environ.get("TERM") == "dumb":
-        return False
-    if not sys.stdout.isatty():
-        return False
-    return True
+    return bool(sys.stdout.isatty())
 
 
 class Colors:

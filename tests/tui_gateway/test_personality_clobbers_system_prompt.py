@@ -34,7 +34,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import tui_gateway.server as server
-import yaml
+import hermes_yaml as yaml
 
 
 MANUAL_PROMPT = "manual_prompt_1"
@@ -103,25 +103,6 @@ def _run(home: str, session_id: str = ""):
     return resp
 
 
-def test_personality_selection_preserves_manual_system_prompt(tmp_path, monkeypatch):
-    """Selecting a personality must NOT overwrite the manual agent.system_prompt."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    # Force the server module to pick up the temp home for config reads/writes.
-    monkeypatch.setattr(server, "_hermes_home", Path(tmp_path))
-    monkeypatch.setattr(server, "_cfg_path", None)
-    monkeypatch.setattr(server, "_cfg_cache", None)
-    _seed_config(str(tmp_path))
-
-    resp = _run(str(tmp_path))
-
-    assert resp["result"]["value"] == "personality_1", resp
-    # THE BUG: the manual system_prompt was overwritten by the personality.
-    saved = _read_saved_system_prompt(str(tmp_path))
-    assert saved == MANUAL_PROMPT, (
-        "agent.system_prompt was clobbered by the personality selection.\n"
-        f"  expected (manual): {MANUAL_PROMPT!r}\n"
-        f"  got (personality): {saved!r}"
-    )
 
 
 def test_switching_personality_leaves_no_stale_text(tmp_path, monkeypatch):

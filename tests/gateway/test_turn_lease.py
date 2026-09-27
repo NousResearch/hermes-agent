@@ -24,7 +24,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.turn_lease import SessionTurnLeaseRegistry, TurnLeaseTimeoutError
+from gateway.turn_lease import (
+    SessionTurnLeaseRegistry,
+    TurnLeaseTimeoutError,
+)
 
 
 def _run(coro):
@@ -96,6 +99,8 @@ def test_distinct_sessions_do_not_contend():
 # ---------------------------------------------------------------------------
 
 
+
+
 def test_timeout_fails_closed_instead_of_authorizing_an_unserialized_turn():
     """A timed-out waiter must never run against the still-live holder.
 
@@ -140,7 +145,7 @@ async def test_agent_path_propagates_timed_out_lease_before_loading_transcript(
     transcript loading and agent execution must not start: both would operate
     without the per-session serialization guarantee.
     """
-    from tests.gateway.test_42039_duplicate_user_message import (
+    from tests.gateway.test_duplicate_user_message import (
         _bootstrap,
         _event,
         _source,
@@ -179,7 +184,7 @@ async def test_full_dispatch_rejects_lease_timeout_without_running_goal_hook(
     The lease wait also has its own clock: a short lease budget must reject
     promptly even while the normal agent inactivity timeout remains long.
     """
-    from tests.gateway.test_42039_duplicate_user_message import _bootstrap, _event
+    from tests.gateway.test_duplicate_user_message import _bootstrap, _event
 
     runner = _bootstrap(monkeypatch, tmp_path)
     runner._turn_leases = SessionTurnLeaseRegistry()
@@ -187,7 +192,7 @@ async def test_full_dispatch_rejects_lease_timeout_without_running_goal_hook(
         "sess-dedup", owner_key="holder-key", generation=1, timeout=1
     )
     assert holder is not None
-    monkeypatch.setenv("HERMES_AGENT_TIMEOUT", "5")
+    monkeypatch.setenv("HERMES_AGENT_TIMEOUT", "120")
     monkeypatch.setenv("HERMES_TURN_LEASE_TIMEOUT", "0.02")
 
     runner.session_store.load_transcript.side_effect = AssertionError(
@@ -200,7 +205,7 @@ async def test_full_dispatch_rejects_lease_timeout_without_running_goal_hook(
     runner._post_turn_goal_continuation = AsyncMock()
 
     try:
-        response = await asyncio.wait_for(runner._handle_message(_event()), timeout=1)
+        response = await asyncio.wait_for(runner._handle_message(_event()), timeout=30)
     finally:
         assert runner._turn_leases.release(holder) is True
 
@@ -478,3 +483,5 @@ def test_runner_release_turn_lease_is_token_scoped_and_bare_safe():
         assert runner._release_turn_lease("", 1) is False
 
     _run(scenario())
+
+

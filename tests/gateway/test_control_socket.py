@@ -18,10 +18,7 @@ from gateway.control_socket import (
     windows_pipe_name,
 )
 
-pytestmark = pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="Unix-socket transport; the named-pipe half is covered on the wine2e lane",
-)
+pytestmark = pytest.mark.platforms("posix")  # Unix-socket transport; the named-pipe half is covered on the wine2e lane
 
 
 def _run(coro):
@@ -161,6 +158,39 @@ def test_unknown_verb_and_malformed_request(home: Path):
     assert payload["protocol"] == CONTROL_PROTOCOL_VERSION
 
 
+def test_verb_handler_receives_params(home: Path):
+    """A handler declaring a ``params`` argument is called with the request's params dict; a bare
+    handler is still called with no args (backward compat for identify/status/rescan)."""
+    received = {}
+
+    def with_params(params):
+        received.update(params)
+        return {"echo": params}
+
+    def bare():
+        return {"ok": 1}
+
+    async def scenario():
+        server = GatewayControlServer(
+            home, verb_handlers={"with-params": with_params, "bare": bare})
+        assert await server.start()
+        try:
+            loop = asyncio.get_running_loop()
+            got = await loop.run_in_executor(
+                None, lambda: query_gateway_control(
+                    home, "with-params", params={"old": "a", "new": "b"}))
+            bare_ok = await loop.run_in_executor(
+                None, lambda: query_gateway_control(home, "bare"))
+            return got, bare_ok
+        finally:
+            await server.stop()
+
+    got, bare_ok = _run(scenario())
+    assert got == {"echo": {"old": "a", "new": "b"}}
+    assert received == {"old": "a", "new": "b"}
+    assert bare_ok == {"ok": 1}
+
+
 def test_stop_removes_socket_and_pointer(home: Path):
     async def scenario():
         server = GatewayControlServer(
@@ -276,7 +306,7 @@ def test_collect_fleet_versions_prefers_socket(tmp_path: Path, monkeypatch):
     home.mkdir()
 
     monkeypatch.setattr(
-        "hermes_cli.build_info.get_code_identity",
+        "hermes_cli.version_info.get_code_identity",
         lambda refresh=False: {"sha": "HEADSHA", "version": "1.0"},
     )
     monkeypatch.setattr(
@@ -303,6 +333,13 @@ def test_collect_fleet_versions_prefers_socket(tmp_path: Path, monkeypatch):
 
 
 def test_collect_fleet_versions_falls_back_to_state_file(tmp_path: Path, monkeypatch):
+    """Without a socket answer the state file is a fallback claim, not an identity.
+
+    A live PID that is not the home's verified gateway (here: this pytest
+    process wrote the record) stays visible as ``unknown`` with no
+    self-reported sha; only the verified gateway PID is classified
+    ``current``/``stale`` from the file (#110420).
+    """
     import os
 
     import hermes_cli.update_receipt as ur
@@ -311,7 +348,7 @@ def test_collect_fleet_versions_falls_back_to_state_file(tmp_path: Path, monkeyp
     home.mkdir()
 
     monkeypatch.setattr(
-        "hermes_cli.build_info.get_code_identity",
+        "hermes_cli.version_info.get_code_identity",
         lambda refresh=False: {"sha": "HEADSHA", "version": "1.0"},
     )
     monkeypatch.setattr(
@@ -336,7 +373,19 @@ def test_collect_fleet_versions_falls_back_to_state_file(tmp_path: Path, monkeyp
     fleet = ur.collect_fleet_versions()
     assert len(fleet) == 1
     assert fleet[0]["pid"] == os.getpid()
+    assert fleet[0]["state"] == "unknown"
+    assert fleet[0]["code_sha"] is None
+    assert "source" not in fleet[0]
+
+    # Same file, but the profile's identity resolver verifies this PID as the
+    # gateway: the fallback may now classify from the stamped sha.
+    monkeypatch.setattr(
+        "gateway.status.live_gateway_pid_for_home", lambda h: os.getpid()
+    )
+    fleet = ur.collect_fleet_versions()
+    assert len(fleet) == 1
     assert fleet[0]["state"] == "stale"
+    assert fleet[0]["code_sha"] == "OLDSHA"
     assert "source" not in fleet[0]
 
 

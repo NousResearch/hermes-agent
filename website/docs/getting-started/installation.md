@@ -150,7 +150,7 @@ You don't need to rebuild your setup from scratch. Restore a full backup with `h
 
 For the POSIX source script, provide Git, curl, tar, and SHA-256 utilities.
 Windows can bootstrap its pinned Git for Windows archive when Git is absent.
-An existing uv can bootstrap PM; otherwise the script downloads its verified pin.
+The script always downloads its verified uv pin; a uv already on your PATH is never used.
 
 Current first-party installations run on **Python 3.14**. The broader
 `>=3.11,<3.15` range in `pyproject.toml` lets older Python installations

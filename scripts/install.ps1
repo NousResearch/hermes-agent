@@ -496,16 +496,12 @@ function Invoke-DownloadWithProgress {
 # (<store>\uv-<version>-<target>\), sha256-verified, so pm adopts the same
 # bytes — no astral-latest, no irm|iex. Returns the uv.exe path.
 function Get-Uv {
-    $existing = Get-Command uv -ErrorAction SilentlyContinue
-    if ($existing) {
-        # Developer shortcut: fetches nothing, but only for a new-enough uv.
-        if (Test-UvAtLeastPin $existing.Source) { return $existing.Source }
-        Log "uv on PATH ($($existing.Source)) is older than the pinned $($script:UvPinVersion) or does not run; downloading our own copy"
-    }
+    # Always the pinned artifact, never a uv already on PATH: Hermes runs only
+    # its own packaged toolchain.
     $target = "win32-$(Get-WindowsArch)"
     $pin = $script:UvPinFiles[$target]
     if (-not $pin) {
-        Fail "no pinned uv artifact for $target; install uv manually: https://docs.astral.sh/uv/"
+        Fail "no pinned uv artifact for $target; Hermes does not support this host"
     }
     $entry = Join-Path (Get-PmStoreRoot) "uv-$($script:UvPinVersion)-$target"
     $uvExe = Join-Path $entry "uv.exe"

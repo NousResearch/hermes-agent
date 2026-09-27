@@ -115,14 +115,14 @@ def test_passive_discovery_never_installs_or_repairs_a_legacy_tree(tmp_path, mon
     assert {p.relative_to(home): p.read_bytes() for p in home.rglob("*") if p.is_file()} == before
     assert not (home / "tools").exists()
 
-    # A user-owned PATH toolchain remains usable without acquiring a PM one.
+    # A user-owned PATH toolchain is never selected: Hermes runs only PM's copy.
     external = tmp_path / "external"
     external.mkdir()
     npm = external / "npm"
     npm.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     npm.chmod(0o755)
     monkeypatch.setenv("PATH", str(external))
-    assert hermes_constants.find_node_executable("npm") == str(npm)
+    assert hermes_constants.find_node_executable("npm") is None
     assert attempts == []
     assert not (home / "tools").exists()
 

@@ -194,6 +194,10 @@ def _compose_live_state_reason(root: Path) -> str | None:
         result = subprocess.run(
             ["docker", "compose", "ps", "--status", "running", "--format", "{{.Name}}"],
             cwd=root, capture_output=True, text=True, timeout=15, stdin=subprocess.DEVNULL,
+            # Same profile as _SUBPROCESS_KW: lossy decode. Strict locale decoding raised
+            # UnicodeDecodeError (a ValueError) out of this probe — past its
+            # except (FileNotFoundError, TimeoutExpired) — and killed the whole verify run.
+            encoding="utf-8", errors="replace",
         )
     except FileNotFoundError:
         return None

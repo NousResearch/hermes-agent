@@ -17,8 +17,11 @@ logger = logging.getLogger("gateway.stream_consumer")
 class StreamFallbackMixin:
     """Non-streaming delivery paths used once progressive edits fail or the turn ends oddly."""
 
+    _initial_reply_to_id: Optional[str]
+    _turn_split_delivery: bool
+
     async def _send_new_chunk(self, text: str, reply_to_id: Optional[str], *,
-                              final: bool = False) -> Optional[str]:
+                              final: bool = False, continuation: Optional[bool] = None) -> Optional[str]:
         """Send a new chunk threaded to ``reply_to_id``; returns the new message_id."""
         text = self._clean_for_display(text)
         if not text.strip():
@@ -26,7 +29,8 @@ class StreamFallbackMixin:
         try:
             result = await self.adapter.send(
                 chat_id=self.chat_id, content=text, reply_to=reply_to_id,
-                metadata=self._metadata_for_send(final=final, expect_edits=not final))
+                metadata=self._metadata_for_send(
+                    final=final, expect_edits=not final, continuation=continuation))
             if not (result.success and result.message_id):
                 self._edit_supported = False
                 return reply_to_id
@@ -129,6 +133,7 @@ class StreamFallbackMixin:
         for chunk in chunks:
             result = await self._send_with_flood_retry(
                 content=chunk, reply_to=None if sent_any_chunk else anchor,
+                continuation=self._turn_split_delivery or continuation != final_text or sent_any_chunk,
                 retry_log="Flood control on fallback send, retrying in %.1fs")
             if not result or not result.success:
                 # Partial continuation landed: do NOT set _final_response_sent (the
@@ -222,11 +227,12 @@ class StreamFallbackMixin:
                 logger.debug("per-chat limit resolution failed: %s", e)
         return _len_fn, raw_limit
 
-    async def _send_with_flood_retry(self, *, content: str, retry_log: str, reply_to=None):
+    async def _send_with_flood_retry(self, *, content: str, retry_log: str, reply_to=None,
+                                    continuation: Optional[bool] = None):
         """adapter.send(final metadata) with ONE bounded flood retry; returns the last
         SendResult.  Exceptions propagate (callers decide whether a raise is "ambiguous")."""
         kwargs = dict(chat_id=self.chat_id, content=content,
-                      metadata=self._metadata_for_send(final=True))
+                      metadata=self._metadata_for_send(final=True, continuation=continuation))
         if reply_to is not None:
             kwargs["reply_to"] = reply_to
         result = None
@@ -326,6 +332,8 @@ class StreamFallbackMixin:
         try:
             # Interim: must never seal a native stream (see _send_commentary).
             _md = dict(self.metadata) if self.metadata else {}
+            _md["_stream_continuation"] = bool(visible) or self._turn_split_delivery
+            _md["_stream_reply_to_message_id"] = self._initial_reply_to_id
             _md["_interim_send"] = True
             result = await self.adapter.send(chat_id=self.chat_id, content=tail, metadata=_md)
             if result.success:

@@ -155,6 +155,23 @@ def test_strip_helper_drops_device_code_blocks_and_reports(tmp_path):
     assert "openai-codex" not in store["providers"] and "nous" in store["providers"]
 
 
+def test_strip_helper_drops_cloned_nous_refresh_grant(tmp_path):
+    """Nous refresh tokens rotate on use: a cloned pool row or providers block is a fork (#121649)."""
+    from hermes_cli.auth import strip_cloned_single_use_oauth_grants
+    pdir = tmp_path / "p"
+    pdir.mkdir()
+    grant = {"access_token": "AT1", "refresh_token": "RT1", "agent_key": "AK"}
+    (pdir / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": {"nous": dict(grant)},
+        "credential_pool": {"nous": [dict(grant, id="n", source="device_code", auth_type="oauth")]},
+    }))
+    summary = strip_cloned_single_use_oauth_grants(pdir)
+    store = json.loads((pdir / "auth.json").read_text())
+    assert (summary["pool"], summary["providers"]) == (["nous"], ["nous"])
+    assert "nous" not in store["credential_pool"] and "nous" not in store["providers"]
+
+
 def test_strip_helper_is_a_noop_without_credentials(tmp_path):
     from hermes_cli.auth import strip_cloned_single_use_oauth_grants
     assert strip_cloned_single_use_oauth_grants(tmp_path) == {"pool": [], "providers": [], "files": []}

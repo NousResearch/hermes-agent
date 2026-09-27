@@ -30,7 +30,15 @@ SINGLE_USE_REFRESH_POOL_PROVIDERS = frozenset({"anthropic", "openai-codex", "xai
 SINGLE_USE_OAUTH_SINGLETON_FILES = (".anthropic_oauth.json",)
 
 # Providers whose device-code grants live under ``providers.<id>`` (not only the pool).
-_DEVICE_CODE_BLOCK_PROVIDERS = ("openai-codex", "xai-oauth")
+# Only a block carrying a refresh token is a forkable grant: an agent_key-only ``nous`` block is
+# not single-use and must survive.
+_DEVICE_CODE_BLOCK_PROVIDERS = ("openai-codex", "xai-oauth", "nous")
+
+
+def _block_tokens(block: Dict[str, Any]) -> Dict[str, Any]:
+    # Codex/xAI nest the pair under ``tokens``; Nous stores it flat on the block.
+    tokens = block.get("tokens")
+    return tokens if isinstance(tokens, dict) else block
 
 
 def _is_oauth_pool_payload(entry: Any) -> bool:
@@ -113,7 +121,7 @@ def strip_cloned_single_use_oauth_grants(profile_dir: Path) -> Dict[str, Any]:
         # profile working while removing the fork.
         for provider_id in _DEVICE_CODE_BLOCK_PROVIDERS:
             block = providers.get(provider_id)
-            if isinstance(block, dict) and block:
+            if isinstance(block, dict) and _block_tokens(block).get("refresh_token"):
                 del providers[provider_id]
                 stripped["providers"].append(provider_id)
                 changed = True
@@ -361,12 +369,12 @@ def _heal_forked_provider_block(
     if not (isinstance(p_providers, dict) and isinstance(r_providers, dict)):
         return None
     p_block, r_block = p_providers.get(provider_id), r_providers.get(provider_id)
-    if not (isinstance(p_block, dict) and p_block and isinstance(r_block, dict) and r_block):
+    if not (isinstance(p_block, dict) and _block_tokens(p_block).get("refresh_token")
+            and isinstance(r_block, dict) and r_block):
         return None
 
     def _flat(block: Dict[str, Any]) -> Dict[str, Any]:
-        tokens = block.get("tokens") if isinstance(block.get("tokens"), dict) else {}
-        return {**tokens, "last_refresh": block.get("last_refresh")}
+        return {**_block_tokens(block), "last_refresh": block.get("last_refresh")}
 
     p_flat, r_flat = _flat(p_block), _flat(r_block)
     # Provider blocks have no stable pool-row ID. Without a shared token pair

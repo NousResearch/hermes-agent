@@ -1,0 +1,29 @@
+manifest_version: 1
+
+name: seiche
+description: Review dollar funding conditions with source clocks and explicit data gaps.
+source: https://seiche.info/developers/
+transport:
+  type: http
+  url: https://api.seiche.info/mcp
+auth:
+  type: none
+tools:
+  default_enabled:
+    - funding_stress_now
+    - money_market_context
+    - data_health
+suggest:
+  keywords:
+    - seiche
+    - dollar funding
+  hosts:
+    - seiche.info
+post_install: |
+  No account or API key is needed for the public research endpoint.
+  Start a new session and ask: What does the current dollar-funding board
+  say, and which underlying observations are old or missing?
+  Use funding_stress_now first. Preserve individual observation dates,
+  source-quality gaps and historical-validation limits. Board generation
+  time is not the freshness of every input. Public usage limits apply.
+  This is research context; the server does not place orders or move funds.

@@ -35,6 +35,13 @@ def test_real_action_tail_still_detected(detect, text):
     assert detect(text)
 
 
+@pytest.mark.parametrize("separator", [" — ", " – ", ": "])
+@pytest.mark.parametrize("detect", [trailing_continue_intent, promoted_reasoning_announces_action])
+def test_user_handoff_after_clause_separator(detect, separator):
+    assert not detect("Options ready" + separator + "Next, I will wait for your decision.")
+    assert detect("Options ready" + separator + "Next, I will check the logs.")
+
+
 @pytest.mark.parametrize("enabled", [True, False])
 @pytest.mark.parametrize("promoted", [True, False])
 def test_tool_turn_ends_at_user_decision_without_synthetic_authority(loop_agent, enabled, promoted):

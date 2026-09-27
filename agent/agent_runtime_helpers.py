@@ -3153,7 +3153,7 @@ _TRAILING_CONTINUE_INTENT_RE = re.compile(
 # ("I will now check the logs and wait for your decision") must not hide a stall.
 # Keep process/background waits on the normal action path.
 _USER_HANDOFF_TAIL_RE = re.compile(
-    r"(?:^|[.!?\n]\s*)"
+    r"(?:^|[.!?:\n\u2014\u2013]\s*)"
     r"(?:(?:next|first)[,:]?\s+|now\s+)?"
     r"(?:i(?:['\u2019]ll| will| am going to|['\u2019]m going to)?|let me)\s+"
     r"(?:now\s+)?(?:wait for|await)\s+"

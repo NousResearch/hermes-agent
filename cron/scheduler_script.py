@@ -334,6 +334,22 @@ def _script_argv(path: Path) -> tuple[Optional[list[str]], dict[str, str], Optio
     python_exe, env_overlay = _windows_cron_python_invocation(sys.executable)
     if env_overlay:
         return _windows_cron_bootstrap_argv(python_exe, env_overlay, str(path)), env_overlay, None
+    repo = Path(__file__).resolve().parents[1]
+    from hermes_cli._launchers import resolve_store_python
+    if resolve_store_python(repo) is not None:
+        # PM layout: the store interpreter carries no third-party distributions, so a bare
+        # ``[sys.executable, script]`` dies on the script's first real import (``yaml``). Mirror the
+        # Windows bootstrap's semantics — argv[0] is the script, its own directory leads sys.path —
+        # while the launcher leases the dependency generation at child start.
+        from hermes_cli._launchers import runtime_command
+        runner = (
+            "import os, runpy, sys; "
+            f"script = {str(path)!r}; "
+            "sys.argv = [script]; "
+            "sys.path.insert(0, os.path.dirname(os.path.abspath(script))); "
+            "runpy.run_path(script, run_name='__main__')"
+        )
+        return runtime_command(repo, [], code=runner), {}, None
     return [python_exe, str(path)], env_overlay, None
 
 

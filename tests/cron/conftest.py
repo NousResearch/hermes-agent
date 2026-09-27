@@ -53,6 +53,22 @@ def _default_cron_test_model(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_runtime_dir(tmp_path, monkeypatch):
+    """Keep install-store resolution out of the real Hermes home.
+
+    Child commands are built with ``hermes_cli._launchers.runtime_command``, which consults the
+    install's store; ``pm.environments.store_root`` probes ``<repo>/../manifest.json``, and on a
+    default install (repo checked out INSIDE ``$HERMES_HOME``) that path IS the real home — every
+    cron test that builds a worker/script/delivery command would otherwise trip
+    ``tests/home_io_guard.py``. Pointing ``HERMES_RUNTIME_DIR`` at a temp directory makes the
+    resolution hermetic: ``resolve_store_python`` finds no ``facts.json`` and takes its documented
+    ``sys.executable`` fallback, which is also the environment CI sees (no PM store).
+    """
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "tools"))
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _reset_session_context_vars():
     """Restore session ContextVars around cron tests that call run_job directly.
 

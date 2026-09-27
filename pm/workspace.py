@@ -281,8 +281,16 @@ def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path) -> Path:
                     continue  # The referenced tree was copied with this member.
                 spec["path"] = (identity / relative).resolve().as_posix()
                 changed = True
+        # uv rejects any [project] table whose `version` is neither set nor listed
+        # in `project.dynamic` at parse time — before resolver or build — so a
+        # version-less plugin pyproject failed every `uv lock` of the workspace.
+        # A version is required metadata: stage one instead of refusing the plugin.
+        project = document.setdefault("project", {})
+        if "version" not in project and "version" not in project.get("dynamic", []):
+            project["version"] = "0.0.0"
+            changed = True
         if virtual:
-            document.setdefault("project", {})["name"] = f"hermes-plugin-{key}"
+            project["name"] = f"hermes-plugin-{key}"
         if virtual or changed:
             import tomli_w
 

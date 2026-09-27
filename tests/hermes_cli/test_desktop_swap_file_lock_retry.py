@@ -35,16 +35,18 @@ def _staged_over_live(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(main_desktop, "_stop_desktop_processes_locking_build", lambda d, **kw: [])
     slept: list[float] = []
     monkeypatch.setattr(main_desktop._time_mod, "sleep", slept.append)
-    return desktop_dir, staging, live_exe, slept
+    # The promotion renames the unpacked ROOT (electron-builder's appOutDir), which on darwin is
+    # an ancestor of the exe (…/mac-arm64 vs …/Contents/MacOS) — key the lock on that root.
+    return desktop_dir, staging, live_exe, slept, main_desktop._desktop_unpacked_root(live_exe, desktop_dir / "release")
 
 
 def test_swap_retries_transient_permission_error_then_promotes(tmp_path, monkeypatch, caplog):
-    desktop_dir, staging, live_exe, slept = _staged_over_live(tmp_path, monkeypatch)
+    desktop_dir, staging, live_exe, slept, live_root = _staged_over_live(tmp_path, monkeypatch)
     real_rename = os.rename
     locked = {"n": 0}
 
     def scanner_locked_rename(src, dst):
-        if Path(dst) == live_exe.parent and locked["n"] < 2:
+        if Path(dst) == live_root and locked["n"] < 2:
             locked["n"] += 1
             raise PermissionError(32, "being used by another process")
         return real_rename(src, dst)
@@ -61,7 +63,7 @@ def test_swap_retries_transient_permission_error_then_promotes(tmp_path, monkeyp
 
 def test_swap_gives_up_after_bounded_retries_and_keeps_live_app(tmp_path, monkeypatch, caplog):
     """A lock that never clears: bounded attempts, real OSError surfaced in the log, live app untouched."""
-    desktop_dir, staging, live_exe, slept = _staged_over_live(tmp_path, monkeypatch)
+    desktop_dir, staging, live_exe, slept, _live_root = _staged_over_live(tmp_path, monkeypatch)
     real_rename = os.rename
     attempts = {"n": 0}
 

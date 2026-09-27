@@ -620,13 +620,16 @@ def write_board_metadata(
             meta["default_workspace_kind"] = kind
         else:
             meta["default_workspace_kind"] = None
-    # A worktree default materializes ``<repo>/.worktrees/<task-id>`` under the
-    # board default_workdir; without the anchor, every defaulted task dies at
-    # dispatch workspace resolution instead of at this write (#123288).
-    if (meta.get("default_workspace_kind") or "") == "worktree" and not (meta.get("default_workdir") or "").strip():
+    # Both persistent kinds anchor defaulted tasks in the board
+    # default_workdir (worktree: <repo>/.worktrees/<id>; dir: the workdir
+    # itself); without the anchor, every defaulted task dies at dispatch
+    # workspace resolution instead of at this write (#123288) — dir raises
+    # "workspace_kind=dir but no workspace_path" just like worktree does.
+    _kind = (meta.get("default_workspace_kind") or "").strip()
+    if _kind in {"worktree", "dir"} and not (meta.get("default_workdir") or "").strip():
         raise ValueError(
-            "default_workspace_kind 'worktree' requires the board default_workdir "
-            "to be set (a git repo to anchor per-task worktrees under); set it "
+            f"default_workspace_kind {_kind!r} requires the board default_workdir "
+            "to be set (the anchor defaulted tasks resolve against); set it "
             "with `hermes kanban boards set-default-workdir <slug> <path>`"
         )
     if not meta.get("created_at"):
@@ -1320,6 +1323,33 @@ def create_task(
         raise ValueError("title is required")
     if initial_status not in VALID_INITIAL_STATUSES:
         raise ValueError(f"initial_status must be one of {sorted(VALID_INITIAL_STATUSES)}")
+    # Read the board's declared default kind BEFORE the project-inheritance
+    # check below keys on ``workspace_kind != "scratch"``: a declared
+    # "scratch" is the same no-project opt-out as an explicit one (#106342),
+    # so it must pin the kind before the board's project_id can be
+    # considered — otherwise _resolve_project_link upgrades it to worktree
+    # and the board's own declaration is silently discarded.
+    if workspace_kind is None:
+        # No explicit workspace: the board may declare the kind its tasks are
+        # born with (#123288) — e.g. worktree, so a governed backend's binding
+        # guard (strict descendant AND exact git root) is satisfiable without
+        # passing --workspace on every creation. A declared kind (including
+        # "scratch") PINS the task before the project-inheritance check
+        # below, so a board declaring scratch gets the same #106342 no-project
+        # opt-out an explicit scratch gets. With nothing declared the kind
+        # stays None — None means "unspecified" and must keep inheriting the
+        # board project; only after that check does it concretize to scratch.
+        # An invalid declared kind (hand-edited board.json) raises with the
+        # fix command rather than silently birthing scratch tasks.
+        try:
+            board_meta = _board_meta_for(board)
+        except ValueError:
+            raise
+        except Exception:
+            board_meta = {}
+        workspace_kind = (
+            str(board_meta.get("default_workspace_kind") or "").strip() or None
+        )
     # A project-scoped board anchors every new task to its project's repo
     # (deterministic worktree + branch) without each surface repeating it.
     # An explicit ``scratch`` (or ``project_id=""``) is a request for no project:
@@ -1330,18 +1360,7 @@ def create_task(
         except Exception:
             pass
     if workspace_kind is None:
-        # No explicit workspace: the board may declare the kind its tasks are
-        # born with (#123288) — e.g. worktree, so a governed backend's binding
-        # guard (strict descendant AND exact git root) is satisfiable without
-        # passing --workspace on every creation. An explicit 'scratch' never
-        # reaches this branch.
-        try:
-            workspace_kind = (
-                (_board_meta_for(board).get("default_workspace_kind") or "").strip()
-                or "scratch"
-            )
-        except Exception:
-            workspace_kind = "scratch"
+        workspace_kind = "scratch"
     if workspace_kind not in VALID_WORKSPACE_KINDS:
         raise ValueError(
             f"workspace_kind must be one of {sorted(VALID_WORKSPACE_KINDS)}, "
@@ -1467,7 +1486,24 @@ def create_task(
 
 
 def _board_meta_for(board: Optional[str]) -> dict:
-    return read_board_metadata(board if board else get_current_board())
+    meta = read_board_metadata(board if board else get_current_board())
+    # ``board.json`` is hand-editable; refuse a garbage declared kind loudly
+    # at every read instead of letting it brick card creation downstream
+    # (an unknown kind would raise on EVERY create_task) or pass silently
+    # through a falsy-coercing fallback.
+    kind = meta.get("default_workspace_kind")
+    if kind is not None and (
+        not isinstance(kind, str)
+        or (kind := kind.strip()) not in VALID_WORKSPACE_KINDS
+    ):
+        raise ValueError(
+            f"board {board or get_current_board()!r} declares invalid "
+            f"default_workspace_kind {meta.get('default_workspace_kind')!r} in "
+            f"board.json; must be one of {sorted(VALID_WORKSPACE_KINDS)}. Fix or "
+            "remove the field (`hermes kanban boards set-default-workspace "
+            "<slug> <scratch|worktree|dir>` rewrites it)."
+        )
+    return meta
 
 
 def _project_branch_name(project_obj: Any, task_id: str, title: Optional[str]) -> Optional[str]:

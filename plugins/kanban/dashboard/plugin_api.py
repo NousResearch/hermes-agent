@@ -1373,7 +1373,13 @@ def _default_workspace_kind(board: dict[str, Any]) -> str:
 
 
 def _annotate_board_meta(meta: dict) -> dict:
-    meta["default_workspace_kind"] = _default_workspace_kind(meta)
+    # The declared kind is returned as-is (None = nothing declared); the
+    # non-destructive recommendation derived from default_workdir travels
+    # under its own key. Overwriting the declared field made GET /boards
+    # unable to distinguish "declared" from "undeclared, but the workdir is
+    # a repo", and a read-modify-write of that payload minted a real
+    # declaration (rb/123543, rb/121149).
+    meta["recommended_workspace_kind"] = _default_workspace_kind(meta)
     _, meta["project_name"], _ = _resolve_project(meta.get("project_id"))
     return meta
 
@@ -1403,7 +1409,10 @@ def list_boards(include_archived: bool = Query(False)):
         # Live cards only — archived tasks are hidden from every default board view,
         # so counting them in the switcher badge would visibly disagree.
         b["total"] = sum(n for status, n in b["counts"].items() if status != "archived")
-        b["default_workspace_kind"] = _default_workspace_kind(b)
+        # Declared kind as-is; the derived recommendation under its own key —
+        # see _annotate_board_meta.
+        b["recommended_workspace_kind"] = _default_workspace_kind(b)
+        b["default_workspace_kind"] = (str(b.get("default_workspace_kind") or "").strip() or None)
         pid = b["project_id"] = b.get("project_id") or None
         proj = proj_map.get(pid) if pid else None
         b["project_name"] = proj.name if proj else None

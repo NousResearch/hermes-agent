@@ -123,9 +123,12 @@ def test_patch_board_sets_project_directory(client, tmp_path):
     assert response.status_code == 200, response.text
     board = response.json()["board"]
     assert board["default_workdir"] == str(project_dir.resolve())
-    # The recommendation flips from scratch to a persistent kind so the
-    # create-task dialog's workspace default follows the board setting.
-    assert board["default_workspace_kind"] == "dir"
+    # Nothing is declared, so the declared field stays None while the
+    # derived recommendation (now under its own key, so a read-modify-write
+    # cannot mint a declaration) flips scratch -> dir and the create-task
+    # dialog's workspace default follows the board setting.
+    assert board["default_workspace_kind"] is None
+    assert board["recommended_workspace_kind"] == "dir"
     assert kb.read_board_metadata("late-config")["default_workdir"] == str(
         project_dir.resolve()
     )

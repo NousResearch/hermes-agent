@@ -136,7 +136,7 @@ def test_do_list_platform_env_is_ignored(three_source_env, monkeypatch):
 
 
 
-def test_check_for_skill_updates_does_not_fall_back_across_registries():
+def test_check_for_skill_updates_does_not_fall_back_across_registries(tmp_path, monkeypatch):
     """An entry whose source has no adapter reports `unavailable`.
 
     Previously `candidate_sources ... or sources` fell back to every source, so
@@ -168,9 +168,12 @@ def test_check_for_skill_updates_does_not_fall_back_across_registries():
         def inspect(self, identifier):
             return _ForeignBundle()
 
+    from tools import skills_hub as hub
+    monkeypatch.setattr(hub, "SKILLS_DIR", tmp_path)
+    (tmp_path / "reddit").mkdir()
     lock = _DummyLockFile([
         {"name": "reddit", "identifier": "reddit", "source": "clawhub",
-         "content_hash": "hash-of-the-clawhub-copy"},
+         "install_path": "reddit", "content_hash": "hash-of-the-clawhub-copy"},
     ])
 
     results = check_for_skill_updates(
@@ -280,6 +283,75 @@ def test_resolve_keeps_catalog_meta_when_later_sources_do_not_fetch():
     assert meta.identifier.endswith("latipun7/agent-skill-collections/skills/skillopt")
     assert matched is not None
     assert matched.__class__ is CatalogSource
+
+
+def test_inspect_reuses_one_ssrf_safe_client_for_metadata_and_bundle(monkeypatch, tmp_path):
+    """A preview's (and an install's) sequential resolver calls must share one guarded connection pool."""
+    import hermes_cli.skills_hub as cli_hub
+    import tools.skills_hub as hub
+    import tools.skills_hub_search as search
+    import tools.skills_hub_clawhub as clawhub
+    from tools.skills_hub_models import SkillBundle, SkillMeta
+
+    clients = []
+    client_kwargs = []
+
+    class Response:
+        status_code = 200
+        text = "ok"
+        content = b"ok"
+        headers = {}
+
+        def json(self):
+            return {"skills": []}
+
+    class Client:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def get(self, *_args, **_kwargs):
+            return Response()
+
+    class Source:
+        def inspect(self, _identifier):
+            hub._guarded_http_get("https://example.com/metadata")
+            # The Hermes-index fetch must ride the same pool (no cache → real GET).
+            assert search._load_hermes_index() == {"skills": []}
+            return SkillMeta("example", "metadata", "test", "example/id", "community")
+
+        def fetch(self, _identifier):
+            hub._guarded_http_get("https://example.com/SKILL.md")
+            return SkillBundle("example", {"SKILL.md": "# Example"}, "test", "example/id", "community")
+
+    def create_client(**kwargs):
+        client_kwargs.append(kwargs)
+        client = Client()
+        clients.append(client)
+        return client
+
+    monkeypatch.setattr(cli_hub, "_sources", lambda: [Source()])
+    monkeypatch.setattr(hub, "create_ssrf_safe_client", create_client, raising=False)
+    monkeypatch.setattr(hub, "is_safe_url", lambda _url: True)
+    monkeypatch.setattr(hub, "check_website_access", lambda _url: None)
+    monkeypatch.setattr(search, "_hermes_index_cache_file", lambda: tmp_path / "hermes-index.json")
+    monkeypatch.setattr(search.httpx, "get", lambda *_a, **_k: pytest.fail("index fetch bypassed the pool"))
+
+    result = cli_hub.inspect_skill("example/id")
+
+    assert result is not None
+    assert len(clients) == 1
+    # The pooled client keeps the one-shot default timeout and never auto-follows redirects.
+    assert client_kwargs[0]["timeout"] == hub._DEFAULT_HTTP_TIMEOUT
+    assert client_kwargs[0]["follow_redirects"] is False
+
+    # Install runs the same resolve + fetch sequence (plus the per-file fan-out) and must pool too.
+    clients.clear()
+    monkeypatch.setattr(cli_hub, "_resolve_url_bundle_name", lambda *_a, **_k: False)
+    cli_hub.do_install("example/id", console=Console(file=StringIO()))
+    assert len(clients) == 1
 
 
 
@@ -493,3 +565,72 @@ def test_do_update_unmodified_skill_updates_normally(monkeypatch, tmp_path):
 
     assert installs == ["someone/hub-skill"]
     assert "Updated 1 skill(s)" in sink.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# Stale index entry messages (#3259)
+# ---------------------------------------------------------------------------
+
+
+def _stale_env(monkeypatch):
+    """do_install where the index has metadata but the files are gone (404)."""
+    import hermes_cli.skills_hub as cli_hub
+    import tools.skills_hub as hub
+
+    class StaleSource:
+        def source_id(self):
+            return "skills-sh"
+
+    meta = type("Meta", (), {"identifier": "skills-sh/org/gone-skill"})()
+    monkeypatch.setattr(hub, "ensure_hub_dirs", lambda: None)
+    monkeypatch.setattr(cli_hub, "_sources", lambda: [StaleSource()])
+    monkeypatch.setattr(
+        cli_hub, "_resolve_source_meta_and_bundle",
+        lambda identifier, sources: (meta, None, sources[0]))
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+    return console, sink
+
+
+def test_do_install_stale_index_names_the_problem(monkeypatch):
+    """Index hit + missing files reads as a stale entry, not a typo (#3259)."""
+    from hermes_cli.skills_hub import do_install
+
+    console, sink = _stale_env(monkeypatch)
+    do_install("skills-sh/org/gone-skill", console=console, skip_confirm=True)
+
+    out = sink.getvalue()
+    assert "Stale index entry" in out
+    assert "skills-sh" in out
+    assert "Could not fetch" not in out
+
+
+@pytest.mark.parametrize("meta_hit", [False, True])
+def test_do_install_generic_when_no_index_hit_or_rate_limited(monkeypatch, meta_hit):
+    """No index hit — or a throttled fetch that only *looks* like a stale entry — keeps the
+    generic message (plus the rate-limit hint), never the stale-entry verdict."""
+    import hermes_cli.skills_hub as cli_hub
+    import tools.skills_hub as hub
+    from hermes_cli.skills_hub import do_install
+
+    class ThrottledSource:
+        is_rate_limited = meta_hit
+
+        def source_id(self):
+            return "skills-sh"
+
+    meta = type("Meta", (), {"identifier": "skills-sh/org/gone-skill"})() if meta_hit else None
+    src = ThrottledSource()
+    monkeypatch.setattr(hub, "ensure_hub_dirs", lambda: None)
+    monkeypatch.setattr(cli_hub, "_sources", lambda: [src])
+    monkeypatch.setattr(
+        cli_hub, "_resolve_source_meta_and_bundle",
+        lambda identifier, sources: (meta, None, src if meta_hit else None))
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+    do_install("skills-sh/org/gone-skill", console=console, skip_confirm=True)
+
+    out = sink.getvalue()
+    assert "Could not download" in out
+    assert "Stale index entry" not in out
+    assert ("rate limit" in out) is meta_hit

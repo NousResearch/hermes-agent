@@ -1,4 +1,4 @@
-import { authMcpServer, cancelMcpOAuthFlow, getMcpOAuthFlow, listMcpServers } from '@/hermes'
+import { listMcpServers } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { completeMcpDesktopOAuth, McpOAuthCancelled } from '@/lib/mcp-dashboard-oauth'
 import { prettyName } from '@/lib/text'
@@ -40,11 +40,7 @@ async function reconnect(server: string, sessionId: string | null, cancelled: ()
   try {
     await completeMcpDesktopOAuth({
       serverName: server,
-      start: authMcpServer,
-      status: getMcpOAuthFlow,
-      cancelled,
-      cancel: cancelMcpOAuthFlow,
-      openExternal: url => window.hermesDesktop.openExternal(url)
+      cancelled
     })
 
     // Fresh tokens reach the live session before the pill claims success.

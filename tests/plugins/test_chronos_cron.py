@@ -100,6 +100,72 @@ def test_register_job_propagates_provision_failure(chronos):
 
 # -- reconcile ----------------------------------------------------------------
 
+def test_identity_rejection_hands_fires_to_the_builtin_ticker(temp_home, chronos, monkeypatch, caplog):
+    """Regression for #97494: NAS answering 403 invalid_client is a deterministic identity rejection
+    (the auth.json token is not this instance's provisioned agent), not a transient. The provider
+    must say so ONCE with the remedy, stop calling NAS, and start the built-in ticker so jobs still
+    fire on time instead of only via the late misfire sweep."""
+    import threading
+
+    from plugins.cron_providers.chronos._nas_client import NasCronClientError
+
+    prov, fake = chronos
+    calls = []
+
+    def rejected(**kw):
+        calls.append(kw["job_id"])
+        raise NasCronClientError(
+            "POST /api/agent-cron/provision returned 403: invalid_client",
+            status=403, error_code="invalid_client")
+
+    fake.provision = rejected
+    jobs = [
+        {"id": "a", "enabled": True, "next_run_at": "2026-06-18T12:00:00+00:00", "state": "scheduled"},
+        {"id": "b", "enabled": True, "next_run_at": "2026-06-18T12:05:00+00:00", "state": "scheduled"},
+    ]
+    monkeypatch.setattr("cron.jobs.load_jobs", lambda: jobs)
+    monkeypatch.setattr("cron.jobs.get_job", lambda jid: next(j for j in jobs if j["id"] == jid))
+    monkeypatch.setattr("cron.executions.recover_interrupted_executions", lambda: 0)
+    ticker_started = threading.Event()
+    monkeypatch.setattr(
+        "cron.scheduler_provider.InProcessCronScheduler.start",
+        lambda self, stop_event, **kw: ticker_started.set())
+
+    stop = threading.Event()
+    with caplog.at_level("WARNING", logger="cron.chronos"):
+        prov.start(stop, adapters={"x": 1}, loop=None, interval=7)
+    assert ticker_started.wait(2.0), "the built-in ticker must take over this process's fires"
+    assert calls == ["a"], "after the first rejection NAS is left alone"
+    identity_msgs = [r.message for r in caplog.records if "re-login" in r.message]
+    assert len(identity_msgs) == 1 and "built-in cron ticker" in identity_msgs[0]
+
+    # Job creation and re-arms no longer reach NAS (and no longer fail the create).
+    prov.register_job({"id": "c", "next_run_at": "2026-06-18T12:10:00+00:00"})
+    prov.on_jobs_changed()
+    assert calls == ["a"]
+
+
+def test_transient_provision_failure_does_not_degrade(temp_home, chronos, monkeypatch):
+    """A 5xx / transport error is retried on the next reconcile; only 403 invalid_client degrades."""
+    from plugins.cron_providers.chronos._nas_client import NasCronClientError
+
+    prov, fake = chronos
+    attempts = []
+
+    def flaky(**kw):
+        attempts.append(kw["job_id"])
+        raise NasCronClientError("POST /api/agent-cron/provision returned 502: upstream", status=502)
+
+    fake.provision = flaky
+    jobs = [{"id": "a", "enabled": True, "next_run_at": "2026-06-18T12:00:00+00:00", "state": "scheduled"}]
+    monkeypatch.setattr("cron.jobs.load_jobs", lambda: jobs)
+    monkeypatch.setattr("cron.jobs.get_job", lambda jid: jobs[0])
+
+    prov.reconcile()
+    prov.reconcile()
+    assert attempts == ["a", "a"] and prov._identity_rejected is False
+
+
 def test_reconcile_arms_all_enabled(temp_home, chronos, monkeypatch):
     prov, fake = chronos
     jobs = [
@@ -136,8 +202,11 @@ def test_fire_due_rearms_next_oneshot(chronos, monkeypatch):
     assert fake.provisions[0]["fire_at"] == "2026-06-18T12:05:00+00:00"
 
 
-def test_fire_due_rearms_after_claimed_job_failure(chronos, monkeypatch):
+def test_fire_due_rearms_after_claimed_job_failure(chronos, monkeypatch, tmp_path):
     """A claimed attempt is consumed even when the job pipeline reports failure."""
+    import cron.executions as executions
+
+    monkeypatch.setattr(executions, "EXECUTIONS_FILE", tmp_path / "executions.db")
     prov, fake = chronos
     claimed = {"id": "j1", "fire_claim": {"by": "owner-1"}}
     persisted = {
@@ -147,10 +216,6 @@ def test_fire_due_rearms_after_claimed_job_failure(chronos, monkeypatch):
     }
 
     monkeypatch.setattr("cron.jobs.claim_job_for_fire", lambda jid, **kw: claimed)
-    monkeypatch.setattr(
-        "cron.executions.create_execution",
-        lambda jid, source: {"id": "exec-1"},
-    )
     monkeypatch.setattr("cron.scheduler.run_one_job", lambda *args, **kwargs: False)
     monkeypatch.setattr("cron.jobs.get_job", lambda jid: persisted)
 

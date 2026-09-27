@@ -40,6 +40,15 @@ def _short(fingerprint: str) -> str:
     return sha[:10] if sha and sha != "unresolved" and len(sha) > 10 else (sha or fingerprint)
 
 
+def current_code_sha() -> str | None:
+    """Full SHA for the checkout currently on disk, or None when unresolved."""
+    fingerprint = _fingerprint()
+    if fingerprint is None:
+        return None
+    sha = fingerprint.rsplit(":", 1)[-1]
+    return sha if sha and sha != "unresolved" else None
+
+
 def detect_code_skew() -> tuple[str, str] | None:
     """``(boot_rev, disk_rev)`` short labels if the checkout drifted since boot, else ``None``."""
     current = _fingerprint() if _boot_fingerprint is not None else None

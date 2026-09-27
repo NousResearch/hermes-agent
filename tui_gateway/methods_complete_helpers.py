@@ -70,6 +70,10 @@ def _list_repo_files(root: str) -> list[str]:
     if not files:
         files = list(islice(_walk_repo_files(root), _FUZZY_CACHE_MAX_FILES))
     with _fuzzy_cache_lock:
+        # The TTL is only consulted on read, so a root that stops being queried (one .worktrees/<id>
+        # root per worktree flow, MBs each) would stay pinned for the process lifetime (#62950).
+        for stale in [r for r, (ts, _) in _fuzzy_cache.items() if now - ts >= _FUZZY_CACHE_TTL_S]:
+            del _fuzzy_cache[stale]
         _fuzzy_cache[root] = (now, files)
     return files
 

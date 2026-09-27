@@ -18,6 +18,7 @@ import logging
 import os
 import re
 import tarfile
+import time as _time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -35,7 +36,20 @@ _ARCHIVE_TS_SUFFIX_RE = re.compile(r"^(.+)-\d{14}$")
 # support files first, so a disk-only capture would restore a hollow skill.
 _PACKAGE_RESTORE_ACTIONS = frozenset({"delete", "archive", "purge"})
 _VALID_ACTORS = {"curator", "agent", "user"}
-_NON_PACKAGE_TOPS = {".curator_backups", ".hub", ".archive"}
+_DEFAULT_LEDGER_MAX_BYTES = 5 * 1024 * 1024  # skills.ledger_max_bytes default (5 MB)
+_BLOB_GC_GRACE_SECS = 3600  # blobs younger than this may belong to an in-flight capture: never GC them
+_NON_PACKAGE_TOPS = {".curator_backups", ".hub", ".archive", ".locks"}
+# Transient/regeneratable local artifacts that must never be swept into a
+# snapshot, no matter how deep they sit under the skill dir — a stray venv or
+# node_modules turns a multi-KB ledger capture into gigabytes of blobs (#107539).
+# agent.curator_backup applies the same set to the whole-tree tarball.
+TRANSIENT_DIRS = frozenset({
+    ".venv", "venv", "env", ".env",
+    "node_modules", "__pycache__",
+    ".pytest_cache", ".mypy_cache", ".ruff_cache",
+    ".git",
+})
+_SNAPSHOT_EXCLUDE_DIRS = TRANSIENT_DIRS
 
 # Explicit actor override: the CLI sets "user", the curator walk sets "curator".
 _actor_override: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
@@ -75,14 +89,36 @@ def blobs_dir() -> Path:
     return get_hermes_home() / ".curator_backups" / "blobs"
 
 
-def ledger_enabled() -> bool:
-    """Config gate ``skills.ledger`` (default True); lazy import keeps this importable without the CLI."""
+def _ledger_lock():
+    """Exclusive cross-process lock on the ledger file, held across an append AND the maintenance
+    sweep, and across the CLI compact/GC path. Without it a concurrent appender's O_APPEND write can
+    land on the inode ``compact_ledger``/``_trim_oldest`` are about to ``os.replace`` — the row is
+    silently lost and ``gc_blobs`` then deletes its blobs. Same idiom as ``_skill_mutation_lock``:
+    ``<skills>/.locks/ledger.lock``, thread-re-entrant, no-op where neither fcntl nor msvcrt exists."""
+    from tools.skill_usage import skill_file_lock
+    return skill_file_lock(_skills_dir() / ".locks" / "ledger.lock")
+
+
+def _skills_cfg(key: str, default):
+    """``skills.<key>`` from the read-only merged config (no deepcopy), or *default* when the
+    read fails. Lazy import keeps this module importable without the CLI."""
     try:
-        from hermes_cli.config import cfg_get, load_config
-        return bool(cfg_get(load_config(), "skills", "ledger", default=True))
+        from hermes_cli.config import cfg_get, load_config_readonly  # read-only hot path: no deepcopy
+        return cfg_get(load_config_readonly(), "skills", key, default=default)
     except Exception as e:  # pragma: no cover — best-effort config read
-        logger.debug("skill_ledger: config read failed (%s); defaulting on", e)
-        return True
+        logger.debug("skill_ledger: config read failed (%s); skills.%s defaults to %r", e, key, default)
+        return default
+
+
+def ledger_enabled() -> bool:
+    """Config gate ``skills.ledger`` (default True)."""
+    return bool(_skills_cfg("ledger", True))
+
+
+def _max_ledger_bytes() -> int:
+    """Config ``skills.ledger_max_bytes`` (default 5 MB, 0 disables): above it the
+    next append triggers the maintenance sweep instead of growing the file forever."""
+    return int(_skills_cfg("ledger_max_bytes", _DEFAULT_LEDGER_MAX_BYTES))
 
 
 def _rel_posix(path: Path | str, root: Path) -> Optional[str]:
@@ -121,14 +157,18 @@ def read_blob(sha256: str) -> Optional[bytes]:
 
 def snapshot_paths(root: Optional[Path], *, complete_package: bool = False) -> List[Dict[str, str]]:
     """{path, sha256} for every file under *root*, each stored as a blob; [] when root is
-    None/missing. Raises on I/O failure — callers decide whether that is fatal (rollback safety
-    capture) or swallowed (telemetry). ``complete_package`` unions in the newest curator
-    tarball's files (disk hashes win)."""
+    None/missing. Transient local artifacts (venvs, node_modules, caches, .git) are
+    excluded wherever they appear under *root*. Raises on I/O failure — callers decide
+    whether that is fatal (rollback safety capture) or swallowed (telemetry).
+    ``complete_package`` unions in the newest curator tarball's files (disk hashes win)."""
     if root is None:
         return []
     root = Path(root)  # gone from disk -> []; the complete_package fill may still recover it
     files = ([root] if root.is_file()
-             else sorted(p for p in root.rglob("*") if p.is_file()) if root.is_dir() else [])
+             else sorted(p for p in root.rglob("*") if p.is_file()
+                         and not any(part in _SNAPSHOT_EXCLUDE_DIRS
+                                     for part in p.relative_to(root).parts[:-1]))
+             if root.is_dir() else [])
     out = [{"path": str(f), "sha256": _store_blob(f.read_bytes())} for f in files]
     return fill_snapshot_from_curator_backup(root, out) if complete_package else out
 
@@ -243,6 +283,18 @@ def fill_snapshot_from_curator_backup(
     return out
 
 
+def _delta(before: List[Dict[str, str]], after: List[Dict[str, str]]) -> Tuple[List[Dict[str, str]], List[Dict[str, str]]]:
+    """Drop paths whose hash is identical on both sides. ``rollback_entry`` writes every *before*
+    path and removes *after*-only paths, so unchanged files are dead weight there — and a full
+    package manifest per edit made a 4,000-file skill cost 1.5 MB of ledger per patch (650 MB
+    over one summer). Deletions/creations are preserved: a path present on one side only stays."""
+    b_sha = {str(i.get("path")): i.get("sha256") for i in before}
+    a_sha = {str(i.get("path")): i.get("sha256") for i in after}
+    same = {p for p, s in b_sha.items() if a_sha.get(p) == s}
+    return ([i for i in before if str(i.get("path")) not in same],
+            [i for i in after if str(i.get("path")) not in same])
+
+
 def append_entry(
     action: str, skill: str, before: Optional[List[Dict[str, str]]] = None,
     after: Optional[List[Dict[str, str]]] = None, actor: Optional[str] = None,
@@ -251,6 +303,9 @@ def append_entry(
     if not ledger_enabled():
         return None
     try:
+        # pre-rollback deliberately records before == after (the current state of every touched path).
+        if action != "pre-rollback":
+            before, after = _delta(before or [], after or [])
         entry = {
             "id": uuid.uuid4().hex[:12], "ts": datetime.now(timezone.utc).isoformat(),
             "actor": actor if actor in _VALID_ACTORS else derive_actor(),
@@ -258,12 +313,189 @@ def append_entry(
             "before": before or [], "after": after or []}
         path = ledger_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        with _ledger_lock():
+            with open(path, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            _maintain_size()
         return entry["id"]
     except Exception as e:
         logger.warning("skill_ledger: failed to append entry (%s) — mutation unaffected", e)
         return None
+
+
+def _read_ledger(what: str, *, quiet_missing: bool = False) -> Optional[bytes]:
+    """Raw ledger bytes, or ``None`` (after a warning) when the file cannot be read or is not UTF-8.
+    ``quiet_missing`` keeps a merely absent ledger silent — normal for a fresh install."""
+    try:
+        raw = ledger_path().read_bytes()
+        # Windows editors may prepend a UTF-8 BOM. Normalize it away so every
+        # consumer can decode ordinary UTF-8 without treating the first row as malformed.
+        return raw.decode("utf-8-sig").encode("utf-8")
+    except (OSError, UnicodeError) as exc:
+        if not (quiet_missing and isinstance(exc, FileNotFoundError)):
+            logger.warning("skill_ledger: ledger unreadable (%s); %s", exc, what)
+        return None
+
+
+_TRIM_LOW_WATER = 0.8  # trim target as a fraction of ``skills.ledger_max_bytes``
+
+
+def _maintain_size() -> None:
+    """Keep the ledger bounded: once it crosses ``skills.ledger_max_bytes`` run the
+    delta-dedup rewrite, and if genuinely-divergent entries still exceed the cap,
+    drop the oldest ones until it fits. Best-effort telemetry, never a gate: any
+    failure is logged and the just-appended entry stays on disk.
+
+    Trimming stops at a LOW-WATER mark (``_TRIM_LOW_WATER`` of the cap), not at the
+    cap itself: a ledger trimmed to exactly the cap is over it again on the very next
+    append, so every append would pay compact + trim + blob GC. ``gc_blobs`` only
+    runs when the trim actually dropped rows — that is the only way a blob can
+    become orphaned here."""
+    max_bytes = _max_ledger_bytes()
+    if max_bytes <= 0:
+        return
+    try:
+        if ledger_path().stat().st_size <= max_bytes:
+            return
+        _, _, size_after = compact_ledger()
+        low_water = int(max_bytes * _TRIM_LOW_WATER)
+        dropped = _trim_oldest(low_water) if size_after > low_water else 0
+        if dropped:
+            gc_blobs()
+    except Exception as e:
+        logger.warning(
+            "skill_ledger: maintenance sweep failed (%s) — ledger left as-is", e
+        )
+
+
+
+def _rewrite_ledger(path: Path, lines: List[bytes], op: str) -> bytes:
+    """Atomically replace the ledger at *path* with *lines* (one physical row each, no
+    terminators): write ``<name>.<op>.tmp`` fully, then ``os.replace`` it over the ledger.
+    Returns the bytes written so callers can report the new size."""
+    data = b"\n".join(lines) + b"\n" if lines else b""
+    tmp = path.with_name(path.name + f".{op}.tmp")
+    tmp.write_bytes(data)
+    os.replace(tmp, path)
+    return data
+
+def _trim_oldest(max_bytes: int) -> int:
+    """Rewrite the ledger without its oldest lines until it is at most *max_bytes*;
+    the newest entry always survives. Lines in the retained tail are never rewritten
+    or parsed — malformed lines there survive verbatim; trimming drops the oldest
+    lines regardless of shape. Returns the number of lines dropped (0 = untouched)."""
+    with _ledger_lock():
+        return _trim_oldest_locked(max_bytes)
+
+
+def _trim_oldest_locked(max_bytes: int) -> int:
+    path = ledger_path()
+    raw = _read_ledger("trim skipped")
+    if raw is None:
+        return 0
+    # Split on the physical row terminator only: ``str.splitlines`` would also split on
+    # U+2028/U+2029/U+0085, which ``ensure_ascii=False`` rows may legitimately contain.
+    lines = raw.split(b"\n")
+    if lines and lines[-1] == b"":
+        lines.pop()
+    kept: List[bytes] = []
+    size = 0
+    for line in reversed(lines):  # the first iteration always keeps lines[-1]: the newest entry
+        addition = len(line) + 1
+        if kept and size + addition > max_bytes:
+            break
+        kept.append(line)
+        size += addition
+    kept.reverse()
+    dropped = len(lines) - len(kept)
+    if not dropped:
+        return 0
+    _rewrite_ledger(path, kept, "trim")
+    return dropped
+
+
+def compact_ledger() -> Tuple[int, int, int]:
+    """Rewrite the ledger with every entry's unchanged paths dropped (see ``_delta``); ids, order and
+    rollback semantics are preserved. Returns ``(entries, bytes_before, bytes_after)``. Atomic: the
+    new file replaces the old only once fully written. Malformed lines are kept verbatim. Follow with
+    ``gc_blobs()``: dropped references leave blobs nothing can restore."""
+    with _ledger_lock():
+        return _compact_ledger_locked()
+
+
+def _compact_ledger_locked() -> Tuple[int, int, int]:
+    path = ledger_path()
+    raw = _read_ledger("compaction skipped")
+    if raw is None:
+        return 0, 0, 0
+    text = raw.decode("utf-8")
+    out, kept = [], 0
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            out.append(line)
+            continue
+        if isinstance(row, dict) and row.get("action") != "pre-rollback":
+            row["before"], row["after"] = _delta(row.get("before") or [], row.get("after") or [])
+            line = json.dumps(row, ensure_ascii=False)
+        out.append(line)
+        kept += 1
+    lines = [line.encode("utf-8") for line in out]
+    if (b"\n".join(lines) + b"\n" if lines else b"") == raw:
+        return kept, len(raw), len(raw)  # already compact (append-time _delta): no rewrite to pay
+    data = _rewrite_ledger(path, lines, "compact")
+    return kept, len(raw), len(data)
+
+
+def gc_blobs() -> Tuple[int, int]:
+    """Delete blobs no ledger entry references; returns ``(deleted, bytes_freed)``. The store was
+    write-only: on one install 98.9% of 47k blobs (1.18 GB) were unreachable after a venv walk
+    (#107539). Malformed ledger lines, or an unreadable/undecodable ledger, abort the sweep
+    (blobs are kept) — an entry we cannot read may still hold references. Blobs newer than
+    ``_BLOB_GC_GRACE_SECS`` are kept too: ``snapshot_paths`` stores them before the referencing row.
+    """
+    with _ledger_lock():
+        return _gc_blobs_locked()
+
+
+def _gc_blobs_locked() -> Tuple[int, int]:
+    blobs = blobs_dir()
+    if not blobs.is_dir():
+        return 0, 0
+    referenced: set = set()
+    raw = _read_ledger("blob GC skipped")
+    if raw is None:  # an unavailable ledger is not evidence that its blobs are unreferenced
+        return 0, 0
+    for line in raw.decode("utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            row = None
+        if not isinstance(row, dict):
+            logger.warning("skill_ledger: malformed ledger line; blob GC skipped")
+            return 0, 0
+        for item in (row.get("before") or []) + (row.get("after") or []):
+            referenced.add(str(item.get("sha256", "")))
+    deleted = freed = 0
+    fresh_after = _time.time() - _BLOB_GC_GRACE_SECS
+    for blob in blobs.iterdir():
+        if blob.is_file() and blob.name not in referenced:
+            try:
+                st = blob.stat()
+                if st.st_mtime > fresh_after:  # in-flight capture (incl. .tmp-*): row not appended yet
+                    continue
+                size = st.st_size
+                blob.unlink()
+            except OSError:
+                continue
+            deleted += 1
+            freed += size
+    return deleted, freed
 
 
 def record_mutation(
@@ -305,12 +537,11 @@ def capture_before(
 
 def list_entries(skill: Optional[str] = None, limit: Optional[int] = None) -> List[Dict[str, Any]]:
     """Read the ledger, newest first. Malformed lines are skipped."""
-    try:
-        lines = ledger_path().read_text(encoding="utf-8").splitlines()
-    except OSError:  # missing or unreadable ledger == empty
+    raw = _read_ledger("listing empty", quiet_missing=True)  # missing/unreadable/undecodable == empty
+    if raw is None:
         return []
     rows: List[Dict[str, Any]] = []
-    for line in lines:
+    for line in raw.decode("utf-8").splitlines():
         with suppress(json.JSONDecodeError):
             row = json.loads(line) if line.strip() else None
             if isinstance(row, dict) and (not skill or row.get("skill") == skill):

@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
 from tools import approval as approval_mod
 from tools import slash_confirm as slash_confirm_mod
@@ -208,8 +208,11 @@ def test_clear_session_boundary_security_state_wakes_blocked_approvals():
     runner._clear_session_boundary_security_state(session_key)
 
     assert target_entry.event.is_set()
-    assert target_entry.result == "deny"
+    # Withdrawn, not denied: the waiter renders outcome="cancelled" rather than a user deny.
+    assert target_entry.result is None
+    assert target_entry.cancelled
     assert other_entry.event.is_set() is False
     assert other_entry.result is None
+    assert other_entry.cancelled is None
     assert session_key not in approval_mod._gateway_queues
     assert other_key in approval_mod._gateway_queues

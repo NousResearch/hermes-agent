@@ -71,16 +71,22 @@ export const toTranscriptMessages = (rows: unknown): Msg[] => {
       continue
     }
 
-    if (display_kind === 'async_delegation_complete') {
+    if (display_kind === 'async_delegation_complete' || display_kind === 'process_complete') {
       const meta = (row as TranscriptRow).display_metadata
       const count = meta && typeof meta.task_count === 'number' ? meta.task_count : undefined
 
       const label =
-        count === undefined
-          ? 'background agent work finished'
-          : `${count} background agent${count === 1 ? '' : 's'} finished`
+        display_kind === 'process_complete'
+          ? 'background process finished'
+          : count === undefined
+            ? 'background agent work finished'
+            : `${count} background agent${count === 1 ? '' : 's'} finished`
 
-      out.push({ kind: 'event', role: 'system', text: label })
+      out.push({
+        kind: 'event',
+        role: 'system',
+        text: typeof meta?.display_text === 'string' ? meta.display_text : label
+      })
       pending = []
 
       continue

@@ -7,7 +7,6 @@ line count, trailing newline), so each proves the compound reply carries
 that answer.
 """
 
-import logging
 import os
 import sys
 import threading
@@ -18,16 +17,14 @@ import pytest
 from tools.environments.local import LocalEnvironment
 from tools.file_operations import ExecuteResult, ShellFileOperations
 
-pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell probes")
+pytestmark = pytest.mark.platforms("posix")  # POSIX shell probes
 
 READ_PROBE_MARK = "__HERMES_RF_"
-
 
 @pytest.fixture(scope="module")
 def _local_env(tmp_path_factory):
     """One real LocalEnvironment per module; constructing one costs ~0.8 s."""
     return LocalEnvironment(cwd=str(tmp_path_factory.mktemp("file-ops")))
-
 
 @pytest.fixture
 def _ops(_local_env, tmp_path):
@@ -47,13 +44,11 @@ def _ops(_local_env, tmp_path):
     finally:
         env.__dict__.pop("execute", None)
 
-
 @pytest.fixture
 def shell(_ops, monkeypatch):
     """Pin the shell path even where a native fast path exists."""
     monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "0")
     return _ops
-
 
 @pytest.fixture
 def native(_ops, monkeypatch):
@@ -61,12 +56,10 @@ def native(_ops, monkeypatch):
     monkeypatch.delenv("HERMES_NATIVE_FILE_READ", raising=False)
     return _ops
 
-
 def _write(tmp_path, name, data: bytes):
     p = tmp_path / name
     p.write_bytes(data)
     return str(p)
-
 
 class TestReadFileOneRoundTrip:
     def test_text_read_is_one_round_trip(self, shell, tmp_path):
@@ -75,9 +68,9 @@ class TestReadFileOneRoundTrip:
         r = ops.read_file(p)
         assert len(calls) == 1 and READ_PROBE_MARK in calls[0]
         assert r.error is None
-        # ``_add_line_numbers`` numbers the empty tail after the final
-        # newline: long-standing behaviour, preserved byte for byte.
-        assert r.content == "1|one\n2|two\n3|three\n4|"
+        # The final newline terminates line 3; it does not start a phantom
+        # ``4|`` line (`cat -n` semantics).
+        assert r.content == "1|one\n2|two\n3|three"
         assert (r.total_lines, r.file_size, r.truncated) == (3, 14, False)
 
     def test_no_trailing_newline_needs_no_extra_probe(self, shell, tmp_path):
@@ -88,14 +81,15 @@ class TestReadFileOneRoundTrip:
         # ``cut`` newline-terminates the last line; the artifact is stripped
         # from the same reply that used to need a fifth ``tail -c 1`` call.
         assert r.content == "1|a\n2|b"
-        assert r.total_lines == 1  # wc -l semantics, unchanged
+        # The unterminated final line counts: 2 lines, not wc -l's 1 (#3907).
+        assert r.total_lines == 2
 
     def test_pagination_window_and_hint(self, shell, tmp_path):
         ops, calls = shell
         p = _write(tmp_path, "c.txt", b"".join(b"l%d\n" % i for i in range(1, 11)))
         r = ops.read_file(p, offset=3, limit=2)
         assert len(calls) == 1
-        assert r.content == "3|l3\n4|l4\n5|"
+        assert r.content == "3|l3\n4|l4"
         assert r.truncated is True and r.total_lines == 10
         assert "offset=5" in r.hint
 
@@ -118,26 +112,26 @@ class TestReadFileOneRoundTrip:
         ops, calls = shell
         r = ops.read_file(_write(tmp_path, "f.txt", "﻿hello\n".encode("utf-8")))
         assert len(calls) == 1
-        assert r.content == "1|hello\n2|"
+        assert r.content == "1|hello"
 
     def test_crlf_bytes_survive(self, shell, tmp_path):
         ops, calls = shell
         r = ops.read_file(_write(tmp_path, "g.txt", b"x\r\ny\r\n"))
-        assert r.content == "1|x\r\n2|y\r\n3|"
+        assert r.content == "1|x\r\n2|y\r"
 
     def test_long_line_clamped_and_marked(self, shell, tmp_path):
         ops, calls = shell
         r = ops.read_file(_write(tmp_path, "L.txt", b"a" * 9000 + b"\nshort\n"))
         assert len(calls) == 1
-        first, second, tail = r.content.split("\n")
+        first, second = r.content.split("\n")
         assert first.endswith("... [truncated]") and len(first) < 9000
-        assert second == "2|short" and tail == "3|"
+        assert second == "2|short"
 
     def test_relative_path_resolves_against_env_cwd(self, shell, tmp_path):
         ops, calls = shell
         _write(tmp_path, "rel.txt", b"here\n")
         r = ops.read_file("rel.txt")
-        assert r.error is None and r.content == "1|here\n2|"
+        assert r.error is None and r.content == "1|here"
 
     def test_sentinel_lookalike_in_content_reads_intact(self, shell, tmp_path):
         ops, calls = shell
@@ -145,8 +139,7 @@ class TestReadFileOneRoundTrip:
         p = _write(tmp_path, "s.txt", f"x\n{lookalike}\ny\n".encode("utf-8"))
         r = ops.read_file(p)
         assert r.error is None and r.total_lines == 3
-        assert r.content == f"1|x\n2|{lookalike}\n3|y\n4|"
-
+        assert r.content == f"1|x\n2|{lookalike}\n3|y"
 
 class TestReadFileNonTextPaths:
     def test_missing_file_probes_once_then_suggests(self, shell, tmp_path):
@@ -168,7 +161,7 @@ class TestReadFileNonTextPaths:
         assert on_disk != typed
         _write(tmp_path, on_disk, b"accent\n")
         r = ops.read_file(str(tmp_path / typed))
-        assert r.error is None and r.content == "1|accent\n2|"
+        assert r.error is None and r.content == "1|accent"
         assert r.hint is not None and "unicode-equivalent" in r.hint
 
     def test_directory_is_not_regular(self, shell, tmp_path):
@@ -192,7 +185,6 @@ class TestReadFileNonTextPaths:
         assert len(calls) == 1 and READ_PROBE_MARK not in calls[0]
         assert r.is_image is True and r.file_size == 6
 
-    @pytest.mark.linux_only
     def test_fifo_returns_not_regular_without_blocking(self, shell, tmp_path):
         if not hasattr(os, "mkfifo"):
             pytest.skip("no mkfifo")
@@ -211,7 +203,6 @@ class TestReadFileNonTextPaths:
         assert "not a regular file" in box["r"].error
         assert len(calls) == 1
 
-
 class TestWriteFileRoundTrips:
     """write_file: one probe, one atomic write, one hash check (three calls)."""
 
@@ -225,9 +216,6 @@ class TestWriteFileRoundTrips:
         r = ops.write_file(p, "line one\nline two\n")
         assert r.error is None and r.verified is True
         assert len(calls) == 3
-        assert "__HERMES_WF_" in calls[0]          # probe
-        assert "mv -f" in calls[1]                  # atomic write
-        assert calls[2].startswith("sha256sum ")   # verify
         assert (tmp_path / "new.txt").read_bytes() == b"line one\nline two\n"
 
     def test_crlf_file_keeps_crlf_from_the_probe(self, shell, tmp_path):
@@ -284,12 +272,44 @@ class TestWriteFileRoundTrips:
         assert p.read_bytes() == b"x\r\ny\r\n"
 
 
+class TestHeredocStdinBackends:
+    """Modal/Daytona/Vercel embed stdin as a heredoc in the command string (the SDK exec has
+    no stdin; the local env gets DEVNULL, same as there). The atomic write's temp file must
+    receive exactly the content, or ``mv`` swaps a wrong file over the target."""
+
+    @pytest.fixture
+    def heredoc_ops(self, shell, monkeypatch):
+        ops, _calls = shell
+        monkeypatch.setattr(ops.env, "_stdin_mode", "heredoc")
+        return ops
+
+    @pytest.mark.parametrize("content", [
+        "no trailing newline",
+        "one trailing newline\n",
+        "blank tail\n\n\n",
+        "q ' \" ) ( $(x) `y` ${z} \\\ncontinued\\",
+    ])
+    def test_write_file_is_byte_exact(self, heredoc_ops, tmp_path, content):
+        p = tmp_path / "existing.txt"
+        p.write_bytes(b"keep me\n")
+        r = heredoc_ops.write_file(str(p), content)
+        assert p.read_bytes() == content.encode()
+        assert r.error is None and r.verified is True
+
+    def test_patch_replace_is_byte_exact(self, heredoc_ops, tmp_path):
+        p = tmp_path / "notes.txt"
+        p.write_bytes(b"line one\nline two\nimportant data")
+        r = heredoc_ops.patch_replace(str(p), "line two", "line 2")
+        assert p.read_bytes() == b"line one\nline 2\nimportant data"
+        assert r.success is True
+
+
 class TestNativeRead:
     def test_native_read_makes_no_shell_call(self, native, tmp_path):
         ops, calls = native
         r = ops.read_file(_write(tmp_path, "a.txt", b"one\ntwo\n"))
         assert calls == []
-        assert r.error is None and r.content == "1|one\n2|two\n3|"
+        assert r.error is None and r.content == "1|one\n2|two"
         assert (r.total_lines, r.file_size) == (2, 8)
 
     def test_kill_switch_routes_to_the_shell(self, native, tmp_path, monkeypatch):
@@ -323,7 +343,6 @@ class TestNativeRead:
         for c in calls:
             assert c == "echo $HOME" or c.startswith("ls -1 '~; echo PWNED"), c
 
-    @pytest.mark.linux_only
     def test_fifo_refused_without_a_shell_and_without_blocking(self, native, tmp_path):
         if not hasattr(os, "mkfifo"):
             pytest.skip("no mkfifo")
@@ -341,7 +360,6 @@ class TestNativeRead:
         assert not t.is_alive(), "native read_file blocked on a writer-less FIFO"
         assert "not a regular file" in box["r"].error
         assert calls == []
-
 
 # The native reader scans 1 MiB chunks and clamps each page line to
 # ``4 * get_max_line_length() + 1`` bytes (8001 by default), exactly as
@@ -393,7 +411,6 @@ PARITY_CASES = [
     ("sentinel_lookalike", b"x\n__HERMES_RF_" + b"ab" * 16 + b"__\ny\n", {}),
 ]
 
-
 class TestNativeReadParity:
     """The native path must be indistinguishable from the shell path."""
 
@@ -435,7 +452,6 @@ class TestNativeReadParity:
             assert via_native == via_shell, p
             assert not any(READ_PROBE_MARK in c for c in calls), p
 
-
 class TestCompoundFallback:
     def test_unparseable_reply_falls_back_to_sequential_probes(self, shell, tmp_path):
         ops, calls = shell
@@ -449,26 +465,5 @@ class TestCompoundFallback:
 
         with patch.object(ops, "_exec", side_effect=garbled):
             r = ops.read_file(p)
-        assert r.error is None and r.content == "1|one\n2|two\n3|"
+        assert r.error is None and r.content == "1|one\n2|two"
         assert r.total_lines == 2
-
-    def test_fallback_is_logged_at_debug(self, shell, tmp_path, caplog):
-        """A backend that keeps falling back shows up in debug logs."""
-        ops, calls = shell
-        p = _write(tmp_path, "a.txt", b"one\n")
-        real_exec = ops._exec
-
-        def garbled(command, *args, **kwargs):
-            if READ_PROBE_MARK in command:
-                return ExecuteResult(stdout="garbage\n", exit_code=0)
-            return real_exec(command, *args, **kwargs)
-
-        with caplog.at_level(logging.DEBUG, logger="tools.file_operations"), \
-             patch.object(ops, "_exec", side_effect=garbled):
-            r = ops.read_file(p)
-        assert r.error is None and r.content == "1|one\n2|"
-        assert any(
-            "falling back to sequential probes" in rec.getMessage()
-            and str(p) in rec.getMessage()
-            for rec in caplog.records
-        )

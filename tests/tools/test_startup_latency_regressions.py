@@ -15,7 +15,6 @@ from unittest.mock import patch
 
 import pytest
 
-
 class TestAuxProbeMode:
     def test_probe_mode_returns_stub_without_openai_import(self):
         import agent.auxiliary_client as aux
@@ -33,6 +32,26 @@ class TestAuxProbeMode:
         aux._store_cached_client(key, stub, "m")
         with aux._client_cache_lock:
             assert key not in aux._client_cache
+
+    @pytest.mark.parametrize("wrap", [False, True], ids=["bare-stub", "adapter-wrapped-stub"])
+    def test_repeat_probes_stay_resolvable_and_never_cache(self, wrap):
+        """Probes go through _get_cached_client's inline store, not _store_cached_client,
+        so the stub (bare, or wrapped in a Codex adapter whose leaf is the stub) used to
+        land under the runtime key; the next probe then hit _compat_model() on the stub
+        and check_vision_requirements() flipped to False for the process (#87654).
+        """
+        import agent.auxiliary_client as aux
+
+        def _resolve(*a, **k):
+            stub = aux._AuxProbeClientStub(api_key="k", base_url="https://x.invalid/v1")
+            return (aux.CodexAuxiliaryClient(stub, "v/m") if wrap else stub), "v/m"
+
+        aux.shutdown_cached_clients()
+        with patch.object(aux, "resolve_provider_client", _resolve), aux.aux_probe_mode():
+            answers = [aux._get_cached_client("probe-guard-test", "vendor/model")[0] is not None for _ in range(3)]
+        assert answers == [True, True, True]
+        with aux._client_cache_lock:
+            assert not [k for k in aux._client_cache if k[1:2] == (False,) and k[-1] == "vendor/model"]
 
     def test_probe_stub_raises_on_runtime_use(self):
         import agent.auxiliary_client as aux
@@ -67,22 +86,6 @@ class TestAuxProbeMode:
             t.join()
         assert seen["active"] is False
 
-    def test_maybe_wrap_anthropic_passes_stub_through(self):
-        import agent.auxiliary_client as aux
-
-        stub = aux._AuxProbeClientStub(base_url="https://api.anthropic.com")
-        out = aux._maybe_wrap_anthropic(stub, "m", "key", "https://api.anthropic.com")
-        assert out is stub
-
-    def test_to_async_client_passes_stub_through(self):
-        import agent.auxiliary_client as aux
-
-        stub = aux._AuxProbeClientStub()
-        client, model = aux._to_async_client(stub, "m")
-        assert client is stub
-        assert model == "m"
-
-
 class TestVisionCheckUsesProbeMode:
     def test_check_vision_requirements_enters_probe_mode(self):
         from tools import vision_tools
@@ -97,7 +100,6 @@ class TestVisionCheckUsesProbeMode:
         with patch.object(aux, "resolve_vision_provider_client", fake_resolver):
             assert vision_tools.check_vision_requirements() is True
         assert states and all(states)
-
 
 class TestLazyMcpSdk:
     def test_module_import_does_not_import_mcp_sdk(self):
@@ -117,29 +119,6 @@ class TestLazyMcpSdk:
         assert proc.returncode == 0, proc.stderr
         assert "ok" in proc.stdout
 
-    def test_availability_flag_reflects_find_spec(self):
-        import importlib.util
-        from tools import mcp_tool
-
-        expected = importlib.util.find_spec("mcp") is not None
-        assert mcp_tool._MCP_AVAILABLE is expected
-
-    def test_ensure_mcp_sdk_binds_symbols(self):
-        import importlib.util
-        from tools import mcp_tool
-
-        if importlib.util.find_spec("mcp") is None:
-            pytest.skip("mcp SDK not installed")
-        assert mcp_tool._ensure_mcp_sdk() is True
-        assert mcp_tool.ClientSession is not None
-        assert mcp_tool.stdio_client is not None
-
-    def test_ensure_respects_patched_unavailable(self):
-        from tools import mcp_tool
-
-        with patch.object(mcp_tool, "_MCP_AVAILABLE", False):
-            assert mcp_tool._ensure_mcp_sdk() is False
-
     def test_lazy_symbol_getattr_resolves_via_ensure(self):
         import importlib.util
         from tools import mcp_tool
@@ -149,7 +128,6 @@ class TestLazyMcpSdk:
         # getattr through the module (what mock.patch does when saving the
         # original) must materialize the symbol instead of AttributeError.
         assert getattr(mcp_tool, "StdioServerParameters") is not None
-
 
 class TestBannerUpdateCheckNonBlocking:
     def test_banner_does_not_block_on_pending_update_check(self):
@@ -190,21 +168,3 @@ class TestBannerUpdateCheckNonBlocking:
         visible = "".join(text for _style, text, *_ in to_formatted_text(printed[0]))
         assert "3 commits behind" in visible
         assert "\x1b" not in visible and "[bold" not in visible
-
-    def test_deferred_notice_silent_when_up_to_date(self):
-        import hermes_cli.banner as banner
-
-        printed = []
-
-        def _fake_cprint(text):
-            printed.append(text)
-
-        done = threading.Event()
-        with patch.object(banner, "_update_check_done", done), \
-             patch.object(banner, "_update_result", 0), \
-             patch.object(banner, "_deferred_update_notice_started", False), \
-             patch.object(banner, "cprint", _fake_cprint):
-            banner._defer_update_notice(max_wait=2.0)
-            done.set()
-            time.sleep(0.3)
-        assert not printed

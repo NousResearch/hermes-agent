@@ -56,24 +56,26 @@ def _normalize_local_model(model_name: Optional[str]) -> str:
 
 
 def _try_lazy_install_stt() -> bool:
-    """Lazy-install faster-whisper and re-check dynamically so it's usable without a restart."""
+    """Install faster-whisper and re-check dynamically so it's usable without a restart.
+
+    ACTION paths only (``_transcribe_local``). Nothing that merely *resolves* or *reports* a
+    provider may call this: the install takes the per-install lock for as long as a full extra-set
+    rebuild, and a status probe must never start one."""
     try:
-        from tools.lazy_deps import ensure
-        # prompt=False: a bare input() deadlocks under the interactive CLI where prompt_toolkit
-        # owns stdin; the install is already gated by security.allow_lazy_installs.
-        # prompt=False: never raise a blocking input() prompt mid-session. See #40490.
-        ensure("stt.faster_whisper", prompt=False)
+        # pm installs are gated by security.allow_lazy_installs; never a blocking
+        # prompt mid-session. See #40490.
+        import pm
+        pm.ensure_import("stt-whisper")
         if _ilu.find_spec("faster_whisper"):
             return True
         logger.warning("faster-whisper was installed but importlib still cannot find it (may require Python restart)")
     except Exception as exc:
         logger.warning(
             "Lazy install of faster-whisper failed: %s. "
-            "This is often a permission issue: the Hermes process user cannot "
-            "write to the virtual environment. Try running manually as the "
-            "venv owner: `stat -c '%%u' '$(dirname $(dirname $(which python3)))'` "
-            "then `su - <owner> -c 'VIRTUAL_ENV=/opt/hermes/.venv "
-            "uv pip install faster-whisper==1.2.1'`",
+            "When the message names a restart, this process selected its dependency generation at "
+            "boot and a new one cannot take effect in-flight; otherwise the Hermes process user "
+            "may not be able to write to the dependency environment. Run `hermes tools` as the "
+            "Hermes installation owner and select Local Whisper under Speech-to-Text.",
             exc)
     return False
 
@@ -120,6 +122,46 @@ def _get_idle_unload_seconds(local_cfg: Dict[str, Any]) -> int:
     return max(_config_number(local_cfg, "unload_after_idle_seconds", 0, int), 0)
 
 
+def _hub_cache_miss_error() -> type:
+    """Exception faster-whisper raises for a model missing from the local Hub cache.
+
+    ``huggingface_hub`` is an optional dependency (it arrives with faster-whisper); when it is
+    absent, its ``LocalEntryNotFoundError`` base class ``OSError`` is the closest match.
+    """
+    try:
+        from huggingface_hub.errors import LocalEntryNotFoundError
+    except ImportError:
+        return OSError
+    return LocalEntryNotFoundError
+
+
+def _create_whisper_model(model_name: str, *, device: str, compute_type: str):
+    """Use a cached model without contacting the Hub, downloading only on a cache miss."""
+    from faster_whisper import WhisperModel
+
+    kwargs = {"device": device, "compute_type": compute_type}
+    try:
+        return WhisperModel(model_name, local_files_only=True, **kwargs)
+    except (_hub_cache_miss_error(), RuntimeError) as exc:
+        # An interrupted first download leaves a snapshot folder without the weights;
+        # snapshot_download still returns it and ctranslate2 raises "Unable to open file".
+        if isinstance(exc, RuntimeError) and "Unable to open file" not in str(exc):
+            raise
+        logger.info("faster-whisper model '%s' is not cached; downloading it from the Hugging Face Hub", model_name)
+
+    # huggingface_hub surfaces every Hub/network failure as an OSError subclass
+    # (LocalEntryNotFoundError wrapping the ConnectTimeout, HfHubHTTPError). Anything else
+    # (CUDA runtime, invalid model size) is not a download problem and propagates untouched.
+    try:
+        return WhisperModel(model_name, local_files_only=False, **kwargs)
+    except OSError as exc:
+        raise RuntimeError(
+            f"Unable to download faster-whisper model '{model_name}': {exc}. "
+            "If huggingface.co is unreachable, set HF_ENDPOINT to an accessible mirror; "
+            "when using a mirror with hf-xet installed, also set HF_HUB_DISABLE_XET=1."
+        ) from exc
+
+
 def _load_local_whisper_model(model_name: str, device: str = "auto", compute_type: str = "auto"):
     """Load faster-whisper with graceful CUDA → CPU fallback. ``device="auto"`` picks CUDA
     whenever the ctranslate2 wheel ships CUDA libs, even on hosts without the NVIDIA runtime (WSL2,
@@ -134,19 +176,18 @@ def _load_local_whisper_model(model_name: str, device: str = "auto", compute_typ
         # Importing ctranslate2 can itself abort on Apple Silicon/Rosetta when
         # multiple Intel OpenMP runtimes are loaded — set before the import.
         os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
-    from faster_whisper import WhisperModel
     if force_cpu:
         logger.info("Apple Silicon/Rosetta detected — loading faster-whisper on CPU "
                     "(int8) to avoid native device autodetection crashes")
-        return WhisperModel(model_name, device="cpu", compute_type="int8")
+        return _create_whisper_model(model_name, device="cpu", compute_type="int8")
     try:
-        return WhisperModel(model_name, device=device, compute_type=compute_type)
+        return _create_whisper_model(model_name, device=device, compute_type=compute_type)
     except Exception as exc:
         if not _looks_like_cuda_lib_error(exc):
             raise
         logger.warning("faster-whisper CUDA load failed (%s) — falling back to CPU (int8). "
                        "Install the NVIDIA CUDA runtime (libcublas/libcudnn) to use GPU.", exc)
-        return WhisperModel(model_name, device="cpu", compute_type="int8")
+        return _create_whisper_model(model_name, device="cpu", compute_type="int8")
 
 
 # Silence-hallucination hardening for local faster-whisper (whisper decodes junk like
@@ -248,7 +289,7 @@ def _transcribe_local_command(
             txt_files = sorted(Path(output_dir).glob("*.txt"))
             if not txt_files:
                 return _error_result("Local STT command completed but did not produce a .txt transcript")
-            transcript_text = txt_files[0].read_text(encoding="utf-8").strip()
+            transcript_text = txt_files[0].read_text(encoding="utf-8-sig").strip()
             logger.info("Transcribed %s via local STT command (%s, %d chars)",
                         Path(file_path).name, normalized_model, len(transcript_text))
             return _ok_result(transcript_text, "local_command")

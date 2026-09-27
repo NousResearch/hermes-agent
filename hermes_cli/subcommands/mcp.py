@@ -55,6 +55,9 @@ def build_mcp_parser(subparsers, *, cmd_mcp: Callable) -> None:
     mcp_login_p = mcp_sub.add_parser(
         "login", help="Force re-authentication for an OAuth-based MCP server")
     mcp_login_p.add_argument("name", help="Server name to re-authenticate")
+    mcp_login_p.add_argument(
+        "--flow", choices=["browser", "device"], default=None,
+        help="OAuth flow (overrides oauth.flow): browser PKCE or RFC 8628 device code")
 
     mcp_reauth_p = mcp_sub.add_parser(
         "reauth", help="Re-authenticate one OAuth MCP server, or all of them (--all)")
@@ -69,7 +72,7 @@ def build_mcp_parser(subparsers, *, cmd_mcp: Callable) -> None:
         "picker", help="Interactive catalog picker (also the default for `hermes mcp`)")
     mcp_sub.add_parser("catalog", help="List Nous-approved MCPs available for one-click install")
     mcp_install_p = mcp_sub.add_parser(
-        "install", help="Install a catalog MCP by name (e.g. `hermes mcp install n8n`)")
+        "install", help="Install a catalog MCP by name (e.g. `hermes mcp install deepwiki`)")
     mcp_install_p.add_argument("identifier", help="Catalog entry name (or `official/<name>`)")
 
     add_accept_hooks_flag(mcp_parser)

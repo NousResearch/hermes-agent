@@ -9,6 +9,8 @@ overlap behind #102827. The worker's Future owns the teardown instead.
 from __future__ import annotations
 
 import concurrent.futures
+import subprocess
+import threading
 from typing import Optional
 
 
@@ -32,3 +34,20 @@ def defer_teardown_to_running_worker(
     # Runs inline if the worker finished between done() and here — still exactly once.
     future.add_done_callback(_finish)
     return True
+
+
+def reap_terminal_worker_in_background(process: subprocess.Popen) -> None:
+    """Keep the reap contract when the waiter returns before the worker exits.
+
+    The ledger turning terminal lets ``_wait_for_external_cron_worker_body``
+    return while the worker is still in final teardown. The gateway remains the
+    worker's parent, so if nobody calls ``wait()`` afterwards the worker lingers
+    as a zombie (STAT=Z) under the gateway until it is restarted (#114509). A
+    short-lived daemon thread holds that single responsibility and ends with
+    the process exit it waits for.
+    """
+    threading.Thread(
+        target=process.wait,
+        name=f"cron-worker-reap-{getattr(process, 'pid', '?')}",
+        daemon=True,
+    ).start()

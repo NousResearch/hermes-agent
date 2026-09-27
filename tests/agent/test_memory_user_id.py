@@ -5,17 +5,14 @@ so each gateway user gets their own memory bucket instead of sharing a static on
 """
 
 import json
-import os
 from unittest.mock import MagicMock, patch
 
 from agent.memory_provider import MemoryProvider
 from agent.memory_manager import MemoryManager
 
-
 # ---------------------------------------------------------------------------
 # Concrete test provider that records init kwargs
 # ---------------------------------------------------------------------------
-
 
 class RecordingProvider(MemoryProvider):
     """Minimal provider that records what initialize() receives."""
@@ -54,16 +51,12 @@ class RecordingProvider(MemoryProvider):
     def shutdown(self):
         pass
 
-
 # ---------------------------------------------------------------------------
 # MemoryManager user_id threading tests
 # ---------------------------------------------------------------------------
 
-
 class TestMemoryManagerUserIdThreading:
     """Verify user_id reaches providers via initialize_all."""
-
-
 
     def test_no_user_id_when_cli(self):
         """CLI sessions should not have user_id in kwargs."""
@@ -78,7 +71,6 @@ class TestMemoryManagerUserIdThreading:
 
         assert "user_id" not in p._init_kwargs
         assert p._init_kwargs.get("platform") == "cli"
-
 
     def test_multiple_providers_all_receive_user_id(self):
         mgr = MemoryManager()
@@ -99,15 +91,56 @@ class TestMemoryManagerUserIdThreading:
         assert p2._init_kwargs.get("user_id") == "slack_U12345"
         assert p2._init_kwargs.get("platform") == "slack"
 
+    def test_session_title_provenance_and_cwd_reach_provider(self, tmp_path):
+        from run_agent import AIAgent
+
+        provider = RecordingProvider()
+        session_db = MagicMock()
+        session_db.get_session_title.return_value = "Generated title"
+        session_db.get_session_title_source.return_value = "llm"
+
+        with patch(
+            "model_tools.get_tool_definitions",
+            return_value=[],
+        ), patch(
+            "model_tools.check_toolset_requirements",
+            return_value={},
+        ), patch(
+            "agent.process_bootstrap.OpenAI",
+        ), patch(
+            "hermes_cli.config.load_config_readonly",
+            return_value={"memory": {"provider": "recording"}},
+        ), patch(
+            "plugins.memory.load_memory_provider",
+            return_value=provider,
+        ):
+            agent = AIAgent(
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                platform="telegram",
+                session_id="session-with-title",
+                session_db=session_db,
+                gateway_session_key="agent:main:telegram:dm:42",
+                cwd=str(tmp_path),
+            )
+
+        assert provider._init_kwargs["session_title"] == "Generated title"
+        assert provider._init_kwargs["session_title_source"] == "llm"
+        assert (
+            provider._init_kwargs["gateway_session_key"]
+            == "agent:main:telegram:dm:42"
+        )
+        assert provider._init_kwargs["cwd"] == str(tmp_path)
+        agent.close()
 
 # ---------------------------------------------------------------------------
 # Mem0 provider user_id tests
 # ---------------------------------------------------------------------------
 
-
 class TestMem0UserIdScoping:
     """Verify Mem0 plugin uses gateway user_id when provided."""
-
 
     def test_no_user_id_falls_back_to_config(self):
         """Without user_id in kwargs, should use config default."""
@@ -123,7 +156,6 @@ class TestMem0UserIdScoping:
             provider.initialize(session_id="test-sess")
 
         assert provider._user_id == "custom-default"
-
 
     def test_different_users_get_different_ids(self):
         """Two providers initialized with different user_ids should be scoped differently."""
@@ -145,11 +177,9 @@ class TestMem0UserIdScoping:
         assert p2._user_id == "bob_456"
         assert p1._user_id != p2._user_id
 
-
 # ---------------------------------------------------------------------------
 # Honcho provider user_id tests
 # ---------------------------------------------------------------------------
-
 
 class TestHonchoUserIdScoping:
     """Verify Honcho plugin keeps runtime user scoping separate from config peer_name."""
@@ -222,7 +252,7 @@ class TestHonchoUserIdScoping:
         with patch.object(manager, "_get_or_create_peer", return_value=MagicMock()), patch.object(
             manager,
             "_get_or_create_honcho_session",
-            return_value=(MagicMock(), []),
+            return_value=(MagicMock(), [], None),
         ):
             session = manager.get_or_create("discord:channel-1")
 
@@ -253,29 +283,6 @@ class TestHonchoUserIdScoping:
         # peer_name should not have been overridden
         assert mock_cfg.peer_name == "my-custom-peer"
 
-
 # ---------------------------------------------------------------------------
 # AIAgent user_id propagation test
 # ---------------------------------------------------------------------------
-
-
-class TestAIAgentUserIdPropagation:
-    """Verify AIAgent stores user_id and passes it to memory init kwargs."""
-
-    def test_user_id_stored_on_agent(self):
-        """AIAgent should store user_id as instance attribute."""
-        with patch.dict(os.environ, {"HERMES_HOME": "/tmp/test_hermes"}):
-            from run_agent import AIAgent
-            agent = object.__new__(AIAgent)
-            # Manually set the attribute as __init__ does
-            agent._user_id = "test_user_42"
-            assert agent._user_id == "test_user_42"
-
-    def test_user_id_none_by_default(self):
-        """AIAgent should have None user_id when not provided (CLI mode)."""
-        with patch.dict(os.environ, {"HERMES_HOME": "/tmp/test_hermes"}):
-            from run_agent import AIAgent
-            agent = object.__new__(AIAgent)
-            agent._user_id = None
-            assert agent._user_id is None
-

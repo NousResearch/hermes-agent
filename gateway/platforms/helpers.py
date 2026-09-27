@@ -2,12 +2,16 @@
 stripping, thread participation tracking, GFM table → bullets, mention-pattern
 compilation, and fence-aware markdown chunking."""
 
+import asyncio
+import contextlib
 import json
 import logging
 import re
+import threading
 import time
 from pathlib import Path
-
+from typing import Any, MutableMapping, Optional
+from gateway.platforms.event import MessageEvent
 from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
@@ -56,9 +60,60 @@ class MessageDeduplicator:
     def clear(self):
         self._seen.clear()
 
+    def absorb(self, other: "MessageDeduplicator") -> None:
+        """Adopt *other*'s still-live IDs (at their original seen times) into this cache."""
+        cutoff = time.time() - self._ttl
+        self._seen.update({k: v for k, v in other._seen.items() if v > cutoff and k not in self._seen})
 
-# Markdown-stripping rules, applied in order: bold, italic, bold/italic underscore,
-# code fence markers, inline code, headings, links, then newline squeeze.
+
+def inbound_dedup_caches(adapter: Any) -> dict[str, MessageDeduplicator]:
+    """The adapter's ``MessageDeduplicator`` attributes, by name (held by reference, so IDs the old
+    adapter admits after this call still reach its replacement)."""
+    return {name: v for name, v in vars(adapter).items() if isinstance(v, MessageDeduplicator)}
+
+
+def carry_inbound_dedup(caches: Optional[dict], adapter: Any) -> None:
+    """Seed a rebuilt adapter's dedup caches from the instance it replaces.
+
+    The runner's reconnect path builds a NEW adapter; without this a platform replaying a recent
+    inbound ID after the reconnect (websocket resume, webhook retry, unacked poll batch) is
+    admitted and answered a second time."""
+    for name, previous in (caches or {}).items():
+        current = getattr(adapter, name, None)
+        if isinstance(current, MessageDeduplicator) and current is not previous:
+            current.absorb(previous)
+
+
+# Worker-thread handoff used by the off-loop persist paths.  A module attribute
+# so tests can replace THIS seam instead of patching ``asyncio.to_thread``
+# globally.
+_to_thread = asyncio.to_thread
+
+
+async def cancel_task(task: Optional[asyncio.Task]) -> None:
+    """Cancel *task* and wait for it to unwind. ``None``/finished tasks are no-ops; awaiting the
+    current task would deadlock, so a self-cancel only requests cancellation. Exceptions the task
+    dies with are swallowed: at teardown nobody is left to handle them."""
+    if task is None or task.done():
+        return
+    task.cancel()
+    if task is not asyncio.current_task():
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await task
+
+
+def bounded_put(store: MutableMapping[str, Any], key: str, value: Any, cap: int) -> None:
+    """Insert into an insertion-ordered mapping with a hard size bound, evicting the oldest keys. A
+    re-put moves the key to the newest position so live entries outlast stale ones."""
+    store.pop(key, None)
+    store[key] = value
+    while len(store) > cap:
+        del store[next(iter(store))]
+
+
+# Inline markdown-stripping rules, applied in order: bold, italic, bold/italic
+# underscore, code fence markers, inline code, headings. Links and the newline
+# squeeze run after these, in that order (see ``strip_markdown``).
 _STRIP_RULES = (
     (re.compile(r"\*\*(.+?)\*\*", re.DOTALL), r"\1"),
     (re.compile(r"\*(.+?)\*", re.DOTALL), r"\1"),
@@ -67,16 +122,36 @@ _STRIP_RULES = (
     (re.compile(r"```[a-zA-Z0-9_+-]*\n?"), ""),
     (re.compile(r"`(.+?)`"), r"\1"),
     (re.compile(r"^#{1,6}\s+", re.MULTILINE), ""),
-    (re.compile(r"\[([^\]]+)\]\([^\)]+\)"), r"\1"),
-    (re.compile(r"\n{3,}"), "\n\n"),
 )
+_MD_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^\)]+)\)")
+_HTTP_TARGET_RE = re.compile(r"https?://", re.IGNORECASE)
+_NEWLINE_SQUEEZE_RE = re.compile(r"\n{3,}")
 
 
-def strip_markdown(text: str) -> str:
-    """Strip markdown formatting for plain-text platforms (SMS, iMessage, etc.)."""
+def _keep_link_target(match: "re.Match[str]") -> str:
+    r"""``[label](https://url)`` -> ``label\nurl``.
+
+    The bare URL is the only thing a platform with its own data detection
+    (iMessage) can turn back into a tap target, so dropping it makes the link
+    unreachable rather than merely unformatted. Non-http targets (``mailto:``,
+    relative paths) are not auto-linked, so they keep the label-only behaviour.
+    """
+    label, target = match.group(1).strip(), match.group(2).strip()
+    if not _HTTP_TARGET_RE.match(target):
+        return match.group(1)
+    return target if label == target else f"{label}\n{target}"
+
+
+def strip_markdown(text: str, *, keep_link_targets: bool = False) -> str:
+    r"""Strip markdown formatting for plain-text platforms (SMS, iMessage, etc.).
+
+    ``keep_link_targets`` rewrites ``[label](https://url)`` as ``label\nurl``
+    instead of discarding the URL; pass it on platforms that auto-link bare URLs.
+    """
     for pattern, repl in _STRIP_RULES:
         text = pattern.sub(repl, text)
-    return text.strip()
+    text = _MD_LINK_RE.sub(_keep_link_target if keep_link_targets else r"\1", text)
+    return _NEWLINE_SQUEEZE_RE.sub("\n\n", text).strip()
 
 
 class ThreadParticipationTracker:
@@ -88,6 +163,19 @@ class ThreadParticipationTracker:
     def __init__(self, platform_name: str, max_tracked: int = 500):
         self._platform = platform_name
         self._max_tracked = max_tracked
+        # ``mark_async`` runs the persist on a worker thread, which removes the
+        # accidental serialization the event loop used to provide.  Two locks,
+        # never nested the other way round:
+        #   ``_lock``    guards ONLY the in-memory set (``_remember``,
+        #                ``__contains__``, ``clear`` and the snapshot in
+        #                ``_save``); held for microseconds, safe on the loop.
+        #   ``_io_lock`` worker-only; serializes snapshot+write in ``_save`` so
+        #                two persists cannot interleave and lose an entry.
+        # ``_save`` must NOT hold ``_lock`` across ``os.replace``: the adapters'
+        # ``thread_id in tracker`` gate runs on the loop thread and would stall
+        # for the whole rename.
+        self._lock = threading.Lock()
+        self._io_lock = threading.Lock()
         self._threads: dict[str, None] = dict.fromkeys(str(t) for t in self._load())
 
     def _state_path(self) -> Path:
@@ -96,29 +184,62 @@ class ThreadParticipationTracker:
 
     def _load(self) -> list[str]:
         try:
-            data = json.loads(self._state_path().read_text(encoding="utf-8"))
+            data = json.loads(self._state_path().read_text(encoding="utf-8-sig"))
         except Exception:
             return []
         return [str(thread_id) for thread_id in data] if isinstance(data, list) else []
 
     def _save(self) -> None:
-        thread_list = list(self._threads)
-        if len(thread_list) > self._max_tracked:
-            thread_list = thread_list[-self._max_tracked:]
-            self._threads = dict.fromkeys(thread_list)
-        atomic_json_write(self._state_path(), thread_list, indent=None)
+        with self._io_lock:
+            with self._lock:
+                thread_list = list(self._threads)
+                if len(thread_list) > self._max_tracked:
+                    thread_list = thread_list[-self._max_tracked:]
+                    self._threads = dict.fromkeys(thread_list)
+            atomic_json_write(self._state_path(), thread_list, indent=None)
+
+    def _remember(self, thread_id: str) -> bool:
+        """Record *thread_id* in memory; ``True`` when a persist is still owed.
+
+        The in-memory half stays synchronous even for :meth:`mark_async` so that
+        a ``thread_id in tracker`` check immediately after marking is correct --
+        the mention-gating logic in the adapters depends on that.
+        """
+        with self._lock:
+            if thread_id in self._threads:
+                return False
+            self._threads[thread_id] = None
+            return True
 
     def mark(self, thread_id: str) -> None:
-        """Mark *thread_id* as participated and persist."""
-        if thread_id not in self._threads:
-            self._threads[thread_id] = None
+        """Mark *thread_id* as participated and persist.
+
+        Blocking: ends in ``atomic_json_write`` -> ``os.replace``.  Coroutines
+        must use :meth:`mark_async` instead.
+        """
+        if self._remember(thread_id):
             self._save()
 
+    async def mark_async(self, thread_id: str) -> None:
+        """Off-loop form of :meth:`mark`.
+
+        ``_save`` ends in ``atomic_json_write`` -> ``os.replace``, whose
+        duration is unbounded under filesystem pressure.  Every caller of this
+        tracker sits on an inbound-message coroutine in the Discord and Matrix
+        adapters, so the rename must not be paid inline on the event loop -- it
+        stalls every other adapter's polling and every in-flight turn for as
+        long as it runs.
+        """
+        if self._remember(thread_id):
+            await _to_thread(self._save)
+
     def __contains__(self, thread_id: str) -> bool:
-        return thread_id in self._threads
+        with self._lock:
+            return thread_id in self._threads
 
     def clear(self) -> None:
-        self._threads.clear()
+        with self._lock:
+            self._threads.clear()
 
 
 def redact_phone(phone: str) -> str:
@@ -513,6 +634,32 @@ def _chunk_newline_preferred(text, limit, len_fn):
     return chunks
 
 
+# ─── Discord channel obfuscation (Bot API change, mandatory Nov 16 2026) ───────
+# Channels a bot lacks VIEW_CHANNEL on are still dispatched over the Gateway with the
+# name replaced by "___hidden___", sensitive fields nulled and flag 1 << 17 set; over
+# HTTP they are omitted. https://discord.com/developers/docs/change-log (Aug 12, 2026)
+DISCORD_CHANNEL_OBFUSCATED_FLAG = 1 << 17
+DISCORD_OBFUSCATED_CHANNEL_NAME = "___hidden___"
+
+
+def is_discord_channel_obfuscated(channel) -> bool:
+    """True when a discord.py channel object is an obfuscated placeholder.
+
+    Skip these wherever guild channels are enumerated (channel directory, message
+    backfill): history reads and sends always fail with a permission error. Flag
+    first; the sentinel name is the fallback for discord.py builds that don't
+    expose the flag (a visible channel literally named ``___hidden___`` is then
+    also skipped — deliberate bias toward hiding). #90154
+    """
+    try:
+        flag_value = channel.flags.value
+    except AttributeError:
+        flag_value = None
+    if isinstance(flag_value, int) and flag_value & DISCORD_CHANNEL_OBFUSCATED_FLAG:
+        return True
+    return getattr(channel, "name", None) == DISCORD_OBFUSCATED_CHANNEL_NAME
+
+
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
 # Names external plugins imported from this module before the Sep 2026 decomposition.
 # Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
@@ -554,14 +701,14 @@ class TextBatchAggregator:
         self._batch_delay = batch_delay
         self._split_delay = split_delay
         self._split_threshold = split_threshold
-        self._pending: Dict[str, "MessageEvent"] = {}
+        self._pending: Dict[str, MessageEvent] = {}
         self._pending_tasks: Dict[str, asyncio.Task] = {}
 
     def is_enabled(self) -> bool:
         """Return True if batching is active (delay > 0)."""
         return self._batch_delay > 0
 
-    def enqueue(self, event: "MessageEvent", key: str) -> None:
+    def enqueue(self, event: MessageEvent, key: str) -> None:
         """Add *event* to the pending batch for *key*."""
         chunk_len = len(event.text or "")
         existing = self._pending.get(key)

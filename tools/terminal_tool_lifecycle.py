@@ -263,8 +263,11 @@ def is_persistent_env(task_id: str) -> bool:
 
 
 def cleanup_all_environments():
-    """Clean up ALL active environments. Use with caution."""
+    """Clean up ALL active environments (process exit). Use with caution."""
+    from tools.environments.base import kill_live_foreground_processes
     from tools.terminal_tool import _active_environments
+    # A command still running when the host exits would outlive it in its own process group.
+    kill_live_foreground_processes()
     cleaned = 0
     for task_id in list(_active_environments.keys()):
         try:

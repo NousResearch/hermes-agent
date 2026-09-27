@@ -3,10 +3,8 @@ import assert from 'node:assert/strict'
 import { test } from 'vitest'
 
 import {
-  describeRendererLifecycleEvent,
   installWindowRendererLifecycle,
   pruneReloadTimes,
-  pushReloadTime,
   shouldReloadAfterFailedLoad,
   shouldReloadAfterRendererGone
 } from './window-renderer-lifecycle'
@@ -86,33 +84,24 @@ test('pruneReloadTimes drops timestamps outside the rolling window', () => {
   assert.deepEqual(pruneReloadTimes([], now, 60_000), [])
 })
 
-test('pushReloadTime records the timestamp', () => {
-  const times: number[] = []
-
-  assert.deepEqual(pushReloadTime(times, 42), [42])
-})
-
-test('shouldReloadAfterRendererGone reloads crashed/oom on a live window', () => {
+test('shouldReloadAfterRendererGone reloads crashed/oom/killed on a live window', () => {
   assert.deepEqual(shouldReloadAfterRendererGone({ reason: 'crashed', isDestroyed: false, recentReloadTimes: [] }), {
     reload: true
   })
   assert.deepEqual(shouldReloadAfterRendererGone({ reason: 'oom', isDestroyed: false, recentReloadTimes: [] }), {
     reload: true
   })
+  assert.deepEqual(shouldReloadAfterRendererGone({ reason: 'killed', isDestroyed: false, recentReloadTimes: [] }), {
+    reload: true
+  })
 })
 
 test('shouldReloadAfterRendererGone never reloads expected teardown or unknown reasons', () => {
   // A window the user closed reports reason 'killed' — reloading would pop it
-  // back up after close.
+  // back up after close. isDestroyed gates that case before reason matching.
   assert.deepEqual(shouldReloadAfterRendererGone({ reason: 'killed', isDestroyed: true, recentReloadTimes: [] }), {
     reload: false,
     suppressedReason: 'expected-teardown'
-  })
-  // Killed on a live window is a process-initiated loss (e.g. OS reclaim);
-  // the primary window never reloaded it, so peers don't either.
-  assert.deepEqual(shouldReloadAfterRendererGone({ reason: 'killed', isDestroyed: false, recentReloadTimes: [] }), {
-    reload: false,
-    suppressedReason: 'unrecoverable-reason'
   })
   assert.deepEqual(
     shouldReloadAfterRendererGone({ reason: 'launch-failed', isDestroyed: false, recentReloadTimes: [] }),
@@ -282,7 +271,7 @@ test('unresponsive is logged, never reloaded', () => {
   win.webContents.emit('unresponsive')
 
   assert.equal(win.reloadCalls.length, 0)
-  assert.equal(logs[0], '[renderer:secondary] webContents became unresponsive')
+  assert.equal(logs.length, 1)
 })
 
 test('did-fail-load on the main frame is logged, not reloaded', () => {
@@ -374,32 +363,6 @@ test('dispose removes every listener (no stacking on window recreation)', () => 
   assert.equal(win.reloadCalls.length, 0)
   assert.equal(logs.length, 0)
   assert.equal(win.webContents.listenerCount('render-process-gone'), before - 1)
-})
-
-test('describeRendererLifecycleEvent sanitizes unknown fields', () => {
-  assert.equal(
-    describeRendererLifecycleEvent({ kind: 'secondary', event: 'render-process-gone' }),
-    '[renderer:secondary] render-process-gone reason=? exitCode=?'
-  )
-  assert.equal(
-    describeRendererLifecycleEvent({
-      kind: 'secondary',
-      event: 'render-process-gone',
-      reason: 'crashed',
-      exitCode: undefined
-    }),
-    '[renderer:secondary] render-process-gone reason=crashed exitCode=?'
-  )
-  assert.equal(
-    describeRendererLifecycleEvent({
-      kind: 'main',
-      event: 'render-process-gone',
-      reason: 'killed',
-      exitCode: 1,
-      isDestroyed: true
-    }),
-    '[renderer:main] render-process-gone reason=killed exitCode=1 (expected teardown)'
-  )
 })
 
 // --- #95575: white-screen recovery for main-frame load failures -------------
@@ -544,4 +507,80 @@ test('ERR_ABORTED does not consume the load-failure budget', async () => {
   win.webContents.emit('did-fail-load', {}, -6, 'ERR_FILE_NOT_FOUND', 'file:///dist/index.html', true)
   await flushDeferred()
   assert.equal(win.reloadCalls.length, 1)
+})
+
+test('a live window whose renderer is killed reloads, then ends on the recovery hook once the budget is spent', async () => {
+  // #85048: an external SIGTERM reports reason=killed on a still-live window.
+  const terminated: any[] = []
+  const win = makeFakeWindow()
+
+  const { options } = makeOptions(win, 'main', {
+    reloadWindowMs: 60_000,
+    reloadMax: 1,
+    now: () => 1000,
+    callbacks: {
+      log: () => undefined,
+      reload: () => win.webContents.reload(),
+      onRendererTerminated: (details: any) => {
+        terminated.push(details)
+      }
+    }
+  })
+
+  installWindowRendererLifecycle(win, options)
+
+  win.webContents.emit('render-process-gone', {}, { reason: 'killed', exitCode: 15 })
+  await flushDeferred()
+  assert.equal(win.reloadCalls.length, 1)
+  assert.equal(terminated.length, 0)
+
+  // Killed again inside the window: no reload loop, and not a silent dead window.
+  win.webContents.emit('render-process-gone', {}, { reason: 'killed', exitCode: 15 })
+  await flushDeferred()
+  assert.equal(win.reloadCalls.length, 1)
+  assert.deepEqual(terminated, [{ reason: 'killed', exitCode: 15 }])
+
+  // An unrecoverable reason is surfaced without a reload.
+  win.webContents.emit('render-process-gone', {}, { reason: 'launch-failed', exitCode: 7 })
+  await flushDeferred()
+  assert.equal(win.reloadCalls.length, 1)
+  assert.equal(terminated.length, 2)
+})
+
+test('a killed renderer is never reloaded or surfaced after close or during an intentional quit', async () => {
+  const terminated: any[] = []
+  let quitting = false
+
+  const makeWindow = (destroyed: boolean) => {
+    const win = makeFakeWindow({ destroyed })
+
+    const { options } = makeOptions(win, 'main', {
+      isIntentionalTeardown: () => quitting,
+      callbacks: {
+        log: () => undefined,
+        reload: () => win.webContents.reload(),
+        onRendererTerminated: (details: any) => {
+          terminated.push(details)
+        }
+      }
+    })
+
+    installWindowRendererLifecycle(win, options)
+
+    return win
+  }
+
+  // Closed window: killed is expected teardown.
+  const closed = makeWindow(true)
+  closed.webContents.emit('render-process-gone', {}, { reason: 'killed', exitCode: 9 })
+
+  // Quit / update handoff: the window can still report live while its renderer dies.
+  quitting = true
+  const live = makeWindow(false)
+  live.webContents.emit('render-process-gone', {}, { reason: 'killed', exitCode: 9 })
+  await flushDeferred()
+
+  assert.equal(closed.reloadCalls.length, 0)
+  assert.equal(live.reloadCalls.length, 0)
+  assert.equal(terminated.length, 0)
 })

@@ -659,6 +659,14 @@ import {
   shouldSurfaceErrorForRendererStackCookieCrashLoop,
   writeGpuStackCookieMarker
 } from './windows-stack-cookie-fallback'
+import {
+  decideLinuxGpuLaunch,
+  linuxGpuFallbackMarker,
+  linuxGpuMarkerAfterSuccessfulBoot,
+  readLinuxGpuMarker,
+  shouldRelaunchForLinuxGpuCrash,
+  writeLinuxGpuMarker
+} from './linux-gpu-fallback'
 import { readWindowsUserEnvVar } from './windows-user-env'
 import { isPackagedInstallPath as isPackagedInstallPathUnderRoots } from './workspace-cwd'
 import { readWslWindowsClipboardImage } from './wsl-clipboard-image'
@@ -900,6 +908,51 @@ if (NVIDIA_DRIVER_MAJOR !== null && process.platform === 'linux') {
   })
 }
 
+// #124843: on Mesa/Wayland the Chromium GPU child can fail init
+// (error_code=1002) and retry inside a sub-zygote forever — ~350% CPU, no
+// gpu-process, no crash. Bound it: one relaunch into software rendering,
+// then a sticky per-version marker so the next boot goes straight there.
+// Reactive only — healthy Mesa/Wayland stacks keep full acceleration. Must
+// run before app `ready`. Override with HERMES_DESKTOP_DISABLE_GPU
+// (1/true → always software, 0/false → keep GPU on).
+let linuxGpuFallbackActive = false
+let linuxGpuFallbackSticky = false
+let linuxGpuRelaunchAttempted = false
+
+const LINUX_GPU_SOFTWARE_ACTIVE =
+  Boolean(REMOTE_DISPLAY_REASON) || NVIDIA_EGL_FALLBACK.enable || alreadyHasDisableGpu(process.argv, process.env)
+
+if (process.platform === 'linux') {
+  const linuxGpuUserData = app.getPath('userData')
+
+  const linuxGpuDecision = decideLinuxGpuLaunch({
+    argv: process.argv,
+    env: process.env,
+    marker: readLinuxGpuMarker(linuxGpuUserData),
+    appVersion: app.getVersion(),
+    remoteDisplayReason: REMOTE_DISPLAY_REASON,
+    nvidiaFallbackActive: NVIDIA_EGL_FALLBACK.enable
+  })
+
+  linuxGpuFallbackActive = linuxGpuDecision.enable
+  linuxGpuFallbackSticky = linuxGpuDecision.nextMarker.state === 'fallback'
+
+  try {
+    writeLinuxGpuMarker(linuxGpuUserData, linuxGpuDecision.nextMarker)
+  } catch {
+    void 0
+  }
+
+  if (linuxGpuDecision.enable && linuxGpuDecision.reason !== 'already-enabled' && !LINUX_GPU_SOFTWARE_ACTIVE) {
+    app.disableHardwareAcceleration()
+    app.commandLine.appendSwitch('disable-gpu-compositing')
+    console.log(
+      `[hermes] Linux GPU software fallback enabled (${linuxGpuDecision.reason}); disabling GPU ` +
+        'hardware acceleration after a GPU-child init failure (#124843). HERMES_DESKTOP_DISABLE_GPU=0 to opt out.'
+    )
+  }
+}
+
 // Linux: point Chromium at the session's keychain backend so safeStorage can
 // encrypt remote gateway tokens (hardening.ts refuses to persist them without
 // it). The value arrives via HERMES_DESKTOP_PASSWORD_STORE, bridged by the
@@ -1013,6 +1066,49 @@ if (IS_WINDOWS) {
       void exitAfterBackendShutdown(0)
     } catch (error) {
       console.error(`[hermes] --no-sandbox relaunch failed: ${error?.message || error}`)
+    }
+  })
+}
+
+// #124843: catch a Linux GPU-child launch failure/crash and relaunch once
+// with --disable-gpu before Chromium's init-retry loop burns the machine.
+// No-op when software rendering is already on.
+if (process.platform === 'linux') {
+  app.on('child-process-gone', (_event, details) => {
+    const alreadySoftware =
+      LINUX_GPU_SOFTWARE_ACTIVE || linuxGpuFallbackActive || alreadyHasDisableGpu(process.argv, process.env)
+
+    if (
+      !shouldRelaunchForLinuxGpuCrash({
+        details,
+        alreadySoftware,
+        relaunchAttempted: linuxGpuRelaunchAttempted
+      })
+    ) {
+      return
+    }
+
+    linuxGpuRelaunchAttempted = true
+    linuxGpuFallbackActive = true
+    linuxGpuFallbackSticky = true
+
+    const reason = String(details?.reason || '').toLowerCase() === 'launch-failure' ? 'gpu-launch-failure' : 'gpu-crash'
+
+    try {
+      writeLinuxGpuMarker(app.getPath('userData'), linuxGpuFallbackMarker(reason, app.getVersion()))
+    } catch {
+      void 0
+    }
+
+    console.warn(
+      `[hermes] Linux GPU child gone (reason=${details?.reason}); relaunching once with --disable-gpu (#124843)`
+    )
+
+    try {
+      app.relaunch({ args: buildDisableGpuRelaunchArgs(process.argv.slice(1)) })
+      void exitAfterBackendShutdown(0)
+    } catch (error) {
+      console.error(`[hermes] --disable-gpu relaunch failed: ${error?.message || error}`)
     }
   })
 }
@@ -14936,6 +15032,23 @@ function createWindow() {
           rememberLog(`[gpu] stack-cookie marker update after main-window reveal failed: ${error?.message || error}`)
         }
       }
+
+      // #124843: clear the mid-boot marker only after a window is actually
+      // usable. Keep sticky `fallback` when we launched with software
+      // rendering so the next launch skips the GPU-child retry loop.
+      if (process.platform === 'linux') {
+        try {
+          writeLinuxGpuMarker(
+            app.getPath('userData'),
+            linuxGpuMarkerAfterSuccessfulBoot({
+              fallbackActive: linuxGpuFallbackSticky,
+              appVersion: app.getVersion()
+            })
+          )
+        } catch (error) {
+          rememberLog(`[gpu] linux marker update after main-window reveal failed: ${error?.message || error}`)
+        }
+      }
     }
   })
 
@@ -19232,6 +19345,16 @@ app.on('before-quit', event => {
   if (IS_WINDOWS && !windowsSandboxFallbackSticky) {
     try {
       writeSandboxMarker(app.getPath('userData'), markerAfterSuccessfulBoot({ fallbackActive: false }))
+    } catch {
+      void 0
+    }
+  }
+
+  // #124843: a clean quit mid-boot must not trip next-launch --disable-gpu.
+  // Keyed on sticky (not active) so an engaged fallback keeps its marker.
+  if (process.platform === 'linux' && !linuxGpuFallbackSticky) {
+    try {
+      writeLinuxGpuMarker(app.getPath('userData'), linuxGpuMarkerAfterSuccessfulBoot({ fallbackActive: false }))
     } catch {
       void 0
     }

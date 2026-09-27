@@ -102,6 +102,13 @@ def test_requester_reaction_resumes_the_matrix_thread(
             assert ("Matrix reaction by " + live_room.observer.user_id) in json.dumps(
                 requests[-1]["messages"]
             )
+            latest_user = [
+                message
+                for message in requests[-1]["messages"]
+                if message.get("role") == "user"
+            ][-1]
+            assert "Replying to your previous message" in json.dumps(latest_user)
+            assert "Watch this answer" in json.dumps(latest_user)
             assert (
                 watched.source["content"]["m.relates_to"]["event_id"] == root.event_id
             )

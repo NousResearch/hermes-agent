@@ -348,6 +348,36 @@ def _mirror_stop(sid, session, agent, arg) -> None:
     process_registry.kill_all()
 
 
+_MODEL_BUILD_WAIT = 30.0  # ceiling for a prewarm build to land before a /model defers (config.set parity)
+
+
+def _defer_model_switch(sid: str, session: dict, arg: str) -> str:
+    """Queue a ``/model`` for the next turn when the prewarm build outlived the wait.
+
+    Pinning while a build is still resolving its kwargs loses: the finished build
+    splats the route it resolved BEFORE the switch and re-announces the OLD model —
+    the last frame the Desktop paints, inverting #122678. Stash exactly like
+    ``config.set``'s deferred branch (selection guards first): ``_session_info`` reports
+    the pending pick over the agent's model, so emitting now moves the picker, and
+    ``_apply_pending_model_switch`` at next turn start commits against the built agent
+    (prompt.submit gates on it) before anything bills.
+    """
+    from hermes_cli.model_switch import parse_model_switch_args
+    try:
+        parsed = parse_model_switch_args(arg)
+        display_model, display_provider = parsed.model_input, (parsed.explicit_provider or "").strip()
+    except Exception:
+        display_model, display_provider = arg.strip(), ""
+    if warning := _pending_switch_selection_warning(display_model, display_provider):
+        return warning
+    session["pending_model_switch"] = {
+        "raw": arg, "confirm_expensive_model": False,
+        "display_model": display_model, "display_provider": display_provider}
+    _emit("session.info", sid, _session_info(None, session))
+    return (f"Still starting this session, so the switch to {display_model or 'the picked model'} "
+            "will apply with your next message.")
+
+
 def _mirror_model(sid, session, agent, arg) -> str:
     """Mirror a typed ``/model`` onto the live session; returns the switch's warning, if any.
 
@@ -361,17 +391,30 @@ def _mirror_model(sid, session, agent, arg) -> str:
 
     A prewarm build may be in flight (``session.create`` starts one before the first prompt): a pin
     applied mid-build loses to it — the build resolves its kwargs earlier and the finished agent
-    re-announces the OLD model, inverting the mismatch the switch just reported. Wait for the
-    build, then take the live-agent path, the same order ``config.set``'s picker applies in."""
+    re-announces the OLD model. Wait it out (the build's announce lands BEFORE ``agent_ready``, so a
+    committed switch always announces last), and if the build outlives the ceiling, defer instead of
+    pinning under a loser. A lazy watch-window resume never prewarms: key the wait on the build
+    actually having started, or every /model on a spectated session parks for the full ceiling.
+
+    Resolution (no agent: config fallback, provider routing, secrets) must run under the
+    SESSION's profile scope — on a pooled multi-profile serve, an unscoped bare call resolves
+    against the LAUNCH profile's credentials (#122986 review; same wrap config.set applies).
+    And the pin must land in BOTH route stores a cold resume seeds: ``model_override`` AND the
+    full ``resume_runtime_overrides`` bundle, or the deferred build splats the old route
+    wholesale and the announce was a lie (#122986 review of #122678)."""
     if agent is None:
         ready = session.get("agent_ready")
-        # Only wait on a build that actually started: a lazy watch-window resume never
-        # prewarms, and its unset event would park this for the full ceiling.
         if ready is not None and session.get("agent_build_started") and not ready.is_set():
-            ready.wait(timeout=30.0)
-    warning = _apply_model_switch(sid, session, arg).get("warning", "")
-    if session.get("agent") is None and session.get("model_override"):
-        _emit("session.info", sid, _session_info(None, session))
+            if not ready.wait(timeout=_MODEL_BUILD_WAIT):
+                return _defer_model_switch(sid, session, arg)
+    with _session_profile_runtime_scope(session):
+        previous_override = session.get("model_override")
+        warning = _apply_model_switch(sid, session, arg).get("warning", "")
+    if session.get("agent") is None:
+        pinned = session.get("model_override")
+        if pinned and pinned != previous_override:
+            _sync_resume_runtime_with_pinned_override(session)
+            _emit("session.info", sid, _session_info(None, session))
     return warning
 
 

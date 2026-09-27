@@ -138,6 +138,134 @@ def test_bare_model_never_reaches_the_switch_mirror(monkeypatch):
     assert not events
 
 
+def test_lazy_mirror_folds_pin_into_resume_runtime_bundle(monkeypatch):
+    """A cold resume seeds BOTH route stores; the deferred build splats
+    ``resume_runtime_overrides`` wholesale while its provider routs
+    (``_deferred_build_agent_kwargs``). A mirror that only pinned
+    ``model_override`` announced the new route while the build constructed the OLD
+    one — #122678 inverted (PR #122986 review, finding 1)."""
+    session = _lazy_session(resume_runtime_overrides={
+        "model_override": {"model": "model-one", "provider": "openrouter"},
+        "provider_override": "openrouter"})
+    server._sessions["resume-bundle-sid"] = session
+    _install_fake_switch(monkeypatch, model="model-two", provider="openrouter")
+    events = _capture_emits(monkeypatch)
+    try:
+        warning = server._mirror_slash_side_effects("resume-bundle-sid", session, "/model model-two")
+    finally:
+        server._sessions.pop("resume-bundle-sid", None)
+
+    assert warning == ""
+    resume = session["resume_runtime_overrides"]
+    assert resume["model_override"] == {"model": "model-two", "provider": "openrouter"}, (
+        "the pinned route must reach the bundle the deferred build actually splats")
+    assert resume["provider_override"] == "openrouter"
+    # And the build kwargs resolve to the switched route, not the stale resume row.
+    kwargs = server._deferred_build_agent_kwargs(session, session_db=None)
+    assert kwargs["model_override"]["model"] == "model-two"
+
+
+def test_lazy_mirror_syncs_provider_removal_into_bundle(monkeypatch):
+    """A pin that drops the provider must also drop the bundle's provider_override,
+    or the build splats an unroutable pair (same merge semantics as the failed-build
+    restart precedent)."""
+    session = _lazy_session(resume_runtime_overrides={
+        "model_override": {"model": "model-one", "provider": "openrouter"},
+        "provider_override": "openrouter"})
+    server._sessions["bundle-drop-sid"] = session
+    _install_fake_switch(monkeypatch, model="model-two", provider="")
+    _capture_emits(monkeypatch)
+    try:
+        server._mirror_slash_side_effects("bundle-drop-sid", session, "/model model-two")
+    finally:
+        server._sessions.pop("bundle-drop-sid", None)
+    assert session["resume_runtime_overrides"]["model_override"] == {"model": "model-two", "provider": ""}
+    assert "provider_override" not in session["resume_runtime_overrides"]
+
+
+def test_mirror_applies_switch_under_session_profile_scope(monkeypatch):
+    """No built agent means ``_apply_model_switch`` resolves the FROM-route against
+    config.yaml and ambient provider state — that read must be bound to the
+    session's profile home, not the launch profile's (PR #122986 review, finding 2;
+    config.set wraps its apply the same way)."""
+    entered = []
+    session = _lazy_session(profile_home="/profiles/b")
+
+    import contextlib
+
+    @contextlib.contextmanager
+    def fake_scope(sess):
+        entered.append(sess)
+        yield
+
+    monkeypatch.setattr(server, "_session_profile_runtime_scope", fake_scope)
+    server._sessions["scope-sid"] = session
+    _install_fake_switch(monkeypatch, model="model-two", provider="laby")
+    _capture_emits(monkeypatch)
+    try:
+        server._mirror_slash_side_effects("scope-sid", session, "/model model-two")
+    finally:
+        server._sessions.pop("scope-sid", None)
+    assert entered and entered[0] is session, "the switch must resolve inside the session's profile scope"
+
+
+def test_slow_prewarm_build_defers_switch_instead_of_pinning_under_it(monkeypatch):
+    """The wait must not fail open: a build outliving the ceiling would re-announce
+    the OLD route after a pin (last frame wins on the Desktop). Past the ceiling the
+    mirror stashes the pick like config.set's deferred branch — ``_session_info``
+    reports pending over any agent model, so even the build's late announce paints
+    the NEW route — and the commit lands at next turn start (#122986 finding 3)."""
+    session = _lazy_session()
+    ready = session["agent_ready"] = threading.Event()
+    session["agent_build_started"] = True
+
+    def fake_build():
+        time.sleep(0.6)  # outlives the monkeypatched 0.1 ceiling
+        agent = types.SimpleNamespace(model="model-one", provider="custom:laby", tools=[])
+        session["agent"] = agent
+        server._emit("session.info", "slow-build-sid", server._session_info(agent, session))
+        ready.set()
+
+    monkeypatch.setattr(server, "_MODEL_BUILD_WAIT", 0.1)
+    calls = _install_fake_switch(monkeypatch, model="model-two", provider="custom:laby")
+    threading.Thread(target=fake_build, daemon=True).start()
+    server._sessions["slow-build-sid"] = session
+    events = _capture_emits(monkeypatch)
+    try:
+        warning = server._mirror_slash_side_effects("slow-build-sid", session, "/model model-two")
+        assert not calls, "the mirror must never reach the switch while the build still runs"
+        assert "next message" in warning
+        assert not session.get("model_override"), "must not pin under a still-resolving build"
+        pending = session["pending_model_switch"]
+        assert pending["raw"] == "model-two" and pending["display_model"] == "model-two"
+        infos = [p for kind, _sid, p in events if kind == "session.info"]
+        assert infos and infos[0]["model"] == "model-two", "the deferred pick shows in the pill now"
+    finally:
+        ready.wait(timeout=5)
+    # The build's late announce (model_one agent) still carries the pending pick.
+    assert server._session_info(session["agent"], session)["model"] == "model-two"
+
+
+def test_repeat_of_current_model_does_not_re_announce(monkeypatch):
+    """The lazy announce belongs to a pin THIS call changed; re-emitting on "a pin
+    exists" churns the picker for a no-op switch (#122986 review, minor)."""
+    session = _lazy_session(model_override={"model": "model-two", "provider": "laby"})
+    server._sessions["noop-sid"] = session
+
+    def apply(sid, sess, arg, **kwargs):
+        sess["model_override"] = {"model": "model-two", "provider": "laby"}
+        return {"value": "model-two", "warning": "", "scope": "session"}
+
+    monkeypatch.setattr(server, "_apply_model_switch", apply)
+    events = _capture_emits(monkeypatch)
+    try:
+        warning = server._mirror_slash_side_effects("noop-sid", session, "/model model-two")
+    finally:
+        server._sessions.pop("noop-sid", None)
+    assert warning == ""
+    assert not [e for e in events if e[0] == "session.info"], "same pin in, silence out"
+
+
 def test_prewarm_build_in_flight_switch_wins_the_race(monkeypatch):
     """``session.create`` prewarms a build that announces its own model on
     completion. A /model landing mid-build must not pin under the announce — the

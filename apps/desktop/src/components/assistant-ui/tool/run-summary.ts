@@ -24,7 +24,8 @@ export function isToolCallPart<T extends { type: string }>(part: T): part is Ext
   return part.type === 'tool-call'
 }
 
-type RunCategory = 'analyze' | 'browse' | 'delegate' | 'edit' | 'explore' | 'other' | 'read' | 'run' | 'search'
+type RunCategory =
+  'analyze' | 'browse' | 'delegate' | 'edit' | 'explore' | 'interact' | 'other' | 'read' | 'run' | 'search'
 
 // Clause order is fixed so the same run always reads the same way, whichever
 // category happens to be live.
@@ -34,6 +35,7 @@ const CATEGORY_ORDER: readonly RunCategory[] = [
   'search',
   'read',
   'browse',
+  'interact',
   'analyze',
   'run',
   'delegate',
@@ -42,23 +44,27 @@ const CATEGORY_ORDER: readonly RunCategory[] = [
 
 const CATEGORY_COPY: Record<RunCategory, { noun: [string, string]; past: string; present: string }> = {
   analyze: { noun: ['image', 'images'], past: 'Analyzed', present: 'Analyzing' },
-  browse: { noun: ['page', 'pages'], past: 'Browsed', present: 'Browsing' },
+  browse: { noun: ['page', 'pages'], past: 'Opened', present: 'Opening' },
   delegate: { noun: ['task', 'tasks'], past: 'Delegated', present: 'Delegating' },
   edit: { noun: ['file', 'files'], past: 'Edited', present: 'Editing' },
   explore: { noun: ['file', 'files'], past: 'Explored', present: 'Exploring' },
+  interact: { noun: ['browser action', 'browser actions'], past: 'Performed', present: 'Performing' },
   other: { noun: ['tool', 'tools'], past: 'Used', present: 'Using' },
   read: { noun: ['page', 'pages'], past: 'Read', present: 'Reading' },
   run: { noun: ['command', 'commands'], past: 'Ran', present: 'Running' },
   search: { noun: ['query', 'queries'], past: 'Searched', present: 'Searching' }
 }
 
-// File-system tools — the ones a "files" noun is honest about. Everything else
-// is routed by name below, so a web search never counts as an explored file.
-const EXPLORE_TOOLS = new Set(['list_files', 'read_file', 'search_files'])
-
+// Routed by name so a web search never counts as an explored file. Browser
+// tools other than navigation are interaction, not page loads: a screenshot or
+// a click fetches nothing, so they must not be counted as pages.
 const TOOL_CATEGORY: Record<string, RunCategory> = {
+  browser_navigate: 'browse',
   delegate_task: 'delegate',
   execute_code: 'run',
+  list_files: 'explore',
+  read_file: 'explore',
+  search_files: 'explore',
   session_search_recall: 'search',
   terminal: 'run',
   vision_analyze: 'analyze',
@@ -71,17 +77,22 @@ function toolCategory(toolName: string): RunCategory {
     return 'edit'
   }
 
-  const named = TOOL_CATEGORY[toolName]
+  return TOOL_CATEGORY[toolName] ?? (toolName.startsWith('browser_') ? 'interact' : 'other')
+}
 
-  if (named) {
-    return named
+/**
+ * How many things one call acted on. One call is one thing everywhere except
+ * `web_extract`, which takes up to five URLs — counting its calls would report
+ * five fetched pages as one.
+ */
+function unitCount(tool: ToolCallLike): number {
+  if (tool.toolName !== 'web_extract') {
+    return 1
   }
 
-  if (EXPLORE_TOOLS.has(toolName)) {
-    return 'explore'
-  }
+  const urls = parseMaybeObject(tool.args).urls
 
-  return toolName.startsWith('browser_') ? 'browse' : 'other'
+  return Array.isArray(urls) && urls.length > 0 ? urls.length : 1
 }
 
 function isPending(tool: ToolCallLike): boolean {
@@ -111,7 +122,13 @@ function toolTarget(tool: ToolCallLike): string {
 
   const path = firstStringField(args, ['path', 'file', 'filepath'])
 
-  return path ? fileEditBasename(path) : firstStringField(args, ['query', 'url'])
+  if (path) {
+    return fileEditBasename(path)
+  }
+
+  const urls = Array.isArray(args.urls) ? args.urls : []
+
+  return firstStringField(args, ['query', 'url']) || (urls.length === 1 && typeof urls[0] === 'string' ? urls[0] : '')
 }
 
 /**
@@ -123,13 +140,14 @@ function toolTarget(tool: ToolCallLike): string {
 function clause(category: RunCategory, tools: ToolCallLike[], live: boolean): string {
   const copy = CATEGORY_COPY[category]
   const verb = live ? copy.present : copy.past
-  const target = tools.length === 1 ? toolTarget(tools[0]) : ''
+  const count = tools.reduce((sum, tool) => sum + unitCount(tool), 0)
+  const target = count === 1 && category !== 'interact' ? toolTarget(tools[0]) : ''
 
   if (target && (live || category !== 'run')) {
     return `${verb} ${target}`
   }
 
-  return `${verb} ${tools.length} ${copy.noun[tools.length === 1 ? 0 : 1]}`
+  return `${verb} ${count} ${copy.noun[count === 1 ? 0 : 1]}`
 }
 
 function lowerFirst(text: string): string {

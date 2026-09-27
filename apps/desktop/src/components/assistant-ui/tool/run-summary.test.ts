@@ -10,7 +10,8 @@ const read = (path: string) => tool('read_file', { path }, { content: '' })
 const searched = (query: string) => tool('search_files', { query }, { hits: [] })
 const ran = (command: string) => tool('terminal', { command }, { exit_code: 0 })
 const webSearched = (query: string) => tool('web_search', { query }, { success: true, data: { web: [] } })
-const fetched = (url: string) => tool('web_extract', { urls: [url] }, { success: true, results: [] })
+const fetched = (...urls: string[]) => tool('web_extract', { urls }, { success: true, results: [] })
+const navigated = (url: string) => tool('browser_navigate', { url }, { success: true })
 const browsed = () => tool('browser_exec', { code: 'goto' }, { success: true })
 const analyzed = (image: string) => tool('vision_analyze', { image_url: image }, { success: true, analysis: '' })
 
@@ -69,9 +70,29 @@ describe('summarizeToolRun', () => {
     expect(running([webSearched('release notes'), webSearched('changelog')])).toBe('Searching 2 queries')
   })
 
-  it('names page reads, browsing and vision after what they were', () => {
+  it('names page reads, browser work and vision after what they were', () => {
     expect(settled([fetched('https://a.example'), browsed(), analyzed('shot.png')])).toBe(
-      'Read 1 page, browsed 1 page, analyzed 1 image'
+      'Read https://a.example, performed 1 browser action, analyzed 1 image'
     )
+  })
+
+  // One web_extract call fetches up to five URLs, so the page count follows
+  // the URLs rather than the calls.
+  it('counts every page a batched fetch read', () => {
+    expect(settled([fetched('https://a.example', 'https://b.example', 'https://c.example')])).toBe('Read 3 pages')
+    expect(settled([fetched('https://a.example', 'https://b.example'), fetched('https://c.example')])).toBe(
+      'Read 3 pages'
+    )
+  })
+
+  // Clicks, screenshots and scripts load nothing; only navigation opens pages.
+  it('never counts browser interaction as pages', () => {
+    const interaction = [browsed(), browsed(), tool('browser_screenshot'), tool('browser_scroll')]
+
+    expect(settled(interaction)).toBe('Performed 4 browser actions')
+    expect(settled([navigated('https://a.example'), navigated('https://b.example'), ...interaction])).toBe(
+      'Opened 2 pages, performed 4 browser actions'
+    )
+    expect(settled([navigated('https://a.example')])).toBe('Opened https://a.example')
   })
 })

@@ -816,16 +816,10 @@ class MatrixAdapter(MatrixApprovalMixin, MatrixReactionPromptMixin, MatrixInvite
         super().__init__(config, Platform.MATRIX)
         self.max_message_length = _resolve_max_message_length(config)
         self.MAX_MESSAGE_LENGTH = self.max_message_length  # mirrors other adapters for tooling
-        # reply_to_mode ("off"|"first"|"all"), mirroring Discord/Telegram: "off" sends plain
-        # messages without the m.in_reply_to quote anchor; threaded sends keep their m.thread
-        # relation (the in_reply_to fallback inside a thread relation stays, per spec it is what
-        # unthreaded clients render). YAML 1.1 parses a bare `off`/`on` as a bool — normalized.
-        # The `extra:` spelling is resolved at config-load time by the YAML bridge → env (discord
-        # pattern); the adapter reads the typed PlatformConfig key.
-        _rtm = getattr(config, "reply_to_mode", None)
-        if isinstance(_rtm, bool):
-            _rtm = "all" if _rtm else "off"
-        self._reply_to_mode: str = str(_rtm or "first").strip().lower()
+        reply_mode = config.reply_to_mode
+        if isinstance(reply_mode, bool):
+            reply_mode = "all" if reply_mode else "off"
+        self._reply_to_mode: str = str(reply_mode or "first").strip().lower()
         if self._reply_to_mode not in {"off", "first", "all"}:
             self._reply_to_mode = "first"
         # A chunk near the outbound limit almost certainly has a continuation.
@@ -3148,18 +3142,13 @@ class MatrixAdapter(MatrixApprovalMixin, MatrixReactionPromptMixin, MatrixInvite
         return msg_content
 
     def _should_reply_anchor(self, reply_to: Optional[str], chunk_index: int) -> bool:
-        """Whether this chunk (0 = first) carries the plain m.in_reply_to anchor, per reply_to_mode.
-
-        Mirrors Telegram's _should_thread_reply: "off" never, "all" always, "first" (default)
-        only chunk 0. Thread relations are per-send, not chunk-gated (see _apply_relation_metadata).
-        """
         if not reply_to:
             return False
         if self._reply_to_mode == "off":
             return False
         if self._reply_to_mode == "all":
             return True
-        return chunk_index == 0  # "first" (default)
+        return chunk_index == 0
 
     def _apply_relation_metadata(
         self, room_id: str, msg_content: dict[str, Any], *, reply_to: Optional[str] = None,
@@ -3168,13 +3157,16 @@ class MatrixAdapter(MatrixApprovalMixin, MatrixReactionPromptMixin, MatrixInvite
         meta = metadata or {}
         thread_id = str(meta.get("thread_id") or "")
         fallback_to = str(meta.get("matrix_thread_fallback_event_id") or "")
-        if reply_to and self._reply_to_mode != "off":
-            msg_content["m.relates_to"] = {"m.in_reply_to": {"event_id": reply_to}}
+        rich_reply = reply_to if self._reply_to_mode != "off" else None
+        if rich_reply:
+            msg_content["m.relates_to"] = {"m.in_reply_to": {"event_id": rich_reply}}
         if thread_id:
             relates_to = msg_content.get("m.relates_to", {})
             relates_to["rel_type"] = "m.thread"
             relates_to["event_id"] = thread_id
-            if reply_to and not self._thread_fallbacks.is_continuation(room_id, thread_id, reply_to):
+            if rich_reply and not self._thread_fallbacks.is_continuation(
+                room_id, thread_id, rich_reply
+            ):
                 relates_to["is_falling_back"] = False
             else:
                 latest = self._thread_fallbacks.latest(room_id, thread_id)
@@ -3514,11 +3506,6 @@ _YAML_BRIDGE = (  # (yaml key, env var, kind) for apply_yaml_bridge
 def _apply_yaml_config(yaml_cfg: dict, matrix_cfg: dict) -> dict | None:
     """``apply_yaml_config_fn`` (#24849): config.yaml matrix: keys → MATRIX_* env (env wins; skipped under a
     multiplexed secondary profile's scope) + ``PlatformConfig.extra`` (extra-first readers)."""
-    _matrix_extra: dict = (
-        matrix_cfg.get("extra") if isinstance(matrix_cfg.get("extra"), dict) else {}
-    )  # type: ignore[assignment]
-    if "reply_to_mode" not in matrix_cfg and "reply_to_mode" in _matrix_extra:
-        matrix_cfg = {**matrix_cfg, "reply_to_mode": _matrix_extra["reply_to_mode"]}
     if isinstance(matrix_cfg.get("reply_to_mode"), bool):
         matrix_cfg = {
             **matrix_cfg,

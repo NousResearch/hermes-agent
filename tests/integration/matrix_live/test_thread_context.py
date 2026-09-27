@@ -240,3 +240,79 @@ def test_split_thread_reply_quotes_the_inbound_event_once(
             for previous, _ in chunks[:-1]
         ],
     ]
+
+
+@pytest.mark.parametrize(
+    "gateway", [GatewaySettings(reply_to_mode="off")], indirect=True
+)
+def test_reply_mode_off_keeps_threads_but_omits_plain_reply_references(
+    gateway: LiveGateway,
+    live_room: LiveRoom,
+    record_property: Callable[[str, object], None],
+) -> None:
+    async def exchange() -> None:
+        client = live_room.observer.client(live_room.homeserver)
+        seen: set[str] = set()
+        try:
+            await asyncio.wait_for(client.sync(timeout=0), timeout=15)
+
+            async def send_and_wait(content: dict) -> tuple[str, RoomMessageText]:
+                sent = await client.room_send(
+                    live_room.room_id, "m.room.message", content
+                )
+                assert isinstance(sent, RoomSendResponse), sent
+
+                while True:
+                    response = await client.sync(timeout=250)
+                    joined = response.rooms.join.get(live_room.room_id)
+                    if not joined:
+                        continue
+                    for event in joined.timeline.events:
+                        if (
+                            isinstance(event, RoomMessageText)
+                            and event.sender == live_room.bot.user_id
+                            and event.event_id not in seen
+                        ):
+                            seen.add(event.event_id)
+                            return sent.event_id, event
+
+            _, plain = await asyncio.wait_for(
+                send_and_wait({"msgtype": "m.text", "body": "Plain question"}),
+                timeout=15,
+            )
+            assert plain.source["content"].get("m.relates_to") is None
+
+            root = await client.room_send(
+                live_room.room_id,
+                "m.room.message",
+                {"msgtype": "m.notice", "body": "Thread root"},
+            )
+            assert isinstance(root, RoomSendResponse), root
+            question_id, threaded = await asyncio.wait_for(
+                send_and_wait({
+                    "msgtype": "m.text",
+                    "body": "Thread question",
+                    "m.relates_to": {
+                        "rel_type": "m.thread",
+                        "event_id": root.event_id,
+                        "is_falling_back": True,
+                        "m.in_reply_to": {"event_id": root.event_id},
+                    },
+                }),
+                timeout=15,
+            )
+            assert threaded.source["content"]["m.relates_to"] == {
+                "rel_type": "m.thread",
+                "event_id": root.event_id,
+                "m.in_reply_to": {"event_id": question_id},
+                "is_falling_back": True,
+            }
+            assert len(gateway.model.main_requests()) == 2
+        finally:
+            await client.close()
+
+    started = time.monotonic()
+    try:
+        asyncio.run(exchange())
+    finally:
+        record_property("body_seconds", round(time.monotonic() - started, 3))

@@ -113,6 +113,7 @@ class GatewaySettings:
     reply: str = "Matrix live reply"
     max_message_length: int | None = None
     mode: str | None = None
+    reply_to_mode: str | None = None
 
 
 @dataclass(frozen=True)
@@ -463,6 +464,12 @@ def gateway(
     home = tmp_path / "hermes"
     home.mkdir()
     route = _host_route(network)
+    if settings.reply_to_mode is not None:
+        gateway_config = gateway_config.replace(
+            "    enabled: true\n",
+            "    enabled: true\n" + f'    reply_to_mode: "{settings.reply_to_mode}"\n',
+            1,
+        )
     script = [] if mode == "inspection" else [Text(settings.reply)]
     with FakeLLMServer(
         script, bind_host=route.bind_host, default_text=settings.reply if mode == "inspection" else "ok",

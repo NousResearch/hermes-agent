@@ -632,6 +632,62 @@ describe('active transcript refresh', () => {
     expect(refresh).toHaveBeenCalledTimes(2)
   })
 
+  it('catches the transcript up when the window becomes visible again (#125532)', () => {
+    $changeEventsAvailable.set(true)
+    const refresh = vi.fn(async () => undefined)
+
+    renderSync(refresh)
+    refresh.mockClear() // drop the connect-time pull; this test is about the return edge
+
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'))
+    })
+    expect(refresh).toHaveBeenCalledTimes(1)
+  })
+
+  it('catches the transcript up on window focus (#125532)', () => {
+    const refresh = vi.fn(async () => undefined)
+
+    renderSync(refresh)
+    refresh.mockClear()
+
+    act(() => {
+      window.dispatchEvent(new Event('focus'))
+    })
+    expect(refresh).toHaveBeenCalledTimes(1)
+  })
+
+  it('coalesces the wake burst of focus and visibilitychange into one transcript pull (#125532)', () => {
+    const refresh = vi.fn(async () => undefined)
+
+    renderSync(refresh)
+    refresh.mockClear()
+
+    act(() => {
+      window.dispatchEvent(new Event('focus'))
+      document.dispatchEvent(new Event('visibilitychange'))
+      window.dispatchEvent(new Event('focus'))
+    })
+    expect(refresh).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not fire the return edge for a messaging transcript (own visible poll covers it)', () => {
+    // The messaging transcript's own visible poll also listens to focus and
+    // visibilitychange; defuse it (it requires an actively viewed window) so a
+    // call here can only come from the desktop return edge under test.
+    vi.spyOn(document, 'hasFocus').mockReturnValue(false)
+    const refresh = vi.fn(async () => undefined)
+
+    renderSync(refresh, { activeIsMessaging: true })
+    refresh.mockClear()
+
+    act(() => {
+      window.dispatchEvent(new Event('focus'))
+      document.dispatchEvent(new Event('visibilitychange'))
+    })
+    expect(refresh).not.toHaveBeenCalled()
+  })
+
   it('coalesces a burst of global session-change ticks', async () => {
     vi.useFakeTimers()
     $changeEventsAvailable.set(true)

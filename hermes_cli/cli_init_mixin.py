@@ -126,6 +126,9 @@ class CLIInitMixin:
                 self.model,
                 explicit_provider=provider or "",
                 current_provider=(provider or _nested_provider or _cfg_provider or ""),
+                # Only a config-sourced model carries its provider as a pin; an explicit -m
+                # keeps the prefix as a deliberate provider switch. See #125578.
+                pinned_provider=("" if model else str(_nested_provider or _cfg_provider or "")),
                 user_providers=CLI_CONFIG.get("providers"),
                 custom_providers=CLI_CONFIG.get("custom_providers"),
             )

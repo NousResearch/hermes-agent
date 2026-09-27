@@ -796,3 +796,18 @@ def test_openrouter_startup_key_never_holds_a_real_openai_key(env, expected):
     # so it must already follow the sk-or- gate for openrouter.ai.
     cli = _make_cli(env_overrides=env)
     assert (cli.api_key or "") == expected
+
+
+def test_config_pinned_provider_survives_hf_prefixed_default_model():
+    # #125578: on a config-sourced default the ``hf:`` prefix is part of the model id on the
+    # wire, not a huggingface route — the explicit ``custom:synthetic`` pin must stay the
+    # requested provider, or every fresh CLI session fails auth on the missing HF_TOKEN.
+    cli = _make_cli(config_overrides={
+        "model": {
+            "default": "hf:zai-org/GLM-5.3-Flash",
+            "provider": "custom:synthetic",
+        },
+        "providers": {"synthetic": {"base_url": "https://api.synthetic.new/openai/v1"}},
+    })
+    assert cli.requested_provider == "custom:synthetic"
+    assert cli.model == "hf:zai-org/GLM-5.3-Flash"

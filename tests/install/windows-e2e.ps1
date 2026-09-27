@@ -525,19 +525,31 @@ function Clear-HistoricalInstallerChurn {
     # The GUI driver refuses a dirty source tree. v2026.7.1's installer leaves
     # its own state there: `npm install` rewrites package-lock.json on Windows
     # (later installers use `npm ci`, #112378) and v2026.6.19-era installers
-    # write an unignored .install_method. Undo only that installer-generated
-    # state in this disposable clone; any other change still fails, listed.
+    # write an unignored .install_method. Installers through v2026.9.24 also
+    # clone under Git for Windows' system core.autocrlf=true and pin false only
+    # afterwards, leaving CRLF copies of every text file .gitattributes does not
+    # pin to LF (*.mdx, LICENSE, ...). The stat cache hides them except the few
+    # written in the index's racy timestamp window, which read as modified with
+    # identical index/HEAD blobs. Undo only that installer-generated state in
+    # this disposable clone; any other change still fails, listed.
     # porcelain=v2: Invoke-Git trims output, which would eat v1's leading " M".
-    $lines = @((Invoke-Git @("-C", $InstallDir, "status", "--porcelain=v2", "--untracked-files=all")) -split "\r?\n" |
+    $lines = @((Invoke-Git @("-C", $InstallDir, "-c", "core.quotepath=false", "status", "--porcelain=v2", "--untracked-files=all")) -split "\r?\n" |
         Where-Object { $_ })
     if ($lines.Count -eq 0) { return }
     Write-Host "  source status before GUI update:"
     $lines | ForEach-Object { Write-Host "    $_" }
+    # --numstat honours --ignore-cr-at-eol (--name-only does not): a modified
+    # path with no record and an unchanged mode differs from its index blob
+    # only by CRs.
+    $content = @{}
+    (Invoke-Git @("-C", $InstallDir, "-c", "core.quotepath=false", "diff", "--numstat", "--ignore-cr-at-eol")) -split "\r?\n" |
+        Where-Object { $_ } | ForEach-Object { $content[($_ -split "`t", 3)[2]] = $true }
     $locks = @(); $other = @()
     foreach ($line in $lines) {
         $fields = $line -split " ", 9
         if ($fields[0] -eq "1" -and $fields[1] -eq ".M" -and $fields.Count -eq 9 -and
-            ($fields[8] -eq "package-lock.json" -or $fields[8] -like "*/package-lock.json")) {
+            ($fields[8] -eq "package-lock.json" -or $fields[8] -like "*/package-lock.json" -or
+             ($fields[4] -eq $fields[5] -and -not $content.ContainsKey($fields[8])))) {
             $locks += $fields[8]
         } elseif ($line -eq "? .install_method") {
             Add-Content -LiteralPath (Join-Path $InstallDir ".git\info\exclude") -Value "/.install_method"

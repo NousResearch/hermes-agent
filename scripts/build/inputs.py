@@ -7,6 +7,8 @@ import json
 import re
 import tomllib
 
+from pm.store import ALL_TARGETS
+
 
 RESOURCE_ENV = {
     "skills": "HERMES_BUNDLED_SKILLS",
@@ -70,7 +72,7 @@ class AgentInputs:
         return cls(**values)
 
     def validate(self, out: Path) -> None:
-        if not re.fullmatch(r"(?:(?:linux|darwin|win32)-(?:x64|arm64)|linux-arm64-bionic)", self.target):
+        if self.target not in ALL_TARGETS:
             raise ValueError(f"unsupported target: {self.target}")
         if self.placement not in ("contained", "fixed", "references"):
             raise ValueError(f"unknown placement: {self.placement}")

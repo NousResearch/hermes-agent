@@ -257,7 +257,10 @@ def mint_launcher(
                 prefix = existing.read_bytes()[:archive.infolist()[0].header_offset]
                 shebangs = (f"#!{python_exe} -I\n".encode("utf-8"),
                             f'#!"{python_exe}" -I\n'.encode("utf-8"))
-                if (any(prefix.endswith(shebang) for shebang in shebangs)
+                # Vendored distlib trails the shebang with an extra CRLF
+                # before the zip; compare the shebang line itself.
+                tail = prefix.rstrip(b"\r\n")
+                if (any(tail.endswith(shebang.rstrip(b"\r\n")) for shebang in shebangs)
                         and archive.read("__main__.py") == script.encode("utf-8")):
                     return existing
     except (OSError, BadZipFile, KeyError):
@@ -466,8 +469,16 @@ def _kept_shared_launcher(name: str, local: Path, store: Path, own: Path | None)
     data root must never repoint them at another root's interpreter (#123238):
     once that root is deleted, every hermes breaks. Keep the file when it
     execs a live interpreter outside *store*. Missing launchers, dead
-    interpreters and same-store repins still publish."""
+    interpreters and same-store repins still publish. A launcher whose
+    interpreter is gone is never left in front of a kept one: PATHEXT resolves
+    the ``.exe`` first, so the kept ``.cmd`` would not be the file that runs."""
+    if own is None:
+        # No interpreter recorded for this root: nothing says whether the
+        # launcher is ours, and callers read the returned count as success, so
+        # a keep here would report a half-finished store as healthy.
+        return None
     candidates = [local / name] if not _is_windows() else [local / f"{name}.exe", local / f"{name}.cmd"]
+    dead: list[Path] = []
     for target in candidates:
         try:
             present = target.is_file() or target.is_symlink()
@@ -476,7 +487,10 @@ def _kept_shared_launcher(name: str, local: Path, store: Path, own: Path | None)
         if not present:
             continue
         python = _launcher_python(target)
-        if python is None or python == own or not python.is_file():
+        if python is None or python == own:
+            continue
+        if not python.is_file():
+            dead.append(target)
             continue
         try:
             # Resolve the store's directories, not the interpreter: a store
@@ -486,6 +500,14 @@ def _kept_shared_launcher(name: str, local: Path, store: Path, own: Path | None)
         except (OSError, RuntimeError, ValueError):
             continue
         if foreign:
+            for stale in dead:
+                # cmd.exe picks the .exe first; leaving a dead one would run
+                # instead of the command just kept. stage_launcher drops the
+                # same shadow when it has to mint a .cmd.
+                try:
+                    stale.unlink(missing_ok=True)
+                except OSError:
+                    pass
             return target
     return None
 

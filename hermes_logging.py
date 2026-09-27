@@ -365,6 +365,11 @@ def setup_logging(
 
     # (filename, level, max_bytes, backup_count, component) — a component gates
     # the file on ``mode`` and restricts it to that component's logger prefixes.
+    # Rotation (maxBytes/backupCount) comes from the config ``logging.*`` values
+    # for ALL files; the per-file figures below are only the defaults used
+    # while those keys are unset, so default behavior is byte-identical to the
+    # pre-config era hardcodes (errors 2 MiB x2, gateway 5 MiB x3, gui 10 MiB
+    # x5). The config values previously reached agent.log alone (#125462).
     handler_specs = (
         ("agent.log", level, max_bytes, backups, None),
         ("errors.log", logging.WARNING, 2 * 1024 * 1024, 2, None),
@@ -375,7 +380,9 @@ def setup_logging(
         if component is not None and mode != component:
             continue
         _add_rotating_handler(
-            log_dir / filename, level=lvl, max_bytes=size, backup_count=count,
+            log_dir / filename, level=lvl,
+            max_bytes=max_bytes if cfg_max_size else size,
+            backup_count=backups if cfg_backup else count,
             formatter=RedactingFormatter(_LOG_FORMAT),
             log_filter=_ComponentFilter(COMPONENT_PREFIXES[component]) if component else None,
         )

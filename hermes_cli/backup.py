@@ -1161,8 +1161,8 @@ def _create_prefixed_full_backup(
         return None
     out_path = backup_dir / f"{prefix}{datetime.now().strftime('%Y-%m-%d-%H%M%S')}.zip"
     if _write_full_zip_backup(out_path, hermes_root) is None:
-        # Incomplete runs leave a renamed salvage archive; cap those at one without letting
-        # them rotate complete backups out.
+        # Incomplete runs publish straight to ``*.incomplete.zip`` (all-failed runs are discarded);
+        # cap those salvages at one without letting them rotate complete backups out.
         _prune_incomplete_zips(backup_dir, prefix, prune_what)
         return None
     _prune_prefixed_zips(backup_dir, prefix, keep, prune_what)
@@ -2049,10 +2049,16 @@ def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path) -> Optional
     # every entry failed salvages nothing, so its empty archive is discarded rather than kept.
     salvage_path = out_path.with_name(out_path.stem + _INCOMPLETE_ZIP_SUFFIX)
 
+    published: Optional[Path] = None
+
     def _publish_path() -> Optional[Path]:
+        # Decide clean/salvage/discard once; the post-publish stat and return reuse it.
+        nonlocal published
         if not errors:
-            return out_path
-        return salvage_path if len(errors) < len(files_to_add) else None
+            published = out_path
+        elif len(errors) < len(files_to_add):
+            published = salvage_path
+        return published
 
     archive_started = time.monotonic()
     try:
@@ -2068,11 +2074,11 @@ def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path) -> Optional
         logger.warning("Full-zip backup: zip write failed: %s", exc)
         return None
 
-    if errors and len(errors) >= len(files_to_add):
+    if published is None:
         logger.warning("Full-zip backup: every entry failed, nothing salvaged: %s", _capped_errors())
         return None
-    zip_size = (salvage_path if errors else out_path).stat().st_size
-    if errors:
+    zip_size = published.stat().st_size
+    if published != out_path:
         logger.warning(
             "automatic backup phase=archive status=incomplete duration_ms=%.1f files=%d errors=%d "
             "bytes=%d salvage=%s skipped=%s",

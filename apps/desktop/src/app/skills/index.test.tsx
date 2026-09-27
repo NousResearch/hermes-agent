@@ -190,7 +190,7 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
     })
 
     // The selector appears with >1 profile.
-    const trigger = await screen.findByRole('combobox')
+    const trigger = await screen.findByRole('combobox', { name: 'Configuring:' })
     await act(async () => {
       fireEvent.click(trigger)
     })
@@ -236,7 +236,7 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
     })
 
     // The selector renders on the Skills tab too (Capabilities-wide).
-    const trigger = await screen.findByRole('combobox')
+    const trigger = await screen.findByRole('combobox', { name: 'Configuring:' })
     await act(async () => {
       fireEvent.click(trigger)
     })

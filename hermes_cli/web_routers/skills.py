@@ -411,13 +411,15 @@ async def get_skill_content(name: str, profile: Optional[str] = None):
 
 
 @router.post("/api/skills")
-async def create_skill(body: SkillCreate):
+async def create_skill(body: SkillCreate, profile: Optional[str] = None):
     """Create a skill via the agent's ``skill_manage`` write path, minus the
     write-approval gate — an authenticated dashboard write IS the user."""
     from tools.skill_manager_tool import _create_skill
 
+    if profile and body.profile and profile != body.profile:
+        raise HTTPException(status_code=400, detail="Conflicting skill profile scopes.")
     result = await scoped_to_thread(
-        body.profile, lambda: _create_skill(body.name, body.content, body.category or None))
+        profile or body.profile, lambda: _create_skill(body.name, body.content, body.category or None))
     if not result.get("success"):
         raise HTTPException(status_code=400, detail=result.get("error", "Failed to create skill."))
     _clear_skills_prompt_cache()

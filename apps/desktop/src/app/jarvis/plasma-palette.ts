@@ -1,6 +1,10 @@
 import type { PlasmaPalette, PlasmaTone } from './plasma'
 
 export const PALETTES: Record<PlasmaTone, PlasmaPalette> = {
+  thinking: {
+    back: '105, 110, 240', core: '205, 215, 255', front: '115, 145, 250',
+    highlight: '165, 185, 255', rim: '145, 165, 245'
+  },
   idle: {
     back: '124, 92, 255',
     core: '150, 225, 255',

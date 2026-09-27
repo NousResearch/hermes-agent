@@ -6,10 +6,12 @@ import { JarvisCore } from '@/app/jarvis/core'
 import { desktopOrbCopy } from '@/app/jarvis/desktop-orb-copy'
 import { type DesktopOrbState, moveOrb } from '@/app/jarvis/desktop-orb-state'
 import { Button } from '@/components/ui/button'
+import { TRANSLATIONS } from '@/i18n'
 import { ExternalLink, Mic, Square, X } from '@/lib/icons'
 
 export function OrbOverlay({ state }: { state: DesktopOrbState }) {
   const copy = desktopOrbCopy[state.locale]
+  const phaseCopy = TRANSLATIONS[state.locale].jarvisShell.dashboard.core.task
   const api = window.hermesDesktop?.petOverlay
   const orbRef = useRef<HTMLDivElement>(null)
 
@@ -22,15 +24,13 @@ export function OrbOverlay({ state }: { state: DesktopOrbState }) {
 
   const status = !state.connected
     ? copy.offline
-    : state.voice === 'error'
+    : state.voice === 'error' || state.task === 'failed'
       ? copy.error
       : state.voice === 'speaking'
         ? copy.speaking
-        : state.active
+        : state.voice === 'listening'
           ? copy.listening
-          : state.task === 'running' || state.task === 'planning'
-            ? copy.working
-            : copy.idle
+          : phaseCopy[state.task] || copy.idle
 
   useEffect(() => {
     let ignored = false

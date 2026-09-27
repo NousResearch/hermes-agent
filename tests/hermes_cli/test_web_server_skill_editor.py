@@ -90,6 +90,22 @@ class TestSkillContent:
 
 
 class TestSkillCreate:
+    def test_query_scope_creates_only_in_selected_profile_and_rejects_duplicate(self, client, isolated_profiles):
+        payload = {"name": "pasted-skill", "content": SKILL_MD.format(name="pasted-skill"), "category": "biuro"}
+        response = client.post("/api/skills?profile=worker_alpha", json=payload)
+        assert response.status_code == 200, response.text
+        target = isolated_profiles["worker_alpha"] / "skills" / "biuro" / "pasted-skill" / "SKILL.md"
+        assert target.read_text(encoding="utf-8") == payload["content"]
+        assert not (isolated_profiles["default"] / "skills" / "biuro" / "pasted-skill").exists()
+        assert client.post("/api/skills?profile=worker_alpha", json=payload).status_code == 400
+        assert target.read_text(encoding="utf-8") == payload["content"]
+
+    def test_conflicting_scopes_do_not_write(self, client, isolated_profiles):
+        payload = {"name": "conflict-skill", "content": SKILL_MD.format(name="conflict-skill"), "profile": "default"}
+        assert client.post("/api/skills?profile=worker_alpha", json=payload).status_code == 400
+        for home in isolated_profiles.values():
+            assert not (home / "skills" / "conflict-skill").exists()
+
     def test_create_writes_skill_md(self, client, isolated_profiles):
         resp = client.post(
             "/api/skills",

@@ -11,6 +11,12 @@ import type { ActionResponse } from '@/types/hermes'
 
 import { capabilityScoped, hermesApi, type ProfileScope, profileScoped } from './client'
 
+export function createSkill(draft: { name: string; content: string; category: string }, profile?: ProfileScope) {
+  return window.hermesDesktop.api<{ success: boolean; message: string }>({
+    ...capabilityScoped(profile), path: '/api/skills', method: 'POST', body: draft
+  })
+}
+
 export function getSkills(profile?: ProfileScope): Promise<SkillInfo[]> {
   return window.hermesDesktop.api<SkillInfo[]>({
     ...capabilityScoped(profile),

@@ -32,3 +32,18 @@ Wydanie jest osobnym etapem: [pipeline](product/RELEASE_PIPELINE.md),
 PR nie potwierdzają podpisanego instalatora. Kod Hermes ma warunki [MIT](../LICENSE),
 a autorskie zasoby marki mają [osobne warunki](../CZESIEK-ASSETS-LICENSE.md).
 Sekrety i dane profilu pozostają poza repozytorium.
+
+## Własne skille, role i orb
+
+- Import z tekstu i kreator: `apps/desktop/src/app/skills/skill-create.tsx`;
+  walidacja/podgląd: `skill-draft.ts`; zapis: `src/api/skills.ts` →
+  `hermes_cli/web_routers/skills.py` → istniejący `tools/skill_manager_tool.py`.
+  Profil jest częścią routingu żądania; test integracyjny:
+  `tests/hermes_cli/test_web_server_skill_editor.py`.
+- Role asystenta: `apps/desktop/src/app/agents/presets.ts`, `preset-store.ts`
+  (zapis CAS), `launch-preset.ts` (przygotowanie nowego zadania).
+- Kolor i ruch orba: `apps/desktop/src/app/jarvis/plasma.ts`,
+  `plasma-palette.ts`, `particle-orb.ts`; podpis pływającej kuli:
+  `src/app/pet-overlay/orb-overlay.tsx`.
+
+Instrukcja użytkownika: [własne umiejętności i role](SKILLS_AND_ASSISTANT.md).

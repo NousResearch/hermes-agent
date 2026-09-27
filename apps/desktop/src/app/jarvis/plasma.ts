@@ -14,7 +14,7 @@ import { drawPlasmaGlow } from './plasma-glow'
 import { PALETTES } from './plasma-palette'
 import type { JarvisTaskPhase, JarvisVoiceState } from './types'
 
-export type PlasmaTone = 'approval' | 'error' | 'idle' | 'listening' | 'speaking' | 'success' | 'working'
+export type PlasmaTone = 'approval' | 'error' | 'idle' | 'listening' | 'speaking' | 'success' | 'thinking' | 'working'
 
 export interface PlasmaPalette {
   /** Filament colour on the side facing the viewer. */
@@ -50,7 +50,9 @@ export function plasmaTone(voice: JarvisVoiceState, task: JarvisTaskPhase): Plas
     return 'approval'
   }
 
-  if (task === 'planning' || task === 'running' || task === 'cancelling') {
+  if (task === 'planning') {return 'thinking'}
+
+  if (task === 'running' || task === 'cancelling') {
     return 'working'
   }
 

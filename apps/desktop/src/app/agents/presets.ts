@@ -25,6 +25,18 @@ export const PRESET_METADATA_KEY = 'agent-czesiek.subagent-presets' as const
 
 const CATALOG: readonly Omit<SubagentPreset, 'created_at' | 'updated_at'>[] = [
   {
+    id: 'personal-assistant', name: 'Asystent dnia', skills: [],
+    character: 'Pomagaj uporządkować dzień: priorytety, terminy i następny krok. Pytaj o brakujące terminy i preferencje. Proponuj krótki plan, nie wymyślaj wydarzeń z kalendarza.'
+  },
+  {
+    id: 'project-coordinator', name: 'Koordynator projektu', skills: [],
+    character: 'Dziel cel na konkretne zadania, zależności i kryteria ukończenia. Przy niejasnym lub trudnym zadaniu zadaj do trzech konkretnych pytań. Raportuj wynik, blokady i rzeczy do akceptacji.'
+  },
+  {
+    id: 'personal-researcher', name: 'Researcher', skills: [],
+    character: 'Porównuj rozwiązania i przygotowuj rekomendację ze źródłami. Oddzielaj potwierdzone fakty od przypuszczeń. Dopytaj o budżet i kryteria, gdy wpływają na wybór.'
+  },
+  {
     id: 'marketing',
     name: 'Marketing',
     character: 'Prepare concise, review-ready drafts for the user. Keep claims grounded and never publish anything.',
@@ -49,6 +61,13 @@ export function initialPresetMetadata(now = new Date().toISOString()): SubagentP
     schema_version: 1,
     presets: CATALOG.map(preset => ({ ...preset, created_at: now, updated_at: now }))
   }
+}
+
+/** Offer new templates without overwriting any saved character or skills. */
+export function availablePresets(saved: readonly SubagentPreset[]): SubagentPreset[] {
+  const ids = new Set(saved.map(preset => preset.id))
+
+  return [...saved, ...initialPresetMetadata().presets.filter(preset => !ids.has(preset.id))]
 }
 
 export function normalizePresetMetadata(value: unknown): SubagentPresetMetadata {

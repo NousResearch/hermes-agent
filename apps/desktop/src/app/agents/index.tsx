@@ -29,7 +29,7 @@ import { Panel, PanelEmpty, PanelHeader } from '../overlays/panel'
 import { PresetEditor } from './preset-editor'
 import { PresetList } from './preset-list'
 import { loadPresetSnapshot, type PresetOwner, type PresetSnapshot, PresetStoreError, savePresetMetadata } from './preset-store'
-import { initialPresetMetadata, type SubagentPreset } from './presets'
+import { availablePresets, type SubagentPreset } from './presets'
 
 // Mirrors statusGlyph() in tool-fallback.tsx so subagent rows speak the
 // same visual vocabulary as the chat tool blocks.
@@ -115,7 +115,7 @@ export function AgentsView({ onClose }: AgentsViewProps) {
 
   const persistPreset = async (preset: SubagentPreset) => {
     if (!presetSnapshot || !presetSnapshot.supports_cas) {return}
-    const base = presetSnapshot.metadata.presets.length ? presetSnapshot.metadata.presets : initialPresetMetadata(preset.created_at).presets
+    const base = availablePresets(presetSnapshot.metadata.presets)
     const metadata = { schema_version: 1 as const, presets: [...base.filter(item => item.id !== preset.id), preset] }
 
     try {
@@ -131,13 +131,13 @@ export function AgentsView({ onClose }: AgentsViewProps) {
   return (
     <Panel closeLabel={t.agents.close} onClose={onClose}>
       <div className="grid min-h-0 gap-6 overflow-y-auto">
-          <section className="grid gap-2"><h2 className="text-sm font-semibold">Running</h2>{tree.length === 0 ? <PanelEmpty description={t.agents.emptyDesc} icon="hubot" title={t.agents.emptyTitle} /> : <><PanelHeader subtitle={t.agents.subtitle} title={t.agents.title} /><SubagentTree tree={tree} /></>}</section>
+          <section className="grid gap-2"><h2 className="text-sm font-semibold">Praca agentów</h2>{tree.length === 0 ? <PanelEmpty description={t.agents.emptyDesc} icon="hubot" title={t.agents.emptyTitle} /> : <><PanelHeader subtitle={t.agents.subtitle} title={t.agents.title} /><SubagentTree tree={tree} /></>}</section>
         <section className="grid gap-3 border-t border-border/60 pt-4">
-          <div><h1 className="text-base font-semibold">Subagent presets</h1><p className="text-xs text-muted-foreground">Characters and skills apply only when the next task is submitted.</p></div>
+          <div><h1 className="text-base font-semibold">Gotowe role asystenta</h1><p className="text-xs text-muted-foreground">Wybierz rolę i wpisz zadanie. Czesiek koordynuje, subagent wykonuje. Zmiany dotyczą nowego zadania.</p></div>
           {presetError ? <p className="text-xs text-destructive" role="alert">{presetError}</p> : null}
           {presetSnapshot && !presetSnapshot.supports_cas ? <p className="text-xs text-muted-foreground">This backend cannot safely persist presets yet.</p> : null}
-          {editing !== undefined ? <PresetEditor onCancel={() => setEditing(undefined)} onSave={preset => void persistPreset(preset)} preset={editing} /> : presetSnapshot ? <PresetList onEdit={preset => setEditing(preset)} owner={owner} presets={presetSnapshot.metadata.presets.length ? presetSnapshot.metadata.presets : initialPresetMetadata().presets} skills={skills} /> : <p className="text-xs text-muted-foreground">Loading presets…</p>}
-          {presetSnapshot && presetSnapshot.supports_cas && editing === undefined ? <button className="justify-self-start text-xs text-muted-foreground underline underline-offset-4" onClick={() => setEditing(null)} type="button">Create a preset</button> : null}
+          {editing !== undefined ? <PresetEditor onCancel={() => setEditing(undefined)} onSave={preset => void persistPreset(preset)} preset={editing} /> : presetSnapshot ? <PresetList onEdit={preset => setEditing(preset)} owner={owner} presets={availablePresets(presetSnapshot.metadata.presets)} skills={skills} /> : <p className="text-xs text-muted-foreground">Wczytywanie ról…</p>}
+          {presetSnapshot && presetSnapshot.supports_cas && editing === undefined ? <button className="justify-self-start text-xs text-muted-foreground underline underline-offset-4" onClick={() => setEditing(null)} type="button">Utwórz własną rolę</button> : null}
         </section>
       </div>
     </Panel>

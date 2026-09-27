@@ -725,7 +725,7 @@ test('resolveProfileApiRequest uses exact method and path eligibility for mixed 
     resolveProfileApiRequest('iris', '/api/skills', {
       requestMethod: 'POST'
     }),
-    { backendProfile: 'iris', requestPath: '/api/skills' }
+    { backendProfile: null, requestPath: '/api/skills?profile=iris' }
   )
   assert.deepEqual(
     resolveProfileApiRequest('iris', '/api/config/defaults', {

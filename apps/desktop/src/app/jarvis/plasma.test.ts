@@ -17,6 +17,10 @@ const TASKS: JarvisTaskPhase[] = [
 ]
 
 describe('plasmaTone', () => {
+  it('distinguishes planning from execution while preserving voice priority', () => {
+    expect(plasmaTone('idle', 'planning')).not.toBe(plasmaTone('idle', 'running'))
+    expect(plasmaTone('speaking', 'planning')).toBe(plasmaTone('speaking', 'running'))
+  })
   it('keeps an intermediate colour in each tone and darkens every ramp stop on light surfaces', () => {
     for (const tone of ['idle', 'listening', 'working', 'speaking', 'approval', 'success', 'error'] as const) {
       const dark = plasmaPalette(tone)

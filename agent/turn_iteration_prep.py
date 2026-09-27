@@ -45,6 +45,67 @@ ITERATION_BUDGET_WARNING_TEMPLATE = (
 )
 
 
+ITERATION_GOVERNOR_SOFT_NOTICE = (
+    "[SYSTEM NOTICE — tool-iteration budget at 50%] Reassess remaining work now. "
+    "Stop low-value discovery, batch independent tool calls, and preserve budget for verification."
+)
+ITERATION_GOVERNOR_CHECKPOINT_NOTICE = (
+    "[SYSTEM NOTICE — tool-iteration budget at 75%] Checkpoint posture is mandatory. "
+    "Finish required work, verify deliverables, and prepare the best complete response."
+)
+
+
+def _append_iteration_notice(messages: Any, notice: str) -> bool:
+    """Append ``notice`` to the newest tool result, or return False without touching anything.
+
+    Only the CURRENT tool-result tail is mutable: an already-persisted row (``_DB_PERSISTED_MARKER``)
+    may sit inside a cached prompt prefix, and rewriting it would both break the cache and make the
+    replayed transcript diverge from what was actually sent. Appending in place (rather than adding
+    a synthetic user/system row) also keeps role alternation intact.
+    """
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+
+    if (not messages or messages[-1].get("role") != "tool"
+            or messages[-1].get(_DB_PERSISTED_MARKER)):
+        return False
+    message = messages[-1]
+    content = message.get("content", "")
+    if isinstance(content, str):
+        message["content"] = content + f"\n\n{notice}"
+    elif isinstance(content, list) or content is None:
+        message["content"] = [*(content or []), {"type": "text", "text": notice}]
+    else:
+        return False
+    return True
+
+
+def _maybe_inject_iteration_governor(agent: Any, messages: Any) -> bool:
+    """Emit one pacing notice at each of the 50% and 75% tool-iteration thresholds, once per turn.
+
+    Both flags reset in ``_PER_TURN_RESET_STATE``, so a long turn is paced exactly twice. Crossing
+    75% directly (a big jump, or a turn that starts mid-budget) marks the 50% notice consumed rather
+    than emitting both: the checkpoint notice already supersedes it. Only bounded budgets qualify —
+    an unbounded ``max_total`` has no meaningful percentage.
+    """
+    budget = getattr(agent, "iteration_budget", None)
+    maximum = getattr(budget, "max_total", 0)
+    used = getattr(budget, "used", 0)
+    if maximum <= 0 or maximum >= sys.maxsize or used < 0:
+        return False
+    if used >= 0.75 * maximum and not getattr(agent, "_iteration_governor_checkpoint_injected", False):
+        if not _append_iteration_notice(messages, ITERATION_GOVERNOR_CHECKPOINT_NOTICE):
+            return False
+        agent._iteration_governor_checkpoint_injected = True
+        agent._iteration_governor_soft_injected = True
+        return True
+    if used >= 0.5 * maximum and not getattr(agent, "_iteration_governor_soft_injected", False):
+        if not _append_iteration_notice(messages, ITERATION_GOVERNOR_SOFT_NOTICE):
+            return False
+        agent._iteration_governor_soft_injected = True
+        return True
+    return False
+
+
 def _maybe_inject_iteration_budget_warning(agent: Any, messages: Any) -> bool:
     """Append the opt-in one-shot warning to the newest tool result."""
     import os
@@ -83,17 +144,7 @@ def _maybe_inject_iteration_budget_warning(agent: Any, messages: Any) -> bool:
             "continue. A diff or commit alone is not completion evidence."
         )
     # Only the current tool-result tail is mutable; an older turn may already be cached.
-    from agent.context_compressor import _DB_PERSISTED_MARKER
-    if (not messages or messages[-1].get("role") != "tool"
-            or messages[-1].get(_DB_PERSISTED_MARKER)):
-        return False
-    message = messages[-1]
-    content = message.get("content", "")
-    if isinstance(content, str):
-        message["content"] = content + f"\n\n{notice}"
-    elif isinstance(content, list) or content is None:
-        message["content"] = [*(content or []), {"type": "text", "text": notice}]
-    else:
+    if not _append_iteration_notice(messages, notice):
         return False
     agent._iteration_budget_warning_injected = True
     return True
@@ -160,6 +211,7 @@ def prepare_iteration(
         _maybe_inject_run_budget_wrapup(agent, messages)
 
     # Appended to the newest tool result; never a synthetic user/system row.
+    _maybe_inject_iteration_governor(agent, messages)
     _maybe_inject_iteration_budget_warning(agent, messages)
 
     request_logger = getattr(agent, "logger", None) or logger  # same name as the origin module

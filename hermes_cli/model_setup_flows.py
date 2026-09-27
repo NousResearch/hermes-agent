@@ -113,14 +113,14 @@ def _model_flow_moa(config, current_model=""):
 
     names = list(presets.keys())
     default_name = moa.get("default_preset") or names[0]
-    # Rows show the aggregator so the picker is informative before drilling in.
+    # Rows show the aggregator as the acting/billed model so the picker is informative before drilling in.
     rows = []
     for n in names:
         agg = presets[n].get("aggregator") or {}
         agg_label = f"{agg.get('provider')}:{agg.get('model')}" if agg else ""
         ref_count = len(presets[n].get("reference_models") or [])
         suffix = "  ← default" if n == default_name else ""
-        rows.append(f"{n}  (agg {agg_label}, {ref_count} refs){suffix}")
+        rows.append(f"{n}  (acting: {agg_label}, {ref_count} refs){suffix}")
     default_idx = names.index(default_name) if default_name in names else 0
 
     title = "Select a Mixture of Agents preset:"
@@ -151,11 +151,18 @@ def _model_flow_moa(config, current_model=""):
     _save_model_choice(selected_name)
 
     preset = presets[selected_name]
-    _say("", f"Default model set to: {selected_name} (via Mixture of Agents)", f"  Preset: {selected_name}", "  Reference models:")
+    _say(
+        "",
+        f"Default model set to: {selected_name} (via Mixture of Agents)",
+        f"  Preset: {selected_name}",
+        "  Reference models (advise once per user turn):",
+    )
     for i, slot in enumerate(preset.get("reference_models") or [], start=1):
         print(f"    {i}. {slot.get('provider')}:{slot.get('model')}")
     agg = preset.get("aggregator") or {}
-    print(f"  Aggregator:  {agg.get('provider')}:{agg.get('model')}")
+    print(
+        f"  Aggregator:  {agg.get('provider')}:{agg.get('model')}  (acting model — runs every step and carries almost all of the cost)"
+    )
 
 
 def _nous_login_args(args) -> argparse.Namespace:
@@ -367,19 +374,23 @@ def _model_flow_openai_codex(config, current_model=""):
 
     # Prefer the credential pool (where `hermes auth` stores device_code tokens),
     # fall back to legacy provider state.
-    _codex_token = None
+    # Token and route base travel together (#121486): a pooled gateway key must never be sent to
+    # the chatgpt.com default by the catalog probe.
+    _codex_token = _codex_base = None
     with contextlib.suppress(Exception):
         _codex_status = get_codex_auth_status()
-        _codex_token = _codex_status.get("api_key") if _codex_status.get("logged_in") else None
+        if _codex_status.get("logged_in"):
+            _codex_token, _codex_base = _codex_status.get("api_key"), _codex_status.get("base_url")
     if not _codex_token:
         with contextlib.suppress(Exception):
             from hermes_cli.auth import resolve_codex_runtime_credentials
-            _codex_token = resolve_codex_runtime_credentials().get("api_key")
+            _creds = resolve_codex_runtime_credentials()
+            _codex_token, _codex_base = _creds.get("api_key"), _creds.get("base_url")
 
-    codex_models = get_codex_model_ids(access_token=_codex_token)
+    codex_models = get_codex_model_ids(access_token=_codex_token, base_url=_codex_base)
     selected = _prompt_model_selection(
         codex_models, current_model=current_model, confirm_provider="openai-codex",
-        confirm_base_url=DEFAULT_CODEX_BASE_URL, confirm_api_key=_codex_token or "")
+        confirm_base_url=_codex_base or DEFAULT_CODEX_BASE_URL, confirm_api_key=_codex_token or "")
     _activate_provider_model(selected, "openai-codex", DEFAULT_CODEX_BASE_URL,
                              f"Default model set to: {selected} (via OpenAI Codex)")
 
@@ -537,12 +548,11 @@ def _copilot_obtain_token() -> bool:
 
 
 def _model_flow_copilot(config, current_model=""):
-    """GitHub Copilot flow using env vars, gh CLI, or OAuth device code."""
-    from hermes_cli.main_provider_setup import _prompt_reasoning_effort_selection
-    from hermes_cli.setup import _current_reasoning_effort, _set_reasoning_effort
+    """GitHub Copilot flow using env vars, gh CLI, or OAuth device code. The reasoning-effort step
+    is the shared post-pick one in ``select_provider_and_model`` (Copilot's per-model level set
+    comes from ``github_model_reasoning_efforts`` there)."""
     from hermes_cli.auth import PROVIDER_REGISTRY, resolve_api_key_provider_credentials
-    from hermes_cli.config import load_config
-    from hermes_cli.models import fetch_api_models, github_model_reasoning_efforts, copilot_model_api_mode
+    from hermes_cli.models import fetch_api_models, copilot_model_api_mode
     provider_id = "copilot"
     pconfig = PROVIDER_REGISTRY[provider_id]
     creds = resolve_api_key_provider_credentials(provider_id)
@@ -572,25 +582,9 @@ def _model_flow_copilot(config, current_model=""):
         print("No change.")
         return
     selected = _normalize(selected)
-    current_effort = _current_reasoning_effort(load_config())
-    reasoning_efforts = github_model_reasoning_efforts(selected, catalog=catalog, api_key=api_key)
-    selected_effort = None
-    if reasoning_efforts:
-        print(f"  {selected} supports reasoning controls.")
-        selected_effort = _prompt_reasoning_effort_selection(reasoning_efforts, current_effort=current_effort)
-
-    def _finish(cfg, _model):
-        if selected_effort is not None:
-            _set_reasoning_effort(cfg, selected_effort)
-
     _persist_model(selected, provider_id, base_url=effective_base,
-                   api_mode=copilot_model_api_mode(selected, catalog=catalog, api_key=api_key), finish=_finish)
+                   api_mode=copilot_model_api_mode(selected, catalog=catalog, api_key=api_key))
     print(f"Default model set to: {selected} (via {pconfig.name})")
-    if reasoning_efforts:
-        if selected_effort == "none":
-            print("Reasoning disabled for this model.")
-        elif selected_effort:
-            print(f"Reasoning effort set to: {selected_effort}")
 
 
 def _model_flow_copilot_acp(config, current_model=""):
@@ -853,14 +847,6 @@ def _ollama_cloud_models(pconfig, curated, api_key, base_url):
     return model_list
 
 
-def _opencode_free_models(pconfig, curated, api_key, base_url):
-    """Keyless tier: the curated list is synced against anonymous live probes (models.dev's
-    cost.input==0 filter lags reality)."""
-    if curated:
-        print(f'  Showing {len(curated)} keyless free models — use "Enter custom model name" for others.')
-    return curated
-
-
 def _novita_models(pconfig, curated, api_key, base_url):
     """Novita: live first, then models.dev, then curated."""
     from hermes_cli.models import fetch_api_models
@@ -880,16 +866,17 @@ def _novita_models(pconfig, curated, api_key, base_url):
 _SPECIAL_MODEL_LISTS = {
     "lmstudio": _lmstudio_models,
     "ollama-cloud": _ollama_cloud_models,
-    "opencode-free": _opencode_free_models,
     "novita": _novita_models}
 
 
 def _api_key_provider_model_list(provider_id: str, pconfig, existing_key: str, key_env: str, effective_base: str) -> list:
     """Model list for an API-key provider: models.dev registry (cached, agentic/tool-capable filter)
-    → curated static list (offline insurance) → live /models probe (small providers without
-    models.dev data). Providers in ``_SPECIAL_MODEL_LISTS`` have their own resolution."""
+    → curated static list (offline insurance) → provider-owned catalog (``ProviderProfile.fetch_models``
+    merged with ``fallback_models`` exactly like the ``/model`` picker's
+    ``models._profile_live_catalog``; generic /models probe for unregistered providers).
+    Providers in ``_SPECIAL_MODEL_LISTS`` have their own resolution."""
     from hermes_cli.config import get_env_value
-    from hermes_cli.models import _PROVIDER_MODELS, fetch_api_models
+    from hermes_cli.models import _PROVIDER_MODELS, fetch_api_models, probe_profile_catalog
     curated = _PROVIDER_MODELS.get(provider_id, [])
     api_key_for_probe = existing_key or (get_env_value(key_env) if key_env else "")
 
@@ -906,6 +893,18 @@ def _api_key_provider_model_list(provider_id: str, pconfig, existing_key: str, k
         # Substantial curated list — use it directly, skip live probe
         _show_curated(curated)
         return curated
+    from providers import get_provider_profile
+    profile = get_provider_profile(provider_id)
+    if profile is not None:
+        # The profile owns endpoint (models_url), headers and response shape. Same probe as the
+        # ``/model`` picker; when neither live nor fallback_models yields rows, the curated
+        # ``_PROVIDER_MODELS`` row still applies (built-in providers with a short curated list).
+        model_list = probe_profile_catalog(provider_id, profile, api_key_for_probe, effective_base)
+        if model_list:
+            _report_live_models(model_list, f"{pconfig.name} catalog")
+            return model_list
+        _show_curated(curated)
+        return list(curated)
     live_models = fetch_api_models(api_key_for_probe, effective_base)
     if live_models and len(live_models) >= len(curated):
         _report_live_models(live_models, f"{pconfig.name} API")
@@ -922,17 +921,11 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
     pconfig = PROVIDER_REGISTRY[provider_id]
     key_env = pconfig.api_key_env_vars[0] if pconfig.api_key_env_vars else ""
     base_url_env = pconfig.base_url_env_var or ""
-    is_opencode = provider_id in {"opencode-zen", "opencode-go", "opencode-free"}
+    is_opencode = provider_id in {"opencode-zen", "opencode-go"}
 
-    # OpenCode Free is keyless — the tier is served anonymously and any unrecognized
-    # bearer 401s, so there is no key to prompt for.
-    if provider_id == "opencode-free":
-        print("  OpenCode Free is keyless — no API key or account needed.")
-        existing_key = ""
-    else:
-        _, existing_key, abort = _ensure_flow_api_key(provider_id, pconfig)
-        if abort:
-            return
+    _, existing_key, abort = _ensure_flow_api_key(provider_id, pconfig)
+    if abort:
+        return
     if provider_id == "gemini" and existing_key and not _gemini_tier_ok(existing_key, pconfig, base_url_env):
         return
 
@@ -1069,6 +1062,125 @@ def _model_flow_anthropic(config, current_model=""):
     # Clear base_url: resolve_runtime_provider() always hardcodes Anthropic's URL, and a
     # stale value can contaminate other providers on a later switch.
     _finish_model(selected, "anthropic", f"Default model set to: {selected} (via Anthropic)", drop_base_url=True, drop_api_mode=True)
+
+
+# ── Generic flow for plugin providers without a bespoke `_model_flow_*` ────────────────────────────
+# The credential step is keyed by the profile's auth_type: each returns ``(base_url, api_key)`` or
+# None when the picker must stop (the helper already printed why). ``api_key`` providers keep
+# ``_model_flow_api_key_provider``; ``hermes_cli.main`` routes every registered profile missing
+# from ``_PROVIDER_MODEL_FLOWS`` here, so an admitted plugin is never a silent no-op.
+
+def _external_process_login_gate(profile, status) -> bool:
+    """Logged in → say so (with plan). Logged out → run the CLI's own login on a TTY (it is
+    browser/device based, so it must own the terminal), else print the instruction and stop."""
+    import shlex
+    import subprocess
+    import sys
+
+    if status["logged_in"]:
+        plan = f" ({status['plan']})" if status.get("plan") else ""
+        _say(f"  {profile.display_name} credentials: ✓{plan}", "")
+        return True
+    login = status.get("login_command")
+    if not login or not sys.stdin.isatty():
+        _say(f"  ✗ {status['detail']}")
+        return False
+    _say(f"  {status['detail'].split('.')[0]}.", f"  Starting `{shlex.join(login[-2:])}` (press Ctrl-C to cancel)...", "")
+    try:
+        subprocess.run(login, check=False)
+    except (KeyboardInterrupt, OSError):
+        print("Login cancelled or failed.")
+        return False
+    if not profile.setup_status()["logged_in"]:
+        print("Login failed.")
+        return False
+    _say("", f"  {profile.display_name} credentials: ✓", "")
+    return True
+
+
+def _plugin_flow_external_process(provider_id: str, profile) -> tuple[str, str] | None:
+    from hermes_cli.auth import get_external_process_provider_status, resolve_external_process_provider_credentials
+    status = get_external_process_provider_status(provider_id)
+    _say(f"  {profile.display_name or provider_id} delegates Hermes turns to a local `{status.get('command') or profile.process_command}` process.",
+         f"  Command: {status.get('resolved_command') or status.get('command') or '(not found)'}",
+         f"  Backend marker: {status.get('base_url') or profile.base_url}", "")
+    try:
+        creds = resolve_external_process_provider_credentials(provider_id)
+    except Exception as exc:
+        _say(f"  ⚠ {exc}")
+        return None
+    # A profile that can ask its CLI (``setup_status``) gates on login before anything is saved.
+    probe = profile.setup_status()
+    if probe is not None:
+        if not probe["available"]:
+            _say(f"  ✗ {probe['detail']}")
+            return None
+        if not _external_process_login_gate(profile, probe):
+            return None
+    return str(creds.get("base_url") or profile.base_url or ""), ""
+
+
+def _plugin_flow_oauth(provider_id: str, profile) -> tuple[str, str] | None:
+    from hermes_cli.auth import get_auth_status
+    from hermes_cli.auth_plugin_providers import plugin_missing_auth_handler_error
+    status = get_auth_status(provider_id)
+    if not status.get("logged_in"):
+        missing = plugin_missing_auth_handler_error(provider_id, "add")
+        _say(f"  ⚠ Not signed in to {profile.display_name or provider_id}.",
+             f"  {missing.code if missing else status.get('hint') or f'Run `hermes auth add {provider_id}` to sign in.'}")
+        return None
+    from agent.credential_pool import load_pool
+    entry = load_pool(provider_id).select()
+    base_url = (entry.runtime_base_url if entry else "") or status.get("base_url") or profile.base_url or ""
+    return str(base_url), (entry.runtime_api_key if entry else "") or ""
+
+
+_PLUGIN_FLOW_CREDENTIALS = {
+    "external_process": _plugin_flow_external_process,
+    "oauth_device_code": _plugin_flow_oauth,
+    "oauth_external": _plugin_flow_oauth,
+}
+
+
+def _is_profile_plugin_flow_provider(provider_id: str) -> bool:
+    """True when *provider_id* is a registered profile whose auth_type the generic plugin flow handles."""
+    from hermes_cli.auth_plugin_providers import plugin_profile
+    profile = plugin_profile(provider_id)
+    return profile is not None and profile.auth_type in _PLUGIN_FLOW_CREDENTIALS
+
+
+def _plugin_flow_live_rows(profile, api_key: str, base_url: str) -> tuple[list[str] | None, dict[str, str]]:
+    """``(live ids, {id: note})``. ``discover_models()`` (the account's own annotated picker, e.g.
+    ``usage credits``) wins when the profile implements it; otherwise the plain ``fetch_models()``."""
+    with contextlib.suppress(Exception):
+        rows = profile.discover_models()
+        if rows:
+            _say(f"  Models below come from your {profile.display_name or profile.name} account.", "")
+            return [r["id"] for r in rows], {r["id"]: r["note"] for r in rows if r.get("note")}
+    live = None
+    with contextlib.suppress(Exception):
+        live = profile.fetch_models(api_key=api_key or None, base_url=base_url or None)
+    return live, {}
+
+
+def _model_flow_plugin_provider(config, provider_id, current_model=""):
+    """Generic ``hermes model`` flow for a registered plugin profile: credential step by auth_type,
+    catalog via ``merge_profile_catalog`` (live ``fetch_models()`` ⊕ ``fallback_models``), persist."""
+    from hermes_cli.auth_plugin_providers import plugin_profile
+    from hermes_cli.models import merge_profile_catalog
+    del config
+    profile = plugin_profile(provider_id)
+    creds = _PLUGIN_FLOW_CREDENTIALS[profile.auth_type](provider_id, profile)
+    if creds is None:
+        return
+    base_url, api_key = creds
+    live, notes = _plugin_flow_live_rows(profile, api_key, base_url)
+    model_list = merge_profile_catalog(provider_id, profile, live) or []
+    selected = _pick_model_or_prompt(
+        model_list, "Model name: ", current_model=current_model, confirm_provider=provider_id,
+        confirm_base_url=base_url, confirm_api_key=api_key, notes=notes)
+    _finish_model(selected, provider_id, f"Default model set to: {selected} (via {profile.display_name or provider_id})",
+                  base_url=base_url or None, api_mode=profile.api_mode or None)
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

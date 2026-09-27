@@ -34,6 +34,28 @@ _TRANSIENT_SQLITE_MARKERS = (
 )
 
 
+# Lock contention by result code. SQLite keeps SQLITE_BUSY when FTS5's xConnect loses the race
+# on its %_config read but replaces the text with "vtable constructor failed: messages_fts",
+# so a phrase match read a busy store as a hard failure.
+_SQLITE_LOCK_CODES = (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED)
+
+
+def _sqlite_primary_code(exc_or_str) -> "int | None":
+    """Primary result code (extended codes keep it in the low byte); None when unknown."""
+    code = getattr(exc_or_str, "sqlite_errorcode", None)
+    return code & 0xFF if isinstance(code, int) else None
+
+
+def is_sqlite_lock_error(exc_or_str) -> bool:
+    """SQLITE_BUSY / SQLITE_LOCKED: wait and retry, never treat as damage. A known result code
+    decides; only without one (our own re-raised messages, RPC-wrapped strings) does the text."""
+    code = _sqlite_primary_code(exc_or_str)
+    if code is not None:
+        return code in _SQLITE_LOCK_CODES
+    text = str(exc_or_str).lower()
+    return "locked" in text or "busy" in text
+
+
 def _is_no_more_rows(exc: sqlite3.Error) -> bool:
     """Transient engine error on contended WAL appends (retries like locked/busy);
     message-scoped because some builds raise it as InterfaceError."""
@@ -43,8 +65,8 @@ def _is_no_more_rows(exc: sqlite3.Error) -> bool:
 def is_transient_sqlite_error(exc: BaseException) -> bool:
     """"Busy right now", not "damaged": one predicate so retry and the HTTP
     503-vs-500 split cannot drift apart."""
-    return isinstance(exc, sqlite3.OperationalError) and any(
-        marker in str(exc).lower() for marker in _TRANSIENT_SQLITE_MARKERS
+    return isinstance(exc, sqlite3.OperationalError) and (
+        is_sqlite_lock_error(exc) or any(marker in str(exc).lower() for marker in _TRANSIENT_SQLITE_MARKERS)
     )
 
 
@@ -76,7 +98,7 @@ def is_disk_full_error(exc: BaseException | str | None) -> bool:
 # Every classify_persistence_error bucket; consumers enumerate this tuple.
 PERSISTENCE_ERROR_CAUSES = (
     "locked", "compression", "compression_closed", "turn_lease", "corrupt", "fts_index",
-    "replaced", "deleted_wal", "disk", "unknown",
+    "replaced", "deleted_wal", "disk", "session_row_missing", "unknown",
 )
 
 
@@ -173,12 +195,20 @@ _STATE_DB_REPLACED_MSG = (
     "writes to this file. Divert transcripts to sessions/<id>.jsonl (and the "
     "gateway pending_messages spool) and restore or reopen after operator intervention."
 )
+STORAGE_RECOVERY_DOCS_URL = "https://hermes-agent.nousresearch.com/docs/user-guide/session-storage-recovery"
+
+# Two layers (#110054): the first sentence is for the person reading a chat bubble or a banner (what
+# happened, nothing is lost, the one thing to do); the rest is the operator detail. The phrase
+# "deleted state.db-wal or state.db-shm" is the classifier's RPC-wrapped fingerprint — keep it.
 _DELETED_WAL_GENERATION_MSG = (
-    "FATAL: a live process holds a deleted state.db-wal or state.db-shm "
-    "inode while the path names a different (or missing) generation. "
-    "Refusing to open or write so a second WAL cannot be minted. "
-    "Stop the gateway, dashboard, and cron writers that hold the deleted "
-    "sidecar, then reopen. Do not delete the WAL yourself. "
+    "FATAL: session storage stopped writing because another Hermes process still holds a deleted "
+    "state.db-wal or state.db-shm inode (an old copy of the write-ahead log). Nothing is lost: quit "
+    "every Hermes process on this profile (Desktop app, gateway, dashboard, cron), run `hermes doctor` "
+    "(it names the processes still holding the log), then start Hermes again. Do not delete the WAL "
+    "yourself and do not run `hermes doctor --fix` while they are running. "
+    f"Guide: {STORAGE_RECOVERY_DOCS_URL} "
+    "Detail: the path names a different (or missing) generation than the one this process holds "
+    "open; opening or writing through it would mint a second WAL (split-brain). "
     "database.journal_mode: delete is operator containment, not a new default."
 )
 
@@ -230,6 +260,8 @@ _PERSISTENCE_CAUSE_BY_PHRASE = (
     (("was replaced underneath",), "replaced"),
     (_DB_CORRUPTION_MARKERS, "corrupt"),
     (("locked", "busy"), "locked"),
+    # A flush rejected by the session-row FK: the row was removed under a live agent (#123583).
+    (("foreign key constraint failed",), "session_row_missing"),
 )
 
 
@@ -241,7 +273,8 @@ def classify_persistence_error(exc_or_str) -> str:
     file damage (repair path, not disk space); "fts_index" = SQLite scoped the
     corruption to the FTS index (the transcript store is not damaged); "replaced" =
     main-file replacement; "deleted_wal" = a retired sidecar generation requiring
-    capture inspection."""
+    capture inspection; "session_row_missing" = the session row was deleted under a
+    live agent (FK rejection; the flush recreates it)."""
     if exc_or_str is None:
         return "unknown"
     # Lease refusals contain neither "locked" nor "busy": match by type first,
@@ -255,6 +288,10 @@ def classify_persistence_error(exc_or_str) -> str:
     # naming messages_fts*) is index damage, never whole-file corruption (#97794).
     if is_fts_scoped_corruption_error(exc_or_str):
         return "fts_index"
+    if _sqlite_primary_code(exc_or_str) in _SQLITE_LOCK_CODES:
+        return "locked"
+    if getattr(exc_or_str, "sqlite_errorcode", None) == sqlite3.SQLITE_CONSTRAINT_FOREIGNKEY:
+        return "session_row_missing"
     text = str(exc_or_str).lower()
     for markers, cause in _PERSISTENCE_CAUSE_BY_PHRASE:
         if any(marker in text for marker in markers):

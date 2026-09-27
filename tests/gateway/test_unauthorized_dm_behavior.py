@@ -1,3 +1,4 @@
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -413,3 +414,75 @@ def test_qqbot_with_allowlist_ignores_unauthorized_dm(monkeypatch):
 
     behavior = runner._get_unauthorized_dm_behavior(Platform.QQBOT)
     assert behavior == "ignore"
+
+
+# ---------------------------------------------------------------------------
+# "decline" behavior: one-time polite decline instead of a pairing code (#88028)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_unauthorized_dm_decline_sends_once_then_stays_silent(monkeypatch):
+    """First DM: stamp recorded BEFORE the send, custom text delivered, no pairing code. A sender
+    with a recent stamp gets nothing."""
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(
+        platforms={Platform.WHATSAPP: PlatformConfig(enabled=True, extra={"unauthorized_dm_behavior": "decline"})},
+    )
+    config.unauthorized_dm_decline_message = "Sorry, this assistant is private."
+    runner, adapter = _make_runner(Platform.WHATSAPP, config)
+    jid = "15551234567@s.whatsapp.net"
+    runner.pairing_store.has_recent_decline.return_value = False
+
+    assert await runner._handle_message(_make_event(Platform.WHATSAPP, jid, jid)) is None
+
+    runner.pairing_store.generate_code.assert_not_called()
+    runner.pairing_store.record_decline.assert_called_once_with("whatsapp", jid)
+    adapter.send.assert_awaited_once_with(jid, "Sorry, this assistant is private.")
+
+    runner.pairing_store.has_recent_decline.return_value = True
+    adapter.send.reset_mock()
+    runner.pairing_store.record_decline.reset_mock()
+
+    assert await runner._handle_message(_make_event(Platform.WHATSAPP, jid, jid)) is None
+
+    runner.pairing_store.record_decline.assert_not_called()
+    adapter.send.assert_not_awaited()
+
+
+def test_decline_config_and_stamp_roundtrip(monkeypatch, tmp_path):
+    """The real startup path (config.yaml -> load_gateway_config) keeps 'decline' (case-insensitive)
+    at top level and as a platform override, and carries the custom text; a real PairingStore
+    persists the stamp, scopes it per sender, and expires it after the window."""
+    from unittest.mock import patch as _patch
+
+    import gateway.pairing as pairing_mod
+    from gateway.config import load_gateway_config
+
+    _clear_auth_env(monkeypatch)
+    (tmp_path / "config.yaml").write_text(
+        "unauthorized_dm_behavior: DECLINE\n"
+        "unauthorized_dm_decline_message: '  custom text  '\n"
+        "platforms:\n"
+        "  telegram:\n"
+        "    unauthorized_dm_behavior: pair\n"
+        "  whatsapp:\n"
+        "    unauthorized_dm_behavior: decline\n",
+        encoding="utf-8",
+    )
+    with _patch("gateway.config.get_hermes_home", return_value=tmp_path):
+        config = load_gateway_config()
+    assert config.unauthorized_dm_behavior == "decline"
+    assert config.unauthorized_dm_decline_message == "custom text"
+    assert config.get_unauthorized_dm_behavior(Platform.TELEGRAM) == "pair"
+    assert config.get_unauthorized_dm_behavior(Platform.WHATSAPP) == "decline"
+    assert config.get_unauthorized_dm_behavior(Platform.DISCORD) == "decline"
+    assert GatewayConfig.from_dict(config.to_dict()).unauthorized_dm_decline_message == "custom text"
+
+    with _patch("gateway.pairing.PAIRING_DIR", tmp_path):
+        store = pairing_mod.PairingStore()
+        assert store.has_recent_decline("telegram", "12345") is False
+        store.record_decline("telegram", "12345")
+        assert store.has_recent_decline("telegram", "12345") is True
+        assert store.has_recent_decline("telegram", "67890") is False
+        with _patch("gateway.pairing.time.time", return_value=time.time() + pairing_mod.DECLINE_DEDUPE_SECONDS + 1):
+            assert store.has_recent_decline("telegram", "12345") is False

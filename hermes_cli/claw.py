@@ -1,5 +1,6 @@
 """hermes claw — OpenClaw migration commands."""
 
+import contextlib
 import importlib.util
 import itertools
 import logging
@@ -26,6 +27,8 @@ _OPENCLAW_SCRIPT_INSTALLED = get_hermes_home() / "skills" / _SCRIPT_REL
 
 # Known OpenClaw directory names (current + legacy)
 _OPENCLAW_DIR_NAMES = (".openclaw", ".clawdbot", ".moltbot")
+# pgrep -f ERE anchored on a node interpreter as argv[0] (``node /usr/local/bin/openclaw gateway``).
+_OPENCLAW_NODE_CMDLINE_RE = r"^(\S*/)?node(js)?\s.*(openclaw|clawd)"
 
 # `hermes claw migrate` flags/defaults. Secrets are never included implicitly: --migrate-secrets
 # is required even under --preset full (OpenClaw's two-phase posture); no silent API-key import.
@@ -54,7 +57,7 @@ def _print_banner(title: str) -> None:
     """Print the magenta boxed banner shared by the claw subcommands."""
     print()
     rule = "─" * 57
-    for line in (f"┌{rule}┐", f"│          ⚕ Hermes — {title:<35s}│", f"└{rule}┘"):
+    for line in (f"┌{rule}┐", f"│          ☤ Hermes — {title:<35s}│", f"└{rule}┘"):
         print(color(line, Colors.MAGENTA))
 
 
@@ -124,9 +127,19 @@ def _detect_openclaw_processes() -> list[str]:
     result = _posix_probe(["systemctl", "--user", "is-active", "openclaw-gateway.service"], 5)
     if result is not None and result.stdout.strip() == "active":
         found.append("systemd service: openclaw-gateway.service")
-    result = _posix_probe(["pgrep", "-f", "openclaw"], 3)
-    if result is not None and result.returncode == 0:
-        found.append(f"openclaw process(es) (PIDs: {', '.join(result.stdout.strip().split())})")
+    # Never a bare ``pgrep -f openclaw``: it matches ANY argv containing the word (an editor on
+    # ~/.openclaw/config.json, ``tail -f openclaw.log``) and aborted cleanup on idle hosts (#12648).
+    # Mirror the Windows branch: exact binary names, plus node processes whose script mentions it.
+    pids: list[str] = []
+    # ``-x`` matches the 15-char comm: the gateway sets process.title="openclaw-gateway", which
+    # the kernel truncates to "openclaw-gatewa".
+    for probe in (["pgrep", "-x", "openclaw"], ["pgrep", "-x", "openclaw-gatewa"], ["pgrep", "-x", "clawd"],
+                  ["pgrep", "-f", _OPENCLAW_NODE_CMDLINE_RE]):
+        result = _posix_probe(probe, 3)
+        if result is not None and result.returncode == 0:
+            pids.extend(result.stdout.split())
+    if pids:
+        found.append(f"openclaw process(es) (PIDs: {', '.join(dict.fromkeys(pids))})")
     return found
 
 
@@ -154,9 +167,27 @@ def _warn_if_openclaw_running(auto_yes: bool) -> None:
 
 
 def _warn_if_gateway_running(auto_yes: bool) -> None:
-    """Warn if a Hermes gateway has connected platforms (token conflicts, e.g. Telegram 409)."""
-    from gateway.status import get_running_pid, read_runtime_status
-    platforms = ((read_runtime_status() or {}).get("platforms") or {}) if get_running_pid() else {}
+    """Warn if the HOST gateway has connected platforms for this profile (token conflicts, e.g.
+    Telegram 409).
+
+    Multiplex-only: one host process serves N profiles, so a SERVED profile owns no ``gateway.pid``.
+    Gating on ``get_running_pid()`` made this destructive-action warning silently vanish for exactly
+    those profiles — the liveness ladder answers for the served case too.
+    """
+    from gateway.status import (
+        profile_platforms_from_multiplexer, read_runtime_status, resolve_gateway_liveness)
+    liveness = resolve_gateway_liveness(use_cache=False)
+    platforms: dict = {}
+    if liveness.running:
+        profile = None
+        with contextlib.suppress(Exception):
+            from hermes_cli.profiles import get_active_profile_name
+            profile = get_active_profile_name()
+        if liveness.source == "multiplexer" and profile and profile != "default":
+            # Served profile: its platforms live under `<profile>:<platform>` in the host record.
+            platforms = profile_platforms_from_multiplexer(liveness.runtime, profile)
+        else:
+            platforms = (liveness.runtime or read_runtime_status() or {}).get("platforms") or {}
     connected = [name for name, info in platforms.items()
                  if isinstance(info, dict) and info.get("state") == "connected"]
     if connected and _warn_running(
@@ -164,7 +195,7 @@ def _warn_if_gateway_running(auto_yes: bool) -> None:
         ("Migrating bot tokens while the gateway is active will cause "
          "conflicts (Telegram, Discord, and Slack only allow one active "
          "session per token).",
-         "Recommendation: stop the gateway first with 'hermes gateway stop'."),
+         "Recommendation: stop the host gateway first with 'hermes gateway stop'."),
         "Continue anyway?", declined="Migration cancelled. Stop the gateway and try again.",
     ) is False:
         sys.exit(0)

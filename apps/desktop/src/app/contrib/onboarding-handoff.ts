@@ -15,22 +15,22 @@ import {
   firstTaskTitle,
   guideSourceConnectionId,
   readGuideHandoffReceipt,
-  retrySetupHandoff,
-  SETUP_PROFILE
+  retrySetupHandoff
 } from '@/components/onboarding-chat/setup-profile'
-import { declinedLookAround, showProfileSignpost } from '@/components/onboarding-chat/signpost'
+import { showHandoffTour } from '@/components/onboarding-chat/signpost'
 import { findGroupOfPane } from '@/components/pane-shell/tree/model'
 import { $layoutTree, activateTreePane } from '@/components/pane-shell/tree/store'
 import { toChatMessages } from '@/lib/chat-messages'
+import { connectorTitle } from '@/lib/connector-tools'
 import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 import { requestGatewayForAgent } from '@/store/gateway'
 import { dismissNotification, notify } from '@/store/notifications'
 import { $onboardingAnswers } from '@/store/onboarding-answers'
 import { beginOnboardingHandoff, completeOnboardingFlow } from '@/store/onboarding-gate'
-import { $activeGatewayProfile, $newChatProfile, $newChatRoute, ensureGatewayAgent } from '@/store/profile'
+import { watchPluginOutcomes } from '@/store/onboarding-plugin-outcomes'
+import { $activeGatewayProfile, $newChatProfile, $newChatRoute, $profiles, ensureGatewayAgent } from '@/store/profile'
 import {
   $activeSessionId,
-  $messages,
   $selectedStoredSessionId,
   forgetSessionOwnerHintsForSession,
   setActiveSessionId,
@@ -50,8 +50,8 @@ export interface OnboardingHandoffOptions extends Pick<
 > {
   createBackendSessionForSend: ReturnType<typeof useSessionActions>['createBackendSessionForSend']
   requestGateway: AmbientGatewayRequest
-  /** Pin creation to the target profile while the guide remains selected;
-   * the caller's own requestGateway is what reads the pin. */
+  /** Pins session creation to the target profile while the guide chat is still selected.
+   * The caller's own requestGateway reads the pin. */
   runCreatePinnedTo: <T>(profile: string, create: () => Promise<T>) => Promise<T>
 }
 
@@ -63,19 +63,23 @@ export function useOnboardingHandoff({
   requestGateway,
   runCreatePinnedTo
 }: OnboardingHandoffOptions) {
-  // The receipt survives failure and relaunch; only a confirmed go signal
-  // completes onboarding. Never fall back to building in the guide chat.
+  // The saved receipt survives a failed handoff and a relaunch. Onboarding completes only after the build
+  // session confirms its start.
   const setupHandoff = useStore($setupHandoff)
   const selectedStoredId = useStore($selectedStoredSessionId)
 
-  // Resume only an EXISTING receipt when the welcome chat is reopened after
-  // relaunch. Replayed directives stay inert; recovery never mints a new build.
+  // The guide's install card settles before its handoff card; its per-plugin result rides the answers into the
+  // build session's runbook.
+  useEffect(() => watchPluginOutcomes(() => $setupSession.get()?.runtimeId), [])
+
+  // Resume an existing receipt when the welcome chat is reopened after a relaunch. Recovery reads the saved
+  // receipt only; it never creates a new build session.
   useEffect(() => {
     if (
       !isOnboardingEnabled() ||
       $setupHandoff.get() ||
       !selectedStoredId ||
-      $activeGatewayProfile.get() !== SETUP_PROFILE
+      $profiles.get().find(p => p.name === $activeGatewayProfile.get())?.role !== 'setup'
     ) {
       return
     }
@@ -104,7 +108,7 @@ export function useOnboardingHandoff({
 
       $setupSession.set({
         connectionId,
-        profile: SETUP_PROFILE,
+        profile: $activeGatewayProfile.get(),
         runtimeId: $activeSessionId.get() ?? '',
         storedId: selectedStoredId
       })
@@ -132,7 +136,6 @@ export function useOnboardingHandoff({
       const setupSession = setupHandoff.guide ?? $setupSession.get()
       const connectionId = setupSession?.connectionId ?? null
 
-      const signpost = !declinedLookAround($messages.get())
       const previousNewChatProfile = $newChatProfile.get()
       const previousNewChatRoute = $newChatRoute.get()
       let receipt: HandoffReceipt | null = null
@@ -150,8 +153,8 @@ export function useOnboardingHandoff({
         const { key: receiptKey, receipt: saved } = readGuideHandoffReceipt(setupSession.storedId)
         receipt = saved
         const owner: HandoffReceipt['owner'] = receipt?.owner ?? { connectionId, profile: BUILD_PROFILE }
-        // Save facts before session.create freezes the new agent's memory.
-        // A retry never re-creates the session or copies the guide's memory.
+        // personalize runs before session.create because the new agent's memory is fixed at creation time.
+        // A retry reuses the saved receipt; it never creates a second session or copies the guide's memory.
         receipt = await startHandoff(
           {
             read: () => receipt,
@@ -160,10 +163,14 @@ export function useOnboardingHandoff({
               saveHandoffReceipt(receiptKey, value)
             },
             personalize: async () => {
+              const answers = $onboardingAnswers.get()
+
               const result = await request<{ saved?: boolean; profile?: string; target?: string }>(
                 owner,
                 'profiles.remember_onboarding',
-                { answers: $onboardingAnswers.get() }
+                {
+                  answers: { ...answers, connectors: answers.connectors.map(connectorTitle), plugins: answers.plugins }
+                }
               )
 
               if (!result.saved || result.profile !== BUILD_PROFILE || result.target !== 'user') {
@@ -233,7 +240,7 @@ export function useOnboardingHandoff({
                 value.storedId
               )
 
-              // Background recovery must not steal focus.
+              // Recovery in the background must not change which session is active.
               if ($selectedStoredSessionId.get() === value.storedId) {
                 activeSessionIdRef.current = value.runtimeId
                 setActiveSessionId(value.runtimeId)
@@ -245,8 +252,8 @@ export function useOnboardingHandoff({
           setupHandoff
         )
 
-        // Create's title is pending metadata on older backends.
-        // Title after acceptance so naming cannot gate submission.
+        // Older backends return the title from session.create as pending metadata, so the title is set here,
+        // after acceptance. A failed session.title call then cannot stop the prompt from being submitted.
         const chatTitle = firstTaskTitle(receipt.task)
         await request(receipt.owner, 'session.title', { session_id: receipt.runtimeId, title: chatTitle }).catch(
           error => console.warn('[handoff] title could not be saved', error)
@@ -269,7 +276,7 @@ export function useOnboardingHandoff({
           activateTreePane(sessionsGroup.id, 'sessions')
         }
 
-        // This is an informational success note, never an alternate build.
+        // The note tells the guide chat that the build started. It does not start a second build.
         void requestGatewayForAgent(
           connectionId,
           setupSession.profile ?? BUILD_PROFILE,
@@ -282,8 +289,8 @@ export function useOnboardingHandoff({
           PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
         ).catch(error => console.warn('[handoff] guide note was not delivered', error))
 
-        if (signpost && $selectedStoredSessionId.get() === receipt.storedId) {
-          void showProfileSignpost()
+        if ($selectedStoredSessionId.get() === receipt.storedId) {
+          void showHandoffTour()
         }
       } catch (error) {
         console.error('[handoff] first build needs recovery', error)

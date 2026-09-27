@@ -115,7 +115,7 @@ def test_desktop_ticker_gates_on_profile_gateway_running(tmp_path, monkeypatch, 
     homes = [("default", tmp_path / "default"), ("ops", tmp_path / "ops")][:profile_count]
     running = {homes[-1][1]}
     monkeypatch.setattr(
-        "hermes_cli.profiles.profiles_to_serve", lambda multiplex=False, profile_allowlist=None: list(homes)
+        "hermes_cli.profiles.profiles_to_serve", lambda multiplex=False: list(homes)
     )
     monkeypatch.setattr(
         "hermes_cli.profiles._check_gateway_running", lambda home: home in running
@@ -138,7 +138,11 @@ def test_desktop_ticker_gates_on_profile_gateway_running(tmp_path, monkeypatch, 
 
     web_server._start_desktop_cron_ticker(threading.Event(), interval=0)
 
-    assert captured.get("profile_homes") == homes
+    # The Desktop hands the scheduler a live enumerator, not a startup snapshot,
+    # so profiles created or deleted while the app runs are picked up per tick.
+    profile_homes = captured.get("profile_homes")
+    assert callable(profile_homes)
+    assert profile_homes() == homes
     gate = captured.get("profile_gate")
     assert gate is not None, "desktop ticker did not install a profile gate"
     for name, home in homes:

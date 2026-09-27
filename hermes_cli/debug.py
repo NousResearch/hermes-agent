@@ -16,7 +16,7 @@ from types import SimpleNamespace
 from typing import Optional
 
 from hermes_constants import get_hermes_home
-from utils import atomic_replace
+from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +45,7 @@ def _pending_file() -> Path:
 
 def _load_pending() -> list[dict]:
     try:
-        data = json.loads(_pending_file().read_text(encoding="utf-8"))
+        data = json.loads(_pending_file().read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return []
     if not isinstance(data, list):
@@ -54,12 +54,8 @@ def _load_pending() -> list[dict]:
 
 
 def _save_pending(entries: list[dict]) -> None:
-    path = _pending_file()
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(entries, indent=2), encoding="utf-8")
-        atomic_replace(tmp, path)
+        atomic_json_write(_pending_file(), entries)
     except OSError:
         pass  # non-fatal — worst case the user runs ``hermes debug delete`` manually
 

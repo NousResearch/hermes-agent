@@ -79,6 +79,18 @@ def _has_openai_audio_backend() -> bool:
         return False
 
 
+def _openai_extra_body(oai_config: Dict[str, Any]) -> Dict[str, Any]:
+    """Optional ``tts.openai`` fields OpenAI-compatible servers read from the JSON body: ``language``
+    (sent as ``lang_code``) and ``consent_attestation`` (cloned voices). Unset keys are omitted so
+    the official API and strict servers never see unknown fields."""
+    extra_body: Dict[str, Any] = {}
+    if oai_config.get("language"):
+        extra_body["lang_code"] = oai_config["language"]
+    if oai_config.get("consent_attestation"):
+        extra_body["consent_attestation"] = oai_config["consent_attestation"]
+    return extra_body
+
+
 def _generate_openai_tts(
     text: str, output_path: str, tts_config: Dict[str, Any], *, api_key: Optional[str] = None,
     base_url: Optional[str] = None, model: Optional[str] = None, voice: Optional[str] = None,
@@ -122,8 +134,8 @@ def _generate_openai_tts(
         create_kwargs["speed"] = max(0.25, min(4.0, speed))
     if instructions:
         create_kwargs["instructions"] = instructions
-    if oai_config.get("language"):
-        create_kwargs["extra_body"] = {"lang_code": oai_config["language"]}
+    if extra_body := _openai_extra_body(oai_config):
+        create_kwargs["extra_body"] = extra_body
     client = _origin()._import_openai_client()(api_key=api_key, base_url=base_url)
     try:
         client.audio.speech.create(**create_kwargs).stream_to_file(output_path)

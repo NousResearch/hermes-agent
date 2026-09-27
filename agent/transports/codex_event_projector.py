@@ -106,8 +106,10 @@ class CodexEventProjector:
         args = {"command": item.get("command") or "", "cwd": item.get("cwd") or ""}
         output = item.get("aggregatedOutput") or ""
         exit_code = item.get("exitCode")
-        if exit_code is not None and exit_code != 0:
-            output = f"[exit {exit_code}]\n{output}"
+        if exit_code is not None:
+            # Preserve executor status so successful marker-like output is not an interrupt.
+            output = json.dumps({"exit_code": exit_code, "output": output}, ensure_ascii=False)
+        # Unknown exit status keeps the legacy text shape and conservative replay handling.
         return "exec", "exec_command", args, output
 
     @staticmethod

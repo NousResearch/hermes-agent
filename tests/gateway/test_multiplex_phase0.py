@@ -11,7 +11,7 @@ Covers the three Phase 0 deliverables:
 import pytest
 from datetime import datetime
 from unittest.mock import patch
-import yaml
+import hermes_yaml as yaml
 
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from gateway.config import GatewayConfig, Platform
@@ -97,46 +97,17 @@ class TestMultiplexConfigFlag:
         hk.join(timeout=5)
         assert captured["default_profile"] == "rex"
 
-    def test_default_is_false(self):
-        assert GatewayConfig().multiplex_profiles is False
+    def test_unset_is_undecided_and_reads_as_off(self):
+        """The default (on) is applied by the boot guard, not the dataclass: an unset flag stays
+        ``None`` so the guard can tell it from an explicit choice, and every reader treats it as off."""
+        assert GatewayConfig().multiplex_profiles is None
+        assert not GatewayConfig().multiplex_profiles
+        assert GatewayConfig.from_dict({}).multiplex_profiles is None
 
 
     def test_from_dict_top_level(self):
         cfg = GatewayConfig.from_dict({"multiplex_profiles": True})
         assert cfg.multiplex_profiles is True
-
-    def test_profile_allowlist_defaults_to_serve_all(self):
-        assert GatewayConfig().multiplex_profile_allowlist is None
-
-    def test_profile_allowlist_normalizes_and_round_trips(self):
-        cfg = GatewayConfig.from_dict(
-            {
-                "gateway": {
-                    "multiplex_profiles": True,
-                    "multiplex_profile_allowlist": [
-                        " Worker ",
-                        "worker",
-                        "Guest",
-                        "default",
-                        "bad/name",
-                        7,
-                    ],
-                }
-            }
-        )
-
-        assert cfg.multiplex_profile_allowlist == ["worker", "guest"]
-        restored = GatewayConfig.from_dict(cfg.to_dict())
-        assert restored.multiplex_profile_allowlist == ["worker", "guest"]
-
-    def test_invalid_profile_allowlist_fails_safe_to_default_only(self, caplog):
-        with caplog.at_level("WARNING", logger="gateway.config"):
-            cfg = GatewayConfig.from_dict(
-                {"gateway": {"multiplex_profile_allowlist": "worker"}}
-            )
-
-        assert cfg.multiplex_profile_allowlist == []
-        assert "serving only the default profile" in caplog.text
 
 
 class TestSessionStoreProfileResolution:

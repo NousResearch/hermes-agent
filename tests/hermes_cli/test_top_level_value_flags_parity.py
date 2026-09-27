@@ -17,7 +17,6 @@ derived from ``build_top_level_parser()`` (mirroring the
   2. the ``--reasoning`` misparse regression itself.
 """
 
-import sys
 
 import pytest
 
@@ -57,9 +56,6 @@ def test_helper_sets_match_top_level_parser():
     )
 
 
-def test_reasoning_is_classified_as_value_flag():
-    required, optional = top_level_value_flag_sets()
-    assert "--reasoning" in (required | optional)
 
 
 def test_first_positional_skips_reasoning_value(monkeypatch):

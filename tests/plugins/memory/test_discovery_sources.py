@@ -219,3 +219,27 @@ def test_activation_is_not_gated_on_plugins_enabled(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
     assert memory_plugins.load_memory_provider("gatedmem") is not None
+
+
+def test_unreadable_user_plugin_does_not_abort_memory_discovery(tmp_path, monkeypatch):
+    """One mode-000 / ACL-denied ``$HERMES_HOME/plugins/<x>`` must not hide the bundled
+    providers or its readable siblings from the dashboard / ``hermes memory`` pickers (#111804)."""
+    plugins_root = tmp_path / "plugins"
+    _write_provider_dir(plugins_root, "goodmem")
+    denied = plugins_root / "denied"
+    denied.mkdir()
+    (denied / "__init__.py").write_text("", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    real_stat = Path.stat  # chmod 000 does not bite as root; fail the child's stat instead
+
+    def stat(self, *args, **kwargs):
+        if self.parent == denied:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", stat)
+
+    names = memory_plugins.list_memory_provider_names()
+    assert "goodmem" in names
+    assert "denied" not in names
+    assert memory_plugins.find_provider_dir("denied") is None

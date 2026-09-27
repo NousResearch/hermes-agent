@@ -22,12 +22,58 @@ from tools.registry import tool_error
 logger = logging.getLogger("tools.code_execution_tool")
 
 # Terminal parameters that must not be used from ephemeral sandbox scripts.
-_TERMINAL_BLOCKED_PARAMS = {"background", "pty", "notify", "notify_on_complete", "watch_patterns"}
+_TERMINAL_BLOCKED_PARAMS = {"background", "pty", "notify", "notify_on_complete", "watch_patterns", "heartbeat", "persist_on_release"}
 
 
 def _default_dispatch(task_id):
     from model_tools import handle_function_call
     return lambda tool_name, tool_args: handle_function_call(tool_name, tool_args, task_id=task_id)
+
+
+def _private_dirs_cmd(root: str, *subdirs: str) -> str:
+    """Shell command creating *root* (and optional *subdirs* under it) owner-only
+    on a shared host. ``umask 077`` makes intermediates and leaves private at
+    creation (no mkdir-then-chmod window where a co-tenant could open a dir fd);
+    ``chmod`` then repairs any named dir that already existed with permissive
+    modes."""
+    mkdir = " ".join(shlex.quote(d) for d in (subdirs or (root,)))
+    chmod = " ".join(shlex.quote(d) for d in (root, *subdirs))
+    return f"umask 077 && mkdir -p {mkdir} && chmod 700 {chmod}"
+
+
+def _execute_checked(env, cmd: str, what: str, *, timeout: int, **kwargs) -> dict:
+    """Run *cmd* from ``/`` and raise ``RuntimeError`` on a non-zero exit.
+
+    Used where a silent failure would ship secrets or code into a missing,
+    half-written, or still-permissive remote path. The error carries the
+    command output only, never the payload."""
+    result = env.execute(cmd, cwd="/", timeout=timeout, **kwargs)
+    if result.get("returncode", 1) != 0:
+        raise RuntimeError(f"{what} failed: {result.get('output')!r}")
+    return result
+
+
+def _remote_write(env, remote_path: str, content: str, *, atomic: bool = False,
+                  timeout: int = 30, check: bool = False):
+    """Write *content* owner-only to *remote_path*; returns the execute() result
+    (``check=True`` raises on failure via _execute_checked).
+
+    The base64 payload always travels as ``stdin_data``: pipe-mode backends
+    (ssh, docker, local, singularity: the real shared-host ones) deliver it on
+    real stdin, so it never enters argv where a co-tenant can read it via
+    ``/proc/*/cmdline``; ``BaseEnvironment.execute`` embeds it as a heredoc
+    for heredoc-mode backends (modal, daytona, vercel), and managed_modal
+    forwards it as ``stdinData``, the same contract ``_write_to_sandbox``
+    relies on."""
+    encoded = base64.b64encode(content.encode("utf-8")).decode("ascii")
+    target = shlex.quote(remote_path)
+    write = (f"base64 -d > {target}.tmp && mv -f {target}.tmp {target}"
+             if atomic else f"base64 -d > {target}")
+    cmd = f"umask 077 && {write}"
+    if check:
+        return _execute_checked(env, cmd, f"remote file ship for {remote_path!r}",
+                                timeout=timeout, stdin_data=encoded)
+    return env.execute(cmd, cwd="/", timeout=timeout, stdin_data=encoded)
 
 
 def _rpc_token_ok(request: dict, rpc_token: str) -> bool:
@@ -161,20 +207,23 @@ def _rpc_poll_loop(env, rpc_dir: str, task_id: str, tool_call_log: list, tool_ca
                     logger.debug("Unauthorized RPC request in %s", req_file)
                     env.execute(f"rm -f {quoted_req_file}", cwd="/", timeout=5)
                     continue
+                seq = request.get("seq", 0)
+                if not isinstance(seq, int):
+                    # A non-int seq cannot form the res_NNNNNN name the caller
+                    # polls; formatting it after dispatch would raise, leave the
+                    # request in place, and replay the tool call every cycle.
+                    logger.debug("RPC request with malformed seq in %s", req_file)
+                    env.execute(f"rm -f {quoted_req_file}", cwd="/", timeout=5)
+                    continue
                 tool_result = _handle_rpc_request(
                     request, allowed_tools=allowed_tools, tool_call_counter=tool_call_counter,
                     max_tool_calls=max_tool_calls, dispatch=dispatch, tool_call_log=tool_call_log,
                     call_start=call_start, where="remote sandbox",
                 )
-                # Write the response atomically (tmp + rename) via echo piping —
-                # Modal doesn't reliably deliver stdin_data to chained commands.
-                quoted_res_file = shlex.quote(f"{rpc_dir}/res_{request.get('seq', 0):06d}")
-                encoded_result = base64.b64encode(tool_result.encode("utf-8")).decode("ascii")
-                env.execute(
-                    f"echo '{encoded_result}' | base64 -d > {quoted_res_file}.tmp"
-                    f" && mv {quoted_res_file}.tmp {quoted_res_file}",
-                    cwd="/", timeout=60,
-                )
+                # Atomic (tmp + rename) and owner-only; results carry tool output
+                # on a shared-host backend.
+                _remote_write(env, f"{rpc_dir}/res_{seq:06d}", tool_result,
+                              atomic=True, timeout=60)
                 env.execute(f"rm -f {quoted_req_file}", cwd="/", timeout=5)
         except Exception as e:
             if not stop_event.is_set():

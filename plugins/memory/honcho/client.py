@@ -7,25 +7,30 @@ flat/global fields, which win over defaults.
 
 from __future__ import annotations
 
+import atexit
 import contextlib
 import hashlib
 import ipaddress
 import json
 import logging
 import os
+import threading as _threading
+import time
+import weakref
 # --- per-identity client cache ------------------------------------------- One slot per client identity,
 # replacing the single process-wide slot that pinned the first profile's workspace and bearer for every
 # later profile in multi-profile processes (#69123 multiplexed gateway, #74065 dashboard). The legacy names
 # above are retained only for reset bookkeeping.
-import threading as _threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 from urllib.parse import urlparse
 
+from agent.memory_provider import spawn_context_thread as _spawn_context_thread
 from agent.secret_scope import get_secret
 from hermes_cli.profiles import _get_default_hermes_home
 from hermes_constants import get_hermes_home
+from hermes_state_common import TITLE_SOURCE_DERIVED, TITLE_SOURCE_LLM
 
 from plugins.memory.honcho.client_cache import (
     _DEFAULT_HTTP_TIMEOUT, _client_cache_key, _client_slots, _client_slots_lock,
@@ -38,6 +43,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 HOST = "hermes"
+_AUTOMATIC_SESSION_TITLE_SOURCES = frozenset({TITLE_SOURCE_DERIVED, TITLE_SOURCE_LLM})
 
 
 def _sanitize_url(url: str | None) -> str | None:
@@ -91,7 +97,7 @@ def resolve_active_host() -> str:
 
 def _read_config(path: Path) -> dict:
     """Parse a honcho.json; {} when absent (parse/OS errors propagate)."""
-    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    return json.loads(path.read_text(encoding="utf-8-sig")) if path.exists() else {}
 
 
 def resolve_global_config_path() -> Path:
@@ -326,6 +332,7 @@ def _behavior_fields(look: _HostLookup, explicitly_configured: bool) -> dict[str
         "session_strategy": look.pick("sessionStrategy", "per-directory"),
         "session_peer_prefix": look.pick_set("sessionPeerPrefix", False),
         "a2a_sessions": look.flag("a2aSessions", default=True),
+        "session_ai_peer_prefix": look.pick_set("sessionAiPeerPrefix", False),
     }
 
 
@@ -390,6 +397,9 @@ class HonchoClientConfig:
     session_peer_prefix: bool = False
     # Bot-authored DMs write into their own session per sender bot.
     a2a_sessions: bool = True
+    # Prefixes every resolved session name with ``{ai_peer}-``. The gateway_session_key branch is
+    # AI-peer-agnostic, so several AI peers sharing one workspace + peerName + chat key would collide.
+    session_ai_peer_prefix: bool = False
     sessions: dict[str, str] = field(default_factory=dict)
     raw: dict[str, Any] = field(default_factory=dict)
     # A hosts.<host> block or explicit enabled flag, vs auto-enabled from a stray env key.
@@ -480,11 +490,31 @@ class HonchoClientConfig:
     def resolve_session_name(
         self, cwd: str | None = None, session_title: str | None = None,
         session_id: str | None = None, gateway_session_key: str | None = None,
+        session_title_source: str | None = None,
     ) -> str | None:
-        """Resolve the Honcho session name. Order: gateway session key (per-chat isolation no
-        cwd/strategy gives) -> per-session strategy's session_id (authoritative, so a generated
-        title never remaps a live conversation) -> sessions map override -> /title ->
-        per-repo (git root name) -> per-directory (basename) -> global (workspace)."""
+        """Resolve the Honcho session name; with ``session_ai_peer_prefix`` the result is prefixed
+        ``{ai_peer}-`` on every path, including the AI-peer-agnostic gateway session key."""
+        import re
+
+        result = self._resolve_session_name_base(cwd=cwd, session_title=session_title,
+                                                 session_id=session_id, gateway_session_key=gateway_session_key,
+                                                 session_title_source=session_title_source)
+        if result and self.session_ai_peer_prefix and self.ai_peer:
+            ai = re.sub(r'[^a-zA-Z0-9_-]+', '-', self.ai_peer).strip('-')
+            if ai:
+                prefixed = f"{ai}-{result}"
+                return self._enforce_session_id_limit(prefixed, prefixed)
+        return result
+
+    def _resolve_session_name_base(
+        self, cwd: str | None = None, session_title: str | None = None,
+        session_id: str | None = None, gateway_session_key: str | None = None,
+        session_title_source: str | None = None,
+    ) -> str | None:
+        """Order: gateway session key (per-chat isolation no cwd/strategy gives) -> per-session
+        strategy's session_id (authoritative, so a generated title never remaps a live conversation)
+        -> sessions map override -> /title -> per-repo (git root name) -> per-directory (basename)
+        -> global (workspace)."""
         import re
 
         def _slug(text: str) -> str:
@@ -498,7 +528,9 @@ class HonchoClientConfig:
         manual = self.sessions.get(cwd)
         if manual:
             return manual
-        if session_title and _slug(session_title):
+        # Absent provenance retains the legacy explicit-title override. Generated
+        # display titles must not change a strategy-selected memory identity.
+        if session_title and session_title_source not in _AUTOMATIC_SESSION_TITLE_SOURCES and _slug(session_title):
             return self._with_peer_prefix(_slug(session_title))
         if self.session_strategy == "per-repo":
             return self._with_peer_prefix(self._git_repo_name(cwd) or Path(cwd).name)
@@ -507,14 +539,59 @@ class HonchoClientConfig:
         return self.workspace_id
 
 
-def spawn_context_thread(target, *, name: str, daemon: bool = True, args: tuple = ()) -> "_threading.Thread":
-    """Thread that inherits the caller's contextvars: profile isolation is a ContextVar
-    (set_hermes_home_override) and a plain Thread starts EMPTY, so ambient resolution on it
-    would silently land on the default profile."""
-    import contextvars
+# Threads keyed by the provider or manager that owns them, so shutdown never waits on another agent's work.
+_plugin_threads: "weakref.WeakKeyDictionary[Any, weakref.WeakSet]" = weakref.WeakKeyDictionary()
+_plugin_threads_lock = _threading.Lock()
 
-    ctx = contextvars.copy_context()
-    return _threading.Thread(target=lambda: ctx.run(target, *args), name=name, daemon=daemon)
+
+def spawn_context_thread(
+    target, *, name: str, daemon: bool = True, args: tuple = (), owner: Any = None,
+) -> "_threading.Thread":
+    """agent.memory_provider.spawn_context_thread plus an ``owner``: the thread is registered so
+    join_plugin_threads can wait on exactly the threads this provider or manager spawned."""
+    thread = _spawn_context_thread(target, name=name, daemon=daemon, args=args)
+    if owner is not None:
+        with _plugin_threads_lock:
+            _plugin_threads.setdefault(owner, weakref.WeakSet()).add(thread)
+    return thread
+
+
+def join_plugin_threads(owners, timeout: float) -> list[str]:
+    """Join every live thread spawned for ``owners`` within one shared ``timeout``. Returns the names
+    of the threads still running when the budget ran out."""
+    deadline = time.monotonic() + max(0.0, timeout)
+    me = _threading.current_thread()
+    with _plugin_threads_lock:
+        threads = [t for owner in owners if owner is not None
+                   for t in list(_plugin_threads.get(owner, ())) if t.is_alive() and t is not me]
+    for thread in threads:
+        thread.join(timeout=max(0.0, deadline - time.monotonic()))
+    return [t.name for t in threads if t.is_alive()]
+
+
+def close_honcho_clients() -> None:
+    """Close the HTTP pool of every cached client and drop the slots. Process exit only: one client
+    serves every manager with the same identity, so a per-agent shutdown must never call this."""
+    with _client_slots_lock:
+        slots = list(_client_slots.values())
+        _client_slots.clear()
+    for slot in slots:
+        close = getattr(getattr(slot.peek(), "_http", None), "close", None)
+        if callable(close):
+            with contextlib.suppress(Exception):
+                close()
+
+
+_exit_close_registered = False
+
+
+def _register_exit_close() -> None:
+    global _exit_close_registered
+    with _client_slots_lock:
+        if _exit_close_registered:
+            return
+        _exit_close_registered = True
+    atexit.register(close_honcho_clients)
 
 
 def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
@@ -547,14 +624,14 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
                          "then run 'hermes honcho setup' or set HONCHO_API_KEY. "
                          "For local instances, set HONCHO_BASE_URL instead.")
 
+    # Build inside the singleton factory so racing callers share one client.
     return slot.get(lambda: _build_client(config))
-
 
 def _build_client(config: HonchoClientConfig) -> "Honcho":
     """Construct the SDK client (runs inside the slot factory so racing callers share one)."""
     with contextlib.suppress(Exception):  # lazy-dep failures fall through to the canonical import error below
-        from tools.lazy_deps import ensure as _lazy_ensure
-        _lazy_ensure("memory.honcho", prompt=False)
+        from pm import ensure_import as _lazy_ensure
+        _lazy_ensure("honcho")
     try:
         from honcho import Honcho
     except ImportError:
@@ -594,6 +671,7 @@ def _build_client(config: HonchoClientConfig) -> "Honcho":
         # strip a trailing version segment from any base_url to avoid "/v3/v3/...".
         import re
         kwargs["base_url"] = re.sub(r"/v\d+/*$", "", base_url).rstrip("/")
+    _register_exit_close()
     return Honcho(**kwargs)
 
 

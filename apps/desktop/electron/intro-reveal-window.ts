@@ -7,7 +7,7 @@ import { chatWindowWebPreferences } from './session-windows'
 import { installWindowRendererLifecycle } from './window-renderer-lifecycle'
 import { createWindowRevealController } from './window-reveal'
 
-// The native watchdog must outlast the renderer deadman, even if its clock stalls.
+// Longer than the renderer's INTRO_DEADMAN_MS, so the main process closes the overlay if the renderer clock stalls.
 export const INTRO_REVEAL_WATCHDOG_MS = 34_000
 const INTRO_FROST_IN_MS = 500
 const INTRO_FROST_OUT_MS = 600
@@ -186,7 +186,7 @@ export function createIntroRevealWindowController({
     const main = mainWindow()
 
     if (payload.hideMain === true && main && !main.isDestroyed()) {
-      // Stamp ownership even before first paint: skip must reveal an unshown app.
+      // Set before the overlay's first paint, so a skip during load still shows the main window again.
       onboardingFlowHidMain = true
       main.hide()
     }
@@ -234,7 +234,7 @@ export function createIntroRevealWindowController({
       mainFadeTimer = null
     }
 
-    // Teardown must not reveal the app while it is quitting.
+    // Cleared before destroy, so the 'closed' handler does not show the main window while the app quits.
     onboardingFlowHidMain = false
     introRevealWindow?.destroy()
     introRevealWindow = null

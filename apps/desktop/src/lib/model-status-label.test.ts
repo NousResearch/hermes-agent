@@ -1,24 +1,18 @@
 import { describe, expect, it } from 'vitest'
 
-import {
-  currentPickerSelection,
-  displayModelName,
-  formatModelStatusLabel,
-  modelDisplayParts
-} from './model-status-label'
-import { reasoningEffortLabel } from './reasoning-effort'
+import { currentPickerSelection, displayModelName, formatModelPillLabel, modelDisplayParts } from './model-status-label'
 
 describe('model-status-label', () => {
-  it('formats display names consistently', () => {
-    expect(displayModelName('anthropic/claude-opus-4.8-fast')).toBe('Opus 4.8')
-    expect(displayModelName('openai/gpt-5.5-fast')).toBe('GPT-5.5')
-    expect(displayModelName('deepseek/deepseek-v4-pro-thinking')).toBe('Deepseek V4 Pro')
-    expect(displayModelName('openai/gpt-5.5')).toBe('GPT-5.5')
+  it('strips trailing date-pin snapshots and dots hyphenated Anthropic versions', () => {
+    expect(displayModelName('claude-opus-4-5-20251101')).toBe('Opus 4.5')
+    expect(displayModelName('anthropic/claude-haiku-4-5-20251001')).toBe('Haiku 4.5')
+    expect(displayModelName('claude-fable-5-1')).toBe('Fable 5.1')
   })
 
-  it('strips trailing date-pin snapshots from the display name', () => {
-    expect(displayModelName('claude-opus-4-5-20251101')).toBe('Opus 4 5')
-    expect(displayModelName('anthropic/claude-haiku-4-5-20251001')).toBe('Haiku 4 5')
+  it('renders the Anthropic 1M-context route suffix as a tag, never raw brackets', () => {
+    expect(modelDisplayParts('claude-sonnet-5[1m]')).toEqual({ name: 'Sonnet 5', tag: '1M' })
+    expect(modelDisplayParts('claude-fable-5-1[1m]')).toEqual({ name: 'Fable 5.1', tag: '1M' })
+    expect(displayModelName('claude-opus-5[1m]')).not.toContain('[')
   })
 
   it('renders local GGUF ids as a clean name with a quant tag', () => {
@@ -33,34 +27,49 @@ describe('model-status-label', () => {
     expect(modelDisplayParts('anthropic/claude-opus-4.8-fast').tag).toBe('Fast')
   })
 
-  it('maps reasoning effort to compact labels', () => {
-    expect(reasoningEffortLabel('high')).toBe('High')
-    expect(reasoningEffortLabel('xhigh')).toBe('XHigh')
-    expect(reasoningEffortLabel('max')).toBe('Max')
-    expect(reasoningEffortLabel('ultra')).toBe('Ultra')
-    expect(reasoningEffortLabel('')).toBe('')
+  it('keeps the vendor casing the model id does not carry (#85849)', () => {
+    expect(displayModelName('glm-5.2')).toBe('GLM 5.2')
+    expect(displayModelName('zai-org/glm-5.1')).toBe('GLM 5.1')
+    expect(displayModelName('deepseek-v4-flash')).toBe('DeepSeek V4 Flash')
+    expect(displayModelName('minimax/minimax-01')).toBe('MiniMax 01')
+    expect(displayModelName('xiaomi/mimo-v2.5')).toBe('MiMo V2.5')
+    expect(displayModelName('ernie-5.1')).toBe('ERNIE 5.1')
+    expect(displayModelName('baai/bge-m3')).toBe('BGE M3')
+    expect(displayModelName('openai')).toBe('OpenAI')
   })
 
-  it('appends fast + effort session state to the status label', () => {
-    expect(formatModelStatusLabel('openai/gpt-5.5', { fastMode: true, reasoningEffort: 'high' })).toBe(
-      'GPT-5.5 · Fast High'
-    )
+  it('capitalises parameter counts the way vendors write them (#85849)', () => {
+    expect(displayModelName('qwen3-32b')).toBe('Qwen3 32B')
+    expect(displayModelName('qwen/qwen3.5-35b-a3b')).toBe('Qwen3.5 35B A3B')
+    expect(displayModelName('meta/llama-3.1-8b-instruct')).toBe('Llama 3.1 8B Instruct')
+    expect(displayModelName('llama-3.1-8b-instruct-fp8')).toBe('Llama 3.1 8B Instruct FP8')
+    expect(displayModelName('gemma-4-26b-a4b-it')).toBe('Gemma 4 26B A4B IT')
+    expect(displayModelName('nemotron-nano-12b-v2-vl')).toBe('Nemotron Nano 12B V2 VL')
   })
 
-  it('falls back to the profile default effort, then to medium', () => {
-    expect(formatModelStatusLabel('openai/gpt-5.5', { reasoningEffort: 'medium' })).toBe('GPT-5.5 · Med')
-    expect(formatModelStatusLabel('openai/gpt-5.5')).toBe('GPT-5.5 · Med')
-    // No session-level effort → the configured profile default is advertised,
-    // not Hermes' built-in medium.
-    expect(formatModelStatusLabel('openai/gpt-5.5', { defaultEffort: 'high' })).toBe('GPT-5.5 · High')
-    // An explicit session effort still wins over the profile default.
-    expect(formatModelStatusLabel('openai/gpt-5.5', { defaultEffort: 'high', reasoningEffort: 'low' })).toBe(
-      'GPT-5.5 · Low'
-    )
+  it('title-cases gemini names like every other branch (#85849)', () => {
+    expect(displayModelName('gemini-2.5-pro')).toBe('Gemini 2.5 Pro')
+    expect(displayModelName('gemini-2.0-flash')).toBe('Gemini 2.0 Flash')
+    expect(displayModelName('google/gemini-2.5-flash-lite')).toBe('Gemini 2.5 Flash Lite')
   })
 
-  it('returns just the placeholder name when there is no model', () => {
-    expect(formatModelStatusLabel('')).toBe('No model')
+  it('keeps the model pill to name + Fast; the effort lives on its own pill', () => {
+    expect(formatModelPillLabel('openai/gpt-5.5', { fastMode: true })).toBe('GPT-5.5 · Fast')
+    expect(formatModelPillLabel('anthropic/claude-opus-4.8-fast')).toBe('Opus 4.8 Fast')
+    expect(formatModelPillLabel('openai/gpt-5.5')).toBe('GPT-5.5')
+    expect(formatModelPillLabel('')).toBe('No model')
+  })
+
+  it('keeps the variant tag in the display name so distinct ids never collapse (#88597)', () => {
+    expect(displayModelName('anthropic/claude-opus-4.8-fast')).toBe('Opus 4.8 Fast')
+    expect(displayModelName('deepseek/deepseek-v4-pro-thinking')).toBe('DeepSeek V4 Pro Thinking')
+    expect(displayModelName('gpt-5.5-preview')).toBe('GPT-5.5 Preview')
+    expect(displayModelName('claude-opus-5')).toBe('Opus 5')
+    // A base model and its variant must NEVER share a display label.
+    expect(displayModelName('claude-opus-5')).not.toBe(displayModelName('claude-opus-5-thinking'))
+    // The quant/contextWindow tags ride along the same way.
+    expect(displayModelName('Qwen3.6-27B-UD-Q4_K_XL')).toBe('Qwen3.6 27B Q4')
+    expect(displayModelName('claude-sonnet-5[1m]')).toBe('Sonnet 5 1M')
   })
 
   describe('currentPickerSelection', () => {
@@ -68,10 +77,6 @@ describe('model-status-label', () => {
     const options = { model: 'hermes-4', provider: 'nous' }
 
     it('prefers the sticky composer pick over the profile default pre-session', () => {
-      expect(currentPickerSelection(store, options)).toEqual(store)
-    })
-
-    it('keeps the SessionView selection when a stale options response disagrees', () => {
       expect(currentPickerSelection(store, options)).toEqual(store)
     })
 

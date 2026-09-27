@@ -10,7 +10,7 @@ import asyncio
 from concurrent.futures import Future
 from unittest.mock import MagicMock, patch
 
-import yaml
+import hermes_yaml as yaml
 
 from cron.scheduler import _deliver_result
 from cron.scheduler_preflight import SharedRouteAdapters, _primary_profile_routes_for_current_home

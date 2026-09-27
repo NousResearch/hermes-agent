@@ -71,3 +71,50 @@ def test_fetch_compare_branch_reports_missing_branch(narrow_clone: Path) -> None
     assert fetch_result.returncode != 0
     assert compare_branch == "origin/no-such-branch"
     assert not update_cmd_check.compare_ref_exists(git_cmd, narrow_clone, compare_branch)
+
+
+def test_forced_refspec_updates_shallow_clone_to_new_tip(narrow_clone: Path) -> None:
+    """The ``+`` prefix is load-bearing on depth-1 shallow clones (the installer's shape).
+
+    A shallow boundary makes the new tip a non-descendant of the old one, so a NON-forced
+    refspec fetch is rejected as non-fast-forward and the tracking ref never advances —
+    the update check would keep comparing against the stale tip forever. Only the forced
+    form lands the new tip; pin both directions so a refactor to the non-forced refspec
+    fails here instead of silently breaking every shallow installer update check.
+    """
+    # The prior update check left a tracking ref at the tip the clone was pinned to:
+    # seed it the same way (non-forced fetch while origin is still at the old tip).
+    adv = narrow_clone.parent / "advance"
+    assert _run(narrow_clone.parent, "clone", "-q", f"file://{narrow_clone.parent / 'origin.git'}", str(adv)).returncode == 0
+    seed_fetch = _run(
+        narrow_clone, "fetch", "--depth", "1", "origin",
+        "refs/heads/main:refs/remotes/origin/main",
+    )
+    assert seed_fetch.returncode == 0, seed_fetch.stderr
+    stale = _run(narrow_clone, "rev-parse", "--verify", "--quiet", "origin/main").stdout.strip()
+    assert stale
+
+    # Advance origin/main past the pinned tag.
+    (adv / "f.txt").write_text("b\n")
+    _run(adv, "add", "f.txt")
+    assert _run(adv, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "second").returncode == 0
+    assert _run(adv, "push", "-q", "origin", "main").returncode == 0
+    new_tip = _run(adv, "rev-parse", "HEAD").stdout.strip()
+    assert new_tip and new_tip != stale
+
+    # The hazard: without the force, the shallow clone rejects the new tip...
+    nonforced = _run(
+        narrow_clone, "fetch", "--depth", "1", "origin",
+        "refs/heads/main:refs/remotes/origin/main",
+    )
+    assert nonforced.returncode != 0
+    assert "non-fast-forward" in nonforced.stderr
+
+    # ...while the production fetch's forced refspec lands the new tracking ref.
+    fetch_result, compare_branch = update_cmd_check.fetch_compare_branch(
+        git_cmd, narrow_clone, "main", ["--depth", "1"],
+    )
+    assert fetch_result.returncode == 0, fetch_result.stderr
+    assert compare_branch == "origin/main"
+    landed = _run(narrow_clone, "rev-parse", "--verify", "--quiet", "origin/main").stdout.strip()
+    assert landed == new_tip

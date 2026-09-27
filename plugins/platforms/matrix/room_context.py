@@ -74,6 +74,19 @@ def format_room_notes(notes: dict[str, RoomStateNote]) -> str | None:
     return "\n".join(lines)
 
 
+def last_recorded_room_state(history: list[dict[str, Any]]) -> MatrixRoomState | None:
+    for message in reversed(history):
+        if message.get("role") != "user":
+            continue
+        metadata = message.get("display_metadata")
+        if not isinstance(metadata, dict):
+            continue
+        state = MatrixRoomState.from_dict(metadata.get("matrix_room_state"))
+        if state is not None:
+            return state
+    return None
+
+
 def _content_dict(event: Any) -> dict:
     content = getattr(event, "content", None)
     if content is None and isinstance(event, dict):

@@ -2,7 +2,7 @@ import { useStore } from '@nanostores/react'
 import type { KeyboardEvent, RefObject } from 'react'
 import { createRef, useMemo } from 'react'
 
-import logoUrl from '@/assets/ai-evolution-logo.png'
+import logoUrl from '@/assets/czesiek-logo.png'
 import { type Locale, useI18n } from '@/i18n'
 import {
   Activity,

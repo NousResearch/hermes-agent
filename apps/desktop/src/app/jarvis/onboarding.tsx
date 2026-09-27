@@ -1,6 +1,7 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import type { LiveVoiceProviderId } from '@/api/voice-realtime'
+import logoUrl from '@/assets/czesiek-logo.png'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent } from '@/components/ui/dialog'
 import {
@@ -244,6 +245,47 @@ export function JarvisOnboarding({
   const scope = useMemo(() => normalizeJarvisOnboardingScope(rawScope), [rawScope])
   const scopeKey = useMemo(() => jarvisOnboardingScopeKey(scope), [scope])
   const loadedState = useMemo(() => readJarvisOnboardingState(undefined, scope), [scope])
+  const [showSplash, setShowSplash] = useState(() => loadedState === null && initialStep === undefined)
+  const [splashLeaving, setSplashLeaving] = useState(false)
+  const splashTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => () => {
+    if (splashTimer.current) {
+      clearTimeout(splashTimer.current)
+    }
+  }, [])
+
+  const openWizard = () => {
+    if (splashLeaving) {
+      return
+    }
+    setSplashLeaving(true)
+    try {
+      const AudioContextClass = window.AudioContext
+      if (AudioContextClass) {
+        const audio = new AudioContextClass()
+        const now = audio.currentTime
+        for (const [index, frequency] of [392, 523.25, 659.25].entries()) {
+          const oscillator = audio.createOscillator()
+          const gain = audio.createGain()
+          const start = now + index * 0.095
+          oscillator.type = 'sine'
+          oscillator.frequency.value = frequency
+          gain.gain.setValueAtTime(0, start)
+          gain.gain.linearRampToValueAtTime(0.035, start + 0.025)
+          gain.gain.exponentialRampToValueAtTime(0.001, start + 0.35)
+          oscillator.connect(gain).connect(audio.destination)
+          oscillator.start(start)
+          oscillator.stop(start + 0.36)
+        }
+        window.setTimeout(() => void audio.close(), 800)
+      }
+    } catch {
+      // The onboarding remains usable when audio is unavailable.
+    }
+    const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
+    splashTimer.current = setTimeout(() => setShowSplash(false), reducedMotion ? 0 : 420)
+  }
 
   const [state, setState] = useState<JarvisOnboardingState>(
     () => loadedState ?? initialJarvisOnboardingState(initialStep)
@@ -969,6 +1011,46 @@ export function JarvisOnboarding({
     (currentStep === 'engine' && !selectedProvider) ||
     (currentStep === 'model' && configurationStatus !== 'passed') ||
     (currentStep === 'approvals' && !approvalsMode)
+
+  if (showSplash) {
+    const splashCopy = locale === 'pl'
+      ? { title: 'Poznaj Cześka', action: 'Kliknij logo, aby rozpocząć' }
+      : locale === 'zh'
+        ? { title: '认识 Czesiek', action: '点击标志开始' }
+        : { title: 'Meet Czesiek', action: 'Click the logo to begin' }
+
+    return (
+      <Dialog
+        modal
+        onOpenChange={open => {
+          if (!open) {
+            close()
+          }
+        }}
+        open
+      >
+        <DialogContent
+          aria-labelledby="czesiek-splash-title"
+          className="z-(--z-onboarding) w-[calc(100vw-2rem)] max-w-xl border-(--ui-stroke-secondary) bg-(--ui-bg-elevated) text-(--ui-text-primary)"
+          data-testid="czesiek-onboarding-splash"
+          showCloseButton={false}
+        >
+          <div className="flex min-h-[26rem] flex-col items-center justify-center gap-5 text-center">
+            <button
+              aria-label={splashCopy.action}
+              className={cn('rounded-full p-3 transition-all duration-400 hover:scale-105 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-(--ui-accent)', splashLeaving && 'scale-125 opacity-0')}
+              onClick={openWizard}
+              type="button"
+            >
+              <img alt="" className="size-44 object-contain drop-shadow-[0_0_30px_rgba(67,108,255,0.36)] sm:size-56" src={logoUrl} />
+            </button>
+            <h1 className="text-2xl font-semibold" id="czesiek-splash-title">{splashCopy.title}</h1>
+            <p className="text-sm text-(--ui-text-secondary)">{splashCopy.action}</p>
+          </div>
+        </DialogContent>
+      </Dialog>
+    )
+  }
 
   return (
     <Dialog

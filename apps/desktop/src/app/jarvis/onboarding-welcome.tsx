@@ -7,7 +7,7 @@
  * behind a "yes" — and shows what the person can do once setup is done.
  */
 
-import logoUrl from '@/assets/ai-evolution-logo.png'
+import logoUrl from '@/assets/czesiek-logo.png'
 import type { Translations } from '@/i18n'
 import { Bookmark, Brain, Check, ChevronRight, Lock, Mic, ShieldLock, Wrench } from '@/lib/icons'
 

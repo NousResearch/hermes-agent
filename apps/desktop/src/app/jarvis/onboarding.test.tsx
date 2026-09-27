@@ -77,6 +77,7 @@ function renderOnboarding(props: Partial<React.ComponentProps<typeof JarvisOnboa
   return render(
     <I18nProvider configClient={null} initialLocale="pl">
       <JarvisOnboarding
+        initialStep="welcome"
         loadConfig={async () => ({
           approvals: { mode: 'manual' },
           stt: { enabled: false },
@@ -130,7 +131,7 @@ it('keeps setup usable after StrictMode remount and loads providers for the requ
     <StrictMode>
       <I18nProvider configClient={null} initialLocale="pl">
         <JarvisOnboarding
-          scope={TEST_SCOPE}
+          initialStep="welcome"
           loadConfig={async () => ({})}
           loadModelOptions={async () => ({
             provider: 'openrouter',
@@ -138,6 +139,7 @@ it('keeps setup usable after StrictMode remount and loads providers for the requ
             providers: [{ slug: 'openrouter', name: 'OpenRouter', authenticated: true, models: ['demo'] }]
           })}
           onComplete={vi.fn()}
+          scope={TEST_SCOPE}
         />
       </I18nProvider>
     </StrictMode>
@@ -149,6 +151,14 @@ it('keeps setup usable after StrictMode remount and loads providers for the requ
   )
   fireEvent.click(screen.getByRole('button', { name: /Silnik|Własne API/ }))
   await waitFor(() => expect(screen.getByRole('button', { name: /OpenRouter.*1/ })).toBeTruthy())
+})
+
+it('opens fresh onboarding after the user activates the logo', async () => {
+  renderOnboarding({ initialStep: undefined })
+  expect(screen.getByTestId('czesiek-onboarding-splash')).toBeTruthy()
+  expect(screen.queryByTestId('jarvis-onboarding')).toBeNull()
+  fireEvent.click(screen.getByRole('button', { name: 'Kliknij logo, aby rozpocząć' }))
+  await waitFor(() => expect(screen.getByTestId('jarvis-onboarding')).toBeTruthy())
 })
 
 function persistReadyComputerState() {

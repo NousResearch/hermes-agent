@@ -4553,6 +4553,7 @@ export interface Translations {
     readOnlyTranscriptTitle: string
     readOnlyTranscriptBody: string
     readOnlyTranscriptSendBlocked: string
+    sessionTargetMismatch: string
     resumeStrandedTitle: string
     resumeStrandedBody: string
     poolSlotTimeoutBody: string

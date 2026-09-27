@@ -4,6 +4,8 @@ import type { MutableRefObject } from 'react'
 import { useEffect, useRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { group, split } from '@/components/pane-shell/tree/model'
+import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
 import { getLatestSessionMessages, getSession } from '@/hermes'
 import { textPart, toChatMessages } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
@@ -27,7 +29,7 @@ import {
   setMessages,
   setSessions
 } from '@/store/session'
-import { dropSessionState, publishSessionState } from '@/store/session-states'
+import { $focusedStoredSessionId, dropSessionState, publishSessionState } from '@/store/session-states'
 import { $wakeWord, resetWakeWordState } from '@/store/wake-word'
 import type { SessionInfo } from '@/types/hermes'
 
@@ -6173,5 +6175,117 @@ describe('usePromptActions stale multi-window guard (#65047)', () => {
       { session_id: RUNTIME_SESSION_ID, text: 'send anyway' },
       1_800_000
     )
+  })
+})
+
+const tilePane = (id: string) => `session-tile:${id}`
+
+describe('usePromptActions main submit follows the focused session surface', () => {
+  beforeEach(() => {
+    clearNotifications()
+  })
+
+  afterEach(() => {
+    dropSessionState('rt-pet2')
+    dropSessionState('rt-focus')
+    $layoutTree.set(null)
+  })
+
+  it('BLOCKS a main submit whose target differs from the focused session surface', async () => {
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: 'stored-pet2' }
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: 'rt-pet2' }
+
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([['stored-pet2', 'rt-pet2']])
+    }
+
+    // The renderer mirrors a live pet2 runtime, so every other guard passes,
+    // but the user is interacting with a different session surface (a
+    // restored tile). This is the relaunch shape: an internally consistent
+    // target whose chat is not the one the user believes they are typing into.
+    publishSessionState('rt-pet2', createClientSessionState('stored-pet2'))
+    $layoutTree.set(split('row', [group([tilePane('stored-v3')], { active: tilePane('stored-v3'), id: 'grp-main' })]))
+    noteActiveTreeGroup('grp-main')
+    expect($focusedStoredSessionId.get()).toBe('stored-v3')
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        activeSessionId="rt-pet2"
+        activeSessionIdRef={activeSessionIdRef}
+        getRoutedStoredSessionId={() => 'stored-pet2'}
+        getRouteToken={() => '/stored-pet2::'}
+        getRuntimeIdForStoredSession={storedId => runtimeIdByStoredSessionIdRef.current.get(storedId) ?? null}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId="stored-pet2"
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    const accepted = await handle!.submitText('prompt meant for the focused chat')
+
+    expect(accepted).toBe(false)
+    expect(calls.filter(c => c.method === 'prompt.submit')).toHaveLength(0)
+    // Fail closed keeps the draft: dispatchSubmit re-stashes on false.
+    const notifications = $notifications.get()
+    expect(notifications.some(n => /focused chat/i.test(n.message || ''))).toBe(true)
+  })
+
+  it('DELIVERS a main submit when the focused surface IS the target (no false positive)', async () => {
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: 'stored-focus' }
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: 'rt-focus' }
+
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([['stored-focus', 'rt-focus']])
+    }
+
+    publishSessionState('rt-focus', createClientSessionState('stored-focus'))
+    // No tile focused: the interacted zone is the main workspace itself.
+    $layoutTree.set(split('row', [group(['workspace'], { active: 'workspace', id: 'grp-main' })]))
+    noteActiveTreeGroup('grp-main')
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        activeSessionId="rt-focus"
+        activeSessionIdRef={activeSessionIdRef}
+        getRoutedStoredSessionId={() => 'stored-focus'}
+        getRouteToken={() => '/stored-focus::'}
+        getRuntimeIdForStoredSession={storedId => runtimeIdByStoredSessionIdRef.current.get(storedId) ?? null}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId="stored-focus"
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    const accepted = await handle!.submitText('deliver to the intended chat')
+
+    expect(accepted).toBe(true)
+    expect(calls.find(c => c.method === 'prompt.submit')?.params).toMatchObject({
+      session_id: 'rt-focus',
+      text: 'deliver to the intended chat'
+    })
   })
 })

@@ -35,7 +35,7 @@ import {
   setMessages,
   touchSessionActivity
 } from '@/store/session'
-import { $sessionStates } from '@/store/session-states'
+import { $focusedStoredSessionId, $sessionStates } from '@/store/session-states'
 import type { SessionInfo } from '@/types/hermes'
 
 import {
@@ -268,6 +268,38 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         notify({ kind: 'info', message: copy.readOnlyTranscriptSendBlocked })
 
         return false
+      }
+
+      // A MAIN composer submit must go to the session the user is interacting
+      // with. $focusedStoredSessionId is the focused pane-tree tile's session,
+      // else the primary selection. After a relaunch the app can restore the
+      // remembered main route AND a background tile; every identity inside the
+      // main composer then agrees with itself, so the guards above pass, while
+      // the user is typing into what they believe is the focused tile's chat.
+      // Compared by composer scope (lineage root) so a compression tip rotation
+      // never trips it. Callers that pass options.storedSessionId (tiles, queue
+      // drains) address their session explicitly and are not gated. Fail
+      // closed: wrong-session delivery is worse than no delivery, and
+      // dispatchSubmit re-stashes the draft when this returns false.
+      if (!options?.storedSessionId && targetStoredSessionId) {
+        const focusedStoredId = $focusedStoredSessionId.get()
+
+        if (focusedStoredId && focusedStoredId !== targetStoredSessionId) {
+          const sessionsNow = $sessions.get()
+
+          if (
+            resolveComposerSessionKey(focusedStoredId, sessionsNow) !==
+            resolveComposerSessionKey(targetStoredSessionId, sessionsNow)
+          ) {
+            console.warn('[submit] focused session differs from the composer target', {
+              focused: focusedStoredId,
+              target: targetStoredSessionId
+            })
+            notify({ kind: 'error', message: copy.sessionTargetMismatch })
+
+            return false
+          }
+        }
       }
 
       let targetStartedInCurrentView =

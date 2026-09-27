@@ -240,6 +240,135 @@ def _check_directory_structure(should_fix: bool, f: Finding) -> None:
             check_info(f"{fname} not created yet (will be created when the agent first writes a memory)")
 
 
+def _unproven_line(names: list[str], display_home: str) -> str:
+    """The manual-review line for family names that are NOT shaped like a pre-PM binary."""
+    return (
+        f"{', '.join(names)} in {display_home}/bin {'is' if len(names) == 1 else 'are'} not "
+        "shaped like a pre-PM uv binary (too small, or a symlink) — if it is your own "
+        "uv, leave it; if it is a leftover, remove it manually"
+    )
+
+
+@doctor_check()
+def _check_legacy_uv_shadow(should_fix: bool, f: Finding) -> None:
+    """Report (and with ``--fix`` delete) pre-PM ``uv``/``uvx`` in ``$HERMES_HOME/bin``.
+
+    A leftover shadows the user's own uv — ``bin`` sits on the Windows User
+    PATH and the agent terminal's PATH (#101269). Only the family goes once
+    PM's store carries its own uv; clean is reported only when it is actually
+    gone. Without :data:`AUTOMATIC_CLEANUP` the manual step is named, never a
+    ``--fix`` retry.
+    """
+    import pm
+    from hermes_cli import legacy_uv
+    from hermes_cli.doctor import HERMES_HOME, _DHH
+    from hermes_cli.legacy_uv import (
+        LEGACY_MANAGED_UV_NAMES,
+        bin_escapes_home,
+        classify_leftover,
+        remove_legacy_managed_uv,
+    )
+
+    _section("Legacy uv binaries")
+    if bin_escapes_home(HERMES_HOME):
+        # Behind a linked bin are the USER's own files — not ours to name or clear.
+        return check_warn(
+            f"{_DHH}/bin resolves outside the Hermes home",
+            "(legacy-uv check skipped — files behind it are not Hermes' to remove)",
+        )
+    # Same shape policy as the anchored probe (classify_leftover): a link or
+    # under-the-floor file is a hint, never a deletable finding.
+    buckets: dict[str, list[str]] = {}
+    for name in LEGACY_MANAGED_UV_NAMES:
+        verdict = classify_leftover(HERMES_HOME / "bin" / name)
+        if verdict != legacy_uv.ABSENT:
+            buckets.setdefault(verdict, []).append(name)
+    unprobeable = buckets.get(legacy_uv.UNPROBEABLE, [])
+    unproven = buckets.get(legacy_uv.UNPROVEN, [])
+    removable = buckets.get(legacy_uv.REMOVABLE, [])
+    if not unprobeable and not unproven and not removable:
+        return check_ok(f"No pre-PM uv binaries in {_DHH}/bin")
+    if unprobeable:
+        if not legacy_uv.AUTOMATIC_CLEANUP:
+            # Same platform gate as the removable branch below: on a fail-closed
+            # platform no ``--fix`` run deletes anything, so "retry" would be advice
+            # nothing can satisfy — the manual step is the only remedy.
+            return _fail_and_issue(
+                f"Pre-PM uv binaries in {_DHH}/bin could not be inspected",
+                f"({', '.join(unprobeable)})",
+                f"Automatic legacy-uv cleanup is not performed on this platform — "
+                f"inspect {', '.join(unprobeable)} in {_DHH}/bin and delete any leftover manually",
+                f.manual_issues,
+            )
+        return _fail_and_issue(
+            f"Pre-PM uv binaries in {_DHH}/bin could not be inspected",
+            f"({', '.join(unprobeable)})",
+            "The file changed or became inaccessible during the check; retry "
+            "`hermes doctor --fix`",
+            f.issues,
+        )
+    if unproven and not removable:
+        check_ok(f"No provably-Hermes uv binaries in {_DHH}/bin")
+        return check_info(_unproven_line(unproven, _DHH))
+    if unproven:
+        # Both buckets in one home: report-only never runs the cleanup whose warning
+        # would name these, so a headline listing only ``removable`` would hide the
+        # files the fix refuses to touch (legacy_uv: skipped = surfaced for review).
+        check_info(_unproven_line(unproven, _DHH))
+    headline = f"Pre-PM uv binaries in {_DHH}/bin shadow your own uv"
+    detail = f"({', '.join(removable)})"
+    if not legacy_uv.AUTOMATIC_CLEANUP:
+        provision = (
+            "PM's store has no uv yet, so these are this install's only uv — run "
+            "`hermes update` to provision PM's uv first, then "
+            if not pm.is_installed("uv")
+            else ""
+        )
+        # ``manual_issues``: no ``--fix`` run can ever clear this one (the cleanup
+        # fails closed by design), which is exactly what that bucket means.
+        return _fail_and_issue(
+            headline,
+            detail,
+            f"Automatic legacy-uv cleanup is not performed on this platform — {provision}"
+            f"delete {', '.join(removable)} from {_DHH}/bin manually",
+            f.manual_issues,
+        )
+    if should_fix:
+        if not pm.is_installed("uv"):
+            return _fail_and_issue(
+                headline,
+                detail,
+                "PM's store has no uv yet, so these are this install's only uv — "
+                "run `hermes update` (it installs uv into PM's store, then clears these), "
+                "then re-run `hermes doctor --fix`",
+                f.issues,
+            )
+        removed = remove_legacy_managed_uv(HERMES_HOME)
+        f.fixed += len(removed)
+        remaining = [name for name in removable if (HERMES_HOME / "bin" / name).is_file()]
+        if remaining:
+            # A skip (lock held / store unreadable) or a partial delete stays an unresolved
+            # finding: the old unconditional check_ok printed "Removed 0 ..." with an empty
+            # issues list and reported a repair that never ran as healthy.
+            return _fail_and_issue(
+                headline,
+                f"({', '.join(remaining)} still there — cleanup could not complete)",
+                f"Remove {', '.join(remaining)} from {_DHH}/bin — retry 'hermes doctor --fix' "
+                "once the active PM operation finishes ('hermes update' also does it)",
+                f.issues,
+            )
+        return check_ok(
+            f"Removed {len(removed)} pre-PM uv binary/binaries from {_DHH}/bin",
+            f"({', '.join(removable)})",
+        )
+    _fail_and_issue(
+        headline,
+        detail,
+        f"Remove the pre-PM uv binaries from {_DHH}/bin — 'hermes doctor --fix' or 'hermes update' does it",
+        f.issues,
+    )
+
+
 # Cache-root entries at least this big that no pruner covers get a doctor warning.
 _UNPRUNED_CACHE_WARN_BYTES = 1 << 30
 _PRUNED_CACHE_DIRS = frozenset({"scratch", "terminal"})

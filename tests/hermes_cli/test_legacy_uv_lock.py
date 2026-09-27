@@ -125,3 +125,31 @@ def test_purge_does_not_create_an_absent_store(tmp_path, monkeypatch):
     assert not legacy.exists()
 
 
+@pytest.mark.platforms("posix")
+def test_doctor_reports_cleanup_blocked_by_live_lock(tmp_path, monkeypatch):
+    """A cleanup the lock skipped is an UNRESOLVED finding, never a green check: with the
+    install lock held, ``--fix`` removes nothing, so the check must go
+    through ``issues`` — the old path printed ``check_ok`` / "Removed 0 ..." with an empty
+    issues list, reporting a blocked repair as healthy. The bounded fail-closed lock itself
+    stays untouched; the retry after release is the control."""
+    import pm
+
+    from hermes_cli import doctor
+    from hermes_cli.doctor_state import _check_legacy_uv_shadow
+
+    home, legacy, store = _home_with_legacy_uv(tmp_path, monkeypatch)
+    monkeypatch.setattr(doctor, "HERMES_HOME", home)
+    monkeypatch.setattr(pm, "is_installed", lambda name: True)
+
+    child = _hold_install_lock(store / ".install.lock")
+    try:
+        finding = _check_legacy_uv_shadow(True)
+        assert legacy.exists()
+        assert finding.issues, "a repair that could not run is an unresolved finding"
+    finally:
+        _stop(child)
+
+    finding = _check_legacy_uv_shadow(True)  # released: the retry really removes it
+    assert not legacy.exists()
+    assert finding.fixed == 1
+    assert not finding.issues

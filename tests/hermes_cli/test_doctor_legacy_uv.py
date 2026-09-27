@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import doctor
+from hermes_cli import doctor, doctor_state
 
 
 def _uv(path: Path, body: str = "hermes") -> None:
@@ -40,6 +40,92 @@ def home(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     monkeypatch.setattr(doctor, "HERMES_HOME", hermes_home)
     return hermes_home
+
+
+@pytest.mark.platforms("posix")
+def test_doctor_reports_a_pre_pm_uv_shadow(home, capsys):
+    _uv_binary(home / "bin" / "uvx")
+    (home / "bin" / "hermes").write_text("#!/usr/bin/env sh\n", encoding="utf-8")
+
+    finding = doctor_state._check_legacy_uv_shadow(False)
+
+    assert any("hermes doctor --fix" in issue for issue in finding.issues)
+    assert "shadow your own uv" in capsys.readouterr().out
+    assert finding.fixed == 0
+    # A report must not delete: the user gets to choose how to clear it.
+    assert (home / "bin" / "uvx").is_file()
+
+
+def test_doctor_keeps_an_unprobeable_uv_unresolved(home, monkeypatch):
+    """A file disappearing between discovery and sizing must not abort or look clean."""
+    _uv_binary(home / "bin" / "uv")
+    real_lstat = os.lstat
+
+    def refuse_lstat(path, *args, **kwargs):
+        if Path(path).name == "uv":
+            raise PermissionError("raced with cleanup")
+        return real_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "lstat", refuse_lstat)
+
+    finding = doctor_state._check_legacy_uv_shadow(False)
+
+    assert finding.fixed == 0
+    # ``_fail_and_issue`` records the FIX instruction, not the headline text.
+    assert finding.issues
+    assert "inaccessible" in finding.issues[0]
+
+
+@pytest.mark.platforms("posix")
+def test_doctor_fix_removes_only_the_uv_family(home, monkeypatch):
+    import pm
+
+    monkeypatch.setattr(pm, "is_installed", lambda name: True)
+    for name in ("uv", "uvx", "uv.exe", "uvx.exe"):
+        _uv_binary(home / "bin" / name)
+    (home / "bin" / "hermes").write_text("#!/usr/bin/env sh\n", encoding="utf-8")
+    (home / "bin" / "mytool").write_text("#!/usr/bin/env sh\n", encoding="utf-8")
+
+    finding = doctor_state._check_legacy_uv_shadow(True)
+
+    assert finding.fixed == 4
+    assert not finding.issues
+    for name in ("uv", "uvx", "uv.exe", "uvx.exe"):
+        assert not (home / "bin" / name).exists()
+    # ``bin/`` holds the launchers and the user's own scripts — never those.
+    assert (home / "bin" / "hermes").is_file()
+    assert (home / "bin" / "mytool").is_file()
+
+
+@pytest.mark.platforms("posix")
+def test_doctor_fix_keeps_the_family_until_the_store_has_uv(home, monkeypatch, capsys):
+    """``--fix`` must not trade the install's only uv for none: while PM's store has no uv the
+    legacy binary is still what this install runs on (same guard as
+    ``update_cmd_maint._purge_legacy_managed_uv``: remove only once a private
+    target exists). The shadowing is still reported, so the run exits non-zero with a next step."""
+    import pm
+
+    monkeypatch.setattr(pm, "is_installed", lambda name: False)
+    _uv_binary(home / "bin" / "uv")
+    (home / "bin" / "hermes").write_text("#!/usr/bin/env sh\n", encoding="utf-8")
+
+    finding = doctor_state._check_legacy_uv_shadow(True)
+
+    assert finding.fixed == 0
+    assert finding.issues
+    assert (home / "bin" / "uv").is_file()
+    out = capsys.readouterr().out
+    assert "shadow your own uv" in out
+    assert "hermes update" in finding.issues[0]
+
+
+def test_doctor_is_quiet_once_the_family_is_gone(home):
+    (home / "bin" / "hermes").write_text("#!/usr/bin/env sh\n", encoding="utf-8")
+
+    finding = doctor_state._check_legacy_uv_shadow(True)
+
+    assert not finding.issues
+    assert finding.fixed == 0
 
 
 @pytest.mark.platforms("posix")
@@ -127,6 +213,34 @@ def test_missing_bin_never_authorizes_a_later_path_unlink(tmp_path, monkeypatch)
 
     for name in legacy_uv.LEGACY_MANAGED_UV_NAMES:
         assert (outside / name).read_text(encoding="utf-8") == "USER-OWNED", name
+
+
+@pytest.mark.platforms("posix")
+def test_doctor_does_not_name_a_linked_bin_as_removable(tmp_path, monkeypatch, capsys):
+    """``$HERMES_HOME/bin`` symlinked into an ordinary user bin: doctor must not report the
+    user's own uv behind that link as a pre-PM leftover to remove, and ``--fix`` must not
+    touch it. The deletion side already refuses (the uninstall twin above); this asserts the
+    REPORT side no longer contradicts it by telling the user to delete their own files."""
+    from hermes_cli.legacy_uv import LEGACY_MANAGED_UV_NAMES
+
+    home = tmp_path / "hermes"
+    outside = tmp_path / "user-bin"
+    home.mkdir()
+    outside.mkdir()
+    for name in LEGACY_MANAGED_UV_NAMES:
+        _uv(outside / name, body="users-own-uv")
+    (home / "bin").symlink_to(outside, target_is_directory=True)
+    monkeypatch.setattr(doctor, "HERMES_HOME", home)
+
+    finding = doctor_state._check_legacy_uv_shadow(True)
+
+    assert not finding.issues, "the user's own uv is not a removable finding"
+    assert finding.fixed == 0
+    for name in LEGACY_MANAGED_UV_NAMES:
+        assert "users-own-uv" in (outside / name).read_text(encoding="utf-8")
+    out = capsys.readouterr().out
+    assert "outside the Hermes home" in out
+    assert "Remove" not in out
 
 
 @pytest.mark.platforms("posix")
@@ -375,6 +489,25 @@ def test_cleanup_skips_user_own_symlinked_uv_exe(tmp_path, monkeypatch, capsys):
 
 
 @pytest.mark.platforms("windows")
+def test_doctor_names_the_manual_step_on_the_fail_closed_platform(home, capsys):
+    """Windows gets the manual-removal instruction, not a retry: on a platform the
+    cleanup fails closed on, a "retry --fix" hint would be a finding no fix run
+    could ever clear — so it lands in the bucket that survives --fix, and the
+    summary still shows it (``_print_summary`` reads issues + manual_issues)."""
+    _uv_binary(home / "bin" / "uv.exe")
+
+    finding = doctor_state._check_legacy_uv_shadow(True)
+
+    assert finding.fixed == 0
+    assert finding.manual_issues, "the manual step must survive a --fix run"
+    assert "manual" in finding.manual_issues[0]
+    assert "retry" not in finding.manual_issues[0]
+    assert not finding.issues, "nothing here is auto-fixable, so no auto-fix issue"
+    assert (home / "bin" / "uv.exe").is_file()
+    assert "shadow your own uv" in capsys.readouterr().out
+
+
+@pytest.mark.platforms("windows")
 def test_remove_legacy_uv_is_silent_when_the_family_is_absent(home, capsys):
     """A launcher install's ``bin/`` always exists (``hermes.exe`` and friends), and on
     Windows ``_open_home_bin`` fails closed before it can probe for the family. The
@@ -419,6 +552,103 @@ def test_fail_closed_cleanup_says_nothing_when_the_family_is_absent(home, capsys
     assert (home / "bin" / "uv").is_file(), "fail closed means nothing is deleted"
 
 
+@pytest.mark.platforms("posix")
+def test_manual_step_lands_in_the_bucket_no_fix_run_can_clear(home, capsys, monkeypatch):
+    """The fail-closed instruction is a MANUAL issue on any host that reaches that branch.
+
+    It says "delete these yourself": no ``--fix`` run can ever clear it, so filing it
+    under auto-fixable issues would keep it out of the bucket the summary labels
+    "require manual intervention". The branch is platform policy, so flipping the flag
+    pins the bucket split on every lane; the marked Windows test above covers the real
+    gate — same wording, same bucket.
+    """
+    from hermes_cli import legacy_uv
+
+    monkeypatch.setattr(legacy_uv, "AUTOMATIC_CLEANUP", False)
+    _uv_binary(home / "bin" / "uv.exe")
+
+    finding = doctor_state._check_legacy_uv_shadow(True)
+
+    assert finding.fixed == 0
+    assert finding.manual_issues, "the manual step must survive a --fix run"
+    assert "manual" in finding.manual_issues[0]
+    assert "retry" not in finding.manual_issues[0]
+    assert not finding.issues, "nothing here is auto-fixable"
+    assert (home / "bin" / "uv.exe").is_file()
+    assert "shadow your own uv" in capsys.readouterr().out
+
+
+@pytest.mark.platforms("posix")
+def test_unprobeable_uv_is_manual_on_the_fail_closed_platform(home, capsys, monkeypatch):
+    """An unprobeable file obeys the same platform gate as a removable one.
+
+    On a fail-closed platform no ``--fix`` run deletes anything, so the POSIX
+    "retry ``hermes doctor --fix``" wording is advice that can never be satisfied —
+    exactly the finding the removable branch avoids. Before the gate, this path
+    returned early into ``issues`` (the auto-fixable bucket) and told Windows users
+    to retry a repair that cannot run.
+    """
+    from hermes_cli import legacy_uv
+
+    monkeypatch.setattr(legacy_uv, "AUTOMATIC_CLEANUP", False)
+    _uv_binary(home / "bin" / "uv.exe")
+    real_lstat = os.lstat
+
+    def refuse_lstat(path, *args, **kwargs):
+        if Path(path).name == "uv.exe":
+            raise PermissionError("locked by another process")
+        return real_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "lstat", refuse_lstat)
+
+    finding = doctor_state._check_legacy_uv_shadow(True)
+
+    assert finding.fixed == 0
+    assert finding.manual_issues, "no --fix run can clear this, so it is a manual issue"
+    assert "manually" in finding.manual_issues[0]
+    assert "retry" not in finding.manual_issues[0]
+    assert not finding.issues, "nothing here is auto-fixable"
+    assert (home / "bin" / "uv.exe").is_file()
+    assert "could not be inspected" in capsys.readouterr().out
+
+
+@pytest.mark.platforms("posix")
+def test_doctor_reports_the_unproven_names_beside_the_removable_ones(home, capsys):
+    """One home holding BOTH a provable leftover and a too-small/symlinked name: the
+    report-only run never executes the cleanup whose warning would name the unproven
+    files, so the headline alone would hide them — doctor must print both buckets."""
+    _uv_binary(home / "bin" / "uv.exe")
+    _uv(home / "bin" / "uvx", body="tiny, not the astral binary")
+
+    finding = doctor_state._check_legacy_uv_shadow(False)
+
+    out = capsys.readouterr().out
+    assert "not shaped like a pre-PM uv binary" in out
+    assert "uvx" in out, "the unproven name must appear in the review line"
+    assert finding.issues, "the removable family stays an unresolved finding"
+    assert not any("uvx" in issue for issue in finding.issues), (
+        "an unproven file is never a removable finding"
+    )
+    assert (home / "bin" / "uv.exe").is_file(), "report-only must not delete"
+    assert (home / "bin" / "uvx").is_file()
+
+
+@pytest.mark.platforms("posix")
+def test_doctor_reports_only_the_unproven_bucket_when_nothing_is_provable(home, capsys):
+    """The unproven-only path stays a clean report (no issue to fix), and the shared
+    review line is the same wording the both-buckets path prints."""
+    _uv(home / "bin" / "uv", body="the user's own tiny uv")
+
+    finding = doctor_state._check_legacy_uv_shadow(True)
+
+    assert not finding.issues
+    assert not finding.manual_issues
+    out = capsys.readouterr().out
+    assert "No provably-Hermes uv binaries" in out
+    assert "not shaped like a pre-PM uv binary" in out
+    assert (home / "bin" / "uv").is_file()
+
+
 @pytest.mark.platforms("windows")
 def test_remove_legacy_uv_refuses_a_junctioned_bin(tmp_path, monkeypatch):
     """Native Windows twin of the linked-bin refusal: a junction into the user's bin would
@@ -449,3 +679,28 @@ def test_remove_legacy_uv_refuses_a_junctioned_bin(tmp_path, monkeypatch):
         assert (outside / name).read_text(encoding="utf-8") == "user-owned; preserve"
 
 
+@pytest.mark.platforms("posix")
+def test_doctor_reports_partial_cleanup_as_unresolved(home, monkeypatch):
+    """One name failing mid-family: the three that went count as fixes, the one that stayed
+    remains an unresolved finding — a clean result over a live leftover is the bug."""
+    import pm
+
+    real_unlink = os.unlink
+
+    def _fail_one(name, *, dir_fd=None):
+        if os.path.basename(str(name)) == "uvx.exe":
+            raise PermissionError("simulated unlink failure")
+        return real_unlink(name, dir_fd=dir_fd) if dir_fd is not None else real_unlink(name)
+
+    monkeypatch.setattr(pm, "is_installed", lambda name: True)
+    monkeypatch.setattr("hermes_cli.legacy_uv.os.unlink", _fail_one)
+    for name in ("uv", "uvx", "uv.exe", "uvx.exe"):
+        _uv_binary(home / "bin" / name)
+
+    finding = doctor_state._check_legacy_uv_shadow(True)
+
+    assert finding.fixed == 3
+    assert finding.issues, "the name that stayed is an unresolved finding"
+    assert (home / "bin" / "uvx.exe").is_file()
+    for name in ("uv", "uvx", "uv.exe"):
+        assert not (home / "bin" / name).exists()

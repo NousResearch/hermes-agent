@@ -433,6 +433,8 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     """Profile asset as a data URL; absent is ``found: false``, not an error."""
     asset = str(params.get("asset") or "avatar").strip().lower()
+    if asset != "avatar":
+        return _err(rid, 4066, f"unknown asset '{asset}' (supported: avatar)")
     import base64
     _name, profile_dir, err = _resolve_profile(rid, params)
     if err is not None:

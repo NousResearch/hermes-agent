@@ -4113,6 +4113,10 @@ export const en: Translations = {
       noChanges: 'No changes',
       notRepo: 'Not a git repository',
       noDiff: 'No diff to show',
+      noDiffForFile: 'No diff to review',
+      noDiffForFileHint:
+        'This file lives outside the session’s git repository, or its changes are already committed.',
+      revealFile: 'Reveal file',
       scopeUncommitted: 'Uncommitted',
       scopeBranch: 'Branch',
       scopeLastTurn: 'Last turn',

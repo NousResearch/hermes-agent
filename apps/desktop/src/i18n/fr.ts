@@ -4516,6 +4516,10 @@ export const frOverrides = {
       noChanges: 'Aucune modification',
       notRepo: 'Pas un dépôt git',
       noDiff: 'Aucune différence à afficher',
+      noDiffForFile: 'Aucune différence à réviser',
+      noDiffForFileHint:
+        "Ce fichier se trouve en dehors du dépôt git de la session, ou ses modifications sont déjà validées.",
+      revealFile: 'Révéler le fichier',
       scopeUncommitted: 'Non validé',
       scopeBranch: 'Branche',
       scopeLastTurn: 'Dernier tour',

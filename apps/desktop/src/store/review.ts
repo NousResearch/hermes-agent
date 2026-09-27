@@ -5,11 +5,14 @@ import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
 import { isPaneVisible, revealTreePane } from '@/components/pane-shell/tree/store'
 import type { HermesReviewFile, HermesReviewShipInfo } from '@/global'
 import { matchesQuery } from '@/hooks/use-media-query'
+import { translateNow } from '@/i18n'
+import { revealDesktopPath } from '@/lib/desktop-fs'
 import { desktopGit } from '@/lib/desktop-git'
 import { isExcludedPath } from '@/lib/excluded-paths'
 import { requestOneShot } from '@/lib/oneshot'
 import { Codecs, persistentAtom } from '@/lib/persisted'
 import { modeBound } from '@/store/interface-mode'
+import { notify, notifyError } from '@/store/notifications'
 
 import { refreshRepoStatus, repoStatusForCwd } from './coding-status'
 import { stampSessionPrBranch } from './pull-requests'
@@ -378,7 +381,46 @@ export async function openReviewForPath(
 
   if (file) {
     await selectReviewFile(file)
+
+    return
   }
+
+  notifyMissingReviewDiff(path)
+}
+
+// A tool-reported path can arrive repo-relative; anchor it to the repo cwd so
+// the reveal action points at a real file, not one relative to the renderer.
+function revealCandidatePath(path: string): string {
+  const target = path.trim()
+
+  if (target.startsWith('~') || target.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(target)) {
+    return target
+  }
+
+  const cwd = reviewRepoCwd()
+
+  return cwd ? `${cwd.replace(/[\\/]+$/, '')}/${target.replace(/^[\\/]+/, '')}` : target
+}
+
+// The clicked file has no git row: it lives outside the repo (no baseline to
+// diff against — #125035) or its edits are already committed. The pane opens
+// with nothing selected, so say why instead of leaving a silent empty panel.
+function notifyMissingReviewDiff(path: string): void {
+  notify({
+    // One toast slot: a later click replaces the earlier one (its action is
+    // bound to that click's path).
+    id: 'review-no-diff-for-file',
+    kind: 'info',
+    title: translateNow('statusStack.coding.noDiffForFile'),
+    message: translateNow('statusStack.coding.noDiffForFileHint'),
+    action: {
+      label: translateNow('statusStack.coding.revealFile'),
+      onClick: () =>
+        void revealDesktopPath(revealCandidatePath(path)).catch(error =>
+          notifyError(error, translateNow('statusStack.coding.revealFile'))
+        )
+    }
+  })
 }
 
 // ── Mutations ────────────────────────────────────────────────────────────────

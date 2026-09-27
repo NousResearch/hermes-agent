@@ -4494,6 +4494,10 @@ export const esOverrides = {
       noChanges: 'Sin cambios',
       notRepo: 'No es un repositorio Git',
       noDiff: 'No hay diferencias que mostrar',
+      noDiffForFile: 'No hay diff que revisar',
+      noDiffForFileHint:
+        'Este archivo está fuera del repositorio git de la sesión, o sus cambios ya están confirmados.',
+      revealFile: 'Mostrar archivo',
       scopeUncommitted: 'Sin confirmar',
       scopeBranch: 'Rama',
       scopeLastTurn: 'Último turno',

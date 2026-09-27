@@ -4504,6 +4504,10 @@ export const deOverrides = {
       noChanges: 'Keine Änderungen',
       notRepo: 'Kein git-Repository',
       noDiff: 'Kein Diff zum Anzeigen',
+      noDiffForFile: 'Kein Diff zu prüfen',
+      noDiffForFileHint:
+        'Diese Datei liegt außerhalb des git-Repositorys der Sitzung, oder ihre Änderungen sind bereits committet.',
+      revealFile: 'Datei anzeigen',
       scopeUncommitted: 'Nicht committet',
       scopeBranch: 'Branch',
       scopeLastTurn: 'Letzte Runde',

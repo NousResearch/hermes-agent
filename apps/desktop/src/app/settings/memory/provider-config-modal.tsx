@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import {
@@ -11,7 +11,7 @@ import {
   DialogHeader,
   DialogTitle
 } from '@/components/ui/dialog'
-import { saveMemoryProviderConfig } from '@/hermes'
+import { type ProfileScope, profileScopeKey, saveMemoryProviderConfig } from '@/hermes'
 import { ExternalLink, Loader2, Save, SlidersHorizontal } from '@/lib/icons'
 import { notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile } from '@/store/profile'
@@ -53,7 +53,7 @@ export function ProviderConfigModal({
   onSaved
 }: {
   config: MemoryProviderConfig
-  profile?: null | string
+  profile?: ProfileScope
   provider: string
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -63,6 +63,20 @@ export function ProviderConfigModal({
   const [values, setValues] = useState<Record<string, string>>({})
   const [seeded, setSeeded] = useState<Record<string, string>>({})
   const [saving, setSaving] = useState(false)
+  const ownerKey = profileScopeKey(profile)
+  const ownerKeyRef = useRef(ownerKey)
+  const mountedRef = useRef(true)
+  ownerKeyRef.current = ownerKey
+
+  // React StrictMode replays effects after cleanup; reopen this lifecycle.
+  // eslint-disable-next-line no-restricted-syntax -- mount state is not reactive routing state
+  useEffect(() => {
+    mountedRef.current = true
+
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
 
   // Reseed on open so edits never start from a stale prior-session snapshot.
   useEffect(() => {
@@ -78,16 +92,25 @@ export function ProviderConfigModal({
     const edited = Object.fromEntries(Object.entries(values).filter(([key, value]) => value !== seeded[key]))
 
     setSaving(true)
+    const capturedOwnerKey = ownerKey
 
     try {
       await saveMemoryProviderConfig(provider, edited, profile)
+
+      if (!mountedRef.current || ownerKeyRef.current !== capturedOwnerKey) {return}
       notify({ kind: 'success', title: `${config.label} saved`, message: 'Memory provider configuration updated.' })
       await onSaved()
+
+      if (!mountedRef.current || ownerKeyRef.current !== capturedOwnerKey) {return}
       onOpenChange(false)
     } catch (err) {
-      notifyError(err, `Failed to save ${config.label} settings`)
+      if (mountedRef.current && ownerKeyRef.current === capturedOwnerKey) {
+        notifyError(err, `Failed to save ${config.label} settings`)
+      }
     } finally {
-      setSaving(false)
+      if (mountedRef.current && ownerKeyRef.current === capturedOwnerKey) {
+        setSaving(false)
+      }
     }
   }
 
@@ -97,8 +120,11 @@ export function ProviderConfigModal({
         <DialogHeader>
           <DialogTitle icon={SlidersHorizontal}>{config.label} — full configuration</DialogTitle>
           <DialogDescription>
-            Every {config.label} option for the <span className="font-medium">{profile ?? activeProfile}</span> profile.
-            Blank fields fall back to the resolved host or built-in default.
+            Every {config.label} option for the{' '}
+            <span className="font-medium">
+              {(typeof profile === 'object' ? profile?.profile : profile) ?? activeProfile}
+            </span>{' '}
+            profile. Blank fields fall back to the resolved host or built-in default.
           </DialogDescription>
           {config.docs_url && (
             <a

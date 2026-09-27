@@ -80,6 +80,71 @@ describe('renameSessionPreferringRpc', () => {
     expect(renameSession).toHaveBeenCalledWith(STORED_ID, 'Prep Butler', 'personal')
   })
 
+  it('keeps a registry row route binding on the REST rename', async () => {
+    $selectedStoredSessionId.set('some-other-active-session')
+    $sessions.set([
+      {
+        _desktop_route_binding: 'binding-a',
+        connection_id: 'same-id',
+        id: STORED_ID,
+        profile: 'personal',
+        title: 'Owned row'
+      } as never
+    ])
+
+    await renameSessionPreferringRpc(STORED_ID, 'Renamed')
+
+    expect(renameSession).toHaveBeenCalledWith(STORED_ID, 'Renamed', {
+      connectionId: 'same-id',
+      profile: 'personal',
+      sessionRouteBinding: 'binding-a',
+      sessionRouteId: STORED_ID
+    })
+  })
+
+  it('renames an active legacy row through its guarded REST route', async () => {
+    $selectedStoredSessionId.set(STORED_ID)
+    $activeSessionId.set(RUNTIME_ID)
+    $sessions.set([
+      {
+        _desktop_route_binding: 'binding-a',
+        id: STORED_ID,
+        profile: 'personal',
+        title: 'Owned legacy row'
+      } as never
+    ])
+
+    await renameSessionPreferringRpc(STORED_ID, 'Renamed')
+
+    expect(request).not.toHaveBeenCalled()
+    expect(renameSession).toHaveBeenCalledWith(STORED_ID, 'Renamed', {
+      connectionId: null,
+      profile: 'personal',
+      sessionRouteBinding: 'binding-a',
+      sessionRouteId: STORED_ID
+    })
+  })
+
+  it('keeps a sidebar source row route binding when the row is absent from $sessions', async () => {
+    $selectedStoredSessionId.set('some-other-active-session')
+
+    const sourceRow = {
+      _desktop_route_binding: 'binding-a',
+      id: STORED_ID,
+      profile: 'personal',
+      title: 'Owned legacy row'
+    } as never
+
+    await renameSessionPreferringRpc(STORED_ID, 'Renamed', 'personal', sourceRow)
+
+    expect(renameSession).toHaveBeenCalledWith(STORED_ID, 'Renamed', {
+      connectionId: null,
+      profile: 'personal',
+      sessionRouteBinding: 'binding-a',
+      sessionRouteId: STORED_ID
+    })
+  })
+
   it('falls back to REST when the RPC fails (e.g. socket mid-reconnect)', async () => {
     $selectedStoredSessionId.set(STORED_ID)
     $activeSessionId.set(RUNTIME_ID)

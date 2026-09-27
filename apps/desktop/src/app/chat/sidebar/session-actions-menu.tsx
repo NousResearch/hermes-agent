@@ -53,9 +53,11 @@ import {
   sessionPinId
 } from '@/store/session'
 import { $sessionColorOverrides, setSessionColorOverride } from '@/store/session-color'
+import { sessionMutationScopeFromRow } from '@/store/session-request-router'
 import { $sessionStates, $sessionTiles, closeAllOpenSessionTiles } from '@/store/session-states'
 import { ackStoredSessionId } from '@/store/session-unread'
 import { canOpenSessionInTerminal, canOpenSessionWindow, openSessionInTerminal } from '@/store/windows'
+import type { SessionInfo } from '@/types/hermes'
 
 import type { SessionTitleResponse } from '../../types'
 
@@ -113,17 +115,17 @@ function resolveRuntimeIdForStored(storedSessionId: string): null | string {
 export async function renameSessionPreferringRpc(
   storedSessionId: string,
   title: string,
-  profile?: string
+  profile?: string,
+  sourceRow?: SessionInfo
 ): Promise<{ title?: string }> {
-  const resolvedProfile =
-    (profile ?? '').trim() ||
-    $sessions.get().find(s => sessionMatchesStoredId(s, storedSessionId))?.profile ||
-    undefined
+  const row = sourceRow ?? $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+  const resolvedProfile = (profile ?? '').trim() || row?.profile || undefined
+  const owner = sessionMutationScopeFromRow(row) ?? resolvedProfile
 
   const runtimeId = resolveRuntimeIdForStored(storedSessionId)
   const gateway = activeGateway()
 
-  if (title && runtimeId && gateway) {
+  if (title && runtimeId && gateway && !row?._desktop_route_binding) {
     try {
       const result = await gateway.request<SessionTitleResponse>('session.title', {
         session_id: runtimeId,
@@ -140,11 +142,12 @@ export async function renameSessionPreferringRpc(
     }
   }
 
-  return renameSession(storedSessionId, title, resolvedProfile)
+  return renameSession(storedSessionId, title, owner)
 }
 
 interface SessionActions {
   sessionId: string
+  session?: SessionInfo
   title: string
   pinned?: boolean
   /** Backend-derived read state — drives the Mark as unread/read label. */
@@ -250,6 +253,7 @@ function MoveToProjectItems({ kit, sessionId, profile }: { kit: MenuKit; session
 
 function useSessionActions({
   sessionId,
+  session,
   title,
   pinned = false,
   unread = false,
@@ -606,6 +610,7 @@ function useSessionActions({
       onOpenChange={setRenameOpen}
       open={renameOpen}
       profile={profile}
+      session={session}
       sessionId={sessionId}
     />
   ) : null
@@ -721,9 +726,10 @@ interface RenameSessionDialogProps {
   sessionId: string
   currentTitle: string
   profile?: string
+  session?: SessionInfo
 }
 
-function RenameSessionDialog({ open, onOpenChange, sessionId, currentTitle, profile }: RenameSessionDialogProps) {
+function RenameSessionDialog({ open, onOpenChange, sessionId, currentTitle, profile, session }: RenameSessionDialogProps) {
   const { t } = useI18n()
   const r = t.sidebar.row
   const [value, setValue] = useState(currentTitle)
@@ -756,7 +762,7 @@ function RenameSessionDialog({ open, onOpenChange, sessionId, currentTitle, prof
       const targetProfile =
         (profile ?? '').trim() || $sessions.get().find(s => sessionMatchesStoredId(s, sessionId))?.profile || undefined
 
-      const result = await renameSessionPreferringRpc(sessionId, next, targetProfile)
+      const result = await renameSessionPreferringRpc(sessionId, next, targetProfile, session)
       const finalTitle = result.title || next || ''
       // One write, every list: patch the main store AND the project surfaces.
       // Bare-id patching only the recents slice left project-scoped rows

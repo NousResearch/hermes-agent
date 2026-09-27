@@ -9,6 +9,12 @@ const host = vi.hoisted(() => ({
   handle: vi.fn()
 }))
 
+vi.mock('node:os', async importOriginal => {
+  const actual = await importOriginal<typeof os>()
+
+  return { ...actual, hostname: vi.fn(actual.hostname) }
+})
+
 vi.mock('electron', () => ({
   app: { getGPUInfo: host.getGPUInfo, getLocale: host.getLocale },
   ipcMain: { handle: host.handle }
@@ -18,6 +24,7 @@ import type { MachineProfile } from './machine-profile'
 import { registerMachineProfile } from './machine-profile'
 
 beforeEach((): void => {
+  vi.mocked(os.hostname).mockReset()
   host.handle.mockReset()
   host.getGPUInfo.mockReset()
   host.getLocale.mockClear()
@@ -45,6 +52,7 @@ it('registers the renderer channel and reports native machine facts with the OS 
     release: os.release(),
     username: os.userInfo().username
   })
+  expect(typeof result.hostname).toBe('string')
   expect(typeof result.model).toBe('string')
   expect(host.getGPUInfo).toHaveBeenCalledWith('basic')
 })
@@ -56,4 +64,19 @@ it('keeps machine facts available when Chromium cannot enumerate GPUs', async ()
   expect(result.nvidia).toBe(false)
   expect(result.platform).toBe(process.platform)
   expect(result.locale).toBe('fr-CA')
+})
+
+it.each([
+  ['192.168.1.20', ''],
+  ['::1', ''],
+  ['localhost', ''],
+  ['LOCALHOST.local', ''],
+  ['foo.local', 'foo'],
+  ['  foo.local  ', 'foo'],
+  ['', '']
+])('reports hostname %j as the display name %j', async (hostname, expected): Promise<void> => {
+  vi.mocked(os.hostname).mockReturnValue(hostname)
+  host.getGPUInfo.mockResolvedValue({ gpuDevice: [] })
+
+  expect((await handler()()).hostname).toBe(expected)
 })

@@ -17,6 +17,7 @@ it('offers the NVIDIA games pill only where its plugins run, and Blender everywh
   const machine: DesktopMachineProfile = {
     ageDays: 400,
     arch: 'x64',
+    hostname: 'gaming-pc',
     locale: 'en-US',
     model: 'PC',
     nvidia: true,

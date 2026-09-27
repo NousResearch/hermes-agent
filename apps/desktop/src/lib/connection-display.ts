@@ -74,9 +74,25 @@ export function connectionEndpoint(connection: DesktopRegistryConnection): null 
   return connection.url?.trim() || null
 }
 
+/** Registry labels remain identity data; machine naming is display-only. */
+export function connectionDisplayName(
+  connection: DesktopRegistryConnection,
+  hostname: string | undefined,
+  thisDeviceSuffix: string
+): { name: string; suffix: string } {
+  if (connection.kind !== 'local') {
+    return { name: connection.label, suffix: '' }
+  }
+
+  // Keep the default label in sync with electron/connection-registry.ts localEntry() (separate TS projects).
+  const name = connection.label !== 'This device' ? connection.label : hostname?.trim()
+
+  return { name: name || connection.label, suffix: name ? thisDeviceSuffix : '' }
+}
+
 /** Full gateway identity for a hover tip without keeping technical routing in chrome. */
-export function connectionTooltip(connection: DesktopRegistryConnection): string {
+export function connectionTooltip(connection: DesktopRegistryConnection, displayName = connection.label): string {
   const endpoint = connectionEndpoint(connection)
 
-  return endpoint ? `${connection.label}\n${endpoint}` : connection.label
+  return endpoint ? `${displayName}\n${endpoint}` : displayName
 }

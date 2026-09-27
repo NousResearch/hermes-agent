@@ -1208,6 +1208,7 @@ export const ru = defineLocale({
     },
     // v2 multi-connection registry: Settings → Gateways.
     connections: {
+      thisDeviceSuffix: '(это устройство)',
       title: 'Зарегистрированные шлюзы',
       intro:
         'Управляйте этим устройством и всеми шлюзами Hermes, до которых можно дотянуться через удалённые, SSH или Cloud-соединения.',

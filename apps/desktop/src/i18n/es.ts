@@ -1728,6 +1728,7 @@ export const esOverrides = {
       clear: 'Limpiar'
     },
     connections: {
+      thisDeviceSuffix: '(este dispositivo)',
       title: 'Gateways registrados',
       intro:
         'Gestiona este dispositivo y cada gateway de Hermes al que puede llegar mediante conexiones remotas, SSH o Cloud.',

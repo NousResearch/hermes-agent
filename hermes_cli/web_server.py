@@ -33,8 +33,8 @@ PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from hermes_cli import __version__
 from hermes_cli.config import load_config
+from hermes_cli.version_info import get_version_info
 
 try:
     from fastapi import FastAPI, HTTPException, Request
@@ -45,15 +45,17 @@ except ImportError:
     # running `hermes dashboard` needs fastapi+uvicorn; lazy install keeps
     # them out of every other install path. After install, re-import.
     try:
-        from tools.lazy_deps import ensure as _lazy_ensure
-        _lazy_ensure("tool.dashboard", prompt=False)
-        from fastapi import FastAPI, HTTPException, Request
+        from pm import ensure_import
+        ensure_import("web")
+        from fastapi import (
+            FastAPI, HTTPException, Request,
+        )
         from fastapi.middleware.cors import CORSMiddleware
         from fastapi.responses import JSONResponse
     except Exception:
         raise SystemExit(
             "Web UI requires fastapi and uvicorn.\n"
-            f"Install with: {sys.executable} -m pip install 'fastapi' 'uvicorn'"
+            "Run hermes pm repair, then restart Hermes."
         )
 
 WEB_DIST = Path(os.environ["HERMES_WEB_DIST"]) if "HERMES_WEB_DIST" in os.environ else Path(__file__).parent / "web_dist"
@@ -92,6 +94,26 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
     ("tasks on the sleeping profile could be idle" — community report, Aug 2026).
     """
     from cron.scheduler_provider import InProcessCronScheduler, resolve_cron_scheduler
+
+    # A live gateway on THIS backend's HERMES_HOME owns cron delivery with live platform
+    # adapters (#52202): let it tick, and start nothing here. Without this, the fail-open
+    # paths below (profile enumeration failure, empty served set, external provider) start
+    # an ungated single-store ticker that races the gateway's tick-lock; when the desktop
+    # wins, delivery has no live adapter and the cold send hangs until script_timeout.
+    try:
+        from hermes_constants import get_hermes_home
+        from hermes_cli.profiles import _check_gateway_running
+
+        if _check_gateway_running(Path(get_hermes_home())):
+            _log.info(
+                "Desktop cron scheduler not started: live gateway owns cron on this "
+                "HERMES_HOME; the gateway ticks with live adapters"
+            )
+            return
+    except Exception:
+        # Liveness probe failed: fall through to the existing per-tick gating, which
+        # still stands down profile-by-profile for gateway-owned homes.
+        _log.warning("Desktop cron: gateway-ownership probe failed; using per-tick gating only", exc_info=True)
 
     provider = resolve_cron_scheduler()
 
@@ -315,7 +337,7 @@ def _get_pty_active_session_files(app: "FastAPI") -> dict[str, Path]:
     return _app_state_default(app, "pty_active_session_files", dict)
 
 
-app = FastAPI(title="Hermes Agent", version=__version__, lifespan=_lifespan)
+app = FastAPI(title="Hermes Agent", version=get_version_info().base_version, lifespan=_lifespan)
 
 
 # Memory-provider OAuth connect routes live in the memory layer, not here.
@@ -1275,6 +1297,7 @@ def _on_server_started(
     host: str,
     port: int,
     headless: bool,
+    isolated: bool,
     open_browser: bool,
     initial_profile: str,
     start_mcp_discovery_after_bind: bool,
@@ -1316,6 +1339,11 @@ def _on_server_started(
         except (TypeError, ValueError):
             grace = DEFAULT_IDLE_GRACE_S
         start_idle_watchdog(server, app.state.ssh_isolated_clients, grace_s=grace)
+        # A connected client keeps the idle watchdog quiet forever, and the host's updater may not
+        # restart this backend, so it retires itself (between turns) when the install moves on.
+        from hermes_cli.web_server_skew_exit import start_code_skew_watchdog
+
+        start_code_skew_watchdog(server)
 
     actual_port = _read_bound_port(server, fallback=port)
     app.state.bound_port = actual_port
@@ -1332,7 +1360,7 @@ def _on_server_started(
 
         register_self(
             "serve" if headless else "dashboard",
-            detail={"host": host, "port": actual_port, "profile": initial_profile or ""},
+            detail={"host": host, "port": actual_port, "profile": initial_profile or "", "isolated": isolated},
         )
         attach_self_to_kill_on_close_job()
 
@@ -1345,11 +1373,18 @@ def _on_server_started(
     _best_effort("host rendezvous publish", lambda: _publish_host_rendezvous(host, actual_port))
 
     _write_dashboard_ready_file(actual_port)
-    # Port-discovery sentinel parsed by the Desktop spawn (matches either
-    # token). Written to fd 1: tui_gateway.server redirects sys.stdout to
-    # stderr at import, and the Desktop watches child.stdout (#96282).
-    ready_token = "HERMES_BACKEND_READY" if headless else "HERMES_DASHBOARD_READY"
-    _write_machine_sentinel_line(f"{ready_token} port={actual_port}")
+    # Port-discovery sentinel parsed by the Desktop spawn. Written to fd 1:
+    # tui_gateway.server redirects sys.stdout to stderr at import, and the
+    # Desktop watches child.stdout (#96282). A headless `serve` announces the
+    # neutral token FIRST and the legacy HERMES_DASHBOARD_READY one after it:
+    # a packaged Desktop artifact whose parser predates the neutral token
+    # (#60772) still matches the legacy sentinel, while current parsers match
+    # either. The legacy `dashboard` backend keeps its own single token.
+    if headless:
+        _write_machine_sentinel_line(f"HERMES_BACKEND_READY port={actual_port}")
+        _write_machine_sentinel_line(f"HERMES_DASHBOARD_READY port={actual_port}")
+    else:
+        _write_machine_sentinel_line(f"HERMES_DASHBOARD_READY port={actual_port}")
     if headless:
         # Auth-gated JSON-RPC/WS only — announce the bind, not a URL. flush:
         # a piped stdout otherwise surfaces this minutes after the sentinel.
@@ -1466,6 +1501,7 @@ def start_server(
     allow_public: bool = False,
     initial_profile: str = "",
     headless: bool = False,
+    isolated: bool = False,
     ssh_session_token: Optional[str] = None,
     ssh_owner_nonce: Optional[str] = None,
     start_mcp_discovery_after_bind: bool = False,
@@ -1475,6 +1511,8 @@ def start_server(
     ``initial_profile`` is appended to the auto-opened URL as ``?profile=<name>``
     (profile alias ``<profile> dashboard``). ``headless`` is the ``serve`` path:
     JSON-RPC/WS backend, no UI build, no SPA mount (``HERMES_SERVE_HEADLESS``).
+    ``isolated`` (``--isolated``) is recorded in the spawn ledger so attach-first
+    discovery never adopts this process.
     ``ssh_session_token``/``ssh_owner_nonce`` are process-local Desktop SSH
     bootstrap state, never persisted or exported to children.
     ``start_mcp_discovery_after_bind`` (Desktop ``serve``) defers MCP discovery
@@ -1560,6 +1598,7 @@ def start_server(
                 host=host,
                 port=port,
                 headless=headless,
+                isolated=isolated,
                 open_browser=open_browser,
                 initial_profile=initial_profile,
                 start_mcp_discovery_after_bind=start_mcp_discovery_after_bind,
@@ -1600,7 +1639,7 @@ import shutil  # noqa: F401,E402
 import stat  # noqa: F401,E402
 import tempfile  # noqa: F401,E402
 from datetime import timezone  # noqa: F401,E402
-import yaml  # noqa: F401,E402
+import hermes_yaml as yaml  # noqa: F401,E402
 import zipfile  # noqa: F401,E402
 
 

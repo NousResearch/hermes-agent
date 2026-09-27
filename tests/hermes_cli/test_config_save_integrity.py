@@ -5,7 +5,7 @@ import os
 import shutil
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 import hermes_cli.config as config_mod
 from hermes_cli.config import DEFAULT_CONFIG, load_config, migrate_config, read_raw_config, save_config

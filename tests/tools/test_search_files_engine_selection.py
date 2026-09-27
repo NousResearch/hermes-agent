@@ -333,7 +333,7 @@ def test_resolved_executable_with_spaces_is_used_by_every_rg_invocation():
 
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_off_path_windows_rg_miss_is_reprobed_then_success_is_cached(
     tmp_path, monkeypatch
 ):
@@ -378,7 +378,7 @@ def test_remote_resolution_never_probes_controller_host_paths(tmp_path, monkeypa
     assert str(tmp_path) not in env.commands[0]
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_remote_msys_shaped_executable_is_not_rewritten_as_controller_path():
     env = RecordingEnvironment()
 
@@ -401,7 +401,7 @@ def test_remote_msys_shaped_executable_is_not_rewritten_as_controller_path():
     assert "C:/remote-tools/rg" not in env.rg_commands[0]
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_every_windows_drive_root_is_broad_even_when_home_is_on_another_drive(
     tmp_path, monkeypatch
 ):

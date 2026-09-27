@@ -1,10 +1,5 @@
 """Tests for hermes-api-server toolset and API server tool availability."""
 
-
-
-
-
-
 class TestApiServerPlatformConfig:
 
     def test_default_api_server_includes_terminal_toolset(self):
@@ -18,6 +13,3 @@ class TestApiServerPlatformConfig:
         from hermes_cli.tools_config import _get_platform_tools
         discover_builtin_tools()
         assert "terminal" in _get_platform_tools({}, "api_server")
-
-
-

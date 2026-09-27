@@ -40,7 +40,8 @@ import type { GatewayEventContext } from './types'
 
 /**
  * Whether a `session.info` payload's `stored_session_id` may be treated as the
- * selected conversation's, so its cwd can be claimed for it (#71254).
+ * selected conversation's, so its cwd and branch can be claimed for it
+ * (#71254, #92888).
  *
  * Absent is not the same as different: the backend omits the id on a
  * not-yet-built (`lazy`) session, and refusing there would leave the workspace
@@ -199,10 +200,16 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
       // Active-session model/provider still flows through the session state
       // cache via updateSessionState → syncRuntimeMetadataToView below.
 
-      if (
-        typeof payload?.cwd === 'string' &&
-        sessionInfoDescribesSelectedSession(payload.stored_session_id, isActiveEvent || rebound)
-      ) {
+      // cwd and branch together name the workspace, so both need the event to
+      // be the selected conversation's. A background Kanban worker's update
+      // otherwise repointed the composer's branch at its PR worktree while
+      // the default chat stayed selected (#92888).
+      const describesSelectedWorkspace = sessionInfoDescribesSelectedSession(
+        payload?.stored_session_id,
+        isActiveEvent || rebound
+      )
+
+      if (typeof payload?.cwd === 'string' && describesSelectedWorkspace) {
         // The active session's agent can relocate itself (new repo/worktree
         // via the terminal). When the SAME active session's cwd actually
         // moves, follow it — refresh the project tree + scope so the sidebar
@@ -227,7 +234,7 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
         }
       }
 
-      if (typeof payload?.branch === 'string') {
+      if (typeof payload?.branch === 'string' && describesSelectedWorkspace) {
         setCurrentBranch(payload.branch)
       }
 

@@ -43,6 +43,7 @@ export function createClientSessionState(
     interrupted: false,
     interimBoundaryPending: false,
     needsInput: false,
+    runtimeStartedAt: Date.now(),
     turnStartedAt: null,
     turnLive: false,
     usage: null
@@ -221,7 +222,8 @@ export function attachmentDisplayText(attachment: ComposerAttachment): string | 
  * URL renders inline with zero network, while an `@image:<localpath>` ref would
  * route through `/api/media` and can 403 in remote mode. Full-resolution bytes
  * are loaded separately for the model and on-demand lightbox, not retained in
- * the optimistic message.
+ * the optimistic message. `blob:` previews from OS drops bypass the data-URL
+ * extract path and render as a markdown image instead (#63682).
  *
  * Everything else (files, folders, terminals, post-sync `@file:` refs) falls
  * through to `attachmentDisplayText`.
@@ -232,9 +234,32 @@ export function optimisticAttachmentRef(attachment: ComposerAttachment): string 
   }
 
   if (attachment.kind === 'image') {
+    // Object-URL previews from OS drops take precedence over the path ref:
+    // markdown image keeps them out of the data-URL extract path while still
+    // rendering inline in the optimistic bubble (#63682).
+    if (attachment.previewUrl?.startsWith('blob:')) {
+      const alt = attachment.label || 'image'
+
+      return `![${alt}](${attachment.previewUrl})`
+    }
+
+    // Prefer a filesystem-backed `@image:<path>` ref so the in-flight bubble
+    // renders through the same DirectiveImage path as a reloaded turn. That
+    // component shows a bounded thumbnail inline (no full-resolution paint, so
+    // the multi-image send freeze this design guards against does not return)
+    // and hands the full-resolution file to the lightbox/download — fixing the
+    // live-vs-reload fidelity gap where a sent screenshot stayed 512px until a
+    // session reload rehydrated it (#93204). Remote gateways resolve the same
+    // path over the authenticated media API, so no /api/media 403.
+    const pathRef = attachment.path || attachment.detail
+
+    if (pathRef) {
+      return `@image:${formatRefValue(pathRef)}`
+    }
+
     if (attachment.thumbnailUrl?.startsWith('data:')) {
-      // The pill and the in-flight bubble render the bounded thumbnail. Full
-      // bytes are read separately for lightbox/download and model upload.
+      // No path to rehydrate from (e.g. pasted bytes): render the bounded
+      // thumbnail inline. Full bytes remain available for the model upload.
       return attachment.thumbnailUrl
     }
 
@@ -244,10 +269,9 @@ export function optimisticAttachmentRef(attachment: ComposerAttachment): string 
       return attachment.previewUrl
     }
 
-    // A newly attached image has no thumbnail while its queued resize is still
-    // pending. Do not fall through to @image:<path>: the optimistic bubble would
-    // fetch and paint the full source, recreating the freeze if Send wins the
-    // race. The model upload remains path/byte based and is unaffected.
+    // A newly attached image with no path and no thumbnail yet: the queued
+    // resize is still pending. Render nothing rather than paint the full source
+    // and recreate the freeze if Send wins the race.
     return null
   }
 

@@ -300,7 +300,21 @@ function SidebarSessionRowImpl({
   // shell column would span the card's full height and shave every line,
   // when only the header shares its line with the age and kebab.
   const actionsNode = (
-    <div className="relative z-2 flex shrink-0 items-center justify-end gap-1" data-row-actions>
+    <div
+      className="relative z-2 flex shrink-0 items-center justify-end gap-1"
+      data-row-actions
+      // Radix renders the menu content in a portal, but React still bubbles its
+      // events through this logical parent (#85163): in card (Inbox) mode this
+      // cluster renders INSIDE the row body whose onClick resumes, so an
+      // Archive menu click also fired the row's resume. This container-level
+      // gate is deliberate: every action owns its gesture instead of inheriting
+      // row resume/drag semantics. A future child that needs row semantics must
+      // move outside this boundary rather than weakening it for every menu
+      // action. Flat rows already achieve this structurally (actions render
+      // outside the row button via the shell's `actions` column).
+      onClick={event => event.stopPropagation()}
+      onPointerDown={event => event.stopPropagation()}
+    >
       {trailing.map(({ key, node }, index) => (
         <span
           className={
@@ -312,6 +326,7 @@ function SidebarSessionRowImpl({
         </span>
       ))}
       <SessionActionsMenu
+        archived={Boolean(session.archived)}
         onArchive={onArchive}
         onBranch={onBranch}
         onDelete={onDelete}
@@ -341,6 +356,7 @@ function SidebarSessionRowImpl({
 
   return (
     <SessionContextMenu
+      archived={Boolean(session.archived)}
       onArchive={onArchive}
       onBranch={onBranch}
       onDelete={onDelete}
@@ -498,12 +514,30 @@ function SidebarSessionRowImpl({
                 </Tip>
               ) : null
 
+            // A projected continuation renders as a plain top-level row, which
+            // reads as a brand-new conversation that "appeared by itself" — and
+            // the sealed predecessor it replaced once nested like a branch
+            // users deleted as accidents (#121148). Label the provenance so an
+            // automatic rotation is legible as one.
+            const continuationBadge =
+              session.continuation_kind === 'compression' ? (
+                <Tip label={r.continuationOrigin}>
+                  <Codicon
+                    aria-hidden="true"
+                    className="size-3.5 shrink-0 text-(--ui-text-quaternary)"
+                    name="layers"
+                    size="0.75rem"
+                  />
+                </Tip>
+              ) : null
+
             if (!card) {
               return (
                 <>
                   {leadNode}
                   <SessionRowSlot area={SESSION_ROW_AREAS.leading} sessionId={sessionPinId(session)} />
                   {handoffBadge}
+                  {continuationBadge}
                   <span className="min-w-0 flex-1 self-center">
                     <OverflowTip label={title} placement="row">
                       <SidebarRowLabel
@@ -562,6 +596,7 @@ function SidebarSessionRowImpl({
                     {context}
                   </span>
                   {handoffBadge}
+                  {continuationBadge}
                   <SessionRowSlot area={SESSION_ROW_AREAS.trailing} sessionId={sessionPinId(session)} />
                   {actionsNode}
                 </div>

@@ -12,8 +12,6 @@ import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-
-
 def _ensure_discord_mock():
     if "discord" in sys.modules and hasattr(sys.modules["discord"], "__file__"):
         return
@@ -45,7 +43,6 @@ def _ensure_discord_mock():
     sys.modules.setdefault("discord.ext", ext_mod)
     sys.modules.setdefault("discord.ext.commands", commands_mod)
 
-
 _ensure_discord_mock()
 
 from plugins.platforms.discord.adapter import (  # noqa: E402
@@ -54,23 +51,19 @@ from plugins.platforms.discord.adapter import (  # noqa: E402
     _read_discord_prompt_timeout,
 )
 
-
 def _patch_config(monkeypatch, cfg):
     """Stub ``hermes_cli.config.read_raw_config`` to return ``cfg``."""
     import hermes_cli.config
     monkeypatch.setattr(hermes_cli.config, "read_raw_config", lambda: cfg)
 
-
 def test_explicit_int_value(monkeypatch):
     _patch_config(monkeypatch, {"approvals": {"discord_prompt_timeout": 600}})
     assert _read_discord_prompt_timeout() == 600
-
 
 def test_numeric_string_accepted(monkeypatch):
     """YAML parsers occasionally return numbers as strings; tolerate it."""
     _patch_config(monkeypatch, {"approvals": {"discord_prompt_timeout": "450"}})
     assert _read_discord_prompt_timeout() == 450
-
 
 def test_malformed_value_falls_back_to_default(monkeypatch):
     _patch_config(
@@ -79,12 +72,7 @@ def test_malformed_value_falls_back_to_default(monkeypatch):
     )
     assert _read_discord_prompt_timeout() == _DISCORD_PROMPT_TIMEOUT_DEFAULT
 
-
 def test_value_clamped_to_minimum(monkeypatch):
     """A typo of e.g. 5 seconds must not make prompts disappear."""
     _patch_config(monkeypatch, {"approvals": {"discord_prompt_timeout": 5}})
     assert _read_discord_prompt_timeout() == _DISCORD_PROMPT_TIMEOUT_MIN
-
-
-
-

@@ -54,13 +54,13 @@ def test_memory_info_takes_the_tighter_of_cgroup_and_host(tmp_path, monkeypatch)
     monkeypatch.setattr(resources, "_CGROUP_V1", tmp_path / "nope")
     meminfo = tmp_path / "meminfo"
     monkeypatch.setattr(resources, "_MEMINFO", meminfo)
-    meminfo.write_text("MemTotal:       4194304 kB\nMemAvailable:   3145728 kB\n")
-    (v2 / "memory.max").write_text(str(16 * 1024 ** 3)); (v2 / "memory.current").write_text(str(1024 ** 3))
+    meminfo.write_text("MemTotal:       4194304 kB\nMemAvailable:   3145728 kB\n", encoding="utf-8")
+    (v2 / "memory.max").write_text(str(16 * 1024 ** 3), encoding="utf-8"); (v2 / "memory.current").write_text(str(1024 ** 3), encoding="utf-8")
     assert resources.memory_info().available_mb == 3072
-    (v2 / "memory.max").write_text(str(2 * 1024 ** 3))
+    (v2 / "memory.max").write_text(str(2 * 1024 ** 3), encoding="utf-8")
     info = resources.memory_info()
     assert info.available_mb == 1024 and info.limit_mb == 2048
-    (v2 / "memory.max").write_text("max")  # no limit: host numbers
+    (v2 / "memory.max").write_text("max", encoding="utf-8")  # no limit: host numbers
     assert resources.memory_info() == resources.MemoryInfo(available_mb=3072, limit_mb=4096)
 
 

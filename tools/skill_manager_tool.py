@@ -18,9 +18,9 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-import yaml
+import hermes_yaml as yaml
 
-from hermes_constants import get_hermes_home, display_hermes_home
+from hermes_constants import get_hermes_home
 from utils import atomic_write_text, is_truthy_value
 from hermes_cli.config import cfg_get
 from agent.skill_utils import (
@@ -114,15 +114,6 @@ VALID_NAME_RE = re.compile(r'^[a-z0-9][a-z0-9._-]*$')  # filesystem-safe, URL-fr
 ALLOWED_SUBDIRS = {"references", "templates", "scripts", "assets"}  # for write_file/remove_file
 _FRONTMATTER_END_RE = re.compile(r'\n---\s*\n')
 _NAME_RULE = "Use lowercase letters, numbers, hyphens, dots, and underscores."
-
-
-def _display_create_dir() -> str:
-    """Skill-creation dir for schema/instruction text; follows ``skills.create_dir``."""
-    try:
-        from agent.skill_utils import display_skill_create_dir
-        return display_skill_create_dir()
-    except Exception:
-        return f"{display_hermes_home()}/skills/"
 
 
 # --- Validation helpers -------------------------------------------------------
@@ -364,7 +355,7 @@ def _guarded_write(name: str, skill_dir: Path, target: Path, action: str, label:
     if target.exists():
         if read_guard := _background_review_read_before_write_guard(name, target, action, label):
             return read_guard
-        original = target.read_text(encoding="utf-8")
+        original = target.read_text(encoding="utf-8-sig")
     from hermes_constants import mkdir_under_hermes_home
     mkdir_under_hermes_home(target.parent)
     atomic_write_text(target, content, preserve_mode=True, create_mode=0o644)
@@ -499,9 +490,9 @@ def _patch_skill(name: str, old_string: str, new_string: str, file_path: str = N
         return _err(f"File not found: {target.relative_to(skill_dir)}")
     if read_guard := _background_review_read_before_write_guard(name, target, "patch", target_label):
         return read_guard
-    content = target.read_text(encoding="utf-8")
-    # Same fuzzy engine as the file patch tool (whitespace/indent/escape normalization,
-    # block anchors) so minor formatting mismatches don't fail.
+    content = target.read_text(encoding="utf-8-sig")
+
+    # Use the same fuzzy matching engine as the file patch tool.
     from tools.fuzzy_match import fuzzy_find_and_replace
     new_content, match_count, _strategy, match_error = fuzzy_find_and_replace(
         content, old_string, new_string, replace_all)
@@ -827,13 +818,13 @@ def skill_manage(
 
 # --- OpenAI Function-Calling Schema -------------------------------------------
 
-def _skill_manage_description(create_dir: str) -> str:
+def _skill_manage_description() -> str:
     return (
         "Create, update, or delete skills — your procedural memory for "
         "recurring task types. The call is an operations array (a single "
         "edit is a list of one); it applies atomically — any failure rolls "
         "every touched skill back. Ops: create (full SKILL.md; lands in "
-        f"{create_dir}; must precede that skill's other "
+        "the profile's skills directory or configured skills.create_dir; must precede that skill's other "
         "ops), patch (targeted old_string/new_string fix — preferred; "
         "content alone REPLACES the whole file, read it via skill_view() "
         "first), write_file/remove_file (supporting files), delete (sole "
@@ -844,13 +835,6 @@ def _skill_manage_description(create_dir: str) -> str:
         "rule per lesson, references/ named by topic (extend before adding). "
         "skill_view() shows format conventions."
     )
-
-
-def _skill_manage_schema_overrides() -> dict:
-    """Rebuild the create-dir hint from the ACTIVE profile at every get_definitions(): the
-    multiplexed gateway serves every profile from one process, so a path baked in at import
-    would name the launch profile's skills dir for everyone else (#95685)."""
-    return {"description": _skill_manage_description(_display_create_dir())}
 
 
 _NAME = {"type": "string"}
@@ -879,7 +863,7 @@ SKILL_MANAGE_SCHEMA = {
     # ONE advertised call shape (memory-tool pattern): the call IS an operations
     # array. The legacy flat shape (top-level action/name/content/...) is still
     # ACCEPTED for old transcripts and staged-write replay, but not advertised.
-    "description": _skill_manage_description("the profile's skills.create_dir"),
+    "description": _skill_manage_description(),
     "parameters": {
         "type": "object",
         "properties": {
@@ -940,8 +924,7 @@ from tools.registry import registry, tool_error
 registry.register(
     name="skill_manage", toolset="skills", schema=SKILL_MANAGE_SCHEMA, emoji="📝",
     handler=lambda args, **kw: _skill_manage_from(
-        args, task_id=kw.get("task_id"), session_id=kw.get("session_id")),
-    dynamic_schema_overrides=_skill_manage_schema_overrides)
+        args, task_id=kw.get("task_id"), session_id=kw.get("session_id")))
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

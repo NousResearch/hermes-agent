@@ -21,10 +21,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-
 async def _noop_initialize():
     return None
-
 
 def _build_server_with_sse(oauth: bool = False):
     """Stand up an MCPServerTask configured for SSE transport, with mocks
@@ -36,7 +34,6 @@ def _build_server_with_sse(oauth: bool = False):
     server._auth_type = "oauth" if oauth else ""
     server._sampling = None
     return server
-
 
 @pytest.fixture
 def patch_sse_client():
@@ -78,7 +75,6 @@ def patch_sse_client():
          patch("tools.mcp_tool.ClientSession", new=_FakeSession):
         yield captured_kwargs
 
-
 class TestSSEReadTimeout:
     def test_sse_read_timeout_is_300s_not_tool_timeout(self, patch_sse_client):
         """``sse_read_timeout`` must be 300s regardless of the configured
@@ -110,8 +106,6 @@ class TestSSEReadTimeout:
             f"sse_read_timeout = {patch_sse_client.get('sse_read_timeout')} "
             f"(expected 300.0) — SSE idle disconnect regression"
         )
-
-
 
 class TestSSEOAuthForwarding:
     def test_sse_client_receives_oauth_auth_when_configured(self, patch_sse_client):
@@ -149,4 +143,3 @@ class TestSSEOAuthForwarding:
             "sse_client was NOT called with auth= — SSE OAuth forwarding regressed"
         )
         assert patch_sse_client["auth"] is fake_oauth_provider
-

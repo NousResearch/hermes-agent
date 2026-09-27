@@ -522,7 +522,8 @@ def _default_workers() -> int:
 
 def run_host(stdin: Any = None, stdout: Any = None) -> None:
     os.environ["HERMES_COMPUTE_HOST_CHILD"] = "1"
-    stdin = stdin or sys.stdin
+    # JSONL framing is byte-oriented; avoid text-stream read-ahead on Windows pipes.
+    stdin = stdin if stdin is not None else getattr(sys.stdin, "buffer", sys.stdin)
     host = ComputeHost(stdout=stdout or sys.stdout)
     shutting_down = threading.Event()
     # No client is connected to this process: session-less broadcasts (``broadcast_plugin_event``
@@ -588,7 +589,6 @@ if __name__ == "__main__":  # pragma: no cover
 # Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
 # The whole block is removed by reverting the commit that added it.
 from dataclasses import field  # noqa: F401,E402
-from dataclasses import dataclass  # noqa: F401,E402
 from dataclasses import dataclass  # noqa: F401,E402
 from dataclasses import field  # noqa: F401,E402
 

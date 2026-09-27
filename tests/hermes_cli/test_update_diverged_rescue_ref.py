@@ -81,4 +81,3 @@ def test_hermes_update_keeps_local_commit_behind_a_rescue_ref(
     out = capsys.readouterr().out
     _assert_reset_kept_local_commit(checkout, local_sha, out)
     assert "1 commit(s) not on origin/main" in out
-

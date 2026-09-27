@@ -135,7 +135,7 @@ class TestBindMechanics:
             await second.disconnect()
 
 
-    @pytest.mark.macos_only  # the exclusive bind (reuse_address=False) is a Darwin-only path
+    @pytest.mark.platforms("macos")  # the exclusive bind (reuse_address=False) is a Darwin-only path
     @pytest.mark.asyncio
     async def test_rebind_over_time_wait(self):
         """A port held only by a server-side TIME_WAIT socket (the previous gateway closed a

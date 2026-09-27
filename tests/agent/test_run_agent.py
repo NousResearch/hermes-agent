@@ -51,6 +51,17 @@ def test_is_destructive_command_treats_cp_as_mutating():
     assert _is_destructive_command("cp .env.local .env") is True
 
 
+
+
+
+
+@pytest.fixture(autouse=True)
+def _mock_plugin_discovery(monkeypatch):
+    # Tool definitions are supplied by these unit fixtures. Scanning every
+    # bundled plugin again for each isolated test home adds no coverage.
+    monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
+
+
 @pytest.fixture()
 def agent():
     """Minimal AIAgent with mocked OpenAI client and tool loading."""
@@ -2440,6 +2451,116 @@ class TestMcpParallelToolBatch:
 
 
 class TestHandleMaxIterations:
+    @pytest.mark.parametrize("api_mode,platform", [
+        ("chat_completions", "cli"), ("chat_completions", "cron"),
+        ("anthropic_messages", "cli"),
+    ])
+    def test_summary_interrupt_aborts_only_its_request(self, agent, monkeypatch, api_mode, platform):
+        agent.api_mode = api_mode
+        agent.platform = platform
+        agent._cached_system_prompt = "You are helpful."
+        entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+        request_client = MagicMock()
+        aborted = []
+
+        def blocked(*args, **kwargs):
+            entered.set()
+            release.wait(10)
+            raise OSError("fixture request stopped")
+
+        def abort(client, **kwargs):
+            aborted.append(client)
+            release.set()
+
+        agent.client.chat.completions.create.side_effect = blocked
+        request_client.chat.completions.create.side_effect = blocked
+        monkeypatch.setattr(agent, "_create_request_openai_client", lambda **kw: request_client)
+        monkeypatch.setattr(agent, "_create_request_anthropic_client", lambda **kw: request_client)
+        monkeypatch.setattr(agent, "_abort_request_openai_client", abort)
+        monkeypatch.setattr(agent, "_abort_request_anthropic_client", abort)
+        monkeypatch.setattr(agent, "_close_request_openai_client", lambda *a, **kw: None)
+        monkeypatch.setattr(agent, "_close_request_anthropic_client", lambda *a, **kw: None)
+        if api_mode == "anthropic_messages":
+            agent._is_anthropic_oauth = False
+            transport = SimpleNamespace(build_kwargs=lambda **kw: {"model": "fixture", "messages": kw["messages"]})
+            monkeypatch.setattr(agent, "_get_transport", lambda: transport)
+            monkeypatch.setattr(agent, "_anthropic_messages_create", blocked)
+
+        raised = []
+
+        def summarize():
+            try:
+                agent._handle_max_iterations([{"role": "user", "content": "work"}], 1)
+            except InterruptedError as exc:
+                raised.append(exc)
+            finally:
+                finished.set()
+
+        worker = threading.Thread(target=summarize)
+        worker.start()
+        try:
+            assert entered.wait(5), "summary did not reach provider fixture"
+            agent.interrupt()
+            assert finished.wait(4), "summary ignored interrupt while provider was blocked"
+            assert aborted == [request_client]
+            assert len(raised) == 1, "summary cancellation must propagate, not become a fallback"
+            agent.client.close.assert_not_called()
+        finally:
+            release.set()
+            worker.join(12)
+
+    def test_interrupted_summary_ends_turn_interrupted_and_keeps_pending_message(self, agent, monkeypatch):
+        from agent.context_compressor import MAX_ITERATIONS_SUMMARY_REQUEST
+        from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
+
+        agent._cached_system_prompt = "You are helpful."
+        agent._use_prompt_caching = False
+        agent.compression_enabled = False
+        agent.save_trajectories = False
+        agent.max_iterations = 1
+        tool_resp = _mock_response(
+            content="", finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call(name="web_search", arguments="{}", call_id="c1")],
+        )
+        release = threading.Event()
+        calls = []
+
+        def provider(*args, **kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                return tool_resp
+            # The summary request: a new user message arrives while it is in flight.
+            agent.interrupt("follow-up message")
+            release.wait(10)
+            raise OSError("fixture request stopped")
+
+        request_client = MagicMock()
+        request_client.chat.completions.create.side_effect = provider
+        agent.client.chat.completions.create.side_effect = provider
+        monkeypatch.setattr(agent, "_create_request_openai_client", lambda **kw: request_client)
+        monkeypatch.setattr(agent, "_abort_request_openai_client", lambda *a, **kw: release.set())
+        monkeypatch.setattr(agent, "_close_request_openai_client", lambda *a, **kw: None)
+
+        try:
+            with (
+                patch("model_tools.handle_function_call", return_value="ok"),
+                patch.object(agent, "_persist_session"),
+                patch.object(agent, "_save_trajectory"),
+                patch.object(agent, "_cleanup_task_resources"),
+            ):
+                result = agent.run_conversation("do the work")
+        finally:
+            release.set()
+
+        assert len(calls) == 2, "summary request never reached the provider fixture"
+        assert result["interrupted"] is True
+        assert result["completed"] is False
+        assert result["interrupt_message"] == "follow-up message"
+        assert result["turn_exit_reason"].startswith("interrupted_during_api_call")
+        assert result["final_response"].startswith(INTERRUPT_WAITING_FOR_MODEL_PREFIX)
+        assert "couldn't produce a summary" not in result["final_response"]
+        assert all(m.get("content") != MAX_ITERATIONS_SUMMARY_REQUEST for m in result["messages"])
+
     def test_summary_notice_uses_safe_print(self, agent):
         agent._print_fn = lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("closed"))
         agent.client.chat.completions.create.return_value = _mock_response(content="Summary")
@@ -4312,6 +4433,77 @@ class TestRunConversation:
         assert result["partial"] is True
         assert result["failure_reason"] == "truncated"
         mock_handle_function_call.assert_not_called()
+
+    def test_clean_eof_stub_gets_distinct_truncation_message(self, agent):
+        """#102766: a clean-EOF partial-stream stub (stream ended with no
+        transport exception and no finish_reason) must not print the same
+        'stream ended before completion' wording used for a genuine
+        network drop — that wording sends the user chasing a network
+        problem a stream_diag log with finish_reason_seen=False would
+        already have ruled out."""
+        from hermes_constants import PARTIAL_STREAM_STUB_ID
+
+        self._setup_agent(agent)
+        bad_tc = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"report.md","content":"partial',
+            call_id="c1",
+        )
+        resp = _mock_response(content="", finish_reason="length", tool_calls=[bad_tc])
+        resp.id = PARTIAL_STREAM_STUB_ID
+        resp._clean_eof = True
+        agent.client.chat.completions.create.return_value = resp
+
+        printed = []
+        agent._print_fn = lambda *a, **k: printed.append(" ".join(str(x) for x in a))
+
+        with (
+            patch("run_agent.handle_function_call"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("write the report")
+
+        text = " ".join(printed)
+        assert "server ended the stream without ever sending finish_reason" in text
+        assert "stream ended before completion" not in text
+        # Retries exhausted: the final copy/reason must not blame the network either.
+        assert "Check your network" not in result["final_response"]
+        assert "kept closing the stream" in result["final_response"]
+        assert result["failure_reason"] == "truncated"
+
+    def test_transport_drop_stub_keeps_original_truncation_message(self, agent):
+        """Companion to the clean-EOF test above: a stub NOT tagged
+        _clean_eof (the shape built after a real transport exception) must
+        keep printing the original 'stream ended before completion'
+        wording — issue #102766 asks that this case's existing wording
+        stay as-is, only the clean-EOF case gets new wording."""
+        from hermes_constants import PARTIAL_STREAM_STUB_ID
+
+        self._setup_agent(agent)
+        bad_tc = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"report.md","content":"partial',
+            call_id="c1",
+        )
+        resp = _mock_response(content="", finish_reason="length", tool_calls=[bad_tc])
+        resp.id = PARTIAL_STREAM_STUB_ID
+        agent.client.chat.completions.create.return_value = resp
+
+        printed = []
+        agent._print_fn = lambda *a, **k: printed.append(" ".join(str(x) for x in a))
+
+        with (
+            patch("run_agent.handle_function_call"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            agent.run_conversation("write the report")
+
+        text = " ".join(printed)
+        assert "stream ended before completion" in text
 
     def test_truncated_tool_call_retries_once_before_refusing(self, agent):
         """When tool call args are truncated, the agent retries the API call
@@ -6213,6 +6405,28 @@ class TestStreamingApiCall:
         assert tc[0].function.arguments == '{"path":"x.txt","content":"hel'
         assert resp.choices[0].finish_reason == "length"
 
+    @pytest.mark.parametrize("finish_reason", [None, "tool_calls"])
+    def test_cut_tool_args_are_repaired_only_once_the_provider_finished(self, agent, finish_reason):
+        # Cut after the first digit of "timeout": 600. Every string is closed, so the
+        # prefix repairs to valid JSON that carries timeout=6. Without a finish_reason
+        # nothing says the model was done: retry, never run what happened to arrive.
+        from hermes_constants import PARTIAL_STREAM_STUB_ID
+        raw = '{"command": "make deploy", "timeout": 6'
+        chunks = [_make_chunk(tool_calls=[_make_tc_delta(0, "call_1", "terminal", raw)])]
+        if finish_reason:
+            chunks.append(_make_chunk(finish_reason=finish_reason))
+        agent.client.chat.completions.create.return_value = iter(chunks)
+
+        resp = agent._interruptible_streaming_api_call({"messages": []})
+
+        if finish_reason is None:
+            assert resp.id == PARTIAL_STREAM_STUB_ID
+            assert resp.choices[0].message.tool_calls is None
+            assert resp._dropped_tool_names == ["terminal"]
+        else:
+            args = resp.choices[0].message.tool_calls[0].function.arguments
+            assert json.loads(args) == {"command": "make deploy", "timeout": 6}
+
     def test_ollama_reused_index_separate_tool_calls(self, agent):
         """Ollama sends every tool call at index 0 with different ids.
 
@@ -6355,7 +6569,7 @@ class TestAnthropicInterruptHandler:
     """_interruptible_api_call must handle Anthropic mode when interrupted."""
 
 
-    def test_interruptible_anthropic_interrupt_never_closes_shared_client(self):
+    def test_interruptible_anthropic_interrupt_never_closes_shared_client(self, agent):
         """#67142: a non-streaming Anthropic interrupt must abort the
         request-local client from the poll thread, never close/rebuild the
         shared _anthropic_client (which raced a live SSL BIO and corrupted an
@@ -6366,18 +6580,8 @@ class TestAnthropicInterruptHandler:
         """
         import time
         from unittest.mock import MagicMock
-        from run_agent import AIAgent
         from agent.chat_completion_helpers import interruptible_api_call
 
-        agent = AIAgent(
-            api_key="test-key",
-            base_url="https://api.anthropic.com",
-            provider="anthropic",
-            model="claude-test",
-            quiet_mode=True,
-            skip_context_files=True,
-            skip_memory=True,
-        )
         agent.api_mode = "anthropic_messages"
         agent._interrupt_requested = False
         agent._anthropic_client = MagicMock()

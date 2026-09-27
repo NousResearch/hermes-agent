@@ -17,6 +17,7 @@ import {
   buildAgentRoster,
   connectionDialFieldsChanged,
   connectionIdForLabel,
+  connectionIdForPendingLogin,
   labelKey,
   labelSlug,
   LOCAL_CONNECTION_ID,
@@ -28,6 +29,7 @@ import {
   reconcileAppliedGlobalConnection,
   reconcileRegistryDrift,
   REGISTRY_VERSION,
+  registryDialConnectionId,
   registrySourceOwnsPrimaryBackend,
   rememberSshEnumeration,
   removeConnection,
@@ -43,6 +45,16 @@ import {
   updateEligibility,
   upsertConnection
 } from './connection-registry'
+
+// Non-literal specifier on purpose: tsconfig.electron.json's project boundary
+// excludes apps/shared sources, but vitest resolves the workspace package fine
+// at runtime. Loaded once here, not in the test body, where a cold import under
+// CI load can outlast the 5s test timeout.
+const shared = (await import(String('@hermes/shared'))) as {
+  backendScopeKey: typeof backendScopeKey
+  backendScopePrefix: typeof backendScopePrefix
+  LOCAL_CONNECTION_ID: string
+}
 
 function emptyRegistry(): ConnectionRegistry {
   return normalizeRegistry(null)
@@ -636,6 +648,62 @@ test('connectionIdForLabel suffixes on collision and never mints "local"', () =>
   assert.equal(connectionIdForLabel('Local', []), 'local-2')
 })
 
+// A registry-editor sign-in can run before the draft is saved: the id settled
+// here names the cookie partition the login writes, so it MUST equal the id
+// normalizeConnectionInput mints when the draft is saved.
+test('connectionIdForPendingLogin: an explicit draft id wins (trimmed)', () => {
+  const registry = emptyRegistry()
+
+  assert.equal(connectionIdForPendingLogin({ connectionId: 'homelab', registry }), 'homelab')
+  assert.equal(connectionIdForPendingLogin({ connectionId: '  homelab  ', registry }), 'homelab')
+})
+
+test('connectionIdForPendingLogin: mints the save-time id for an unpersisted draft', () => {
+  let registry = emptyRegistry()
+  const entry = normalizeConnectionInput({ kind: 'remote', label: 'Homelab', url: 'http://10.0.0.5:9119' }, registry)
+  registry = upsertConnection(registry, entry)
+
+  // Label-derived and collision-suffixed exactly like normalizeConnectionInput.
+  assert.equal(connectionIdForPendingLogin({ label: 'Mac mini', registry }), 'mac-mini')
+  assert.equal(connectionIdForPendingLogin({ label: 'Homelab', registry }), 'homelab-2')
+
+  // The save must land on the same id the login used.
+  const saved = normalizeConnectionInput(
+    {
+      kind: 'remote',
+      id: connectionIdForPendingLogin({ label: 'Mac mini', registry }),
+      label: 'Mac mini',
+      url: 'http://10.0.0.6:9119'
+    },
+    registry
+  )
+
+  assert.equal(saved.id, 'mac-mini')
+})
+
+test('connectionIdForPendingLogin: an unnamed draft still gets a stable unique id', () => {
+  let registry = emptyRegistry()
+  registry = upsertConnection(registry, {
+    id: 'connection',
+    kind: 'remote',
+    label: 'Taken',
+    url: 'http://10.0.0.7:9119',
+    authMode: 'oauth'
+  })
+
+  // labelSlug('') is 'connection'; the collision suffixes just like a label.
+  assert.equal(connectionIdForPendingLogin({ label: '', registry }), 'connection-2')
+  assert.equal(connectionIdForPendingLogin({ registry }), 'connection-2')
+})
+
+test('connectionIdForPendingLogin: blank or non-string ids fall back to minting', () => {
+  const registry = emptyRegistry()
+
+  for (const junk of ['', '   ', 42, null, undefined]) {
+    assert.equal(connectionIdForPendingLogin({ connectionId: junk, label: 'Homelab', registry }), 'homelab')
+  }
+})
+
 test('uniqueLabel counts up (never "X 2 2") and clamps long candidates', () => {
   assert.equal(uniqueLabel('Homelab', []), 'Homelab')
   assert.equal(uniqueLabel('Homelab', ['Homelab']), 'Homelab 2')
@@ -654,16 +722,7 @@ test('uniqueLabel counts up (never "X 2 2") and clamps long candidates', () => {
 // the renderer keys its socket registry with the shared copy while the main
 // process keys the backend pool with this one. This contract test is the
 // enforcement (see the NOTE on backendScopeKey).
-test('backendScopeKey: electron and shared implementations agree everywhere', async () => {
-  // Non-literal specifier on purpose: tsconfig.electron.json's project
-  // boundary excludes apps/shared sources, but vitest resolves the workspace
-  // package fine at runtime — which is exactly what this test needs.
-  const shared = (await import(String('@hermes/shared'))) as {
-    backendScopeKey: typeof backendScopeKey
-    backendScopePrefix: typeof backendScopePrefix
-    LOCAL_CONNECTION_ID: string
-  }
-
+test('backendScopeKey: electron and shared implementations agree everywhere', () => {
   const cases: [null | string | undefined, null | string | undefined][] = [
     [null, null],
     [undefined, undefined],
@@ -742,6 +801,52 @@ test('registry local route: per-profile override wins when global remote is also
   })
 
   assert.deepEqual(route, { delegate: true, poolKey: 'research' })
+})
+
+test('registry local route: a concrete remote-only profile is refused on the forced-local branch', () => {
+  // globalRemote still force-locals a profile that exists on this machine
+  // (This device must not dial the remote). A named profile that exists only
+  // on the remote must not spawn a local child.
+  const named = resolveRegistryLocalRoute('inbox', { globalRemote: true, localProfileExists: false })
+
+  assert.match(String(named.refuse ?? ''), /Profile "inbox" no longer exists/)
+  assert.equal(named.delegate, false)
+
+  // default is $HERMES_HOME, not profiles/default: a profiles/default probe
+  // reports absent, but This device -> default must still open locally.
+  assert.deepEqual(resolveRegistryLocalRoute('default', { globalRemote: true, localProfileExists: false }), {
+    delegate: false,
+    poolKey: 'conn:local::default'
+  })
+
+  const present = resolveRegistryLocalRoute('research', { globalRemote: true, localProfileExists: true })
+
+  assert.equal(present.refuse, undefined)
+  assert.equal(present.delegate, false)
+  assert.equal(present.poolKey, 'conn:local::research')
+
+  // The override remains the authoritative route even when the profile is
+  // absent locally. Unprofiled enumeration is not a concrete dial.
+  assert.deepEqual(
+    resolveRegistryLocalRoute('research', {
+      globalRemote: true,
+      localProfileExists: false,
+      profileRemoteOverride: true
+    }),
+    { delegate: true, poolKey: 'research' }
+  )
+  assert.equal(resolveRegistryLocalRoute(null, { globalRemote: true, localProfileExists: false }).refuse, undefined)
+  assert.equal(resolveRegistryLocalRoute('', { globalRemote: true, localProfileExists: false }).refuse, undefined)
+})
+
+test('registry dial: an empty connection id is not registry.primary', () => {
+  assert.throws(() => registryDialConnectionId('', 'ssh-other-host'), /No connection with id/)
+  assert.throws(() => registryDialConnectionId('   ', 'ssh-other-host'), /No connection with id/)
+  assert.throws(() => registryDialConnectionId(null, 'ssh-other-host'), /No connection with id/)
+  assert.throws(() => registryDialConnectionId(undefined, 'homelab'), /No connection with id/)
+  assert.equal(registryDialConnectionId('local', 'ssh-other-host'), 'local')
+  assert.equal(registryDialConnectionId('homelab', 'ssh-other-host'), 'homelab')
+  assert.equal(registryDialConnectionId('ssh-other-host', 'ssh-other-host'), 'ssh-other-host')
 })
 
 // --- shouldDeferLocalEnumeration (roster's connect-on-demand for 'local') ---

@@ -109,7 +109,7 @@ class DiskCache(Generic[K]):
         if ttl_seconds <= 0:
             return None
         try:
-            with open(self.path(home_path), "r", encoding="utf-8") as f:
+            with open(self.path(home_path), "r", encoding="utf-8-sig") as f:
                 payload = json.load(f)
         except (OSError, json.JSONDecodeError):
             return None

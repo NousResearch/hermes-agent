@@ -1,4 +1,4 @@
-"""Process bootstrap for Hermes entry points: Windows UTF-8 stdio, import-path
+"""Process bootstrap for Hermes entry points: Windows UTF-8 stdio and ANSI console, import-path
 hardening, durable lazy-install target, and dual-stack (Happy Eyeballs) connects.
 
 Windows binds stdio to the console code page (cp1252), so ``print("café")`` raises
@@ -253,6 +253,47 @@ def apply_windows_utf8_bootstrap() -> bool:
     return True
 
 
+_ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+
+
+def enable_windows_vt(streams=None) -> bool:
+    """Opt the console behind stdout/stderr in to ANSI escape processing.
+
+    ``hermes_cli.colors`` and the skins emit raw SGR codes whenever stdout is a TTY. A
+    conhost console (PowerShell 5.1, cmd.exe, the installer's ``hermes setup``) prints
+    them as ``←[35m`` until the output handle has ENABLE_VIRTUAL_TERMINAL_PROCESSING, and
+    shells hand native children a console with it off. The mode belongs to the console
+    buffer, so setting it here also covers the relaunched child. Handles that are not a
+    console (pipes, files, NUL, a windowless pythonw) fail GetConsoleMode and are left
+    alone. A console that refuses VT (pre-Windows 10) gets NO_COLOR instead, which
+    ``should_use_color`` and rich honour, so it shows plain text rather than garbage.
+    Returns False only in that fallback case.
+    """
+    if not _IS_WINDOWS:
+        return True
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    enabled = True
+    for stream in (sys.stdout, sys.stderr) if streams is None else streams:
+        try:
+            handle = msvcrt.get_osfhandle(stream.fileno())
+        except (AttributeError, OSError, ValueError):
+            continue  # no fd (None under pythonw, StringIO in embedders)
+        mode = wintypes.DWORD()
+        if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            continue
+        if mode.value & _ENABLE_VIRTUAL_TERMINAL_PROCESSING:
+            continue
+        if not kernel32.SetConsoleMode(handle, mode.value | _ENABLE_VIRTUAL_TERMINAL_PROCESSING):
+            enabled = False
+    if not enabled:
+        os.environ.setdefault("NO_COLOR", "1")
+    return enabled
+
+
 def suppress_platform_ver_console() -> None:
     """Stub ``platform._syscmd_ver`` on Windows — decode-crash + console-flash guard.
 
@@ -412,23 +453,6 @@ def harden_import_path(src_root: str | None = None) -> None:
     sys.path.insert(0, root)
 
 
-def activate_durable_lazy_target() -> None:
-    """Put the durable lazy-install dir (``HERMES_LAZY_INSTALL_TARGET``) on ``sys.path``.
-
-    Immutable Docker images seal the venv and redirect lazy installs to the data volume;
-    packages installed there on a previous run must be importable before any backend
-    imports its SDK. Appends to the END of ``sys.path`` so the core venv always wins name
-    collisions (see ``tools.lazy_deps``). Never raises; unset target is a no-op.
-    """
-    if not os.environ.get("HERMES_LAZY_INSTALL_TARGET", "").strip():
-        return
-    try:
-        from tools import lazy_deps
-        lazy_deps.activate_durable_lazy_target()
-    except Exception:
-        pass  # a failed activation just leaves the backend reporting itself unavailable
-
-
 def export_scratch_tmp_env() -> None:
     """Point ``TMPDIR``/``TMP``/``TEMP`` at ``HERMES_HOME/cache/scratch`` unless the user set them.
 
@@ -444,10 +468,93 @@ def export_scratch_tmp_env() -> None:
         pass  # a missing/unwritable home just leaves the system temp dir in place
 
 
-# Apply on import — entry points only need ``import hermes_bootstrap`` first.
+# Apply on import — entry points just need ``import hermes_bootstrap``
+# (or ``from hermes_bootstrap import apply_windows_utf8_bootstrap``) at
+# the very top of their module, before importing anything else.  The
+# import side effect does the right thing.
 apply_windows_utf8_bootstrap()
+enable_windows_vt()
 suppress_platform_ver_console()
 install_never_free_environ()
-activate_durable_lazy_target()
+
+# Every entry point imports this module before its dependency graph.
+from pathlib import Path
+
+_root = Path(__file__).resolve().parent
+try:
+    os.getcwd()
+except FileNotFoundError:
+    # Reaped workspaces leave children in a deleted cwd. PM resolves relative
+    # import paths before the CLI's guards, so recover before any PM work.
+    os.chdir(_root)
+
+
+def _legacy_post_swap_invocation(argv: list[str]) -> tuple[Path, list[str]] | None:
+    """Recognize the exact fresh-checkout command emitted by shipped updaters."""
+    if not argv or argv[0] != "update":
+        return None
+    try:
+        marker = argv.index("--post-swap", 1)
+    except ValueError:
+        return None
+    if marker + 2 != len(argv):
+        return None
+    return Path(argv[marker + 1]), argv[1:marker]
+
+
+# Everything below imports Hermes packages, so the root goes on sys.path first. A venv
+# editable-installed from a pre-PM tree maps only the top-level packages it knew then:
+# without this, ``pm`` is unimportable and the launch silently skips PM adoption.
+harden_import_path(str(_root))
+
+_legacy_post_swap = _legacy_post_swap_invocation(sys.argv[1:])
+if _legacy_post_swap is not None:
+    # This continuation exists precisely because the replacement tree may not
+    # run under the old release's dependency graph. Take it over before PM
+    # activation, launch preparation, or argparse imports any of that graph.
+    from hermes_cli.update_handoff import _continue_legacy_post_swap
+
+    _handoff_path, _argv_tail = _legacy_post_swap
+    raise SystemExit(_continue_legacy_post_swap(_handoff_path, argv_tail=_argv_tail))
+
+
+from pm.environments import activate_dependencies
+from hermes_cli._early_recovery import recover_if_needed
+
+from hermes_cli._parser import command_argv
+
+# Repair needs only stdlib. Do not activate the damaged tree to reach it.
+_pm_repair = command_argv(sys.argv[1:])[:2] == ["pm", "repair"]
+if not _pm_repair:
+    from hermes_cli.venv_sync import prepare_launch, relaunch_command
+
+    try:
+        _launch_python = prepare_launch(_root, sys.argv[1:])
+        if _launch_python is not None:
+            _main_spec = getattr(sys.modules.get("__main__"), "__spec__", None)
+            _command = relaunch_command(
+                _launch_python, _root, sys.argv, sys.orig_argv,
+                getattr(_main_spec, "name", None),
+            )
+            if os.name == "nt":
+                import subprocess
+
+                raise SystemExit(subprocess.call(_command))
+            os.execv(str(_launch_python), _command)
+    except Exception as exc:
+        # Degrade, never brick the CLI: the previous dependency generation is still selected
+        # (a failed sync commits nothing), so an offline or half-finished update leaves a
+        # usable Hermes plus a warning. Activation below is the real gate — a tree whose
+        # dependencies cannot load still exits with the repair remedy.
+        print(f"hermes: source-update completion failed: {exc}; "
+              "running with the previous dependencies — run `hermes update` to finish it",
+              file=sys.stderr)
+    recover_if_needed(_root)
+    try:
+        activate_dependencies(_root)
+    except (RuntimeError, OSError) as exc:
+        if command_argv(sys.argv[1:])[:1] != ["pm"]:
+            print(f"hermes: {exc}; run `hermes pm repair`", file=sys.stderr)
+            raise SystemExit(1) from None
 install_happy_eyeballs_socket_connect()
 export_scratch_tmp_env()

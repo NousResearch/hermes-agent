@@ -1652,7 +1652,7 @@ def _load_prefill_messages(cfg: dict, job_id: str) -> Optional[list]:
     if not pfpath.exists():
         return None
     try:
-        with open(pfpath, "r", encoding="utf-8") as _pf:
+        with open(pfpath, "r", encoding="utf-8-sig") as _pf:
             prefill_messages = json.load(_pf)
         return prefill_messages if isinstance(prefill_messages, list) else None
     except Exception as e:
@@ -2726,19 +2726,35 @@ def run_one_job(
             if _launch_external_cron_worker(job):
                 return True
         except Exception as handoff_error:
-            error = f"Restart-safe cron worker dispatch failed: {handoff_error}"
+            # Past the handoff the worker may have adopted the row, run side effects
+            # and sent its own notice: record bookkeeping only, never a false
+            # "dispatch failed" incident/ping.
+            post_handoff = isinstance(handoff_error, _ExternalWorkerPostHandoffError)
+            stage = "failed after handoff" if post_handoff else "dispatch failed"
+            error = f"Restart-safe cron worker {stage}: {handoff_error}"
             logger.error("Job '%s': %s", job["id"], error)
             claim = job.get("fire_claim")
             owner = str(claim.get("by") or "") if isinstance(claim, dict) else ""
+            delivery_error = delivery_outcome = None
             try:
+                # A pre-handoff dispatch failure is a job failure like any other: it
+                # must open an incident and leave through the job's failure lane
+                # (#123401). Without this the outage is silent — no cron_incidents
+                # row, no ping — while executions.db keeps piling up failed rows.
+                if not post_handoff:
+                    delivery_error, delivery_outcome = _deliver_crash_failure(
+                        job, error, adapters=adapters, loop=loop)
                 mark_job_run(
                     job["id"],
                     False,
                     error,
+                    delivery_error=delivery_error,
                     **({"expected_fire_owner": owner} if owner else {}),
                 )
             finally:
-                finish_execution(execution_id, success=False, error=error)
+                finish_execution(
+                    execution_id, success=False, error=error,
+                    delivery_outcome=delivery_outcome)
             return True
     if extra_prompt is None:
         # Gateway-forwarded manual run stamps its prompt on the job via trigger_job; the fire that
@@ -3408,6 +3424,10 @@ def _wait_for_external_cron_worker_body(
         )
 
 
+class _ExternalWorkerPostHandoffError(RuntimeError):
+    """The waiter failed after the worker was spawned and may own the execution."""
+
+
 def _wait_for_external_cron_worker(
     process: subprocess.Popen,
     *,
@@ -3419,6 +3439,8 @@ def _wait_for_external_cron_worker(
         return _wait_for_external_cron_worker_body(
             process, execution_id=execution_id
         )
+    except Exception as wait_error:
+        raise _ExternalWorkerPostHandoffError(str(wait_error)) from wait_error
     finally:
         if job_id is not None:
             with _running_lock:
@@ -3572,7 +3594,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
     while time.monotonic() < deadline:
         if ack_path.exists():
             try:
-                acknowledgement = json.loads(ack_path.read_text(encoding="utf-8"))
+                acknowledgement = json.loads(ack_path.read_text(encoding="utf-8-sig"))
             except Exception:
                 logger.exception(
                     "Cron external worker %s published an unreadable acknowledgement; "
@@ -3666,7 +3688,7 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
     unless that durable ownership transfer succeeds.
     """
     try:
-        payload = json.loads(payload_path.read_text(encoding="utf-8"))
+        payload = json.loads(payload_path.read_text(encoding="utf-8-sig"))
         job = payload["job"]
         profile_home = Path(payload["profile_home"]).resolve()
         execution_id = str(job["execution_id"])
@@ -3880,7 +3902,7 @@ def _maybe_run_worktree_maintenance() -> None:
             repos = _worktree_maintenance_repos()
             if not repos:
                 return
-            from cli import _prune_stale_worktrees
+            from hermes_cli.worktree_ops import _prune_stale_worktrees
 
             for repo in repos:
                 try:

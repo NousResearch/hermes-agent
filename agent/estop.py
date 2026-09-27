@@ -91,9 +91,12 @@ def _read_payload(path: Path) -> Optional[dict]:
 
     None means "no usable body", which every caller must treat as ENGAGED (fail safe) —
     it is never a reason to lift the pause.
+
+    ``utf-8-sig`` so a BOM left by a Windows editor does not turn the body into an
+    unparsable one (a BOM'd ``expires_at`` would otherwise read as "no expiry").
     """
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError, AttributeError):
         return None
     return raw if isinstance(raw, dict) else None

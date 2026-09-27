@@ -11,7 +11,6 @@ DevTools endpoint, so the dock exposes a debugging port and the agent ATTACHES t
 
 from __future__ import annotations
 
-import glob
 import os
 import shutil
 import socket
@@ -47,18 +46,17 @@ def executable() -> Optional[str]:
     explicit = os.environ.get("AGENT_BROWSER_EXECUTABLE_PATH", "").strip()
     if explicit and os.access(explicit, os.X_OK) and not _is_headless_shell(explicit):
         return explicit
-    finders = [_playwright_executable, _system_executable]
+    finders = [_managed_executable, _system_executable]
     if not _is_root() and _userns_restricted():
         finders.reverse()
     return next((exe for find in finders if (exe := find())), None)
 
 
-def _playwright_executable() -> Optional[str]:
-    from tools.browser_tool_install import _chromium_search_roots
-    candidates = sorted(
-        (p for root in _chromium_search_roots() for p in glob.glob(os.path.join(root, "chromium-*", "chrome-linux*", "chrome"))),
-        key=os.path.getmtime, reverse=True)
-    return next((exe for exe in candidates if os.access(exe, os.X_OK)), None)
+def _managed_executable() -> Optional[str]:
+    from hermes_cli.browser_runtime import chromium_executable
+
+    exe = chromium_executable(allow_override=False)
+    return exe if exe and os.access(exe, os.X_OK) and not _is_headless_shell(exe) else None
 
 
 def _is_headless_shell(exe: str) -> bool:
@@ -126,7 +124,7 @@ def running_instance_cdp_port(user_data_dir: str, *, exclude_session: Optional[s
     close the browser as a config change and then attach to the port that just died with it.
     """
     try:
-        with open(os.path.join(user_data_dir, "DevToolsActivePort"), encoding="utf-8") as fh:
+        with open(os.path.join(user_data_dir, "DevToolsActivePort"), encoding="utf-8-sig") as fh:
             port_line = fh.readline().strip()
         target = os.readlink(os.path.join(user_data_dir, "SingletonLock"))
     except OSError:

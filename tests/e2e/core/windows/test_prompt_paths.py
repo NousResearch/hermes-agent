@@ -32,7 +32,7 @@ from tests.e2e.core.windows._helpers import (
 from tests.e2e.core.windows._rpc import StdioGateway
 from tests.fakes.fake_llm_provider import FakeLLMServer, Text, ToolCall
 
-pytestmark = [pytest.mark.windows_only, pytest.mark.integration]
+pytestmark = [pytest.mark.platforms("windows"), pytest.mark.integration]
 
 # key -> (the bug's own failure signature, "#issue reason"); see _pending_fixes.known_failure.
 KNOWN: dict[str, tuple[str, str]] = {

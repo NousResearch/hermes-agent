@@ -525,6 +525,29 @@ class SessionDB(
                 resolved = data.pop(f"_{column}_resolved")
                 if column in data:
                     data[column] = resolved
+        # Lift /new vs /branch markers out of model_config so list payloads
+        # (which strip that heavy field) can still tell a reset sibling from
+        # a genuine fork. Keep this a local helper: tests sometimes replace
+        # the SessionDB name with a factory lambda.
+        if not (data.get("_reset_from") and data.get("_branched_from")):
+            raw = data.get("model_config")
+            cfg = None
+            if isinstance(raw, str) and raw:
+                try:
+                    cfg = json.loads(raw)
+                except (TypeError, ValueError):
+                    cfg = None
+            elif isinstance(raw, dict):
+                cfg = raw
+            if isinstance(cfg, dict):
+                if not data.get("_reset_from"):
+                    value = cfg.get("_reset_from")
+                    if isinstance(value, str) and value.strip():
+                        data["_reset_from"] = value.strip()
+                if not data.get("_branched_from"):
+                    value = cfg.get("_branched_from")
+                    if isinstance(value, str) and value.strip():
+                        data["_branched_from"] = value.strip()
         return data
 
     @staticmethod
@@ -1621,10 +1644,12 @@ class SessionDB(
         if self.get_meta(gate) == "1":
             return 0
         def _do(conn):
+            esc = _escape_like(prefix)
             cursor = conn.execute(
                 "UPDATE sessions SET source = 'kanban' "
-                "WHERE source = 'cli' AND (cwd = ? OR cwd LIKE ? ESCAPE '\\')",
-                (prefix, _escape_like(prefix) + "/%"),
+                "WHERE source = 'cli' AND (cwd = ? OR cwd LIKE ? ESCAPE '\\' "
+                "OR cwd LIKE ? ESCAPE '\\')",
+                (prefix, f"{esc}/%", f"{esc}\\\\%"),
             )
             # rowcount BEFORE set_meta reuses this cursor for its INSERT.
             retagged = cursor.rowcount or 0

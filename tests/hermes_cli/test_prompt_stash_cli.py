@@ -19,7 +19,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-
 def _make_cli(**kwargs):
     """Create a HermesCLI with prompt_toolkit stubbed out."""
     _clean_config = {
@@ -61,14 +60,11 @@ def _make_cli(**kwargs):
         ):
             return _cli_mod.HermesCLI(**kwargs)
 
-
 @pytest.fixture(scope="module")
 def cli():
     return _make_cli()
 
-
 class TestStashStateInit:
-
 
     def test_stash_is_per_instance_not_shared(self):
         """Two CLIs must not share one stash — drafts would leak across sessions."""
@@ -77,9 +73,6 @@ class TestStashStateInit:
         a._prompt_stash.stash("only in a")
         assert len(a._prompt_stash) == 1
         assert len(b._prompt_stash) == 0
-
-
-
 
 class TestLayoutSlot:
     def test_layout_includes_stash_panel_when_present(self, cli):
@@ -125,7 +118,6 @@ class TestLayoutSlot:
         )
         assert None not in children
 
-
 class TestRenderStashPanel:
     """Contributor's panel renderer, now measured in display cells."""
 
@@ -135,10 +127,6 @@ class TestRenderStashPanel:
         for i in range(count):
             stash.stash(f"draft number {i}")
         return cli._render_stash_panel(stash.panel_rows(), 0, width)
-
-
-
-
 
     @pytest.mark.parametrize("width", [16, 20, 40, 120])
     def test_no_line_exceeds_terminal_width(self, cli, width):
@@ -179,8 +167,6 @@ class TestRenderStashPanel:
         rows = stash.panel_rows()
         assert cli._render_stash_panel(rows, 0, 100) != cli._render_stash_panel(rows, 1, 100)
 
-
-
 class TestStatusBarIndicator:
 
     def test_indicator_appears_after_stashing(self, cli):
@@ -193,7 +179,6 @@ class TestStatusBarIndicator:
         finally:
             cli._prompt_stash.clear()
 
-
     def test_indicator_clears_after_restore(self, cli):
         cli._prompt_stash.clear()
         cli._status_bar_visible = True
@@ -201,5 +186,3 @@ class TestStatusBarIndicator:
         cli._prompt_stash.pop()
         text = "".join(t for _, t in cli._get_status_bar_fragments())
         assert "📌" not in text
-
-

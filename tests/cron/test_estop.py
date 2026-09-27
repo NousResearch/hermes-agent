@@ -433,6 +433,28 @@ def test_unreadable_expiry_stays_engaged(hermes_home):
     assert estop.is_engaged() is True
 
 
+def test_bom_encoded_sentinel_reads_like_a_plain_one(hermes_home, caplog):
+    """A sentinel written by a Windows editor carries a UTF-8 BOM; the body still counts.
+
+    Decoding as plain utf-8 leaves the BOM on the string, so the JSON parses as junk and
+    the body is dropped. That fails SAFE but silently: the reason vanishes and a past
+    ``expires_at`` reads as "no expiry", so a deadman hold would never lift.
+    """
+    bom = b"\xef\xbb\xbf"
+    (hermes_home / "ESTOP").write_bytes(
+        bom + json.dumps({"reason": "bom window", "expires_at": _stamp(-5)}).encode("utf-8"))
+
+    with caplog.at_level(logging.WARNING):
+        assert estop.is_engaged() is False, "a BOM'd body must not defeat the deadman"
+    assert len([r for r in caplog.records if "EXPIRED" in r.getMessage()]) == 1
+
+    (hermes_home / "ESTOP").write_bytes(
+        bom + json.dumps({"reason": "bom window", "expires_at": _stamp(600)}).encode("utf-8"))
+    state = estop.get_state()
+    assert state is not None and state["reason"] == "bom window"
+    assert estop.is_engaged() is True
+
+
 def test_ttl_and_allowlist_round_trip_through_the_sentinel(hermes_home):
     estop.engage(reason="window", allow={"user_ids": [OPERATOR], "profiles": ["primary-lane"]}, ttl="45m")
 

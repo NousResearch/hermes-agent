@@ -191,8 +191,23 @@ export interface EnvVarInfo {
   // desktop-only env-var prefix guesses. Empty for non-provider env vars.
   provider?: string
   provider_label?: string
+  // A credential env var can be shared by multiple built-in routes. The
+  // singular fields above remain for compatibility; this list lets the Keys
+  // tab render every provider card without duplicating credential storage.
+  provider_profiles?: EnvProviderProfile[]
+  // Frontend-only hint copied from a provider profile while grouping a shared
+  // credential. It keeps the provider's first credential ahead of aliases.
+  provider_primary?: boolean
   redacted_value: null | string
   tools: string[]
+  url: null | string
+}
+
+export interface EnvProviderProfile {
+  description: string
+  primary: boolean
+  provider: string
+  provider_label: string
   url: null | string
 }
 
@@ -535,6 +550,13 @@ export interface SessionInfo {
    *  entry is a projected continuation tip. Intermediates matter: a persisted
    *  tile or route can hold a middle segment's id from when IT was the tip. */
   _lineage_ids?: null | string[]
+  /** Provenance of this row when it is a projected continuation tip:
+   *  `'compression'` means the conversation was rotated by automatic context
+   *  compression and this row continues a sealed earlier segment — it is NOT a
+   *  fresh conversation and NOT a user branch (#121148). Surfaced so the
+   *  sidebar can label the lineage; undefined against older backends and for
+   *  plain rows and branches. */
+  continuation_kind?: 'compression'
   input_tokens: number
   /** Spend for the session, straight off the `sessions` row. `actual` is set
    *  when the provider reported a price; `estimated` is our own pricing-table
@@ -547,8 +569,15 @@ export interface SessionInfo {
   message_count: number
   model: null | string
   output_tokens: number
-  /** Parent conversation when this row is a /branch fork. */
+  /** Parent conversation id. Written for genuine /branch forks *and* for
+   *  /new / idle / daily resets (durable lineage). Nesting uses
+   *  {@link _branched_from} vs {@link _reset_from}, not this field alone. */
   parent_session_id?: null | string
+  /** Predecessor of a /new or idle/daily reset. Not a fork — the sidebar
+   *  renders these as siblings of the previous topic. */
+  _reset_from?: null | string
+  /** Parent of a genuine /branch fork. The sidebar nests only these. */
+  _branched_from?: null | string
   /** Durable server-side pin flag (`sessions.pinned`). The list endpoints
    *  back-fill pinned conversations past their LIMIT, so a pinned row is
    *  always present in a page — which makes this authoritative for the
@@ -1307,6 +1336,11 @@ export interface SessionSearchResult {
   session_started: number | null
   snippet: string
   source: string | null
+  /** Real session title from the sessions table; the backend enriches every
+   *  search hit with it (web_routers/sessions.py add_lineage_result), absent
+   *  for untitled sessions. The sidebar maps it onto the synthesized row so
+   *  search hits show the actual name, not the matched-message snippet. */
+  title?: string | null
 }
 
 export interface SessionSearchResponse {
@@ -1326,6 +1360,7 @@ export interface PlatformStatus {
 }
 
 export interface StatusResponse {
+  shared_profile_warning?: boolean
   active_sessions: number
   config_path: string
   config_version: number
@@ -1431,13 +1466,28 @@ export interface LocalRuntimeJob {
   kind: 'model-activate' | 'model-download' | 'quickstart' | 'runtime-install'
   target: string
   model_id: string | null
-  status: 'running' | 'done' | 'error'
+  status: 'done' | 'error' | 'paused' | 'running'
   phase: string
   detail: string
   total_bytes: number | null
   done_bytes: number
   percent?: number
+  /** Smoothed transfer rate (bytes/sec) and remaining seconds. Present only
+   * while a download is actually moving — absent when parked or settled, so a
+   * stale speed never reads as the live one. */
+  bytes_per_sec?: number | null
+  eta_seconds?: number | null
   error: string | null
+  /** Which file ranges of the source plan are fetched vs banked — present
+   * while a plan (multi-file or cached+fresh mix) is in flight. */
+  ranges?: Record<string, [number, number][]>
+  /** Control flags: false while the job is in a phase that cannot park
+   * (server start, default assignment, non-download quickstart legs). */
+  can_pause?: boolean
+  can_resume?: boolean
+  /** The backend has accepted a pause request; the status flips when the
+   * downloader actually parks. */
+  pause_requested?: boolean
 }
 
 export interface ActionResponse {

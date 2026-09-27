@@ -181,7 +181,7 @@ def _bundled_platform_manifest_name(plugin_dir: Path) -> Optional[str]:
             (plugin_dir / m for m in ("plugin.yaml", "plugin.yml") if (plugin_dir / m).exists()), None)
         if manifest_file is None:
             return None
-        data = fast_safe_load(manifest_file.read_text(encoding="utf-8")) or {}
+        data = fast_safe_load(manifest_file.read_text(encoding="utf-8-sig")) or {}
         name = data.get("name") if isinstance(data, dict) else None
         return str(name).strip().lower() or None
     except Exception:

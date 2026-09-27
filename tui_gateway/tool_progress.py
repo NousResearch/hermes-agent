@@ -188,6 +188,27 @@ def _todo_state_from_history(history) -> dict | None:
         return None
 
 
+def _tool_result_needs_user(result: object) -> bool:
+    """A failed call the user still has to see. Display policy must not swallow it."""
+    if not isinstance(result, str) or not result:
+        return False
+    try:
+        data = json.loads(result)
+    except Exception:
+        return False
+    if not isinstance(data, dict):
+        return False
+    if data.get("success") is False or data.get("ok") is False:
+        return True
+    error = data.get("error")
+    if isinstance(error, str) and bool(error.strip()):
+        return True
+    # terminal reports a failed command as {output, exit_code: 1, error: null}:
+    # a non-zero exit is a failure the user must see even without an error string.
+    exit_code = data.get("exit_code")
+    return isinstance(exit_code, int) and exit_code != 0 and not isinstance(exit_code, bool)
+
+
 def _tool_labels(name: str, args: dict) -> list[dict] | None:
     from agent.display import tool_labels_for_call
 
@@ -250,7 +271,7 @@ def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
         # A preview prepared for an earlier call whose completion never fired (failed
         # flush) must not attach to a provider that reuses the same call id.
         session.setdefault("tool_result_metadata", {}).pop(tool_call_id, None)
-    if (_tool_progress_enabled(sid) or _tool_lifecycle_required_for_ui(name)
+    if (_process_tool_chrome_enabled(sid) or _tool_lifecycle_required_for_ui(name)
             or _connector_tool_lifecycle(name, args)):
         payload: dict[str, object] = {"tool_id": tool_call_id, "name": name, "context": _tool_ctx(name, args)}
         if (labels := _tool_labels(name, args)) is not None:
@@ -316,8 +337,9 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
         payload.update(todo_state)
         if session is not None:
             _cache_todo_state(session, todo_state)
-    if (_tool_progress_enabled(sid) or payload.get("inline_diff") or _tool_lifecycle_required_for_ui(name)
-            or name in _TODO_TOOL_NAMES or _connector_tool_lifecycle(name, args)):
+    if (_process_tool_chrome_enabled(sid) or payload.get("inline_diff") or _tool_lifecycle_required_for_ui(name)
+            or name in _TODO_TOOL_NAMES or _connector_tool_lifecycle(name, args)
+            or _tool_result_needs_user(result)):
         _emit_tool_lifecycle("tool.complete", sid, name, args, payload)
     # Task state is application data, not tool-progress chrome: a dedicated full-snapshot event lets
     # every client reconcile without parsing tool args.
@@ -339,11 +361,15 @@ def _progress_output_risk(sid, name, preview, kw):
 
 
 def _progress_reasoning(sid, name, preview, kw):
+    if not _session_show_reasoning(sid):
+        return
     _emit("reasoning.available", sid, {"text": str(preview), **({"verbose": True} if _session_verbose(sid) else {})})
 
 
 def _progress_moa_reference(sid, name, preview, kw):
-    # MoA reference-model output, rendered as a labelled block before the aggregator's response.
+    # Reference-model output lands in the reasoning disclosure. Answer-only drops it.
+    if not _session_show_reasoning(sid):
+        return
     # `name` is the slot label, `preview` the text.
     ref_payload: dict[str, object] = {"label": str(name), "text": str(preview or "")}
     for key, out in (("moa_index", "index"), ("moa_count", "count")):
@@ -355,10 +381,7 @@ def _progress_moa_reference(sid, name, preview, kw):
 def _progress_moa_progress(sid, name, preview, kw):
     # Drives the status-bar `MOA: 2/3 refs done`; both counters required for deterministic rendering.
     refs_done, refs_total = kw.get("moa_refs_done"), kw.get("moa_refs_total")
-    # Per-reference completion — drives the status-bar progress indicator (`MOA: 2/3 refs done`) requested
-    # in issue #59546. Only emitted when both counters are present so the client can render
-    # deterministically.
-    if refs_done is None or refs_total is None:
+    if not _session_show_reasoning(sid) or refs_done is None or refs_total is None:
         return
     _emit("moa.progress", sid, {"label": str(name or ""), "refs_done": int(refs_done), "refs_total": int(refs_total)})
 
@@ -366,7 +389,7 @@ def _progress_moa_progress(sid, name, preview, kw):
 def _progress_moa_phase(sid, name, preview, kw):
     # Currently only phase="aggregator" fires, once fan-out completes.
     phase = kw.get("moa_phase")
-    if not phase:
+    if not phase or not _session_show_reasoning(sid):
         return
     phase_payload: dict[str, object] = {"phase": str(phase)}
     for key, out in (("moa_refs_done", "refs_done"), ("moa_refs_total", "refs_total")):
@@ -407,7 +430,7 @@ _SUBAGENT_FIELDS = (
 )
 
 
-def _progress_subagent(sid, name, preview, kw, event_type):
+def _progress_subagent(sid: str, name: str, preview, kw, event_type):
     payload = {"goal": str(kw.get("goal") or ""), "task_count": int(kw.get("task_count") or 1), "task_index": int(kw.get("task_index") or 0)}
     source = {**kw, "tool_name": name, "text": preview}
     for key, present, coerce in _SUBAGENT_FIELDS:
@@ -415,6 +438,10 @@ def _progress_subagent(sid, name, preview, kw, event_type):
             val = coerce(source[key])
             if val is not None:
                 payload[key] = val
+    # subagent.thinking's text is the child's chain of thought: with reasoning hidden the
+    # delegate card must not leak it, same policy as the child-mirror's reasoning.delta.
+    if event_type == "subagent.thinking" and not _session_show_reasoning(sid):
+        payload.pop("text", None)
     if preview and event_type == "subagent.tool":
         payload["tool_preview"] = str(preview)
         payload["text"] = str(preview)
@@ -430,6 +457,9 @@ def _progress_subagent(sid, name, preview, kw, event_type):
 _PROGRESS_HANDLERS = {
     "tool.output_risk": (_progress_output_risk, "name"), "reasoning.available": (_progress_reasoning, "preview"),
     "moa.reference": (_progress_moa_reference, "name"),
+    # Answer-only drops MoA content (references, progress/phase lines that land in the reasoning
+    # disclosure or activity log) but keeps this: a bare state transition both clients use only
+    # for the busy indicator. Same rule as subagent.thinking: frame kept, text dropped.
     "moa.aggregating": (lambda sid, name, preview, kw: _emit("moa.aggregating", sid, {"aggregator": str(name or "")}), None),
     "moa.progress": (_progress_moa_progress, None), "moa.phase": (_progress_moa_phase, None),
 }

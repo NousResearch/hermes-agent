@@ -11,7 +11,7 @@ import asyncio
 
 import pytest
 
-pytestmark = pytest.mark.windows_only
+pytestmark = pytest.mark.platforms("windows")
 
 
 class _ProactorConfig:

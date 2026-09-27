@@ -10,7 +10,6 @@ from agent.turn_context_compaction import (
     run_turn_start_compaction,
 )
 
-
 def _agent(**kw):
     compressor = SimpleNamespace(
         protect_first_n=3, protect_last_n=3, threshold_tokens=1_000, context_length=8_000,
@@ -23,7 +22,6 @@ def _agent(**kw):
     base.update(kw)
     return SimpleNamespace(**base)
 
-
 def test_codex_native_auto_compaction_gate():
     assert _codex_native_auto_compaction(
         SimpleNamespace(api_mode="codex_app_server", codex_app_server_auto_compaction="native")
@@ -35,7 +33,6 @@ def test_codex_native_auto_compaction_gate():
         SimpleNamespace(api_mode="codex_app_server", codex_app_server_auto_compaction="hermes")
     )
     assert not _codex_native_auto_compaction(SimpleNamespace(api_mode="chat_completions"))
-
 
 def test_disabled_compression_rearms_overflow_warn_when_under_window():
     agent = _agent()
@@ -51,7 +48,3 @@ def test_disabled_compression_rearms_overflow_warn_when_under_window():
     agent._clear_context_overflow_warn.assert_called_once()
     assert agent._turn_received_provider_response is False
     assert agent._turn_preflight_display_snapshot is None
-
-
-
-

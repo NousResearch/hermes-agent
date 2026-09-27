@@ -960,12 +960,16 @@ export const host = {
     // path below still keys off the explicit cross-connection route, so a plain
     // local open dials exactly as before (openGatewayForProfile), never the
     // registry-secondary path.
-    const localConnectionId = activeGatewayConnectionId()
+    const liveConnection = $connection.get()
+    const liveRemote = liveConnection?.mode === 'remote'
+    const liveConnectionId = String(liveConnection?.connectionId ?? '').trim()
+    const ambientConnectionId = (liveRemote && liveConnectionId) || activeGatewayConnectionId()
+    const ambientMode = liveRemote ? ('remote' as const) : ('local' as const)
 
     const ownerRoute =
       explicitRoute ??
-      (options.workspaceMode === 'bots' && profile && localConnectionId
-        ? { connectionId: localConnectionId, mode: 'local' as const, profile: targetProfile }
+      (options.workspaceMode === 'bots' && profile && ambientConnectionId
+        ? { connectionId: ambientConnectionId, mode: ambientMode, profile: targetProfile }
         : null)
 
     const expectHistory = options.expectHistory ?? false
@@ -1004,16 +1008,18 @@ export const host = {
     if (ownerRoute) {
       setSessionOwnerHint(storedSessionId, ownerRoute)
     } else if (profile) {
-      // Local plugin-owned opens (Bot Mode without a cross-connection route)
-      // still carry an explicit owning profile. Record it: hidden sessions
-      // (canonical Bot Chats) have no sidebar row, so this hint is the only
-      // durable owner record the session-RPC router can consult — without it
-      // a later prompt.submit resolves to the ACTIVE profile's backend and
-      // 4001s while the bot's own backend is healthy.
-      const connectionId = activeGatewayConnectionId()
-
-      if (connectionId) {
-        setSessionOwnerHint(storedSessionId, { connectionId, mode: 'local', profile: targetProfile })
+      // Plugin-owned opens without a cross-connection route still carry an
+      // explicit owning profile. Record it: hidden sessions have no sidebar
+      // row, so this hint is the only durable owner record the session-RPC
+      // router can consult. Do not stamp mode local when the live connection
+      // is remote — that hint persists and the next open resolves the profile
+      // against this machine (#90477).
+      if (ambientConnectionId) {
+        setSessionOwnerHint(storedSessionId, {
+          connectionId: ambientConnectionId,
+          mode: ambientMode,
+          profile: targetProfile
+        })
       }
     }
 
@@ -1979,6 +1985,10 @@ export type { DisplayLease, DisplayObserveResult, DisplayStatus, DisplayThumbnai
 /** THE compact-number formatter — every user-facing count/token figure goes
  *  through here (1230 → "1.2k", 1_500_000 → "1.5M"). Don't hand-roll `/1000`. */
 export { compactNumber } from '@hermes/shared'
+/** Client deadline for `approval.respond`: matches the backend's
+ *  `approvals.timeout` (300s) so a plugin answering an approval never rejects
+ *  its own RPC while the backend still applies the decision (#60654). */
+export { APPROVAL_RESPOND_TIMEOUT_MS } from '@hermes/shared'
 /** Hermes' reasoning levels, so a plugin surfacing a thinking depth uses the
  *  same scale as the rest of the app (labels: `reasoningEffortLabel`). */
 export {

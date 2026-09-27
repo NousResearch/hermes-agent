@@ -37,6 +37,7 @@ vi.mock('@/i18n', () => ({
           backgroundRunning: 'Running in background',
           finishedUnread: 'Finished',
           handoffOrigin: (platform: string) => `Started on ${platform}`,
+          continuationOrigin: 'Automatic continuation — this conversation was compressed and continued',
           messageCount: (count: number) => `${count} messages`,
           needsInput: 'Needs input',
           sessionActions: 'Session actions',
@@ -125,10 +126,21 @@ vi.mock('@/store/windows', async importOriginal => {
 
 // SessionActionsMenu open behavior is covered in session-actions-menu.test.tsx
 // against the real component. Stub it here so this file stays focused on the
-// row chrome.
+// row chrome (handoff avatar tip, etc.) — but record the props so the row's
+// own state plumbing (e.g. the archived flag, #98813) is still asserted.
+const menuProps = vi.hoisted(() => vi.fn())
+
 vi.mock('./session-actions-menu', () => ({
-  SessionActionsMenu: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  SessionContextMenu: ({ children }: { children: React.ReactNode }) => <>{children}</>
+  SessionActionsMenu: (props: { children?: React.ReactNode }) => {
+    menuProps(props)
+
+    return <>{props.children}</>
+  },
+  SessionContextMenu: (props: { children?: React.ReactNode }) => {
+    menuProps(props)
+
+    return <>{props.children}</>
+  }
 }))
 
 vi.mock('./use-profile-prewarm', () => ({
@@ -260,6 +272,22 @@ describe('SidebarSessionRow', () => {
       expect(screen.queryByRole('tooltip')).toBeNull()
     })
   })
+
+  // The Archived view reuses the row menu, and the menu needs the row's
+  // archived state to label its shared verb Unarchive (#98813).
+  it('forwards the archived state to the row menu', () => {
+    menuProps.mockClear()
+    renderRow(makeSession({ archived: true, title: 'Archived row' }))
+
+    expect(menuProps).toHaveBeenCalledWith(expect.objectContaining({ archived: true }))
+  })
+
+  it('forwards the non-archived state to the row menu', () => {
+    menuProps.mockClear()
+    renderRow(makeSession({ title: 'Live row' }))
+
+    expect(menuProps).toHaveBeenCalledWith(expect.objectContaining({ archived: false }))
+  })
 })
 
 // Regression for #83617: the row shell once spread the FULL dnd-kit handle, so
@@ -382,5 +410,29 @@ describe('SidebarSessionRow decoration slots', () => {
     })
 
     expect(screen.queryByTestId('lead-deco')).toBeNull()
+  })
+})
+
+// #121148: a projected compression continuation renders as a plain
+// top-level row that reads as a brand-new conversation — and the sealed
+// predecessor it replaced used to nest like a branch users deleted as
+// accidents. The row must carry a visible continuation affordance.
+describe('SidebarSessionRow continuation badge', () => {
+  const continuationGlyph = (container: HTMLElement) => container.querySelector('.codicon-layers')
+
+  it('paints the continuation glyph for a projected compression tip', () => {
+    const { container } = renderRow(makeSession({ continuation_kind: 'compression', title: 'Long-running chat' }))
+
+    expect(continuationGlyph(container)).not.toBeNull()
+  })
+
+  it('paints nothing for a plain session and for a branch', () => {
+    const plain = renderRow(makeSession({ title: 'Plain' }))
+
+    expect(continuationGlyph(plain.container)).toBeNull()
+
+    const branch = renderRow(makeSession({ parent_session_id: 'parent', title: 'A real branch' }))
+
+    expect(continuationGlyph(branch.container)).toBeNull()
   })
 })

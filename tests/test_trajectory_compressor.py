@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
+from agent.compression_marker import _COMPRESSION_MARKER_RE
+
 from trajectory_compressor import (
     CompressionConfig,
     TrajectoryMetrics,
@@ -268,7 +270,7 @@ class TestExtractTurnContent:
             {"from": "tool", "value": "x" * 5000},
         ]
         content = tc._extract_turn_content_for_summary(trajectory, 0, 1)
-        assert "...[truncated]..." in content
+        assert _COMPRESSION_MARKER_RE.search(content)
         assert len(content) < 5000
 
     def test_empty_range(self):

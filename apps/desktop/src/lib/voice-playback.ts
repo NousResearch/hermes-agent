@@ -22,6 +22,8 @@ const PLAYBACK_STALL_MS = 15_000
 let currentAudio: HTMLAudioElement | null = null
 let currentStop: (() => void) | null = null
 let sequence = 0
+let claimTurnKey: string | null = null
+let inFlight: { done: Promise<boolean>; turnKey: string } | null = null
 
 // A shared, lazily-created AudioContext used only to nudge the browser's
 // autoplay state out of "suspended". A wake-word-started voice turn has no
@@ -77,9 +79,12 @@ export interface VoicePlaybackOptions extends OwnerScope {
    *  answered `fallback` this reply; the relay may not have been probed. */
   syncOnly?: boolean
   source: VoicePlaybackSource
+  /** Stable across a live-id rewrite. A second start of this turn must not stop the first. */
+  turnKey?: string
 }
 
 export function stopVoicePlayback() {
+  inFlight = null
   sequence += 1
   currentStop?.()
   currentStop = null
@@ -663,8 +668,36 @@ async function playSpeechDataUrl(
 }
 
 export async function playSpeechText(text: string, options: VoicePlaybackOptions): Promise<boolean> {
-  stopVoicePlayback()
+  if (options.turnKey && (claimTurnKey === options.turnKey || inFlight?.turnKey === options.turnKey)) {
+    return inFlight?.turnKey === options.turnKey ? inFlight.done : Promise.resolve(true)
+  }
 
+  const previousClaim = claimTurnKey
+  claimTurnKey = options.turnKey ?? null
+
+  try {
+    stopVoicePlayback()
+
+    const done = startSpeechText(text, options)
+
+    if (options.turnKey) {
+      inFlight = { done, turnKey: options.turnKey }
+      void done.finally(() => {
+        if (inFlight?.done === done) {
+          inFlight = null
+        }
+      })
+    }
+
+    return done
+  } finally {
+    if (claimTurnKey === (options.turnKey ?? null)) {
+      claimTurnKey = previousClaim
+    }
+  }
+}
+
+async function startSpeechText(text: string, options: VoicePlaybackOptions): Promise<boolean> {
   const speakableText = sanitizeTextForSpeech(text)
 
   if (!speakableText) {

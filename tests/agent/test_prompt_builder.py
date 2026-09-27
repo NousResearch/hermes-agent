@@ -496,10 +496,7 @@ class TestBuildContextFilesPrompt:
         assert "Project Context" in result
 
 
-    @pytest.mark.skipif(
-        sys.platform == "darwin",
-        reason="APFS default volume is case-insensitive; CLAUDE.md and claude.md alias the same path",
-    )
+    @pytest.mark.platforms("not macos")  # APFS default volume is case-insensitive; CLAUDE.md and claude.md alias the same path
     def test_claude_md_uppercase_takes_priority(self, tmp_path):
         uppercase = tmp_path / "CLAUDE.md"
         lowercase = tmp_path / "claude.md"
@@ -568,7 +565,11 @@ class TestFindHermesMd:
         with patch("agent.prompt_builder._find_git_root", return_value=None):
             assert _find_hermes_md(cwd) is None
 
-    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses directory permissions")
+    @pytest.mark.platforms("posix")
+    @pytest.mark.skipif(
+        getattr(os, "geteuid", lambda: -1)() == 0,
+        reason="root bypasses directory permissions",
+    )
     def test_unreadable_cwd_is_treated_as_not_found(self, tmp_path):
         """A cwd the process cannot stat yields "no context file" instead of a PermissionError
         escaping prompt construction and taking down every surface sharing the gateway (#112430:
@@ -597,7 +598,11 @@ class TestFindGitRoot:
 
 
 class TestCursorrulesCandidates:
-    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses directory permissions")
+    @pytest.mark.platforms("posix")
+    @pytest.mark.skipif(
+        getattr(os, "geteuid", lambda: -1)() == 0,
+        reason="root bypasses directory permissions",
+    )
     def test_unreadable_cwd_is_treated_as_absent(self, tmp_path):
         """Same crash shape as ``_find_hermes_md``: ``.is_dir()`` on ``<cwd>/.cursor/rules`` inside an
         unreadable cwd must not raise; a readable sibling project still yields its rules."""

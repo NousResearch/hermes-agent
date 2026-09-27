@@ -315,7 +315,7 @@ def reap_orphaned_lightpanda() -> int:
     for record_path in sorted(state_dir.glob("*.json")):
         session_name = record_path.stem
         try:
-            record = json.loads(record_path.read_text(encoding="utf-8"))
+            record = json.loads(record_path.read_text(encoding="utf-8-sig"))
             if not isinstance(record, dict):
                 raise ValueError(f"expected a JSON object, got {type(record).__name__}")
         except (OSError, ValueError):

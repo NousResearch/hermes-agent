@@ -43,11 +43,13 @@ import { $activeGatewayProfile } from '@/store/profile'
 import { $projectTree } from '@/store/projects'
 import { sessionAwaitingInput } from '@/store/prompts'
 import {
+  $connection,
   $cronSessions,
   $gatewayState,
   $messagingSessions,
   $selectedStoredSessionId,
   $sessions,
+  ownerLookupSessionRows,
   sessionMatchesStoredId,
   sessionPinId
 } from '@/store/session'
@@ -81,10 +83,14 @@ import { ChatView } from '.'
 
 const NO_MESSAGES: ChatMessage[] = []
 
+export const WRONG_BACKEND_TILE_ERROR =
+  'Wrong backend — this session lives on another connection. Reconnect to that backend to open it.'
+
 export function sessionTileResumeFailure(
   message: string,
   durableSessionFound: boolean | undefined,
-  tileStillUnbound: boolean
+  tileStillUnbound: boolean,
+  backendIdentityChanged = false
 ): string | undefined {
   if (!tileStillUnbound) {
     return undefined
@@ -94,11 +100,61 @@ export function sessionTileResumeFailure(
     return message
   }
 
+  if (backendIdentityChanged) {
+    return WRONG_BACKEND_TILE_ERROR
+  }
+
   if (durableSessionFound) {
     return 'Session is still available — retry resuming it.'
   }
 
   return 'Session unavailable — you can retry resuming it.'
+}
+
+/** True when a persisted tile's owner is a different backend than the one that
+ *  just became active. An unqualified local boot (no connectionId, mode local)
+ *  counts as the local identity — that is the post-update empty backend. */
+export function tileBackendIdentityChanged(
+  ownerConnectionId: string | null | undefined,
+  activeConnection: { connectionId?: string | null; mode?: string | null } | null | undefined
+): boolean {
+  const owner = String(ownerConnectionId || '').trim()
+
+  if (!owner || !activeConnection) {
+    return false
+  }
+
+  const active =
+    String(activeConnection.connectionId || '').trim() || (activeConnection.mode === 'local' ? 'local' : '')
+
+  return Boolean(active) && owner !== active
+}
+
+export function unbindTilesForBackendIdentityChange<
+  T extends { error?: string; ownerRoute?: { connectionId?: string }; runtimeId?: string }
+>(
+  tiles: readonly T[],
+  activeConnection: { connectionId?: string | null; mode?: string | null } | null | undefined
+): T[] {
+  let changed = false
+
+  const next = tiles.map(tile => {
+    if (!tileBackendIdentityChanged(tile.ownerRoute?.connectionId, activeConnection)) {
+      return tile
+    }
+
+    if (!tile.runtimeId && tile.error === WRONG_BACKEND_TILE_ERROR) {
+      return tile
+    }
+
+    changed = true
+    const unbound = { ...tile, error: WRONG_BACKEND_TILE_ERROR }
+    delete unbound.runtimeId
+
+    return unbound
+  })
+
+  return changed ? next : (tiles as T[])
 }
 
 /** Should this tile dispatch a `session.resume`?
@@ -473,7 +529,14 @@ export function SessionTilePane({ storedSessionId }: { storedSessionId: string }
         // reconnect-time lookup.
         const durableSession = await resolveStoredSession(storedSessionId, ownerRoute).catch(() => undefined)
         const current = $sessionTiles.get().find(candidate => candidate.storedSessionId === storedSessionId)
-        const error = sessionTileResumeFailure(message, Boolean(durableSession), Boolean(current && !current.runtimeId))
+        const identityChanged = tileBackendIdentityChanged(ownerRoute?.connectionId, $connection.get())
+
+        const error = sessionTileResumeFailure(
+          message,
+          Boolean(durableSession),
+          Boolean(current && !current.runtimeId),
+          identityChanged
+        )
 
         if (error) {
           patchSessionTile(storedSessionId, { error })
@@ -489,7 +552,7 @@ export function SessionTilePane({ storedSessionId }: { storedSessionId: string }
   // retriggers the resume effect: one bounded auto-retry per (re)connect,
   // mirroring the primary path's became-open resync.
   useEffect(() => {
-    if (gatewayOpen && tile?.error) {
+    if (gatewayOpen && tile?.error && tile.error !== WRONG_BACKEND_TILE_ERROR) {
       patchSessionTile(storedSessionId, { error: undefined })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -526,16 +589,23 @@ export function SessionTilePane({ storedSessionId }: { storedSessionId: string }
 // Tile -> pane contribution sync (call once from the app root).
 // ---------------------------------------------------------------------------
 
-/** Resolve a tile's stored row: the recents list first, then the project
- *  tree. A session opened as a tab from a project group is often older than
- *  the paginated recents page, so it has no `$sessions` row at all until new
- *  activity lands it there — resolving through the tree keeps its tab titled
- *  and tinted instead of a grey "Session" placeholder. */
+/** Resolve a tile's stored row: every loaded sidebar slice first, then the
+ *  project tree. A session opened as a tab from a project group is often older
+ *  than the paginated recents page, so it has no `$sessions` row at all until
+ *  new activity lands it there — resolving through the tree keeps its tab
+ *  titled and tinted instead of a grey "Session" placeholder.
+ *
+ *  The slice scan is `ownerLookupSessionRows`, not `$sessions`: the sidebar
+ *  fetch splits its rows three ways, and a telegram/discord/cron conversation
+ *  is listed ONLY in `$messagingSessions` / `$cronSessions` — recents excludes
+ *  those sources outright. Searching recents alone made every such tab read
+ *  "New session" forever, since the row it needed was one atom over and no
+ *  amount of activity would ever move it into recents. */
 export function tileStoredRow(storedSessionId: string): SessionInfo | undefined {
   const match = (s: SessionInfo) => sessionMatchesStoredId(s, storedSessionId)
 
   return (
-    $sessions.get().find(match) ??
+    ownerLookupSessionRows().find(match) ??
     $projectTree
       .get()
       .flatMap(p => [...p.repos.flatMap(r => r.groups.flatMap(g => g.sessions)), ...(p.previewSessions ?? [])])
@@ -565,6 +635,26 @@ export function startUnrestoredTileTitleBackfill(lookup = resolveStoredSession):
   }
 
   const off = $gatewayState.listen(run)
+  run()
+
+  return off
+}
+
+/** Drop persisted tile bindings that belong to a different backend than the
+ *  one that just became active, and latch the wrong-backend error so a later
+ *  resume cannot turn a cross-backend 404 into the durable-session retry copy. */
+export function startTileBackendIdentityGuard(activeConnection = () => $connection.get()): () => void {
+  const run = () => {
+    const connection = activeConnection()
+    const tiles = $sessionTiles.get()
+    const next = unbindTilesForBackendIdentityChange(tiles, connection)
+
+    if (next !== tiles) {
+      $sessionTiles.set(next)
+    }
+  }
+
+  const off = $connection.listen(run)
   run()
 
   return off
@@ -786,9 +876,14 @@ export function WorkspaceTabMenu({ children }: { children: React.ReactElement })
 export const watchSessionTiles = paneMirror<SessionTile>({
   source: $sessionTiles,
   // $projectTree: a tile whose session is older than the recents page resolves
-  // its title through the tree, which loads after the tiles register. (The tab's
-  // status dot subscribes to color/state itself, so it needs no `also` entry.)
-  also: [$sessions, $projectTree, $workspaceOwnerLabels],
+  // its title through the tree, which loads after the tiles register.
+  // $cronSessions/$messagingSessions: `tileStoredRow` reads every sidebar
+  // slice, so the strip must re-sync when the slice that owns a gateway
+  // conversation lands — it arrives on its own fetch, after the tiles register,
+  // and without it the tab stays stuck on its "New session" placeholder.
+  // (The tab's status dot subscribes to color/state itself, so it needs no
+  // `also` entry.)
+  also: [$sessions, $cronSessions, $messagingSessions, $projectTree, $workspaceOwnerLabels],
   key: t => t.storedSessionId,
   prefix: 'session-tile',
   dir: t => t.dir,

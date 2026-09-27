@@ -15,10 +15,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-
-
 # ── Text aux tasks — _resolve_auto_route ──────────────────────────────────────────
-
 
 class TestResolveAutoMainFirst:
     """_resolve_auto_route() must prefer main provider + main model for every user."""
@@ -84,7 +81,6 @@ class TestResolveAutoMainFirst:
         assert client is mock_client
         assert model == fast_model
 
-
     def test_moa_main_resolves_aux_to_aggregator(self, monkeypatch, tmp_path):
         """MoA main user → aux runs on the aggregator slot, NOT the preset name.
 
@@ -94,7 +90,7 @@ class TestResolveAutoMainFirst:
         acting model). The virtual moa://local base_url + placeholder key must
         be dropped so the aggregator resolves via its own provider credentials.
         """
-        import yaml
+        import hermes_yaml as yaml
 
         home = tmp_path / ".hermes"
         home.mkdir()
@@ -145,9 +141,6 @@ class TestResolveAutoMainFirst:
         # aggregator's base_url.
         assert mock_resolve.call_args.kwargs.get("explicit_base_url") in (None, "")
 
-
-
-
     def test_main_unavailable_uses_task_fallback_chain_before_builtin_chain(self):
         """Auto aux resolution honors auxiliary.<task>.fallback_chain before built-ins."""
         task_client = MagicMock()
@@ -176,9 +169,6 @@ class TestResolveAutoMainFirst:
             "title_generation", "nvidia", reason="main provider unavailable")
         mock_main_chain.assert_not_called()
         mock_openrouter.assert_not_called()
-
-
-
 
     def test_resolve_provider_auto_returns_runtime_model_not_stale_config_default(self):
         """Blank auto aux requests must not pair a stale config model with live fallback provider."""
@@ -237,9 +227,7 @@ class TestResolveAutoMainFirst:
         assert mock_resolve.call_args.kwargs["explicit_api_key"] == "tp-test-key"
         assert mock_resolve.call_args.kwargs["api_mode"] == "chat_completions"
 
-
 # ── Vision — resolve_vision_provider_client ─────────────────────────────────
-
 
 class TestResolveVisionMainFirst:
     """Vision auto-detection prefers the main provider first."""
@@ -275,9 +263,6 @@ class TestResolveVisionMainFirst:
         assert mock_resolve.call_args.args[0] == "openrouter"
         assert mock_resolve.call_args.args[1] == "anthropic/claude-sonnet-4.6"
         assert mock_resolve.call_args.kwargs.get("is_vision") is True
-
-
-
 
     @staticmethod
     def _stub_nous_portal(seen: dict):
@@ -482,11 +467,7 @@ class TestResolveVisionMainFirst:
         assert captured == {"is_agent_turn": True, "is_vision": False}
         assert "default_headers" not in mock_openai.call_args.kwargs
 
-
-
-
 # ── Vision — custom provider endpoint credential passthrough ────────────────
-
 
 class TestResolveVisionCustomProvider:
     """Custom-endpoint mains must forward base_url/api_key to Step 1.
@@ -602,7 +583,4 @@ class TestResolveVisionCustomProvider:
         assert kwargs.get("explicit_base_url") == "https://configured.example/v1"
         assert kwargs.get("explicit_api_key") == "sk-configured"
 
-
 # ── Constant cleanup ────────────────────────────────────────────────────────
-
-

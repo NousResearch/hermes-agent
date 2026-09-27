@@ -91,7 +91,7 @@ export const COMMIT_SHA_RE = /^[0-9a-f]{40}$/i
 export type AgentPluginsStatus = 'idle' | 'loading' | 'ready' | 'error'
 
 /** The recovering `requestGateway` from `useGatewayRequest`. */
-export type GatewayRequest = <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+export type GatewayRequest = <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
 
 export const $agentPlugins = atom<AgentPluginRow[]>([])
 export const $agentPluginsStatus = atom<AgentPluginsStatus>('idle')
@@ -237,6 +237,8 @@ export async function toggleAgentPlugin(
 
 export interface AgentPluginInstallResult {
   ok: boolean
+  /** The client stopped waiting; the backend may still finish the install. */
+  timedOut?: boolean
   pluginName?: string
   warnings?: string[]
   missingEnv?: string[]
@@ -260,6 +262,12 @@ export interface AgentPluginLiveNow {
 }
 
 const NO_LIVE: AgentPluginLiveNow = { mcpServers: [], skills: [] }
+
+// Installing a catalog package can clone a repository and resolve Python dependencies.
+// The ordinary Desktop RPC deadline is 30s, which can expire after the backend
+// has already begun an install that will succeed. Keep this wait bounded while
+// giving normal installs time to return their authoritative result.
+const PLUGIN_INSTALL_REQUEST_TIMEOUT_MS = 120_000
 
 export async function installAgentPlugin(
   request: GatewayRequest,
@@ -302,7 +310,8 @@ export async function installAgentPlugin(
           ...(opts.ref ? { ref: opts.ref } : {})
         },
         opts.profile
-      )
+      ),
+      PLUGIN_INSTALL_REQUEST_TIMEOUT_MS
     )
 
     if (!result?.ok) {
@@ -322,9 +331,12 @@ export async function installAgentPlugin(
       nextChat: Object.keys(result.activation?.deferred ?? {}).length > 0
     }
   } catch (e) {
+    const message = e instanceof Error ? e.message : String(e)
+
     return {
       ok: false,
-      error: e instanceof Error ? e.message : String(e),
+      timedOut: /^request timed out after \d+s: plugins\.manage$/.test(message),
+      error: message,
       live: NO_LIVE,
       nextChat: false
     }

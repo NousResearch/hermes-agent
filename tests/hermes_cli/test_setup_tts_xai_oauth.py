@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-import yaml
+import hermes_yaml as yaml
 
 
 def test_run_xai_oauth_login_from_setup_does_not_hijack_active_provider(

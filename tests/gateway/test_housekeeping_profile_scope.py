@@ -292,3 +292,34 @@ def test_single_profile_sync_ticks_run_once_against_the_process_home(two_homes, 
 
     assert {k: [h for h, _ in v] for k, v in seen.items()} == {
         "sync": [a.name], "org": [a.name], "curator": [a.name]}
+
+
+def test_multiplexed_plugin_update_check_visits_every_served_profiles_plugins(two_homes, monkeypatch):
+    """The plugin update check runs once per served profile, against THAT profile's plugins dir
+    and marker, under that profile's ``plugins:`` config. Unscoped it checked the launch home's
+    plugins only, so B's plugins were never checked and B's ``plugins.auto_apply`` was ignored."""
+    from agent.secret_scope import set_multiplex_active
+    from hermes_cli import plugins_cadence
+
+    a, b = two_homes
+    (a / "config.yaml").write_text("plugins:\n  auto_update_check_hours: 1\n", encoding="utf-8")
+    (b / "config.yaml").write_text(
+        "plugins:\n  auto_update_check_hours: 1\n  auto_apply: true\n", encoding="utf-8")
+    checked: list = []
+
+    def _run_checks(plugins_dir, *a_, **k_):
+        checked.append((plugins_dir, plugins_cadence.auto_apply_enabled()))
+        return []
+
+    import hermes_cli.plugins_updates as updates
+    monkeypatch.setattr(updates, "run_checks", _run_checks)
+
+    set_multiplex_active(True)
+    try:
+        _run_60_ticks(SimpleNamespace(config=SimpleNamespace(multiplex_profiles=True)))
+    finally:
+        set_multiplex_active(False)
+
+    assert checked == [(a / "plugins", False), (b / "plugins", True)]
+    assert (a / "plugin-update-checks" / "last-run").exists()
+    assert (b / "plugin-update-checks" / "last-run").exists()

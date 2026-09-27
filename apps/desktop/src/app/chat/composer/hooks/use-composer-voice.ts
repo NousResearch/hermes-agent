@@ -5,7 +5,12 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useI18n } from '@/i18n'
 import { chatMessageText, collectUnspokenTurnSpeech } from '@/lib/chat-messages'
 import { triggerHaptic } from '@/lib/haptics'
-import { adoptSpokenReplySession, markAssistantIdSpoken, resolveSpokenReply } from '@/lib/spoken-reply'
+import {
+  adoptSpokenReplySession,
+  assistantTurnKey,
+  markAssistantIdSpoken,
+  resolveSpokenReply
+} from '@/lib/spoken-reply'
 import { CONVERSATION_LEASE, READ_ALOUD_LEASE, syncTtsLease } from '@/lib/tts-lease'
 import { toLiveHistory } from '@/lib/voice-live'
 import { clearWakeIndicator, syncWakeIndicatorWithVoice } from '@/lib/wake-indicator'
@@ -134,7 +139,8 @@ export function useComposerVoice({
     return {
       id: last.id,
       pending: Boolean(last.pending),
-      text
+      text,
+      turnKey: assistantTurnKey(sessionId, messages, last.id)
     }
   }
 

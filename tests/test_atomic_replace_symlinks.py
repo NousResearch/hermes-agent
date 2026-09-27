@@ -20,7 +20,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 # Ensure the repo root is importable when running via `pytest tests/...`.
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -290,7 +290,7 @@ def test_atomic_replace_real_cross_device(tmp_path: Path) -> None:
 # *source* reports.  The cross-platform tests below therefore simulate
 # winerror 5, matching what production actually raises.
 #
-# The real-handle tests use @pytest.mark.windows_only rather than a bare
+# The real-handle tests use @pytest.mark.platforms("windows") rather than a bare
 # `skip(os.name != "nt")`: scripts/ci/list_os_marked_tests.py greps for the
 # MARKER NAME to decide which files the Windows lane imports, so a plain
 # skipif would leave them running on no host at all.
@@ -313,7 +313,7 @@ def fast_replace_retries(monkeypatch: pytest.MonkeyPatch) -> None:
 # ── cross-platform: the retry/fallback state machine ──────────────────────
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 @pytest.mark.parametrize("winerror", [5, 32, 33])
 def test_contended_rename_retries_then_rewrites_in_place(
     tmp_path: Path,
@@ -347,7 +347,7 @@ def test_contended_rename_retries_then_rewrites_in_place(
     assert not tmp.exists()
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_contended_rename_retry_wins_keeps_write_atomic(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fast_replace_retries: None
 ) -> None:
@@ -379,7 +379,7 @@ def test_contended_rename_retry_wins_keeps_write_atomic(
     assert not tmp.exists()
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_genuine_denial_propagates_after_budget(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fast_replace_retries: None
 ) -> None:
@@ -409,7 +409,7 @@ def test_genuine_denial_propagates_after_budget(
     assert tmp.exists(), "the pending write must survive for the caller"
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_contended_retry_switching_to_exdev_uses_copy_fallback(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fast_replace_retries: None
 ) -> None:
@@ -506,7 +506,7 @@ def test_in_place_rewrite_never_exposes_a_truncated_file(
     assert observed == [5000]
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 @pytest.mark.require_symlinks
 def test_symlinked_target_survives_a_contended_rename(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fast_replace_retries: None
@@ -532,7 +532,7 @@ def test_symlinked_target_survives_a_contended_rename(
 # ── native Windows: real contended handles ────────────────────────────────
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_windows_real_held_read_handle_lands_the_write(tmp_path: Path) -> None:
     """The reported bug, end to end against a real held handle."""
     target = tmp_path / "gateway_state.json"
@@ -546,7 +546,7 @@ def test_windows_real_held_read_handle_lands_the_write(tmp_path: Path) -> None:
     assert not tmp.exists()
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_windows_real_held_handle_reports_access_denied(tmp_path: Path) -> None:
     """Pin the premise this fix is built on: a held *target* handle raises
     winerror 5, not 32.  If CPython ever changes that, the classification in
@@ -566,7 +566,7 @@ def test_windows_real_held_handle_reports_access_denied(tmp_path: Path) -> None:
     assert utils_mod._is_contended_windows_replace_error(caught.value)
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_windows_atomic_json_write_with_concurrent_reader(
     tmp_path: Path,
 ) -> None:
@@ -583,7 +583,7 @@ def test_windows_atomic_json_write_with_concurrent_reader(
     assert leftovers == [], f"orphaned temp files: {leftovers}"
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_windows_readonly_target_still_raises(tmp_path: Path) -> None:
     """A genuinely unwritable target must not be rescued by the fallback."""
     import subprocess

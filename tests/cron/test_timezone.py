@@ -197,14 +197,14 @@ class TestGetTimezone:
 # execute_code child env — TZ injection
 # =========================================================================
 
-@pytest.mark.skipif(sys.platform == "win32", reason="UDS not available on Windows")
+@pytest.mark.platforms("posix")  # UDS not available on Windows
 class TestCodeExecutionTZ:
     """Verify TZ env var is passed to sandboxed child process via real execute_code."""
 
     @pytest.fixture(autouse=True)
     def _import_execute_code(self, monkeypatch):
         """Lazy-import execute_code to avoid pulling in firecrawl at collection time."""
-        # Force local backend — other tests in the same xdist worker may leak
+        # Force local backend — other tests in the same process may leak
         # TERMINAL_ENV=modal/docker which causes modal.exception.AuthError.
         monkeypatch.setenv("TERMINAL_ENV", "local")
         try:

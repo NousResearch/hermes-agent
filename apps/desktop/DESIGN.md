@@ -158,8 +158,9 @@ renderer and Electron's first window paint.
 | `--chrome-action-hover` | hover fill for quiet controls |
 | `--theme-primary`, `--ui-accent` | brand/accent |
 
-Never hardcode `border-gray-*`, `bg-white`, `text-black`, etc. The white tile in
-`BrandMark` is the one sanctioned literal (the mark needs a fixed backdrop).
+Never hardcode `border-gray-*`, `bg-white`, `text-black`, etc. The two tiles in
+`BrandMark` (white in light mode, `#0d1117` in dark) are the sanctioned literals
+(the mark needs a fixed backdrop).
 
 ## Buttons — one component
 
@@ -234,6 +235,19 @@ Notes:
 `warn`, `destructive`, `outline`, `solid` (primary fill — icon-corner counts).
 Sizes: `default`, `xs`, `overlay` (titlebar glyph counts).
 
+Badges are inert. A metadata chip that does something (filter by category or
+tag, search a platform or tool) is a `Button` `size="xs"`: `chip` for facet
+values (soft fill + a 0.5px inset shadow ring on hover, so no reflow), `ghost`
+for quieter search values. Don't style a Badge to look clickable or add a
+separate chip component.
+
+## Reel
+
+`src/components/ui/reel.tsx`: one horizontal, snap-scrolling row (catalog
+category shelves, screenshot strips). Children keep their width and snap to
+the start; set it once from the parent (`className="*:w-68"`). Use it instead of
+hand-rolling `flex overflow-x-auto snap-x`.
+
 ## Context-sensitive dialogs
 
 Sudo password dialogs keep the backdrop unblurred (`DialogContent`'s
@@ -242,16 +256,25 @@ password field. Long commands wrap and scroll; missing backend context is
 explicit, never inferred from another tool row. Other dialogs retain the shared
 blurred backdrop.
 
+A dialog opened from inside another (an image lightbox over a catalog detail)
+stacks above it automatically, so its backdrop dims the parent too. Media
+viewers use a heavier scrim through `overlayClassName`. Controls that belong to
+the dialog but mustn't scroll with its body (prev/next pagers) go in `chrome`,
+which may sit past the dialog's edges.
+
 ## Form controls
 
 - **`controlVariants`** (`src/components/ui/control.ts`) is the shared shape for
   `Input` / `Textarea` / `SelectTrigger`. New text-entry controls compose it.
 - **`SearchField`** — borderless, underline-on-focus, auto-width. The only
   search input. Don't build boxed search bars; don't wrap it in a bordered tile.
+  `variant="box"` is the one bordered form: a full-width rounded field for
+  pages where search is the primary affordance (the Skills/Plugins catalogs).
   Empty lists hide their search field.
 - **`SegmentedControl`** — the choice control for small mutually-exclusive sets
   (color mode, tool-call display, usage period). Replaces radio piles and
-  pill rows.
+  pill rows. A two-state view switch (list/cards, list/tree) is not a segmented
+  control: it's one ghost `icon-xs` `Button` showing the mode it switches to.
 - **`Switch`** (`size="xs"`) — bare, with `aria-label`. No bordered text wrapper.
 - **`FanMenu`** (`src/components/ui/fan-menu.tsx`) — one hub control that
   fans sibling toggles out on hover: `direction` `vertical` | `horizontal`
@@ -267,6 +290,13 @@ blurred backdrop.
 - **Master/detail overlays:** `OverlaySplitLayout` + `OverlaySidebar` /
   `OverlayMain`. Cron, profiles, etc. ride this — don't rebuild a titlebar
   shell.
+- **Filter rails** reuse the same pieces: `SidebarPanelLabel` (its `meta` slot
+  carries the result count), `SidebarDateDivider` group headings, and `nested`
+  `OverlayNavItem` rows. Facets are multi-select: each row is `pressed`, with a
+  `CheckboxMark` in `leading` (the row is the control; a real `Checkbox` would
+  nest a button), and an "All" row clears the group. No radio glyphs. A text
+  "Clear" sits on the label row while anything is filtered. Cap long facets
+  (tags) to the top values plus the selection; search covers the tail.
 - **Settings subpages:** `OverlayNav` keeps navigation and disclosure separate:
   labels navigate; the shared `DisclosureCaret` button opens a branch without
   changing the page. Active paths reveal automatically, inactive paths stay
@@ -404,6 +434,13 @@ so glass and message-bubble transparency do not reveal scrolling text.
 - Install, onboarding, connecting, boot failure, and reauthentication are
   distinct states with shared visual primitives. Preserve their recovery
   semantics when unifying appearance.
+- Guide startup has a dedicated landing screen with the shared long-operation
+  Loader and a localized startup label. It remains active until the guide's
+  saved conversation is loaded. No greeting, composer, Skip setup, or statusbar
+  appears early. Reduced motion uses a static BrandMark and the same label.
+  On readiness, reveal the real conversation and fade controls in over 100ms.
+  Never fabricate progress, delay readiness for motion, or replace a resumed
+  conversation with a new greeting.
 - Respect `AppShell` overlay ownership. Persistent terminal/content layers,
   route overlays, dialogs, and boot surfaces must not compete through ad-hoc
   z-index literals. Pick a rung of the ladder in `styles.css` instead —
@@ -425,7 +462,11 @@ so glass and message-bubble transparency do not reveal scrolling text.
   action. Do not introduce a third icon set or mix styles within one control
   group.
 - **`BrandMark`** (`src/components/brand-mark.tsx`) is the brand glyph — the
-  `nous-girl` mark on a white tile, softly rounded, identical in light/dark.
+  `nous-girl` mark on a fixed tile, theme-aware: black girl on white in light
+  mode, white girl on the `#0d1117` dark tile in dark mode (keyed off
+  `renderedMode` so bright surfaces in dark skins stay on the light mark).
+  The marks are generated by `scripts/generate_icons.py` from the girl SVGs
+  + squircle backgrounds (`assets/nous-girl-*.svg` × `assets/backgrounds/`).
   It replaced scattered Sparkles glyphs in updates / onboarding / about. Use it
   for hero/brand moments; don't reintroduce decorative star/sparkle icons.
 
@@ -447,6 +488,14 @@ so glass and message-bubble transparency do not reveal scrolling text.
   remove animation before masking a performance problem.
 
 ## Direct manipulation & performance
+
+`Masonry` (`components/ui/masonry.tsx`) packs natural-height cards into responsive
+lanes, using CSS `display: grid-lanes` where supported. Older Electron versions
+use one ResizeObserver and frame-batched placement; child DOM/source order stays
+intact through resizing, media loading, and disclosure. It owns the shared gap;
+`--masonry-min-width` optionally changes the minimum lane width. It knows nothing
+about what it holds: catalog results and discovery shelves opt into their hover
+treatment (sibling dimming, the pointer-following glow) from the catalog's own CSS.
 
 The app should feel instant under real load — long transcripts, several panes,
 live streams. Design toward that:

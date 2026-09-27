@@ -106,8 +106,7 @@ def _load_managed_file(name: str, cache: Dict[str, tuple], parse) -> dict:
 
 def load_managed_config() -> dict:
     """Parsed managed config.yaml, or {} when absent/malformed (fail-open)."""
-
-    return _load_managed_file("config.yaml", _CONFIG_CACHE, lambda p: fast_safe_load(p.read_text(encoding="utf-8")) or {})
+    return _load_managed_file("config.yaml", _CONFIG_CACHE, lambda p: fast_safe_load(p.read_text(encoding="utf-8-sig")) or {})
 
 
 def load_managed_env() -> Dict[str, str]:

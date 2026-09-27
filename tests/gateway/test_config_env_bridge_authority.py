@@ -106,7 +106,7 @@ def _run_gateway_import(
 
 def _write_config(home: Path, agent_cfg: dict | None = None, display_cfg: dict | None = None,
                   timezone: str | None = None, gateway_cfg: dict | None = None) -> None:
-    import yaml
+    import hermes_yaml as yaml
     cfg: dict = {}
     if agent_cfg:
         cfg["agent"] = agent_cfg
@@ -229,14 +229,14 @@ def test_env_platform_connect_timeout_wins_over_config(hermes_home: Path) -> Non
 def test_first_import_under_a_routed_override_bridges_the_process_home(tmp_path: Path) -> None:
     """A multiplexed backend first imports gateway.run lazily inside a routed profile's session;
     the import-time bridge must still write the LAUNCH home's config into the process env."""
-    import yaml
+    from utils import atomic_yaml_write
 
     homes = {}
     for name, turns in (("launch", 111), ("routed", 222)):
         home = tmp_path / name
         (home / "work").mkdir(parents=True)
         cfg = {"agent": {"max_turns": turns}, "terminal": {"cwd": str(home / "work")}}
-        (home / "config.yaml").write_text(yaml.safe_dump(cfg), encoding="utf-8")
+        atomic_yaml_write(home / "config.yaml", cfg)
         homes[name] = home
 
     env = _run_gateway_import(homes["launch"], {}, routed_home=homes["routed"])

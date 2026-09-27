@@ -14,7 +14,7 @@ import {
 import { isVoiceStopCommand } from '@/lib/voice-stop-word'
 import { notify, notifyError } from '@/store/notifications'
 import { $voicePlayback } from '@/store/voice-playback'
-import { $bargeInThresholdMultiplier } from '@/store/voice-prefs'
+import { $autoSpeakReplies, $bargeInThresholdMultiplier } from '@/store/voice-prefs'
 
 import { useComposerScope } from '../scope'
 
@@ -49,6 +49,14 @@ interface VoiceConversationOptions {
  *  the captured utterance anyway. */
 const INTERRUPT_SETTLE_TIMEOUT_MS = 5_000
 
+/** A take whose level meter died is sent to STT (the meter can't say whether
+ *  it heard speech) unless it is shorter than this. */
+const METER_FAILURE_MIN_CLIP_MS = 750
+
+/** Back-to-back takes with a dead meter mean the device isn't recovering;
+ *  stop and say so rather than re-arm forever. */
+const METER_FAILURE_LIMIT = 2
+
 export function useVoiceConversation({
   busy,
   enabled,
@@ -75,6 +83,7 @@ export function useVoiceConversation({
   const turnTimeoutRef = useRef<number | null>(null)
   const pendingStartRef = useRef(false)
   const turnClosingRef = useRef(false)
+  const meterFailuresRef = useRef(0)
   const awaitingSpokenResponseRef = useRef(false)
   const responseIdRef = useRef<string | null>(null)
   const spokenSourceLengthRef = useRef(0)
@@ -133,7 +142,6 @@ export function useVoiceConversation({
   // a torn-down window).
   const cancelFallbackPollRef = useRef<(() => void) | null>(null)
 
-   
   useEffect(() => () => cancelFallbackPollRef.current?.(), [])
 
   const clearTurnTimeout = () => {
@@ -166,8 +174,29 @@ export function useVoiceConversation({
 
       try {
         const result = await handle.stop()
+        const meterFailed = Boolean(result?.meterFailed)
 
-        if (!result || (!result.heardSpeech && !forceTranscribe) || !onTranscribeAudio) {
+        meterFailuresRef.current = meterFailed ? meterFailuresRef.current + 1 : 0
+
+        if (meterFailuresRef.current >= METER_FAILURE_LIMIT) {
+          meterFailuresRef.current = 0
+          notifyError(new Error(voiceCopy.recordingFailed), voiceCopy.microphoneFailed)
+          pendingStartRef.current = false
+          setStatus('idle')
+          onFatalError?.()
+
+          return
+        }
+
+        // `heardSpeech` comes from the level meter alone. When the meter died
+        // (AudioContext device error) it is unknown, not false — let STT judge
+        // the clip instead of silently dropping the turn (#75329).
+        const transcribable =
+          result?.heardSpeech ||
+          forceTranscribe ||
+          (meterFailed && (result?.durationMs ?? 0) >= METER_FAILURE_MIN_CLIP_MS)
+
+        if (!result || !transcribable || !onTranscribeAudio) {
           if (enabledRef.current && !mutedRef.current && !busyRef.current && statusRef.current !== 'speaking') {
             pendingStartRef.current = true
           }
@@ -219,7 +248,15 @@ export function useVoiceConversation({
         turnClosingRef.current = false
       }
     },
-    [handle, onSubmit, onTranscribeAudio, voiceCopy.transcriptionFailed]
+    [
+      handle,
+      onFatalError,
+      onSubmit,
+      onTranscribeAudio,
+      voiceCopy.microphoneFailed,
+      voiceCopy.recordingFailed,
+      voiceCopy.transcriptionFailed
+    ]
   )
 
   const startListening = useCallback(async () => {
@@ -262,6 +299,7 @@ export function useVoiceConversation({
           pendingStartRef.current = false
           onFatalError?.()
         },
+        onMeterFailure: () => void handleTurn(),
         onSilence: () => void handleTurn()
       })
       setStatus('listening')
@@ -816,6 +854,19 @@ export function useVoiceConversation({
       }
 
       const response = pendingResponse()
+
+      // "Read replies aloud" off (#44263): Voice Chat is STT-only — the reply
+      // stays text on screen, the loop consumes it and re-arms the mic for
+      // the next turn without ever starting TTS.
+      if (response && !$autoSpeakReplies.get()) {
+        awaitingSpokenResponseRef.current = false
+        dropSpeechSession()
+        consumePendingResponse()
+        pendingStartRef.current = true
+        setStatus('idle')
+
+        return
+      }
 
       if (response) {
         openLiveSpeech(response.id)

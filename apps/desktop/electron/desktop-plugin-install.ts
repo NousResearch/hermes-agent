@@ -4,13 +4,14 @@
  * async entry points with a resolved git binary.
  */
 
-import { execFile, spawn } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 
 import { publishDesktopTree, writeDesktopHalfMarker } from './desktop-plugins-root'
+import { execGit, hiddenGitSpawnSpec } from './no-console-git'
 
 const GITHUB_BROWSER_SEGMENTS = new Set(['tree', 'blob', 'commit'])
 
@@ -267,12 +268,13 @@ const GIT_TIMEOUT_MS = 300_000
 
 function runGit(gitBin: string, args: string[], cwd?: string): Promise<{ code: number; stderr: string }> {
   return new Promise((resolve, reject) => {
-    const child = spawn(gitBin, args, {
+    const spec = hiddenGitSpawnSpec(gitBin, args, {
       cwd,
       env: noninteractiveGitEnv(),
-      stdio: ['ignore', 'ignore', 'pipe'],
-      windowsHide: true
+      stdio: ['ignore', 'ignore', 'pipe']
     })
+
+    const child = spawn(spec.command, spec.args, spec.options)
 
     let stderr = ''
 
@@ -487,9 +489,8 @@ export async function installDesktopPluginFromGit(
 
 /** Resolve git binary via execFile which path on unix; caller passes Windows-resolved path. */
 export function runGitVersion(gitBin: string): Promise<boolean> {
-  return new Promise(resolve => {
-    execFile(gitBin, ['--version'], { windowsHide: true, timeout: 5_000 }, err => {
-      resolve(!err)
-    })
-  })
+  return execGit(gitBin, ['--version'], { timeoutMs: 5_000 }).then(
+    result => result.code === 0,
+    () => false
+  )
 }

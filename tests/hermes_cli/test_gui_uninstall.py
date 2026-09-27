@@ -51,7 +51,7 @@ def test_gui_install_summary_shape(tmp_path, monkeypatch):
     assert summary["platform"] == sys.platform
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_uninstall_removes_launcher_entry_and_refreshes_cache(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
 
@@ -83,7 +83,7 @@ def test_uninstall_removes_launcher_entry_and_refreshes_cache(tmp_path, monkeypa
     assert (hermes_home / "hermes-agent" / "hermes_cli").is_dir()
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlink semantics")
+@pytest.mark.platforms("posix")  # POSIX symlink semantics
 def test_remove_path_handles_symlink(tmp_path):
     target = tmp_path / "real"
     target.mkdir()

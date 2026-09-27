@@ -483,19 +483,19 @@ def _admit_live_dm(profile_home: Path | None, dm_file: str, author: Optional[dic
     intent: dict[str, Any]
     intent_path = Path(dm_file + ".live.json")
     if intent_path.exists():
-        intent = json.loads(intent_path.read_text(encoding="utf-8"))
+        intent = json.loads(intent_path.read_text(encoding="utf-8-sig"))
     else:
         assert profile_home is not None
         owner = find_canonical_live_owner(profile_home)
         if owner is None:
             return None
-        intent = dict(owner=owner, message=Path(dm_file).read_text(encoding="utf-8"),
+        intent = dict(owner=owner, message=Path(dm_file).read_text(encoding="utf-8-sig"),
                       delivery_id=_dm_delivery_id(dm_file),
                       **({"author": author} if author else {}))
         try:
             fd = os.open(intent_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         except FileExistsError:
-            intent = json.loads(intent_path.read_text(encoding="utf-8"))
+            intent = json.loads(intent_path.read_text(encoding="utf-8-sig"))
         else:
             with os.fdopen(fd, "w", encoding="utf-8") as stream:
                 json.dump(intent, stream)
@@ -574,8 +574,9 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool,
                 return _run_local_turn(argv, dm_file, env=env)
             # Keep the file open until the transport exits; cleanup occurs
             # after subprocess.run returns, not merely after stdin reaches EOF.
-            with open(dm_file, "r", encoding="utf-8") as stream:
-                return subprocess.run(argv, stdin=stream, check=False, env=env).returncode
+            with open(dm_file, "r", encoding="utf-8-sig") as stream:
+                # Passing the file descriptor as stdin bypasses the BOM-aware decoder.
+                return subprocess.run(argv, input=stream.read().encode("utf-8"), check=False, env=env).returncode
     finally:
         _unlink_dm_file(dm_file)
 
@@ -748,7 +749,7 @@ def _wait_reply_main(reply_path: str, label: str, budget_seconds: str) -> int:
         return 2
     while time.time() < deadline:
         if os.path.exists(reply_path):
-            with open(reply_path, encoding="utf-8") as fh:
+            with open(reply_path, encoding="utf-8-sig") as fh:
                 d = json.load(fh)
             if d.get("error"):
                 # Typed reason code rides ahead of the free text so the sender can branch on it

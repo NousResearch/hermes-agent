@@ -22,9 +22,7 @@ import pytest
 from tools import mcp_death_supervisor, mcp_tool
 from tools import mcp_tool_lifecycle as _mcp_lifecycle
 
-pytestmark = pytest.mark.skipif(
-    os.name != "posix", reason="the supervisor is POSIX-only (process groups)"
-)
+pytestmark = pytest.mark.platforms("posix")  # the supervisor is POSIX-only (process groups)
 
 SUPERVISOR = os.path.join(os.path.dirname(mcp_tool.__file__), "mcp_death_supervisor.py")
 

@@ -25,7 +25,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 import cron.jobs as jobs_mod
 from cron.jobs import clear_run_claim
 
-
 @pytest.fixture
 def cron_store(tmp_path, monkeypatch):
     hermes_home = tmp_path / ".hermes"
@@ -37,7 +36,6 @@ def cron_store(tmp_path, monkeypatch):
     monkeypatch.setattr(jobs_mod, "OUTPUT_DIR", hermes_home / "cron" / "output")
     return hermes_home
 
-
 def _make_oneshot(claimed: bool = True) -> dict:
     job = jobs_mod.create_job(prompt="remind me", schedule="in 30m")
     if claimed:
@@ -47,7 +45,6 @@ def _make_oneshot(claimed: bool = True) -> dict:
                 j["run_claim"] = {"at": "2026-08-17T10:00:00+00:00", "by": "test:1"}
         jobs_mod.save_jobs(jobs)
     return job
-
 
 class TestClearRunClaim:
     def test_clears_claim_on_oneshot(self, cron_store):
@@ -73,7 +70,6 @@ class TestClearRunClaim:
 
     def test_unknown_job_id_returns_false(self, cron_store):
         assert clear_run_claim("no-such-job") is False
-
 
 class TestDispatchFailurePathsClearClaim:
     """Each _submit_with_guard early-exit must clear the one-shot claim so the
@@ -128,4 +124,3 @@ class TestDispatchFailurePathsClearClaim:
              patch.object(sched, "clear_run_claim", side_effect=OSError(24, "Too many open files")):
             n = self._tick_one(job)  # must not raise
         assert n == 0
-

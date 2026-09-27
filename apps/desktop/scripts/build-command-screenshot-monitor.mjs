@@ -12,7 +12,8 @@ const root = resolve(dirname(script), '..')
 // `platform` and `sysroot` are injectable so tests can exercise the branches
 // without redefining process.platform or shelling out to xcode-select.
 export function buildCommandScreenshotMonitor({
-  distDir = resolve(root, 'dist'),
+  source = resolve(root, '../..'),
+  distDir = resolve(source, 'apps/desktop/dist'),
   platform = process.platform,
   sysroot,
 } = {}) {
@@ -27,7 +28,7 @@ export function buildCommandScreenshotMonitor({
       '-arch', 'arm64', '-arch', 'x86_64', '-mmacosx-version-min=11.0',
       '-fobjc-arc', '-fblocks', '-O2', '-Wall', '-Wextra',
       '-framework', 'Cocoa', '-framework', 'CoreGraphics',
-      resolve(root, 'electron/native/command-screenshot-monitor.m'), '-o', staging,
+      resolve(source, 'apps/desktop/electron/native/command-screenshot-monitor.m'), '-o', staging,
     ], { stdio: 'inherit', timeout: 120_000 })
     chmodSync(staging, 0o755)
     renameSync(staging, output)

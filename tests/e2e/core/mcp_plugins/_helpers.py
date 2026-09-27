@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from tests.e2e.core.parity._helpers import hermes_argv, kill_tagged, tagged_pids, wait_until
 from tests.fakes.fake_llm_provider import FakeLLMServer, Text, ToolCall, write_hermes_home
@@ -111,6 +111,12 @@ class E2EHome:
         cfg = yaml.safe_load(self.config_path.read_text(encoding="utf-8"))
         mutate(cfg)
         self.config_path.write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
+
+
+def _select_test_dependencies(eh: E2EHome) -> None:
+    from tests.e2e.core._pm_dependencies import select_test_dependencies
+
+    select_test_dependencies(eh.hermes_home, REPO_ROOT)
 
 
 def build_home(root: Path, base_url: str, *, mcp_servers: dict[str, dict] | None = None,

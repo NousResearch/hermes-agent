@@ -1,6 +1,5 @@
 """Tests for Xiaomi MiMo provider support."""
 
-
 import pytest
 
 from hermes_cli.auth import (
@@ -8,18 +7,13 @@ from hermes_cli.auth import (
     resolve_api_key_provider_credentials,
 )
 
-
 # =============================================================================
 # Provider Registry
 # =============================================================================
 
-
-
-
 # =============================================================================
 # Aliases
 # =============================================================================
-
 
 class TestXiaomiAliases:
     """All aliases should resolve to 'xiaomi'."""
@@ -39,11 +33,9 @@ class TestXiaomiAliases:
         assert normalize_provider("mimo") == "xiaomi"
         assert normalize_provider("xiaomi-mimo") == "xiaomi"
 
-
 # =============================================================================
 # Auto-detection
 # =============================================================================
-
 
 class TestXiaomiAutoDetection:
     """Setting XIAOMI_API_KEY should auto-detect the provider."""
@@ -62,16 +54,12 @@ class TestXiaomiAutoDetection:
         provider = resolve_provider("auto")
         assert provider == "xiaomi"
 
-
 # =============================================================================
 # Credentials
 # =============================================================================
 
-
 class TestXiaomiCredentials:
     """Test credential resolution for the xiaomi provider."""
-
-
 
     def test_resolve_credentials(self, monkeypatch):
         monkeypatch.setenv("XIAOMI_API_KEY", "sk-test-12345678")
@@ -79,7 +67,6 @@ class TestXiaomiCredentials:
         creds = resolve_api_key_provider_credentials("xiaomi")
         assert creds["api_key"] == "sk-test-12345678"
         assert creds["base_url"] == "https://api.xiaomimimo.com/v1"
-
 
     def test_resolve_credentials_reads_home_external_secret_scope(
         self, tmp_path, monkeypatch
@@ -113,17 +100,12 @@ class TestXiaomiCredentials:
         assert creds["api_key"] == "sk-bws-xiaomi-12345678"
         assert creds["source"] == "XIAOMI_API_KEY"
 
-
-
-
 # =============================================================================
 # Model catalog (dynamic — no static list)
 # =============================================================================
 
-
 class TestXiaomiModelCatalog:
     """Xiaomi uses dynamic model discovery via models.dev."""
-
 
     def test_static_model_list_fallback(self):
         """Static _PROVIDER_MODELS fallback must exist for model picker.
@@ -167,17 +149,12 @@ class TestXiaomiModelCatalog:
         assert "mimo-v2-pro" in result
         assert "mimo-v2-flash" in result
 
-
 # =============================================================================
 # Normalization
 # =============================================================================
 
-
 class TestXiaomiNormalization:
     """Model name normalization — Xiaomi is a direct provider."""
-
-
-
 
     def test_lowercase_subset_of_matching_prefix(self):
         """_LOWERCASE_MODEL_PROVIDERS must be a subset of _MATCHING_PREFIX_STRIP_PROVIDERS.
@@ -194,7 +171,6 @@ class TestXiaomiNormalization:
             f"{_LOWERCASE_MODEL_PROVIDERS - _MATCHING_PREFIX_STRIP_PROVIDERS}"
         )
 
-
     @pytest.mark.parametrize("input_name,expected", [
         ("MiMo-V2.5-Pro", "mimo-v2.5-pro"),
         ("mimo-v2.5-pro", "mimo-v2.5-pro"),     # already lowercase
@@ -205,18 +181,12 @@ class TestXiaomiNormalization:
         result = normalize_model_for_provider(input_name, "xiaomi")
         assert result == expected
 
-
-
 # =============================================================================
 # URL mapping
 # =============================================================================
 
-
 class TestXiaomiURLMapping:
     """Test URL → provider inference for Xiaomi endpoints."""
-
-
-
 
     def test_infer_from_regional_urls(self):
         """Regional token-plan endpoints should also resolve to xiaomi."""
@@ -225,25 +195,14 @@ class TestXiaomiURLMapping:
         assert _infer_provider_from_url("https://token-plan-cn.xiaomimimo.com/v1") == "xiaomi"
         assert _infer_provider_from_url("https://token-plan-sgp.xiaomimimo.com/v1") == "xiaomi"
 
-
 # =============================================================================
 # providers.py
 # =============================================================================
-
-
-
 
 # =============================================================================
 # Auxiliary client
 # =============================================================================
 
-
-
-
 # =============================================================================
 # Agent init (no SyntaxError, correct api_mode)
 # =============================================================================
-
-
-
-

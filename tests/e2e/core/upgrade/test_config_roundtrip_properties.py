@@ -47,7 +47,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from tests.e2e.core._pending_fixes import known_failure
 from tests.e2e.core.upgrade._helpers import WORKTREE, isolated_env

@@ -675,9 +675,12 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
             headers["x-goog-api-key"] = api_key
+        text_input: Dict[str, Any] = {"type": "text", "text": prompt_text}
+        if is_38 and style:
+            text_input["annotations"] = [{"type": "speech_metadata", "style": style}]
         interactions_payload: Dict[str, Any] = {
             "model": model,
-            "input": [{"type": "text", "text": prompt_text}],
+            "input": [text_input],
         }
         if voice:
             interactions_payload["generation_config"] = {
@@ -691,9 +694,12 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
             response = resp
         elif protocol in ("interactions",):
             response = resp
-        else:
-            # Fallback to generateContent if auto-detected and interactions endpoint failed
+        elif resp.status_code in (404, 405):
+            # Endpoint not supported by custom proxy; fallback to generateContent
             use_interactions = False
+        else:
+            # Real error (400, 401, 403, 429, 500) -> do not re-post to avoid duplicate billing
+            response = resp
 
     if not use_interactions:
         part: Dict[str, Any] = {"text": prompt_text}

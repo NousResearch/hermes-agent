@@ -398,3 +398,65 @@ class TestGeminiInteractionsProtocol:
             "https": "http://192.168.21.6:17893",
         }
 
+    def test_interactions_wire_shape_carries_style_and_instructions(self, tmp_path, monkeypatch, fake_pcm_bytes):
+        from tools.tts_tool import _generate_gemini_tts
+        from tools.tts_tool_delivery import _wrap_pcm_as_wav
+
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        wav = _wrap_pcm_as_wav(fake_pcm_bytes)
+        response = MagicMock(status_code=200)
+        response.json.return_value = {
+            "steps": [{"content": [{"type": "audio", "data": base64.b64encode(wav).decode(), "mime_type": "audio/wav"}]}]
+        }
+        config = {
+            "gemini": {
+                "model": "gemini-3.8-flash-tts",
+                "voice": "Kore",
+                "style": "Warm and cheerful",
+                "protocol": "interactions",
+            }
+        }
+        with patch("requests.post", return_value=response) as post:
+            _generate_gemini_tts("Hello style", str(tmp_path / "out.wav"), config)
+
+        payload = post.call_args.kwargs["json"]
+        assert payload["input"][0]["text"] == "Hello style"
+        assert payload["input"][0]["annotations"] == [{"type": "speech_metadata", "style": "Warm and cheerful"}]
+
+        # Per-call instructions override configured style
+        with patch("requests.post", return_value=response) as post:
+            _generate_gemini_tts("Hello per-call", str(tmp_path / "out.wav"), config, instructions="Whisper softly")
+
+        payload = post.call_args.kwargs["json"]
+        assert payload["input"][0]["text"] == "Hello per-call"
+        assert payload["input"][0]["annotations"] == [{"type": "speech_metadata", "style": "Whisper softly"}]
+
+    def test_interactions_fallback_only_on_404_or_405(self, tmp_path, monkeypatch, mock_gemini_response):
+        from tools.tts_tool import _generate_gemini_tts
+
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        config = {
+            "gemini": {
+                "base_url": "http://custom-proxy:8317/v1beta",
+                "model": "gemini-3.8-flash-tts",
+                "protocol": "auto",
+            }
+        }
+
+        # 404 triggers fallback to generateContent
+        resp_404 = MagicMock(status_code=404, text="Not Found")
+        with patch("requests.post", side_effect=[resp_404, mock_gemini_response]) as post:
+            _generate_gemini_tts("Fallback test", str(tmp_path / "out.wav"), config)
+        assert post.call_count == 2
+        assert post.call_args_list[0].args[0] == "http://custom-proxy:8317/v1beta/interactions"
+        assert post.call_args_list[1].args[0] == "http://custom-proxy:8317/v1beta/models/gemini-3.8-flash-tts:generateContent"
+
+        # 400 (Bad Request) does NOT fall back (prevents duplicate requests/double-billing)
+        resp_400 = MagicMock(status_code=400, text="Bad Request")
+        resp_400.json.return_value = {"error": {"message": "invalid input"}}
+        with patch("requests.post", return_value=resp_400) as post:
+            with pytest.raises(RuntimeError, match="Gemini TTS API error"):
+                _generate_gemini_tts("Error test", str(tmp_path / "out.wav"), config)
+        assert post.call_count == 1
+
+

@@ -27,13 +27,18 @@ def test_staged_uv_prepares_pm_before_any_tool_download(tmp_path):
     store = home / "tools"
     target = current_target()
     # As in setup: uv has been verified/extracted, but PM has no installed facts.
+    # The staged-uv shortcut is gated on the lockfile's pinned python minor, so
+    # the fixture pins the running interpreter's minor (the real lock pins the
+    # bootstrap interpreter's, e.g. 3.14.x).
+    interpreter = f"{sys.version_info.major}.{sys.version_info.minor}"
     entry = store / Uv().store_entry("bootstrap-fixture", target)
     binary = Uv().binary(entry, target)
     assert binary is not None
     binary.parent.mkdir(parents=True)
     shutil.copy2(uv, binary)
     (stage / "pm" / "lock.json").write_text(json.dumps({"schema": 1, "packages": {
-        name: {"version": "bootstrap-fixture", "artifacts": {target: {
+        name: {"version": "bootstrap-fixture" if name == "uv" else f"{interpreter}.0+fixture",
+               "artifacts": {target: {
             "url": f"https://must-not-fetch.invalid/{name}.tar.gz", "sha256": "a" * 64,
         }}} for name in ("uv", "python")
     }}))

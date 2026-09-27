@@ -100,8 +100,8 @@ def _resolve_stt_client_config() -> Dict[str, Any]:
     # slow endpoint fails the Desktop's direct request instead of hanging it.
     timeout_s = tc._config_number(_section(stt_config, "openai"), "timeout", 60.0)
 
-    def direct(wire: str, base_url: Any, api_key: str, model: Any) -> Dict[str, Any]:
-        return _direct(wire, provider, base_url, api_key, model, language=language, timeout_s=timeout_s)
+    def direct(wire: str, base_url: Any, api_key: str, model: Any, **extra: Any) -> Dict[str, Any]:
+        return _direct(wire, provider, base_url, api_key, model, language=language, timeout_s=timeout_s, **extra)
 
     def env_base_url(env_var: str, default: str) -> str:
         from hermes_cli.config import get_env_value
@@ -145,6 +145,20 @@ def _resolve_stt_client_config() -> Dict[str, Any]:
         if not model:
             return _relay("no deepinfra stt model")
         return direct(STT_WIRE_OPENAI, deepinfra_base_url(section), api_key, model)
+    if provider == "mittwald":
+        # Not in ``_STT_KEYED``: the base URL honours ``stt.mittwald.base_url`` and the
+        # provider-wide MITTWALD_BASE_URL override, which that table's lookup skips.
+        from hermes_cli.config import get_env_value
+        from tools.tool_backend_helpers import resolve_mittwald_api_key
+        api_key = resolve_mittwald_api_key()
+        if not api_key:
+            return _relay("no credentials")
+        base_url = str(
+            section.get("base_url") or get_env_value("MITTWALD_STT_BASE_URL")
+            or get_env_value("MITTWALD_BASE_URL") or tc.MITTWALD_STT_BASE_URL
+        ).strip().rstrip("/")
+        return direct(STT_WIRE_OPENAI, base_url, api_key,
+                      section.get("model") or tc.DEFAULT_MITTWALD_STT_MODEL, response_format="json")
     return _relay(f"provider {provider!r} has no client wire")
 
 
@@ -206,6 +220,23 @@ def _resolve_tts_client_config() -> Dict[str, Any]:
             return _relay("no deepinfra tts model")
         return _direct(TTS_WIRE_OPENAI, "deepinfra", deepinfra_base_url(di), api_key, model,
                        voice=di.get("voice") or "af_bella", speed=None, min_len=min_len)
+    if provider == "mittwald":
+        from hermes_cli.config import get_env_value
+        from tools.tool_backend_helpers import resolve_mittwald_api_key
+        api_key = resolve_mittwald_api_key()
+        if not api_key:
+            return _relay("no credentials")
+        from tools.transcription_common import MITTWALD_STT_BASE_URL
+        mw = _section(tts_config, "mittwald")
+        return _direct(TTS_WIRE_OPENAI, "mittwald",
+                       str(mw.get("base_url") or get_env_value("MITTWALD_BASE_URL")
+                           or MITTWALD_STT_BASE_URL).rstrip("/"), api_key,
+                       mw.get("model") or tts_tool_openai.DEFAULT_MITTWALD_TTS_MODEL,
+                       voice=mw.get("voice") or tts_tool_openai.DEFAULT_MITTWALD_TTS_VOICE, speed=None,
+                       min_len=min_len,
+                       # Word form, not ISO — the client forwards it verbatim.
+                       language=tts_tool_openai._mittwald_tts_language(
+                           mw.get("language") or tts_config.get("language")))
     # edge / minimax / xai / mistral / gemini / neutts / kittentts / piper: server-host-only
     # engines or wire shapes the desktop doesn't speak yet; the relay path serves them.
     return _relay(f"provider {provider!r} has no client wire")

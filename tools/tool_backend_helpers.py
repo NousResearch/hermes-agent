@@ -166,6 +166,14 @@ def resolve_provider_secret(env_var: str, provider_id: str, config_value: str = 
     return ""
 
 
+def resolve_mittwald_api_key(config_value: str = "") -> str:
+    """Resolve mittwald's preferred API-key name before its documented alias."""
+    return (
+        resolve_provider_secret("MITTWALD_LLM_API_KEY", "mittwald", config_value=config_value)
+        or resolve_provider_secret("MITTWALD_AI_API_KEY", "mittwald")
+    )
+
+
 def resolve_openai_audio_api_key() -> str:
     """Prefer VOICE_TOOLS_OPENAI_KEY, else OPENAI_API_KEY (scope-aware, pool fallback for the
     latter). Must go through the secret scope: a raw ``os.environ`` read could bill another

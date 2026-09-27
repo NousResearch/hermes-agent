@@ -92,8 +92,10 @@ hermes memory setup mem0 --mode oss \
 | Component | Providers |
 |-----------|-----------|
 | LLM | openai, ollama |
-| Embedder | openai, ollama |
+| Embedder | openai, ollama, mittwald |
 | Vector Store | qdrant (local/server), pgvector |
+
+`mittwald` embeds with `Qwen3-Embedding-8B` (4096 dims) on mittwald AI Hosting using `MITTWALD_LLM_API_KEY`; it rides mem0's OpenAI-compatible embedder, so mem0 needs no extra dependency.
 
 ### Flags Reference
 

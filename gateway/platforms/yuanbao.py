@@ -43,12 +43,14 @@ except ImportError:
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
-    BasePlatformAdapter, MessageEvent, MessageType, SendResult,
+    BasePlatformAdapter, SendResult,
     cache_document_from_bytes_async, cache_image_from_bytes_async, cache_video_from_bytes_async,
 )
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms import helpers as _mdchunk
-from gateway.platforms._shared import get_scoped_secret as _yb_secret
-from gateway.platforms.helpers import MessageDeduplicator
+from gateway.platforms._shared import get_scoped_secret as _yb_secret, profile_scoped as _profile_scoped
+from gateway.platforms.helpers import MessageDeduplicator, cancel_task
+from gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
 from gateway.platforms.yuanbao_media import (
     download_url as media_download_url, get_cos_credentials, upload_to_cos,
     build_image_msg_body, build_file_msg_body, guess_mime_type, md5_hex,
@@ -62,17 +64,14 @@ from gateway.platforms.yuanbao_proto import (
     encode_send_private_heartbeat, encode_send_group_heartbeat, encode_query_group_info,
     encode_get_group_member_list, next_seq_no,
 )
-from gateway.session import build_session_key
 from gateway.session_transcript import TranscriptReadError
 
 logger = logging.getLogger(__name__)
 
 # AUTH_BIND / sign-token header values
-try:
-    from hermes_cli import __version__ as _HERMES_VERSION
-except ImportError:
-    _HERMES_VERSION = "0.0.0"
-_APP_VERSION = _BOT_VERSION = _HERMES_VERSION
+from hermes_cli.version_info import get_version_info
+
+_APP_VERSION = _BOT_VERSION = get_version_info().base_version
 _YUANBAO_INSTANCE_ID = str(HERMES_INSTANCE_ID)
 _OPERATION_SYSTEM = sys.platform
 
@@ -135,13 +134,6 @@ def _cancel_all(tasks: Dict[str, asyncio.Task]) -> None:
         if not task.done():
             task.cancel()
     tasks.clear()
-
-
-async def _cancel_task(task: asyncio.Task) -> None:
-    """Cancel *task* and wait for it to unwind (swallowing the CancelledError)."""
-    task.cancel()
-    with contextlib.suppress(asyncio.CancelledError):
-        await task
 
 
 class MarkdownProcessor:
@@ -699,39 +691,30 @@ class ChatRoutingMiddleware(InboundMiddleware):
         await next_fn()
 
 
-class AccessPolicy:
+class AccessPolicy(OwnAccessPolicyMixin):
     """DM / group access rules shared by inbound middleware and outbound ``send_dm``."""
+    ALLOW_ALL_ENV_PREFIX = "YUANBAO"
+
     def __init__(self, dm_policy: str, dm_allow_from: list[str], group_policy: str, group_allow_from: list[str]) -> None:
         self._dm_policy = dm_policy
-        self._dm_allow_from = dm_allow_from
+        self._allow_from = dm_allow_from
         self._group_policy = group_policy
         self._group_allow_from = group_allow_from
 
-    def _open_dm_opted_in(self) -> bool:
-        return any((_yb_secret(k, "") or "").lower() in {"true", "1", "yes"}
-                   for k in ("GATEWAY_ALLOW_ALL_USERS", "YUANBAO_ALLOW_ALL_USERS"))
-
-    def _evaluate(self, policy: str, allow_from: list[str], principal: str, *, pairing: bool) -> bool:
-        """Shared allow/deny rule; *pairing* is the verdict for the "pairing" policy."""
-        if policy == "allowlist":
-            return principal in allow_from
-        if policy == "pairing":
-            return pairing
-        if policy == "open":
-            return self._open_dm_opted_in()
-        return False  # "disabled" or unknown
-
     def is_dm_allowed(self, sender_id: str) -> bool:
         """Strict DM authorization — pairing does not imply access."""
-        return self._evaluate(self._dm_policy, self._dm_allow_from, sender_id.strip(), pairing=False)
+        return self._is_dm_allowed(sender_id.strip())
 
     def is_dm_intake_allowed(self, sender_id: str) -> bool:
         """Whether a DM may reach gateway intake (pairing handshake path)."""
-        principal = str(sender_id or "").strip()
-        return bool(principal) and self._evaluate(self._dm_policy, self._dm_allow_from, principal, pairing=True)
+        return self._is_dm_intake_allowed(sender_id)
 
     def is_group_allowed(self, group_code: str) -> bool:
-        return self._evaluate(self._group_policy, self._group_allow_from, group_code.strip(), pairing=False)
+        """Unlike the shared rule, an ``open`` group still needs the allow-all opt-in: Yuanbao groups
+        have no runner-side mention gate, so open-without-opt-in would forward every member."""
+        if self._group_policy == "open":
+            return self._open_dm_opted_in()
+        return self._is_group_allowed(group_code.strip())
 
     @property
     def dm_policy(self) -> str:
@@ -767,7 +750,7 @@ class AutoSetHomeMiddleware(InboundMiddleware):
     async def handle(self, ctx: InboundContext, next_fn) -> None:
         adapter = ctx.adapter
         if not adapter._auto_sethome_done and adapter._sender_may_designate_home(ctx):
-            _cur_home = os.getenv("YUANBAO_HOME_CHANNEL", "")
+            _cur_home = _yb_secret("YUANBAO_HOME_CHANNEL", "") or ""
             _should_set = not _cur_home or (_cur_home.startswith("group:") and ctx.chat_type == "dm")
             if ctx.chat_type == "dm":
                 adapter._auto_sethome_done = True  # DM seen — no further upgrades needed
@@ -778,14 +761,17 @@ class AutoSetHomeMiddleware(InboundMiddleware):
     @staticmethod
     def _persist_home(adapter, ctx: InboundContext) -> None:
         try:
-            from hermes_constants import get_hermes_home
-            from hermes_cli.config import atomic_config_write, read_user_config_raw
-            config_path = get_hermes_home() / "config.yaml"
-            # Raw read: merged defaults must not be persisted to the user's file.
-            user_config: dict = read_user_config_raw(config_path)
-            user_config["YUANBAO_HOME_CHANNEL"] = ctx.chat_id
-            atomic_config_write(config_path, user_config)
-            os.environ["YUANBAO_HOME_CHANNEL"] = str(ctx.chat_id)
+            from gateway.config import HomeChannel, persist_home_channel
+            home = HomeChannel(platform=Platform.YUANBAO, chat_id=str(ctx.chat_id), name=str(ctx.chat_name or "Home"))
+            # ``platforms.yuanbao.home_channel`` in the owning profile's config.yaml is the durable record
+            # ``load_gateway_config`` reads back; the live PlatformConfig is updated so cron/home-channel
+            # delivery in THIS process has a target without a restart.
+            persist_home_channel(home)
+            adapter.config.home_channel = home
+            # Under a multiplexed secondary's scope the process env is the DEFAULT profile's; writing there
+            # would make this tenant's chat the default profile's cron/notification home.
+            if not _profile_scoped():
+                os.environ["YUANBAO_HOME_CHANNEL"] = str(ctx.chat_id)
             logger.info("[%s] Auto-sethome: designated %s (%s) as Yuanbao home channel", adapter.name, ctx.chat_id, ctx.chat_name)
         except Exception as e:
             logger.warning("[%s] Auto-sethome failed: %s", adapter.name, e)
@@ -1677,11 +1663,8 @@ class DispatchMiddleware(InboundMiddleware):
 
     async def handle(self, ctx: InboundContext, next_fn) -> None:
         adapter = ctx.adapter
-        _sk = build_session_key(
-            ctx.source,
-            group_sessions_per_user=adapter.config.extra.get("group_sessions_per_user", True),
-            thread_sessions_per_user=adapter.config.extra.get("thread_sessions_per_user", False),
-        )
+        # The adapter seam: keyed in the owner profile's namespace, same as ``handle_message``.
+        _sk = adapter._source_session_key(ctx.source)
 
         async def _dispatch_inbound_event() -> None:
             if any(mt.startswith(("application/", "text/")) for mt in ctx.media_types):
@@ -1805,7 +1788,7 @@ class ConnectionManager:
         if not WEBSOCKETS_AVAILABLE:
             msg = "Yuanbao startup failed: 'websockets' package not installed"
             adapter._set_fatal_error("yuanbao_missing_dependency", msg, retryable=True)
-            logger.warning("[%s] %s. Run: pip install websockets", adapter.name, msg)
+            logger.warning("[%s] %s. Run: hermes pm repair", adapter.name, msg)
             return False
         if not adapter._app_key or not adapter._app_secret:
             msg = "Yuanbao startup failed: YUANBAO_APP_ID and YUANBAO_APP_SECRET are required"
@@ -1843,6 +1826,7 @@ class ConnectionManager:
         self._ws = await asyncio.wait_for(
             websockets.connect(  # type: ignore[attr-defined]
                 self._adapter._ws_url, ping_interval=None, ping_timeout=None, close_timeout=5,
+                happy_eyeballs_delay=0.25,  # race IPv6/IPv4 in loop.create_connection (#114265)
             ),
             timeout=CONNECT_TIMEOUT_SECONDS,
         )
@@ -1872,7 +1856,7 @@ class ConnectionManager:
         for attr, _coro_name, _tag in self._LOOPS:
             task = getattr(self, attr)
             if task:
-                await _cancel_task(task)
+                await cancel_task(task)
                 setattr(self, attr, None)
         disc_exc = RuntimeError("YuanbaoAdapter disconnected")
         for fut in self._pending_acks.values():
@@ -2339,7 +2323,7 @@ class HeartbeatManager:
         """Stop the RUNNING sender and optionally send FINISH."""
         task = self._reply_heartbeat_tasks.pop(chat_id, None)
         if task and not task.done():
-            await _cancel_task(task)
+            await cancel_task(task)
         if send_finish:
             await self.send_heartbeat_once(chat_id, WS_HEARTBEAT_FINISH)
 
@@ -2602,14 +2586,31 @@ class YuanbaoAdapter(BasePlatformAdapter):
     MEDIA_MAX_SIZE_MB: int = 50
     DM_MAX_CHARS = 10000
     _active_instance: ClassVar[Optional["YuanbaoAdapter"]] = None
+    # Per Hermes home: a multiplexed gateway runs one Yuanbao adapter per profile, and the tools /
+    # send_message read "the" adapter from inside a profile-scoped turn, so last-wins would route
+    # profile B's sends through profile A's bot. Registration and lookup both key on the ambient
+    # override (connect/reconnect tasks inherit the profile's Context); the slot above serves the
+    # unscoped path.
+    _active_instances: ClassVar[Dict[str, "YuanbaoAdapter"]] = {}
 
     @classmethod
     def get_active(cls) -> Optional["YuanbaoAdapter"]:
-        return cls._active_instance
+        from hermes_constants import get_hermes_home_override, hermes_home_key
+
+        if get_hermes_home_override() is None:
+            return cls._active_instance
+        return cls._active_instances.get(hermes_home_key())
 
     @classmethod
     def set_active(cls, adapter: Optional["YuanbaoAdapter"]) -> None:
-        cls._active_instance = adapter
+        from hermes_constants import get_hermes_home_override, hermes_home_key
+
+        if get_hermes_home_override() is None:
+            cls._active_instance = adapter
+        elif adapter is None:
+            cls._active_instances.pop(hermes_home_key(), None)
+        else:
+            cls._active_instances[hermes_home_key()] = adapter
 
     def __init__(self, config: PlatformConfig, **kwargs: Any) -> None:
         super().__init__(config, Platform.YUANBAO)
@@ -2648,7 +2649,7 @@ class YuanbaoAdapter(BasePlatformAdapter):
         self._access_policy = AccessPolicy(*_policy("dm"), *_policy("group"))
         self._inbound_pipeline: InboundPipeline = InboundPipelineBuilder.build()
         # Auto-sethome stays open when no home is set or the home is a group (upgradable by first DM).
-        _existing_home = os.getenv("YUANBAO_HOME_CHANNEL") or (config.home_channel.chat_id if config.home_channel else "")
+        _existing_home = _yb_secret("YUANBAO_HOME_CHANNEL", "") or (config.home_channel.chat_id if config.home_channel else "")
         self._auto_sethome_done: bool = bool(_existing_home) and not _existing_home.startswith("group:")
 
     def _track_task(self, task: asyncio.Task) -> asyncio.Task:
@@ -2659,7 +2660,7 @@ class YuanbaoAdapter(BasePlatformAdapter):
 
     @property
     def enforces_own_access_policy(self) -> bool:
-        """Yuanbao gates DM/group access at intake via dm_policy/group_policy."""
+        """Intake gating lives in ``AccessPolicy`` (composed, not inherited), so the flag stays here."""
         return True
 
     def _sender_may_designate_home(self, ctx: InboundContext) -> bool:
@@ -2692,7 +2693,10 @@ class YuanbaoAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Cancel background tasks and close the WebSocket connection."""
         if YuanbaoAdapter._active_instance is self:
-            YuanbaoAdapter.set_active(None)
+            YuanbaoAdapter._active_instance = None
+        for home_key, active in list(YuanbaoAdapter._active_instances.items()):
+            if active is self:
+                del YuanbaoAdapter._active_instances[home_key]
         self._running = False
         self._mark_disconnected()
         self._release_platform_lock()

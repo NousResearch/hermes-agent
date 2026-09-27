@@ -5,7 +5,7 @@
 ## 前提条件
 
 - 已安装并以守护进程方式运行的 **simplex-chat** CLI
-- Python 包 **websockets**（`pip install websockets`）
+- Python 包 **websockets**（`hermes pm repair`）
 
 ## 安装 simplex-chat
 
@@ -93,6 +93,6 @@ send_message(target="simplex:<contact-id>", message="Done!")
 
 **"Cannot reach daemon"** — 确保 `simplex-chat -p 5225` 正在运行，且端口与 `SIMPLEX_WS_URL` 一致。
 
-**"websockets not installed"** — 运行 `pip install websockets`。
+**"websockets not installed"** — 运行 `hermes pm repair`。
 
 **消息未收到** — 检查该联系人的 ID 是否已加入 `SIMPLEX_ALLOWED_USERS`，或通过 DM 配对方式批准该联系人。

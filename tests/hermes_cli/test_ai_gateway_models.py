@@ -94,7 +94,7 @@ def test_fetch_ai_gateway_models_filters_against_live_catalog():
             for mid in live_ids
         ]
     }
-    with patch("urllib.request.urlopen", return_value=_mock_urlopen(payload)):
+    with patch("hermes_cli.models._urlopen_model_catalog_request", return_value=_mock_urlopen(payload)):
         result = fetch_ai_gateway_models(force_refresh=True)
 
     assert [mid for mid, _ in result] == live_ids
@@ -111,7 +111,7 @@ def test_fetch_ai_gateway_models_tags_free_models():
             {"id": second_id, "pricing": {"input": "0", "output": "0"}},
         ]
     }
-    with patch("urllib.request.urlopen", return_value=_mock_urlopen(payload)):
+    with patch("hermes_cli.models._urlopen_model_catalog_request", return_value=_mock_urlopen(payload)):
         result = fetch_ai_gateway_models(force_refresh=True)
 
     by_id = dict(result)
@@ -129,7 +129,7 @@ def test_free_moonshot_model_auto_promoted_to_top_even_if_not_curated():
             {"id": unlisted_free_moonshot, "pricing": {"input": "0", "output": "0"}},
         ]
     }
-    with patch("urllib.request.urlopen", return_value=_mock_urlopen(payload)):
+    with patch("hermes_cli.models._urlopen_model_catalog_request", return_value=_mock_urlopen(payload)):
         result = fetch_ai_gateway_models(force_refresh=True)
 
     assert result[0] == (unlisted_free_moonshot, "recommended")
@@ -145,7 +145,7 @@ def test_paid_moonshot_does_not_get_auto_promoted():
             {"id": "moonshotai/some-paid-variant", "pricing": {"input": "0.001", "output": "0.002"}},
         ]
     }
-    with patch("urllib.request.urlopen", return_value=_mock_urlopen(payload)):
+    with patch("hermes_cli.models._urlopen_model_catalog_request", return_value=_mock_urlopen(payload)):
         result = fetch_ai_gateway_models(force_refresh=True)
 
     assert result[0][0] == first_curated
@@ -153,6 +153,16 @@ def test_paid_moonshot_does_not_get_auto_promoted():
 
 def test_fetch_ai_gateway_models_falls_back_on_error():
     _reset_caches()
-    with patch("urllib.request.urlopen", side_effect=OSError("network")):
+    with patch("hermes_cli.models._urlopen_model_catalog_request", side_effect=OSError("network")):
         result = fetch_ai_gateway_models(force_refresh=True)
     assert result == list(VERCEL_AI_GATEWAY_MODELS)
+
+
+def test_fetch_ai_gateway_models_routes_bearer_through_catalog_opener(monkeypatch):
+    """The keyed catalog GET carries the AI Gateway bearer, so it must go through the
+    redirect-safe catalog opener rather than bare urlopen (which forwards headers cross-origin)."""
+    monkeypatch.setenv("AI_GATEWAY_API_KEY", "gw-secret")
+    with patch("hermes_cli.models._urlopen_model_catalog_request", return_value=_mock_urlopen({"data": []})) as opener:
+        assert models_module._fetch_ai_gateway_models() == []
+    req = opener.call_args.args[0]
+    assert req.get_header("Authorization") == "Bearer gw-secret"

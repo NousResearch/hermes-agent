@@ -17,6 +17,37 @@ from hermes_cli.main_provider_setup import _DELEGATION_TASK_KEY, _delegation_cfg
 
 # ── Default config ──────────────────────────────────────────────────────────
 
+def test_aux_task_registries_cover_default_config():
+    """Both aux-slot registries must cover every per-task block in the defaults.
+
+    ``_AUX_TASKS`` drives the ``hermes model`` auxiliary picker;
+    ``_AUX_TASK_SLOTS`` gates the dashboard REST assignment path and feeds
+    ``_stale_aux_pins``. Both are hand-maintained and drifted before #125413:
+    five slots were configurable only via config.yaml. Non-task keys
+    (``transient_retries``, ``free_only``, ``openrouter_model``,
+    ``stream_only_base_urls``) are excluded by shape — a task block is a dict
+    carrying a ``provider`` key.
+    """
+    from hermes_cli.config import DEFAULT_CONFIG
+    from hermes_cli.main_provider_setup import _AUX_TASKS
+    from hermes_cli.web_server_config import _AUX_TASK_SLOTS
+
+    expected = {
+        key for key, val in DEFAULT_CONFIG["auxiliary"].items()
+        if isinstance(val, dict) and "provider" in val
+    }
+    cli_keys = {key for key, _name, _desc in _AUX_TASKS}
+    rest_keys = set(_AUX_TASK_SLOTS)
+
+    assert cli_keys == expected, (
+        "hermes model picker out of sync with DEFAULT_CONFIG['auxiliary']: "
+        f"missing={sorted(expected - cli_keys)} extra={sorted(cli_keys - expected)}"
+    )
+    assert rest_keys == expected, (
+        "dashboard REST allowlist out of sync with DEFAULT_CONFIG['auxiliary']: "
+        f"missing={sorted(expected - rest_keys)} extra={sorted(rest_keys - expected)}"
+    )
+
 # ── _format_aux_current ─────────────────────────────────────────────────────
 
 # ── _save_aux_choice ────────────────────────────────────────────────────────

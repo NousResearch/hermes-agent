@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
+from agent.runtime_cwd import clear_session_cwd, reset_session_cwd, set_session_cwd
 from hermes_cli.goals import (
     DEFAULT_GATE_MAX_RETRIES,
     DEFAULT_GATE_TIMEOUT_SECONDS,
@@ -243,3 +244,51 @@ def test_no_gates_behaves_exactly_as_before():
     mock_judge.assert_called_once()
     assert decision["verdict"] == "continue"
     assert decision["should_continue"] is True
+
+
+def test_gate_runs_in_the_session_workspace_not_the_backend_dir(tmp_path, monkeypatch):
+    """#125369: a multi-session backend's process directory is not the session's project, so a
+    relative gate command must resolve against the scoped session workspace — the marker only
+    exists there, and a backend-directory run would pass an unrelated project's check."""
+    backend_dir = tmp_path / "backend"
+    session_dir = tmp_path / "session"
+    backend_dir.mkdir()
+    session_dir.mkdir()
+    (session_dir / "marker.txt").write_text("session workspace", encoding="utf-8")
+    monkeypatch.chdir(backend_dir)
+
+    mgr = _mgr_with_goal("gate-cwd-sid")
+    mgr.add_gate("test -f marker.txt && pwd")
+    token = set_session_cwd(str(session_dir))
+    try:
+        with patch(
+            "hermes_cli.goals.judge_goal",
+            return_value=("done", "all good", False, None, False),
+        ) as mock_judge:
+            decision = mgr.evaluate_after_turn("done")
+    finally:
+        reset_session_cwd(token)
+
+    mock_judge.assert_called_once()
+    assert decision["verdict"] == "done"
+    assert str(session_dir) in mgr.state.gates[0].last_output_tail
+
+
+def test_gate_keeps_the_process_dir_without_a_scoped_session(tmp_path, monkeypatch):
+    """No scoped session workspace (the classic CLI launched inside the project): gates keep
+    running in the launch directory, so the single-session flow must not regress."""
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    clear_session_cwd()
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "marker.txt").write_text("launch dir", encoding="utf-8")
+
+    mgr = _mgr_with_goal("gate-cwd-fallback-sid")
+    mgr.add_gate("test -f marker.txt")
+    with patch(
+        "hermes_cli.goals.judge_goal",
+        return_value=("done", "all good", False, None, False),
+    ) as mock_judge:
+        decision = mgr.evaluate_after_turn("done")
+
+    mock_judge.assert_called_once()
+    assert decision["verdict"] == "done"

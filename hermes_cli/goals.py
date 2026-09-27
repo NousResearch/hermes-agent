@@ -371,6 +371,20 @@ class GoalGate:
         )
 
 
+def _session_gate_cwd() -> Optional[str]:
+    """Directory quality gates run in: the session's workspace when one is scoped (multi-session
+    backends bind it through agent.runtime_cwd), else the launch process's directory — what
+    subprocess already uses for ``cwd=None``. A remote/container workspace path that doesn't
+    exist on this host resolves the same way, to the process directory, so gate execution never
+    breaks on it (#125369)."""
+    try:
+        from agent.runtime_cwd import resolve_agent_cwd
+
+        return str(resolve_agent_cwd())
+    except Exception:
+        return None
+
+
 def run_gate(gate: GoalGate, *, cwd: Optional[str] = None) -> Tuple[bool, int, str]:
     """Run one gate through the shell. Returns ``(passed, exit_code, output_tail)``; a timeout kills
     the process and counts as exit code -1."""
@@ -1289,8 +1303,9 @@ class GoalManager:
         if state is None or not state.gates:
             return None
 
+        gate_cwd = _session_gate_cwd()
         for gate in state.gates:
-            passed, exit_code, tail = run_gate(gate)
+            passed, exit_code, tail = run_gate(gate, cwd=gate_cwd)
             gate.last_exit_code = exit_code
             gate.last_output_tail = tail
             if passed:

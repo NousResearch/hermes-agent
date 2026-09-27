@@ -18,7 +18,7 @@ from plugins.platforms.matrix.reaction_context import (
 )
 from plugins.platforms.matrix.reply_context import MatrixEventContext, MatrixEventContextCache
 from plugins.platforms.matrix.room_context import MatrixHistoryContext
-from tests.gateway.test_matrix import _rendered
+from tests.gateway.test_matrix import _make_adapter, _rendered
 from plugins.platforms.matrix.thread_context import NON_CONVERSATIONAL_KEY
 
 
@@ -51,7 +51,8 @@ async def test_event_read_includes_current_reactions_once_per_sender_and_emoji()
     client = SimpleNamespace(
         api=SimpleNamespace(request=AsyncMock(side_effect=request)),
     )
-    adapter = SimpleNamespace(
+    adapter = _make_adapter()
+    vars(adapter).update(
         _event_context_cache=MatrixEventContextCache(),
         _client=client, _joined_rooms={room_id}, _user_id="@bot:example.org",
         _is_allowed_matrix_room_event=AsyncMock(return_value=True),
@@ -315,7 +316,8 @@ async def test_reaction_page_retains_later_redaction_during_first_decrypt(evicti
         })
 
     cache = MatrixEventContextCache(max_entries=1)
-    adapter = SimpleNamespace(
+    adapter = _make_adapter()
+    vars(adapter).update(
         _client=SimpleNamespace(api=SimpleNamespace(request=request),
                                 crypto=SimpleNamespace(decrypt_megolm_event=decrypt)),
         _joined_rooms={room_id}, _user_id="@bot:example.org", _event_context_cache=cache,
@@ -381,7 +383,8 @@ async def test_event_read_reports_incomplete_reactions_against_the_target():
         crypto=SimpleNamespace(decrypt_megolm_event=decrypt),
         api=SimpleNamespace(request=AsyncMock(side_effect=request)),
     )
-    adapter = SimpleNamespace(
+    adapter = _make_adapter()
+    vars(adapter).update(
         _event_context_cache=MatrixEventContextCache(),
         _client=client, _joined_rooms={room_id}, _user_id="@bot:example.org",
         _is_allowed_matrix_room_event=AsyncMock(return_value=True),

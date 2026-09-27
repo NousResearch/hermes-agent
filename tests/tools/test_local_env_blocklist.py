@@ -92,12 +92,18 @@ def test_terminal_child_observes_declared_policy(child_env, monkeypatch):
 
 
 # Secrets adapters read straight from the environment (webhook signing secrets, access tokens,
-# app secrets), built-in and plugin adapters alike, none of them listed in OPTIONAL_ENV_VARS.
+# app secrets), declared in the gateway env-override table, a plugin manifest, or the policy's
+# own short list, none of them among the hand-written OPTIONAL_ENV_VARS entries.
 ADAPTER_SECRETS = """
-WHATSAPP_CLOUD_ACCESS_TOKEN WHATSAPP_CLOUD_APP_SECRET WHATSAPP_CLOUD_VERIFY_TOKEN WEIXIN_TOKEN
+TEAMS_INCOMING_WEBHOOK_URL WHATSAPP_CLOUD_ACCESS_TOKEN WHATSAPP_CLOUD_APP_SECRET WHATSAPP_CLOUD_VERIFY_TOKEN WEIXIN_TOKEN
 YUANBAO_APP_SECRET FEISHU_ENCRYPT_KEY FEISHU_VERIFICATION_TOKEN TELEGRAM_WEBHOOK_SECRET
-PHOTON_SIDECAR_TOKEN RAFT_CHANNEL_TOKEN MSGRAPH_WEBHOOK_CLIENT_STATE MSGRAPH_CLIENT_SECRET
+PHOTON_SIDECAR_TOKEN A2A_PUSH_SECRET TEAMS_GRAPH_ACCESS_TOKEN QQ_STT_API_KEY
+MSGRAPH_WEBHOOK_CLIENT_STATE MSGRAPH_CLIENT_SECRET
 """.split()
+# The user's own credentials that merely start with a platform name. Hermes never reads them, so
+# they reach the terminal like any other variable, and passthrough can forward them.
+OPERATOR_SECRETS = ["MY_APP_KEY", "DEPLOY_WEBHOOK_SECRET", "SLACK_USER_TOKEN", "LOCAL_LLM_API_KEY",
+                    "GATEWAY_API_KEY"]
 
 
 @pytest.mark.parametrize("builder", ["foreground", "background", "nonterminal"])
@@ -107,24 +113,24 @@ def test_adapter_and_provider_profile_secrets_never_reach_children(child_env, mo
     secrets = set(ADAPTER_SECRETS)
     secrets.update(name for profile in bundled_provider_profiles() for name in (profile.env_vars or ()))
     secrets.discard("CLAUDE_CODE_OAUTH_TOKEN")  # operator's subscription, not Hermes inference
-    operator = ["MY_APP_KEY", "DEPLOY_WEBHOOK_SECRET"]  # secret-shaped, but no adapter owns them
-    for name in [*secrets, *operator]:
+    for name in [*secrets, *OPERATOR_SECRETS]:
         monkeypatch.setenv(name, "fake-" + name)
     factories = {
         "foreground": lambda: local._make_run_env({}),
         "background": lambda: local._sanitize_subprocess_env(dict(os.environ)),
         "nonterminal": local.hermes_subprocess_env,
     }
-    observed = observe_child(factories[builder](), sorted(secrets | set(operator)))
-    assert observed == {**dict.fromkeys(secrets), **{k: "fake-" + k for k in operator}}
+    observed = observe_child(factories[builder](), sorted(secrets | set(OPERATOR_SECRETS)))
+    assert observed == {**dict.fromkeys(secrets), **{k: "fake-" + k for k in OPERATOR_SECRETS}}
     # Skill passthrough is what forwards a name into docker/ssh/modal and execute_code children.
-    register_env_passthrough(sorted(secrets))
+    register_env_passthrough(sorted(secrets | set(OPERATOR_SECRETS)))
     assert not any(is_env_passthrough(name) for name in secrets)
+    assert all(is_env_passthrough(name) for name in OPERATOR_SECRETS)
 
 
 def test_inheriting_child_gets_provider_keys_but_never_adapter_secrets(child_env, monkeypatch):
     # inherit_credentials is the narrow grant for model-driving CLIs: provider keys only.
-    granted = ["OPENAI_API_KEY", "NOUS_API_KEY", "MY_APP_KEY", "DEPLOY_WEBHOOK_SECRET"]
+    granted = ["OPENAI_API_KEY", "NOUS_API_KEY", *OPERATOR_SECRETS]
     for name in [*ADAPTER_SECRETS, *granted]:
         monkeypatch.setenv(name, "fake-" + name)
     observed = observe_child(local.hermes_subprocess_env(inherit_credentials=True),
@@ -138,13 +144,13 @@ def test_runtime_adapter_secret_follows_the_bound_profiles_registry(child_env, m
     home_a, home_b = child_env / "hermes", child_env / "profile-b"
     home_a.mkdir(exist_ok=True)
     home_b.mkdir()
-    name = "ACME_CHAT_SIGNING_SECRET"  # read by a user adapter; no OPTIONAL_ENV_VARS entry
+    name = "ACME_CHAT_SIGNING_SECRET"  # declared by a user adapter; no OPTIONAL_ENV_VARS entry
     monkeypatch.setenv(name, "fake-secret")
     monkeypatch.setenv("MY_APP_KEY", "operator")
     scope_a = platform_registry.current_scope_key()
     # Registered after the policy module was imported, in profile A only.
     platform_registry.register(PlatformEntry(name="acme-chat", label="Acme", adapter_factory=lambda c: None,
-                                             check_fn=lambda: True), scope=scope_a)
+                                             check_fn=lambda: True, required_env=[name]), scope=scope_a)
 
     def child_sees():
         return observe_child(local.hermes_subprocess_env(), [name, "MY_APP_KEY"])
@@ -185,7 +191,7 @@ def test_passthrough_accepted_before_an_adapter_owns_the_name_stops_forwarding_i
 
     scope = platform_registry.current_scope_key()
     platform_registry.register(PlatformEntry(name="acme-chat", label="Acme", adapter_factory=lambda c: None,
-                                             check_fn=lambda: True), scope=scope)
+                                             check_fn=lambda: True, required_env=[name]), scope=scope)
     try:
         assert [observe_child(b(), names) for b in builders] == [{name: None, "MY_APP_KEY": "operator"}] * 3
         # A routed profile's value lives only in its scope; the stale declaration must not add it back.

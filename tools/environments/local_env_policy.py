@@ -40,9 +40,6 @@ _STATIC_PROVIDER_ENV_BLOCKLIST = frozenset({
     "DAYTONA_API_KEY", "GATEWAY_RELAY_ID", "GATEWAY_RELAY_SECRET",
     "GATEWAY_RELAY_DELIVERY_KEY", "VERCEL_OIDC_TOKEN", "VERCEL_TOKEN",
     "VERCEL_PROJECT_ID", "VERCEL_TEAM_ID",
-    # Microsoft Graph app secret and webhook clientState: read in code only, and no
-    # adapter prefix owns them for the shape rule (``_is_platform_secret_env``).
-    "MSGRAPH_CLIENT_SECRET", "MSGRAPH_WEBHOOK_CLIENT_STATE",
 })
 
 
@@ -94,31 +91,64 @@ def _build_provider_env_blocklist() -> frozenset:
     return frozenset(blocked)
 
 
-_HERMES_PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
+_SECRET_ENV_SUFFIXES = ("_TOKEN", "_SECRET", "_PASSWORD", "_KEY")
 
 
-def _is_provider_env_blocklisted(name: str) -> bool:
-    """``name`` is a blocklisted provider/tool credential, matched the way the
-    platform's environment resolves names: exact plus case-folded. On Windows
-    the environment block is case-insensitive, so ``openai_api_key`` IS
-    ``OPENAI_API_KEY``; consistent with ``_is_hermes_internal_secret``, which
-    already folds (``key.upper()``)."""
+def _build_adapter_secret_env() -> frozenset:
+    """Secrets the messaging adapters declare: ``password`` messaging entries of OPTIONAL_ENV_VARS
+    (built-ins plus every platform plugin manifest's ``requires_env`` / ``optional_env``) and the
+    secret-named keys the gateway env-override table reads (WEIXIN_TOKEN, FEISHU_ENCRYPT_KEY, ...).
+    Declared names only: a user's own ``SLACK_USER_TOKEN`` or ``LOCAL_LLM_API_KEY`` is not Hermes's."""
+    # Read in code only, declared nowhere else: the Microsoft Graph app secret and webhook
+    # clientState, and the QQ bot's speech-to-text key.
+    names: set[str] = {"MSGRAPH_CLIENT_SECRET", "MSGRAPH_WEBHOOK_CLIENT_STATE", "QQ_STT_API_KEY"}
+    try:
+        from hermes_cli.config import OPTIONAL_ENV_VARS
+        names.update(name.upper() for name, meta in OPTIONAL_ENV_VARS.items()
+                     if meta.get("category") == "messaging" and meta.get("password"))
+    except ImportError:
+        pass
+    try:
+        from gateway import config_env
+        from hermes_cli.profile_channels import _cred_row_envs
+        declared = {n for ns in config_env._ENV_ENABLE_CREDENTIALS.values() for n in ns}
+        for step in config_env._ENV_STEPS:
+            if isinstance(step, config_env._Cred):
+                declared |= _cred_row_envs(step)
+        names.update(n.upper() for n in declared if n.upper().endswith(_SECRET_ENV_SUFFIXES))
+    except ImportError:
+        pass
+    return frozenset(names)
+
+
+_ADAPTER_SECRET_ENV = _build_adapter_secret_env()
+_HERMES_PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist() | _ADAPTER_SECRET_ENV
+
+
+def _registered_adapter_secret_env() -> frozenset:
+    """Secret-named ``required_env`` of the adapters registered in the current profile scope. Read
+    per call: plugin adapters register late and per profile, and a profile's own user plugins are
+    not in the import-time OPTIONAL_ENV_VARS. Tier 2 only: ``required_env`` is an unchecked setup
+    list, so a plugin naming OPENAI_API_KEY must not strip it from credentialed children."""
+    try:
+        from gateway.platform_registry import platform_registry
+        return frozenset(n.upper() for n in platform_registry.required_env_names()
+                         if n.upper().endswith(_SECRET_ENV_SUFFIXES))
+    except Exception:
+        return frozenset()
+
+
+def _is_provider_env_blocklisted(name: str, _registered: "frozenset | None" = None) -> bool:
+    """``name`` is a blocklisted provider/tool credential or adapter secret, matched the way the
+    platform's environment resolves names: exact plus case-folded. On Windows the environment
+    block is case-insensitive, so ``openai_api_key`` IS ``OPENAI_API_KEY``; consistent with
+    ``_is_hermes_internal_secret``, which already folds (``key.upper()``). Loops pass
+    ``_registered`` so the registry is read once per env, not once per key."""
     upper = name.upper()
-    return (name in _HERMES_PROVIDER_ENV_BLOCKLIST or upper in _HERMES_PROVIDER_ENV_BLOCKLIST
-            or _is_platform_secret_env(upper))
+    if name in _HERMES_PROVIDER_ENV_BLOCKLIST or upper in _HERMES_PROVIDER_ENV_BLOCKLIST:
+        return True
+    return upper in (_registered_adapter_secret_env() if _registered is None else _registered)
 
-
-# Adapters read many secrets straight from the environment without listing them in
-# OPTIONAL_ENV_VARS (TELEGRAM_WEBHOOK_SECRET, WHATSAPP_CLOUD_APP_SECRET, WEIXIN_TOKEN, ...), so
-# the list above never sees them. Match them by shape, like the authorization gates below: an
-# adapter prefix plus a secret suffix, so a new adapter secret needs no second edit. The owners
-# are read per call because plugin adapters register late and per profile.
-_PLATFORM_SECRET_ENV_SUFFIXES = ("_TOKEN", "_SECRET", "_PASSWORD", "_KEY")
-
-
-def _is_platform_secret_env(upper: str) -> bool:
-    return upper.endswith(_PLATFORM_SECRET_ENV_SUFFIXES) and any(
-        upper.startswith(prefix + "_") for prefix in _platform_gate_env_prefixes())
 
 # First-party platform credentials (``BUZZ_*``, driving the platform-mandated ``buzz``
 # CLI) carved out of the TERMINAL scrub only (``_make_run_env``,
@@ -321,7 +351,6 @@ _ALWAYS_STRIP_KEYS: frozenset[str] = frozenset({
     # enumerated here to stay stripped on the inherit_credentials=True path.
     "GATEWAY_RELAY_ID", "GATEWAY_RELAY_SECRET", "GATEWAY_RELAY_DELIVERY_KEY",
     "HASS_TOKEN", "EMAIL_PASSWORD", "HERMES_DASHBOARD_SESSION_TOKEN",
-    "MSGRAPH_CLIENT_SECRET", "MSGRAPH_WEBHOOK_CLIENT_STATE",
     # Remote-compute / infrastructure secrets
     "MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET", "DAYTONA_API_KEY",
-})
+}) | _ADAPTER_SECRET_ENV  # every declared adapter secret is Tier 1, like the bot tokens above

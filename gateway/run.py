@@ -433,15 +433,16 @@ def _ensure_windows_gateway_venv_imports() -> None:
     candidates.append(project_root / "venv")
 
     def _venv_python_minor(venv_dir: Path) -> tuple[int, int] | None:
-        """The Python minor a venv was built for (pyvenv.cfg ``version_info``), if recorded."""
+        """The Python minor recorded as ``version`` (stdlib) or ``version_info`` (uv)."""
         try:
             for line in (venv_dir / "pyvenv.cfg").read_text(encoding="utf-8").splitlines():
-                line = line.strip()
-                if line.startswith("version_info"):
-                    _, _, raw = line.partition("=")
-                    parts = raw.strip().strip('"').split(".")
+                key, separator, raw = line.partition("=")
+                if separator != "=" or key.strip() not in {"version", "version_info"}:
+                    continue
+                parts = raw.split("#", 1)[0].strip().strip("\"'").split(".")
+                if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
                     return (int(parts[0]), int(parts[1]))
-        except (OSError, ValueError, IndexError):
+        except OSError:
             return None
         return None
 

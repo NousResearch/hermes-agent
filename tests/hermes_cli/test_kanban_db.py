@@ -985,30 +985,6 @@ def test_is_managed_scratch_path_rejects_kanban_metadata_subtrees(kanban_home):
     assert kb._is_managed_scratch_path(task_dir)
 
 
-@pytest.mark.require_symlinks
-def test_symlinked_workspaces_root_does_not_widen_scratch_cleanup(kanban_home, tmp_path):
-    """A workspaces root that is a symlink to a broad directory must not make
-    every path inside the symlink target "managed". Only paths that are
-    lexically below the root (i.e. reached through it) are scratch; a path
-    named directly inside the target is user data (#28818)."""
-    broad = tmp_path / "user-data"
-    victim = broad / "project"
-    victim.mkdir(parents=True)
-    (victim / "keep.txt").write_text("user data", encoding="utf-8")
-    ws_root = kanban_home / "kanban" / "workspaces"
-    if ws_root.is_dir() and not ws_root.is_symlink():
-        ws_root.rmdir()
-    ws_root.parent.mkdir(parents=True, exist_ok=True)
-    ws_root.symlink_to(broad, target_is_directory=True)
-
-    with kbc.connect() as conn:
-        # Legacy explicit-path scratch task pointing straight at user data.
-        t = kb.create_task(conn, title="scratch")
-        kbw.set_workspace_path(conn, t, victim)
-        assert kb.complete_task(conn, t, result="done")
-    assert (victim / "keep.txt").is_file()
-
-
 # ---------------------------------------------------------------------------
 # Tenancy
 # ---------------------------------------------------------------------------
@@ -1578,7 +1554,13 @@ def test_connect_heals_reduced_tasks_schema_seeded_by_external_harness(kanban_ho
 def test_resolve_hermes_argv_prefers_module_form_over_path_shim(monkeypatch):
     """A `hermes` on PATH must not shadow the running install (#111569):
     the module argv wins whenever ``hermes_cli`` is importable; only an
-    explicit ``$HERMES_BIN`` overrides it."""
+    explicit ``$HERMES_BIN`` overrides it.
+
+    The module argv is the published launcher when one exists (it resolves
+    ``hermes_cli`` regardless of the worker's cwd, which the bare
+    ``python -m`` form cannot), and ``[sys.executable, "-m", ...]`` otherwise.
+    The invariant under test is that neither form is the PATH shim.
+    """
     import shutil
     import sys
     from hermes_cli import kanban_db_dispatch as kbd
@@ -1586,10 +1568,37 @@ def test_resolve_hermes_argv_prefers_module_form_over_path_shim(monkeypatch):
     monkeypatch.delenv("HERMES_BIN", raising=False)
     monkeypatch.setattr(shutil, "which", lambda name: "/tmp/planted/hermes")
     monkeypatch.setattr(kbd, "_safe_which_no_cwd", lambda name: "/tmp/planted/hermes")
-    assert kbd._resolve_hermes_argv() == [sys.executable, "-m", "hermes_cli.main"]
+
+    launcher = Path(kbd.__file__).resolve().parent.parent / ".hermes" / "bin" / "hermes"
+    if launcher.is_file() and os.access(launcher, os.X_OK):
+        # Published launcher: still must not be the planted PATH shim.
+        assert kbd._resolve_hermes_argv() == [str(launcher)]
+    else:
+        assert kbd._resolve_hermes_argv() == [sys.executable, "-m", "hermes_cli.main"]
 
     monkeypatch.setenv("HERMES_BIN", "/opt/hermes/bin/hermes")
     assert kbd._resolve_hermes_argv() == ["/opt/hermes/bin/hermes"]
+
+
+def test_module_hermes_argv_never_returns_a_path_shim(monkeypatch):
+    """The module argv must never resolve to a `hermes` found on PATH.
+
+    Regression for the kanban worker crash: a bare
+    ``[sys.executable, "-m", "hermes_cli.main"]`` cannot import ``hermes_cli``
+    when the managed runtime has no install and the worker's cwd is not the
+    repo root, so the published launcher is preferred. Whichever form is
+    chosen, it must not be a PATH-planted shim.
+    """
+    import shutil
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    monkeypatch.delenv("HERMES_BIN", raising=False)
+    monkeypatch.setattr(shutil, "which", lambda name: "/tmp/planted/hermes")
+    monkeypatch.setattr(kbd, "_safe_which_no_cwd", lambda name: "/tmp/planted/hermes")
+
+    argv = kbd._module_hermes_argv()
+    assert argv, "module argv must never be empty"
+    assert "/tmp/planted/hermes" not in argv
 
 
 

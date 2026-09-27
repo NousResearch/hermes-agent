@@ -1016,14 +1016,17 @@ class TestWebhookApprovalExclusion:
 class TestUnattendedPlatformExecAskLeak:
     """A gateway process sets HERMES_EXEC_ASK=1 for EVERY session it serves, so an
     api_server/webhook turn reads as "ask" in ``_presence()`` even though the platform was
-    already excluded from gateway approval contexts. Without a registered notify callback
-    (non-streaming /v1/chat/completions, webhook, msgraph_webhook) the ask branch parks the
-    approval as ``pending_approval`` that no client on that endpoint can ever answer, and
-    ``approvals.unattended_mode`` never runs — the unanswerable stall of #100532.
+    already excluded from gateway approval contexts. Without a surface that can answer the
+    card — non-streaming /v1/chat/completions registers no notify callback, and
+    webhook/msgraph_webhook register one on every turn yet render no approval surface and
+    have no reader — the ask branch blocks for the full approval timeout with no human who
+    can resolve it, and ``approvals.unattended_mode`` never runs (#100532).
 
-    Fix: ``_presence()`` drops ``is_ask`` for unattended-platform sessions without a notify
-    callback, so the unattended branch resolves instantly from ``approvals.unattended_mode``.
-    ``/v1/runs`` and streaming chat completions register a callback and keep the ask path.
+    Fix: ``_presence()`` drops ``is_ask`` for unattended-platform sessions that no client can
+    answer — no notify callback on api_server, or a notifier-blind platform (webhook,
+    msgraph_webhook) where the TurnRunner lane registers one unconditionally — so the
+    unattended branch resolves instantly from ``approvals.unattended_mode``. ``/v1/runs`` and
+    streaming chat completions register a callback and keep the ask path.
     """
 
     def _isolate(self, monkeypatch, *, platform="api_server"):
@@ -1099,6 +1102,48 @@ class TestUnattendedPlatformExecAskLeak:
         self._isolate(monkeypatch, platform="telegram")
         _, _is_cli, _is_gateway, is_ask = approval_mod._presence()
         assert is_ask is True
+
+    def test_webhook_registered_notifier_still_resolves_unattended(self, monkeypatch):
+        """webhook/msgraph_webhook residual of #100532: the generic TurnRunner lane registers a
+        notify callback for *every* inbound turn (``_run_conversation_with_approval`` registers
+        unconditionally), yet the WebhookAdapter renders no ``send_exec_approval``/``/approve``
+        surface and the inbound lane is ``POST -> 202`` with no reader — so a registered
+        notifier there does not mean anyone can answer. The ask leak must resolve from
+        ``approvals.unattended_mode`` instead of blocking the full approval timeout."""
+        import tools.approval as approval_mod
+        from tools.approval import check_all_command_guards
+
+        self._isolate(monkeypatch, platform="webhook")
+        monkeypatch.setattr(approval_mod, "_smart_verdict",
+                            lambda *a, **k: pytest.fail("guardian ran after unattended resolution"))
+
+        def _no_human(data):
+            pytest.fail("approval card delivered to a platform with no approval transport")
+
+        approval_mod.register_gateway_notify("test-unattended-ask-leak", _no_human)
+        try:
+            result = check_all_command_guards("pkill -9 -f soffice", "local")
+        finally:
+            approval_mod.unregister_gateway_notify("test-unattended-ask-leak")
+
+        assert result["approved"] is False
+        assert result.get("status") != "pending_approval"
+        assert result.get("approval_pending") is not True
+        assert "unattended platform" in result["message"]
+        assert "approvals.unattended_mode" in result["message"]
+
+    def test_msgraph_webhook_registered_notifier_drops_ask(self, monkeypatch):
+        """Same shape at the ``_presence()`` level for msgraph_webhook: the TurnRunner-registered
+        notifier must not keep the ask branch alive on a notifier-blind platform."""
+        import tools.approval as approval_mod
+
+        self._isolate(monkeypatch, platform="msgraph_webhook")
+        approval_mod.register_gateway_notify("test-unattended-ask-leak", lambda data: None)
+        try:
+            _, _is_cli, _is_gateway, is_ask = approval_mod._presence()
+            assert is_ask is False
+        finally:
+            approval_mod.unregister_gateway_notify("test-unattended-ask-leak")
 
 
 class TestNormalizationBypass:

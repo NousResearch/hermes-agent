@@ -1,6 +1,6 @@
 name: hermes-slash-router
 repo: https://github.com/raitoxlol/hermes-slash-router
-sha: d8550700d07b3d75176b0cec4dca721caa1c3fb9
+sha: 1f6c20b0bf38fe1958a80a9798f5dcfde89dac39
 description: >-
   Jev-powered routing for misspelled, shortened, and meaning-based slash commands
   on Hermes Desktop, CLI, and Telegram. Preserves drafts when unsure. Requires a

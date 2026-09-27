@@ -16,6 +16,7 @@ import { parseErrorSurface } from '@/lib/error-surface'
 import { isMessagingSource, normalizeSessionSource } from '@/lib/session-source'
 import { isLiveTailReplyId } from '@/lib/spoken-reply'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
+import { activeGatewayConnectionId } from '@/store/gateway'
 import { requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import { $projectTree } from '@/store/projects'
@@ -2132,6 +2133,33 @@ interface ApplyRuntimeInfoOptions {
    * per-session state is unaffected.
    */
   foreground?: boolean
+  /**
+   * The backend that produced `info`, when the caller dialled one other than
+   * the ambient gateway (a tile's route, an All-profiles resume, a branch of a
+   * bot's chat). Omitted means the active gateway.
+   */
+  owner?: SessionOwnerScope
+}
+
+// The approval chip is keyed by the ACTIVE profile's name, so only the active
+// gateway's runtime may reconcile it — the session.info event path applies the
+// same rule. Another profile's `approvals.mode` written under the active name
+// shows "Manual" on a profile that auto-approves, or the reverse.
+function ownerIsActiveGateway(owner: SessionOwnerScope): boolean {
+  if (!owner) {
+    return true
+  }
+
+  const activeProfile = normalizeProfileKey($activeGatewayProfile.get())
+
+  if (typeof owner === 'string') {
+    return normalizeProfileKey(owner) === activeProfile
+  }
+
+  return (
+    normalizeProfileKey(owner.profile) === activeProfile &&
+    (owner.connectionId?.trim() || 'local') === (activeGatewayConnectionId() ?? 'local')
+  )
 }
 
 /** Mirror a session's runtime state into the composer atoms the MAIN pane
@@ -2189,7 +2217,7 @@ function publishRuntimeToComposer(state: SessionRuntimeStatePatch): void {
 
 export function applyRuntimeInfo(
   info: SessionRuntimeInfo | undefined,
-  { foreground = true }: ApplyRuntimeInfoOptions = {}
+  { foreground = true, owner }: ApplyRuntimeInfoOptions = {}
 ): SessionRuntimeStatePatch | null {
   if (!info) {
     return null
@@ -2199,7 +2227,7 @@ export function applyRuntimeInfo(
   // reports backend skew and credential warnings just as usefully.
   reportBackendContract(info.desktop_contract)
 
-  if (info.approval_mode !== undefined) {
+  if (info.approval_mode !== undefined && ownerIsActiveGateway(owner)) {
     reconcileApprovalModeForProfile($activeGatewayProfile.get(), info.approval_mode)
   }
 

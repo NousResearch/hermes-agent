@@ -33,17 +33,23 @@ import { PROFILE_SWATCHES } from '@/lib/profile-color'
 import { exportSession } from '@/lib/session-export'
 import { activeGateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
-import { $projectTree, moveSessionToProject, projectIdForCwd, projectRootCwd } from '@/store/projects'
+import {
+  $projectTree,
+  applyRenamedSessionTitle,
+  moveSessionToProject,
+  projectIdForCwd,
+  projectRootCwd
+} from '@/store/projects'
 import {
   $activeSessionId,
   $connection,
   $selectedStoredSessionId,
   $sessions,
   $unreadFinishedSessionIds,
+  applySessionTitle,
   markSessionRead,
   sessionMatchesStoredId,
-  sessionPinId,
-  setSessions
+  sessionPinId
 } from '@/store/session'
 import { $sessionColorOverrides, setSessionColorOverride } from '@/store/session-color'
 import { $sessionTiles, closeAllOpenSessionTiles } from '@/store/session-states'
@@ -699,7 +705,12 @@ function RenameSessionDialog({ open, onOpenChange, sessionId, currentTitle, prof
     try {
       const result = await renameSessionPreferringRpc(sessionId, next, profile)
       const finalTitle = result.title || next || ''
-      setSessions(prev => prev.map(s => (s.id === sessionId ? { ...s, title: finalTitle || null } : s)))
+      // One write, every list: patch the main store AND the project surfaces.
+      // Bare-id patching only the recents slice left project-scoped rows
+      // (overview previews, entered-project lanes) on the stale title until a
+      // profile switch forced a refetch (#123337).
+      applySessionTitle(sessionId, finalTitle || null)
+      applyRenamedSessionTitle(sessionId, finalTitle || null)
       notify({ durationMs: 2_000, kind: 'success', message: r.renamed })
       onOpenChange(false)
     } catch (err) {

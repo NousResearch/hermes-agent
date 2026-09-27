@@ -25,9 +25,9 @@
 
 No existing Hermes installation is required. The Windows NSIS installer creates
 an **Agent Czesiek** desktop and Start Menu shortcut with the Czesiek icon.
-On first launch, the app downloads its pinned runtime from this repository and
-installs the required dependencies. Internet access is required; this is not an
-offline installer. See the [installation guide](../../docs/CZESIEK_INSTALLATION.md).
+The full Windows installer includes the backend, portable Python and dependencies,
+Git Bash and Node.js. First launch does not clone a repository or run pip. Cloud
+model calls and optional integrations still require internet access. See the [installation guide](../../docs/CZESIEK_INSTALLATION.md).
 
 ### Install with the Hermes CLI (development)
 

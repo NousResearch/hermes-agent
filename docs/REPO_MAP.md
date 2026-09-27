@@ -48,3 +48,11 @@ Sekrety i dane profilu pozostają poza repozytorium.
   `src/app/pet-overlay/orb-overlay.tsx`.
 
 Instrukcja użytkownika: [własne umiejętności i role](SKILLS_AND_ASSISTANT.md).
+
+
+### Windows: silnik w instalatorze
+
+- `apps/desktop/electron/bundled-runtime.ts`: wybór dołączonego silnika przed starym bootstrapem.
+- `apps/desktop/scripts/stage-windows-runtime.mjs`: pakowanie kodu, Pythona, zależności, Git i Node.
+- `apps/desktop/scripts/before-pack.mjs`: zgodność commita i architektury pakietu.
+- `docs/CZESIEK_INSTALLATION.md`: instrukcja budowania i granice działania offline.

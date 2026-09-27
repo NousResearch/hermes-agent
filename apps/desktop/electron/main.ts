@@ -80,6 +80,7 @@ import {
 } from './bootstrap-platform'
 import { decideBootstrapRepair } from './bootstrap-repair-guard'
 import { runBootstrap } from './bootstrap-runner'
+import { bundledRuntimeBackend } from './bundled-runtime'
 import {
   BROWSER_WINDOW_HEIGHT,
   BROWSER_WINDOW_MIN_HEIGHT,
@@ -4984,6 +4985,15 @@ function resolveHermesBackend(backendArgs) {
     if (backend) {
       return backend
     }
+  }
+
+  const bundled = bundledRuntimeBackend({
+    isPackaged: IS_PACKAGED, resourcesPath: process.resourcesPath,
+    hermesHome: HERMES_HOME, args: backendArgs
+  })
+  if (bundled) {
+    bootstrapRepairRequested = false
+    return bundled
   }
 
   // 3. ACTIVE_HERMES_ROOT — the canonical install at

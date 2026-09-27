@@ -1,19 +1,14 @@
 # Instalacja Agent Czesiek na nowym komputerze
 
 Nie trzeba wcześniej instalować Hermes Agent, Pythona ani konfigurować CLI.
-Instalacja składa się z dwóch etapów:
+Pełny instalator Windows zawiera aplikację, kod silnika, Python, jego zależności,
+Git Bash i Node.js. Pierwszy start nie klonuje repozytorium ani nie uruchamia pip.
+Kod startuje z `resources/runtime`, a dane użytkownika pozostają poza instalacją.
 
-1. Instalator Windows NSIS instaluje okno aplikacji, tworzy skrót **Agent Czesiek**
-   na pulpicie i w menu Start, a po zakończeniu pozwala uruchomić program.
-2. Przy pierwszym starcie Czesiek uruchamia skrypt instalacyjny dołączony do
-   aplikacji. Silnik pobiera z `aievolutionpl/AGENT_CZESIEK`, przypięty do commita
-   wydania. Kreator przeprowadza instalację
-   potrzebnych narzędzi, Pythona, środowiska i zależności. Następnie użytkownik
-   wybiera model i podaje własny klucz API.
-
-Pierwszy start wymaga internetu (GitHub, źródła pakietów i zależności).
-To instalacja online, nie pełny pakiet offline. Czas zależy od sieci i komputera.
-Samo otwarcie okna nie potwierdza zakończenia instalacji silnika.
+Do instalacji i uruchomienia lokalnego backendu nie potrzeba internetu. Rozmowy
+z Gemini, OpenRouter i innymi usługami API wymagają internetu i własnych kluczy.
+Opcjonalne narzędzia, modele lokalne i integracje mogą mieć dodatkowe wymagania;
+nie są obietnicą całkowicie offline działającego asystenta.
 
 ## Własne środowisko
 
@@ -105,3 +100,27 @@ ani rzeczywistego mikrofonu w tej próbie.
 - Przycisk zakończenia NSIS uruchamia EXE bezpośrednio, bez zależności od skrótu
   w menu Start. Skróty nadal są tworzone przez instalator.
 - Internet nadal jest wymagany do pobrania silnika i zależności.
+
+
+## Budowanie pełnego instalatora Windows
+
+`apps/desktop/scripts/stage-windows-runtime.mjs` pakuje wyłącznie śledzone pliki
+kodu z listy katalogów runtime oraz czystą dystrybucję Pythona i przetestowane
+`site-packages`. Nie wskazuj profilu użytkownika jako źródła. Klucze, czaty,
+konfiguracje i pliki `.env` nie mogą być częścią materiału do wydania.
+
+```powershell
+node apps/desktop/scripts/stage-windows-runtime.mjs --python-root=<standalone-Python> --site-packages=<clean-venv/Lib/site-packages> --git-root=<Git-distribution> --node-root=<Node-distribution> --node-license=<matching-Node-LICENSE>
+```
+
+Opcjonalne `--output` pozwala użyć innego dysku; `apps/desktop/build/runtime`
+musi wtedy wskazywać wynikowy katalog. Źródłowy interpreter musi być pełną,
+przenośną dystrybucją, nie samym launcherem z venv. Skrypt usuwa powiązania
+editable z maszyną budującą i zapisuje wersje pakietów w `manifest.json`.
+Przygotuj zależności w czystym środowisku zgodnie z `pyproject.toml`, a przed
+wydaniem sprawdź manifest i przetestuj wynik po przeniesieniu do nowej ścieżki.
+Pakowanie odrzuca runtime z innego commita lub architektury.
+
+Następnie wykonaj build i pakowanie NSIS. Aktualizacja wymienia runtime razem
+z aplikacją. Nie aktualizuj silnika przez git/pip w katalogu zainstalowanego
+programu. Licencje Hermesa, Pythona, Git, Node i pakietów pozostają w paczce.

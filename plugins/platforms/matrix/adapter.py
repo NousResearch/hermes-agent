@@ -81,12 +81,13 @@ except ImportError:
     TrustState = type("_TrustStateStub", (), {"UNVERIFIED": 0, "VERIFIED": 1})  # type: ignore[misc,assignment]
 
 from gateway.config import Platform, PlatformConfig
-from plugins.platforms.matrix.room_context import (
-    MatrixRoomState, PendingRoomNotes, RoomStateNote, room_state_change_note,
-)
+from plugins.platforms.matrix.outbound_relations import ThreadFallbackTracker
 from plugins.platforms.matrix.relations import MatrixRelation
 from plugins.platforms.matrix.reply_context import (
     MatrixEventContext, MatrixEventContextCache, MatrixReplyContext, extract_mx_reply_quote,
+)
+from plugins.platforms.matrix.room_context import (
+    MatrixRoomState, PendingRoomNotes, RoomStateNote, room_state_change_note,
 )
 from plugins.platforms.matrix.thread_context import fetch_thread_entries
 from gateway.platforms.base_exec_approval import EA_HEADER_TEXT
@@ -895,6 +896,7 @@ class MatrixAdapter(BasePlatformAdapter):
         self._room_identity_cache_max = 256
         self._pending_room_notes = PendingRoomNotes(self._room_identity_cache_max)
         self._event_context_cache = MatrixEventContextCache()
+        self._thread_fallbacks = ThreadFallbackTracker()
         try:
             self._thread_backfill_limit = max(0, min(100, int(config.extra.get("thread_backfill_limit", 20))))
         except (TypeError, ValueError):
@@ -1448,7 +1450,7 @@ class MatrixAdapter(BasePlatformAdapter):
         last_event_id = None
         for chunk in self.truncate_message(self.format_message(content), self.max_message_length):
             msg_content = self._build_text_message_content(chunk)
-            self._apply_relation_metadata(msg_content, reply_to=reply_to, metadata=metadata)
+            self._apply_relation_metadata(chat_id, msg_content, reply_to=reply_to, metadata=metadata)
             try:
                 last_event_id = await self._send_room_message(chat_id, msg_content)
                 logger.info("Matrix: sent event %s to %s", last_event_id, chat_id)
@@ -1473,6 +1475,7 @@ class MatrixAdapter(BasePlatformAdapter):
         self._event_context_cache.store(
             chat_id, event_id, MatrixEventContext(self._user_id or "", msg_content["body"])
         )
+        self._thread_fallbacks.remember_sent(chat_id, msg_content, event_id)
         return event_id
 
     async def create_handoff_thread(self, parent_chat_id: str, name: str) -> Optional[str]:
@@ -1845,7 +1848,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 msg_content["info"]["duration"] = audio_metadata["duration"]
             if audio_metadata:
                 msg_content["org.matrix.msc1767.audio"] = audio_metadata
-        self._apply_relation_metadata(msg_content, reply_to=reply_to, metadata=metadata)
+        self._apply_relation_metadata(room_id, msg_content, reply_to=reply_to, metadata=metadata)
         return await self._send_content_event(room_id, msg_content)
 
     async def _room_needs_encrypted_upload(self, room_id: str) -> bool:
@@ -1868,6 +1871,7 @@ class MatrixAdapter(BasePlatformAdapter):
         """Send a prebuilt m.room.message payload, mapping exceptions to SendResult."""
         try:
             event_id = await self._client.send_message_event(RoomID(room_id), EventType.ROOM_MESSAGE, msg_content)
+            self._thread_fallbacks.remember_sent(room_id, msg_content, str(event_id))
             return SendResult(success=True, message_id=str(event_id))
         except Exception as exc:
             return SendResult(success=False, error=str(exc))
@@ -2147,6 +2151,7 @@ class MatrixAdapter(BasePlatformAdapter):
         source.room_members_digest = identity.members_digest
         if thread_id:
             await self._threads.mark_async(thread_id)  # covers real roots and synthetic ones alike
+            self._thread_fallbacks.remember(room_id, thread_id, event_id)
         self._background_read_receipt(room_id, event_id)
         return body, is_dm, chat_type, thread_id, display_name, source
 
@@ -3115,7 +3120,7 @@ class MatrixAdapter(BasePlatformAdapter):
         return msg_content
 
     def _apply_relation_metadata(
-        self, msg_content: Dict[str, Any], *, reply_to: Optional[str] = None,
+        self, room_id: str, msg_content: Dict[str, Any], *, reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None) -> None:
         """Apply Matrix reply/thread relation metadata to an outbound payload."""
         meta = metadata or {}
@@ -3134,7 +3139,8 @@ class MatrixAdapter(BasePlatformAdapter):
             if reply_to:
                 relates_to["is_falling_back"] = False
             else:
-                relates_to["m.in_reply_to"] = {"event_id": fallback_to or thread_id}
+                latest = self._thread_fallbacks.latest(room_id, thread_id)
+                relates_to["m.in_reply_to"] = {"event_id": fallback_to or latest or thread_id}
                 relates_to["is_falling_back"] = True
             msg_content["m.relates_to"] = relates_to
 

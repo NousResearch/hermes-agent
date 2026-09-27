@@ -184,7 +184,7 @@ def refuse_foreign_owned_venv(project_root: Path) -> None:
     """Refuse cross-user mutation before PM changes the selected environment (#83529)."""
     if not hasattr(os, "geteuid"):
         return
-    uid = os.geteuid()  # windows-footgun: ok — guarded POSIX ownership check
+    uid = getattr(os, "geteuid")()  # windows-footgun: ok - guarded POSIX ownership check
     root = Path(project_root)
     # A root-run update on a user's checkout is not safe even if a fresh
     # generation would be allocated: it publishes root-owned state for them.
@@ -321,6 +321,44 @@ def _finish_source_update(root: Path, *, current: bool, pending: Path) -> None:
     clear_completion(root)
 
 
+def configured_platform_extras(project_root: Path) -> list[str]:
+    """Declared extras of every CONFIGURED platform this install can actually carry (#122535).
+
+    The recorded extras ledger unions and never shrinks, but an SDK that only ever arrived
+    through the shrinking ``[all]`` selection (or a hand install) is recorded nowhere: an
+    update's dependency sync then rebuilds without it and the channel is dead after the
+    restart. Connected platform configuration is the durable signal; intersecting it with
+    this tree's declared extras keeps a stale config inert, and the sync that records the
+    union makes later syncs keep it without re-reading configuration. Extras this Python /
+    platform cannot carry are dropped the way ``pm.install._feature_policy`` would refuse
+    them, so a configured backend never fails an update it cannot serve. Best-effort: any
+    read failure leaves the dependency sync exactly as it was.
+    """
+    import sys
+
+    try:
+        from gateway.config import load_gateway_config
+        from pm.extras import extra_supported
+        from pm.features import declared_extras
+
+        connected = {str(platform.value) for platform in load_gateway_config().get_connected_platforms()}
+        declared = set(declared_extras(project_root))
+        return sorted(name for name in connected & declared
+                      if extra_supported(name, importable=lambda _anchor: False))
+    except Exception as exc:
+        print(f"hermes: configured-platform extras unavailable: {exc}", file=sys.stderr, flush=True)
+        return []
+
+
+def update_sync_extras(project_root: Path, legacy: list[str] | None = None) -> list[str] | None:
+    """``legacy`` unioned with every configured platform's declared extra (#122535).
+
+    ``legacy`` is the pre-PM selection (or None for an established ledger); the result
+    feeds the update dependency sync, which unions it over the recorded ledger.
+    """
+    return sorted(set(legacy or []) | set(configured_platform_extras(project_root))) or None
+
+
 def _sync_source_dependencies(root: Path, *, arm: bool) -> None:
     """Commit the tree's dependency generation; *arm* also owes the tail afterwards."""
     import sys
@@ -337,8 +375,10 @@ def _sync_source_dependencies(root: Path, *, arm: bool) -> None:
         # tail must leave the tail, not a "current" install with nothing built.
         arm_completion(root)
     # Main-era installs have no PM ledger; carry what their venv held.
-    # Established PM installs retain their recorded extras and plugin union instead.
+    # Established PM installs retain their recorded extras and plugin union instead;
+    # configured platforms join either way so their SDK survives the rebuild (#122535).
     extras = legacy_selection(root) if not runtime_facts_path(root).is_file() else None
+    extras = update_sync_extras(root, extras)
     # Same order as `hermes update`: an interrupted update or a hand-run
     # `git pull` leaves this tree's lockfile ahead of the installed tools.
     ensure_tools_for_sync()

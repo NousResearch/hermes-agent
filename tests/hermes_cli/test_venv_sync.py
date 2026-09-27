@@ -100,6 +100,43 @@ class TestCheckoutSync:
         assert calls == [(root, True), (root, True)]
 
 
+class TestConfiguredPlatformExtras:
+    def test_source_update_dep_sync_carries_configured_platform_extra(self, tmp_path, monkeypatch):
+        """#122535: the source-update dependency sync must carry the declared extra of a
+        CONFIGURED platform. The recorded ledger unions, but an install whose SDK only ever
+        arrived through the shrinking ``[all]`` selection (or a hand install) recorded it
+        nowhere, so the sync rebuilds without it and the channel is dead after restart."""
+        import pm
+        from gateway.config import Platform
+
+        calls = []
+        monkeypatch.setattr(pm, "sync_venv", lambda *args, **kwargs: calls.append((args, kwargs)))
+        monkeypatch.setattr(venv_sync, "refuse_foreign_owned_venv", lambda root: None)
+        monkeypatch.setattr(venv_sync, "collect_superseded_generations", lambda root: None)
+        # An established PM install: runtime facts exist, so no legacy selection runs.
+        facts = tmp_path / "facts.json"
+        facts.write_text("{}", encoding="utf-8")
+        monkeypatch.setattr("pm.environments.runtime_facts_path", lambda root: facts)
+        monkeypatch.setattr("pm.client.ensure_tools_for_sync", lambda: None)
+
+        class _Config:
+            def get_connected_platforms(self):
+                return [Platform.FEISHU]
+
+        monkeypatch.setattr("gateway.config.load_gateway_config", lambda: _Config())
+
+        venv_sync._sync_source_dependencies(REPO_ROOT, arm=False)
+
+        assert calls, "the source-update dependency sync never ran"
+        args, kwargs = calls[0]
+        extras = args[0] if args else kwargs.get("extras")
+        assert "feishu" in (extras or []), (
+            "a configured Feishu platform must reach the source-update dependency sync "
+            f"as the 'feishu' extra, got {extras!r} -- without it the rebuilt venv has no "
+            "lark-oapi and the channel fails to load after the restart"
+        )
+
+
 class TestSealedTrees:
     def test_a_sealed_tree_is_a_clean_noop(self, tmp_path, monkeypatch):
         """The desktop payload and nix bundle must not fail, must not sync."""

@@ -71,9 +71,21 @@ def is_shallow_repository(git_cmd: list[str], root: Path) -> bool:
     return _git(git_cmd, root, ["rev-parse", "--is-shallow-repository"]).stdout.strip() == "true"
 
 
+def tracking_refspec(remote: str, branch: str) -> str:
+    """Refspec that always writes ``<remote>/<branch>``, whatever ``remote.<remote>.fetch`` says.
+
+    Narrow clones (tag-pinned ``--single-branch``, #125112) map only the tag, so a by-name fetch
+    writes FETCH_HEAD and never the tracking ref the updater resolves. The ``+`` is load-bearing:
+    on a depth-1 clone the new tip is not a descendant of the old one.
+    """
+    return f"+refs/heads/{branch}:refs/remotes/{remote}/{branch}"
+
+
 def _fetch(git_cmd: list[str], root: Path, depth_args: list[str], remote: str, branch: str):
     print(f"→ Fetching from {remote}...")
-    return _git(git_cmd, root, ["fetch", *depth_args, remote, branch], **_uc()._no_prompt_git_kwargs())
+    return _git(
+        git_cmd, root, ["fetch", *depth_args, remote, tracking_refspec(remote, branch)],
+        **_uc()._no_prompt_git_kwargs())
 
 
 def fetch_compare_branch(git_cmd: list[str], root: Path, branch: str, depth_args: list[str]):

@@ -239,13 +239,13 @@ def _commit_model_switch(
     typed path additionally records the one-turn restore snapshot. ``reasoning_effort`` (from
     ``--reasoning`` or the picker's effort step) is applied after the swap."""
     from cli import HermesCLI, _cprint
-    from hermes_cli.observability.shared_metrics_events import record_model_switch
     old_model, old_provider = cli.model, getattr(cli, "provider", None)
     snapshot = cli._snapshot_model_runtime() if one_turn else None
     if not cli._stage_and_swap_model(result, old_model):
         return
     # A TUI slash worker replays /model on its shadow CLI; the tui_gateway mirror counts the real switch.
     if not getattr(cli, "is_slash_worker", False):
+        from hermes_cli.observability.shared_metrics_events import record_model_switch
         record_model_switch(from_provider=old_provider, to_provider=result.target_provider, surface="cli")
     if not picker:
         cli._pending_one_turn_model_restore = snapshot

@@ -1170,8 +1170,18 @@ export function useBackgroundSync({
 
     let lastRefreshAt = 0
 
-    const refreshOnReturn = () => {
-      if (!windowIsActivelyViewed({ focused: document.hasFocus(), visibilityState: document.visibilityState })) {
+    const refreshOnReturn = (event?: Event) => {
+      // Each leg gates on its own signal: a window that is visible but never
+      // focused (another app in front, a secondary space, read without
+      // clicking) drops the visibility leg under a combined focused gate, and
+      // the focus leg it would wait for never arrives — the return refresh is
+      // lost for a window the user is reading.
+      const viewed =
+        event?.type === 'visibilitychange'
+          ? document.visibilityState === 'visible'
+          : document.hasFocus()
+
+      if (!viewed) {
         return
       }
 

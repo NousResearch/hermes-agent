@@ -757,6 +757,33 @@ describe('active transcript refresh', () => {
     expect(refresh).toHaveBeenCalledTimes(1)
   })
 
+  it('refreshes on the visibility leg alone when the window is visible but unfocused (#125532 review)', () => {
+    // A visible-but-unfocused window (another app in front, read without
+    // clicking) never receives `focus`; the visibility leg must stand on
+    // `visible` alone or the return refresh is lost entirely.
+    vi.spyOn(document, 'hasFocus').mockReturnValue(false)
+    $changeEventsAvailable.set(true)
+    const refresh = vi.fn(async () => undefined)
+
+    renderSync(refresh)
+    refresh.mockClear() // drop the connect-time pull; this test is about returns
+
+    act(() => document.dispatchEvent(new Event('visibilitychange')))
+    expect(refresh).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not refresh on a visibilitychange to hidden (#125532 review)', () => {
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden')
+    $changeEventsAvailable.set(true)
+    const refresh = vi.fn(async () => undefined)
+
+    renderSync(refresh)
+    refresh.mockClear()
+
+    act(() => document.dispatchEvent(new Event('visibilitychange')))
+    expect(refresh).not.toHaveBeenCalled()
+  })
+
   it('throttles return refreshes inside the minimum gap (#125532)', () => {
     vi.useFakeTimers()
     $changeEventsAvailable.set(true)

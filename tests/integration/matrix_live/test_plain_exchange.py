@@ -33,9 +33,15 @@ def test_plain_room_exchange(
             )
             assert isinstance(sent, RoomSendResponse), sent
 
-            deadline = time.monotonic() + 60
-            while time.monotonic() < deadline:
-                response = await client.sync(timeout=1000)
+            deadline = time.monotonic() + 15
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                try:
+                    response = await asyncio.wait_for(client.sync(timeout=250), timeout=remaining)
+                except asyncio.TimeoutError:
+                    break
                 joined = response.rooms.join.get(room_id)
                 if not joined:
                     continue
@@ -51,7 +57,7 @@ def test_plain_room_exchange(
                     assert "Hello Hermes [in:plain]" in json.dumps(requests[0]["messages"])
                     return
             pytest.fail(
-                "No Matrix reply after 60 seconds. Gateway logs:\n"
+                "No Matrix reply after 15 seconds. Gateway logs:\n"
                 + gateway.container.get_wrapped_container().logs().decode(errors="replace")[-6000:]
             )
         finally:

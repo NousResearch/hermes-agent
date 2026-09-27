@@ -234,8 +234,8 @@ class TestMatrixMultiCardRetention:
         obj._approval_prompt_by_session["s"] = {"$A", "$B"}
 
         monkeypatch.setattr("tools.approval.resolve_gateway_approval", lambda *a, **kw: 1)
-        monkeypatch.setattr(obj, "_redact_bot_approval_reactions", self._noop_redact())
-        monkeypatch.setattr(obj, "_send_invalid_reaction_feedback", self._noop_feedback())
+        monkeypatch.setattr(obj, "_redact_bot_approval_reactions", _noop_redact_fn())
+        monkeypatch.setattr(obj, "_send_invalid_reaction_feedback", _noop_feedback_fn())
         obj._is_authorized_user = lambda user_id: True
         obj._approval_require_sender = False
 
@@ -258,8 +258,8 @@ class TestMatrixMultiCardRetention:
             expires_at=time.monotonic() + 10 ** 6)
         obj._approval_prompt_by_session["s"] = {"$A", "$B"}
 
-        monkeypatch.setattr(obj, "_redact_bot_approval_reactions", self._noop_redact())
-        monkeypatch.setattr(obj, "_send_invalid_reaction_feedback", self._noop_feedback())
+        monkeypatch.setattr(obj, "_redact_bot_approval_reactions", _noop_redact_fn())
+        monkeypatch.setattr(obj, "_send_invalid_reaction_feedback", _noop_feedback_fn())
         obj._is_authorized_user = lambda _u: True
         obj._approval_require_sender = False
 
@@ -269,11 +269,241 @@ class TestMatrixMultiCardRetention:
         assert obj._approval_prompt_by_session.get("s") == {"$B"}
 
     def _noop_redact(self):
-        async def _redact(_room, _prompt):
-            return None
-        return _redact
+        return _noop_redact_fn()
 
     def _noop_feedback(self):
-        async def _feedback(*_a):
-            return None
-        return _feedback
+        return _noop_feedback_fn()
+
+
+# ── Second-pass review: stale-card settlement (F4/F5) ─────────────────────────────────────
+
+
+def _noop_redact_fn():
+    async def _redact(_room, _prompt):
+        return None
+    return _redact
+
+
+def _noop_feedback_fn():
+    async def _feedback(*_a):
+        return None
+    return _feedback
+
+
+def _qq_adapter_for_interaction():
+    from gateway.platforms.qqbot import adapter as qq
+
+    obj = object.__new__(qq.QQAdapter)
+    obj._interaction_callback = obj._default_interaction_dispatch
+    obj._acked: list = []
+    obj._sent: list = []
+
+    async def _fake_ack(interaction_id, code=0):
+        obj._acked.append((interaction_id, code))
+
+    async def _fake_send(chat_id, content, reply_to=None, metadata=None):
+        from gateway.platforms.base import SendResult
+        obj._sent.append((chat_id, content))
+        return SendResult(success=True)
+
+    obj._acknowledge_interaction = _fake_ack
+    obj.send = _fake_send
+    return qq, obj
+
+
+def _qq_raw_event(button_data: str, *, scene: str = "c2c", user: str = "o1", eid: str = "i1") -> dict:
+    """Raw INTERACTION_CREATE ``d`` payload shaped like api-v2 event-emit."""
+    return {
+        "id": eid, "chat_type": 2 if scene == "c2c" else 1,
+        "data": {"type": 11, "resolved": {
+            "button_data": button_data, "button_id": "10",
+            "operator_id": user}},
+        "user_openid": user if scene == "c2c" else "",
+        "group_openid": "" if scene == "c2c" else "g1",
+        "group_member_openid": user if scene != "c2c" else "",
+    }
+
+
+class TestQQStaleSettlement:
+    def test_stale_tap_posts_correction_and_leaves_live_B(self, monkeypatch):
+        """F5: count==0 must correct the visible record; B's entry+waiter untouched."""
+        from tools import approval as _approval
+        from tools.approval_gateway_wait import _ApprovalEntry
+
+        qq, obj = _qq_adapter_for_interaction()
+        entry_b = _ApprovalEntry({"command": "b-cmd", "request_id": "rid-b"})
+        session = "agent:main:qqbot:dm:o1"
+        with _approval._lock:
+            _approval._gateway_queues[session] = [entry_b]
+        try:
+            calls: list = []
+
+            def _resolve(sess, choice, request_id=None):
+                calls.append((sess, choice, request_id))
+                return 0  # the named request is gone; B stays queued
+
+            monkeypatch.setattr("tools.approval.resolve_gateway_approval", _resolve)
+            payload = f"approve:v2:{session}:{'a' * 32}:allow-once"
+            raw = _qq_raw_event(payload)
+            asyncio.run(obj._on_interaction(raw))  # ACTUAL ingress: parse -> ACK -> dispatch
+            assert obj._acked == [("i1", 0)]
+            assert calls == [(session, "once", "a" * 32)]
+            assert len(obj._sent) == 1 and "未生效" in obj._sent[0][1], obj._sent
+            with _approval._lock:
+                remaining = [e.data["request_id"] for e in _approval._gateway_queues.get(session, [])]
+            assert remaining == ["rid-b"]
+            assert not entry_b.event.is_set(), "live B's waiter must stay blocked"
+        finally:
+            with _approval._lock:
+                _approval._gateway_queues.pop(session, None)
+
+    def test_live_tap_resolves_without_correction(self, monkeypatch):
+        """count>0: no correction message; the queue entry settles."""
+        from tools import approval as _approval
+        from tools.approval_gateway_wait import _ApprovalEntry
+
+        qq, obj = _qq_adapter_for_interaction()
+        entry_b = _ApprovalEntry({"command": "b-cmd", "request_id": "rid-b"})
+        session = "agent:main:qqbot:dm:o1"
+        with _approval._lock:
+            _approval._gateway_queues[session] = [entry_b]
+        try:
+            monkeypatch.setattr(
+                "tools.approval.resolve_gateway_approval",
+                lambda sess, choice, request_id=None: 1)
+            payload = f"approve:v2:{session}:{'b' * 32}:allow-once"
+            asyncio.run(obj._default_interaction_dispatch(
+                __import__("gateway.platforms.qqbot.keyboards", fromlist=["InteractionEvent"]).InteractionEvent(
+                    id="i2", scene="c2c", user_openid="o1", button_data=payload)))
+            assert obj._sent == [], "live tap must not post a stale correction"
+            with _approval._lock:
+                remaining = [e.data["request_id"] for e in _approval._gateway_queues.get(session, [])]
+            assert remaining == ["rid-b"], "resolver owns the queue; stub returns 1 without mutating"
+        finally:
+            with _approval._lock:
+                _approval._gateway_queues.pop(session, None)
+
+    def test_duplicate_stale_taps_each_correct_without_retrying(self, monkeypatch):
+        """Duplicate taps: both resolve with the SAME request id; no fallback resolve."""
+        qq, obj = _qq_adapter_for_interaction()
+        calls: list = []
+
+        def _resolve(sess, choice, request_id=None):
+            calls.append(request_id)
+            return 0
+
+        monkeypatch.setattr("tools.approval.resolve_gateway_approval", _resolve)
+        session = "agent:main:qqbot:dm:o1"
+        payload = f"approve:v2:{session}:{'c' * 32}:deny"
+        for n in range(2):
+            asyncio.run(obj._on_interaction(_qq_raw_event(payload, eid=f"i3-{n}")))
+        assert calls == ["c" * 32, "c" * 32], "each tap resolves exactly once, same id, never session-fallback"
+        assert len(obj._sent) == 2, "each stale tap corrects the visible record"
+
+    def test_unauthorized_tap_never_reaches_the_resolver(self, monkeypatch):
+        """A foreign operator is rejected before any resolve/correction."""
+        qq, obj = _qq_adapter_for_interaction()
+        seen: list = []
+        monkeypatch.setattr(
+            "tools.approval.resolve_gateway_approval",
+            lambda *a, **kw: seen.append(a) or 1)
+        session = "agent:main:qqbot:dm:o1"
+        payload = f"approve:v2:{session}:{'d' * 32}:allow-once"
+        from gateway.platforms.qqbot.keyboards import InteractionEvent
+        asyncio.run(obj._default_interaction_dispatch(InteractionEvent(
+            id="i4", scene="c2c", user_openid="intruder", button_data=payload)))
+        assert seen == [] and obj._sent == []
+
+
+class TestMatrixStaleSettlement:
+    @pytest.mark.asyncio
+    async def test_stale_A_reaction_retires_only_A_with_feedback(self, monkeypatch):
+        """F4: count==0 must retire the stale card (terminal, redacted, feedback),
+        never touch sibling B's registration."""
+        from plugins.platforms.matrix.adapter import _MatrixApprovalPrompt
+
+        obj = _matrix_adapter_for_prompt()
+        obj._approval_prompts_by_event["$A"] = _MatrixApprovalPrompt(
+            session_key="s", chat_id="room", message_id="$A", request_id="a" * 32)
+        obj._approval_prompts_by_event["$B"] = _MatrixApprovalPrompt(
+            session_key="s", chat_id="room", message_id="$B", request_id="b" * 32)
+        obj._approval_prompt_by_session["s"] = {"$A", "$B"}
+
+        monkeypatch.setattr("tools.approval.resolve_gateway_approval", lambda *a, **kw: 0)
+        redacted: list = []
+        feedbacks: list = []
+
+        async def _redact(_room, prompt):
+            redacted.append(prompt.message_id)
+
+        async def _feedback(room, target, text):
+            feedbacks.append((room, target, text))
+
+        monkeypatch.setattr(obj, "_redact_bot_approval_reactions", _redact)
+        monkeypatch.setattr(obj, "_send_invalid_reaction_feedback", _feedback)
+        obj._is_authorized_user = lambda _u: True
+        obj._approval_require_sender = False
+
+        await obj._handle_approval_reaction("room", "$A", "✅", "@user:example.org")
+        assert "$A" not in obj._approval_prompts_by_event, "stale card must retire"
+        assert obj._approval_prompts_by_event["$A"].resolved if "$A" in obj._approval_prompts_by_event else True
+        assert redacted == ["$A"], "the stale card's bot reactions are redacted"
+        assert feedbacks and feedbacks[0][1] == "$A" and "expired" in feedbacks[0][2].lower(), feedbacks
+        assert "$B" in obj._approval_prompts_by_event, "sibling stays registered"
+        assert obj._approval_prompt_by_session.get("s") == {"$B"}
+        prompt_b = obj._approval_prompts_by_event["$B"]
+        assert not getattr(prompt_b, "resolved", False), "sibling must stay answerable"
+
+    @pytest.mark.asyncio
+    async def test_click_order_B_then_stale_A(self, monkeypatch):
+        """Both click orders: settle live B first, then a stale A tap retires A only."""
+        from plugins.platforms.matrix.adapter import _MatrixApprovalPrompt
+
+        obj = _matrix_adapter_for_prompt()
+        obj._approval_prompts_by_event["$A"] = _MatrixApprovalPrompt(
+            session_key="s", chat_id="room", message_id="$A", request_id="a" * 32)
+        obj._approval_prompts_by_event["$B"] = _MatrixApprovalPrompt(
+            session_key="s", chat_id="room", message_id="$B", request_id="b" * 32)
+        obj._approval_prompt_by_session["s"] = {"$A", "$B"}
+
+        resolved_ids: list = []
+
+        def _resolve(sess, choice, request_id=None):
+            resolved_ids.append(request_id)
+            return 1 if request_id == "b" * 32 else 0
+
+        monkeypatch.setattr("tools.approval.resolve_gateway_approval", _resolve)
+        monkeypatch.setattr(obj, "_redact_bot_approval_reactions", _noop_redact_fn())
+        monkeypatch.setattr(obj, "_send_invalid_reaction_feedback", _noop_feedback_fn())
+        obj._is_authorized_user = lambda _u: True
+        obj._approval_require_sender = False
+
+        await obj._handle_approval_reaction("room", "$B", "✅", "@user:example.org")
+        await obj._handle_approval_reaction("room", "$A", "✅", "@user:example.org")
+        assert resolved_ids == ["b" * 32, "a" * 32]
+        assert obj._approval_prompts_by_event == {}, "both cards are terminal now"
+        assert obj._approval_prompt_by_session.get("s") is None
+
+    @pytest.mark.asyncio
+    async def test_duplicate_stale_A_reactions(self, monkeypatch):
+        """Second tap on a retired card is a no-op (registry miss), not an error."""
+        from plugins.platforms.matrix.adapter import _MatrixApprovalPrompt
+
+        obj = _matrix_adapter_for_prompt()
+        obj._approval_prompts_by_event["$A"] = _MatrixApprovalPrompt(
+            session_key="s", chat_id="room", message_id="$A", request_id="a" * 32)
+        obj._approval_prompt_by_session["s"] = {"$A"}
+
+        calls: list = []
+        monkeypatch.setattr(
+            "tools.approval.resolve_gateway_approval",
+            lambda *a, **kw: calls.append(1) or 0)
+        monkeypatch.setattr(obj, "_redact_bot_approval_reactions", _noop_redact_fn())
+        monkeypatch.setattr(obj, "_send_invalid_reaction_feedback", _noop_feedback_fn())
+        obj._is_authorized_user = lambda _u: True
+        obj._approval_require_sender = False
+
+        await obj._handle_approval_reaction("room", "$A", "✅", "@user:example.org")
+        await obj._handle_approval_reaction("room", "$A", "✅", "@user:example.org")
+        assert calls == [1], "second tap never re-resolves (registry miss)"
+        assert obj._approval_prompts_by_event == {}

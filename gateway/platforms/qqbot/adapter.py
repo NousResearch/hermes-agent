@@ -709,6 +709,19 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                 logger.info(
                     "[%s] Button resolved %d approval(s) for session %s (choice=%s, operator=%s)",
                     self._log_tag, count, session_key, choice, event.operator_openid)
+                if count == 0:
+                    # Exact-target miss: the named request is already resolved/expired.
+                    # The interaction ACK was already sent (the client shows the button's
+                    # visited label), so correct the record the operator sees — without
+                    # retrying, and never without the request id (#124974 review, F5).
+                    chat = str(event.group_openid or event.guild_id or event.user_openid or "")
+                    if chat:
+                        try:
+                            await self.send(chat, "该审批已被处理或已过期，本次点击未生效。")
+                        except Exception as send_exc:
+                            logger.warning(
+                                "[%s] Failed to post stale-approval correction to %s: %s",
+                                self._log_tag, chat, send_exc)
             except Exception as exc:
                 logger.error("[%s] resolve_gateway_approval failed for session %s: %s", self._log_tag, session_key, exc)
             return

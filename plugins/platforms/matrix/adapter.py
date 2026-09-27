@@ -2500,6 +2500,16 @@ class MatrixAdapter(BasePlatformAdapter):
                     "Matrix reaction resolved %d approval(s) for session %s (choice=%s, user=%s)",
                     count, prompt.session_key, choice, sender)
                 await self._redact_bot_approval_reactions(room_id, prompt)
+            else:
+                # Exact-target miss: the named request is already gone (resolved
+                # elsewhere / expired). Retire ONLY this card so it stops being
+                # visibly answerable; a sibling card for a still-live request in
+                # the same session keeps its registration and waiter (#124974).
+                logger.info(
+                    "Matrix reaction hit an already-resolved approval for session %s "
+                    "(choice=%s, user=%s); retiring the stale card only",
+                    prompt.session_key, choice, sender)
+                await self._expire_matrix_approval_prompt(room_id, reacts_to, prompt)
         except Exception as exc:
             logger.error("Failed to resolve gateway approval from Matrix reaction: %s", exc)
         return True

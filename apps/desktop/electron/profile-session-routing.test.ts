@@ -410,7 +410,12 @@ test('registry sources: shared remote hosts read the cross-profile aggregate onc
         ],
         total: 2
       }
-    }
+    },
+    (sourceRows, descriptor) =>
+      sourceRows.map(row => ({
+        ...(row as Record<string, unknown>),
+        _desktop_route_binding: `${String(descriptor)}:${String((row as Record<string, unknown>).id)}`
+      }))
   )
 
   assert.equal(calls.length, 1)
@@ -420,10 +425,15 @@ test('registry sources: shared remote hosts read the cross-profile aggregate onc
 
   // The remote's own profile stamps survive; missing stamps get 'default'.
   assert.deepEqual(
-    rows.map(row => [(row as any).id, (row as any).profile, (row as any).connection_id]),
+    rows.map(row => [
+      (row as any).id,
+      (row as any).profile,
+      (row as any).connection_id,
+      (row as any)._desktop_route_binding
+    ]),
     [
-      ['r-1', 'hermes-claude', 'gw-cloud'],
-      ['r-2', 'default', 'gw-cloud']
+      ['r-1', 'hermes-claude', 'gw-cloud', 'cloud-desc:r-1'],
+      ['r-2', 'default', 'gw-cloud', 'cloud-desc:r-2']
     ]
   )
 })
@@ -462,6 +472,12 @@ test('registry sources: large aggregate reads stay within the backend page cap',
 })
 
 test('registry-pinned session responses retain their owning connection', () => {
+  const bindRows = (rows: unknown[]) =>
+    rows.map(row => ({
+      ...(row as Record<string, unknown>),
+      _desktop_route_binding: `bound:${String((row as Record<string, unknown>).id)}`
+    }))
+
   const sidebar = tagRegistrySessionResponse(
     '/api/profiles/sessions/sidebar?recents_profile=default',
     {
@@ -469,27 +485,33 @@ test('registry-pinned session responses retain their owning connection', () => {
       cron: { sessions: [{ id: 'remote-cron', profile: 'default' }] },
       messaging: { sessions: [] }
     },
-    'test-amnezia'
+    'test-amnezia',
+    bindRows
   ) as any
 
   assert.equal(sidebar.recents.sessions[0].connection_id, 'test-amnezia')
+  assert.equal(sidebar.recents.sessions[0]._desktop_route_binding, 'bound:remote-chat')
   assert.equal(sidebar.cron.sessions[0].connection_id, 'test-amnezia')
 
   const aggregate = tagRegistrySessionResponse(
     '/api/profiles/sessions?profile=all',
     { sessions: [{ id: 'remote-profile-chat', profile: 'research' }] },
-    'test-amnezia'
+    'test-amnezia',
+    bindRows
   ) as any
 
   assert.equal(aggregate.sessions[0].connection_id, 'test-amnezia')
+  assert.equal(aggregate.sessions[0]._desktop_route_binding, 'bound:remote-profile-chat')
 
   const single = tagRegistrySessionResponse(
     '/api/sessions/remote-chat?profile=default',
     { id: 'remote-chat', profile: 'default' },
-    'test-amnezia'
+    'test-amnezia',
+    bindRows
   ) as any
 
   assert.equal(single.connection_id, 'test-amnezia')
+  assert.equal(single._desktop_route_binding, 'bound:remote-chat')
 })
 
 test('registry response ownership tagging ignores non-session payloads and transcript messages', () => {

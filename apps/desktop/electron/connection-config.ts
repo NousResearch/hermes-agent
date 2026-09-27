@@ -34,6 +34,8 @@
 //     (POST /api/auth/ws-ticket), so the session is still LIVE even with no
 //     AT cookie. A liveness check that looked only at the AT cookie would
 //     force a needless full re-login every ~15 min — hence cookiesHaveLiveSession.
+import crypto from 'node:crypto'
+
 import { readStatusCode } from './api-transport'
 import { sharesHostBackend } from './host-backend-singleton'
 
@@ -1073,6 +1075,183 @@ function apiRequestRegistryConnectionId(request): null | string {
   }
 
   return id
+}
+
+// ponytail: validate the resolved route; never dial a renderer-supplied URL.
+function sameStringRecord(left?: Record<string, string>, right?: Record<string, string>): boolean {
+  const entries = Object.entries(left ?? {})
+
+  return entries.length === Object.keys(right ?? {}).length && entries.every(([key, value]) => right?.[key] === value)
+}
+
+export function assertConnectionOwner(expected, connection): void {
+  if (
+    !expected ||
+    ['mode', 'baseUrl', 'token', 'authMode', 'remoteHost', 'remoteIdentity', 'remoteKind'].some(
+      key => expected[key] !== connection?.[key]
+    ) ||
+    !sameStringRecord(expected.headers, connection?.headers)
+  ) {
+    throw new Error('Backend changed. Reopen Settings for the current connection.')
+  }
+}
+
+export function assertLegacyConnectionOwner(expected, connection): void {
+  if (!expected || expected.mode !== 'remote' || !expected.baseUrl) {
+    throw new Error('Backend changed. Reopen Settings for the current connection.')
+  }
+
+  assertConnectionOwner(expected, connection)
+}
+
+const sessionRouteBindingKey = crypto.randomBytes(32)
+
+function sessionRouteBindingPayload(sessionId, profile, connection): string {
+  return JSON.stringify([
+    'legacy-session-route-v1',
+    String(sessionId || ''),
+    String(profile || ''),
+    connection?.mode || '',
+    normalizeRemoteBaseUrl(connection?.baseUrl || ''),
+    connection?.remoteKind || '',
+    connection?.remoteHost || '',
+    connection?.remoteIdentity || ''
+  ])
+}
+
+export function createSessionRouteBinding(sessionId, profile, connection): string {
+  if (!sessionId || !profile || !connection || !['local', 'remote'].includes(connection.mode)) {
+    throw new Error('Backend changed. Reopen Settings for the current connection.')
+  }
+
+  return crypto
+    .createHmac('sha256', sessionRouteBindingKey)
+    .update(sessionRouteBindingPayload(sessionId, profile, connection))
+    .digest('base64url')
+}
+
+export function bindSessionRowsToRoute(rows, connection) {
+  return rows.map(row => ({
+    ...row,
+    _desktop_route_binding: createSessionRouteBinding(row.id, row.profile, connection)
+  }))
+}
+
+function assertSessionRouteBinding(expected, sessionId, profile, connection): void {
+  if (typeof expected !== 'string' || !expected) {
+    throw new Error('Backend changed. Reopen Settings for the current connection.')
+  }
+
+  const actual = createSessionRouteBinding(sessionId, profile, connection)
+  const expectedBytes = Buffer.from(expected)
+  const actualBytes = Buffer.from(actual)
+
+  if (expectedBytes.length !== actualBytes.length || !crypto.timingSafeEqual(expectedBytes, actualBytes)) {
+    throw new Error('Backend changed. Reopen Settings for the current connection.')
+  }
+}
+
+/** Acquire another profile without adopting a same-id gateway replacement. */
+export async function resolveSettingsProfileConnection(profile, expectedOwner, resolveProfile) {
+  if (!expectedOwner || typeof expectedOwner.profile !== 'string' || !expectedOwner.profile.trim()) {
+    throw new Error('Backend changed. Reopen Settings for the current connection.')
+  }
+
+  assertConnectionOwner(expectedOwner.connectionOwner, await resolveProfile(expectedOwner.profile))
+  const connection = await resolveProfile(profile)
+  // Acquisition can await a cold pool spawn; recheck the source after that wait.
+  assertConnectionOwner(expectedOwner.connectionOwner, await resolveProfile(expectedOwner.profile))
+
+  return connection
+}
+
+export async function resolveRegistryApiConnection(request, connectionId, ensureBackend, routeProfile = request?.profile) {
+  if (Object.hasOwn(request, 'connectionOwnerProfile')) {
+    if (!request.connectionOwner || typeof request.connectionOwnerProfile !== 'string') {
+      throw new Error('Backend changed. Reopen Settings for the current connection.')
+    }
+
+    const resolveProfile = profile => ensureBackend(connectionId, profile, request?.passive)
+
+    return resolveSettingsProfileConnection(
+      routeProfile,
+      { connectionOwner: request.connectionOwner, profile: request.connectionOwnerProfile },
+      resolveProfile
+    )
+  }
+
+  const connection = await ensureBackend(connectionId, routeProfile, request?.passive)
+
+  if (Object.hasOwn(request, 'connectionOwner')) {
+    assertConnectionOwner(request.connectionOwner, connection)
+  }
+
+  if (Object.hasOwn(request, 'sessionRouteBinding')) {
+    const match = String(request.path || '').match(/^\/api\/sessions\/([^/?#]+)/)
+    const sessionId = match ? decodeURIComponent(match[1]) : ''
+
+    assertSessionRouteBinding(request.sessionRouteBinding, sessionId, routeProfile, connection)
+  }
+
+  return connection
+}
+
+export async function resolveLegacyApiConnection(request, routeProfile, ensureBackend, options = {}) {
+  const backendOptions = { passive: request?.passive, ...options }
+
+  if (!Object.hasOwn(request, 'legacyConnection')) {
+    return ensureBackend(routeProfile, backendOptions)
+  }
+
+  const sourceProfile = request.legacyConnectionProfile ?? routeProfile
+  const source = await ensureBackend(sourceProfile, backendOptions)
+
+  assertLegacyConnectionOwner(request.legacyConnection, source)
+
+  if (sourceProfile === routeProfile) {
+    return source
+  }
+
+  const connection = await ensureBackend(routeProfile, backendOptions)
+
+  // Resolving an override can await a cold backend; reject the request if the
+  // foreground route that authorised it changed while that work was pending.
+  assertLegacyConnectionOwner(request.legacyConnection, await ensureBackend(sourceProfile, backendOptions))
+
+  return connection
+}
+
+/** Fail closed before a legacy session interceptor bypasses the normal API resolver. */
+export async function assertLegacyApiRequestOwner(request, routeProfile, ensureBackend, options = {}): Promise<void> {
+  if (!request || !Object.hasOwn(request, 'legacyConnection')) {
+    return
+  }
+
+  await resolveLegacyApiConnection(request, routeProfile, ensureBackend, options)
+}
+
+/** Validate the captured legacy owner at the session-interception boundary,
+ * then dispatch to the row's route. The two profiles intentionally differ
+ * when Settings is global-remote and an archived row has a profile override. */
+export async function dispatchLegacySessionRequest(request, routeProfile, ensureBackend, dispatch, options = {}) {
+  let targetConnection
+
+  if (request && Object.hasOwn(request, 'legacyConnection')) {
+    const sourceProfile = request.legacyConnectionProfile ?? routeProfile
+
+    await assertLegacyApiRequestOwner(request, sourceProfile, ensureBackend, options)
+    targetConnection = await ensureBackend(routeProfile, options)
+    await assertLegacyApiRequestOwner(request, sourceProfile, ensureBackend, options)
+
+    if (routeProfile !== sourceProfile) {
+      const match = String(request.path || '').match(/^\/api\/sessions\/([^/?#]+)/)
+      const sessionId = match ? decodeURIComponent(match[1]) : ''
+
+      assertSessionRouteBinding(request.sessionRouteBinding, sessionId, routeProfile, targetConnection)
+    }
+  }
+
+  return dispatch(targetConnection)
 }
 
 export interface ProfileApiRequestRoute {

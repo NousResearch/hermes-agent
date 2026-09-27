@@ -76,4 +76,70 @@ describe('stale-aux dismissal persistence', () => {
       staleAuxFingerprint('nous', slots([['vision', 'alibaba', 'qwen3.6-flash-2']]))
     )
   })
+
+  it('keeps same-named profile acknowledgements isolated by gateway', () => {
+    const first = { connectionId: 'gateway-a', profile: 'default' }
+    const second = { connectionId: 'gateway-b', profile: 'default' }
+
+    dismissStaleAux(first, 'nous', slots([['vision', 'alibaba', 'qwen3.6-flash']]))
+
+    expect(readStaleAuxDismissal(first)).toBe(
+      staleAuxFingerprint('nous', slots([['vision', 'alibaba', 'qwen3.6-flash']]))
+    )
+    expect(readStaleAuxDismissal(second)).toBeNull()
+  })
+
+  it('does not persist a dismissal across same-ID descriptor replacement', () => {
+    const firstOwner = { baseUrl: 'https://gateway-a.example', mode: 'remote' as const, token: 'synthetic-a' }
+    const replacementOwner = { baseUrl: 'https://gateway-b.example', mode: 'remote' as const, token: 'synthetic-b' }
+    const first = { connectionId: 'shared-id', connectionOwner: firstOwner, profile: 'default' }
+    const replacement = { connectionId: 'shared-id', connectionOwner: replacementOwner, profile: 'default' }
+
+    dismissStaleAux(first, 'nous', slots([['vision', 'alibaba', 'qwen3.6-flash']]))
+
+    expect(readStaleAuxDismissal(first)).toBe(
+      staleAuxFingerprint('nous', slots([['vision', 'alibaba', 'qwen3.6-flash']]))
+    )
+    expect(readStaleAuxDismissal(replacement)).toBeNull()
+    expect(window.localStorage.length).toBe(1)
+  })
+
+  it('does not persist a dismissal across legacy descriptor replacement', () => {
+    const first = {
+      connectionId: null,
+      legacyConnection: { baseUrl: 'https://legacy-a.example', mode: 'remote' as const, token: 'synthetic-a' },
+      profile: 'default'
+    }
+
+    const replacement = {
+      connectionId: null,
+      legacyConnection: { baseUrl: 'https://legacy-b.example', mode: 'remote' as const, token: 'synthetic-b' },
+      profile: 'default'
+    }
+
+    dismissStaleAux(first, 'nous', slots([['vision', 'alibaba', 'qwen3.6-flash']]))
+
+    expect(readStaleAuxDismissal(first)).not.toBeNull()
+    expect(readStaleAuxDismissal(replacement)).toBeNull()
+    expect(window.localStorage.length).toBe(1)
+  })
+
+  it('persists across a recreated descriptor for the same authority without keying credentials', () => {
+    const first = {
+      connectionId: 'gateway-a',
+      connectionOwner: { baseUrl: 'https://gateway.example/', mode: 'remote' as const, token: 'old-secret' },
+      profile: 'default'
+    }
+
+    const refreshed = {
+      connectionId: 'gateway-a',
+      connectionOwner: { baseUrl: 'https://gateway.example', mode: 'remote' as const, token: 'new-secret' },
+      profile: 'default'
+    }
+
+    dismissStaleAux(first, 'nous', slots([['vision', 'alibaba', 'qwen3.6-flash']]))
+
+    expect(readStaleAuxDismissal(refreshed)).not.toBeNull()
+    expect(Object.keys(window.localStorage)[0]).not.toContain('secret')
+  })
 })

@@ -545,6 +545,8 @@ export interface SessionCreateResponse {
 
 export interface SessionInfo {
   archived?: boolean
+  /** Electron-issued opaque binding to the remote route that returned this row. */
+  _desktop_route_binding?: string
   cwd?: null | string
   /** Git branch checked out in {@link cwd} when the session started/resumed.
    *  The sidebar groups main-checkout sessions by this so feature-branch work

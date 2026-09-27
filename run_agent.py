@@ -1107,10 +1107,14 @@ class AIAgent(
 
     @classmethod
     def _assistant_has_todo_tool_call(cls, assistant_msg: Dict[str, Any], tool_call_id: str) -> bool:
-        """True when the assistant message issued a ``todo`` call with this id."""
+        """True when the assistant message issued a ``todo_list`` call with this id.
+
+        ``todo`` is the pre-tool-search legacy name (model_tools._LEGACY_TOOL_ALIASES)
+        still present in old sessions' history, so both spellings pair."""
         tool_calls = assistant_msg.get("tool_calls")
         return isinstance(tool_calls, list) and any(
-            cls._get_tool_call_id_static(tc) == tool_call_id and cls._get_tool_call_name_static(tc) == "todo"
+            cls._get_tool_call_id_static(tc) == tool_call_id
+            and cls._get_tool_call_name_static(tc) in ("todo_list", "todo")
             for tc in tool_calls
         )
 

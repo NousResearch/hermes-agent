@@ -331,6 +331,20 @@ def activate_dependencies(project_root: Path) -> None:
             return  # External/Nix interpreter owns its original sys.path.
     if not selected.is_dir():
         raise RuntimeError(f"dependency environment has no site-packages: {selected}")
+    # ABI guard: never activate an environment built for a different interpreter.
+    # The selected env's site-packages is named for the Python that built it
+    # (e.g. lib/python3.14/site-packages); adopting it into a 3.11 process puts a
+    # foreign site-packages ahead of the running interpreter's own, so a child
+    # import of any C-extension package (pydantic_core._pydantic_core) resolves to
+    # a .so whose filename encodes the other ABI and dies with ModuleNotFoundError.
+    # Skipping leaves the caller on its own environment, which is what a
+    # differently-versioned interpreter needs (e.g. hermes-webui pinned via
+    # HERMES_WEBUI_PYTHON to the 3.11 agent venv).
+    selected_tag = next(
+        (part for part in Path(selected).parts if part.startswith("python3.")), None
+    )
+    if selected_tag and selected_tag != f"python{sys.version_info[0]}.{sys.version_info[1]}":
+        return
     import site
 
     sys.path[:] = [entry for entry in sys.path

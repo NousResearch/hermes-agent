@@ -139,3 +139,49 @@ class TestSharedCleanerWiring:
         spoken = adapter.prepare_tts_text("<think>plan</think>Hello there")
         assert "plan" not in spoken
         assert "Hello there" in spoken
+
+
+def test_french_voice_hears_french_units():
+    # English expansions ("kilometres per hour", "percent") injected into a French
+    # voice are read with a French accent and sound broken; kg was not expanded at all.
+    spoken = prepare_spoken_text(
+        "Poids : 3 kg. Vitesse : 80 km/h. Total : 50 %. Fièvre : 39 °C. Prix : 12 €, "
+        "plage 11-17°C.", spoken_lang="fr")
+    for english_or_raw in ("kg", "km/h", "percent", "degrees", "Celsius", "€", " to "):
+        assert english_or_raw not in spoken
+    for french in ("3 kilogrammes", "80 kilomètres par heure", "50 pour cent", "39 degrés",
+                   "12 euros", "11 à 17 degrés"):
+        assert french in spoken
+
+
+def test_english_stays_the_default_for_missing_or_unknown_language():
+    raw = "Wind 9 km/h, 5 kg bag, 50 %, 14°C, 11-17°F, US$300, €5 and £3 -- 20 ° turn."
+    default = prepare_spoken_text(raw)
+    assert default == prepare_spoken_text(raw, spoken_lang="en") == prepare_spoken_text(raw, spoken_lang="xx")
+    assert "5 kilograms" in default
+
+
+def test_bare_domains_are_silenced_like_urls():
+    spoken = prepare_spoken_text("Le site est hyperbio.fr. Voir aussi https://hyperbio.fr/produits ici.",
+                                 spoken_lang="fr")
+    assert "hyperbio" not in spoken
+    assert "https" not in spoken
+    assert spoken.startswith("Le site est.")
+
+
+def test_bare_domain_filter_spares_files_versions_and_emails():
+    # File names, version numbers and e-mail addresses are not domains: an e-mail
+    # stays whole (the voice reads the address; removing half of it would be worse).
+    from tools.tts_text_normalize import strip_markdown_for_tts
+
+    raw = "Ouvre rapport.md et script.py avec python 3.13, puis écris à user@example.com."
+    assert strip_markdown_for_tts(raw) == raw
+
+
+def test_edge_voice_name_gives_the_spoken_language():
+    from tools.tts_tool import _spoken_lang_for
+
+    assert _spoken_lang_for("edge", {"edge": {"voice": "fr-FR-VivienneMultilingualNeural"}}) == "fr"
+    assert _spoken_lang_for("edge", {}) is not None  # default Edge voice carries its language too
+    # Opaque voice ids (ElevenLabs, Mistral...) are not guessed.
+    assert _spoken_lang_for("elevenlabs", {"edge": {"voice": "fr-FR-DeniseNeural"}}) is None

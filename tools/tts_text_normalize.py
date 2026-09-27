@@ -7,6 +7,7 @@ stays free of invisible/look-alike glyphs.
 
 from __future__ import annotations
 
+import functools
 import html
 import re
 
@@ -35,17 +36,56 @@ _URL_RE = re.compile(r"https?://\S+")
 # assistant's prose already says "the files are below". Trailing sentence
 # punctuation is left in place so "see MEDIA:/x.py. Then" keeps its full stop.
 _MEDIA_PATH_RE = re.compile(r"MEDIA:\S+?(?=[.,;:!?)\]]*(?:\s|$))")
+# Bare domains ("le site est hyperbio.fr") are as unspeakable as URLs: voices read
+# "hyperbio point f r". Conservative on purpose: a short list of common TLDs so file
+# names ("rapport.md", "script.py") survive, an alpha-led label so versions
+# ("python 3.13") survive, and no match after "@" so e-mail addresses stay whole.
+# Trailing sentence punctuation is kept, like _MEDIA_PATH_RE.
+_BARE_DOMAIN_RE = re.compile(
+    r"(?<![\w@./-])(?:[A-Za-z0-9-]+\.)*[A-Za-z][A-Za-z0-9-]+\.(?:fr|com|net|org|io|eu|co|dev|app|ai)"
+    r"(?![\w@-])(?:/\S*?)?(?=[.,;:!?)\]]*(?:\s|$))")
 
 _DEGREE_UNITS = (("C", "Celsius"), ("F", "Fahrenheit"))
 # Unit suffix (regex, after a digit) -> spoken word; km/h variants before the bare "m".
 _UNIT_WORDS = (
     (r"km\s*/\s*h", "kilometres per hour"), (r"km/h", "kilometres per hour"),
-    (r"mm", "millimetres"), (r"cm", "centimetres"), (r"m", "metres"))
+    (r"mm", "millimetres"), (r"cm", "centimetres"), (r"m", "metres"), (r"kg", "kilograms"))
 # Currency prefix (regex) -> spoken word; order matters (NZ$/A$/US$ before bare $).
 _CURRENCY_WORDS = (
     (r"NZ\$", "New Zealand dollars", re.IGNORECASE), (r"A\$", "Australian dollars", re.IGNORECASE),
     (r"US\$", "US dollars", re.IGNORECASE), ("€", "euros", 0), ("£", "pounds", 0), (r"\$", "dollars", 0),
 )
+
+# French expansions: English words injected into a French voice are read with a
+# French accent ("kilometres per hour"), so a French voice gets French words.
+# "°C" is plain "degr\u00e9s" (Celsius is implied in French speech); "km" before "m".
+_DEGREE_UNITS_FR = (("C", ""), ("F", "Fahrenheit"))
+_UNIT_WORDS_FR = (
+    (r"km\s*/\s*h", "kilom\u00e8tres par heure"), (r"km", "kilom\u00e8tres"),
+    (r"mm", "millim\u00e8tres"), (r"cm", "centim\u00e8tres"), (r"m", "m\u00e8tres"), (r"kg", "kilogrammes"))
+_CURRENCY_WORDS_FR = (
+    (r"NZ\$", "dollars n\u00e9o-z\u00e9landais", re.IGNORECASE), (r"A\$", "dollars australiens", re.IGNORECASE),
+    (r"US\$", "dollars am\u00e9ricains", re.IGNORECASE), ("\u20ac", "euros", 0), ("\u00a3", "livres sterling", 0),
+    (r"\$", "dollars", 0),
+)
+# French writes the symbol after the amount ("12 \u20ac"); English keeps prefix-only.
+_SUFFIX_CURRENCY_WORDS_FR = (("\u20ac", "euros"), ("\u00a3", "livres sterling"), (r"\$", "dollars"))
+
+# Per-language spoken words; an unknown or missing language keeps the English table,
+# the historical behaviour every caller without a language still relies on.
+_SPOKEN_WORDS = {
+    "en": {"degrees": "degrees", "to": "to", "percent": "percent", "degree_units": _DEGREE_UNITS,
+           "units": _UNIT_WORDS, "currencies": _CURRENCY_WORDS, "suffix_currencies": ()},
+    "fr": {"degrees": "degr\u00e9s", "to": "\u00e0", "percent": "pour cent", "degree_units": _DEGREE_UNITS_FR,
+           "units": _UNIT_WORDS_FR, "currencies": _CURRENCY_WORDS_FR,
+           "suffix_currencies": _SUFFIX_CURRENCY_WORDS_FR},
+}
+
+
+def _spoken_words(spoken_lang: str | None) -> dict:
+    """Word table for a language code ("fr", "fr-FR", "en"...); English when unknown."""
+    primary = (spoken_lang or "").strip().lower().replace("_", "-").split("-")[0]
+    return _SPOKEN_WORDS.get(primary, _SPOKEN_WORDS["en"])
 
 # Broad emoji / pictograph cleanup: most voice providers read emojis as awkward labels.
 _EMOJI_RE = re.compile(
@@ -66,6 +106,7 @@ def strip_markdown_for_tts(text: str) -> str:
     text = _MD_LINK_RE.sub(r"\1", text)
     text = _URL_RE.sub("", text)
     text = _MEDIA_PATH_RE.sub(" ", text)
+    text = _BARE_DOMAIN_RE.sub("", text)
     text = _MD_INLINE_CODE_RE.sub(r"\1", text)
     text = _MD_BOLD_RE.sub(r"\1", text)
     text = _MD_UNDERSCORE_BOLD_RE.sub(r"\1", text)
@@ -81,37 +122,46 @@ def strip_markdown_for_tts(text: str) -> str:
     return _MD_TABLE_PIPE_RE.sub("; ", text)
 
 
-def _normalize_temperature_ranges(text: str) -> str:
+def _degree_phrase(words: dict, unit_word: str) -> str:
+    return f"{words['degrees']} {unit_word}".rstrip()
+
+
+def _normalize_temperature_ranges(text: str, words: dict | None = None) -> str:
     """``11-17°C`` -> ``11 to 17 degrees Celsius`` (en/em dash or hyphen; unicode minus normalized)."""
+    words = words or _SPOKEN_WORDS["en"]
     number = r"([-+\u2212]?\d+(?:\.\d+)?)"
-    for unit, word in _DEGREE_UNITS:
+    for unit, word in words["degree_units"]:
         text = re.sub(
             r"(?<!\w)" + number + r"\s*[\u2013\u2014-]\s*" + number + r"\s*°\s*" + unit + r"\b",
-            lambda m, w=word: (
-                f"{m.group(1).replace(chr(0x2212), '-')} to {m.group(2).replace(chr(0x2212), '-')} degrees {w}"
+            lambda m, phrase=_degree_phrase(words, word): (
+                f"{m.group(1).replace(chr(0x2212), '-')} {words['to']} {m.group(2).replace(chr(0x2212), '-')} {phrase}"
             ),
             text, flags=re.IGNORECASE)
     return text
 
 
-def normalize_symbols_for_tts(text: str) -> str:
-    """Expand common symbols/shorthand into words a TTS engine reads well."""
+def normalize_symbols_for_tts(text: str, spoken_lang: str | None = None) -> str:
+    """Expand common symbols/shorthand into words a TTS engine reads well, in the voice's
+    language (``spoken_lang`` such as ``"fr"``; English when missing or unsupported)."""
     if not text:
         return ""
+    words = _spoken_words(spoken_lang)
+    degrees = words["degrees"]
     text = re.sub("[   ]", " ", str(text))  # non-breaking / thin spaces
     text = text.replace("\u2212", "-").replace("…", "...")  # minus sign, ellipsis
-    text = _normalize_temperature_ranges(text)
+    text = _normalize_temperature_ranges(text, words)
     # Temperatures with a number first, then bare units ("measured in degrees C"),
     # then any remaining degree symbol (angles, stray cases).
-    for unit, word in _DEGREE_UNITS:
+    for unit, word in words["degree_units"]:
         text = re.sub(
-            r"(?<!\w)([-+]?\d+(?:\.\d+)?)\s*°\s*" + unit + r"\b", r"\1 degrees " + word, text, flags=re.IGNORECASE,
+            r"(?<!\w)([-+]?\d+(?:\.\d+)?)\s*°\s*" + unit + r"\b", r"\1 " + _degree_phrase(words, word), text,
+            flags=re.IGNORECASE,
         )
-    for unit, word in _DEGREE_UNITS:
-        text = re.sub(r"°\s*" + unit + r"\b", "degrees " + word, text, flags=re.IGNORECASE)
-    text = re.sub(r"(?<!\w)([-+]?\d+(?:\.\d+)?)\s*°", r"\1 degrees", text).replace("°", " degrees")
+    for unit, word in words["degree_units"]:
+        text = re.sub(r"°\s*" + unit + r"\b", _degree_phrase(words, word), text, flags=re.IGNORECASE)
+    text = re.sub(r"(?<!\w)([-+]?\d+(?:\.\d+)?)\s*°", r"\1 " + degrees, text).replace("°", " " + degrees)
     # Common weather/travel units.
-    for pattern, word in _UNIT_WORDS:
+    for pattern, word in words["units"]:
         text = re.sub(r"(?<=\d)\s*" + pattern + r"\b", " " + word, text, flags=re.IGNORECASE)
     # Numeric rates only ("5/month" -> "5 per month").  Requiring digit-then-letter
     # keeps "and/or", "N/A", "TCP/IP" and dates like "2026/06" intact.
@@ -119,9 +169,11 @@ def normalize_symbols_for_tts(text: str) -> str:
     # Money and percentages. The integer part must END in a digit so a trailing
     # comma ("A$50, ...") is not swallowed into the spoken amount. Prefixed
     # currencies run first so "$" doesn't eat "NZ$".
-    for symbol, word, flags in _CURRENCY_WORDS:
+    for symbol, word, flags in words["currencies"]:
         text = re.sub(symbol + r"\s*([\d,]*\d(?:\.\d+)?)", r"\1 " + word, text, flags=flags)
-    text = re.sub(r"(?<=\d)\s*%", " percent", text)
+    for symbol, word in words["suffix_currencies"]:
+        text = re.sub(r"(?<=\d)\s*" + symbol, " " + word, text)
+    text = re.sub(r"(?<=\d)\s*%", " " + words["percent"], text)
     # Operators and separators that commonly leak from formatted answers.
     text = re.sub("[•◦▪▫]", " ", text.replace("&", " and "))  # bullet glyphs
     for symbol, word in (("→", " to "), ("⇒", " to "), ("≈", " about "), ("~", " about ")):
@@ -219,12 +271,14 @@ def flatten_newlines_for_payload(text: str) -> str:
     return text.strip()
 
 
-def prepare_spoken_text(text: str, max_chars: int | None = 4000) -> str:
+def prepare_spoken_text(text: str, max_chars: int | None = 4000, *, spoken_lang: str | None = None) -> str:
     """Return a TTS-friendly script from assistant text (deterministic cleanup, not a rewrite).
     Pipeline: non-spoken blocks > Markdown > symbols/units > line formatting into sentence
-    pauses > single line (for newline-sensitive providers), then ``max_chars``."""
+    pauses > single line (for newline-sensitive providers), then ``max_chars``. ``spoken_lang``
+    is the voice's language: units are expanded in it so a French voice never reads English."""
     spoken = text
-    for step in (strip_nonspoken_blocks, strip_markdown_for_tts, normalize_symbols_for_tts,
+    for step in (strip_nonspoken_blocks, strip_markdown_for_tts,
+                 functools.partial(normalize_symbols_for_tts, spoken_lang=spoken_lang),
                  smooth_whitespace_for_tts, flatten_newlines_for_payload):
         spoken = step(spoken)
     if max_chars is not None and max_chars > 0 and len(spoken) > max_chars:

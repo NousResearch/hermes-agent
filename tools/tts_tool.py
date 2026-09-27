@@ -266,6 +266,22 @@ def _finalize_voice_delivery(
 
 
 # --- Main tool function ---
+_EDGE_VOICE_LANG_RE = re.compile(r"^([a-z]{2,3})-[A-Za-z]{2,4}-", re.IGNORECASE)
+
+
+def _spoken_lang_for(provider: str, tts_config: Dict[str, Any]) -> Optional[str]:
+    """Language of the voice that will speak, so units are expanded in it, or None when unknown.
+
+    Only Edge names carry it reliably (BCP-47 prefix: ``fr-FR-VivienneMultilingualNeural``);
+    other providers' voice ids are opaque, so they keep the default (English) expansions."""
+    if provider != "edge":
+        return None
+    from tools.tts_tool_providers import DEFAULT_EDGE_VOICE
+    voice = str((tts_config.get("edge") or {}).get("voice") or DEFAULT_EDGE_VOICE)
+    match = _EDGE_VOICE_LANG_RE.match(voice.strip())
+    return match.group(1).lower() if match else None
+
+
 def _apply_call_overrides(tts_config: Dict[str, Any], speed: Optional[float], provider: Optional[str]):
     """Apply per-call ``speed`` (clamped, on a shallow copy so the cached config isn't mutated) and
     resolve the provider name."""
@@ -429,14 +445,14 @@ def text_to_speech_tool(
     separate valid files and no over-limit artifact is ever returned."""
     if not text or not text.strip():
         return tool_error("Text is required", success=False)
+    tts_config, provider = _apply_call_overrides(_load_tts_config(), speed, provider)
     try:  # shared cleaner: markdown, emoji, think blocks, verifier footer, units, newlines
         from tools.tts_text_normalize import prepare_spoken_text
-        text = prepare_spoken_text(text, max_chars=None)
+        text = prepare_spoken_text(text, max_chars=None, spoken_lang=_spoken_lang_for(provider, tts_config))
     except Exception:
         text = text.strip()
     if not text:
         return tool_error("Text is empty after TTS cleanup", success=False)
-    tts_config, provider = _apply_call_overrides(_load_tts_config(), speed, provider)
     command_provider_config = _resolve_command_provider_config(provider, tts_config)
     max_len = _resolve_max_text_length(provider, tts_config)
     chunks = _split_text_for_tts(text, max_len)

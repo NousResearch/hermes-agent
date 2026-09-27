@@ -708,6 +708,7 @@ def _run_setup_wizard_impl(args):
         # backwards-compatible no-op here.
         if quick_requested:
             _run_setup_steps([("Quick Setup", lambda: _run_quick_setup(config, hermes_home))])
+            _record_setup_completed(config)
             return
         print_header("Reconfigure", gap=True)
         print_success("You already have Hermes configured.")
@@ -728,6 +729,7 @@ def _run_setup_wizard_impl(args):
         if runner is not None:
             from hermes_cli import setup_quick
             _run_setup_steps([(label, lambda: getattr(setup_quick, runner)(config, hermes_home, is_existing))])
+            _record_setup_completed(config)
             return
     _run_full_setup(config, hermes_home, is_existing=is_existing, migration_ran=migration_ran)
 
@@ -738,3 +740,12 @@ def _run_setup_wizard_impl(args):
               "If setup changed a value you customized, restore it with:",
               f"  cp {_backup_path} {config_path}")
     _print_setup_summary(config, hermes_home)
+    _record_setup_completed(config)
+
+
+def _record_setup_completed(config: dict) -> None:
+    """Count a wizard run that finished. Runs after every section (shared-metrics consent
+    included) so a user who opted in during this run is counted; the API checks enablement."""
+    from hermes_cli.observability.shared_metrics_events import record_setup_completed
+    model = config.get("model")
+    record_setup_completed(surface="cli", provider=model.get("provider") if isinstance(model, dict) else None)

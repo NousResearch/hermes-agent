@@ -4058,6 +4058,7 @@ export interface PluginsManageResult {
   warnings?: string[] | null
   missing_env?: string[] | null
   python_dependencies?: string[] | null
+  known_issues?: string[] | null
   after_install_path?: string | null
   enabled?: boolean | null
   sha?: string | null

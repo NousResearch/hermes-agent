@@ -21668,6 +21668,21 @@
             "default": null,
             "title": "Python Dependencies"
           },
+          "known_issues": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Known Issues"
+          },
           "after_install_path": {
             "anyOf": [
               {

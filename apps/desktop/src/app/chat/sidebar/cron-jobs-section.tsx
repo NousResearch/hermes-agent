@@ -66,6 +66,13 @@ function formatRunTime(seconds?: null | number): string {
   return Number.isNaN(date.valueOf()) ? '—' : fmtDayTime.format(date)
 }
 
+// Script-only (no_agent) jobs have no agent sessions; the runs endpoint
+// surfaces their per-fire output docs as rows with source='cron_output'
+// (see _list_cron_output_runs in hermes_cli/web_routers/cron.py).
+function isSyntheticCronOutputRun(run: SessionInfo): boolean {
+  return run.source === 'cron_output'
+}
+
 interface SidebarCronJobsSectionProps {
   jobs: CronJob[]
   label: string
@@ -450,21 +457,31 @@ function CronJobSidebarRuns({ jobId, onOpenRun }: { jobId: string; onOpenRun: (s
         <div className="py-1 pl-1 text-[0.6875rem] text-(--ui-text-tertiary)">{c.noRuns}</div>
       ) : (
         <>
-          {runs.map(run => (
-            <button
-              className={cn(
-                'truncate rounded-md px-1.5 py-0.5 text-left text-[0.6875rem] tabular-nums focus-visible:bg-(--chrome-action-hover) focus-visible:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40',
-                run.id === selectedSessionId
-                  ? 'bg-(--ui-row-active-background) text-foreground'
-                  : 'text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) hover:text-foreground'
-              )}
-              key={run.id}
-              onClick={() => onOpenRun(run.id)}
-              type="button"
-            >
-              {formatRunTime(run.last_active || run.started_at)}
-            </button>
-          ))}
+          {runs.map(run =>
+            isSyntheticCronOutputRun(run) ? (
+              // Output-doc rows have no backing session to open.
+              <div
+                className="truncate rounded-md px-1.5 py-0.5 text-[0.6875rem] text-(--ui-text-secondary) tabular-nums"
+                key={run.id}
+              >
+                {formatRunTime(run.last_active || run.started_at)}
+              </div>
+            ) : (
+              <button
+                className={cn(
+                  'truncate rounded-md px-1.5 py-0.5 text-left text-[0.6875rem] tabular-nums focus-visible:bg-(--chrome-action-hover) focus-visible:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40',
+                  run.id === selectedSessionId
+                    ? 'bg-(--ui-row-active-background) text-foreground'
+                    : 'text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) hover:text-foreground'
+                )}
+                key={run.id}
+                onClick={() => onOpenRun(run.id)}
+                type="button"
+              >
+                {formatRunTime(run.last_active || run.started_at)}
+              </button>
+            )
+          )}
         </>
       )}
     </div>

@@ -294,16 +294,44 @@ def _remove_systemd_gateway() -> bool:
     return removed_any
 
 
-def _remove_launchd_gateway() -> bool:
-    """macOS: uninstall launchd plist."""
+# Both gateway LaunchAgent naming schemes: the current ``ai.hermes.gateway*``
+# label and the ``io.nousresearch.hermes-agent.gateway*`` label older builds
+# installed. An uninstall must sweep BOTH — a stale agent keeps respawning the
+# gateway after the code tree is gone (#62209).
+_LAUNCHD_GATEWAY_PLIST_PATTERNS = (
+    "ai.hermes.gateway*.plist",
+    "io.nousresearch.hermes-agent.gateway*.plist",
+)
+
+
+def _launchd_gateway_plists() -> "list[Path]":
+    """Every gateway LaunchAgent plist on disk, under the real account home."""
     from hermes_cli.gateway import get_launchd_plist_path
-    plist_path = get_launchd_plist_path()
-    if not plist_path.exists():
-        return False
-    subprocess.run(["launchctl", "unload", str(plist_path)], capture_output=True, check=False)
-    plist_path.unlink()
-    log_success(f"Removed macOS gateway service ({plist_path})")
-    return True
+
+    launch_agents = get_launchd_plist_path().parent
+    return sorted({p for pattern in _LAUNCHD_GATEWAY_PLIST_PATTERNS for p in launch_agents.glob(pattern)})
+
+
+def _remove_launchd_gateway() -> bool:
+    """macOS: boot out and uninstall every gateway LaunchAgent plist.
+
+    Sweeps BOTH label patterns (see ``_LAUNCHD_GATEWAY_PLIST_PATTERNS``):
+    uninstalling only the current label's plist left older-label agents
+    registered, and launchd kept respawning the gateway after removal.
+    ``bootout`` (both Aqua and per-user domains, whichever holds the job) plus
+    the legacy ``unload`` run before the unlink so launchd never respawns a
+    job whose plist is gone.
+    """
+    plists = _launchd_gateway_plists()
+    uid = os.getuid()  # windows-footgun: ok — darwin-only (called from the macOS branch)
+    for plist_path in plists:
+        label = plist_path.stem
+        for domain in (f"gui/{uid}", f"user/{uid}"):
+            subprocess.run(["launchctl", "bootout", f"{domain}/{label}"], capture_output=True, check=False)
+        subprocess.run(["launchctl", "unload", str(plist_path)], capture_output=True, check=False)
+        plist_path.unlink()
+        log_success(f"Removed macOS gateway service ({plist_path})")
+    return bool(plists)
 
 
 def _remove_windows_gateway() -> bool:
@@ -407,6 +435,64 @@ def remove_portable_tooling_windows(hermes_home: Path) -> list[Path]:
     ``hermes_home`` (isolated from any system Git / Node, so nothing else breaks)."""
     targets = (hermes_home / sub for sub in ("git", "node", "gateway-service"))
     return _remove_each((t for t in targets if t.exists()), lambda t: shutil.rmtree(t) or True)
+
+
+def _xdg_leftover_paths(full_uninstall: bool) -> "tuple[list[Path], list[Path]]":
+    """The XDG cache/data dirs an install scatters outside HERMES_HOME.
+
+    Returns (removable, data_preserved): the cache dir is always removable;
+    the XDG data dir is user data, so it is only removed on a full uninstall
+    and otherwise reported as intentionally preserved.
+    """
+    home = Path.home()
+    cache = home / ".cache" / "hermes"
+    data = home / ".local" / "share" / "hermes"
+    removable = [cache] if cache.exists() else []
+    if data.exists() and full_uninstall:
+        removable.append(data)
+    preserved = [data] if data.exists() and not full_uninstall else []
+    return removable, preserved
+
+
+def remove_desktop_app_leftovers(*, full_uninstall: bool) -> list[Path]:
+    """Remove per-user app leftovers that live outside HERMES_HOME and the
+    checkout, which earlier uninstallers left behind (#62209): the macOS
+    Library caches/logs/browser-store/state entries the packaged app and
+    Electron scatter, and the XDG cache dir on every platform. On a full
+    uninstall the XDG data dir (``~/.local/share/hermes``) goes too.
+
+    Only well-known Hermes-named entries are touched — never a glob of the
+    whole Library.
+    """
+    import sys as _sys
+
+    targets: list[Path] = []
+    home = Path.home()
+    if _sys.platform == "darwin":
+        library = home / "Library"
+        for parent in ("Caches", "Logs", "WebKit", "HTTPStorages", "Saved Application State"):
+            parent_dir = library / parent
+            if not parent_dir.is_dir():
+                continue
+            try:
+                entries = list(parent_dir.iterdir())
+            except OSError:
+                continue
+            targets.extend(e for e in entries if "hermes" in e.name.lower())
+    removable, _ = _xdg_leftover_paths(full_uninstall=full_uninstall)
+    targets.extend(removable)
+    return _remove_each((t for t in targets if t.exists()), _remove_path_or_tree)
+
+
+def _remove_path_or_tree(path: Path) -> bool:
+    try:
+        if path.is_symlink() or path.is_file():
+            path.unlink()
+        else:
+            shutil.rmtree(path)
+        return True
+    except OSError:
+        return False
 
 
 def remove_legacy_runtime_trees(hermes_home: Path) -> list[Path]:
@@ -700,6 +786,9 @@ def run_uninstall(args):
     print(f"  Config:  {hermes_home / 'config.yaml'}")
     print(f"  Secrets: {hermes_home / '.env'}")
     print(f"  Data:    {hermes_home / 'cron/'}, {hermes_home / 'sessions/'}, {hermes_home / 'logs/'}")
+    from hermes_cli.gui_uninstall import desktop_userdata_dir
+    if (desktop_userdata := desktop_userdata_dir()).exists():
+        print(f"  Desktop: {desktop_userdata}  (app data - kept by 'Keep data', removed by 'Full uninstall')")
     print()
 
     if named_profiles:
@@ -775,12 +864,18 @@ def _print_uninstall_dry_run(*, project_root: Path, hermes_home: Path, full_unin
     print("  • Hermes wrapper scripts and Hermes-managed node/npm/npx symlinks")
     print("  • Desktop Chat GUI artifacts")
     print(f"  • Code checkout: {project_root}")
+    from hermes_cli.gui_uninstall import desktop_userdata_dir
+    userdata = desktop_userdata_dir()
     if not full_uninstall:
         print(f"  • Keep Hermes config/data: {hermes_home}")
+        if userdata.exists():
+            print(f"  • Keep desktop app data: {userdata}")
     else:
         print(f"  • Hermes config/data: {hermes_home}")
         if sys.platform == "darwin":
             print("  • macOS: dashboard/serve launchd jobs, Electron + setup caches")
+        if userdata.exists():
+            print(f"  • Desktop app data: {userdata}")
         profiles = _discover_named_profiles() if _is_default_hermes_home(hermes_home) else []
         if profiles:
             print("  • Named profiles (interactive uninstall asks before removing):")
@@ -940,13 +1035,26 @@ def _perform_uninstall(
 
     # 3c. Chat GUI artifacts go with the agent code. uninstall_gui() never touches config/sessions/
     #     .env (safe in keep-data mode); the packaged app + Electron userData live OUTSIDE HERMES_HOME.
+    #     The userData dir is user configuration (connections.json, OAuth partitions, renderer
+    #     state), so keep-data preserves it — only the full wipe removes it.
     log_info("Removing desktop Chat GUI artifacts...")
     try:
         from hermes_cli.gui_uninstall import uninstall_gui
-        if not uninstall_gui(hermes_home):
+        if not uninstall_gui(hermes_home, remove_userdata=full_uninstall):
             log_info("No desktop GUI artifacts found")
     except Exception as e:
         log_warn(f"Could not remove desktop GUI artifacts: {e}")
+
+    # 3d. Per-user app leftovers outside HERMES_HOME: macOS Library caches/logs/
+    #     browser-store/state entries, the XDG cache dir, and (full mode) the XDG
+    #     data dir. Only Hermes-named entries are touched (#62209).
+    log_info("Removing app caches and leftovers outside the install...")
+    removed_leftovers = remove_desktop_app_leftovers(full_uninstall=full_uninstall)
+    if removed_leftovers:
+        for path in removed_leftovers:
+            log_success(f"Removed {path}")
+    else:
+        log_info("No app caches or leftovers found")
 
     # 4. Remove installation directory (code) — we may be running from inside it.
     log_info("Removing installation directory...")
@@ -1007,6 +1115,12 @@ def _perform_uninstall(
     if not full_uninstall:
         print(color("Your configuration and data have been preserved:", Colors.CYAN))
         print(f"  {hermes_home}/")
+        from hermes_cli.gui_uninstall import desktop_userdata_dir
+        if (desktop_userdata := desktop_userdata_dir()).exists():
+            print(f"  {desktop_userdata}  (desktop app data)")
+        _, preserved = _xdg_leftover_paths(full_uninstall=False)
+        for path in preserved:
+            print(f"  {path}/")
         print()
         print("To reinstall later with your existing settings:")
         print(color(_REINSTALL_HINT[windows], Colors.DIM))

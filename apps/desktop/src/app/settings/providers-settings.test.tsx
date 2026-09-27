@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -9,6 +9,7 @@ import type { EnvVarInfo, OAuthProvider } from '@/types/hermes'
 const listOAuthProviders = vi.fn()
 const disconnectOAuthProvider = vi.fn()
 const getEnvVars = vi.fn()
+const revealEnvVar = vi.fn()
 const setEnvVar = vi.fn()
 const startManualProviderOAuth = vi.fn()
 const startManualLocalEndpoint = vi.fn()
@@ -25,10 +26,11 @@ vi.mock('@/store/profile', () => ({
 vi.mock('@/hermes', () => ({
   setApiRequestProfile: vi.fn(),
   getProfiles: async () => ({ profiles: (await import('@/store/profile')).$profiles.get() }),
-  setEnvVar: (key: string, value: string, profile?: string) => setEnvVar(key, value, profile),
   disconnectOAuthProvider: (...args: unknown[]) => disconnectOAuthProvider(...args),
   getEnvVars: (...args: unknown[]) => getEnvVars(...args),
-  listOAuthProviders: (...args: unknown[]) => listOAuthProviders(...args)
+  listOAuthProviders: (...args: unknown[]) => listOAuthProviders(...args),
+  revealEnvVar: (key: string, profile?: string) => revealEnvVar(key, profile),
+  setEnvVar: (key: string, value: string, profile?: string) => setEnvVar(key, value, profile)
 }))
 
 vi.mock('@/store/onboarding', () => ({
@@ -81,6 +83,8 @@ beforeEach(() => {
   onboarding.set({ manual: false })
   getEnvVars.mockResolvedValue({})
   disconnectOAuthProvider.mockResolvedValue({ ok: true, provider: 'nous' })
+  revealEnvVar.mockResolvedValue({ value: 'old-secret' })
+  setEnvVar.mockResolvedValue({ ok: true })
   listOAuthProviders.mockResolvedValue({
     providers: [provider('nous', true), provider('minimax-oauth', false)]
   })
@@ -125,6 +129,7 @@ describe('ProvidersSettings', () => {
       }))
     )
     getEnvVars.mockResolvedValue({ WIDGET_API_KEY: keyVar({ provider: 'widget', provider_label: 'Widget' }) })
+
     try {
       const { container } = render(<ProvidersSettings onClose={vi.fn()} onViewChange={vi.fn()} view="keys" />)
       await screen.findByText('Widget')
@@ -236,6 +241,155 @@ describe('ProvidersSettings', () => {
     })
 
     expect(await screen.findByText('WidgetAI')).toBeTruthy()
+  })
+
+  it('renders separate provider cards that share one credential env var', async () => {
+    getEnvVars.mockResolvedValue({
+      DASHSCOPE_API_KEY: keyVar({
+        provider: 'alibaba',
+        provider_label: 'Qwen Cloud',
+        provider_profiles: [
+          {
+            description: 'International DashScope route',
+            primary: true,
+            provider: 'alibaba',
+            provider_label: 'Qwen Cloud',
+            url: 'https://modelstudio.console.alibabacloud.com/'
+          },
+          {
+            description: 'Mainland-China DashScope route',
+            primary: true,
+            provider: 'alibaba-cn',
+            provider_label: 'Alibaba Cloud DashScope (China)',
+            url: 'https://bailian.console.aliyun.com/'
+          }
+        ]
+      })
+    })
+    listOAuthProviders.mockResolvedValue({ providers: [] })
+
+    const { ProvidersSettings } = await import('./providers-settings')
+    render(<ProvidersSettings onClose={vi.fn()} onViewChange={vi.fn()} view="keys" />)
+
+    expect(await screen.findByText('Qwen Cloud')).toBeTruthy()
+    expect(screen.getByText('Alibaba Cloud DashScope (China)')).toBeTruthy()
+    const inputs = screen.getAllByPlaceholderText(/Paste .* key/)
+    expect(inputs).toHaveLength(2)
+
+    fireEvent.focus(inputs[0])
+    fireEvent.change(inputs[0], { target: { value: 'shared-secret' } })
+
+    expect(screen.getAllByDisplayValue('shared-secret')).toHaveLength(1)
+    expect((inputs[1] as HTMLInputElement).value).toBe('')
+  })
+
+  it('keeps a card on its own key when a shared credential arrives with primary: false', async () => {
+    // The CN Coding Plan card's own credential (its index-0 var) plus the
+    // shared DASHSCOPE_API_KEY, which the catalog contributes as a FALLBACK
+    // alias (primary: false) because it is index >= 1 for that provider. The
+    // card's "Paste key" must edit the provider's own key, not the shared one.
+    getEnvVars.mockResolvedValue({
+      ALIBABA_CODING_PLAN_CN_API_KEY: keyVar({
+        provider: 'alibaba-coding-plan-cn',
+        provider_label: 'Alibaba Cloud (Coding Plan, China)',
+        provider_primary: true
+      }),
+      ALIBABA_CODING_PLAN_API_KEY: keyVar({
+        provider: 'alibaba-coding-plan-cn',
+        provider_label: 'Alibaba Cloud (Coding Plan, China)',
+        provider_primary: false
+      }),
+      DASHSCOPE_API_KEY: keyVar({
+        provider: 'alibaba',
+        provider_label: 'Qwen Cloud',
+        provider_profiles: [
+          {
+            description: 'International DashScope route',
+            primary: true,
+            provider: 'alibaba',
+            provider_label: 'Qwen Cloud',
+            url: 'https://modelstudio.console.alibabacloud.com/'
+          },
+          {
+            description: 'Coding Plan fallback alias',
+            primary: false,
+            provider: 'alibaba-coding-plan-cn',
+            provider_label: 'Alibaba Cloud (Coding Plan, China)',
+            url: 'https://help.aliyun.com/zh/model-studio/'
+          }
+        ]
+      })
+    })
+    listOAuthProviders.mockResolvedValue({ providers: [] })
+
+    const { ProvidersSettings } = await import('./providers-settings')
+    const { container } = render(<ProvidersSettings onClose={vi.fn()} onViewChange={vi.fn()} view="keys" />)
+
+    expect(await screen.findByText('Alibaba Cloud (Coding Plan, China)')).toBeTruthy()
+
+    // Exactly one primary "Paste … key" input per card; the CN card's must edit
+    // ALIBABA_CODING_PLAN_CN_API_KEY, never the shared DASHSCOPE_API_KEY.
+    const inputs = container.querySelectorAll('input[type="password"]')
+    const pasteInputs = await screen.findAllByPlaceholderText(/Paste .* key/)
+    expect(pasteInputs).toHaveLength(2) // Qwen Cloud card + the CN Coding Plan card
+
+    const cnCard = screen
+      .getAllByText('Alibaba Cloud (Coding Plan, China)')
+      .map(el => el.closest('[role="button"]') ?? el.closest('div[class*="group/card"]'))
+      .find(Boolean)!
+
+    const cnInput = cnCard.querySelector('input[type="password"]')!
+    expect(inputs.length).toBeGreaterThanOrEqual(1)
+
+    fireEvent.focus(cnInput)
+    fireEvent.change(cnInput, { target: { value: 'cn-tier-secret' } })
+    fireEvent.click(within(cnCard as HTMLElement).getByRole('button', { name: 'Save' }))
+
+    // The write names the CN-specific var — never the shared DASHSCOPE_API_KEY.
+    await waitFor(() => {
+      const [key, value] = setEnvVar.mock.calls.at(-1) ?? []
+      expect(key).toBe('ALIBABA_CODING_PLAN_CN_API_KEY')
+      expect(value).toBe('cn-tier-secret')
+      expect(setEnvVar).not.toHaveBeenCalledWith('DASHSCOPE_API_KEY', expect.anything(), expect.anything())
+    })
+  })
+
+  it('clears the shared reveal when a namespaced provider-card draft is saved', async () => {
+    const varKey = 'DASHSCOPE_API_KEY'
+    const editKey = `Qwen Cloud:${varKey}`
+    getEnvVars.mockResolvedValue({
+      [varKey]: keyVar({ is_set: true, redacted_value: '••••••••' })
+    })
+
+    const { useEnvCredentials } = await import('./env-credentials')
+    const state = { current: null as null | ReturnType<typeof useEnvCredentials> }
+
+    function Harness() {
+      state.current = useEnvCredentials()
+
+      return null
+    }
+
+    render(<Harness />)
+    await waitFor(() => expect(state.current?.vars).not.toBeNull())
+
+    await act(async () => {
+      await Promise.resolve(state.current!.rowProps.onReveal(varKey))
+    })
+    expect(state.current!.rowProps.revealed[varKey]).toBe('old-secret')
+
+    act(() => {
+      state.current!.rowProps.setEdits(current => ({ ...current, [editKey]: 'new-secret' }))
+    })
+    await waitFor(() => expect(state.current!.rowProps.edits[editKey]).toBe('new-secret'))
+
+    await act(async () => {
+      await Promise.resolve(state.current!.rowProps.onSave(varKey, editKey))
+    })
+
+    expect(setEnvVar).toHaveBeenCalledWith(varKey, 'new-secret', undefined)
+    expect(state.current!.rowProps.edits[editKey]).toBeUndefined()
+    expect(state.current!.rowProps.revealed[varKey]).toBeUndefined()
   })
 
   it('orders API-key providers by priority then name, and filters them via search', async () => {

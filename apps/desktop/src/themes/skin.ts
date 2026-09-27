@@ -116,6 +116,6 @@ export function skinToDesktopTheme(skin: HermesSkin): DesktopTheme | null {
     darkColors: palette,
     // Pass through raw CSS so the desktop can inject it as a scoped <style>
     // tag — users put CSS in their skin YAML instead of hacking app.asar.
-    customCSS: skin.customCSS?.trim() || undefined,
+    customCSS: skin.customCSS?.trim() || undefined
   }
 }

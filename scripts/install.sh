@@ -179,6 +179,16 @@ uv_bootstrap_pin() {
             UV_PIN_MIRROR="https://hermes-assets.nousresearch.com/upstream/sha256/bb66cb52e7b1823aed1183630d8d8e5c958840d584a4c55ec10a4cfc168dcca2"
             UV_PIN_SHA256="bb66cb52e7b1823aed1183630d8d8e5c958840d584a4c55ec10a4cfc168dcca2"
             ;;
+        linux-x64-musl)
+            UV_PIN_URL="https://github.com/astral-sh/uv/releases/download/0.12.3/uv-x86_64-unknown-linux-musl.tar.gz"
+            UV_PIN_MIRROR="https://hermes-assets.nousresearch.com/upstream/sha256/0643b9fb8c9fb27458e709ce6ff939695013c41975ff7b02d3f3b138d8d4bdb3"
+            UV_PIN_SHA256="0643b9fb8c9fb27458e709ce6ff939695013c41975ff7b02d3f3b138d8d4bdb3"
+            ;;
+        linux-arm64-musl)
+            UV_PIN_URL="https://github.com/astral-sh/uv/releases/download/0.12.3/uv-aarch64-unknown-linux-musl.tar.gz"
+            UV_PIN_MIRROR="https://hermes-assets.nousresearch.com/upstream/sha256/fa513fca1eb2913334c944fe9adbdd410274a1cbe8dd05d03699a9eb85311d4e"
+            UV_PIN_SHA256="fa513fca1eb2913334c944fe9adbdd410274a1cbe8dd05d03699a9eb85311d4e"
+            ;;
         darwin-x64)
             UV_PIN_URL="https://github.com/astral-sh/uv/releases/download/0.12.3/uv-x86_64-apple-darwin.tar.gz"
             UV_PIN_MIRROR="https://hermes-assets.nousresearch.com/upstream/sha256/4c9f52262a14da336e4a42ed24992d12d0c956acde87619e4611d321dffa602b"
@@ -207,7 +217,34 @@ uv_bootstrap_target() {
         *) return 1 ;;
     esac
     case "$(uname -s)" in
-        Linux)  echo "linux-$_arch" ;;
+        Linux)
+            # Same precedence as pm/store.py::_is_musl_libc: the native
+            # userland's ELF interpreter decides; ldd and a musl loader on
+            # disk are fallbacks only (a glibc host may carry musl as a
+            # secondary toolchain, and minimal musl roots may lack ldd).
+            local _libc="" _probe _head
+            for _probe in /bin/sh /bin/ls; do
+                _head="$(head -c 8192 "$_probe" 2>/dev/null | LC_ALL=C tr -d '\000')" || continue
+                [[ "$_head" == $'\x7f'ELF* ]] || continue
+                case "$_head" in
+                    *ld-musl-*) _libc="musl"; break ;;
+                    *ld-linux*) _libc="glibc"; break ;;
+                esac
+            done
+            if [[ -z "$_libc" ]]; then
+                _libc="$(ldd --version 2>&1 || true)"
+                _libc="${_libc,,}"
+            fi
+            if [[ "$_libc" == *musl* ]]; then
+                echo "linux-$_arch-musl"
+            elif [[ "$_libc" == *glibc* || "$_libc" == *"gnu libc"* || "$_libc" == *"gnu c library"* ]]; then
+                echo "linux-$_arch"
+            elif compgen -G '/lib/ld-musl-*.so.1' >/dev/null; then
+                echo "linux-$_arch-musl"
+            else
+                echo "linux-$_arch"
+            fi
+            ;;
         Darwin) echo "darwin-$_arch" ;;
         *) return 1 ;;
     esac
@@ -413,6 +450,15 @@ emit_manifest() {
 stage_prerequisites() {
     command -v git >/dev/null 2>&1 || fail "git is required. Install it with your system package manager."
     command -v curl >/dev/null 2>&1 || fail "curl is required. Install it with your system package manager."
+    # PM's Node on musl is the unofficial-builds musl archive, which links the
+    # system libstdc++; without it every node/npm stage fails verification.
+    if [[ "$(uv_bootstrap_target 2>/dev/null)" == *-musl ]]; then
+        local _libdir _stdcxx=""
+        for _libdir in /lib /usr/lib /usr/local/lib; do
+            compgen -G "$_libdir/libstdc++.so.6*" >/dev/null && { _stdcxx=yes; break; }
+        done
+        [ -n "$_stdcxx" ] || fail "musl host: the Node.js runtime needs the system libstdc++. Install it (Alpine: apk add libstdc++, Void: xbps-install libstdc++) and re-run."
+    fi
     log_success "prerequisites ok (git, curl)"
 }
 
@@ -612,10 +658,21 @@ desktop_product_present() {
     # bundle built from the previous code: the app is part of that install, and
     # the artifacts live inside the tree (gitignored), so an update makes them
     # stale instead of removing them.
-    local release="$INSTALL_DIR/apps/desktop/release"
-    [ -d "$release/linux-unpacked" ] || [ -d "$release/mac" ] \
-        || [ -d "$release/mac-arm64" ] || [ -d "$release/win-unpacked" ]
+    # electron-builder suffixes the output dir with the arch on every non-x64
+    # target (linux-arm64-unpacked, mac-arm64, win-arm64-unpacked), so the x64
+    # names alone miss a desktop build on ARM64 Linux/Windows (#94703).
+    local release="$INSTALL_DIR/apps/desktop/release" dir
+    for dir in linux-unpacked linux-arm64-unpacked mac mac-arm64 \
+               win-unpacked win-ia32-unpacked win-arm64-unpacked; do
+        [ -d "$release/$dir" ] && return 0
+    done
+    return 1
 }
+
+# Guarded: a login shell whose ~/.bash_profile sources ~/.bashrc (Fedora, RHEL)
+# reads both files, so an unconditional prepend would put ~/.local/bin on PATH twice.
+SHELL_PATH_LINE='case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) export PATH="$HOME/.local/bin:$PATH" ;; esac'
+SHELL_PATH_SETUP_RE='^[[:space:]]*([^#[:space:]].*)?PATH=.*\.local/bin'
 
 append_shell_path() {
     local rc="$1" line="$2" pattern="$3"
@@ -635,18 +692,18 @@ wire_shell_path() {
     local login_shell="${SHELL:-/bin/bash}"
     case "${login_shell##*/}" in
         zsh)
-            append_shell_path "$HOME/.zshrc" 'export PATH="$HOME/.local/bin:$PATH"' '^[[:space:]]*[^#[:space:]].*PATH=.*\.local/bin'
-            append_shell_path "$HOME/.zprofile" 'export PATH="$HOME/.local/bin:$PATH"' '^[[:space:]]*[^#[:space:]].*PATH=.*\.local/bin'
+            append_shell_path "$HOME/.zshrc" "$SHELL_PATH_LINE" "$SHELL_PATH_SETUP_RE"
+            append_shell_path "$HOME/.zprofile" "$SHELL_PATH_LINE" "$SHELL_PATH_SETUP_RE"
             ;;
         fish)
             append_shell_path "$HOME/.config/fish/config.fish" 'fish_add_path "$HOME/.local/bin"' '^[[:space:]]*fish_add_path.*\.local/bin'
             ;;
         *)
-            append_shell_path "$HOME/.bashrc" 'export PATH="$HOME/.local/bin:$PATH"' '^[[:space:]]*[^#[:space:]].*PATH=.*\.local/bin'
-            append_shell_path "$HOME/.profile" 'export PATH="$HOME/.local/bin:$PATH"' '^[[:space:]]*[^#[:space:]].*PATH=.*\.local/bin'
+            append_shell_path "$HOME/.bashrc" "$SHELL_PATH_LINE" "$SHELL_PATH_SETUP_RE"
+            append_shell_path "$HOME/.profile" "$SHELL_PATH_LINE" "$SHELL_PATH_SETUP_RE"
             # Bash prefers .bash_profile over .profile if both exist.
             if [ -f "$HOME/.bash_profile" ]; then
-                append_shell_path "$HOME/.bash_profile" 'export PATH="$HOME/.local/bin:$PATH"' '^[[:space:]]*[^#[:space:]].*PATH=.*\.local/bin'
+                append_shell_path "$HOME/.bash_profile" "$SHELL_PATH_LINE" "$SHELL_PATH_SETUP_RE"
             fi
             ;;
     esac

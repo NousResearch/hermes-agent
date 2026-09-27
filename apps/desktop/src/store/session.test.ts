@@ -69,6 +69,7 @@ import {
   touchSessionActivity,
   workspaceCwdForNewSession
 } from './session'
+import { tombstoneSessions, untombstoneSessions } from './session-removal'
 import {
   $attentionSessionIds,
   clearAllSessionStates,
@@ -548,6 +549,41 @@ describe('mergeSessionPage', () => {
     expect(mergeSessionPage(previous, incoming, ['bot-chat']).map(s => s.id)).toEqual(['mine'])
   })
 
+  it('never resurrects a tombstoned row through the keep set (#118156)', () => {
+    // Archive flow: the row is tombstoned and dropped optimistically, but it
+    // is still recently-settled (its turn just ended), so sessionsToKeep()
+    // names it. A refresh whose `previous` still holds the row (a slice
+    // captured before the drop, or a resurrection injected by a stale page)
+    // must not let the survivor path keep it alive: while the tombstone
+    // stands, the row is on its way out — full stop.
+    tombstoneSessions(['doomed'])
+
+    try {
+      const previous = [session({ id: 'doomed' }), session({ id: 'mine' })]
+      const incoming = [session({ id: 'mine', message_count: 3 })]
+
+      expect(mergeSessionPage(previous, incoming, ['doomed']).map(s => s.id)).toEqual(['mine'])
+    } finally {
+      untombstoneSessions(['doomed'])
+    }
+  })
+
+  it('matches a tombstone by lineage root, not just the live tip (#118156)', () => {
+    // archiveSession() tombstones the stored id AND the lineage root; the
+    // survivor filter must honor both, the same way dropTombstoned does for
+    // incoming rows.
+    tombstoneSessions(['root'])
+
+    try {
+      const previous = [session({ id: 'tip', _lineage_root_id: 'root' }), session({ id: 'mine' })]
+      const incoming = [session({ id: 'mine' })]
+
+      expect(mergeSessionPage(previous, incoming, ['root']).map(s => s.id)).toEqual(['mine'])
+    } finally {
+      untombstoneSessions(['root'])
+    }
+  })
+
   it('keeps a pinned session that has aged off the recent page', () => {
     // Repro of "loses pins until you refresh": a pinned chat falls off the
     // most-recent page, so the server stops returning it. A hard replace would
@@ -615,7 +651,7 @@ describe('mergeSessionPage', () => {
     // the incoming page and unmatched by the root-only lineage key, so it
     // used to survive as a title-less ghost row the backend never sent.
     const previous = [
-      session({ id: 'seg2' }),  // old segment: no lineage of its own
+      session({ id: 'seg2' }), // old segment: no lineage of its own
       session({ id: 'tip', _lineage_root_id: 'fresh-root' }),
       session({ id: 'other' })
     ] as SessionInfo[]
@@ -655,9 +691,7 @@ describe('mergeSessionPage', () => {
     // really was absorbed into the projected tip, but the pinned row is a
     // different session. Lineage members must be profile-qualified like
     // every other key in the survivor predicate.
-    const previous = [
-      session({ id: 'sess-42', profile: 'quietbot', title: 'Pinned quiet work' })
-    ] as SessionInfo[]
+    const previous = [session({ id: 'sess-42', profile: 'quietbot', title: 'Pinned quiet work' })] as SessionInfo[]
 
     const incoming = [
       session({

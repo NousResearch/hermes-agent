@@ -125,14 +125,14 @@ export function resetBackgroundPollingGuardAfterRebind(
  * 2-arg call shape exactly (gateway.request callers assert on it); one that
  * does (approval.respond, #55433) has the deadline forwarded. */
 export function ambientRequestFor(gateway: {
-  request: (method: string, params: Record<string, unknown>, timeoutMs?: number, signal?: AbortSignal) => Promise<unknown>
-}): <R>(method: string, params?: Record<string, unknown>, timeoutMs?: number, signal?: AbortSignal) => Promise<R> {
-  return <R>(
+  request: (
     method: string,
-    params?: Record<string, unknown>,
+    params: Record<string, unknown>,
     timeoutMs?: number,
     signal?: AbortSignal
-  ) =>
+  ) => Promise<unknown>
+}): <R>(method: string, params?: Record<string, unknown>, timeoutMs?: number, signal?: AbortSignal) => Promise<R> {
+  return <R>(method: string, params?: Record<string, unknown>, timeoutMs?: number, signal?: AbortSignal) =>
     (timeoutMs === undefined && signal === undefined
       ? gateway.request(method, params ?? {})
       : gateway.request(method, params ?? {}, timeoutMs, signal)) as Promise<R>

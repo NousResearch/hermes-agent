@@ -8,7 +8,7 @@ import {
   tailBoundedRemend
 } from '@assistant-ui/react-streamdown'
 import type { code as streamdownCode } from '@streamdown/code'
-import { type ComponentProps, memo, type ReactNode, useEffect, useMemo, useState } from 'react'
+import { type ComponentProps, isValidElement, memo, type ReactNode, useEffect, useMemo, useState } from 'react'
 
 import { ExpandableBlock } from '@/components/chat/expandable-block'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
@@ -249,13 +249,29 @@ function MediaPlaybackAttachment({ path }: { path: string }) {
   )
 }
 
+// Authored labels can be formatted markdown — an inline-code label like
+// [`v1.0.1`](url) arrives as a <code> element, not a plain string. Extract
+// the text so MarkdownLink can pass it as `fallbackLabel`; dropping it sent
+// the link down the title-fetch / URL-slug fallback path instead (#121321).
 function childrenToText(children: unknown): string {
-  if (typeof children === 'string' || typeof children === 'number') {
-    return String(children).trim()
+  return flattenChildrenToText(children).trim()
+}
+
+function flattenChildrenToText(node: unknown): string {
+  if (node === null || node === undefined || typeof node === 'boolean') {
+    return ''
   }
 
-  if (Array.isArray(children) && children.every(c => typeof c === 'string' || typeof c === 'number')) {
-    return children.join('').trim()
+  if (typeof node === 'string' || typeof node === 'number') {
+    return String(node)
+  }
+
+  if (Array.isArray(node)) {
+    return node.map(flattenChildrenToText).join('')
+  }
+
+  if (isValidElement<{ children?: unknown }>(node)) {
+    return flattenChildrenToText(node.props.children)
   }
 
   return ''
@@ -345,7 +361,14 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
     }
   }
 
-  const fallbackLabel = text && normalizeExternalUrl(text) !== target ? text : undefined
+  // Always pass the link's own text as the fallback label so a bare URL stays
+  // fully visible (#121007): previously this was `undefined` when the child
+  // text matched the target URL (the bare-autolink case), so PrettyLink fell
+  // through to urlSlugTitleLabel — a host-only label like `ncpssd.org` with
+  // the address readable only via hover/inspect. The full URL is the label the
+  // sender actually wrote into the chat. Labeled links are unchanged: their
+  // authored label already wins display by design.
+  const fallbackLabel = text || undefined
 
   return (
     <PrettyLink className={cn('wrap-anywhere', className)} fallbackLabel={fallbackLabel} href={target} {...props} />

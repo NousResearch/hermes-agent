@@ -47,6 +47,52 @@ def test_breakdown_includes_major_categories():
     assert data["context_max"] == 200_000
     assert data["estimated_total"] > 0
 
+def test_context_used_never_exceeds_model_window():
+    """Regression for #109760: anchor + appended-delta estimate can overshoot the window
+    (355.8k / 262.1k); one prompt can never be larger than the model's context."""
+    from agent.context_breakdown import context_usage_fields
+    from agent.usage_anchor import capture_usage_anchor
+
+    history = [{"role": "user", "content": "start"}, {"role": "assistant", "content": "ok"}]
+    agent, parts = _make_agent(context_length=262_144)
+    agent._turn_base_usage_anchor = capture_usage_anchor(250_000, 1_000, history)
+    history = history + [{"role": "user", "content": "x" * 800_000}]
+
+    with patch("agent.system_prompt.build_system_prompt_parts", return_value=parts):
+        data = compute_session_context_breakdown(agent, history)
+
+    assert data["context_source"] == "provider_usage_plus_estimate"
+    assert data["context_used"] <= data["context_max"]
+    assert data["context_percent"] == 100
+
+    seeded = context_usage_fields(MagicMock(context_length=262_144, last_prompt_tokens=400_000,
+                                            last_real_prompt_tokens=150_000))
+    assert seeded["context_used"] <= seeded["context_max"]
+
+def test_empty_transcript_still_reports_the_conversation_category():
+    """Zero conversation tokens is a measurement, not an absence (#87903).
+
+    A fresh session (or one whose first turn never completed) estimates the
+    conversation at zero. Dropping the row there made "the transcript is empty"
+    render identically to "the breakdown never measured it" — the Desktop
+    Context usage panel hid Conversation until a turn completed. Structurally
+    absent categories (mcp/memory/skills with nothing configured) stay dropped.
+    """
+    agent, parts = _make_agent(
+        tools=[{"type": "function", "function": {"name": "terminal", "description": "run"}}]
+    )
+    history = []  # nothing said yet
+
+    with patch("agent.system_prompt.build_system_prompt_parts", return_value=parts):
+        data = compute_session_context_breakdown(agent, history)
+
+    categories = {item["id"]: item["tokens"] for item in data["categories"]}
+    assert categories["conversation"] == 0
+    # Optional surfaces with nothing configured are still omitted at zero —
+    # "not configured" is exactly what their absence communicates.
+    assert "mcp" not in categories
+    assert "skills" not in categories
+
 # ── /context renderers (pure functions over the payload) ────────────────────
 
 from agent.context_breakdown import (  # noqa: E402

@@ -761,7 +761,11 @@ export const ru = defineLocale({
       reactionsTitle: 'Реакции на сообщения',
       reactionsDesc: 'Эмодзи-тапбеки в стиле iMessage — реагируйте на сообщения, и Hermes сможет реагировать на ваши.',
       composerPopoutTitle: 'Плавающий композер',
-      composerPopoutDesc: 'Позволяет вытягивать композер из его док-зоны. Отключите, чтобы он был закреплён снизу.',
+      composerPopoutDesc:
+        'Позволяет вытягивать композер из его док-зоны. Когда выключено, он остаётся закреплённым внизу.',
+      fileBrowserTitle: 'Файловый браузер',
+      fileBrowserDesc:
+        'Показывает файловый браузер рядом с чатом, когда открыто рабочее пространство. Кнопка в заголовке окна меняет эту настройку.',
       embedsTitle: 'Встроенные превью',
       embedsDesc:
         'Богатые превью загружаются со сторонних сайтов (YouTube, X, …). «Спрашивать» показывает заглушку, пока вы не разрешите каждый источник; «Всегда» загружает их автоматически; «Выкл» оставляет обычные ссылки.',
@@ -2374,6 +2378,8 @@ export const ru = defineLocale({
     skillsLabel: 'Навыки',
     notSet: 'Не задано',
     soulDesc: 'Системный промпт и инструкции по персоне, встроенные в этот профиль.',
+    soulMissing:
+      'В этом профиле ещё нет файла SOUL.md. Введите инструкции ниже и сохраните, чтобы создать его. Настройки персонажей в config.yaml управляются отдельно.',
     soulOptional: 'необязательно',
     soulPlaceholder: mode =>
       `Системный промпт / персона этого профиля.\nОставьте пустым, чтобы сохранить ${mode} по умолчанию.`,
@@ -2526,6 +2532,8 @@ export const ru = defineLocale({
     nameLabel: 'Имя',
     namePlaceholder: 'Утренний брифинг',
     promptLabel: 'Промпт',
+    scriptLabel: 'Скрипт',
+    scriptBadge: 'скрипт',
     promptPlaceholder: 'Суммируй мои непрочитанные треды Slack и пришли топ-5 на почту...',
     frequencyLabel: 'Частота',
     deliverLabel: 'Доставить в',
@@ -2998,6 +3006,9 @@ export const ru = defineLocale({
     queueStuckTitle: 'Сообщение из очереди не отправлено',
     queueStuckBody:
       'Ход из очереди несколько раз не удалось отправить. Он всё ещё в очереди — попробуйте отправить снова.',
+    queueDroppedTitle: 'Элемент очереди отброшен',
+    queueDroppedBody:
+      'Эта фоновая запись была отброшена: её сеанс не удалось возобновить после нескольких попыток. Остальная очередь не затронута.',
     previewUnavailable: 'Предпросмотр недоступен',
     previewLabel: label => `Предпросмотр ${label}`,
     couldNotPreview: label => `Не удалось предпросмотреть ${label}`,
@@ -3090,6 +3101,7 @@ export const ru = defineLocale({
     goalWaiting: 'Цель ожидает',
     subagents: count => `${count} ${RU_PLURAL(count, 'субагент', 'субагента', 'субагентов')}`,
     todos: (done, total) => `Задачи ${done}/${total}`,
+    previousTodos: (done, total) => `Прошлые задачи ${done}/${total}`,
     running: 'Выполняется',
     stop: 'Стоп',
     dismiss: 'Скрыть',
@@ -3178,7 +3190,8 @@ export const ru = defineLocale({
       copyFailure: 'Не удалось скопировать критерий в буфер обмена',
       continuationFailed: 'Не удалось отправить продолжение цели',
       continuationQueued: 'Цель возобновлена — продолжение поставлено в очередь до конца текущего хода',
-      continuationBusy: 'Цель возобновлена — сессия занята; сначала остановите текущий ответ (кнопка Stop или Esc), чтобы продолжить',
+      continuationBusy:
+        'Цель возобновлена — сессия занята; сначала остановите текущий ответ (кнопка Stop или Esc), чтобы продолжить',
       controlUnavailable: msg => `Управление сессией недоступно: ${msg}`,
       dismissError: 'Скрыть ошибку',
       add: 'Добавить'
@@ -3233,7 +3246,8 @@ export const ru = defineLocale({
   },
   updates: {
     discontinuedTitle: 'Эта сборка Hermes больше не поддерживается',
-    discontinuedBody: 'Эта сборка Hermes больше не поддерживается и может перестать работать — удалите её. Ваши данные останутся на диске.',
+    discontinuedBody:
+      'Эта сборка Hermes больше не поддерживается и может перестать работать — удалите её. Ваши данные останутся на диске.',
     channels: { stable: 'Стабильный', canary: 'Тестовый' },
     bundleSwapPending: 'Перезапустите, чтобы завершить обновление',
     bundleSwapPendingDesc:
@@ -3939,6 +3953,8 @@ export const ru = defineLocale({
       preparingAudio: 'Подготовка аудио...',
       stopReading: 'Остановить чтение',
       readAloud: 'Зачитать вслух',
+      copyFullResponse: 'Копировать весь ответ',
+      readAloudFullResponseHint: 'Shift+клик: прочитать весь ответ',
       editMessage: 'Изменить сообщение',
       expandMessage: 'Развернуть сообщение',
       scrollToBottom: 'Прокрутить вниз',
@@ -3984,7 +4000,9 @@ export const ru = defineLocale({
       questionProgress: (answered, total) => `Ответ дан на ${answered} из ${total}`,
       lateAnswer: (question, choice) => `Re: «${question}» — мой ответ: ${choice}`,
       lateAnswerTip: 'Составить этот ответ как продолжение',
-      lateAnswerHint: 'Этот промпт больше не ждёт. Выберите вариант, чтобы составить его как сообщение-продолжение.'
+      lateAnswerHint: 'Этот промпт больше не ждёт. Выберите вариант, чтобы составить его как сообщение-продолжение.',
+      notDelivered:
+        'Этот вопрос не дошёл до приложения, поэтому ответить здесь нельзя. Нажмите «Стоп», чтобы завершить ход, и ответьте в чате.'
     },
     catalogInstall: {
       preparing: 'Готовим установку…',

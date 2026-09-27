@@ -5,7 +5,7 @@ import {
   $backendThemes,
   $pendingSkinApply,
   __resetBackendSkinSync,
-  ingestBackendSkin,
+  ingestBackendSkin
 } from './backend-sync'
 
 const skin = (name: string) => ({

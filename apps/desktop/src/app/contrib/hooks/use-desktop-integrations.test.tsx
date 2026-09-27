@@ -310,12 +310,51 @@ describe('useDesktopIntegrations', () => {
     })
 
     it('keeps remembering a /branch child: source, not parenthood, is the discriminator', () => {
-      const sessions = [session({ id: 'branch-child', parent_session_id: 'parent-session', profile: 'default', source: 'tui' })]
+      const sessions = [
+        session({ id: 'branch-child', parent_session_id: 'parent-session', profile: 'default', source: 'tui' })
+      ]
 
       render({ locationPathname: '/branch-child', profileReady: true, routedSessionId: 'branch-child', sessions })
 
       expect(window.localStorage.getItem('hermes.desktop.lastSessionId.profile.default')).toBe('branch-child')
       expect(window.localStorage.getItem('hermes.desktop.lastRoute.profile.default')).toBe('/branch-child')
+    })
+  })
+
+  describe('resume-exhausted write barrier (#98467)', () => {
+    it('does not re-persist an exhausted session on a session-list refresh', () => {
+      window.localStorage.setItem('hermes.desktop.lastRoute.profile.default', '/exhausted-session')
+      window.localStorage.setItem('hermes.desktop.lastSessionId.profile.default', 'exhausted-session')
+
+      const sessions = [session({ id: 'exhausted-session', profile: 'default' })]
+
+      const result = render({ profileReady: true, sessions })
+
+      // The cleanup effect drops the remembered exhausted session...
+      result.rerender({
+        activeProfile: 'default',
+        locationPathname: '/exhausted-session',
+        profileReady: true,
+        resumeExhaustedSessionId: 'exhausted-session',
+        resumeLastSession: true,
+        routedSessionId: 'exhausted-session',
+        sessions
+      })
+
+      // ...and a routine session-list refresh (same sessions, ordinary re-render)
+      // must not write the dead id back into remembered navigation.
+      result.rerender({
+        activeProfile: 'default',
+        locationPathname: '/exhausted-session',
+        profileReady: true,
+        resumeExhaustedSessionId: 'exhausted-session',
+        resumeLastSession: true,
+        routedSessionId: 'exhausted-session',
+        sessions: [...sessions, session({ id: 'other-session', profile: 'default' })]
+      })
+
+      expect(window.localStorage.getItem('hermes.desktop.lastSessionId.profile.default')).toBeNull()
+      expect(window.localStorage.getItem('hermes.desktop.lastRoute.profile.default')).toBeNull()
     })
   })
 

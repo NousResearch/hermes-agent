@@ -347,11 +347,7 @@ describe('answerApproval', () => {
     rememberServerRequest({ fail: vi.fn(), id: 'srv-1', method: 'approval', params: {}, respond })
     const request = vi.fn()
 
-    await answerApproval(
-      { request } as never,
-      { requestId: 'r1', serverRequestId: 'srv-1', sessionId: 's1' },
-      'once'
-    )
+    await answerApproval({ request } as never, { requestId: 'r1', serverRequestId: 'srv-1', sessionId: 's1' }, 'once')
 
     expect(respond).toHaveBeenCalledWith({ choice: 'once' })
     expect(request).not.toHaveBeenCalled()

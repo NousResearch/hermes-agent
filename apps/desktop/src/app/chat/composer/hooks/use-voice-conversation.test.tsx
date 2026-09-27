@@ -79,11 +79,13 @@ interface HookProps {
   busy: boolean
 }
 
-function renderConversation(overrides: {
-  onInterrupt?: () => void
-  pendingResponse?: () => { id: string; pending: boolean; text: string } | null
-  transcript?: string
-} = {}) {
+function renderConversation(
+  overrides: {
+    onInterrupt?: () => void
+    pendingResponse?: () => { id: string; pending: boolean; text: string } | null
+    transcript?: string
+  } = {}
+) {
   const onInterrupt = overrides.onInterrupt ?? vi.fn()
 
   // Mirrors the real app: submitting a turn makes the agent busy.

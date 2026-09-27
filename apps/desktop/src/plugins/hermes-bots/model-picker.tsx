@@ -129,7 +129,16 @@ export function ModelPicker({ bot = null, value, onChange, placeholderModel }: M
   const CUSTOM = '__custom__'
   const providers = (data?.providers || []).filter(p => p && p.slug)
   const isKnown = !value.provider || value.provider === NONE || providers.some(p => p.slug === value.provider)
-  const [useFreeText, setUseFreeText] = useState(!isKnown)
+  // The manual-entry latch is the USER's choice only. Seeding it from
+  // `isKnown` froze whatever the catalog state was at first paint: on the
+  // first open the async read had not resolved yet, so a configured provider
+  // read as unknown and the picker latched into free text — the dropdown
+  // only appeared on the second open, from the cached catalog. `null` means
+  // "no user choice yet": derive from the LIVE catalog, so a provider the
+  // loaded inventory knows flips to the dropdowns when data arrives, while
+  // one it does not know still gets the free-text form.
+  const [manualEntry, setManualEntry] = useState<boolean | null>(null)
+  const useFreeText = manualEntry ?? !isKnown
 
   if (isLoading) {
     return (
@@ -202,7 +211,7 @@ export function ModelPicker({ bot = null, value, onChange, placeholderModel }: M
         </div>
         <Button
           className="h-6 self-start text-xs text-(--ui-text-tertiary)"
-          onClick={() => setUseFreeText(false)}
+          onClick={() => setManualEntry(false)}
           size="sm"
           variant="ghost"
         >
@@ -230,7 +239,7 @@ export function ModelPicker({ bot = null, value, onChange, placeholderModel }: M
                 model: ''
               })
             } else if (v === CUSTOM) {
-              setUseFreeText(true)
+              setManualEntry(true)
             } else {
               const prov = providers.find(p => p.slug === v)
               const provModels = (prov?.models || []).map(m => (typeof m === 'string' ? m : m.id || m.name || ''))

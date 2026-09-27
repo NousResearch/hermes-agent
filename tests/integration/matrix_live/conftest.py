@@ -7,6 +7,7 @@ import os
 import subprocess
 import time
 import urllib.request
+import uuid
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,7 +17,8 @@ import pytest
 from docker import errors as docker_errors
 from nio import AsyncClient, LoginResponse, RegisterResponse, RoomCreateResponse
 from testcontainers.core import testcontainers_config
-from testcontainers.core.container import DockerContainer
+from testcontainers.core.container import DockerContainer, Reaper
+from testcontainers.core.labels import LABEL_SESSION_ID, SESSION_ID
 from testcontainers.core.network import Network
 
 from tests.fakes.fake_llm_provider import FakeLLMServer, Text, write_hermes_home
@@ -24,6 +26,7 @@ from tests.fakes.fake_llm_provider import FakeLLMServer, Text, write_hermes_home
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SYNAPSE_IMAGE = "matrixdotorg/synapse:v1.158.0@sha256:5f868df1f5772907c6dbe973a9b69ab530a5d6bb317c011a3788f7ad78eb1292"
+RYUK_IMAGE = "testcontainers/ryuk:0.8.1@sha256:bf3f74a47dee0acda89aba4b2fc9c7fdcf994a084db02a2d06566f07baae022e"
 
 
 @dataclass(frozen=True)
@@ -79,7 +82,8 @@ def docker_engine(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
     (docker_config / "config.json").write_text("{}", encoding="utf-8")
     previous_config = os.environ.get("DOCKER_CONFIG")
     os.environ["DOCKER_CONFIG"] = str(docker_config)
-    testcontainers_config.ryuk_disabled = True
+    testcontainers_config.ryuk_disabled = False
+    testcontainers_config.ryuk_image = RYUK_IMAGE
     client = None
     try:
         client = docker.from_env()
@@ -124,35 +128,49 @@ def gateway_image(docker_engine: None) -> Iterator[str]:
 
 
 @pytest.fixture
-def synapse(tmp_path: Path, docker_engine: None) -> Iterator[tuple[DockerContainer, str, Network]]:
-    data = tmp_path / "synapse"
-    data.mkdir()
+def synapse(docker_engine: None) -> Iterator[tuple[DockerContainer, str, Network]]:
+    # Start Ryuk before creating the volume so a killed worker cannot leave it behind.
+    Reaper.get_instance()
+    client = docker.from_env()
+    volume = client.volumes.create(
+        name=f"hermes-matrix-live-{uuid.uuid4().hex}",
+        labels={LABEL_SESSION_ID: SESSION_ID},
+    )
+    try:
+        with DockerContainer(SYNAPSE_IMAGE, command="generate").with_env(
+            "SYNAPSE_SERVER_NAME", "matrix.test"
+        ).with_env("SYNAPSE_REPORT_STATS", "no").with_volume_mapping(volume.name, "/data", "rw") as generator:
+            exit_state = generator.get_wrapped_container().wait(timeout=90)
+            assert exit_state["StatusCode"] == 0, generator.get_wrapped_container().logs().decode(errors="replace")
 
-    with DockerContainer(SYNAPSE_IMAGE, command="generate").with_env(
-        "SYNAPSE_SERVER_NAME", "matrix.test"
-    ).with_env("SYNAPSE_REPORT_STATS", "no").with_volume_mapping(data, "/data", "rw") as generator:
-        exit_state = generator.get_wrapped_container().wait(timeout=90)
-        assert exit_state["StatusCode"] == 0, generator.get_wrapped_container().logs().decode(errors="replace")
+        with DockerContainer(
+            SYNAPSE_IMAGE,
+            entrypoint="/bin/sh",
+        ).with_command([
+            "-c",
+            "printf '\\nenable_registration: true\\nenable_registration_without_verification: true\\n' >> /data/homeserver.yaml",
+        ]).with_volume_mapping(volume.name, "/data", "rw") as configure:
+            exit_state = configure.get_wrapped_container().wait(timeout=30)
+            assert exit_state["StatusCode"] == 0, configure.get_wrapped_container().logs().decode(errors="replace")
 
-    config = data / "homeserver.yaml"
-    with config.open("a", encoding="utf-8") as stream:
-        stream.write("\nenable_registration: true\nenable_registration_without_verification: true\n")
+        with Network() as network:
+            with DockerContainer(SYNAPSE_IMAGE, network=network, network_aliases=["synapse"]).with_volume_mapping(
+                volume.name, "/data", "rw"
+            ).with_exposed_ports(8008) as container:
+                url = f"http://{container.get_container_host_ip()}:{container.get_exposed_port(8008)}"
 
-    with Network() as network:
-        with DockerContainer(SYNAPSE_IMAGE, network=network, network_aliases=["synapse"]).with_volume_mapping(
-            data, "/data", "rw"
-        ).with_exposed_ports(8008) as container:
-            url = f"http://{container.get_container_host_ip()}:{container.get_exposed_port(8008)}"
+                def ready() -> bool:
+                    try:
+                        with urllib.request.urlopen(f"{url}/_matrix/client/versions", timeout=2) as response:
+                            return response.status == 200
+                    except OSError:
+                        return False
 
-            def ready() -> bool:
-                try:
-                    with urllib.request.urlopen(f"{url}/_matrix/client/versions", timeout=2) as response:
-                        return response.status == 200
-                except OSError:
-                    return False
-
-            _wait_for(ready, "Synapse client API", timeout=120)
-            yield container, url, network
+                _wait_for(ready, "Synapse client API", timeout=120)
+                yield container, url, network
+    finally:
+        volume.remove(force=True)
+        client.close()
 
 
 async def _register(url: str, localpart: str) -> MatrixAccount:

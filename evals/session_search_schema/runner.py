@@ -177,8 +177,7 @@ def run_one(client, model, arm_name, arm_mod, task_id, prompt, oracle,
                 out, was_err = exec_tool(arm_mod, args, main_db_path)
             if was_err:
                 bad_calls += 1
-            if len(out) > 30000:
-                out = elide(out, 30000)
+            out = elide(out, 30000)
             messages.append(
                 {"role": "tool", "tool_call_id": tc.id, "content": out})
     return {

@@ -126,8 +126,7 @@ class TestDumpSubagentTimeoutDiagnostic:
             worker_thread=None,
             goal="g" * 1200,
         )
-        child.interrupt()
-        text = Path(path).read_text(encoding="utf-8-sig")
+        text = Path(path).read_text(encoding="utf-8")
         assert _COMPRESSION_MARKER_RE.search(text)
         assert "g" * 100 in text
         assert "...[truncated]" not in text

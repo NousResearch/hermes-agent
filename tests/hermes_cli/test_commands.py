@@ -209,7 +209,7 @@ class TestSlackNativeSlashes:
 
         This catches the old behavior where Slack users couldn't invoke
         commands like /btw natively. If a future command surfaces on
-        Telegram but not Slack (because of Slack's 50-slash cap), this
+        Telegram but not Slack (because of Slack's 25-slash cap), this
         test fails loudly so we can curate the list rather than silently
         dropping parity.
 
@@ -227,7 +227,7 @@ class TestSlackNativeSlashes:
         tg_norm = {_norm(n) for n in tg_names}
         reserved_norm = {_norm(n) for n in _SLACK_RESERVED_COMMANDS}
         # Commands deliberately routed through /hermes <command> on Slack only
-        # (Slack's 50-slash cap) are expected to be absent from native slashes.
+        # (Slack's 25-slash cap) are expected to be absent from native slashes.
         via_hermes_norm = {_norm(n) for n in _SLACK_VIA_HERMES_ONLY}
         missing = (tg_norm - slack_norm) - reserved_norm - via_hermes_norm
         assert not missing, (
@@ -248,6 +248,14 @@ class TestSlackAppManifest:
             # should_escape must be present (Slack defaults to True which
             # HTML-escapes args — we want the raw text)
             assert "should_escape" in entry
+
+
+    def test_manifest_never_exceeds_slacks_25_command_ceiling(self):
+        """Slack rejects a manifest whose app would hold more than 25 slash
+        commands outright ("Too many commands. Each app can have up to 25
+        commands associated with it."), so the generator must never emit one."""
+        m = slack_app_manifest()
+        assert len(m["features"]["slash_commands"]) <= 25
 
 
 

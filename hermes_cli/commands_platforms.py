@@ -366,9 +366,10 @@ def discord_skill_commands_by_category(
 # --- Slack native slash commands --------------------------------------------
 
 # Slack slash names: lowercase a-z, 0-9, hyphens, underscores, max 32 chars; an app manifest
-# accepts up to 50 slash commands. Reserved = Slack built-ins apps cannot register
+# accepts up to 25 slash commands (apps grandfathered above that cannot add more). Reserved =
+# Slack built-ins apps cannot register
 # (https://slack.com/help/articles/201259356-Use-built-in-slash-commands).
-_SLACK_MAX_SLASH_COMMANDS = 50
+_SLACK_MAX_SLASH_COMMANDS = 25
 _SLACK_NAME_LIMIT = 32
 _SLACK_INVALID_CHARS = re.compile(r"[^a-z0-9_\-]")
 _SLACK_RESERVED_COMMANDS = frozenset({
@@ -376,14 +377,19 @@ _SLACK_RESERVED_COMMANDS = frozenset({
     "leave", "join", "open", "search", "topic", "mute", "pro", "shortcuts"})
 
 # Canonical commands deliberately routed through ``/hermes <command>`` on Slack only: the registry
-# sits at Slack's 50-slash cap, so rather than let the clamp silently drop whichever command sorts
-# last (breaking the Telegram-parity test), low-frequency ones are demoted here. Rule: when a new
-# canonical command tips past the cap, demote a rarer one-off lookup (version, whoami, diff, ...)
+# far exceeds Slack's 25-slash cap, so rather than let the clamp silently drop whichever command
+# sorts last (breaking the Telegram-parity test), everything except the ~24 most-used recurring
+# surfaces is demoted here. Rule: when a new canonical command should get a native slot, demote a
+# rarer one-off lookup (version, whoami, diff, ...) or config toggle (yolo, fast, footer, ...)
 # rather than a recurring interactive surface (context, loop, save, approvals). Keep TIGHT — the
 # parity test reads this set. Aliases are never pinned ahead of canonicals.
 _SLACK_VIA_HERMES_ONLY = frozenset({
     "topup", "moa", "debug", "egress", "init", "version", "diff", "update", "heartbeat",
-    "refine", "review", "pause", "whoami", "platform", "insights", "login"})
+    "refine", "review", "pause", "whoami", "platform", "insights", "login",
+    "title", "compress", "rollback", "subgoal", "profile", "sethome", "codex-runtime",
+    "personality", "footer", "yolo", "reasoning", "fast", "voice", "busy", "bundles", "learn",
+    "suggestions", "blueprint", "curator", "reload-mcp", "reload-skills", "commands", "help",
+    "restart", "usage"})
 
 
 def _sanitize_slack_name(raw: str) -> str:
@@ -393,14 +399,14 @@ def _sanitize_slack_name(raw: str) -> str:
 
 def slack_native_slashes() -> list[tuple[str, str, str]]:
     """(slash_name, description, usage_hint) triples for Slack: every gateway-available command
-    (canonical names first so they win slots at the cap, then aliases, then plugins) becomes a
-    standalone slash, deduped and clamped to the 50-command cap; Slack built-ins and
+    (canonical names first so they win slots at the cap, then plugins, then aliases) becomes a
+    standalone slash, deduped and clamped to the 25-command cap; Slack built-ins and
     _SLACK_VIA_HERMES_ONLY are skipped. ``/hermes`` is always first for anything dropped."""
     available = _gateway_available_commands()
     wanted = [(cmd.name, cmd.describe(), cmd.args_hint or "") for cmd in available]
+    wanted += [(name, desc, hint or "") for name, desc, hint in _iter_plugin_command_entries()]
     wanted += [(alias, t("slash.shared.slack_alias_for", name=cmd.name, description=cmd.describe()),
                 cmd.args_hint or "") for cmd in available for alias in cmd.aliases]
-    wanted += [(name, desc, hint or "") for name, desc, hint in _iter_plugin_command_entries()]
 
     entries: list[tuple[str, str, str]] = [
         ("hermes", t("slash.hermes.description"), "[subcommand] [args]")]

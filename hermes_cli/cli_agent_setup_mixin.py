@@ -539,7 +539,8 @@ class CLIAgentSetupMixin:
         from hermes_cli.models import resolve_fast_mode_overrides
         runtime = _current_runtime(self)
         route = {"model": self.model, "runtime": runtime, "signature": _route_signature(self.model, runtime)}
-        if not getattr(self, "_skip_turn_routing", False):
+        from tools.process_registry_notifications import TimelineNotification
+        if not getattr(self, "_skip_turn_routing", False) and not isinstance(user_message, TimelineNotification):
             try:
                 from hermes_cli.middleware import apply_turn_route_middleware, public_turn_route
                 result = apply_turn_route_middleware(
@@ -569,7 +570,16 @@ class CLIAgentSetupMixin:
                         selected_provider = selected_provider.strip()
                         if selected_provider != current_requested or selected_model != self.model:
                             from hermes_cli.runtime_provider import resolve_runtime_provider
-                            resolved = resolve_runtime_provider(requested=selected_provider, target_model=selected_model)
+                            resolver_kwargs = {"requested": selected_provider, "target_model": selected_model}
+                            if selected_provider == current_requested and (
+                                getattr(self, "_explicit_api_key", None) or getattr(self, "_explicit_base_url", None)
+                            ):
+                                # Model-only routing must retain invocation-level credential authority.
+                                resolver_kwargs.update(
+                                    explicit_api_key=getattr(self, "_explicit_api_key", None),
+                                    explicit_base_url=getattr(self, "_explicit_base_url", None),
+                                )
+                            resolved = resolve_runtime_provider(**resolver_kwargs)
                             runtime = {
                                 "api_key": resolved.get("api_key"), "base_url": resolved.get("base_url"),
                                 "provider": resolved.get("provider", selected_provider),

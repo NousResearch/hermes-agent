@@ -1,6 +1,9 @@
 """Turn-route choices must select the matching warm CLI agent."""
 
 from contextlib import nullcontext
+from pathlib import Path
+import queue
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -73,8 +76,8 @@ def routed_chat():
     # Keep chat() and _init_agent() real through route comparison and agent
     # construction. Stub only the unrelated turn execution/rendering work.
     shell._sync_fallback_chain_with_config = lambda _agent: None
-    shell._chat_route_images = lambda message, _images: message
-    shell._chat_expand_context_references = lambda message: (message, None)
+    shell._chat_route_images = lambda message, _images, **_kwargs: message
+    shell._chat_expand_context_references = lambda message, **_kwargs: (message, None)
     shell._chat_stage_user_message = lambda _agent, _message: None
     shell._reset_stream_state = lambda: None
     shell._chat_setup_turn_audio = lambda *_args: None
@@ -101,7 +104,7 @@ def routed_chat():
         patch("hermes_cli.plugins._delivery_manager", lambda: manager),
         patch(
             "hermes_cli.runtime_provider.resolve_runtime_provider",
-            lambda *, requested, target_model: {
+            lambda *, requested, target_model, **_kwargs: {
                 "api_key": credential["api_key"],
                 "base_url": "https://provider-b.example/v1",
                 "provider": requested,
@@ -195,7 +198,7 @@ def test_same_provider_model_change_resolves_selected_model_wire(routed_chat, mo
     monkeypatch.setattr("hermes_cli.plugins._delivery_manager", lambda: manager)
     monkeypatch.setattr(
         "hermes_cli.runtime_provider.resolve_runtime_provider",
-        lambda *, requested, target_model: {
+        lambda *, requested, target_model, **_kwargs: {
             "api_key": "zen-key",
             "base_url": (
                 "https://opencode.ai/zen"
@@ -262,3 +265,143 @@ def test_explicit_cli_reasoning_stays_authoritative_across_turn_route(routed_cha
     assert shell.chat("route to beta") == "beta"
     assert shell.agent.reasoning_config == explicit
 
+
+@pytest.mark.parametrize("explicit_key,explicit_url", [
+    ("pinned-key", None),
+    (None, "https://pinned.example/v1"),
+    ("pinned-key", "https://pinned.example/v1"),
+])
+def test_model_only_route_preserves_explicit_cli_runtime(routed_chat, monkeypatch, explicit_key, explicit_url):
+    shell, selected, _credential, _agents, _turn_agents = routed_chat
+    shell._explicit_api_key = explicit_key
+    shell._explicit_base_url = explicit_url
+    selected.update(model="beta")
+    calls = []
+
+    def resolve(*, requested, target_model, explicit_api_key=None, explicit_base_url=None):
+        calls.append((requested, target_model, explicit_api_key, explicit_base_url))
+        return {
+            "provider": requested, "requested_provider": requested,
+            "api_key": explicit_api_key or "ambient-key",
+            "base_url": explicit_base_url or "https://ambient.example/v1",
+            "api_mode": "chat_completions",
+        }
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", resolve)
+    assert shell.chat("select beta") == "beta"
+    assert shell.agent.api_key == (explicit_key or "ambient-key")
+    assert shell.agent.base_url == (explicit_url or "https://ambient.example/v1")
+    assert calls[-1] == ("provider-a", "beta", explicit_key, explicit_url)
+
+    selected.update(model="gamma", provider="provider-b")
+    assert shell.chat("switch provider") == "gamma"
+    assert shell.agent.api_key == "ambient-key"
+    assert shell.agent.base_url == "https://ambient.example/v1"
+    assert calls[-1] == ("provider-b", "gamma", None, None)
+
+
+def test_internal_process_completion_bypasses_cli_router_through_queue_and_chat(routed_chat, monkeypatch):
+    from tools.process_registry_notifications import format_process_notification
+
+    shell, _selected, _credential, _agents, _turn_agents = routed_chat
+    shell.session_id = "durable-session"
+    shell._pending_input = queue.Queue()
+    shell._pending_resume_sessions = []
+    shell._typed_voice_stop = lambda _message: False
+    shell.handle_bang_shell = lambda _message: False
+    shell._turn_summary_begin = lambda: None
+    shell._tui_after_turn = lambda: None
+    shell._print_user_message_preview = lambda _message: None
+    shell._app = SimpleNamespace(invalidate=lambda: None)
+    event = {"type": "completion", "session_id": "process-1", "session_key": shell.session_id,
+             "command": "test", "exit_code": 0, "completion_reason": "exited", "output": "done"}
+    registry = SimpleNamespace(
+        drain_notifications=lambda **_kwargs: [(event, format_process_notification(event))],
+        is_completion_consumed=lambda _session_id: False,
+    )
+    monkeypatch.setattr("tools.process_registry.process_registry", registry)
+    monkeypatch.setattr("tools.async_delegation.claim_event_delivery", lambda *_args: "claimed")
+    monkeypatch.setattr("tools.async_delegation.complete_event_delivery", lambda *_args: None)
+    seen = []
+
+    def apply(route, **context):
+        seen.append(context)
+        return SimpleNamespace(changed=False, payload=route, trace=[])
+
+    monkeypatch.setattr("hermes_cli.middleware.apply_turn_route_middleware", apply)
+    shell._drain_process_notifications("cli-idle")
+    shell._tui_process_one_input(shell._pending_input.get_nowait())
+    assert seen == []
+    shell._tui_process_one_input("ordinary user input")
+    assert len(seen) == 1
+    assert seen[0]["is_user_turn"] is True
+    assert seen[0]["internal"] is False
+
+
+@pytest.mark.parametrize("vision_model", ["alpha", "beta"])
+def test_chat_prepares_images_for_realized_turn_route(routed_chat, monkeypatch, vision_model):
+    shell, selected, _credential, _agents, _turn_agents = routed_chat
+    del shell._chat_route_images  # Exercise the production image preparation method.
+    staged = []
+    shell._chat_stage_user_message = lambda _agent, message: staged.append(message)
+    decisions = []
+
+    def decide(provider, model, _config, *, requested_provider):
+        decisions.append((provider, model, requested_provider))
+        return "native" if model == vision_model else "text"
+
+    monkeypatch.setattr("agent.image_routing.decide_image_input_mode", decide)
+    monkeypatch.setattr("agent.image_routing.build_native_content_parts",
+                        lambda text, _paths: ([{"type": "text", "text": text},
+                                               {"type": "image_url", "image_url": {"url": "data:image/png;base64,test"}}], []))
+    shell._preprocess_images_with_vision = lambda text, _images: f"described: {text}"
+    selected.update(model="beta", provider="provider-b")
+    assert shell.chat("inspect", images=[Path("image.png")]) == "beta"
+    if vision_model == "beta":
+        assert isinstance(staged[-1], list)
+    else:
+        assert staged[-1] == "described: inspect"
+    assert decisions[-1] == ("provider-b", "beta", "provider-b")
+
+    selected.update(model="alpha", provider="provider-a")
+    assert shell.chat("inspect again", images=[Path("image.png")]) == "alpha"
+    if vision_model == "alpha":
+        assert isinstance(staged[-1], list)
+    else:
+        assert staged[-1] == "described: inspect again"
+    assert decisions[-1] == ("provider-a", "alpha", "provider-a")
+
+
+@pytest.mark.parametrize("routed_budget", [50, 200])
+def test_chat_budgets_context_for_realized_turn_route(routed_chat, monkeypatch, routed_budget):
+    shell, selected, _credential, _agents, _turn_agents = routed_chat
+    del shell._chat_expand_context_references  # Exercise the production context preparation method.
+    metadata = []
+    budgets = []
+
+    def context_length(model, **kwargs):
+        metadata.append((model, kwargs))
+        return routed_budget if model == "beta" else 100
+
+    def expand(message, *, cwd, context_length):
+        budgets.append(context_length)
+        return SimpleNamespace(expanded=True, blocked=False, references=[], injected_tokens=1,
+                               warnings=[], message=f"expanded: {message}")
+
+    monkeypatch.setattr("agent.model_metadata.get_model_context_length", context_length)
+    monkeypatch.setattr("agent.context_references.preprocess_context_references", expand)
+    selected.update(model="beta", provider="provider-b")
+    assert shell.chat("inspect @file:a") == "beta"
+    assert metadata[-1][0] == "beta"
+    assert metadata[-1][1]["provider"] == "provider-b"
+    assert metadata[-1][1]["base_url"] == "https://provider-b.example/v1"
+    assert metadata[-1][1]["api_key"] == "key-b"
+    assert budgets[-1] == routed_budget
+
+    selected.update(model="alpha", provider="provider-a")
+    assert shell.chat("inspect @file:b") == "alpha"
+    assert metadata[-1][0] == "alpha"
+    assert metadata[-1][1]["provider"] == "provider-a"
+    assert metadata[-1][1]["base_url"] == "https://provider-a.example/v1"
+    assert metadata[-1][1]["api_key"] == "key-a"
+    assert budgets[-1] == 100

@@ -32,6 +32,7 @@ class _RuntimeCLI(CLIAgentSetupMixin):
         self._explicit_base_url = None
         self._credential_pool = None
         self.service_tier = None
+        self.reasoning_config = None
 
     def _normalize_model_for_provider(self, _provider: str) -> bool:
         return False

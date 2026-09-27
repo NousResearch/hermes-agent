@@ -18,10 +18,9 @@ _INERT_HEREDOC_CONSUMER_RE = re.compile(
     r"(?:python(?:3(?:\.\d+)*)?|osascript|cat)(?=\s|$)",
     re.IGNORECASE)
 
-_DATA_HEREDOC_CONSUMER_RE = re.compile(
-    r"^\s*(?:[A-Z_][A-Z0-9_]*=\S+\s+)*(?:env\s+)?(?:[A-Za-z0-9_./-]+/)?"
-    r"(?:cat|tee)(?=\s|$)",
-    re.IGNORECASE)
+# Do not infer a data sink from an arbitrary executable basename or an
+# environment override (e.g. ./cat or PATH=./bin cat may execute stdin).
+_DATA_HEREDOC_CONSUMER_RE = re.compile(r"^[ \t]*(?:cat|tee)(?=[ \t]|$)")
 
 
 def _span_end(command: str, cursor: int, closer: str) -> int:

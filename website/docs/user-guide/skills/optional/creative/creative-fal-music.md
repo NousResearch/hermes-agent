@@ -21,7 +21,7 @@ Generate music and sound effects via fal.ai hosted models.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `music`, `audio`, `sound-effects`, `fal`, `elevenlabs`, `minimax`, `lyria`, `stable-audio`, `ace-step`, `generation` |
-| Related skills | [`songwriting-and-ai-music`](/docs/user-guide/skills/bundled/creative/creative-songwriting-and-ai-music), [`heartmula`](/docs/user-guide/skills/optional/creative/creative-heartmula), [`audiocraft-audio-generation`](/docs/user-guide/skills/optional/creative/creative-audiocraft-audio-generation) |
+| Related skills | [`songwriting-and-ai-music`](../../bundled/creative/creative-songwriting-and-ai-music.md), [`heartmula`](../../optional/creative/creative-heartmula.md), [`audiocraft-audio-generation`](../../optional/creative/creative-audiocraft-audio-generation.md) |
 
 ## Reference: full SKILL.md
 
@@ -79,8 +79,9 @@ API; the rest bill per fal's dashboard rate card.
    python -c "import fal_client" 2>/dev/null || pip install fal-client==0.13.1
    test -n "$FAL_KEY" || echo "FAL_KEY missing — https://fal.ai/dashboard/keys"
    ```
-   Hermes sessions load `~/.hermes/.env`, so a `FAL_KEY=` line there is enough;
-   a plain shell needs `set -a; . ~/.hermes/.env; set +a` first.
+   Hermes sessions already export the `FAL_KEY` saved during setup (`hermes setup`
+   or `hermes config set`), so the `terminal` tool sees it without extra steps; a
+   plain shell outside Hermes needs `export FAL_KEY=...` first.
 3. Turn the request into a style prompt. Genre, mood, tempo/BPM, instrumentation,
    vocal type, era, and "instrumental" when no vocals are wanted. The
    `songwriting-and-ai-music` skill's craft (structure tags, style painting)

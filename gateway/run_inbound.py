@@ -1116,15 +1116,17 @@ class GatewayInboundMixin:
                     # so session_key is derived from source. Sync handlers run on the gateway pool
                     # (contextvars carried), never the loop thread: blocking I/O there starves the
                     # liveness watchdog and the process exits 75 mid-handler (#105279).
+                    # Commands and turn-route middleware share this durable route/control identity.
+                    # The physical session id remains diagnostic and may rotate after compaction.
                     _plugin_context = build_session_context(source, self.config)
-                    quick_key = self._session_key_for_source(source)
-                    _plugin_context.session_key = quick_key
+                    durable_session_key = self._session_key_for_source(source)
+                    _plugin_context.session_key = durable_session_key
                     physical_session_id = None
                     session_store = getattr(self, "session_store", None)
                     peek_session_id = getattr(session_store, "peek_session_id", None)
                     if callable(peek_session_id):
                         with suppress(Exception):
-                            physical_session_id = peek_session_id(quick_key)
+                            physical_session_id = peek_session_id(durable_session_key)
                     user_args = event.get_command_args().strip()
                     with self._session_env_scope(_plugin_context):
                         if asyncio.iscoroutinefunction(plugin_handler):
@@ -1132,7 +1134,7 @@ class GatewayInboundMixin:
                                 plugin_handler,
                                 user_args,
                                 session_id=physical_session_id,
-                                session_key=quick_key,
+                                session_key=durable_session_key,
                                 platform=source.platform.value if source.platform else None,
                             )
                         else:
@@ -1141,7 +1143,7 @@ class GatewayInboundMixin:
                                     plugin_handler,
                                     user_args,
                                     session_id=physical_session_id,
-                                    session_key=quick_key,
+                                    session_key=durable_session_key,
                                     platform=source.platform.value if source.platform else None,
                                 )
                             )

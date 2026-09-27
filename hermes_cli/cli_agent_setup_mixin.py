@@ -543,11 +543,15 @@ class CLIAgentSetupMixin:
         if not getattr(self, "_skip_turn_routing", False) and not isinstance(user_message, TimelineNotification):
             try:
                 from hermes_cli.middleware import apply_turn_route_middleware, public_turn_route
+                cli_session_id = getattr(self, "session_id", None)
                 result = apply_turn_route_middleware(
                     public_turn_route(route["model"], runtime),
                     user_message=user_message,
-                    session_id=getattr(self, "session_id", None),
-                    session_key=getattr(self, "session_id", None),
+                    session_id=cli_session_id,
+                    # Derive a distinct durable route key for CLI middleware. This keeps the
+                    # physical/session identity fields separate while preserving CLI route state
+                    # across turns without pretending it is a gateway session key.
+                    session_key=f"cli:{cli_session_id}" if cli_session_id else None,
                     source="cli",
                     is_user_turn=True,
                     is_first_turn=not bool(getattr(self, "conversation_history", None)),

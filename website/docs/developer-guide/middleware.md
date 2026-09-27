@@ -54,8 +54,10 @@ Supported middleware kinds:
 | `tool_request` | `tool_name`, `args`, `original_args` | `{"args": {...}}` | Replace effective tool args before hooks, guardrails, approvals, and execution. |
 | `llm_execution` | `request`, `original_request`, `next_call` | Any provider response | Wrap or replace the actual provider call. |
 | `tool_execution` | `tool_name`, `args`, `original_args`, `next_call` | Any tool result | Wrap or replace the actual tool call. |
-| `turn_route` | `route`, `original_route`, `user_message`, `session_id`, `session_key` | `{"route": {...}}` | Select public model/provider metadata before agent construction. |
+| `turn_route` | `route`, `original_redacted_route`, `user_message`, `session_id`, `session_key` | `{"route": {...}}` | Select public model/provider metadata before agent construction. |
 
+`original_redacted_route` is the host route after public redaction; it never
+contains credentials, ACP command arguments, or other private runtime fields.
 `turn_route` is called once for an external user turn before Hermes constructs
 the provider client or agent. The callback receives no credentials, API keys,
 or provider clients. Its public runtime DTO is limited to `provider`,
@@ -75,6 +77,18 @@ Request middleware can return optional trace fields:
 return {
     "request": updated_request,
     "source": "my-plugin",
+    "reason": "tagged request",
+}
+```
+
+Turn-route traces additionally include the registering plugin's manifest name as
+`plugin`:
+
+```python
+return {
+    "route": updated_route,
+    "source": "my-plugin",
+    "plugin": "my-plugin",
     "reason": "selected fallback model",
 }
 ```

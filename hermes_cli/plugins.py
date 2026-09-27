@@ -981,8 +981,17 @@ class PluginContext:
     def register_middleware(self, kind: str, callback: Callable) -> PluginRegistration:
         """Register behavior-changing middleware (request kinds rewrite the payload, execution kinds
         wrap the callback). Unknown kinds warn but are stored."""
+        # Keep the manifest owner attached to turn-route results so the host's forensic trace can
+        # distinguish two plugins that return the same source/reason fields.
+        original_callback = callback
+
+        @wraps(original_callback)
+        def owned_callback(*args, **kwargs):
+            return original_callback(*args, **kwargs)
+
+        setattr(owned_callback, "_hermes_plugin_name", self.manifest.name)
         return self._track_callback(
-            "middleware", kind, callback, self._manager._middleware, VALID_MIDDLEWARE
+            "middleware", kind, owned_callback, self._manager._middleware, VALID_MIDDLEWARE
         )
 
     def _track_callback(

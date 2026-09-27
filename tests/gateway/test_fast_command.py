@@ -118,7 +118,9 @@ def test_turn_route_injects_priority_processing_without_changing_runtime():
         "credential_pool": None,
     }
 
-    route = gateway_run.GatewayRunner._resolve_turn_agent_config(runner, "hi", "gpt-5.4", runtime_kwargs)
+    route = gateway_run.GatewayRunner._resolve_turn_agent_config(
+        runner, "hi", "gpt-5.4", runtime_kwargs, internal=True
+    )
 
     assert route["runtime"]["provider"] == "openai"
     assert route["runtime"]["api_mode"] == "chat_completions"
@@ -126,7 +128,9 @@ def test_turn_route_injects_priority_processing_without_changing_runtime():
 
     # Proxied routes never receive the param (OpenRouter strips it / others 400).
     runtime_kwargs.update(base_url="https://openrouter.ai/api/v1", provider="openrouter")
-    route = gateway_run.GatewayRunner._resolve_turn_agent_config(runner, "hi", "gpt-5.4", runtime_kwargs)
+    route = gateway_run.GatewayRunner._resolve_turn_agent_config(
+        runner, "hi", "gpt-5.4", runtime_kwargs, internal=True
+    )
     assert route["request_overrides"] == {}
 
 
@@ -288,6 +292,8 @@ async def test_plugin_command_retains_session_context(monkeypatch, kind):
         seen.append((
             get_session_env("HERMES_SESSION_CHAT_ID"),
             get_session_env("HERMES_SESSION_KEY"),
+            context["session_id"],
+            context["session_key"],
         ))
         return "ok"
 
@@ -309,4 +315,4 @@ async def test_plugin_command_retains_session_context(monkeypatch, kind):
 
     assert handled is True
     assert result == "ok"
-    assert seen == [("intended-chat", "durable-chat")]
+    assert seen == [("intended-chat", "durable-chat", "physical-chat", "durable-chat")]

@@ -601,10 +601,17 @@ class PluginDispatchMixin:
                     # callback that mutates and raises cannot leak its draft.
                     callback_kwargs = dict(kwargs)
                     callback_kwargs["route"] = copy.deepcopy(current_route)
-                    if "original_route" in kwargs:
-                        callback_kwargs["original_route"] = copy.deepcopy(kwargs["original_route"])
+                    if "original_redacted_route" in kwargs:
+                        callback_kwargs["original_redacted_route"] = copy.deepcopy(
+                            kwargs["original_redacted_route"]
+                        )
                 ret = cb(**callback_kwargs)
                 if ret is not None:
+                    if kind == "turn_route" and isinstance(ret, dict):
+                        plugin_name = getattr(cb, "_hermes_plugin_name", None)
+                        if isinstance(plugin_name, str) and plugin_name:
+                            ret = dict(ret)
+                            ret["plugin"] = plugin_name
                     results.append(ret)
                     if (
                         kind == "turn_route"

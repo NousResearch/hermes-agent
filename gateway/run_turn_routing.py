@@ -34,8 +34,9 @@ class GatewayTurnRoutingMixin:
         self, user_message: str, model: str, runtime_kwargs: dict,
         *, session_id: Optional[str] = None, session_key: Optional[str] = None,
         source: Optional[SessionSource] = None, conversation_history: Optional[list] = None,
-        # Legacy/background callers are internal unless the external TurnRunner opts in explicitly.
-        internal: bool = True,
+        # Every caller must classify the turn explicitly. Omitting this would silently bypass
+        # external-user routing when a new entry point is added.
+        internal: bool,
     ) -> dict:
         """Build one turn route; middleware is fail-open and never owns credentials.
 

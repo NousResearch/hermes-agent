@@ -95,7 +95,7 @@ def _apply_request_chain(
         current = _safe_copy(next_payload)
         entry = {
             key: value
-            for key in ("source", "reason", "name")
+            for key in ("plugin", "source", "reason", "name")
             if isinstance(value := result.get(key), str) and value
         }
         trace.append(entry or {"source": "plugin"})
@@ -124,15 +124,15 @@ def apply_turn_route_middleware(route: Dict[str, Any], **context: Any) -> Reques
 
     if not has_middleware(TURN_ROUTE_MIDDLEWARE):
         return RequestMiddlewareResult(payload=route, original_payload=route)
-    original_route = _safe_copy(route)
-    current_route = _safe_copy(original_route)
+    original_redacted_route = _safe_copy(route)
+    current_route = _safe_copy(original_redacted_route)
     trace: List[Dict[str, Any]] = []
     from hermes_cli.plugins import invoke_middleware
 
     for result in invoke_middleware(
         TURN_ROUTE_MIDDLEWARE,
         route=current_route,
-        original_route=original_route,
+        original_redacted_route=original_redacted_route,
         **middleware_payload(**context),
     ):
         if not isinstance(result, dict) or not isinstance(result.get("route"), dict):
@@ -140,14 +140,14 @@ def apply_turn_route_middleware(route: Dict[str, Any], **context: Any) -> Reques
         current_route = _safe_copy(result["route"])
         entry = {
             key: value
-            for key in ("source", "reason", "name")
+            for key in ("plugin", "source", "reason", "name")
             if isinstance(value := result.get(key), str) and value
         }
         trace.append(entry or {"source": "plugin"})
     return RequestMiddlewareResult(
         payload=current_route,
-        original_payload=original_route,
-        changed=current_route != original_route,
+        original_payload=original_redacted_route,
+        changed=current_route != original_redacted_route,
         trace=trace,
     )
 

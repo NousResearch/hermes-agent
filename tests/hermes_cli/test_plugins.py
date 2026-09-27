@@ -418,6 +418,44 @@ class TestPluginDiscovery:
         assert mgr.has_middleware("llm_request") is True
 
 
+    def test_turn_route_trace_contains_plugin_identity_and_redacted_original(self, tmp_path, monkeypatch):
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir,
+            "router_plugin",
+            register_body=(
+                "ctx.register_middleware('turn_route', lambda **kw: {"
+                "'route': {**kw['route'], 'marker': ('redacted' if 'api_key' not in repr(kw['original_redacted_route']) else 'leaked')}, "
+                "'source': 'router'})"
+            ),
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+        monkeypatch.setattr("hermes_cli.plugins._delivery_manager", lambda: mgr)
+
+        from hermes_cli.middleware import apply_turn_route_middleware, public_turn_route
+
+        route = public_turn_route(
+            "configured-model",
+            {
+                "provider": "custom",
+                "requested_provider": "custom:alpha",
+                "api_mode": "chat_completions",
+                "api_key": "provider-token-value",
+                "command": "hermes-acp",
+                "args": ["--api-key", "acp-token-value"],
+            },
+        )
+        result = apply_turn_route_middleware(route, session_id="physical", session_key="durable")
+
+        assert result.payload["marker"] == "redacted"
+        assert result.trace == [{"plugin": "router_plugin", "source": "router"}]
+        assert "provider-token-value" not in repr(result.original_payload)
+        assert "acp-token-value" not in repr(result.original_payload)
+
+
     def test_middleware_helpers_skip_no_listener_work(self, monkeypatch):
         manager = types.SimpleNamespace(_middleware={})
         monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)

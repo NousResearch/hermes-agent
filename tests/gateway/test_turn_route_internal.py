@@ -76,11 +76,51 @@ def test_gateway_message_event_internal_identity_controls_turn_route(monkeypatch
     if callbacks:
         assert callbacks[0]["is_user_turn"] is True
         assert callbacks[0]["internal"] is False
+        assert callbacks[0]["session_id"] == "physical-session"
+        assert callbacks[0]["session_key"] == "durable-session"
 
 
 def test_gateway_turn_context_carries_internal_identity():
     assert TurnContext().internal is False
     assert TurnContext(internal=True).internal is True
+
+
+def test_gateway_route_middleware_redacts_acp_arguments(monkeypatch):
+    runner = object.__new__(GatewayRunner)
+    runner._service_tier = None
+    captured = {}
+
+    def apply_route(route, **metadata):
+        captured["route"] = route
+        captured["metadata"] = metadata
+        return SimpleNamespace(changed=False, payload=route, trace=[])
+
+    monkeypatch.setattr("hermes_cli.middleware.apply_turn_route_middleware", apply_route)
+    acp_argument = "gateway-acp-token-value"
+    route = runner._resolve_turn_agent_config(
+        "hello",
+        "test-model",
+        {
+            "api_key": "provider-token-value",
+            "base_url": "https://example.invalid/v1",
+            "provider": "custom",
+            "requested_provider": "custom:alpha",
+            "api_mode": "chat_completions",
+            "command": "hermes-acp",
+            "args": ["--api-key", acp_argument],
+            "capabilities": {"secret": "capability-token-value"},
+        },
+        session_id="physical-session",
+        session_key="durable-session",
+        internal=False,
+    )
+
+    assert route["model"] == "test-model"
+    assert captured["metadata"]["session_id"] == "physical-session"
+    assert captured["metadata"]["session_key"] == "durable-session"
+    assert acp_argument not in repr(captured["route"])
+    assert "provider-token-value" not in repr(captured["route"])
+    assert "capability-token-value" not in repr(captured["route"])
 
 
 @pytest.mark.parametrize("internal", [True, False])

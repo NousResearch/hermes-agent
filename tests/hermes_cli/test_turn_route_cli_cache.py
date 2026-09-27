@@ -69,6 +69,9 @@ def routed_chat():
     def select_route(route, **context):
         assert "api_key" not in repr((route, context))
         assert "signature" not in repr((route, context))
+        assert context["session_key"] == (
+            f"cli:{context['session_id']}" if context["session_id"] else None
+        )
         return {"route": {**route, **selected}, "source": "test-router"}
 
     manager._middleware["turn_route"] = [select_route]

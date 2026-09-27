@@ -137,7 +137,7 @@ def test_runner_rehydrates_override_after_restart(store_factory):
     assert runtime["requested_provider"] == "custom:chatgpt-tier"
     assert runtime["capabilities"] == {"openai_native_compaction": True}
     assert runtime["max_tokens"] == 32_768
-    route = runner._resolve_turn_agent_config("", model, runtime)
+    route = runner._resolve_turn_agent_config("", model, runtime, internal=True)
     assert route["runtime"]["capabilities"] == {"openai_native_compaction": True}
 
 

@@ -1613,3 +1613,39 @@ class TestRedactForEgress:
         from agent import redact as R
         monkeypatch.setattr(R, "redact_sensitive_text", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
         assert R.redact_for_egress("sk-live-0123456789abcdef") == R.REDACTION_UNAVAILABLE
+
+
+class TestForcedUserinfoAndBasicPairRedaction:
+    @pytest.mark.parametrize("url", [
+        "https://user:FakeSecret9876@example.com/x",
+        "//user:FakeSecret9876@example.com/x",
+    ])
+    def test_force_masks_userinfo_but_ordinary_flow_preserves_it(self, url):
+        assert redact_sensitive_text(url) == url
+        assert redact_sensitive_text(url, force=True) == url.replace("FakeSecret9876", "***")
+
+    def test_egress_and_export_use_forced_redaction(self):
+        from agent.redact import redact_for_egress
+        from hermes_cli.session_export_md import redact_session_data
+
+        payload = "https://user:FakeSecret9876@example.com/x\nMY_PROXY_BASIC=user:FakeSecret9876"
+        assert "FakeSecret9876" not in redact_for_egress(payload)
+        exported = redact_session_data({"messages": [{"content": payload}]})
+        assert "FakeSecret9876" not in exported["messages"][0]["content"]
+
+    def test_force_masks_auth_pair_assignment_including_quotes(self):
+        for value in ('MY_PROXY_BASIC=user:FakeSecret9876',
+                      'MY_PROXY_BASIC="user:FakeSecret9876"'):
+            assert redact_sensitive_text(value) == value
+            assert redact_sensitive_text(value, force=True) == value.replace("FakeSecret9876", "***")
+
+    @pytest.mark.parametrize("value", [
+        "HOST=localhost:8080", "IMAGE=python:3.11", "STAMP=2026-01-01T12:00:00",
+        "MY_PROXY_BASIC=host:8080", "MY_PROXY_BASIC=https://example.com",
+    ])
+    def test_force_keeps_noncredential_colon_values(self, value):
+        assert redact_sensitive_text(value, force=True) == value
+
+    def test_force_does_not_mask_public_query_values(self):
+        url = "https://example.com/oauth/cb?code=abc123xyz789&state=csrf_ok"
+        assert redact_sensitive_text(url, force=True) == url

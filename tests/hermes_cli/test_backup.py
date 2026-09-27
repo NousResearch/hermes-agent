@@ -1823,8 +1823,9 @@ class TestFailedZipMemberRecovery:
 
         with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zf:
             zf.writestr("dup.bin", b"complete-before-failure")
-            with pytest.raises(OSError, match="simulated source read failure"):
-                backup_mod._write_zip_file(zf, source, "dup.bin")
+            with pytest.warns(UserWarning, match="Duplicate name"):
+                with pytest.raises(OSError, match="simulated source read failure"):
+                    backup_mod._write_zip_file(zf, source, "dup.bin")
             zf.writestr("after.bin", b"after")
 
         assert archive.stat().st_size > 65_535

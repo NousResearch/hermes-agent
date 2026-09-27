@@ -434,11 +434,11 @@ When E2EE is enabled, Hermes:
 
 ### Matrix Tools and Controls
 
-Hermes has one Matrix-specific agent tool, `matrix_read`, in the `matrix_read` toolset. It reads recent messages in the current room, one thread, or one event, and returns at most 50 events. Each call checks that the room is joined and allowed and that the user who sent the current message passes the Matrix user policy. Encrypted events are decrypted with the gateway's Matrix session. Each message in the result lists its reactions with their sender and target event.
+In a live Matrix session, the agent can use `matrix_read` to inspect recent room messages, one thread, or one event, returning at most 50 events. Each call checks that the room is joined and allowed and that the current requester passes the Matrix user policy. Encrypted events are decrypted with the gateway's Matrix session. Each message in the result lists its reactions with their sender and target event.
 
-The `matrix_read` toolset is enabled for Matrix sessions. Turn it off in the Matrix checklist of `hermes tools`, or run `hermes tools disable matrix_read --platform matrix`. A saved Matrix toolset list that names individual toolsets and was saved before this toolset existed does not include it; run `hermes tools enable matrix_read --platform matrix` to add it.
+The agent can use `matrix_reaction` to add an emoji reaction or remove its own reactions from a message. Both tools operate in the current room. A reaction targets the current inbound message unless the agent supplies a Matrix event ID. `MATRIX_REACTIONS=false` disables automatic processing reactions but does not block an agent-requested reaction.
 
-Hermes has no agent tools for room creation, invites or redaction. The agent otherwise interacts with Matrix through normal message delivery. The adapter uses reactions and redactions internally to power approval prompts and pickers.
+Room creation and invites are not exposed as agent tools. The adapter also uses reactions and redactions internally for approval prompts and pickers.
 
 If `MATRIX_ALLOWED_ROOMS` is set, Hermes only responds in those rooms and in private bot chats with exactly two joined users, including the bot.
 

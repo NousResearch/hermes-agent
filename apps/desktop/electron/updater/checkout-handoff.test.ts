@@ -97,6 +97,35 @@ it.each([true, false])(
   }
 )
 
+// #103222: the Windows wrapper must own the hidden console the script shares.
+// Spawned detached it has none, so `start /b` gives PowerShell a visible
+// console whose QuickEdit selection stalls the hand-off before relaunch.
+it('the Windows hand-off wrapper is spawned non-detached so the script shares its hidden console', async (): Promise<void> => {
+  const { root, deps } = handoffFixture(false)
+  fs.writeFileSync(path.join(root, 'scripts', 'desktop-update', 'windows.ps1'), '')
+  const resolveHandoff: typeof updaterProcess.resolveUpdateScriptHandoff = updaterProcess.resolveUpdateScriptHandoff
+  vi.spyOn(updaterProcess, 'resolveUpdateScriptHandoff').mockImplementation(
+    (updateRoot: string): updaterProcess.UpdateScriptHandoff | null => resolveHandoff(updateRoot, { isWindows: true })
+  )
+  const spawned: { command: string; args: string[]; detached: unknown }[] = []
+  vi.spyOn(updaterProcess, 'spawnUpdaterProcess').mockImplementation(
+    (command: string, args: string[], options: { detached?: boolean }): updaterProcess.UpdaterChild => {
+      spawned.push({ command, args, detached: options.detached })
+
+      return { unref: (): void => {} }
+    }
+  )
+
+  try {
+    expect(await createCheckoutStrategy({ ...deps, isWindows: true }).apply()).toMatchObject({ ok: true })
+    expect(spawned).toHaveLength(1)
+    expect(spawned[0]).toMatchObject({ command: 'cmd.exe', detached: false })
+    expect(spawned[0]!.args.slice(0, 6)).toEqual(['/d', '/s', '/c', 'start', '', '/b'])
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
 // A hand-off that never became viable (#66753) must not quit into nothing:
 // the app stays, the backend restarts, and the user reads plain copy with
 // the raw spawn outcome confined to a Details line.

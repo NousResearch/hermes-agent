@@ -156,7 +156,7 @@ def test_resolution_reuses_successful_responses_but_refreshes_next_operation(ups
         # Manual re-pinning also needs a short-lived index scope after removing
         # the old process-wide FFmpeg indexes. Pin real bytes into a real lock.
         failures.clear()
-        monkeypatch.setattr(package, "gaps", {"linux-arm64-bionic": "separate supplier"})
+        monkeypatch.setattr(package, "gaps", {**package.gaps, "linux-arm64-bionic": "separate supplier"})
         body = b"advertised ffmpeg artifact"
         for urls in decision.artifact_updates.values():
             RangeHandler.payloads[urlsplit(urls[0]).path] = body

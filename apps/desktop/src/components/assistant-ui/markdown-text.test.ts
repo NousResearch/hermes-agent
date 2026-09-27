@@ -16,8 +16,9 @@ describe('preprocessMarkdown', () => {
 
     expect(output).not.toContain('```')
     expect(output).toContain("Here's your scene:")
-    // Bare localhost URLs (with or without trailing slash) are still stripped.
-    expect(output).not.toContain('http://localhost:8812/')
+    // Loopback URLs in prose are user-facing content (#121683): the address
+    // autolinks instead of being deleted from the sentence.
+    expect(output).toContain('<http://localhost:8812/>')
     expect(output).toContain('- **Multicolored cube**')
   })
 
@@ -34,8 +35,9 @@ describe('preprocessMarkdown', () => {
     const output = preprocessMarkdown(input)
 
     expect(output).not.toContain('```')
-    // Bare localhost URLs (with or without trailing slash) are still stripped.
-    expect(output).not.toContain('http://localhost:8812/')
+    // Loopback URLs in prose are user-facing content (#121683): the address
+    // autolinks instead of being deleted from the sentence.
+    expect(output).toContain('<http://localhost:8812/>')
     expect(output).toContain('- **Scroll wheel** - zoom')
   })
 

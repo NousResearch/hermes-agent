@@ -567,10 +567,11 @@ def test_gc_removes_fetch_cache_archives(pm_env):
 
 def test_gc_dry_run_reports_without_deleting(pm_env, capsys):
     """The store is writable space; a sweep that deletes on sight destroys
-    entries the user placed by hand. `--dry-run` must show the exact
-    removal list without touching the filesystem — expired partials and
-    superseded generations included, whose collectors unlink/rmtree on
-    sight, so they must not even run."""
+    entries the user placed by hand. `--dry-run` must show the exact removal
+    list without touching the filesystem. Expired partials are probed under
+    their own locks (nothing unlinked) so the list is the full picture a real
+    gc would act on — superseded generations stay out of it and are named
+    as unscanned in the summary."""
     import os
     import time
     from types import SimpleNamespace
@@ -592,13 +593,41 @@ def test_gc_dry_run_reports_without_deleting(pm_env, capsys):
     cmd_gc(SimpleNamespace(dry_run=True))
     out = capsys.readouterr().out
     assert "would remove orphan-9.9-nowhere" in out
+    assert "would remove partials/deadbeef.part" in out
     assert "generations not scanned" in out
     assert orphan.is_dir(), "dry run must not delete anything"
-    assert partial.is_file(), "dry run must not collect expired partials"
+    assert partial.is_file(), "dry run must not unlink the expired partial"
 
     cmd_gc(None)
     assert not orphan.exists()
     assert not partial.exists(), "a real gc still collects the expired partial"
+
+
+def test_gc_dry_run_does_not_initialise_the_store(pm_env, capsys):
+    """A dry run deletes nothing, so it must not create anything either:
+    on a machine with no store yet (only a leftover partials dir) a dry gc
+    reports the would-be removal while leaving both the store root and its
+    lock file uncreated."""
+    import os
+    import time
+    from types import SimpleNamespace
+
+    from pm.cli import cmd_gc
+    from pm.download_state import GC_GRACE_SECONDS
+    from pm import paths
+
+    _, runtime, *_ = pm_env
+    partial = paths.partials_root() / "cafe.part"
+    partial.parent.mkdir(parents=True, exist_ok=True)
+    partial.write_bytes(b"stale bytes")
+    stale = time.time() - GC_GRACE_SECONDS - 60
+    os.utime(partial, (stale, stale))
+    cmd_gc(SimpleNamespace(dry_run=True))
+    out = capsys.readouterr().out
+    assert "would remove partials/cafe.part" in out
+    assert partial.is_file(), "dry run must not unlink the expired partial"
+    assert not runtime.exists(), "dry run must not create the store root"
+    assert not (runtime / ".install.lock").exists(), "dry run must not create the lock file"
 
 
 def test_gc_keeps_entries_pinned_in_the_keep_list(pm_env):

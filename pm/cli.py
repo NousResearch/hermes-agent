@@ -496,8 +496,9 @@ def _gc_store(store, facts, *, dry_run: bool = False) -> tuple[int, int]:
     lock, and expired partials. Keeps live package entries (recorded in
     facts), partials an in-flight download still owns, and entries pinned in
     ``<store>/.gc-keep``. ``dry_run`` prints the removals instead of doing
-    them — partial collection is skipped too, since it unlinks expired
-    partials, and set-aside trees are reported but left for a real run.
+    them — expired partials are still probed (under their own locks, nothing
+    unlinked) so the removal list is the full picture a real gc would act on,
+    and set-aside trees are reported but left for a real run.
     Returns (removed, kept).
     """
     from pm.download_state import collect_partials
@@ -507,30 +508,33 @@ def _gc_store(store, facts, *, dry_run: bool = False) -> tuple[int, int]:
     if not store.root.is_dir() and not partials_dir.is_dir():
         return (0, 0)
     removed = 0
-    with store.install_lock():
+    with store.install_lock(dry_run=dry_run):
         facts.reload()
         keep = facts.entries_in_use() | _gc_keep_list(store.root)
-        if not dry_run:
-            collect_partials(partials_dir)
-        removed += _reclaim_set_aside(store, dry_run=dry_run)
-        for item in sorted(store.root.iterdir()):
-            if not item.is_dir():
-                continue
-            # Scratch dirs are created and removed under this same lock, so any
-            # that remain belong to a killed installer. Other dot-dirs stay:
-            # .previous-* is the restore point the next install of that entry
-            # consumes, and it is only safe to drop after that verification.
-            if item.name.startswith(".") and not item.name.startswith(".staging-"):
-                continue
-            if item.name in keep:
-                continue
-            if dry_run:
-                print(f"would remove {item.name}")
-                removed += 1
-                continue
-            print(f"removing {item.name}")
-            shutil.rmtree(item, ignore_errors=True)
+        for name in collect_partials(partials_dir, dry_run=dry_run):
+            print(f"{'would remove' if dry_run else 'removing'} partials/{name}")
             removed += 1
+        removed += _reclaim_set_aside(store, dry_run=dry_run)
+        # A dry run leaves a missing store root missing, so guard the scan.
+        if store.root.is_dir():
+            for item in sorted(store.root.iterdir()):
+                if not item.is_dir():
+                    continue
+                # Scratch dirs are created and removed under this same lock, so any
+                # that remain belong to a killed installer. Other dot-dirs stay:
+                # .previous-* is the restore point the next install of that entry
+                # consumes, and it is only safe to drop after that verification.
+                if item.name.startswith(".") and not item.name.startswith(".staging-"):
+                    continue
+                if item.name in keep:
+                    continue
+                if dry_run:
+                    print(f"would remove {item.name}")
+                    removed += 1
+                    continue
+                print(f"removing {item.name}")
+                shutil.rmtree(item, ignore_errors=True)
+                removed += 1
     return (removed, len(keep))
 
 

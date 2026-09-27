@@ -114,55 +114,47 @@ def _read_windows_pyvenv_cfg(venv_dir: Path) -> dict[str, str]:
     }
 
 
-def _posix_cron_python_invocation(python_exe: str) -> tuple[str, dict[str, str]]:
-    """POSIX managed-store installs: cron ``.py`` scripts run on the selected dependency venv's
-    interpreter, not the bare store Python. The store Python only carries the repo and the
-    managed site-packages on its in-process ``sys.path``; a spawned child re-resolves imports
-    from scratch and dies with ``ModuleNotFoundError`` after the venv → PM runtime switch
-    (#123044). The venv interpreter finds its dependency site-packages through ``pyvenv.cfg``
-    (editable installs included), so no ``PYTHONPATH`` overlay is needed — and one must not be
-    used: it would be inherited by every child the script spawns, where a foreign interpreter
-    (another venv, system Python) would import the store's CPython-3.14 extension modules first
-    and crash (#123440). Lazy installs are disabled for script children so a script importing
-    ``hermes_bootstrap`` off the store-record venv cannot republish launchers (#123440).
-    Installs without a committed store (source checkouts, pre-PM venvs) keep the caller's
-    interpreter. A broken committed selection degrades to the caller's interpreter too:
-    ``selected_venv`` is documented as a raising function, and this runs before
-    ``_run_job_script``'s ``try``, so an escaping error would crash the tick and leave the
-    execution row in ``running`` forever."""
+# ``python -c`` leaves sys.path[0] = cwd; restore the script-dir entry a plain
+# ``python script.py`` gets, with the live checkout right after it.
+_POSIX_SCRIPT_BOOTSTRAP = (
+    "import os, runpy, sys;"
+    "repo, script = sys.argv[1], sys.argv[2];"
+    "sys.argv = [script] + sys.argv[3:];"
+    "sys.path[0:1] = [os.path.dirname(os.path.abspath(script)), repo];"
+    "runpy.run_path(script, run_name='__main__')"
+)
+
+
+def _posix_cron_script_argv(script: Path) -> tuple[list[str], dict[str, str]]:
+    """POSIX managed-store installs run cron ``.py`` scripts on the selected dependency venv's
+    interpreter: the store Python carries the repo and managed site-packages only on its
+    in-process ``sys.path``, so a child of it cannot import either (#123044). No ``PYTHONPATH``
+    overlay — every child the script spawns would inherit it, and a foreign interpreter would
+    then import the store's compiled extensions (#123440). The venv resolves Hermes itself from
+    its generation's workspace SNAPSHOT, which only a dependency change rebuilds, so the live
+    checkout goes in front in-process via the bootstrap. Lazy installs stay off in the script's
+    process tree: a script importing Hermes must not complete a source update or republish
+    launchers from a cron child. Without a committed store, the caller's interpreter as before."""
     from hermes_cli._launchers import resolve_store_python
+    from pm.environments import selected_venv, venv_python
 
     repo = Path(__file__).resolve().parents[1]
-    if resolve_store_python(repo) is None:
-        return python_exe, {}
-
-    from pm.environments import selected_venv, venv_bin_dir
-
-    try:
-        venv = selected_venv(repo)
-    except (RuntimeError, OSError) as exc:
-        # Degrade, don't crash — same contract as the Windows bootstrap's unresolvable-venv
-        # fallback below (a silent fallback would make the misconfiguration undiagnosable).
-        logger.warning(
-            "POSIX cron script: cannot select the dependency venv (%s); running on the "
-            "caller's interpreter",
-            exc,
-        )
-        return python_exe, {}
-    venv_python = venv_bin_dir(venv) / "python"
-    if not venv_python.is_file():
-        return python_exe, {}
-    return str(venv_python), {"HERMES_DISABLE_LAZY_INSTALLS": "1"}
+    if resolve_store_python(repo) is not None:
+        # selected_venv (not committed_venv as on Windows): with nothing committed yet, the
+        # pre-PM venv runs on its OWN interpreter here, so there is no ABI mix (#122183).
+        python = venv_python(selected_venv(repo))
+        if python.is_file():
+            return ([str(python), "-c", _POSIX_SCRIPT_BOOTSTRAP, str(repo), str(script)],
+                    {"HERMES_DISABLE_LAZY_INSTALLS": "1"})
+    return [sys.executable, str(script)], {}
 
 
 def _windows_cron_python_invocation(python_exe: str) -> tuple[str, dict[str, str]]:
     """Hidden, output-capable Python invocation for Windows cron scripts. ``pythonw.exe`` loses
     captured output; uv venv launchers can re-exec the base console python and flash a window
-    even with CREATE_NO_WINDOW, so run the base python directly with venv paths overlaid in env.
-    Off-Windows callers are routed to ``_posix_cron_python_invocation`` (venv interpreter
-    selection, no env overlay)."""
+    even with CREATE_NO_WINDOW, so run the base python directly with venv paths overlaid in env."""
     if sys.platform != "win32":
-        return _posix_cron_python_invocation(python_exe)
+        return python_exe, {}
 
     interpreter = _sched.Path(python_exe)
     venv_dir = interpreter.parent.parent
@@ -364,7 +356,8 @@ def _script_argv(path: Path) -> tuple[Optional[list[str]], dict[str, str], Optio
     """``(argv, env_overlay, error)`` for a validated script. Interpreter by extension — the
     shebang is deliberately NOT honoured (small, auditable surface): ``.sh``/``.bash`` → bash,
     else ``sys.executable`` (Windows managed/uv overlays get the ``.pth`` bootstrap; POSIX
-    managed installs run on the selected venv's interpreter)."""
+    managed installs run on the selected venv's interpreter).
+    Selection reads PM's install records and may raise; callers run this inside their ``try``."""
     if path.suffix.lower() in {".sh", ".bash"}:
         # which() finds Git Bash on Windows; None there → clear error instead of a "[WinError 2]".
         _bash = shutil.which("bash") or ("/bin/bash" if os.path.isfile("/bin/bash") else None)
@@ -375,13 +368,11 @@ def _script_argv(path: Path) -> tuple[Optional[list[str]], dict[str, str], Optio
                 "or rewrite the script as Python (.py)."
             )
         return [_bash, str(path)], {}, None
+    if sys.platform != "win32":
+        argv, env_overlay = _posix_cron_script_argv(path)
+        return argv, env_overlay, None
     python_exe, env_overlay = _windows_cron_python_invocation(sys.executable)
-    if env_overlay.get("PYTHONPATH"):
-        # The bootstrap exists to give PYTHONPATH overlays .pth processing (editable installs);
-        # non-PYTHONPATH overlays (the POSIX venv-interpreter path) pass through plain. Both
-        # overlay producers that exist today always set PYTHONPATH (the managed-store branch
-        # sets only it, the uv re-exec sets it alongside VIRTUAL_ENV); a future overlay-only
-        # producer must revisit this gate or it silently loses .pth processing.
+    if env_overlay:
         return _windows_cron_bootstrap_argv(python_exe, env_overlay, str(path)), env_overlay, None
     return [python_exe, str(path)], env_overlay, None
 
@@ -404,11 +395,10 @@ def _run_job_script(
     if path is None:
         return False, err
     script_timeout = _get_script_timeout()
-    argv, env_overlay, err = _script_argv(path)
-    if argv is None:
-        return False, err
-
     try:
+        argv, env_overlay, err = _script_argv(path)
+        if argv is None:
+            return False, err
         from tools.environments.local import build_subprocess_env
         # Lossy decode only: keep the platform-default (locale) encoding — gating ``encoding=``
         # to win32 was deliberate (#66566: unconditional UTF-8 leaked into POSIX) — but

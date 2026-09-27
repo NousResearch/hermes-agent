@@ -457,6 +457,15 @@ launch_app() { # attempted BEFORE the terminal event (launch acceptance is
     # spawn, then confirm the child is still alive shortly after — an
     # immediate exec failure (ENOENT, ELF mismatch, dead sandbox) dies
     # within the window and downgrades to manual instead of lying.
+    #
+    # The relaunched app must resolve its backend afresh. Unset the
+    # installed-runtime skip flag (#124971): this shell inherited it from
+    # the updating Desktop's environment, and a relaunch that keeps it
+    # skips the healthy installed runtime, falls into first-launch
+    # bootstrap, and overlaps another bootstrap's git checkout
+    # (.git/index.lock collisions). The flag is per-launch intent for
+    # e2e/recovery shells, never a property the update should propagate.
+    unset HERMES_DESKTOP_IGNORE_EXISTING
     (cd "${RELAUNCH_CWD:-/}" 2>/dev/null || cd /
      setsid "$RELAUNCH_TARGET" ${RELAUNCH_ARGS[@]+"${RELAUNCH_ARGS[@]}"} >/dev/null 2>&1 &
      echo $! > "$STATUS.launchpid") || { log "WARNING: relaunch spawn failed"; return 1; }

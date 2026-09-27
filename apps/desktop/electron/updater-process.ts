@@ -315,6 +315,16 @@ export function collectRelaunchArgs(argv: unknown): string[] {
       return false
     }
 
+    // `--ignore-existing` is a THIS-launch instruction for e2e and recovery
+    // shells (its env twin HERMES_DESKTOP_IGNORE_EXISTING has the same
+    // meaning). Replaying it into a post-update relaunch made the relaunched
+    // app skip its healthy installed runtime and fall into first-launch
+    // bootstrap (#124971) — it is never an intent the update should carry
+    // forward, so it is filtered like the Electron internals below.
+    if (arg === '--ignore-existing' || arg.startsWith('--ignore-existing=')) {
+      return false
+    }
+
     return !INTERNAL_ARG_PREFIXES.some(prefix =>
       prefix.endsWith('=') ? arg.startsWith(prefix) : arg === prefix || arg.startsWith(prefix + '=')
     )

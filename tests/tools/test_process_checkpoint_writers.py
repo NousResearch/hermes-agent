@@ -85,3 +85,22 @@ def test_gateway_recovery_takes_only_dead_writers_jobs_and_its_shutdown_spares_l
             if writer is not None and writer.poll() is None:
                 writer.stdin.close()
                 writer.wait(timeout=30)
+
+
+def test_a_writer_on_a_recycled_pid_keeps_the_dead_writers_unfingerprinted_entries():
+    """A crashed writer whose start time was unreadable left entries under a PID the kernel has
+    since given to this process; this process's checkpoint must not take them for its own."""
+    from tools.process_registry import _checkpoint_path
+
+    path = _checkpoint_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    orphan = {"session_id": "proc_dead_writer", "pid": 999999, "pid_scope": "host", "command": "sleep 600",
+              "writer_pid": os.getpid(), "writer_started_at": None}
+    path.write_text(json.dumps([orphan]), encoding="utf-8")
+
+    registry = ProcessRegistry()
+    assert registry._checkpoint_writer()["writer_started_at"] is not None
+    registry._write_checkpoint()
+
+    assert [e["session_id"] for e in json.loads(path.read_text(encoding="utf-8"))] == ["proc_dead_writer"]
+

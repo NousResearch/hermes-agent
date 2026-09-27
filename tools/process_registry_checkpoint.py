@@ -19,13 +19,20 @@ def _entry_key(entry: dict[str, Any]) -> tuple:
     return entry.get("session_id"), entry.get("writer_pid"), entry.get("writer_started_at")
 
 
-def _written_by(entry: dict[str, Any], writer: dict[str, Any]) -> bool:
-    """True when ``entry`` was written by the process incarnation ``writer`` describes."""
+def _written_by(entry: dict[str, Any], writer: dict[str, Any], *, lenient: bool = True) -> bool:
+    """True when ``entry`` was written by the process incarnation ``writer`` describes.
+
+    An unreadable start time can't tell a writer from a later process on its recycled PID.
+    Recovery stays ``lenient`` (a live writer's job must never be adopted); deleting entries
+    does not, or that later process would erase the dead writer's recovery record."""
     from gateway.status import start_time_fingerprints_match
 
     recorded, current = entry.get("writer_started_at"), writer["writer_started_at"]
-    return entry.get("writer_pid") == writer["writer_pid"] and (
-        recorded is None or current is None or start_time_fingerprints_match(recorded, current))
+    if entry.get("writer_pid") != writer["writer_pid"]:
+        return False
+    if recorded is None or current is None:
+        return lenient or recorded is current
+    return start_time_fingerprints_match(recorded, current)
 
 
 class ProcessCheckpointMixin:
@@ -110,7 +117,8 @@ class ProcessCheckpointMixin:
                 entry.get("pid"), entry.get("host_start_time")) == "running"))
 
         return [entry for entry in on_disk if isinstance(entry, dict) and entry.get("session_id") not in known
-                and not _written_by(entry, writer) and _entry_key(entry) not in consumed and _decides(entry)]
+                and not _written_by(entry, writer, lenient=False) and _entry_key(entry) not in consumed
+                and _decides(entry)]
 
     def recover_from_checkpoint(self) -> int:
         """On gateway startup, probe PIDs from the checkpoint file; returns how many

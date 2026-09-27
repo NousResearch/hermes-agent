@@ -41,6 +41,9 @@ async def _matrix_read(args: dict[str, Any]) -> str:
     if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 50:
         return json.dumps({"error": "limit must be between 1 and 50"})
 
+    if owner_loop is None or not owner_loop.is_running():
+        return json.dumps({"error": "Matrix gateway loop is unavailable"})
+
     read = adapter.read_matrix_context(
         kind,
         room_id,
@@ -48,14 +51,17 @@ async def _matrix_read(args: dict[str, Any]) -> str:
         limit,
         requester=requester,
     )
-    if (
-        owner_loop is not None
-        and owner_loop.is_running()
-        and owner_loop is not asyncio.get_running_loop()
-    ):
-        result = await asyncio.wrap_future(
-            asyncio.run_coroutine_threadsafe(read, owner_loop)
-        )
+    if owner_loop is not asyncio.get_running_loop():
+        try:
+            future = asyncio.run_coroutine_threadsafe(read, owner_loop)
+        except RuntimeError:
+            read.close()
+            return json.dumps({"error": "Matrix gateway loop is unavailable"})
+        try:
+            result = await asyncio.wait_for(asyncio.wrap_future(future), timeout=60.0)
+        except asyncio.TimeoutError:
+            future.cancel()
+            return json.dumps({"error": "Matrix read timed out"})
     else:
         result = await read
     return json.dumps(result, ensure_ascii=False)

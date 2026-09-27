@@ -131,6 +131,66 @@ class TestImageTooLargeClassification:
         result = classify_api_error(err, provider="kimi-coding", model="kimi-k2")
         assert result.reason != FailoverReason.image_too_large
 
+    def test_deepseek_wording_is_route_gated(self):
+        """The DeepSeek dimension-rejection fragment only means too large on a
+        DeepSeek-family route. The same wording elsewhere is a codec rejection:
+        routing it into the shrink ladder swallows the failure (a valid small
+        image shrinks to changed=False, so no retry fires) instead of stripping
+        the undecodable part (#122449 review)."""
+        err = _FakeApiError(
+            status_code=400,
+            message=(
+                ".messages[30].image[1]: You have uploaded an unsupported image. "
+                "Please make sure your image is valid and has one of the following "
+                "formats: webp, png, jpeg, and gif."
+            ),
+        )
+        result = classify_api_error(err, provider="openai", model="gpt-5.6")
+        assert result.reason != FailoverReason.image_too_large
+
+    def test_codec_rejections_strip_instead_of_shrinking(self):
+        """azure/Google/Anthropic reject an image whose codec they cannot decode
+        with "unsupported image" wordings of their own. Undecodable bytes want
+        the strip-and-retry rung (image_corrupt), never the shrink ladder
+        (#122449 review)."""
+        cases = [
+            ("azure", "Invalid request: the media item is an unsupported image. Supported formats: PNG, JPEG, WebP."),
+            ("google", "Invalid request: request contains an unsupported image (avif)."),
+            ("anthropic", "Invalid request: the image format is not supported. Only PNG, JPEG, GIF and WebP images are supported."),
+        ]
+        for provider, message in cases:
+            err = _FakeApiError(status_code=400, message=message)
+            result = classify_api_error(err, provider=provider, model="m")
+            assert result.reason == FailoverReason.image_corrupt, (provider, result.reason)
+
+    def test_tail_verdicts_survive_an_appended_deepseek_phrase(self):
+        """The image rule list runs ahead of the 400 tail rules, so an ungated
+        "uploaded an unsupported image" phrase appended to a decisive body used
+        to steal its verdict — a rate limit stopped rotating credentials, an
+        overflow stopped compacting (#122449 review). The route gate restores
+        the tails."""
+        rate = _FakeApiError(
+            status_code=400,
+            message=(
+                "Rate limit exceeded. Please try again in 8s. "
+                "Also note: you uploaded an unsupported image."
+            ),
+        )
+        result = classify_api_error(rate, provider="openai", model="gpt-5.6")
+        assert result.reason == FailoverReason.rate_limit
+        assert result.should_rotate_credential is True
+
+        overflow = _FakeApiError(
+            status_code=400,
+            message=(
+                "This model's maximum context length is 8192 tokens. However, "
+                "you uploaded an unsupported image."
+            ),
+        )
+        result = classify_api_error(overflow, provider="openai", model="gpt-5.6")
+        assert result.reason == FailoverReason.context_overflow
+        assert result.should_compress is True
+
     def test_unrelated_400_still_not_image_too_large(self):
         """The new "media" patterns must not widen into ordinary 400s."""
         err = _FakeApiError(

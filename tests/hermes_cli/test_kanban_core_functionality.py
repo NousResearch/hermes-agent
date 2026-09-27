@@ -1448,3 +1448,44 @@ def test_log_parser_accepts_board_before_and_after_the_subcommand(kanban_home):
     assert (post.log_board or post.board) == "trading"
     bare = top.parse_args(["kanban", "log", "t1"])
     assert not (getattr(bare, "log_board", None) or bare.board)
+
+
+def test_log_subcommand_board_flag_hits_the_existence_guard(kanban_home):
+    """`log <id> --board <typo>` must be rejected like the parent-level form, not
+    fall through to the false "may not have spawned yet" miss (#122549 review)."""
+    from hermes_cli import kanban as kc
+
+    kbc.connect(board="trading").close()
+    # Drive the full slash path so the dispatcher + subcommand flag are both real.
+    out = kc.run_slash("log t_x --board treading")
+    assert "board 'treading' does not exist" in out
+    assert "may not have spawned yet" not in out
+
+    # Parent-level form keeps the dispatcher guard with the same wording.
+    out = kc.run_slash("--board treading log t_x")
+    assert "board 'treading' does not exist" in out
+
+    # A real board still resolves through the same code path after the check.
+    log_path = kb.worker_log_path("t_x", board="trading")
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_text("trading log\n")
+    assert "trading log" in kc.run_slash("log t_x --board trading")
+
+
+def test_log_miss_hint_counts_boards_beyond_the_first_three(kanban_home, capsys):
+    """The cross-board hint caps at three names but must say how many more were
+    dropped, not drop them silently (#122549 review)."""
+    import argparse
+
+    from hermes_cli import kanban as kc
+
+    tid = "t_manyboards"
+    for slug in ("b1", "b2", "b3", "b4"):
+        kbc.connect(board=slug).close()
+        p = kb.worker_log_path(tid, board=slug)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("x\n")
+    args = argparse.Namespace(task_id=tid, tail=None, board=None, log_board=None)
+    assert kc._cmd_log(args) == 1
+    err = capsys.readouterr().err
+    assert "+ 1 more" in err

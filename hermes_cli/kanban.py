@@ -1206,6 +1206,20 @@ def _cmd_notify_unsubscribe(args: argparse.Namespace) -> int:
 
 def _cmd_log(args: argparse.Namespace) -> int:
     board = getattr(args, "log_board", None) or getattr(args, "board", None)
+    # The dispatcher guards the parent-level --board, but the subcommand flag binds a
+    # different dest, so validate it here too: a typoed slug would otherwise fall through
+    # to read_worker_log and reprint the false "may not have spawned yet" cause.
+    if getattr(args, "log_board", None):
+        try:
+            normed = kb._normalize_board_slug(args.log_board)
+        except ValueError as exc:
+            return _err(f"kanban: {exc}", 2)
+        if not normed:
+            return _err("kanban: --board requires a slug", 2)
+        if normed != kb.DEFAULT_BOARD and not kb.board_exists(normed):
+            return _err(f"kanban: board {normed!r} does not exist. "
+                        f"Create it with `hermes kanban boards create {normed}`.")
+        board = normed
     content = kb.read_worker_log(args.task_id, tail_bytes=args.tail, board=board)
     if content is None:
         slug = board or kb.get_current_board()
@@ -1216,6 +1230,8 @@ def _cmd_log(args: argparse.Namespace) -> int:
         ]
         if elsewhere:
             hint = "; ".join(f"'{s}' (rerun with --board {s})" for s in elsewhere[:3])
+            if len(elsewhere) > 3:
+                hint += f"; + {len(elsewhere) - 3} more"
             return _err(f"(no log for {args.task_id} on board '{slug}' — no log file at {searched}; "
                         f"a log exists on board {hint})")
         return _err(f"(no log for {args.task_id} on board '{slug}' — no log file at {searched}; "

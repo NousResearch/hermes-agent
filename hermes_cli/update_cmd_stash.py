@@ -224,6 +224,28 @@ def _stash_apply_failed_only_on_existing_untracked(stderr: str) -> bool:
     return saw_untracked_error
 
 
+def _untracked_collisions_that_differ(git_cmd: list[str], cwd: Path, stash_ref: str, stderr: str) -> list[str]:
+    """Paths ``git stash apply`` refused ("<path> already exists, no checkout") whose working-tree
+    content is NOT the stash's untracked copy (``<stash>^3``). Unknown -> treated as differing."""
+    differing = []
+    suffix = " already exists, no checkout"
+    for ln in (stderr or "").splitlines():
+        ln = ln.strip()
+        if not ln.endswith(suffix):
+            continue
+        rel = ln[: -len(suffix)]
+        stashed = subprocess.run(
+            [*git_cmd, "show", f"{stash_ref}^3:{rel}"], cwd=cwd, capture_output=True, check=False,
+        )
+        try:
+            current = (Path(cwd) / rel).read_bytes()
+        except OSError:
+            current = None
+        if stashed.returncode != 0 or current != stashed.stdout:
+            differing.append(rel)
+    return differing
+
+
 def _park_stashed_changes(stash_ref: str) -> None:
     """Leave a pre-update autostash parked (``--keep-stash``, the desktop updater's mode): local source
     edits must never be silently re-applied onto updated code; the entry stays in ``git stash``."""
@@ -326,10 +348,21 @@ def _apply_stash(git_cmd: list[str], cwd: Path, stash_ref: str) -> bool:
     if restore.returncode == 0 and not conflicted_files:
         return True
     if not conflicted_files and _stash_apply_failed_only_on_existing_untracked(restore.stderr):
-        # Tracked changes applied; only undeletable-at-stash-time untracked files were refused. Their
-        # content is untouched — treat as restored.
-        print("  ⚠ Some stashed untracked files already exist in the working tree and were kept as-is.")
-        return True
+        # Tracked changes applied; git refused to overwrite untracked files that already exist. That is
+        # harmless only when the occupant IS the stashed copy (undeletable at stash time, #70127). When
+        # the update added its own file at that path, dropping the stash would lose the user's copy.
+        replaced = _untracked_collisions_that_differ(git_cmd, cwd, stash_ref, restore.stderr)
+        if not replaced:
+            print("  ⚠ Some stashed untracked files already exist in the working tree and were kept as-is.")
+            return True
+        print(f"⚠ The update added {len(replaced)} file(s) where you had untracked files of the same name:")
+        for path in replaced[:10]:
+            print(f"    {path}")
+        print("  The updated files are in place; your versions are kept in the stash, which was NOT dropped.")
+        print(f"  Stash ref: {stash_ref}")
+        print(f"  Recover a file with: git show {stash_ref}^3:<path> > <path>.mine")
+        _record_stash_disposition("parked", stash_ref, f"untracked files replaced by the update: {', '.join(replaced[:10])}")
+        return False
     print("✗ Update pulled new code, but restoring local changes hit conflicts.")
     _print_nonempty(restore.stdout)
     _print_nonempty(restore.stderr)

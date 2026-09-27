@@ -577,3 +577,42 @@ def test_keep_stash_park_records_parked_step_in_receipt(capsys):
     assert len(disposition) == 1
     assert disposition[0]["ok"] is False
     assert "parked" in disposition[0]["detail"]
+
+
+def test_untracked_file_replaced_by_the_update_keeps_the_stash(tmp_path):
+    """#124641: the update adds a file where the user had an untracked file of the same name.
+    ``stash apply`` refuses it ("already exists, no checkout"); the stash is the only copy of the
+    user's version, so it must stay (parked), never be dropped as "kept as-is"."""
+    import subprocess
+
+    def git(*args, check=True):
+        return subprocess.run(["git", *args], cwd=tmp_path, capture_output=True, text=True, check=check)
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "t")
+    (tmp_path / "tracked.txt").write_text("v1\n", encoding="utf-8")
+    git("add", "-A")
+    git("commit", "-qm", "init")
+
+    (tmp_path / "tracked.txt").write_text("v1 local edit\n", encoding="utf-8")
+    (tmp_path / "notes.md").write_text("my private notes\n", encoding="utf-8")
+    stash_ref = hermes_main._stash_local_changes_if_needed(["git"], tmp_path)
+    assert stash_ref
+    # The pull adds its own notes.md.
+    (tmp_path / "notes.md").write_text("upstream notes\n", encoding="utf-8")
+    git("add", "-A")
+    git("commit", "-qm", "upstream adds notes.md")
+
+    probe = _ReceiptProbe()
+    with _active_receipt(probe):
+        restored = hermes_main._restore_stashed_changes(["git"], tmp_path, stash_ref, prompt_user=False)
+
+    assert restored is False
+    assert (tmp_path / "tracked.txt").read_text(encoding="utf-8") == "v1 local edit\n"
+    assert (tmp_path / "notes.md").read_text(encoding="utf-8") == "upstream notes\n"
+    assert git("stash", "list").stdout.strip(), "the stash is the only copy of the user's notes.md"
+    assert git("show", f"{stash_ref}^3:notes.md").stdout == "my private notes\n"
+    disposition = [s for s in probe.steps if s["name"] == "local_changes_stash"]
+    assert len(disposition) == 1 and disposition[0]["ok"] is False
+    assert "parked" in disposition[0]["detail"] and "notes.md" in disposition[0]["detail"]

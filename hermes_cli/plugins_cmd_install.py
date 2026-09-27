@@ -269,6 +269,14 @@ def _refuse_unavailable_portable_plugin(plugin_name: str, tree: Path) -> None:
         )
 
 
+def _known_issue_warnings(entry) -> list[str]:
+    """Catalog ``known_issues`` are informational (#124058): surface them as warnings, never a gate.
+
+    The guard for the traps they describe belongs at the mode-selection seam (#122341 / #123771).
+    """
+    return [f"Known issue: {issue}" for issue in entry.known_issues]
+
+
 def _install_plugin_core(
     identifier: str,
     *,
@@ -420,14 +428,6 @@ def cmd_install(
         console.print(catalog.entry_capability_summary(entry))
     else:
         console.print("[yellow]Warning:[/yellow] custom (unreviewed) source — not from the Hermes catalog.")
-    if entry is not None and entry.known_issues:
-        # #124058: informational only — the catalog documents traps
-        # (unsupported install-method/mode combinations, retired lazy-install
-        # paths, ...) that the user should see before installing. They never
-        # block the install; the guard belongs at the mode-selection seam
-        # (#122341 / #123771 remove the root cause on main).
-        for issue in entry.known_issues:
-            console.print(f"[yellow]Known issue:[/yellow] {issue}")
     if allow_removed:
         console.print(
             "[bold red]WARNING:[/bold red] [red]--allow-removed set — skipping the catalog kill-list check. "
@@ -550,13 +550,7 @@ def dashboard_install_plugin(
         entry = catalog.get_live_catalog_entry(catalog_name)
         if entry is None:
             return {"ok": False, "error": f"'{catalog_name}' is not in the Hermes plugin catalog."}
-        if entry.known_issues:
-            # #124058: informational only — a documented trap must not install
-            # silently, but the gate belongs at the mode-selection seam, not
-            # the install entry (teknium1 review on #124037; #122341/#123771
-            # remove the root cause). Surface the text; never refuse.
-            for issue in entry.known_issues:
-                warnings.append(f"Known issue: {issue}")
+        warnings.extend(_known_issue_warnings(entry))
         identifier = entry.install_identifier
     else:
         warnings.append("Custom (unreviewed) source — not from the Hermes catalog.")

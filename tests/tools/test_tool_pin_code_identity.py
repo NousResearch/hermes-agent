@@ -58,5 +58,24 @@ def test_pin_keyed_by_sha_replays_pinned_bytes_and_a_new_sha_does_not(monkeypatc
     assert post_update.tools[0]["function"]["description"] == "NEW bytes"  # other code: current bytes
 
 
+def test_identity_less_tree_never_replays_pinned_bytes(monkeypatch):
+    """The staleness regression this PR exists for: an unstamped, non-git tree. The identity
+    reader reports the placeholder ``version: "unknown"`` — truthy and CONSTANT, so keying
+    the pin by it compared equal on both sides of an update and replayed pre-update tools[]
+    bytes. With no sha the pin takes the current definitions instead."""
+    from hermes_cli import version_info
+
+    monkeypatch.setattr(
+        version_info, "get_code_identity",
+        lambda refresh=False: {"sha": None, "short_sha": None, "version": "unknown", "source": "unknown"},
+    )
+    assert mcp_tool_agent.tool_pin_version() is None
+
+    pin = {"version": mcp_tool_agent.tool_pin_version(), "tools": [_pinned_def("read_file", "OLD bytes")]}
+    fresh = _agent([_pinned_def("read_file", "NEW bytes")])
+    mcp_tool_agent.restore_agent_tool_prefix(fresh, pin)
+    assert fresh.tools[0]["function"]["description"] == "NEW bytes"  # no identity: fresh bytes
+
+
 if __name__ == "__main__":
     raise SystemExit("run via pytest")

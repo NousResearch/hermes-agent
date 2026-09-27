@@ -26,6 +26,8 @@ def _identity(monkeypatch, sha, source):
 def test_stamped_image_contains_exactly_its_stamp(monkeypatch, source):
     stamped = "b936546561aa0d2e6d0f7c3d1a9c5e8f2b4d6a70"
     _identity(monkeypatch, stamped, source)
+    # The premise is a stamped IMAGE: no .git, nothing for a merge-base to walk.
+    monkeypatch.setattr(chk, "_has_git_history", lambda: False)
     # no git call may be attempted on a stamped image: make one blow up if it is
     monkeypatch.setattr(chk.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(AssertionError("git probe on a stamped image")))
     assert chk.checkout_contains(stamped) is True
@@ -33,9 +35,40 @@ def test_stamped_image_contains_exactly_its_stamp(monkeypatch, source):
     assert chk.checkout_contains("0000000000aa0d2e6d0f7c3d1a9c5e8f2b4d6a70") is False
 
 
+def test_stamped_checkout_with_git_walks_ancestry_past_the_stamp(monkeypatch):
+    """#119367: a "local" stamp is written FROM a git checkout, so while ``.git`` exists the
+    ancestry walk — not stamp equality — answers. HEAD sitting past the recorded sha by a
+    carried hotfix must still count as containing it; stamp equality would say no."""
+    _identity(monkeypatch, "deadbeef" * 5, "local")
+    monkeypatch.setattr(chk, "_has_git_history", lambda: True)
+    calls = []
+
+    class _R:
+        returncode = 0
+
+    monkeypatch.setattr(chk.subprocess, "run", lambda cmd, **k: calls.append(cmd) or _R())
+    # The recorded sha is NOT the stamp's sha and not equal/prefix to it — only ancestry
+    # (the merge-base verdict mocked True) can say HEAD contains it.
+    assert chk.checkout_contains("cafebabe" * 5) is True
+    assert calls and calls[0][:3] == ["git", "merge-base", "--is-ancestor"]
+
+
+def test_identity_reader_raising_stays_fail_closed(monkeypatch):
+    """The identity read sits inside the fail-closed guard: a reader that raises (import-
+    stripped tree, malformed env) yields False, never an exception up to the fleet ledger."""
+    monkeypatch.setattr(chk, "_has_git_history", lambda: False)
+
+    def _boom(refresh=False):
+        raise RuntimeError("no build info")
+
+    monkeypatch.setattr(version_info, "get_code_identity", _boom)
+    assert chk.checkout_contains("b936546561aa0d2e6d0f7c3d1a9c5e8f2b4d6a70") is False
+
+
 def test_unstamped_unknown_identity_stays_fail_closed(monkeypatch):
     """No stamp and no git: unknown ancestry is not evidence the fleet serves the update."""
     _identity(monkeypatch, None, "unknown")
+    monkeypatch.setattr(chk, "_has_git_history", lambda: False)
     monkeypatch.setattr(chk.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(AssertionError("git probe without provenance")))
     assert chk.checkout_contains("b936546561aa0d2e6d0f7c3d1a9c5e8f2b4d6a70") is False
 
@@ -43,6 +76,7 @@ def test_unstamped_unknown_identity_stays_fail_closed(monkeypatch):
 def test_git_checkout_still_walks_ancestry(monkeypatch):
     """Control: a source install keeps asking git, so a carried hotfix past the pulled SHA still counts."""
     _identity(monkeypatch, "deadbeef" * 5, "git")
+    monkeypatch.setattr(chk, "_has_git_history", lambda: True)
     calls = []
 
     class _R:

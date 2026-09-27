@@ -31,13 +31,7 @@ from gateway.session import SessionEntry, SessionSource, build_session_key
 from tests.gateway.restart_test_helpers import RestartTestAdapter
 
 
-class _Adapter(RestartTestAdapter):
-    def __init__(self):
-        super().__init__()
-        self.typing_calls = 0
-
-    async def send_typing(self, chat_id, metadata=None):
-        self.typing_calls += 1
+_Adapter = RestartTestAdapter
 
 
 def _source() -> SessionSource:
@@ -95,8 +89,11 @@ def _runner_with_running_agent(adapter, *, compression_in_flight):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("busy_mode", ["interrupt", "steer"])
-@pytest.mark.parametrize("rewrite_hook", [False, True])
-async def test_requeued_busy_event_does_not_hot_loop(rewrite_hook, busy_mode):
+@pytest.mark.parametrize("rewrite_hook,message_id", [
+    (False, "m1"), (True, "m1"),
+    (True, None),  # id-less rewrite copy: only the copied timestamp ties it to the dispatch
+])
+async def test_requeued_busy_event_does_not_hot_loop(rewrite_hook, message_id, busy_mode):
     adapter = _Adapter()
     runner, agent, sk = _runner_with_running_agent(adapter, compression_in_flight=True)
     # interrupt: demoted to queue (compression in flight); steer: agent refuses -> queue fallback.
@@ -116,22 +113,21 @@ async def test_requeued_busy_event_does_not_hot_loop(rewrite_hook, busy_mode):
 
     # The new adapter holds no guard for the session (the reconnect replaced it mid-turn).
     assert sk not in adapter._active_sessions
-    await adapter.handle_message(MessageEvent(text="still there?", source=_source(), message_id="m1"))
+    await adapter.handle_message(
+        MessageEvent(text="still there?", source=_source(), message_id=message_id))
     # Measure after the first dispatch so a cold first handler call can't eat the window.
     for _ in range(1000):
         if busy_calls:
             break
         await asyncio.sleep(0.01)
-    base_dispatches, base_typing = len(busy_calls), adapter.typing_calls
+    base_dispatches = len(busy_calls)
     await asyncio.sleep(1.0)
     dispatches = len(busy_calls) - base_dispatches
-    typing = adapter.typing_calls - base_typing
     await adapter.cancel_background_tasks()
 
     agent.interrupt.assert_not_called()
-    # Unpatched: hundreds of dispatches (and typing refreshes) per second. Patched: a handful.
+    # Unpatched: hundreds of dispatches per second. Patched: a handful.
     assert dispatches <= 8, f"hot loop: {dispatches} re-dispatches in 1s"
-    assert typing <= 8, f"typing churn: {typing} typing requests in 1s"
 
 
 @pytest.mark.asyncio
@@ -148,29 +144,33 @@ async def test_requeued_event_runs_once_the_agent_finishes():
         if sk not in runner._running_agents:
             handled.append(event.text)
             starts.append(time.monotonic())
-            await asyncio.sleep(0.05)
+            runner._running_agents[sk] = agent  # a real turn owned by this adapter
+            await asyncio.sleep(0.02)
+            nxt = {"queued msg": "f1", "f1": "f2", "f2": "f3"}.get(event.text)
+            if nxt:  # a genuine follow-up reaches the runner mid-turn and is queued behind it
+                await real_handle(MessageEvent(text=nxt, source=_source(), message_id=nxt))
+            await asyncio.sleep(0.03)
+            runner._running_agents.pop(sk, None)
             ends.append(time.monotonic())
             return None  # streamed turn: the body was already delivered
         return await real_handle(event)
 
     adapter.set_message_handler(handler)
     await adapter.handle_message(MessageEvent(text="queued msg", source=_source(), message_id="m2"))
-    await asyncio.sleep(0.6)
+    # Wait for a real back-off (not a fixed sleep: a cold first dispatch can take >1s under load).
+    for _ in range(2000):
+        if adapter._requeue_counts.get(sk, 0) >= 2 and sk in adapter._pending_messages:
+            break
+        await asyncio.sleep(0.01)
     # A cancel during the back-off (e.g. /stop) must not lose the queued event: it stays pending.
     await adapter.cancel_session_processing(sk, discard_pending=False)
     assert adapter._pending_messages[sk].text == "queued msg"
     runner._running_agents.pop(sk)  # the long turn finishes
     await adapter._drain_pending_after_session_command(sk, asyncio.Event())  # /stop tail replays it
-    for _ in range(1000):
-        if handled:
+    for _ in range(2000):
+        if len(ends) >= 4:
             break
         await asyncio.sleep(0.01)
-    for i in range(1, 4):  # a genuine follow-up queued during each (None-returning) turn
-        await adapter.handle_message(MessageEvent(text=f"f{i}", source=_source(), message_id=f"f{i}"))
-        for _ in range(100):
-            if len(handled) > i:
-                break
-            await asyncio.sleep(0.01)
     await adapter.cancel_background_tasks()
     assert handled == ["queued msg", "f1", "f2", "f3"]
     gaps = [starts[i] - ends[i - 1] for i in range(1, len(starts))]

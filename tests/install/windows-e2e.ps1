@@ -1220,15 +1220,24 @@ function Invoke-UserStateActions {
         if (-not ($chatHelp -match '(^|\s)-q(\s|,|$)' -or $chatHelp -match '--quiet')) {
             throw 'the installed CLI has no one-shot chat flag; this leg cannot produce a session through the user path'
         }
+        # Since a5c7eed (v2026.9.21+) `-q` on a real TTY seeds an INTERACTIVE session and
+        # only answers-and-exits with --oneshot (or on non-TTY stdio). The pseudoconsole
+        # below IS a TTY, so without --oneshot the turn answers and then sits at the
+        # prompt forever. Older tags have no --oneshot and exit after -q on their own.
+        $oneshot = @()
+        if ($chatHelp -match '--oneshot') { $oneshot = @('--oneshot') }
         $before = Get-UserStateSessionCount
         $log = Join-Path $WorkRoot 'logs\user-state-chat.log'
         # A released tag prints through prompt_toolkit, whose Windows output object needs
         # a console screen buffer: piping the CLI's stdout into the log takes that away
         # and the turn dies with NoConsoleScreenBufferError. Run it under a real
         # pseudoconsole (pty-run.py) and keep the capture.
-        & python -B (Join-Path $AssetsDir 'pty-run.py') --out $log --timeout 900 -- $hermes chat -q "Reply with the single word: ok"
+        & python -B (Join-Path $AssetsDir 'pty-run.py') --out $log --timeout 300 -- $hermes chat -q "Reply with the single word: ok" @oneshot
         $chatExit = $LASTEXITCODE
         Write-LogGroup 'first real chat turn' $log
+        if ($chatExit -eq 124) {
+            throw "the first chat turn never exited (still running after 300s; flags: chat -q $($oneshot -join ' ')); see $log"
+        }
         if ($chatExit -ne 0) { throw "the first chat turn failed (exit $chatExit); see $log" }
         $after = Get-UserStateSessionCount
         # A fresh install has no state.db until the first turn: -1 means "no

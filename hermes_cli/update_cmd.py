@@ -569,9 +569,12 @@ _PM_WORKSPACE_GUIDANCE = (
     "✗ Not a git repository — this hermes runs a PM environment's workspace\n"
     "  snapshot, which deliberately has no .git. The install itself is healthy;\n"
     "  re-running the installer is not the fix.\n"
-    "  Update from the checkout that owns this environment instead: run the\n"
-    "  hermes of your install (the one first on your default PATH), not this\n"
-    "  environment's venv."
+    "  Update from the checkout that owns this environment instead: cd into\n"
+    "  that checkout and run its own venv entry, e.g.\n"
+    "  `cd <checkout> && venv/bin/hermes update --yes`\n"
+    "  (Windows: `venv\\Scripts\\hermes.exe`). Do not use the hermes first on\n"
+    "  your PATH for this: on a PM-provisioned checkout that entry re-execs\n"
+    "  into this same staged venv and loops back to this message."
 )
 
 

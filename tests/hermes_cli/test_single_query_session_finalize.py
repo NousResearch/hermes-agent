@@ -158,6 +158,52 @@ def test_finalize_settles_session_before_a_successor_can_take_over(tmp_path, mon
     taken_over["lease_b"].release()
 
 
+def test_finalize_commits_memory_session_before_a_successor_can_take_over(tmp_path, monkeypatch):
+    """Memory-provider session finalization is session-owned settlement: providers
+    commit THIS session's remote state at ``on_session_end`` (OpenViking posts
+    ``sessions/{sid}/commit``; Supermemory flushes pending turns stamped with the
+    session id). It must land while this process still owns the lease — post-release
+    it would fire while the successor is mid-turn on the session.
+
+    Discriminating: with the phase-1 memory shutdown removed, ``memory_commit`` is
+    never recorded before the successor's acquisition and this test fails."""
+    from hermes_cli import active_sessions
+
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    events: list[str] = []
+    lease_a, message = active_sessions.try_acquire_active_session(
+        session_id="s1", surface="cli", config={}, metadata={"live_session_id": "s1"}
+    )
+    assert lease_a is not None, message
+
+    agent_a = SimpleNamespace(
+        session_id="s1", _session_messages=[],
+        shutdown_memory_provider=lambda *a, **k: events.append("memory_commit"),
+    )
+    cli_a = SimpleNamespace(
+        agent=agent_a, session_id="s1", conversation_history=[],
+        _release_active_session=lambda: (events.append("release"), lease_a.release()),
+    )
+
+    def linger_with_takeover(_cli):
+        lease_b, msg_b = active_sessions.try_acquire_active_session(
+            session_id="s1", surface="cli", config={}, metadata={"live_session_id": "s1"}
+        )
+        assert lease_b is not None, f"successor could not acquire during the linger: {msg_b}"
+        events.append("successor_acquired")
+        lease_b.release()
+
+    monkeypatch.setattr(cli, "_wait_for_oneshot_background_completions", linger_with_takeover)
+    monkeypatch.setattr(cli, "_flush_one_shot_session_store", lambda _c: None)
+    monkeypatch.setattr(cli, "_notify_single_query_session_finalize", lambda _c: None)
+    monkeypatch.setattr(cli, "_run_cleanup", lambda **_k: None)
+
+    cli._finalize_single_query(cli_a)
+
+    assert events == ["memory_commit", "release", "successor_acquired"]
+
+
 
 
 def test_notify_single_query_session_finalize_uses_agent_session(monkeypatch):

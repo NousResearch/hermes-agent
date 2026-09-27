@@ -118,7 +118,10 @@ describe('preprocessMarkdown / bare loopback URLs in prose', () => {
     ['Wildcard bind: http://0.0.0.0:8000', 'http://0.0.0.0:8000'],
     ['IPv6 loopback: http://[::1]:8080/status', 'http://[::1]:8080/status'],
     ['Trailing slash: http://localhost:3000/ - panel', 'http://localhost:3000/'],
-    ['Server at http://localhost:3000 and docs at https://example.com', ['http://localhost:3000', 'https://example.com']]
+    [
+      'Server at http://localhost:3000 and docs at https://example.com',
+      ['http://localhost:3000', 'https://example.com']
+    ]
   ])('preserves bare loopback URLs in prose: %s', (input, expected) => {
     expect(hrefs(input)).toEqual([expected].flat())
   })

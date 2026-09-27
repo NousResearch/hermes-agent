@@ -134,5 +134,7 @@ def test_diagnostics_reports_resolved_allowlist(kanban_home, capsys, config, exp
     assert f"kanban.dispatch_profiles: {expected}" in text
     assert kanban_cli._cmd_diagnostics(argparse.Namespace(task=None, severity=None, json=True)) == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload == [{"task_id": None, "dispatch_profiles": payload[-1]["dispatch_profiles"], "diagnostics": []}]
+    assert payload == [{"task_id": None, "dispatch_profiles": payload[-1]["dispatch_profiles"],
+                        "provider_concurrency": payload[-1]["provider_concurrency"],
+                        "diagnostics": []}]
     assert payload[-1]["dispatch_profiles"].startswith(expected)

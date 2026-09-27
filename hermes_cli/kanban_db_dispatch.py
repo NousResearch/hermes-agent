@@ -29,6 +29,7 @@ from hermes_cli.quiet_single_query import KANBAN_WORKER_EXIT_TRAILER
 
 if TYPE_CHECKING:
     from hermes_cli.kanban_db import Task
+    from hermes_cli.kanban_provider_budget import ProviderBudgets, RouteKeyResolver
 
 
 # After this many consecutive non-success attempts on a task/profile the
@@ -145,6 +146,11 @@ class DispatchResult:
     """Task ids whose workers bailed on a provider rate-limit / quota wall
     (EX_TEMPFAIL sentinel exit) and were released to ``ready`` WITHOUT counting
     a failure — a long quota window must never trip the circuit breaker."""
+    skipped_provider_budget: list[tuple[str, str, int, int]] = field(default_factory=list)
+    """``(task_id, provider_key, current_running, cap)`` deferred because the
+    run's resolved provider is at ``kanban.provider_concurrency`` (#123654).
+    The row stays ``ready``/``review`` — defer, never kill — and is re-evaluated
+    next tick; a held provider never blocks rows on other providers."""
     skipped_locked: bool = False
     """True when another process held the board's dispatch lock: this tick did
     no DB writes; the lock holder is making progress on the same board."""
@@ -166,6 +172,9 @@ def describe_suppression(results: Iterable[Optional["DispatchResult"]]) -> str:
     """
     counts: dict[str, int] = {}
     pressure: Optional[str] = None
+    # provider_budget[key] -> (current, cap); a board host-wide count is the MAX
+    # across the given results (one entry per tick result set).
+    provider_hold: dict[str, tuple[int, int]] = {}
     for res in results:
         if res is None:
             continue
@@ -177,7 +186,14 @@ def describe_suppression(results: Iterable[Optional["DispatchResult"]]) -> str:
             counts["skipped_locked"] = counts.get("skipped_locked", 0) + 1
         if res.memory_pressure:
             pressure = res.memory_pressure
+        for _tid, key, current, cap in getattr(res, "skipped_provider_budget", []) or []:
+            prev = provider_hold.get(key)
+            if prev is None or current > prev[0]:
+                provider_hold[key] = (current, cap)
     parts = [f"{k}={v}" for k, v in sorted(counts.items())]
+    for key in sorted(provider_hold):
+        current, cap = provider_hold[key]
+        parts.append(f"provider_budget[{key}]={current}/{cap}")
     if pressure:
         parts.append(f"memory_pressure={pressure}")
     return ", ".join(parts)
@@ -1868,6 +1884,24 @@ def configured_max_in_progress() -> Optional[int]:
     return ival if ival >= 1 else None
 
 
+def configured_provider_concurrency() -> Optional[dict]:
+    """RAW ``kanban.provider_concurrency`` mapping from config, or None.
+
+    Kept raw (a plain dict) all the way to ``_dispatch_once_locked``, which
+    parses + memoizes it — the gateway's ``dataclasses.asdict`` passthrough and
+    #117755's dict comparison stay trivial (MoA B2), and every dispatch entry
+    point (``hermes kanban dispatch``, the daemon, the gateway) reads the same
+    live value.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        raw = (load_config_readonly() or {}).get("kanban", {}).get("provider_concurrency")
+        return raw if isinstance(raw, dict) else None
+    except Exception:
+        return None
+
+
 def count_running_tasks(conn: sqlite3.Connection) -> int:
     """Number of tasks in ``status='running'``.
 
@@ -1954,6 +1988,7 @@ def dispatch_once(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    provider_concurrency: Optional[dict] = None,
     reconcile_orphans: bool = True,
 ) -> DispatchResult:
     """Run one dispatcher tick under the board's single-writer lock.
@@ -1977,6 +2012,7 @@ def dispatch_once(
             board=board,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            provider_concurrency=provider_concurrency,
             reconcile_orphans=reconcile_orphans,
         )
 
@@ -2027,6 +2063,9 @@ def _dispatch_lane_task(
     spawn_fn,
     per_profile_cap: Optional[int],
     per_profile_running: dict[str, int],
+    provider_budgets: Optional["ProviderBudgets"] = None,
+    provider_running: Optional[dict] = None,
+    provider_resolver: Optional["RouteKeyResolver"] = None,
 ) -> bool:
     """Guard, claim, resolve the workspace and spawn one ready/review row.
     Returns True when a spawn slot was consumed (real or ``dry_run``); every
@@ -2063,18 +2102,38 @@ def _dispatch_lane_task(
                 _kb._append_event(conn, task_id, "respawn_guarded", {"reason": guard_reason})
         return False
 
-    def _count_spawn(name: str) -> None:
+    # Per-provider concurrency budget (#123654): AFTER the cheap negative
+    # checks (per-profile cap, respawn guard) so guarded rows are neither
+    # resolved nor reported as provider-held, and BEFORE the claim. Defer,
+    # never kill: the row stays ready/review and is re-evaluated next tick.
+    provider_key: Optional[str] = None
+    if provider_resolver is not None:
+        provider_key = provider_resolver.resolve(
+            assignee, row["model_override"], row["provider_override"])
+        if provider_budgets is not None:
+            cap = provider_budgets.cap_for(provider_key)
+            if cap is not None:
+                current = (provider_running or {}).get(provider_key, 0)
+                if current >= cap:
+                    result.skipped_provider_budget.append(
+                        (task_id, provider_key, current, cap))
+                    return False
+
+    def _count_spawn(name: str, key: Optional[str] = None) -> None:
         # Later rows in this tick respect the per-profile cap; subsequent
         # ticks re-query from the DB.
         if per_profile_cap is not None and name:
             per_profile_running[name] = per_profile_running.get(name, 0) + 1
+        # Same for the provider budget: consumed slots count in-tick.
+        if key is not None and provider_running is not None:
+            provider_running[key] = provider_running.get(key, 0) + 1
 
     if dry_run:
         result.spawned.append((task_id, assignee, ""))
-        _count_spawn(assignee)
+        _count_spawn(assignee, provider_key)
         return True
     claim = _kb.claim_review_task if lane == "review" else _kb.claim_task
-    claimed = claim(conn, task_id, ttl_seconds=ttl_seconds)
+    claimed = claim(conn, task_id, ttl_seconds=ttl_seconds, provider_key=provider_key)
     if claimed is None:
         return False
     try:
@@ -2108,7 +2167,7 @@ def _dispatch_lane_task(
         # spawn would let a task that keeps timing out loop forever. Cleared
         # only on successful completion (complete_task).
         result.spawned.append((claimed.id, claimed.assignee or "", str(workspace)))
-        _count_spawn(claimed.assignee)
+        _count_spawn(claimed.assignee or "", provider_key)
         return True
     except Exception as exc:
         from tools.process_registry import RestartSafeScopeUnavailable
@@ -2247,7 +2306,7 @@ def _tick_spawn_budget(
 def _lane_rows(conn: sqlite3.Connection, status: str) -> list[sqlite3.Row]:
     """Unclaimed rows of one lane in dispatch order."""
     return conn.execute(
-        "SELECT id, assignee FROM tasks "
+        "SELECT id, assignee, model_override, provider_override FROM tasks "
         f"WHERE status = '{status}' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
@@ -2259,14 +2318,18 @@ def _any_spawnable_review(
     *,
     per_profile_cap: Optional[int] = None,
     per_profile_running: Optional[dict[str, int]] = None,
+    provider_budgets: Optional["ProviderBudgets"] = None,
+    provider_running: Optional[dict] = None,
+    provider_resolver: Optional["RouteKeyResolver"] = None,
 ) -> bool:
     """Mirror review dispatch gates before reserving ready-lane capacity.
 
     Unavailable profile metadata retains the historic fail-open behavior. A
     review row that :func:`_dispatch_lane_task` would refuse this tick — its
-    assignee already at the per-profile cap, or respawn-guarded — cannot
-    consume the reservation, so it must not withhold capacity from an
-    otherwise ready task (one such row would pin ``ready_budget`` to 0).
+    assignee already at the per-profile cap, respawn-guarded, or its provider
+    at ``kanban.provider_concurrency`` (#123654) — cannot consume the
+    reservation, so it must not withhold capacity from an otherwise ready
+    task (one such row would pin ``ready_budget`` to 0).
     """
     if not review_rows:
         return False
@@ -2281,6 +2344,13 @@ def _any_spawnable_review(
         if per_profile_cap is not None and running.get(assignee, 0) >= per_profile_cap:
             continue
         if check_respawn_guard(conn, row["id"], lane="review") is None:
+            if provider_budgets is not None and provider_running is not None and provider_resolver is not None:
+                key = provider_resolver.resolve(
+                    assignee, row["model_override"], row["provider_override"])
+                cap = provider_budgets.cap_for(key)
+                current = provider_running.get(key, 0)
+                if cap is not None and current >= cap:
+                    continue
             return True
     return False
 
@@ -2316,13 +2386,22 @@ def _dispatch_once_locked(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    provider_concurrency: Optional[dict] = None,
     reconcile_orphans: bool = True,
 ) -> DispatchResult:
     """One dispatcher tick: reclaim stale/crashed running tasks, promote
     todo -> ready, then atomically claim each spawnable ready/review row and
     call ``spawn_fn(task, workspace_path, board) -> Optional[int]``, recording
     the PID so later ticks catch crashes before the TTL. Cap semantics:
-    :func:`_tick_spawn_budget`."""
+    :func:`_tick_spawn_budget`.
+
+    ``provider_concurrency`` is the RAW ``kanban.provider_concurrency`` mapping
+    (a plain dict, so ``dataclasses.asdict`` in the gateway's
+    ``tick_once_for_board`` passes it through unchanged); parsed here —
+    memoized per distinct mapping — after plugin discovery has run. None/empty
+    disables the budget (dispatch decisions unchanged); the per-run
+    ``provider_key`` is still recorded on every claim (O3).
+    """
     result = DispatchResult()
     _run_reclaim_phase(
         conn, result, stale_timeout_seconds=stale_timeout_seconds,
@@ -2333,6 +2412,29 @@ def _dispatch_once_locked(
     )
     if not may_spawn:
         return result
+
+    # Per-provider concurrency budget (#123654). The resolver (and thus the
+    # per-claim provider_key recording) runs on EVERY tick so counts survive
+    # enabling the budget later; the counting query only runs when the budget
+    # is on (MoA I8) — a disabled budget costs one key resolution per spawn.
+    from hermes_cli.kanban_provider_budget import (
+        RouteKeyResolver, count_running_by_provider, parse_provider_concurrency,
+    )
+
+    provider_budgets = parse_provider_concurrency(provider_concurrency) if provider_concurrency else None
+    profile_exists_fn = _profile_exists_fn()
+    resolver = RouteKeyResolver(
+        profile_exists=profile_exists_fn,
+        profile_inputs=_provider_route_inputs,
+    )
+    provider_running: Optional[dict] = None
+    if provider_budgets is not None:
+        provider_running = count_running_by_provider(
+            conn, resolver, profile_exists=profile_exists_fn)
+        # Host-wide: provider quotas are account-wide, so sibling boards count
+        # against the same budget (same fail-open-per-board posture as the host
+        # cap). One WARNING per board per process when a sibling count fails.
+        _add_other_board_provider_counts(board, provider_running)
 
     ready_rows = _lane_rows(conn, "ready")
     # Review rows are enumerated up front so the budget split can see whether
@@ -2366,12 +2468,16 @@ def _dispatch_once_locked(
     if spawn_budget is not None and spawn_budget > 0 and _any_spawnable_review(
         conn, review_rows,
         per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
+        provider_budgets=provider_budgets, provider_running=provider_running,
+        provider_resolver=resolver,
     ):
         ready_budget = max(spawn_budget - 1, 0)
     lane_kwargs: dict[str, Any] = dict(
         dry_run=dry_run, ttl_seconds=ttl_seconds, board=board,
         failure_limit=failure_limit, spawn_fn=spawn_fn,
         per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
+        provider_budgets=provider_budgets, provider_running=provider_running,
+        provider_resolver=resolver,
     )
     default_assignee = _resolve_default_assignee(default_assignee)
     spawned = 0
@@ -2640,6 +2746,105 @@ def _worker_profile_scope(hermes_home: str, *, bind_home: bool = True):
             reset_secret_scope(secret_token)
         if home_token is not None:
             reset_hermes_home_override(home_token)
+
+
+def _provider_route_inputs(assignee: str) -> Optional[dict]:
+    """Route-relevant config snapshot for ``assignee``'s profile home (#123654).
+
+    Enters ``_worker_profile_scope`` for the assignee's home so every read
+    (``load_config_readonly`` for ``model``/``providers``/``custom_providers``,
+    ``get_secret_str("HERMES_INFERENCE_PROVIDER")`` for the env rung) resolves
+    through THAT profile's config + secret scope, never the launch profile's.
+    The assignee name only locates the profile; it is never the budget key.
+    """
+    try:
+        from hermes_cli.profiles import resolve_profile_env
+
+        home = resolve_profile_env(assignee)
+    except Exception:
+        return None
+    if not home:
+        return None
+    from hermes_cli.kanban_provider_budget import _default_profile_inputs
+
+    with _worker_profile_scope(str(home)):
+        return _default_profile_inputs(assignee)
+
+
+_warned_provider_count_boards: set[str] = set()
+
+
+def _add_other_board_provider_counts(board: Optional[str], provider_running: Optional[dict]) -> None:
+    """Fold sibling boards' per-key running counts into ``provider_running``.
+
+    Provider quotas are account-wide, so per-board counting would multiply the
+    budget by the number of boards. Shares the board iterator (and the
+    fail-open-per-board posture) of ``count_running_tasks_other_boards``; a
+    sibling whose count raises logs one WARNING per board per process (MoA I7)
+    and is skipped — one corrupt board cannot halt every provider.
+    """
+    if provider_running is None:
+        return
+    from collections import Counter
+
+    from hermes_cli.kanban_provider_budget import count_running_by_provider
+
+    try:
+        current_path = str(_kb.kanban_db_path(board=board).expanduser().resolve())
+    except Exception:
+        current_path = None
+    try:
+        boards = _kb.list_boards(include_archived=False)
+    except Exception:
+        return
+    for meta in boards:
+        slug = meta.get("slug") or _kb.DEFAULT_BOARD
+        try:
+            path = _kb.kanban_db_path(board=slug).expanduser()
+            if current_path is not None and str(path.resolve()) == current_path:
+                continue
+            if not path.exists():
+                continue
+            other = _kbc.connect(board=slug)
+            try:
+                other_counts = count_running_by_provider(other, _counting_resolver_for_board())
+                for key, n in other_counts.items():
+                    provider_running[key] = provider_running.get(key, 0) + n
+            finally:
+                with contextlib.suppress(Exception):
+                    other.close()
+        except Exception:
+            if slug not in _warned_provider_count_boards:
+                _warned_provider_count_boards.add(slug)
+                _kb._log.warning(
+                    "kanban provider budget: could not count running workers on "
+                    "sibling board %s; its workers are not counted against any "
+                    "provider budget this tick", slug,
+                )
+            continue
+
+
+def _counting_resolver_for_board():
+    """A resolver for sibling-board counting (NULL keys re-derived from each
+    row's assignee). Cached per process — the resolver itself memoizes per
+    (assignee, model, provider) triple."""
+    global _SIBLING_COUNT_RESOLVER
+    try:
+        if _SIBLING_COUNT_RESOLVER is None:
+            from hermes_cli.kanban_provider_budget import RouteKeyResolver
+
+            _SIBLING_COUNT_RESOLVER = RouteKeyResolver(
+                profile_exists=_profile_exists_fn(),
+                profile_inputs=_provider_route_inputs,
+            )
+        return _SIBLING_COUNT_RESOLVER
+    except Exception:
+        from hermes_cli.kanban_provider_budget import RouteKeyResolver
+
+        return RouteKeyResolver(profile_exists=_profile_exists_fn(), profile_inputs=_provider_route_inputs)
+
+
+_SIBLING_COUNT_RESOLVER = None
 
 
 def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[str]]:
@@ -2969,12 +3174,14 @@ def run_daemon(
             # Re-resolved every tick (config load is mtime-cached) so operator
             # edits apply without a restart.
             max_in_progress = resolve_max_in_progress(configured_max_in_progress())
+            provider_concurrency = configured_provider_concurrency()
             with contextlib.closing(_kbc.connect()) as conn:
                 res = dispatch_once(
                     conn,
                     max_spawn=max_spawn,
                     max_in_progress=max_in_progress,
                     failure_limit=failure_limit,
+                    provider_concurrency=provider_concurrency,
                 )
             if on_tick is not None:
                 with contextlib.suppress(Exception):

@@ -1563,15 +1563,23 @@ class SessionSessionsMixin:
         self, session_id: str, sessions_dir: Optional[Path] = None,
         expected_delete_ids: Optional[List[str]] = None,
         expected_display_messages: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+        exclude_active_write_guards: bool = False,
     ) -> bool:
         """Delete a session and its messages; delegate children cascade, branch/compression children
         are orphaned. Optional expected ids fence delegate drift; expected display snapshots fence
-        transcript drift. Both checks run inside the same write transaction as deletion."""
+        transcript drift. Both checks run inside the same write transaction as deletion.
+        With ``exclude_active_write_guards``, raises :class:`SessionActiveWriteGuardError` if the row
+        is protected by an active turn lease or compression lock."""
+        from hermes_state_errors import SessionActiveWriteGuardError
         removed_ids: List[str] = []
         expected_ids = set(expected_delete_ids) if expected_delete_ids is not None else None
         def _do(conn):
             if conn.execute("SELECT 1 FROM sessions WHERE id = ? LIMIT 1", (session_id,)).fetchone() is None:
                 return False
+            if exclude_active_write_guards and self._write_guards_reject(conn, session_id):
+                raise SessionActiveWriteGuardError(
+                    f"session '{session_id}' has an active turn lease or compression lock"
+                )
             if expected_ids is not None and expected_ids != {
                 session_id, *_collect_delegate_child_ids(conn, [session_id])
             }:
@@ -1622,9 +1630,13 @@ class SessionSessionsMixin:
             self._remove_session_files(sessions_dir, session_id)
         return deleted
 
-    def delete_sessions(self, session_ids: List[str], sessions_dir: Optional[Path] = None) -> int:
+    def delete_sessions(
+        self, session_ids: List[str], sessions_dir: Optional[Path] = None,
+        exclude_active_write_guards: bool = False,
+    ) -> int:
         """Bulk delete with :meth:`delete_session` semantics per row, in ONE transaction. Unknown ids
-        are skipped (UI selection can race another tab's delete). Returns the number deleted."""
+        are skipped (UI selection can race another tab's delete). With ``exclude_active_write_guards``,
+        rows protected by an active turn lease or compression lock are skipped. Returns the number deleted."""
         unique_ids = list({sid for sid in session_ids or () if isinstance(sid, str) and sid})
         if not unique_ids:
             return 0
@@ -1635,6 +1647,11 @@ class SessionSessionsMixin:
             ).fetchall()]
             if not existing:
                 return 0
+            if exclude_active_write_guards:
+                active_ids = {sid for sid in existing if self._write_guards_reject(conn, sid)}
+                existing = [sid for sid in existing if sid not in active_ids]
+                if not existing:
+                    return 0
             removed_ids.extend(_delete_delegate_children(conn, existing))
             for chunk in _id_chunks(existing):
                 ph = _session_ids_placeholders(chunk)

@@ -28,7 +28,7 @@ from hermes_cli.web_routers._common import (
     CORRUPT_STORE_DETAIL, corrupt_store_as_status, log as _log, destructive_profile, http_failure,
 )
 from hermes_state import is_malformed_db_error
-from hermes_state_errors import StateDbReplacedError, is_transient_sqlite_error
+from hermes_state_errors import SessionActiveWriteGuardError, StateDbReplacedError, is_transient_sqlite_error
 from hermes_state_health import STORAGE_CORRUPT, note_storage_error, storage_state
 
 list_router = APIRouter()
@@ -114,7 +114,8 @@ def _prune_sessions(body: SessionPrune):
                 "sessions": [{k: r.get(k) for k in _PRUNE_ROW_KEYS} for r in rows]}
         sessions_dir = profile_home / "sessions"
         removed = db.prune_sessions(
-            sessions_dir=sessions_dir if sessions_dir.exists() else None, **filters)
+            sessions_dir=sessions_dir if sessions_dir.exists() else None,
+            exclude_active_write_guards=True, **filters)
         return {"ok": True, "removed": removed, "skipped_open": skipped_open}
     finally:
         db.close()
@@ -440,7 +441,7 @@ async def bulk_delete_sessions_endpoint(body: BulkDeleteSessions):
         raise HTTPException(status_code=400, detail="ids must contain at most 500 entries")
     profile = destructive_profile(body.profile, "POST /api/sessions/bulk-delete")
     deleted = await asyncio.to_thread(
-        _with_db, profile, lambda db: db.delete_sessions(body.ids), read_only=False)
+        _with_db, profile, lambda db: db.delete_sessions(body.ids, exclude_active_write_guards=True), read_only=False)
     return {"ok": True, "deleted": deleted}
 
 
@@ -725,7 +726,10 @@ async def delete_session_endpoint(session_id: str, profile: Optional[str] = None
         sid = _resolve_session_id(db, session_id)
         if not sid:
             return {"ok": True, "already_absent": True}
-        db.delete_session(sid, sessions_dir=_session_files_dir(profile))
+        try:
+            db.delete_session(sid, sessions_dir=_session_files_dir(profile), exclude_active_write_guards=True)
+        except SessionActiveWriteGuardError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
         return {"ok": True}
 
     return await asyncio.to_thread(_with_db, profile, _delete, read_only=False)

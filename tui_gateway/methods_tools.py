@@ -1439,8 +1439,9 @@ def _(rid, params: dict) -> dict:
     # Explicit url/command wins. Otherwise a desktop catalog id is resolved
     # before the CLI preset registry — that registry raises, and the wrapper
     # turns the raise into 5024 before the 4063 check below can run.
+    catalog = _tools_mod("hermes_cli.mcp_catalog")
+    entry = None
     if preset and not (server_config.get("url") or server_config.get("command")):
-        catalog = _tools_mod("hermes_cli.mcp_catalog")
         entry = catalog.get_entry(preset)
         if entry is not None:
             for key, value in catalog._build_server_config(entry, install_dir=None).items():
@@ -1457,7 +1458,10 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4063, "config must specify a 'url' (http) or 'command' (stdio), or a valid 'preset'")
     if bearer_token := params.get("bearer_token"):
         server_config["headers"] = mc._save_bearer_auth_token(name, str(bearer_token))
-    if not mc._save_mcp_server(name, server_config):
+    saved_ok = mc._save_mcp_server(name, server_config)
+    source = "catalog" if entry is not None else ("url" if server_config.get("url") else "local")
+    catalog.record_mcp_install(source, entry.name if entry else None, "success" if saved_ok else "failed")
+    if not saved_ok:
         return _err(rid, 4001, f"server '{name}' rejected: suspicious command/args configuration")
     saved = mc._get_mcp_servers().get(name, server_config)
     return _ok(rid, {"ok": True, "name": name, "server": _mcp_summarize_server(name, saved)})

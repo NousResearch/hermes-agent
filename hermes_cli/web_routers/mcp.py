@@ -109,6 +109,7 @@ async def list_mcp_servers(profile: Optional[str] = None):
 
 @router.post("/api/mcp/servers")
 async def add_mcp_server(body: MCPServerCreate, profile: Optional[str] = None):
+    from hermes_cli.mcp_catalog import record_mcp_install
     from hermes_cli.mcp_config import _get_mcp_servers, _save_bearer_auth_token, _save_mcp_server
 
     try:
@@ -133,7 +134,10 @@ async def add_mcp_server(body: MCPServerCreate, profile: Optional[str] = None):
                 raise HTTPException(status_code=409, detail=f"Server '{name}' already exists")
             if bearer_token is not None:
                 server_config["headers"] = _save_bearer_auth_token(name, bearer_token)
-            if not _save_mcp_server(name, server_config):
+            saved = _save_mcp_server(name, server_config)
+            record_mcp_install("url" if server_config.get("url") else "local", None,
+                               "success" if saved else "failed")
+            if not saved:
                 raise HTTPException(
                     status_code=400, detail=f"Server '{name}' rejected: suspicious command/args configuration",
                 )

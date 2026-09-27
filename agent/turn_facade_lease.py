@@ -222,14 +222,11 @@ def _durable_session_exists(db, session_id: str) -> bool:
     try:
         return db.get_session(session_id) is not None
     except Exception:
-        # A locked / non-WAL read is not proof the row is absent; treating probe failure as "fresh"
-        # ran fail-open at the exact contention point. Acquire, or fail closed.
+        # A locked / non-WAL read is not proof the row is absent: get_session returns None — it
+        # does not raise — when the row is missing. Treat the session as durable so a waited turn
+        # reloads rather than runs on a stale in-memory transcript. See #84234.
         logger.warning(
-            # Acquire (or fail closed if acquire itself cannot) rather than start load/run/flush
-            # unsynchronized. get_session returns None — it does not raise — when the row is missing. See
-            # #84234.
-            "Could not check durable session before turn lease; "
-            "will acquire rather than run without serialization",
+            "Could not check durable session after turn lease admission; treating it as durable",
             exc_info=True,
         )
         return True
@@ -258,10 +255,6 @@ def admit_durable_turn_lease(
     # X-Hermes-Session-Id, /v1/runs session_id, fingerprint-derived chat ids) are not
     # process-unique, and the first turn creates the row mid-turn, so a second writer would
     # otherwise find the row, take an unheld lease and interleave its turn into this one.
-    durable = _durable_session_exists(db, session_id)
-    if durable:
-        # Row proven to exist — suppress the redundant create attempt.
-        agent._session_db_created = True
     holder = (
         f"pid={os.getpid()}:turn={relay_turn_id}:platform={task_context['platform'] or 'unknown'}"
     )
@@ -290,9 +283,16 @@ def admit_durable_turn_lease(
     agent._active_session_turn_lease_holder = holder
     agent._active_session_turn_lease_ttl_seconds = LEASE_TTL_SECONDS
     try:
+        # Read the row only now: the previous holder may have created or deleted it while this
+        # turn waited, so an answer from before admission can be stale either way.
+        durable = _durable_session_exists(db, session_id)
+        if durable:
+            # Row proven to exist — suppress the redundant create attempt. A missing row leaves
+            # the flag alone: the flush heals a row deleted under a live agent (#123583).
+            agent._session_db_created = True
         # Reload only a transcript that exists: callers may seed a fresh id in memory before its
         # row is written, and reloading an absent row would erase that seed.
-        if waited and (durable or _durable_session_exists(db, session_id)):
+        if waited and durable:
             agent._emit_status("Session is free; loading the latest transcript...")
             # The holder may have compressed/rotated the session while we waited: reload only
             # AFTER admission; an immediate acquisition skips this (needless prompt-cache miss).

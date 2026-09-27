@@ -200,6 +200,48 @@ def test_fresh_session_keeps_caller_seed(monkeypatch):
     assert "reload" not in [event[0] for event in db.events]
 
 
+def _run_after_wait_that_flips_the_row(monkeypatch, *, exists_before, exists_after):
+    """Run one turn whose lease wait sees the session row created or deleted by the holder."""
+    db = _DB(session_exists=exists_before)
+
+    def acquire_with_wait(session_id, holder, **kwargs):
+        db.events.append(("acquire", session_id, holder))
+        kwargs["on_wait"](0.0)
+        db.session_exists = exists_after
+        return True
+
+    db.acquire_session_turn_lease = acquire_with_wait
+    agent = _agent_with_db(db, session_id="client-id", platform="api_server")
+    agent._session_db_created = False
+    observed = {}
+
+    def fake_run(_agent, _message, _system, history, *_args, **_kwargs):
+        observed["history"] = history
+        observed["row_known"] = _agent._session_db_created
+        return {"final_response": "ok", "messages": history, "failed": False}
+
+    monkeypatch.setattr("agent.conversation_loop.run_conversation", fake_run)
+    seed = [{"role": "user", "content": "caller history"}]
+    AIAgent.run_conversation(agent, "work", conversation_history=seed)
+    return observed, seed
+
+
+def test_row_created_during_the_wait_is_reloaded_and_not_recreated(monkeypatch):
+    observed, _seed = _run_after_wait_that_flips_the_row(
+        monkeypatch, exists_before=False, exists_after=True)
+
+    assert observed["history"] == [{"role": "user", "content": "durable latest"}]
+    assert observed["row_known"] is True
+
+
+def test_row_deleted_during_the_wait_keeps_the_caller_history(monkeypatch):
+    """Reloading a row that went away while waiting would replace the history with nothing."""
+    observed, seed = _run_after_wait_that_flips_the_row(
+        monkeypatch, exists_before=True, exists_after=False)
+
+    assert observed["history"] is seed
+
+
 def test_first_turn_on_fresh_session_serializes_a_second_writer(tmp_path, monkeypatch):
     """A client-addressed session id has no row until its first turn writes one; a second
     turn arriving meanwhile must wait for that turn and see its rows, not interleave."""
@@ -215,6 +257,7 @@ def test_first_turn_on_fresh_session_serializes_a_second_writer(tmp_path, monkey
             a_in_turn.set()
             a_may_finish.wait(timeout=10)
             _agent._session_db.append_message("client-id", "assistant", "first answer")
+            a_finished.set()  # still inside the turn, so strictly before the lease is released
         else:
             observed["a_finished"] = a_finished.is_set()
             observed["history"] = [m.get("content") for m in history]
@@ -224,19 +267,28 @@ def test_first_turn_on_fresh_session_serializes_a_second_writer(tmp_path, monkey
     agent_a = _agent_with_db(db_a, session_id="client-id", platform="api_server")
     agent_a._session_db_created = False
 
-    def run_a():
-        AIAgent.run_conversation(agent_a, "first", conversation_history=[])
-        a_finished.set()
-
-    thread_a = threading.Thread(target=run_a)
+    thread_a = threading.Thread(
+        target=lambda: AIAgent.run_conversation(agent_a, "first", conversation_history=[]))
     thread_a.start()
     assert a_in_turn.wait(timeout=10)
     agent_b = _agent_with_db(db_b, session_id="client-id", platform="api_server")
-    thread_b = threading.Thread(
-        target=lambda: AIAgent.run_conversation(
-            agent_b, "second", conversation_history=db_b.get_messages_as_conversation("client-id")))
+    # B either reports that it is waiting on the lease or, unserialized, runs to the end.
+    b_waiting_or_done = threading.Event()
+    agent_b.status_callback = lambda _kind, text=None: (
+        b_waiting_or_done.set() if text and "waiting" in text else None
+    )
+
+    def run_b():
+        try:
+            AIAgent.run_conversation(
+                agent_b, "second",
+                conversation_history=db_b.get_messages_as_conversation("client-id"))
+        finally:
+            b_waiting_or_done.set()
+
+    thread_b = threading.Thread(target=run_b)
     thread_b.start()
-    time.sleep(0.5)
+    assert b_waiting_or_done.wait(timeout=10)
     a_may_finish.set()
     thread_a.join(timeout=10)
     thread_b.join(timeout=10)

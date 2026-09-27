@@ -120,13 +120,10 @@ def store_root(project_root: Path) -> Path:
             try:
                 data = json.loads(stamp.read_text(encoding="utf-8-sig"))
             except (OSError, ValueError):
-                break
+                return get_default_hermes_root() / "tools"
             value = data.get("runtimeDir") if isinstance(data, dict) else None
-            if value:
-                return Path(value).resolve()
-            break
-    # PM hashes the interpreter path: aliases of one store must share an identity.
-    return (get_default_hermes_root() / "tools").resolve()
+            return Path(value).resolve() if value else get_default_hermes_root() / "tools"
+    return get_default_hermes_root() / "tools"
 
 
 def flush_before_selecting() -> None:

@@ -8,7 +8,7 @@ import json
 import logging
 import re
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from agent.context_compressor import (
     _DB_PERSISTED_MARKER as _DB_PERSISTED_MARKER_KEY, MODEL_ONLY_DISPLAY_METADATA_KEY, _is_checkpoint_item,
@@ -994,36 +994,86 @@ class SessionMessagesMixin:
             "SELECT id FROM messages WHERE session_id = ? AND active = 1 AND role = ? AND content = ?",
             (session_id, message.get("role"), stored)).fetchall()]
 
+    def _merged_user_run(self, conn, session_id: str, message: Dict[str, Any]) -> Optional[List[int]]:
+        """Active rows an alternation repair merged into *message*: ``[]`` for none, None when ambiguous.
+
+        A reload without row ids turns a durable ``user;user`` pair (a prompt that never got its reply)
+        into one dict equal to neither row. Read as an unpersisted turn, its rows would be re-sequenced
+        after the compacted set like concurrent appends, behind the turn that is running.
+        """
+        content = message.get("content")
+        if message.get("role") != "user" or not isinstance(content, str) or "\n\n" not in content:
+            return []
+        rows = [
+            (int(row["id"]), row["role"], self._loaded_view_content(row["role"], self._decode_content(row["content"])))
+            for row in conn.execute(
+                "SELECT id, role, content FROM messages WHERE session_id = ? AND active = 1 ORDER BY id",
+                (session_id,)).fetchall()]
+        runs: List[List[int]] = []
+        for start in range(len(rows)):
+            merged = ""
+            for end in range(start, len(rows)):
+                row_id, role, part = rows[end]
+                if role != "user" or not isinstance(part, str):
+                    break
+                merged = f"{merged}\n\n{part}" if merged and part else (merged or part)
+                if not content.startswith(merged):
+                    break
+                if end > start and merged == content:
+                    runs.append([rows[i][0] for i in range(start, end + 1)])
+                    break
+        if len(runs) > 1:
+            return None
+        return runs[0] if runs else []
+
     def _proved_coverage(
         self, conn, session_id: str, covered_ids: Optional[List[int]],
         unresolved_held: Optional[List[Dict[str, Any]]],
-    ) -> Optional[List[int]]:
-        """Ids safe to archive as summarized, or None when a durable held row cannot be named.
+    ) -> Optional[Tuple[List[int], Set[int]]]:
+        """``(ids safe to archive as summarized, ids merged into another held dict)``, or None when
+        a durable held row cannot be named.
 
         An unresolved dict that still carries the persist marker was loaded from the DB.
         Failing to name it means the watermark path, which archives the rows the compressor
         saw, including ones whose ids were stripped. A marker-less miss is an unpersisted
         turn: it names nothing, and it is not a reason to abandon the ids we do have.
         Several active rows with the same content are ambiguous, so that also abandons.
+        The second set holds only merges the caller could not count: a dict that lists its
+        own ``_absorbed_row_ids`` is already counted in ``tail_count``.
         """
         if covered_ids is None:
             return None
         from agent.context_compressor import _DB_PERSISTED_MARKER
 
         proved = [int(row_id) for row_id in covered_ids if isinstance(row_id, int) and row_id > 0]
+        merged_away: Set[int] = set()
         for message in unresolved_held or ():
             if not isinstance(message, dict):
                 continue
             matches = self._matching_active_ids(conn, session_id, message)
-            if len(matches) > 1 or (message.get(_DB_PERSISTED_MARKER) and len(matches) != 1):
+            run = [] if matches else self._merged_user_run(conn, session_id, message)
+            if run is None or len(matches) > 1 or (
+                    message.get(_DB_PERSISTED_MARKER) and len(matches) != 1 and not run):
                 return None
-            proved.extend(matches)
-        return list(dict.fromkeys(proved))
+            proved.extend(matches or run)
+            merged_away.update(set(run[1:]) - set(message.get("_absorbed_row_ids") or ()))
+        return list(dict.fromkeys(proved)), merged_away
+
+    @staticmethod
+    def _tail_originals(covered_active: List[int], tail_count: int, merged_away: Set[int]) -> List[int]:
+        """Newest rows behind *tail_count* carried dicts; a dict that merged rows stands for each of them."""
+        width = int(tail_count)
+        while True:
+            window = covered_active[-width:]
+            need = int(tail_count) + sum(1 for row_id in window if row_id in merged_away)
+            if need <= width or width >= len(covered_active):
+                return window
+            width = need
 
     def _archive_named_rows(
         self, conn, session_id: str, compacted_messages: List[Dict[str, Any]], covered: List[int], *,
         tail_count: int, carried_messages: Optional[List[Dict[str, Any]]], patched_model_config: Any,
-        patch: bool,
+        patch: bool, merged_away: Set[int],
     ) -> int:
         """Archive *covered* as summarized and clone every other active row after the new set.
 
@@ -1039,7 +1089,7 @@ class SessionMessagesMixin:
         covered_active = [row_id for row_id in active_ids if row_id in covered_set]
         rewind_ids = list(carried_ids)
         if tail_count > 0:
-            rewind_ids += covered_active[-int(tail_count):]
+            rewind_ids += self._tail_originals(covered_active, tail_count, merged_away)
         rewind_ids += unseen
         rewind_ids = list(dict.fromkeys(rewind_ids))
         if rewind_ids:
@@ -1116,8 +1166,9 @@ class SessionMessagesMixin:
             proved = self._proved_coverage(conn, session_id, covered_ids, unresolved_held)
             if proved is not None:
                 return self._archive_named_rows(
-                    conn, session_id, compacted_messages, proved, tail_count=tail_count,
-                    carried_messages=carried_messages, patched_model_config=patched_model_config, patch=patch)
+                    conn, session_id, compacted_messages, proved[0], tail_count=tail_count,
+                    carried_messages=carried_messages, patched_model_config=patched_model_config, patch=patch,
+                    merged_away=proved[1])
             tail_ids, tail_tool_calls = ([], 0) if watermark is None else self._tail_rows_after_watermark(
                 conn, "SELECT id, tool_calls FROM messages WHERE session_id = ? AND active = 1 AND id > ? ORDER BY id",
                 (session_id, int(watermark)))

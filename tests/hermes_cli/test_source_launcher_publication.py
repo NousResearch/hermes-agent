@@ -321,6 +321,7 @@ def _command_survives_generation_collection(tmp_path, monkeypatch, surface):
     assert json.loads(result.stdout)["argv"] == args
 
 
+@pytest.mark.platforms("posix")
 def test_resolver_finds_deb_staged_python_prefers_flat(tmp_path, monkeypatch):
     repo, home, _interpreter = fixture_tree(tmp_path, monkeypatch)
     entry_name = "python-3.14.6-1-aarch64-linux-arm64-bionic"

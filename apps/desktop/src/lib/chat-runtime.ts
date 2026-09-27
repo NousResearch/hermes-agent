@@ -238,7 +238,10 @@ export function optimisticAttachmentRef(attachment: ComposerAttachment): string 
     // markdown image keeps them out of the data-URL extract path while still
     // rendering inline in the optimistic bubble (#63682).
     if (attachment.previewUrl?.startsWith('blob:')) {
-      const alt = attachment.label || 'image'
+      // Percent-encode the alt text: a filename with `]` or parens in it would
+      // otherwise break the Markdown-image form the directive parser matches
+      // below, and the raw expression would leak into visible text (#123368).
+      const alt = encodeURIComponent(attachment.label || 'image')
 
       return `![${alt}](${attachment.previewUrl})`
     }

@@ -98,6 +98,18 @@ describe('optimisticAttachmentRef', () => {
     expect(ref).toBe(`![Lattice.png](${blobUrl})`)
   })
 
+  it('percent-encodes a blob ref alt so brackets in a filename cannot break it', () => {
+    const blobUrl = 'blob:file:///07aa165b-55f6-4167-96c0-68f45ce7de27'
+
+    const ref = optimisticAttachmentRef(
+      attachment({ kind: 'image', label: 'shot[1].png', detail: '/tmp/shot[1].png', previewUrl: blobUrl })
+    )
+
+    // `]` in the raw label would end the alt span in the Markdown-image form
+    // the directive parser matches, leaking the raw expression into text.
+    expect(ref).toBe(`![shot%5B1%5D.png](${blobUrl})`)
+  })
+
   it('passes non-image attachments straight through to attachmentDisplayText', () => {
     expect(optimisticAttachmentRef(attachment({ kind: 'file', refText: '@file:src/a.ts', previewUrl: DATA_URL }))).toBe(
       '@file:src/a.ts'

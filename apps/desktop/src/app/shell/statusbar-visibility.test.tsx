@@ -77,6 +77,45 @@ describe('statusbar item visibility', () => {
 
     expect(screen.getByText('Plugin thing')).toBeTruthy()
   })
+
+  it('starts the per-turn session readouts hidden and restores them from the menu', async () => {
+    const statusbar = bar([
+      item('running-timer', 'Turn timer', { variant: 'text' }),
+      item('context-usage', 'Context meter', { variant: 'menu' }),
+      item('cache-hit-rate', 'Cache hit rate', { variant: 'text' }),
+      item('tokens-per-second', 'Tokens per second', { variant: 'text' }),
+      item('stream-tps', 'Live streaming speed', { variant: 'text' }),
+      item('token-counters', 'Token counters', { variant: 'text' }),
+      item('session-timer', 'Session timer', { variant: 'text' }),
+      item('gateway-health', 'Gateway')
+    ])
+
+    for (const label of [
+      'Turn timer',
+      'Context meter',
+      'Cache hit rate',
+      'Tokens per second',
+      'Live streaming speed',
+      'Token counters',
+      'Session timer'
+    ]) {
+      expect(screen.queryByText(label)).toBeNull()
+    }
+
+    openContextMenu(statusbar)
+
+    for (const [id, label] of [
+      ['session-timer', 'Session timer'],
+      ['cache-hit-rate', 'Cache hit rate'],
+      ['stream-tps', 'Live streaming speed'],
+      ['token-counters', 'Token counters']
+    ]) {
+      fireEvent.click(await screen.findByRole('menuitemcheckbox', { name: label }))
+
+      expect($statusbarHiddenIds.get()).not.toContain(id)
+      expect(within(statusbar).getByText(label)).toBeTruthy()
+    }
+  })
 })
 
 describe('reset to defaults', () => {

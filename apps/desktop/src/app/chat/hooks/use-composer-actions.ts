@@ -701,6 +701,7 @@ export function useComposerActions({
           detail: contextPath(savedPath, currentCwd),
           refText: `@file:${formatRefValue(savedPath)}`,
           path: savedPath,
+          pastedTextPath: savedPath,
           titlePreview: text.slice(0, LARGE_PASTE_TITLE_PREVIEW_CHARS)
         })
 

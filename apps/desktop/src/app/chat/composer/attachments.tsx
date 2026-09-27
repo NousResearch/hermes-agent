@@ -3,6 +3,7 @@ import { useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
 import { ImageLightbox } from '@/components/chat/zoomable-image'
+import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
 import { useImageDownload } from '@/hooks/use-image-download'
@@ -15,12 +16,16 @@ import type { ComposerAttachment } from '@/store/composer'
 import { notifyError } from '@/store/notifications'
 import { openPreview } from '@/store/preview'
 
+import { isPastedContentPath } from './large-paste'
+
 export function AttachmentList({
   attachments,
-  onRemove
+  onRemove,
+  onRestorePastedText
 }: {
   attachments: ComposerAttachment[]
   onRemove?: (id: string) => void
+  onRestorePastedText?: (attachment: ComposerAttachment) => Promise<void>
 }) {
   return (
     <div className="flex max-w-full flex-wrap gap-1.5 px-1 pt-1" data-slot="composer-attachments">
@@ -29,13 +34,22 @@ export function AttachmentList({
           attachment={attachment}
           key={attachment.occurrenceId ? `occ:${attachment.occurrenceId}` : attachment.id}
           onRemove={onRemove}
+          onRestorePastedText={onRestorePastedText}
         />
       ))}
     </div>
   )
 }
 
-function AttachmentPill({ attachment, onRemove }: { attachment: ComposerAttachment; onRemove?: (id: string) => void }) {
+function AttachmentPill({
+  attachment,
+  onRemove,
+  onRestorePastedText
+}: {
+  attachment: ComposerAttachment
+  onRemove?: (id: string) => void
+  onRestorePastedText?: (attachment: ComposerAttachment) => Promise<void>
+}) {
   const { t } = useI18n()
   const c = t.composer
 
@@ -52,6 +66,10 @@ function AttachmentPill({ attachment, onRemove }: { attachment: ComposerAttachme
   const cwd = useStore(useSessionView().$cwd)
   const isUploading = attachment.uploadState === 'uploading'
   const hasUploadError = attachment.uploadState === 'error'
+  const [restoringText, setRestoringText] = useState(false)
+
+  const canRestoreText =
+    attachment.kind === 'file' && isPastedContentPath(attachment.pastedTextPath || attachment.path || '')
 
   const canPreview = attachment.kind !== 'folder' && attachment.kind !== 'terminal' && !isUploading
 
@@ -194,6 +212,21 @@ function AttachmentPill({ attachment, onRemove }: { attachment: ComposerAttachme
               )}
             </span>
           </button>
+          {canRestoreText && onRestorePastedText && (
+            <Button
+              disabled={isUploading}
+              loading={restoringText}
+              onClick={() => {
+                setRestoringText(true)
+                void onRestorePastedText(attachment).finally(() => setRestoringText(false))
+              }}
+              size="xs"
+              type="button"
+              variant="text"
+            >
+              {c.insertAsText}
+            </Button>
+          )}
           {onRemove && (
             <button
               aria-label={c.removeAttachment(attachment.label)}

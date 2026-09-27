@@ -76,6 +76,7 @@ import { useComposerUrlDialog } from './hooks/use-composer-url-dialog'
 import { useComposerVoice } from './hooks/use-composer-voice'
 import { useEmojiCompletions } from './hooks/use-emoji-completions'
 import { useComposerMicroActions } from './hooks/use-micro-actions'
+import { useRestorePastedText } from './hooks/use-restore-pasted-text'
 import { useSlashCompletions } from './hooks/use-slash-completions'
 import { useStatusDrawer } from './hooks/use-status-drawer'
 import { useSessionStatusPresence } from './hooks/use-status-presence'
@@ -312,6 +313,14 @@ export function ChatBar({
     stashAt,
     syncDraftFromEditor
   } = useComposerDraft({ activeQueueSessionKey, focusKey, inputDisabled, queueEditRef, sessionId })
+
+  const restorePastedText = useRestorePastedText({
+    activeQueueSessionKeyRef,
+    editorRef,
+    inputDisabled,
+    loadIntoComposer,
+    focusInput
+  })
 
   useComposerScreenshot({ sessionKey: activeQueueSessionKey, focusKey, onAttachImageBlob })
 
@@ -1522,7 +1531,13 @@ export function ChatBar({
                       </div>
                     </div>
                   )}
-                  {attachments.length > 0 && <AttachmentList attachments={attachments} onRemove={onRemoveAttachment} />}
+                  {attachments.length > 0 && (
+                    <AttachmentList
+                      attachments={attachments}
+                      onRemove={onRemoveAttachment}
+                      onRestorePastedText={inputDisabled ? undefined : restorePastedText}
+                    />
+                  )}
                   <div
                     className={cn(
                       'grid w-full',

@@ -964,14 +964,19 @@ class SessionSessionsMixin:
             emit_session_deleted(self, ids, reason="archive", primary=session_id)
         return bool(ids)
 
-    def _auto_archive_lineage(self, session_id: str) -> bool:
+    def _auto_archive_lineage(self, session_id: str, *,
+                              conn: Optional[sqlite3.Connection] = None) -> bool:
         """The idle sweep's archive: like :meth:`set_session_archived` but stamps
         ``auto_archived`` on the rows IT hides. A row already archived keeps its provenance, so a
         deliberately archived ancestor is never relabelled as sweep-owned (SQLite evaluates every
-        SET expression against the pre-update row)."""
+        SET expression against the pre-update row). With ``conn``, runs on the caller's write
+        transaction so a live-turn guard check and this flip commit atomically (#123583)."""
+        extra_set_sql = ", auto_archived = CASE WHEN archived = 0 THEN 1 ELSE auto_archived END"
+        if conn is not None:
+            return bool(self._set_lineage_column_in_transaction(
+                conn, "archived", session_id, 1, extra_set_sql=extra_set_sql))
         return self._set_lineage_column(
-            "archived", session_id, 1,
-            extra_set_sql=", auto_archived = CASE WHEN archived = 0 THEN 1 ELSE auto_archived END")
+            "archived", session_id, 1, extra_set_sql=extra_set_sql)
 
     @staticmethod
     def _unarchive_auto_archived_lineage(conn, session_id: str) -> bool:

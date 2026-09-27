@@ -1547,6 +1547,181 @@ async def test_native_compress_reports_committed_history_when_pause_clear_fails(
     assert "/compress" in str(reply) and "/new" in str(reply)
 
 
+def test_idle_compression_pause_survives_prune_and_store_reload(env):
+    from datetime import datetime, timedelta
+
+    e = env
+    mark(e)
+    ordinary = e.store.get_or_create_session(replace(e.source, chat_id="ordinary-idle"))
+    assert ordinary.session_key != e.key
+    old = datetime.now() - timedelta(days=40)
+    e.entry.updated_at = ordinary.updated_at = old
+    e.store._save_entries()
+
+    assert e.store.prune_old_entries(max_age_days=30) == 1
+    assert e.store.lookup_by_session_key(e.key).session_id == e.entry.session_id
+    assert e.store.lookup_by_session_key(ordinary.session_key) is None
+    db = SessionDB(db_path=e.tmp / "state.db")
+    store = SessionStore(e.store.sessions_dir, e.store.config)
+    store._db = db
+    try:
+        paused = store.lookup_by_session_key(e.key)
+        assert paused is not None and paused.session_id == e.entry.session_id
+        assert paused.metadata[KEY] is True and paused.compression_paused
+        assert paused.updated_at == old
+        assert store.lookup_by_session_key(ordinary.session_key) is None
+    finally:
+        store.close_all_db_handles()
+        db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("end_reason", [None, "agent_close"])
+async def test_recovery_hint_accepts_current_recoverable_peer(env, end_reason):
+    e = env
+    sid = e.entry.session_id
+    if end_reason:
+        e.db.end_session(sid, end_reason)
+    e.store._entries.pop(e.key)
+    e.store._save_entries()
+    db = SessionDB(db_path=e.tmp / "state.db")
+    store = SessionStore(e.store.sessions_dir, e.store.config)
+    store._db = db
+    try:
+        recovered = await asyncio.to_thread(
+            store.get_or_create_session, e.source, recovery_session_id=sid)
+        assert recovered.session_id == sid
+        row = db.get_session(sid)
+        assert row is not None and row["end_reason"] is None
+    finally:
+        store.close_all_db_handles()
+        db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("old_end_reason", [None, "agent_close"])
+async def test_recovery_hint_cannot_cross_newer_reset_fence(env, old_end_reason):
+    e = env
+    old_id = e.entry.session_id
+    if old_end_reason:
+        e.db.end_session(old_id, old_end_reason)
+    e.db.create_session(
+        "newer-reset-fence", source=e.source.platform.value, session_key=e.key,
+        user_id=e.source.user_id, chat_id=e.source.chat_id,
+        chat_type=e.source.chat_type, thread_id=e.source.thread_id,
+    )
+    e.db.end_session("newer-reset-fence", "session_reset")
+    peer = dict(source=e.source.platform.value, session_key=e.key,
+                user_id=e.source.user_id, chat_id=e.source.chat_id,
+                chat_type=e.source.chat_type, thread_id=e.source.thread_id)
+    assert e.db.find_latest_gateway_session_for_peer(**peer) is None
+    e.store._entries.pop(e.key)
+    e.store._save_entries()
+    db = SessionDB(db_path=e.tmp / "state.db")
+    store = SessionStore(e.store.sessions_dir, e.store.config)
+    store._db = db
+    try:
+        recovered = await asyncio.to_thread(
+            store.get_or_create_session, e.source, recovery_session_id=old_id)
+        assert recovered.session_id not in {old_id, "newer-reset-fence"}
+        row = db.get_session(old_id)
+        assert row is not None and row["end_reason"] == old_end_reason
+    finally:
+        store.close_all_db_handles()
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_recovery_hint_cannot_revive_explicitly_reset_session(env):
+    e = env
+    old_id = e.entry.session_id
+    replacement = e.store.reset_session(e.key, require_primary=True)
+    assert replacement is not None and replacement.session_id != old_id
+    old_row = e.db.get_session(old_id)
+    assert old_row is not None and old_row["end_reason"] == "session_reset"
+    e.store._entries.pop(e.key)
+    e.store._save_entries()
+    db = SessionDB(db_path=e.tmp / "state.db")
+    store = SessionStore(e.store.sessions_dir, e.store.config)
+    store._db = db
+    try:
+        recovered = await asyncio.to_thread(
+            store.get_or_create_session, e.source, recovery_session_id=old_id)
+        assert recovered.session_id == replacement.session_id
+        old_row = db.get_session(old_id)
+        assert old_row is not None and old_row["end_reason"] == "session_reset"
+    finally:
+        store.close_all_db_handles()
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_unpaused_manual_fallback_reset_failure_blocks_followup_and_keeps_fifo(
+    native_env, monkeypatch,
+):
+    from gateway.config import PlatformConfig
+    from gateway.platforms.base import SendResult
+    from tests.gateway.test_pending_drain_no_recursion import _StubAdapter
+
+    e = native_env
+    r = e.runner
+    policy(e, "compression:\n  exhaustion_action: reset\n")
+    assert e.store.set_session_metadata(
+        e.key, "manual_fallback_index", 0, require_primary=True,
+        expected_session_id=e.entry.session_id,
+    )
+    assert not e.entry.compression_paused
+    original_route = copy.deepcopy(e.entry.to_dict())
+    original_history = e.db.get_messages(e.entry.session_id)
+
+    adapter = _StubAdapter(PlatformConfig(enabled=True, typing_indicator=False), Platform.TELEGRAM)
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="reply"))
+    adapter._message_handler = r._primary_message_handler()
+    r.adapters[Platform.TELEGRAM] = adapter
+    pending = MessageEvent(text="accepted first", source=e.source, message_id="pending")
+    overflow = MessageEvent(text="/queue second", source=e.source, message_id="overflow")
+    adapter._active_sessions[e.key] = asyncio.Event()
+    try:
+        await adapter.handle_message(pending)
+        assert pending._gateway_accepted and adapter._pending_messages[e.key] is pending
+        await r._busy_queue_command(overflow, e.key, e.source)
+    finally:
+        adapter._active_sessions.pop(e.key, None)
+    assert [item.text for item in r._overflow_queue(e.key)] == ["second"]
+
+    try:
+        with monkeypatch.context() as primary_down:
+            primary_down.setattr(e.db, "replace_gateway_routing_entries",
+                                 Mock(side_effect=OSError("primary unavailable")))
+            reply, entry, _ = await exhaust(e)
+            assert entry is e.entry and "persist" in reply.lower()
+            assert e.store._entries[e.key] is e.entry
+            assert e.entry.to_dict() == original_route
+            assert e.db.get_messages(e.entry.session_id) == original_history
+            persisted = reload_entry(e)
+            assert persisted is not None and persisted.to_dict() == original_route
+            assert persisted.metadata["manual_fallback_index"] == 0
+            assert not persisted.compression_paused
+            assert e.entry.compression_paused
+
+            refused, _ = await admit(e)
+            assert "paused" in refused.lower()
+            r._hmwa_prepare_turn.assert_not_awaited()
+            r._run_agent.assert_not_awaited()
+            assert pending._gateway_accepted and adapter._pending_messages[e.key] is pending
+            assert [item.text for item in r._overflow_queue(e.key)] == ["second"]
+
+        recovered = await native_message(e, "/new")
+        assert "could not be persisted" not in str(recovered)
+        current = reload_entry(e)
+        assert current is not None and current.session_id != e.entry.session_id
+        assert not current.compression_paused
+        assert "manual_fallback_index" not in current.metadata
+        assert e.db.get_messages(e.entry.session_id) == original_history
+    finally:
+        await adapter.cancel_background_tasks()
+
+
 @pytest.fixture
 def native_topic_env(native_env):
     e = native_env

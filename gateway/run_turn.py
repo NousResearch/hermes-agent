@@ -1920,6 +1920,16 @@ class GatewayTurnMixin:
                           "could not be compressed further. Your next message will start a fresh session.")
         except Exception:
             logger.warning("Compression exhaustion policy could not be persisted", exc_info=True)
+            if action != "pause":
+                # A strict reset can fail on the first exhaustion too. The existing setter
+                # retains its in-memory admission fence even when the pause write fails.
+                with suppress(Exception):
+                    await self._await_session_policy_commit(
+                        self.async_session_store.set_session_metadata(
+                            session_key, COMPRESSION_EXHAUSTED_METADATA_KEY, True,
+                            require_primary=True, expected_session_id=expected_id,
+                        )
+                    )
             notice = self._compression_pause_notice(persistence_failed=True)
         return (response or "") + "\n\n" + notice, session_entry
 

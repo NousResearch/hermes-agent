@@ -219,7 +219,7 @@ class SessionLifecycleMixin:
 
     def prune_old_entries(self, max_age_days: int) -> int:
         """Drop routing entries idle (by ``updated_at``) for more than max_age_days; suspended
-        entries and entries with active background processes are kept. Only the key -> session_id
+        entries, compression-paused entries and active background processes are kept. Only the key -> session_id
         mapping is dropped (the transcript stays). ``max_age_days <= 0`` disables. Returns count."""
         if max_age_days is None or max_age_days <= 0:
             return 0
@@ -228,7 +228,7 @@ class SessionLifecycleMixin:
             self._ensure_loaded_locked()
             removed_keys = [
                 key for key, entry in list(self._entries.items())
-                if not entry.suspended
+                if not entry.suspended and not entry.compression_paused
                 # The callback is keyed by session_key, NOT session_id.
                 and not self._has_active_processes_safe(entry.session_key, context="prune")
                 and entry.updated_at < cutoff

@@ -92,6 +92,7 @@ CONFIGURABLE_TOOLSETS = [
     ("matrix_followup", "🔁 Matrix Reaction Follow-ups", "let a reaction to a reply start a follow-up"),
     ("matrix_read",     "📜 Matrix History",           "read room, thread and event history"),
     ("matrix_reaction", "👍 Matrix Reactions",         "add and remove the agent's reactions"),
+    ("matrix_admin",    "🛡️  Matrix Room Admin",        "pin or unpin messages in the current room"),
     ("yuanbao",          "🤖 Yuanbao",                  "group info, member queries, DM"),
     ("computer_use",     "🖱️  Computer Use (macOS/Windows/Linux)", "background desktop control via cua-driver"),
 ]
@@ -110,7 +111,7 @@ def gui_toolset_label(label: str) -> str:
 # OFF by default for new installs (still in _HERMES_CORE_TOOLS; the checklist won't pre-select them). x_search
 # auto-enables when xAI creds exist; its check_fn still gates the schema. ``spotify`` and ``a2a`` are plugin
 # toolsets (catalog / bundled plugin) that stay opt-in once installed.
-_DEFAULT_OFF_TOOLSETS = {"spotify", "discord", "discord_admin", "video", "video_gen", "x_search", "a2a", "kanban"}
+_DEFAULT_OFF_TOOLSETS = {"spotify", "discord", "discord_admin", "matrix_admin", "video", "video_gen", "x_search", "a2a", "kanban"}
 
 # Config-only capabilities: provider setup in `hermes tools` (TOOL_CATEGORIES) but not model toolsets — zero
 # schemas, own switch (``stt.enabled``), never in ``platform_toolsets`` or the per-platform checklist.

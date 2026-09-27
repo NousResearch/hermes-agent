@@ -10,6 +10,7 @@ _TOOLSET_PLATFORM_RESTRICTIONS = {
     "matrix_followup": {"matrix"},
     "matrix_read": {"matrix"},
     "matrix_reaction": {"matrix"},
+    "matrix_admin": {"matrix"},
 }
 
 

@@ -327,7 +327,10 @@ def test_cp1252_env_bytes_survive_a_normalizing_sanitize(tmp_path, monkeypatch):
 
     load_hermes_dotenv(hermes_home=home)
 
-    assert env_file.read_bytes() == b"ASCII_KEY=ok\nLATIN1_VALUE=caf\xe9\n"
+    # Per line, so the text-mode writer's native terminator (CRLF on Windows) does not matter.
+    data = env_file.read_bytes()
+    assert data.splitlines() == [b"ASCII_KEY=ok", b"LATIN1_VALUE=caf\xe9"]
+    assert data.endswith(b"\n")
     assert os.getenv("LATIN1_VALUE") == "café"
 
 

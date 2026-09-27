@@ -462,7 +462,8 @@ class TestSaveEnvValueSecure:
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             save_env_value("TELEGRAM_HOME_CHANNEL", "12345")
 
-        assert env_path.read_bytes() == original + b"TELEGRAM_HOME_CHANNEL=12345\n"
+        # Per line, so the text-mode writer's native terminator (CRLF on Windows) does not matter.
+        assert env_path.read_bytes().splitlines() == (original + b"TELEGRAM_HOME_CHANNEL=12345\n").splitlines()
 
     def test_save_env_value_quotes_values_containing_hash(self, tmp_path):
         """Regression test for #30355."""

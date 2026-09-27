@@ -1691,10 +1691,11 @@ export interface CompletionItem {
   meta?: string
   kind?: string | null
 }
-/** ``session_id`` binds skill completions to that session's profile and workspace (project skills). */
+/** ``session_id`` binds skill completions to that session's profile and workspace (project skills). ``profile`` scopes a request with no session yet (a new-chat draft); a resolved ``session_id`` always wins over it. */
 export interface CompleteSlashParams {
   text?: string | null
   session_id?: string | null
+  profile?: string | null
 }
 /** ``replace_from`` is the column the accepted item replaces from. */
 export interface CompleteSlashResult {

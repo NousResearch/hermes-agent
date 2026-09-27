@@ -45,6 +45,9 @@ export interface ChatBarProps {
   gateway?: HermesGateway | null
   queueSessionKey?: string | null
   sessionId?: string | null
+  /** The tile's own routed profile — scopes the slash palette when there is no
+   *  session yet to resolve one from (a fresh draft in a non-primary profile). */
+  profile?: string | null
   cwd?: string | null
   onCancel: () => Promise<void> | void
   onAddContextRef?: (refText: string, label?: string, detail?: string) => void

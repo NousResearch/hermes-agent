@@ -1263,6 +1263,86 @@ def test_slash_exec_scopes_skill_lookup_to_session_profile(server, tmp_path):
     assert resp["error"]["code"] == 4018
 
 
+def test_commands_catalog_scopes_skills_to_sessionless_profile_param(server, tmp_path, monkeypatch):
+    """A new-chat draft has no session yet, so commands.catalog must fall back to
+    ``params['profile']`` for skill discovery instead of silently scanning the
+    launch profile's home (#124651)."""
+    import agent.skill_commands as sc_mod
+
+    empty_local_dir = tmp_path / "no-local-skills"
+    empty_local_dir.mkdir()
+
+    profile_b = tmp_path / "profile_b"
+    external_b = tmp_path / "external_b"
+    profile_b.mkdir()
+    skill_dir = external_b / "b-only"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: b-only\ndescription: Only in profile b.\n---\n\n# b-only\n\nDo the thing.\n"
+    )
+    (profile_b / "config.yaml").write_text(
+        f"skills:\n  external_dirs:\n    - {external_b}\n"
+    )
+
+    monkeypatch.setattr(server, "_profile_home", lambda name: profile_b if name == "b" else None)
+
+    with (
+        patch("tools.skills_tool.SKILLS_DIR", empty_local_dir),
+        patch.object(sc_mod, "_skill_commands", {}),
+        patch.object(sc_mod, "_skill_commands_platform", None),
+        patch.object(sc_mod, "_skill_commands_home", None),
+    ):
+        resp = server.handle_request({
+            "id": "r1",
+            "method": "commands.catalog",
+            "params": {"profile": "b"},
+        })
+
+    # The gateway's own HERMES_HOME (the test-isolation tempdir, no
+    # skills.external_dirs) has no "b-only" skill — the only way this
+    # resolves is by scoping the lookup to the sessionless `profile` param.
+    assert "result" in resp, resp
+    assert "/b-only" in resp["result"]["skills"]
+
+
+def test_complete_slash_scopes_skills_to_sessionless_profile_param(server, tmp_path, monkeypatch):
+    """Same fallback for complete.slash — the typed-name lookup a new-chat draft
+    uses once catalog browsing already surfaced the command (#124651)."""
+    import agent.skill_commands as sc_mod
+
+    empty_local_dir = tmp_path / "no-local-skills"
+    empty_local_dir.mkdir()
+
+    profile_b = tmp_path / "profile_b"
+    external_b = tmp_path / "external_b"
+    profile_b.mkdir()
+    skill_dir = external_b / "b-only"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: b-only\ndescription: Only in profile b.\n---\n\n# b-only\n\nDo the thing.\n"
+    )
+    (profile_b / "config.yaml").write_text(
+        f"skills:\n  external_dirs:\n    - {external_b}\n"
+    )
+
+    monkeypatch.setattr(server, "_profile_home", lambda name: profile_b if name == "b" else None)
+
+    with (
+        patch("tools.skills_tool.SKILLS_DIR", empty_local_dir),
+        patch.object(sc_mod, "_skill_commands", {}),
+        patch.object(sc_mod, "_skill_commands_platform", None),
+        patch.object(sc_mod, "_skill_commands_home", None),
+    ):
+        resp = server.handle_request({
+            "id": "r1",
+            "method": "complete.slash",
+            "params": {"text": "/b-only", "profile": "b"},
+        })
+
+    assert "result" in resp, resp
+    assert any("b-only" in item.get("text", "") for item in resp["result"]["items"])
+
+
 class _BannerWorker:
     """Stand-in for the slash worker's current skill path: ok-reply the banner."""
 

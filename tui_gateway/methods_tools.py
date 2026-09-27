@@ -491,7 +491,7 @@ def _(rid, params: dict) -> dict:
     the built-in-name collision notice for skills that have no ``/<name>`` (empty when none). Skill
     discovery is bound to the calling session's profile and workspace (``_completion_cwd``: its record,
     else the cwd a new session would be seeded with) so project-local skills register for the repo the
-    session is actually in (#114359)."""
+    session is actually in (#114359). A session-less draft falls back to ``params['profile']`` (#124651)."""
     cat = _Catalog()
     _catalog_registry(cat)
     warning = ""
@@ -505,7 +505,8 @@ def _(rid, params: dict) -> dict:
         warning = warning or f"plugin command discovery unavailable: {e}"
     skills: dict[str, dict] = {}
     try:
-        with _session_home_scope(_sessions.get(params.get("session_id", "")), cwd=_completion_cwd(params)):
+        with _session_home_scope(_sessions.get(params.get("session_id", "")), cwd=_completion_cwd(params),
+                                  profile=params.get("profile")):
             collision_note = _catalog_skills(cat, skills)  # always runs: skills must list even when a loader failed
         warning = warning or collision_note
     except Exception as e:
@@ -589,7 +590,7 @@ def _run_plugin_command(handler, arg: str, session=None) -> str:
 
 
 @contextlib.contextmanager
-def _session_home_scope(session, cwd: str | None = None):
+def _session_home_scope(session, cwd: str | None = None, profile: str | None = None):
     """Bind HERMES_HOME and the logical cwd to the session for the block.
 
     Skill/bundle/quick-command resolution is home-keyed (``skills.external_dirs``, ``skill-bundles/``,
@@ -598,10 +599,15 @@ def _session_home_scope(session, cwd: str | None = None):
     are cwd-keyed (``find_project_root`` reads the session-bound cwd first): these RPCs run on the socket
     thread with no session context, where the terminal scope resolves a placeholder ``terminal.cwd`` to
     ``$HOME`` and no project skill ever registers or dispatches (#114359). ``cwd`` overrides the session
-    record (a session-less catalog request binds the workspace a new session would be seeded with)."""
+    record (a session-less catalog request binds the workspace a new session would be seeded with).
+    ``profile`` scopes a call with no live session yet (a new-chat draft naming the rail-selected
+    profile); a resolved session's own ``profile_home`` always wins over it (#124651)."""
     hc = _tools_mod("hermes_constants")
     rc = _tools_mod("agent.runtime_cwd")
     profile_home = session.get("profile_home") if session else None
+    if profile_home is None and not session and profile:
+        home = _profile_home(profile)
+        profile_home = str(home) if home else None
     cwd = cwd or (str(session.get("cwd") or "") if session else "")
     token = hc.set_hermes_home_override(profile_home) if profile_home else None
     cwd_token = rc.set_session_cwd(cwd) if cwd else None

@@ -1,6 +1,6 @@
 name: desensitize
 repo: https://github.com/yubingz/hermes-desensitize
-sha: 6385779a388b53f12c3b79c4c255a2f13ae16ce6
+sha: 8dc7c759bda05788bf36327b7b435b21b0f932f0
 subdir: src/hermes_desensitize
 description: "Chinese-context desensitization for Hermes chats. Replaces PII and business-sensitive
   entities — person names, company names, addresses, file paths, and magnitude figures — with
@@ -25,7 +25,7 @@ tier: community
 category: tools
 requires_hermes: ">=0.19"
 docs_url: https://github.com/yubingz/hermes-desensitize#readme
-version: "1.2.0"
+version: "1.3.0"
 readme: true
 platforms: []
 capabilities:

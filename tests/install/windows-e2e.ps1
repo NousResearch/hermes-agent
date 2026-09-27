@@ -489,6 +489,25 @@ function Invoke-HermesUpdate {
     # releases; ask the installed binary, never parse its source.
     $hermesExe = Get-SourceHermes $InstallDir
     $updateArgs = @("update")
+    # The desktop smoke runs the app without the job's HERMES_RUNTIME_DIR, the
+    # way a user's app runs, so it settles the install onto <HERMES_HOME>\tools
+    # and republishes .hermes\bin for that store's Python. Updating from that
+    # hermes.exe with the job's store back in scope made the update re-point
+    # its own running, locked launcher ("source launcher publication failed").
+    # Follow the store the install last settled on, as a user machine has one.
+    $jobRuntimeDir = $env:HERMES_RUNTIME_DIR
+    if ($jobRuntimeDir -and (Test-Path -LiteralPath (Join-Path $HermesHome "tools"))) {
+        Write-Host "  update runs on the install's own store ($HermesHome\tools), not HERMES_RUNTIME_DIR"
+        Remove-Item Env:HERMES_RUNTIME_DIR
+    }
+    try {
+        Invoke-HermesUpdateOnce $hermesExe $updateArgs
+    } finally {
+        if ($jobRuntimeDir) { $env:HERMES_RUNTIME_DIR = $jobRuntimeDir }
+    }
+}
+
+function Invoke-HermesUpdateOnce([string]$hermesExe, [string[]]$updateArgs) {
     $prevEap = $ErrorActionPreference; $ErrorActionPreference = "Continue"
     $helpText = & $hermesExe update --help 2>&1 | Out-String
     $helpExit = $LASTEXITCODE

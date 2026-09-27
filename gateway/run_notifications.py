@@ -445,6 +445,13 @@ class GatewayNotificationsMixin:
                         )
                         if getattr(_edit_res, "success", False):
                             _reconciled = True
+                            if session_key:
+                                callback = getattr(adapter, "on_streamed_final_delivery", None)
+                                if callable(callback):
+                                    callback(
+                                        source, session_key,
+                                        getattr(stream_consumer, "final_message_ids", ()), text_content,
+                                    )
                             logger.info(
                                 "Queued-lane final reconciled by editing message %s in place (no duplicate send).",
                                 _sc_msg_id,

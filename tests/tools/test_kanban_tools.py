@@ -205,7 +205,7 @@ def test_request_review_rejects_unknown_reviewer_without_mutation(monkeypatch, w
     from tools import kanban_tools as kt
 
     (tmp_path / ".hermes" / "profiles" / "verifier").mkdir(parents=True)
-    (tmp_path / ".hermes" / "profiles" / "verifier" / "config.yaml").write_text("{}\n")  # identity marker
+    (tmp_path / ".hermes" / "profiles" / "verifier" / "config.yaml").write_text("{}\n", encoding="utf-8")  # identity marker
     with kbc.connect() as conn:
         before = kb.get_task(conn, worker_env)
         before_events = kb.list_events(conn, worker_env)
@@ -226,7 +226,7 @@ def test_request_review_accepts_installed_profile(monkeypatch, worker_env, tmp_p
     from tools import kanban_tools as kt
 
     (tmp_path / ".hermes" / "profiles" / "verifier").mkdir(parents=True)
-    (tmp_path / ".hermes" / "profiles" / "verifier" / "config.yaml").write_text("{}\n")  # identity marker
+    (tmp_path / ".hermes" / "profiles" / "verifier" / "config.yaml").write_text("{}\n", encoding="utf-8")  # identity marker
     with kbc.connect() as conn:
         monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(kb.get_task(conn, worker_env).current_run_id))
 
@@ -507,6 +507,61 @@ def test_heartbeat_extends_claim_expires(worker_env):
         f"claim_expires={after} is suspiciously close to now={now}; "
         f"expected at least now + {kb.DEFAULT_CLAIM_TTL_SECONDS // 2}"
     )
+
+
+def _expire_claim(conn, tid):
+    conn.execute("UPDATE tasks SET claim_expires = 1 WHERE id = ?", (tid,))
+    conn.commit()
+
+
+def test_worker_the_dispatcher_never_recorded_keeps_its_claim_or_never_starts(monkeypatch, worker_env):
+    """``worker_env`` is a claim whose dispatcher died between spawning the worker and recording its
+    pid. The worker registers itself, so the expired claim is extended, not handed to a second worker;
+    a worker that starts only after its run was reclaimed is told not to work the card."""
+    import os as _os
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    assert kt.register_current_worker_from_env() is True
+    with kbc.connect_closing() as conn:
+        assert kb.get_task(conn, worker_env).worker_pid == _os.getpid()
+        _expire_claim(conn, worker_env)
+        assert kb.release_stale_claims(conn) == 0
+        assert kb.get_task(conn, worker_env).status == "running"
+
+        late = kb.create_task(conn, title="late orphan", assignee="test-worker")
+        kb.claim_task(conn, late)
+        stale_run = kb._current_run_id(conn, late)
+        _expire_claim(conn, late)
+        assert kb.release_stale_claims(conn) == 1
+        kb.claim_task(conn, late)
+    monkeypatch.setenv("HERMES_KANBAN_TASK", late)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(stale_run))
+    assert kt.register_current_worker_from_env() is False
+    with kbc.connect_closing() as conn:
+        assert kb.get_task(conn, late).worker_pid is None
+
+
+def test_reclaim_loses_to_a_worker_registering_mid_sweep(monkeypatch, worker_env):
+    """The worker registers between the stale-claim SELECT and its UPDATE: the claim stays its own."""
+    import os as _os
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    real_terminate = kb._terminate_reclaimed_worker
+
+    def _register_then_terminate(*args, **kwargs):
+        assert kt.register_current_worker_from_env() is True
+        return real_terminate(*args, **kwargs)
+
+    monkeypatch.setattr(kb, "_terminate_reclaimed_worker", _register_then_terminate)
+    with kbc.connect_closing() as conn:
+        _expire_claim(conn, worker_env)
+        assert kb.release_stale_claims(conn) == 0
+        task = kb.get_task(conn, worker_env)
+    assert (task.status, task.worker_pid) == ("running", _os.getpid())
 
 
 def test_comment_rejects_caller_supplied_author(worker_env):

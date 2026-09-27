@@ -16,6 +16,7 @@ import fs from 'node:fs'
 import { mkdir, readdir } from 'node:fs/promises'
 import { runPython } from '../../../scripts/build/python.mjs'
 
+import { assertPackagedBackendReadyArtifact, resolvePackagedAsarPath } from './backend-ready-artifact.mjs'
 import { batchSignAppTree } from './batch-sign-binaries.mjs'
 import { rehashPayloadDigests } from './payload-digests.mjs'
 import { resolveSigningIdentity, signNestedChromium } from './sign-nested-chromium.mjs'
@@ -48,6 +49,14 @@ export async function restoreMacLocaleMarkers({ appOutDir, packager }) {
 
 export default async function afterPack(context) {
   const platform = context.electronPlatformName
+  // Artifact-skew guard (#60772): before any platform work, prove the packed
+  // bundle's readiness parser still accepts both ready tokens. This runs for
+  // every packed build — first install, `hermes desktop`, the installer's
+  // --update rebuild — so a stale matcher fails the pack here instead of
+  // killing healthy backends on user machines.
+  const asarPath = resolvePackagedAsarPath(context)
+  assertPackagedBackendReadyArtifact(asarPath)
+  console.log(`[after-pack] verified backend readiness parser in ${asarPath}`)
   const resources = platform === 'darwin'
     ? path.join(context.appOutDir, `${context.packager.appInfo.productFilename}.app`, 'Contents', 'Resources')
     : path.join(context.appOutDir, 'resources')

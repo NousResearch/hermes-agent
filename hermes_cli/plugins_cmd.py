@@ -211,6 +211,33 @@ def _scan_plugin_tree(plugin_dir: Path, identifier: str, *, force: bool, scan_de
     return result
 
 
+def _preserved_files_note(exc: PluginScanBlocked, merged: list[str]) -> str:
+    """Scan-block text for a tree that also holds user files preserved from the installed copy."""
+    preserved = set(merged)
+    findings = exc.scan_result.findings if exc.scan_result is not None else ()
+    hits = sorted({f.file for f in findings if f.file in preserved})
+    if hits:
+        note = ("These findings come from user files preserved from the installed copy: "
+                f"{', '.join(hits)}. Move or remove them and retry the update.")
+    else:
+        note = "The scanned tree included user files preserved from the installed copy."
+    return f"{exc}\n\n{note}"
+
+
+def _scan_merged_tree(plugin_dir: Path, identifier: str, merged: Optional[list[str]], **kwargs):
+    """:func:`_scan_plugin_tree` for a candidate that may hold carried user files (*merged*).
+
+    A block then names the findings that sit in those files, so user data does not read as a
+    malicious upstream revision; the original block stays chained as the cause.
+    """
+    try:
+        return _scan_plugin_tree(plugin_dir, identifier, **kwargs)
+    except PluginScanBlocked as exc:
+        if not merged:
+            raise
+        raise PluginScanBlocked(_preserved_files_note(exc, merged), scan_result=exc.scan_result) from exc
+
+
 def _plugins_dir() -> Path:
     """Return the user plugins directory, creating it if needed."""
     plugins = get_hermes_home() / "plugins"

@@ -76,6 +76,7 @@ class LiveGateway:
 class GatewaySettings:
     reply: str = "Matrix live reply"
     max_message_length: int | None = None
+    mode: str | None = None
 
 
 @dataclass(frozen=True)
@@ -372,9 +373,14 @@ def gateway(
     synapse: tuple[DockerContainer, str, Network],
     live_room: LiveRoom,
 ) -> Iterator[LiveGateway]:
-    settings: GatewaySettings = getattr(request, "param", GatewaySettings())
+    param = getattr(request, "param", GatewaySettings())
+    settings = GatewaySettings(mode=param) if isinstance(param, str) else param
     _, _, network = synapse
     room_id = live_room.room_id
+    mode = settings.mode
+    resolution_pause = mode == "pause-resolution"
+    context_pause = mode in {"pause-context", "pause-image-context", "pause-image-conversion", "pause-queued-context"}
+    native_images = mode in {"pause-image-context", "pause-image-conversion"}
     home = tmp_path / "hermes"
     home.mkdir()
     route = _host_route(network)
@@ -382,8 +388,27 @@ def gateway(
         write_hermes_home(
             home,
             f"http://host.docker.internal:{model.port}/v1",
-            extra_config="platforms:\n  matrix:\n    enabled: true\nupdates:\n  check: false\n",
+            extra_config=(
+                ("  image_input_mode: native\n" if native_images else "")
+                + "platforms:\n  matrix:\n    enabled: true\n"
+                + ("    thread_require_mention: true\n" if mode == "pause-context" or resolution_pause else "")
+                + (f"    free_response_rooms:\n      - {room_id!r}\n" if resolution_pause else "")
+                + "updates:\n  check: false\n"
+                + ("display:\n  busy_input_mode: queue\n  busy_ack_enabled: false\n"
+                   if mode == "pause-queued-context" else "")
+                + ("plugins:\n  enabled:\n    - matrix-live-context\n"
+                   if context_pause else "")
+                + ("plugins:\n  enabled:\n    - matrix-live-resolution\n" if resolution_pause else "")
+            ),
         )
+        if native_images:
+            config_path = home / "config.yaml"
+            config_path.write_text(
+                config_path.read_text(encoding="utf-8").replace(
+                    "model:\n", "model:\n  supports_vision: true\n", 1,
+                ),
+                encoding="utf-8",
+            )
         with (home / ".env").open("a", encoding="utf-8") as stream:
             stream.write(
                 "MATRIX_HOMESERVER=http://synapse:8008\n"
@@ -394,6 +419,105 @@ def gateway(
             )
             if settings.max_message_length is not None:
                 stream.write(f"MATRIX_MAX_MESSAGE_LENGTH={settings.max_message_length}\n")
+        if context_pause:
+            plugin = home / "plugins" / "matrix-live-context"
+            plugin.mkdir(parents=True)
+            (plugin / "plugin.yaml").write_text(
+                "name: matrix-live-context\nversion: 1.0.0\ndescription: Matrix live context pause\n",
+                encoding="utf-8",
+            )
+            (plugin / "__init__.py").write_text(
+                "import asyncio\n"
+                "from agent.context_references import ContextReferenceProvider\n"
+                "from hermes_constants import get_hermes_home\n"
+                "class ContextPause(ContextReferenceProvider):\n"
+                "    prefix = 'matrix-live'\n"
+                "    async def autocomplete(self, query, *, limit=10):\n"
+                "        return []\n"
+                "    async def expand(self, target):\n"
+                "        (get_hermes_home() / 'context-started').write_text('started', encoding='utf-8')\n"
+                "        while not (get_hermes_home() / 'context-release').exists():\n"
+                "            await asyncio.sleep(0.01)\n"
+                "        return 'Live enrichment completed'\n"
+                "def register(ctx):\n"
+                "    ctx.register_context_reference(ContextPause())\n",
+                encoding="utf-8",
+            )
+        if context_pause:
+            with (plugin / "__init__.py").open("a", encoding="utf-8") as stream:
+                stream.write(
+                    "from plugins.platforms.matrix.reply_context import MatrixEventContextCache\n"
+                    "original_store = MatrixEventContextCache.store\n"
+                    "def observed_store(self, room_id, event_id, entry):\n"
+                    "    result = original_store(self, room_id, event_id, entry)\n"
+                    "    expected = get_hermes_home() / 'expected-media-change'\n"
+                    "    if expected.exists() and expected.read_text(encoding='utf-8') == event_id:\n"
+                    "        if (get_hermes_home() / 'evict-media-state').exists():\n"
+                    "            from plugins.platforms.matrix.reply_context import MatrixEventContext\n"
+                    "            for index in range(self.max_entries):\n"
+                    "                original_store(self, room_id, f'$unrelated{index}', MatrixEventContext('', 'unrelated'))\n"
+                    "            import gc\n"
+                    "            gc.collect()\n"
+                    "        (get_hermes_home() / 'media-change-observed').write_text(event_id, encoding='utf-8')\n"
+                    "    return result\n"
+                    "MatrixEventContextCache.store = observed_store\n"
+                    "from gateway.platforms.base import BasePlatformAdapter\n"
+                    "original_init = BasePlatformAdapter.__init__\n"
+                    "def observed_init(self, *args, **kwargs):\n"
+                    "    original_init(self, *args, **kwargs)\n"
+                    "    if self.platform.value != 'matrix':\n"
+                    "        return\n"
+                    "    original_message = self._on_room_message\n"
+                    "    async def observed_message(event):\n"
+                    "        from plugins.platforms.matrix.effective_event import event_content\n"
+                    "        queued = 'queued question' in str(event_content(event).get('body', ''))\n"
+                    "        if queued:\n"
+                    "            self._event_context_cache._entries.clear()\n"
+                    "            import gc\n"
+                    "            gc.collect()\n"
+                    "        await original_message(event)\n"
+                    "        if queued:\n"
+                    "            (get_hermes_home() / 'reply-queued').write_text('queued', encoding='utf-8')\n"
+                    "        expected = get_hermes_home() / 'expected-media-change'\n"
+                    "        from plugins.platforms.matrix.effective_event import event_content\n"
+                    "        relation = event_content(event).get('m.relates_to', {})\n"
+                    "        if expected.exists() and relation.get('event_id') == expected.read_text(encoding='utf-8'):\n"
+                    "            (get_hermes_home() / 'media-change-observed').write_text(relation['event_id'], encoding='utf-8')\n"
+                    "    self._on_room_message = observed_message\n"
+                    "BasePlatformAdapter.__init__ = observed_init\n"
+                )
+        if mode == "pause-image-conversion":
+            with (plugin / "__init__.py").open("a", encoding="utf-8") as stream:
+                stream.write(
+                    "import time\n"
+                    "from pathlib import Path\n"
+                    "async def expanded(self, target):\n"
+                    "    return 'Live enrichment completed'\n"
+                    "ContextPause.expand = expanded\n"
+                    "original_read_bytes = Path.read_bytes\n"
+                    "def paused_read_bytes(path):\n"
+                    "    home = get_hermes_home()\n"
+                    "    if path.suffix == '.png' and home in path.parents and not (home / 'context-started').exists():\n"
+                    "        (home / 'context-started').write_text('conversion', encoding='utf-8')\n"
+                    "        deadline = time.monotonic() + 10\n"
+                    "        while not (home / 'context-release').exists():\n"
+                    "            if time.monotonic() >= deadline:\n"
+                    "                raise TimeoutError('Matrix file conversion was not released')\n"
+                    "            time.sleep(0.01)\n"
+                    "    return original_read_bytes(path)\n"
+                    "Path.read_bytes = paused_read_bytes\n"
+                )
+        if resolution_pause:
+            plugin = home / "plugins" / "matrix-live-resolution"
+            plugin.mkdir(parents=True)
+            (plugin / "plugin.yaml").write_text(
+                "name: matrix-live-resolution\nversion: 1.0.0\ndescription: Matrix live resolution barrier\n",
+                encoding="utf-8",
+            )
+            (plugin / "__init__.py").write_text(
+                (Path(__file__).parent / "resolution_probe.py").read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
 
         with DockerContainer(
             gateway_image,

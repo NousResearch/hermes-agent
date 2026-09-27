@@ -172,6 +172,12 @@ Persist: background=true, persist_on_release=true keeps the job alive across age
 # Environment lifecycle state.
 _active_environments: Dict[str, Any] = {}
 _last_activity: Dict[str, float] = {}
+# Executions currently inside ``env.execute`` per live env (id-keyed). A release tears the
+# container down (``docker stop`` + ``rm -f``), so it must not run under one: that is what
+# turned a mount disagreement between two sessions into ``exit_code: 137`` on work that had
+# been running for minutes.
+_executions_in_flight: Dict[int, int] = {}
+_in_flight_lock = threading.Lock()
 _env_lock = threading.Lock()
 _creation_locks: Dict[str, threading.Lock] = {}  # Per-task locks for sandbox creation
 _creation_locks_lock = threading.Lock()  # Protects _creation_locks dict itself
@@ -609,19 +615,79 @@ def _live_env_mount_agrees(env: Any, host_cwd: Optional[str]) -> bool:
     return os.path.abspath(os.path.expanduser(mounted)) == os.path.abspath(os.path.expanduser(host_cwd))
 
 
-def _release_active_env(effective_task_id: str, task_id: Optional[str], host_cwd: Optional[str]) -> None:
+def _env_has_executions_in_flight(env: Any) -> bool:
+    """Whether *env* currently has an execution inside ``env.execute``.
+
+    Keyed by object identity (``id``), not by task key: a sibling session resolving
+    another workspace can hold the SAME env under a different key, and the release is
+    decided on the object. Ids are only compared while the env is referenced by
+    ``_active_environments``, so no id can be recycled underneath us.
+    """
+    with _in_flight_lock:
+        return _executions_in_flight.get(id(env), 0) > 0
+
+
+def _note_execution_start(env: Any) -> None:
+    with _in_flight_lock:
+        _executions_in_flight[id(env)] = _executions_in_flight.get(id(env), 0) + 1
+
+
+def _note_execution_end(env: Any) -> None:
+    with _in_flight_lock:
+        remaining = _executions_in_flight.get(id(env), 0) - 1
+        if remaining > 0:
+            _executions_in_flight[id(env)] = remaining
+        else:
+            _executions_in_flight.pop(id(env), None)
+
+
+def _release_active_env(
+    effective_task_id: str, task_id: Optional[str], host_cwd: Optional[str], *, in_use: bool = True,
+) -> bool:
     """Drop a live env whose ``/workspace`` no longer matches this session's source.
 
     Closing it is what makes the caller's retry create a container with the right
     bind (run args are immutable at creation, so reusing in place can never fix the
-    mount). If the env is busy the close fails and the caller keeps the live one —
-    a session's own work must never be torn out from under it to satisfy a sibling.
+    mount). Returns True only when the env was actually dropped, so a caller can
+    tell "released, recreate" from "still busy, keep what is live".
+
+    A mount disagreement is a REQUEST-level conflict, not a reason to destroy a
+    sibling's sandbox: the release tears the container down (``docker stop`` +
+    ``rm -f``), so anything executing in it is killed. Two guards, because the
+    in-flight case is the destructive one:
+
+    * ``in_use=False`` — the caller needs the mount to change before it can run
+      anything (the mount is decided at container creation), so releasing under an
+      in-flight execution would SIGKILL work that had been running for minutes.
+      Callers that only want to know whether reuse is safe pass ``in_use=True`` and
+      simply keep the live env on False.
+    * a caller with NO workspace of its own (``host_cwd`` is None, or the session
+      never attached one and the value is only the backend process cwd) keeps the
+      live env outright. Nothing would be mounted for it, so there is no bind to
+      repair, and that legacy fallback is itself refused as a mount source
+      everywhere else — evicting a sibling's container to impose a directory the
+      policy rejects is strictly worse than sharing.
     """
     from tools.terminal_tool_lifecycle import get_active_env
 
     stale = get_active_env(effective_task_id) or get_active_env(task_id or "")
     if stale is None or _live_env_mount_agrees(stale, host_cwd):
-        return
+        return False
+    if host_cwd is None or _session_workspace_mount_source(task_id) is None:
+        logger.info(
+            "Task %s has no workspace of its own; keeping the live container for %s "
+            "instead of releasing it (no bind to repair).",
+            (task_id or effective_task_id)[:24], effective_task_id[:24],
+        )
+        return False
+    if not in_use and _env_has_executions_in_flight(stale):
+        logger.warning(
+            "Not releasing the container for task %s: an execution is still in flight. "
+            "Releasing would SIGKILL it — the mount is needed before anything runs, so "
+            "this call waits for a later one instead.",
+            effective_task_id[:24],
+        )
+        return False
     logger.warning(
         "Docker container for task %s is mounted on %r, not this session's workspace %r "
         "— releasing it so the right mount is created.",
@@ -631,11 +697,23 @@ def _release_active_env(effective_task_id: str, task_id: Optional[str], host_cwd
         for key in (effective_task_id, task_id):
             if key and _active_environments.get(key) is stale:
                 _active_environments.pop(key, None)
+    # Same reason `_unregister_env` does it: a cached ShellFileOperations entry holds a
+    # handle to the container this line is about to destroy, so the next file tool call
+    # would run against a dead sandbox until something else invalidates it.
+    try:
+        from tools.terminal_tool_lifecycle import _clear_file_ops_cache
+        for key in (effective_task_id, task_id):
+            if key:
+                _clear_file_ops_cache(key)
+    except ImportError:
+        pass
     try:
         from tools.terminal_tool_lifecycle import _cleanup_env
         _cleanup_env(stale)
-    except Exception as exc:  # noqa: BLE001 — a busy/failed teardown just leaves it live
+    except Exception as exc:  # noqa: BLE001 — a failed teardown just leaves it live
         logger.warning("Could not tear down the stale container for task %s: %s", effective_task_id[:24], exc)
+        return False
+    return True
 
 
 def _resolve_task_host_cwd(config: Dict[str, Any], task_id: Optional[str]) -> Optional[str]:
@@ -1257,7 +1335,15 @@ def _acquire_env(plan: _ExecPlan, task_id: Optional[str]) -> Any:
     if env is not None and _live_env_mount_agrees(env, plan.host_cwd):
         return env
     if env is not None:
-        _release_active_env(eff, task_id, plan.host_cwd)
+        # in_use=False: the caller needs this call's mount before it runs anything, so a
+        # release that would kill an in-flight execution is deferred — it keeps the live
+        # env and this call proceeds in it, like every other disagreement case.
+        if not _release_active_env(eff, task_id, plan.host_cwd, in_use=False):
+            logger.info(
+                "Keeping the live container for task %s for this call (release deferred).",
+                eff[:24],
+            )
+            return env
 
     with _creation_locks_lock:
         task_lock = _creation_locks.setdefault(eff, threading.Lock())
@@ -1267,8 +1353,12 @@ def _acquire_env(plan: _ExecPlan, task_id: Optional[str]) -> Any:
             env = _lookup_active_env(eff, task_id)
         if env is not None and _live_env_mount_agrees(env, plan.host_cwd):
             return env
-        if env is not None:
-            _release_active_env(eff, task_id, plan.host_cwd)
+        if env is not None and not _release_active_env(eff, task_id, plan.host_cwd, in_use=False):
+            logger.info(
+                "Keeping the live container for task %s for this call (release deferred).",
+                eff[:24],
+            )
+            return env
 
         if env_type == "singularity":
             _check_disk_usage_warning()
@@ -1329,11 +1419,18 @@ def _run_foreground(
             # bounded_capture: model-facing output keeps a head/tail window
             # while streaming so a verbose command can't OOM the gateway;
             # internal env.execute() consumers stay unbounded.
-            result = env.execute(
-                command, timeout=effective_timeout, cwd=command_cwd, bounded_capture=True,
-                **_yield_kwargs(command, env_type=env_type, cwd=command_cwd, effective_task_id=eff,
-                                task_id=task_id, session_key=session_key),
-            )
+            # The in-flight marker makes this env un-releasable while a command runs: a
+            # sibling session's mount disagreement must not tear the container out from
+            # under it (that is the exit_code 137 class).
+            _note_execution_start(env)
+            try:
+                result = env.execute(
+                    command, timeout=effective_timeout, cwd=command_cwd, bounded_capture=True,
+                    **_yield_kwargs(command, env_type=env_type, cwd=command_cwd, effective_task_id=eff,
+                                    task_id=task_id, session_key=session_key),
+                )
+            finally:
+                _note_execution_end(env)
             break
         except Exception as e:
             if "timeout" in str(e).lower():

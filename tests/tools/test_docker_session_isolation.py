@@ -403,6 +403,12 @@ class TestSharedContainerMountIdentity:
                             lambda tid: entries.get(tid))
         return popped, entries
 
+    def _register_workspace(self, session_key: str, path) -> None:
+        """This session ATTACHED ``path`` as its workspace (the picker's cwd_source)."""
+        terminal_tool.register_task_env_overrides(
+            session_key, {"cwd": str(path), "cwd_source": "session"},
+        )
+
     def test_stale_env_is_released_and_dropped_from_the_cache(self, monkeypatch, tmp_path):
         a = tmp_path / "a"
         b = tmp_path / "b"
@@ -413,10 +419,100 @@ class TestSharedContainerMountIdentity:
         monkeypatch.setattr(
             "tools.terminal_tool_lifecycle._cleanup_env", lambda env: torn_down.append(env),
         )
+        self._register_workspace("sess-B", b)
 
-        terminal_tool._release_active_env("profile:work", "sess-B", str(b))
+        assert terminal_tool._release_active_env("profile:work", "sess-B", str(b)) is True
         assert torn_down == [stale]
         assert "profile:work" in popped
+
+    def test_release_invalidates_the_file_ops_cache_too(self, monkeypatch, tmp_path):
+        """The release destroys the container, and a cached ShellFileOperations entry
+        holds a handle to it — the next ``read_file``/``write_file`` would talk to a dead
+        sandbox. ``_unregister_env`` already clears the cache for exactly this reason."""
+        a = tmp_path / "a"
+        b = tmp_path / "b"
+        a.mkdir(); b.mkdir()
+        stale = self._env(str(a))
+        self._fake_registry(monkeypatch, {"profile:work": stale})
+        monkeypatch.setattr(
+            "tools.terminal_tool_lifecycle._cleanup_env", lambda env: None,
+        )
+        cleared = []
+        monkeypatch.setattr(
+            "tools.terminal_tool_lifecycle._clear_file_ops_cache", lambda tid: cleared.append(tid),
+        )
+        self._register_workspace("sess-B", b)
+
+        assert terminal_tool._release_active_env("profile:work", "sess-B", str(b)) is True
+        assert "profile:work" in cleared
+
+    def test_a_session_without_a_workspace_never_evicts_a_sibling(self, monkeypatch, tmp_path):
+        """The #119170 residual: a session that attached NO workspace used to release the
+        shared container and re-impose the backend process cwd as ``/workspace`` — churning
+        the sandbox (and SIGKILLing whatever ran in it) to mount a directory the mount policy
+        refuses everywhere else. It has no bind of its own to repair, so it keeps what is
+        live."""
+        a = tmp_path / "a"
+        a.mkdir()
+        stale = self._env(str(a))
+        torn_down = []
+        self._fake_registry(monkeypatch, {"profile:work": stale})
+        monkeypatch.setattr(
+            "tools.terminal_tool_lifecycle._cleanup_env", lambda env: torn_down.append(env),
+        )
+
+        released = terminal_tool._release_active_env(
+            "profile:work", "sess-no-workspace", str(tmp_path),
+        )
+        assert released is False
+        assert torn_down == []
+
+    def test_a_process_tagged_cwd_is_not_a_workspace_to_evict_for(self, monkeypatch, tmp_path):
+        """``cwd_source: "process"`` is a launch artifact, refused as a mount source by
+        ``_session_workspace_mount_source`` — so it must not authorise an eviction either."""
+        a = tmp_path / "a"
+        a.mkdir()
+        stale = self._env(str(a))
+        torn_down = []
+        self._fake_registry(monkeypatch, {"profile:work": stale})
+        monkeypatch.setattr(
+            "tools.terminal_tool_lifecycle._cleanup_env", lambda env: torn_down.append(env),
+        )
+        terminal_tool.register_task_env_overrides(
+            "sess-B", {"cwd": str(tmp_path), "cwd_source": "process"},
+        )
+
+        assert terminal_tool._release_active_env("profile:work", "sess-B", str(tmp_path)) is False
+        assert torn_down == []
+
+    def test_an_in_flight_execution_is_never_released(self, monkeypatch, tmp_path):
+        """Releasing under a running command is the ``exit_code: 137`` class: run args are
+        immutable, so the release stops the container while a command is executing in it."""
+        a = tmp_path / "a"
+        b = tmp_path / "b"
+        a.mkdir(); b.mkdir()
+        stale = self._env(str(a))
+        torn_down = []
+        self._fake_registry(monkeypatch, {"profile:work": stale})
+        monkeypatch.setattr(
+            "tools.terminal_tool_lifecycle._cleanup_env", lambda env: torn_down.append(env),
+        )
+        self._register_workspace("sess-B", b)
+
+        terminal_tool._note_execution_start(stale)
+        try:
+            assert terminal_tool._release_active_env(
+                "profile:work", "sess-B", str(b), in_use=False,
+            ) is False
+            assert torn_down == []
+        finally:
+            terminal_tool._note_execution_end(stale)
+
+        # …and once the command is done, the deferred release proceeds.
+        assert terminal_tool._release_active_env(
+            "profile:work", "sess-B", str(b), in_use=False,
+        ) is True
+        assert torn_down == [stale]
 
     def test_release_is_a_no_op_when_the_mount_already_matches(self, monkeypatch, tmp_path):
         """Regression guard for the sibling-safety rule: an agreeing container is never
@@ -429,14 +525,17 @@ class TestSharedContainerMountIdentity:
         monkeypatch.setattr(
             "tools.terminal_tool_lifecycle._cleanup_env", lambda env: torn_down.append(env),
         )
-        terminal_tool._release_active_env("profile:work", "sess-B", str(a))
+        self._register_workspace("sess-B", a)
+        assert terminal_tool._release_active_env("profile:work", "sess-B", str(a)) is False
         assert torn_down == []
 
     def test_release_is_a_no_op_without_an_active_env(self, monkeypatch, tmp_path):
         b = tmp_path / "b"
         b.mkdir()
         self._fake_registry(monkeypatch, {})
-        terminal_tool._release_active_env("profile:work", "sess-B", str(b))  # must not raise
+        self._register_workspace("sess-B", b)
+        # must not raise
+        assert terminal_tool._release_active_env("profile:work", "sess-B", str(b)) is False
 
 
 class TestRecordedHostCwdDiscardedOnContainers:

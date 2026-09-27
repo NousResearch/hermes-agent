@@ -588,3 +588,113 @@ def test_cli_death_is_reported_as_a_crash_not_a_timeout(tmp_path):
         assert "exited early: fatal: agent segfaulted" in str(exc)
     else:
         raise AssertionError("session on a dead CLI must raise")
+
+
+_LAUNCHER_WITH_NATIVE_CHILD = (
+    "import subprocess, sys, time\n"
+    "# Shape of the npm @github/copilot launcher (#124835): a thin wrapper that spawns a\n"
+    "# worker as a child, stays alive until terminated, and orphans that worker when only\n"
+    "# the wrapper itself is signalled.\n"
+    "w = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(300)'])\n"
+    "print(w.pid, flush=True)\n"
+    "while True:\n"
+    "    time.sleep(0.1)\n"
+)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
+def test_terminate_process_takes_the_native_descendant_with_it():
+    """Terminating only the tracked launcher used to orphan the launcher's native
+    child, which a container's PID 1 then never reaped — 16 leaked processes
+    ≈ 2.6 GiB RSS in the reporter's deployment (#124835). The session spawn puts
+    the tree in its own process group, so teardown must reach the descendant."""
+    import contextlib
+    import subprocess as sp
+    import time as _time
+
+    proc = sp.Popen(  # mirrors _spawn's own-process-group contract
+        [sys.executable, "-c", _LAUNCHER_WITH_NATIVE_CHILD],
+        stdin=sp.PIPE, stdout=sp.PIPE, stderr=sp.PIPE, process_group=0,
+    )
+    try:
+        worker_pid = int(proc.stdout.readline().decode().strip())
+        assert worker_pid > 0
+
+        CopilotACPClient._terminate_process(proc)
+
+        deadline = _time.monotonic() + 5
+        while _time.monotonic() < deadline:
+            try:
+                os.kill(worker_pid, 0)
+            except OSError:
+                break
+            _time.sleep(0.05)
+        else:
+            with contextlib.suppress(OSError):
+                os.kill(worker_pid, 9)
+            raise AssertionError("the native worker survived the launcher's termination")
+    finally:
+        with contextlib.suppress(Exception):
+            proc.kill()
+            proc.wait(timeout=5)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
+def test_terminate_process_never_signals_a_shared_process_group(monkeypatch):
+    """A spawn that did not get its own process group must fall back to
+    launcher-only termination: signalling the shared group would take unrelated
+    processes down with the session (#124835)."""
+    import agent.copilot_acp_client as mod
+
+    signalled, terminated = [], []
+
+    class _Proc:
+        pid = 111
+
+        def terminate(self):
+            terminated.append(111)
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            pass
+
+    monkeypatch.setattr(mod.os, "name", "posix")
+    monkeypatch.setattr(mod.os, "getpgid", lambda pid: 4242, raising=False)
+    monkeypatch.setattr(mod.os, "killpg", lambda pgid, sig: signalled.append((pgid, sig)), raising=False)
+    CopilotACPClient._terminate_process(_Proc())  # type: ignore[arg-type]
+    assert terminated == [111]
+    assert signalled == []
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
+def test_terminate_process_sweeps_a_group_that_ignores_the_term(monkeypatch):
+    """A descendant that ignores the graceful TERM must not outlive the session:
+    after the launcher is reaped, a live group (pgid still claimed by a member)
+    gets the KILL sweep (#124835)."""
+    import signal as _signal
+
+    import agent.copilot_acp_client as mod
+
+    signalled, terminated = [], []
+
+    class _Proc:
+        pid = 111
+
+        def terminate(self):
+            terminated.append(111)
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            pass
+
+    monkeypatch.setattr(mod.os, "name", "posix")
+    monkeypatch.setattr(mod.os, "getpgid", lambda pid: 111, raising=False)
+    monkeypatch.setattr(mod.os, "killpg", lambda pgid, sig: signalled.append((pgid, sig)), raising=False)
+    CopilotACPClient._terminate_process(_Proc())  # type: ignore[arg-type]
+    # TERM to the group, probe (signal 0), then the KILL sweep for the survivor.
+    assert signalled == [(111, _signal.SIGTERM), (111, 0), (111, _signal.SIGKILL)]
+    assert terminated == []  # the group path never degrades to launcher-only

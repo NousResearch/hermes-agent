@@ -24,6 +24,7 @@ from run_agent import AIAgent
 from agent.error_classifier import FailoverReason
 from agent.memory_manager import MemoryManager
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
+from tui_gateway import server as tui_server
 
 
 # ---------------------------------------------------------------------------
@@ -754,9 +755,7 @@ class TestHydrateTodoStore:
 
         assert agent._todo_store.snapshot() == {"todos": todos, "revision": 3}
         # The TUI resume path (no AIAgent yet) must pair the same call via the same predicate.
-        from tui_gateway import server
-
-        assert server._todo_state_from_history(history)["todos"] == todos
+        assert tui_server._todo_state_from_history(history)["todos"] == todos
 
     def test_no_todo_in_history(self, agent):
         history = [

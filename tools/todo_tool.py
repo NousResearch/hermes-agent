@@ -282,7 +282,7 @@ TODO_TOOL_NAMES = frozenset((TODO_SCHEMA["name"], *TODO_LEGACY_ALIASES))
 
 def is_todo_tool_name(name: Any) -> bool:
     """True for the Todo tool's current name or a legacy alias (an already-unwrapped dispatch name)."""
-    return name in TODO_TOOL_NAMES
+    return isinstance(name, str) and name in TODO_TOOL_NAMES
 
 
 def is_todo_tool_call(tool_call: Any) -> bool:
@@ -290,8 +290,8 @@ def is_todo_tool_call(tool_call: Any) -> bool:
 
     Covers the current name, legacy aliases, and the ``tool_call`` bridge (``todo_list`` is deferred by
     default, and the transcript keeps the bridge name). The bridge is peeled from the recorded arguments
-    only, never live tool-search config, and must wrap exactly one call. Lives here, not in
-    agent.tool_executor, so TUI resume and run_agent never pull model_tools / the executor in to answer it.
+    only, never live tool-search config, and must wrap exactly one call. Keep this module free of model_tools / agent.tool_executor
+    imports: TUI resume and run_agent call this without loading either.
     """
     from agent.message_sanitization import _tc_field
 
@@ -299,7 +299,8 @@ def is_todo_tool_call(tool_call: Any) -> bool:
     name, raw_args = _tc_field(fn, "name") or "", _tc_field(fn, "arguments")
     if is_todo_tool_name(name):
         return True
-    # Cheap pre-check before the bridge modules load: no "todo" in the raw args means no todo inside.
+    # Cheap heuristic before the bridge modules load: skip args without a literal "todo". Only a
+    # unicode-escaped name slips past, which json.dumps never writes for ASCII.
     if isinstance(raw_args, str) and "todo" not in raw_args:
         return False
     from tools.tool_search_catalog import TOOL_CALL_NAME

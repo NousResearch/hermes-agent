@@ -1870,6 +1870,88 @@ async def test_thread_backfill_omits_child_redacted_during_relations_fetch():
     assert await fetching == [root]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("start", [None, "", 7])
+async def test_thread_fetch_uses_anchored_context_when_cursor_is_missing(start):
+    from plugins.platforms.matrix import thread_context
+    from plugins.platforms.matrix.reply_context import MatrixEventContext, MatrixEventContextCache
+
+    room_id = "!room:example.org"
+    client = MagicMock()
+    client.api.request = AsyncMock(side_effect=[
+        {"start": start, "events_before": []},
+        {"events_before": [
+            {"event_id": "$other-room", "room_id": "!elsewhere:example.org",
+             "sender": "@mallory:example.org", "content": {"msgtype": "m.text", "body": "Other room",
+             "m.relates_to": {"rel_type": "m.thread", "event_id": "$root"}}},
+            {"event_id": "$other-thread", "room_id": room_id,
+             "sender": "@bob:example.org", "content": {"msgtype": "m.text", "body": "Other thread",
+             "m.relates_to": {"rel_type": "m.thread", "event_id": "$other-root"}}},
+            {"event_id": "$encrypted", "room_id": room_id, "type": "m.room.encrypted",
+             "sender": "@alice:example.org", "content": {"ciphertext": "encrypted"}},
+            {"event_id": "$earlier", "room_id": room_id,
+             "sender": "@alice:example.org", "content": {"msgtype": "m.text", "body": "Earlier",
+             "m.relates_to": {"rel_type": "m.thread", "event_id": "$root"}}},
+        ], "events_after": [
+            {"event_id": "$later", "room_id": room_id, "sender": "@bob:example.org",
+             "content": {"msgtype": "m.text", "body": "Later",
+             "m.relates_to": {"rel_type": "m.thread", "event_id": "$root"}}},
+        ]},
+    ])
+    client.get_event = AsyncMock(return_value={"event_id": "$root", "content": {}})
+    cache = MatrixEventContextCache()
+
+    with patch.object(thread_context, "_decrypt_thread_event", new_callable=AsyncMock) as decrypt:
+        decrypt.return_value = {"content": {"msgtype": "m.text", "body": "Secret",
+                                              "m.relates_to": {"rel_type": "m.thread", "event_id": "$root"}}}
+        entries = await thread_context.fetch_thread_entries(
+            client, cache, room_id, "$root", limit=4, before_event_id="$current",
+        )
+
+    assert entries == [
+        MatrixEventContext("@alice:example.org", "Earlier"),
+        MatrixEventContext("@alice:example.org", "Secret"),
+    ]
+    decrypt.assert_awaited_once()
+    assert [call.kwargs["query_params"] for call in client.api.request.await_args_list] == [
+        {"limit": "0"}, {"limit": "4"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_thread_fetch_uses_anchored_context_when_relations_rejects_cursor():
+    from plugins.platforms.matrix import thread_context
+    from plugins.platforms.matrix.reply_context import MatrixEventContext, MatrixEventContextCache
+
+    client = MagicMock()
+    client.api.request = AsyncMock(side_effect=[
+        {"start": "incompatible-context-token"},
+        RuntimeError("invalid cursor"),
+        {"events_before": [
+            {"event_id": "$earlier", "sender": "@alice:example.org",
+             "content": {"msgtype": "m.text", "body": "Earlier",
+             "m.relates_to": {"rel_type": "m.thread", "event_id": "$root"}}},
+        ], "events_after": [
+            {"event_id": "$later", "sender": "@bob:example.org",
+             "content": {"msgtype": "m.text", "body": "Later",
+             "m.relates_to": {"rel_type": "m.thread", "event_id": "$root"}}},
+        ]},
+    ])
+    client.get_event = AsyncMock(return_value={"event_id": "$root", "content": {}})
+
+    entries = await thread_context.fetch_thread_entries(
+        client, MatrixEventContextCache(), "!room:example.org", "$root",
+        limit=3, before_event_id="$current",
+    )
+
+    assert entries == [MatrixEventContext("@alice:example.org", "Earlier")]
+    assert [call.kwargs["query_params"] for call in client.api.request.await_args_list] == [
+        {"limit": "0"},
+        {"dir": "b", "limit": "3", "from": "incompatible-context-token"},
+        {"limit": "3"},
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Reply fallback stripping
 # ---------------------------------------------------------------------------

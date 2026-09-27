@@ -85,20 +85,30 @@ async def fetch_thread_entries(
         f"/_matrix/client/v1/rooms/{quote(room_id, safe='')}"
         f"/relations/{quote(thread_id, safe='')}/m.thread"
     )
+    response: dict | None = None
+    event_key = "events_before"
     try:
         boundary = await asyncio.wait_for(
             client.api.request(Method.GET, context_path, query_params={"limit": "0"}), timeout=10.0,
         )
         token = boundary.get("start") if isinstance(boundary, dict) else None
-        if not isinstance(token, str) or not token:
-            return []
-        response = await asyncio.wait_for(
-            client.api.request(
-                Method.GET, path,
-                query_params={"dir": "b", "limit": str(limit), "from": token},
-            ),
-            timeout=10.0,
-        )
+        if isinstance(token, str) and token:
+            try:
+                response = await asyncio.wait_for(
+                    client.api.request(
+                        Method.GET, path,
+                        query_params={"dir": "b", "limit": str(limit), "from": token},
+                    ),
+                    timeout=10.0,
+                )
+                event_key = "chunk"
+            except Exception as exc:
+                logger.debug("Matrix: thread cursor rejected for %s in %s: %s", thread_id, room_id, exc)
+        if response is None:
+            response = await asyncio.wait_for(
+                client.api.request(Method.GET, context_path, query_params={"limit": str(limit)}),
+                timeout=10.0,
+            )
     except Exception as exc:
         logger.debug("Matrix: could not fetch thread %s in %s: %s", thread_id, room_id, exc)
         return []
@@ -108,7 +118,7 @@ async def fetch_thread_entries(
     if root is not None:
         entries.append(root)
 
-    chunk = response.get("chunk") if isinstance(response, dict) else None
+    chunk = response.get(event_key) if isinstance(response, dict) else None
     if not isinstance(chunk, list):
         return entries
 
@@ -117,6 +127,8 @@ async def fetch_thread_entries(
             continue
         event_id = raw.get("event_id")
         if event_id == before_event_id or not isinstance(event_id, str):
+            continue
+        if raw.get("room_id", room_id) != room_id:
             continue
         parsed = await history_entry(client, raw)
         if parsed is None:

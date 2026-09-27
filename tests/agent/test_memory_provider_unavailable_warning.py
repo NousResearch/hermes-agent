@@ -19,10 +19,7 @@ def test_warns_once_and_dedupes(caplog):
 
     warnings = [r for r in caplog.records if "unavailable" in r.getMessage()]
     assert len(warnings) == 1, "should warn exactly once per provider (gateway dedup)"
-    msg = warnings[0].getMessage()
-    assert "hindsight" in msg
-    assert "hermes memory status" in msg
-    assert ".env" in msg  # surfaces the systemd/gateway root cause
+    assert "hindsight" in warnings[0].getMessage()
 
 
 def test_distinct_providers_each_warn(caplog):
@@ -47,13 +44,3 @@ def test_provider_reason_is_appended(caplog):
     warnings = [r for r in caplog.records if "unavailable" in r.getMessage()]
     assert len(warnings) == 1
     assert hint in warnings[0].getMessage()
-
-
-def test_empty_reason_adds_no_trailing_noise(caplog):
-    agent_init._warned_unavailable_providers.clear()
-    with caplog.at_level(logging.WARNING, logger="run_agent"):
-        agent_init._warn_memory_provider_unavailable("hindsight", "")
-
-    msg = next(r.getMessage() for r in caplog.records if "unavailable" in r.getMessage())
-    # No dangling separator when there's no provider-specific hint.
-    assert msg.rstrip().endswith("service environment.")

@@ -1,3 +1,4 @@
+import { replaceEqualDeep } from '@tanstack/react-query'
 import { atom, computed } from 'nanostores'
 
 import type { NewSessionPlacement } from '@/app/chat/new-session-drag'
@@ -14,7 +15,6 @@ import { desktopDefaultCwd, isDesktopFsRemoteMode, selectDesktopPaths, writeDesk
 import { desktopGit } from '@/lib/desktop-git'
 import { isMissingRestEndpoint, isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { isUnderPath } from '@/lib/path-compare'
-import { persistentAtom } from '@/lib/persisted'
 import { revealFile } from '@/store/file-actions'
 import { $gateway, activeGateway, ensureActiveGatewayOpen } from '@/store/gateway'
 import { $sidebarShowAllSessions, setSidebarAgentsGrouped } from '@/store/layout'
@@ -26,10 +26,13 @@ import {
   normalizeProfileKey,
   requestFreshSession
 } from '@/store/profile'
+import { $projectScope, ALL_PROJECTS } from '@/store/project-scope'
 import {
+  $currentCwd,
   $selectedStoredSessionId,
   $sessions,
   sessionMatchesStoredId,
+  setCurrentCwd,
   setSessions,
   workspaceCwdForNewSession
 } from '@/store/session'
@@ -77,22 +80,6 @@ function projectsStaleBackendError(): Error {
 // True while the disk scan is in flight (drives the "finding repos" hint).
 export const $reposScanning = atom(false)
 
-// ── Project scope (the "you're inside a project" view, mirroring profile scope)─
-// The sidebar's grouped view is a project switcher: ALL_PROJECTS shows the
-// project overview (a list you drill into), and a concrete id means you've
-// "entered" that project so only its worktrees/branches/sessions show. This is
-// pure view state (localStorage), distinct from the durable active-project
-// pointer in projects.db — though entering a project also makes it active so new
-// chats land there, exactly as selecting a profile does.
-export const ALL_PROJECTS = '__all_projects__'
-
-const PROJECT_SCOPE_KEY = 'hermes.desktop.projectScope'
-
-export const $projectScope = persistentAtom<string>(PROJECT_SCOPE_KEY, ALL_PROJECTS, {
-  decode: raw => raw || ALL_PROJECTS,
-  encode: value => value || ALL_PROJECTS
-})
-
 // Enter a project: scope the sidebar to it and make it the active project
 // (best-effort — the durable pointer is nice-to-have, the view scope is the
 // point). Never opens a session.
@@ -105,10 +92,6 @@ export function enterProject(id: string): void {
   if (id.startsWith('p_')) {
     void setActiveProject(id).catch(() => undefined)
   }
-}
-
-export function exitProjectScope(): void {
-  $projectScope.set(ALL_PROJECTS)
 }
 
 // A project's working root: its primary folder, else the first repo that has
@@ -173,6 +156,23 @@ export function resolveNewSessionCwd(): string {
   }
 
   return workspaceCwdForNewSession()
+}
+
+// Entering a project moves the live workspace only when main holds a fresh
+// draft: the draft has no folder of its own yet, and the project root is where
+// its first message should run. A stored conversation keeps its cwd — entering
+// is a scope switch, and moving the workspace under the selected chat re-pointed
+// Files/Review and the composer's Git context at the project while the
+// transcript stayed on the old session (#72772). The next new chat still lands
+// in the project through resolveNewSessionCwd.
+export function followEnteredProjectCwd(cwd: string): void {
+  const target = cwd.trim()
+
+  if (!target || $selectedStoredSessionId.get() || target === $currentCwd.get()) {
+    return
+  }
+
+  setCurrentCwd(target)
 }
 
 // The project (explicit or auto) that owns `cwd`, by longest path match across
@@ -409,7 +409,10 @@ let projectTreeRefreshGeneration = 0
 
 function applyProjectTreePayload(res: ProjectTreePayload): void {
   const scoped = new Set(res.scoped_session_ids ?? [])
-  $projectTree.set(res.projects ?? [])
+  // The tree refreshes on every sessions.changed and window focus, and most of
+  // those answers are unchanged. Keep unchanged nodes by reference so the
+  // entered project doesn't refetch and rebuild on a no-op (#77591).
+  $projectTree.set(replaceEqualDeep($projectTree.get(), res.projects ?? []))
   $activeProjectId.set(res.active_id ?? null)
   const tombstones = $removedSessionIds.get()
 

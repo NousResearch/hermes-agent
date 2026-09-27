@@ -92,6 +92,16 @@ def _nested_dict(root: dict, *keys: str) -> dict:
     return root
 
 
+def _write_raw_config_leaf(config_path: Path, keys: tuple, value) -> None:
+    """Set one leaf through a strict raw round-trip. The behavioral read is fail-open (``{}``) and
+    expanded, so writing it back wipes the file after a read error and persists ``${VAR}`` values."""
+    from hermes_cli.config import read_user_config_raw
+    raw = read_user_config_raw(config_path)
+    *parents, leaf = keys
+    _nested_dict(raw, *parents)[leaf] = value
+    atomic_config_write(config_path, raw)
+
+
 def _preview(text: str, limit: int = 60) -> str:
     return text[:limit] + ("..." if len(text) > limit else "")
 
@@ -969,8 +979,7 @@ class GatewaySlashCommandsMixin(
         new_mode = cycle[(cycle.index(current if current in cycle else "all") + 1) % len(cycle)]
         description = t(f"gateway.verbose.mode_{new_mode}")
         try:
-            _nested_dict(user_config, "display", "platforms", platform_key)["tool_progress"] = new_mode
-            atomic_config_write(config_path, user_config)
+            _write_raw_config_leaf(config_path, ("display", "platforms", platform_key, "tool_progress"), new_mode)
             return f"{description}\n" + t("gateway.verbose.saved_suffix", platform=platform_key)
         except Exception as e:
             logger.warning("Failed to save tool_progress mode: %s", e)
@@ -1037,8 +1046,7 @@ class GatewaySlashCommandsMixin(
             return t("gateway.footer.usage")
         new_state = _FOOTER_STATE_BY_ARG[arg] if arg else not effective["enabled"]
         try:
-            _nested_dict(user_config, "display", "runtime_footer")["enabled"] = new_state
-            atomic_config_write(config_path, user_config)
+            _write_raw_config_leaf(config_path, ("display", "runtime_footer", "enabled"), new_state)
         except Exception as e:
             logger.warning("Failed to save runtime_footer.enabled: %s", e)
             return t("gateway.config_save_failed", error=e)
@@ -1271,7 +1279,30 @@ class GatewaySlashCommandsMixin(
                 return t("gateway.update.platform_not_messaging")
         if is_managed():
             return f"✗ {format_managed_message('update Hermes Agent')}"
-        if not (Path(__file__).parent.parent.resolve() / '.git').exists():
+
+        project_root = Path(__file__).parent.parent.resolve()
+
+        # Not a git-managed install (docker/nix/desktop-app/source): refuse
+        # with the steward's own update mechanism instead of git-pulling a
+        # tree `hermes update` does not own.
+        try:
+            from hermes_cli.config import (
+                detect_install_method,
+                recommended_update_command_for_method,
+            )
+
+            method = detect_install_method(project_root)
+            if method not in {"git", "unknown"}:
+                return (
+                    f"✗ `hermes update` does not apply to this install ({method}).\n"
+                    f"Update with: {recommended_update_command_for_method(method)}"
+                )
+        except Exception:
+            pass  # config unreadable — fall through to the .git check below
+
+        git_dir = project_root / '.git'
+
+        if not git_dir.exists():
             return t("gateway.update.not_git_repo")
         hermes_cmd = _resolve_hermes_bin()
         if not hermes_cmd:

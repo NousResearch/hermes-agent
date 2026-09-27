@@ -28,10 +28,10 @@ import { localPreviewTarget } from '@/lib/local-preview'
  *
  * NATIVE BY DEFAULT. A theme prelude injects first: the app's resolved
  * theme tokens under friendly names (--foreground, --muted-foreground,
- * --accent, --border, --card), the app font, zero body margin/padding, and
- * a transparent background — so widget-shaped content reads as part of the
- * app. The page's own styles override all of it, so a full page keeps its
- * own design.
+ * --accent, --border, --card), the app's color scheme, the app font, zero
+ * body margin/padding, and a transparent background — so widget-shaped
+ * content reads as part of the app. The page's own styles override all of
+ * it, so a full page keeps its own design.
  *
  * WIDGETS TALK BACK OFF-SCREEN. `window.hermes.send(prompt)` (or declarative
  * `data-hermes-send` on any clickable element) routes the prompt through the
@@ -150,12 +150,16 @@ export function collectThemeBridge(): { vars: Record<string, string>; font: stri
 
 /**
  * The style prelude that makes an inline widget read as NATIVE: the app's
- * resolved theme tokens as CSS vars, the app font, no margin, and a
+ * resolved theme tokens as CSS vars, the app's color scheme (so UA controls,
+ * scrollbars, form defaults, and `prefers-color-scheme` inside the frame
+ * follow the app instead of the UA light default — a transparent background
+ * alone does not do this, #95814), the app font, no margin, and a
  * transparent background so the widget sits directly on the chat surface.
  * Injected FIRST, so the page's own styles override every default here — a
- * full page that wants its own look keeps it.
+ * full page that wants its own look keeps it, including its own
+ * `color-scheme` declaration.
  */
-export function themePrelude(vars: Record<string, string>, font: string): string {
+export function themePrelude(vars: Record<string, string>, font: string, colorScheme: 'light' | 'dark'): string {
   const tokens = Object.entries(vars)
     .map(([name, value]) => `${name}:${value}`)
     .join(';')
@@ -163,7 +167,7 @@ export function themePrelude(vars: Record<string, string>, font: string): string
   const fontRule = font ? `font-family:${font};` : ''
 
   return (
-    `<style>:root{${tokens}}` +
+    `<style>:root{color-scheme:${colorScheme};${tokens}}` +
     `html,body{margin:0;padding:0;background:transparent;color:var(--foreground,inherit);${fontRule}}</style>`
   )
 }
@@ -259,7 +263,7 @@ export function InlinePreviewDirective({
   // which fetches over the authenticated /api/fs bridge in remote mode, so a
   // URL connection — including a same-machine `hermes serve` — renders live.)
   if (!file || !HTML_FILE_RE.test(file)) {
-    return file ? <PreviewAttachment source="explicit-link" target={file} /> : null
+    return file ? <PreviewAttachment target={file} /> : null
   }
 
   return <InlineHtmlFrame file={file} initialHeight={directiveFrameHeight(attrs.height)} streaming={streaming} />
@@ -277,6 +281,7 @@ function InlineHtmlFrame({
 }) {
   const cwd = useStore(useSessionView().$cwd)
   const isDark = useIsDark()
+  const colorScheme = isDark ? 'dark' : 'light'
   const [doc, setDoc] = useState<string | null>(null)
   const [failed, setFailed] = useState(false)
   const [measured, setMeasured] = useState<number | null>(null)
@@ -370,7 +375,8 @@ function InlineHtmlFrame({
     return () => window.removeEventListener('message', onMessage)
   }, [initialHeight, token])
 
-  // Resolved once per mount; theme switches remount the transcript anyway.
+  // Rebuild the srcdoc when the color scheme changes so its native controls and
+  // transparent canvas stay aligned with the app.
   const framedDoc = useMemo(() => {
     if (doc === null) {
       return null
@@ -378,11 +384,11 @@ function InlineHtmlFrame({
 
     const { vars, font } = collectThemeBridge()
 
-    return withInlineChrome(doc, token, themePrelude(vars, font))
-  }, [doc, token])
+    return withInlineChrome(doc, token, themePrelude(vars, font, colorScheme))
+  }, [colorScheme, doc, token])
 
   if (!path || failed) {
-    return <PreviewAttachment source="explicit-link" target={file} />
+    return <PreviewAttachment target={file} />
   }
 
   const height = measured ?? initialHeight ?? DEFAULT_HEIGHT
@@ -408,7 +414,7 @@ function InlineHtmlFrame({
             loading="lazy"
             sandbox="allow-scripts"
             srcDoc={framedDoc}
-            style={{ colorScheme: isDark ? 'dark' : 'light' }}
+            style={{ colorScheme }}
             title={file}
           />
         </span>

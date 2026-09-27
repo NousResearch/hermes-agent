@@ -32,6 +32,8 @@ const CODE_TO_KEY: Record<string, string> = {
   Enter: 'enter',
   Escape: 'escape',
   Backspace: 'backspace',
+  Delete: 'delete',
+  CapsLock: 'capslock',
   Tab: 'tab',
   PageUp: 'pageup',
   PageDown: 'pagedown',
@@ -55,7 +57,14 @@ const MODIFIER_CODES = new Set([
 // Modifier names as reported by `event.key` on a bare modifier keydown.
 const MODIFIER_KEYS = new Set(['Alt', 'Control', 'Meta', 'Shift'])
 
-function baseKeyFromCode(code: string): string | null {
+function baseKeyFromCode(code: unknown): string | null {
+  // event.code is typed string, but synthetic/IME keydowns can arrive without
+  // one (packaged-renderer TypeError reproductions in #91611); treat a
+  // non-string or empty code as "no physical key" instead of throwing.
+  if (typeof code !== 'string' || !code) {
+    return null
+  }
+
   if (code.startsWith('Key')) {
     return code.slice(3).toLowerCase()
   }
@@ -170,6 +179,8 @@ const TOKEN_LABELS: Record<string, string> = {
   enter: '↵',
   escape: 'Esc',
   backspace: '⌫',
+  delete: 'Del',
+  capslock: 'Caps Lock',
   tab: '⇥',
   pageup: 'PgUp',
   pagedown: 'PgDn',
@@ -258,6 +269,7 @@ export function isEditableTarget(target: EventTarget | null): boolean {
 const INPUT_SAFE_ACTIONS = new Set([
   'composer.modelPicker',
   'composer.voice',
+  'composer.dictate',
   'keybinds.openPanel',
   'nav.commandPalette',
   'session.next',

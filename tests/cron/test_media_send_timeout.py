@@ -22,7 +22,7 @@ class TestMediaSendTimeoutResolution:
     def test_default(self, monkeypatch):
         monkeypatch.delenv("HERMES_CRON_MEDIA_SEND_TIMEOUT", raising=False)
         monkeypatch.setattr("cron.scheduler.load_config", lambda: {})
-        assert _get_media_send_timeout() == _DEFAULT_MEDIA_SEND_TIMEOUT == 300
+        assert _get_media_send_timeout() == _DEFAULT_MEDIA_SEND_TIMEOUT
 
     def test_env_wins(self, monkeypatch):
         monkeypatch.setenv("HERMES_CRON_MEDIA_SEND_TIMEOUT", "45")

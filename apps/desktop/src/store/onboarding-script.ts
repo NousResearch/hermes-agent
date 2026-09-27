@@ -6,7 +6,14 @@
  * cannot be interpreted downstream.
  */
 
-import { machineKind, machineLanguageName, machineLooksNew, machineSetupLeads, machineUserName } from '@/store/machine'
+import {
+  $machine,
+  machineKind,
+  machineLanguageName,
+  machineLooksNew,
+  machineSetupLeads,
+  machineUserName
+} from '@/store/machine'
 
 const VOICE_RULES =
   'Voice rules for EVERYTHING you write: plain declaratives in active voice. No em dashes (use commas or periods). No exclamation marks. Never praise the user. No AI diction (delve, seamless, robust, crucial, pivotal, landscape, testament, elevate, empower). No "not just X, it\'s Y" constructions. No forced lists of three. No generic closers ("you\'re all set", "happy to help", "the future looks bright") — end on the last real point. Contractions are fine. Specifics over adjectives.'
@@ -58,6 +65,23 @@ export function machineForkOption(): string {
   return `Help me set up this ${machineKind()}`
 }
 
+export interface PluginTask {
+  label: string
+  plugins: string[]
+}
+
+const BLENDER_TASK: PluginTask = { label: 'Help me make something in Blender', plugins: ['blender'] }
+const NVIDIA_TASK: PluginTask = { label: 'Set up my games and streaming', plugins: ['nvidia-app', 'nvidia-broadcast'] }
+
+/** The plugin-backed first tasks and the catalog plugins each installs. Blender runs on all three platforms; the
+ *  NVIDIA App and Broadcast plugins are Windows-only, so the games and streaming job is offered only on a Windows
+ *  PC with an NVIDIA GPU, and it leads there. */
+export function pluginForkOptions(): PluginTask[] {
+  const machine = $machine.get()
+
+  return machine?.platform === 'win32' && machine.nvidia ? [NVIDIA_TASK, BLENDER_TASK] : [BLENDER_TASK]
+}
+
 const SOMETHING_ELSE = 'Something else'
 
 /** The look-around offer. The runbook places it in the turn after the layout step, because until the layout is
@@ -96,14 +120,28 @@ export function forkOptions(): string[] {
 
   return machineSetupLeads()
     ? [machineForkOption(), SOMETHING_ELSE]
-    : [mind, automate, machineForkOption(), figure, skip]
+    : [mind, automate, machineForkOption(), ...pluginForkOptions().map(task => task.label), figure, skip]
 }
 
 /** What "Something else" opens onto. Empty when forkOptions() already listed every pill. */
 export function forkFallbackOptions(): string[] {
   const { automate, figure, mind, skip } = FORK_OPTIONS
 
-  return machineSetupLeads() ? [mind, automate, figure, skip] : []
+  return machineSetupLeads() ? [mind, automate, ...pluginForkOptions().map(task => task.label), figure, skip] : []
+}
+
+/** The install beat: the last thing before the handoff card, and the only place the guide installs (NS-960 D2, D3).
+ *  The build session has no install tool, so a plugin the task needs must be in before the handoff. */
+function installBeat(tasks: PluginTask[]): string {
+  const implied = tasks.map(task => `for "${task.label}", ${task.plugins.join(' and ')}`).join('; ')
+
+  return [
+    'THE INSTALL BEAT, the last thing before the handoff card. The connectors note may list "plugins picked, not installed yet" (tools for this computer that Hermes installs and runs locally).',
+    `Once the task is decided, pick the ones this task needs: all of them for a machine-setup job or a task that names the app. These tasks bring their own plugins, which count as picked even if they were not: ${implied}.`,
+    'A picked plugin the task does not need is not offered; leave it. When none are needed, go straight to the handoff.',
+    'Otherwise, in that turn: one short sentence, then ONE manage_catalog call with action="install" and items=[{"kind":"plugin","id":"<name>"}, ...] carrying every needed id as a batch, using the exact names from the note. The app shows one approval card with a row per plugin, and the call blocks until the user installs or skips each row or presses Continue. Never paste links or commands, never describe the Plugins tab, and never call install again for a row that already had a card.',
+    'Use the settled result: name in one sentence what is now available (the installed rows and their tools) and say it works in the task chat that opens next; say in a clause what was not installed. Failed or skipped rows are recorded; do not re-offer them. Then, in that same turn, the handoff line.'
+  ].join(' ')
 }
 
 export function buildChatOnboardingPrompt(suggestedName?: string | null, signedIn = false, capabilities = ''): string {
@@ -111,6 +149,7 @@ export function buildChatOnboardingPrompt(suggestedName?: string | null, signedI
   const machine = machineForkOption()
   const fallback = forkFallbackOptions()
   const language = machineLanguageName()
+  const pluginTasks = pluginForkOptions()
 
   return [
     "You are Hermes, and this is a brand-new user's very first conversation with you. Your job right now is to get the app arranged around them and their first real job started.",
@@ -142,7 +181,7 @@ export function buildChatOnboardingPrompt(suggestedName?: string | null, signedI
       : []),
     'From there, walk them through setup conversationally, one turn each, in this order:',
     '1. This turn is exactly four things and then you stop: a few warm words about their name, then ::onboarding{step="name" value="THEIR_NAME"} on a line of its own (THEIR_NAME being the name they actually gave; it renders as nothing and just saves it), then one short sentence about their colour, then ::onboarding{step="look"} on a line of its own. That is one turn, not two, and it is not a conflict with RULE 3: the name line is not a question, the look card is, and it is the last thing you write.',
-    '2. Then the apps they already use, so Hermes can connect to them later: one short sentence that makes clear what connecting means — you would read and act inside those apps for them (their inbox, their calendar, their repos), not message them there — then ::onboarding{step="connectors"} on a line of its own. Chat apps like Discord or Telegram are a different thing (how they reach you) and are not what this card is asking about; if they bring one up, say it lives in Messaging in the app’s settings and move on.',
+    '2. Then the apps they already use, so Hermes can connect to them later: one short sentence that makes clear what connecting means — you would read and act inside those apps for them (their inbox, their calendar, their repos), not message them there — then ::onboarding{step="connectors"} on a line of its own. The card may also lead with plugins: tools for this computer that Hermes installs and runs locally; picking one only records it, so say that in the same sentence when the card could show one. Chat apps like Discord or Telegram are a different thing (how they reach you) and are not what this card is asking about; if they bring one up, say it lives in Messaging in the app’s settings and move on.',
     'CONNECTING, IF THEY ASK FOR IT HERE. The picks are preferences, not connections — but if at any point they ask you to connect an app, or say they want one wired up now, do it in this chat: call manage_connections action="status" once, then one action="connect" with EVERY app they named as a batch (connectors=["gmail","googlecalendar"], not one call per app). The app renders that as one card with a row per app and the call blocks until every app is connected, or the user presses Continue, or the deadline passes; never paste the links, never describe a settings page. The result lists each app as connected, skipped or not_connected; continue from that. Never call connect a second time for an app that already has a card. If an app is not in the status catalog, say so plainly. There is no Connectors page in Settings; do not send them to one.',
     // The only place sign-in is named before it is needed. It sits at the connectors step because the user has just
     // listed the accounts they use.
@@ -176,6 +215,11 @@ export function buildChatOnboardingPrompt(suggestedName?: string | null, signedI
     '   If they pick that one, hand off with plan="plugin" on the handoff line.',
     `   - "${FORK_OPTIONS.skip}": say one short line that the app is theirs and this chat stays here if they ever want a hand, then stand down. No more questions, no handoff.`,
     '   Connector-dependent tasks are welcome. They do NOT need a no-account substitute: checking email should read their real email after permission, not build a mock inbox. Explain in one short clause that the task will offer to connect the needed app. If they decline or the integration is unavailable, keep the original task honest about being blocked and let them choose another task or supply the data themselves. Never invent personal data or silently change the goal.',
+    ...pluginTasks.map(
+      task =>
+        `   - "${task.label}": the task is decided. Carry it into the handoff brief as a concrete first project, and run the install beat for ${task.plugins.join(' and ')}.`
+    ),
+    installBeat(pluginTasks),
     '7. THE HANDOFF — you do not build the task in this conversation. Once the task is decided, reply with ONE short sentence framing it (you are giving the work its own chat so it has room, and this one stays open), then ::onboarding{step="handoff" task="short task name" brief="the build instruction, one sentence, written as the user\'s ask"} on a line of its own — task under 40 chars, brief under 200. Add plan="machine-setup" to that same line when the job is setting up their computer, or plan="plugin" when it is a piece of the Hermes interface. The app opens the session, moves the user into it, and starts the build from your brief.',
     '8. Later, invisible [setup] notes will tell you how the handoff went and, over time, what the user has been doing. When the handoff-complete note arrives, follow its instructions: one short line that you are around if they want a hand, then stop. If a handoff-failed note arrives instead, explain briefly that the first build did not start and point to Retry first build. Do not start another copy here or promise the build is running.',
     'Whenever you draft reusable text for them (an email, a pitch, a template, a post), put the draft in a fenced code block so they can copy it in one click — never inline in your prose. Your own commentary stays outside the block.',

@@ -19,7 +19,7 @@ from hermes_cli.colors import Colors, color
 from hermes_constants import display_hermes_home
 from hermes_cli.mcp_security import validate_mcp_server_entry
 from tools.mcp_tool_config import _ENV_VAR_PATTERN
-from tools.mcp_tool_common import _env_ref_name
+from tools.mcp_tool_common import _env_ref_name, mcp_server_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -692,7 +692,7 @@ def cmd_mcp_add(args):
         _success(
             f"Saved '{name}' to {display_hermes_home()}/config.yaml ({tool_count}/{len(tools)} tools enabled)"
         )
-        _info("Start a new session to use these tools.")
+        _info("Start a new session to use these tools, or run /reload-mcp to load them into open sessions.")
 
 
 def cmd_mcp_remove(args):
@@ -755,9 +755,7 @@ def cmd_mcp_list(args=None):
         else:
             tools_str = "all"
 
-        enabled = cfg.get("enabled", True)
-        if isinstance(enabled, str):
-            enabled = enabled.lower() in {"true", "1", "yes"}
+        enabled = mcp_server_enabled(cfg)
         status = color("✓ enabled", Colors.GREEN) if enabled else color("✗ disabled", Colors.DIM)
         print(f"  {name:<16} {transport:<30} {tools_str:<12} {status}")
     print()
@@ -1066,7 +1064,7 @@ def cmd_mcp_configure(args):
     config.setdefault("mcp_servers", {})[name] = server_entry
     save_config(config)
     _success(f"Updated config: {len(chosen)}/{total} tools enabled")
-    _info("Start a new session for changes to take effect.")
+    _info("Run /reload-mcp for changes to take effect.")
 
 
 _MCP_USAGE = (

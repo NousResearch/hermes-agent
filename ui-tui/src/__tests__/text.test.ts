@@ -6,7 +6,6 @@ import {
   buildVerboseToolTrailLine,
   edgePreview,
   estimateRows,
-  estimateTokensRough,
   isToolTrailResultLine,
   lastCotTrailIndex,
   parseToolTrailResultLine,
@@ -111,15 +110,6 @@ describe('sameToolTrailGroup', () => {
   it('rejects other tools', () => {
     expect(sameToolTrailGroup('searching', 'reading ✓')).toBe(false)
     expect(sameToolTrailGroup('searching', 'searching extra ✓')).toBe(false)
-  })
-})
-
-describe('estimateTokensRough', () => {
-  it('uses 4 chars per token rounding up', () => {
-    expect(estimateTokensRough('')).toBe(0)
-    expect(estimateTokensRough('a')).toBe(1)
-    expect(estimateTokensRough('abcd')).toBe(1)
-    expect(estimateTokensRough('abcde')).toBe(2)
   })
 })
 

@@ -1,7 +1,7 @@
 .status-drawer {
   display: grid;
   grid-template-rows: 1fr;
-  /* Quick lift, then a soft landing. Closing is deliberately shorter. */
+  /* Quick lift, then a soft landing. */
   transition: grid-template-rows 260ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
@@ -11,20 +11,25 @@
 }
 
 .status-drawer-content {
-  /* The bottom-anchored dock already slides this content as the row opens.
-     Another translate doubles its travel and hides the first half of arrival. */
+  /* The dock supplies the slide; this is only a small drift for the exit. */
   visibility: visible;
-  transition: visibility 0s;
+  opacity: 1;
+  transform: translateY(0);
+  transition: opacity 90ms ease-out, transform 260ms cubic-bezier(0.16, 1, 0.3, 1), visibility 0s;
 }
 
 .status-drawer[data-collapsed] {
   grid-template-rows: 0fr;
-  transition: grid-template-rows 150ms cubic-bezier(0.4, 0, 0.2, 1);
+  transition: grid-template-rows 200ms cubic-bezier(0.4, 0, 0.2, 1) 70ms;
 }
 
 .status-drawer[data-collapsed] .status-drawer-content {
   visibility: hidden;
-  transition: visibility 0s 150ms;
+  opacity: 0.078;
+  transform: translateY(0.5rem);
+  /* Let the labels fade and drift before folding. Retain a faint trace through
+     the overlapping slide instead of flashing an empty panel, then hide it. */
+  transition: opacity 90ms ease-out, transform 150ms ease-in, visibility 0s 270ms;
 }
 
 .status-drawer-toggle {

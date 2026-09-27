@@ -17,6 +17,7 @@ class ReadResult:
     total_lines: int = 0
     file_size: int = 0
     truncated: bool = False
+    truncated_lines: Optional[bool] = None
     hint: Optional[str] = None
     is_binary: bool = False
     is_image: bool = False
@@ -24,10 +25,15 @@ class ReadResult:
     mime_type: Optional[str] = None
     dimensions: Optional[str] = None  # For images: "WIDTHxHEIGHT"
     error: Optional[str] = None
+    #: True only when the path is genuinely absent. An error with this False is a read that
+    #: FAILED (transport down, no byte transport installed); callers deciding whether a path
+    #: is free must not read that as "absent". See patch_parser._apply_add.
+    not_found: bool = False
     similar_files: List[str] = field(default_factory=list)
+    _snapshot: Optional[tuple] = None
 
     def to_dict(self) -> dict:
-        return {k: v for k, v in self.__dict__.items() if v is not None and v != []}
+        return {k: v for k, v in self.__dict__.items() if not k.startswith("_") and v is not None and v != []}
 
 
 @dataclass
@@ -38,6 +44,7 @@ class WriteResult:
     # True when the on-disk sha256 matched the intended content; None when the
     # backend couldn't verify (no sha256sum). A mismatch is a hard error, never a flag.
     verified: Optional[bool] = None
+    _content_sha256: Optional[str] = None
     lint: Optional[Dict[str, Any]] = None
     # LSP semantic diagnostics, kept separate from ``lint`` (syntax) so the model
     # reads the two as independent signals. None when LSP is off/inapplicable.
@@ -46,7 +53,7 @@ class WriteResult:
     warning: Optional[str] = None
 
     def to_dict(self) -> dict:
-        return {k: v for k, v in self.__dict__.items() if v is not None}
+        return {k: v for k, v in self.__dict__.items() if not k.startswith("_") and v is not None}
 
 
 @dataclass

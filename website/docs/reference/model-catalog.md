@@ -110,6 +110,29 @@ model_catalog:
 
 The exclusion is matched case-insensitively against every key a provider can surface under — the Hermes id and models.dev id (built-in mapped providers), the overlay pid and resolved Hermes slug (overlay providers), and the canonical slug (canonical providers) — so a single entry like `copilot` hides the provider regardless of which section emits it. It is honored by every `/model` picker surface: the gateway interactive/text pickers, the TUI picker, and the interactive `hermes model` CLI picker. An empty list (or omitting the key) has no effect.
 
+### Telegram: flat three-provider menu with 🔎 Search and 🕘 recent models
+
+`telegram_three_provider_menu` (default off) replaces the Telegram `/model` picker's grouped
+provider list with a flat one and adds two extra rows:
+
+```yaml
+model_catalog:
+  telegram_three_provider_menu: true
+```
+
+* The provider list is the payload as-is — no family fold, so `opencode-zen` / `opencode-go` stay
+  separate buttons instead of collapsing into one OpenCode group.
+* **🔎 Search** turns the next free-text message in that same chat into a cross-provider model
+  query (matched case-insensitively, 60 hits max, paginated) instead of sending it to the agent.
+  Slash commands always pass through, and the flag is one-shot.
+* **🕘 Son kullanılanlar** lists the most recently picked models (`model · Provider`, newest first),
+  stored in `$HERMES_HOME/model_recent.json` (atomic write, last 20 kept) and recorded whenever a
+  pick succeeds — including picks made through the classic picker.
+* Picking a model that is more expensive than the current one still goes through the usual
+  confirmation gate.
+
+With the flag unset, the picker is byte-for-byte the classic grouped behaviour.
+
 ## Updating the manifest
 
 Maintainers:

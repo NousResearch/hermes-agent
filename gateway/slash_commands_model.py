@@ -403,6 +403,15 @@ class GatewayModelCommandsMixin:
             providers = []
         if not providers:
             return False
+        from hermes_cli.telegram_picker_menu import (
+            build_three_provider_payload, three_provider_menu_enabled)
+
+        if three_provider_menu_enabled():
+            # Opt-in (``model_catalog.telegram_three_provider_menu``): collapse the payload to the
+            # three canonical providers — no MoA/DeepSeek extras, no duplicate OpenRouter row.
+            providers = build_three_provider_payload(providers)
+            if not providers:
+                return False
         result = await adapter.send_model_picker(
             chat_id=source.chat_id, providers=providers,
             current_model=listing_kwargs["current_model"],

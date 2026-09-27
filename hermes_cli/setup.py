@@ -523,7 +523,8 @@ _SEND_CONSENT_EXPLAINER = (
 def setup_telemetry(config: dict):
     """Configure the local shared-metrics subscriber and optional sending."""
     print_header("Shared Metrics")
-    _info("Shared metrics contain only bounded counters and histograms.",
+    _info("Shared metrics contain only bounded counters: activity, outcomes, error",
+          "classes, model routes and built-in tool names. Never prompts, files or error text.",
           "Collection is local. Sending them to Nous is a separate opt-in.")
     shared_metrics = _sub_dict(_sub_dict(config, "telemetry"), "shared_metrics")
     current = shared_metrics.get("enabled") is True

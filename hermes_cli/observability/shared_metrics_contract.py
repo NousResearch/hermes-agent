@@ -5,15 +5,18 @@ from __future__ import annotations
 from math import isfinite
 from typing import Any
 
+from agent.error_classifier import FailoverReason
 from agent.relay_runtime import (
     LOGICAL_LLM_SCOPE,
     RUNTIME_INSTANCE_KEY,
     RUNTIME_SCHEMA_KEY,
     RUNTIME_SCHEMA_VERSION,
 )
+from hermes_cli.platforms import PLATFORMS
+from toolsets import BUILTIN_TOOL_NAMES
 
 SCHEMA_KEY = "hermes.metrics.schema_version"
-SCHEMA_VERSION = "hermes.metrics.event.v2"
+SCHEMA_VERSION = "hermes.metrics.event.v3"
 MODEL_CALL_SCOPE = "hermes.model_call"
 MODEL_CALL_PROFILE_MODEL = "unknown"
 TASK_SCOPE = "hermes.task_run"
@@ -22,6 +25,7 @@ CLIENT_ACTIVE_MARK = "hermes.client.active"
 TOOL_APPROVAL_MARK = "hermes.tool_approval"
 SKILL_LIFECYCLE_MARK = "hermes.skill.lifecycle"
 SKILL_LOAD_MARK = "hermes.skill.load"
+INSTALL_SNAPSHOT_MARK = "hermes.install.snapshot"
 SUBSCRIBER_NAME = "hermes.nemo_relay.shared_metrics"
 CLIENT_ACTIVE_METRIC = "hermes.client.active"
 LEGACY_MODEL_CALL_METRIC = "hermes.model_call.count"
@@ -32,6 +36,8 @@ TOOL_CALL_METRIC = "hermes.tool_call.count"
 TOOL_APPROVAL_METRIC = "hermes.tool_approval.count"
 SKILL_LIFECYCLE_METRIC = "hermes.skill.lifecycle.count"
 SKILL_LOAD_METRIC = "hermes.skill.load.count"
+TOOL_USAGE_METRIC = "hermes.tool.usage.count"
+INSTALL_SNAPSHOT_METRIC = "hermes.install.snapshot"
 MODEL_IDENTIFIER_MAX_LENGTH = 256
 PROVIDER_IDENTIFIER_MAX_LENGTH = 64
 _METRIC_IDENTIFIER_CHARACTERS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789._:/@+-")
@@ -80,6 +86,39 @@ CLIENT_INSTALL_METHODS = frozenset({
     "apt", "docker", "git", "home-manager", "homebrew", "nixos", "pip", "unknown",
 })
 CLIENT_RESOURCE_KEYS = frozenset({"architecture", "hermes_version", "install_method", "os_family"})
+
+# ---- v3 taxonomies -------------------------------------------------------------------------
+MODEL_CALL_ROLES = frozenset({"auxiliary", "primary"})
+MODEL_OUTCOMES = frozenset({"cancelled", "failed", "success"})
+# The classifier's own closed enum, so the exported vocabulary is exactly what recovery acts on.
+MODEL_ERROR_CLASSES = frozenset(reason.value for reason in FailoverReason) | {"none"}
+TASK_FAILURE_CLASSES = MODEL_ERROR_CLASSES | frozenset({
+    "context_compression", "empty_response", "exception", "local_error", "other", "persistence",
+    "repeated_errors", "restart_limit", "session_busy", "shutdown",
+})
+# Surfaces that are not messaging platforms keep their own execution_surface value.
+GATEWAY_PLATFORMS = (frozenset(PLATFORMS) - {"api_server", "cli", "cron"}) | {"none", "plugin"}
+TOOL_NAMES = BUILTIN_TOOL_NAMES | {"mcp", "plugin", "unknown"}
+TOOL_ERROR_CLASSES = frozenset({
+    "blocked", "contract_violation", "exception", "interrupted", "invalid_arguments", "none",
+    "timeout", "tool_error", "unknown",
+})
+SIZE_BUCKETS = frozenset({
+    "0", "1", "2", "3_to_5", "6_to_10", "11_to_25", "26_to_100", "101_to_250", "gte_251",
+})
+
+
+def _bundled_memory_providers() -> frozenset[str]:
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2] / "plugins" / "memory"
+    try:
+        return frozenset(p.name for p in root.iterdir() if (p / "__init__.py").is_file())
+    except OSError:
+        return frozenset()
+
+
+MEMORY_PROVIDERS = _bundled_memory_providers() | {"builtin", "plugin"}
 
 _ARCHITECTURE_ALIASES = {
     "amd64": "x86_64", "x64": "x86_64", "x86_64": "x86_64",
@@ -160,11 +199,16 @@ _COUNTER_DIMENSION_VALUES: dict[str, dict[str, frozenset[str]]] = {
         "model_family": _LEGACY_MODEL_FAMILIES, "outcome": _LEGACY_MODEL_OUTCOMES,
         "provider_family": _LEGACY_PROVIDER_FAMILIES,
     },
-    TASK_STARTED_METRIC: {"entrypoint": TASK_ENTRYPOINTS, "execution_surface": EXECUTION_SURFACES},
+    TASK_STARTED_METRIC: {
+        "entrypoint": TASK_ENTRYPOINTS, "execution_surface": EXECUTION_SURFACES,
+        "platform": GATEWAY_PLATFORMS,
+    },
     TASK_FINISHED_METRIC: {
         "duration_bucket": DURATION_BUCKETS, "end_reason": TASK_END_REASONS,
         "entrypoint": TASK_ENTRYPOINTS, "execution_surface": EXECUTION_SURFACES,
+        "failure_class": TASK_FAILURE_CLASSES,
         "model_call_count_bucket": COUNT_BUCKETS, "outcome": TASK_OUTCOMES,
+        "platform": GATEWAY_PLATFORMS,
         "retry_count_bucket": COUNT_BUCKETS, "termination": TASK_TERMINATIONS,
         "tool_call_count_bucket": COUNT_BUCKETS,
     },
@@ -172,6 +216,9 @@ _COUNTER_DIMENSION_VALUES: dict[str, dict[str, frozenset[str]]] = {
         "approval_outcome": TOOL_APPROVAL_OUTCOMES, "latency_bucket": TOOL_LATENCY_BUCKETS,
         "outcome": TOOL_OUTCOMES, "retry_count_bucket": TOOL_RETRY_BUCKETS,
         "tool_category": TOOL_CATEGORIES,
+    },
+    TOOL_USAGE_METRIC: {
+        "error_class": TOOL_ERROR_CLASSES, "outcome": TOOL_OUTCOMES, "tool_name": TOOL_NAMES,
     },
     TOOL_APPROVAL_METRIC: {
         "attribution": TOOL_APPROVAL_ATTRIBUTIONS,
@@ -182,14 +229,28 @@ _COUNTER_DIMENSION_VALUES: dict[str, dict[str, frozenset[str]]] = {
         "post_patch_state": SKILL_POST_PATCH_STATES, "provenance": SKILL_PROVENANCES,
         "reuse_state": SKILL_REUSE_STATES, "use_count_bucket": COUNT_BUCKETS,
     },
+    INSTALL_SNAPSHOT_METRIC: {
+        "cron_job_count_bucket": SIZE_BUCKETS, "mcp_server_count_bucket": SIZE_BUCKETS,
+        "memory_provider": MEMORY_PROVIDERS, "plugin_count_bucket": SIZE_BUCKETS,
+        "profile_count_bucket": SIZE_BUCKETS, "skill_count_bucket": SIZE_BUCKETS,
+    },
 }
 _MODEL_ROUTE_MAX_LENGTHS = {
     "model": MODEL_IDENTIFIER_MAX_LENGTH, "provider": PROVIDER_IDENTIFIER_MAX_LENGTH,
 }
-# metric -> closed dimension field set (model-route fields are validated by shape, not allowlist)
+_MODEL_ROUTE_OUTCOME_VALUES = {
+    "call_role": MODEL_CALL_ROLES, "error_class": MODEL_ERROR_CLASSES, "outcome": MODEL_OUTCOMES,
+}
+# metric -> closed dimension field set (model-route identifiers are validated by shape)
 _METRIC_FIELDS: dict[str, frozenset[str]] = {
     **{name: frozenset(contract) for name, contract in _COUNTER_DIMENSION_VALUES.items()},
+    MODEL_ROUTE_METRIC: frozenset(_MODEL_ROUTE_MAX_LENGTHS) | frozenset(_MODEL_ROUTE_OUTCOME_VALUES),
+}
+# Older field sets still accepted at packaging so counters recorded before an upgrade drain.
+_LEGACY_METRIC_FIELDS: dict[str, frozenset[str]] = {
     MODEL_ROUTE_METRIC: frozenset(_MODEL_ROUTE_MAX_LENGTHS),
+    TASK_STARTED_METRIC: _METRIC_FIELDS[TASK_STARTED_METRIC] - {"platform"},
+    TASK_FINISHED_METRIC: _METRIC_FIELDS[TASK_FINISHED_METRIC] - {"failure_class", "platform"},
 }
 COUNTER_METRICS = frozenset(_METRIC_FIELDS) - {LEGACY_MODEL_CALL_METRIC}
 _SKILL_MARK_METRICS = {
@@ -198,18 +259,22 @@ _SKILL_MARK_METRICS = {
 
 
 def counter_dimensions_are_valid(metric_name: str, dimensions: dict[str, Any]) -> bool:
-    """Return whether dimensions match one closed shared-metric contract."""
+    """Return whether dimensions match one closed shared-metric contract (current or legacy)."""
+    fields = set(dimensions)
+    if fields != _METRIC_FIELDS.get(metric_name) and fields != _LEGACY_METRIC_FIELDS.get(metric_name):
+        return False
     if metric_name == MODEL_ROUTE_METRIC:
-        return set(dimensions) == _METRIC_FIELDS[metric_name] and all(
+        return all(
             dimensions[field] == _metric_identifier(dimensions[field], max_length=max_length)
             for field, max_length in _MODEL_ROUTE_MAX_LENGTHS.items()
+        ) and all(
+            isinstance(dimensions[field], str) and dimensions[field] in _MODEL_ROUTE_OUTCOME_VALUES[field]
+            for field in fields & set(_MODEL_ROUTE_OUTCOME_VALUES)
         )
-    contract = _COUNTER_DIMENSION_VALUES.get(metric_name)
-    if contract is None or set(dimensions) != set(contract):
-        return False
+    contract = _COUNTER_DIMENSION_VALUES[metric_name]
     return all(
-        isinstance(dimensions[field], str) and dimensions[field] in allowed_values
-        for field, allowed_values in contract.items()
+        isinstance(dimensions[field], str) and dimensions[field] in contract[field]
+        for field in fields
     )
 
 
@@ -323,7 +388,11 @@ def _auxiliary_model_call_dimensions(event: Any) -> dict[str, str] | None:
         or data.get("outcome") not in _LEGACY_MODEL_OUTCOMES
     ):
         return None
-    dimensions = model_call_fields(data)
+    outcome = data["outcome"]
+    dimensions = model_route_fields(
+        data, call_role="auxiliary", outcome=outcome,
+        error_class="none" if outcome == "success" else "unknown",
+    )
     return dimensions if counter_dimensions_are_valid(MODEL_ROUTE_METRIC, dimensions) else None
 
 
@@ -339,9 +408,37 @@ def task_counter(event: Any) -> tuple[str, dict[str, str]] | None:
 
 def tool_call_dimensions(event: Any) -> dict[str, str] | None:
     """Return package dimensions for one allowlisted tool lifecycle end event."""
-    return _scoped_dimensions(
-        event, TOOL_CALL_METRIC, category="tool", name=TOOL_CALL_SCOPE, category_profile={}
-    )
+    return _tool_end_projection(event, TOOL_CALL_METRIC)
+
+
+def tool_usage_dimensions(event: Any) -> dict[str, str] | None:
+    """Return the per-tool usage dimensions carried by the same tool lifecycle end event."""
+    return _tool_end_projection(event, TOOL_USAGE_METRIC)
+
+
+_TOOL_END_FIELDS = _METRIC_FIELDS[TOOL_CALL_METRIC] | _METRIC_FIELDS[TOOL_USAGE_METRIC]
+
+
+def _tool_end_projection(event: Any, metric_name: str) -> dict[str, str] | None:
+    """Project the tool end event onto one counter; both projections must validate first."""
+    if not _valid_shape(
+        event, kind="scope", scope_category="end", category="tool", name=TOOL_CALL_SCOPE,
+        category_profile={},
+    ):
+        return None
+    data = getattr(event, "data", None)
+    if not isinstance(data, dict) or set(data) != _TOOL_END_FIELDS:
+        return None
+    projections = {
+        name: _bounded_dimensions(name, {f: data[f] for f in _METRIC_FIELDS[name]})
+        for name in (TOOL_CALL_METRIC, TOOL_USAGE_METRIC)
+    }
+    return projections[metric_name] if all(projections.values()) else None
+
+
+def install_snapshot_counter(event: Any) -> tuple[str, dict[str, str]] | None:
+    """Return the daily install-configuration snapshot from a safe mark."""
+    return _mark_counter(event, {INSTALL_SNAPSHOT_MARK: INSTALL_SNAPSHOT_METRIC})
 
 
 def tool_approval_counter(event: Any) -> tuple[str, dict[str, str]] | None:
@@ -416,7 +513,18 @@ def execution_surface(kwargs: dict[str, Any]) -> str:
 def task_start_fields(kwargs: dict[str, Any]) -> dict[str, str]:
     """Build the bounded fields recorded on a task scope start event."""
     surface = execution_surface(kwargs)
-    return {"entrypoint": task_entrypoint(kwargs, surface), "execution_surface": surface}
+    return {
+        "entrypoint": task_entrypoint(kwargs, surface), "execution_surface": surface,
+        "platform": gateway_platform(kwargs, surface),
+    }
+
+
+def gateway_platform(kwargs: dict[str, Any], surface: str | None = None) -> str:
+    """The built-in messaging platform for a gateway task; plugin platforms stay anonymous."""
+    if (surface or execution_surface(kwargs)) != "gateway":
+        return "none"
+    value = _norm(kwargs.get("platform"))
+    return value if value in GATEWAY_PLATFORMS else "plugin"
 
 
 _SURFACE_ENTRYPOINTS = {
@@ -448,12 +556,44 @@ def task_terminal_fields(
         **task_start_fields(kwargs),
         "duration_bucket": duration_bucket(duration_ms),
         "end_reason": end_reason,
+        "failure_class": task_failure_class(kwargs, outcome),
         "model_call_count_bucket": count_bucket(model_call_count),
         "outcome": outcome,
         "retry_count_bucket": count_bucket(retry_count),
         "termination": termination,
         "tool_call_count_bucket": count_bucket(tool_call_count),
     }
+
+
+_LOCAL_FAILURE_CLASSES = {"interpreter_shutdown": "shutdown", "session_busy": "session_busy"}
+# turn_exit_reason prefix -> class, for failures that never reached the provider classifier.
+_EXIT_REASON_FAILURE_CLASSES = (
+    ("empty_response", "empty_response"), ("all_retries_exhausted", "empty_response"),
+    ("context_compression", "context_compression"), ("compaction_", "context_compression"),
+    ("ollama_runtime_context", "context_compression"),
+    ("local_processing_error", "local_error"), ("repeated_outer_errors", "repeated_errors"),
+    ("error_near_max_iterations", "repeated_errors"), ("session_persistence", "persistence"),
+    ("redirect_restart_limit", "restart_limit"), ("rebuilt_restart_limit", "restart_limit"),
+)
+
+
+def task_failure_class(kwargs: dict[str, Any], outcome: str | None = None) -> str:
+    """Why a failed task failed, as a closed class; ``none`` for any non-failed outcome."""
+    if (outcome or task_terminal_state(kwargs)[0]) != "failed":
+        return "none"
+    declared = _norm(kwargs.get("failure_class"))
+    if declared in TASK_FAILURE_CLASSES - {"none"}:
+        return declared
+    failure_reason = _norm(kwargs.get("failure_reason"))
+    if failure_reason in MODEL_ERROR_CLASSES - {"none"}:
+        return failure_reason
+    if failure_reason in _LOCAL_FAILURE_CLASSES:
+        return _LOCAL_FAILURE_CLASSES[failure_reason]
+    reason = _norm(kwargs.get("turn_exit_reason"))
+    return next(
+        (label for prefix, label in _EXIT_REASON_FAILURE_CLASSES if reason.startswith(prefix)),
+        "other",
+    )
 
 
 def task_terminal_state(kwargs: dict[str, Any]) -> tuple[str, str, str]:
@@ -559,18 +699,55 @@ def tool_approval_outcome(kwargs: dict[str, Any]) -> str:
 
 def tool_terminal_fields(
     kwargs: dict[str, Any], *, category: str | None = None, approval_outcome: str = "not_required",
-    fallback_duration_ms: int | None = None,
+    fallback_duration_ms: int | None = None, tool_name: str | None = None,
 ) -> dict[str, str]:
-    """Build one bounded tool-call terminal payload."""
+    """Build one bounded tool-call terminal payload (feeds the category and per-tool counters)."""
+    outcome = tool_outcome(kwargs)
     return {
         "approval_outcome": _allowlisted(approval_outcome, TOOL_APPROVAL_OUTCOMES),
+        "error_class": tool_error_class(kwargs, outcome),
         "latency_bucket": tool_latency_bucket(
             kwargs.get("duration_ms"), fallback_duration_ms=fallback_duration_ms
         ),
-        "outcome": tool_outcome(kwargs),
+        "outcome": outcome,
         "retry_count_bucket": tool_retry_bucket(kwargs.get("retry_count")),
         "tool_category": category if category in TOOL_CATEGORIES else tool_category(kwargs),
+        "tool_name": tool_name if tool_name is not None and tool_name in TOOL_NAMES
+        else tool_metric_name(kwargs),
     }
+
+
+def tool_metric_name(kwargs: dict[str, Any]) -> str:
+    """A built-in tool's own name; MCP and plugin tools collapse to their source kind."""
+    name = _norm(kwargs.get("tool_name"))
+    if name in BUILTIN_TOOL_NAMES:
+        return name
+    if not name:
+        return "unknown"
+    return "mcp" if name.startswith("mcp_") or tool_category(kwargs) == "mcp" else "plugin"
+
+
+_TOOL_STATUS_ERROR_CLASSES = {
+    "blocked": "blocked", "cancelled": "interrupted", "success": "none", "timed_out": "timeout",
+}
+_TOOL_ERROR_TYPES = {
+    **dict.fromkeys(("keyboard_interrupt", "tool_interrupted", "user_interrupt"), "interrupted"),
+    "invalid_tool_arguments": "invalid_arguments", "thread_missing_result": "exception",
+    "tool_error": "tool_error", "tool_result_contract": "contract_violation",
+    "tool_timeout": "timeout",
+}
+
+
+def tool_error_class(kwargs: dict[str, Any], outcome: str | None = None) -> str:
+    """Closed failure class from Hermes's own error_type; exception class names become
+    ``exception`` so plugin-defined identifiers never leave the machine."""
+    outcome = outcome or tool_outcome(kwargs)
+    if outcome in _TOOL_STATUS_ERROR_CLASSES:
+        return _TOOL_STATUS_ERROR_CLASSES[outcome]
+    if outcome != "failed":
+        return "unknown"
+    error_type = _norm(kwargs.get("error_type"))
+    return _TOOL_ERROR_TYPES.get(error_type, "exception" if error_type else "unknown")
 
 
 def tool_latency_bucket(value: Any, *, fallback_duration_ms: int | None = None) -> str:
@@ -607,6 +784,54 @@ def model_call_fields(kwargs: dict[str, Any]) -> dict[str, str]:
         model = _metric_identifier(kwargs.get("model"), max_length=MODEL_IDENTIFIER_MAX_LENGTH)
     provider = _metric_identifier(kwargs.get("provider"), max_length=PROVIDER_IDENTIFIER_MAX_LENGTH)
     return {"model": model, "provider": provider}
+
+
+def model_route_fields(
+    kwargs: dict[str, Any], *, call_role: str, outcome: str, error_class: str
+) -> dict[str, str]:
+    """The terminal route plus how the logical call ended. ``error_class`` is the last
+    classified attempt error, so ``success`` + ``rate_limit`` reads as "recovered from a 429"."""
+    return {
+        **model_call_fields(kwargs),
+        "call_role": _allowlisted(call_role, MODEL_CALL_ROLES),
+        "error_class": error_class if error_class in MODEL_ERROR_CLASSES else "unknown",
+        "outcome": outcome if outcome in MODEL_OUTCOMES else "failed",
+    }
+
+
+def model_error_class(kwargs: dict[str, Any]) -> str:
+    """The classifier's FailoverReason for one failed provider attempt."""
+    reason = _norm(kwargs.get("reason"))
+    return reason if reason in MODEL_ERROR_CLASSES - {"none"} else "unknown"
+
+
+# (exclusive upper bound, label) for install-scale counts (skills routinely exceed 100).
+_SIZE_THRESHOLDS = (
+    (1, "0"), (2, "1"), (3, "2"), (6, "3_to_5"), (11, "6_to_10"), (26, "11_to_25"),
+    (101, "26_to_100"), (251, "101_to_250"),
+)
+
+
+def size_bucket(count: int) -> str:
+    """Bucket a non-negative install-scale count."""
+    return _bucket(max(0, int(count)), _SIZE_THRESHOLDS, "gte_251")
+
+
+def install_snapshot_fields(
+    *, memory_provider: Any, mcp_servers: int, plugins: int, skills: int, cron_jobs: int,
+    profiles: int,
+) -> dict[str, str]:
+    """Bounded daily configuration snapshot: counts only, plus a bundled memory provider name."""
+    provider = _norm(memory_provider)
+    return {
+        "cron_job_count_bucket": size_bucket(cron_jobs),
+        "mcp_server_count_bucket": size_bucket(mcp_servers),
+        "memory_provider": "builtin" if not provider
+        else provider if provider in MEMORY_PROVIDERS else "plugin",
+        "plugin_count_bucket": size_bucket(plugins),
+        "profile_count_bucket": size_bucket(profiles),
+        "skill_count_bucket": size_bucket(skills),
+    }
 
 
 def _metric_identifier(value: Any, *, max_length: int) -> str:

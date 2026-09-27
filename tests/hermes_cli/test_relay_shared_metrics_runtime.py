@@ -357,6 +357,7 @@ def test_direct_runtime_records_without_enabling_a_plugin(direct_runtime, tmp_pa
     assert scope_starts[1][3]["input"] == {
         "entrypoint": "interactive",
         "execution_surface": "cli",
+        "platform": "none",
     }
     assert len(starts) == 1
     assert len(ends) == 1
@@ -366,10 +367,12 @@ def test_direct_runtime_records_without_enabling_a_plugin(direct_runtime, tmp_pa
     assert tool_starts[0][2] == {}
     assert tool_ends[0][2] == {
         "approval_outcome": "approved",
+        "error_class": "none",
         "latency_bucket": "250ms_to_500ms",
         "outcome": "success",
         "retry_count_bucket": "0",
         "tool_category": "terminal",
+        "tool_name": "terminal",
     }
     assert starts[0][2] == {}
     assert starts[0][3]["model_name"] == "unknown"
@@ -381,7 +384,11 @@ def test_direct_runtime_records_without_enabling_a_plugin(direct_runtime, tmp_pa
     assert len(active_marks) == 2
     assert all(mark[2]["data"] == {} for mark in active_marks)
     assert ends[0][2] == {
+        "call_role": "primary",
+        # The call recovered from an unclassified provider error before succeeding.
+        "error_class": "unknown",
         "model": "claude-sonnet",
+        "outcome": "success",
         "provider": "anthropic",
     }
     serialized_events = json.dumps(direct_runtime.events)
@@ -402,12 +409,18 @@ def test_direct_runtime_records_without_enabling_a_plugin(direct_runtime, tmp_pa
     metrics = {metric["name"]: metric for metric in package["metrics"]}
     assert set(metrics) == {
         "hermes.client.active",
+        "hermes.install.snapshot",
         "hermes.model_route.count",
         "hermes.task_run.finished",
         "hermes.task_run.started",
+        "hermes.tool.usage.count",
         "hermes.tool_approval.count",
         "hermes.tool_call.count",
     }
+    assert metrics["hermes.tool.usage.count"]["dimensions"] == {
+        "error_class": "none", "outcome": "success", "tool_name": "terminal",
+    }
+    assert metrics["hermes.install.snapshot"]["value"] == 1
     assert metrics["hermes.client.active"] == {
         "name": "hermes.client.active",
         "type": "counter",
@@ -415,7 +428,11 @@ def test_direct_runtime_records_without_enabling_a_plugin(direct_runtime, tmp_pa
         "value": 1,
     }
     assert metrics["hermes.model_route.count"]["dimensions"] == {
+        "call_role": "primary",
+        # The call recovered from an unclassified provider error before succeeding.
+        "error_class": "unknown",
         "model": "claude-sonnet",
+        "outcome": "success",
         "provider": "anthropic",
     }
     assert metrics["hermes.model_route.count"]["value"] == 1
@@ -446,6 +463,7 @@ def test_direct_runtime_records_without_enabling_a_plugin(direct_runtime, tmp_pa
         "dimensions": {
             "entrypoint": "interactive",
             "execution_surface": "cli",
+            "platform": "none",
         },
         "value": 1,
     }
@@ -464,8 +482,10 @@ def test_direct_runtime_records_without_enabling_a_plugin(direct_runtime, tmp_pa
         "end_reason": "completed",
         "entrypoint": "interactive",
         "execution_surface": "cli",
+        "failure_class": "none",
         "model_call_count_bucket": "1",
         "outcome": "success",
+        "platform": "none",
         "retry_count_bucket": "1",
         "termination": "none",
         "tool_call_count_bucket": "1",
@@ -637,13 +657,32 @@ def test_real_binding_drives_lifecycle_aggregation_export_and_snapshot(
     assert by_metric["hermes.client.active"][0]["value"] == 1
     assert len(by_metric["hermes.task_run.started"]) == 1
     assert by_metric["hermes.task_run.started"][0]["value"] == 3
-    assert len(by_metric["hermes.model_route.count"]) == 1
-    model_counter = by_metric["hermes.model_route.count"][0]
-    assert model_counter["dimensions"] == {
-        "model": model_canary,
-        "provider": "custom",
+    # v3: one route row per terminal outcome; an unclassified failed call reports `unknown`.
+    route_by_outcome = {
+        counter["dimensions"]["outcome"]: counter
+        for counter in by_metric["hermes.model_route.count"]
     }
-    assert model_counter["value"] == 3
+    assert set(route_by_outcome) == {"success", "failed", "cancelled"}
+    for outcome, error_class in (
+        # The success call recovered from an unclassified error; the failed one never did.
+        ("success", "unknown"), ("failed", "unknown"), ("cancelled", "none")
+    ):
+        assert route_by_outcome[outcome]["dimensions"] == {
+            "call_role": "primary",
+            "error_class": error_class,
+            "model": model_canary,
+            "outcome": outcome,
+            "provider": "custom",
+        }
+        assert route_by_outcome[outcome]["value"] == 1
+    assert {
+        (c["dimensions"]["tool_name"], c["dimensions"]["outcome"], c["dimensions"]["error_class"])
+        for c in by_metric["hermes.tool.usage.count"]
+    } == {
+        ("terminal", "success", "none"),
+        ("read_file", "failed", "unknown"),
+        ("browser_navigate", "cancelled", "interrupted"),
+    }
     assert {
         counter["dimensions"]["outcome"]
         for counter in by_metric["hermes.tool_call.count"]
@@ -691,6 +730,8 @@ def test_real_binding_drives_lifecycle_aggregation_export_and_snapshot(
     assert terminal_by_outcome["failed"]["dimensions"]["end_reason"] == (
         "system_aborted"
     )
+    assert terminal_by_outcome["failed"]["dimensions"]["failure_class"] == "other"
+    assert terminal_by_outcome["success"]["dimensions"]["failure_class"] == "none"
     assert terminal_by_outcome["cancelled"]["dimensions"]["termination"] == (
         "user_cancelled"
     )
@@ -710,7 +751,7 @@ def test_real_binding_drives_lifecycle_aggregation_export_and_snapshot(
         json.loads(package.read_text(encoding="utf-8")) for package in packages
     ]
     for package in package_payloads:
-        assert package["schema_version"] == "hermes.shared_metrics.v2"
+        assert package["schema_version"] == "hermes.shared_metrics.v3"
         for metric in package["metrics"]:
             key = (metric["name"], tuple(sorted(metric["dimensions"].items())))
             package_values[key] = package_values.get(key, 0) + metric["value"]
@@ -1249,6 +1290,7 @@ def test_disabling_shared_metrics_stops_collection_and_shutdown_export(
     store = SharedMetricsStore(root / "metrics.sqlite3", root / "outbox")
     assert [row["metric_name"] for row in store.counter_snapshot()] == [
         "hermes.client.active",
+        "hermes.install.snapshot",
         "hermes.task_run.started"
     ]
     assert list((root / "outbox").glob("*.json")) == []
@@ -1647,6 +1689,7 @@ def test_terminal_model_error_retains_the_failed_route(direct_runtime):
         "api_request_error",
         **base,
         retryable=False,
+        reason="auth",
         error={"message": "sensitive-error"},
     )
     assert not [event for event in direct_runtime.events if event[0] == "llm.call_end"]
@@ -1662,7 +1705,10 @@ def test_terminal_model_error_retains_the_failed_route(direct_runtime):
 
     [end] = [event for event in direct_runtime.events if event[0] == "llm.call_end"]
     assert end[2] == {
+        "call_role": "primary",
+        "error_class": "auth",
         "model": "claude-sonnet",
+        "outcome": "failed",
         "provider": "anthropic",
     }
 
@@ -1684,6 +1730,7 @@ def test_nonretryable_provider_error_can_recover_within_one_logical_call(
         **base,
         retry_count=0,
         retryable=False,
+        reason="model_not_found",
     )
     fallback = {
         **base,
@@ -1701,8 +1748,12 @@ def test_nonretryable_provider_error_can_recover_within_one_logical_call(
     [end] = [event for event in direct_runtime.events if event[0] == "llm.call_end"]
     [start] = [event for event in direct_runtime.events if event[0] == "llm.call"]
     assert start[3]["model_name"] == "unknown"
+    # The recovered call keeps the error it recovered from.
     assert end[2] == {
+        "call_role": "primary",
+        "error_class": "model_not_found",
         "model": "gpt-5",
+        "outcome": "success",
         "provider": "openai-api",
     }
 
@@ -2098,10 +2149,12 @@ def test_pending_tool_is_closed_and_counted_when_task_is_interrupted(direct_runt
     ]
     assert tool_end[2] == {
         "approval_outcome": "not_required",
+        "error_class": "interrupted",
         "latency_bucket": tool_end[2]["latency_bucket"],
         "outcome": "cancelled",
         "retry_count_bucket": "unknown",
         "tool_category": "terminal",
+        "tool_name": "terminal",
     }
     [task_end] = [
         event
@@ -2350,8 +2403,9 @@ def test_task_retry_count_survives_provider_fallback_ordinal_reset(direct_runtim
     [model_end] = [
         event for event in direct_runtime.events if event[0] == "llm.call_end"
     ]
-    assert model_end[2] == {
+    assert {k: model_end[2][k] for k in ("model", "outcome", "provider")} == {
         "model": "gpt-5",
+        "outcome": "success",
         "provider": "openai",
     }
     [task_end] = [
@@ -2621,3 +2675,80 @@ def test_real_binding_concurrent_task_close_skips_pop_under_sibling_scope(
     )
     lifecycle.invoke_hook("on_session_end", **event)
     assert "task close failed" not in caplog.text
+
+
+def _stored_counters(tmp_path) -> dict[str, list[dict[str, Any]]]:
+    from hermes_cli.observability.shared_metrics import SharedMetricsStore
+
+    root = tmp_path / "hermes-home" / "telemetry" / "shared_metrics"
+    by_metric: dict[str, list[dict[str, Any]]] = {}
+    for counter in SharedMetricsStore(root / "metrics.sqlite3", root / "outbox").counter_snapshot():
+        by_metric.setdefault(counter["metric_name"], []).append(counter["dimensions"])
+    return by_metric
+
+
+def test_v3_failure_dimensions_never_export_third_party_identifiers(direct_runtime, tmp_path):
+    """Plugin tool names, exception class names, plugin platforms and raw exit reasons collapse
+    to closed classes, while Hermes's own vocabularies pass through."""
+    base = {
+        "session_id": "s1", "task_id": "t1", "api_request_id": "r1", "platform": "telegram",
+        "provider": "anthropic", "model": "claude-sonnet",
+    }
+    lifecycle.invoke_hook("pre_llm_call", **base)
+    lifecycle.invoke_hook("pre_api_request", **base)
+    lifecycle.invoke_hook("api_request_error", **base, retryable=True, reason="rate_limit")
+    for call_id, tool, error_type in (
+        ("c1", "acme_private_tool", "AcmePrivateError"), ("c2", "terminal", "tool_timeout"),
+    ):
+        lifecycle.invoke_hook("pre_tool_call", **base, tool_call_id=call_id, tool_name=tool)
+        lifecycle.invoke_hook(
+            "post_tool_call", **base, tool_call_id=call_id, tool_name=tool, status="error",
+            error_type=error_type, duration_ms=10,
+        )
+    relay_shared_metrics.finish_task_run(
+        session_id="s1", task_id="t1", platform="telegram",
+        result={"failed": True, "failure_reason": "rate_limit",
+                "turn_exit_reason": "acme private exit reason"},
+    )
+    lifecycle.finalize_session(session_id="s1")
+
+    counters = _stored_counters(tmp_path)
+    assert "acme" not in json.dumps(counters).lower()
+    assert {(d["tool_name"], d["error_class"]) for d in counters["hermes.tool.usage.count"]} == {
+        ("plugin", "exception"), ("terminal", "timeout"),
+    }
+    [route] = counters["hermes.model_route.count"]
+    assert (route["outcome"], route["error_class"]) == ("failed", "rate_limit")
+    [finished] = counters["hermes.task_run.finished"]
+    assert (finished["platform"], finished["failure_class"]) == ("telegram", "rate_limit")
+
+
+def test_install_snapshot_is_daily_and_carries_only_bucketed_counts(
+    direct_runtime, tmp_path, monkeypatch,
+):
+    monkeypatch.setattr(
+        "hermes_cli.config.read_raw_config_readonly",
+        lambda: {
+            "telemetry": {"shared_metrics": {"enabled": True}},
+            "memory": {"provider": "acme-private-memory"},
+            "mcp_servers": {"acme-private-server": {"command": "x"}, "off": {"enabled": False}},
+            "plugins": {"enabled": ["acme-private-plugin", "b", "c"]},
+        },
+    )
+    for task_id in ("t1", "t2"):
+        event = {"session_id": task_id, "task_id": task_id, "platform": "cli"}
+        lifecycle.invoke_hook("pre_llm_call", **event)
+        relay_shared_metrics.finish_task_run(**event, result={"completed": True})
+        lifecycle.finalize_session(session_id=task_id)
+    # A new runtime has no in-process throttle; only the store's 24h latch can hold it back.
+    relay_shared_metrics._reset_for_tests()
+    event = {"session_id": "t3", "task_id": "t3", "platform": "cli"}
+    lifecycle.invoke_hook("pre_llm_call", **event)
+    lifecycle.finalize_session(session_id="t3")
+
+    [snapshot] = _stored_counters(tmp_path)["hermes.install.snapshot"]
+    assert snapshot == {
+        "cron_job_count_bucket": "0", "mcp_server_count_bucket": "1",
+        "memory_provider": "plugin", "plugin_count_bucket": "3_to_5",
+        "profile_count_bucket": snapshot["profile_count_bucket"], "skill_count_bucket": "0",
+    }

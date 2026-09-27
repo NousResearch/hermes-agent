@@ -1,0 +1,912 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:hermes-agent:schema:shared-metrics:v3",
+  "title": "Hermes Shared Metrics Package v3",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "package_id",
+    "install_id",
+    "period_start",
+    "period_end",
+    "generated_at",
+    "resource",
+    "metrics"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "hermes.shared_metrics.v3"
+    },
+    "package_id": {
+      "$ref": "#/$defs/uuid"
+    },
+    "install_id": {
+      "description": "Random persistent identifier scoped to one HERMES_HOME.",
+      "$ref": "#/$defs/uuid"
+    },
+    "period_start": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "period_end": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "resource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "architecture",
+        "hermes_version",
+        "install_method",
+        "os_family"
+      ],
+      "properties": {
+        "architecture": {
+          "type": "string",
+          "enum": [
+            "arm",
+            "arm64",
+            "unknown",
+            "x86",
+            "x86_64"
+          ]
+        },
+        "hermes_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "install_method": {
+          "type": "string",
+          "enum": [
+            "apt",
+            "docker",
+            "git",
+            "home-manager",
+            "homebrew",
+            "nixos",
+            "pip",
+            "unknown"
+          ]
+        },
+        "os_family": {
+          "type": "string",
+          "enum": [
+            "linux",
+            "macos",
+            "unknown",
+            "windows"
+          ]
+        }
+      }
+    },
+    "metrics": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "oneOf": [
+          {
+            "$ref": "#/$defs/client_active_counter"
+          },
+          {
+            "$ref": "#/$defs/model_call_counter"
+          },
+          {
+            "$ref": "#/$defs/model_route_counter"
+          },
+          {
+            "$ref": "#/$defs/task_started_counter"
+          },
+          {
+            "$ref": "#/$defs/task_finished_counter"
+          },
+          {
+            "$ref": "#/$defs/tool_call_counter"
+          },
+          {
+            "$ref": "#/$defs/tool_approval_counter"
+          },
+          {
+            "$ref": "#/$defs/skill_lifecycle_counter"
+          },
+          {
+            "$ref": "#/$defs/skill_load_counter"
+          },
+          {
+            "$ref": "#/$defs/tool_usage_counter"
+          },
+          {
+            "$ref": "#/$defs/install_snapshot_counter"
+          }
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "client_active_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.client.active"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "maxProperties": 0
+        },
+        "value": {
+          "const": 1
+        }
+      }
+    },
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "model_call_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.model_call.count"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "call_role",
+            "locality",
+            "model_family",
+            "outcome",
+            "provider_family"
+          ],
+          "properties": {
+            "call_role": {
+              "const": "primary"
+            },
+            "locality": {
+              "enum": [
+                "local",
+                "remote",
+                "unknown"
+              ]
+            },
+            "model_family": {
+              "enum": [
+                "claude",
+                "deepseek",
+                "gemini",
+                "gemma",
+                "glm",
+                "gpt",
+                "grok",
+                "kimi",
+                "llama",
+                "minimax",
+                "mimo",
+                "mistral",
+                "nemotron",
+                "nova",
+                "o1",
+                "o3",
+                "o4",
+                "qwen",
+                "step",
+                "trinity",
+                "unknown"
+              ]
+            },
+            "outcome": {
+              "enum": [
+                "cancelled",
+                "failed",
+                "success"
+              ]
+            },
+            "provider_family": {
+              "enum": [
+                "aggregator",
+                "custom",
+                "direct",
+                "local",
+                "unknown"
+              ]
+            }
+          }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "model_route_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.model_route.count"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "model",
+            "provider"
+          ],
+          "properties": {
+            "model": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[a-z0-9][a-z0-9._:/@+\\-]*$"
+            },
+            "provider": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[a-z0-9][a-z0-9._:/@+\\-]*$"
+            },
+            "call_role": {
+              "enum": [
+                "auxiliary",
+                "primary"
+              ]
+            },
+            "error_class": {
+              "$ref": "#/$defs/vocabulary_identifier"
+            },
+            "outcome": {
+              "enum": [
+                "cancelled",
+                "failed",
+                "success"
+              ]
+            }
+          },
+          "dependentRequired": {
+            "call_role": [
+              "call_role",
+              "error_class",
+              "outcome"
+            ],
+            "error_class": [
+              "call_role",
+              "error_class",
+              "outcome"
+            ],
+            "outcome": [
+              "call_role",
+              "error_class",
+              "outcome"
+            ]
+          },
+          "description": "v3 rows carry call_role/error_class/outcome; rows counted by an older build carry only model/provider."
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "task_started_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.task_run.started"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "entrypoint",
+            "execution_surface"
+          ],
+          "properties": {
+            "entrypoint": {
+              "$ref": "#/$defs/task_entrypoint"
+            },
+            "execution_surface": {
+              "$ref": "#/$defs/execution_surface"
+            },
+            "platform": {
+              "$ref": "#/$defs/vocabulary_identifier"
+            }
+          }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "task_finished_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.task_run.finished"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "duration_bucket",
+            "end_reason",
+            "entrypoint",
+            "execution_surface",
+            "model_call_count_bucket",
+            "outcome",
+            "retry_count_bucket",
+            "termination",
+            "tool_call_count_bucket"
+          ],
+          "properties": {
+            "duration_bucket": {
+              "$ref": "#/$defs/duration_bucket"
+            },
+            "end_reason": {
+              "enum": [
+                "approval_denied",
+                "completed",
+                "failed",
+                "guardrail_blocked",
+                "iteration_limit",
+                "system_aborted",
+                "timed_out",
+                "unknown",
+                "user_cancelled"
+              ]
+            },
+            "entrypoint": {
+              "$ref": "#/$defs/task_entrypoint"
+            },
+            "execution_surface": {
+              "$ref": "#/$defs/execution_surface"
+            },
+            "model_call_count_bucket": {
+              "$ref": "#/$defs/count_bucket"
+            },
+            "outcome": {
+              "enum": [
+                "cancelled",
+                "failed",
+                "success",
+                "timed_out",
+                "unknown"
+              ]
+            },
+            "retry_count_bucket": {
+              "$ref": "#/$defs/count_bucket"
+            },
+            "termination": {
+              "enum": [
+                "none",
+                "system_aborted",
+                "timed_out",
+                "unknown",
+                "user_cancelled"
+              ]
+            },
+            "tool_call_count_bucket": {
+              "$ref": "#/$defs/count_bucket"
+            },
+            "platform": {
+              "$ref": "#/$defs/vocabulary_identifier"
+            },
+            "failure_class": {
+              "$ref": "#/$defs/vocabulary_identifier"
+            }
+          },
+          "dependentRequired": {
+            "failure_class": [
+              "platform"
+            ],
+            "platform": [
+              "failure_class"
+            ]
+          }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "execution_surface": {
+      "enum": [
+        "acp",
+        "api",
+        "batch",
+        "cli",
+        "desktop",
+        "gateway",
+        "other",
+        "python",
+        "scheduled_task",
+        "tui",
+        "unknown"
+      ]
+    },
+    "task_entrypoint": {
+      "enum": [
+        "api",
+        "background",
+        "batch",
+        "delegated",
+        "gateway_message",
+        "interactive",
+        "other",
+        "python",
+        "scheduled_task",
+        "unknown"
+      ]
+    },
+    "duration_bucket": {
+      "enum": [
+        "1s_to_5s",
+        "2m_to_10m",
+        "30s_to_2m",
+        "5s_to_30s",
+        "gte_10m",
+        "lt_1s"
+      ]
+    },
+    "count_bucket": {
+      "enum": [
+        "0",
+        "1",
+        "2",
+        "3_to_5",
+        "6_to_10",
+        "gte_11"
+      ]
+    },
+    "tool_latency_bucket": {
+      "enum": [
+        "100ms_to_250ms",
+        "10s_to_30s",
+        "1s_to_2s",
+        "250ms_to_500ms",
+        "2s_to_5s",
+        "500ms_to_1s",
+        "5s_to_10s",
+        "gte_30s",
+        "lt_100ms",
+        "unknown"
+      ]
+    },
+    "tool_retry_bucket": {
+      "enum": [
+        "0",
+        "1",
+        "2",
+        "3_to_5",
+        "6_to_10",
+        "gte_11",
+        "unknown"
+      ]
+    },
+    "tool_call_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.tool_call.count"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "approval_outcome",
+            "latency_bucket",
+            "outcome",
+            "retry_count_bucket",
+            "tool_category"
+          ],
+          "properties": {
+            "approval_outcome": {
+              "enum": [
+                "approved",
+                "cancelled",
+                "denied",
+                "not_required",
+                "timed_out",
+                "unknown"
+              ]
+            },
+            "latency_bucket": {
+              "$ref": "#/$defs/tool_latency_bucket"
+            },
+            "outcome": {
+              "enum": [
+                "blocked",
+                "cancelled",
+                "failed",
+                "success",
+                "timed_out",
+                "unknown"
+              ]
+            },
+            "retry_count_bucket": {
+              "$ref": "#/$defs/tool_retry_bucket"
+            },
+            "tool_category": {
+              "enum": [
+                "browser",
+                "code_execution",
+                "communication",
+                "computer_use",
+                "delegation",
+                "file",
+                "home_automation",
+                "mcp",
+                "media",
+                "memory",
+                "other",
+                "planning",
+                "project",
+                "scheduler",
+                "skill",
+                "terminal",
+                "unknown",
+                "web"
+              ]
+            }
+          }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "tool_approval_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.tool_approval.count"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "attribution",
+            "outcome"
+          ],
+          "properties": {
+            "attribution": {
+              "enum": [
+                "tool_call",
+                "unattributed"
+              ]
+            },
+            "outcome": {
+              "enum": [
+                "approved",
+                "cancelled",
+                "denied",
+                "timed_out",
+                "unknown"
+              ]
+            }
+          }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "skill_lifecycle_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.skill.lifecycle.count"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "action",
+            "provenance"
+          ],
+          "properties": {
+            "action": {
+              "enum": [
+                "archived",
+                "created",
+                "edited",
+                "installed",
+                "patched",
+                "restored",
+                "stale"
+              ]
+            },
+            "provenance": {
+              "$ref": "#/$defs/skill_provenance"
+            }
+          }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "skill_load_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.skill.load.count"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "post_patch_state",
+            "provenance",
+            "reuse_state",
+            "use_count_bucket"
+          ],
+          "properties": {
+            "post_patch_state": {
+              "enum": [
+                "no_new_patch",
+                "not_applicable",
+                "reused_after_patch"
+              ]
+            },
+            "provenance": {
+              "$ref": "#/$defs/skill_provenance"
+            },
+            "reuse_state": {
+              "enum": [
+                "first_use",
+                "reused"
+              ]
+            },
+            "use_count_bucket": {
+              "$ref": "#/$defs/count_bucket"
+            }
+          }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "skill_provenance": {
+      "enum": [
+        "agent_created",
+        "external",
+        "installed",
+        "local",
+        "unknown"
+      ]
+    },
+    "vocabulary_identifier": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_]{0,63}$",
+      "description": "Closed vocabulary owned by hermes_cli/observability/shared_metrics_contract.py (derived from in-repo registries); values outside it are never emitted."
+    },
+    "tool_usage_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.tool.usage.count"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "error_class",
+            "outcome",
+            "tool_name"
+          ],
+          "properties": {
+            "error_class": {
+              "enum": [
+                "blocked",
+                "contract_violation",
+                "exception",
+                "interrupted",
+                "invalid_arguments",
+                "none",
+                "timeout",
+                "tool_error",
+                "unknown"
+              ]
+            },
+            "outcome": {
+              "enum": [
+                "blocked",
+                "cancelled",
+                "failed",
+                "success",
+                "timed_out",
+                "unknown"
+              ]
+            },
+            "tool_name": {
+              "$ref": "#/$defs/vocabulary_identifier"
+            }
+          }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "size_bucket": {
+      "enum": [
+        "0",
+        "1",
+        "2",
+        "3_to_5",
+        "6_to_10",
+        "11_to_25",
+        "26_to_100",
+        "101_to_250",
+        "gte_251"
+      ]
+    },
+    "install_snapshot_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.install.snapshot"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "cron_job_count_bucket",
+            "mcp_server_count_bucket",
+            "memory_provider",
+            "plugin_count_bucket",
+            "profile_count_bucket",
+            "skill_count_bucket"
+          ],
+          "properties": {
+            "cron_job_count_bucket": {
+              "$ref": "#/$defs/size_bucket"
+            },
+            "mcp_server_count_bucket": {
+              "$ref": "#/$defs/size_bucket"
+            },
+            "memory_provider": {
+              "$ref": "#/$defs/vocabulary_identifier"
+            },
+            "plugin_count_bucket": {
+              "$ref": "#/$defs/size_bucket"
+            },
+            "profile_count_bucket": {
+              "$ref": "#/$defs/size_bucket"
+            },
+            "skill_count_bucket": {
+              "$ref": "#/$defs/size_bucket"
+            }
+          }
+        },
+        "value": {
+          "const": 1
+        }
+      }
+    }
+  }
+}

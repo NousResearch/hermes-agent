@@ -62,6 +62,7 @@ from hermes_cli.observability.shared_metrics_contract import (
     tool_approval_counter,
     tool_approval_outcome,
     tool_call_dimensions,
+    tool_usage_dimensions,
     tool_category,
     tool_latency_bucket,
     tool_outcome,
@@ -74,7 +75,7 @@ SCHEMA_PATH = (
     / "hermes_cli"
     / "observability"
     / "schemas"
-    / "hermes.shared_metrics.v2.schema.json"
+    / "hermes.shared_metrics.v3.schema.json"
 )
 LEGACY_SCHEMA_PATH = SCHEMA_PATH.with_name("hermes.shared_metrics.v1.schema.json")
 
@@ -172,7 +173,7 @@ def test_model_call_counter_survives_restart_and_exports_only_new_deltas(tmp_pat
     _schema_validator().validate(first_package)
     uuid.UUID(first_package["package_id"])
     uuid.UUID(first_package["install_id"])
-    assert first_package["schema_version"] == "hermes.shared_metrics.v2"
+    assert first_package["schema_version"] == "hermes.shared_metrics.v3"
     assert first_package["resource"] == _resource()
     assert first_package["metrics"] == [
         {
@@ -250,7 +251,7 @@ def test_v2_package_preserves_pending_v1_model_counters(tmp_path):
     package = json.loads(package_path.read_text(encoding="utf-8"))
     _schema_validator().validate(package)
 
-    assert package["schema_version"] == "hermes.shared_metrics.v2"
+    assert package["schema_version"] == "hermes.shared_metrics.v3"
     assert package["metrics"] == [
         {
             "name": LEGACY_MODEL_CALL_METRIC,
@@ -496,8 +497,10 @@ def test_package_schema_matches_the_model_call_contract():
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
     properties = _package_dimension_schema()["properties"]
 
-    assert schema["properties"]["schema_version"]["const"] == "hermes.shared_metrics.v2"
-    assert set(properties) == {"model", "provider"}
+    assert schema["properties"]["schema_version"]["const"] == "hermes.shared_metrics.v3"
+    assert set(properties) == {"call_role", "error_class", "model", "outcome", "provider"}
+    # Rows counted before the v3 upgrade carry only model/provider and must still drain.
+    assert set(_package_dimension_schema()["required"]) == {"model", "provider"}
     assert properties["model"]["maxLength"] == MODEL_IDENTIFIER_MAX_LENGTH
     assert properties["provider"]["maxLength"] == PROVIDER_IDENTIFIER_MAX_LENGTH
     assert "enum" not in properties["model"]
@@ -558,7 +561,7 @@ def test_client_active_mark_accepts_only_an_empty_allowlisted_payload():
         name="hermes.client.active",
         scope_category=None,
         metadata={
-            "hermes.metrics.schema_version": "hermes.metrics.event.v2",
+            "hermes.metrics.schema_version": "hermes.metrics.event.v3",
         },
         data={},
     )
@@ -759,7 +762,10 @@ def test_auxiliary_logical_scope_projects_one_normalized_terminal_route():
     )
 
     assert model_call_dimensions(event) == {
+        "call_role": "auxiliary",
+        "error_class": "none",
         "model": "accepted/model",
+        "outcome": "success",
         "provider": "openrouter",
     }
 
@@ -768,7 +774,10 @@ def test_auxiliary_logical_scope_projects_one_normalized_terminal_route():
         "response_model": "malformed response model",
     })
     assert model_call_dimensions(event) == {
+        "call_role": "auxiliary",
+        "error_class": "none",
         "model": "configured/model",
+        "outcome": "success",
         "provider": "openrouter",
     }
 
@@ -823,16 +832,31 @@ def test_tool_subscriber_contract_accepts_only_bounded_events():
         category_profile={},
         name="hermes.tool_call",
         scope_category="end",
-        metadata={"hermes.metrics.schema_version": "hermes.metrics.event.v2"},
+        metadata={"hermes.metrics.schema_version": "hermes.metrics.event.v3"},
         data={
             "approval_outcome": "approved",
+            "error_class": "none",
             "latency_bucket": "250ms_to_500ms",
             "outcome": "success",
             "retry_count_bucket": "0",
             "tool_category": "terminal",
+            "tool_name": "terminal",
         },
     )
-    assert tool_call_dimensions(terminal) == terminal.data
+    assert tool_call_dimensions(terminal) == {
+        "approval_outcome": "approved",
+        "latency_bucket": "250ms_to_500ms",
+        "outcome": "success",
+        "retry_count_bucket": "0",
+        "tool_category": "terminal",
+    }
+    assert tool_usage_dimensions(terminal) == {
+        "error_class": "none", "outcome": "success", "tool_name": "terminal",
+    }
+    terminal.data["tool_name"] = "private-plugin-tool"
+    assert tool_usage_dimensions(terminal) is None
+    assert tool_call_dimensions(terminal) is None
+    terminal.data["tool_name"] = "terminal"
 
     terminal.data["result"] = "must-not-pass"
     assert tool_call_dimensions(terminal) is None
@@ -849,7 +873,7 @@ def test_tool_subscriber_contract_accepts_only_bounded_events():
         category_profile=None,
         name="hermes.tool_approval",
         scope_category=None,
-        metadata={"hermes.metrics.schema_version": "hermes.metrics.event.v2"},
+        metadata={"hermes.metrics.schema_version": "hermes.metrics.event.v3"},
         data={"attribution": "unattributed", "outcome": "denied"},
     )
     assert tool_approval_counter(approval) == (
@@ -861,7 +885,7 @@ def test_tool_subscriber_contract_accepts_only_bounded_events():
 
 
 def test_skill_subscriber_contract_accepts_only_bounded_marks():
-    metadata = {"hermes.metrics.schema_version": "hermes.metrics.event.v2"}
+    metadata = {"hermes.metrics.schema_version": "hermes.metrics.event.v3"}
     lifecycle = SimpleNamespace(
         kind="mark",
         category=None,

@@ -27,6 +27,8 @@ _RUNTIMES: dict[str, _Runtime | object] = {}
 _RUNTIME_LOCK = threading.RLock()
 
 _ABORTED = {"failed": True, "turn_exit_reason": "system_aborted"}
+# The store latch allows one snapshot per 24h; re-reading it hourly keeps task starts cheap.
+_SNAPSHOT_RECHECK_NS = 3_600 * 1_000_000_000
 
 
 def _text(event: dict[str, Any], key: str) -> str:
@@ -103,12 +105,14 @@ class _ModelCall:
     handle: Any
     task_id: str
     fields: dict[str, str]
+    error_class: str = "none"
 
 
 @dataclass
 class _ToolCall:
     handle: Any
     category: str
+    tool_name: str
     started_ns: int
     approval_outcome: str = "not_required"
 
@@ -160,6 +164,7 @@ class _Runtime:
         # Guards the opt-in send pass: at most one in flight per process.
         self._send_lock = threading.RLock()
         self._send_thread: threading.Thread | None = None
+        self._snapshot_checked_ns: int | None = None
         self._subscriber_name = f"{SUBSCRIBER_NAME}.{self.host.runtime_id}"
         self.subscriber = SharedMetricsSubscriber(
             SharedMetricsStore(), get_version_info().base_version, runtime_id=self.host.runtime_id
@@ -196,6 +201,19 @@ class _Runtime:
         with session.lock:
             if not session.closing:
                 self._mark(session, None, contract.CLIENT_ACTIVE_MARK, {})
+                self._safe(self._emit_install_snapshot_if_due, session)
+
+    def _emit_install_snapshot_if_due(self, session: _MetricsSession) -> None:
+        now = monotonic_ns()
+        if self._snapshot_checked_ns is not None and now - self._snapshot_checked_ns < _SNAPSHOT_RECHECK_NS:
+            return
+        self._snapshot_checked_ns = now
+        if not self.subscriber.store.install_snapshot_due():
+            return
+        from .shared_metrics_snapshot import collect_install_snapshot
+
+        fields = collect_install_snapshot(_raw_config())
+        self._mark(session, None, contract.INSTALL_SNAPSHOT_MARK, fields)
 
     def _mark(
         self, session: _MetricsSession, task: _TaskRun | None, name: str, data: dict[str, str]
@@ -324,7 +342,9 @@ class _Runtime:
                 return
             model_call.fields = contract.model_call_fields(event)
             if finish:
-                self._finish_model_call(session, model_call_key)
+                self._finish_model_call(session, model_call_key, "success")
+            else:
+                model_call.error_class = contract.model_error_class(event)
 
     def start_tool_call(self, event: dict[str, Any]) -> None:
         """Open one privacy-safe Relay tool lifecycle under its task."""
@@ -667,14 +687,16 @@ class _Runtime:
             task, self.relay.tools.call, contract.TOOL_CALL_SCOPE, {},
             handle=task.handle, metadata=self._event_metadata(),
         )
-        return _ToolCall(handle, contract.tool_category(event), monotonic_ns())
+        return _ToolCall(
+            handle, contract.tool_category(event), contract.tool_metric_name(event), monotonic_ns()
+        )
 
     def _finish_tool_call(
         self, task: _TaskRun, tool_call: _ToolCall, event: dict[str, Any]
     ) -> None:
         fields = contract.tool_terminal_fields(
             event, category=tool_call.category, approval_outcome=tool_call.approval_outcome,
-            fallback_duration_ms=_elapsed_ms(tool_call.started_ns),
+            fallback_duration_ms=_elapsed_ms(tool_call.started_ns), tool_name=tool_call.tool_name,
         )
         self._guarded(
             "Hermes shared-metrics tool call close failed",
@@ -693,22 +715,32 @@ class _Runtime:
         for key in [key for key in session.tool_calls if key[0] == task.task_id]:
             self._finish_tool_call(task, session.tool_calls.pop(key), {**event, "status": status})
 
-    def _finish_model_call(self, session: _MetricsSession, model_call_key: tuple[str, str]) -> None:
+    def _finish_model_call(
+        self, session: _MetricsSession, model_call_key: tuple[str, str], outcome: str
+    ) -> None:
         model_call = session.model_calls.pop(model_call_key, None)
         if model_call is None:
             return
+        error_class = model_call.error_class
+        if outcome == "failed" and error_class == "none":
+            error_class = "unknown"
+        fields = contract.model_route_fields(
+            model_call.fields, call_role="primary", outcome=outcome, error_class=error_class
+        )
         self._guarded(
             "Hermes shared-metrics model call close failed",
             self._run_scoped, session, session.tasks.get(model_call.task_id),
-            self.relay.llm.call_end, model_call.handle, model_call.fields,
+            self.relay.llm.call_end, model_call.handle, fields,
             metadata=self._event_metadata(),
         )
 
     def _end_pending_model_calls(self, session: _MetricsSession, event: dict[str, Any]) -> None:
+        """Close calls that never saw a successful response as failed or cancelled."""
         task_id = _text(event, "task_id")
+        cancelled = contract.task_terminal_state(event)[0] == "cancelled"
         pending = [k for k, c in session.model_calls.items() if not task_id or c.task_id == task_id]
         for key in pending:
-            self._finish_model_call(session, key)
+            self._finish_model_call(session, key, "cancelled" if cancelled else "failed")
 
     @staticmethod
     def _existing_model_call_key(
@@ -1001,7 +1033,7 @@ def _terminal_flags(result: dict[str, Any] | None, error: BaseException | None) 
             reason = "timed_out" if isinstance(error, TimeoutError) else "system_aborted"
         return {
             "completed": False, "failed": not interrupted, "interrupted": interrupted,
-            "turn_exit_reason": reason,
+            "turn_exit_reason": reason, "failure_class": "exception",
         }
     terminal = result if isinstance(result, dict) else {}
     failed = terminal.get("failed") is True
@@ -1011,6 +1043,8 @@ def _terminal_flags(result: dict[str, Any] | None, error: BaseException | None) 
         "failed": failed,
         "interrupted": terminal.get("interrupted") is True,
         "turn_exit_reason": reason or ("failed" if failed else "unknown"),
+        # Classified in the contract against a closed set; the raw string never leaves.
+        "failure_reason": str(terminal.get("failure_reason") or ""),
     }
 
 

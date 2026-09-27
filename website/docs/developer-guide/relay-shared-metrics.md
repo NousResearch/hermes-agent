@@ -172,9 +172,14 @@ provider route that Hermes used for the logical call, such as
 `nvidia/nemotron-3-ultra` through `openrouter`. These identifiers are
 lowercased and structurally bounded, but they are not normalized through a
 checked-in model catalog. Pricing and model-family classification belong to
-the metrics backend. Prompts, responses, endpoints, errors, session IDs, task
-IDs, and request IDs are not included in the metrics event or package.
-New calls use `hermes.model_route.count`. The previous
+the metrics backend. Prompts, responses, endpoints, error text, session IDs,
+task IDs, and request IDs are not included in the metrics event or package.
+New calls use `hermes.model_route.count`. Since package schema v3 each route row
+also carries `call_role` (`primary` or `auxiliary`), `outcome` (`success`,
+`failed`, `cancelled`) and `error_class`: the error classifier's own
+`FailoverReason` value (`rate_limit`, `auth`, `context_overflow`, ...) for the
+last failed attempt of that logical call, or `none`. A `success` row with a
+non-`none` class is a call that recovered after that error. The previous
 `hermes.model_call.count` contract remains readable only so pending local
 counters created by older builds can be exported without losing data.
 
@@ -189,9 +194,15 @@ mark again, but the subscriber suppresses it until the rolling window expires.
 
 Each task run is a Relay `Function` scope named `hermes.task_run`, parented to
 the owning Hermes session. The start counter contains only bounded execution
-surface and entrypoint values. The terminal counter contains bounded outcome,
-end reason, termination status, duration, logical model-call count, terminal
-tool-call count, and provider-retry count buckets. Retries are additional
+surface and entrypoint values plus, for gateway tasks, the built-in messaging
+`platform` (`telegram`, `discord`, `slack`, ...; plugin platforms report
+`plugin`, every other surface `none`). The terminal counter contains bounded
+outcome, end reason, termination status, duration, logical model-call count,
+terminal tool-call count, and provider-retry count buckets, and a
+`failure_class` for failed tasks: the provider `FailoverReason` when the turn
+died on a classified API error, otherwise a local class (`empty_response`,
+`context_compression`, `repeated_errors`, `exception`, `other`, ...). Raw exit
+reasons never leave the machine. Retries are additional
 provider attempts for the same Hermes API request ID; they do not inflate the
 logical model-call count. Tool calls are deduplicated by their Hermes tool-call
 ID after a terminal tool result is observed. The outer `AIAgent` execution
@@ -204,13 +215,21 @@ Each tool invocation is represented by a Relay tool lifecycle named
 outcome, approval outcome, latency, and explicit retry-count buckets. Hermes
 derives the category from the toolset already declared in its runtime registry;
 custom and unrecognized toolsets collapse to `other` rather than exporting
-tool or plugin names. Hermes does not infer retries from repeated tool names or
+tool or plugin names. The same terminal event also feeds
+`hermes.tool.usage.count` with `tool_name`, `outcome` and `error_class`.
+`tool_name` is exported only for tools declared in the repository's static
+`toolsets.TOOLSETS` (`toolsets.BUILTIN_TOOL_NAMES`, captured before any runtime
+custom toolset is created); MCP tools report `mcp` and every plugin or custom
+tool reports `plugin`. `error_class` maps Hermes's own `error_type` values
+(`tool_error`, `timeout`, `interrupted`, `invalid_arguments`, `blocked`,
+`contract_violation`); any other value, such as an exception class name,
+collapses to `exception`. Hermes does not infer retries from repeated tool names or
 adjacent calls; when the
 hook does not provide an explicit retry relationship, the retry bucket is
 `unknown`. Approval decisions are emitted as `hermes.tool_approval` marks and
-recorded as attributed to a tool call or explicitly `unattributed`. Tool names,
-call IDs, arguments, results, commands, descriptions, and error text are not
-included in shared-metrics events or packages. A started tool that is still
+recorded as attributed to a tool call or explicitly `unattributed`. Non-built-in
+tool names, call IDs, arguments, results, commands, descriptions, and error
+text are not included in shared-metrics events or packages. A started tool that is still
 open when its task terminates is closed as failed, timed out, or cancelled and
 remains in the task's tool-count bucket.
 
@@ -224,6 +243,15 @@ SQLite dimensions, or packages. A use after a new patch is counted once as
 `reused_after_patch`; later uses remain ordinary reuse until another patch.
 Task-outcome attribution after a patch remains deferred until its window and
 multi-skill semantics are defined.
+
+Once per rolling 24 hours, the first activation also emits a
+`hermes.install.snapshot` mark describing how the profile is configured: the
+memory provider (a bundled provider name, `builtin`, or `plugin`) and bucketed
+counts of MCP servers, enabled plugins, installed skills, enabled cron jobs and
+profiles. Server, plugin, skill, job and profile names are never read into the
+event. The same compare-and-set latch as `hermes.client.active` keeps it to one
+row per install per day, and the producer checks the latch before walking the
+skills tree.
 
 Local state is written under:
 
@@ -241,9 +269,12 @@ platform strings, hostnames, and paths are never included. Fully packaged
 aggregate rows and successfully exported package rows and files are retained
 locally for 30 days. Pending package rows and counters with unexported deltas
 are never pruned.
-Package schema v1 remains unchanged for existing outbox files. New packages
-use v2, which accepts both the retired model-call contract and the current
-model-route contract so upgrades can drain pending counters safely.
+Package schemas v1 and v2 remain unchanged for existing outbox files. New
+packages use v3, which also accepts the v2 field sets of `hermes.model_route.count`
+and the task counters so counters recorded before an upgrade drain safely.
+Vocabularies derived from in-repo registries (tool names, platforms, memory
+providers, error classes) are bounded by pattern in the JSON schema; the
+authoritative allowlist is `shared_metrics_contract.py`.
 
 Each package contains an `install_id` generated as a random UUID. Despite the
 schema field name, its current scope is one `HERMES_HOME`, so it is more

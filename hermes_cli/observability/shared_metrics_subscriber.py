@@ -13,24 +13,31 @@ from hermes_cli.config import detect_install_method
 from .shared_metrics import SharedMetricsStore
 from .shared_metrics_contract import (
     CLIENT_ACTIVE_METRIC,
+    INSTALL_SNAPSHOT_METRIC,
     MODEL_ROUTE_METRIC,
     TOOL_CALL_METRIC,
+    TOOL_USAGE_METRIC,
     client_active_counter,
     client_resource,
+    install_snapshot_counter,
     model_call_dimensions,
     skill_counter,
     task_counter,
     tool_approval_counter,
     tool_call_dimensions,
+    tool_usage_dimensions,
 )
 
 logger = logging.getLogger(__name__)
 
-# Contract projections in match order; each yields (metric_name, dimensions) or None.
+# Contract projections; each yields (metric_name, dimensions) or None. One tool end event feeds
+# both the category counter and the per-tool counter, so every match is recorded.
 _COUNTERS = (
     client_active_counter,
+    install_snapshot_counter,
     lambda event: _named(MODEL_ROUTE_METRIC, model_call_dimensions(event)),
     lambda event: _named(TOOL_CALL_METRIC, tool_call_dimensions(event)),
+    lambda event: _named(TOOL_USAGE_METRIC, tool_usage_dimensions(event)),
     task_counter,
     tool_approval_counter,
     skill_counter,
@@ -68,9 +75,9 @@ class SharedMetricsSubscriber:
             self._active = False
 
     @staticmethod
-    def _classify(event: Any) -> tuple[str, dict] | None:
-        """Return ``(metric_name, dimensions)`` for the first matching contract, else None."""
-        return next((m for m in (project(event) for project in _COUNTERS) if m is not None), None)
+    def _classify(event: Any) -> list[tuple[str, dict]]:
+        """Return every ``(metric_name, dimensions)`` the event satisfies."""
+        return [m for m in (project(event) for project in _COUNTERS) if m is not None]
 
     def __call__(self, event: Any) -> None:
         if self._runtime_id is not None:
@@ -80,19 +87,18 @@ class SharedMetricsSubscriber:
                 or metadata.get(RUNTIME_INSTANCE_KEY) != self._runtime_id
             ):
                 return
-        metric = self._classify(event)
-        if metric is None:
-            return
-        metric_name, dimensions = metric
-        with self._lock:
-            if not self._active:
-                return
-            try:
-                if metric_name == CLIENT_ACTIVE_METRIC:
-                    self.store.record_client_active(self._client_resource)
-                else:
-                    self.store.record_counter(metric_name, dimensions, self._client_resource)
-            except Exception:
-                logger.warning(
-                    "Unable to persist the Hermes shared metric: %s", metric_name, exc_info=True
-                )
+        for metric_name, dimensions in self._classify(event):
+            with self._lock:
+                if not self._active:
+                    return
+                try:
+                    if metric_name == CLIENT_ACTIVE_METRIC:
+                        self.store.record_client_active(self._client_resource)
+                    elif metric_name == INSTALL_SNAPSHOT_METRIC:
+                        self.store.record_install_snapshot(dimensions, self._client_resource)
+                    else:
+                        self.store.record_counter(metric_name, dimensions, self._client_resource)
+                except Exception:
+                    logger.warning(
+                        "Unable to persist the Hermes shared metric: %s", metric_name, exc_info=True
+                    )

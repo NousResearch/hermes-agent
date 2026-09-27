@@ -266,6 +266,9 @@ def _write_config(home: Path, port: int) -> None:
   api_key: no-key-required
 security:
   tirith_enabled: false
+auxiliary:
+  title_generation:
+    enabled: false
 telemetry:
   shared_metrics:
     enabled: true
@@ -299,11 +302,13 @@ def _validate_store(database_path: Path) -> list[dict[str, Any]]:
         by_name.setdefault(counter["name"], []).append(counter)
     if set(by_name) != {
         "hermes.client.active",
+        "hermes.install.snapshot",
         "hermes.model_route.count",
         "hermes.skill.lifecycle.count",
         "hermes.skill.load.count",
         "hermes.task_run.finished",
         "hermes.task_run.started",
+        "hermes.tool.usage.count",
         "hermes.tool_call.count",
     }:
         raise AssertionError(
@@ -324,7 +329,10 @@ def _validate_store(database_path: Path) -> list[dict[str, Any]]:
     expected_model = {
         "name": "hermes.model_route.count",
         "dimensions": {
+            "call_role": "primary",
+            "error_class": "none",
             "model": MODEL_CANARY,
+            "outcome": "success",
             "provider": "custom",
         },
         "value": 2,
@@ -339,6 +347,7 @@ def _validate_store(database_path: Path) -> list[dict[str, Any]]:
         "dimensions": {
             "entrypoint": "interactive",
             "execution_surface": "cli",
+            "platform": "none",
         },
         "value": 1,
         "packaged_value": 1,
@@ -353,8 +362,10 @@ def _validate_store(database_path: Path) -> list[dict[str, Any]]:
         "end_reason": "completed",
         "entrypoint": "interactive",
         "execution_surface": "cli",
+        "failure_class": "none",
         "model_call_count_bucket": "2",
         "outcome": "success",
+        "platform": "none",
         "retry_count_bucket": "0",
         "termination": "none",
         "tool_call_count_bucket": "1",
@@ -365,6 +376,13 @@ def _validate_store(database_path: Path) -> list[dict[str, Any]]:
         or terminal["packaged_value"] != 1
     ):
         raise AssertionError(f"Unexpected task terminal counter: {terminal}")
+    if [c["dimensions"] for c in by_name["hermes.tool.usage.count"]] != [
+        {"error_class": "none", "outcome": "success", "tool_name": "read_file"}
+    ]:
+        raise AssertionError(f"Unexpected tool usage: {by_name['hermes.tool.usage.count']}")
+    [snapshot] = by_name["hermes.install.snapshot"]
+    if snapshot["value"] != 1 or snapshot["dimensions"]["memory_provider"] != "builtin":
+        raise AssertionError(f"Unexpected install snapshot: {snapshot}")
     [tool] = by_name["hermes.tool_call.count"]
     expected_tool_dimensions = {
         "approval_outcome": "not_required",
@@ -468,11 +486,13 @@ def _validate_packages(
             metrics.setdefault(metric["name"], []).append(metric)
     if set(metrics) != {
         "hermes.client.active",
+        "hermes.install.snapshot",
         "hermes.model_route.count",
         "hermes.skill.lifecycle.count",
         "hermes.skill.load.count",
         "hermes.task_run.finished",
         "hermes.task_run.started",
+        "hermes.tool.usage.count",
         "hermes.tool_call.count",
     }:
         raise AssertionError(
@@ -491,7 +511,10 @@ def _validate_packages(
         )
     [model] = metrics["hermes.model_route.count"]
     if model["dimensions"] != {
+        "call_role": "primary",
+        "error_class": "none",
         "model": MODEL_CANARY,
+        "outcome": "success",
         "provider": "custom",
     } or model["value"] != 2:
         raise AssertionError(
@@ -503,8 +526,10 @@ def _validate_packages(
         "end_reason": "completed",
         "entrypoint": "interactive",
         "execution_surface": "cli",
+        "failure_class": "none",
         "model_call_count_bucket": "2",
         "outcome": "success",
+        "platform": "none",
         "retry_count_bucket": "0",
         "termination": "none",
         "tool_call_count_bucket": "1",
@@ -723,7 +748,7 @@ def main() -> int:
         / "hermes_cli"
         / "observability"
         / "schemas"
-        / "hermes.shared_metrics.v2.schema.json",
+        / "hermes.shared_metrics.v3.schema.json",
     )
 
     print("Hermes -> NeMo Relay shared-metrics smoke test passed")

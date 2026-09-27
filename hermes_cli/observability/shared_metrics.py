@@ -19,18 +19,20 @@ from utils import atomic_json_write
 from .shared_metrics_contract import (
     CLIENT_ACTIVE_METRIC,
     COUNTER_METRICS,
+    INSTALL_SNAPSHOT_METRIC,
     MODEL_ROUTE_METRIC,
     client_resource_is_valid,
     counter_dimensions_are_valid,
 )
 
 
-_PACKAGE_SCHEMA_VERSION = "hermes.shared_metrics.v2"
+_PACKAGE_SCHEMA_VERSION = "hermes.shared_metrics.v3"
 _STORE_SCHEMA_VERSION = "2"
 _BUSY_TIMEOUT_MS = 250
 _SCHEMA_BUSY_TIMEOUT_MS = 5_000
 _LOCAL_HISTORY_RETENTION_DAYS = 30
 _ACTIVE_INSTALL_STATE_KEY = "client_active_recorded_at"
+_INSTALL_SNAPSHOT_STATE_KEY = "install_snapshot_recorded_at"
 _ACTIVE_INSTALL_INTERVAL = timedelta(hours=24)
 # Column order of the client resource in every counter_aggregates statement.
 _RESOURCE_COLUMNS = ("hermes_version", "os_family", "architecture", "install_method")
@@ -190,13 +192,36 @@ class SharedMetricsStore:
 
     def record_client_active(self, resource: dict[str, str]) -> bool:
         """Record this install at most once in any rolling 24-hour window."""
-        dimensions: dict[str, str] = {}
-        self._validate_counter(CLIENT_ACTIVE_METRIC, dimensions, resource)
+        return self._record_once_per_interval(
+            _ACTIVE_INSTALL_STATE_KEY, CLIENT_ACTIVE_METRIC, {}, resource
+        )
+
+    def record_install_snapshot(self, dimensions: dict[str, str], resource: dict[str, str]) -> bool:
+        """Record the configuration snapshot at most once in any rolling 24-hour window."""
+        return self._record_once_per_interval(
+            _INSTALL_SNAPSHOT_STATE_KEY, INSTALL_SNAPSHOT_METRIC, dimensions, resource
+        )
+
+    def install_snapshot_due(self) -> bool:
+        """Cheap read so the producer skips collecting a snapshot the latch would drop."""
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT value FROM telemetry_state WHERE key = ?", (_INSTALL_SNAPSHOT_STATE_KEY,)
+            ).fetchone()
+        last = self._parse_state_timestamp(row["value"]) if row is not None else None
+        now = _utc_now()
+        return last is None or last > now or now >= last + _ACTIVE_INSTALL_INTERVAL
+
+    def _record_once_per_interval(
+        self, state_key: str, metric_name: str, dimensions: dict[str, str],
+        resource: dict[str, str],
+    ) -> bool:
+        """Transactional compare-and-set latch shared by concurrent Hermes processes."""
+        self._validate_counter(metric_name, dimensions, resource)
         now = _utc_now()
         with self._write() as connection:
             row = connection.execute(
-                "SELECT value FROM telemetry_state WHERE key = ?",
-                (_ACTIVE_INSTALL_STATE_KEY,),
+                "SELECT value FROM telemetry_state WHERE key = ?", (state_key,)
             ).fetchone()
             last_recorded = self._parse_state_timestamp(row["value"]) if row is not None else None
             if last_recorded is not None and last_recorded > now:
@@ -204,19 +229,19 @@ class SharedMetricsStore:
                 # timestamp plus another full interval.
                 connection.execute(
                     "UPDATE telemetry_state SET value = ? WHERE key = ?",
-                    (_isoformat(now), _ACTIVE_INSTALL_STATE_KEY),
+                    (_isoformat(now), state_key),
                 )
                 return False
             if last_recorded is not None and now < last_recorded + _ACTIVE_INSTALL_INTERVAL:
                 return False
             self._install_id(connection)
             self._record_counter_in_transaction(
-                connection, CLIENT_ACTIVE_METRIC, dimensions, resource, now.date().isoformat()
+                connection, metric_name, dimensions, resource, now.date().isoformat()
             )
             connection.execute(
                 "INSERT INTO telemetry_state(key, value) VALUES (?, ?)"
                 " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                (_ACTIVE_INSTALL_STATE_KEY, _isoformat(now)),
+                (state_key, _isoformat(now)),
             )
         return True
 

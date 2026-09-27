@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from agent.context_compressor import (
     COMPRESSED_SUMMARY_METADATA_KEY,
+    USER_MERGE_PREFIX_KEY,
     _DB_PERSISTED_MARKER,
     ContextCompressor,
     _newest_checkpoint_carrier,
@@ -76,6 +77,22 @@ def _override_replaces_content(msg: Dict, content: Any, override: Any) -> bool:
         and not msg.get(COMPRESSED_SUMMARY_METADATA_KEY)
         and (not isinstance(content, list) or isinstance(override, list))
     )
+
+
+def _post_override_content(msg: Dict, override: Any) -> Any:
+    """The live content the persist override rewrites a user row to. A plain row takes the override
+    alone; a row the alternation-repair merge pass produced re-attaches its pre-merge prefix
+    (``USER_MERGE_PREFIX_KEY``, stamped by ``_merge_consecutive_users``), otherwise an earlier
+    unanswered user message — left durable without a reply by a crash/restart between turn start and
+    the answer — would drop out of the live list at finalize (#124731). The DB row path
+    (``durable_user_row_content``) deliberately keeps the plain override: the pre-merge row stays an
+    active store row, so the merged bytes would duplicate it on the next load-time repair."""
+    if override is None or not isinstance(override, str):
+        return override
+    prefix = msg.get(USER_MERGE_PREFIX_KEY)
+    if isinstance(prefix, str) and prefix:
+        return prefix + "\n\n" + override
+    return override
 
 
 def durable_user_row_content(agent, msg: Dict, content: Any, api_content: Any) -> Tuple[Any, Any]:
@@ -395,7 +412,7 @@ class SessionPersistenceMixin:
         if not (isinstance(msg, dict) and msg.get("role") == "user"):
             return
         if _override_replaces_content(msg, msg.get("content"), override):
-            msg["content"] = override
+            msg["content"] = _post_override_content(msg, override)
         if timestamp is not None:
             msg["timestamp"] = timestamp
         if platform_id is not None:  # load-bearing for restart drain-window recovery dedup (has_platform_message_id)

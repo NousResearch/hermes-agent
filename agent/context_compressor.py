@@ -303,6 +303,11 @@ LEGACY_SUMMARY_PREFIX = "[CONTEXT SUMMARY]:"
 # reject unknown keys, so a bare key would poison every request in the session.
 COMPRESSED_SUMMARY_METADATA_KEY = "_compressed_summary"
 COMPRESSED_SUMMARY_HAS_USER_TURN_KEY = "_compressed_summary_has_user_turn"
+# ``_merge_consecutive_users`` stamps a user-row survivor with the content it held BEFORE the latest
+# content-changing merge, so a persist-override rewrite that later anchors onto the merged row can
+# re-attach the pre-merge bytes instead of clobbering an earlier (crash-orphaned, unanswered) user
+# message out of the live list (#124731).
+USER_MERGE_PREFIX_KEY = "_user_merge_prefix"
 # Only micro markers may be superseded/defragged/rehydrated: a batch marker's
 # content is NOT in the rolling micro summary, so rewriting one destroys history.
 MICRO_COMPACT_MARKER_KEY = "_micro_compact_marker"

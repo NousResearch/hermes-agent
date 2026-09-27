@@ -576,7 +576,11 @@ def _prune_unanswered_tool_calls(messages: List[Dict]) -> Tuple[List[Dict], int]
 
 def _merge_consecutive_users(messages: List[Dict]) -> Tuple[List[Dict], int]:
     """Pass 3: merge consecutive plain-text user messages (no user input lost)."""
-    from agent.context_compressor import _DB_PERSISTED_MARKER, split_user_originated_turn
+    from agent.context_compressor import (
+        _DB_PERSISTED_MARKER,
+        split_user_originated_turn,
+        USER_MERGE_PREFIX_KEY,
+    )
 
     repairs = 0
     merged: List[Dict] = []
@@ -606,6 +610,12 @@ def _merge_consecutive_users(messages: List[Dict]) -> Tuple[List[Dict], int]:
             # reproduces the persisted bytes (e.g. an empty incoming turn) keeps its stamp.
             if merged_content != prev_content or had_api_sidecar:
                 prev.pop(_DB_PERSISTED_MARKER, None)
+                # Remember the pre-merge bytes so a persist override that later anchors onto this
+                # merged row (reanchor's last-user-row fallback after a crash-orphaned user tail)
+                # re-attaches them instead of clobbering the earlier message (#124731). Chained
+                # merges overwrite with the FULL pre-merge content, keeping prefix + next piece == content.
+                if prev_content:
+                    prev[USER_MERGE_PREFIX_KEY] = prev_content
             _remember_absorbed_row(prev, msg)
             repairs += 1
             continue

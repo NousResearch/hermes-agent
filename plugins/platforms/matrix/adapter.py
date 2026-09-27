@@ -83,6 +83,7 @@ except ImportError:
         """Import-safe stand-in for the homeserver's M_NOT_FOUND error."""
 
 from gateway.config import Platform, PlatformConfig
+from plugins.platforms.matrix.relations import MatrixRelation
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
     SendResult, resolve_proxy_url, proxy_kwargs_for_aiohttp, _ssrf_redirect_guard,
@@ -2088,7 +2089,7 @@ class MatrixAdapter(BasePlatformAdapter):
             source_content = content.serialize() if hasattr(content, "serialize") else {}
             msgtype = str(content.msgtype) if hasattr(content, "msgtype") else ""
         relates_to = source_content.get("m.relates_to", {})
-        if relates_to.get("rel_type") == "m.replace":  # skip edits
+        if MatrixRelation.from_content(relates_to).is_edit:
             return
         # m.notice is the conventional bot-response msgtype; ignoring it prevents bot-to-bot loops.
         if msgtype == "m.notice" and not self._process_notices:
@@ -2109,7 +2110,7 @@ class MatrixAdapter(BasePlatformAdapter):
         identity = await self._resolve_room_identity(room_id)
         is_dm = await self._is_dm_room(room_id)
         chat_type = "dm" if is_dm else "group"
-        thread_id = _thread_root(relates_to)
+        thread_id = MatrixRelation.from_content(relates_to).thread_root
         is_mentioned = mention_claimed or self._content_mentions_bot(body, source_content)
         if not is_dm:
             # Whitelist first: non-listed rooms are dropped even when @mentioned (DMs exempt).
@@ -2140,7 +2141,7 @@ class MatrixAdapter(BasePlatformAdapter):
             # for reply_to_author_id. A whole-body replace rewrote the pill to ``> <>``
             # and silently dropped the replied-to author (#111233). Without a fallback, a leading
             # quote is the user's own text, so the mention is stripped from the whole body.
-            if relates_to.get("m.in_reply_to") and _has_reply_fallback(body, source_content):
+            if MatrixRelation.from_content(relates_to).reply_target and _has_reply_fallback(body, source_content):
                 quote_block, reply_text = _split_reply_fallback(body)
                 body = quote_block + self._strip_mention(reply_text)
             else:
@@ -2173,7 +2174,7 @@ class MatrixAdapter(BasePlatformAdapter):
         """Return (body, reply_to, reply_to_text, reply_to_author_id, reply_to_author_name). Captures
         the inline reply fallback (``> <@user:srv> text\\n\\nreply``) BEFORE stripping it, so the
         prompt layer can render "[Replying to: ...]" like Signal/Slack/Telegram."""
-        reply_to = (relates_to.get("m.in_reply_to") or {}).get("event_id")
+        reply_to = MatrixRelation.from_content(relates_to).reply_target
         reply_to_text = reply_to_author_id = reply_to_author_name = None
         if reply_to and _has_reply_fallback(body, source_content):
             reply_to_text, reply_to_author_id = _extract_reply_fallback(body)

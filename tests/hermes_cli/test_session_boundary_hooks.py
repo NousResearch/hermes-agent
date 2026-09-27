@@ -96,7 +96,9 @@ def test_hook_errors_are_caught(mock_invoke_hook):
     def bad_callback(**kwargs):
         raise Exception("Hook failed")
 
-    mgr._hooks["on_session_finalize"] = [bad_callback]
+    from hermes_cli.plugins import PluginContext, PluginManifest
+    ctx = PluginContext(PluginManifest(name="test-seed", source="user"), mgr)
+    ctx.register_hook("on_session_finalize", bad_callback)
 
     # This should not raise
     results = mgr.invoke_hook("on_session_finalize", session_id="test", platform="cli")

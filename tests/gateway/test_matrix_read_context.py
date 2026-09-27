@@ -9,6 +9,7 @@ import pytest
 
 from plugins.platforms.matrix.read_context import read_matrix_context
 from plugins.platforms.matrix.reply_context import MatrixEventContextCache
+from tests.gateway.test_matrix import _make_adapter
 
 
 def _message(event_id, body, *, ts=None, thread=None, sender="@alice:server"):
@@ -36,9 +37,6 @@ def _client(chunk=(), *, event=None, crypto=None):
 
 
 def _adapter(client, **overrides):
-    from types import MethodType
-    from plugins.platforms.matrix.adapter import MatrixAdapter
-
     values = dict(
         _allowed_room_ids=set(),
         _event_context_cache=MatrixEventContextCache(),
@@ -48,11 +46,8 @@ def _adapter(client, **overrides):
         _is_sender_authorized=lambda user, **kw: user == "@alice:server",
     )
     values.update(overrides)
-    adapter = SimpleNamespace(**values)
-    adapter._is_allowed_matrix_room = MethodType(
-        MatrixAdapter._is_allowed_matrix_room,
-        adapter,
-    )
+    adapter = _make_adapter()
+    vars(adapter).update(values)
     return adapter
 
 

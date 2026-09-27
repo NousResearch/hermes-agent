@@ -499,7 +499,7 @@ async def test_name_allowlist_warning_once_scoped_even_if_first_connect_fails(mo
     from gateway.config import PlatformConfig
 
     monkeypatch.setenv("SIMPLEX_ALLOWED_USERS", "bob")  # default profile's bridge output
-    monkeypatch.setattr(_simplex, "_NAME_ALLOWLIST_WARNED", set(), raising=False)
+    monkeypatch.setattr(_simplex, "_NAME_ALLOWLIST_WARNED", set())
 
     class DummyWs:
         async def __aenter__(self):

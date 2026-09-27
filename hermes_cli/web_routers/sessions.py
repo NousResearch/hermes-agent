@@ -440,9 +440,10 @@ async def bulk_delete_sessions_endpoint(body: BulkDeleteSessions):
     if len(body.ids) > 500:
         raise HTTPException(status_code=400, detail="ids must contain at most 500 entries")
     profile = destructive_profile(body.profile, "POST /api/sessions/bulk-delete")
-    deleted = await asyncio.to_thread(
-        _with_db, profile, lambda db: db.delete_sessions(body.ids, exclude_active_write_guards=True), read_only=False)
-    return {"ok": True, "deleted": deleted}
+    skipped: list[str] = []  # rows a live turn/compression still owns; the UI must keep them listed
+    deleted = await asyncio.to_thread(_with_db, profile, lambda db: db.delete_sessions(
+        body.ids, exclude_active_write_guards=True, skipped_ids=skipped), read_only=False)
+    return {"ok": True, "deleted": deleted, "skipped_active": skipped}
 
 
 @manage_router.post("/api/sessions/import")

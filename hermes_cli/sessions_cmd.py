@@ -16,6 +16,7 @@ from pathlib import Path
 
 from hermes_cli.cli_output import print_truncated
 from hermes_cli.sessions_cmd_browse import _relative_time, _session_browse_picker
+from hermes_state_errors import SessionActiveWriteGuardError
 
 
 def get_hermes_home():
@@ -562,7 +563,6 @@ def _export_markdown_single(db, args, export_one, output_dir, lineage_is_logical
             print(f"Export verification failed; not deleting session '{data.get('id')}': {reason}")
             return
         expected_messages.update(snapshots)
-    from hermes_state_errors import SessionActiveWriteGuardError
     try:
         if not db.delete_session(
             resolved_session_id, sessions_dir=_sessions_dir(), expected_delete_ids=delete_target_ids,
@@ -593,7 +593,6 @@ def _cmd_delete(db, args):
             return
     elif _pinned_note:
         print(f"Warning: deleting a pinned session '{resolved_session_id}'.")
-    from hermes_state_errors import SessionActiveWriteGuardError
     try:
         if not db.delete_session(resolved_session_id, sessions_dir=_sessions_dir(), exclude_active_write_guards=True):
             return _not_found(args.session_id)

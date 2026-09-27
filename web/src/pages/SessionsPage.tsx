@@ -1408,7 +1408,9 @@ export default function SessionsPage() {
       // than waiting for the reload. The reload still runs so total /
       // pagination stays correct, and so any rows the reload pulls in
       // from later pages render in place.
-      const deletedSet = new Set(ids);
+      // Rows a live turn still owns were refused server-side; keep them listed.
+      const skipped = new Set(resp.skipped_active ?? []);
+      const deletedSet = new Set(ids.filter((id) => !skipped.has(id)));
       setSessions((prev) => prev.filter((s) => !deletedSet.has(s.id)));
       setTotal((prev) => Math.max(0, prev - resp.deleted));
       if (expandedId && deletedSet.has(expandedId)) setExpandedId(null);

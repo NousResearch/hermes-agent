@@ -156,6 +156,7 @@ from gateway.browser_control_broker import (
     browser_control_protocol_supported, filter_browser_control_capabilities, get_browser_control_broker)
 
 from gateway.platforms._shared import coerce_port as _coerce_port
+from hermes_state_errors import SessionActiveWriteGuardError
 from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
 from gateway.platforms.tcp_site import start_tcp_site
 
@@ -3216,7 +3217,6 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             sessions_dir = Path(get_hermes_home()) / "sessions"
         except Exception:
             logger.debug("sessions dir unavailable for delete of %s", session_id, exc_info=True)
-        from hermes_state_errors import SessionActiveWriteGuardError
         try:
             deleted = await asyncio.to_thread(
                 db.delete_session, session_id, sessions_dir=sessions_dir, exclude_active_write_guards=True)

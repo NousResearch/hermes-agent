@@ -7,6 +7,7 @@ server.py the same way (tests monkeypatching ``server.X`` still intercept)."""
 import contextlib
 
 from .method_ctx import HandlerRegistry, bind_module
+from hermes_state_errors import SessionActiveWriteGuardError
 
 _registry = HandlerRegistry()
 method = _registry.method
@@ -1085,7 +1086,6 @@ def _(rid, params: dict) -> dict:
     with _profile_db(params, writer=True) as db:
         if db is None:
             return _db_unavailable_error(rid, code=5036)
-        from hermes_state_errors import SessionActiveWriteGuardError
         try:
             home = Path(profile_home) if profile_home is not None else get_hermes_home()
             deleted = db.delete_session(target, sessions_dir=home / "sessions", exclude_active_write_guards=True)

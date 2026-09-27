@@ -53,13 +53,15 @@ def test_delete_sessions_bulk_skips_active_write_guards(tmp_path):
     turn_holder = f"pid={os.getpid()}:turn=bulk"
     assert db.try_acquire_session_turn_lease("bulk-active", turn_holder, ttl_seconds=300.0) is True
 
-    deleted_count = db.delete_sessions(["bulk-active", "bulk-idle"], exclude_active_write_guards=True)
+    skipped: list[str] = []
+    deleted_count = db.delete_sessions(
+        ["bulk-active", "bulk-idle"], exclude_active_write_guards=True, skipped_ids=skipped)
     assert deleted_count == 1
+    assert skipped == ["bulk-active"]  # reported to the caller, not silently dropped
 
     # Protected row survived; idle row was deleted
     assert db.get_session("bulk-active") is not None
     assert db.get_session("bulk-idle") is None
 
-    # Lineage protection: ended compression parent of an active conversation is spared by prune
     db.release_session_turn_lease("bulk-active", turn_holder)
     db.close()

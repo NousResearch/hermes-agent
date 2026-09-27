@@ -66,6 +66,7 @@ import { SidebarFooter } from "@/components/SidebarFooter";
 import { SidebarStatusStrip, gatewayLine } from "@/components/SidebarStatusStrip";
 import { useBelowBreakpoint } from "@nous-research/ui/hooks/use-below-breakpoint";
 import { useSidebarStatus } from "@/hooks/useSidebarStatus";
+import { useFleetActivity } from "@/hooks/useFleetActivity";
 import { AuthWidget } from "@/components/AuthWidget";
 import { PageHeaderProvider } from "@/contexts/PageHeaderProvider";
 import { ProfileProvider } from "@/contexts/ProfileProvider";
@@ -96,6 +97,7 @@ const ChannelsPage = lazy(() => import("@/pages/ChannelsPage"));
 const WebhooksPage = lazy(() => import("@/pages/WebhooksPage"));
 const SystemPage = lazy(() => import("@/pages/SystemPage"));
 const ChatPage = lazy(() => import("@/pages/ChatPage"));
+const FleetActivityPage = lazy(() => import("@/pages/FleetActivityPage"));
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
 import { useI18n } from "@/i18n";
@@ -157,6 +159,7 @@ const CHAT_NAV_ITEM: NavItem = {
 const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/": RootRedirect,
   "/sessions": SessionsPage,
+  "/fleet": FleetActivityPage,
   "/files": FilesPage,
   "/analytics": AnalyticsPage,
   "/models": ModelsPage,
@@ -191,6 +194,7 @@ const BUILTIN_NAV_REST: NavItem[] = [
     label: "Sessions",
     icon: MessageSquare,
   },
+  { path: "/fleet", label: "Fleet Activity", icon: Activity },
   { path: "/files", label: "Files", icon: FolderOpen },
   {
     path: "/analytics",
@@ -398,6 +402,8 @@ export default function App() {
   const isDesktopCollapsed = collapsed && !isMobile;
   const tooltipWarmRef = useRef(0);
   const sidebarStatus = useSidebarStatus();
+  const { activity: fleetActivity } = useFleetActivity();
+  const fleetLiveCount = fleetActivity?.count ?? 0;
   const isDocsRoute = pathname === "/docs" || pathname === "/docs/";
   const normalizedPath = pathname.replace(/\/$/, "") || "/";
   const isChatRoute = normalizedPath === "/chat";
@@ -661,6 +667,7 @@ export default function App() {
                     collapsed={isDesktopCollapsed}
                     item={item}
                     key={item.path}
+                    liveCount={item.path === "/fleet" ? fleetLiveCount : undefined}
                     t={t}
                     tooltipWarmRef={tooltipWarmRef}
                   />
@@ -851,10 +858,12 @@ function SidebarNavLink({
   closeMobile,
   collapsed,
   item,
+  liveCount,
   tooltipWarmRef,
   t,
 }: SidebarNavLinkProps) {
   const { path, label, labelKey, icon: Icon } = item;
+  const showLiveDot = (liveCount ?? 0) > 0;
   const [hovered, setHovered] = useState(false);
   const [tooltipAnchor, setTooltipAnchor] = useState<HTMLElement | null>(null);
 
@@ -900,7 +909,19 @@ function SidebarNavLink({
       >
         {({ isActive }) => (
           <>
-            <Icon className="h-3.5 w-3.5 shrink-0" />
+            <span className="relative shrink-0">
+              <Icon className="h-3.5 w-3.5 shrink-0" />
+              {showLiveDot && (
+                <span
+                  aria-hidden
+                  className="absolute -right-0.5 -top-0.5 flex h-1.5 w-1.5"
+                  title={`${liveCount} running`}
+                >
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-success opacity-75" />
+                  <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-success" />
+                </span>
+              )}
+            </span>
 
             <span
               className={cn(
@@ -1368,6 +1389,8 @@ interface SidebarNavLinkProps {
   closeMobile: () => void;
   collapsed: boolean;
   item: NavItem;
+  /** Live count badge (e.g. Fleet Activity's running-task/session total); omitted elsewhere. */
+  liveCount?: number;
   t: Translations;
   tooltipWarmRef: TooltipWarmRef;
 }

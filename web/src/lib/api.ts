@@ -405,6 +405,9 @@ function appendSessionFilters(url: string, options: SessionQueryOptions): string
 export const api = {
   buildWsUrl,
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
+  /** Fleet-wide activity: running Kanban tasks (every board) + gateway sessions mid-turn
+   * (every served profile) — the panel that fills the gap the per-chat "live" dot leaves. */
+  getFleetActivity: () => fetchJSON<FleetActivityResponse>("/api/fleet/activity"),
   /**
    * Identity probe for the dashboard auth gate (Phase 7).
    *
@@ -1937,6 +1940,36 @@ export interface ActionStatusResponse {
   name: string;
   pid: number | null;
   running: boolean;
+}
+
+/** One running Kanban task (GET /api/fleet/activity), any board, any assignee profile. */
+export interface FleetKanbanTask {
+  board: string;
+  board_name: string;
+  task_id: string;
+  title: string;
+  profile: string | null;
+  started_at: number | null;
+  elapsed_seconds: number | null;
+  last_heartbeat_at: number | null;
+  heartbeat_age_seconds: number | null;
+}
+
+/** One gateway (Telegram/WhatsApp/Discord/...) session currently mid-turn. */
+export interface FleetGatewaySession {
+  profile: string;
+  session_key: string;
+  platform: string | null;
+  display_name: string | null;
+  chat_type: string | null;
+  started_at: number;
+  elapsed_seconds: number;
+}
+
+export interface FleetActivityResponse {
+  kanban_tasks: FleetKanbanTask[];
+  gateway_sessions: FleetGatewaySession[];
+  count: number;
 }
 
 export interface PlatformStatus {

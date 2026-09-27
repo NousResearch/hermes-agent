@@ -515,13 +515,18 @@ def _content_dual_emits_structured(result, structured) -> bool:
     value = structured["result"]
     if any(_text_is_value(text, value) for text in texts):
         return True
-    return isinstance(value, list) and len(texts) == len(value) and all(map(_text_is_value, texts, value))
+    # Blocks are rejoined with "\n", so a string item holding one would lose its boundary once the list is dropped.
+    return (isinstance(value, list) and len(texts) == len(value)
+            and not any(isinstance(item, str) and "\n" in item for item in value)
+            and all(map(_text_is_value, texts, value)))
 
 
 def _text_is_value(text: str, value) -> bool:
-    """True when one text block is *value*: verbatim for a string, else its JSON."""
-    if isinstance(value, str):
-        return text == value
+    """True when one text block is *value*: verbatim for a string, else its JSON. A string is also
+    tried as JSON because the SDK serializes non-``str`` returns such as ``bytes`` into ``content``
+    (``'"abc"'``) while ``structuredContent`` holds the bare ``"abc"``."""
+    if isinstance(value, str) and text == value:
+        return True
     try:
         return _json_type_stable_equal(json.loads(text), value)
     except (TypeError, ValueError):

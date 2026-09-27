@@ -120,14 +120,13 @@ async function openStoredBotChat(
         }
       : {}),
     profile: name,
-    // Same intent a session row click uses. `tab` stacked a fresh tile every
-    // time focusOpenSession missed, so bot chats piled up beside each other and
-    // beside the untouched "New session" draft, which then kept focus —
-    // clicking a bot appeared to do nothing. `in-place` still fronts an
-    // already-open tile first, so Bot tabs survive owner lifecycles (#a81854a2,
-    // the reason this stopped being `main`); it just loads into main instead of
-    // minting a second tab when there is nothing to front.
-    intent: 'in-place',
+    // `tab` keeps each bot's chat in its own workspace tile, so multiple bots
+    // can be open side by side. The dedup the old `tab` regime lacked is now
+    // in openSession('tab') itself: it fronts an existing tile through
+    // focusOpenSession before stacking a new one (#a81854a2's pile-up class),
+    // and the bots workspace scope rides every open, so a bot tile is born
+    // scoped and never migrates.
+    intent: 'tab',
     awaitHydration: true,
     expectHistory,
     forceResume: true,
@@ -360,7 +359,10 @@ export function createCanonicalChat(
           }
         : {}),
       profile: name,
-      intent: 'main',
+      // Same tabbed intent as the stored open: a freshly minted forever-chat
+      // takes its own tile instead of stealing main, and openSession('tab')
+      // dedups by session id so re-clicks front rather than stack.
+      intent: 'tab',
       keepAllProfilesScope: route ? true : false,
       workspaceMode: 'bots',
       workspaceOwnerKey: botWorkspaceOwnerKey(bot),

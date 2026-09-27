@@ -248,13 +248,16 @@ async def test_bare_mention_passes_empty_string(monkeypatch):
     ("!room2:example.org", "@hermes:example.org", False, False),
     ("!room1:example.org", "@hermes:example.org hi", False, False),
     ("!room1:example.org", "@hermes:example.org", True, True),
+    ("!room1:example.org", "@hermes:example.org", True, "two_voices"),
 ])
 async def test_bare_mention_claims_parked_voice_only_in_same_room(
         monkeypatch, mention_room, mention_body, claims, same_sync_batch):
     """An unmentioned MSC3245 voice (empty m.mentions) is answered by the sender's bare @mention
     typed right after it in the SAME room; a bare mention in another room never pulls it across,
     and a mention carrying text is answered as that text. mautrix runs one /sync batch's events as
-    concurrent tasks, so the claim must also win while the voice still awaits a room-identity fetch."""
+    concurrent tasks, so the claim must also win while the voice still awaits a room-identity fetch.
+    ``two_voices``: batch [voice (slow gate), mention, voice2 (fast)] then mention2 -- each mention
+    answers the voice sent before it, even though voice2 parks first, and nothing stays parked."""
     import asyncio
 
     monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
@@ -272,12 +275,26 @@ async def test_bare_mention_claims_parked_voice_only_in_same_room(
 
     if same_sync_batch:
         resolve_identity = adapter._resolve_room_identity
+        delays = [0.1] if same_sync_batch == "two_voices" else []
 
         async def slow_identity(room_id):  # stale 60s cache -> homeserver round-trip
-            await asyncio.sleep(0.01)
+            await asyncio.sleep(delays.pop(0) if delays else 0.01)
             return await resolve_identity(room_id)
         adapter._resolve_room_identity = slow_identity
-        await asyncio.gather(adapter._on_room_message(voice), adapter._on_room_message(mention))
+        batch = [voice, mention]
+        if same_sync_batch == "two_voices":
+            voice2 = _make_event("voice message", event_id="$voice2")
+            voice2.content.update({k: voice.content[k] for k in (
+                "msgtype", "url", "info", "org.matrix.msc3245.voice", "m.mentions")})
+            batch.append(voice2)
+        await asyncio.gather(*(adapter._on_room_message(e) for e in batch))
+        if same_sync_batch == "two_voices":
+            await adapter._on_room_message(_make_event(
+                "@hermes:example.org", event_id="$text2", mention_user_ids=["@hermes:example.org"]))
+            dispatched = [m.args[0].message_id for m in adapter.handle_message.await_args_list]
+            assert dispatched == ["$voice", "$voice2"]
+            assert not adapter._parked_voices._parked and not adapter._parked_voices._inflight
+            return
     else:
         await adapter._on_room_message(voice)
         adapter.handle_message.assert_not_awaited()

@@ -98,12 +98,17 @@ def print_parked_status() -> bool:
         print(f"Profile '{name}': parked (hermes -p {name} gateway start)")
         return True
     if not name or name == "default":
-        parked = [profile for profile, home in profiles_to_serve(True, include_parked=True)
-                  if profile != "default" and profile_is_parked(home)]
+        parked = [(profile, phome) for profile, phome in profiles_to_serve(True, include_parked=True)
+                  if profile != "default" and profile_is_parked(phome)]
         if parked:
+            from hermes_cli.web_server_gateway import _has_own_gateway
             owner = gw.host_multiplexer_serving()
             if owner is not None:
                 print(f"Served profiles: {', '.join(owner.profiles)}")
-            for profile in parked:
-                print(f"Profile '{profile}': parked (hermes -p {profile} gateway start)")
+            for profile, phome in parked:
+                if _has_own_gateway(phome):
+                    print(f"Profile '{profile}': parking marker present, but a gateway is live for "
+                          f"this profile (started with --force?).")
+                else:
+                    print(f"Profile '{profile}': parked (hermes -p {profile} gateway start)")
     return False

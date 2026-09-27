@@ -231,6 +231,22 @@ def test_status_reports_marker_beside_a_forced_live_gateway(homes, monkeypatch, 
     assert '4242' in output
 
 
+def test_default_status_reports_forced_live_gateway_for_parked_profile(homes, monkeypatch, capsys):
+    """The default-profile enumeration path must surface a `--force`-started live gateway for a
+    parked profile too, not only when querying that parked profile directly."""
+    from hermes_cli import gateway as gw, web_server_gateway
+    from hermes_cli.gateway_profile_lifecycle import print_parked_status
+    root, secondary = homes
+    (secondary / 'gateway.parked').touch()
+    monkeypatch.setattr(gw, '_current_profile_name', lambda: 'default')
+    monkeypatch.setattr(gw, 'host_multiplexer_serving', lambda: SimpleNamespace(
+        home=root, profiles=('default',)))
+    monkeypatch.setattr(web_server_gateway, '_has_own_gateway', lambda home: True)
+    assert print_parked_status() is False
+    output = capsys.readouterr().out
+    assert "Profile 'worker': parking marker present, but a gateway is live for this profile" in output
+
+
 def test_default_status_distinguishes_served_and_parked(homes, monkeypatch, capsys):
     from hermes_cli import gateway as gw
     from hermes_cli.gateway_profile_lifecycle import print_parked_status

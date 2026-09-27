@@ -373,14 +373,14 @@ describe('settled tool run', () => {
   it('collapses to a summary line naming the work', async () => {
     const { container } = render(<GroupHarness message={settledRunMessage()} />)
 
-    expect(await screen.findByText('Explored wiring.tsx, ran 1 command')).toBeTruthy()
+    expect(await screen.findByText('Read wiring.tsx, ran 1 command')).toBeTruthy()
     expect(container.querySelectorAll('[data-tool-row]')).toHaveLength(0)
   })
 
   it('expands to the underlying rows when the summary is clicked', async () => {
     const { container } = render(<GroupHarness message={settledRunMessage()} />)
 
-    fireEvent.click(await screen.findByText('Explored wiring.tsx, ran 1 command'))
+    fireEvent.click(await screen.findByText('Read wiring.tsx, ran 1 command'))
 
     await waitFor(() => {
       expect(container.querySelectorAll('[data-tool-row]').length).toBeGreaterThan(0)
@@ -404,7 +404,7 @@ describe('a file edit among ordinary activity', () => {
   it('stays visible between the two runs it interrupted', async () => {
     const { container } = render(<GroupHarness message={editBetweenRunsMessage()} />)
 
-    await screen.findByText('Explored 2 files')
+    await screen.findByText('Read a.ts, searched for toolRuns')
 
     const shape = [...container.querySelectorAll('[data-tool-summary],[data-tool-row]')].map(node =>
       node.hasAttribute('data-tool-summary') ? 'summary' : 'row'
@@ -509,7 +509,7 @@ describe('tool run left unresolved', () => {
   it('settles with the turn rather than narrating work that stopped', async () => {
     const { container } = render(<GroupHarness message={abandonedRunMessage()} />)
 
-    expect(await screen.findByText('Explored 2 files')).toBeTruthy()
+    expect(await screen.findByText('Read status.tsx, searched for toolRuns')).toBeTruthy()
     expect(container.querySelectorAll('[data-tool-row]')).toHaveLength(0)
     expect(container.querySelector('[data-tool-summary] button[aria-expanded]')).not.toBeNull()
   })
@@ -517,7 +517,7 @@ describe('tool run left unresolved', () => {
   it('settles once the agent moves on, even mid-turn', async () => {
     const { container } = render(<GroupHarness message={movedOnMessage()} />)
 
-    expect(await screen.findByText('Explored 2 files')).toBeTruthy()
+    expect(await screen.findByText('Read status.tsx, searched for toolRuns')).toBeTruthy()
     expect(container.querySelector('[data-tool-summary] button[aria-expanded]')).not.toBeNull()
   })
 })

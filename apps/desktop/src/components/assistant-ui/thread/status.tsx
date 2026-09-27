@@ -24,7 +24,7 @@ import { type DraftingTool, sessionDraftingTool } from '@/store/tool-drafting'
 import type { LocalModelLoadProgress } from '@/types/hermes'
 
 // A status line is scaffolding like any other — "Editing" while the model
-// drafts a call is the same kind of line as "Explored 3 files" once it has run,
+// drafts a call is the same kind of line as "Read 3 files" once it has run,
 // and reads as one continuous column only if it shares their type and colour.
 const StatusRow: FC<{ children: ReactNode; label: string } & React.ComponentPropsWithoutRef<'div'>> = ({
   children,

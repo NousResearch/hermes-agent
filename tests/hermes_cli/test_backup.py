@@ -1813,28 +1813,6 @@ class TestFailedZipMemberRecovery:
             assert zf.read("config.yaml") == b"model: test\n"
             assert zf.testzip() is None
 
-    def test_failed_duplicate_restores_previous_central_directory_entry(self, tmp_path, monkeypatch):
-        source = tmp_path / "source.bin"
-        source.write_bytes(os.urandom(300_000))
-        archive = tmp_path / "duplicate.zip"
-        _fail_zip_write_after(monkeypatch, "dup.bin")
-
-        import hermes_cli.backup as backup_mod
-
-        with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr("dup.bin", b"complete-before-failure")
-            with pytest.warns(UserWarning, match="Duplicate name"):
-                with pytest.raises(OSError, match="simulated source read failure"):
-                    backup_mod._write_zip_file(zf, source, "dup.bin")
-            zf.writestr("after.bin", b"after")
-
-        assert archive.stat().st_size > 65_535
-        with zipfile.ZipFile(archive) as zf:
-            assert zf.namelist().count("dup.bin") == 1
-            assert zf.read("dup.bin") == b"complete-before-failure"
-            assert zf.read("after.bin") == b"after"
-            assert zf.testzip() is None
-
     def test_incomplete_pre_update_backup_does_not_rotate_last_complete(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()

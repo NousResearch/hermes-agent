@@ -1609,6 +1609,8 @@ _plugin_managers_lock = threading.RLock()
 # aimed at a non-launch profile. ``None`` until the TUI/desktop process installs it.
 _published_tui_message_injector: tuple[object, Callable] | None = None
 _published_tui_host_lock = threading.Lock()
+_published_gateway_message_injector: tuple[object, Callable] | None = None
+_published_gateway_host_lock = threading.Lock()
 
 
 def _plugin_home_key() -> Path:
@@ -1675,6 +1677,34 @@ def _attach_published_tui_host(manager: PluginManager) -> None:
         manager._tui_message_injector = host
 
 
+def publish_gateway_message_host(owner: object, injector: Callable[..., bool]) -> None:
+    """Remember the process gateway host and stamp managers that already exist."""
+    global _published_gateway_message_injector
+    with _published_gateway_host_lock:
+        _published_gateway_message_injector = (owner, injector)
+        for manager in _known_plugin_managers():
+            manager.set_gateway_message_injector(owner, injector)
+
+
+def clear_published_gateway_message_host(owner: object) -> None:
+    """Forget the gateway host and clear it where this owner still holds the slot."""
+    global _published_gateway_message_injector
+    with _published_gateway_host_lock:
+        if (_published_gateway_message_injector is not None
+                and _published_gateway_message_injector[0] is owner):
+            _published_gateway_message_injector = None
+        for manager in _known_plugin_managers():
+            manager.clear_gateway_message_injector(owner)
+
+
+def _attach_published_gateway_host(manager: PluginManager) -> None:
+    """Give a newly resolved manager the process gateway host when its slot is empty."""
+    with _published_gateway_host_lock:
+        host = _published_gateway_message_injector
+        if host is not None and manager._gateway_message_injector is None:
+            manager._gateway_message_injector = host
+
+
 def get_plugin_manager() -> PluginManager:
     """Return the plugin manager for the active Hermes profile/home (cached per resolved home; a
     profile switch gets its own manager and plugin submodules)."""
@@ -1692,13 +1722,14 @@ def get_plugin_manager() -> PluginManager:
                 manager = PluginManager(scope_key=hermes_home_key(current_home))
                 _plugin_managers_by_home[current_home] = manager
             _plugin_manager = manager
+    _attach_published_gateway_host(manager)
     _attach_published_tui_host(manager)
     return manager
 
 
 def _reset_plugin_managers_for_tests() -> None:
     """Test-only: drop every cached manager and its submodules for a fully clean slate."""
-    global _plugin_manager, _published_tui_message_injector
+    global _plugin_manager, _published_tui_message_injector, _published_gateway_message_injector
     with _plugin_managers_lock:
         managers = list(dict.fromkeys(_plugin_managers_by_home.values()))
         if _plugin_manager is not None and _plugin_manager not in managers:
@@ -1713,6 +1744,8 @@ def _reset_plugin_managers_for_tests() -> None:
         _plugin_manager = None
     with _published_tui_host_lock:
         _published_tui_message_injector = None
+    with _published_gateway_host_lock:
+        _published_gateway_message_injector = None
     # Dashboard-auth providers are persistent and survive a routine unload, so the clean-slate
     # reset must clear that process-global registry explicitly or a test's provider leaks.
     try:

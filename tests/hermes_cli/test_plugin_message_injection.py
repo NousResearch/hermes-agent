@@ -6,7 +6,16 @@ from unittest.mock import MagicMock, patch
 
 import hermes_yaml as yaml
 
-from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+from hermes_cli.plugins import (
+    PluginContext,
+    PluginManager,
+    PluginManifest,
+    clear_published_gateway_message_host,
+    clear_published_tui_message_host,
+    get_plugin_manager,
+    publish_gateway_message_host,
+    publish_tui_message_host,
+)
 
 
 def _context(name: str = "notify-plugin") -> tuple[PluginContext, PluginManager]:
@@ -138,6 +147,46 @@ def test_gateway_injection_requires_live_host(tmp_path, monkeypatch):
         )
         is False
     )
+
+
+def test_published_gateway_host_reaches_existing_and_late_managers_and_clears_by_owner(
+    tmp_path,
+    monkeypatch,
+):
+    launch_home = tmp_path / "launch"
+    secondary_home = tmp_path / "secondary"
+    launch_home.mkdir()
+    secondary_home.mkdir()
+
+    monkeypatch.setenv("HERMES_HOME", str(launch_home))
+    launch_manager = get_plugin_manager()
+    owner = object()
+    gateway_injector = MagicMock(return_value=True)
+    publish_gateway_message_host(owner, gateway_injector)
+    assert launch_manager.has_gateway_message_injector is True
+
+    tui_owner = object()
+    tui_injector = MagicMock(return_value=True)
+    publish_tui_message_host(tui_owner, tui_injector)
+
+    monkeypatch.setenv("HERMES_HOME", str(secondary_home))
+    secondary_manager = get_plugin_manager()
+    assert secondary_manager.has_gateway_message_injector is True
+    assert secondary_manager.has_tui_message_injector is True
+
+    newer_owner = object()
+    newer_injector = MagicMock(return_value=True)
+    publish_gateway_message_host(newer_owner, newer_injector)
+    clear_published_gateway_message_host(owner)
+    assert secondary_manager.inject_gateway_message(value="synthetic") is True
+    newer_injector.assert_called_once_with(value="synthetic")
+
+    clear_published_gateway_message_host(newer_owner)
+    assert launch_manager.has_gateway_message_injector is False
+    assert secondary_manager.has_gateway_message_injector is False
+    assert secondary_manager.has_tui_message_injector is True
+    clear_published_tui_message_host(tui_owner)
+    assert secondary_manager.has_tui_message_injector is False
 
 
 def test_gateway_injection_passes_host_owned_plugin_identity(tmp_path, monkeypatch):

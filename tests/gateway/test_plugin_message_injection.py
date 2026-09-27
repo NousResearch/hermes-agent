@@ -16,7 +16,12 @@ from gateway.platforms.base import (
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session import SessionEntry, SessionSource, SessionStore, build_session_key
-from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+from hermes_cli.plugins import (
+    PluginContext,
+    PluginManager,
+    PluginManifest,
+    get_plugin_manager,
+)
 
 
 def _entry(*, origin=True) -> SessionEntry:
@@ -77,14 +82,27 @@ async def test_plugin_context_routes_through_live_gateway_to_existing_session(
     tmp_path,
     monkeypatch,
 ):
-    hermes_home = tmp_path / "hermes"
-    hermes_home.mkdir()
-    (hermes_home / "config.yaml").write_text(
+    secondary_home = tmp_path / "profiles" / "secondary"
+    secondary_home.mkdir(parents=True)
+    (secondary_home / "config.yaml").write_text(
         yaml.safe_dump({
             "plugins": {"entries": {"notify-plugin": {"allow_gateway_injection": True}}}
         })
     )
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    launch_home = tmp_path / "hermes"
+    launch_home.mkdir()
+    (launch_home / "config.yaml").write_text(
+        yaml.safe_dump({
+            "plugins": {"entries": {"notify-plugin": {"allow_gateway_injection": True}}}
+        })
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(launch_home))
+    launch_manager = get_plugin_manager()
+    monkeypatch.setenv("HERMES_HOME", str(secondary_home))
+    secondary_manager = get_plugin_manager()
+    monkeypatch.setenv("HERMES_HOME", str(launch_home))
+    assert get_plugin_manager() is launch_manager
 
     store = SessionStore(sessions_dir=tmp_path / "sessions", config=GatewayConfig())
     source = _entry().origin
@@ -113,37 +131,42 @@ async def test_plugin_context_routes_through_live_gateway_to_existing_session(
     runner._is_user_authorized = MagicMock(return_value=True)
     adapter.set_busy_session_handler(runner._handle_active_session_busy_message)
 
-    manager = PluginManager()
+    runner._install_plugin_message_injector()
+    monkeypatch.setenv("HERMES_HOME", str(secondary_home))
+    assert get_plugin_manager() is secondary_manager
     context = PluginContext(
         PluginManifest(name="notify-plugin", key="notify-plugin", source="user"),
-        manager,
+        secondary_manager,
     )
-
-    with patch("hermes_cli.plugins.get_plugin_manager", return_value=manager):
-        runner._install_plugin_message_injector()
-        assert (
-            context.inject_message(
-                "/approve always",
-                session_key=entry.session_key,
-            )
-            is True
+    assert secondary_manager.has_gateway_message_injector is True
+    assert (
+        context.inject_message(
+            "/approve always",
+            session_key=entry.session_key,
         )
-        task = next(iter(runner._background_tasks))
-        await asyncio.gather(task, return_exceptions=True)
-        await asyncio.sleep(0)
+        is True
+    )
+    task = next(iter(runner._background_tasks))
+    await asyncio.gather(task, return_exceptions=True)
+    await asyncio.sleep(0)
 
-        assert adapter._pending_messages[entry.session_key] is pending_user_event
-        queued = runner._queued_events[entry.session_key][0]
-        assert pending_user_event.text == "human follow-up"
-        assert pending_user_event.media_urls == ["human.jpg"]
-        assert pending_user_event.allow_gateway_control is True
-        assert queued.text == "/approve always"
-        assert queued.allow_gateway_control is False
-        assert queued.metadata["gateway_session_id"] == entry.session_id
-        adapter._message_handler.assert_not_awaited()
+    assert adapter._pending_messages[entry.session_key] is pending_user_event
+    queued = runner._queued_events[entry.session_key][0]
+    assert pending_user_event.text == "human follow-up"
+    assert pending_user_event.media_urls == ["human.jpg"]
+    assert pending_user_event.allow_gateway_control is True
+    assert queued.text == "/approve always"
+    assert queued.allow_gateway_control is False
+    assert queued.metadata["gateway_session_id"] == entry.session_id
+    adapter._message_handler.assert_not_awaited()
 
-        runner._clear_plugin_message_injector()
-        assert manager.has_gateway_message_injector is False
+    monkeypatch.setenv("HERMES_HOME", str(launch_home))
+    assert get_plugin_manager() is launch_manager
+    assert launch_manager.has_gateway_message_injector is True
+
+    runner._clear_plugin_message_injector()
+    assert secondary_manager.has_gateway_message_injector is False
+    assert launch_manager.has_gateway_message_injector is False
 
 
 @pytest.mark.asyncio
@@ -431,24 +454,33 @@ def test_scheduler_rejects_submission_failure():
         )
 
 
-def test_install_and_clear_gateway_injector_preserves_newer_owner():
+def test_install_and_clear_gateway_injector_preserves_newer_owner(tmp_path, monkeypatch):
+    launch_home = tmp_path / "launch"
+    secondary_home = tmp_path / "secondary"
+    launch_home.mkdir()
+    secondary_home.mkdir()
+
+    monkeypatch.setenv("HERMES_HOME", str(launch_home))
+    launch_manager = get_plugin_manager()
+    monkeypatch.setenv("HERMES_HOME", str(secondary_home))
+    secondary_manager = get_plugin_manager()
+
     runner = _runner(_entry())
-    manager = PluginManager()
+    runner._schedule_plugin_message_injection = MagicMock(return_value=True)
+    newer_runner = _runner(_entry())
+    newer_runner._schedule_plugin_message_injection = MagicMock(return_value=True)
 
-    with patch("hermes_cli.plugins.get_plugin_manager", return_value=manager):
-        runner._install_plugin_message_injector()
-        assert manager.has_gateway_message_injector is True
+    runner._install_plugin_message_injector()
+    assert launch_manager.has_gateway_message_injector is True
+    assert secondary_manager.has_gateway_message_injector is True
 
-        runner._clear_plugin_message_injector()
-        assert manager.has_gateway_message_injector is False
+    newer_runner._install_plugin_message_injector()
+    runner._clear_plugin_message_injector()
 
-        runner._install_plugin_message_injector()
+    assert secondary_manager.has_gateway_message_injector is True
+    assert secondary_manager.inject_gateway_message(value="kept") is True
+    newer_runner._schedule_plugin_message_injection.assert_called_once_with(value="kept")
 
-        newer_owner = MagicMock()
-        newer_injector = MagicMock(return_value=True)
-        manager.set_gateway_message_injector(newer_owner, newer_injector)
-        runner._clear_plugin_message_injector()
-
-    assert manager.has_gateway_message_injector is True
-    assert manager.inject_gateway_message(value="kept") is True
-    newer_injector.assert_called_once_with(value="kept")
+    newer_runner._clear_plugin_message_injector()
+    assert launch_manager.has_gateway_message_injector is False
+    assert secondary_manager.has_gateway_message_injector is False

@@ -34,11 +34,7 @@ import { fixedTrackSize, paneChrome, type TrackContext } from './track-model'
  *  `data.width` (then 18rem) when no zone claims the pane. Pure, so the
  *  regression test asserts the resolution itself (jsdom's CSSOM drops the
  *  `min()` wrapper from style.width, hiding the rendered result). */
-export function narrowOverlayWidth(
-  ctx: TrackContext,
-  tree: LayoutNode | null,
-  revealed: Contribution
-): string {
+export function narrowOverlayWidth(ctx: TrackContext, tree: LayoutNode | null, revealed: Contribution): string {
   if (!tree) {
     return paneChrome(revealed).width ?? '18rem'
   }
@@ -166,7 +162,11 @@ export function NarrowOverlays() {
   // user narrowed stays narrowed here too — reading only data.width would
   // reset the overlay to the declared size on every reveal.
   const overlayWidth = revealed
-    ? narrowOverlayWidth({ paneFor: id => panes.find(p => p.id === id), paneGone: () => false, overrides: paneStates }, tree, revealed)
+    ? narrowOverlayWidth(
+        { paneFor: id => panes.find(p => p.id === id), paneGone: () => false, overrides: paneStates },
+        tree,
+        revealed
+      )
     : null
 
   // The revealed pane's ZONE-mates that also left the grid (the sessions zone

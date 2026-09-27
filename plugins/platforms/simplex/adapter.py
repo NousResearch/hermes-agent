@@ -2,7 +2,7 @@
 or ``docker run -p 5225:5225 simplexchat/simplex-chat-cli -p 5225``); JSON commands out, events in.
 
 Env: SIMPLEX_WS_URL (required; default ws://127.0.0.1:5225) · SIMPLEX_ALLOWED_USERS (numeric
-contactIds — stable across renames, see ``/contacts`` — or display names) · SIMPLEX_ALLOW_ALL_USERS ·
+contactIds — stable across renames, see ``/contacts``) · SIMPLEX_ALLOW_ALL_USERS ·
 SIMPLEX_AUTO_ACCEPT ('false' disables contact-request auto-accept; default true) ·
 SIMPLEX_GROUP_ALLOWED (group IDs or '*'; omit to ignore groups) · SIMPLEX_HOME_CHANNEL[_NAME] ·
 HERMES_SIMPLEX_TEXT_BATCH_DELAY (quiet seconds, default 0.8, merging rapid-fire inbound text).
@@ -25,9 +25,11 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import unquote
 
 from gateway.platforms._shared import (
-    get_scoped_secret as _get_scoped_secret, seed_extra_from_env as _seed_extra_from_env, send_error
+    decode_json_list_literal as _decode_json_list_literal, get_scoped_secret as _get_scoped_secret,
+    platform_gate_env as _platform_gate_env, seed_extra_from_env as _seed_extra_from_env, send_error
 )
 from gateway.config import Platform, PlatformConfig
+from hermes_constants import hermes_home_key
 from gateway.platforms.base import BasePlatformAdapter, SendResult, cache_image_from_url
 from gateway.platforms.helpers import cancel_task
 from gateway.platforms.event import MessageEvent, MessageType
@@ -50,6 +52,29 @@ _MEDIA_KIND_PRECEDENCE = (("audio/", MessageType.VOICE), ("image/", MessageType.
 
 def _parse_comma_list(value: str) -> List[str]:
     return [v.strip() for v in value.split(",") if v.strip()]
+
+
+# (hermes home key, names) already warned about. Module-level: every reconnect builds a FRESH adapter
+# (gateway/run_adapters.py), so an instance flag would re-warn on every retry while the daemon is down.
+_NAME_ALLOWLIST_WARNED: set = set()
+
+
+def _warn_name_allowlist_entries() -> None:
+    """Warn once per process per profile/allowlist value about SIMPLEX_ALLOWED_USERS entries authz ignores.
+
+    Reads and decodes the value exactly as authz does (``platform_gate_env`` + JSON list literal), so the
+    warning names only entries that really fail the contactId check."""
+    raw = _decode_json_list_literal(_platform_gate_env("SIMPLEX_ALLOWED_USERS"))
+    entries = [str(e).strip() for e in raw] if isinstance(raw, list) else _parse_comma_list(raw)
+    names = [u for u in entries if u and u != "*" and not u.isdigit()]
+    if not names:
+        return
+    key = (hermes_home_key(), frozenset(names))
+    if key in _NAME_ALLOWLIST_WARNED:
+        return
+    _NAME_ALLOWLIST_WARNED.add(key)
+    logger.warning("SimpleX: SIMPLEX_ALLOWED_USERS entries %s are not numeric contactIds and are ignored "
+                   "(display names are not trusted; see /contacts for IDs)", names)
 
 
 def _redact_id(contact_id: str) -> str:
@@ -134,6 +159,7 @@ class SimplexAdapter(BasePlatformAdapter):
         if not self.ws_url:
             logger.error("SimpleX: SIMPLEX_WS_URL is required")
             return False
+        _warn_name_allowlist_entries()  # before the probe so a daemon-down cold boot still warns
         try:  # quick connectivity check — open and immediately close
             async with _wsclient.connect(self.ws_url, open_timeout=10):
                 pass
@@ -643,7 +669,7 @@ async def _standalone_send(
 
 _SETUP_PROMPTS = (
     ("SIMPLEX_WS_URL", "Daemon WebSocket URL (default ws://127.0.0.1:5225)"),
-    ("SIMPLEX_ALLOWED_USERS", "Allowed contactIds or display names (comma-separated; blank=skip)"),
+    ("SIMPLEX_ALLOWED_USERS", "Allowed contactIds (comma-separated; blank=skip)"),
     ("SIMPLEX_GROUP_ALLOWED", "Allowed group IDs (comma-separated, or '*' for any; blank=disable groups)"),
     ("SIMPLEX_AUTO_ACCEPT", "Auto-accept incoming contact requests? (true/false, default true)"),
     ("SIMPLEX_HOME_CHANNEL", "Home channel contact/group ID (or empty)"))

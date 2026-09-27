@@ -87,3 +87,81 @@ def test_thread_fallback_keeps_model_context_in_its_thread(
         asyncio.run(exchange())
     finally:
         record_property("body_seconds", round(time.monotonic() - started, 3))
+
+
+def test_thread_replies_keep_genuine_relations_to_each_inbound_event(
+    gateway: LiveGateway,
+    live_room: LiveRoom,
+    record_property: Callable[[str, object], None],
+) -> None:
+    async def exchange() -> None:
+        client = live_room.observer.client(live_room.homeserver)
+        seen: set[str] = set()
+        try:
+            await asyncio.wait_for(client.sync(timeout=0), timeout=15)
+            root = await asyncio.wait_for(
+                client.room_send(
+                    live_room.room_id,
+                    "m.room.message",
+                    {"msgtype": "m.notice", "body": "Thread root"},
+                ),
+                timeout=15,
+            )
+            assert isinstance(root, RoomSendResponse), root
+
+            async def reply_to(anchor: str, body: str) -> RoomMessageText:
+                sent = await client.room_send(
+                    live_room.room_id,
+                    "m.room.message",
+                    {
+                        "msgtype": "m.text",
+                        "body": body,
+                        "m.relates_to": {
+                            "rel_type": "m.thread",
+                            "event_id": root.event_id,
+                            "is_falling_back": True,
+                            "m.in_reply_to": {"event_id": anchor},
+                        },
+                    },
+                )
+                assert isinstance(sent, RoomSendResponse), sent
+
+                async def next_bot_reply() -> RoomMessageText:
+                    while True:
+                        response = await client.sync(timeout=250)
+                        joined = response.rooms.join.get(live_room.room_id)
+                        if not joined:
+                            continue
+                        for event in joined.timeline.events:
+                            if (
+                                isinstance(event, RoomMessageText)
+                                and event.sender == live_room.bot.user_id
+                                and event.event_id not in seen
+                            ):
+                                seen.add(event.event_id)
+                                return event
+
+                event = await next_bot_reply()
+                assert event.source["content"]["m.relates_to"] == {
+                    "rel_type": "m.thread",
+                    "event_id": root.event_id,
+                    "m.in_reply_to": {"event_id": sent.event_id},
+                    "is_falling_back": False,
+                }
+                return event
+
+            first = await asyncio.wait_for(
+                reply_to(root.event_id, "First question"), timeout=15
+            )
+            await asyncio.wait_for(
+                reply_to(first.event_id, "Second question"), timeout=15
+            )
+            assert len(gateway.model.main_requests()) == 2
+        finally:
+            await client.close()
+
+    started = time.monotonic()
+    try:
+        asyncio.run(exchange())
+    finally:
+        record_property("body_seconds", round(time.monotonic() - started, 3))

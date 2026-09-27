@@ -106,7 +106,243 @@ uv_version="$(pin version)"
 py_version="$(pin version python | cut -d+ -f1 | cut -d. -f1,2)"
 [ -n "$uv_version" ] || { echo -e "${RED}✗${NC} no uv pin in pm/lock.json" >&2; exit 1; }
 
-store="${HERMES_RUNTIME_DIR:-$HOME/.hermes/tools}"
+# The bootstrap store follows the machine root folded from HERMES_HOME, never a
+# hardcoded ~/.hermes; byte-identical to install.sh's copy (the mirror-body test
+# compares both with pm's answer). A stamped ``runtimeDir`` is not readable here
+# yet (no Python); HERMES_RUNTIME_DIR remains the explicit override.
+# --- BEGIN store-root resolver (mirrored in scripts/install.sh) ---
+_hermes_user_home() {
+    # '~user' -> the account's home, or nothing when unknown (getent / dscacheutil).
+    local _name="$1" _home=""
+    case "$_name" in
+        ""|*[!A-Za-z0-9_.-]*) return 1 ;;
+    esac
+    if command -v getent >/dev/null 2>&1; then
+        _home="$(getent passwd "$_name" 2>/dev/null | cut -d: -f6)"
+    fi
+    if [ -z "$_home" ] && command -v dscacheutil >/dev/null 2>&1; then
+        _home="$(dscacheutil -q user -a name "$_name" 2>/dev/null | awk '/^dir:/{print $2}')"
+    fi
+    [ -n "$_home" ] || return 1
+    printf '%s' "$_home"
+}
+_hermes_expand() {
+    # os.path.expandvars+expanduser without eval: an UNSET name keeps its source
+    # text (braces included), anything else malformed stays literal, and printenv
+    # reads the exported table (unlike ${!name}).
+    local _s="$1" _out="" _name _v
+    while [ -n "$_s" ]; do
+        case "$_s" in
+            '$'*)
+                _s="${_s#\$}"
+                case "$_s" in
+                    '{'*)
+                        case "$_s" in
+                            *'}'*)
+                                _name="${_s#\{}"
+                                _name="${_name%%\}*}"
+                                _s="${_s#*\}}"
+                                if [ -z "$_name" ]; then
+                                    _out="$_out\${}"
+                                elif _v="$(printenv "$_name")"; then
+                                    _out="$_out$_v"
+                                else
+                                    _out="$_out\${$_name}"
+                                fi
+                                ;;
+                            *)
+                                _out="$_out\$"
+                                ;;
+                        esac
+                        ;;
+                    [A-Za-z0-9_]*)
+                        _name="${_s%%[!A-Za-z0-9_]*}"
+                        _s="${_s#"$_name"}"
+                        if _v="$(printenv "$_name")"; then
+                            _out="$_out$_v"
+                        else
+                            _out="$_out\$$_name"
+                        fi
+                        ;;
+                    *)
+                        _out="$_out\$"
+                        ;;
+                esac
+                ;;
+            *)
+                _out="$_out${_s%%\$*}"
+                _s="${_s#"${_s%%\$*}"}"
+                ;;
+        esac
+    done
+    case "$_out" in
+        "~"|"~/"*)
+            # posixpath.expanduser: HOME when it is set — an EMPTY HOME answers
+            # "/" — and the account database when HOME is unset (expanduser's pwd
+            # fallback). '~user' below always resolves through the account database.
+            local _tail=""
+            case "$_out" in "~/"*) _tail="${_out#"~"}" ;; esac
+            if [ "${HOME+x}" = x ]; then
+                if [ -n "$HOME" ]; then
+                    _out="$HOME$_tail"
+                else
+                    _out="/${_tail#/}"
+                fi
+            elif _v="$(_hermes_user_home "$(id -un 2>/dev/null)")"; then
+                _out="$_v$_tail"
+            fi
+            ;;
+        "~"?*)
+            # '~user'/'~user/rest': the account home replaces the prefix; unknown stays literal.
+            local _user="${_out#"~"}" _tail=""
+            case "$_user" in
+                */*) _tail="/${_user#*/}"; _user="${_user%%/*}" ;;
+            esac
+            if _v="$(_hermes_user_home "$_user")"; then
+                _out="$_v$_tail"
+            fi
+            ;;
+    esac
+    printf '%s' "$_out"
+}
+_hermes_norm() {
+    # Lexical normalization like Path: collapse repeated separators and drop
+    # "."; ".." stays VERBATIM (the fold runs on the RESOLVED path).
+    local _rest="$1" _out="" _comp
+    case "$_rest" in
+        "//"[!/]*) _out="//" ;;
+        /*)        _out="/" ;;
+    esac
+    _rest="${_rest#/}"
+    case "$_rest" in
+        "//"*) _rest="${_rest#//}" ;;
+    esac
+    while [ -n "$_rest" ]; do
+        _comp="${_rest%%/*}"
+        case "$_rest" in
+            */*) _rest="${_rest#*/}" ;;
+            *)   _rest="" ;;
+        esac
+        [ -z "$_comp" ] && continue
+        [ "$_comp" = "." ] && continue
+        if [ -z "$_out" ]; then _out="$_comp"
+        elif [ "$_out" = "/" ] || [ "$_out" = "//" ]; then _out="$_out$_comp"
+        else _out="$_out/$_comp"; fi
+    done
+    printf '%s' "$_out"
+}
+_hermes_resolve() {
+    # Path.resolve(strict=False): follow every symlink along the chain (not only
+    # the longest existing prefix), keep missing components, pop ".." off the
+    # resolved prefix (never the anchor).
+    local _p="$1"
+    case "$_p" in
+        /*) ;;
+        *) _p="$PWD/$_p" ;;
+    esac
+    local _body="${_p#/}" _rest _c _cand _link _res="" _depth=0
+    _rest="${_body#/}"
+    while [ -n "$_rest" ]; do
+        _c="${_rest%%/*}"
+        case "$_rest" in
+            */*) _rest="${_rest#*/}" ;;
+            *)   _rest="" ;;
+        esac
+        [ -z "$_c" ] && continue
+        [ "$_c" = "." ] && continue
+        if [ "$_c" = ".." ]; then
+            # A one-component pop empties the chain ("%/*" alone keeps the component).
+            case "$_res" in
+                */*) _res="${_res%/*}" ;;
+                *)   _res="" ;;
+            esac
+            continue
+        fi
+        if [ -z "$_res" ]; then _cand="/$_c"; else _cand="/$_res/$_c"; fi
+        if [ -L "$_cand" ]; then
+            _depth=$((_depth + 1))
+            if [ "$_depth" -gt 40 ]; then
+                # Symlink loop (realpath's cap): answer the lexical input.
+                _hermes_norm "$1"
+                return
+            fi
+            _link="$(readlink "$_cand")"
+            case "$_link" in
+                /*)
+                    _res=""
+                    _rest="${_link#/}/$_rest"
+                    _rest="${_rest#/}"
+                    ;;
+                *)
+                    _rest="$_link/$_rest"
+                    ;;
+            esac
+            continue
+        fi
+        if [ -z "$_res" ]; then _res="$_c"; else _res="$_res/$_c"; fi
+    done
+    printf '/%s' "$_res"
+}
+hermes_default_home() {
+    # The home used when HERMES_HOME is unset: the platform account home with
+    # the data-dir suffix appended LITERALLY (_get_platform_default_hermes_home).
+    # HOME is used verbatim when SET and non-empty; an EMPTY HOME makes
+    # posixpath.expanduser("~") answer "/", so the default is "/.hermes<suffix>";
+    # an unset HOME resolves through the account database; a missing account
+    # keeps the tilde the way expanduser does.
+    local _suffix="${HERMES_DATA_DIR_SUFFIX:-}" _account_home
+    if [ "${HOME+x}" = x ]; then
+        if [ -n "$HOME" ]; then
+            printf '%s' "$HOME/.hermes$_suffix"
+        else
+            printf '%s' "/.hermes$_suffix"
+        fi
+        return
+    fi
+    if _account_home="$(_hermes_user_home "$(id -un 2>/dev/null)" 2>/dev/null)"; then
+        printf '%s' "$_account_home/.hermes$_suffix"
+        return
+    fi
+    printf '%s' "~/.hermes$_suffix"
+}
+hermes_root_of() {
+    # Containment is decided on RESOLVED paths but the lexical form is returned,
+    # mirroring get_default_hermes_root() (its non-fold answer keeps "..").
+    local _default_lex _default_res _lex _res _raw
+    # The default is the platform account home + LITERAL suffix; never run it
+    # through _hermes_expand (a $ in the suffix would expand; pm keeps it raw).
+    _default_lex="$(_hermes_norm "$(hermes_default_home)")"
+    _default_res="$(_hermes_resolve "$_default_lex")"
+    # pm strips the RAW env home before expanding it; whitespace-only folds to default.
+    _raw="${HERMES_HOME-}"
+    _raw="${_raw#"${_raw%%[![:space:]]*}"}"
+    _raw="${_raw%"${_raw##*[![:space:]]}"}"
+    if [ -n "$_raw" ]; then
+        _lex="$(_hermes_norm "$(_hermes_expand "$_raw")")"
+    else
+        _lex="$_default_lex"
+    fi
+    _res="$(_hermes_resolve "$_lex")"
+    case "$_res/" in
+        "$_default_res"/*) _lex="$_default_lex" ;;
+        *)
+            local _parent="${_lex%/*}"
+            if [ "${_parent##*/}" = profiles ] && [ "$_parent" != "$_lex" ]; then
+                if [ "$_parent" = profiles ]; then _lex=".";
+                elif [ "$_parent" = /profiles ]; then _lex=/;
+                else _lex="${_parent%/profiles}"; fi
+            fi
+            ;;
+    esac
+    # "." like Path("."): an empty root would make "${HERMES_ROOT}/tools" the fs root.
+    [ -z "$_lex" ] && _lex="."
+    printf '%s' "$_lex"
+}
+# --- END store-root resolver ---
+
+
+hermes_root="$(hermes_root_of)"
+store="${HERMES_RUNTIME_DIR:-$hermes_root/tools}"
 entry="$store/uv-$uv_version-$target"
 uv="$entry/uv"; [ "$os" = win32 ] && uv="$entry/uv.exe"
 
@@ -170,6 +406,13 @@ if [ "$os" = win32 ]; then
   case "$arch" in arm64) py_request="cpython-$py_version-windows-aarch64-none" ;;
                   *) py_request="cpython-$py_version-windows-x86_64-none" ;; esac
 fi
+# uv's default state (~/.cache/uv, ~/.local/share/uv) belongs to the USER's
+# uv (#101269); pin both to the Hermes root. The cache keeps its OWN slot -
+# pm seeds <root>/cache/uv once, skipping entries that already exist, so
+# bootstrap bytes there first would mark a partial seed done - while nothing
+# seeds the python dir the `python find` below reads back.
+export UV_CACHE_DIR="$hermes_root/cache/uv-bootstrap"
+export UV_PYTHON_INSTALL_DIR="$hermes_root/cache/uv-python"
 "$uv" python install --no-bin --no-registry "$py_request"
 boot_py="$("$uv" python find --managed-python "$py_request")"
 boot_py="${boot_py%$'\r'}"

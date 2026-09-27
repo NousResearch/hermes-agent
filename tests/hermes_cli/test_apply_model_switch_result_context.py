@@ -31,6 +31,11 @@ class _FakeModelInfo:
 
 class _StubCLI:
     """Minimum attrs ``_apply_model_switch_result`` reads on ``self``."""
+    def _stage_and_swap_model(self, result, old_model):
+        # Staging + in-place swap lives in a helper; run the real one on this stub.
+        import cli as _cli_mod
+        return _cli_mod.HermesCLI._stage_and_swap_model(self, result, old_model)
+
     agent = None
     model = ""
     provider = ""
@@ -126,9 +131,8 @@ def test_global_switch_clears_context_pin_owned_by_previous_route(monkeypatch):
     writes = []
     monkeypatch.setattr(cli_mod, "_cprint", lambda *_a, **_k: None)
     monkeypatch.setattr(
-        cli_mod,
-        "save_config_value",
-        lambda key, value: writes.append((key, value)),
+        "utils.atomic_roundtrip_yaml_update",
+        lambda path, key, value: writes.append((key, value)),
     )
     cli = _StubCLI()
     cli.model = "shared-model"
@@ -164,7 +168,7 @@ def test_global_switch_clears_context_pin_owned_by_previous_route(monkeypatch):
             "agent.model_metadata.get_model_context_length",
             return_value=256_000,
         ),
-        patch("hermes_cli.config.load_config_readonly", return_value=configured),
+        patch("hermes_cli.config.read_user_config_raw", return_value=configured),
     ):
         cli_mod.HermesCLI._apply_model_switch_result(cli, result, True)
 

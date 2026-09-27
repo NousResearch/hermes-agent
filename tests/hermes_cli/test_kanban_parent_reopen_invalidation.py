@@ -22,11 +22,13 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_db_dispatch as kbd
 
 
 @pytest.fixture
 def conn(tmp_path: Path):
-    db = kb.connect(tmp_path / "kanban.db")
+    db = kbc.connect(tmp_path / "kanban.db")
     try:
         yield db
     finally:
@@ -35,11 +37,11 @@ def conn(tmp_path: Path):
 
 def _done_parent_with_done_child(conn):
     parent_id = kb.create_task(conn, title="ancestor", assignee="planner")
-    assert kb.complete_task(conn, parent_id)
+    assert kb.complete_task(conn, parent_id, result="done")
     child_id = kb.create_task(
         conn, title="child", assignee="builder", parents=[parent_id],
     )
-    assert kb.complete_task(conn, child_id)
+    assert kb.complete_task(conn, child_id, result="done")
     return parent_id, child_id
 
 
@@ -57,7 +59,7 @@ def test_reopen_demotes_done_descendants_with_events_and_comments(conn):
     grandchild_id = kb.create_task(
         conn, title="grandchild", assignee="writer", parents=[child_id],
     )
-    assert kb.complete_task(conn, grandchild_id)
+    assert kb.complete_task(conn, grandchild_id, result="done")
 
     _reopen_parent_directly(conn, parent_id)
     result = kb.invalidate_descendants_for_parent_reopen(
@@ -93,26 +95,26 @@ def test_running_descendant_event_precedes_termination_via_reclaim_helper(
     conn, tmp_path, monkeypatch,
 ):
     parent_id = kb.create_task(conn, title="ancestor", assignee="planner")
-    assert kb.complete_task(conn, parent_id)
+    assert kb.complete_task(conn, parent_id, result="done")
     child_id = kb.create_task(
         conn, title="running child", assignee="builder", parents=[parent_id],
     )
     claimed = kb.claim_task(conn, child_id)
     assert claimed is not None and claimed.status == "running"
-    kb._set_worker_pid(conn, child_id, 424242)
+    kbd._set_worker_pid(conn, child_id, 424242)
 
     kills: list[tuple] = []
 
-    def fake_terminate(pid, claim_lock, **kwargs):
+    def fake_terminate(pid, claim_lock, started_at=None, **kwargs):
         # The audit trail must already be durable when the kill fires:
         # standalone calls commit before terminating.
-        side = kb.connect(tmp_path / "kanban.db")
+        side = kbc.connect(tmp_path / "kanban.db")
         try:
             kinds = [e.kind for e in kb.list_events(side, child_id)]
         finally:
             side.close()
         assert "descendant_invalidated" in kinds
-        kills.append((pid, claim_lock))
+        kills.append((pid, claim_lock, started_at))
         return {"terminated": True}
 
     monkeypatch.setattr(kb, "_terminate_reclaimed_worker", fake_terminate)
@@ -176,13 +178,13 @@ def test_dashboard_and_db_paths_produce_identical_outcomes(tmp_path, monkeypatch
     client = TestClient(app)
 
     def build_graph(tag: str):
-        with kb.connect() as c:
+        with kbc.connect() as c:
             parent = kb.create_task(c, title=f"{tag}-parent", assignee="planner")
-            assert kb.complete_task(c, parent)
+            assert kb.complete_task(c, parent, result="done")
             child = kb.create_task(
                 c, title=f"{tag}-child", assignee="builder", parents=[parent],
             )
-            assert kb.complete_task(c, child)
+            assert kb.complete_task(c, child, result="done")
         return parent, child
 
     dash_parent, dash_child = build_graph("dash")
@@ -195,7 +197,7 @@ def test_dashboard_and_db_paths_produce_identical_outcomes(tmp_path, monkeypatch
     assert r.status_code == 200, r.text
 
     # Surface 2: DB function directly (the single domain implementation).
-    with kb.connect() as c:
+    with kbc.connect() as c:
         with kb.write_txn(c):
             c.execute(
                 "UPDATE tasks SET status = 'todo', completed_at = NULL "
@@ -206,7 +208,7 @@ def test_dashboard_and_db_paths_produce_identical_outcomes(tmp_path, monkeypatch
             c, db_parent, author="dashboard",
         )
 
-    with kb.connect() as c:
+    with kbc.connect() as c:
         def snapshot(tid: str):
             t = kb.get_task(c, tid)
             assert t is not None

@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 import hermes_cli.web_server as web_server
+import hermes_cli.web_server_gateway as _web_server_gateway
 
 
 @pytest.fixture()
@@ -88,12 +89,12 @@ class TestUpdateReceiptEndpoint:
 class TestUpdateStatusReadsReceipt:
 
     def _clear_registries(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(web_server, "_ACTION_LOG_DIR", tmp_path / "actions")
+        monkeypatch.setattr(_web_server_gateway, "_ACTION_LOG_DIR", tmp_path / "actions")
         (tmp_path / "actions").mkdir(exist_ok=True)
-        monkeypatch.setattr(web_server, "_ACTION_PROCS", {})
-        monkeypatch.setattr(web_server, "_ACTION_RESULTS", {})
-        monkeypatch.setattr(web_server, "_ACTION_COMMANDS", {})
-        monkeypatch.setattr(web_server, "_ACTION_IDS", {})
+        monkeypatch.setattr(_web_server_gateway, "_ACTION_PROCS", {})
+        monkeypatch.setattr(_web_server_gateway, "_ACTION_RESULTS", {})
+        monkeypatch.setattr(_web_server_gateway, "_ACTION_COMMANDS", {})
+        monkeypatch.setattr(_web_server_gateway, "_ACTION_IDS", {})
 
     def test_status_attaches_receipt_summary(self, client, tmp_path, monkeypatch):
         _write_receipt(tmp_path, monkeypatch)

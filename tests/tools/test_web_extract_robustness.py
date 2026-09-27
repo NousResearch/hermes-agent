@@ -10,26 +10,27 @@ from __future__ import annotations
 import re
 
 import tools.web_tools as wt
+from tools import web_tools_truncate
 
 
 def test_store_full_text_is_bounded(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     # Force the cache dir under the temp home.
     from hermes_constants import get_hermes_dir  # noqa: F401
-    huge = "x\n" * (wt.MAX_STORED_TEXT_CHARS)  # > MAX_STORED_TEXT_CHARS chars
-    assert len(huge) > wt.MAX_STORED_TEXT_CHARS
-    path = wt._store_full_text("https://example.com/big", huge)
+    huge = "x\n" * (web_tools_truncate.MAX_STORED_TEXT_CHARS)  # > MAX_STORED_TEXT_CHARS chars
+    assert len(huge) > web_tools_truncate.MAX_STORED_TEXT_CHARS
+    path = web_tools_truncate._store_full_text("https://example.com/big", huge)
     assert path is not None
     stored = open(path, encoding="utf-8").read()
     # Stored copy capped (+ short marker), not the full unbounded blob.
-    assert len(stored) <= wt.MAX_STORED_TEXT_CHARS + 200
+    assert len(stored) <= web_tools_truncate.MAX_STORED_TEXT_CHARS + 200
     assert "stored copy truncated" in stored
 
 
 def test_small_page_not_truncated_no_footer(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     content = "short page\nwith a few lines\n"
-    model_text, truncated = wt._truncate_with_footer(
+    model_text, truncated = web_tools_truncate._truncate_with_footer(
         content, "https://example.com/s", char_limit=15000
     )
     assert not truncated

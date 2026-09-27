@@ -1,23 +1,13 @@
 """Durable cron failure incidents with signature dedup and ack.
 
-The executions ledger (``cron.executions``) records every attempt; this module
-groups the *failures* into durable incidents keyed by ``(job_id, error
-signature)`` so the same job failing with the same error does not re-ping the
-operator every run once they have acknowledged it.
-
-Lifecycle: ``detected`` → ``alerted`` → ``closed``. Closing
-(acking) an incident is per-signature: the same job + same normalized error
-keeps resolving to the SAME incident id, so a closed incident stays closed (no
-re-alert) until the error text changes, which mints a brand-new incident.
-``detected`` means the failure was recorded; ``alerted`` means at least one
-failure ping for the signature actually reached the operator. Richer states
-(e.g. a dv9.6 ``reviewed``) are deliberately NOT reserved here — state
-validity lives in ``INCIDENT_STATES`` (Python), not a SQLite CHECK, exactly
-so a future slice can add states without a table rebuild.
-
-Incidents live in the SAME ``cron/executions.db`` as ``cron.executions`` so
-there is one durable cron store per profile. The schema is lazily created on
-connect and a missing database never raises (directories are created).
+The executions ledger records every attempt; this module groups the *failures* into incidents keyed
+by ``(job_id, error signature)`` so the same job failing with the same error does not re-ping the
+operator every run once acknowledged. Lifecycle: ``detected`` → ``alerted`` → ``closed``. The same
+job + same normalized error resolves to the SAME incident id, so a closed incident stays closed
+until the error text changes and mints a new one. ``alerted`` means a failure ping actually reached
+the operator (``alerted_at`` = when the latest one did; the scheduler withholds repeats until
+``cron.failure_repeat_alert_hours`` have passed). Incidents share ``cron/executions.db`` with
+``cron.executions`` (one ledger file).
 """
 
 from __future__ import annotations
@@ -30,13 +20,16 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
+from cron import executions as _executions
 from hermes_constants import get_hermes_home
 from hermes_time import now as _hermes_now
 
 # Optional test override (mirrors ``cron.executions.EXECUTIONS_FILE``).
 EXECUTIONS_FILE: Optional[Path] = None
 
-INCIDENT_STATES = ("detected", "alerted", "closed")
+# ``resolved``: the job ran OK after the failure (auto); ``closed``: the operator acked the signature
+# and wants it silent. Only ``closed`` is terminal; a repeat of a resolved error re-opens it.
+INCIDENT_STATES = ("detected", "alerted", "resolved", "closed")
 _FAILURE_TYPE_ORDER = (
     ("rate_limit", (r"\b429\b", "rate limit", "usage limit", "quota")),
     ("timeout", ("timeout", "timed out")),
@@ -52,39 +45,31 @@ _MAX_SIGNATURE_ERROR_CHARS = 200
 _lock = threading.RLock()
 
 
-def _connect() -> sqlite3.Connection:
-    path = _db_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    return sqlite3.connect(path, timeout=5)
-
-
 def _db_path() -> Path:
-    """Resolve the shared cron DB path.
-
-    Prefer the ``cron.executions`` override when one is installed so an
-    operator/test that redirects the executions ledger also redirects the
-    incident table — they must stay in the SAME database. Falls back to this
-    module's own override, then the canonical profile home.
-    """
-    try:
-        from cron.executions import EXECUTIONS_FILE as _EXEC_OVERRIDE
-
-        if _EXEC_OVERRIDE is not None:
-            return Path(_EXEC_OVERRIDE)
-    except Exception:
-        pass
-    if EXECUTIONS_FILE is not None:
-        return Path(EXECUTIONS_FILE)
+    """Shared cron DB path. The ``cron.executions`` override wins when installed so redirecting the
+    executions ledger also redirects the incident table (they must stay in the SAME database); then
+    this module's own override, then the canonical profile home."""
+    for override in (_executions.EXECUTIONS_FILE, EXECUTIONS_FILE):
+        if override is not None:
+            return Path(override)
     return get_hermes_home().resolve() / "cron" / "executions.db"
 
 
-def _initialize_schema(conn: sqlite3.Connection) -> None:
-    from hermes_state import apply_wal_with_fallback
+def _connect() -> sqlite3.Connection:
+    # Late imports: a scheduler daemon that outlives an on-disk upgrade already has the OLD
+    # ``hermes_cli.sqlite_util`` / ``cron.jobs`` cached, so new names must be resolved at call time,
+    # not at import time (the guarantee cron/ledger.py used to carry, see e24c8499).
+    from cron.jobs import _ensure_cron_dir
+    from hermes_cli.sqlite_util import open_db
 
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA busy_timeout=5000")
-    apply_wal_with_fallback(conn, db_label="cron/executions.db")
-    conn.execute("PRAGMA synchronous=FULL")
+    path = _db_path()
+    _ensure_cron_dir(path.parent)
+    return open_db(path, db_label="cron/executions.db", synchronous_full=True, initialize=_initialize_schema)
+
+
+def _initialize_schema(conn: sqlite3.Connection) -> None:
+    from hermes_cli.sqlite_util import add_column_if_missing
+
     conn.execute(
         """CREATE TABLE IF NOT EXISTS cron_incidents (
              id            TEXT PRIMARY KEY,
@@ -95,11 +80,14 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
              first_seen_at TEXT NOT NULL,
              last_seen_at  TEXT NOT NULL,
              acked_at      TEXT,
+             alerted_at    TEXT,
              closed_at     TEXT,
              error         TEXT NOT NULL,
              output_file   TEXT
            )"""
     )
+    # Ledgers created before the alert-once gate lack ``alerted_at``; add it in place.
+    add_column_if_missing(conn, "cron_incidents", "alerted_at", "alerted_at TEXT")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_cron_incidents_job "
         "ON cron_incidents(job_id)"
@@ -112,20 +100,10 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
 
 @contextmanager
 def _transaction() -> Iterator[sqlite3.Connection]:
-    """Open a connection, commit/rollback on exit, always close.
+    from hermes_cli.sqlite_util import transaction
 
-    Mirrors ``cron.executions._transaction``: schema init runs inside the
-    ``try`` so a PRAGMA/DDL failure after a successful ``connect()`` still
-    closes the connection instead of leaking it.
-    """
-    with _lock:
-        conn = _connect()
-        try:
-            _initialize_schema(conn)
-            with conn:
-                yield conn
-        finally:
-            conn.close()
+    with _lock, transaction(_connect()) as conn:
+        yield conn
 
 
 def _normalize_error(error: str) -> str:
@@ -134,14 +112,13 @@ def _normalize_error(error: str) -> str:
 
 
 def _redact_error(error: str) -> str:
-    """Redact secrets then bound the stored error length."""
+    """Redact secrets (best-effort; the scheduler path never fails on it) then bound the length."""
     text = str(error or "")
     try:
         from agent.redact import redact_sensitive_text
 
-        text = redact_sensitive_text(text)
+        text = redact_sensitive_text(text, force=True)  # persisted to disk: always scrub
     except Exception:
-        # Redaction is best-effort; the scheduler path never fails on it.
         pass
     return text[:MAX_ERROR_CHARS]
 
@@ -149,8 +126,7 @@ def _redact_error(error: str) -> str:
 def _error_signature(job_id: str, error: str) -> str:
     """Dedup key: stable for same job + same normalized error prefix."""
     normalized = _normalize_error(error)[:_MAX_SIGNATURE_ERROR_CHARS]
-    digest = hashlib.sha256(job_id.encode() + normalized.encode()).hexdigest()
-    return digest[:12]
+    return hashlib.sha256(job_id.encode() + normalized.encode()).hexdigest()[:12]
 
 
 def _incident_id(job_id: str, error_sig: str) -> str:
@@ -173,20 +149,14 @@ def _classify_failure_type(error: str) -> str:
 
 
 def upsert_incident(
-    job_id: str,
-    error: str,
-    *,
-    job_name: Optional[str] = None,
-    failure_type: Optional[str] = None,
+    job_id: str, error: str, *, job_name: Optional[str] = None, failure_type: Optional[str] = None,
     output_file: Optional[str] = None,
 ) -> tuple[str, bool]:
-    """Record (or refresh) the incident for ``job_id`` + ``error``.
-
-    Returns ``(incident_id, is_new)``. A row for the same signature already
-    existing refreshes ``last_seen_at``/``error``/``output_file`` and keeps its
-    current state — a ``closed`` (acked) incident stays closed for the same
-    signature. A changed error text mints a new incident automatically.
-    """
+    """Record (or refresh) the incident for ``job_id`` + ``error``; returns ``(incident_id,
+    is_new)``. An existing row for the signature refreshes
+    ``last_seen_at``/``error``/``output_file`` and keeps its state — a ``closed`` incident stays
+    closed, while a ``resolved`` one (job recovered, then broke the same way again) re-opens as
+    ``detected`` so the operator is alerted once more. A changed error text mints a new incident."""
     job_id = str(job_id or "")
     sig = _error_signature(job_id, error)
     stored_error = _redact_error(error)
@@ -197,16 +167,20 @@ def upsert_incident(
 
     with _transaction() as conn:
         row = conn.execute(
-            "SELECT id FROM cron_incidents WHERE id=?", (incident_id,)
+            "SELECT id, state FROM cron_incidents WHERE id=?", (incident_id,)
         ).fetchone()
         if row is not None:
+            reopen = row["state"] == "resolved"
             conn.execute(
                 """UPDATE cron_incidents
-                   SET last_seen_at=?, error=?, output_file=?
+                   SET last_seen_at=?, error=?, output_file=?,
+                       state=CASE WHEN state='resolved' THEN 'detected' ELSE state END,
+                       alerted_at=CASE WHEN state='resolved' THEN NULL ELSE alerted_at END,
+                       closed_at=CASE WHEN state='resolved' THEN NULL ELSE closed_at END
                    WHERE id=?""",
                 (now, stored_error, output_file, incident_id),
             )
-            return incident_id, False
+            return incident_id, reopen
         conn.execute(
             """INSERT INTO cron_incidents
                (id, job_id, error_sig, state, failure_type,
@@ -219,12 +193,10 @@ def upsert_incident(
 
 
 def set_incident_state(incident_id: str, state: str) -> bool:
-    """Transition an incident's lifecycle state; return whether it changed.
-
-    ``closed`` is terminal for that signature: no transition (including back
-    to ``alerted``) leaves it — re-open happens by the error changing and
-    minting a NEW incident. Unknown states are rejected (no-op, ``False``).
-    """
+    """Transition an incident's lifecycle state; return whether it changed. ``closed`` is terminal
+    for that signature (re-open happens by a changed error minting a NEW incident). Unknown states
+    are rejected (no-op, ``False``). ``alerted`` also stamps ``alerted_at`` — every time, so the
+    cooldown reminder (see ``cron.scheduler._upsert_incident_for_failure``) restarts its window."""
     if state not in INCIDENT_STATES:
         return False
     now = _hermes_now().isoformat()
@@ -232,9 +204,15 @@ def set_incident_state(incident_id: str, state: str) -> bool:
         row = conn.execute(
             "SELECT state FROM cron_incidents WHERE id=?", (incident_id,)
         ).fetchone()
-        if row is None or row["state"] == state:
+        if row is None or row["state"] == "closed":
             return False
-        if row["state"] == "closed":
+        if state == "alerted":
+            conn.execute(
+                "UPDATE cron_incidents SET state='alerted', alerted_at=? WHERE id=?",
+                (now, incident_id),
+            )
+            return True
+        if row["state"] == state:
             return False
         if state == "closed":
             conn.execute(
@@ -252,29 +230,41 @@ def set_incident_state(incident_id: str, state: str) -> bool:
 
 
 def ack_incident(incident_id: str) -> bool:
-    """Acknowledge (close) an incident; return whether the state changed.
-
-    A no-op (``False``) when the incident does not exist or is already closed.
-    """
+    """Acknowledge (close) an incident; ``False`` when missing or already closed."""
     return set_incident_state(incident_id, "closed")
+
+
+def close_incidents_for_recovered_job(job_id: str) -> int:
+    """Mark every open incident for ``job_id`` ``resolved`` after a successful run; returns how many.
+    Without this the ledger only ever grows: a one-off failure (a config drift skip, a provider
+    outage) stayed ``detected``/``alerted`` forever after the job recovered, so ``hermes cron
+    incidents`` showed dozens of "open" incidents for jobs that had been green for weeks (32 of 32 on
+    one install). ``resolved`` is distinct from the operator's ``closed`` on purpose: a repeat of the
+    same error re-opens a resolved incident and alerts again (see ``upsert_incident``), whereas
+    ``closed`` keeps that signature silent."""
+    now = _hermes_now().isoformat()
+    with _transaction() as conn:
+        cursor = conn.execute(
+            """UPDATE cron_incidents SET state='resolved', closed_at=?
+               WHERE job_id=? AND state IN ('detected', 'alerted')""",
+            (now, str(job_id or "")),
+        )
+        return int(cursor.rowcount or 0)
+
+
+def _state_filter(state: Optional[str]) -> tuple[str, tuple]:
+    return ("", ()) if state is None else (" WHERE state=?", (state,))
 
 
 def list_incidents(state: Optional[str] = None) -> List[Dict[str, Any]]:
     """Return incidents, newest-activity first, optionally filtered by state."""
     if state is not None and state not in INCIDENT_STATES:
         return []
+    where, params = _state_filter(state)
     with _transaction() as conn:
-        if state is None:
-            rows = conn.execute(
-                "SELECT * FROM cron_incidents "
-                "ORDER BY last_seen_at DESC, id DESC"
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT * FROM cron_incidents WHERE state=? "
-                "ORDER BY last_seen_at DESC, id DESC",
-                (state,),
-            ).fetchall()
+        rows = conn.execute(
+            "SELECT * FROM cron_incidents" + where + " ORDER BY last_seen_at DESC, id DESC", params
+        ).fetchall()
     return [dict(row) for row in rows]
 
 
@@ -289,12 +279,7 @@ def get_incident(incident_id: str) -> Optional[Dict[str, Any]]:
 def count_incidents(state: Optional[str] = None) -> int:
     if state is not None and state not in INCIDENT_STATES:
         return 0
+    where, params = _state_filter(state)
     with _transaction() as conn:
-        if state is None:
-            row = conn.execute("SELECT COUNT(*) AS n FROM cron_incidents").fetchone()
-        else:
-            row = conn.execute(
-                "SELECT COUNT(*) AS n FROM cron_incidents WHERE state=?",
-                (state,),
-            ).fetchone()
+        row = conn.execute("SELECT COUNT(*) AS n FROM cron_incidents" + where, params).fetchone()
     return int(row["n"]) if row is not None else 0

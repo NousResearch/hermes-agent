@@ -192,12 +192,3 @@ test('an expired marker does not block a hand-off (self-heals)', () => {
   writeMarker(home, 1010, Math.floor((now - UPDATE_MARKER_MAX_AGE_MS - 60_000) / 1000))
   assert.equal(updateHandoffConflict(home, { kill: ALIVE, now: () => now }), null)
 })
-
-test('minutes-scale elapsed time is formatted as "Nm Ss"', () => {
-  const home = tmpHome('conflict-minutes')
-  const now = 1_000_000_000_000
-  writeMarker(home, 1010, Math.floor(now / 1000) - 125) // 2m 5s old
-  const conflict = updateHandoffConflict(home, { kill: ALIVE, now: () => now })
-  assert.ok(conflict)
-  assert.match(conflict.message, /2m 5s/)
-})

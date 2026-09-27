@@ -162,9 +162,14 @@ export const zhHant: Translations = {
     deleteSelectedConfirmMessage:
       "此操作將永久刪除所選的 {count} 個工作階段及其所有訊息。無法復原。",
     selectedSessionsDeleted: "已刪除 {count} 個工作階段",
+    selectedSessionsSkippedActive: "已刪除 {deleted} 個；{count} 個因仍有回合執行中而保留",
     failedToDeleteSelected: "刪除所選工作階段失敗",
     resumeInChat: "在對話中繼續",
     newChat: "新對話",
+    workspace: "工作區",
+    workspaceDefault: "預設",
+    workspaceRescan: "重新掃描儲存庫",
+    workspaceCustom: "其他路徑…",
     previousPage: "上一頁",
     nextPage: "下一頁",
     roles: {
@@ -323,6 +328,8 @@ export const zhHant: Translations = {
     disableRuntime: "停用",
     enableAfterInstall: "安裝後啟用",
     enableRuntime: "啟用",
+    toggleTakesEffectAfterRestart:
+      "已儲存 — 重新啟動閘道以套用變更。",
     forceReinstall: "強制重新安裝（先刪除既有資料夾）",
     headline:
       "探索、安裝、啟用並更新 Hermes 外掛（對齊 `hermes plugins` CLI）。",
@@ -468,6 +475,8 @@ export const zhHant: Translations = {
     copyCliCommand: "複製 CLI 指令（外部 / 備援用）",
     connect: "連線",
     sessionExpires: "工作階段將於 {time} 後過期",
+    sessionExpiredNoError:
+      "登入已過期，且未能連線到提供方。這通常表示登入頁面在開啟的分頁中卡住了（伺服器端問題）——請在該分頁完成登入後點擊重試。若仍失敗，請改用 API 金鑰或 CLI。",
     initiatingLogin: "正在啟動登入流程…",
     exchangingCode: "正在交換權杖…",
     connectedClosing: "已連線！正在關閉…",

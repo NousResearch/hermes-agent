@@ -10,7 +10,9 @@ description: >-
   Independent of OrcaSlicer and Nous Research.
   Disclosure — executes the installed local slicer and exposes printer upload,
   start, pause, resume and cancel; agent-supplied confirmation is not independent
-  human authentication.
+  human authentication. Printer/camera credentials are read from ORCA_*/HERMES_ORCA_*
+  environment variables named in tool arguments (HTTPS required unless allow_plaintext_credentials
+  is set); plugin state lives in ~/.hermes-orca (HERMES_ORCA_HOME), outside HERMES_HOME.
 maintainer: mazzanfar
 tier: community
 category: tools

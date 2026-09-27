@@ -49,10 +49,17 @@ async def test_followup_action_validates_filter_and_updates_live_turn():
         {"success": True, "enabled": False, "emoji": []},
     )
     assert [
-        call.args for call in adapter.configure_reaction_followups.await_args_list
+        (call.args, call.kwargs)
+        for call in adapter.configure_reaction_followups.await_args_list
     ] == [
-        ("agent:matrix:room", True, ("👍",)),
-        ("agent:matrix:room", False, ()),
+        (("agent:matrix:room", True, ("👍",)), {
+            "room_id": "!room:test", "requester": "@alice:test",
+            "thread_id": "", "profile": "",
+        }),
+        (("agent:matrix:room", False, ()), {
+            "room_id": "!room:test", "requester": "@alice:test",
+            "thread_id": "", "profile": "",
+        }),
     ]
     assert (
         "matrix_followup" in _get_platform_tools({}, "matrix"),

@@ -218,7 +218,17 @@ uv_bootstrap_target() {
     esac
     case "$(uname -s)" in
         Linux)
-            if ldd --version 2>&1 | grep -qi musl; then
+            # Minimal musl roots may have the loader but no ldd. Trust a
+            # recognizable ldd result before falling back to the loader:
+            # a glibc host may carry musl as a secondary toolchain.
+            local _libc
+            _libc="$(ldd --version 2>&1 || true)"
+            _libc="${_libc,,}"
+            if [[ "$_libc" == *musl* ]]; then
+                echo "linux-$_arch-musl"
+            elif [[ "$_libc" == *glibc* || "$_libc" == *"gnu libc"* || "$_libc" == *"gnu c library"* ]]; then
+                echo "linux-$_arch"
+            elif compgen -G '/lib/ld-musl-*.so.1' >/dev/null; then
                 echo "linux-$_arch-musl"
             else
                 echo "linux-$_arch"

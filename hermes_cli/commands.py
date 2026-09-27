@@ -91,6 +91,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True, args_hint="<archive.tar.gz> [--name <name>]"),
     CommandDef("stop", "Kill all running background processes", "Session",
                busy_policy="interrupt_then_dispatch", busy_handler="stop"),
+    CommandDef("purge", "Discard this session's pending background reports (keep running work)", "Session",
+               cli_only=True, desktop="terminal", busy_policy="dispatch"),
     CommandDef("pause", "Pause new work globally (emergency stop); '/pause off' resumes", "Session",
                gateway_only=True, args_hint="[reason | off]", busy_policy="dispatch"),
     CommandDef("approve", "Approve a pending dangerous command", "Session",

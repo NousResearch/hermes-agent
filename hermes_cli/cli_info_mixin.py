@@ -462,9 +462,9 @@ class CLIInfoMixin:
 
     def _should_handle_background_command_inline(
         self, text: str, has_images: bool = False) -> bool:
-        """Return True when /bg or /btw should be dispatched while the agent runs (their
+        """Return True when /bg, /btw or /purge should dispatch while the agent runs (their
         ``CommandDef`` entries declare ``busy_policy="dispatch"``; the classic CLI honours it here)."""
-        return self._busy_inline_command(text, has_images, ("bg", "btw"))
+        return self._busy_inline_command(text, has_images, ("bg", "btw", "purge"))
 
     def handle_bang_shell(self, text: str) -> bool:
         """Run a ``!<command>`` submission. Returns True when it was handled.

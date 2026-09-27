@@ -2098,7 +2098,7 @@ class MatrixAdapter(BasePlatformAdapter):
             message_id=event_id,
             source_permalink=self._build_source_permalink(
                 room_id, thread_id or event_id,
-                identity.server_name or (self._user_id or "").partition(":")[2] or None,
+                (self._user_id or "").partition(":")[2] or identity.server_name,
             ))
         if thread_id:
             await self._threads.mark_async(thread_id)  # covers real roots and synthetic ones alike
@@ -2784,7 +2784,7 @@ class MatrixAdapter(BasePlatformAdapter):
         is_likely_dm = (member_count is not None and member_count <= 2) or (is_direct and not has_explicit_name)
         identity = MatrixRoomIdentity(
             room_id=room_id, room_name=room_name, room_topic=room_topic, canonical_alias=canonical_alias,
-            server_name=(room_id.rsplit(":", 1)[-1].strip() or None) if ":" in room_id else None,
+            server_name=(room_id.partition(":")[2].strip() or None) if ":" in room_id else None,
             joined_member_count=member_count,
             is_direct_account_data=is_direct, display_name=room_name or canonical_alias or room_id,
             has_explicit_name=has_explicit_name, chat_type="dm" if is_likely_dm else "room",
@@ -2804,12 +2804,12 @@ class MatrixAdapter(BasePlatformAdapter):
         """Canonical matrix.to permalink for a room/event pair.
 
         ``event_id`` should be the thread root when the message lives in a thread (stable anchor
-        that opens the thread), else the triggering event. The ``via`` parameter carries the
+        that opens the thread), else the triggering event. The ``via`` parameter specifies the
         server name, derived from the room ID when the caller has none. None when no event.
         """
         if not event_id:
             return None
-        via = server_name or (room_id.rsplit(":", 1)[-1].strip() or None if ":" in room_id else None)
+        via = server_name or (room_id.partition(":")[2].strip() or None if ":" in room_id else None)
         permalink = (
             f"https://matrix.to/#/{quote(room_id, safe='!$:@')}/"
             f"{quote(event_id, safe='!$:@')}"

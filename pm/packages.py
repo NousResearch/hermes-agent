@@ -21,7 +21,7 @@ from pm.package import (
     _probe_reason,
 )
 from pm.registry import register
-from pm.store import ALL_TARGETS, Store, _MUSL_TARGETS, current_target, flatten_single_dir, merge_tree
+from pm.store import ALL_TARGETS, MUSL_TARGETS, Store, current_target, flatten_single_dir, merge_tree
 from pm.update import (
     btbn_index,
     btbn_versions,
@@ -471,7 +471,7 @@ class Nodejs(_BionicDebArm, BinaryPackage, DebPackage):
         ext = "zip" if target.startswith("win32") else "tar.xz"
         base = (
             "https://unofficial-builds.nodejs.org/download/release"
-            if target in _MUSL_TARGETS
+            if target in MUSL_TARGETS
             else "https://nodejs.org/dist"
         )
         return f"{base}/v{version}/node-v{version}-{plat}.{ext}"
@@ -668,7 +668,7 @@ class Gh(BinaryPackage):
     def fetch_url(self, version: str, target: str) -> str:
         # GitHub CLI's Linux release matrix is built with CGO_ENABLED=0,
         # so the generic Linux archive is libc-independent.
-        lookup_target = target.removesuffix("-musl") if target in _MUSL_TARGETS else target
+        lookup_target = target.removesuffix("-musl") if target in MUSL_TARGETS else target
         osname, arch = lookup_target.split("-")
         plat = {"win32": "windows", "linux": "linux", "darwin": "macOS"}[osname]
         arch = {"x64": "amd64", "arm64": "arm64"}[arch]
@@ -700,7 +700,7 @@ class Ffmpeg(_BionicDebArm, BinaryPackage, DebPackage):
     name = "ffmpeg"
     deb_package = "ffmpeg"
     optional = False
-    gaps = {target: "BtbN Linux builds link glibc dynamically" for target in _MUSL_TARGETS}
+    gaps = {target: "BtbN Linux builds link glibc dynamically" for target in MUSL_TARGETS}
 
     def main_rel(self, target: str) -> str:
         return "bin/ffmpeg"
@@ -728,7 +728,7 @@ class Ffmpeg(_BionicDebArm, BinaryPackage, DebPackage):
     def fetch_url(self, version: str, target: str) -> str:
         if target == "linux-arm64-bionic":
             return f"https://packages.termux.dev/apt/termux-main/pool/main/f/ffmpeg/ffmpeg_{version}_aarch64.deb"
-        if target in _MUSL_TARGETS:
+        if target in MUSL_TARGETS:
             raise InstallError(self.name, f"unavailable on {target}: {self.missing_reason(target)}")
         osname, arch = target.split("-")
         if osname in ("win32", "linux"):
@@ -747,7 +747,7 @@ class Ffmpeg(_BionicDebArm, BinaryPackage, DebPackage):
                            "retry when the upstream index is available, or keep the existing pin")
 
     def latest_versions(self, target: str, locked=None) -> list[str]:
-        if target in _MUSL_TARGETS:
+        if target in MUSL_TARGETS:
             return []
         if target in ("win32-x64", "win32-arm64", "linux-x64", "linux-arm64"):
             return btbn_versions(target)
@@ -805,7 +805,7 @@ class Ripgrep(BinaryPackage):
 class CuaDriver(BinaryPackage):
     name = "cua-driver"
     optional = True
-    gaps = {target: "cua-driver does not publish a musl build" for target in _MUSL_TARGETS}
+    gaps = {target: "cua-driver does not publish a musl build" for target in MUSL_TARGETS}
     binary_rel = {
         "darwin-arm64": "CuaDriver.app/Contents/MacOS/cua-driver",
         "darwin-x64": "CuaDriver.app/Contents/MacOS/cua-driver",
@@ -865,7 +865,7 @@ class AgentBrowser(BinaryPackage):
     # tools/browser_tool_install.py), and PM has no bionic Chromium to drive.
     gaps = {
         "linux-arm64-bionic": "Termux installs agent-browser through npm",
-        **{target: "agent-browser has no musl Chromium runtime" for target in _MUSL_TARGETS},
+        **{target: "agent-browser has no musl Chromium runtime" for target in MUSL_TARGETS},
     }
     flatten = True
     probe_version = False
@@ -929,7 +929,7 @@ class Chromium(Package):
     # Neither Chrome-for-Testing nor Playwright's mirror builds for Android.
     gaps = {
         "linux-arm64-bionic": "no Chromium build for Android/Termux",
-        **{target: "Playwright/Chrome-for-Testing publishes no musl build" for target in _MUSL_TARGETS},
+        **{target: "Playwright/Chrome-for-Testing publishes no musl build" for target in MUSL_TARGETS},
     }
     emulated_arch_targets = frozenset({"win32-arm64"})
     _CDN = "https://cdn.playwright.dev"

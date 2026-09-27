@@ -29,6 +29,7 @@ ALL_TARGETS = (
     "darwin-x64",
     "darwin-arm64",
 )
+MUSL_TARGETS = frozenset({"linux-x64-musl", "linux-arm64-musl"})
 
 
 def _native_machine() -> str:
@@ -96,9 +97,6 @@ def _is_bionic_libc() -> bool:
     import sysconfig
 
     return bool(sysconfig.get_config_var("ANDROID_API_LEVEL"))
-
-
-_MUSL_TARGETS = frozenset({"linux-x64-musl", "linux-arm64-musl"})
 
 
 def _elf_loader_is_musl(binary: Path) -> bool | None:

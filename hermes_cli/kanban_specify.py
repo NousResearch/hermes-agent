@@ -187,6 +187,16 @@ def _call_aux(verb: str, task_id: str, *, aux_task: str, system: str, user: str,
         return "", ""
 
 
+def _escalation_refusal(task_id: str) -> Optional[kb.TriageEscalationRefusal]:
+    """The block-loop breaker's park for ``task_id``, or None.
+
+    Checked BEFORE the aux call: a card parked for a human stays parked whatever the
+    specifier would have said, so the LLM round-trip is pure waste.
+    """
+    with kbc.connect_closing() as conn:
+        return kb.triage_escalation_refusal(conn, task_id)
+
+
 def specify_task(
     task_id: str,
     *,
@@ -199,6 +209,10 @@ def specify_task(
     task, reason = _load_triage_task(task_id)
     if task is None:
         return SpecifyOutcome(task_id, False, reason)
+
+    refusal = _escalation_refusal(task_id)
+    if refusal is not None:
+        return SpecifyOutcome(task_id, False, refusal.detail)
 
     raw, reason = _call_aux(
         "specify", task_id, aux_task="triage_specifier", system=_SYSTEM_PROMPT,
@@ -229,8 +243,12 @@ def specify_task(
             author=author or _profile_author(),
         )
     if not ok:
-        # Race: promoted/archived between our read and the write.
-        return SpecifyOutcome(task_id, False, "task moved out of triage before promotion")
+        # A refused promotion carries the refusal (triage escalation names the event
+        # and the card); a bare False is the read-then-write race.
+        return SpecifyOutcome(
+            task_id, False,
+            getattr(ok, "detail", None) or "task moved out of triage before promotion",
+        )
     return SpecifyOutcome(task_id, True, "specified", new_title=new_title)
 
 

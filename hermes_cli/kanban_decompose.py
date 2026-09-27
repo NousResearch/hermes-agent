@@ -233,7 +233,11 @@ def _apply_single(task: kb.Task, parsed: dict, routing: _Routing, author: str) -
             conn, task.id, title=title_val, body=body_val, assignee=assignee_val, author=author,
         )
     if not ok:
-        return DecomposeOutcome(task.id, False, "task moved out of triage before promotion")
+        # A refused promotion carries the refusal (triage escalation names the event
+        # and the card); a bare False is the read-then-write race.
+        return DecomposeOutcome(
+            task.id, False, getattr(ok, "detail", None) or "task moved out of triage before promotion",
+        )
     return DecomposeOutcome(task.id, True, "single task (no fanout)", fanout=False, new_title=title_val)
 
 
@@ -295,9 +299,25 @@ def _apply_fanout(task_id: str, parsed: dict, routing: _Routing, author: str) ->
         return DecomposeOutcome(task_id, False, f"DB error: {type(exc).__name__}")
     if child_ids is None:
         return DecomposeOutcome(task_id, False, "task already decomposed or moved out of triage")
+    if not child_ids:
+        # Falsy: the DB layer refused the fan-out (triage escalation) and named the
+        # triggering event and the card, so the operator sees why nothing was created.
+        return DecomposeOutcome(
+            task_id, False, getattr(child_ids, "detail", None) or "decompose refused",
+        )
     return DecomposeOutcome(
         task_id, True, f"decomposed into {len(child_ids)} children", fanout=True, child_ids=child_ids,
     )
+
+
+def _escalation_refusal(task_id: str) -> Optional[kb.TriageEscalationRefusal]:
+    """The block-loop breaker's park for ``task_id``, or None.
+
+    Checked BEFORE the aux call: a card parked for a human stays parked whatever the
+    decomposer would have said, so the LLM round-trip is pure waste.
+    """
+    with kbc.connect_closing() as conn:
+        return kb.triage_escalation_refusal(conn, task_id)
 
 
 def decompose_task(
@@ -312,6 +332,10 @@ def decompose_task(
     task, reason = _load_triage_task(task_id)
     if task is None:
         return DecomposeOutcome(task_id, False, reason)
+
+    refusal = _escalation_refusal(task_id)
+    if refusal is not None:
+        return DecomposeOutcome(task_id, False, refusal.detail)
 
     routing = _load_routing(root_assignee=task.assignee)
     raw, reason = _call_aux(

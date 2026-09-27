@@ -3274,6 +3274,7 @@ def block_task(
         new_status, event_kind, set_sql, params, payload = _route_block(
             kind, reason, source_status, prev_kind=_row_get(cur_row, "block_kind"),
             prev_recurrences=int(_row_get(cur_row, "block_recurrences") or 0),
+            triage_round_trips=triage_round_trips(conn, task_id),
         )
         if rekind_reason:
             payload["requested_kind"] = requested_kind
@@ -3309,7 +3310,7 @@ def block_task(
 
 def _route_block(
     kind: Optional[str], reason: Optional[str], source_status: str, *,
-    prev_kind: Optional[str], prev_recurrences: int,
+    prev_kind: Optional[str], prev_recurrences: int, triage_round_trips: int = 0,
 ) -> tuple[str, str, str, tuple, dict]:
     """``(new_status, event_kind, set_sql, params, payload)`` for :func:`block_task`.
 
@@ -3323,6 +3324,9 @@ def _route_block(
     incoming one means blocked -> unblocked -> re-block for the same cause
     (un-typed None compares equal to a prior un-typed block). At
     ``BLOCK_RECURRENCE_LIMIT`` the task routes to ``triage`` for a human.
+    ``triage_round_trips`` is read from the card's own escalation history (see
+    :func:`triage_round_trips`) and lands on the ``block_loop_detected`` payload, so
+    a count that spans a triage trip is not read as N consecutive honest blocks.
     """
     payload = {"reason": reason, "kind": kind, "source_status": source_status}
     if kind == "dependency":
@@ -3332,8 +3336,102 @@ def _route_block(
     payload = {"reason": reason, "kind": kind, "recurrences": recurrences, "source_status": source_status}
     if recurrences >= BLOCK_RECURRENCE_LIMIT:
         payload["limit"] = BLOCK_RECURRENCE_LIMIT
+        # ``recurrences`` alone reads as N consecutive honest blocks. Record how many
+        # triage round-trips the count already spans, so the reader who re-blocks this
+        # card after a trip cannot describe it as a state that never changed.
+        payload["triage_round_trips"] = triage_round_trips
         return "triage", "block_loop_detected", set_sql, (kind, recurrences), payload
     return "blocked", "blocked", set_sql, (kind, recurrences), payload
+
+
+# --- The triage escalation guard -------------------------------------------------------
+#
+# ``_route_block`` parks a repeating card in ``triage`` for a HUMAN. Every promotion path
+# out of ``triage`` therefore has to refuse such a card: promoting it hands the same
+# unchanged card — and the same failing context — straight back to the board, where it
+# blocks again and manufactures a fresh graph of children on each pass. The promotion
+# paths are ``specify_triage_task`` and ``kanban_db_graph.decompose_triage_task``; both
+# call :func:`triage_escalation_refusal` inside their own write txn, so the refusal is
+# atomic with the read that decided it and no caller can forget the guard.
+
+TRIAGE_ESCALATION_EVENT_KIND = "block_loop_detected"
+BLOCK_ROUTING_EVENT_KINDS = ("blocked", "dependency_wait", TRIAGE_ESCALATION_EVENT_KIND, "gave_up")
+TRIAGE_ESCALATION_CAUSE = "block_loop_escalation"
+
+
+class TriageEscalationRefusal:
+    """Why a promotion out of ``triage`` refused: the block-loop breaker parked the card.
+
+    Falsy, so every existing ``if not specify_triage_task(...)`` caller keeps its meaning,
+    while the operator-facing surfaces can name the triggering event and the card. A bare
+    ``False`` cannot tell "already promoted / moved out" from "escalated to a human", and
+    that ambiguity is how the auto-decompose hook silently fanned out a card the board had
+    already handed to a person.
+    """
+
+    __slots__ = ("task_id", "cause", "detail", "event_id", "payload")
+
+    def __init__(self, task_id: str, event_id: int, payload: Optional[dict]):
+        payload = payload or {}
+        self.task_id = task_id
+        self.cause = TRIAGE_ESCALATION_CAUSE
+        self.event_id = event_id
+        self.payload = payload
+        self.detail = (
+            f"{task_id} is parked in triage by the block-loop breaker (event {event_id} "
+            f"'{TRIAGE_ESCALATION_EVENT_KIND}': kind={payload.get('kind')!r}, "
+            f"recurrences={payload.get('recurrences')}/{payload.get('limit')}, "
+            f"triage_round_trips={payload.get('triage_round_trips')}) — an escalation for a "
+            f"human to dispose of with a board edit: archive the card, or move it out of the "
+            f"triage column (to todo/ready). unblock / complete / reassign do not clear the "
+            f"park — the card stays in triage. Promoting the unchanged card back onto the "
+            f"board re-arms the block it was escalated for"
+        )
+
+    def __bool__(self) -> bool:
+        return False
+
+    def __repr__(self) -> str:
+        return f"TriageEscalationRefusal(task_id={self.task_id!r}, event_id={self.event_id!r})"
+
+
+def triage_escalation_refusal(
+    conn: sqlite3.Connection, task_id: str,
+) -> Optional[TriageEscalationRefusal]:
+    """The breaker's park for ``task_id`` when that is why it sits in ``triage``; else None.
+
+    The predicate is the NEWEST block-routing event, never the merely-newest-one-that-happens
+    -to-exist: a card that once escalated and later blocked again for another cause is
+    triaged by whichever routing decision came last. Sticky by construction — nothing in the
+    promotion paths clears the event, so a card stays refused until a human edits the column.
+    """
+    placeholders = ",".join("?" * len(BLOCK_ROUTING_EVENT_KINDS))
+    row = conn.execute(
+        f"SELECT id, kind, payload FROM task_events WHERE task_id = ? "
+        f"AND kind IN ({placeholders}) ORDER BY id DESC LIMIT 1",
+        (task_id, *BLOCK_ROUTING_EVENT_KINDS),
+    ).fetchone()
+    if row is None or row["kind"] != TRIAGE_ESCALATION_EVENT_KIND:
+        return None
+    return TriageEscalationRefusal(
+        task_id, int(row["id"]), _json_or(_lossy_text(row["payload"])),
+    )
+
+
+def triage_round_trips(conn: sqlite3.Connection, task_id: str) -> int:
+    """How many times this card has already been through triage and come back to work.
+
+    Every prior ``block_loop_detected`` event is one COMPLETED round-trip: the card can only
+    block again after it left ``triage``, whether the exit was the decomposer/specifier or a
+    human editing the column directly. Counted *before* the current escalation is appended
+    (``block_task`` reads it, then ``_route_block`` writes the new event), so the payload
+    says how many times the board has already handed this card to a person.
+    """
+    row = conn.execute(
+        "SELECT COUNT(*) FROM task_events WHERE task_id = ? AND kind = ?",
+        (task_id, TRIAGE_ESCALATION_EVENT_KIND),
+    ).fetchone()
+    return int(row[0] or 0)
 
 
 def redact_review_value(value: Any) -> Any:
@@ -3827,10 +3925,15 @@ def invalidate_descendants_for_parent_reopen(
 def specify_triage_task(
     conn: sqlite3.Connection, task_id: str, *, title: Optional[str] = None,
     body: Optional[str] = None, assignee: Optional[str] = None, author: Optional[str] = None,
-) -> bool:
+) -> bool | TriageEscalationRefusal:
     """Update title/body/assignee (when given) and move ``triage -> todo`` in one
     txn; False when not in triage. Lands in ``todo`` (not ``ready``) so parent
     gating still applies; the audit comment is written only when a field changed.
+
+    A card the block-loop breaker parked refuses with a
+    :class:`TriageEscalationRefusal` (falsy) and stays in ``triage``: specification
+    cannot fix a card whose state has not changed since the block it was escalated
+    for, and promoting it re-arms the loop.
     """
     if title is not None and not title.strip():
         raise ValueError("title cannot be blank")
@@ -3842,6 +3945,9 @@ def specify_triage_task(
         ).fetchone()
         if existing is None:
             return False
+        refusal = triage_escalation_refusal(conn, task_id)
+        if refusal is not None:
+            return refusal
         sets: list[str] = ["status = 'todo'"]
         params: list[Any] = []
         changed_fields: list[str] = []

@@ -184,6 +184,26 @@ def test_returns_turn_context_with_user_message_appended():
     assert ctx.active_system_prompt == "SYSTEM"
 
 
+def test_plugin_model_route_runs_before_prompt_construction():
+    agent = _FakeAgent()
+    agent._cached_system_prompt = None
+    seen = []
+
+    def apply_route(agent, **kwargs):
+        seen.append('route')
+        agent.provider = 'provider-b'
+        agent.model = 'model-b'
+
+    def build_prompt(agent, *_args):
+        seen.append(('prompt', agent.provider, agent.model))
+        agent._cached_system_prompt = 'SYSTEM'
+
+    with patch('agent.turn_context._apply_plugin_model_route', side_effect=apply_route):
+        _build(agent, restore_or_build_system_prompt=build_prompt)
+
+    assert seen == ['route', ('prompt', 'provider-b', 'model-b')]
+
+
 def test_preflight_timeout_stops_turn_before_provider_boundary():
     """An unchanged payload above the model window must not escape turn construction (a request that
     still fits its window is sent uncompressed instead — see test_preflight_compression_timeout_fail_closed)."""

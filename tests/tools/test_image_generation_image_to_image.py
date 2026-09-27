@@ -169,6 +169,64 @@ class TestFalRouting:
 
 
 class TestLocalSourceConsent:
+    @pytest.mark.parametrize("changed", ["plugin", "model", "gateway", "unrelated"])
+    def test_approval_binds_selected_destination(self, cfg_home, monkeypatch, tmp_path, changed):
+        import tools.image_generation_tool as image_tool
+        from tools import approval_prompt
+
+        source = tmp_path / "private.png"
+        source.write_bytes(base64.b64decode(
+            b"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="))
+        initial = {"provider": "openai" if changed == "plugin" else "fal",
+                   "model": "fal-ai/nano-banana-pro"}
+        _write_cfg(cfg_home, {"image_gen": initial})
+        monkeypatch.setattr(image_tool, "fal_key_is_configured", lambda: True)
+
+        class Gateway:
+            gateway_origin = "https://managed-a.example/fal-queue"
+
+        gateway = Gateway()
+        monkeypatch.setattr(image_tool, "_resolve_managed_fal_gateway",
+                            lambda: gateway if changed == "gateway" else None)
+        sent = []
+        monkeypatch.setattr(image_tool, "_dispatch_to_plugin_provider",
+                            lambda *a, **k: sent.append("plugin") or image_tool._provider_error("sent", "provider_exception"))
+        monkeypatch.setattr(image_tool, "_submit_fal_request",
+                            lambda *a, **k: sent.append("fal") or object())
+        monkeypatch.setattr(image_tool, "_wait_fal_result",
+                            lambda handle: {"images": [{"url": "https://out.example/image.png"}]})
+
+        class FakeFal:
+            def upload(self, data, mime):
+                sent.append("upload")
+                return "https://fal.storage/private.png"
+
+        monkeypatch.setattr(image_tool, "fal_client", FakeFal())
+
+        def approve(message, description, **kwargs):
+            if changed == "plugin":
+                _write_cfg(cfg_home, {"image_gen": {**initial, "provider": "xai"}})
+            elif changed == "model":
+                _write_cfg(cfg_home, {"image_gen": {**initial, "model": "fal-ai/flux-2-pro"}})
+            elif changed == "gateway":
+                gateway.gateway_origin = "https://managed-b.example/fal-queue"
+            else:
+                _write_cfg(cfg_home, {"image_gen": initial, "terminal": {"theme": "dark"}})
+            return "accept"
+
+        monkeypatch.setattr(approval_prompt, "request_elicitation_consent", approve)
+
+        result = json.loads(image_tool._handle_image_generate({
+            "prompt": "make it night", "image_url": str(source), "upscale": False,
+        }))
+
+        if changed == "unrelated":
+            assert result["success"] is True
+            assert sent == ["upload", "fal"]
+        else:
+            assert result["error_type"] == "source_export_destination_changed"
+            assert sent == []
+
     def test_approval_binds_canonical_path_and_validated_bytes(self, cfg_home, monkeypatch, tmp_path):
         import tools.image_generation_tool as image_tool
         from tools import approval_prompt
@@ -210,7 +268,7 @@ class TestLocalSourceConsent:
             def get(self):
                 return {"images": [{"url": "https://out/edited.png", "width": 1, "height": 1}]}
 
-        monkeypatch.setattr(image_tool, "_submit_fal_request", lambda endpoint, arguments: Handler())
+        monkeypatch.setattr(image_tool, "_submit_fal_request", lambda endpoint, arguments, **kwargs: Handler())
 
         result = json.loads(image_tool._handle_image_generate({
             "prompt": "make it night", "image_url": str(link), "upscale": False,
@@ -308,7 +366,7 @@ class TestLocalSourceConsent:
 
         submitted = []
         monkeypatch.setattr(image_tool, "_submit_fal_request",
-                            lambda endpoint, arguments: submitted.append((endpoint, arguments)) or Handler())
+                            lambda endpoint, arguments, **kwargs: submitted.append((endpoint, arguments)) or Handler())
 
         result = json.loads(image_tool._handle_image_generate({
             "prompt": "make it night", "image_url": source_ref, "upscale": False,

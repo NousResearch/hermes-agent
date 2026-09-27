@@ -200,3 +200,85 @@ test('160 rendered rows respond to selection with measured interaction time', as
   await test.info().attach('managed-rollout-interaction-ms', { path: timingsFile, contentType: 'application/json' })
   await expect(managedRollouts(page).getByRole('button', { name: 'Start rollout' })).toHaveCount(0)
 })
+
+test('one Escape closes only the topmost layer and focus returns to its trigger', async ({ page }) => {
+  await page.goto(url + '?journey=focus')
+
+  const trigger = page.locator('#open-confirm')
+  const overlayCard = page.locator('.relative.flex.h-full.min-h-0.flex-col').first()
+
+  await expect(overlayCard).toBeVisible()
+
+  // No dialog yet: Escape closes the overlay and nothing else.
+  await page.keyboard.press('Escape')
+  await expect(overlayCard).toHaveCount(0)
+
+  const afterOverlay = await page.evaluate(
+    () => (window as unknown as { __managedRolloutJourney: Record<string, number> }).__managedRolloutJourney
+  )
+
+  expect(afterOverlay.overlayClose).toBe(1)
+  expect(afterOverlay.dialogClose).toBe(0)
+  expect(afterOverlay.dialogConfirm).toBe(0)
+})
+
+test('the focus-return journey keeps one Escape per layer with the dialog open', async ({ page }) => {
+  await page.goto(url + '?journey=focus')
+
+  const trigger = page.locator('#open-confirm')
+
+  await trigger.click()
+
+  const dialog = page.getByRole('dialog')
+  await expect(dialog).toBeVisible()
+
+  // Confirm owns focus on open (the production dialog's auto-focus contract).
+  await expect(page.getByRole('button', { name: 'confirm-journey' })).toBeFocused()
+
+  // One Escape closes ONLY the dialog — the overlay must survive.
+  await page.keyboard.press('Escape')
+  await expect(dialog).toHaveCount(0)
+
+  const overlayCard = page.locator('.relative.flex.h-full.min-h-0.flex-col').first()
+  await expect(overlayCard).toBeVisible()
+
+  const afterDialog = await page.evaluate(
+    () => (window as unknown as { __managedRolloutJourney: Record<string, number> }).__managedRolloutJourney
+  )
+
+  expect(afterDialog.dialogClose).toBe(1)
+  expect(afterDialog.dialogConfirm).toBe(0)
+  expect(afterDialog.overlayClose).toBe(0)
+
+  // Focus returned to the trigger that opened the dialog.
+  await expect(trigger).toBeFocused()
+
+  // The next Escape now closes the overlay — still one layer per press.
+  await page.keyboard.press('Escape')
+  await expect(overlayCard).toHaveCount(0)
+
+  const afterOverlay = await page.evaluate(
+    () => (window as unknown as { __managedRolloutJourney: Record<string, number> }).__managedRolloutJourney
+  )
+
+  expect(afterOverlay.overlayClose).toBe(1)
+})
+
+test('captures the inspected dark/light narrow/wide screenshot set', async ({ page }) => {
+  for (const scheme of ['light', 'dark'] as const) {
+    await page.emulateMedia({ colorScheme: scheme })
+
+    for (const width of [1220, 760]) {
+      await page.setViewportSize({ width, height: 800 })
+      await expect(managedRollouts(page)).toBeVisible()
+
+      const file = test.info().outputPath(`managed-rollout-inspected-${scheme}-${width}.png`)
+
+      await managedRollouts(page)
+        .getByRole('heading', { name: ROLLOUT_TITLE })
+        .scrollIntoViewIfNeeded()
+      await page.screenshot({ path: file, animations: 'disabled', caret: 'hide', fullPage: true })
+      await test.info().attach(`managed-rollout-inspected-${scheme}-${width}`, { path: file, contentType: 'image/png' })
+    }
+  }
+})

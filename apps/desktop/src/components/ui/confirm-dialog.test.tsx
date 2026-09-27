@@ -1,4 +1,5 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { useState } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { ConfirmDialog } from './confirm-dialog'
@@ -46,5 +47,42 @@ describe('ConfirmDialog secondary action', () => {
 
     await waitFor(() => expect(onConfirm).toHaveBeenCalledTimes(1))
     expect(onSecondary).not.toHaveBeenCalled()
+  })
+})
+
+describe('ConfirmDialog focus return', () => {
+  function Harness() {
+    const [open, setOpen] = useState(false)
+
+    return (
+      <div>
+        <button id="opener" onClick={() => setOpen(true)} type="button">
+          open
+        </button>
+        <ConfirmDialog onClose={() => setOpen(false)} onConfirm={() => {}} open={open} title="Focus return" />
+      </div>
+    )
+  }
+
+  it('returns focus to the element that opened it, not the body', async () => {
+    render(<Harness />)
+
+    const opener = screen.getByRole('button', { name: 'open' })
+
+    // eslint-disable-next-line no-restricted-globals -- asserting real focus requires the live document
+    opener.focus()
+    fireEvent.click(opener)
+    await screen.findByRole('dialog')
+
+    fireEvent.keyDown(
+      // eslint-disable-next-line no-restricted-globals -- asserting real focus requires the live document
+      document.activeElement!,
+      { key: 'Escape' }
+    )
+
+    await waitFor(() => {
+      // eslint-disable-next-line no-restricted-globals -- asserting real focus requires the live document
+      expect(document.activeElement).toBe(opener)
+    })
   })
 })

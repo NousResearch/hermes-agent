@@ -59,6 +59,10 @@ export function ConfirmDialog({
   const { t } = useI18n()
   const confirmRef = useRef<HTMLButtonElement>(null)
   const closeTimerRef = useRef<null | number>(null)
+  // This dialog is controlled by `open` with no Radix DialogTrigger, so
+  // Radix's close-time restore targets a null trigger and focus would fall to
+  // <body>. Remember who opened it and hand focus back on close.
+  const restoreFocusRef = useRef<HTMLElement | null>(null)
   const [status, setStatus] = useState<'done' | 'idle' | 'saving'>('idle')
   const [error, setError] = useState<null | string>(null)
   const busy = status === 'saving' || status === 'done'
@@ -142,8 +146,20 @@ export function ConfirmDialog({
           // the key: it stays on whatever opened the dialog (a menu item, a
           // sidebar row) and Enter re-triggers that instead. Radix's default
           // would take the X — confirm is the button Enter maps to.
+          restoreFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
           event.preventDefault()
           confirmRef.current?.focus()
+        }}
+        onCloseAutoFocus={event => {
+          // Radix's own restore needs a DialogTrigger, which a controlled
+          // dialog has none of; restore the opener explicitly instead of
+          // leaving focus on <body>.
+          event.preventDefault()
+          const target = restoreFocusRef.current
+
+          if (target?.isConnected) {
+            target.focus()
+          }
         }}
       >
         <DialogHeader>

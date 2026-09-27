@@ -126,7 +126,7 @@ def _make_slow_agent(**kwargs):
 
     mock_agent.interrupt = MagicMock(side_effect=_do_interrupt)
 
-    def _slow_run(user_message=None, conversation_history=None, task_id=None):
+    def _slow_run(user_message=None, conversation_history=None, task_id=None, conversation_history_loader=None):
         ready.set()
         # Block until interrupt() is called
         interrupted.wait(timeout=10)
@@ -272,7 +272,7 @@ class TestStartRun:
             with patch.object(adapter, "_create_agent") as mock_create:
                 mock_agent = MagicMock()
 
-                def _capture_run(user_message=None, conversation_history=None, task_id=None):
+                def _capture_run(user_message=None, conversation_history=None, task_id=None, conversation_history_loader=None):
                     from tools.async_delegation import _current_origin_session_id
 
                     captured["origin_session_id"] = _current_origin_session_id()

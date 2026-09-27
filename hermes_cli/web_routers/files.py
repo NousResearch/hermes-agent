@@ -25,6 +25,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 
 from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
 from hermes_cli.web_deps import late
 from hermes_cli.web_server_files import (
     _fs_path, _managed_file_entry, _managed_response_meta, _resolve_managed_path,
@@ -174,13 +175,39 @@ def _fs_regular_file(path: Path) -> tuple[Path, os.stat_result]:
     return target, st
 
 
-def _fs_read_bytes(target: Path, limit: Optional[int] = None) -> bytes:
-    """Read (a prefix of) ``target``; 403/400 on failure."""
+@contextlib.contextmanager
+def _serve_offline(target: Path):
+    """Hold ``offline_file_access`` for serving ``target``; 409 while a SQLite connection to it is live.
+
+    Callers keep the block open through the file's close: a raw close cancels this process's
+    SQLite POSIX locks on it."""
     try:
-        if limit is None:
-            return target.read_bytes()
-        with target.open("rb") as handle:
-            return handle.read(limit)
+        with offline_file_access(target, what="serve"):
+            yield
+    except LiveConnectionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+def _refuse_live_database(target: Path) -> None:
+    """Point-in-time 409 before streaming ``target`` while a SQLite connection to it is live.
+
+    ``FileResponse`` opens and closes the file in-process, and that raw close cancels the
+    connection's POSIX locks. The registry lock can't be held across a streamed response
+    (never across an await/yield), so streamed routes only get this admission check. It
+    takes the global registry lock, which other threads hold across whole-file reads, so
+    call it via ``asyncio.to_thread``."""
+    with _serve_offline(target):
+        pass
+
+
+def _fs_read_bytes(target: Path, limit: Optional[int] = None) -> bytes:
+    """Read (a prefix of) ``target``; 403/400 on failure, 409 while a SQLite connection to it is live."""
+    try:
+        with _serve_offline(target):
+            if limit is None:
+                return target.read_bytes()
+            with target.open("rb") as handle:
+                return handle.read(limit)
     except PermissionError:
         raise HTTPException(status_code=403, detail="File is not readable")
     except OSError as exc:
@@ -244,8 +271,11 @@ def _media_serve_roots() -> list[Path]:
 
 
 def _read_base64_file(path: Path) -> str:
-    """Read and encode a bounded file from a worker thread."""
-    return base64.b64encode(path.read_bytes()).decode("ascii")
+    """Read and encode a bounded file from a worker thread; 409 while a SQLite connection to it is live."""
+    with _serve_offline(path):
+        data = path.read_bytes()
+    # Encode after release: only the open/read/close needs the registry lock.
+    return base64.b64encode(data).decode("ascii")
 
 
 @router.get("/api/media")
@@ -389,8 +419,9 @@ async def list_managed_files(request: Request, path: Optional[str] = None):
 
 def _managed_readable_file(request: Request, path: str) -> tuple[Any, Path, str, int, str]:
     """Resolve + guard a managed file for reading: existence, regular file,
-    sensitive-path denylist, size cap. Returns (policy, target, display_path,
-    size, mime_type)."""
+    sensitive-path denylist. Returns (policy, target, display_path, max_bytes,
+    mime_type). Callers own the live-SQLite 409 (held through the read for
+    /api/files/read, point-in-time for streamed responses)."""
     from hermes_cli.web_server import _MANAGED_FILE_MAX_BYTES
     policy, target, display_path = _resolve_managed_path(path, request)
     if not target.exists():
@@ -429,7 +460,7 @@ async def read_managed_file(request: Request, path: str):
     }
 
 
-def _managed_file_response(
+async def _managed_file_response(
     request: Request,
     path: str,
     *,
@@ -441,6 +472,7 @@ def _managed_file_response(
     if media_only and target.suffix.lower() not in _STREAMABLE_MEDIA_EXTENSIONS:
         raise HTTPException(status_code=415, detail="Unsupported media type")
     _managed_file_size(target, max_bytes)
+    await asyncio.to_thread(_refuse_live_database, target)
     return FileResponse(
         path=str(target),
         media_type=mime_type,
@@ -462,7 +494,7 @@ async def download_managed_file(request: Request, path: str):
     """
     fetch_destination = request.headers.get("sec-fetch-dest", "").lower()
     is_media_subresource = fetch_destination in {"audio", "video"}
-    return _managed_file_response(
+    return await _managed_file_response(
         request,
         path,
         content_disposition_type="inline" if is_media_subresource else "attachment",
@@ -477,7 +509,7 @@ async def stream_managed_file(request: Request, path: str):
     media pipeline may reject an attachment response as an ``<audio>``/
     ``<video>`` source. Same auth, size cap, sensitive guard and MIME detection
     as download."""
-    return _managed_file_response(request, path, content_disposition_type="inline", media_only=True)
+    return await _managed_file_response(request, path, content_disposition_type="inline", media_only=True)
 
 
 def _managed_write_target(path: str, request: Request, overwrite: bool):
@@ -735,6 +767,7 @@ async def fs_download(
     path: str, profile: Optional[str] = None, session_id: Optional[str] = None,
 ):
     target, _st = _fs_regular_file(await _fs_download_path(path, profile, session_id))
+    await asyncio.to_thread(_refuse_live_database, target)
     return FileResponse(
         path=str(target),
         media_type=_fs_mime_type(target),

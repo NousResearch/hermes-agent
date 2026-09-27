@@ -36,7 +36,57 @@ def adapter_supports_push(adapter: Any) -> bool:
 
 
 class WakeNotAccepted(RuntimeError):
-    """No adapter admission: retry without treating a healthy chat as dead."""
+    """No adapter admission (or no dispatch receipt): retry without treating a healthy chat as dead."""
+
+
+def _settle_internal_event_dispatch(event: Any, reason: Optional[str] = None) -> None:
+    """Settle the optional post-admission dispatch receipt without raising into the turn task."""
+    waiter = getattr(event, "_gateway_dispatch_waiter", None)
+    if waiter is None or waiter.done():
+        return
+    waiter.set_result(reason)
+
+
+async def admit_internal_event(
+    adapter: Any, event: Any, *, wait_for_dispatch: Optional[bool] = None,
+) -> None:
+    """Require a concrete adapter admission and, for pinned events, a session-dispatch outcome.
+
+    The public handler return stays unchanged. Ordinary events retain the historical
+    scheduled/queued receipt. A pinned internal event also waits for the gateway turn task to
+    resolve its session; if that dispatch is refused, ``WakeNotAccepted`` gives the caller the
+    same retry/fallback opportunity as a queue refusal. Async-delegation completions opt out
+    because their result is durable in the delegation records and may remain fail-closed.
+    """
+    event._gateway_accepted = False
+    event._gateway_dispatch_waiter = None
+    event._gateway_dispatch_tracked = False
+    metadata = getattr(event, "metadata", None) or {}
+    if wait_for_dispatch is None:
+        wait_for_dispatch = bool(str(metadata.get("gateway_session_id") or "").strip())
+    waiter = None
+    if wait_for_dispatch:
+        waiter = asyncio.get_running_loop().create_future()
+        event._gateway_dispatch_waiter = waiter
+    try:
+        await adapter.handle_message(event)
+        if event._gateway_accepted is not True:
+            raise WakeNotAccepted("internal wake not accepted by adapter")
+        if waiter is not None:
+            # BasePlatformAdapter marks accepted events as tracked. Give a custom adapter that
+            # dispatches inline one loop turn to settle the receipt; otherwise a missing receipt
+            # is itself a refusal, never a false success.
+            if not getattr(event, "_gateway_dispatch_tracked", False):
+                await asyncio.sleep(0)
+            if not waiter.done() and not getattr(event, "_gateway_dispatch_tracked", False):
+                raise WakeNotAccepted("internal wake not accepted for dispatch")
+            reason = await waiter
+            if reason:
+                raise WakeNotAccepted(f"internal wake not accepted for dispatch: {reason}")
+    finally:
+        if waiter is None or waiter.done() or not getattr(event, "_gateway_dispatch_tracked", False):
+            event._gateway_dispatch_waiter = None
+            event._gateway_dispatch_tracked = False
 
 
 def session_owned_by_profile(config: Any, profile: Optional[str], session_id: Any) -> bool:
@@ -74,18 +124,6 @@ def session_owned_by_profile(config: Any, profile: Optional[str], session_id: An
         with contextlib.suppress(Exception):
             db.close()
     return bool(row) and (row.get("profile_name") or profile) == profile
-
-
-async def admit_internal_event(adapter: Any, event: Any) -> None:
-    """Require a concrete adapter admission, not merely a handler returning None.
-
-    The public handler return stays unchanged. This receipt means scheduled/queued,
-    not model execution, authorization of a later turn, or successful outbound delivery.
-    """
-    event._gateway_accepted = False
-    await adapter.handle_message(event)
-    if event._gateway_accepted is not True:
-        raise WakeNotAccepted("internal wake not accepted by adapter")
 
 
 async def deliver_wake(adapter: Any, *, text: str, session_id: str = "", source: Any = None,

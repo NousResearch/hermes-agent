@@ -31,9 +31,6 @@ from gateway.session import SessionEntry, SessionSource, build_session_key
 from tests.gateway.restart_test_helpers import RestartTestAdapter
 
 
-_Adapter = RestartTestAdapter
-
-
 def _source() -> SessionSource:
     return SessionSource(platform=Platform.TELEGRAM, user_id="u1", chat_id="c1",
                          user_name="tester", chat_type="dm")
@@ -88,13 +85,15 @@ def _runner_with_running_agent(adapter, *, compression_in_flight):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("busy_mode", ["interrupt", "steer"])
-@pytest.mark.parametrize("rewrite_hook,message_id", [
-    (False, "m1"), (True, "m1"),
-    (True, None),  # id-less rewrite copy: only the copied timestamp ties it to the dispatch
+@pytest.mark.parametrize("rewrite_hook,message_id,busy_mode", [
+    (False, "m1", "interrupt"),
+    (True, "m1", "interrupt"),
+    (True, None, "interrupt"),  # id-less rewrite copy: only the copied timestamp ties it back
+    # The demotion route is orthogonal to the identity axis; steer covers the other route.
+    (False, "m1", "steer"),
 ])
 async def test_requeued_busy_event_does_not_hot_loop(rewrite_hook, message_id, busy_mode):
-    adapter = _Adapter()
+    adapter = RestartTestAdapter()
     runner, agent, sk = _runner_with_running_agent(adapter, compression_in_flight=True)
     # interrupt: demoted to queue (compression in flight); steer: agent refuses -> queue fallback.
     runner._busy_input_mode = busy_mode
@@ -135,7 +134,7 @@ async def test_requeued_event_runs_once_the_agent_finishes():
     """The back-off must defer, not drop: once the running agent is gone the event is processed.
     And it must key on the runner's demotion, not on ``None``: every streamed turn returns None,
     so chained genuine follow-ups after it must each dispatch immediately."""
-    adapter = _Adapter()
+    adapter = RestartTestAdapter()
     runner, agent, sk = _runner_with_running_agent(adapter, compression_in_flight=True)
     handled, starts, ends = [], [], []
     real_handle = runner._handle_message

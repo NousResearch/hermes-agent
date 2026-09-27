@@ -4595,18 +4595,18 @@ class BasePlatformAdapter(ABC):
                                dispatched_event: MessageEvent) -> float:
         """Delay before re-dispatching the queued follow-up.
 
-        Only the event this task just dispatched coming straight back (same object, or for
-        rewrite-hook copies the same ``message_id`` / id-less same ``timestamp``) backs off: the handler put it back because the
-        session is busy elsewhere, and re-dispatching it at once hot-loops for the whole busy
-        window (#123229). Any other follow-up resets the counter and runs immediately. The first
-        bounce stays immediate (restart auto-resume relies on one self-bounce), then back off
-        exponentially to a cap. Defers, never drops."""
-        # Rewrite-hook copies (dataclasses.replace) keep message_id and timestamp; an id-less
-        # event falls back to the copied timestamp (a genuine new message gets a fresh one).
-        same = pending_event is dispatched_event or (
-            pending_event.message_id == dispatched_event.message_id
-            and (bool(pending_event.message_id)
-                 or pending_event.timestamp == dispatched_event.timestamp))
+        Only the event this task just dispatched coming straight back backs off: the same
+        ``message_id``, or for an id-less event the same ``timestamp`` (rewrite-hook
+        ``dataclasses.replace`` copies keep both; a genuine new message gets a fresh timestamp).
+        The handler put it back because the session is busy elsewhere, and re-dispatching it at
+        once hot-loops for the whole busy window (#123229). Any other follow-up resets the counter
+        and runs immediately. The first bounce stays immediate (restart auto-resume relies on one
+        self-bounce), then back off exponentially to a cap. Defers, never drops."""
+        # The identical object always matches too: its id equals itself, and when empty the
+        # timestamp comparison does.
+        same = (pending_event.message_id == dispatched_event.message_id
+                and (bool(pending_event.message_id)
+                     or pending_event.timestamp == dispatched_event.timestamp))
         if not same:
             self._requeue_counts.pop(session_key, None)
             return 0.0
@@ -4638,7 +4638,7 @@ class BasePlatformAdapter(ABC):
             asyncio.create_task(self._drain_after(pending_event, session_key, delay, guard)))
 
     async def _drain_after(self, pending_event: MessageEvent, session_key: str, delay: float,
-                           guard: Optional[asyncio.Event] = None) -> None:
+                           guard: Optional[asyncio.Event]) -> None:
         if delay > 0:
             await asyncio.sleep(delay)
             await self._flush_text_debounce_now(session_key)  # as every other task exit does

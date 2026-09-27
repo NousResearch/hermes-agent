@@ -1,0 +1,57 @@
+{
+  "phase": "before",
+  "state": "dark glass chat over emulated bright native backdrop #eef2f7",
+  "frame": {
+    "background": "rgba(0, 0, 0, 0)",
+    "border": "rgba(255, 255, 255, 0.94)",
+    "borderRadius": "13px",
+    "backdropFilter": "none"
+  },
+  "samples": [
+    {
+      "selector": ".message",
+      "color": "rgba(255, 255, 255, 0.94)",
+      "fontSize": 14,
+      "background": [
+        238,
+        242,
+        247
+      ],
+      "ratio": 1.12,
+      "point": [
+        370,
+        118
+      ]
+    },
+    {
+      "selector": ".meta",
+      "color": "rgba(255, 255, 255, 0.64)",
+      "fontSize": 12,
+      "background": [
+        238,
+        242,
+        247
+      ],
+      "ratio": 1.08,
+      "point": [
+        370,
+        165
+      ]
+    },
+    {
+      "selector": ".placeholder",
+      "color": "rgba(255, 255, 255, 0.7)",
+      "fontSize": 13,
+      "background": [
+        238,
+        242,
+        247
+      ],
+      "ratio": 1.09,
+      "point": [
+        389,
+        696
+      ]
+    }
+  ]
+}

@@ -925,6 +925,7 @@ const ChatViewContent = memo(function ChatViewContent({
       >
         <div
           className="relative min-h-0 max-w-full flex-1 overflow-hidden bg-(--ui-chat-surface-background) contain-[layout_paint]"
+          data-chat-transcript-frame=""
           data-slot="composer-bounds"
           {...dropHandlers}
         >

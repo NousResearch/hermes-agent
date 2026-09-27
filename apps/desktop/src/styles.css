@@ -702,6 +702,21 @@
     --ui-editor-surface-background: var(--ui-bg-chrome);
   }
 
+  /* The transcript is the one content field that must remain readable against
+     arbitrary native material. Keep the window's single-painter contract for
+     shell/sidebar/terminal, then raise only the transcript as a quiet glass
+     pane: enough tint for AA text, blur for noisy wallpaper, and one hairline
+     to describe the frame without nesting cards. */
+  :root[data-hermes-glass] [data-chat-transcript-frame] {
+    margin: 0.5rem;
+    border: 1px solid var(--ui-stroke-tertiary);
+    border-radius: var(--radius-xl);
+    background: color-mix(in srgb, var(--ui-bg-chrome) 86%, transparent);
+    box-shadow: var(--shadow-nous);
+    backdrop-filter: blur(1.5rem) saturate(1.08);
+    -webkit-backdrop-filter: blur(1.5rem) saturate(1.08);
+  }
+
   /* Clear mode (native window opacity) fades EVERYTHING in the window
      uniformly, so when an overlay opens over a session two layers of text
      fade by the same amount and fight through the overlay's light default

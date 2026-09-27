@@ -6,7 +6,9 @@ import asyncio
 import logging
 from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Any
+from html.parser import HTMLParser
+from pathlib import Path
+from typing import Any, Awaitable, Callable
 
 
 logger = logging.getLogger(__name__)
@@ -16,6 +18,21 @@ logger = logging.getLogger(__name__)
 class MatrixEventContext:
     sender: str
     text: str
+    media_path: str | None = None
+    media_type: str | None = None
+
+
+@dataclass(frozen=True)
+class MatrixReplyContext:
+    body: str
+    event_id: str | None
+    text: str | None
+    author_id: str | None
+    author_name: str | None
+    is_own_message: bool
+    author_authorized: bool | None
+    media_path: str | None = None
+    media_type: str | None = None
 
 
 def _content_dict(event: Any) -> dict:
@@ -74,6 +91,49 @@ def _own_text(body: str) -> str:
     return ""
 
 
+class _MxReplyQuoteExtractor(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._depth = 0
+        self._done = False
+        self._parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag == "mx-reply" and not self._done:
+            self._depth += 1
+        elif tag == "br" and self._depth and not self._done:
+            self._parts.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "mx-reply" and self._depth:
+            self._depth -= 1
+            if self._depth == 0:
+                self._done = True
+
+    def handle_data(self, data: str) -> None:
+        if self._depth and not self._done:
+            self._parts.append(data)
+
+    def text(self) -> str:
+        return "".join(self._parts)
+
+
+def extract_mx_reply_quote(formatted_body: Any) -> str | None:
+    if not isinstance(formatted_body, str) or not formatted_body.lstrip().startswith("<mx-reply"):
+        return None
+    parser = _MxReplyQuoteExtractor()
+    try:
+        parser.feed(formatted_body)
+        parser.close()
+    except Exception:
+        return None
+    text = parser.text().strip()
+    first, separator, rest = text.partition("\n")
+    if separator and first.strip().lower().startswith("in reply to"):
+        text = rest.strip()
+    return text or None
+
+
 def _label_body(msgtype: str, body: str) -> str:
     labels = {
         "m.image": "image", "m.audio": "audio", "m.video": "video",
@@ -121,12 +181,18 @@ class MatrixEventContextCache:
         sender = prior.sender if prior is not None else ""
         self.store(room_id, event_id, MatrixEventContext(sender, ""))
 
-    async def resolve(self, client: Any, room_id: str, event_id: str) -> MatrixEventContext | None:
+    async def resolve(
+        self, client: Any, room_id: str, event_id: str,
+        image_loader: Callable[[dict, str], Awaitable[tuple[str, str] | None]] | None = None,
+    ) -> MatrixEventContext | None:
         key = room_id, event_id
         if key in self._entries:
             self._entries.move_to_end(key)
             entry = self._entries[key]
-            return entry if entry.text else None
+            if entry.media_path and not Path(entry.media_path).is_file():
+                self._entries.pop(key)
+            else:
+                return entry if entry.text or entry.media_path else None
         if client is None:
             return None
 
@@ -152,7 +218,20 @@ class MatrixEventContextCache:
         if edited and body.startswith("* "):
             body = body[2:].strip()
         body = _own_text(body)
-        text = _label_body(str(content.get("msgtype") or ""), body)
-        entry = MatrixEventContext(sender=sender, text=text)
+        msgtype = str(content.get("msgtype") or "")
+        text = _label_body(msgtype, body)
+        media = None
+        if msgtype == "m.image" and image_loader is not None:
+            try:
+                media = await asyncio.wait_for(
+                    image_loader(content, event_id), self.timeout_seconds
+                )
+            except Exception as exc:
+                logger.debug("Matrix: could not cache quoted image %s: %s", event_id, exc)
+        entry = MatrixEventContext(
+            sender=sender, text=text,
+            media_path=media[0] if media else None,
+            media_type=media[1] if media else None,
+        )
         self.store(room_id, event_id, entry)
         return entry if text else None

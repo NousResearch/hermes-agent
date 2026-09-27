@@ -32,13 +32,13 @@ def narrow_clone(tmp_path: Path) -> Path:
     """Bare origin with ``main`` + one tag, and a tag-pinned --single-branch clone of it."""
     origin = tmp_path / "origin.git"
     seed = tmp_path / "seed"
-    _run(tmp_path, "init", "-q", "--bare", str(origin))
+    _run(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
     _run(tmp_path, "clone", "-q", f"file://{origin}", str(seed))
     (seed / "f.txt").write_text("a\n")
     _run(seed, "add", "f.txt")
     _run(seed, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init")
     _run(seed, "tag", "v1")
-    assert _run(seed, "push", "-q", "origin", "main", "v1").returncode == 0
+    assert _run(seed, "push", "-q", "origin", "HEAD:refs/heads/main", "v1").returncode == 0
     work = tmp_path / "work"
     _run(tmp_path, "clone", "-q", "--depth", "1", "--single-branch", "--branch", "v1", f"file://{origin}", str(work))
     # Prove the clone is the narrow shape from the issue before testing anything.

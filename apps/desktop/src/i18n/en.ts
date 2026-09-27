@@ -342,7 +342,8 @@ export const en: Translations = {
           error: 'having a voice problem'
         }
       },
-      emptyGreeting: name => (name ? `${name}, what should Agent Czesiek handle next?` : 'What should Agent Czesiek handle next?'),
+      emptyGreeting: name =>
+        name ? `${name}, what should Agent Czesiek handle next?` : 'What should Agent Czesiek handle next?',
       insightTabs: {
         activity: 'Activity',
         news: 'News',
@@ -564,7 +565,7 @@ export const en: Translations = {
       nav: {
         tagline: 'People · Knowledge · Real results',
         search: 'Search…',
-        sections: { work: 'Work', knowledge: 'Knowledge', system: 'System' },
+        sections: { work: 'Work', knowledge: 'Knowledge', connections: 'Connections', system: 'System' },
         promoTitle: 'Build more with AI.',
         promoBody: 'Add skills and tools — faster ideas, bigger impact.',
         profileHint: 'Profiles and agents',
@@ -581,13 +582,13 @@ export const en: Translations = {
       tasks: 'Tasks',
       agents: 'Agents',
       messaging: 'Messaging',
-      webhooks: 'Webhooks',
-      artifacts: 'Artifacts',
+      webhooks: 'Automations',
+      artifacts: 'Files & results',
       memory: 'Memory',
       starmap: 'Knowledge map',
-      tools: 'Capabilities',
-      connections: 'Connections',
-      insights: 'Command center',
+      tools: 'Tools',
+      connections: 'Integrations',
+      insights: 'System monitor',
       settings: 'Settings',
       profile: 'Profile'
     },
@@ -601,9 +602,9 @@ export const en: Translations = {
   },
 
   jarvisConnections: {
-    title: 'Connections',
+    title: 'Integrations',
     subtitle:
-      'Connect the tools you use every day. Agent Czesiek walks you through each one, and keys and passwords stay on this computer.',
+      'Connect Google, Calendar, GitHub, Notion and other work services. Messaging and automations have their own simpler menu sections.',
     chosenLabel: 'Chosen during setup',
     allLabel: 'All connections',
     stepsLabel: 'How to connect',
@@ -785,7 +786,10 @@ export const en: Translations = {
           body: 'Tools: files, terminal, browser, the web — and, with your consent, your screen.'
         },
         memory: { title: 'Memory', body: 'Remembers you, your projects and decisions between conversations.' },
-        voice: { title: 'Voice', body: 'Speak naturally, Agent Czesiek answers out loud. You can interrupt it anytime.' },
+        voice: {
+          title: 'Voice',
+          body: 'Speak naturally, Agent Czesiek answers out loud. You can interrupt it anytime.'
+        },
         approvals: { title: 'Approvals', body: 'Sending an e-mail or deleting a file waits for your "yes".' }
       },
       flowLabel: 'How one task goes',
@@ -836,7 +840,8 @@ export const en: Translations = {
       spoken: 'Spoken',
       spokenHint: 'Read replies aloud using the existing voice preferences.',
       live: 'Live (OpenAI Realtime)',
-      liveHint: 'Natural, interruptible conversation with the newest GPT realtime voice. Agent Czesiek still does the work.',
+      liveHint:
+        'Natural, interruptible conversation with the newest GPT realtime voice. Agent Czesiek still does the work.',
       liveKeyHint: 'Live voice uses your OpenAI key (OPENAI_API_KEY). Skip this if it is already set.',
       liveKeyLabel: 'OpenAI API key',
       liveKeySave: 'Save key',
@@ -901,7 +906,8 @@ export const en: Translations = {
     },
     approvals: {
       balanced: 'Balanced',
-      balancedHint: 'Agent Czesiek uses smart approvals for routine safe actions and still asks for sensitive operations.',
+      balancedHint:
+        'Agent Czesiek uses smart approvals for routine safe actions and still asks for sensitive operations.',
       strict: 'Strict',
       strictHint: 'Agent Czesiek asks before operations that need explicit approval.',
       title: 'Approvals'
@@ -1301,7 +1307,8 @@ export const en: Translations = {
       deleteAction: 'Remove saved item',
       otpField: 'Authenticator key',
       otpPlaceholder: 'Base32 secret or otpauth:// link',
-      otpHint: 'The "setup key" the site shows when you enable 2FA. With it saved, Agent Czesiek generates the codes itself.',
+      otpHint:
+        'The "setup key" the site shows when you enable 2FA. With it saved, Agent Czesiek generates the codes itself.',
       twoFactorBadge: '2FA auto',
       deleteTitle: 'Delete this item?',
       deleteDescription: label => `"${label}" will be removed. This cannot be undone.`,
@@ -1315,7 +1322,8 @@ export const en: Translations = {
           `Not detected. Install the ${name} command-line tool and sign in to it; Agent Czesiek picks it up automatically.`,
         disabledDesc: 'Detected but turned off for Agent Czesiek.',
         lockedDesc: 'Detected. The agent will ask you to unlock it when it needs a login, or unlock now.',
-        unlockedDesc: 'Unlocked for this session. Locks automatically after 30 minutes idle or when Agent Czesiek closes.',
+        unlockedDesc:
+          'Unlocked for this session. Locks automatically after 30 minutes idle or when Agent Czesiek closes.',
         statusLocked: 'Locked',
         statusNotDetected: 'Not detected',
         statusOff: 'Off',
@@ -1663,7 +1671,8 @@ export const en: Translations = {
     // v2 multi-connection registry: Settings → Gateways.
     connections: {
       title: 'Registered gateways',
-      intro: 'Manage this device and every Agent Czesiek gateway it can reach through remote, SSH, or Cloud connections.',
+      intro:
+        'Manage this device and every Agent Czesiek gateway it can reach through remote, SSH, or Cloud connections.',
       stagedNote:
         'Switch gateways from Sessions. Profiles, chats, messaging, and cron jobs stay with their gateway; work on other gateways keeps running.',
       launchModeTitle: 'At startup, return to Sessions on the last-used gateway',
@@ -2534,7 +2543,7 @@ export const en: Translations = {
   },
 
   commandCenter: {
-    close: 'Close command center',
+    close: 'Close system monitor',
     paletteTitle: 'Command palette',
     back: 'Back',
     searchPlaceholder: 'Search sessions, views, and actions',
@@ -2547,7 +2556,7 @@ export const en: Translations = {
     newSessionInProject: project => `New session in ${project}`,
     commands: 'Commands',
     startInBranch: branch => `New conversation in ${branch}`,
-    commandCenter: 'Command Center',
+    commandCenter: 'System monitor',
     appearance: 'Appearance',
     settings: 'Settings',
     changeTheme: 'Change theme',
@@ -2794,7 +2803,8 @@ export const en: Translations = {
     restartFailedManual: 'Gateway restart failed — restart it manually and check the gateway logs.',
     telegramQr: {
       title: 'Choose how to connect your Telegram bot',
-      subtitle: 'Both options connect a bot you control and save its credentials only to this Agent Czesiek installation.',
+      subtitle:
+        'Both options connect a bot you control and save its credentials only to this Agent Czesiek installation.',
       quickSetup: 'Quick setup',
       recommended: 'Recommended',
       quickHelp:
@@ -2911,8 +2921,8 @@ export const en: Translations = {
     search: 'Search webhooks...',
     loading: 'Loading webhooks...',
     loadFailed: 'Webhooks failed to load',
-    subscriptions: (count: number) => `Subscriptions (${count})`,
-    hint: 'Subscription changes hot-reload once the receiver is running. Disabled subscriptions reject incoming events.',
+    subscriptions: (count: number) => `Webhooks & triggers (${count})`,
+    hint: 'Advanced feature. Webhooks receive events from other services and trigger selected actions automatically.',
     empty: 'No webhook subscriptions yet.',
     disabledTitle: 'Webhook receiver disabled',
     disabledBody:
@@ -3006,7 +3016,8 @@ export const en: Translations = {
       menuItem: 'Connect to a remote host…',
       badge: (host: string) => `Runs on ${host}`,
       title: (profile: string) => `Connect ${profile} to a remote host`,
-      description: 'Sessions in this profile will run on the remote Agent Czesiek you point it at, instead of this computer.',
+      description:
+        'Sessions in this profile will run on the remote Agent Czesiek you point it at, instead of this computer.',
       urlLabel: 'Remote address',
       urlPlaceholder: 'https://hermes.example.com',
       urlInvalid: 'Enter a full address starting with http:// or https://',
@@ -3387,7 +3398,8 @@ export const en: Translations = {
       createFailed: 'Could not create project',
       staleBackend:
         'Update the Agent Czesiek backend to create projects — your backend is older than this desktop app (Settings → Updates → Backend).',
-      deleteConfirm: 'This removes the saved project from Agent Czesiek. Files, git repos, and worktrees stay untouched.',
+      deleteConfirm:
+        'This removes the saved project from Agent Czesiek. Files, git repos, and worktrees stay untouched.',
       startWork: 'New worktree',
       newWorktreeTitle: 'New worktree',
       newWorktreeDesc: 'Name the branch for this worktree.',
@@ -3849,7 +3861,8 @@ export const en: Translations = {
     maybeLater: 'Maybe later',
     moreChanges: count => `+ ${count} more change${count === 1 ? '' : 's'} included.`,
     manualTitle: 'Update from your terminal',
-    manualBody: 'You installed Agent Czesiek from the command line, so updates run there too. Paste this into your terminal:',
+    manualBody:
+      'You installed Agent Czesiek from the command line, so updates run there too. Paste this into your terminal:',
     manualPickedUp: 'Agent Czesiek will pick up the new version next time you launch it.',
     guiSkewTitle: 'Update the desktop app',
     guiSkewBody:
@@ -3923,7 +3936,8 @@ export const en: Translations = {
     installLocalDesc: 'Download Agent Czesiek, create its Python environment, and run the backend on this computer.',
     localStartUnavailable: 'Local installation could not start. Restart Agent Czesiek Desktop and try again.',
     remoteSetupTitle: 'Connect to existing Agent Czesiek',
-    remoteSetupDesc: 'Enter your gateway URL. Agent Czesiek Desktop will detect whether it needs a token or browser sign-in.',
+    remoteSetupDesc:
+      'Enter your gateway URL. Agent Czesiek Desktop will detect whether it needs a token or browser sign-in.',
     remoteUrlTitle: 'Gateway URL',
     remoteUrlDesc: 'Use the base URL of the Agent Czesiek gateway, including https:// when remote.',
     remoteUrlPlaceholder: 'https://gateway.example.com/hermes',
@@ -4001,7 +4015,8 @@ export const en: Translations = {
       xai: { short: 'Grok models', description: 'Direct access to xAI Grok models.' },
       local: {
         short: 'self-hosted',
-        description: 'Point Agent Czesiek at a local or self-hosted OpenAI-compatible endpoint (vLLM, llama.cpp, Ollama, etc).'
+        description:
+          'Point Agent Czesiek at a local or self-hosted OpenAI-compatible endpoint (vLLM, llama.cpp, Ollama, etc).'
       }
     },
     backToSignIn: 'Back to sign in',
@@ -4357,7 +4372,8 @@ export const en: Translations = {
       address: 'Address',
       addressPlaceholder: 'Enter address',
       blankPageBody: 'Type an address above to browse, or ask Agent Czesiek to open a page.',
-      finishedRestarting: message => `Agent Czesiek finished restarting the preview server${message ? `: ${message}` : ''}`,
+      finishedRestarting: message =>
+        `Agent Czesiek finished restarting the preview server${message ? `: ${message}` : ''}`,
       failedRestarting: message => `Server restart failed: ${message}`,
       unknownError: 'unknown error',
       restartedTitle: 'Preview server restarted',
@@ -4685,7 +4701,8 @@ export const en: Translations = {
     sudoSendFailed: 'Could not send sudo password',
     secretSendFailed: 'Could not send secret',
     sudoTitle: 'Administrator password',
-    sudoDesc: 'Agent Czesiek needs your sudo password to run a privileged command. It is sent only to your local agent.',
+    sudoDesc:
+      'Agent Czesiek needs your sudo password to run a privileged command. It is sent only to your local agent.',
     sudoPlaceholder: 'sudo password',
     secretTitle: 'Secret required',
     secretDesc: 'Agent Czesiek needs a credential to continue.',

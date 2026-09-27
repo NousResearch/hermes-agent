@@ -58,15 +58,16 @@ const MAIN_VIEWS = [
   { view: 'jarvis', hash: null },
   { view: 'tasks', hash: '#/cron' },
   { view: 'agents', hash: '#/agents' },
-  { view: 'messaging', hash: '#/messaging' },
-  { view: 'webhooks', hash: '#/webhooks' },
   { view: 'prompts', hash: '#/prompts' },
   { view: 'artifacts', hash: '#/artifacts' },
   { view: 'memory', hash: '#/starmap?view=list' },
   { view: 'starmap', hash: '#/starmap' },
-  { view: 'tools', hash: '#/skills' },
   { view: 'connections', hash: '#/connections' },
-  { view: 'insights', hash: '#/command-center' }
+  { view: 'messaging', hash: '#/messaging' },
+  { view: 'webhooks', hash: '#/webhooks' },
+  { view: 'tools', hash: '#/skills' },
+  { view: 'insights', hash: '#/command-center' },
+  { view: 'settings', hash: '#/settings' }
 ] as const
 
 /**
@@ -257,7 +258,9 @@ test.describe('Jarvis product shell', () => {
     await form.locator('form button').nth(1).click()
     await expect.poll(() => page.evaluate(() => window.location.hash)).toBe('#/')
     const composer = page.locator('textarea, [contenteditable="true"]').first()
-    await expect.poll(async () => await composer.inputValue().catch(() => composer.textContent())).toContain('Zaplanuj tydzien')
+    await expect
+      .poll(async () => await composer.inputValue().catch(() => composer.textContent()))
+      .toContain('Zaplanuj tydzien')
     await page.locator('[data-jarvis-nav-view="prompts"]').click()
     await page.getByRole('button', { name: 'Plan E2E', exact: true }).click()
     await form.locator('form button').last().click()
@@ -286,14 +289,11 @@ test.describe('Jarvis product shell', () => {
       }
     }
 
-    await page.getByRole('button', { name: 'Historia czatu' }).click()
+    await page.getByRole('button', { name: 'Rozmowy' }).click()
     await expect(page.getByRole('dialog')).toBeVisible()
     await page.keyboard.press('Escape')
 
-    for (const { name, view, hash } of [
-      { name: 'Ustawienia', view: 'settings', hash: '#/settings' },
-      { name: 'Profil', view: 'profile', hash: '#/profiles' }
-    ]) {
+    for (const { name, view, hash } of [{ name: 'Profil', view: 'profile', hash: '#/profiles' }]) {
       const button = page.locator('[data-jarvis-nav-rail]').getByRole('button', { name, exact: true })
       await button.click()
       await expect(page.locator(`[data-jarvis-view="${view}"]`)).toBeVisible()

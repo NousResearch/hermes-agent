@@ -576,7 +576,7 @@ export const pl = defineLocale({
       nav: {
         tagline: 'Ludzie · Wiedza · Realne efekty',
         search: 'Szukaj…',
-        sections: { work: 'Praca', knowledge: 'Wiedza', system: 'System' },
+        sections: { work: 'Praca', knowledge: 'Wiedza', connections: 'Połączenia', system: 'System' },
         promoTitle: 'Buduj więcej z AI.',
         promoBody: 'Dodaj umiejętności i narzędzia — szybsze pomysły, większy efekt.',
         profileHint: 'Profile i agenci',
@@ -593,13 +593,13 @@ export const pl = defineLocale({
       tasks: 'Zadania',
       agents: 'Agenci',
       messaging: 'Komunikatory',
-      webhooks: 'Webhooki',
-      artifacts: 'Artefakty',
+      webhooks: 'Automatyzacje',
+      artifacts: 'Pliki i wyniki',
       memory: 'Pamięć',
       starmap: 'Mapa wiedzy',
-      tools: 'Możliwości',
-      connections: 'Połączenia',
-      insights: 'Centrum dowodzenia',
+      tools: 'Narzędzia',
+      connections: 'Integracje',
+      insights: 'Monitor systemu',
       settings: 'Ustawienia',
       profile: 'Profil'
     },
@@ -613,9 +613,9 @@ export const pl = defineLocale({
   },
 
   jarvisConnections: {
-    title: 'Połączenia',
+    title: 'Integracje',
     subtitle:
-      'Podłącz narzędzia, z których korzystasz na co dzień. Agent Czesiek poprowadzi Cię krok po kroku, a klucze i hasła zostają na tym komputerze.',
+      'Połącz Google, Kalendarz, GitHub, Notion i inne usługi do pracy. Komunikatory oraz automatyzacje mają osobne, prostsze sekcje w menu.',
     chosenLabel: 'Wybrane podczas konfiguracji',
     allLabel: 'Wszystkie połączenia',
     stepsLabel: 'Jak połączyć',
@@ -714,7 +714,7 @@ export const pl = defineLocale({
         description: 'Zapier, Linear, Figma, Slack, bazy danych i inne — przez serwery MCP.',
         examples: 'Każda usługa z katalogu MCP staje się narzędziem Agenta Cześka.',
         steps: [
-          'Otwórz Możliwości → MCP i wybierz usługę z katalogu.',
+          'Otwórz Narzędzia → MCP i wybierz usługę z katalogu.',
           'Podaj klucz lub zaloguj się, jeśli usługa tego wymaga — Agent Czesiek sprawdzi połączenie.'
         ],
         prompt: 'Pomóż mi podłączyć usługę przez MCP. Zapytaj, z czego korzystam, i zaproponuj serwer z katalogu.'
@@ -771,7 +771,7 @@ export const pl = defineLocale({
       access: 'Dostępy',
       approvals: 'Zgody',
       computer: 'Komputer',
-      connections: 'Połączenia i API',
+      connections: 'Integracje i API',
       engine: 'Silnik',
       model: 'Model',
       profile: 'Profil',
@@ -812,15 +812,15 @@ export const pl = defineLocale({
     },
     connections: {
       title: 'Co chcesz połączyć z Agentem Czeskiem?',
-      body: 'Zaznacz narzędzia, z których korzystasz. Nic nie łączy się teraz samo — po konfiguracji Agent Czesiek otworzy Połączenia i poprowadzi Cię po kolei.',
+      body: 'Zaznacz narzędzia, z których korzystasz. Nic nie łączy się teraz samo — po konfiguracji Agent Czesiek otworzy Integracje i poprowadzi Cię po kolei.',
       selected: count => (count === 0 ? 'Nic nie zaznaczono — możesz to zrobić później.' : `Zaznaczono: ${count}`),
       keysTitle: 'Klucze API w skrócie',
       keysBody:
-        'Klucz API to hasło dla usługi. Wklejasz go raz w Ustawieniach, zostaje zaszyfrowany na tym komputerze. Instrukcje z linkami są w Połączeniach.',
+        'Klucz API to hasło dla usługi. Wklejasz go raz w Ustawieniach, zostaje zaszyfrowany na tym komputerze. Instrukcje z linkami są w Integracjach.',
       apiTitle: 'API Agenta Cześka',
       apiBody:
-        'Chcesz, żeby n8n, Make albo Twoja aplikacja rozmawiały z Agentem Czeskiem? Włączysz jego API zgodne z OpenAI — przepis krok po kroku jest w Połączeniach.',
-      later: 'Wszystko to znajdziesz później w menu: Połączenia.'
+        'Chcesz, żeby n8n, Make albo Twoja aplikacja rozmawiały z Agentem Czeskiem? Włączysz jego API zgodne z OpenAI — przepis krok po kroku jest w Integracjach.',
+      later: 'Wszystko to znajdziesz później w menu: Integracje.'
     },
     profile: {
       active: 'Aktywny profil',
@@ -1065,7 +1065,7 @@ export const pl = defineLocale({
       'nav.profiles': 'Otwórz profile',
       'nav.skills': 'Otwórz umiejętności',
       'nav.messaging': 'Otwórz komunikatory',
-      'nav.artifacts': 'Otwórz artefakty',
+      'nav.artifacts': 'Otwórz pliki i wyniki',
       'nav.cron': 'Otwórz zaplanowane zadania',
       'nav.agents': 'Otwórz agentów',
       'session.new': 'Nowa sesja',
@@ -1216,7 +1216,7 @@ export const pl = defineLocale({
       kinds: { bundled: 'dołączona', disk: 'na dysku', runtime: 'środowisko uruchomieniowe' },
       agentHalfMissing: 'brak części agentowej',
       agentHalfMissingTip:
-        'To desktopowa część dołączonej wtyczki, ale jej część agentowa nie jest zainstalowana w aktualnie podłączonym backendzie/profilu. Zainstaluj ją w Możliwości → Wtyczki.',
+        'To desktopowa część dołączonej wtyczki, ale jej część agentowa nie jest zainstalowana w aktualnie podłączonym backendzie/profilu. Zainstaluj ją w Narzędzia → Wtyczki.',
       installModal: {
         installFromGit: 'Zainstaluj z Gita',
         reviewRepository: 'Przejrzyj repozytorium',
@@ -1494,7 +1494,8 @@ export const pl = defineLocale({
       tipsReset: (count: number) =>
         `Pokaż ponownie ${count} ${PL_PLURAL(count, 'wskazówkę', 'wskazówki', 'wskazówek')}`,
       toursTitle: 'Przewodniki',
-      toursDesc: 'Pozwól Agentowi Cześkowi oprowadzić Cię po aplikacji, przyciemniając ekran i podświetlając każdy krok.',
+      toursDesc:
+        'Pozwól Agentowi Cześkowi oprowadzić Cię po aplikacji, przyciemniając ekran i podświetlając każdy krok.',
       composerPopoutTitle: 'Pływający edytor wiadomości',
       composerPopoutDesc: 'Pozwala wyciągnąć edytor wiadomości z jego doku. Wyłącz, aby pozostał zakotwiczony na dole.',
       vibeHeartsTitle: 'Serduszka',
@@ -1874,7 +1875,8 @@ export const pl = defineLocale({
       lastChecked: age => `Ostatnio sprawdzono ${age}`,
       justNowSuffix: ' · przed chwilą',
       automaticUpdates: 'Automatyczne aktualizacje',
-      automaticUpdatesDesc: 'Agent Czesiek automatycznie sprawdza aktualizacje w tle i informuje, gdy któraś jest gotowa.',
+      automaticUpdatesDesc:
+        'Agent Czesiek automatycznie sprawdza aktualizacje w tle i informuje, gdy któraś jest gotowa.',
       branchCommit: (branch, commit) => `Gałąź ${branch} · Commit ${commit}`,
       never: 'nigdy',
       justNow: 'przed chwilą',
@@ -2135,7 +2137,8 @@ export const pl = defineLocale({
       enterUrlFirst: 'Najpierw wpisz adres zdalny.',
       restartingTitle: 'Ponowne uruchamianie połączenia z bramą',
       savedTitle: 'Zapisano ustawienia bramy',
-      restartingMessage: 'Agent Czesiek Desktop połączy się ponownie z użyciem zapisanych ustawień — okno pozostaje otwarte.',
+      restartingMessage:
+        'Agent Czesiek Desktop połączy się ponownie z użyciem zapisanych ustawień — okno pozostaje otwarte.',
       savedMessage: 'Zapisano na następny start.',
       connectedTo: (baseUrl, version) => `Połączono z ${baseUrl}${version ? ` · Agent Czesiek ${version}` : ''}`,
       reachableTitle: 'Zdalna brama jest osiągalna',
@@ -2847,7 +2850,7 @@ export const pl = defineLocale({
   },
 
   commandCenter: {
-    close: 'Zamknij centrum poleceń',
+    close: 'Zamknij monitor systemu',
     paletteTitle: 'Paleta poleceń',
     back: 'Wstecz',
     searchPlaceholder: 'Szukaj sesji, widoków i akcji',
@@ -2860,7 +2863,7 @@ export const pl = defineLocale({
     newSessionInProject: project => `Nowa sesja w projekcie ${project}`,
     commands: 'Polecenia',
     startInBranch: branch => `Nowa rozmowa w gałęzi ${branch}`,
-    commandCenter: 'Centrum poleceń',
+    commandCenter: 'Monitor systemu',
     appearance: 'Wygląd',
     settings: 'Ustawienia',
     changeTheme: 'Zmień motyw',
@@ -2935,9 +2938,9 @@ export const pl = defineLocale({
     nav: {
       newChat: { title: 'Nowa sesja', detail: 'Rozpocznij nową sesję' },
       settings: { title: 'Ustawienia', detail: 'Skonfiguruj Agent Czesiek Desktop' },
-      skills: { title: 'Możliwości', detail: 'Umiejętności, narzędzia, serwery MCP i wtyczki' },
+      skills: { title: 'Narzędzia', detail: 'Umiejętności, narzędzia, serwery MCP i wtyczki' },
       messaging: { title: 'Komunikatory', detail: 'Skonfiguruj Telegram, Slack, Discord i inne' },
-      artifacts: { title: 'Artefakty', detail: 'Przeglądaj wygenerowane wyniki' }
+      artifacts: { title: 'Pliki i wyniki', detail: 'Przeglądaj wygenerowane wyniki' }
     },
     sectionEntries: {
       sessions: { title: 'Panel sesji', detail: 'Szukaj, przypinaj i zarządzaj sesjami' },
@@ -3237,8 +3240,8 @@ export const pl = defineLocale({
     search: 'Szukaj webhooków...',
     loading: 'Wczytywanie webhooków...',
     loadFailed: 'Nie udało się wczytać webhooków',
-    subscriptions: (count: number) => `Subskrypcje (${count})`,
-    hint: 'Zmiany subskrypcji przeładowują się na gorąco, gdy odbiornik działa. Wyłączone subskrypcje odrzucają przychodzące zdarzenia.',
+    subscriptions: (count: number) => `Webhooki i wyzwalacze (${count})`,
+    hint: 'Funkcja zaawansowana. Webhooki odbierają zdarzenia z innych usług i uruchamiają wybrane działania automatycznie.',
     empty: 'Nie ma jeszcze subskrypcji webhooków.',
     disabledTitle: 'Odbiornik webhooków wyłączony',
     disabledBody:
@@ -3713,9 +3716,9 @@ export const pl = defineLocale({
     },
     nav: {
       'new-session': 'Nowa sesja',
-      skills: 'Możliwości',
+      skills: 'Narzędzia',
       messaging: 'Komunikatory',
-      artifacts: 'Artefakty',
+      artifacts: 'Pliki i wyniki',
       cron: 'Zaplanowane zadania'
     },
     searchAria: 'Szukaj sesji',
@@ -3779,7 +3782,8 @@ export const pl = defineLocale({
       createFailed: 'Nie udało się utworzyć projektu',
       staleBackend:
         'Zaktualizuj backend Agenta Cześka, aby tworzyć projekty — Twój backend jest starszy niż ta aplikacja (Ustawienia → Aktualizacje → Backend).',
-      deleteConfirm: 'To usuwa zapisany projekt z Agenta Cześka. Pliki, repozytoria git i worktree pozostają nietknięte.',
+      deleteConfirm:
+        'To usuwa zapisany projekt z Agenta Cześka. Pliki, repozytoria git i worktree pozostają nietknięte.',
       startWork: 'Nowe worktree',
       newWorktreeTitle: 'Nowe worktree',
       newWorktreeDesc: 'Nazwij gałąź dla tego worktree.',
@@ -4321,7 +4325,8 @@ export const pl = defineLocale({
       'Użyj zdalnego backendu z tokenem sesji albo logowaniem w przeglądarce. Instalacja lokalna nie zostanie uruchomiona.',
     installLocalTitle: 'Zainstaluj Agenta Cześka lokalnie',
     installLocalDesc: 'Pobiera Agenta Cześka, tworzy jego środowisko Pythona i uruchamia backend na tym komputerze.',
-    localStartUnavailable: 'Nie udało się rozpocząć instalacji lokalnej. Zrestartuj Agent Czesiek Desktop i spróbuj ponownie.',
+    localStartUnavailable:
+      'Nie udało się rozpocząć instalacji lokalnej. Zrestartuj Agent Czesiek Desktop i spróbuj ponownie.',
     remoteSetupTitle: 'Połącz z istniejącym Agentem Cześkiem',
     remoteSetupDesc:
       'Wpisz adres swojej bramy. Agent Czesiek Desktop wykryje, czy potrzebny jest token, czy logowanie w przeglądarce.',
@@ -4374,7 +4379,8 @@ export const pl = defineLocale({
   onboarding: {
     headerTitle: 'Skonfigurujmy Twojego agenta Agent Czesiek',
     headerDesc: 'Podłącz dostawcę modeli, aby zacząć rozmawiać. Większość opcji wymaga jednego kliknięcia.',
-    preparingInstall: 'Agent Czesiek kończy instalację. Przy pierwszym uruchomieniu zwykle zajmuje to mniej niż minutę.',
+    preparingInstall:
+      'Agent Czesiek kończy instalację. Przy pierwszym uruchomieniu zwykle zajmuje to mniej niż minutę.',
     starting: 'Uruchamianie Agenta Cześka…',
     lookingUpProviders: 'Wyszukiwanie dostawców...',
     collapse: 'Zwiń',
@@ -4581,7 +4587,7 @@ export const pl = defineLocale({
       toggleApprovalMode: 'Zatwierdzenia',
       toggleBackendVersion: 'Wersja backendu',
       toggleCacheHitRate: 'Skuteczność cache',
-      toggleCommandCenter: 'Centrum poleceń',
+      toggleCommandCenter: 'Monitor systemu',
       toggleContextUsage: 'Miernik kontekstu',
       toggleRunningTimer: 'Licznik tury',
       toggleSessionTimer: 'Licznik sesji',
@@ -4600,8 +4606,8 @@ export const pl = defineLocale({
       running: count => `działających: ${count}`,
       cron: 'Cron',
       openCron: 'Otwórz zadania cron',
-      webhooks: 'Webhooki',
-      openWebhooks: 'Otwórz webhooki',
+      webhooks: 'Automatyzacje',
+      openWebhooks: 'Otwórz automatyzacje',
       starmap: 'Graf pamięci',
       openStarmap: 'Otwórz graf pamięci',
       turnRunning: 'W trakcie',
@@ -4825,7 +4831,7 @@ export const pl = defineLocale({
     newSessionTab: 'Nowa karta sesji',
     newTab: 'Nowa karta',
     pluginDisabled: pluginId => `Wtyczka „${pluginId}” wyłączona`,
-    pluginDisabledBody: 'Włącz ją ponownie w Możliwości → Wtyczki, aby przywrócić panel.',
+    pluginDisabledBody: 'Włącz ją ponownie w Narzędzia → Wtyczki, aby przywrócić panel.',
     missingPane: paneId => `brakujący panel: ${paneId}`,
     editTitle: 'Układy',
     editHint: 'Wybierz układ albo przeciągaj panele między strefami.',

@@ -556,7 +556,7 @@ export interface Translations {
       nav: {
         tagline: string
         search: string
-        sections: { work: string; knowledge: string; system: string }
+        sections: { work: string; knowledge: string; connections: string; system: string }
         promoTitle: string
         promoBody: string
         profileHint: string

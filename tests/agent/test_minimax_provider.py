@@ -60,6 +60,63 @@ class TestMinimaxThinkingSupport:
 
 
 
+class TestMinimaxM31AdaptiveEffort:
+    """MiniMax-M3.1-Flash-Preview speaks the adaptive contract: ``output_config.effort`` in
+    low/medium/high/xhigh/max with a default of ``max``, and thinking that cannot be disabled
+    (``thinking: {"type": "disabled"}`` -> HTTP 400 "requires adaptive thinking").
+    https://platform.minimax.io/docs/guides/text-generation#thinking
+
+    Before this, M3.1 fell through to the manual budget_tokens path, which MiniMax accepts but
+    does not map to effort: every Hermes turn ran at the server default (max), whatever
+    ``/reasoning`` said.
+    """
+
+    M31 = ("MiniMax-M3.1-Flash-Preview", "minimax/MiniMax-M3.1-Flash-Preview", "MiniMax-M3.1")
+
+    def _kwargs(self, model, reasoning_config):
+        from agent.anthropic_adapter import build_anthropic_kwargs
+        return build_anthropic_kwargs(
+            model=model,
+            messages=[{"role": "user", "content": "hello"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config=reasoning_config,
+            base_url="https://api.minimax.io/anthropic",
+        )
+
+    def test_m31_sends_the_requested_effort(self):
+        for model in self.M31:
+            for effort in ("low", "medium", "high", "xhigh", "max"):
+                kwargs = self._kwargs(model, {"enabled": True, "effort": effort})
+                assert kwargs["output_config"] == {"effort": effort}, (model, effort)
+                assert kwargs["thinking"]["type"] == "adaptive", model
+                assert "budget_tokens" not in kwargs["thinking"], model
+
+    def test_m31_minimal_maps_to_low_not_the_max_default(self):
+        kwargs = self._kwargs("MiniMax-M3.1-Flash-Preview", {"enabled": True, "effort": "minimal"})
+        assert kwargs["output_config"] == {"effort": "low"}
+
+    def test_m31_thinking_off_is_never_sent_as_a_disable(self):
+        """The disable is a 400 on M3.1; omission is the only 'off' it accepts."""
+        kwargs = self._kwargs("MiniMax-M3.1-Flash-Preview", {"enabled": False})
+        assert "thinking" not in kwargs
+        assert "output_config" not in kwargs
+
+    def test_m3_and_m2_keep_manual_thinking(self):
+        for model in ("MiniMax-M3", "minimax/MiniMax-M3", "MiniMax-M2.7", "MiniMax-M3-Flash"):
+            kwargs = self._kwargs(model, {"enabled": True, "effort": "low"})
+            assert kwargs["thinking"]["type"] == "enabled", model
+            assert "output_config" not in kwargs, model
+
+    def test_lookalikes_do_not_match(self):
+        from agent.anthropic_endpoints import _model_name_is_minimax_adaptive
+        for m in ("MiniMax-M3", "MiniMax-M3-Flash", "MiniMax-M31", "minimax-m30",
+                  "not-minimax-m3.1", "", None):
+            assert _model_name_is_minimax_adaptive(m) is False, m
+        for m in ("MiniMax-M3.1-Flash-Preview", "minimax-m3.1", "MiniMax-M3-1", "minimax/minimax-m3.1-x"):
+            assert _model_name_is_minimax_adaptive(m) is True, m
+
+
 class TestMinimaxBetaHeaders:
     """MiniMax Anthropic-compat endpoints reject fine-grained-tool-streaming beta.
 

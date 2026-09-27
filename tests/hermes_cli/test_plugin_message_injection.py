@@ -6,6 +6,8 @@ from unittest.mock import MagicMock, patch
 
 import hermes_yaml as yaml
 
+import hermes_cli.plugins as plugins_mod
+from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
 
 
@@ -181,3 +183,87 @@ def test_gateway_injection_fails_closed_on_host_exception(tmp_path, monkeypatch)
         )
         is False
     )
+
+
+def test_published_gateway_host_reaches_existing_and_future_profile_managers(tmp_path, monkeypatch):
+    homes = [tmp_path / name for name in ("launch", "secondary", "late")]
+    for home in homes:
+        home.mkdir()
+        (home / "config.yaml").write_text(
+            yaml.safe_dump({
+                "plugins": {"entries": {"notify-plugin": {"allow_gateway_injection": True}}}
+            })
+        )
+    monkeypatch.setenv("HERMES_HOME", str(homes[0]))
+    plugins_mod._reset_plugin_managers_for_tests()
+
+    def manager_for(home):
+        token = set_hermes_home_override(str(home))
+        try:
+            return plugins_mod.get_plugin_manager()
+        finally:
+            reset_hermes_home_override(token)
+
+    owner = object()
+    injector = MagicMock(return_value=True)
+    try:
+        launch_manager = manager_for(homes[0])
+        secondary_manager = manager_for(homes[1])
+        assert secondary_manager is not launch_manager
+        assert secondary_manager.has_gateway_message_injector is False
+
+        plugins_mod.publish_gateway_message_host(owner, injector)
+        assert launch_manager.has_gateway_message_injector is True
+        assert secondary_manager.has_gateway_message_injector is True
+
+        late_manager = manager_for(homes[2])
+        assert late_manager.has_gateway_message_injector is True
+
+        token = set_hermes_home_override(str(homes[1]))
+        try:
+            context = PluginContext(
+                PluginManifest(name="notify-plugin", key="notify-plugin", source="user"),
+                secondary_manager,
+            )
+            assert context.inject_message(
+                "continue", session_key="agent:secondary:telegram:dm:42"
+            ) is True
+        finally:
+            reset_hermes_home_override(token)
+
+        injector.assert_called_once_with(
+            session_key="agent:secondary:telegram:dm:42",
+            content="continue",
+            plugin_id="notify-plugin",
+        )
+
+        plugins_mod.clear_published_gateway_message_host(owner)
+        assert launch_manager.has_gateway_message_injector is False
+        assert secondary_manager.has_gateway_message_injector is False
+        assert late_manager.has_gateway_message_injector is False
+    finally:
+        plugins_mod.clear_published_gateway_message_host(owner)
+        plugins_mod._reset_plugin_managers_for_tests()
+
+
+def test_published_gateway_host_clear_preserves_newer_owner(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    plugins_mod._reset_plugin_managers_for_tests()
+    manager = plugins_mod.get_plugin_manager()
+    older_owner, newer_owner = object(), object()
+    older = MagicMock(return_value=False)
+    newer = MagicMock(return_value=True)
+    try:
+        plugins_mod.publish_gateway_message_host(older_owner, older)
+        plugins_mod.publish_gateway_message_host(newer_owner, newer)
+        plugins_mod.clear_published_gateway_message_host(older_owner)
+
+        assert manager.has_gateway_message_injector is True
+        assert manager.inject_gateway_message(session_key="kept") is True
+        newer.assert_called_once_with(session_key="kept")
+        older.assert_not_called()
+    finally:
+        plugins_mod.clear_published_gateway_message_host(newer_owner)
+        plugins_mod._reset_plugin_managers_for_tests()

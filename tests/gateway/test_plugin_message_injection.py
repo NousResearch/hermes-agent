@@ -119,7 +119,9 @@ async def test_plugin_context_routes_through_live_gateway_to_existing_session(
         manager,
     )
 
-    with patch("hermes_cli.plugins.get_plugin_manager", return_value=manager):
+    # The runner publishes process-wide; expose this standalone manager through the legacy slot so
+    # the real publisher stamps it while this integration test still exercises the scheduler.
+    with patch("hermes_cli.plugins._plugin_manager", manager):
         runner._install_plugin_message_injector()
         assert (
             context.inject_message(
@@ -431,24 +433,15 @@ def test_scheduler_rejects_submission_failure():
         )
 
 
-def test_install_and_clear_gateway_injector_preserves_newer_owner():
+def test_install_and_clear_gateway_injector_use_process_host():
     runner = _runner(_entry())
-    manager = PluginManager()
 
-    with patch("hermes_cli.plugins.get_plugin_manager", return_value=manager):
+    with (
+        patch("hermes_cli.plugins.publish_gateway_message_host") as publish,
+        patch("hermes_cli.plugins.clear_published_gateway_message_host") as clear,
+    ):
         runner._install_plugin_message_injector()
-        assert manager.has_gateway_message_injector is True
-
-        runner._clear_plugin_message_injector()
-        assert manager.has_gateway_message_injector is False
-
-        runner._install_plugin_message_injector()
-
-        newer_owner = MagicMock()
-        newer_injector = MagicMock(return_value=True)
-        manager.set_gateway_message_injector(newer_owner, newer_injector)
         runner._clear_plugin_message_injector()
 
-    assert manager.has_gateway_message_injector is True
-    assert manager.inject_gateway_message(value="kept") is True
-    newer_injector.assert_called_once_with(value="kept")
+    publish.assert_called_once_with(runner, runner._schedule_plugin_message_injection)
+    clear.assert_called_once_with(runner)

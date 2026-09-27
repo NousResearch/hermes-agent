@@ -21,6 +21,8 @@ import {
   type MessagingPlatformInfo,
   type MessagingPlatformUpdate,
   type PairingUser,
+  type ProfileScope,
+  profileScopeKey,
   revokePairing,
   type TelegramOnboardingApplyResponse,
   updateMessagingPlatform
@@ -33,7 +35,7 @@ import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { $changeEventsAvailable, $pairingChangeTick, $platformsChangeTick } from '@/store/live-sync'
 import { notify, notifyError } from '@/store/notifications'
-import { $settingsRequestProfile } from '@/store/settings-scope'
+import { $settingsOwner, $settingsScopeProfile } from '@/store/settings-scope'
 import { $gatewayRestarting, runGatewayRestart, watchGatewayRestartOutcome } from '@/store/system-actions'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
@@ -118,6 +120,17 @@ function byPlatform(rows: PairingUser[]): Record<string, PairingUser[]> {
   return grouped
 }
 
+/** Custom HERMES_HOME is an ambient home, not a named profile. */
+function ownsSettingsScope(owner: ProfileScope, scopeKey: string): boolean {
+  if (!owner || typeof owner !== 'object') {
+    return false
+  }
+
+  const profile = owner.profile?.trim()
+
+  return profile ? profile === scopeKey : scopeKey === 'custom'
+}
+
 const FIELD_COPY: Record<string, { advanced?: boolean }> = {
   TELEGRAM_PROXY: { advanced: true },
   DISCORD_REPLY_TO_MODE: { advanced: true },
@@ -149,14 +162,26 @@ function fieldCopy(field: MessagingEnvVarInfo, m: Translations['messaging']) {
 export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...props }: MessagingViewProps) {
   const { t } = useI18n()
   const m = t.messaging
-  // Shared settings "Applies to" scope, request-shaped (undefined → follow
-  // the active profile; the API helpers treat null as "target primary").
-  const scopeProfile = useStore($settingsRequestProfile)
+  // Pin every read, write and deferred action to the Settings gateway/profile owner.
+  const scopeKey = useStore($settingsScopeProfile)
+  const scopeProfile = useStore($settingsOwner)
+
+  const ownsScope = ownsSettingsScope(scopeProfile, scopeKey)
+
+  const renderScopeKey = ownsScope
+    ? `${profileScopeKey(scopeProfile)}::${scopeKey}`
+    : `unavailable::${scopeKey}`
+
+  const scopeRef = useRef(scopeProfile)
+  const scopeKeyRef = useRef(scopeKey)
+  scopeRef.current = scopeProfile
+  scopeKeyRef.current = scopeKey
   const [platforms, setPlatforms] = useState<MessagingPlatformInfo[] | null>(null)
   // A saved credential/toggle only takes effect on the next gateway start, so a
   // vanishing toast is not enough: the page keeps a banner up until a restart
   // actually happens (dashboard parity). Cleared on a completed restart.
-  const [restartNeeded, setRestartNeeded] = useState(false)
+  const [restartOwner, setRestartOwner] = useState<ProfileScope>(null)
+  const restartNeeded = Boolean(scopeProfile && restartOwner === scopeProfile)
   const gatewayRestarting = useStore($gatewayRestarting)
 
   const [pairing, setPairing] = useState<{ approved: PairingUser[]; pending: PairingUser[] }>({
@@ -175,59 +200,68 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   const [selectedId, setSelectedId] = useRouteEnumParam('platform', platformIds, platformIds[0] ?? '')
 
   const restartGatewayNow = useCallback(async () => {
+    const owner = scopeRef.current
+
+    if (!owner) {
+      return
+    }
+
     // runGatewayRestart never rejects: it toasts the failure and settles the
     // statusbar indicator; the banner stays if the restart did not complete.
-    const ok = await runGatewayRestart()
+    const ok = await runGatewayRestart(owner, () => scopeRef.current === owner)
 
-    if (ok) {
-      setRestartNeeded(false)
+    if (ok && scopeRef.current === owner) {
+      setRestartOwner(null)
       window.setTimeout(() => void refreshPlatformsRef.current(true), 4000)
     }
   }, [])
 
   // A multiplexed named profile is re-served from its new config at once (`hot_served`): no restart
   // banner; re-read status once the adapter had a moment to connect. Anything else needs a restart.
-  const settleAfterUpdate = useCallback((hotServed: boolean | undefined) => {
+  const settleAfterUpdate = useCallback((hotServed: boolean | undefined, owner: ProfileScope) => {
+    if (!owner || scopeRef.current !== owner) {
+      return
+    }
+
     if (hotServed) {
       window.setTimeout(() => void refreshPlatformsRef.current(true), 4000)
 
       return
     }
 
-    setRestartNeeded(true)
+    setRestartOwner(owner)
   }, [])
-
-  // The scope each in-flight fetch was issued for. A→B: A's request can resolve
-  // AFTER the switch and repaint A's platforms/env snapshot (its redacted
-  // Telegram token included) under B until B's own response lands (#96542).
-  // A response whose scope is no longer the rendered one is dropped.
-  const scopeRef = useRef(scopeProfile)
-
-  scopeRef.current = scopeProfile
 
   const refreshPlatforms = useCallback(
     async (silent = false) => {
+      const owner = scopeProfile
+      const requestScopeKey = scopeKey
+
+      if (!ownsSettingsScope(owner, requestScopeKey)) {
+        return
+      }
+
       if (!silent) {
         setRefreshing(true)
       }
 
       try {
-        const result = await getMessagingPlatforms(scopeProfile)
+        const result = await getMessagingPlatforms(owner)
 
-        if (scopeRef.current === scopeProfile) {
+        if (scopeRef.current === owner && scopeKeyRef.current === requestScopeKey) {
           setPlatforms(result.platforms)
         }
       } catch (err) {
-        if (!silent) {
+        if (!silent && scopeRef.current === owner && scopeKeyRef.current === requestScopeKey) {
           notifyError(err, m.loadFailed)
         }
       } finally {
-        if (!silent) {
+        if (!silent && scopeRef.current === owner && scopeKeyRef.current === requestScopeKey) {
           setRefreshing(false)
         }
       }
     },
-    [m, scopeProfile]
+    [m, scopeKey, scopeProfile]
   )
 
   // Latest-callback ref: the deferred post-restart refresh must not capture a
@@ -242,16 +276,23 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   // reconnected. Failures stay silent: an older backend without the endpoint
   // should show no rows, not an error banner over a working page.
   const refreshPairing = useCallback(async () => {
-    try {
-      const result = await getPairing(scopeProfile)
+    const owner = scopeProfile
+    const requestScopeKey = scopeKey
 
-      if (scopeRef.current === scopeProfile) {
+    if (!ownsSettingsScope(owner, requestScopeKey)) {
+      return
+    }
+
+    try {
+      const result = await getPairing(owner)
+
+      if (scopeRef.current === owner && scopeKeyRef.current === requestScopeKey) {
         setPairing({ approved: result.approved ?? [], pending: result.pending ?? [] })
       }
     } catch {
       // Leave the last known rows in place rather than blanking them.
     }
-  }, [scopeProfile])
+  }, [scopeKey, scopeProfile])
 
   const refreshAll = useCallback(
     async (silent = false) => {
@@ -275,13 +316,18 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   // scope for the ~1s until the fetch lands (#96542). Setting state during
   // render makes React throw the stale frame away before it reaches the
   // screen.
-  const [prevScope, setPrevScope] = useState(scopeProfile)
+  const [prevScope, setPrevScope] = useState(renderScopeKey)
 
-  if (prevScope !== scopeProfile) {
-    setPrevScope(scopeProfile)
+  if (prevScope !== renderScopeKey) {
+    setPrevScope(renderScopeKey)
     setPlatforms(null)
     setPairing({ approved: [], pending: [] })
     setEdits({})
+    setRestartOwner(null)
+    setPendingRevoke(null)
+    setSaving(null)
+    setApproving(null)
+    setRefreshing(false)
   }
 
   const changeEventsAvailable = useStore($changeEventsAvailable)
@@ -373,10 +419,15 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   }
 
   async function handleToggle(platform: MessagingPlatformInfo, enabled: boolean) {
+    const owner = scopeProfile
+
+    if (!owner) {return}
     setSaving(`enabled:${platform.id}`)
 
     try {
-      const result = await updateMessagingPlatform(platform.id, { enabled }, scopeProfile)
+      const result = await updateMessagingPlatform(platform.id, { enabled }, owner)
+
+      if (scopeRef.current !== owner) {return}
       setPlatforms(
         current =>
           current?.map(row =>
@@ -389,51 +440,61 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
               : row
           ) ?? current
       )
-      settleAfterUpdate(result.hot_served)
+      settleAfterUpdate(result.hot_served, owner)
       notify({
         kind: 'success',
         title: enabled ? m.platformEnabled(platform.name) : m.platformDisabled(platform.name),
         message: result.hot_served ? m.appliedLive : m.restartToApply
       })
     } catch (err) {
-      notifyError(err, m.failedUpdate(platform.name))
+      if (scopeRef.current === owner) {notifyError(err, m.failedUpdate(platform.name))}
     } finally {
-      setSaving(null)
+      if (scopeRef.current === owner) {setSaving(null)}
     }
   }
 
   async function handleSave(platform: MessagingPlatformInfo) {
+    const owner = scopeProfile
     const update = platformChanges(platform, edits[platform.id] || {})
 
-    if (!hasChanges(update)) {
+    if (!owner || !hasChanges(update)) {
       return
     }
 
     setSaving(`env:${platform.id}`)
 
     try {
-      const result = await updateMessagingPlatform(platform.id, update, scopeProfile)
+      const result = await updateMessagingPlatform(platform.id, update, owner)
+
+      if (scopeRef.current !== owner) {return}
       // Refresh before dropping the drafts so list editors re-seed from the saved value, not the old one.
       await refreshPlatforms()
+
+      if (scopeRef.current !== owner) {return}
       setEdits(current => ({ ...current, [platform.id]: {} }))
-      settleAfterUpdate(result.hot_served)
+      settleAfterUpdate(result.hot_served, owner)
       notify({
         kind: 'success',
         title: m.setupSaved(platform.name),
         message: result.hot_served ? m.connectingLive : m.restartToReconnect
       })
     } catch (err) {
-      notifyError(err, m.failedSave(platform.name))
+      if (scopeRef.current === owner) {notifyError(err, m.failedSave(platform.name))}
     } finally {
-      setSaving(null)
+      if (scopeRef.current === owner) {setSaving(null)}
     }
   }
 
   async function handleClear(platform: MessagingPlatformInfo, key: string) {
+    const owner = scopeProfile
+
+    if (!owner) {return}
     setSaving(`clear:${key}`)
 
     try {
-      const result = await updateMessagingPlatform(platform.id, { clear_env: [key] }, scopeProfile)
+      const result = await updateMessagingPlatform(platform.id, { clear_env: [key] }, owner)
+
+      if (scopeRef.current !== owner) {return}
       setEdits(current => ({
         ...current,
         [platform.id]: {
@@ -442,12 +503,14 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         }
       }))
       await refreshPlatforms()
-      settleAfterUpdate(result.hot_served)
+
+      if (scopeRef.current !== owner) {return}
+      settleAfterUpdate(result.hot_served, owner)
       notify({ kind: 'success', title: m.keyCleared(key), message: m.setupUpdated(platform.name) })
     } catch (err) {
-      notifyError(err, m.failedClear(key))
+      if (scopeRef.current === owner) {notifyError(err, m.failedClear(key))}
     } finally {
-      setSaving(null)
+      if (scopeRef.current === owner) {setSaving(null)}
     }
   }
 
@@ -455,7 +518,12 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   // the gateway. restart_started only means the child spawned; watch its exit
   // so a failed restart lands in the banner instead of a silent "stopped".
   async function handleTelegramApplied(result: TelegramOnboardingApplyResponse) {
+    const owner = scopeProfile
+
+    if (!owner) {return}
     await refreshPlatforms(true)
+
+    if (scopeRef.current !== owner) {return}
 
     if (result.restart_started) {
       const connectedBot = result.bot_username ? `${m.states.connected}: @${result.bot_username}` : null
@@ -465,16 +533,21 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         title: m.setupSaved('Telegram'),
         message: [connectedBot, m.telegramQr.savedRestarting].filter(Boolean).join(' · ')
       })
-      setRestartNeeded(false)
-      const ok = await watchGatewayRestartOutcome()
+      setRestartOwner(null)
+      const ok = await watchGatewayRestartOutcome(owner, () => scopeRef.current === owner)
+
+      if (scopeRef.current !== owner) {return}
 
       if (!ok) {
-        setRestartNeeded(true)
+        setRestartOwner(owner)
         notify({
           kind: 'error',
           title: m.restartFailedManual,
           message: m.restartFailedManualDetail,
-          action: { label: m.restartAgain, onClick: () => void runGatewayRestart() },
+          action: {
+            label: m.restartAgain,
+            onClick: () => void runGatewayRestart(owner, () => scopeRef.current === owner)
+          },
           secondaryAction: {
             label: m.openLogs,
             onClick: () => void window.hermesDesktop?.revealLogs?.().catch(() => undefined)
@@ -492,9 +565,9 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       // to the app's own restart action, same as the manual-save path.
       await restartGatewayNow()
 
-      if (result.restart_error) {
+      if (scopeRef.current === owner && result.restart_error) {
         notifyError(new Error(result.restart_error), m.telegramQr.savedRestartFailed(`: ${result.restart_error}`))
-        setRestartNeeded(true)
+        setRestartOwner(owner)
       }
     }
   }
@@ -503,7 +576,9 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   // authoritative refresh have the last word. A failed write restores the
   // snapshot so the row never silently disappears on an error.
   async function handleApprove(user: PairingUser) {
-    if (!user.request_id) {
+    const owner = scopeProfile
+
+    if (!owner || !user.request_id) {
       return
     }
 
@@ -516,23 +591,29 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     }))
 
     try {
-      await approvePairing(user.platform, user.request_id, scopeProfile)
+      await approvePairing(user.platform, user.request_id, owner)
+
+      if (scopeRef.current !== owner) {return}
       notify({ kind: 'success', title: m.approvedUser(pairingLabel(user)), message: m.approvedHint })
       await refreshPairing()
     } catch (err) {
+      if (scopeRef.current !== owner) {return}
       setPairing(snapshot)
       // 429 is the code path's brute-force lockout — a distinct condition the
       // operator can only wait out, so it gets its own message.
       const lockedOut = err instanceof Error && err.message.includes('429')
       notifyError(err, lockedOut ? m.pairingLockedOut : m.failedApprove(pairingLabel(user)))
     } finally {
-      setApproving(null)
+      if (scopeRef.current === owner) {setApproving(null)}
     }
   }
 
   // ConfirmDialog owns the pending → done → close beat and shows an inline
   // error when onConfirm throws, so this rethrows instead of swallowing.
   async function handleRevoke(user: PairingUser) {
+    const owner = scopeProfile
+
+    if (!owner) {return}
     const key = pairingKey(user)
     const snapshot = pairing
     setPairing(current => ({
@@ -541,12 +622,16 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     }))
 
     try {
-      await revokePairing(user.platform, user.user_id, scopeProfile)
+      await revokePairing(user.platform, user.user_id, owner)
+
+      if (scopeRef.current !== owner) {return}
       notify({ kind: 'success', title: m.revokedUser(pairingLabel(user)), message: user.platform })
       await refreshPairing()
     } catch (err) {
-      setPairing(snapshot)
-      throw err
+      if (scopeRef.current === owner) {
+        setPairing(snapshot)
+        throw err
+      }
     }
   }
 
@@ -739,7 +824,7 @@ function PlatformDetail({
   pending: PairingUser[]
   platform: MessagingPlatformInfo
   saving: string | null
-  scopeProfile: string | undefined
+  scopeProfile: ProfileScope
 }) {
   const { t } = useI18n()
   const m = t.messaging

@@ -335,6 +335,7 @@ function SidebarSessionRowImpl({
         onToggleUnread={onToggleUnread}
         pinned={isPinned}
         profile={session.profile}
+        session={session}
         sessionId={session.id}
         title={title}
         unread={unread}
@@ -365,6 +366,7 @@ function SidebarSessionRowImpl({
       onToggleUnread={onToggleUnread}
       pinned={isPinned}
       profile={session.profile}
+      session={session}
       sessionId={session.id}
       title={title}
       unread={unread}

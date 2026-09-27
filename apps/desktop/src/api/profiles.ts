@@ -29,7 +29,7 @@ export function createProfile(body: ProfileCreatePayload): Promise<{ name: strin
 // square's SOUL/name in place. capabilityScoped now forwards a `'local'` pin
 // itself (it must, or a remote registry PRIMARY absorbs "This device" reads),
 // so this is a plain alias kept for the call sites' self-documenting name.
-function profileOwnerScoped(scope?: ProfileScope): { connectionId?: string; profile?: string } {
+function profileOwnerScoped(scope?: ProfileScope): { connectionId?: null | string; profile?: string } {
   return capabilityScoped(scope)
 }
 

@@ -1,13 +1,13 @@
 name: orcaslicer
 repo: https://github.com/mazzanfar/hermes-orcaslicer
-sha: 1417fdff0a34e18a1c5416864721657cd4477de4
-version: "0.2.0"
+sha: c4c4860b6f160f99dfd88a74175feaa386ba32a1
+version: "0.3.0"
 title: OrcaSlicer for Hermes
 description: >-
   Prepare, slice, preflight and export 3D prints with stock OrcaSlicer profiles.
   Includes explicit printer upload/control, camera snapshots and monitoring
-  through supported protocols. Community preview; protocol and hardware limits
-  are documented. Independent of OrcaSlicer and Nous Research.
+  through supported protocols. Protocol and hardware limits are documented.
+  Independent of OrcaSlicer and Nous Research.
 maintainer: mazzanfar
 tier: community
 category: tools

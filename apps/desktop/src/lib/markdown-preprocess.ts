@@ -446,10 +446,7 @@ function rewriteProseSegment(segment: string): string {
       autoLinkRawUrls(
         routeFileLinksToPreview(
           escapeUnknownHtmlLikeTags(
-            segment
-              .replace(/`{3,}/g, '')
-              .replace(CITATION_TRANSPORT_MARKER_RE, '')
-              .replace(CITATION_MARKER_RE, '')
+            segment.replace(/`{3,}/g, '').replace(CITATION_TRANSPORT_MARKER_RE, '').replace(CITATION_MARKER_RE, '')
           )
         )
       )

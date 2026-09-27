@@ -203,7 +203,7 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
             if any(part in _EXCLUDED_SKILL_DIRS for part in skill_md.parts):
                 continue
             try:
-                frontmatter, body = _parse_frontmatter(_read_skill_text(skill_md)[:4000])
+                frontmatter, body = _parse_frontmatter(_read_skill_text(skill_md))
                 if not skill_matches_platform(frontmatter) or not skill_matches_environment(frontmatter) or not skill_matches_apps(frontmatter):
                     continue
                 name = frontmatter.get("name", skill_md.parent.name)[:MAX_NAME_LENGTH]

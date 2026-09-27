@@ -282,6 +282,24 @@ class TestProposalRedaction:
         assert all("user:***@" in ex for ex in examples)
 
 
+    def test_signed_url_secret_never_becomes_allowlist_pattern(
+        self, db_path, isolated_allowlist, capsys
+    ):
+        """Strict URL redaction must sanitize before a mined glob can be persisted."""
+        secret = "s3cr3tK9x"
+        path, con = db_path
+        cmd = f"X-Amz-Signature={secret} curl https://bucket.example/file"
+        for _ in range(3):
+            _add_terminal_call(con, cmd)
+
+        assert suggest_command(_args(path, json=True)) == 0
+        payload = json.loads(capsys.readouterr().out)
+        proposals = payload["proposals"]
+        assert proposals
+        serialized = json.dumps(proposals)
+        assert secret not in serialized
+
+
 # ---------------------------------------------------------------------------
 # --apply / dry-run
 # ---------------------------------------------------------------------------

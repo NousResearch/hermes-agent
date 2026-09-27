@@ -5,8 +5,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { I18nProvider } from '@/i18n'
 import { $clarifyDockedSessions, clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
 import { $gateway } from '@/store/gateway'
+import { rememberServerRequest, resetServerRequestsForTests } from '@/store/server-requests'
 import { $activeSessionId } from '@/store/session'
-import { $threadScrolledUp } from '@/store/thread-scroll'
+import { $threadScrolledUpBySession } from '@/store/thread-scroll'
 
 import { ComposerStatusStack } from './index'
 
@@ -33,7 +34,10 @@ function renderStack(sessionId: null | string = SID) {
 
 function parkClarify(sessionId = SID) {
   const request = vi.fn().mockResolvedValue({ ok: true })
+  // Answers ride the live server→client request frame, not a gateway RPC.
+  const respond = vi.fn()
 
+  rememberServerRequest({ fail: vi.fn(), id: 'req-1', method: 'clarify', params: {}, respond })
   $activeSessionId.set(sessionId)
   $gateway.set({ request } as never)
   setClarifyRequest({
@@ -44,7 +48,7 @@ function parkClarify(sessionId = SID) {
     sessionId
   })
 
-  return request
+  return respond
 }
 
 describe('ComposerStatusStack Needs-you section', () => {
@@ -53,6 +57,7 @@ describe('ComposerStatusStack Needs-you section', () => {
     clearClarifyRequest()
     $activeSessionId.set(null)
     $gateway.set(null)
+    resetServerRequestsForTests()
     vi.clearAllMocks()
   })
 
@@ -99,19 +104,19 @@ describe('ComposerStatusStack Needs-you section', () => {
 
   it('stays fully opaque while the thread is scrolled up (a ghosted question is a missed question)', () => {
     parkClarify()
-    $threadScrolledUp.set(true)
+    $threadScrolledUpBySession.set({ [SID]: true })
 
     const view = renderStack()
-    const card = view.container.querySelector('[data-slot="composer-status-stack"] > div') as HTMLElement
+    const card = view.container.querySelector('[data-slot="status-stack-content"]') as HTMLElement
 
     expect(card.classList.contains('opacity-30')).toBe(false)
     expect(card.classList.contains('opacity-100')).toBe(true)
 
-    $threadScrolledUp.set(false)
+    $threadScrolledUpBySession.set({})
   })
 
   it('answers the same request the inline card would and clears the panel', async () => {
-    const request = parkClarify()
+    const respond = parkClarify()
 
     renderStack()
 
@@ -119,7 +124,7 @@ describe('ComposerStatusStack Needs-you section', () => {
     fireEvent.click(screen.getByRole('button', { name: /Continue/ }))
 
     await vi.waitFor(() => {
-      expect(request).toHaveBeenCalledWith('clarify.respond', { answer: 'Pause here for review', request_id: 'req-1' })
+      expect(respond).toHaveBeenCalledWith({ answer: 'Pause here for review' })
     })
 
     await vi.waitFor(() => {

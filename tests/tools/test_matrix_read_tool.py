@@ -16,6 +16,16 @@ from tools.registry import registry
 matrix_read_tool = importlib.import_module("tools.matrix_read_tool")
 
 
+def _dispatch_in_worker(tool, args):
+    from model_tools import _get_worker_loop
+
+    loop = _get_worker_loop()
+    try:
+        return registry.dispatch(tool, args)
+    finally:
+        loop.close()
+
+
 def _bind_matrix_session(adapter, **overrides):
     values = dict(platform="matrix", chat_id="!room:server", user_id="@alice:server",
                   transport_adapter=adapter, transport_loop=asyncio.get_running_loop())
@@ -31,7 +41,7 @@ async def test_matrix_read_uses_session_owner_and_room():
     tokens = _bind_matrix_session(adapter, thread_id="$root", session_key="matrix-session")
     try:
         result = json.loads(await asyncio.to_thread(
-            registry.dispatch, "matrix_read", {"kind": "room", "limit": 5},
+            _dispatch_in_worker, "matrix_read", {"kind": "room", "limit": 5},
         ))
     finally:
         clear_session_vars(tokens)
@@ -44,9 +54,30 @@ async def test_matrix_read_uses_session_owner_and_room():
 
 
 @pytest.mark.asyncio
+async def test_matrix_room_inspection_uses_session_owner():
+    adapter = SimpleNamespace(
+        read_matrix_context=AsyncMock(),
+        inspect_matrix_room=AsyncMock(return_value={"room_id": "!room:server", "name": "Planning"}),
+    )
+    tokens = _bind_matrix_session(adapter)
+    try:
+        result = json.loads(await asyncio.to_thread(
+            _dispatch_in_worker, "matrix_read", {"kind": "state"},
+        ))
+    finally:
+        clear_session_vars(tokens)
+
+    assert result == {"room_id": "!room:server", "name": "Planning"}
+    adapter.inspect_matrix_room.assert_awaited_once_with(
+        "state", "!room:server", 20, requester="@alice:server",
+    )
+    adapter.read_matrix_context.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(("args", "error"), [
-    ({}, "kind must be room, thread, or event"),
-    ({"kind": "search"}, "kind must be room, thread, or event"),
+    ({}, "kind must be room, thread, event, state, members, permissions, or pins"),
+    ({"kind": "search"}, "kind must be room, thread, event, state, members, permissions, or pins"),
     ({"kind": "thread"}, "event_id is required for thread and event reads"),
     ({"kind": "event"}, "event_id is required for thread and event reads"),
     ({"kind": "event", "event_id": "not-an-event"}, "event_id is required for thread and event reads"),
@@ -60,7 +91,7 @@ async def test_matrix_read_rejects_invalid_arguments_before_reading(args, error)
     adapter = SimpleNamespace(read_matrix_context=AsyncMock(return_value={"events": []}))
     tokens = _bind_matrix_session(adapter)
     try:
-        result = json.loads(await asyncio.to_thread(registry.dispatch, "matrix_read", args))
+        result = json.loads(await asyncio.to_thread(_dispatch_in_worker, "matrix_read", args))
     finally:
         clear_session_vars(tokens)
 
@@ -76,7 +107,7 @@ async def test_matrix_read_rejects_invalid_arguments_before_reading(args, error)
 async def test_matrix_read_requires_live_matrix_session(session):
     tokens = _bind_matrix_session(None, **session)
     try:
-        result = json.loads(await asyncio.to_thread(registry.dispatch, "matrix_read", {"kind": "room"}))
+        result = json.loads(await asyncio.to_thread(_dispatch_in_worker, "matrix_read", {"kind": "room"}))
     finally:
         clear_session_vars(tokens)
 
@@ -97,7 +128,7 @@ async def test_matrix_read_runs_on_owning_gateway_loop():
 
     tokens = _bind_matrix_session(SimpleNamespace(read_matrix_context=read))
     try:
-        result = await asyncio.to_thread(registry.dispatch, "matrix_read", {"kind": "room"})
+        result = await asyncio.to_thread(_dispatch_in_worker, "matrix_read", {"kind": "room"})
     finally:
         clear_session_vars(tokens)
 
@@ -110,7 +141,7 @@ async def test_matrix_read_refuses_a_stopped_owner_loop():
     stopped_loop = asyncio.new_event_loop()
     tokens = _bind_matrix_session(adapter, transport_loop=stopped_loop)
     try:
-        result = await asyncio.to_thread(registry.dispatch, "matrix_read", {"kind": "room"})
+        result = await asyncio.to_thread(_dispatch_in_worker, "matrix_read", {"kind": "room"})
     finally:
         clear_session_vars(tokens)
         stopped_loop.close()
@@ -152,7 +183,7 @@ async def test_matrix_read_deadline_cancels_a_stalled_read(monkeypatch):
 
     tokens = _bind_matrix_session(SimpleNamespace(read_matrix_context=stalled_read))
     try:
-        dispatch = asyncio.create_task(asyncio.to_thread(registry.dispatch, "matrix_read", {"kind": "room"}))
+        dispatch = asyncio.create_task(asyncio.to_thread(_dispatch_in_worker, "matrix_read", {"kind": "room"}))
         started = asyncio.create_task(reading.wait())
         await asyncio.wait({dispatch, started}, return_when=asyncio.FIRST_COMPLETED)
         started.cancel()

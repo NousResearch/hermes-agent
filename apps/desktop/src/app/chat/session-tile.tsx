@@ -29,7 +29,7 @@ import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { CenteredThreadSpinner } from '@/components/assistant-ui/thread/status'
 import { findGroupOfPane } from '@/components/pane-shell/tree/model'
 import { $layoutTree, closeTreePane, moveTreePane, setTreeGroupTabStrip } from '@/components/pane-shell/tree/store'
-import { $workspaceOwnerLabels, workspaceOwnerTitle } from '@/components/pane-shell/workspace-scope'
+import { $workspaceOwnerLabels, workspaceOwnerTitle, workspaceSessionRenameable } from '@/components/pane-shell/workspace-scope'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { transcribeAudio } from '@/hermes'
@@ -56,6 +56,7 @@ import {
 import { isSessionRemovalPending } from '@/store/session-removal'
 import { requestForSessionProfile } from '@/store/session-request-router'
 import {
+  $botChatScopes,
   $sessionStates,
   $sessionTileDelegateRevision,
   $sessionTiles,
@@ -672,6 +673,16 @@ function tileTitle(storedSessionId: string): string {
   return stored ? sessionTitle(stored) : explicit || NEW_SESSION_TITLE
 }
 
+/** The tile's workspace scope — the same fields `workspaceOwnerTitle` reads,
+ *  so the rename gate agrees with the caption's notion of a bot tab. */
+function tileWorkspaceScope(storedSessionId: string): Parameters<typeof workspaceSessionRenameable>[0] {
+  const tile = $sessionTiles.get().find(candidate => candidate.storedSessionId === storedSessionId)
+
+  return tile
+    ? { workspaceMode: tile.workspaceMode, workspaceTabTitle: tile.workspaceTabTitle }
+    : ($botChatScopes.get()[storedSessionId] ?? {})
+}
+
 /** The tab's CAPTION: a bot chat's owner name over the canonical stored title
  *  (#99152). The menu keeps `tileTitle` — rename/delete show the real row. */
 function tileCaption(storedSessionId: string): string {
@@ -763,16 +774,20 @@ export function stackSessionTilesIntoMain(): void {
  *  updates in other sessions) — for a context menu that's almost never open.
  *  Same class as the TreeGroup fix (#72245): derive narrowly, bail out unless
  *  the derived values change. */
-function useTileMenuRow(storedSessionId: string): { pinId: string; profile?: string; title: string } {
-  const cache = useRef<{ key: string; value: { pinId: string; profile?: string; title: string } } | null>(null)
+function useTileMenuRow(storedSessionId: string): { pinId: string; profile?: string; renameable: boolean; title: string } {
+  const cache = useRef<
+    { key: string; value: { pinId: string; profile?: string; renameable: boolean; title: string } } | null
+  >(null)
 
   const subscribe = useCallback((onChange: () => void) => {
     const offSessions = $sessions.listen(onChange)
     const offTree = $projectTree.listen(onChange)
+    const offTiles = $sessionTiles.listen(onChange)
 
     return () => {
       offSessions()
       offTree()
+      offTiles()
     }
   }, [])
 
@@ -781,10 +796,11 @@ function useTileMenuRow(storedSessionId: string): { pinId: string; profile?: str
     const pinId = stored ? sessionPinId(stored) : storedSessionId
     const title = tileTitle(storedSessionId)
     const profile = stored?.profile
-    const key = `${pinId}\u0000${title}\u0000${profile ?? ''}`
+    const renameable = workspaceSessionRenameable(tileWorkspaceScope(storedSessionId))
+    const key = `${pinId}\u0000${title}\u0000${profile ?? ''}\u0000${renameable}`
 
     if (cache.current?.key !== key) {
-      cache.current = { key, value: { pinId, profile, title } }
+      cache.current = { key, value: { pinId, profile, renameable, title } }
     }
 
     return cache.current.value
@@ -812,7 +828,7 @@ export function SessionTabMenu({
   /** Layout-tree pane id — powers the Close-others/right/all verbs. */
   tabPaneId: string
 }) {
-  const { pinId, profile, title } = useTileMenuRow(storedSessionId)
+  const { pinId, profile, renameable, title } = useTileMenuRow(storedSessionId)
   const pinnedSessionIds = useStore($pinnedSessionIds)
   const pinned = pinnedSessionIds.includes(pinId)
 
@@ -827,6 +843,7 @@ export function SessionTabMenu({
         onPin={() => (pinned ? unpinSession(pinId) : pinSession(pinId))}
         pinned={pinned}
         profile={profile}
+        renameable={renameable}
         sessionId={storedSessionId}
         surface="tab"
         tabPaneId={tabPaneId}

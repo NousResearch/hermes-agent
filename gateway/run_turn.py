@@ -1813,8 +1813,14 @@ class GatewayTurnMixin:
         }
         if prepared.persist_user_display_kind:
             _user_entry["display_kind"] = prepared.persist_user_display_kind
+        display_metadata = {}
         if prepared.persistence_owner:
-            _user_entry["display_metadata"] = {"gateway_input_owner": prepared.persistence_owner}
+            display_metadata["gateway_input_owner"] = prepared.persistence_owner
+        room_state = getattr(event, "_matrix_room_state", None)
+        if room_state is not None:
+            display_metadata["matrix_room_state"] = room_state
+        if display_metadata:
+            _user_entry["display_metadata"] = display_metadata
         if getattr(event, "message_id", None):
             _user_entry["message_id"] = str(event.message_id)
         return _user_entry
@@ -2205,6 +2211,8 @@ class GatewayTurnMixin:
                 reply_expected=event.reply_expected,
                 persist_user_display_metadata={
                     "gateway_input_owner": prepared.persistence_owner,
+                    **({"matrix_room_state": event._matrix_room_state}
+                       if hasattr(event, "_matrix_room_state") else {}),
                     **reply_expected_metadata(event.reply_expected), **diagnostic_metadata(event)},
                 message_type=event.message_type,
                 scheduled_heartbeat=bool(getattr(event, "_heartbeat_session_id", None)),
@@ -3906,6 +3914,8 @@ class GatewayTurnMixin:
                 persist_user_display_kind=next_display_kind,
                 reply_expected=next_reply_expected,
                 persist_user_display_metadata={
+                    **({"matrix_room_state": pending_event._matrix_room_state}
+                       if hasattr(pending_event, "_matrix_room_state") else {}),
                     **reply_expected_metadata(next_reply_expected), **diagnostic_metadata(pending_event)} or None,
             )
         except asyncio.CancelledError:

@@ -1784,20 +1784,24 @@ class GatewayInboundMixin:
                 and not event.internal and event.message_type == MessageType.TEXT
                 and callable(take_room_notes)
             ):
-                from plugins.platforms.matrix.room_context import MatrixRoomState, format_room_notes
+                from plugins.platforms.matrix.room_context import (
+                    MatrixRoomState, format_room_notes, last_recorded_room_state,
+                )
 
-                current = MatrixRoomState.from_source(source)
-                saved = entry.metadata.get("matrix_room_state")
-                previous = MatrixRoomState.from_dict(saved)
+                resolve_room_state = getattr(type(adapter), "resolve_turn_room_state", None)
+                current = await resolve_room_state(adapter, source.chat_id) if callable(resolve_room_state) else None
+                if current is None:
+                    current = MatrixRoomState.from_source(source)
+                previous = last_recorded_room_state(history)
                 if previous is None:
                     previous = MatrixRoomState.from_source(entry.origin or source)
-                notes = current.changes_since(previous)
-                notes.update(take_room_notes(adapter, event, session_key, created_at))
+                changes = current.changes_since(previous)
+                notes = take_room_notes(adapter, event, session_key, created_at)
+                for kind in ("name", "topic", "members"):
+                    notes.pop(kind, None)
+                notes.update(changes)
                 context = format_room_notes(notes)
-                if current.to_dict() != saved:
-                    await self.async_session_store.set_session_metadata(
-                        session_key, "matrix_room_state", current.to_dict(),
-                    )
+                event._matrix_room_state = current.to_dict()
             else:
                 context = take_channel_context(adapter, event, session_key, created_at)
             if context:

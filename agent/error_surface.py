@@ -39,6 +39,7 @@ _REASON_TO_LAYER = {
     "loop_error": LAYER_GATEWAY, "interpreter_shutdown": LAYER_GATEWAY, "session_busy": LAYER_GATEWAY,
     "truncated": LAYER_PROVIDER, "empty_response": LAYER_PROVIDER, "invalid_response": LAYER_PROVIDER,
     "context_overflow": LAYER_PROVIDER,  # a bigger-window model IS the fix, so Switch provider applies
+    "malformed_tool_call": LAYER_PROVIDER,  # the model cannot emit valid arguments; another model can
 }
 
 # Failures between us and the base_url (not a provider verdict); on a
@@ -54,7 +55,7 @@ _FREE_TIER_RETRYABLE_KINDS = {"rate_limited", "at_capacity", "outage"}
 _NON_RETRYABLE_REASONS = {
     "auth", "auth_permanent", "billing", "billing_unverified", "content_policy_blocked",
     "provider_policy_blocked", "model_not_found", "format_error", "ssl_cert_verification",
-    "context_overflow", "interpreter_shutdown", "upstream_blocked",
+    "context_overflow", "interpreter_shutdown", "upstream_blocked", "malformed_tool_call",
 }
 
 # Providers whose base_url is user-supplied rather than a known vendor.

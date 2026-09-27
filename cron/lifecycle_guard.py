@@ -956,6 +956,31 @@ def _has_binary_magic(data: bytes) -> bool:
     return data.startswith(_BINARY_MAGICS)
 
 
+_SHEBANG_INTERPRETER_RE = re.compile(rb"^#!\s*(/usr/bin/env\s+)?(\S+)")
+
+
+def _text_names_shell_interpreter(text: Optional[str]) -> bool:
+    """True when *text* is a script whose shebang names a POSIX shell.
+
+    The reference walk applies POSIX shell semantics (shlex tokenization, segment
+    splitting on ``;&|()``) to every referenced file's text. On a Python/Node/Ruby
+    source that walk is a false-positive generator — a quoted string literal such
+    as ``"/dev/null"`` tokenizes into a bare ``/dev/null`` token that looks like an
+    executed script and fails closed on the character device. ``check_gateway_lifecycle``
+    already exempts ``.py`` scripts for exactly this reason ("the shell reference walk
+    is a false-positive generator on Python sources"); shebang-launched scripts with no
+    extension must get the same treatment. Content over suffix: a file is shell only
+    when its shebang SAYS it is a shell. See #125378.
+    """
+    if not text or not text.startswith("#!"):
+        return False
+    match = _SHEBANG_INTERPRETER_RE.match(text.encode("utf-8", errors="replace"))
+    if match is None:
+        return False
+    interpreter = Path(match.group(2).decode("utf-8", errors="replace")).name
+    return interpreter in _SHELL_EXECUTABLES
+
+
 def _read_referenced_script(
     path: Path, *, max_bytes: Optional[int] = None
 ) -> tuple[Optional[str], bool]:
@@ -1114,6 +1139,16 @@ def _contains_unsafe_gateway_action(
         if recurse(payload, cwd, executed):
             return True
 
+    # Shell-semantics walks must not descend into non-shell interpreter sources: shlex
+    # tokenization + segment splitting turn Python/Node/Ruby string literals ("/dev/null",
+    # pathlib "/") into bogus executed-script candidates that fail closed. The direct
+    # lifecycle regex above has ALREADY scanned the full command text, so skipping the walk
+    # keeps the regex protection intact — exactly the treatment check_gateway_lifecycle
+    # gives .py scripts (#77131, #78398). A suffixless shebang-launched interpreter
+    # script gets the same exemption by content, not suffix (#125378).
+    if command.startswith("#!") and not _text_names_shell_interpreter(command):
+        return False
+
     # Paths named only inside a masked body are still READ: an interpreter body that hands
     # `/x/restart.sh` to os.system() executes it. Only the fail-closed verdicts (cloud placeholder,
     # oversized/binary, budget) stay restricted to the executed view — a mere data mention must not
@@ -1245,10 +1280,20 @@ def check_gateway_lifecycle(prompt: Optional[str], script: Optional[str] = None)
                 "being read. Move the script to a local, non-cloud path "
                 "(e.g. ~/.hermes/scripts/) and recreate the job."
             )
-        python_script = resolved_script is not None and resolved_script.suffix == ".py"
         script_text, refusal = _read_script_for_scanning(script)
         if script_text:
             combined = f"{combined}\n{script_text}"
+        # Content over suffix (#125378): a shebang-launched interpreter script with no .py
+        # extension gets the same regex-only treatment as .py — the POSIX reference walk on
+        # non-shell sources is a false-positive generator (string literals tokenize into bogus
+        # executed-script candidates). The direct regex below still scans the full text.
+        python_script = (
+            resolved_script is not None and resolved_script.suffix == ".py"
+        ) or (
+            bool(script_text)
+            and script_text.startswith("#!")
+            and not _text_names_shell_interpreter(script_text)
+        )
 
     if refusal:
         unsafe = True

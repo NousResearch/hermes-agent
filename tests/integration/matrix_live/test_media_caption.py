@@ -44,9 +44,15 @@ def test_media_caption_and_filename_reach_model_through_cache(
             )
             assert isinstance(sent, RoomSendResponse), sent
 
-            deadline = time.monotonic() + 60
-            while time.monotonic() < deadline:
-                response = await client.sync(timeout=1000)
+            deadline = time.monotonic() + 15
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                try:
+                    response = await asyncio.wait_for(client.sync(timeout=250), timeout=remaining)
+                except asyncio.TimeoutError:
+                    break
                 joined = response.rooms.join.get(live_room.room_id)
                 if not joined:
                     continue
@@ -80,7 +86,7 @@ def test_media_caption_and_filename_reach_model_through_cache(
                 assert (content.exit_code, content.output) == (0, payload)
                 return
 
-            pytest.fail("No Matrix reply to the media event within 60 seconds")
+            pytest.fail("No Matrix reply to the media event within 15 seconds")
         finally:
             await client.close()
 

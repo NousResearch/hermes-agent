@@ -23,7 +23,8 @@ auth:
   type: oauth
 
 # The server exposes ~30 tools. Pre-checked: the ones an agent needs to find,
-# run and read back saved scripts. Left unchecked (opt in with
+# run and read back saved scripts, including runs from earlier sessions
+# (list_runs). Left unchecked (opt in with
 # `hermes mcp configure reduck`):
 #   - script authoring: start_session / exec_code / stop_session drive a live
 #     browser to build a script, then create_script and the *_script_version
@@ -38,6 +39,7 @@ tools:
     - list_scripts
     - read_script
     - run_script
+    - list_runs
     - read_run_results
     - read_run_trace
 

@@ -25,9 +25,11 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import unquote
 
 from gateway.platforms._shared import (
-    get_scoped_secret as _get_scoped_secret, seed_extra_from_env as _seed_extra_from_env, send_error
+    decode_json_list_literal as _decode_json_list_literal, get_scoped_secret as _get_scoped_secret,
+    platform_gate_env as _platform_gate_env, seed_extra_from_env as _seed_extra_from_env, send_error
 )
 from gateway.config import Platform, PlatformConfig
+from hermes_constants import hermes_home_key
 from gateway.platforms.base import BasePlatformAdapter, SendResult, cache_image_from_url
 from gateway.platforms.helpers import cancel_task
 from gateway.platforms.event import MessageEvent, MessageType
@@ -50,6 +52,29 @@ _MEDIA_KIND_PRECEDENCE = (("audio/", MessageType.VOICE), ("image/", MessageType.
 
 def _parse_comma_list(value: str) -> List[str]:
     return [v.strip() for v in value.split(",") if v.strip()]
+
+
+# (hermes home key, names) already warned about. Module-level: every reconnect builds a FRESH adapter
+# (gateway/run_adapters.py), so an instance flag would re-warn on every retry while the daemon is down.
+_NAME_ALLOWLIST_WARNED: set = set()
+
+
+def _warn_name_allowlist_entries() -> None:
+    """Warn once per process per profile/allowlist value about SIMPLEX_ALLOWED_USERS entries authz ignores.
+
+    Reads and decodes the value exactly as authz does (``platform_gate_env`` + JSON list literal), so the
+    warning names only entries that really fail the contactId check."""
+    raw = _decode_json_list_literal(_platform_gate_env("SIMPLEX_ALLOWED_USERS"))
+    entries = [str(e).strip() for e in raw] if isinstance(raw, list) else _parse_comma_list(raw)
+    names = [u for u in entries if u and u != "*" and not u.isdigit()]
+    if not names:
+        return
+    key = (hermes_home_key(), frozenset(names))
+    if key in _NAME_ALLOWLIST_WARNED:
+        return
+    _NAME_ALLOWLIST_WARNED.add(key)
+    logger.warning("SimpleX: SIMPLEX_ALLOWED_USERS entries %s are not numeric contactIds and are ignored "
+                   "(display names are not trusted; see /contacts for IDs)", names)
 
 
 def _redact_id(contact_id: str) -> str:
@@ -118,7 +143,6 @@ class SimplexAdapter(BasePlatformAdapter):
         self._pending_file_transfers: Dict[int, dict] = {}  # awaiting rcvFileComplete, by fileId
         self._pending_responses: Dict[str, asyncio.Future] = {}  # awaited command replies
         self._corr_counter = 0
-        self._allowlist_warned = False  # name-entry allowlist warning fires once per adapter
         # SimpleX has no client-side split, so the split delay equals the plain one.
         self._text_batch_delay_seconds = float(os.getenv("HERMES_SIMPLEX_TEXT_BATCH_DELAY", "0.8"))
         self._text_batch_split_delay_seconds = self._text_batch_delay_seconds
@@ -135,15 +159,7 @@ class SimplexAdapter(BasePlatformAdapter):
         if not self.ws_url:
             logger.error("SimpleX: SIMPLEX_WS_URL is required")
             return False
-        # Once per adapter, before the probe so a daemon-down cold boot still warns (later connects
-        # arrive as is_reconnect=True). Scoped read matches what authz enforces for this profile.
-        if not self._allowlist_warned:
-            self._allowlist_warned = True
-            names = [u for u in _parse_comma_list(_get_scoped_secret("SIMPLEX_ALLOWED_USERS", "") or "")
-                     if u != "*" and not u.isdigit()]
-            if names:
-                logger.warning("SimpleX: SIMPLEX_ALLOWED_USERS entries %s are not numeric contactIds and are ignored "
-                               "(display names are not trusted; see /contacts for IDs)", names)
+        _warn_name_allowlist_entries()  # before the probe so a daemon-down cold boot still warns
         try:  # quick connectivity check — open and immediately close
             async with _wsclient.connect(self.ws_url, open_timeout=10):
                 pass

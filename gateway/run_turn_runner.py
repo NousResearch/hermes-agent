@@ -336,6 +336,7 @@ class TurnRunner:
         # dynamically so the state is visible where it lives.
         publication_suppressed: bool = False
         anonymous_seq: int = 0
+        quota_failure: Any = None
 
         @staticmethod
         def _compact(value: Any, limit: int = 120) -> str:
@@ -380,12 +381,15 @@ class TurnRunner:
         text = st.fallback_text()
         from gateway.relay.egress import declined_send
 
-        if st.publication_suppressed:
+        if st.publication_suppressed or st.quota_failure is not None:
             return
         if st.fallback_msg_id:
             result = await st.adapter.edit_message(
                 chat_id=ctx.source.chat_id, message_id=st.fallback_msg_id, content=text, metadata=ctx._progress_metadata,
             )
+            self._observe_progress_quota(st, result)
+            if st.quota_failure is not None:
+                return
             if getattr(result, "success", False):
                 return
             # P5(b): R5-4 made a declined native CARD terminal but left this
@@ -408,7 +412,7 @@ class TurnRunner:
         ctx = self._ctx
         if not st.tasks:
             return
-        if st.publication_suppressed:
+        if st.publication_suppressed or st.quota_failure is not None:
             # Publication was suppressed earlier in the turn (egress refusal or a chat
             # that cannot host a card); every later publication would re-deliver the
             # same task text there.
@@ -428,6 +432,9 @@ class TurnRunner:
                 chat_id=ctx.source.chat_id, tasks=st.visible_tasks(), title="Hermes is working",
                 reply_to=ctx._progress_reply_to, metadata=ctx._progress_metadata, fallback_text=st.fallback_text(),
             )
+            self._observe_progress_quota(st, result)
+            if st.quota_failure is not None:
+                return
             if getattr(result, "success", False):
                 return
             # P5(b): an AUTHORIZATION decline is not a broken card lane. The

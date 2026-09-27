@@ -141,3 +141,50 @@ async def test_raised_transport_error_does_not_trip_quota_stop():
     with pytest.raises(TimeoutError):
         await runner._send_progress_text(state, "first")
     assert state.quota_failure is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lane", ["native", "fallback_send", "fallback_edit"])
+async def test_task_card_quota_failure_stops_fallback_and_later_publications(lane):
+    adapter = RecordingAdapter()
+
+    async def native(**kwargs):
+        adapter.calls.append(("native", kwargs["title"]))
+        return SendResult(success=False, error="message_limit_exceeded")
+
+    adapter.send_native_task_card_progress = native
+    runner, _ = make_runner(adapter)
+    state = runner._TaskCardState(adapter)
+    state.apply_event({"type": "tool.started", "tool_call_id": "1", "tool_name": "terminal"})
+    state.native_failed = lane != "native"
+    state.fallback_msg_id = "1" if lane == "fallback_edit" else None
+    await runner._task_card_publish(state)
+    assert len(adapter.calls) == 1
+    await runner._task_card_publish(state)
+    assert len(adapter.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_real_slack_adapter_quota_response_reaches_progress_gate():
+    from unittest.mock import AsyncMock, MagicMock
+    from gateway.config import PlatformConfig
+    from plugins.platforms.slack.adapter import SlackAdapter
+    class QuotaRefusal(Exception):
+        response = {"ok": False, "error": "message_limit_exceeded"}
+
+    adapter = SlackAdapter(PlatformConfig(enabled=True, token="xoxb-fixture", extra={}))
+    adapter._app = MagicMock()
+    adapter._running = True
+    client = AsyncMock()
+    client.chat_postMessage.side_effect = QuotaRefusal("Slack API error: message_limit_exceeded")
+    adapter._get_client = MagicMock(return_value=client)
+    adapter.stop_typing = AsyncMock()
+    runner, _ = make_runner(adapter)
+    state = runner._progress_edit_state(adapter)
+    state.progress_lines = ["first"]
+    await runner._progress_send_or_edit(state, "first")
+    await runner._progress_send_or_edit(state, "second")
+    assert client.chat_postMessage.await_count == 1
+    final = await adapter.send("C1", "final")
+    assert not final.success
+    assert client.chat_postMessage.await_count == 2

@@ -98,3 +98,30 @@ def test_check_gateway_lifecycle_blocks_lifecycle_literal_in_interpreter_script(
         raise AssertionError("literal lifecycle command in interpreter script was allowed")
     except GatewayLifecycleBlocked:
         pass
+
+
+def test_sh_suffix_with_python_shebang_still_walked_as_shell(tmp_path):
+    """cron picks the interpreter by suffix (scheduler_script.py::_script_argv honours the
+    shebang deliberately NOT); a .sh file with a python shebang runs under bash, so its
+    quoted /dev/null must still fail closed as an executed device."""
+    script = _write_executable(
+        tmp_path / "mixed.sh",
+        '#!/usr/bin/env python3\ntrue; "/dev/null" --filter\n',
+    )
+
+    try:
+        check_gateway_lifecycle("nightly", str(script))
+        raise AssertionError(".sh script with python shebang was not walked as shell code")
+    except GatewayLifecycleBlocked:
+        pass
+
+
+def test_suffixless_python_shebang_cron_script_allowed(tmp_path):
+    """cron runs a suffixless script under Python, so the /dev/null string literal is data;
+    the job must not be blocked."""
+    tool = _write_executable(
+        tmp_path / "reviewer-write-check",
+        '#!/usr/bin/env python3\nimport sys\nprint("/dev/null" in sys.argv[1:])\n',
+    )
+
+    check_gateway_lifecycle("nightly review pass", str(tool))

@@ -1276,17 +1276,24 @@ def check_gateway_lifecycle(prompt: Optional[str], script: Optional[str] = None)
         script_text, refusal = _read_script_for_scanning(script)
         if script_text:
             combined = f"{combined}\n{script_text}"
-        # Content over suffix (#125378): a shebang-launched interpreter script with no .py
-        # extension gets the same regex-only treatment as .py — the POSIX reference walk on
-        # non-shell sources is a false-positive generator (string literals tokenize into bogus
-        # executed-script candidates). The direct regex below still scans the full text.
-        # Parser: _runs_outside_posix_shell (from #125378 review) — env-prefix and option
-        # aware, unlike the naive shebang regex this promotion used before the review.
+        # Content over suffix AND over shebang (#125378): cron executes the script exactly
+        # the way cron/scheduler_script.py::_script_argv picks the interpreter — .sh/.bash
+        # under bash, everything else under Python, the shebang deliberately NOT honoured.
+        # Mirror that here: only a script cron really feeds to a shell gets the shell
+        # reference walk (a .sh file with a python shebang must still be walked as shell);
+        # Python-destined sources get the .py treatment — the walk's shlex tokenization is
+        # a false-positive generator on Python sources (string literals tokenize into bogus
+        # executed-script candidates). The direct regex below still scans the full text
+        # either way. When the path cannot be resolved to a suffix, fall back to shebang
+        # content (_runs_outside_posix_shell, from the #125378 review).
+        runs_as_shell = (
+            resolved_script is not None
+            and resolved_script.suffix.lower() in {".sh", ".bash"}
+        )
         python_script = (
-            resolved_script is not None and resolved_script.suffix == ".py"
-        ) or (
-            bool(script_text)
-            and _runs_outside_posix_shell(script_text)
+            not runs_as_shell
+            if resolved_script is not None
+            else bool(script_text) and _runs_outside_posix_shell(script_text)
         )
 
     if refusal:

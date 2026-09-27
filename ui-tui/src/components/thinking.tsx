@@ -650,7 +650,7 @@ export const Thinking = memo(function Thinking({
         {preview ? (
           mode === 'full' ? (
             lines.map((line, index) => (
-              <Text color={t.color.thinking} key={index} wrap="wrap-trim">
+              <Text color={t.color.thinking} dim italic key={index} wrap="wrap-trim">
                 {line || ' '}
                 {index === lines.length - 1 ? (
                   <StreamCursor color={t.color.thinking} streaming={streaming} visible={active} />
@@ -658,13 +658,13 @@ export const Thinking = memo(function Thinking({
               </Text>
             ))
           ) : (
-            <Text color={t.color.thinking} wrap="truncate-end">
+            <Text color={t.color.thinking} dim italic wrap="truncate-end">
               {preview}
               <StreamCursor color={t.color.thinking} streaming={streaming} visible={active} />
             </Text>
           )
         ) : (
-          <Text color={t.color.thinking}>
+          <Text color={t.color.thinking} dim italic>
             <StreamCursor color={t.color.thinking} streaming={streaming} visible={active} />
           </Text>
         )}

@@ -3,6 +3,117 @@
 from plugins.platforms.matrix.reaction_followups import ReactionWatchStore
 
 
+def test_queued_nonstreamed_final_arms_after_processing_hook(tmp_path, monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from gateway.config import Platform
+    from gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome, SendResult
+    from gateway.session import SessionSource
+    from plugins.platforms.matrix.adapter import MatrixAdapter
+
+    async def exercise():
+        adapter = object.__new__(MatrixAdapter)
+        adapter._store_dir = tmp_path / "store"
+        adapter._reaction_followup_actions = {}
+        adapter._active_sessions = {"session": asyncio.Event()}
+        adapter._reactions_enabled = False
+        adapter._event_session_key = lambda _event: "session"
+        source = SessionSource(
+            platform=Platform.MATRIX,
+            chat_id="!room:test",
+            user_id="@alice:test",
+            profile="work",
+        )
+        event = SimpleNamespace(source=source, message_id=None)
+        assert await adapter.configure_reaction_followups(
+            "session", True, ("👍",), room_id="!room:test",
+            requester="@alice:test", thread_id="", profile="work",
+        )
+
+        await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+        monkeypatch.setattr(
+            BasePlatformAdapter,
+            "send_final_ledgered",
+            AsyncMock(return_value=(SendResult(success=True, message_id="$queued"), adapter)),
+        )
+        await adapter.send_final_ledgered(event, "session", "Queued answer", {}, reply_to=None)
+
+        store = ReactionWatchStore(tmp_path / "reaction-followups.sqlite")
+        assert store.candidate("!room:test", "$queued") is not None
+        assert adapter._reaction_followup_actions == {}
+
+    asyncio.run(exercise())
+
+
+def test_queued_final_watches_terminal_turn_requester_and_thread(tmp_path, monkeypatch):
+    import asyncio
+    import importlib
+    import json
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from gateway.config import Platform
+    from gateway.platforms.base import BasePlatformAdapter, SendResult
+    from gateway.session import SessionSource
+    from gateway.session_context import clear_session_vars, set_session_vars
+    from plugins.platforms.matrix.adapter import MatrixAdapter
+    from tools.registry import registry
+
+    importlib.import_module("tools.matrix_followup_tool")
+
+    async def exercise():
+        adapter = object.__new__(MatrixAdapter)
+        adapter._store_dir = tmp_path / "store"
+        adapter._reaction_followup_actions = {}
+        adapter._active_sessions = {"session": asyncio.Event()}
+        outer_source = SessionSource(
+            platform=Platform.MATRIX,
+            chat_id="!room:test",
+            chat_type="group",
+            user_id="@alice:test",
+            thread_id="$outer",
+            profile="work",
+        )
+        tokens = set_session_vars(
+            platform="matrix", chat_id="!room:test", chat_type="group",
+            user_id="@bob:test", thread_id="$inner", profile="work",
+            session_key="session", transport_adapter=adapter,
+        )
+        try:
+            configured = json.loads(await asyncio.to_thread(
+                registry.dispatch, "matrix_followup", {"enabled": True},
+            ))
+        finally:
+            clear_session_vars(tokens)
+        assert configured == {"success": True, "enabled": True, "emoji": []}
+
+        monkeypatch.setattr(
+            BasePlatformAdapter,
+            "send_final_ledgered",
+            AsyncMock(return_value=(SendResult(success=True, message_id="$answer"), adapter)),
+        )
+        await adapter.send_final_ledgered(
+            SimpleNamespace(source=outer_source), "session", "Bob's answer", {}, reply_to=None,
+        )
+
+        store = ReactionWatchStore(tmp_path / "reaction-followups.sqlite")
+        assert store.candidate("!room:test", "$answer") == {
+            "profile": "work",
+            "thread_id": "$inner",
+            "session_key": "session",
+            "requester": "@bob:test",
+            "source": {
+                **outer_source.to_dict(),
+                "user_id": "@bob:test",
+                "thread_id": "$inner",
+            },
+        }
+
+    asyncio.run(exercise())
+
+
 def test_split_final_delivery_arms_only_successful_replies(tmp_path, monkeypatch):
     import asyncio
     from types import SimpleNamespace
@@ -26,8 +137,12 @@ def test_split_final_delivery_arms_only_successful_replies(tmp_path, monkeypatch
             profile="work",
         )
         event = SimpleNamespace(source=source)
-        await adapter.configure_reaction_followups("session", True, ("👍",))
-        await adapter.configure_reaction_followups("session", False, ())
+        choice_context = {
+            "room_id": "!room:test", "requester": "@alice:test",
+            "thread_id": "$thread", "profile": "work",
+        }
+        await adapter.configure_reaction_followups("session", True, ("👍",), **choice_context)
+        await adapter.configure_reaction_followups("session", False, (), **choice_context)
         monkeypatch.setattr(
             BasePlatformAdapter,
             "send_final_ledgered",
@@ -41,7 +156,7 @@ def test_split_final_delivery_arms_only_successful_replies(tmp_path, monkeypatch
         store = ReactionWatchStore(tmp_path / "reaction-followups.sqlite")
         assert store.candidate("!room:test", "$disabled") is None
 
-        await adapter.configure_reaction_followups("session", True, ("👍",))
+        await adapter.configure_reaction_followups("session", True, ("👍",), **choice_context)
         monkeypatch.setattr(
             BasePlatformAdapter,
             "send_final_ledgered",
@@ -64,7 +179,7 @@ def test_split_final_delivery_arms_only_successful_replies(tmp_path, monkeypatch
         )
         assert store.claim("work", "!room:test", "$second", "@alice:test", "👍") is None
 
-        await adapter.configure_reaction_followups("session", True, ())
+        await adapter.configure_reaction_followups("session", True, (), **choice_context)
         monkeypatch.setattr(
             BasePlatformAdapter,
             "send_final_ledgered",
@@ -249,12 +364,16 @@ def test_streamed_final_arms_visible_original_and_split_events(tmp_path):
     from gateway.config import Platform
     from gateway.run import GatewayRunner
     from gateway.session import SessionSource
-    from plugins.platforms.matrix.adapter import MatrixAdapter
+    from plugins.platforms.matrix.adapter import MatrixAdapter, _MatrixFollowupChoice
 
     async def exercise():
         adapter = object.__new__(MatrixAdapter)
         adapter._store_dir = tmp_path / "store"
-        adapter._reaction_followup_actions = {"session": ("turn", ("👍",))}
+        adapter._reaction_followup_actions = {
+            "session": _MatrixFollowupChoice(
+                "turn", ("👍",), "!room:test", "@alice:test", "", "work",
+            )
+        }
         source = SessionSource(
             platform=Platform.MATRIX,
             chat_id="!room:test",
@@ -295,12 +414,16 @@ def test_transformed_streamed_final_watches_edited_original_event(tmp_path):
     from gateway.platforms.base import SendResult
     from gateway.run import GatewayRunner
     from gateway.session import SessionSource
-    from plugins.platforms.matrix.adapter import MatrixAdapter
+    from plugins.platforms.matrix.adapter import MatrixAdapter, _MatrixFollowupChoice
 
     async def exercise():
         adapter = object.__new__(MatrixAdapter)
         adapter._store_dir = tmp_path / "store"
-        adapter._reaction_followup_actions = {"session": ("turn", ())}
+        adapter._reaction_followup_actions = {
+            "session": _MatrixFollowupChoice(
+                "turn", (), "!room:test", "@alice:test", "", "work",
+            )
+        }
         adapter.edit_message = AsyncMock(
             return_value=SendResult(success=True, message_id="$replacement")
         )
@@ -376,12 +499,16 @@ def test_queued_first_response_arms_streamed_final_before_next_turn(tmp_path):
     from gateway.config import Platform
     from gateway.run import GatewayRunner
     from gateway.session import SessionSource
-    from plugins.platforms.matrix.adapter import MatrixAdapter
+    from plugins.platforms.matrix.adapter import MatrixAdapter, _MatrixFollowupChoice
 
     async def exercise():
         adapter = object.__new__(MatrixAdapter)
         adapter._store_dir = tmp_path / "store"
-        adapter._reaction_followup_actions = {"session": ("turn", ())}
+        adapter._reaction_followup_actions = {
+            "session": _MatrixFollowupChoice(
+                "turn", (), "!room:test", "@alice:test", "", "work",
+            )
+        }
         source = SessionSource(
             platform=Platform.MATRIX,
             chat_id="!room:test",

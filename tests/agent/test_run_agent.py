@@ -792,6 +792,73 @@ class TestHydrateTodoStore:
         assert agent._todo_store.snapshot()["revision"] == 2
         assert agent._todo_store.read()[0]["id"] == "new"
 
+    @staticmethod
+    def _snapshot_text(items):
+        from tools.todo_tool import TodoStore
+
+        store = TodoStore()
+        store.write(items)
+        return store.format_for_injection()
+
+    def test_snapshot_fallback_recovers_items_after_stub_demotion(self, agent):
+        """Post-compaction: the tool result is a one-line stub and the snapshot folded into a
+        user row is the only surviving record — hydration must recover from it (#124960)."""
+        items = [
+            {"id": str(i), "content": f"Task {i}", "status": "pending"} for i in range(1, 12)
+        ]
+        history = [
+            self._assistant_todo_call(),
+            # What _demote_tool_result_at leaves behind (no '"todos"' JSON survives)
+            {"role": "tool", "tool_call_id": "c1", "content": "[todo] updated task list"},
+            # What _fold_todo_snapshot writes for the model
+            {"role": "user", "content": f"Continue the work.\n\n{self._snapshot_text(items)}"},
+        ]
+
+        with patch("run_agent._set_interrupt"), patch("agent.interrupt_control._set_interrupt"):
+            agent._hydrate_todo_store(history)
+
+        snapshot = agent._todo_store.snapshot()
+        assert snapshot["revision"] == 1
+        assert [item["id"] for item in snapshot["todos"]] == [str(i) for i in range(1, 12)]
+
+    def test_verbatim_tool_result_beats_snapshot_recovery(self, agent):
+        """A surviving verbatim tool result stays authoritative over the snapshot fallback."""
+        items = [{"id": "1", "content": "Snapshot item", "status": "pending"}]
+        history = [
+            self._assistant_todo_call(),
+            {
+                "role": "tool",
+                "tool_call_id": "c1",
+                "content": json.dumps(
+                    {"todos": [{"id": "live", "content": "Live item", "status": "in_progress"}], "revision": 3}
+                ),
+            },
+            {"role": "user", "content": self._snapshot_text(items)},
+        ]
+
+        with patch("run_agent._set_interrupt"), patch("agent.interrupt_control._set_interrupt"):
+            agent._hydrate_todo_store(history)
+
+        snapshot = agent._todo_store.snapshot()
+        assert snapshot["revision"] == 3
+        assert [item["id"] for item in snapshot["todos"]] == ["live"]
+
+    def test_snapshot_recovery_skips_populated_store(self, agent):
+        """A store hydrated by a live process must not be overwritten by snapshot recovery."""
+        agent._todo_store.restore(
+            [{"id": "db", "content": "Current", "status": "in_progress"}], revision=9
+        )
+        history = [
+            {"role": "user", "content": self._snapshot_text([{"id": "old", "content": "Old", "status": "pending"}])},
+        ]
+
+        with patch("run_agent._set_interrupt"), patch("agent.interrupt_control._set_interrupt"):
+            agent._hydrate_todo_store(history)
+
+        snapshot = agent._todo_store.snapshot()
+        assert snapshot["revision"] == 9
+        assert [item["id"] for item in snapshot["todos"]] == ["db"]
+
 
 class TestBuildSystemPrompt:
     def test_always_has_identity(self, agent):

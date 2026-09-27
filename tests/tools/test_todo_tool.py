@@ -2,7 +2,87 @@
 
 import json
 
-from tools.todo_tool import TodoStore, todo_tool
+from tools.todo_tool import TodoStore, todo_tool, parse_todo_injection, TODO_INJECTION_HEADER
+
+class TestParseTodoInjection:
+    """Inverse of format_for_injection — the post-compaction recovery path (#124960)."""
+
+    def test_round_trip_preserves_active_items(self):
+        store = TodoStore()
+        store.write([
+            {"id": str(i), "content": f"Task {i}", "status": "pending"} for i in range(1, 12)
+        ])
+        snapshot = store.format_for_injection()
+        assert snapshot is not None
+        recovered = parse_todo_injection(snapshot)
+        assert len(recovered) == 11
+        assert recovered[0] == {"id": "1", "content": "Task 1", "status": "pending"}
+        restored = TodoStore()
+        restored.restore(recovered, revision=1)
+        assert restored.read() == recovered
+
+    def test_completed_items_are_not_injected(self):
+        store = TodoStore()
+        store.write([
+            {"id": "1", "content": "Done thing", "status": "completed"},
+            {"id": "2", "content": "Still doing", "status": "in_progress"},
+        ])
+        snapshot = store.format_for_injection()
+        assert snapshot is not None
+        recovered = parse_todo_injection(snapshot)
+        assert [item["id"] for item in recovered] == ["2"]
+
+    def test_nested_parents_recovered(self):
+        store = TodoStore()
+        store.write([
+            {"id": "p1", "content": "Parent task", "status": "pending"},
+            {"id": "c1", "content": "Child task A", "status": "in_progress", "parent": "p1"},
+            {"id": "c2", "content": "Child task B", "status": "pending", "parent": "p1"},
+        ])
+        snapshot = store.format_for_injection()
+        assert snapshot is not None
+        recovered = parse_todo_injection(snapshot)
+        assert [item["id"] for item in recovered] == ["p1", "c1", "c2"]
+        assert recovered[1]["parent"] == "p1"
+        assert recovered[2]["parent"] == "p1"
+
+    def test_content_with_periods_and_parens_survives(self):
+        store = TodoStore()
+        store.write([{
+            "id": "7",
+            "content": "Fix the parser (see spec). Then ship v1.2 (urgent)",
+            "status": "pending",
+        }])
+        snapshot = store.format_for_injection()
+        assert snapshot is not None
+        recovered = parse_todo_injection(snapshot)
+        assert recovered[0]["content"] == "Fix the parser (see spec). Then ship v1.2 (urgent)"
+
+    def test_pruned_skill_reload_notice_ignored(self):
+        store = TodoStore()
+        store.write([{"id": "1", "content": "Only task", "status": "pending"}])
+        snapshot = store.format_for_injection()
+        assert snapshot is not None
+        text = snapshot + (
+            "\n\n[Skills pruned during compression — reload before acting on these tasks]\n"
+            "Reload the reporting skill."
+        )
+        recovered = parse_todo_injection(text)
+        assert [item["id"] for item in recovered] == ["1"]
+
+    def test_snapshot_folded_into_user_message(self):
+        store = TodoStore()
+        store.write([{"id": "1", "content": "Only task", "status": "in_progress"}])
+        snapshot = store.format_for_injection()
+        assert snapshot is not None
+        folded = f"Please continue.\n\n{snapshot}"
+        recovered = parse_todo_injection(folded)
+        assert [item["id"] for item in recovered] == ["1"]
+
+    def test_garbage_and_missing_header_return_empty(self):
+        assert parse_todo_injection("") == []
+        assert parse_todo_injection("random text\n- [ ] 1. fake (pending)") == []
+        assert parse_todo_injection(f"not the header\n- [ ] 1. fake (pending)") == []
 
 class TestWriteAndRead:
     def test_write_replaces_list(self):

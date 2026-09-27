@@ -720,8 +720,10 @@ def test_relaunchable_fixup_configured_identity_failure_never_falls_back_to_adho
     # The old behavior fell through to the legacy deep ad-hoc re-sign — must not happen.
     assert not any("--deep" in c for c in calls)
     assert not any("delete-generic-password" in c for c in calls)
-    # Only the quarantine-xattr hygiene ran; the bundle's signature is untouched.
-    assert ["xattr", "-cr", str(app)] in calls
+    # The refusal decision is made BEFORE the quarantine-xattr hygiene: a failed
+    # attempt must not have already stripped attributes off a bundle we then
+    # decline to modify.
+    assert ["xattr", "-cr", str(app)] not in calls
 
 
 @pytest.mark.platforms("macos")
@@ -752,6 +754,45 @@ def test_relaunchable_fixup_configured_identity_success_still_signs(tmp_path, mo
     assert ["local-codesign", "Hermes Local Signing"] in calls
     assert not any("--deep" in c for c in calls)
     assert not any("delete-generic-password" in c for c in calls)
+
+
+@pytest.mark.platforms("macos")
+def test_promote_staged_desktop_app_refuses_an_unsigned_staging(tmp_path, monkeypatch, capsys):
+    """A fixup refusal must stop the promotion, not just log (#123748 review).
+
+    ``_promote_staged_desktop_app`` used to call the fixup for its side effect and
+    discard the False, so a configured identity that failed still promoted a staged
+    bundle whose signature was never established over the live app. The refusal now
+    follows the same previous-app-kept error path as the integrity check.
+    """
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    staging = desktop_dir / "release" / ".staging-update"
+    exe = _make_packaged_executable(root, monkeypatch)
+    # Re-create the same layout inside the staging dir the promoter scans.
+    staged_exe = staging / exe.relative_to(exe.parents[4])
+    staged_exe.parent.mkdir(parents=True, exist_ok=True)
+    staged_exe.write_bytes(exe.read_bytes())
+
+    swapped: list[Path] = []
+
+    def fake_fixup(dir_, *, publisher_signing_configured=None, release_dir=None):
+        return False  # the refusal under test
+
+    def fake_swap(dir_, st_):
+        swapped.append(st_)
+        return None
+
+    monkeypatch.setattr(main_desktop, "_desktop_macos_relaunchable_fixup", fake_fixup)
+    monkeypatch.setattr(main_desktop, "_swap_staged_desktop_app", fake_swap)
+
+    with pytest.raises(RuntimeError, match="previous desktop app"):
+        main_desktop._promote_staged_desktop_app(desktop_dir, staging)
+    assert not swapped, "the live app must not be swapped when signing was refused"
+    assert not staging.exists(), "the refused staging is discarded"
+    out = capsys.readouterr().out
+    assert "not promoting" in out
 
 
 @pytest.mark.platforms("macos")

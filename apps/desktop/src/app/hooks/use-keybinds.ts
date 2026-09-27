@@ -16,6 +16,7 @@ import {
 } from '@/components/pane-shell/tree/store'
 import { setWorkspaceScope } from '@/components/pane-shell/workspace-scope'
 import { onReleaseTypingFocus } from '@/components/ui/keyboard-first'
+import { translateNow } from '@/i18n/runtime'
 import { findBarClaimsCombo } from '@/lib/find-in-page'
 import {
   contributedKeybindHandler,
@@ -27,6 +28,7 @@ import {
 import { handleApprovalKey, releaseApprovalKey } from '@/lib/keybinds/approval-keys'
 import { actionAllowedInInput, comboFromEvent, isEditableTarget } from '@/lib/keybinds/combo'
 import { composerFocusKeysAllowed, isComposerFocusSoftCombo, typeToFocusChar } from '@/lib/keybinds/composer-focus-keys'
+import { stepReasoningEffort, writeSessionReasoningEffort } from '@/lib/reasoning-step'
 import { openWorktreeDialog } from '@/store/coding-status'
 import { $commandPaletteOpen, openCommandPalettePage, toggleCommandPalette } from '@/store/command-palette'
 import {
@@ -46,6 +48,7 @@ import {
   togglePanesFlipped,
   toggleSidebarOpen
 } from '@/store/layout'
+import { notifyError } from '@/store/notifications'
 import { openBrowserTab } from '@/store/preview'
 import {
   $newChatProfile,
@@ -58,7 +61,15 @@ import {
 import { toggleProfileRailVisible } from '@/store/profile-rail-prefs'
 import { openFolderAsProject } from '@/store/projects'
 import { toggleReview } from '@/store/review'
-import { $selectedStoredSessionId, setModelPickerOpen } from '@/store/session'
+import {
+  $activeSessionId,
+  $currentReasoningEffort,
+  $defaultReasoningEffort,
+  $selectedStoredSessionId,
+  markComposerSelectionManual,
+  setCurrentReasoningEffort,
+  setModelPickerOpen
+} from '@/store/session'
 import { $focusedStoredSessionId, reopenLastClosedTile } from '@/store/session-states'
 import {
   $switcherOpen,
@@ -100,6 +111,8 @@ import {
 } from '../routes'
 
 export interface KeybindRuntimeDeps {
+  /** Gateway RPC requester for session-scoped model controls (reasoning). */
+  requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
   /** Open/close the command center overlay (sessions / system / usage). */
   toggleCommandCenter: () => void
   /** Drop to a fresh new-session draft. */
@@ -211,6 +224,51 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     setTerminalTakeover(false)
   }
 
+  // Reasoning level up/down (#71627): step the ACTIVE session one notch
+  // through off → minimal → … → xhigh (clamped; max/ultra stay behind the
+  // menu). Optimistic store write with rollback, and a monotonic sequence so
+  // a slow earlier response can't revert a newer press.
+  const reasoningRequestSeqRef = useRef(0)
+
+  const stepSessionReasoning = (direction: 1 | -1) => {
+    const sessionId = $activeSessionId.get()
+
+    // No live session: the draft's pick still steps (it ships on the next
+    // session.create); no `config.set` — without a session the RPC falls
+    // back to the persistent profile config and would rewrite the default.
+    const rollback = $currentReasoningEffort.get()
+    const fallback = $defaultReasoningEffort.get() || undefined
+    const next = stepReasoningEffort(rollback, direction, fallback)
+
+    if (next === rollback.trim().toLowerCase()) {
+      return
+    }
+
+    markComposerSelectionManual()
+    setCurrentReasoningEffort(next)
+
+    if (!sessionId) {
+      return
+    }
+
+    const requestSeq = reasoningRequestSeqRef.current + 1
+
+    reasoningRequestSeqRef.current = requestSeq
+
+    void writeSessionReasoningEffort(deps.requestGateway, sessionId, next)
+      .then(value => {
+        if (reasoningRequestSeqRef.current === requestSeq) {
+          setCurrentReasoningEffort(value)
+        }
+      })
+      .catch(error => {
+        if (reasoningRequestSeqRef.current === requestSeq) {
+          setCurrentReasoningEffort(rollback)
+          notifyError(error, translateNow('shell.modelOptions.updateFailed'))
+        }
+      })
+  }
+
   handlersRef.current = {
     'keybinds.openPanel': () => navigate(`${SETTINGS_ROUTE}?tab=keybinds`),
 
@@ -224,6 +282,8 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     },
     'composer.voice': requestVoiceToggle,
     'composer.dictate': requestComposerDictation,
+    'composer.reasoningUp': () => stepSessionReasoning(1),
+    'composer.reasoningDown': () => stepSessionReasoning(-1),
 
     // On the Settings overlay, ⌘K scopes to settings search; the second press
     // (or Esc) still closes as usual via toggle.

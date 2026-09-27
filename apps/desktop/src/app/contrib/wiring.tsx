@@ -1070,6 +1070,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   useKeybinds({
     archiveSelectedSession,
     openNewSessionTab,
+    requestGateway,
     startFreshSession: startFreshSessionDraft,
     toggleCommandCenter,
     toggleSelectedPin

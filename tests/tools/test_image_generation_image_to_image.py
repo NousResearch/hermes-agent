@@ -169,6 +169,57 @@ class TestFalRouting:
 
 
 class TestLocalSourceConsent:
+    def test_approval_binds_canonical_path_and_validated_bytes(self, cfg_home, monkeypatch, tmp_path):
+        import tools.image_generation_tool as image_tool
+        from tools import approval_prompt
+        from PIL import Image
+
+        original = tmp_path / "original.png"
+        replacement = tmp_path / "replacement.png"
+        link = tmp_path / "selected.png"
+        Image.new("RGB", (1, 1), "red").save(original)
+        Image.new("RGB", (1, 1), "blue").save(replacement)
+        original_bytes = original.read_bytes()
+        link.symlink_to(original)
+        _write_cfg(cfg_home, {"image_gen": {"model": "fal-ai/nano-banana-pro"}})
+        monkeypatch.setattr(image_tool, "fal_key_is_configured", lambda: True)
+        monkeypatch.setattr(image_tool, "_resolve_managed_fal_gateway", lambda: None)
+
+        prompts = []
+
+        def approve(message, description, **kwargs):
+            prompts.append(message)
+            link.unlink()
+            link.symlink_to(replacement)
+            return "accept"
+
+        monkeypatch.setattr(approval_prompt, "request_elicitation_consent", approve)
+
+        class FakeFal:
+            def __init__(self):
+                self.uploads = []
+
+            def upload(self, data, mime):
+                self.uploads.append((data, mime))
+                return "https://fal.storage/selected.png"
+
+        fake = FakeFal()
+        monkeypatch.setattr(image_tool, "fal_client", fake)
+
+        class Handler:
+            def get(self):
+                return {"images": [{"url": "https://out/edited.png", "width": 1, "height": 1}]}
+
+        monkeypatch.setattr(image_tool, "_submit_fal_request", lambda endpoint, arguments: Handler())
+
+        result = json.loads(image_tool._handle_image_generate({
+            "prompt": "make it night", "image_url": str(link), "upscale": False,
+        }))
+
+        assert result["success"] is True
+        assert str(original) in prompts[0]
+        assert fake.uploads == [(original_bytes, "image/png")]
+
     @pytest.mark.parametrize("entry,answer,error_type", [
         ("handler", "decline", "source_export_denied"),
         ("handler", "cancel", "source_export_denied"),
@@ -180,17 +231,19 @@ class TestLocalSourceConsent:
         self, cfg_home, monkeypatch, tmp_path, entry, answer, error_type
     ):
         import tools.image_generation_tool as image_tool
-        import tools.image_source as image_source
         from tools import approval_prompt
 
         source = tmp_path / "private.png"
-        source.write_bytes(b"\x89PNG\r\n\x1a\nprivate")
+        source.write_bytes(base64.b64decode(
+            b"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="))
         provider = "broken" if entry == "plugin_fallback" else "fal"
         _write_cfg(cfg_home, {"image_gen": {"provider": provider, "model": "fal-ai/nano-banana-pro"}})
         monkeypatch.setattr(image_tool, "fal_key_is_configured", lambda: True)
         monkeypatch.setattr(image_tool, "_resolve_managed_fal_gateway", lambda: None)
         monkeypatch.setattr(approval_prompt, "request_elicitation_consent", lambda *a, **k: answer)
-        monkeypatch.setattr(image_source, "resolve_source_sync", lambda *a, **k: pytest.fail("read before consent"))
+        if answer != "accept":
+            monkeypatch.setattr(image_tool, "resolve_canonical_source_sync",
+                                lambda *a, **k: pytest.fail("read before consent"))
         monkeypatch.setattr(image_tool, "_submit_fal_request", lambda *a, **k: pytest.fail("submitted after denial"))
         if entry == "plugin_fallback":
             monkeypatch.setattr(image_tool, "_get_plugin_provider", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("missing")))

@@ -15,6 +15,8 @@ import threading
 import uuid
 from typing import Any, Dict, Optional
 
+from tools.image_source import ResolvedImage, canonical_local_source, resolve_canonical_source_sync
+
 # Imported lazily by _load_fal_client() (~64 ms on every CLI cold start); a test-monkeypatched
 # value short-circuits the loader.
 fal_client: Any = None
@@ -418,15 +420,20 @@ def _prepare_fal_request(model_id, meta, prompt, aspect_ratio, seed, overrides, 
 _MAX_MANAGED_SOURCE_URL_BYTES = 20 * 1024 * 1024
 
 
-def _resolve_fal_source_image(source: str, task_id: Optional[str], *, managed: bool) -> str:
+def _resolve_fal_source_image(
+    source: str, task_id: Optional[str], *, managed: bool, snapshot: Optional[ResolvedImage] = None
+) -> str:
     from tools.image_source import resolve_source_sync
 
     source = source.strip()
     if source.lower().startswith(("http://", "https://")):
         return source
 
-    resolved = resolve_source_sync(source, task_id)
-    if source.lower().startswith("data:") or managed:
+    local = not source.lower().startswith("data:")
+    if local and snapshot is None:
+        raise ValueError("Local image export was not approved for this source")
+    resolved = snapshot if snapshot is not None else resolve_source_sync(source, task_id)
+    if not local or managed:
         result = f"data:{resolved.mime};base64,{base64.b64encode(resolved.data).decode('ascii')}"
     else:
         _load_fal_client()
@@ -443,7 +450,7 @@ def image_generate_tool(
     num_images: Optional[int] = None, output_format: Optional[str] = None,
     seed: Optional[int] = None, image_url: Optional[str] = None,
     reference_image_urls: Optional[list] = None, upscale: Optional[bool] = None,
-    *, task_id: Optional[str] = None, _export_approved: bool = False) -> str:
+    *, task_id: Optional[str] = None, _source_snapshots: Optional[dict[str, ResolvedImage]] = None) -> str:
     """Generate (or, with source images + an ``edit_endpoint`` model, edit) an image via FAL.
 
     Extra kwargs are overrides filtered per-model via ``supports`` / ``edit_supports`` (dropped
@@ -471,10 +478,13 @@ def image_generate_tool(
         _debug.save()
         return json.dumps(response, indent=2, ensure_ascii=False)
     try:
-        if not _export_approved:
-            export_error = _approve_local_image_export(image_url, reference_image_urls)
+        if _source_snapshots is None:
+            source_snapshots, export_error = _approve_local_image_export(
+                image_url, reference_image_urls, task_id, route="fal")
             if export_error is not None:
                 return export_error
+        else:
+            source_snapshots = _source_snapshots
         endpoint, arguments = _prepare_fal_request(
             model_id, meta, prompt, aspect_ratio, seed,
             {k: v for k, v in overrides.items() if v is not None}, source_images)
@@ -483,7 +493,8 @@ def image_generate_tool(
             max_refs = int(meta.get("max_reference_images") or 1)
             selected_sources = source_images[:max_refs] if max_refs > 0 else source_images
             resolved_sources = [
-                _resolve_fal_source_image(source, task_id, managed=managed)
+                _resolve_fal_source_image(
+                    source, task_id, managed=managed, snapshot=source_snapshots.get(source))
                 for source in selected_sources
             ]
             image_param = meta.get("edit_image_param") or "image_urls"
@@ -805,14 +816,20 @@ def _local_image_references(sources: list[str]) -> list[str]:
             if not source.lower().startswith(("http://", "https://", "data:"))]
 
 
-def _approve_local_image_export(image_url, reference_image_urls) -> Optional[str]:
+def _source_data_url(resolved: ResolvedImage) -> str:
+    return f"data:{resolved.mime};base64,{base64.b64encode(resolved.data).decode('ascii')}"
+
+
+def _approve_local_image_export(
+    image_url, reference_image_urls, task_id: Optional[str], *, route: Optional[str] = None
+) -> tuple[dict[str, ResolvedImage], Optional[str]]:
     sources = _image_source_references(image_url, reference_image_urls)
     paths = _local_image_references(sources)
     if not paths:
-        return None
+        return {}, None
 
-    configured = _plugin_provider_name()
-    managed_model = _managed_model_plugin() if configured is None else None
+    configured = _plugin_provider_name() if route is None else None
+    managed_model = _managed_model_plugin() if configured is None and route is None else None
     if configured is not None:
         destination = f"image provider '{configured}'"
     elif managed_model is not None:
@@ -827,12 +844,12 @@ def _approve_local_image_export(image_url, reference_image_urls) -> Optional[str
     else:
         model_id, meta = _resolve_fal_model()
         if not meta.get("edit_endpoint"):
-            return None
+            return {}, None
         max_refs = int(meta.get("max_reference_images") or 1)
         selected_sources = sources[:max_refs] if max_refs > 0 else sources
         paths = _local_image_references(selected_sources)
         if not paths:
-            return None
+            return {}, None
         gateway = _resolve_managed_fal_gateway()
         endpoint = meta.get("edit_endpoint") or model_id
         destination = (f"Nous managed FAL gateway {gateway.gateway_origin}, endpoint '{endpoint}'"
@@ -840,12 +857,22 @@ def _approve_local_image_export(image_url, reference_image_urls) -> Optional[str
 
     from tools.approval_prompt import request_elicitation_consent
 
-    message = f"Send images from these source references to {destination}:\n" + "\n".join(paths)
-    description = "Hermes will resolve these references and send the resulting image bytes to the provider."
+    canonical_sources = {source: canonical_local_source(source, task_id) for source in paths}
+    displayed = [
+        f"{source.scope} file: {source.path} (source reference: {reference})"
+        for reference, source in canonical_sources.items()
+    ]
+    message = f"Send images from these paths to {destination}:\n" + "\n".join(displayed)
+    description = "Hermes will read these files after approval and send their image bytes to the provider."
     if request_elicitation_consent(message, description, surface="image-source-export",
                                    title="Send local images to image provider?") != "accept":
-        return _provider_error("Local image export was not approved.", "source_export_denied")
-    return None
+        return {}, _provider_error(
+            "Local image export was not approved. Do not retry or use another provider without the user's direction.",
+            "source_export_denied")
+    return {
+        reference: resolve_canonical_source_sync(source, task_id)
+        for reference, source in canonical_sources.items()
+    }, None
 
 
 def _handle_image_generate(args, **kw):
@@ -856,9 +883,10 @@ def _handle_image_generate(args, **kw):
     upscale = args.get("upscale")
     task_id = kw.get("task_id")
     try:
-        export_error = _approve_local_image_export(args.get("image_url"), args.get("reference_image_urls"))
+        source_snapshots, export_error = _approve_local_image_export(
+            args.get("image_url"), args.get("reference_image_urls"), task_id)
     except Exception as exc:
-        return _provider_error(f"Could not approve local image export: {exc}", "source_export_unavailable")
+        return _provider_error(f"Could not prepare local image export: {exc}", "source_export_unavailable")
     if export_error is not None:
         return export_error
     image_url = args.get("image_url")
@@ -867,10 +895,15 @@ def _handle_image_generate(args, **kw):
     raw = None
     configured_provider = _plugin_provider_name()
     if configured_provider is not None or _managed_model_plugin() is not None:
-        # Plugin routes receive sandbox-confined data. The FAL route uses the same resolver
-        # itself, so it keeps the original source type for direct byte uploads.
+        plugin_url = (_source_data_url(source_snapshots[image_url.strip()])
+                      if isinstance(image_url, str) and image_url.strip() in source_snapshots else image_url)
+        plugin_refs = ([
+            _source_data_url(source_snapshots[ref.strip()])
+            if isinstance(ref, str) and ref.strip() in source_snapshots else ref
+            for ref in reference_image_urls
+        ] if isinstance(reference_image_urls, (list, tuple)) else reference_image_urls)
         confined_url, confined_refs, confine_error = _confine_source_images(
-            image_url, reference_image_urls, task_id)
+            plugin_url, plugin_refs, task_id)
         if confine_error is not None:
             return confine_error
         sources = dict(image_url=confined_url, reference_image_urls=confined_refs, upscale=upscale_arg)
@@ -886,7 +919,7 @@ def _handle_image_generate(args, **kw):
     if raw is None:
         raw = image_generate_tool(
             prompt, aspect_ratio, image_url=image_url, reference_image_urls=reference_image_urls,
-            upscale=upscale_arg, task_id=task_id, _export_approved=True)
+            upscale=upscale_arg, task_id=task_id, _source_snapshots=source_snapshots)
     return _postprocess_image_generate_result(raw, task_id=task_id)
 
 

@@ -1,13 +1,4 @@
-"""Confinement interplay between the generation chokepoint and the backends.
-
-Every image-gen backend resolves its source images through the sanctioned
-resolver (tools.image_source). Under a non-local terminal backend the handler
-chokepoint (_confine_source_images) has already converted path-like sources
-to data: URLs, so per-backend resolution must degrade to pure
-decode-sniff-cap validation: no sandbox exec, no download, one decode. And a
-path that does slip to a backend under a sandbox with no env must fail
-closed rather than fall back to a host read.
-"""
+"""Image-generation source handling under sandbox confinement."""
 
 import base64
 import importlib

@@ -132,6 +132,44 @@ class TestLocalBackend:
         assert res.origin == "file"
 
 
+class TestCanonicalLocalSource:
+    def test_sandbox_path_uses_its_own_scope_and_reads_after_resolution(self, tmp_path, monkeypatch):
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        host_path = tmp_path / "visible.png"
+        host_path.write_bytes(b"host-only data")
+
+        class Environment:
+            host_cwd = ""
+            host_cwd_mount = "/workspace"
+
+            def __init__(self):
+                self.commands = []
+
+            def fetch_realpath(self, path):
+                return "/workspace/real.png"
+
+            def execute(self, command):
+                self.commands.append(command)
+                return {"returncode": 0, "output": base64.b64encode(PNG).decode()}
+
+        env = Environment()
+        monkeypatch.setattr(isrc, "_permitted_host_read_target", lambda path, ctx: None)
+        monkeypatch.setattr(isrc, "_get_active_env", lambda task_id: env)
+
+        canonical = isrc.canonical_local_source(str(host_path), "task")
+
+        assert canonical == isrc.CanonicalLocalSource("/workspace/real.png", "sandbox")
+        assert env.commands == []
+
+        resolved = isrc.resolve_canonical_source_sync(canonical, "task")
+
+        assert resolved.data == PNG
+        assert resolved.origin == "container"
+        assert len(env.commands) == 1
+        assert "/workspace/real.png" in env.commands[0]
+
+
 class TestNonLocalBackendConfinement:
     """The security model: under a sandbox backend, host reads are confined to
     the media caches; every other path is read inside the sandbox."""

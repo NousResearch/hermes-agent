@@ -2511,6 +2511,11 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
     normalized = _norm(tool_name)
     if normalized in agent.valid_tool_names:
         return normalized
+    # ``search_web`` means ``web_search``, but fuzzy matching below prefers ``search_files`` (0.73 vs
+    # 0.6) and would run a web query as a filesystem search. Map it here and never let it reach fuzzy.
+    aliased = {"search_web": "web_search"}.get(normalized)
+    if aliased:
+        return aliased if aliased in agent.valid_tool_names else None
     cands: set[str] = {tool_name, lowered, normalized, _camel_snake(tool_name)}
     for _ in range(2):  # strip trailing tool-suffix up to twice (TodoTool_tool needs it)
         extra: set[str] = set()

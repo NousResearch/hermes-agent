@@ -445,19 +445,23 @@ def _ledger_outbound_send(platform_name, chat_id, thread_id, content):
     trace at all, so anything reading
     ``delivery_obligations`` silently missed them. Book the outcome AFTER the platform ACK as a
     terminal 'delivered' row (``record_delivered_obligation``), so no redelivery semantics can
-    attach. Failures and partial sends are deliberately not booked: a 'failed' row IS
+    attach. The row attributes the sending agent's muxed profile (``HERMES_SESSION_PROFILE``)
+    so a multiplexed gateway can tell the families apart; sends with no session profile land as
+    'default'. Failures and partial sends are deliberately not booked: a 'failed' row IS
     sweep-eligible, and granting outbound-first sends cross-process retry semantics is a design
     decision, not a side effect. Never raises."""
     try:
         from gateway.delivery_ledger import (
             compute_obligation_id, ledger_enabled, record_delivered_obligation)
+        from gateway.session_context import get_session_env
         if not ledger_enabled():
             return
         session_key = f"outbound:{platform_name}:{chat_id}" + (f":{thread_id}" if thread_id else "")
         record_delivered_obligation(
             obligation_id=compute_obligation_id(session_key, f"outbound-{uuid.uuid4().hex[:12]}", content),
             session_key=session_key, platform=platform_name, chat_id=str(chat_id),
-            thread_id=thread_id, content=content)
+            thread_id=thread_id, content=content,
+            adapter_profile=get_session_env("HERMES_SESSION_PROFILE", "") or None)
     except Exception:
         logger.debug("outbound send ledger record failed", exc_info=True)
 

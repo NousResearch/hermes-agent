@@ -558,7 +558,13 @@ def pending_retries(now: Optional[float] = None) -> List[Dict[str, Any]]:
 
 
 def _prune_unlocked(conn, now: float) -> None:
-    """Retention DELETEs on the caller's open connection — must run inside the caller's transaction."""
+    """Retention DELETEs on the caller's open connection — must run inside the caller's transaction.
+
+    The ``_MAX_ROWS`` budget is shared across delivery families: gateway reply obligations and
+    outbound-first send rows (``outbound:`` session keys) contend for it, and eviction is
+    oldest-terminal-first with no per-family quota — a sustained high-volume writer in one
+    family ages out the other family's terminal audit history. Non-terminal rows
+    (pending/attempting/failed) sort last and are never picked while terminal rows remain."""
     conn.execute(
         """DELETE FROM delivery_obligations
            WHERE state IN ('delivered', 'abandoned') AND updated_at < ?""", (now - _RETENTION_SECONDS,))

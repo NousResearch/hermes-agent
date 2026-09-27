@@ -245,3 +245,129 @@ def test_bare_uvx_resolves_pm_uv_and_an_absolute_command_stays_the_users(tmp_pat
     explicit = str(user_bin / "uvx")
     command, _env = _resolve_stdio_command(explicit, {"PATH": "/usr/bin"})
     assert command == explicit
+
+
+def test_resolve_stdio_command_displaces_a_system_node_already_on_path(tmp_path, monkeypatch):
+    """End-to-end: with the managed dir already on the child PATH behind a system
+    Node dir, the resolved env must put the managed dir first so the spawned
+    launcher's shebang/children (`/usr/bin/env node`) get the managed Node."""
+    node_bin = tmp_path / "node" / "bin"
+    node_bin.mkdir(parents=True)
+    npx_path = node_bin / "npx"
+    npx_path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    npx_path.chmod(0o755)
+    system_bin = tmp_path / "system-node"
+    system_bin.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    inherited = os.pathsep.join([str(system_bin), "/usr/bin", str(node_bin)])
+
+    with patch("tools.mcp_tool_config.shutil.which", return_value=None):
+        command, env = _resolve_stdio_command("npx", {"PATH": inherited})
+
+    assert command == str(npx_path)
+    assert env["PATH"].split(os.pathsep) == [str(node_bin), str(system_bin), "/usr/bin"]
+
+
+# ---------------------------------------------------------------------------
+# #125300: bootstrap prepends the managed runtime's bin dir to this process's
+# PATH, so a bare `python3` resolved to the bundled interpreter, which lacks
+# the user's packages — the server died on import and the agent log only said
+# "Connection closed". A bare command must keep the USER's PATH semantics.
+# ---------------------------------------------------------------------------
+
+
+def test_bare_python3_steps_past_the_managed_runtime_to_the_user_hit(tmp_path, monkeypatch):
+    """Two PATH hits for a bare non-launcher command: the managed runtime's and the
+    user's. The user's wins; the resolved env prepends the user's dir (helpers the
+    server spawns resolve against the same interpreter). The user dir must sit OUTSIDE
+    the hermes home — everything under it counts as managed."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    home = tmp_path / "home"
+    managed_bin = home / "bin"  # <HERMES_HOME>/bin — a managed dir by definition
+    managed_bin.mkdir(parents=True)
+    user_bin = tmp_path / "user-bin"
+    user_bin.mkdir()
+    for directory in (managed_bin, user_bin):
+        exe = directory / "python3"
+        exe.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        exe.chmod(0o755)
+    token = set_hermes_home_override(home)
+    try:
+        command, env = _resolve_stdio_command("python3", {
+            "PATH": os.pathsep.join([str(managed_bin), str(user_bin)])})
+    finally:
+        reset_hermes_home_override(token)
+
+    assert command == str(user_bin / "python3")
+    assert env["PATH"].split(os.pathsep)[0] == str(user_bin)
+
+
+def test_bare_python3_keeps_the_managed_hit_when_the_user_has_none(tmp_path, monkeypatch):
+    """A managed-only PATH keeps the managed hit: no user hit exists to prefer, and a
+    resolved absolute path still beats an ENOENT at execvp. The trailing user dir is a
+    real directory with no executables — not /usr/bin, which may genuinely carry one."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    home = tmp_path / "home"
+    managed_bin = home / "bin"
+    managed_bin.mkdir(parents=True)
+    exe = managed_bin / "python3"
+    exe.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    exe.chmod(0o755)
+    empty_bin = tmp_path / "user-bin"
+    empty_bin.mkdir()
+    token = set_hermes_home_override(home)
+    try:
+        command, _env = _resolve_stdio_command("python3", {
+            "PATH": os.pathsep.join([str(managed_bin), str(empty_bin)])})
+    finally:
+        reset_hermes_home_override(token)
+
+    assert command == str(exe)
+
+
+def test_bare_launcher_commands_keep_the_managed_first_resolution(tmp_path, monkeypatch):
+    """The launcher family is exempt from the user-hit step: resolving npx/node/uv/uvx
+    to the managed tree is the point of the managed-first policy (#37589, #111937)."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    home = tmp_path / "home"
+    managed_bin = home / "bin"
+    managed_bin.mkdir(parents=True)
+    user_bin = tmp_path / "user-bin"
+    user_bin.mkdir()
+    for directory in (managed_bin, user_bin):
+        exe = directory / "npx"
+        exe.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        exe.chmod(0o755)
+    token = set_hermes_home_override(home)
+    try:
+        command, _env = _resolve_stdio_command("npx", {
+            "PATH": os.pathsep.join([str(managed_bin), str(user_bin)])})
+    finally:
+        reset_hermes_home_override(token)
+
+    assert command == str(managed_bin / "npx")
+
+
+def test_tail_server_stderr_scopes_to_the_named_server(tmp_path, monkeypatch):
+    """The connect-failure log line quotes the child's last stderr lines; a server that
+    never started has no segment and gets nothing (not another server's output)."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools import mcp_tool_config as cfg
+
+    token = set_hermes_home_override(tmp_path)
+    try:
+        cfg._close_mcp_stderr_logs()
+        cfg._write_stderr_log_header("beta")
+        fh = cfg._get_mcp_stderr_log()
+        fh.write("beta noise\n")
+        fh.flush()
+        cfg._write_stderr_log_header("alpha")
+        fh.write("ModuleNotFoundError: No module named 'requests'\n")
+        fh.flush()
+
+        assert "ModuleNotFoundError" in cfg._tail_server_stderr("alpha")
+        assert "beta noise" not in cfg._tail_server_stderr("alpha")
+        assert cfg._tail_server_stderr("never-started") == ""
+    finally:
+        cfg._close_mcp_stderr_logs()
+        reset_hermes_home_override(token)

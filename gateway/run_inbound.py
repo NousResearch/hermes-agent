@@ -32,7 +32,7 @@ from gateway.run_inbound_unauthorized import (
     unauthorized_owner_hint,
 )
 from gateway.session import (
-    SessionSource, build_session_context, is_shared_multi_user_session,
+    SessionEntry, SessionSource, build_session_context, is_shared_multi_user_session,
     neutralize_untrusted_inline_text,
 )
 from gateway.turn_lease import TurnLeaseTimeoutError
@@ -1772,10 +1772,29 @@ class GatewayInboundMixin:
         if callable(take_channel_context):
             entry = getattr(getattr(self, "session_store", None), "_entries", {}).get(session_key)
             created_at = getattr(entry, "created_at", None)
-            context = take_channel_context(
-                adapter, event, session_key,
-                created_at if isinstance(created_at, datetime) else None,
-            )
+            created_at = created_at if isinstance(created_at, datetime) else None
+            take_room_notes = getattr(type(adapter), "take_turn_room_notes", None)
+            if (
+                source.platform == Platform.MATRIX and isinstance(entry, SessionEntry)
+                and not event.internal and event.message_type == MessageType.TEXT
+                and callable(take_room_notes)
+            ):
+                from plugins.platforms.matrix.room_context import MatrixRoomState, format_room_notes
+
+                current = MatrixRoomState.from_source(source)
+                saved = entry.metadata.get("matrix_room_state")
+                previous = MatrixRoomState.from_dict(saved)
+                if previous is None:
+                    previous = MatrixRoomState.from_source(entry.origin or source)
+                notes = current.changes_since(previous)
+                notes.update(take_room_notes(adapter, event, session_key, created_at))
+                context = format_room_notes(notes)
+                if current.to_dict() != saved:
+                    await self.async_session_store.set_session_metadata(
+                        session_key, "matrix_room_state", current.to_dict(),
+                    )
+            else:
+                context = take_channel_context(adapter, event, session_key, created_at)
             if context:
                 message_text = f"{context}\n\n[New message]\n{message_text}"
         return message_text

@@ -6,7 +6,7 @@ import time
 from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:  # typing only: importing kanban_db here would close an import cycle
-    from hermes_cli.kanban_db import TriageEscalationRefusal
+    from hermes_cli.kanban_db import DecomposeRefusal, TriageEscalationRefusal
 
 def inherit_creator_origin(
     conn: sqlite3.Connection, task_id: str, creator_task_id: Optional[str], *,
@@ -93,7 +93,7 @@ def _validate_children_graph(children: list) -> None:
 def decompose_triage_task(
     conn: sqlite3.Connection, task_id: str, *, root_assignee: Optional[str], children: list[dict],
     author: Optional[str] = None, auto_promote: bool = True,
-) -> Optional[list[str] | TriageEscalationRefusal]:
+) -> Optional[list[str] | TriageEscalationRefusal | DecomposeRefusal]:
     """Fan a triage task out into children and move the root to ``todo``; the root
     waits on every child and wakes (``ready``) when all are done.
 
@@ -129,9 +129,11 @@ def decompose_triage_task(
         ).fetchone()
         if root_row is None or root_row["status"] != "triage":
             return None
-        # Guard before the fan-out: the refusal is decided inside this txn, so a
-        # concurrent escalation cannot slip a graph past it.
-        refusal = kb_triage.triage_escalation_refusal(conn, task_id)
+        # Guard before the fan-out: both refusals are decided inside this txn, so neither a
+        # concurrent escalation nor a record that now says the work is already decided
+        # (approved / superseded / in review / live branch / live run) can slip a graph
+        # past it. The record refusal is also WRITTEN here, so it survives the attempt.
+        refusal = kb_triage.decompose_refusal_guard(conn, task_id, author=author)
         if refusal is not None:
             return refusal
         # Dependency links alone do not imply lineage. The completion event is

@@ -299,25 +299,42 @@ def _apply_fanout(task_id: str, parsed: dict, routing: _Routing, author: str) ->
         return DecomposeOutcome(task_id, False, f"DB error: {type(exc).__name__}")
     if child_ids is None:
         return DecomposeOutcome(task_id, False, "task already decomposed or moved out of triage")
-    if not child_ids:
-        # Falsy: the DB layer refused the fan-out (triage escalation) and named the
-        # triggering event and the card, so the operator sees why nothing was created.
+    if not isinstance(child_ids, list):
+        # Falsy: the DB layer refused the fan-out and named the reason and the card, so the
+        # operator sees why nothing was created — the block-loop breaker's park, or a record
+        # that says the work is already decided (approved / superseded / in review /
+        # live branch / live run).
         return DecomposeOutcome(
             task_id, False, getattr(child_ids, "detail", None) or "decompose refused",
         )
+    if not child_ids:
+        return DecomposeOutcome(task_id, False, "decompose refused: no children created")
     return DecomposeOutcome(
         task_id, True, f"decomposed into {len(child_ids)} children", fanout=True, child_ids=child_ids,
     )
 
 
-def _escalation_refusal(task_id: str) -> Optional[kb.TriageEscalationRefusal]:
-    """The block-loop breaker's park for ``task_id``, or None.
+def _promotion_refusal(
+    task_id: str, author: str,
+) -> Optional[kb.TriageEscalationRefusal | kb.DecomposeRefusal]:
+    """The refusal that keeps ``task_id`` in ``triage``, or None.
 
-    Checked BEFORE the aux call: a card parked for a human stays parked whatever the
-    decomposer would have said, so the LLM round-trip is pure waste.
+    Checked BEFORE the aux call: a card the record has already decided — or one the
+    block-loop breaker parked — stays put whatever the decomposer would have said, so the
+    LLM round-trip is pure waste. The refusal is RECORDED here (see
+    ``kanban_db.decompose_refusal_guard``), so the operator reads the reason off the card
+    instead of inferring it from a decompose that quietly did nothing.
     """
     with kbc.connect_closing() as conn:
-        return kb.triage_escalation_refusal(conn, task_id)
+        escalation = kb.triage_escalation_refusal(conn, task_id)
+        if escalation is not None:
+            return escalation
+        refusal = kb.decompose_refusal(conn, task_id)
+        if refusal is None:
+            return None
+        with kb.write_txn(conn):
+            kb.record_decompose_refusal(conn, refusal, author=author)
+        return refusal
 
 
 def decompose_task(
@@ -333,7 +350,8 @@ def decompose_task(
     if task is None:
         return DecomposeOutcome(task_id, False, reason)
 
-    refusal = _escalation_refusal(task_id)
+    audit_author = author or _profile_author()
+    refusal = _promotion_refusal(task_id, audit_author)
     if refusal is not None:
         return DecomposeOutcome(task_id, False, refusal.detail)
 
@@ -354,7 +372,6 @@ def decompose_task(
     if parsed is None:
         return DecomposeOutcome(task_id, False, "LLM returned malformed JSON")
 
-    audit_author = author or _profile_author()
     if not parsed.get("fanout"):
         return _apply_single(task, parsed, routing, audit_author)
     return _apply_fanout(task_id, parsed, routing, audit_author)

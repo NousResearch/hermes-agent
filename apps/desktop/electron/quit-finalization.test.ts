@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 
 import { test, vi } from 'vitest'
 
-import { createQuitFinalization } from './quit-finalization'
+import { createManagedUpdateQuitCoordinator, createQuitFinalization } from './quit-finalization'
 
 /**
  * #116376: on Windows, closing the last window ran the whole JS quit path
@@ -109,4 +109,58 @@ test('a completed quit cancels the fallback and it never re-arms', () => {
   assert.deepEqual(cancel.mock.calls, [['timer']])
   assert.equal(hardExit.mock.calls.length, 0)
   assert.equal(schedule.mock.calls.length, 1)
+})
+
+test('a managed update in flight causes before-quit to return without arming sealed teardown, then arms after completion', async () => {
+  let inFlight = true
+  const preventDefault = vi.fn()
+  const requestQuit = vi.fn()
+  const armSealedTeardown = vi.fn()
+  let resolveUpdate!: () => void
+  const updatePromise = new Promise<void>(resolve => {
+    resolveUpdate = resolve
+  })
+
+  const coordinator = createManagedUpdateQuitCoordinator({
+    hasInFlightUpdates: () => inFlight,
+    waitForUpdates: () => updatePromise,
+    requestQuit,
+    armSealedTeardown
+  })
+
+  // 1. First before-quit pass: managed update is in flight.
+  // Must preventDefault, initiate wait, and return without arming sealed teardown.
+  const handled = coordinator.handleBeforeQuit({ preventDefault })
+  assert.equal(handled, true)
+  assert.equal(preventDefault.mock.calls.length, 1)
+
+  // Explicit arm attempt while update is in flight must also be suppressed.
+  coordinator.armSealedQuitExit()
+  coordinator.armSealedQuitExit(20_000)
+  assert.equal(armSealedTeardown.mock.calls.length, 0, 'must not arm while managed update is in flight')
+
+  // A concurrent before-quit while the wait is already pending also returns without re-arming.
+  const concurrentPreventDefault = vi.fn()
+  assert.equal(coordinator.handleBeforeQuit({ preventDefault: concurrentPreventDefault }), true)
+  assert.equal(concurrentPreventDefault.mock.calls.length, 1)
+  assert.equal(armSealedTeardown.mock.calls.length, 0)
+
+  // 2. Managed update settles.
+  inFlight = false
+  resolveUpdate()
+  await Promise.resolve()
+  await Promise.resolve()
+
+  // App.quit() is requested for the second pass.
+  assert.equal(requestQuit.mock.calls.length, 1)
+  assert.equal(coordinator.isWaitDone(), true)
+
+  // 3. Second before-quit pass: update wait is done, so it does not intercept.
+  const secondPreventDefault = vi.fn()
+  assert.equal(coordinator.handleBeforeQuit({ preventDefault: secondPreventDefault }), false)
+  assert.equal(secondPreventDefault.mock.calls.length, 0)
+
+  // Normal teardown can now arm as intended.
+  coordinator.armSealedQuitExit(20_000)
+  assert.deepEqual(armSealedTeardown.mock.calls, [[20_000]])
 })

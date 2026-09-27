@@ -98,8 +98,7 @@ export function checkDistBuilt(distDir) {
 // Parse each emitted chunk as an ES module before packaging so a corrupted
 // build fails loudly and the update retry rebuilds instead of shipping it.
 function verifyChunksParse(assetsDir) {
-  const nodeBin = process.env.NODE ||
-    (process.execPath && process.execPath.endsWith("node") ? process.execPath : "node")
+  const nodeBin = process.env.NODE || process.execPath || "node"
   const chunks = readdirSync(assetsDir).filter(name => name.endsWith(".js"))
   for (const name of chunks) {
     const file = join(assetsDir, name)

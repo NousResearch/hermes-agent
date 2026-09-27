@@ -1,0 +1,39 @@
+name: desensitize
+repo: https://github.com/yubingz/hermes-desensitize
+sha: 9684e1b5e60197524dc15aacf6a3c9b91c74ce0a
+subdir: src/hermes_desensitize
+description: "Chinese-context desensitization for Hermes chats. Replaces PII and business-sensitive
+  entities — person names, company names, addresses, file paths, and magnitude figures — with
+  reversible placeholders before a message reaches the model, then restores them in the reply.
+  Two layers: an optional local/OpenAI-compatible LLM for semantic entity judgment, plus a
+  sub-millisecond regex fallback (phone, ID card, email, IP, path) that keeps the conversation
+  working when the model is unavailable. Disclosure — the semantic layer sends the
+  pre-redaction text to the configured LLM, because recognising a name requires seeing it:
+  with the default provider=ollama that is the local Ollama host and nothing leaves the
+  machine, but provider=openai without an explicit base_url falls back to
+  https://api.siliconflow.cn/v1 (remote); set base_url, or stay on ollama, to keep it local.
+  Also rewrites inbound user messages and outbound
+  assistant replies, so transcript content differs from what you typed; placeholders are
+  code-generated and may over-match (18-digit ID-card-shaped strings, names that collide with
+  the public-entity allowlist); company names are matched greedily and a modifier such as
+  原北京某某有限公司 is absorbed into the placeholder; magnitude masking drops the numeric
+  value and only fires on the configured trigger words, so a domain term absent from that list
+  is left unmasked without warning; the placeholder mapping is held in memory only and never
+  written to disk."
+maintainer: yubingz
+tier: community
+category: tools
+requires_hermes: ">=0.19"
+docs_url: https://github.com/yubingz/hermes-desensitize#readme
+version: "1.0.0"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+    - pre_api_request
+    - transform_llm_output
+    - post_llm_call
+  provides_middleware: []
+  requires_env: []

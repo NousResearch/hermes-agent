@@ -9,6 +9,13 @@
 
 **The native desktop app for [Hermes Agent](../../README.md) — the self-improving AI agent from [Nous Research](https://nousresearch.com).** Same agent, same skills, same memory as the CLI and gateway, in a polished native window — chat with streaming tool output, side-by-side previews, a file browser, voice, and settings, no terminal required. Available for **macOS, Windows, and Linux**.
 
+> **Intel Macs:** the `Hermes-Setup.dmg` bootstrap installer is built for
+> Apple Silicon (arm64) only, so on an Intel Mac it reports "not supported on
+> this Mac". The desktop release pipeline also builds a native `darwin-x64`
+> bundle (signed, notarized, with its own update feed); use that build, or
+> install the [CLI](../../README.md) and run `hermes desktop`. See
+> [Platform Support](../../website/docs/getting-started/platform-support.md#build-targets-and-support-priority).
+
 <table>
 <tr><td><b>Chat with the full agent</b></td><td>Streaming responses, live tool activity, structured tool summaries, and the same conversation history as every other Hermes surface.</td></tr>
 <tr><td><b>Side-by-side previews</b></td><td>Render web pages, files, and tool outputs in a right-hand pane while you keep chatting.</td></tr>

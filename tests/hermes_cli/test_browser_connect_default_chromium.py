@@ -59,6 +59,48 @@ class TestLaunchServicesHttpsHandler:
         assert bc._launchservices_https_handler(dump) == "com.microsoft.edgemac"
 
 
+@pytest.mark.platforms("windows")
+class TestDetectDefaultWindows:
+    def test_effective_chrome_wins_over_stale_edge_userchoice(self, monkeypatch):
+        chrome = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+        monkeypatch.setattr(
+            bc,
+            "_query_windows_association_string",
+            lambda assocstr, scheme="https": (
+                chrome if assocstr == bc._WINDOWS_ASSOCSTR_EXECUTABLE else None
+            ),
+        )
+        monkeypatch.setattr(
+            bc,
+            "chromium_executable",
+            lambda browser, system=None: chrome if browser == "chrome" else None,
+        )
+        with patch.object(bc, "_read_windows_userchoice", return_value="MSEdgeHTM") as read:
+            assert bc._detect_default_windows() == "chrome"
+            read.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "assocstr,effective,expected",
+        [
+            (bc._WINDOWS_ASSOCSTR_PROGID, "ChromeBHTML", bc.UNSUPPORTED_CHANNEL),
+            (bc._WINDOWS_ASSOCSTR_EXECUTABLE,
+             r"C:\Program Files\Mozilla Firefox\firefox.exe", None),
+        ],
+    )
+    def test_unsupported_or_unknown_effective_association_fails_closed(
+        self, monkeypatch, assocstr, effective, expected
+    ):
+        monkeypatch.setattr(
+            bc,
+            "_query_windows_association_string",
+            lambda requested, scheme="https": effective if requested == assocstr else None,
+        )
+        monkeypatch.setattr(bc, "chromium_executable", lambda browser, system=None: None)
+        with patch.object(bc, "_read_windows_userchoice", return_value="ChromeHTML") as read:
+            assert bc._detect_default_windows() == expected
+            read.assert_not_called()
+
+
 class TestDetectDefaultDarwin:
     def _run_with(self, dump: str):
         class _Proc:

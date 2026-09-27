@@ -233,19 +233,80 @@ def _classify_default(value: str, channels, table, match) -> str | None:
     return next((browser for frag, browser in table if match(value, frag)), None)
 
 
-def _detect_default_windows() -> str | None:
+_WINDOWS_ASSOCSTR_EXECUTABLE = 2
+_WINDOWS_ASSOCSTR_PROGID = 20
+
+
+def _query_windows_association_string(assocstr: int, scheme: str = "https") -> str | None:
+    """Read the shell-resolved HTTPS association, which can differ from stale UserChoice."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        query = ctypes.WinDLL("shlwapi", use_last_error=True).AssocQueryStringW
+        query.argtypes = [wintypes.DWORD, ctypes.c_int, wintypes.LPCWSTR,
+                          wintypes.LPCWSTR, wintypes.LPWSTR,
+                          ctypes.POINTER(wintypes.DWORD)]
+        query.restype = ctypes.c_long
+        result = ctypes.create_unicode_buffer(32768)
+        result_size = wintypes.DWORD(len(result))
+        status = query(0, assocstr, scheme, None, result, ctypes.byref(result_size))
+        if status != 0:
+            return None
+        return result.value.strip() or None
+    except Exception:  # unavailable API, non-Windows host, or unresolved association
+        return None
+
+
+def _classify_windows_executable(executable: str) -> str | None:
+    """Map only a known stable browser binary; unknown/channel binaries fail closed."""
+    value = os.path.normcase(os.path.normpath(executable.strip().strip('"')))
+    for browser in _BROWSER_BY_KEY:
+        candidate = chromium_executable(browser, system="Windows")
+        if candidate and value == os.path.normcase(os.path.normpath(candidate)):
+            return browser
+    return None
+
+
+def _read_windows_userchoice(choice_key: str) -> str | None:
     try:
         import winreg  # type: ignore
 
         key = winreg.OpenKey(
             winreg.HKEY_CURRENT_USER,
-            r"Software\Microsoft\Windows\Shell\Associations\UrlAssociations\https\UserChoice")
-        prog_id, _ = winreg.QueryValueEx(key, "ProgId")
-        winreg.CloseKey(key)
-    except Exception:  # non-Windows host (no winreg) or unreadable key
+            rf"Software\Microsoft\Windows\Shell\Associations\UrlAssociations\https\{choice_key}")
+        try:
+            prog_id, _ = winreg.QueryValueEx(key, "ProgId")
+        finally:
+            winreg.CloseKey(key)
+        return str(prog_id or "") or None
+    except Exception:  # non-Windows host or unreadable association key
         return None
+
+
+def _classify_windows_progid(prog_id: str) -> str | None:
     return _classify_default(str(prog_id or "").lower(), _WINDOWS_CHANNEL_PROGIDS,
                              _WINDOWS_PROGID_MAP, str.startswith)
+
+
+def _detect_default_windows() -> str | None:
+    # Windows 11 may leave UserChoice stale after changing the default in Settings.
+    # Prefer the effective shell association; ProgID is more portable than executable
+    # resolution on some Windows builds.
+    executable = _query_windows_association_string(_WINDOWS_ASSOCSTR_EXECUTABLE)
+    if executable:
+        return _classify_windows_executable(executable)
+
+    prog_id = _query_windows_association_string(_WINDOWS_ASSOCSTR_PROGID)
+    if prog_id:
+        return _classify_windows_progid(prog_id)
+
+    # Windows 11 25H2 writes UserChoiceLatest on some builds; older Windows uses UserChoice.
+    for choice_key in ("UserChoiceLatest", "UserChoice"):
+        prog_id = _read_windows_userchoice(choice_key)
+        if prog_id:
+            return _classify_windows_progid(prog_id)
+    return None
 
 
 def _run_stdout(argv: list[str]) -> str | None:

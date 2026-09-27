@@ -2,7 +2,14 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { classifyActiveRuntime, hasValidBootstrapMarker } from './active-runtime-state'
+import { classifyActiveRuntime, externalRuntimePolicy, hasValidBootstrapMarker } from './active-runtime-state'
+
+test('packaged runtime stays isolated while explicit deployments and development remain supported', () => {
+  assert.deepEqual(externalRuntimePolicy(true, false, false), { command: false, systemPython: false })
+  assert.deepEqual(externalRuntimePolicy(true, false, true), { command: true, systemPython: false })
+  assert.deepEqual(externalRuntimePolicy(false, false, false), { command: true, systemPython: true })
+  assert.deepEqual(externalRuntimePolicy(false, true, true), { command: false, systemPython: false })
+})
 
 const VALID_MARKER = {
   pinnedCommit: '1234567890abcdef1234567890abcdef12345678',

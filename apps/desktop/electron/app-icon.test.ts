@@ -142,7 +142,7 @@ test('appIconCandidates keeps the documented precedence ladder', () => {
 
 test('package metadata uses the Agent Czesiek app identity consistently', () => {
   assert.equal(pkg.productName, 'Agent Czesiek')
-  assert.equal(pkg.description, 'AI Evolution Jarvis, powered by Hermes Agent.')
+  assert.ok(pkg.description.includes(pkg.productName))
   assert.equal(pkg.author, 'AI Evolution')
   assert.equal(pkg.repository.url, 'git+https://github.com/aievolutionpl/AGENT_CZESIEK.git')
   assert.equal(pkg.build.productName, pkg.productName)

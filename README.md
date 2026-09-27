@@ -72,6 +72,7 @@ Poniższe zrzuty pochodzą z uruchomionej aplikacji Electron z testowym backende
 ## Pierwsze uruchomienie
 
 1. Pobierz wersję dla swojego systemu z [Releases](https://github.com/aievolutionpl/AGENT_CZESIEK/releases) i zainstaluj aplikację. Sprawdź numer najnowszego wydania na tej stronie.
+   Na Windows instalator NSIS tworzy skrót **Agent Czesiek** na pulpicie i w menu Start. Nie potrzebujesz wcześniej zainstalowanego Hermesa: przy pierwszym uruchomieniu aplikacja pobiera własny silnik i zależności. Ten etap wymaga internetu; instalator nie jest pełnym pakietem offline. Szczegóły: [instalacja na nowym komputerze](docs/CZESIEK_INSTALLATION.md).
 2. Kliknij logo Cześka. Krótka animacja i cichy dźwięk otworzą onboarding. Dźwięk uruchamia się dopiero po kliknięciu.
 3. Wybierz profil i dostawcę modelu. Wklej własny klucz API, np. OpenRouter, w kreatorze lub później w Ustawieniach. Głos Live wymaga zgodnego dostawcy i osobnego klucza.
 4. Zdecyduj o dostępie do komputera, integracjach i trybie zgód. Możesz wrócić do tych ustawień później.

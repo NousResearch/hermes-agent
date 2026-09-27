@@ -32,11 +32,11 @@
 //
 // Exits 0 on success, non-zero on failure when run as a CLI. As a hook,
 // stampExeIdentity() resolves on success and rejects on failure; the caller
-// (after-pack.mjs) swallows the rejection so a stamp failure never fails an
-// otherwise-good build (worst case: stock icon, not a broken app).
+// (after-pack.mjs) propagates the rejection so a release cannot silently ship
+// the stock Electron icon or another product's identity.
 
 import { resolve, join } from 'node:path'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 
 import { rcedit } from 'rcedit'
 
@@ -58,18 +58,21 @@ async function stampExeIdentity(exe, desktopRoot = resolve(import.meta.dirname, 
 
   console.log(`[set-exe-identity] stamping ${exe}`)
   console.log(`[set-exe-identity] icon: ${icon}`)
+  const { version } = JSON.parse(readFileSync(join(desktopRoot, 'package.json'), 'utf8'))
 
   await rcedit(exe, {
     icon,
+    'file-version': version,
+    'product-version': version,
     'version-string': {
-      ProductName: 'Hermes',
-      FileDescription: 'Hermes',
-      CompanyName: 'Nous Research',
-      LegalCopyright: 'Copyright (c) 2026 Nous Research'
+      ProductName: 'Agent Czesiek',
+      FileDescription: 'Agent Czesiek',
+      CompanyName: 'AI Evolution Polska',
+      LegalCopyright: 'Agent Czesiek (c) 2026 AI Evolution Polska. Includes Hermes Agent under MIT.'
     }
   })
 
-  console.log('[set-exe-identity] done — Hermes icon + identity stamped')
+  console.log('[set-exe-identity] done — Agent Czesiek icon + identity stamped')
 }
 
 export { stampExeIdentity }

@@ -138,6 +138,14 @@ const HERMES_DIRECTIVE_RE = referenceRe()
 // something other than another slash.
 const SLASH_SKILL_RE = /(?<=^|\s)\/([a-zA-Z][\w-]*)(?![\w-]*\/)/g
 
+// The optimistic attachment ref for an OS-dropped image is a Markdown image
+// wrapping a renderer-local object URL (`![alt](blob:file:///…)`) — a string
+// this same module's producer (optimisticAttachmentRef) serializes. Recognize
+// exactly that form so the ref renders as a thumbnail instead of leaking the
+// raw Markdown and the blob URL into visible message text. Only `blob:` URLs
+// qualify: a plain-http/data markdown image is foreign input and stays text.
+const BLOB_MARKDOWN_IMAGE_RE = /!\[([^\]\n]{0,512})\]\((blob:[^)\s]{1,2048})\)/g
+
 const TRAILING_PUNCTUATION_RE = /[,.;!?]+$/
 
 function unwrapRefValue(raw: string): string {
@@ -252,6 +260,13 @@ function parseDirectiveText(text: string): Unstable_DirectiveSegment[] {
       type: 'skill',
       label: match[1],
       id: `/${match[1]}`
+    })),
+    ...Array.from(text.matchAll(BLOB_MARKDOWN_IMAGE_RE)).map(match => ({
+      start: match.index ?? 0,
+      end: (match.index ?? 0) + match[0].length,
+      type: 'image',
+      label: match[1] || 'image',
+      id: match[2]
     }))
   ]
     .filter(match => match.id)
@@ -401,7 +416,10 @@ export const DirectiveText: TextMessagePartComponent = ({ text }: TextMessagePar
  * messages render after the backend embeds the data URL, so the UX is stable
  * across initial send and refresh. */
 const DirectiveImage: FC<{ id: string; label: string }> = ({ id, label }) => {
-  const isUrl = /^(?:https?|data):/i.test(id)
+  // `blob:` joins the direct-URL set: the object URL is already renderer-local
+  // (the whole point of the OS-drop preview path), so painting it is free of
+  // the IPC read the path branch would issue.
+  const isUrl = /^(?:https?|data|blob):/i.test(id)
   // `src` is the bounded thumbnail painted inline; `zoomSrc` is the full-
   // resolution source the lightbox and download use. Keeping inline bounded is
   // what lets the in-flight bubble render an `@image:<path>` ref without the

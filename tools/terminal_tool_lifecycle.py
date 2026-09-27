@@ -7,7 +7,6 @@ Split out of ``tools/terminal_tool.py``; every public/patched name is re-importe
 so ``tools.terminal_tool.<name>`` keeps resolving (and monkeypatching) as before.
 """
 
-import glob
 import logging
 import inspect
 import shutil
@@ -34,7 +33,10 @@ _DISK_USAGE_CACHE_TTL = 300.0  # seconds
 
 
 def _scratch_paths():
-    return glob.glob(str(_get_scratch_dir() / "hermes-*"))
+    # Path.glob keeps the base directory literal; embedding the configured root in a
+    # glob.glob pattern would re-interpret its metacharacters (e.g. a scratch dir
+    # named "run[1]" enumerates "run1"/hermes-* — a different directory's tree).
+    return [str(p) for p in _get_scratch_dir().glob("hermes-*")]
 
 
 def _persistent_scratch_roots() -> tuple:
@@ -290,7 +292,14 @@ def cleanup_all_environments():
     # cannot tell them from orphans, so the declaration, not the name, decides).
     persistent_roots = frozenset(_persistent_scratch_roots())
     for path in _scratch_paths():
-        if Path(path).resolve() in persistent_roots:
+        candidate = Path(path).resolve()
+        # Skip anything whose deletion could touch a declared persistent root: exact
+        # match, the candidate sitting INSIDE a root, or the candidate being an
+        # ANCESTOR of one (e.g. hermes-overlays symlinked to hermes-storage/persistent
+        # — the glob selects hermes-storage itself, and exact-equality would not
+        # protect the real tree).
+        if any(candidate == root or candidate in root.parents or root in candidate.parents
+               for root in persistent_roots):
             continue
         with _quiet("Failed to remove orphaned path %s", path, exc=OSError):
             shutil.rmtree(path, ignore_errors=True)

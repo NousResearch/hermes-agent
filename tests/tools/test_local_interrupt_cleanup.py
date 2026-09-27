@@ -358,3 +358,76 @@ def test_exit_sweep_preserves_backend_persistent_roots(tmp_path, monkeypatch):
         "exit sweep deleted a backend-declared persistent root"
     )
     assert not stray.exists(), "true orphans must still be collected"
+
+
+def test_exit_sweep_treats_scratch_root_as_literal(tmp_path, monkeypatch):
+    """The configured scratch root is a literal directory, never a glob pattern.
+
+    A TERMINAL_SCRATCH_DIR containing glob metacharacters ("run[1]") embedded into
+    glob.glob re-interprets them: the configured root's own orphans are never
+    collected and a NEIGHBORING directory's ("run1") hermes-* tree gets swept —
+    including its overlays. The destructive boundary must enumerate via Path.glob
+    (literal base). Red without the literal form: the neighbor sentinel disappears
+    and the stray in the configured root survives.
+    """
+    import tools.terminal_tool as terminal_tool
+    import tools.terminal_tool_lifecycle as lifecycle
+    from tools.environments import base as env_base, singularity
+
+    root = tmp_path / "run[1]"
+    overlay = root / "hermes-overlays" / "overlay-t"
+    overlay.mkdir(parents=True)
+    own_sentinel = overlay / "keep.txt"
+    own_sentinel.write_text("own", encoding="utf-8")
+    stray = root / "hermes-stray"
+    stray.mkdir()
+    neighbor = tmp_path / "run1" / "hermes-overlays"
+    neighbor.mkdir(parents=True)
+    neighbor_sentinel = neighbor / "keep.txt"
+    neighbor_sentinel.write_text("neighbor", encoding="utf-8")
+
+    monkeypatch.setattr(lifecycle, "_get_scratch_dir", lambda: root)
+    monkeypatch.setattr(singularity, "_get_scratch_dir", lambda: root)
+    monkeypatch.setattr(terminal_tool, "_active_environments", {})
+    monkeypatch.setattr(env_base, "kill_live_foreground_processes", lambda: None)
+
+    lifecycle.cleanup_all_environments()
+
+    assert own_sentinel.read_text(encoding="utf-8") == "own"
+    assert neighbor_sentinel.read_text(encoding="utf-8") == "neighbor"
+    assert not stray.exists(), "the configured root's true orphans must still be collected"
+
+
+def test_exit_sweep_never_deletes_ancestor_of_persistent_root(tmp_path, monkeypatch):
+    """The declaration guard protects the resolved tree, not just the named entry.
+
+    If hermes-overlays is a symlink to hermes-storage/persistent, the glob also
+    selects hermes-storage itself; an exact-equality check would rmtree it and
+    destroy the real overlay tree inside. Red without the ancestor check: the
+    sentinel under hermes-storage/persistent is gone after the sweep.
+    """
+    import tools.terminal_tool as terminal_tool
+    import tools.terminal_tool_lifecycle as lifecycle
+    from tools.environments import base as env_base, singularity
+
+    scratch = tmp_path / "scratch"
+    real_root = scratch / "hermes-storage" / "persistent"
+    (real_root / "overlay-t").mkdir(parents=True)
+    sentinel = real_root / "overlay-t" / "keep.txt"
+    sentinel.write_text("persistent", encoding="utf-8")
+    try:
+        (scratch / "hermes-overlays").symlink_to(real_root, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlink creation not permitted on this host")
+    stray = scratch / "hermes-stray"
+    stray.mkdir()
+
+    monkeypatch.setattr(lifecycle, "_get_scratch_dir", lambda: scratch)
+    monkeypatch.setattr(singularity, "_get_scratch_dir", lambda: scratch)
+    monkeypatch.setattr(terminal_tool, "_active_environments", {})
+    monkeypatch.setattr(env_base, "kill_live_foreground_processes", lambda: None)
+
+    lifecycle.cleanup_all_environments()
+
+    assert sentinel.read_text(encoding="utf-8") == "persistent"
+    assert not stray.exists(), "true orphans must still be collected"

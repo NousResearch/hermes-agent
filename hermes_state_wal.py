@@ -214,9 +214,11 @@ def _mountinfo_fstype(directory: str, mountinfo_path: str = "/proc/self/mountinf
 
 
 def _detect_cross_vm_fs(directory: str, mountinfo_path: str = "/proc/self/mountinfo") -> bool:
-    """True only when ``directory`` sits on a virtiofs/9p mount per ``mountinfo_path``."""
-    if sys.platform != "linux":
-        return False
+    """True only when ``directory`` sits on a virtiofs/9p mount per ``mountinfo_path``.
+
+    No platform gate: on non-Linux hosts the default /proc path is unreadable and
+    ``_mountinfo_fstype`` fails closed to ``""`` (False) — while an explicitly injected
+    ``mountinfo_path`` (tests, host-independent use) is honored on every platform."""
     return _mountinfo_fstype(directory, mountinfo_path) in _CROSS_VM_FSTYPES
 
 

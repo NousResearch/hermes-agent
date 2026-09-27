@@ -410,6 +410,8 @@ From strongest to weakest: `bots.force_private` beats `private`, which beats `ci
 
 Circles govern what Bots do on their own. They do not stop **you** from putting Bots from different circles into one [group chat](#groups-and-group-chats) — that room is the deliberate, human-arranged bridge between circles.
 
+`private` and circles keep Bot sets apart on machines you control; they are not access control between machines. Each machine applies them to its own Bots' rosters and outgoing messages, and a message arriving over the relay is not checked again on the receiving side, so connect only machines you control and keep them on a build that knows about circles.
+
 ## Turning it off
 
 Bot Mode is a bundled desktop plugin. Flip its **Desktop** switch off in **Capabilities → Plugins → Bots** — the roster, the Routines pane, and the composer middleware unregister live, no restart needed. Your profiles, sessions, and cron jobs are untouched either way; Bot Mode never owns your data, it only renders it.

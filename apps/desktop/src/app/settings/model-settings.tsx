@@ -30,10 +30,11 @@ import { useI18n } from '@/i18n'
 import { isCodeSkewRestartRequired } from '@/lib/code-skew-error'
 import { AlertTriangle, Cpu, Loader2 } from '@/lib/icons'
 import { isSubmitEnter } from '@/lib/ime'
+import { findCatalogProvider } from '@/lib/model-options'
 import { cn } from '@/lib/utils'
 import { $customModels, withCustomModels } from '@/store/custom-models'
 import { setMainModelAssignment } from '@/store/model-assignment'
-import { notifyError, readableError } from '@/store/notifications'
+import { notify, notifyError, readableError } from '@/store/notifications'
 import { startManualLocalEndpoint, startManualOnboarding, startManualProviderOAuth } from '@/store/onboarding'
 
 import { hermesConfigCacheWriter, invalidateHermesConfig, useHermesConfigRecord } from '../hooks/use-config-record'
@@ -394,7 +395,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
   // leaving it out of the real inventory used for readiness/setup metadata.
   const mainProviderOptions = useMemo(
     () =>
-      selectedProvider && !providers.some(provider => provider.slug === selectedProvider)
+      selectedProvider && !findCatalogProvider(providers, selectedProvider)
         ? [{ name: selectedProvider, slug: selectedProvider, models: [] }, ...providers]
         : providerOptions,
     [providerOptions, providers, selectedProvider]
@@ -406,7 +407,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
   const moaSlotProviderOptions = providerOptions.filter(provider => (provider.slug || '').toLowerCase() !== 'moa')
 
   const selectedProviderRow = useMemo(
-    () => providers.find(provider => provider.slug === selectedProvider),
+    () => findCatalogProvider(providers, selectedProvider),
     [providers, selectedProvider]
   )
 
@@ -424,12 +425,12 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
   }, [selectedProvider])
 
   const auxDraftProviderModels = useMemo(
-    () => providers.find(provider => provider.slug === auxDraft.provider)?.models ?? [],
+    () => findCatalogProvider(providers, auxDraft.provider)?.models ?? [],
     [auxDraft.provider, providers]
   )
 
   const modelsForProvider = useCallback(
-    (provider: string) => providers.find(row => row.slug === provider)?.models ?? [],
+    (provider: string) => findCatalogProvider(providers, provider)?.models ?? [],
     [providers]
   )
 
@@ -585,7 +586,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
   // reasoning/speed controls the same way the composer picker gates per-model
   // edits (reasoning defaults on, fast defaults off when unreported).
   const mainCaps = useMemo(() => {
-    const row = providers.find(provider => provider.slug === mainModel?.provider)
+    const row = mainModel ? findCatalogProvider(providers, mainModel.provider) : undefined
 
     return mainModel ? row?.capabilities?.[mainModel.model] : undefined
   }, [providers, mainModel])
@@ -729,6 +730,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
       const model = result.model || selectedModel
       setMainModel({ provider, model })
       setSwitchStaleAux(result.stale_aux ?? [])
+      notify({ kind: 'success', title: m.mainAppliedTitle, message: m.mainAppliedMessage(model) })
 
       // Live UI stores mirror the ACTIVE profile's model; a scoped apply
       // changed a different profile and must not repaint them.
@@ -743,7 +745,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
       setApplying(false)
     }
   }, [
-    m.loadFailed,
+    m,
     onMainModelChanged,
     refresh,
     scopeProfile,
@@ -760,7 +762,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
   // main endpoint.
   const endpointForProvider = useCallback(
     (provider: string) => {
-      const row = providers.find(entry => entry.slug === provider)
+      const row = findCatalogProvider(providers, provider)
 
       return row?.api_url ? { base_url: row.api_url } : {}
     },
@@ -915,7 +917,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
         <section>
           <p className="mb-3 text-xs text-muted-foreground">{m.appliesDesc}</p>
           <div className="flex flex-wrap items-center gap-2">
-            <Select onValueChange={setSelectedProvider} value={selectedProvider}>
+            <Select onValueChange={setSelectedProvider} value={selectedProviderRow?.slug ?? selectedProvider}>
               <SelectTrigger className={cn('min-w-40', CONTROL_TEXT)}>
                 <SelectValue placeholder={m.provider} />
               </SelectTrigger>
@@ -1098,7 +1100,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
                           <div className="flex flex-wrap items-center gap-2">
                             <Select
                               onValueChange={value => setAuxDraft(prev => ({ ...prev, provider: value, model: '' }))}
-                              value={auxDraft.provider}
+                              value={findCatalogProvider(providers, auxDraft.provider)?.slug ?? auxDraft.provider}
                             >
                               <SelectTrigger
                                 aria-label={`${copy.label} provider`}
@@ -1119,7 +1121,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
                               className="min-w-48"
                               models={auxDraftProviderModels}
                               onValueChange={value => setAuxDraft(prev => ({ ...prev, model: value }))}
-                              provider={providers.find(row => row.slug === auxDraft.provider)}
+                              provider={findCatalogProvider(providers, auxDraft.provider)}
                               providerSlug={auxDraft.provider}
                               value={auxDraft.model}
                             />
@@ -1351,7 +1353,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
                           )
                         }))
                       }
-                      provider={providers.find(row => row.slug === slot.provider)}
+                      provider={findCatalogProvider(providers, slot.provider)}
                       providerSlug={slot.provider}
                       value={slot.model}
                     />
@@ -1437,7 +1439,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
                         aggregator: updateMoaSlot(prev.aggregator, { model: value })
                       }))
                     }
-                    provider={providers.find(row => row.slug === currentMoaPreset.aggregator.provider)}
+                    provider={findCatalogProvider(providers, currentMoaPreset.aggregator.provider)}
                     providerSlug={currentMoaPreset.aggregator.provider}
                     value={currentMoaPreset.aggregator.model}
                   />

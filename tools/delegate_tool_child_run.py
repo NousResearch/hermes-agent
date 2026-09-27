@@ -11,6 +11,7 @@ import threading
 import time
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from typing import Any, Dict, List, Optional
+from agent.compression_marker import elide
 from agent.interrupt_compat import request_hard_interrupt
 from dataclasses import dataclass, field
 from tools import file_state
@@ -182,9 +183,7 @@ def _dump_subagent_timeout_diagnostic(
 
         subagent_id = getattr(child, "_subagent_id", None) or f"idx{task_index}"
         dump_path = logs_dir / f"subagent-timeout-{subagent_id}-{_dt.datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-        _goal_preview = (goal or "").strip()
-        if len(_goal_preview) > 1000:
-            _goal_preview = _goal_preview[:1000] + " ...[truncated]"
+        _goal_preview = elide((goal or "").strip(), 1000)
         def _attr_line(attr):
             try:
                 return f"  {attr}: {getattr(child, attr, None)!r}"

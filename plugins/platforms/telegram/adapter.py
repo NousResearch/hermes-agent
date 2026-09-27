@@ -4945,8 +4945,11 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         success = False
         try:
+            # A user script under HERMES_HOME the agent can write: scrubbed like cron and quick-command scripts.
+            from tools.environments.local import build_subprocess_env
             proc = await asyncio.create_subprocess_exec(
-                str(script_path), arg, *extra_args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+                str(script_path), arg, *extra_args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                env=build_subprocess_env(strip_launch_profile=True))
             _stdout_bytes, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=60)
             if proc.returncode == 0:
                 label = success_label

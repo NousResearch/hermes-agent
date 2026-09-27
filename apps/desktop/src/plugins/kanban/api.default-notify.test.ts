@@ -72,7 +72,9 @@ describe('default board event notifications', () => {
   it.each(['empty', 'rejected'])('preserves the live alias socket when board resolution is %s', async mode => {
     const rest = vi.fn(async (path: string) => {
       if (path === '/boards') {
-        if (mode === 'rejected') {throw new Error('offline')}
+        if (mode === 'rejected') {
+          throw new Error('offline')
+        }
 
         return { current: '' }
       }
@@ -139,9 +141,13 @@ describe('default board event notifications', () => {
     let latest = 100
 
     const rest = vi.fn(async (path: string) => {
-      if (path === '/boards') {return { current: 'default', boards: [{ slug: 'default' }] }}
+      if (path === '/boards') {
+        return { current: 'default', boards: [{ slug: 'default' }] }
+      }
 
-      if (path === '/board?board=default' || path === '/board') {return { latest_event_id: latest }}
+      if (path === '/board?board=default' || path === '/board') {
+        return { latest_event_id: latest }
+      }
       throw new Error(`Unexpected REST call: ${path}`)
     })
 

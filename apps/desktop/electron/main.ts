@@ -443,7 +443,12 @@ import {
 import { createQuickEntryShortcut, quickEntryWindowBounds, sanitizeQuickEntrySettings } from './quick-entry'
 import { createQuitFinalization } from './quit-finalization'
 import { type ActiveWork, backendOwnedByApp, mergeActiveWork, normalizeActiveWork, quitPromptFor } from './quit-guard'
-import { backendQuitNeedsWait, backendTeardownOptions, createQuitTeardownCoordinator, type QuitTeardownTask } from './quit-teardown'
+import {
+  backendQuitNeedsWait,
+  backendTeardownOptions,
+  createQuitTeardownCoordinator,
+  type QuitTeardownTask
+} from './quit-teardown'
 import * as remoteLifecycle from './remote-lifecycle'
 import {
   attachPowerResumeRemoteRevalidation,
@@ -3637,10 +3642,12 @@ function isLightVariant(): boolean {
 /** Invalidate connections and wait for every owned backend before the swap. */
 async function teardownBundledBackend(): Promise<void> {
   isQuittingForHandoff = true
+
   const results = await Promise.allSettled([
     teardownPrimaryBackendAndWait(backendTeardownOptions('reconnect')),
     stopAllPoolBackends()
   ])
+
   const errors = results.filter(result => result.status === 'rejected').map(result => result.reason)
 
   if (errors.length) {

@@ -236,7 +236,9 @@ export function bindApi(
     const selectedSlug = $boardSlug.get()
 
     return socket(eventsUrl(slug, since), data => {
-      if (generation === socketGeneration) {onEventsFrame(scope, slug, data, selectedSlug)}
+      if (generation === socketGeneration) {
+        onEventsFrame(scope, slug, data, selectedSlug)
+      }
     })
   }
 

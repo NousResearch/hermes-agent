@@ -167,7 +167,9 @@ async function run(): Promise<void> {
   const journalRoot = path.join(userData, 'managed-rollouts', 'journal')
 
   const report = (result: Record<string, unknown>) => {
-    fs.writeFileSync(resultPath, JSON.stringify({ pid: process.pid, appName: app.getName(), mode, ...result }))
+    // Publish atomically: the parent polls this path, so it must never observe a partial document.
+    fs.writeFileSync(`${resultPath}.partial`, JSON.stringify({ pid: process.pid, appName: app.getName(), mode, ...result }))
+    fs.renameSync(`${resultPath}.partial`, resultPath)
   }
 
   fs.mkdirSync(userData, { recursive: true })
@@ -279,7 +281,9 @@ void run().catch(error => {
   const resultPath = process.env.HERMES_OWNER_FIXTURE_RESULT
 
   if (resultPath) {
-    fs.writeFileSync(resultPath, JSON.stringify({ pid: process.pid, error: String(error) }))
+    // Publish atomically for the same reason as report(): the parent may already be polling.
+    fs.writeFileSync(`${resultPath}.partial`, JSON.stringify({ pid: process.pid, error: String(error) }))
+    fs.renameSync(`${resultPath}.partial`, resultPath)
   }
 
   app.exit(1)

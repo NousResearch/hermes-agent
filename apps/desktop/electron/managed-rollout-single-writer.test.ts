@@ -47,17 +47,25 @@ function launch(appDirectory: string, mode: string, generation: number, userData
 }
 
 async function resultOf(process: FixtureProcess, filename: string): Promise<Record<string, any>> {
-  for (let attempt = 0; attempt < 300; attempt += 1) {
-    if (fs.existsSync(filename)) {return JSON.parse(fs.readFileSync(filename, 'utf8'))}
+  let lastParseError = ''
 
-    if (process.child.exitCode !== null || process.child.signalCode !== null) {
+  for (let attempt = 0; attempt < 300; attempt += 1) {
+    if (fs.existsSync(filename)) {
+      try {
+        return JSON.parse(fs.readFileSync(filename, 'utf8'))
+      } catch (error) {
+        // The fixture publishes its result with a truncate-then-write; a reader racing that
+        // write can observe a partial document, so a parse failure here is retried, not fatal.
+        lastParseError = error instanceof Error ? error.message : String(error)
+      }
+    } else if (process.child.exitCode !== null || process.child.signalCode !== null) {
       throw new Error(`Fixture process exited ${process.child.exitCode ?? process.child.signalCode} before result: ${process.output()}`)
     }
 
     await delay(50)
   }
 
-  throw new Error(`Timed out waiting for fixture result: ${process.output()}`)
+  throw new Error(`Timed out waiting for fixture result${lastParseError ? ` (last parse error: ${lastParseError})` : ''}: ${process.output()}`)
 }
 
 async function stopOwnedProcess(process: FixtureProcess): Promise<void> {

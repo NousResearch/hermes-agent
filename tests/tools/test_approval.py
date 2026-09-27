@@ -30,6 +30,18 @@ class TestHermesLifecycleCommandPosition:
     def test_quoted_prose_does_not_require_approval(self, command):
         assert detect_dangerous_command(command) == (False, None, None)
 
+    @pytest.mark.parametrize("command", [
+        'env -S "hermes update"',
+        'env --split-string="hermes update"',
+    ])
+    def test_env_split_updater_requires_approval(self, command):
+        reason = "hermes update (restarts gateway, kills running agents)"
+        assert detect_dangerous_command(command) == (True, reason, reason)
+
+    def test_quoted_env_split_prose_does_not_require_approval(self):
+        command = "gh issue create --title 'env -S \"hermes update\"'"
+        assert detect_dangerous_command(command) == (False, None, None)
+
     @pytest.mark.parametrize("invocation, reason", [
         ("hermes update", "hermes update (restarts gateway, kills running agents)"),
         ("hermes gateway stop", "stop/restart hermes gateway (kills running agents)"),

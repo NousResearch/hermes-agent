@@ -1424,9 +1424,17 @@ def _command_detection_variants(command: str):
             yield win_variant
     # Program-bearing options are parsed in their owning command's context; surfacing only the payload lets the
     # hardline floor inspect what will actually run without promoting similar flags or quoted prose.
-    pending = [normalized]
+    pending = [command]
     while pending:
-        for _, payload in _execution_flag_findings(pending.pop()):
+        source = pending.pop()
+        payloads = [payload for _, payload in _execution_flag_findings(source)]
+        for start, _, word in _iter_shell_command_word_spans(source):
+            if os.path.basename(_deobfuscate_shell_word_for_detection(word)) == "env":
+                segment = _shell_command_segment(source, start)
+                tokens = _shell_segment_tokens(segment, 0)
+                if tokens:
+                    payloads.append(_env_split_payload(tokens))
+        for payload in payloads:
             if fresh(payload):
                 yield payload
                 # A payload may start with an option-looking program and then invoke a hardline command

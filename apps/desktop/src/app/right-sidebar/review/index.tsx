@@ -38,6 +38,7 @@ import { PaneEmptyState, RightSidebarSectionHeader } from '../index'
 
 import { ReviewFileTree } from './file-tree'
 import { ReviewShipBar } from './ship-bar'
+import { ReviewStackBar } from './stack-bar'
 
 // Compact header/diff action buttons — micro hit targets packed tight, matching
 // the rest of the app's icon-action rows.
@@ -199,6 +200,9 @@ export function ReviewPane() {
           </div>
         </div>
       )}
+
+      {/* Commit stack: Restack + per-commit review (hidden with no branch commits and a clean tree). */}
+      {isRepo && <ReviewStackBar />}
 
       <ReviewShipBar />
 

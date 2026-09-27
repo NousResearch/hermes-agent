@@ -23,6 +23,7 @@ import {
   listAllProfileSessions,
   listSessions,
   listSidebarSessions,
+  pluginRest,
   pluginSocket,
   resetSidebarBatchCapability,
   setApiRequestConnection,
@@ -684,12 +685,31 @@ describe('Hermes REST helpers', () => {
 
 describe('pluginSocket', () => {
   let getConnection: ReturnType<typeof vi.fn>
+  let getGatewayWsUrl: ReturnType<typeof vi.fn>
+  let sockets: Array<{ url: string; readyState: number; send: ReturnType<typeof vi.fn>; close: ReturnType<typeof vi.fn>; onclose?: (event: CloseEvent) => void; onerror?: (event: Event) => void }>
 
   beforeEach(() => {
     getConnection = vi.fn().mockResolvedValue(null)
+    getGatewayWsUrl = vi.fn(async () => 'ws://127.0.0.1:8000/api/ws?ticket=test-ticket')
+    sockets = []
+    vi.stubGlobal(
+      'WebSocket',
+      class {
+        static OPEN = 1
+        readyState = 1
+        send = vi.fn()
+        close = vi.fn()
+        url: string
+
+        constructor(url: string) {
+          this.url = url
+          sockets.push(this)
+        }
+      }
+    )
     Object.defineProperty(window, 'hermesDesktop', {
       configurable: true,
-      value: { api: vi.fn(), getConnection }
+      value: { api: vi.fn(), getConnection, getGatewayWsUrl }
     })
   })
 
@@ -702,20 +722,106 @@ describe('pluginSocket', () => {
   it('scopes the connection to the active profile, like pluginRest', async () => {
     setApiRequestProfile('work')
 
-    const dispose = pluginSocket('kanban', '/events', () => {})
+    const socket = pluginSocket('kanban', '/events', () => {})
 
     await vi.waitFor(() => expect(getConnection).toHaveBeenCalled())
     expect(getConnection).toHaveBeenCalledWith('work')
 
-    dispose()
+    socket.close()
   })
 
   it('passes null when no profile is scoped (single-profile / primary)', async () => {
-    const dispose = pluginSocket('kanban', '/events', () => {})
+    const socket = pluginSocket('kanban', '/events', () => {})
 
     await vi.waitFor(() => expect(getConnection).toHaveBeenCalled())
     expect(getConnection).toHaveBeenCalledWith(null)
 
-    dispose()
+    socket.close()
+  })
+
+  it('sends JSON frames through an open plugin socket', async () => {
+    getConnection.mockResolvedValue({ authMode: 'token', baseUrl: 'http://127.0.0.1:8000', token: 'test' })
+    const socket = pluginSocket('kanban', '/events', () => {})
+
+    await vi.waitFor(() => expect(sockets).toHaveLength(1))
+    expect(socket.send({ type: 'input', data: 'hello' })).toBe(true)
+    expect(sockets[0].send).toHaveBeenCalledWith('{"type":"input","data":"hello"}')
+
+    socket.close()
+  })
+
+  it('mints a fresh gateway credential and preserves its auth query when rewriting the socket path', async () => {
+    getConnection.mockResolvedValue({ authMode: 'oauth', baseUrl: 'https://remote.invalid', token: '', wsUrl: '' })
+    const socket = pluginSocket('kanban', '/events?board=main', () => {})
+
+    await vi.waitFor(() => expect(sockets).toHaveLength(1))
+    expect(getGatewayWsUrl).toHaveBeenCalledOnce()
+    expect(sockets[0].url).toBe('ws://127.0.0.1:8000/api/plugins/kanban/events?ticket=test-ticket&board=main')
+
+    socket.close()
+  })
+
+  it('preserves a loopback token when rewriting the socket path', async () => {
+    getConnection.mockResolvedValue({ authMode: 'token', baseUrl: 'http://127.0.0.1:8000', token: 'loopback-token' })
+    getGatewayWsUrl.mockResolvedValue('ws://127.0.0.1:8000/api/ws?token=loopback-token')
+    const socket = pluginSocket('kanban', '/events?board=main', () => {})
+
+    await vi.waitFor(() => expect(sockets).toHaveLength(1))
+    expect(sockets[0].url).toBe('ws://127.0.0.1:8000/api/plugins/kanban/events?token=loopback-token&board=main')
+
+    socket.close()
+  })
+
+  it('rejects encoded traversal before resolving a plugin socket credential', () => {
+    expect(() => pluginSocket('kanban', '/%2e%2e/remote-pi-control/terminal', () => {})).toThrow(/traversal/i)
+  })
+
+  it('rejects double-encoded traversal before resolving a plugin socket credential', () => {
+    expect(() => pluginSocket('kanban', '/%252e%252e/remote-pi-control/terminal', () => {})).toThrow(/traversal/i)
+  })
+
+  it.each([
+    '/..\\remote-pi-control\\terminal',
+    '/..%5cremote-pi-control%5cterminal',
+    '/..%255cremote-pi-control%255cterminal'
+  ])('rejects backslash namespace traversal in plugin sockets: %s', path => {
+    expect(() => pluginSocket('kanban', path, () => {})).toThrow(/traversal/i)
+  })
+
+  it.each([
+    '/..\\remote-pi-control\\hosts',
+    '/..%5cremote-pi-control%5chosts',
+    '/..%255cremote-pi-control%255chosts'
+  ])('rejects backslash namespace traversal in plugin REST calls: %s', async path => {
+    await expect(pluginRest('kanban', path)).rejects.toThrow(/traversal/i)
+  })
+
+  it('does not reconnect after an explicitly closed interactive socket', async () => {
+    vi.useFakeTimers()
+    getConnection.mockResolvedValue({ authMode: 'token', baseUrl: 'http://127.0.0.1:8000', token: 'loopback-token' })
+    const onClose = vi.fn()
+    const socket = pluginSocket('kanban', '/terminal', () => {}, { reconnect: false, onClose })
+
+    await vi.waitFor(() => expect(sockets).toHaveLength(1))
+    const event = new CloseEvent('close', { code: 1006 })
+    sockets[0].onclose?.(event)
+    await vi.runAllTimersAsync()
+    expect(sockets).toHaveLength(1)
+    expect(onClose).toHaveBeenCalledWith(event)
+
+    socket.close()
+    vi.useRealTimers()
+  })
+
+  it('reports plugin socket transport errors', async () => {
+    getConnection.mockResolvedValue({ authMode: 'token', baseUrl: 'http://127.0.0.1:8000', token: 'loopback-token' })
+    const onError = vi.fn()
+    const socket = pluginSocket('kanban', '/terminal', () => {}, { reconnect: false, onError })
+
+    await vi.waitFor(() => expect(sockets).toHaveLength(1))
+    sockets[0].onerror?.(new Event('error'))
+    expect(onError).toHaveBeenCalledOnce()
+
+    socket.close()
   })
 })

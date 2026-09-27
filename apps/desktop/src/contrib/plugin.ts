@@ -12,7 +12,7 @@
  * through the plugin host loader (next phase); this is that seam.
  */
 
-import { pluginRest, type PluginRestOptions, pluginSocket } from '@/hermes'
+import { pluginRest, type PluginRestOptions, pluginSocket, type PluginSocketControl, type PluginSocketOptions } from '@/hermes'
 import { createPluginI18n, type PluginI18n } from '@/i18n'
 import { readKey, writeKey } from '@/lib/storage'
 import { dispatchPluginNativeNotification, type PluginNativeNotificationInput } from '@/store/native-notifications'
@@ -22,6 +22,7 @@ import { registry } from './registry'
 import type { Contribution } from './types'
 
 export type { PluginRestOptions } from '@/hermes'
+export type { PluginSocketControl, PluginSocketOptions } from '@/hermes'
 export type { HermesOpenTarget } from '@/lib/hermes-open-target'
 export type { PluginNativeNotificationInput, PluginNotificationAction } from '@/store/native-notifications'
 
@@ -110,10 +111,9 @@ export interface PluginContext {
    *  `host.request` for gateway JSON-RPC. */
   rest: <T>(path: string, opts?: PluginRestOptions) => Promise<T>
   /** Live twin of `rest`: a WebSocket to this plugin's own namespace
-   *  ('/events'), JSON frames to `onMessage`, auto-reconnect, disposer
-   *  returned. Resolves to a no-op on OAuth remotes — treat it as an
-   *  accelerator over your polling, never a replacement. */
-  socket: (path: string, onMessage: (data: unknown) => void) => () => void
+   *  ('/events'), JSON frames to `onMessage`, with configurable reconnect and
+   *  close/error lifecycle callbacks; callable disposer returned. */
+  socket: (path: string, onMessage: (data: unknown) => void, options?: PluginSocketOptions) => PluginSocketControl
   /** The curated OS door: native notification, open-external, reveal-in-file-
    *  manager, clipboard — attributed to this plugin, result-shaped (never
    *  throws for a missing capability). */
@@ -290,7 +290,12 @@ export function createPluginContext(pluginId: string, onDispose?: (dispose: () =
     onEvent: (type, listener) => track(onGatewayEvent(type, listener)),
     ...createPluginLifetime(track),
     rest: <T>(path: string, opts?: PluginRestOptions) => pluginRest<T>(pluginId, path, opts),
-    socket: (path, onMessage) => track(pluginSocket(pluginId, path, onMessage)),
+    socket: (path, onMessage, options) => {
+      const socket = pluginSocket(pluginId, path, onMessage, options)
+      track(socket)
+
+      return socket
+    },
     os: createPluginOs(pluginId),
     storage: createPluginStorage(pluginId),
     i18n: createPluginI18n(pluginId, track)

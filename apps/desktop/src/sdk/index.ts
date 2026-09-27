@@ -18,6 +18,8 @@
  *  - `ui.*` — the design language, so plugin UI looks native by default.
  */
 
+import { FitAddon as XtermFitAddon } from '@xterm/addon-fit'
+import { Terminal as XtermTerminal } from '@xterm/xterm'
 import { atom, computed, type ReadableAtom } from 'nanostores'
 import type { ReactNode } from 'react'
 
@@ -1804,6 +1806,8 @@ export type {
   PluginNotificationAction,
   PluginOs,
   PluginRestOptions,
+  PluginSocketControl,
+  PluginSocketOptions,
   PluginStorage
 } from '@/contrib/plugin'
 /** Mount-scoped contribution: while the rendering component is mounted, its
@@ -1889,6 +1893,10 @@ export { PROFILE_SWATCHES, profileColor, profileColorSoft } from '@/lib/profile-
  *  `ctx.socket` frame invalidating a query). Inside components keep using
  *  `useQueryClient`. */
 export { queryClient } from '@/lib/query-client'
+/** Terminal emulator primitives already bundled by Desktop. Runtime plugins
+ * consume these through the SDK because the runtime loader does not resolve
+ * arbitrary package imports. */
+export { XtermFitAddon, XtermTerminal }
 /** Compact labels for the reasoning levels exported from @hermes/shared, so a
  *  plugin surfacing a thinking depth uses the same spelling as the app. */
 export { reasoningEffortLabel } from '@/lib/reasoning-effort'

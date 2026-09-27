@@ -86,13 +86,13 @@ describe('pluginSocket active-backend scoping (#73044)', () => {
     getConnection.mockClear()
     getConnectionFor.mockClear()
 
-    const dispose = pluginSocket('kanban', '/events', () => {})
+    const socket = pluginSocket('kanban', '/events', () => {})
 
     await vi.waitFor(() => expect(getConnection).toHaveBeenCalled())
     expect(getConnection).toHaveBeenCalledWith('work')
     expect(getConnectionFor).not.toHaveBeenCalled()
 
-    dispose()
+    socket.close()
   })
 
   it("dials the agent's SOURCE connection after a registry-agent activation", async () => {
@@ -100,21 +100,21 @@ describe('pluginSocket active-backend scoping (#73044)', () => {
     getConnection.mockClear()
     getConnectionFor.mockClear()
 
-    const dispose = pluginSocket('kanban', '/events', () => {})
+    const socket = pluginSocket('kanban', '/events', () => {})
 
     await vi.waitFor(() => expect(getConnectionFor).toHaveBeenCalled())
     expect(getConnectionFor).toHaveBeenCalledWith({ connectionId: 'homelab', profile: 'research' })
     expect(getConnection).not.toHaveBeenCalled()
 
-    dispose()
+    socket.close()
   })
 
   it('falls back to the primary when no profile or connection is active', async () => {
-    const dispose = pluginSocket('kanban', '/events', () => {})
+    const socket = pluginSocket('kanban', '/events', () => {})
 
     await vi.waitFor(() => expect(getConnection).toHaveBeenCalled())
     expect(getConnection).toHaveBeenCalledWith(null)
 
-    dispose()
+    socket.close()
   })
 })

@@ -1,6 +1,7 @@
 import { reconnectBackoffDelayMs } from '@hermes/shared'
 
 import type { HermesConnection } from '@/global'
+import { resolveSiblingWsUrl } from '@/lib/sibling-ws-url'
 import { RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
 
 import { getApiRequestConnection, getApiRequestProfile, hermesApi, profileScoped } from './client'
@@ -55,8 +56,24 @@ export interface PluginRestOptions {
 // portion only (before any query/hash).
 function pluginPathSuffix(caller: string, path: string): string {
   const suffix = path.startsWith('/') ? path : `/${path}`
+  const encodedPath = suffix.split(/[?#]/, 1)[0]
+  let decodedPath = encodedPath
 
-  if (suffix.split(/[?#]/, 1)[0].split('/').includes('..')) {
+  try {
+    for (let pass = 0; pass < 3; pass += 1) {
+      const next = decodeURIComponent(decodedPath)
+
+      if (next === decodedPath) {
+        break
+      }
+
+      decodedPath = next
+    }
+  } catch {
+    throw new Error(`${caller}: invalid URL encoding in "${path}"`)
+  }
+
+  if (decodedPath.includes('\\') || decodedPath.split('/').includes('..') || /%2e|%5c/i.test(decodedPath)) {
     throw new Error(`${caller}: illegal path traversal in "${path}"`)
   }
 
@@ -88,11 +105,29 @@ export async function pluginRest<T>(pluginId: string, path: string, opts: Plugin
 
 /** The plugin WebSocket door — the live twin of `pluginRest`, scoped the same
  *  way: `path` is relative to `/api/plugins/<pluginId>` ('/events' → the
- *  plugin's own event stream). Token-mode backends auth via the same query
- *  credential the app's own sockets use; OAuth remotes resolve null (callers
- *  keep their polling fallback — every consumer must have one anyway, since a
- *  socket can drop). Auto-reconnects with backoff until disposed. */
-export function pluginSocket(pluginId: string, path: string, onMessage: (data: unknown) => void): () => void {
+ *  plugin's own event stream). It resolves a fresh gateway credential before
+ *  every dial, so loopback/token and gated OAuth/cookie profiles share the
+ *  canonical ticket machinery. Reconnect behavior is configurable; stateless
+ *  streams reconnect by default, while stateful PTYs disable it. */
+export type PluginSocketControl = (() => void) & {
+  close: () => void
+  send: (data: unknown) => boolean
+}
+
+export interface PluginSocketOptions {
+  /** Reconnect after an unexpected close. Disable for stateful resources such
+   *  as interactive PTYs, where a reconnect would silently spawn a new child. */
+  reconnect?: boolean
+  onClose?: (event: CloseEvent) => void
+  onError?: () => void
+}
+
+export function pluginSocket(
+  pluginId: string,
+  path: string,
+  onMessage: (data: unknown) => void,
+  options: PluginSocketOptions = {}
+): PluginSocketControl {
   const suffix = pluginPathSuffix('pluginSocket', path)
 
   let socket: null | WebSocket = null
@@ -100,19 +135,30 @@ export function pluginSocket(pluginId: string, path: string, onMessage: (data: u
   let attempt = 0
 
   const connect = async () => {
-    const connection = await activeConnection().catch(() => null)
+    const connectionId = getApiRequestConnection()
+    const profile = getApiRequestProfile()
+    const queryIndex = suffix.indexOf('?')
+    const pathname = queryIndex >= 0 ? suffix.slice(0, queryIndex) : suffix
+    const query = queryIndex >= 0 ? suffix.slice(queryIndex + 1) : ''
 
-    // No bridge / OAuth cookie auth (WS tickets are single-use, core-managed):
-    // stay on the polling fallback rather than half-working.
-    if (disposed || !connection || connection.authMode === 'oauth') {
+    const wsUrl = await resolveSiblingWsUrl(
+      { connectionId, profile },
+      `/api/plugins/${pluginId}${pathname}`
+    ).catch(() => null)
+
+    if (disposed || !wsUrl) {
       return
     }
 
-    const base = connection.baseUrl.replace(/^http/, 'ws')
-    const join = suffix.includes('?') ? '&' : '?'
-    socket = new WebSocket(
-      `${base}/api/plugins/${pluginId}${suffix}${join}token=${encodeURIComponent(connection.token)}`
-    )
+    const url = new URL(wsUrl)
+
+    if (query) {
+      for (const [key, value] of new URLSearchParams(query)) {
+        url.searchParams.append(key, value)
+      }
+    }
+
+    socket = new WebSocket(url.toString())
 
     socket.onmessage = event => {
       attempt = 0
@@ -124,10 +170,13 @@ export function pluginSocket(pluginId: string, path: string, onMessage: (data: u
       }
     }
 
-    socket.onclose = () => {
-      socket = null
+    socket.onerror = () => options.onError?.()
 
-      if (!disposed) {
+    socket.onclose = event => {
+      socket = null
+      options.onClose?.(event)
+
+      if (!disposed && options.reconnect !== false) {
         // Full-jitter exponential backoff: same rationale as the gateway
         // socket reconnect loops — an immediate-retry loop across many
         // desktop clients floods the gateway with connection attempts
@@ -140,8 +189,21 @@ export function pluginSocket(pluginId: string, path: string, onMessage: (data: u
 
   void connect()
 
-  return () => {
+  const close = () => {
     disposed = true
     socket?.close()
   }
+
+  return Object.assign(close, {
+    close,
+    send: (data: unknown) => {
+      if (!socket || socket.readyState !== WebSocket.OPEN) {
+        return false
+      }
+
+      socket.send(typeof data === 'string' ? data : JSON.stringify(data))
+
+      return true
+    }
+  })
 }

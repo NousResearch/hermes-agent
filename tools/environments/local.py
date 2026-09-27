@@ -684,8 +684,27 @@ def _make_run_env(env: dict) -> dict:
     the LAUNCH profile's; under a routed home override its ``.env`` residue is dropped first
     (``strip_launch_profile_env``, a no-op for the launch profile) so the backend's own ``env``
     and the served profile's declared passthrough names are what the child sees."""
-    return _scrubbed_env([(dict(strip_launch_profile_env(os.environ.copy()) | env), True)], frozenset(),
-                         lambda p: _prepend_git_bash_dirs(_append_missing_sane_path_entries(p)))
+    run_env = _scrubbed_env(
+        [(dict(strip_launch_profile_env(os.environ.copy()) | env), True)],
+        frozenset(),
+        lambda p: _prepend_git_bash_dirs(_append_missing_sane_path_entries(p)),
+    )
+    # While this profile's Bot Desktop is running, its DISPLAY/XAUTHORITY/DBUS ride along so GUI
+    # apps the agent launches from the terminal open on the Bot Screen the user is watching, not
+    # on the user's own seat (#125830). published_env() is the pure read (no activity stamp — a
+    # plain ``ls`` must not keep the screen alive past idle_stop_minutes), and it wins over the
+    # login snapshot's seat DISPLAY; a user who wants their own seat uses an inline
+    # ``DISPLAY=:0 cmd`` prefix, which bash applies after this env. Empty (or module missing) →
+    # the seat env passes through untouched.
+    try:
+        from tools.bot_desktop.runtime import published_env
+        published = published_env()
+    except Exception:
+        published = {}
+    if published:
+        run_env.update(published)
+        run_env.pop("WAYLAND_DISPLAY", None)  # X11 desktop; a leaked Wayland socket flips GTK/Chromium backends
+    return run_env
 
 
 # --- Hermes venv / repo-root detection (module-level, computed once) ---

@@ -125,6 +125,7 @@ def test_update_network_git_calls_never_prompt_for_credentials():
 
 def test_update_and_upstream_network_calls_disable_terminal_prompts(monkeypatch, tmp_path):
     """Exercise origin fetch and fork fetch/pull/push, not their source spelling."""
+    import os
     import subprocess
     from hermes_cli import update_cmd_git
 
@@ -139,11 +140,17 @@ def test_update_and_upstream_network_calls_disable_terminal_prompts(monkeypatch,
                         lambda git, cwd, base, head: 2 if head == "upstream/main" else 0)
     calls = []
 
-    def run(cmd, **kwargs):
-        calls.append((cmd[1:], kwargs))
-        return subprocess.CompletedProcess(cmd, 0, "", "")
+    class _FakeProc:
+        def __init__(self, cmd, **kwargs):
+            self.args = cmd
+            self.pid = 4242
+            self.returncode = 0
+            calls.append((cmd[1:], kwargs))
 
-    monkeypatch.setattr(subprocess, "run", run)
+        def communicate(self, timeout=None):
+            return "", ""
+
+    monkeypatch.setattr(subprocess, "Popen", _FakeProc)
     update_cmd._git_run(["git"], ["fetch", "origin", "main"], cwd=tmp_path, network=True, check=True)
     assert update_cmd_git._sync_with_upstream_if_needed(["git"], tmp_path, assume_yes=True)
     assert [args[0] for args, _ in calls] == ["fetch", "fetch", "pull", "push"]
@@ -152,6 +159,11 @@ def test_update_and_upstream_network_calls_disable_terminal_prompts(monkeypatch,
         env = kwargs["env"]
         assert env["GIT_TERMINAL_PROMPT"] == "0", args
         assert env["GCM_INTERACTIVE"] == "Never", args
+        # git >= 2.44 stops the promisor lazy-fetch recursion outright (#124794); older
+        # git ignores it and the timeout's process-group reap is the backstop.
+        assert env["GIT_NO_LAZY_FETCH"] == "1", args
         assert env["GIT_ASKPASS"] == "fixture-askpass", args
         assert env["GIT_CONFIG_COUNT"] == "1", args
         assert env["GIT_CONFIG_VALUE_0"] == "fixture-helper", args
+        if os.name != "nt":
+            assert kwargs["process_group"] == 0, args

@@ -207,6 +207,44 @@ def _serve(profile: str, pid: int, kind: str = "serve") -> RuntimeRecord:
     )
 
 
+def test_systemd_dashboard_runtime_reconciles_restarted_via_its_unit():
+    """#125297: the fleet unit pass restarts ``hermes-dashboard{,-<profile>}``, so the
+    receipt's runtime_outcomes row must credit it as ``restarted`` — not leave the
+    dashboard ``deferred`` while the update still reports success."""
+    outcomes = match_runtime_outcomes(
+        _plan(_dash_unit_runtime("default", 700), _dash_unit_runtime("work", 701)),
+        restarted_services=["hermes-dashboard", "user/hermes-dashboard-work"],
+        relaunched_profiles=[], externally_supervised_profiles=[],
+        killed_pids=set(), failed_units=[],
+    )
+    by_pid = {o["pid"]: o["outcome"] for o in outcomes}
+    assert by_pid == {700: "restarted", 701: "restarted"}
+    assert report_unaccounted_runtimes(outcomes) is False
+
+
+def test_systemd_dashboard_runtime_without_unit_restart_stays_unaccounted():
+    """The tripwire side: no ``hermes-dashboard*`` restart in the bookkeeping means
+    the row escalates (exit 1), never a silent ``deferred`` on a success receipt."""
+    outcomes = match_runtime_outcomes(
+        _plan(_dash_unit_runtime("default", 700), _rt("default", 100, supervisor="systemd")),
+        restarted_services=["hermes-gateway"], relaunched_profiles=[],
+        externally_supervised_profiles=[], killed_pids=set(), failed_units=[],
+    )
+    by_pid = {o["pid"]: o["outcome"] for o in outcomes}
+    assert by_pid == {100: "restarted", 700: "unaccounted"}
+    assert report_unaccounted_runtimes(outcomes) is True
+
+
+def _dash_unit_runtime(profile: str, pid: int) -> RuntimeRecord:
+    return RuntimeRecord(
+        kind="dashboard",
+        profile=profile,
+        pid=pid,
+        supervisor="systemd",
+        restart_via=_restart_mechanism("systemd", profile),
+    )
+
+
 def test_serve_never_borrows_relaunched_or_external_gateway_profile():
     """Sibling site of #100479: the relaunched_profiles / external-supervisor
     bookkeeping is gateway vocabulary too. A manual gateway relaunch under

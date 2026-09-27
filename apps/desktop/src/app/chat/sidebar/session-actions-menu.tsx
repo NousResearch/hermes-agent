@@ -119,6 +119,12 @@ interface SessionActions {
   /** TAB surfaces: the session is already a tab, so "Open in new tab" is
    *  nonsense there — sidebar rows/dropdowns keep it. */
   surface?: 'row' | 'tab'
+  /** May this session be renamed? False for a canonical Bot Chat tab: its
+   *  exact title is the bot's identity (the backend guard refuses a user
+   *  rename and the caption never reads the stored title anyway — #124857),
+   *  so the Rename item and dialog are omitted instead of toasting success
+   *  over a no-op. Mirrors how onPin/onBranch are gated. */
+  renameable?: boolean
   /** The tab's layout-tree pane id (`session-tile:<id>` or `workspace`) — enables
    *  the Close-others / to-the-right / all tab verbs. Tab surfaces only. */
   tabPaneId?: string
@@ -200,6 +206,7 @@ function useSessionActions({
   onDelete,
   onClose,
   onHideTabBar,
+  renameable = true,
   surface = 'row',
   tabPaneId
 }: SessionActions) {
@@ -287,19 +294,25 @@ function useSessionActions({
       : [])
   ]
 
-  // IDENTITY — name/mark/reference the session.
+  // IDENTITY — name/mark/reference the session. Rename is omitted (not
+  // disabled) for a session whose title is not its name — a canonical Bot
+  // Chat — so the menu never offers a verb whose result the user cannot see.
   const identityItems: ActionItemSpec[] = [
-    spec({
-      disabled: !sessionId,
-      icon: 'edit',
-      label: r.rename,
-      onSelect: () => {
-        triggerHaptic('selection')
-        // Keep focus off the row trigger so it lands in the dialog input.
-        suppressCloseFocusRef.current = true
-        setRenameOpen(true)
-      }
-    }),
+    ...(renameable
+      ? [
+          spec({
+            disabled: !sessionId,
+            icon: 'edit',
+            label: r.rename,
+            onSelect: () => {
+              triggerHaptic('selection')
+              // Keep focus off the row trigger so it lands in the dialog input.
+              suppressCloseFocusRef.current = true
+              setRenameOpen(true)
+            }
+          })
+        ]
+      : []),
     spec({
       disabled: !onPin,
       icon: 'pin',
@@ -531,7 +544,7 @@ function useSessionActions({
     </>
   )
 
-  const renameDialog = (
+  const renameDialog = renameable ? (
     <RenameSessionDialog
       currentTitle={title}
       onOpenChange={setRenameOpen}
@@ -539,7 +552,7 @@ function useSessionActions({
       profile={profile}
       sessionId={sessionId}
     />
-  )
+  ) : null
 
   // Consumed once per close: when rename was the action that closed the menu,
   // block Radix's focus-restore to the trigger so the dialog input keeps focus.

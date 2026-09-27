@@ -1,8 +1,10 @@
-"""The model-visible marker the context compressor leaves in pruned tool-call arguments.
+"""The model-visible compression/elision marker and its matcher.
 
-Dependency-free leaf shared by the producer (``agent.context_compressor``) and the
-dispatch-boundary detector (``agent.tool_dispatch_helpers``), so the matcher is derived
-from the template instead of re-typing its wording.
+Tool-call arguments are no longer rewritten by the compressor, but legacy sessions may still
+carry this marker inside replayed tool-call arguments. Dependency-free leaf shared by the
+elision renderers (``agent.context_compressor``) and the dispatch-boundary detector
+(``agent.tool_dispatch_helpers``), so the matcher is derived from the template instead of
+re-typing its wording.
 """
 
 from __future__ import annotations
@@ -13,7 +15,7 @@ import re
 # something the model would write itself: the bare "...[truncated]" it replaced was imitated into
 # new calls and written to disk. Non-prose delimiters, an explicit "not original content"
 # disclaimer, and per-instance counts keep a copied marker visibly wrong; the counts also make a
-# verbatim copy stale, which is why the marker must never be re-applied (see ``_shrink``).
+# verbatim copy stale, which is why the marker must never be re-applied.
 _COMPRESSION_MARKER_PREFIX = "⟪HERMES-CONTEXT-COMPRESSION:"
 _COMPRESSION_MARKER_TEMPLATE = (
     _COMPRESSION_MARKER_PREFIX

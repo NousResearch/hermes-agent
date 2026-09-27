@@ -3,8 +3,8 @@ import { useEffect, useMemo, useState } from 'react'
 
 import { requestComposerSubmit } from '@/app/chat/composer/focus'
 import { useSessionView } from '@/app/chat/session-view'
-import { useIsDark } from '@/components/assistant-ui/embeds/use-is-dark'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
+import { useThemeEpoch } from '@/hooks/use-theme-epoch'
 import { readDesktopFileText } from '@/lib/desktop-fs'
 import { localPreviewTarget } from '@/lib/local-preview'
 
@@ -127,8 +127,34 @@ const THEME_BRIDGE_TOKENS: Record<string, string> = {
   '--card': '--ui-bg-editor'
 }
 
-/** Resolve the bridge tokens + app font against the current document. */
-export function collectThemeBridge(): { vars: Record<string, string>; font: string } {
+/** The app's resolved light/dark appearance, read from the SAME attribute
+ *  `applyTheme` (themes/context.tsx) sets the token values from — not the
+ *  `.dark` class via `useIsDark()`, which is React state and can still hold
+ *  the previous render's value for one paint after a real theme change. A
+ *  direct read here means the tokens collected below and the color-scheme
+ *  the frame is built with can never disagree (#123048). Mirrors the same
+ *  fallback as `lib/selection-copy-colors.ts`'s `renderedMode()`. */
+function resolvedColorScheme(): 'light' | 'dark' {
+  if (typeof document === 'undefined') {
+    return 'light'
+  }
+
+  const mode = document.documentElement.dataset.hermesMode
+
+  if (mode === 'light' || mode === 'dark') {
+    return mode
+  }
+
+  try {
+    return document.defaultView?.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+  } catch {
+    return 'light'
+  }
+}
+
+/** Resolve the bridge tokens + app font + color scheme against the current
+ *  document, all from one synchronous read so they can't drift apart. */
+export function collectThemeBridge(): { vars: Record<string, string>; font: string; colorScheme: 'light' | 'dark' } {
   const vars: Record<string, string> = {}
 
   if (typeof document !== 'undefined') {
@@ -145,7 +171,7 @@ export function collectThemeBridge(): { vars: Record<string, string>; font: stri
 
   const font = typeof document === 'undefined' ? '' : getComputedStyle(document.body).fontFamily
 
-  return { vars, font }
+  return { vars, font, colorScheme: resolvedColorScheme() }
 }
 
 /**
@@ -280,8 +306,14 @@ function InlineHtmlFrame({
   streaming: boolean
 }) {
   const cwd = useStore(useSessionView().$cwd)
-  const isDark = useIsDark()
-  const colorScheme = isDark ? 'dark' : 'light'
+  const themeEpoch = useThemeEpoch()
+  // vars/font/colorScheme come from one collectThemeBridge() call so they can
+  // never disagree with each other, even while this lags a repaint behind
+  // `themeEpoch` (same trade-off use-is-dark.ts makes for the same reason).
+  const [bridge, setBridge] = useState(collectThemeBridge)
+
+  useEffect(() => setBridge(collectThemeBridge()), [themeEpoch])
+
   const [doc, setDoc] = useState<string | null>(null)
   const [failed, setFailed] = useState(false)
   const [measured, setMeasured] = useState<number | null>(null)
@@ -375,17 +407,18 @@ function InlineHtmlFrame({
     return () => window.removeEventListener('message', onMessage)
   }, [initialHeight, token])
 
-  // Rebuild the srcdoc when the color scheme changes so its native controls and
+  const { vars, font, colorScheme } = bridge
+
+  // Rebuild the srcdoc when the bridge changes (a repaint or a skin swap,
+  // whichever changed a token or the scheme) so its native controls and
   // transparent canvas stay aligned with the app.
   const framedDoc = useMemo(() => {
     if (doc === null) {
       return null
     }
 
-    const { vars, font } = collectThemeBridge()
-
     return withInlineChrome(doc, token, themePrelude(vars, font, colorScheme))
-  }, [colorScheme, doc, token])
+  }, [vars, font, colorScheme, doc, token])
 
   if (!path || failed) {
     return <PreviewAttachment target={file} />

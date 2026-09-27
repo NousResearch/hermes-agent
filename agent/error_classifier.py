@@ -499,6 +499,10 @@ UNSUPPORTED_PARAM_MARKERS = (
     "unknown parameter", "unrecognized request argument", "unrecognized parameter",
     "invalid parameter", "extra inputs are not permitted",
     "invalid option: expected one of",
+    # Google OpenAI-compat protobuf wire-validation: a folded ``extra_body.reasoning`` is rejected
+    # as 'Invalid JSON payload received. Unknown name "reasoning": Cannot find field.' — no
+    # "unsupported" wording anywhere, so the strip-and-retry rung misses it without these markers.
+    "unknown name", "cannot find field",
 )
 
 # Reasoning wire-field names (the profile reasoning controls minus ``verbosity``), longest first.

@@ -45,7 +45,7 @@ c.close()
 
   try {
     await once(child.stdout!, 'data')
-    preflightStateDb({
+    await preflightStateDb({
       python,
       script,
       home,
@@ -87,7 +87,7 @@ with sqlite3.connect(sys.argv[1]) as c:
   }
 })
 
-test('a managed installation runs the snapshot through the installation launcher', (): void => {
+test('a managed installation runs the snapshot through the installation launcher', async (): Promise<void> => {
   const home: string = fs.mkdtempSync(path.join(os.tmpdir(), 'managed-preflight-'))
   const shims: string = fs.mkdtempSync(path.join(os.tmpdir(), 'launcher-shim-'))
   const python: string = process.env.HERMES_PYTHON || 'python3'
@@ -125,7 +125,7 @@ test('a managed installation runs the snapshot through the installation launcher
 
     assert.equal(created.status, 0, created.stderr)
 
-    preflightStateDb({
+    await preflightStateDb({
       python: null,
       launcher: shim,
       script,
@@ -143,20 +143,23 @@ test('a managed installation runs the snapshot through the installation launcher
   }
 })
 
-test('an older selected checkout without the snapshot helper refuses before backend stop', (): void => {
+test('an older selected checkout without the snapshot helper refuses before backend stop', async (): Promise<void> => {
   const oldRoot: string = fs.mkdtempSync(path.join(os.tmpdir(), 'old-preflight-'))
   let stopped = false
 
   try {
-    assert.throws((): void => {
-      preflightStateDb({
-        python: process.env.HERMES_PYTHON || 'python3',
-        script: path.join(oldRoot, 'hermes_cli', 'backup_sqlite.py'),
-        home: oldRoot,
-        log: (): void => {}
-      })
-      stopped = true
-    }, /snapshot|pre-flight/)
+    await assert.rejects(
+      async (): Promise<void> => {
+        await preflightStateDb({
+          python: process.env.HERMES_PYTHON || 'python3',
+          script: path.join(oldRoot, 'hermes_cli', 'backup_sqlite.py'),
+          home: oldRoot,
+          log: (): void => {}
+        })
+        stopped = true
+      },
+      /snapshot|pre-flight/
+    )
     assert.equal(stopped, false)
   } finally {
     fs.rmSync(oldRoot, { recursive: true, force: true })

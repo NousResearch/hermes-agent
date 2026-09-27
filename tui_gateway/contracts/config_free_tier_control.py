@@ -240,6 +240,23 @@ method("shared_metrics.set", params=SharedMetricsSetParams, result=SharedMetrics
        doc="Write both shared-metrics opt-ins at once (send requires collection) and reconcile consent windows.")
 
 
+class SharedMetricsSlashCommandParams(ProfileParams):
+    """``command`` is the raw typed name (no leading ``/``, no args); the backend canonicalizes it
+    against the published registry. ``session_id`` scopes the count to that session's profile."""
+
+    command: str
+    session_id: str | None = None
+
+
+class SharedMetricsSlashCommandResult(Result):
+    ok: bool
+
+
+method("shared_metrics.slash_command", params=SharedMetricsSlashCommandParams,
+       result=SharedMetricsSlashCommandResult,
+       doc="Count one user-typed slash command (fire-and-forget; a no-op unless shared metrics are on).")
+
+
 # ── model.options ─────────────────────────────────────────────────────────────────────────────
 
 

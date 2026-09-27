@@ -656,6 +656,15 @@ export interface SharedMetricsSetParams {
   send?: boolean
   first_run?: boolean
 }
+/** ``command`` is the raw typed name (no leading ``/``, no args); the backend canonicalizes it against the published registry. ``session_id`` scopes the count to that session's profile. */
+export interface SharedMetricsSlashCommandParams {
+  profile?: string | null
+  command: string
+  session_id?: string | null
+}
+export interface SharedMetricsSlashCommandResult {
+  ok: boolean
+}
 export interface ModelOptionsParams {
   profile?: string | null
   session_id?: string | null
@@ -5150,6 +5159,8 @@ export interface RpcMethods {
   'setup.status': { params: ProfileParams; result: SetupStatusResult }
   /** Write both shared-metrics opt-ins at once (send requires collection) and reconcile consent windows. */
   'shared_metrics.set': { params: SharedMetricsSetParams; result: SharedMetricsConsentResult }
+  /** Count one user-typed slash command (fire-and-forget; a no-op unless shared metrics are on). */
+  'shared_metrics.slash_command': { params: SharedMetricsSlashCommandParams; result: SharedMetricsSlashCommandResult }
   /** Pure read of the focused profile's shared-metrics opt-ins (collection, upload, answered). */
   'shared_metrics.status': { params: ProfileParams; result: SharedMetricsConsentResult }
   /** Run a safe (non-dangerous) shell command captured for ``!cmd`` / inline substitution. */
@@ -5435,6 +5446,7 @@ export const RPC_METHODS = [
   'setup.runtime_check',
   'setup.status',
   'shared_metrics.set',
+  'shared_metrics.slash_command',
   'shared_metrics.status',
   'shell.exec',
   'skills.manage',

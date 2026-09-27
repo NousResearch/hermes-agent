@@ -85,5 +85,17 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, _shared_metrics_consent(cfg))
 
 
+@method("shared_metrics.slash_command")
+@_profile_scoped
+def _(rid, params: dict) -> dict:
+    """The Desktop and Ink TUI dispatchers call this once per user-typed slash command, locally
+    handled ones included; the gateway never counts slash.exec / command.dispatch itself, so
+    each command lands exactly once. Always ``{ok: true}`` (the events API never raises)."""
+    from hermes_cli.observability.shared_metrics_events import record_slash_command
+
+    record_slash_command(command=str(params.get("command") or ""), surface=_resolve_session_platform())
+    return _ok(rid, {"ok": True})
+
+
 def register(server) -> None:
     bind_module(globals(), server, skip=("_",))

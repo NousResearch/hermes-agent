@@ -3607,6 +3607,24 @@
       }
     },
     {
+      "name": "shared_metrics.slash_command",
+      "summary": "Count one user-typed slash command (fire-and-forget; a no-op unless shared metrics are on).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SharedMetricsSlashCommandParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SharedMetricsSlashCommandResult"
+        }
+      }
+    },
+    {
       "name": "shared_metrics.status",
       "summary": "Pure read of the focused profile's shared-metrics opt-ins (collection, upload, answered).",
       "params": [
@@ -31950,6 +31968,59 @@
           "enabled"
         ],
         "title": "SharedMetricsSetParams",
+        "type": "object"
+      },
+      "SharedMetricsSlashCommandParams": {
+        "additionalProperties": false,
+        "description": "``command`` is the raw typed name (no leading ``/``, no args); the backend canonicalizes it\nagainst the published registry. ``session_id`` scopes the count to that session's profile.",
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "command": {
+            "title": "Command",
+            "type": "string"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          }
+        },
+        "required": [
+          "command"
+        ],
+        "title": "SharedMetricsSlashCommandParams",
+        "type": "object"
+      },
+      "SharedMetricsSlashCommandResult": {
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "SharedMetricsSlashCommandResult",
         "type": "object"
       },
       "ShellExecParams": {

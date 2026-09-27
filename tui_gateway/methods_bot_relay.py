@@ -143,12 +143,12 @@ def _(rid, params: dict, _root=_relay_root, _run=_run_delivery,
         # receipt (_wait_live_dm); so does this relay, on the same budget, so the sender gets the
         # target's answer rather than a receipt when its Bot Chat happens to be open.
         from tools.bot_live_delivery import await_delivery, deliver_to_live_owner, find_canonical_live_owner
-        from tools.bot_mode_dm import _LIVE_WAIT_SECONDS
+        from tools.bot_mode_dm import live_wait_seconds
         owner_home = live_home if live_home is not None else Path(_hermes_home)
         owner = find_canonical_live_owner(owner_home)
         if owner is not None:
             record = deliver_to_live_owner(owner_home, owner, message, author=author)
-            record = await_delivery(owner_home, record["delivery_id"], _LIVE_WAIT_SECONDS) or record
+            record = await_delivery(owner_home, record["delivery_id"], live_wait_seconds()) or record
             if record["status"] == "settled":
                 from tui_gateway.prompt_turn import _bot_mode_delivery_text
                 return _ok(rid, {"reply": _bot_mode_delivery_text((record.get("reply") or "").strip(), successful=True)})

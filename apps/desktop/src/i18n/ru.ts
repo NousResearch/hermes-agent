@@ -642,8 +642,62 @@ export const ruOverrides = {
         window: 'Всё окно',
         sidebar: 'Только боковая панель'
       },
+      wallpaper: {
+        title: 'Свои обои',
+        description:
+          'Сохраняются на этом устройстве отдельно для каждого профиля. Изображения оптимизируются при импорте.',
+        choose: 'Выбрать изображение',
+        replace: 'Заменить',
+        remove: 'Удалить',
+        reset: 'Сбросить настройки',
+        error:
+          'Не удалось загрузить изображение. Убедитесь, что это корректный файл JPEG, PNG или WebP размером не более 32 МБ.',
+        unsupported: 'Перезапустите Hermes, чтобы включить выбор обоев.',
+        profileNote: profile => `Сохранено локально для профиля ${profile}.`,
+        preview: 'Предпросмотр',
+        previewEffect: 'Вид в чате',
+        previewFull: 'Всё изображение',
+        visibility: 'Отображение',
+        displayMode: 'Режим отображения',
+        adaptiveTheme: 'Палитра обоев',
+        adaptiveThemeDesc: 'Окрашивает акценты и поверхности по цветам изображения, сохраняя контраст текста.',
+        adaptiveThemeAnalyzing: 'Анализ цветов изображения…',
+        adaptiveThemeError: 'Не удалось извлечь цвета из изображения.',
+        paletteMode: 'Источник палитры',
+        paletteModes: {
+          auto: 'Авто',
+          manual: 'Вручную'
+        },
+        paletteManualDesc:
+          'Цвет акцента применяется без изменений. Оттенок слегка подмешивается к поверхностям для сохранения читаемости.',
+        paletteDominant: 'Оттенок',
+        paletteAccent: 'Акцент',
+        modes: {
+          fill: 'Заполнить',
+          fit: 'Вписать',
+          tile: 'Плитка',
+          center: 'По центру'
+        },
+        opacity: 'Интенсивность изображения',
+        blur: 'Размытие',
+        overlay: 'Маска читаемости',
+        overlayShape: 'Форма маски',
+        overlayShapes: {
+          ellipse: 'Эллипс',
+          strip: 'Вертикальная полоса'
+        },
+        overlayColor: 'Цвет маски',
+        overlayColorTheme: 'Следовать теме',
+        overlayFeather: 'Растушёвка маски',
+        overlayWidth: 'Ширина маски',
+        overlayHeight: 'Высота маски',
+        overlayPosition: 'Положение маски',
+        left: 'Слева',
+        center: 'По центру',
+        right: 'Справа'
+      },
       backdropTitle: 'Фон чата',
-      backdropDesc: 'Блёклый силуэт позади диалога.',
+      backdropDesc: 'Бледное встроенное изображение статуи, когда свои обои не отображаются.',
       userBubbleTitle: 'Пузырь сообщения',
       userBubbleDesc: 'Насколько прозрачны ваши сообщения. 0 — сплошная заливка, 100 — остаётся только контур.',
       textDirectionTitle: 'Направление текста',

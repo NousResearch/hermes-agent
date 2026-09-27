@@ -2215,6 +2215,44 @@ DEFAULT_CONFIG = {
             # response_store.db write several hundred KB. 0 = store tool outputs verbatim
             # (default: the capped text is what the model is replayed on the next turn).
             "history_tool_output_max_chars": 0,
+            # Downloadable file delivery (gateway/platforms/api_server_file_delivery.py). Off by
+            # default. When on, a MEDIA:<path> tag whose extension is a deliverable document
+            # (.pdf, .docx, .xlsx, .csv, .md, .txt, .json, .zip, ...) is rewritten in the response
+            # into a markdown link to a signed, expiring, one-shot download URL, instead of crossing
+            # the HTTP boundary as a server path the frontend cannot read. Deliberately independent of
+            # browser.extension_control.enabled — enabling one never opens the other's routes.
+            "file_delivery": {
+                "enabled": False,
+                # Absolute base URL for the emitted links, e.g. "https://hermes.example.com"; include
+                # the profile prefix when the API is served under one (e.g. ".../p/arman"). Empty =
+                # relative links, which still work for a same-origin chat frontend — an unconfigured
+                # base URL is not a reason to lose the file.
+                "public_base_url": "",
+                # Byte cap for one delivered file (mirrors DEFAULT_MAX_ARTIFACT_BYTES).
+                "max_bytes": 10485760,
+                # Seconds a download link stays valid; the artifact store's TTL is the same value, so
+                # the signed expiry and the stored expiry cannot drift apart.
+                "ttl_seconds": 300.0,
+                # Exact MIME allowlist (no wildcards, no ";charset=" variants). Narrowing only: each
+                # entry must be a type this transport can produce from a file extension, so the list
+                # can restrict what is served but never widen it. Defaults to
+                # DEFAULT_FILE_DELIVERY_MIME_TYPES in gateway/platforms/api_server_file_delivery.py.
+                "allowed_mime_types": [
+                    "application/json",
+                    "application/pdf",
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    "application/zip",
+                    "image/gif",
+                    "image/jpeg",
+                    "image/png",
+                    "image/webp",
+                    "text/csv",
+                    "text/markdown",
+                    "text/plain",
+                    "text/tab-separated-values",
+                ],
+            },
         },
     },
     # Real-time token streaming to messaging platforms (gateway; restart after enabling). Off by

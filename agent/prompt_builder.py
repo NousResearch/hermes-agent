@@ -806,6 +806,19 @@ PLATFORM_HINTS = {
     # 'desktop' or 'tui'). If a real WebUI chat surface ships, write a hint from its actual renderer.
 }
 
+# api_server file-delivery extension — appended only when
+# ``gateway.api_server.file_delivery.enabled`` (see ``system_prompt._default_platform_hint``). The
+# base hint above is the flag-off truth and stays byte-identical, so a default install's prompt is
+# unchanged; this reads as an explicit correction because that text says the opposite.
+API_SERVER_FILE_DELIVERY_HINT = (
+    "UPDATE — file delivery is enabled on this server, so the paragraph above about non-image files no longer "
+    "applies to the chat, completions, and responses endpoints: a MEDIA:/absolute/path tag whose file is a "
+    "deliverable document (.pdf, .docx, .xlsx, .csv, .tsv, .md, .txt, .json, .zip) is rewritten into a clickable "
+    "download link, so use a MEDIA: tag for those instead of a bare path. The link expires and works once, so "
+    "mention that if the user may come back to it later. The runs endpoint still intercepts nothing, and "
+    "unsupported types (.py, .log, .weirdext) or files over the size cap still render as literal text."
+)
+
 # Telegram rich-messages extension — injected only with
 # ``platforms.telegram.extra.rich_messages: true`` (gateway.* or top-level).
 # NOTE: a "webui" hint lived here until 2026-08-29. It was a ghost (verified in the all-platform hint audit,

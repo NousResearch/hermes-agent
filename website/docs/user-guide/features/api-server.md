@@ -737,6 +737,12 @@ gateway:
     model_name: my-hermes
     max_concurrent_runs: 10   # concurrent-run cap; 0 disables the limit
     history_tool_output_max_chars: 0   # cap tool outputs in stored /v1/responses history; 0 = verbatim
+    file_delivery:            # downloadable file delivery; off by default
+      enabled: false
+      public_base_url: ""     # e.g. https://hermes.example.com (include /p/<profile> if you use it)
+      max_bytes: 10485760
+      ttl_seconds: 300
+      allowed_mime_types: [application/pdf, text/markdown]   # narrowing only; see below
 ```
 
 `port`, `key`, `host`, `cors_origins`, and `model_name` are automatically bridged into the platform's `extra` settings, so they behave exactly like their `API_SERVER_*` environment-variable counterparts. Environment variables take precedence over `config.yaml` values. The block is also accepted under `gateway.platforms.api_server:` or a top-level `platforms.api_server:` section.
@@ -748,6 +754,102 @@ The API server limits how many agent runs may execute at once across the endpoin
 ### Stored history size for `previous_response_id` chaining
 
 Each stored `/v1/responses` snapshot embeds the full cumulative conversation history (that is what `previous_response_id` and `conversation` chaining replay), including every tool output verbatim. A conversation with a few large tool outputs can therefore make a single `response_store.db` write several hundred KB. Set `gateway.api_server.history_tool_output_max_chars` (default **0** = store verbatim) to cap each tool output and each string tool-call argument in the **stored** history at that many characters; anything longer is cut to the head plus a `...[N more chars]` marker. User and assistant text is never touched, and the `response.completed` payload and incremental SSE events are unaffected. Because the stored history is what the model sees on the next chained turn, enabling the cap also trims what the model is replayed — leave it at 0 if your workflow needs complete tool outputs across turns.
+
+## Downloadable file delivery
+
+By default a `MEDIA:/absolute/path` tag in a final response is only resolved when the file is an
+image (inlined as a base64 data URL). Any other file type stays in the response as literal text —
+including the server path — which a remote chat frontend cannot render or fetch.
+
+`gateway.api_server.file_delivery` turns those tags into a **clickable download link**. It is off by
+default, and it is independent of `browser.extension_control.enabled` in both directions: enabling
+file delivery does not expose browser control, and enabling browser control does not expose this.
+
+```yaml
+gateway:
+  api_server:
+    file_delivery:
+      enabled: true
+      # Absolute base URL for the emitted links. Include the profile prefix when you use
+      # multi-profile routing, e.g. https://hermes.example.com/p/arman. Empty = relative links.
+      public_base_url: https://hermes.example.com
+      max_bytes: 10485760      # per-file cap; default matches the artifact transport (10 MB)
+      ttl_seconds: 300         # link lifetime; the artifact store's TTL is the same value
+      allowed_mime_types:      # exact match, narrowing only (see below)
+        - application/pdf
+        - text/markdown
+```
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `enabled` | `false` | Master switch. Off means the behavior above is byte-identical to before this transport existed. |
+| `public_base_url` | `""` | Absolute URL prefix for links. Empty emits relative paths (still fine for a same-origin frontend). Never a reason for the file to be dropped. |
+| `max_bytes` | `10485760` | Files larger than this are left as a literal tag. |
+| `ttl_seconds` | `300` | Signed link lifetime, and the artifact store's TTL. |
+| `allowed_mime_types` | 13 types (below) | Exact MIME allowlist. **Narrowing only** — every entry must be a type this transport can produce from a file extension, so it can restrict what is served but never widen it. Unknown entries are dropped with a warning. |
+
+The default allowlist covers `text/plain`, `text/markdown`, `text/csv`, `text/tab-separated-values`,
+`application/json`, `application/pdf`, `application/zip`, both OOXML document types
+(`…spreadsheetml.sheet` for `.xlsx`, `…wordprocessingml.document` for `.docx`), plus the image types
+the inline path already serves. Deliverable extensions are `.txt .md .csv .tsv .json .pdf .zip .xlsx
+.docx`; every one of them is already in the shared `MEDIA_DELIVERY_EXTS` list, which is what builds
+the anchored `MEDIA_TAG_CLEANUP_RE` — an extension outside that list could never be rewritten, so the
+vocabulary cannot be widened by config alone.
+
+### What the user sees
+
+A tag for a deliverable file becomes a markdown link:
+
+```
+Here's the report: [quarterly-report.pdf (812 KB)](https://hermes.example.com/v1/artifacts/download/9f2c…?expires=1789134000&signature=…)
+```
+
+The link is **signed, expiring and one-shot**. It carries no API key: the consumer is a chat window,
+which authenticates to its own backend and never holds `API_SERVER_KEY`. Instead the URL itself is the
+capability — an unguessable 128-bit artifact id plus an HMAC signature over the id *and* the expiry, so
+neither can be rewritten, and the file is consumed on the first successful `GET`. Every failure
+(unknown id, expired, already used, tampered signature, wrong profile) returns **404**, never a
+distinguishable 403, so the route cannot be used to probe which artifacts exist. The signing secret is
+per install and per profile home, so rotating `API_SERVER_KEY` neither mints nor breaks links, and a
+leaked link grants exactly one download of one file.
+
+Because a link works once, tell the user if you expect them to come back to it later — the agent's
+platform hint says so too when this feature is enabled.
+
+### What stays unresolved
+
+Anything that is not a deliverable file keeps its current behavior — the tag is left as literal text,
+never a broken link and never a different kind of leak:
+
+- images (the inline data-URL path still owns them, unchanged);
+- paths rejected by the shared delivery validator (the credential/system denylist: `/etc`, `/proc`,
+  `~/.ssh`, `~/.aws`, Hermes-root `.env`/`auth.json`, other profiles' `.env`);
+- unreadable, empty, or over-cap files;
+- extensions outside the vocabulary (`.py`, `.log`, `.weirdext`, …);
+- files whose bytes do not match their extension's content type (a `.md` that is really a binary);
+- `POST /v1/runs`, which never called the resolver and still does not.
+
+### Streaming clients
+
+The link rides the `choices[0].delta.content` frames, not just the terminal payload — a streaming
+frontend renders deltas and never receives the final text again, so a tag split across deltas is held
+back until it resolves and then emitted as the link. The Responses API lane behaves the same way
+through `response.output_text.delta`.
+
+### Capabilities
+
+`GET /v1/capabilities` advertises the transport under `features.file_delivery` (enabled state, the
+`auth: "signed-url"` model, caps, and the allowlist) as a separate block, so browser-control clients
+reading `features.browser_extension_control` are unaffected.
+
+### Configuration
+
+The following keys are read from `gateway.api_server.file_delivery`: `enabled`, `public_base_url`,
+`max_bytes`, `ttl_seconds`, `allowed_mime_types`.
+
+Changing `enabled` or `public_base_url` takes effect on the next response; changing the caps or the
+allowlist rebuilds the profile's artifact store, so links minted under the previous caps stop working
+(they 404 rather than serving under stale limits). New sessions also pick up a changed hint.
 
 ## Security Headers
 

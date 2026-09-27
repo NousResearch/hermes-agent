@@ -154,6 +154,7 @@ from gateway.browser_control_broker import (
     BROWSER_CONTROL_ARTIFACT_CAPABILITIES, BROWSER_CONTROL_CAPABILITIES, BROWSER_CONTROL_DEVELOPER_CAPABILITIES,
     ControllerScope, ControllerTicketInvalid, browser_control_developer_mode,
     browser_control_protocol_supported, filter_browser_control_capabilities, get_browser_control_broker)
+from gateway.platforms.api_server_file_delivery import FileDeliveryMixin, file_delivery_config
 
 from gateway.platforms._shared import coerce_port as _coerce_port
 from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
@@ -1165,7 +1166,7 @@ def _run_route_delegate(name: str):
     return _handler
 
 
-class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
+class APIServerAdapter(OpenAICompatRoutesMixin, FileDeliveryMixin, BasePlatformAdapter):
     """aiohttp server routing OpenAI-format requests through hermes-agent's AIAgent."""
 
     # Stateless request/response (``send()`` is a stub): async-delivery tools must not promise
@@ -1260,6 +1261,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         self._metrics_latency_ms: List[float] = []
         self._metrics_last_request_at: Optional[float] = None
         self._metrics_last_heartbeat_at: Optional[float] = None
+        # File delivery (gateway.api_server.file_delivery) keeps its own store per profile, keyed by
+        # (profile, caps fingerprint): the two transports never share a root or an index.
+        self._file_delivery_artifacts: Dict[str, tuple] = {}
 
     def active_agent_work_count(self) -> int:
         """All live agent work: pending admissions + in-flight turns + live /v1/runs tasks
@@ -2528,7 +2532,21 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     "real_browser_actions": True,
                     "transports": {
                         "local_vps": "websocket-subprotocol-ticket",
-                        "cloud": "authenticated-gateway-rpc"}}},
+                        "cloud": "authenticated-gateway-rpc"}},
+                # Downloadable file delivery (gateway.api_server.file_delivery) is its own opt-in
+                # transport with its own gate, advertised separately so browser-control clients and
+                # their artifact ladder above are unaffected by it (and vice versa).
+                "file_delivery": {
+                    "enabled": self._file_delivery_config().enabled,
+                    "auth": "signed-url",
+                    "download": {"method": "GET", "path": "/v1/artifacts/download/{artifact_id}",
+                                 "query": ["expires", "signature"]},
+                    "public_base_url": self._file_delivery_config().public_base_url,
+                    "max_bytes": self._file_delivery_config().max_bytes,
+                    "ttl_seconds": self._file_delivery_config().ttl_seconds,
+                    "one_shot": True,
+                    "allowed_mime_types": sorted(self._file_delivery_config().allowed_mime_types)},
+            },
             "endpoints": {name: {"method": m, "path": p} for name, (m, p) in _CAPABILITY_ENDPOINTS},
         })
 
@@ -2881,7 +2899,16 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     async def _handle_artifact_download(self, request: "web.Request") -> "web.Response":
         """GET /v1/artifacts/download/{artifact_id} — one-shot download (a second one 404s) with
         ``X-Artifact-Sha256``. Ladder: 404 disabled/unknown, 403 no API key, 401 bad Bearer, 429
-        rate limited, 410 expired, 400 invalid id/scope mismatch, 200."""
+        rate limited, 410 expired, 400 invalid id/scope mismatch, 200.
+
+        Two independent opt-ins share this path, and the discriminator is explicit: a browser-control
+        client authenticates with its Bearer key and sends no ``signature``; a file-delivery link
+        (``gateway.api_server.file_delivery``) carries ``expires``/``signature`` and no key, because a
+        chat frontend never holds ``API_SERVER_KEY``. The signed branch is checked first and its route
+        stays closed unless that flag is on, so neither feature can open the other's door.
+        """
+        if self._file_delivery_signed_request(request):
+            return await self._handle_file_delivery_download(request)
         if not self._browser_control_enabled():
             raise web.HTTPNotFound()
         ctx, err = self._artifact_route_prelude(request, "download", check_enabled=False)
@@ -3564,7 +3591,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 conversation_history=history, resume_unanswered_turn=True, **ctx["run_kwargs"])
         is_dict = isinstance(result, dict)
         effective_session_id = result.get("session_id") if is_dict else session_id
-        final_response = _resolve_media_to_data_urls(
+        final_response = self._resolve_media_tags(
             result.get("final_response", "") if is_dict else "")
         headers = self._session_headers(effective_session_id or session_id, gateway_session_key)
         return web.json_response(
@@ -3641,7 +3668,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     active_run_id=run_id, approval_notify_callback=approval_notify,
                     approval_session_key=run_id, **ctx["run_kwargs"])
                 is_dict = isinstance(result, dict)
-                final_response = _resolve_media_to_data_urls(result.get("final_response", "") if is_dict else "")
+                final_response = self._resolve_media_tags(result.get("final_response", "") if is_dict else "")
                 effective_session_id = result.get("session_id", session_id) if is_dict else session_id
                 turn_messages = self._turn_transcript_messages(history, user_message, result) if is_dict else []
                 effective_runtime = self._effective_turn_runtime(runtime_request, result, usage)

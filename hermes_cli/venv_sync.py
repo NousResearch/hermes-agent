@@ -154,6 +154,29 @@ def collect_superseded_generations(project_root: Path) -> None:
 #: Answered from the tree alone; a metadata query must never wait on (or fail with)
 #: a network-bound source-update completion.
 _METADATA_FLAGS = frozenset({"-h", "--help", "-V", "--version"})
+# A launch-time tail that keeps failing leaves its marker, and each retry builds another
+# environment. Both thresholds must trip before the tail is refused (#123340): a healthy
+# install has a handful of environments well under a gigabyte.
+_ENVIRONMENTS_GROWTH_LIMIT = 8
+_ENVIRONMENTS_GROWTH_BYTES = 2 * 1024 ** 3
+
+
+def _is_supervised_launch() -> bool:
+    """Whether this process was started by a generated service, not a shell.
+
+    A supervised launch must never become the installer. ``prepare_launch`` otherwise execs
+    ``source_completion --finish-update``, which builds a fresh environment under
+    ``installs/<hash>/environments/``; on a unit with ``Restart=always`` and a completion tail
+    that cannot finish, every restart built another one until the volume was full (415
+    directories, ~74G, then ENOSPC took down gateway stop and update too) (#123340). The tail
+    belongs to ``hermes update`` / ``hermes pm install``, which run it once, in the
+    foreground, where a failure is visible and nobody has to be restarted to notice.
+    """
+    try:
+        from gateway.restart import is_supervised_gateway_launch
+    except Exception:
+        return bool(os.environ.get("HERMES_SUPERVISED_CHILD"))
+    return is_supervised_gateway_launch()
 
 
 def completion_pending_path(project_root: Path) -> Path:
@@ -230,6 +253,7 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     if (command_argv(argv)[:1] == ["pm"]
             or _METADATA_FLAGS & set(argv)
             or os.environ.get("HERMES_DISABLE_LAZY_INSTALLS", "").lower() in ("1", "true", "yes")
+            or _is_supervised_launch()
             or not (root / ".git").exists()
             or not (root / "pyproject.toml").is_file()):
         return None
@@ -285,11 +309,54 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     return None
 
 
+def _environments_budget_exceeded(root: Path) -> str | None:
+    """Why building another environment here would be unwise, or ``None`` to proceed.
+
+    A tail that cannot finish leaves its marker behind, and the next launch tries again. On a
+    supervised unit that repeats until ``installs/<hash>/environments/`` fills the volume, at
+    which point gateway stop, update, and the tail itself all fail with ENOSPC (#123340). Once
+    the tree is already this large, another environment is far more likely to be the loop than
+    a legitimate retry, so stop and say so instead of allocating.
+    """
+    try:
+        from pm.environments import install_state_dir
+
+        root_dir = install_state_dir(root) / "environments"
+        entries = list(root_dir.iterdir())
+    except OSError:
+        return None
+    if len(entries) < _ENVIRONMENTS_GROWTH_LIMIT:
+        return None
+    total = 0
+    for entry in entries:
+        try:
+            for path in entry.rglob("*"):
+                if path.is_file():
+                    total += path.stat().st_size
+        except OSError:
+            continue  # a half-written environment is still an environment; count what we can
+    if total < _ENVIRONMENTS_GROWTH_BYTES:
+        return None
+    return (
+        f"{len(entries)} existing environments under {root_dir} total "
+        f"{total / (1024 ** 3):.1f}G; refusing to build another from a launch-time tail. "
+        f"Run `hermes update` (or `hermes pm gc`) from a shell to finish or reclaim it."
+    )
+
+
 def _finish_source_update(root: Path, *, current: bool, pending: Path) -> None:
     """Sync dependencies when they are stale, then run the tail the marker still owes."""
     import sys
     from hermes_cli._early_recovery import _marker_owner_is_live
     from pm.environments import activation_environment
+
+    if (over_budget := _environments_budget_exceeded(root)) is not None:
+        # Keep the marker: this tail is still owed, and the operator finishes it in the
+        # foreground with `hermes update`. Swallowing the refusal instead would look like a
+        # clean start on a stale install and strand the obligation silently.
+        raise RuntimeError(
+            "source update completion is not safe to run from here: " + over_budget
+        )
 
     if not current:
         # Existing markers guard liveness, never create the completion obligation.

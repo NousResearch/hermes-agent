@@ -177,3 +177,78 @@ class TestCliContract:
 
         assert proc.returncode == 1
         assert json.loads(proc.stdout)["state"] == "failed"
+
+
+class TestSupervisedLaunchDoesNotRunTheCompletionTail:
+    """Regression for #123340.
+
+    ``prepare_launch`` execs ``source_completion --finish-update``, which builds a fresh
+    environment under ``installs/<hash>/environments/``. A tail that cannot finish leaves its
+    marker, so on a unit with ``Restart=always`` every restart built another one until the
+    volume was full (415 directories, ~74G, after which ENOSPC took down gateway stop and
+    ``hermes update`` too). A supervised launch must never become the installer.
+    """
+
+    def test_supervised_launch_skips_prepare_launch_entirely(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_SUPERVISED_CHILD", "1")
+        assert venv_sync._is_supervised_launch() is True
+
+    def test_interactive_shell_is_not_treated_as_supervised(self, monkeypatch):
+        monkeypatch.delenv("HERMES_SUPERVISED_CHILD", raising=False)
+        monkeypatch.delenv("HERMES_S6_SUPERVISED_CHILD", raising=False)
+        monkeypatch.delenv("HERMES_GATEWAY_EXTERNAL_SUPERVISOR", raising=False)
+        monkeypatch.delenv("INVOCATION_ID", raising=False)
+        assert venv_sync._is_supervised_launch() is False
+
+    def test_existing_passive_gate_still_works(self, tmp_path):
+        """The new branch is additive — the other early returns are untouched."""
+        (tmp_path / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+        assert venv_sync.prepare_launch(tmp_path, ["-h"]) is None
+
+
+class TestEnvironmentsGrowthBudget:
+    """The disk-fill half of #123340: stop allocating once the tree is already huge."""
+
+    def _stub_install_state(self, monkeypatch, env_dir: Path):
+        import pm.environments as pm_env
+
+        monkeypatch.setattr(
+            pm_env, "install_state_dir", lambda _root: env_dir.parent, raising=False,
+        )
+
+    def test_healthy_tree_proceeds(self, tmp_path, monkeypatch):
+        env_dir = tmp_path / "state" / "environments"
+        (env_dir / "gen-1").mkdir(parents=True)
+        (env_dir / "gen-1" / "pyvenv.cfg").write_text("x", encoding="utf-8")
+        self._stub_install_state(monkeypatch, env_dir)
+        assert venv_sync._environments_budget_exceeded(tmp_path) is None
+
+    def test_many_small_environments_proceed(self, tmp_path, monkeypatch):
+        """Count alone must not trip it — a legitimate install keeps a few generations."""
+        env_dir = tmp_path / "state" / "environments"
+        env_dir.mkdir(parents=True)
+        for i in range(20):
+            (env_dir / f"gen-{i}").mkdir()
+        self._stub_install_state(monkeypatch, env_dir)
+        assert venv_sync._environments_budget_exceeded(tmp_path) is None
+
+    def test_large_tree_is_refused_with_actionable_advice(self, tmp_path, monkeypatch):
+        env_dir = tmp_path / "state" / "environments"
+        env_dir.mkdir(parents=True)
+        # Sparse files: st_size reports the full length, so the gate sees a multi-gigabyte
+        # tree while the test costs a few KB of disk. Writing real bytes here would make the
+        # suite fail on a nearly-full volume rather than on a real regression.
+        count = venv_sync._ENVIRONMENTS_GROWTH_LIMIT + 2
+        per_dir = venv_sync._ENVIRONMENTS_GROWTH_BYTES // (count - 2)
+        for i in range(count):
+            entry = env_dir / f"gen-{i}"
+            entry.mkdir()
+            with open(entry / "payload.bin", "wb") as fh:
+                fh.truncate(per_dir)
+        self._stub_install_state(monkeypatch, env_dir)
+
+        reason = venv_sync._environments_budget_exceeded(tmp_path)
+        assert reason is not None
+        # The message must say what to do, not just that something is wrong.
+        assert "hermes update" in reason
+        assert "hermes pm gc" in reason

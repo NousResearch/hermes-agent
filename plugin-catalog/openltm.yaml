@@ -5,7 +5,7 @@
 # The `sha` above is the exact reviewed commit; the version label matches it.
 name: openltm
 repo: https://github.com/RohiRIK/OpenLtm
-sha: 3c0560c87ebdc5049575ce98054c684ea7f30638
+sha: 5b88522ec83d1e752b6985c7ec00ea8c847b75ca
 subdir: hermes/openltm_hermes
 description: >-
   Long-term memory for Hermes agents, stored in a local SQLite database. FTS5 full-text search with
@@ -19,7 +19,8 @@ maintainer: RohiRIK
 tier: community
 category: memory
 docs_url: https://github.com/RohiRIK/OpenLtm/blob/main/docs/10-hermes-plugin.md
-version: "2.14.3"
+version: "2.15.0"
+image: https://raw.githubusercontent.com/RohiRIK/OpenLtm/5b88522ec83d1e752b6985c7ec00ea8c847b75ca/hermes/plugin-catalog/banner.png
 readme: true
 platforms: []
 capabilities:

@@ -745,9 +745,10 @@ def _classify_summary_failure(e: Exception) -> _SummaryFailureKind:
     """
     status = _exc_status_code(e)
     err = str(e).lower()
-    # The Codex aux stream guard's mid-stream stall is transient (#124077). Its no-progress and
-    # hard-ceiling timeouts deliberately stay terminal network failures.
-    stall = isinstance(e, TimeoutError) and CODEX_STREAM_STALL_MARKER in err
+    # #124077: only the Codex aux stream guard's mid-stream stall is a retry-ladder timeout; real
+    # transport timeouts and the guard's no-progress/hard-ceiling timeouts stay terminal
+    # network failures (#29559/#94448).
+    stall = isinstance(e, TimeoutError) and CODEX_STREAM_STALL_MARKER in str(e)
     return _SummaryFailureKind(
         # Permanent-looking error on a distinct summary model: fall back to main instead of cooldown.
         model_not_found=status in {404, 503}
@@ -757,8 +758,6 @@ def _classify_summary_failure(e: Exception) -> _SummaryFailureKind:
         # APIResponseValidationError "expecting value"; treat as transient.
         json_decode=isinstance(e, json.JSONDecodeError) or "expecting value" in err,
         # httpx premature-close errors are transient; treat like a timeout, not a 60s cooldown.
-        # Real transport timeouts stay here (terminal abort, #29559/#94448); only the stream-guard
-        # stall is a retry-ladder timeout, not a network failure (#124077).
         streaming_closed=_is_connection_error(e) and not stall,
         # HTTP 200 with empty body from a degraded provider, plus the sibling "no usable response"
         # shapes from _validate_llm_response.

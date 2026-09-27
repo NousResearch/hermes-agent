@@ -478,39 +478,42 @@ def test_followup_reaction_uses_gateway_source_authorization(tmp_path, monkeypat
         adapter = MatrixAdapter(PlatformConfig(enabled=True))
         runner.adapters = {Platform.MATRIX: adapter}
         runner.session_store = SessionStore(tmp_path / "sessions", runner.config)
-        adapter.gateway_runner = runner
-        adapter.set_session_store(runner.session_store)
-        adapter._store_dir = tmp_path / "store"
-        adapter._is_allowed_matrix_room_event = AsyncMock(return_value=True)
-        adapter._message_handler = AsyncMock()
-        adapter.handle_message = AsyncMock()
-        adapter._client = SimpleNamespace(api=SimpleNamespace(request=AsyncMock(return_value={
-            "end": "after-final", "chunk": [{"event_id": "$reaction"}],
-        })))
-        adapter.set_authorization_check(runner._make_adapter_auth_check(Platform.MATRIX))
-        source = adapter.build_source(
-            chat_id="!room:test", chat_type="group", user_id="@alice:test",
-            thread_id="$thread",
-        )
-        entry = runner.session_store.get_or_create_session(source)
-        assert runner._is_user_authorized_for_source(source) is (grant != "denied")
-        assert adapter._is_authorized_user("@alice:test") is (grant != "denied")
-        adapter._followup_store().arm(
-            "turn", ("$reply",), profile=source.profile or "", room_id="!room:test",
-            thread_id="$thread", session_key=entry.session_key, session_id=entry.session_id,
-            requester="@alice:test", source=source.to_dict(), emoji_filter=(),
-            delivery_event_id="$reply",
-        )
+        try:
+            adapter.gateway_runner = runner
+            adapter.set_session_store(runner.session_store)
+            adapter._store_dir = tmp_path / "store"
+            adapter._is_allowed_matrix_room_event = AsyncMock(return_value=True)
+            adapter._message_handler = AsyncMock()
+            adapter.handle_message = AsyncMock()
+            adapter._client = SimpleNamespace(api=SimpleNamespace(request=AsyncMock(return_value={
+                "end": "after-final", "chunk": [{"event_id": "$reaction"}],
+            })))
+            adapter.set_authorization_check(runner._make_adapter_auth_check(Platform.MATRIX))
+            source = adapter.build_source(
+                chat_id="!room:test", chat_type="group", user_id="@alice:test",
+                thread_id="$thread",
+            )
+            entry = runner.session_store.get_or_create_session(source)
+            assert runner._is_user_authorized_for_source(source) is (grant != "denied")
+            assert adapter._is_authorized_user("@alice:test") is (grant != "denied")
+            adapter._followup_store().arm(
+                "turn", ("$reply",), profile=source.profile or "", room_id="!room:test",
+                thread_id="$thread", session_key=entry.session_key, session_id=entry.session_id,
+                requester="@alice:test", source=source.to_dict(), emoji_filter=(),
+                delivery_event_id="$reply",
+            )
 
-        await adapter._handle_followup_reaction(
-            "!room:test", "$reply", "👍", "@alice:test", "$reaction",
-        )
+            await adapter._handle_followup_reaction(
+                "!room:test", "$reply", "👍", "@alice:test", "$reaction",
+            )
 
-        if grant == "denied":
-            adapter.handle_message.assert_not_awaited()
-            assert adapter._followup_store().candidate("!room:test", "$reply") is not None
-            return
-        adapter.handle_message.assert_awaited_once()
+            if grant == "denied":
+                adapter.handle_message.assert_not_awaited()
+                assert adapter._followup_store().candidate("!room:test", "$reply") is not None
+                return
+            adapter.handle_message.assert_awaited_once()
+        finally:
+            runner.session_store.close_all_db_handles()
 
     asyncio.run(exercise())
 
@@ -735,71 +738,74 @@ def test_strict_reaction_followup_cannot_queue_into_replacement_turn(tmp_path, m
         runner._busy_input_mode = "queue"
         runner._draining = False
         runner.session_store = SessionStore(tmp_path / "sessions", runner.config)
-        adapter = MatrixAdapter(PlatformConfig(enabled=True))
-        runner.adapters = {Platform.MATRIX: adapter}
-        adapter.gateway_runner = runner
-        adapter.set_session_store(runner.session_store)
-        adapter.set_authorization_check(runner._make_adapter_auth_check(Platform.MATRIX))
-        adapter.set_message_handler(AsyncMock())
-        adapter.set_busy_session_handler(runner._handle_active_session_busy_message)
-        adapter._store_dir = tmp_path / "store"
-        adapter._is_allowed_matrix_room_event = AsyncMock(return_value=True)
-        adapter._client = SimpleNamespace(api=SimpleNamespace(request=AsyncMock(return_value={
-            "end": "after-final", "chunk": [{"event_id": "$reaction"}],
-        })))
-        source = adapter.build_source(
-            chat_id="!room:test", chat_type="group", user_id="@alice:test",
-        )
-        entry = runner.session_store.get_or_create_session(source)
-        adapter._followup_store().arm(
-            "turn", ("$reply",), profile=source.profile or "", room_id=source.chat_id,
-            thread_id="", session_key=entry.session_key, session_id=entry.session_id,
-            requester=source.user_id, source=source.to_dict(), emoji_filter=(),
-            delivery_event_id="$reply",
-        )
-        resolving = asyncio.Event()
-        resume = asyncio.Event()
-
-        async def resolve(*_args):
-            resolving.set()
-            await resume.wait()
-            return None
-
-        adapter._event_context_cache.resolve = resolve
-        intake = asyncio.create_task(adapter._handle_followup_reaction(
-            source.chat_id, "$reply", "👍", source.user_id, "$reaction",
-        ))
         try:
-            await asyncio.wait_for(resolving.wait(), timeout=5)
-            replacement = runner.session_store.reset_session(entry.session_key)
-            assert replacement.session_id != entry.session_id
-            adapter._active_sessions[entry.session_key] = asyncio.Event()
-            resume.set()
-            await asyncio.wait_for(intake, timeout=5)
+            adapter = MatrixAdapter(PlatformConfig(enabled=True))
+            runner.adapters = {Platform.MATRIX: adapter}
+            adapter.gateway_runner = runner
+            adapter.set_session_store(runner.session_store)
+            adapter.set_authorization_check(runner._make_adapter_auth_check(Platform.MATRIX))
+            adapter.set_message_handler(AsyncMock())
+            adapter.set_busy_session_handler(runner._handle_active_session_busy_message)
+            adapter._store_dir = tmp_path / "store"
+            adapter._is_allowed_matrix_room_event = AsyncMock(return_value=True)
+            adapter._client = SimpleNamespace(api=SimpleNamespace(request=AsyncMock(return_value={
+                "end": "after-final", "chunk": [{"event_id": "$reaction"}],
+            })))
+            source = adapter.build_source(
+                chat_id="!room:test", chat_type="group", user_id="@alice:test",
+            )
+            entry = runner.session_store.get_or_create_session(source)
+            adapter._followup_store().arm(
+                "turn", ("$reply",), profile=source.profile or "", room_id=source.chat_id,
+                thread_id="", session_key=entry.session_key, session_id=entry.session_id,
+                requester=source.user_id, source=source.to_dict(), emoji_filter=(),
+                delivery_event_id="$reply",
+            )
+            resolving = asyncio.Event()
+            resume = asyncio.Event()
+
+            async def resolve(*_args):
+                resolving.set()
+                await resume.wait()
+                return None
+
+            adapter._event_context_cache.resolve = resolve
+            intake = asyncio.create_task(adapter._handle_followup_reaction(
+                source.chat_id, "$reply", "👍", source.user_id, "$reaction",
+            ))
+            try:
+                await asyncio.wait_for(resolving.wait(), timeout=5)
+                replacement = runner.session_store.reset_session(entry.session_key)
+                assert replacement.session_id != entry.session_id
+                adapter._active_sessions[entry.session_key] = asyncio.Event()
+                resume.set()
+                await asyncio.wait_for(intake, timeout=5)
+            finally:
+                resume.set()
+                if not intake.done():
+                    intake.cancel()
+                await asyncio.gather(intake, return_exceptions=True)
+
+            assert adapter._pending_messages == {}
+            adapter._message_handler.assert_not_awaited()
+
+            runner._hm_busy_slash_or_photo = AsyncMock(return_value=(False, None))
+            runner._queue_or_replace_pending_event = Mock()
+            event = MessageEvent(
+                text="Reaction by Alice", source=source, defer_until_idle=True,
+                allow_gateway_control=False,
+                metadata={
+                    "gateway_session_key": entry.session_key,
+                    "gateway_session_id": entry.session_id,
+                    "gateway_session_strict": True,
+                },
+            )
+            assert await runner._hm_handle_running_session_message(
+                event, source, entry.session_key,
+            ) is None
+            runner._queue_or_replace_pending_event.assert_not_called()
         finally:
-            resume.set()
-            if not intake.done():
-                intake.cancel()
-            await asyncio.gather(intake, return_exceptions=True)
-
-        assert adapter._pending_messages == {}
-        adapter._message_handler.assert_not_awaited()
-
-        runner._hm_busy_slash_or_photo = AsyncMock(return_value=(False, None))
-        runner._queue_or_replace_pending_event = Mock()
-        event = MessageEvent(
-            text="Reaction by Alice", source=source, defer_until_idle=True,
-            allow_gateway_control=False,
-            metadata={
-                "gateway_session_key": entry.session_key,
-                "gateway_session_id": entry.session_id,
-                "gateway_session_strict": True,
-            },
-        )
-        assert await runner._hm_handle_running_session_message(
-            event, source, entry.session_key,
-        ) is None
-        runner._queue_or_replace_pending_event.assert_not_called()
+            runner.session_store.close_all_db_handles()
 
     asyncio.run(exercise())
 
@@ -898,6 +904,7 @@ def test_strict_reaction_followup_is_discarded_before_recursive_drain():
     from gateway.platforms.event import MessageEvent
     from gateway.run import GatewayRunner
     from gateway.session import SessionSource
+    from gateway.turn_context import TurnContext
 
     async def exercise():
         source = SessionSource(
@@ -942,7 +949,7 @@ def test_strict_reaction_followup_is_discarded_before_recursive_drain():
             {"final_response": "Current answer"}, adapter, source, "session",
         ) == (human, human.text)
 
-        turn = SimpleNamespace(
+        turn = TurnContext(
             source=source, session_id="old-session", session_key="session",
             run_generation=1, _interrupt_depth=0, history=[], _status_thread_metadata={},
         )
@@ -954,6 +961,7 @@ def test_strict_reaction_followup_is_discarded_before_recursive_drain():
         runner._reply_anchor_for_event = lambda _event: None
         runner._pinned_channel_inputs = lambda _key, prompt, source, **_kwargs: (prompt, source)
         runner._run_agent_deliver_first_response = AsyncMock()
+        runner._persist_prompt_pins = AsyncMock()
 
         async def reset_during_refresh(*_args):
             current_session[0] = "new-session"

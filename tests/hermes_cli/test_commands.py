@@ -1099,3 +1099,10 @@ def test_command_copy_blank_override_and_long_plugin_description(monkeypatch):
     menu = dict(telegram_bot_commands())
     assert len(menu["community_plugin"]) == 256
     assert menu["community_plugin"].endswith("...")
+    # The copy PR must not truncate built-in descriptions; only unbounded
+    # plugin descriptions are clamped before they reach Telegram's API.
+    monkeypatch.setattr(
+        commands_platforms, "_gateway_available_commands",
+        lambda: [CommandDef("test_built_in", "b" * 300, "Info")],
+    )
+    assert dict(telegram_bot_commands(include_plugins=False))["test_built_in"] == "b" * 300

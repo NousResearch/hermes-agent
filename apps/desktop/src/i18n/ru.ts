@@ -1,6 +1,6 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
-import { defineLocale } from './define-locale'
+import { defineLocale, type TranslationOverrides } from './define-locale'
 
 // RU_PLURAL: (count, one, few, many) — русские формы сущ. падежа
 // RU_NOUN: (count, one, few, many) — формы род. множественного
@@ -23,7 +23,7 @@ const RU_NOUN = (count: number | string, one: string, few: string, many: string)
   return n === 1 && nn !== 11 ? one : n >= 2 && n <= 4 && (nn < 12 || nn > 14) ? few : many
 }
 
-export const ru = defineLocale({
+export const ruOverrides = {
   externalOpenFailed: {
     title: 'Не удалось открыть ссылку',
     message: 'Для этого адреса не назначен браузер. Скопируйте ссылку и откройте её вручную.',
@@ -628,6 +628,7 @@ export const ru = defineLocale({
         title: 'Установка плагина',
         description: 'Перед установкой посмотрите, что содержит этот репозиторий.',
         repoLabel: 'Репозиторий',
+        repoPlaceholder: 'https://github.com/owner/repo',
         includesHeading: 'Состав пакета',
         agentLabel: 'Плагин агента',
         desktopLabel: 'UI приложения',
@@ -2210,6 +2211,8 @@ export const ru = defineLocale({
       labelPlaceholder: 'напр. рабочий аккаунт GitHub',
       labelRequired: 'Нужно указать название.',
       originField: 'Домен сайта',
+      originPlaceholder: 'https://github.com',
+      originPlaceholderCheckout: 'https://shop.example.com',
       originInvalid: 'Введите корректный URL вида https://example.com.',
       identifierTypeField: 'Тип идентификатора',
       identifierTypes: {
@@ -3277,6 +3280,7 @@ export const ru = defineLocale({
       description:
         'Сеансы этого профиля будут выполняться на удалённом Hermes, который вы укажете, а не на этом компьютере.',
       urlLabel: 'Удалённый адрес',
+      urlPlaceholder: 'https://hermes.example.com',
       urlInvalid: 'Введите полный адрес, начинающийся с http:// или https://',
       tokenLabel: 'Токен доступа',
       tokenPlaceholder: 'Вставьте токен удалённого сеанса',
@@ -5907,4 +5911,6 @@ export const ru = defineLocale({
       retrying: 'Пробуем снова…'
     }
   },
-})
+} satisfies TranslationOverrides
+
+export const ru = defineLocale(ruOverrides)

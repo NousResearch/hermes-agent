@@ -96,10 +96,10 @@ def telegram_bot_commands(*, include_plugins: bool = True) -> list[tuple[str, st
         for cmd in _gateway_available_commands()
     ]
     if include_plugins:
-        pairs += [(n, d) for n, d, hint in _iter_plugin_command_entries()
+        pairs += [(n, _truncate_desc(d, 256)) for n, d, hint in _iter_plugin_command_entries()
                   if not _requires_argument(hint)]
     return [
-        (tg, _truncate_desc(_normalize_telegram_desc(desc), 256))
+        (tg, _normalize_telegram_desc(desc))
         for name, desc in pairs if (tg := _sanitize_telegram_name(name))
     ]
 

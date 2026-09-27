@@ -1,6 +1,6 @@
-import { defineLocale } from "./define-locale";
+import { defineLocale, type TranslationOverrides } from "./define-locale";
 
-export const ar = defineLocale({
+export const arOverrides = {
   common: {
     save: "حفظ",
     saving: "جاري الحفظ...",
@@ -69,16 +69,22 @@ export const ar = defineLocale({
     nav: {
       analytics: "التحليلات",
       chat: "المحادثة",
+      channels: "القنوات",
       config: "الإعدادات",
       cron: "المهام المجدولة",
       documentation: "التوثيق",
+      files: "الملفات",
       keys: "المفاتيح",
       logs: "السجلات",
+      mcp: "MCP",
       models: "النماذج",
+      pairing: "الاقتران",
       profiles: "الملفات الشخصية",
       plugins: "المكوِّنات الإضافية",
       sessions: "الجلسات",
       skills: "المهارات",
+      system: "النظام",
+      webhooks: "خطافات الويب",
     },
     modelToolsSheetSubtitle: "& أدوات",
     modelToolsSheetTitle: "النموذج",
@@ -712,4 +718,6 @@ export const ar = defineLocale({
     logTruncated: "(عرض آخر 100 كيلوبايت — السجل الكامل في ",
     logAt: ")",
   },
-});
+} satisfies TranslationOverrides;
+
+export const ar = defineLocale(arOverrides);

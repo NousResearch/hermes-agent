@@ -92,6 +92,23 @@ def _same_chat_key_slots(
 class GatewayBusySessionMixin:
     """Busy-session queueing, slot claims, slash dispatch tables, destructive-slash confirmation."""
 
+    async def _strict_session_current(
+        self, event: MessageEvent, session_key: str, *, session_id: str | None = None,
+    ) -> bool:
+        metadata = event.metadata or {}
+        if not metadata.get("gateway_session_strict"):
+            return True
+        expected_key = str(metadata.get("gateway_session_key") or "").strip()
+        expected_id = str(metadata.get("gateway_session_id") or "").strip()
+        if not expected_key or not expected_id or session_key != expected_key:
+            return False
+        if session_id is not None and session_id != expected_id:
+            return False
+        if self._session_key_for_source(event.source) != expected_key:
+            return False
+        entry = await self.async_session_store.lookup_by_session_key(expected_key)
+        return entry is not None and entry.session_id == expected_id
+
     def _queue_during_drain_enabled(self, busy_input_mode: Optional[str] = None) -> bool:
         # "queue"/"steer" mean messages survive a restart (queued for the new process); "interrupt" drops.
         mode = busy_input_mode or self._busy_input_mode
@@ -814,6 +831,9 @@ class GatewayBusySessionMixin:
                 return True
             return False  # base adapter queues silently behind the active turn
 
+        if not await self._strict_session_current(event, session_key):
+            return True
+
         # Same authorization gate as the cold path, else unauthorized users in shared threads
         # inject messages into a session they don't own.
         from gateway.run import _AGENT_PENDING_SENTINEL
@@ -836,6 +856,8 @@ class GatewayBusySessionMixin:
             await self._send_busy_drain_notice(event, session_key, effective_mode)
             return True
         if await self._route_plaintext_approval_while_busy(event, session_key):
+            return True
+        if not await self._strict_session_current(event, session_key):
             return True
         adapter = self._delivery_adapter_for(event.source)
         if not adapter:

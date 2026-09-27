@@ -680,7 +680,7 @@ async fn run_bootstrap(
         // Skip Stage-Desktop unless explicitly requested. install.ps1 may
         // or may not include it in the manifest depending on the flag we
         // pass, but if it slipped in, gate client-side too.
-        if !args.include_desktop && stage.name.eq_ignore_ascii_case("desktop") {
+        if !build_desktop && stage.name.eq_ignore_ascii_case("desktop") {
             emit_event(
                 &app,
                 BootstrapEvent::Stage {
@@ -688,7 +688,7 @@ async fn run_bootstrap(
                     state: StageState::Skipped,
                     duration_ms: Some(0),
                     result: None,
-                    error: Some("skipped by include_desktop=false".into()),
+                    error: Some("skipped because desktop build was not requested".into()),
                 },
             );
             continue;

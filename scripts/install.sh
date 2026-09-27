@@ -397,7 +397,7 @@ stage_names() {
     # Connect to existing Hermes: the published Mac app is the Tauri shell, so
     # the client is still checked out and built. The agent stages stay off.
     if [ "$DESKTOP_ONLY" = true ]; then
-        printf '%s\n' prerequisites repository desktop complete
+        printf '%s\n' prerequisites repository python-deps desktop complete
         return
     fi
     printf '%s\n' prerequisites repository venv python-deps config products setup gateway complete
@@ -823,7 +823,7 @@ run_stage() (
     trap 'stage_result "$?"' EXIT
     if [ "$DESKTOP_ONLY" = true ]; then
         case "$1" in
-            prerequisites|repository|desktop|complete) ;;
+            prerequisites|repository|python-deps|desktop|complete) ;;
             *)
                 STAGE_REASON="stage '$1' is not part of a desktop-only install"
                 printf '%s\n' "$STAGE_REASON" >&2

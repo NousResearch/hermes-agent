@@ -735,6 +735,7 @@ if ($DesktopOnly) {
     $Stages = @(
         @{ name = "prerequisites"; title = "System prerequisites"; category = "runtime"; needs_user_input = $false },
         @{ name = "repository"; title = "Download Hermes Agent"; category = "runtime"; needs_user_input = $false },
+        @{ name = "python-deps"; title = "Install Python dependencies"; category = "runtime"; needs_user_input = $false },
         @{ name = "desktop"; title = "Build desktop app"; category = "runtime"; needs_user_input = $false },
         @{ name = "complete"; title = "Finish install"; category = "runtime"; needs_user_input = $false }
     )

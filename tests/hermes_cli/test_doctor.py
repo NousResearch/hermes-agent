@@ -244,9 +244,11 @@ class TestDoctorToolAvailabilitySummary:
             "agent.web_search_registry.get_active_extract_provider",
             lambda: None,
         )
+        # Answer only the real capability tokens ("search"/"extract"); a display label
+        # ("web search") must not resolve, so the row cannot fake a configured backend.
         monkeypatch.setattr(
             "agent.web_search_registry._configured_backend",
-            lambda capability: "tavily",
+            lambda capability: "tavily" if capability in ("search", "extract") else None,
         )
 
         rows = doctor_tools._doctor_web_capability_rows()

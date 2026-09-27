@@ -130,7 +130,12 @@ def _doctor_web_capability_rows() -> list[tuple[str, str, str]]:
         _ensure_web_plugins_loaded()
     except Exception:
         return rows
-    for capability, getter in (("web search", get_active_search_provider), ("web extract", get_active_extract_provider)):
+    # Label is for display; the token is the one `_configured_backend` interpolates
+    # into `web.<token>_backend` — every other caller passes the short form.
+    for label, token, getter in (
+        ("web search", "search", get_active_search_provider),
+        ("web extract", "extract", get_active_extract_provider),
+    ):
         try:
             provider = getter()
         except Exception:
@@ -138,27 +143,27 @@ def _doctor_web_capability_rows() -> list[tuple[str, str, str]]:
         if provider is None:
             configured = None
             try:
-                configured = _configured_backend(capability)
+                configured = _configured_backend(token)
             except Exception:
                 configured = None
-            rows.append(("warn", capability,
+            rows.append(("warn", label,
                          f"({configured} selected; not registered — plugin import failed or a runtime dependency is missing)"
                          if configured else "(no provider selected or registered)"))
             continue
         name = getattr(provider, "name", None) or type(provider).__name__
         if _provider_is_ready(provider):
-            rows.append(("ok", capability, f"({name})"))
+            rows.append(("ok", label, f"({name})"))
             continue
         if name == "ddgs":
             # ddgs is keyless — there is no credential to configure; its only gate is the optional
             # ddgs package itself, and without it search silently falls back to the keyless ring.
             from tools.web_tools import _ddgs_package_importable
             if not _ddgs_package_importable():
-                rows.append(("warn", capability,
+                rows.append(("warn", label,
                              "(ddgs selected; ddgs package not importable in the runtime python — "
                              "search falls back to the keyless ring; install with `uv pip install ddgs`)"))
                 continue
-        rows.append(("warn", capability, f"({name} selected; provider not configured)"))
+        rows.append(("warn", label, f"({name} selected; provider not configured)"))
     return rows
 
 

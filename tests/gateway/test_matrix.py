@@ -5069,6 +5069,29 @@ class TestMatrixSourcePermalink:
             "?via=example.org"
         )
 
+    @pytest.mark.asyncio
+    async def test_room_without_domain_uses_bot_server_for_via(self):
+        self.adapter._is_dm_room = AsyncMock(return_value=False)
+        self.adapter._get_display_name = AsyncMock(return_value="Alice")
+        self.adapter._background_read_receipt = MagicMock()
+        self.adapter._require_mention = False
+        self.adapter._matrix_session_scope = "room"
+        self.adapter._user_id = "@hermes:example.org"
+
+        ctx = await self.adapter._resolve_message_context(
+            room_id="!opaquehash",
+            sender="@alice:example.org",
+            event_id="$msg",
+            body="hello",
+            source_content={"body": "hello"},
+            relates_to={},
+        )
+
+        assert ctx is not None
+        assert ctx[5].source_permalink == (
+            "https://matrix.to/#/!opaquehash/$msg?via=example.org"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Proxy configuration

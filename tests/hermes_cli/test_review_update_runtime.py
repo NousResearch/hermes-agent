@@ -54,6 +54,33 @@ def test_foreign_owned_venv_file_refused_before_sync(tmp_path, monkeypatch):
         venv_sync.refuse_foreign_owned_venv(checkout)
 
 
+@pytest.mark.platforms("posix")
+def test_uid_faking_sandbox_reports_our_own_file_as_foreign(tmp_path, monkeypatch):
+    """PRoot maps geteuid() to 0 while stat() may still report the host uid, so a
+    checkout owned by the real uid must not read as a second user's file."""
+    from pm import environments
+
+    checkout = tmp_path / "checkout"
+    installer = checkout / "venv/lib/python3.14/site-packages/pkg.dist-info/INSTALLER"
+    installer.parent.mkdir(parents=True)
+    installer.write_text("pip\n", encoding="utf-8")
+    monkeypatch.setattr(environments, "selected_venv", lambda root: checkout / "venv")
+    host_uid = os.geteuid() + 1  # the un-faked uid the sandbox really runs as
+    original_lstat = Path.lstat
+
+    def stat(path, *args, **kwargs):
+        if path == installer:
+            return SimpleNamespace(st_uid=host_uid)
+        return original_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "lstat", stat)
+    # raising=False keeps this simulation working on an unpatched tree too, so
+    # the regression shows up as the refusal itself rather than a missing attr.
+    monkeypatch.setattr(venv_sync, "_kernel_uid", lambda: host_uid, raising=False)
+
+    venv_sync.refuse_foreign_owned_venv(checkout)  # no raise: the file is ours
+
+
 def test_completed_maintenance_survives_stamp_io_error(tmp_path, monkeypatch, capsys):
     from hermes_cli import source_build, source_stamp, update_cmd_maint
 

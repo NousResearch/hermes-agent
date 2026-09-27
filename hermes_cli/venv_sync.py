@@ -180,6 +180,23 @@ def clear_completion(project_root: Path) -> None:
     completion_pending_path(project_root).unlink(missing_ok=True)
 
 
+def _kernel_uid() -> int | None:
+    """The real, un-faked uid this process runs as, or None when unavailable.
+
+    Under a uid-faking sandbox (PRoot) geteuid() reports the mapped uid while
+    stat() may report the host uid, so the two must be compared before
+    treating a foreign st_uid as a second user.
+    """
+    try:
+        with open("/proc/self/status", encoding="utf-8") as handle:
+            for line in handle:
+                if line.startswith("Uid:"):
+                    return int(line.split()[1])
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
+
+
 def refuse_foreign_owned_venv(project_root: Path) -> None:
     """Refuse cross-user mutation before PM changes the selected environment (#83529)."""
     if not hasattr(os, "geteuid"):
@@ -205,6 +222,12 @@ def refuse_foreign_owned_venv(project_root: Path) -> None:
         except FileNotFoundError:
             continue
         if owner != uid:
+            real = _kernel_uid()
+            if real is not None and owner == real and real != uid:
+                # A uid-faking sandbox (PRoot) reports the host uid from
+                # stat() while geteuid() is mapped: the file is ours, not a
+                # second user's, so the cross-user guard must not fire.
+                continue
             raise RuntimeError(
                 f"refusing to update {root}: {path} is owned by uid {owner}, "
                 f"not the current uid {uid}; repair ownership before retrying"

@@ -2,12 +2,16 @@
 
 The owner's handshake supplies the existing authenticated WebSocket URL. A
 registry entry is discovery information, not authority to mint a credential.
-The handshake is a mutual proof of the registry's lease id, which never travels
-in the request: the client sends ``nonce`` plus
-``client_proof = hex(HMAC_SHA256(lease_id, "hermes-session-attach-request:<session_id>:<nonce>"))``
+The handshake lets the requester prove it read the registry without the lease
+id travelling in the request: the client sends ``nonce`` plus
+``client_proof = hex(HMAC_SHA256(lease_id, "hermes-session-attach-request:<session_id>:<nonce>"))``,
 and the reply must echo the request fields and return
 ``attach_proof = hex(HMAC_SHA256(lease_id, "hermes-session-attach:<session_id>:<nonce>"))``.
-A listener that only echoes request parameters cannot produce either proof.
+The client checks the reply proof against its own registry copy, which refuses
+a listener that only echoes request parameters. That check proves the listener
+could read the registry, not that it is the live owner, so the registry itself
+is written owner-only. ``client_proof`` states the request-side half of the
+contract; no shipped runtime verifies it yet.
 """
 from __future__ import annotations
 
@@ -92,7 +96,9 @@ def discover_attach_url(session_id: str, *, registry_home: str | Path | None = N
                          "close it there and run hermes --resume " + session_id + " here.\n"
                          + session_owner_details(session_id, owner)) from exc
     # Echoed fields only prove the listener heard the request; the proof is what ties the
-    # reply to the registry's lease id, which a rogue listener never sees.
+    # reply to the registry's lease id, which a rogue listener cannot learn from the request.
+    # It can learn it from the registry file itself, which is why the registry is
+    # written owner-only (see _write_entries).
     expected_proof = hmac.new(
         str(owner["lease_id"]).encode("utf-8"),
         f"hermes-session-attach:{session_id}:{nonce}".encode("utf-8"),

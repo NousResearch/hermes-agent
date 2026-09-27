@@ -23,7 +23,7 @@ Hermes Agent 内置两个可供模型调用的网页工具，由多个提供商�
 |----------|---------|--------|---------|-----------|
 | **Firecrawl**（默认） | `FIRECRAWL_API_KEY` | ✔ | ✔ | 500 积分/月 |
 | **SearXNG** | `SEARXNG_URL` | ✔ | — | ✔ 免费（自托管） |
-| **Brave Search（免费层级）** | `BRAVE_SEARCH_API_KEY` | ✔ | — | 2 000 次查询/月 |
+| **Brave Search** | `BRAVE_SEARCH_API_KEY` | ✔ | — | 每月 $5 免费额度（约 1 000 次查询）· 需绑定信用卡 · 超出后 $5/1 000 次 |
 | **DDGS (DuckDuckGo)** | —（无需密钥） | ✔ | — | ✔ 免费 |
 | **Tavily** | `TAVILY_API_KEY` | ✔ | ✔ | 1 000 次搜索/月 |
 | **Exa** | `EXA_API_KEY` | ✔ | ✔ | 1 000 次搜索/月 |

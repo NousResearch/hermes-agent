@@ -8,7 +8,6 @@ import stat
 import struct
 import zipfile
 from argparse import Namespace
-from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 

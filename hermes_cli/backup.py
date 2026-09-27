@@ -27,6 +27,8 @@ from hermes_cli.sqlite_safe_read import connect_tracked, has_live_connection, re
 
 from agent.provider_media import GENERATED_SUBDIR
 from hermes_cli.archive_safe import normalize_archive_parts
+# Facade re-export: old updaters import verify_sqlite_integrity from here (tests/compat/old_updater_surface.json).
+from hermes_cli.backup_integrity import DEFAULT_INTEGRITY_CHECK_MAX_BYTES, verify_sqlite_integrity
 from hermes_cli.backup_sqlite import _close_quietly, _safe_copy_db
 from hermes_cli.config_backend import require_file_tooling, supports_file_tooling
 from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS, SECRET_CACHE_FILES, profile_root_entry
@@ -363,18 +365,6 @@ def _iter_backup_files(hermes_root: Path, out_path: Path, skipped_dirs: Optional
 
 # --- SQLite safe copy ---
 
-def _query_ro_sqlite(path: Path, fn):
-    """Run ``fn(conn)`` on a read-only connection to *path*; return ``(value, None)`` or ``(None, exc)``."""
-    conn = None
-    try:
-        conn = connect_tracked(read_only_db_uri(path), uri=True, timeout=1.0, tracking_path=path)
-        return fn(conn), None
-    except Exception as exc:
-        return None, exc
-    finally:
-        _close_quietly(conn)
-
-
 def is_zeroed_sqlite_file(path: Path, *, probe_bytes: int = 100, force: bool = False) -> bool:
     """True when *path* looks like the #68474 zeroed-state.db signature.
 
@@ -395,75 +385,6 @@ def is_zeroed_sqlite_file(path: Path, *, probe_bytes: int = 100, force: bool = F
     head = read_header_bytes_preopen(path, length=max(16, probe_bytes), force=force)
     # Empty or all-NUL header => zeroed; a real header (or unreadable) => not.
     return head is not None and not head.startswith(b"SQLite format 3") and not any(head)
-
-
-# --- SQLite integrity verification ---
-
-_SQLITE_HEADER = b"SQLite format 3\0"
-
-# Above this size ``PRAGMA integrity_check`` (walks every b-tree page — minutes of pegged CPU on a
-# 30 GB state.db, reading as a hung ``hermes update``) is replaced by the O(1) header+schema probe.
-# Default ceiling above which ``PRAGMA integrity_check`` is skipped in favour of the (O(1)) header +
-# structural probe. Sessions databases in the tens of GB are normal for heavy users, so the size-unbounded
-# check is never an acceptable default on the update path. See #70553.
-DEFAULT_INTEGRITY_CHECK_MAX_BYTES = 2 << 30  # 2 GiB
-
-
-def verify_sqlite_integrity(
-    path: Path, *, check_header: bool = True, run_pragma: bool = True,
-    max_bytes: int = DEFAULT_INTEGRITY_CHECK_MAX_BYTES) -> dict:
-    """Verify a SQLite database: existence + minimum size, header magic, then a read-only
-    ``PRAGMA integrity_check`` (or a cheap structural probe above ``max_bytes``)."""
-    def _done(message: str, valid: bool = False, size: Optional[int] = None) -> dict:
-        return {"valid": valid, "message": message, "size": size}
-    try:
-        st = path.stat()
-    except FileNotFoundError:
-        return _done(f"not found: {path}")
-    except OSError as exc:
-        return _done(f"cannot stat: {exc}")
-    size = st.st_size
-    if size < 100:  # SQLite minimum viable size (header + 1 page)
-        return _done(f"too small ({size} bytes) to be a valid SQLite database", size=size)
-    if check_header:
-        # Refused when a live connection exists (close() would cancel this process's POSIX locks
-        # — see sqlite_safe_read); verification targets offline snapshots/backup artifacts anyway.
-        if has_live_connection(path):
-            # The refusal returns None, the same value as an unreadable file, so answering
-            # "invalid" here made a healthy database read as corrupt — the updater then
-            # declared state.db corrupt and refused its own repair with that same connection.
-            # Indeterminate is not corruption: report valid=None so callers skip.
-            return _done(
-                "header check skipped: a live connection in this process owns this database",
-                valid=None, size=size)
-        head = read_header_bytes_preopen(path, length=len(_SQLITE_HEADER))
-        if head is None:
-            return _done("cannot read header", size=size)
-        if head != _SQLITE_HEADER:
-            return _done(f"missing SQLite header magic (got {head[:16].hex()!r})", size=size)
-    if max_bytes > 0 and size > max_bytes:
-        # O(1) probe: the header check caught the zeroed signature; reading sqlite_master + page
-        # geometry catches malformed-schema and truncated-header-page classes without a data walk.
-        _, exc = _query_ro_sqlite(path, lambda c: (
-            c.execute("PRAGMA schema_version").fetchone(),
-            c.execute("SELECT count(*) FROM sqlite_master").fetchone()))
-        if exc is not None:
-            kind = "failed" if isinstance(exc, sqlite3.DatabaseError) else "error"
-            return _done(f"schema probe {kind}: {exc}", size=size)
-        return _done(
-            f"size {size:,} bytes exceeds max_bytes {max_bytes:,}; "
-            "skipped PRAGMA integrity_check (header + schema probe passed)",
-            valid=True, size=size)
-    if run_pragma:
-        rows, exc = _query_ro_sqlite(
-            path, lambda c: [str(r[0]) for r in c.execute("PRAGMA integrity_check")])
-        if exc is not None:
-            kind = "cannot open database" if isinstance(exc, sqlite3.DatabaseError) else "integrity check error"
-            return _done(f"{kind}: {exc}", size=size)
-        if rows == ["ok"]:
-            return _done("integrity check passed", valid=True, size=size)
-        return _done(f"integrity check failed: {'; '.join(rows[:5])}", size=size)
-    return _done("header check passed", valid=True, size=size)
 
 
 def _discard_failed_zip_members(zf: zipfile.ZipFile, filelist_len: int) -> None:

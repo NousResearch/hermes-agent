@@ -729,6 +729,45 @@ def test_pending_room_notes_coalesce_changes_and_bound_rooms():
 
 
 @pytest.mark.asyncio
+async def test_room_state_note_reaches_each_existing_thread_once():
+    from datetime import datetime
+
+    from gateway.platforms.event import MessageEvent
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionSource
+    from plugins.platforms.matrix.room_context import RoomStateNote
+
+    adapter = _make_adapter()
+    room_id = "!room:example.org"
+    adapter._pending_room_notes.stash(room_id, "topic", RoomStateNote("The room topic changed"))
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = types.SimpleNamespace(multiplex_profiles=False)
+    runner.adapters = {Platform.MATRIX: adapter}
+    runner._session_key_for_source = lambda source: source.thread_id
+
+    async def message_for(thread_id):
+        source = SessionSource(
+            platform=Platform.MATRIX, chat_id=room_id, chat_type="thread",
+            user_id="@alice:example.org", thread_id=thread_id,
+        )
+        event = MessageEvent(text="hello", source=source, message_id=thread_id)
+        return await runner._prepare_inbound_message_text(event=event, source=source, history=[])
+
+    assert [await message_for(thread_id) for thread_id in (
+        "$thread-a", "$thread-b", "$thread-a", "$thread-b",
+    )] == [
+        "[The room topic changed]\n\n[New message]\nhello",
+        "[The room topic changed]\n\n[New message]\nhello",
+        "hello", "hello",
+    ]
+    runner.session_store = types.SimpleNamespace(
+        _entries={"$new-thread": types.SimpleNamespace(created_at=datetime.now())},
+    )
+    assert await message_for("$new-thread") == "hello"
+
+
+@pytest.mark.asyncio
 async def test_room_state_change_reaches_next_accepted_message_once():
     adapter = _make_adapter()
     room_id = "!room:example.org"
@@ -813,8 +852,6 @@ async def test_room_state_note_survives_runner_rejection():
 
     assert admitted is not None
     assert admitted[0].channel_context is None
-    runner._model = "test-model"
-    runner._base_url = ""
     runner._session_key_for_source = lambda source: "matrix-room"
     message = await runner._prepare_inbound_message_text(event=accepted, source=accepted.source, history=[])
     assert message.startswith(
@@ -850,8 +887,6 @@ async def test_room_state_note_waits_for_unpaused_model_turn():
     paused = MessageEvent(text="hello", source=source, message_id="$paused")
     assert await runner._handle_message(paused) == "paused"
 
-    runner._model = "test-model"
-    runner._base_url = ""
     runner._session_key_for_source = lambda source: "matrix-room"
     resumed = MessageEvent(text="again", source=source, message_id="$resumed")
     message = await runner._prepare_inbound_message_text(event=resumed, source=resumed.source, history=[])
@@ -873,8 +908,6 @@ async def test_room_state_note_reaches_queued_model_turn():
     runner = object.__new__(GatewayRunner)
     runner.config = types.SimpleNamespace(multiplex_profiles=False)
     runner.adapters = {Platform.MATRIX: adapter}
-    runner._model = "test-model"
-    runner._base_url = ""
     runner._MAX_INTERRUPT_DEPTH = 8
     runner._session_key_for_source = lambda source: "matrix-room"
     runner._run_agent = AsyncMock(return_value={"final_response": "done", "messages": []})

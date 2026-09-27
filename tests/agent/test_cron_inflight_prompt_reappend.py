@@ -279,7 +279,9 @@ def test_merged_restatement_is_not_anchored_twice():
 
     original = [{"role": "user", "content": JOB_SENTINEL}, *_tool_pairs(40)]
     out = _compress_with(2, 1, original)
-    assert any(m.get("_inflight_replay_merged") for m in out), "expected merge layout"
+    assert any(
+        ContextCompressor._has_merged_inflight_replay(m) for m in out
+    ), "expected merge layout"
     assert _job_copies(out) == 1
     assert _ensure_compressed_has_user_turn(original, out) == "already_present"
     assert _job_copies(out) == 1

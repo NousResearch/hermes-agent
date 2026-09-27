@@ -512,9 +512,12 @@ class SessionMessagesMixin:
         row = self._read_one("SELECT role FROM messages WHERE id = ? AND session_id = ? AND active = 1", (int(row_id), session_id))
         return row[0] if row else None
 
-    def _insert_message_rows(self, conn, session_id: str, messages: List[Dict[str, Any]]) -> tuple[int, int]:
+    def _insert_message_rows(self, conn, session_id: str, messages: List[Dict[str, Any]], *,
+                             prune_checkpoints: bool = True) -> tuple[int, int]:
         """Insert *messages* as fresh active rows in the caller's txn -> ``(inserted, tool_call_count)``.
-        Never touches sessions.* counters (callers reconcile differently); reasoning kept for assistant rows."""
+        Never touches sessions.* counters (callers reconcile differently); reasoning kept for assistant rows.
+        A caller that re-archives some rows afterwards passes ``prune_checkpoints=False`` and prunes once they
+        are archived again (:meth:`_prune_shadowed_checkpoints`)."""
         now_ts = time.time()
         inserted = tool_calls_total = 0
         for msg in messages:
@@ -533,10 +536,15 @@ class SessionMessagesMixin:
             inserted += 1
             tool_calls_total += _tool_calls_count(tool_calls)
             now_ts = max(now_ts, message_timestamp) + 1e-6
-        carrier = _newest_checkpoint_carrier(messages, "codex_reasoning_items")
-        if carrier >= 0 and isinstance(messages[carrier].get("_row_id"), int):
-            self._drop_shadowed_checkpoint_rows(conn, session_id, messages[carrier]["_row_id"])
+        if prune_checkpoints:
+            self._prune_shadowed_checkpoints(conn, session_id, messages)
         return inserted, tool_calls_total
+
+    def _prune_shadowed_checkpoints(self, conn, session_id: str, live_messages: List[Dict[str, Any]]) -> None:
+        """Keep only the newest checkpoint among *live_messages* (inserted rows carrying ``_row_id``)."""
+        carrier = _newest_checkpoint_carrier(live_messages, "codex_reasoning_items")
+        if carrier >= 0 and isinstance(live_messages[carrier].get("_row_id"), int):
+            self._drop_shadowed_checkpoint_rows(conn, session_id, live_messages[carrier]["_row_id"])
 
     def _drop_shadowed_checkpoint_rows(self, conn, session_id: str, carrier_row_id: int) -> int:
         """Rewrite older active assistant rows so only the row *carrier_row_id* keeps a ``type: "compaction"``
@@ -807,6 +815,9 @@ class SessionMessagesMixin:
             self._clone_message_rows(conn, unseen)
             inserted += len(unseen)
             tool_calls_total += unseen_tool_calls
+        # A carried copy whose stored identity was computed differently lands in its own
+        # display_order group and would project twice; re-fold before publishing (#122167).
+        self._reconcile_display_orders(conn, session_id)
         conn.execute(
             f"{_SET_COUNTERS_SQL}{', model_config = ?' if patch else ''} WHERE id = ?",
             (inserted, tool_calls_total, *((patched_model_config,) if patch else ()), session_id))
@@ -886,6 +897,9 @@ class SessionMessagesMixin:
                 self._clone_message_rows(conn, tail_ids)
                 inserted += len(tail_ids)
                 tool_calls_total += tail_tool_calls
+            # A carried copy whose stored identity was computed differently lands in its own
+            # display_order group and would project twice; re-fold before publishing (#122167).
+            self._reconcile_display_orders(conn, session_id)
             conn.execute(f"{_SET_COUNTERS_SQL}{', model_config = ?' if patch else ''} WHERE id = ?",
                 (inserted, tool_calls_total, *((patched_model_config,) if patch else ()), session_id))
             return inserted
@@ -1010,6 +1024,39 @@ class SessionMessagesMixin:
         # copy in a newer generation has a higher id than messages emitted after the original.
         return [seen[key] for key in sorted(seen, key=first_id.__getitem__)]
 
+    def _reconcile_display_orders(self, conn, session_id: str) -> None:
+        """Re-fold split display generations by the recomputed display key.
+
+        A compaction generation that computed the display identity differently (or cloned
+        without inheriting it) leaves one logical message in two ``display_order`` groups,
+        and ``GROUP BY display_order`` then projects it twice (#122167). Folding by the same
+        recomputed key :meth:`_dedupe_display_generations` uses keeps every display projection
+        on one definition of a logical message; the live copy wins its group via the read
+        path's ``ORDER BY candidate.active DESC, candidate.id DESC``. Writes only on drift."""
+        first_id: Dict[bytes, int] = {}
+        last_id = 0
+        while True:
+            rows = conn.execute(
+                "SELECT id, role, content, timestamp, tool_call_id, tool_calls, tool_name, "
+                "display_kind, display_metadata, display_order, display_identity "
+                "FROM messages INDEXED BY idx_messages_session_id "
+                "WHERE session_id = ? AND id > ? AND (active = 1 OR compacted = 1) "
+                "ORDER BY id LIMIT 1000",
+                (session_id, last_id))
+            batch_start = last_id
+            updates = []
+            for row in rows:
+                last_id = row["id"]
+                identity = self._display_identity(self._display_dedupe_key(row))
+                order = first_id.setdefault(identity, last_id)
+                if order != row["display_order"] or identity != row["display_identity"]:
+                    updates.append((order, identity, last_id))
+            rows.close()
+            if last_id == batch_start:
+                break
+            conn.executemany(
+                "UPDATE messages SET display_order = ?, display_identity = ? WHERE id = ?", updates)
+
     def _ensure_display_order(self, session_id: str) -> bool:
         """Backfill one legacy session once, preserving the pre-index display identity exactly."""
         with self._read_ctx() as conn:
@@ -1025,29 +1072,7 @@ class SessionMessagesMixin:
             missing = conn.execute(_DISPLAY_INDEX_MISSING_SQL, (session_id,)).fetchone()
             if missing is None:
                 return True
-            first_id: Dict[bytes, int] = {}
-            last_id = 0
-            while True:
-                rows = conn.execute(
-                    "SELECT id, role, content, timestamp, tool_call_id, tool_calls, tool_name, "
-                    "display_kind, display_metadata, display_order, display_identity "
-                    "FROM messages INDEXED BY idx_messages_session_id "
-                    "WHERE session_id = ? AND id > ? AND (active = 1 OR compacted = 1) "
-                    "ORDER BY id LIMIT 1000",
-                    (session_id, last_id))
-                batch_start = last_id
-                updates = []
-                for row in rows:
-                    last_id = row["id"]
-                    identity = self._display_identity(self._display_dedupe_key(row))
-                    order = first_id.setdefault(identity, last_id)
-                    if order != row["display_order"] or identity != row["display_identity"]:
-                        updates.append((order, identity, last_id))
-                rows.close()
-                if last_id == batch_start:
-                    break
-                conn.executemany(
-                    "UPDATE messages SET display_order = ?, display_identity = ? WHERE id = ?", updates)
+            self._reconcile_display_orders(conn, session_id)
             return True
 
         return bool(self._execute_write(_do))

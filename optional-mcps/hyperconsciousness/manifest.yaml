@@ -1,0 +1,59 @@
+manifest_version: 1
+name: hyperconsciousness
+description: Search encrypted, append-only knowledge through scoped, expiring HC grants (developer alpha).
+source: https://github.com/louis030195/hyperconsciousness
+
+# Use an operator-installed source build and an explicitly selected store.
+# Non-secret setup values are inlined into config.yaml by the catalog installer.
+transport:
+  type: stdio
+  command: ${HC_MCP_COMMAND}
+  args: [mcp, --as, "${HC_MCP_GRANT}", --dir, "${HC_MCP_STORE}"]
+
+auth:
+  type: none
+  env:
+    - name: HC_MCP_COMMAND
+      prompt: "Absolute path to hc (build from the repository README first)"
+      required: true
+      secret: false
+    - name: HC_MCP_STORE
+      prompt: "Absolute path to an initialized HC store on this computer"
+      required: true
+      secret: false
+    - name: HC_MCP_GRANT
+      prompt: "HC read grant ID for this device (create with hc grant first)"
+      required: true
+      secret: false
+
+tools:
+  default_enabled:
+    - overview
+    - access_status
+    - search
+    - recent
+    - record
+
+post_install: |
+  HC is a free, MIT-licensed developer alpha. This entry connects its existing
+  stdio MCP server; it does not install HC, initialize a store, or issue grants.
+  Build from source and follow the isolated-store and grant examples:
+    https://github.com/louis030195/hyperconsciousness#install-from-source
+    https://github.com/louis030195/hyperconsciousness#give-an-agent-limited-access
+
+  Before connecting, run hc start --dir <absolute-store-path> and create a
+  read-only grant for the local device with the record kinds, tags, sensitivity,
+  and expiration you intend to expose. Enter the grant ID, not a private key.
+  The executable and store must exist on the computer running Hermes's MCP
+  process. Replace paths and renew expired grants in the server configuration.
+
+  The default tool selection is read-only. It does not request broader access
+  or enable capture, credential use, or file access. HC enforces the supplied
+  grant independently of the tool filter. Returned plaintext is visible to the
+  configured model provider. Grants do not sandbox a process that can access
+  the owner's OS account, store keys, or files; no independent audit is claimed.
+
+  Start a new Hermes session to load the tools. To stop access, revoke the
+  grant with hc revoke <grant-id> --dir <absolute-store-path>, remove this MCP
+  entry, and end or restart sessions that already loaded it. Revocation cannot
+  remove data already returned to a model or stored in a conversation.

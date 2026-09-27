@@ -4545,7 +4545,7 @@ class BasePlatformAdapter(ABC):
             # Force-flush an unfired debounce timer so this task hands off to a fresh drain task.
             # Clear the Event BEFORE the stop-typing await so concurrent inbound sees a live guard.
             await self._flush_text_debounce_now(session_key)
-            if (getattr(event, "_gateway_skip_goal_continuation", False) is not True
+            if (getattr(event, "_gateway_preserve_pending", False) is not True
                     and session_key in self._pending_messages):
                 pending_event = self._pending_messages.pop(session_key)
                 logger.debug("[%s] Processing queued follow-up message", self.name)
@@ -4579,15 +4579,17 @@ class BasePlatformAdapter(ABC):
             # Flush any timer that missed the in-band drain, then reconcile ownership.
             await self._flush_text_debounce_now(session_key)
             # Terminal compression preserves the queue for explicit recovery;
-            # release this task's guard without dispatching into the pause/reset gate.
+            # A committed reset can drain queued work; a paused or failed recovery cannot.
             self._finish_session_task(
                 session_key, interrupt_event,
-                drain_pending=getattr(event, "_gateway_skip_goal_continuation", False) is not True)
+                drain_pending=getattr(event, "_gateway_preserve_pending", False) is not True)
 
     def _spawn_drain_task(self, pending_event: MessageEvent, session_key: str) -> None:
         """Hand the session to a fresh task for a queued follow-up — never recurse (chained
         follow-ups grew the C stack to SIGSEGV). Clearing (not deleting) the Event keeps the guard
         live for concurrent inbound; ownership moves so stale-lock detection works."""
+        # This is the older pending slot, not a new arrival behind FIFO overflow.
+        pending_event._gateway_pending_drain = True
         self._clear_session_guard(session_key)
         self._track_session_task(
             session_key,

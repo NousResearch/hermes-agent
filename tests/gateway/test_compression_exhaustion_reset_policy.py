@@ -504,6 +504,103 @@ async def test_terminal_exhaustion_does_not_drain_pending_input(env, deferred):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["pause", "reset", "normal"])
+async def test_adapter_preserves_terminal_compression_queue(native_env, monkeypatch, action):
+    from gateway.config import PlatformConfig
+    from gateway.platforms.base import SendResult
+    from tests.gateway.test_compression_failure_session_sync import (
+        _CompressionThenFailureAgent, _install_compression_failure_agent,
+    )
+    from tests.gateway.test_pending_drain_no_recursion import _StubAdapter
+
+    e = native_env
+    r = e.runner
+    # Restore the real preparation, agent runner, and both native pending drains.
+    del r._hmwa_prepare_turn
+    del r._run_agent
+    r._agent_cache = {}
+    r._agent_cache_lock = threading.Lock()
+    r._prefill_messages = []
+    r._ephemeral_system_prompt = ""
+    r._reasoning_config = r._service_tier = r._fallback_model = None
+    r._provider_routing = {}
+    r.hooks.loaded_hooks = []
+    r._voice_mode = {}
+    r._get_proxy_url = lambda: None
+    r._resolve_session_agent_runtime = lambda **kwargs: (
+        "gpt-5.4", {"provider": "custom", "api_key": "fixture-key",
+                    "base_url": "https://model.invalid/v1", "api_mode": "chat_completions"},
+    )
+    adapter = _StubAdapter(PlatformConfig(enabled=True, typing_indicator=False), Platform.TELEGRAM)
+    delivered = []
+
+    async def send(chat_id, content, **kwargs):
+        delivered.append((content, adapter._pending_messages.get(e.key)))
+        return SendResult(success=True, message_id="reply")
+
+    adapter.send = AsyncMock(side_effect=send)
+    adapter._message_handler = r._primary_message_handler()
+    r.adapters[Platform.TELEGRAM] = adapter
+    queued = MessageEvent(text="retain this queued request", source=e.source, message_id="queued")
+    loop = asyncio.get_running_loop()
+    model_inputs = []
+
+    class ModelBoundary(_CompressionThenFailureAgent):
+        def run_conversation(self, user_message, conversation_history=None, task_id=None, **kwargs):
+            model_inputs.append(user_message)
+            if len(model_inputs) == 1:
+                # Arrive through real adapter admission while the model owns the turn.
+                asyncio.run_coroutine_threadsafe(adapter.handle_message(queued), loop).result(5)
+                assert queued._gateway_accepted
+            terminal = action != "normal" and len(model_inputs) == 1
+            response = "context full" if terminal else "completed request"
+            return {
+                "final_response": response, "failed": terminal, "completed": not terminal,
+                "compression_exhausted": terminal, "compression_deferred": False,
+                "failure_reason": "context_overflow" if terminal else None,
+                "messages": [*(conversation_history or []),
+                             {"role": "user", "content": user_message},
+                             {"role": "assistant", "content": response}],
+                "api_calls": 1, "agent_persisted": False,
+            }
+
+    _install_compression_failure_agent(monkeypatch, ModelBoundary)
+    monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "gpt-5.4")
+    policy(e, f"compression:\n  exhaustion_action: {action if action != 'normal' else 'pause'}\n")
+    event = MessageEvent(text="initial request", source=e.source, message_id="initial")
+    assert adapter._event_session_key(event) == e.key
+
+    async def settle():
+        while adapter._background_tasks:
+            await asyncio.gather(*tuple(adapter._background_tasks))
+            await asyncio.sleep(0)
+
+    try:
+        await adapter.handle_message(event)
+        await asyncio.wait_for(settle(), 10)
+        assert model_inputs and "initial request" in model_inputs[0]
+        if action == "normal":
+            assert len(model_inputs) == 2
+            assert queued.text in model_inputs[1]
+            assert e.key not in adapter._pending_messages
+        else:
+            notice = "Session paused:" if action == "pause" else "auto-reset"
+            assert any(notice in text and pending is queued for text, pending in delivered)
+            persisted = reload_entry(e)
+            assert persisted is not None
+            assert persisted.compression_paused is (action == "pause")
+            assert (persisted.session_id != e.entry.session_id) is (action == "reset")
+            assert adapter._pending_messages.get(e.key) is queued
+            assert len(model_inputs) == 1
+            assert not any(queued.text in str(row.get("content"))
+                           for row in e.db.get_messages(persisted.session_id))
+        assert e.key not in adapter._active_sessions
+        assert e.key not in adapter._session_tasks
+    finally:
+        await adapter.cancel_background_tasks()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["rotate", "inplace", "noop", "rewrite_fail", "missing_db", "primary_fail", "moved"])
 async def test_manual_commit_matrix_preserves_parent_and_clears_only_on_commit(env, monkeypatch, mode):
     e = env

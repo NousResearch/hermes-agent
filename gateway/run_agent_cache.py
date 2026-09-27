@@ -249,8 +249,15 @@ class GatewayAgentCacheMixin:
 
     def _is_intentional_model_switch(self, session_key: str, agent: Any, config_model: str) -> bool:
         """True when *agent* running a model other than *config_model* is deliberate: a /model session
-        override names that model, or the Nous gateway moved the session off the ``nous/welcome``
+        override or manual fallback selected it, or the Nous gateway moved off ``nous/welcome``
         alias that *config_model* still carries (``anon_auth.apply_model_switch``)."""
+        # Manual fallback takes precedence over a dormant /model override.
+        # Native activation marks constructor-time and in-turn automatic drift.
+        store = getattr(self, "session_store", None)
+        if store is not None and callable(getattr(type(store), "get_session_metadata", None)):
+            with suppress(Exception):
+                if store.get_session_metadata(session_key, "manual_fallback_index") is not None:
+                    return not getattr(agent, "_fallback_activated", False)
         override = self._session_model_override(session_key)
         if override is not None and override.get("model") == agent.model:
             return True

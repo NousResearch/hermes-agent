@@ -389,6 +389,53 @@ def test_ephemeral_projection_and_cache_identity(manual):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("selection,automatic,global_target", [
+    ("manual", False, False), ("explicit", False, False), ("ordinary", True, False),
+    ("manual", True, False), ("manual", True, True), ("ordinary", True, True),
+    ("manual-with-override", True, True),
+], ids=["manual-selected", "explicit-selected", "automatic", "manual-then-automatic",
+        "manual-then-configured-model", "ordinary-configured-model", "manual-with-dormant-override"])
+async def test_post_turn_cache_preserves_selected_fallback(manual, monkeypatch, selection, automatic, global_target):
+    e = manual
+    is_manual = selection in ("manual", "manual-with-override")
+    if selection == "manual-with-override":
+        e.runner._session_state(e.key).conversation.model_override = {"model": "configured-primary"}
+    if is_manual:
+        assert "Manual fallback: ON" in str(await native_message(e, "/fallback on"))
+        # Resolve from a reloaded durable marker, not a test-only in-memory flag.
+        persisted = reload_entry(e)
+        assert persisted is not None and persisted.metadata[KEY] == 0
+        e.store._entries[e.key] = persisted
+        model, runtime = e.runner._resolve_session_agent_runtime(source=e.source)
+        assert runtime[KEY] == 0
+    else:
+        model = e.chain[0]["model"]
+        if selection == "explicit":
+            e.runner._session_state(e.key).conversation.model_override = {"model": model}
+    target = "configured-primary" if global_target else e.chain[1]["model"]
+    agent = SimpleNamespace(model=target if automatic else model,
+                            provider="custom", _fallback_activated=automatic)
+    e.runner._agent_cache_lock = threading.Lock()
+    e.runner._agent_cache = {e.key: (agent, "signature")}
+    # Match the post-run stage: native eviction must not release a still-running agent.
+    e.runner._session_state(e.key).turn.agent = agent
+    monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda: "configured-primary")
+    ctx = SimpleNamespace(session_key=e.key, source=e.source,
+                          agent_holder=[agent], result_holder=[{"completed": True, "failed": False}])
+
+    e.runner._run_agent_evict_on_fallback(ctx)
+
+    cached = e.runner._cached_agent_for(e.key)
+    if automatic and (is_manual or not global_target):
+        assert cached is None
+    else:
+        assert cached is agent
+    persisted = reload_entry(e)
+    assert persisted is not None
+    assert (KEY in persisted.metadata) is is_manual
+
+
+@pytest.mark.asyncio
 async def test_main_reuse_and_background_consume_one_manual_tail(manual, monkeypatch):
     from run_agent import AIAgent
     from gateway.run_turn_runner import TurnRunner

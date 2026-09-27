@@ -574,6 +574,40 @@ def _prune_unanswered_tool_calls(messages: List[Dict]) -> Tuple[List[Dict], int]
     return pruned, repairs
 
 
+def _merge_consecutive_user_pair_content(prev_content: str, new_content: str) -> Optional[Any]:
+    """Merged content for a consecutive-user pair, or None when the pair must stay untouched.
+    A ``\x00json:``-prefixed row is the persisted form of structured (multimodal) content that a
+    prune re-inserted still-encoded (#125299): concatenating it as text would ship hundreds of KB
+    of base64 to the model as plain text and weld the sentinel into an un-decodable stored row, so
+    the decoded parts merge structurally instead (text parts joined, non-text parts kept)."""
+    from hermes_state import SessionDB  # lazy: the constant/decoder live on SessionDB, not the mixin
+
+    prefix = SessionDB._CONTENT_JSON_PREFIX
+    if not (prev_content.startswith(prefix) or new_content.startswith(prefix)):
+        return (prev_content + "\n\n" + new_content) if prev_content and new_content else (prev_content or new_content)
+    parts: List[Dict] = []
+    for content in (prev_content, new_content):
+        decoded = SessionDB._decode_content(content)
+        if isinstance(decoded, str):
+            # A failed decode echoes the prefixed string back; concatenating it would re-create
+            # the un-decodable row, so the pair stays untouched instead.
+            if decoded.startswith(prefix):
+                return None
+            if decoded:
+                parts.append({"type": "text", "text": decoded})
+        elif isinstance(decoded, list):
+            if any(not isinstance(part, dict) for part in decoded):
+                return None
+            parts.extend(decoded)
+        else:
+            return None
+    if not parts:
+        return ""
+    if all(part.get("type") == "text" for part in parts):
+        return "\n\n".join(part.get("text", "") for part in parts if part.get("text"))
+    return parts
+
+
 def _merge_consecutive_users(messages: List[Dict]) -> Tuple[List[Dict], int]:
     """Pass 3: merge consecutive plain-text user messages (no user input lost)."""
     from agent.context_compressor import _DB_PERSISTED_MARKER, split_user_originated_turn
@@ -595,9 +629,12 @@ def _merge_consecutive_users(messages: List[Dict]) -> Tuple[List[Dict], int]:
             and isinstance(prev.get("content", ""), str) and isinstance(msg.get("content", ""), str)
         ):
             prev_content, new_content = prev.get("content", ""), msg.get("content", "")
-            merged_content = (
-                (prev_content + "\n\n" + new_content) if prev_content and new_content else (prev_content or new_content)
-            )
+            merged_content = _merge_consecutive_user_pair_content(prev_content, new_content)
+            if merged_content is None:
+                # Undecodable/unsupported encoded shape: keep both rows as persisted rather than
+                # weld the sentinel into text and corrupt the stored row further.
+                merged.append(msg)
+                continue
             had_api_sidecar = "api_content" in prev
             prev["content"] = merged_content
             # Merged content invalidates the api_content sidecar; drop it so replay cannot use stale bytes.

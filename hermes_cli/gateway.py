@@ -1765,11 +1765,22 @@ def _reaper_candidate_is_supervisor_owned(pid: int) -> bool:
     return False
 
 
-def _reap_unsupervised_gateway_orphans(extra_exclude: set | None = None) -> bool:
+def _reap_unsupervised_gateway_orphans(
+    extra_exclude: set | None = None, *, min_age_s: float = 0.0,
+) -> bool:
     """Kill no-supervisor gateway orphans the pidfile/runtime record can't see. On WSL/no-systemd hosts
     the restart fallback runs the gateway in-process under a ``gateway restart`` argv; a stale pidfile
     then lets a live orphan keep the webhook port while a restart stacks a duplicate. No-op where a
-    supervisor exists (there ``gateway restart`` is a transient command). ``extra_exclude``: already killed."""
+    supervisor exists (there ``gateway restart`` is a transient command). ``extra_exclude``: already killed.
+
+    ``min_age_s`` spares a candidate younger than the grace: a gateway claims
+    ``gateway.pid``/``gateway.lock`` only after imports + runner setup, so a process
+    that a previous Desktop generation (or a concurrent ``gateway start``) just launched
+    is scan-visible but not yet record-visible, and the argv sweep cannot tell it from
+    a corpse. Reaping it writes a planned-stop marker it consumes seconds later — a clean
+    exit 0 with no supervisor to revive it (#122533). The Desktop boot sweep passes a
+    grace; stop/restart keep reaping at once.
+    """
     try:
         supervised_host = supports_systemd_services()
     except Exception:
@@ -1801,6 +1812,16 @@ def _reap_unsupervised_gateway_orphans(extra_exclude: set | None = None) -> bool
         ]
     except Exception:
         return False
+    if min_age_s > 0:
+        from hermes_cli.dashboard_procs import _process_age_seconds
+
+        def _old_enough(pid: int) -> bool:
+            try:  # an undeterminable age must never widen the reap
+                return _process_age_seconds(pid) >= min_age_s
+            except Exception:
+                return False
+
+        orphans = [p for p in orphans if _old_enough(p)]
     if not orphans:
         return False
 

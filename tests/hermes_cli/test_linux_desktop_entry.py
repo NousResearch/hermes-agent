@@ -80,7 +80,7 @@ def test_install_writes_entry_with_absolute_exec_and_icon(
 
     entry = lde.install_desktop_entry(root)
 
-    assert entry == xdg_home / "applications" / "hermes.desktop"
+    assert entry == xdg_home / "applications" / lde.DESKTOP_ENTRY_NAME
     values = _parse(entry.read_text(encoding="utf-8"))
 
     # Exec must be the absolute path of the resolved binary. The launcher
@@ -432,7 +432,7 @@ def test_exec_never_persists_a_checkout_internal_path_hit(tmp_path, xdg_home, mo
     persisting the venv form; the next DE launch re-resolves to the durable
     wrapper and flips the bytes back. Alternating writers alternate the
     file content (captured: wrapper -> venv -> wrapper inside one update
-    cycle), and every flip rewrites hermes.desktop. A rewrite landing
+    cycle), and every flip rewrites the entry. A rewrite landing
     inside a grid launch's STARTING window is the arm for the gnome-shell
     50.x crash this module already guards against. A PATH hit inside the
     checkout must fall through to the durable probe.
@@ -486,7 +486,7 @@ def test_exec_finds_known_wrapper_when_resolver_has_no_candidate(
     None outright. The early `return primary` that used to fire here skipped
     the durable-wrapper probe, so the persisted Exec flipped to the bare
     `<python> -m hermes_cli.main desktop` module form. Each flip between the
-    wrapper and module forms rewrites hermes.desktop on the next launch; any
+    wrapper and module forms rewrites the entry on the next launch; any
     rewrite that lands while gnome-shell's ShellApp for the entry is still
     STARTING crashes the shell (shell_app_dispose `state == STOPPED`
     assertion, gnome-shell 50.4). The entry must converge on the durable
@@ -637,6 +637,99 @@ def test_known_wrapper_candidates_cover_installer_layouts(
     if layout == "non-root-no-fhs":
         # Non-root euid: /usr/local/bin must be excluded outright.
         assert "/usr/local/bin/hermes" not in candidates
+
+
+def test_installed_entry_carries_the_window_app_id(tmp_path, xdg_home, monkeypatch):
+    """The window's app_id is what GNOME matches the entry against — not the old "Hermes"."""
+    _stub_install(tmp_path, monkeypatch)
+    root = _make_project(tmp_path)
+
+    entry = lde.install_desktop_entry(root)
+
+    assert entry is not None
+    assert entry.name == f"{lde.APP_ID}.desktop"
+    values = _parse(entry.read_text(encoding="utf-8"))
+    assert values["StartupWMClass"] == lde.APP_ID
+    assert values["Name"] == "Hermes"  # the menu label is not part of the identity
+
+
+def test_install_retires_the_legacy_entry_name(tmp_path, xdg_home, monkeypatch):
+    """A leftover hermes.desktop would surface as a second Hermes in the app grid."""
+    _stub_install(tmp_path, monkeypatch)
+    root = _make_project(tmp_path)
+    legacy = xdg_home / "applications" / lde.LEGACY_DESKTOP_ENTRY_NAME
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text(
+        "[Desktop Entry]\nType=Application\nName=Hermes\nExec=hermes desktop\n",
+        encoding="utf-8",
+    )
+
+    entry = lde.install_desktop_entry(root)
+
+    assert entry is not None and entry.is_file()
+    assert not legacy.exists()
+
+
+def test_install_keeps_foreign_files_at_the_legacy_path(tmp_path, xdg_home, monkeypatch):
+    """Only our own entry retires; another app's file at that name is not ours to delete."""
+    _stub_install(tmp_path, monkeypatch)
+    root = _make_project(tmp_path)
+    foreign = xdg_home / "applications" / lde.LEGACY_DESKTOP_ENTRY_NAME
+    foreign.parent.mkdir(parents=True)
+    foreign.write_text(
+        "[Desktop Entry]\nType=Application\nName=Someone else\nExec=other-app\n",
+        encoding="utf-8",
+    )
+
+    lde.install_desktop_entry(root)
+
+    assert foreign.is_file()
+    assert "Name=Someone else" in foreign.read_text(encoding="utf-8")
+
+
+def test_install_opt_out_preserves_the_legacy_entry(tmp_path, xdg_home, monkeypatch):
+    """The opt-out protects user edits, so it also stops the legacy retirement.
+
+    The missing-entry path still creates the app-id entry; the deletion is
+    management too and must not run when the user asked to be left alone.
+    """
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    (hermes_home / "config.yaml").write_text(
+        "desktop:\n  manage_launcher_entry: false\n", encoding="utf-8"
+    )
+    _stub_install(tmp_path, monkeypatch)
+    root = _make_project(tmp_path)
+    legacy = xdg_home / "applications" / lde.LEGACY_DESKTOP_ENTRY_NAME
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text(
+        "[Desktop Entry]\nType=Application\nName=Hermes\nExec=hermes desktop\n",
+        encoding="utf-8",
+    )
+
+    entry = lde.install_desktop_entry(root)
+
+    assert entry == xdg_home / "applications" / lde.DESKTOP_ENTRY_NAME
+    assert legacy.is_file(), "the opt-out must keep the legacy entry in place"
+
+
+def test_app_id_matches_the_desktop_build_identity():
+    """APP_ID mirrors apps/desktop/product-identity.cjs; the two must not drift apart."""
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not available")
+    repo = Path(__file__).resolve().parents[2]
+    probe = "console.log(require('./apps/desktop/product-identity.cjs').appId)"
+    result = subprocess.run(
+        [node, "-e", probe], cwd=repo, capture_output=True, text=True, timeout=60
+    )
+    if result.returncode != 0:
+        pytest.skip(f"product-identity.cjs did not evaluate: {result.stderr.strip()[:200]}")
+    assert result.stdout.strip() == lde.APP_ID
 
 
 def test_install_is_idempotent_and_skips_cache_refresh(tmp_path, xdg_home, monkeypatch):

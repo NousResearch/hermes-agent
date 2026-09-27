@@ -14,6 +14,7 @@ import re
 from functools import partial
 from typing import Any, Callable
 
+from agent.message_metadata import DB_ROW_SNAPSHOT
 from agent.vision_message_prep import _provider_model_key
 
 logger = logging.getLogger(__name__)
@@ -23,7 +24,8 @@ logger = logging.getLogger(__name__)
 _SURROGATE_RE = re.compile(r'[\ud800-\udfff]')
 
 # Keys handled explicitly by _sanitize_messages; every OTHER key is swept generically.
-_MESSAGE_CORE_KEYS = frozenset({"content", "name", "tool_calls", "role"})
+# The durable snapshot is an immutable compare-and-swap version, not message payload.
+_MESSAGE_CORE_KEYS = frozenset({"content", "name", "tool_calls", "role", DB_ROW_SNAPSHOT})
 
 
 def _sanitize_surrogates(text: str) -> str:

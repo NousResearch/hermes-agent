@@ -112,6 +112,54 @@ class TestPatchCRLFPreservation:
         assert raw == b"def foo():\r\n    x = 1\r\n    return x\r\n"
 
 
+# An edit writes the whole file back, so the ending of a line it did not touch is the
+# file's own data: a CRLF inside a fixture, a lone CR in a captured progress bar, the
+# LF lines of a file that mixes both.
+_UNTOUCHED_ENDINGS = {
+    "lf_file_one_crlf_line": b"HEADER\nfixture = 'a\r\nb'\nkeep\nx = 1\n",
+    "lf_file_crlf_past_the_sample": b"HEADER\n# " + b"y" * 5000 + b"\nfixture = 'a\r\nb'\nx = 1\n",
+    "lf_file_lone_cr": b"HEADER\nbar 10%\rbar 100%\nx = 1\n",
+    "crlf_file_lf_line": b"HEADER\r\nkeep\nalso\r\nx = 1\r\n",
+    "crlf_file_lone_cr": b"HEADER\r\nbar 10%\rbar 100%\r\nx = 1\r\n",
+}
+
+
+def _edit(mode, target, old, new, task_id):
+    from tools.file_tools import _handle_patch
+
+    if mode == "replace":
+        args = {"mode": "replace", "path": str(target), "old_string": old, "new_string": new}
+    else:
+        removed = "".join(f"-{line}\n" for line in old.split("\n"))
+        added = "".join(f"+{line}\n" for line in new.split("\n"))
+        args = {"mode": "patch",
+                "patch": f"*** Begin Patch\n*** Update File: {target}\n@@\n{removed}{added}*** End Patch"}
+    result = json.loads(_handle_patch(args, task_id=task_id))
+    assert not result.get("error"), result
+
+
+class TestEditKeepsUntouchedLineEndings:
+    @pytest.mark.parametrize("mode", ["replace", "v4a"])
+    @pytest.mark.parametrize("case", sorted(_UNTOUCHED_ENDINGS))
+    def test_one_line_edit_changes_only_that_line(self, hermes_home, tmp_path, mode, case):
+        original = _UNTOUCHED_ENDINGS[case]
+        target = tmp_path / "f.txt"
+        target.write_bytes(original)
+
+        _edit(mode, target, "x = 1", "x = 2", f"endings_{mode}_{case}")
+
+        assert target.read_bytes() == original.replace(b"x = 1", b"x = 2")
+
+    @pytest.mark.parametrize("mode", ["replace", "v4a"])
+    def test_new_lines_take_the_ending_of_the_lines_they_replace(self, hermes_home, tmp_path, mode):
+        target = tmp_path / "f.txt"
+        target.write_bytes(b"keep\nx = 1\r\ny = 2\r\nlast")
+
+        _edit(mode, target, "x = 1\ny = 2", "x = 9\nnew\ny = 8", f"endings_multi_{mode}")
+
+        assert target.read_bytes() == b"keep\nx = 9\r\nnew\r\ny = 8\r\nlast"
+
+
 class TestWriteFileCRLFPreservation:
     def test_overwrite_crlf_file_with_lf_content_preserves_crlf(
         self, hermes_home, tmp_path

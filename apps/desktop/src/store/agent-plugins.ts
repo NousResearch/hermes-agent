@@ -76,6 +76,8 @@ export interface PluginSettingField {
   value?: unknown
   default?: unknown
   choices?: string[]
+  /** Display text for `choices`, index-aligned; absent when every label equals its value. */
+  choice_labels?: string[]
   env?: string
   has_value?: boolean
 }

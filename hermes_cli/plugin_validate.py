@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_cli.plugin_validate_desktop import check_desktop_surface
-from hermes_cli.plugins_manifest import _CONFIG_SCHEMA_TYPES
+from hermes_cli.plugins_manifest import _CONFIG_SCHEMA_TYPES, config_choices_problems
 
 _UPPER_SNAKE_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 # Admission accepts exactly the ``config_schema`` types the loader type-checks at load time (and the
@@ -150,6 +150,7 @@ def _check_config_spec(report: ValidationReport, manifest: dict) -> None:
                 problems.append(
                     f"config_schema.{skey}: required must be a boolean"
                 )
+            problems.extend(f"config_schema.{skey}: {p}" for p in config_choices_problems(spec))
     if problems:
         report.add("config schema", False, "; ".join(problems))
     else:

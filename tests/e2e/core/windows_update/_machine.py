@@ -28,9 +28,10 @@ carries 159-character paths, so a profile any deeper than a real one would hit M
 where no user does. The installer also prepends its bin dir to the user PATH in HKCU;
 the machine restores that value on teardown.
 
-Machines run in parallel, but ``hermes update`` on Windows pauses every gateway on the
-host, including other installs' (#124659). Updates and gateway lifetimes therefore take
-a job-wide lock (``gateway_phase``); installs, turns and everything else stay parallel.
+Machines run in parallel. Updates and gateway lifetimes take a job-wide lock
+(``gateway_phase``) so each journey's gateway hand-off is deterministic; installs, turns and
+everything else stay parallel. One install's update sparing another's gateway (#124659) is
+its own journey (test_update_spares_other_installs.py).
 
 The suite mutates HKCU and downloads a toolchain per machine, so it only runs where
 ``HERMES_E2E_WINDOWS_INSTALL=1`` (the CI job sets it).
@@ -327,11 +328,8 @@ class Machine:
 
     @contextlib.contextmanager
     def gateway_phase(self):
-        """Job-wide mutex for updates and gateway lifetimes (reentrant within a machine).
-
-        ``hermes update`` on Windows discovers gateways host-wide and stops ones it cannot map
-        to its own profiles (#124659), so one machine's update would kill another machine's
-        gateway. Real users rarely run two installs side by side; this suite always does."""
+        """Job-wide mutex for updates and gateway lifetimes (reentrant within a machine), so no
+        journey's gateway hand-off races another machine's update."""
         if self._lock_depth:
             self._lock_depth += 1
             try:

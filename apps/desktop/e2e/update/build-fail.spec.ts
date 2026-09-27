@@ -66,12 +66,17 @@ test('a Desktop build failure during Update now is reported to the user as a fai
 
       expect(outcome, `the update is reported as FAILED, not finished\n${explain()}`).toMatch(/detached update FAILED/)
       expect(outcome).not.toMatch(/detached update finished OK/)
-      expect(
-        installProcesses(facts)
-          .filter(proc => /desktop-update\/posix\.sh| update --yes/.test(proc.cmdline))
-          .map(p => p.cmdline),
-        'no updater is left running after the failure'
-      ).toEqual([])
+      // The relaunched app reports the result while posix.sh is still inside launch_app's 1.5 s
+      // acceptance window, so the updater gets a bounded moment to exit instead of none.
+      await expect
+        .poll(
+          () =>
+            installProcesses(facts)
+              .filter(proc => /desktop-update\/posix\.sh| update --yes/.test(proc.cmdline))
+              .map(p => p.cmdline),
+          { timeout: 30_000, message: 'no updater is left running after the failure' }
+        )
+        .toEqual([])
       // What the user is left on: record it for triage (the checkout moved; the app bundle did not).
       test
         .info()

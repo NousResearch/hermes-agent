@@ -13,6 +13,7 @@ import re
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 from typing import Mapping, NoReturn, Sequence
 
 __all__ = [
@@ -28,6 +29,7 @@ __all__ = [
     "bounded_git_probe",
     "bounded_probe_run",
     "selected_git_env",
+    "expose_pm_git",
     "noninteractive_git_env",
     "NO_DRIVER_DIFF_FLAGS",
     "NO_LAZY_FETCH_ENV",
@@ -369,6 +371,35 @@ def selected_git_env(base: Mapping[str, str] | None = None) -> dict[str, str]:
         return ensure("git", base_env=env).env
     except Exception:
         return env
+
+
+def expose_pm_git(project_root: Path) -> None:
+    """Put PM's git on PATH, and in PM's facts, for a Windows git checkout.
+
+    install.ps1 stages the pinned Git for Windows into PM's store for its own
+    process only, and PM's facts never record it, so every later bare ``git``
+    (``hermes update``, the source-completion stamp, plugin installs, doctor)
+    died with ``[WinError 2]``. A git found under PM's store is that unrecorded
+    copy inherited from the installer, so it is recorded too. Callers are
+    explicit user actions (like ``ensure_tools_for_sync``), so acquire PM's git
+    outright; children inherit the PATH. The machine's own git, and a git-less
+    ZIP install that never runs git, are untouched. Raises what ``pm.ensure``
+    raises.
+    """
+    if sys.platform != "win32" or not (Path(project_root) / ".git").exists():
+        return
+    from hermes_platform.resolver import locate_command
+    from pm.paths import store_root
+
+    found = locate_command("git").command
+    if found and not Path(found[0]).resolve().is_relative_to(store_root()):
+        return
+    from pm import ensure
+
+    env = ensure("git", explicit=True).env
+    path = next((value for key, value in env.items() if key.upper() == "PATH"), None)
+    if path:
+        os.environ["PATH"] = path
 
 
 def noninteractive_git_env(base: "Mapping[str, str] | None" = None) -> dict[str, str]:

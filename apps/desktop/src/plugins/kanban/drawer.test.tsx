@@ -356,3 +356,78 @@ describe('dependency chips resolve titles', () => {
     expect(screen.getByText('child')).toBeTruthy()
   })
 })
+
+// #124391: block_kind / block_recurrences / consecutive_failures /
+// last_failure_error arrive on every payload — the drawer must show them,
+// and a blocked task's diagnostic unblock action must PATCH the task ready.
+describe('blocked task detail', () => {
+  const blockedDetail = {
+    ...legacyDetail,
+    attachments: [] as [],
+    task: {
+      ...legacyDetail.task,
+      status: 'blocked',
+      block_kind: 'needs_input',
+      block_recurrences: 2,
+      consecutive_failures: 3,
+      last_failure_error: 'RuntimeError: boom',
+      diagnostics: [
+        {
+          kind: 'stuck_in_blocked',
+          severity: 'warning',
+          title: 'Parked in blocked',
+          detail: 'This task has been blocked for a while.',
+          actions: [{ kind: 'unblock', label: 'Unblock task' }],
+          count: 1,
+          last_seen_at: 0,
+          data: {}
+        }
+      ]
+    }
+  }
+
+  it('renders the block kind, recurrences, failures and last error the API returns', async () => {
+    detail = blockedDetail
+    openDrawer()
+
+    expect(await screen.findByText('needs_input')).toBeTruthy()
+    expect(screen.getByText('×2')).toBeTruthy()
+    expect(screen.getByText('3')).toBeTruthy()
+    expect(screen.getByText('RuntimeError: boom')).toBeTruthy()
+  })
+
+  it('hides block detail on legacy payloads and recovered tasks', async () => {
+    // Legacy payload: none of the four fields.
+    detail = { ...legacyDetail, attachments: [] }
+    openDrawer()
+    await screen.findByRole('heading', { name: legacyDetail.task.title })
+    expect(screen.queryByText(en.blockReason)).toBeNull()
+    expect(screen.queryByText(en.consecutiveFailures)).toBeNull()
+    expect(screen.queryByText(en.lastFailureError)).toBeNull()
+    cleanup()
+  })
+
+  it('does not present a retained block kind as current after recovery', async () => {
+    // block_kind is retained across unblock — present but the task is no
+    // longer blocked, so it must not read as a current block reason.
+    detail = {
+      ...blockedDetail,
+      task: { ...blockedDetail.task, status: 'todo', consecutive_failures: 0, last_failure_error: null }
+    }
+    openDrawer()
+    await screen.findByRole('heading', { name: blockedDetail.task.title })
+    expect(screen.queryByText(en.blockReason)).toBeNull()
+    expect(screen.queryByText('needs_input')).toBeNull()
+  })
+
+  it('fires the diagnostic unblock action as a PATCH to ready', async () => {
+    detail = blockedDetail
+    openDrawer()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Unblock task' }))
+
+    await waitFor(() =>
+      expect(rest).toHaveBeenCalledWith('/tasks/t_example', expect.objectContaining({ method: 'PATCH', body: { status: 'ready' } }))
+    )
+  })
+})

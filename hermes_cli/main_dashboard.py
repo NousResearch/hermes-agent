@@ -184,16 +184,36 @@ def _pid_unified_cgroup_entries(pid: int):
 
 
 def _get_systemd_service_for_pid(pid: int) -> str | None:
-    """The systemd service unit name *pid* belongs to (``hermes-serve.service``), or None.
+    """The systemd service unit that supervises *pid* (``hermes-serve.service``), or None.
 
-    None when the PID isn't part of a service, the file is unreadable, or off Linux.
+    A ``.service`` cgroup alone only says where the process was started: a dashboard launched by
+    hand from a shell that itself runs under some unit (a CI runner agent, ``cron.service``, a
+    tmux or IDE user service, the gateway's own terminal tool) sits in THAT unit's cgroup. The
+    unit owns the backend only when its live ``MainPID`` is this PID; otherwise restarting it
+    restarts an unrelated service and leaves the dashboard down. None when the PID isn't part of
+    a service, ownership can't be proved, the file is unreadable, or off Linux.
     """
     for cg_path in _pid_unified_cgroup_entries(pid):
         if cg_path.endswith(".service"):
             svc_name = cg_path.rsplit("/", 1)[-1]
-            if svc_name:
+            if svc_name and _unit_main_pid_is(svc_name, cg_path, pid):
                 return svc_name
     return None
+
+
+def _unit_main_pid_is(svc_name: str, cgroup_path: str, pid: int) -> bool:
+    """True when *svc_name*'s live ``MainPID`` is *pid* (read-only ``systemctl show``)."""
+    scope = _extract_scope_from_cgroup(cgroup_path)
+    scopes = {"user": [["--user"]], "system": [[]]}.get(scope or "", [[], ["--user"]])
+    for scope_args in scopes:
+        try:
+            result = _run_probe(
+                ["systemctl", *scope_args, "show", svc_name, "--property=MainPID", "--value"], timeout=10)
+        except _SYSTEMCTL_ERRORS:
+            continue
+        if result.returncode == 0 and (result.stdout or "").strip() == str(pid):
+            return True
+    return False
 
 
 def _extract_scope_from_cgroup(cgroup_entry: str) -> str | None:

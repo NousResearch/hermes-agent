@@ -30,6 +30,14 @@ describe('a sent reference renders as the chip the composer showed', () => {
     expect(document.body.textContent).not.toContain('@file:')
   })
 
+  it('labels a large-paste file as pasted content, keeping its path on hover', () => {
+    const path = '/home/u/.hermes/attachments/pasted_content_2026-09-27_21-33-42-827_55e028-2.txt'
+
+    render(<UserMessageText text={`@file:${path}`} />)
+
+    expect(screen.getByTitle(path).textContent).toBe('Pasted content')
+  })
+
   it('chips every kind that travels in message text', () => {
     // The guard against WIRE_REFERENCE_KINDS and the pattern's own alternation
     // drifting apart: add a kind to one and this fails until both agree.

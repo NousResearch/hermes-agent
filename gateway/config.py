@@ -462,13 +462,16 @@ class PlatformConfig:
             for cid, ov_data in raw_overrides.items()
             if isinstance(ov_data, dict)
         } if isinstance(raw_overrides, dict) else {}
+        reply_to_mode = data.get("reply_to_mode", "first")
+        if isinstance(reply_to_mode, bool):
+            reply_to_mode = "all" if reply_to_mode else "off"
 
         return cls(
             enabled=_coerce_bool(data.get("enabled"), False),
             token=data.get("token"),
             api_key=data.get("api_key"),
             home_channel=HomeChannel.from_dict(home) if isinstance(home, dict) else None,
-            reply_to_mode=data.get("reply_to_mode", "first"),
+            reply_to_mode=reply_to_mode,
             gateway_restart_notification=_coerce_bool(toplevel_or_extra("gateway_restart_notification"), True),
             typing_indicator=_coerce_bool(toplevel_or_extra("typing_indicator"), True),
             typing_status_text=toplevel_or_extra("typing_status_text"),  # string passthrough, no coercion

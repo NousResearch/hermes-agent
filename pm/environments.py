@@ -343,8 +343,13 @@ def activate_dependencies(project_root: Path) -> None:
     os.environ["PYTHONPATH"] = os.pathsep.join([str(project_root.resolve()), str(selected)])
     os.environ.pop("VIRTUAL_ENV", None)
     executable_dir = venv_bin_dir(environment)
-    if executable_dir.is_dir():
-        os.environ["PATH"] = os.pathsep.join([str(executable_dir), os.environ.get("PATH", "")])
+    # The venv's own `hermes`/`hermes-acp` console scripts are editable installs bound to
+    # the build-time source snapshot, not this checkout (#124627): a child that resolves
+    # `hermes` off PATH must hit the checkout's own launcher first, never the venv's copy.
+    prefix = [str(path) for path in (project_root.resolve() / ".hermes" / "bin", executable_dir)
+              if path.is_dir()]
+    if prefix:
+        os.environ["PATH"] = os.pathsep.join([*prefix, os.environ.get("PATH", "")])
 
 
 def activation_environment(project_root: Path) -> dict[str, str]:

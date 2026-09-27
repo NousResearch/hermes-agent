@@ -47,6 +47,7 @@ def _make_fake_mautrix():
         ROOM_ENCRYPTED = "m.room.encrypted"
         ROOM_NAME = "m.room.name"
         ROOM_TOPIC = "m.room.topic"
+        ROOM_REDACTION = "m.room.redaction"
 
     class UserID(str):
         pass
@@ -1132,6 +1133,76 @@ def test_matrix_relation_distinguishes_reply_from_thread_fallback(content, expec
     relation = MatrixRelation.from_content(content)
 
     assert (relation.thread_root, relation.reply_target, relation.thread_fallback_target, relation.is_edit) == expected
+
+
+@pytest.mark.asyncio
+async def test_reply_without_inline_quote_fetches_parent_with_author_trust():
+    adapter = _make_adapter()
+    adapter._client = MagicMock()
+    adapter._client.get_state_event = AsyncMock(side_effect=Exception("no room state"))
+    adapter._client.state_store.get_members = AsyncMock(
+        return_value=["@bot:example.org", "@alice:example.org", "@bob:example.org"]
+    )
+    adapter._client.get_event = AsyncMock(return_value=types.SimpleNamespace(
+        sender="@stranger:example.org",
+        content={"msgtype": "m.text", "body": "prior message"},
+    ))
+    adapter._get_display_name = AsyncMock(side_effect=lambda room, user: user.split(":")[0][1:])
+    adapter._is_sender_authorized = MagicMock(side_effect=lambda user, **kwargs: user != "@stranger:example.org")
+    adapter._background_read_receipt = MagicMock()
+    adapter._require_mention = False
+
+    event = await adapter._build_inbound_event(
+        "!room:example.org", "@alice:example.org", "$reply", "new message",
+        {"msgtype": "m.text", "body": "new message"},
+        {"m.in_reply_to": {"event_id": "$parent"}},
+    )
+
+    assert (
+        event.reply_to_message_id, event.reply_to_text, event.reply_to_author_id,
+        event.reply_to_author_name, event.reply_to_author_authorized,
+    ) == ("$parent", "prior message", "@stranger:example.org", "stranger", False)
+
+
+@pytest.mark.asyncio
+async def test_reply_context_uses_edit_and_never_resurfaces_redacted_text():
+    adapter = _make_adapter()
+    room_id = "!room:example.org"
+    adapter._client = MagicMock()
+    adapter._client.get_state_event = AsyncMock(side_effect=Exception("no room state"))
+    adapter._client.state_store.get_members = AsyncMock(
+        return_value=["@bot:example.org", "@alice:example.org", "@bob:example.org"]
+    )
+    adapter._client.get_event = AsyncMock()
+    adapter._get_display_name = AsyncMock(return_value="Alice")
+    adapter._background_read_receipt = MagicMock()
+    adapter._require_mention = False
+    adapter._text_batch_delay_seconds = 0
+    adapter.handle_message = AsyncMock()
+
+    await adapter._on_room_message(types.SimpleNamespace(
+        room_id=room_id, sender="@alice:example.org", event_id="$parent", timestamp=0,
+        content={"msgtype": "m.text", "body": "before"},
+    ))
+    await adapter._on_room_message(types.SimpleNamespace(
+        room_id=room_id, sender="@alice:example.org", event_id="$edit", timestamp=0,
+        content={"msgtype": "m.text", "body": "* after",
+                 "m.relates_to": {"rel_type": "m.replace", "event_id": "$parent"},
+                 "m.new_content": {"msgtype": "m.text", "body": "after"}},
+    ))
+    relation = {"m.in_reply_to": {"event_id": "$parent"}}
+    edited_reply = await adapter._build_inbound_event(
+        room_id, "@bob:example.org", "$reply1", "question",
+        {"msgtype": "m.text", "body": "question"}, relation,
+    )
+    await adapter._on_redaction(types.SimpleNamespace(room_id=room_id, redacts="$parent"))
+    redacted_reply = await adapter._build_inbound_event(
+        room_id, "@bob:example.org", "$reply2", "another question",
+        {"msgtype": "m.text", "body": "another question"}, relation,
+    )
+
+    assert (edited_reply.reply_to_text, redacted_reply.reply_to_text) == ("after", None)
+    adapter._client.get_event.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -2401,6 +2472,7 @@ class TestMatrixEncryptedEventHandler:
         assert "internal.invite" in waited_types
         assert "m.room.name" in waited_types
         assert "m.room.topic" in waited_types
+        assert "m.room.redaction" in waited_types
 
         await adapter.disconnect()
 

@@ -1035,6 +1035,7 @@ def _run_prompt_submit(
         st.marker_key = _record_turn_marker(session, text, auto_continue=terminal_callback is None,
             notification_category=(display_metadata or {}).get("notification_category"))
         goal_followup = None
+        jev_tools_restore = None  # JEV pre-turn gate: saved tool list to restore
         try:
             prepared = _prepare_turn_input(sid, session, st, text, images)
             if prepared is None:
@@ -1045,6 +1046,18 @@ def _run_prompt_submit(
                     st.receipt_committed = True
                 return
             prompt, run_message, cols, streamer = prepared
+            # ── JEV pre-turn gate (detachable; no-op unless jev.gate_enabled) ──
+            # When enabled and JEV is confident this turn needs no tools, run it
+            # with tools disabled so plain messages skip the tool-search loop.
+            try:
+                from . import jev_gate
+                if (jev_gate.is_enabled() and getattr(st.agent, "tools", None)
+                        and jev_gate.should_disable_tools(text)):
+                    jev_tools_restore = st.agent.tools
+                    st.agent.tools = []
+            except Exception:
+                logger.debug("[jev-gate] skipped", exc_info=True)
+            # ──────────────────────────────────────────────────────────────────
             _invoke_agent(
                 sid, session, st, prompt, run_message, streamer, images, display_kind,
                 display_metadata, turn_author, text)
@@ -1061,6 +1074,9 @@ def _run_prompt_submit(
         except Exception as e:
             _recover_turn_exception(sid, session, st, e)
         finally:
+            # JEV pre-turn gate: restore the tool list this turn borrowed (if any).
+            if jev_tools_restore is not None:
+                st.agent.tools = jev_tools_restore
             _finish_turn(sid, session, st)
             _current_runtime_session_record.reset(runtime_session_token)
             reset_transport(transport_token)

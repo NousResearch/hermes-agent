@@ -22,6 +22,7 @@ import types
 import pytest
 
 from gateway.config import PlatformConfig
+from gateway.platforms.qqbot.adapter import QQAdapter
 from gateway.platforms.qqbot.constants import MSG_TYPE_MARKDOWN, MSG_TYPE_TEXT
 
 TOKEN_URL = "https://bots.qq.com/app/getAppAccessToken"
@@ -110,12 +111,24 @@ async def test_guild_channel_endpoint_keeps_the_plain_content_body(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_markdown_support_false_sends_plain_text(monkeypatch):
-    """The config gate the adapter honors must gate the standalone path too."""
+    """The adapter's gate is two-sided — ``format_message`` strips Markdown, *then*
+    ``_build_text_body`` picks the plain envelope — so turning Markdown off must do
+    both here too. Choosing the envelope alone still shipped literal ``**`` to a
+    deployment that disabled Markdown because its target cannot render it.
+
+    Anchored to the adapter rather than a frozen string: what matters is that the
+    two paths agree, which is the point of the fallback mirroring the live sender.
+    """
     url = f"https://api.sgroup.qq.com/v2/users/{{chat}}/messages"
     calls = _install_fake_httpx(monkeypatch, {CHANNEL_URL: 404, url: 200})
 
     result = await _send(markdown_support=False)
 
     assert result.get("success") is True
+    adapter_text = QQAdapter(PlatformConfig(extra={"markdown_support": False})).format_message(CONTENT)
     assert _message_posts(calls)[-1] == (url.format(chat=CHAT),
-                                         {"content": CONTENT, "msg_type": MSG_TYPE_TEXT})
+                                         {"content": adapter_text, "msg_type": MSG_TYPE_TEXT})
+    # Markdown gone, inline math intact.
+    body = _message_posts(calls)[-1][1]
+    assert "**" not in body["content"]
+    assert "$a\\leqslant b$" in body["content"]

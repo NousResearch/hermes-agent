@@ -211,8 +211,7 @@ def test_failed_guest_mint_only_suppresses_that_profile(homes, monkeypatch, tmp_
     import hermes_cli.anon_auth as anon
     import hermes_cli.auth_nous as auth_nous
 
-    monkeypatch.setattr(anon, "_mint_failed", False)
-    monkeypatch.setattr(anon, "_mint_failed_homes", set(), raising=False)
+    anon.reset_mint_memo_for_tests()
     status = {"code": 429}
     attempts: list[str] = []
 

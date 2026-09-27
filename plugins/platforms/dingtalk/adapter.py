@@ -7,6 +7,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 import traceback
 import uuid
 from datetime import datetime, timezone
@@ -50,8 +51,8 @@ from gateway.platforms.helpers import MessageDeduplicator, compile_mention_patte
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent
 from gateway.platforms._shared import (
-    apply_yaml_bridge as _apply_yaml_bridge, extra_or_secret as _extra_or_secret,
-    get_scoped_secret as _get_scoped_secret, send_error
+    apply_yaml_bridge as _apply_yaml_bridge, decode_json_list_literal as _decode_json_list_literal,
+    extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret, send_error
 )
 from plugins.platforms.dingtalk.inbound import collect_download_codes, extract_media, extract_text
 
@@ -60,6 +61,63 @@ logger = logging.getLogger(__name__)
 
 MAX_MESSAGE_LENGTH = 20000
 RECONNECT_BACKOFF = [2, 5, 10, 30, 60]
+RECONNECT_CIRCUIT_BREAKER_TRIPS = 5  # identical errors escaping start() before the breaker trips
+RECONNECT_CIRCUIT_BREAKER_DELAY = 300  # seconds between attempts while tripped (matches the runner's cap)
+_SDK_LOG_REPEAT_WINDOW = 300.0  # identical dingtalk_stream.client records are collapsed within this window
+
+
+def _is_sdk_incompat(exc: BaseException | None) -> bool:
+    """True for #24851: ``websockets.connect`` is not an async CM for this dingtalk-stream.
+
+    The SDK may surface it as the bare TypeError, or as an AttributeError (its ``except``
+    clause touches the unloaded ``websockets.exceptions``) chained on that TypeError.
+    """
+    for _ in range(4):
+        if exc is None:
+            return False
+        if isinstance(exc, TypeError) and "asynchronous context manager" in str(exc):
+            return True
+        exc = exc.__cause__ or exc.__context__
+    return False
+
+
+class _SdkLogGuard(logging.Filter):
+    """Collapse repeated dingtalk_stream.client records; never raises on bad format args.
+
+    dingtalk-stream 0.24.3 logs ``logger.exception('unknown exception', e)`` every 3 s from its
+    retry loop — a malformed call that also triggers stdlib "--- Logging error ---" tracebacks.
+    """
+
+    def __init__(self, on_exception=None, window: float = _SDK_LOG_REPEAT_WINDOW):
+        super().__init__()
+        self._on_exception, self._window = on_exception, window
+        self._seen: Dict[tuple, list] = {}  # key -> [last_emitted_monotonic, suppressed_count]
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            try:
+                msg = record.getMessage()
+            except Exception:
+                args = record.args if isinstance(record.args, tuple) else (record.args,)
+                msg = " ".join(str(x) for x in (record.msg, *args))
+                record.msg, record.args = msg, ()
+            exc = record.exc_info[1] if record.exc_info else None
+            if exc is not None and self._on_exception is not None:
+                self._on_exception(exc)
+            key = (record.levelno, msg[:500], type(exc).__name__ if exc is not None else None)
+            now = time.monotonic()
+            entry = self._seen.get(key)
+            if entry is not None and now - entry[0] < self._window:
+                entry[1] += 1
+                return False
+            if entry is not None and entry[1]:
+                record.msg, record.args = f"{msg} (suppressed {entry[1]} identical repeats)", ()
+            if len(self._seen) >= 256:
+                self._seen.clear()
+            self._seen[key] = [now, 0]
+        except Exception:
+            pass  # a logging filter must never break the caller
+        return True
 _SESSION_WEBHOOKS_MAX = 500
 _DINGTALK_WEBHOOK_RE = re.compile(r'^https://(?:api|oapi)\.dingtalk\.com/')
 _TRUTHY = {"true", "1", "yes", "on"}
@@ -73,7 +131,8 @@ _NO_LOCAL_UPLOAD = "DingTalk session webhook replies do not support local %s. On
 
 
 def _csv_set(raw: Any) -> Set[str]:
-    """Split a list or comma-separated string into a set of stripped, non-empty items."""
+    """Split a list, JSON-list string or comma-separated string into a set of stripped, non-empty items."""
+    raw = _decode_json_list_literal(raw)
     parts = raw if isinstance(raw, list) else str(raw).split(",")
     return {str(part).strip() for part in parts if str(part).strip()}
 
@@ -103,8 +162,8 @@ def ensure_dingtalk_deps() -> bool:
     if DINGTALK_STREAM_AVAILABLE and HTTPX_AVAILABLE:
         return True
     try:
-        from tools.lazy_deps import ensure as _lazy_ensure
-        _lazy_ensure("platform.dingtalk", prompt=False)
+        from pm.extras import ensure_import
+        ensure_import("dingtalk")
         import dingtalk_stream as _ds, httpx as _httpx  # noqa: E401
         from dingtalk_stream import ChatbotMessage as _CM
         from dingtalk_stream.frames import CallbackMessage as _CBM, AckMessage as _AM
@@ -194,23 +253,86 @@ class DingTalkAdapter(BasePlatformAdapter):
             return False
 
     async def _run_stream(self) -> None:
-        """Run the async stream client with auto-reconnection."""
+        """Run the SDK stream client with auto-reconnection.
+
+        dingtalk-stream's ``start()`` runs its own catch-all retry loop, so most
+        errors never reach us: ``_SdkLogGuard`` collapses that loop's repeated
+        log records, and a dingtalk-stream/websockets incompatibility (#24851)
+        is handed to the gateway's reconnect watcher via ``_set_fatal_error``
+        instead of retrying forever.  For errors that do escape ``start()``,
+        exponential backoff (RECONNECT_BACKOFF) applies; after
+        RECONNECT_CIRCUIT_BREAKER_TRIPS identical errors in a row the breaker
+        trips and stays tripped (silent, RECONNECT_CIRCUIT_BREAKER_DELAY between
+        attempts) until the error type changes.
+        """
+        self._sdk_loop_task = asyncio.current_task()
+        sdk_logger = getattr(self._stream_client, "logger", None)
+        if not isinstance(sdk_logger, logging.Logger):
+            sdk_logger = logging.getLogger("dingtalk_stream.client")
+        guard = _SdkLogGuard(self._on_sdk_error)
+        sdk_logger.addFilter(guard)
+        try:
+            await self._run_stream_loop()
+        finally:
+            sdk_logger.removeFilter(guard)
+
+    async def _run_stream_loop(self) -> None:
         backoff_idx = 0
+        consecutive_same_error = 0
+        last_error_type: type | None = None
         while self._running:
             try:
                 logger.debug("[%s] Starting stream client...", self.name)
                 await self._stream_client.start()
             except asyncio.CancelledError:
+                if getattr(self, "_fatal_error_code", None) == "dingtalk_stream_error":
+                    await self._notify_fatal_error()
                 return
             except Exception as e:
-                if self._running:
+                if not self._running:
+                    return
+                if _is_sdk_incompat(e):
+                    self._on_sdk_error(e, cancel=False)
+                    await self._notify_fatal_error()
+                    return
+                error_type = type(e)
+                if error_type is last_error_type:
+                    consecutive_same_error += 1
+                else:
+                    consecutive_same_error = 1
+                    last_error_type = error_type
+                if consecutive_same_error <= RECONNECT_CIRCUIT_BREAKER_TRIPS:
                     logger.warning("[%s] Stream client error: %s", self.name, e)
+                elif consecutive_same_error == RECONNECT_CIRCUIT_BREAKER_TRIPS + 1:
+                    logger.error(
+                        "[%s] Stream client error repeated %d times: %s — circuit breaker tripped; "
+                        "retrying every %ds silently until the error changes.",
+                        self.name, consecutive_same_error, e, RECONNECT_CIRCUIT_BREAKER_DELAY,
+                    )
             if not self._running:
                 return
-            delay = RECONNECT_BACKOFF[min(backoff_idx, len(RECONNECT_BACKOFF) - 1)]
-            logger.info("[%s] Reconnecting in %ds...", self.name, delay)
-            await asyncio.sleep(delay)
-            backoff_idx += 1
+            if consecutive_same_error > RECONNECT_CIRCUIT_BREAKER_TRIPS:
+                await asyncio.sleep(RECONNECT_CIRCUIT_BREAKER_DELAY)
+            else:
+                delay = RECONNECT_BACKOFF[min(backoff_idx, len(RECONNECT_BACKOFF) - 1)]
+                logger.info("[%s] Reconnecting in %ds...", self.name, delay)
+                await asyncio.sleep(delay)
+                backoff_idx += 1
+
+    def _on_sdk_error(self, exc: BaseException, *, cancel: bool = True) -> None:
+        """Called (sync, possibly from the SDK logger) with an SDK exception; hands off on incompat."""
+        if not _is_sdk_incompat(exc) or getattr(self, "_fatal_error_code", None) == "dingtalk_stream_error":
+            return
+        msg = (f"dingtalk-stream cannot open its websocket with the installed websockets package ({exc}). "
+               "Hermes pins dingtalk-stream==0.24.3 with websockets==15.0.1; reinstall the dingtalk extra "
+               "so those versions are used (e.g. `pip install 'hermes-agent[dingtalk]'`).")
+        logger.error("[%s] %s", self.name, msg)
+        # Not retryable: only a reinstall + restart fixes it, and connect() returns True before the
+        # socket exists, so a gateway reconnect would re-fail every watcher tick forever.
+        self._set_fatal_error("dingtalk_stream_error", msg, retryable=False)
+        task = getattr(self, "_sdk_loop_task", None)
+        if cancel and task is not None and not task.done():
+            task.cancel()  # SDK's own retry loop never exits; lands on its next await
 
     async def _quiet(self, coro, debug_fmt: str = "", *args) -> None:
         """Await *coro*, swallowing any exception (logged at debug as ``debug_fmt % (name, *args, exc)`` when given)."""
@@ -480,6 +602,8 @@ class DingTalkAdapter(BasePlatformAdapter):
 
     async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False) -> SendResult:
         """Stream updated content to an AI Card; ``message_id`` is the creating ``send()``'s out_track_id (callers track their own ids so parallel flows on one chat don't interfere)."""
+        if not self.SUPPORTS_MESSAGE_EDITING:
+            return SendResult(success=False, error="AI Cards are not configured for message editing")
         token = await self._get_access_token() if message_id else None
         if not token:
             return SendResult(success=False, error="message_id required" if not message_id else "No access token")

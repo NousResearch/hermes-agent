@@ -73,7 +73,9 @@ def atomic_write_json(path: Path, payload: dict) -> None:
     """Secret cache entry at 0600 from creation; the containing dir is tightened to 0700
     (``secure_parent_dir`` refuses ``/``, top-level dirs and the install tree). Raises ``OSError``
     on failure; callers decide whether that is best-effort."""
-    path.parent.mkdir(parents=True, exist_ok=True)
+    from hermes_constants import mkdir_under_hermes_home
+
+    mkdir_under_hermes_home(path.parent)
     secure_parent_dir(path)
     atomic_json_write(path, payload, indent=None, mode=0o600)
 
@@ -107,7 +109,7 @@ class DiskCache(Generic[K]):
         if ttl_seconds <= 0:
             return None
         try:
-            with open(self.path(home_path), "r", encoding="utf-8") as f:
+            with open(self.path(home_path), "r", encoding="utf-8-sig") as f:
                 payload = json.load(f)
         except (OSError, json.JSONDecodeError):
             return None

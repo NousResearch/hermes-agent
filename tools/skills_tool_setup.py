@@ -3,7 +3,6 @@
 ``load_env``) stays there and is read lazily at call time so origin-module patches are honored."""
 
 import logging
-import os
 import re
 from enum import Enum
 from typing import Any, Dict, List
@@ -126,8 +125,20 @@ def _is_gateway_surface() -> bool:
 
 
 def _is_env_var_persisted(var_name: str, env_snapshot: Dict[str, str]) -> bool:
-    """Set (non-empty) in the .env snapshot, else in the process environment."""
-    return bool(env_snapshot[var_name] if var_name in env_snapshot else os.getenv(var_name))
+    """Return whether a requirement is present in this profile's secret sources.
+
+    The snapshot keeps the existing ``.env`` precedence.  A miss must use
+    ``get_secret`` rather than reading ``os.environ`` directly so an active
+    multiplex worker can see its hydrated external secrets without seeing a
+    different profile's process environment.
+    """
+    if var_name in env_snapshot:
+        return bool(env_snapshot[var_name])
+    try:
+        from agent.secret_scope import UnscopedSecretError, get_secret
+        return bool(get_secret(var_name))
+    except UnscopedSecretError:
+        return False
 
 
 def _build_setup_note(

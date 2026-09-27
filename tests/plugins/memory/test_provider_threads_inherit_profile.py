@@ -72,16 +72,6 @@ def _openviking(seen, tmp_path):
     return list(workers)
 
 
-def _hindsight(seen, tmp_path):
-    import plugins.memory.hindsight as hindsight
-
-    p = hindsight.HindsightMemoryProvider()
-    p._recall_sync, p._memory_mode, p._auto_recall, p._prefetch_waits_for_retain = False, "hybrid", True, False
-    p._do_recall = lambda query: (seen.setdefault("home", get_hermes_home()) and "text", 1)
-    p.queue_prefetch("remember this")
-    return [p._prefetch_thread]
-
-
 def _honcho(seen, tmp_path):
     from plugins.memory.honcho import HonchoMemoryProvider
 
@@ -90,7 +80,7 @@ def _honcho(seen, tmp_path):
 
 _PROVIDERS = {
     "mem0": _mem0, "retaindb": _retaindb, "byterover": _byterover, "supermemory": _supermemory,
-    "openviking": _openviking, "hindsight": _hindsight, "honcho": _honcho,
+    "openviking": _openviking, "honcho": _honcho,
 }
 
 

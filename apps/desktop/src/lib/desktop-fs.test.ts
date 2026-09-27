@@ -4,6 +4,7 @@ import { setApiRequestConnection } from '@/api/client'
 import { $connection } from '@/store/session'
 
 import {
+  createRemoteDir,
   desktopDefaultCwd,
   desktopFileDiff,
   desktopFsCacheKey,
@@ -41,6 +42,10 @@ const api = vi.fn(async ({ path }: { path: string }) => {
 
   if (path === '/api/fs/default-cwd') {
     return { cwd: '/backend/project', branch: 'main' }
+  }
+
+  if (path === '/api/files/mkdir') {
+    return { ok: true, path: '/home/user/new folder' }
   }
 
   if (path.startsWith('/api/git/file-diff?')) {
@@ -115,6 +120,19 @@ describe('desktop filesystem facade', () => {
     expect(readFileText).not.toHaveBeenCalled()
     expect(readFileDataUrl).not.toHaveBeenCalled()
     expect(gitRoot).not.toHaveBeenCalled()
+  })
+
+  it('creates remote folders through the backend mkdir route for the active profile', async () => {
+    $connection.set({ mode: 'remote', profile: 'team-remote' } as never)
+
+    await expect(createRemoteDir('/home/user/new folder')).resolves.toBe('/home/user/new folder')
+
+    expect(api).toHaveBeenCalledWith({
+      body: { path: '/home/user/new folder' },
+      method: 'POST',
+      path: '/api/files/mkdir',
+      profile: 'team-remote'
+    })
   })
 
   it('does not retry the same unreadable path through the local facade', async () => {

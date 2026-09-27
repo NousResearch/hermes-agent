@@ -61,6 +61,20 @@ def repo(tmp_path, monkeypatch):
     return clone
 
 
+@pytest.fixture
+def local_repo(tmp_path, monkeypatch):
+    """``git init`` repo with NO remote at all (the #111895 shape), HOME redirected."""
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    (tmp_path / "home").mkdir()
+    repo = tmp_path / "local-repo"
+    _git(["init", "-b", "main", str(repo)], tmp_path)
+    (repo / "README.md").write_text("hello\n")
+    _git(["add", "."], repo)
+    _git(["commit", "-m", "init"], repo)
+    (repo / ".worktrees").mkdir()
+    return repo
+
+
 def _add_worktree(repo_path, name, branch=None):
     tree = repo_path / ".worktrees" / name
     branch = branch or f"hermes/{name}"
@@ -105,6 +119,51 @@ class TestAuditVerdicts:
         record = _verdict(records, "hermes-work")
         assert record.verdict == "keep"
         assert "unpushed" in record.reason
+
+    def test_unique_commits_without_a_remote_keep_tree_and_branch(self, local_repo):
+        """No remote: unique commits are judged against the local trunk, never "merged/pushed"."""
+        tree, branch = _add_worktree(local_repo, "hermes-local-work")
+        (tree / "new.py").write_text("x = 1\n")
+        _git(["add", "."], tree)
+        _git(["commit", "-m", "unique local work"], tree)
+
+        records = worktree_gc.audit_worktrees(str(local_repo), with_sizes=False)
+        record = _verdict(records, "hermes-local-work")
+        assert record.verdict == "keep"
+        assert "unpushed" in record.reason
+        assert worktree_gc.reclaim_worktrees(str(local_repo), records=records) == []
+        assert tree.exists()
+        assert _git(["rev-parse", "--verify", branch], local_repo)
+
+    def test_without_a_remote_local_trunk_is_the_baseline(self, local_repo):
+        """Control for the no-remote guard: work merged into the local ``main`` still reclaims
+        (tree and squash-merged branch), while a branch holding unique commits — with or without
+        a worktree — is reported and kept by the branch audit instead of vanishing."""
+        clean_tree, _ = _add_worktree(local_repo, "hermes-clean")
+        squashed_tree, _ = _add_worktree(local_repo, "hermes-squashed")
+        (squashed_tree / "k.py").write_text("k = 1\n")
+        _git(["add", "."], squashed_tree)
+        _git(["commit", "-m", "squash me"], squashed_tree)
+        _git(["merge", "--squash", "hermes/hermes-squashed"], local_repo)
+        _git(["commit", "-m", "squash merge"], local_repo)
+        _git(["branch", "orphan-unique", "main"], local_repo)
+        _git(["checkout", "-q", "orphan-unique"], local_repo)
+        (local_repo / "o.py").write_text("o = 1\n")
+        _git(["add", "."], local_repo)
+        _git(["commit", "-m", "unique, no worktree"], local_repo)
+        _git(["checkout", "-q", "main"], local_repo)
+
+        records = worktree_gc.audit_worktrees(str(local_repo), with_sizes=False)
+        assert _verdict(records, "hermes-clean").verdict == "reap"
+        assert _verdict(records, "hermes-squashed").verdict == "reap"
+        worktree_gc.reclaim_worktrees(str(local_repo), records=records)
+        assert not clean_tree.exists() and not squashed_tree.exists()
+
+        by_name = {b.name: b for b in worktree_gc.audit_branches(str(local_repo))}
+        assert by_name["orphan-unique"].verdict == "keep"
+        assert "unique" in by_name["orphan-unique"].reason
+        assert by_name["main"].verdict == "keep"
+        assert "hermes/hermes-squashed" not in by_name  # branch -D ran only on merged work
 
     def test_patch_equivalent_commits_reap(self, repo):
         """The squash/rebase-merge leak: local commit unreachable from any
@@ -247,3 +306,138 @@ class TestBranchGC:
         by_name = {record.name: record for record in records}
         assert by_name["main"].verdict == "keep"
         assert by_name[branch].verdict == "keep"
+
+
+class TestOlderThanGate:
+    def test_young_reapable_tree_kept_under_older_than(self, repo):
+        _add_worktree(repo, "hermes-young")
+        records = worktree_gc.audit_worktrees(
+            str(repo), with_sizes=False, older_than_days=7,
+        )
+        record = _verdict(records, "hermes-young")
+        assert record.verdict == "keep"
+        assert "older-than" in record.reason
+
+    def test_aged_reapable_tree_still_reaps(self, repo):
+        import os as _os
+        import time as _time
+
+        tree, _ = _add_worktree(repo, "hermes-old")
+        old = _time.time() - 10 * 86400
+        _os.utime(tree, (old, old))
+        records = worktree_gc.audit_worktrees(
+            str(repo), with_sizes=False, older_than_days=7,
+        )
+        assert _verdict(records, "hermes-old").verdict == "reap"
+
+    def test_older_than_never_widens_eligibility(self, repo):
+        """A tree with real work stays keep at ANY age — the age gate only
+        restricts, it can never doom unmerged/dirty work."""
+        import os as _os
+        import time as _time
+
+        tree, _ = _add_worktree(repo, "hermes-old-work")
+        (tree / "README.md").write_text("edited\n")
+        old = _time.time() - 30 * 86400
+        _os.utime(tree, (old, old))
+        records = worktree_gc.audit_worktrees(
+            str(repo), with_sizes=False, older_than_days=7,
+        )
+        record = _verdict(records, "hermes-old-work")
+        assert record.verdict == "keep"
+        assert "tracked" in record.reason
+
+
+class TestExternalTrees:
+    def test_external_tree_reported_never_reaped(self, repo, tmp_path):
+        ext = tmp_path / "elsewhere-tree"
+        _git(["worktree", "add", str(ext), "-b", "ext/branch"], repo)
+        (ext / "WIP.txt").write_text("outside work\n")
+
+        external = worktree_gc.audit_external_trees(str(repo))
+        paths = [record.path for record in external]
+        assert any("elsewhere-tree" in p for p in paths)
+        record = [r for r in external if "elsewhere-tree" in r.path][0]
+        assert record.branch == "ext/branch"
+        assert not record.missing
+
+        # The managed audit + reclaim never see or touch it.
+        records = worktree_gc.audit_worktrees(str(repo), with_sizes=False)
+        assert all("elsewhere-tree" not in r.name for r in records)
+        worktree_gc.reclaim_worktrees(str(repo), records=records)
+        assert ext.exists() and (ext / "WIP.txt").exists()
+
+    def test_managed_trees_not_reported_as_external(self, repo):
+        _add_worktree(repo, "hermes-managed")
+        external = worktree_gc.audit_external_trees(str(repo))
+        assert all("hermes-managed" not in r.path for r in external)
+
+    def test_missing_registration_flagged_and_pruned(self, repo, tmp_path):
+        import shutil as _shutil
+
+        ext = tmp_path / "vanished-tree"
+        _git(["worktree", "add", str(ext), "-b", "ext/vanished"], repo)
+        _shutil.rmtree(ext)
+
+        external = worktree_gc.audit_external_trees(str(repo))
+        record = [r for r in external if "vanished-tree" in r.path][0]
+        assert record.missing
+
+        planned = worktree_gc.prune_missing_registrations(str(repo), dry_run=True)
+        assert any("vanished-tree" in line for line in planned)
+        # Dry-run changed nothing.
+        assert any(
+            r.missing for r in worktree_gc.audit_external_trees(str(repo))
+        )
+
+        done = worktree_gc.prune_missing_registrations(str(repo))
+        assert any("pruned" in line for line in done)
+        assert all(
+            "vanished-tree" not in r.path
+            for r in worktree_gc.audit_external_trees(str(repo))
+        )
+
+
+class TestCmdWorktreeJson:
+    def _ns(self, repo, action, **kw):
+        import argparse
+
+        return argparse.Namespace(
+            repo=str(repo), worktree_action=action,
+            json=True, older_than=kw.get("older_than"),
+            dry_run=kw.get("dry_run", False),
+            trees_only=kw.get("trees_only", False),
+            branches_only=kw.get("branches_only", False),
+        )
+
+    def test_list_json_shape(self, repo, capsys):
+        import json
+
+        from hermes_cli.worktree_cmd import cmd_worktree
+
+        _add_worktree(repo, "hermes-json")
+        assert cmd_worktree(self._ns(repo, "list")) == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert set(payload) == {"repo", "trees", "external_trees", "branches"}
+        names = [t["name"] for t in payload["trees"]]
+        assert "hermes-json" in names
+        tree = [t for t in payload["trees"] if t["name"] == "hermes-json"][0]
+        assert {"verdict", "reason", "age_days", "branch"} <= set(tree)
+
+    def test_prune_dry_run_json(self, repo, capsys):
+        import json
+
+        from hermes_cli.worktree_cmd import cmd_worktree
+
+        _add_worktree(repo, "hermes-json-prune")
+        assert cmd_worktree(self._ns(repo, "prune", dry_run=True)) == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["dry_run"] is True
+        assert any("hermes-json-prune" in a for a in payload["actions"])
+        # dry-run: tree still present
+        assert (repo / ".worktrees" / "hermes-json-prune").exists()
+
+    def test_negative_older_than_rejected(self, repo, capsys):
+        from hermes_cli.worktree_cmd import cmd_worktree
+
+        assert cmd_worktree(self._ns(repo, "prune", older_than=-1)) == 1

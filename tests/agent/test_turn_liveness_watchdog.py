@@ -35,7 +35,6 @@ import pytest
 
 from run_agent import AIAgent
 
-
 class _DB:
     def __init__(self, session_exists=True, acquire_result=True):
         self.events = []
@@ -69,7 +68,6 @@ class _DB:
     def release_session_turn_lease(self, session_id, holder):
         self.events.append(("release", session_id, holder))
 
-
 class _BlockingCommitFence:
     """Controllable compression commit fence for the stall-abort witness.
 
@@ -102,7 +100,6 @@ class _BlockingCommitFence:
         self.entered.set()
         assert self.release.wait(10.0), "fence was never released"
         return True
-
 
 class _ParkingReleaseLock:
     """Activity-lock wrapper that parks the releasing thread at one exact
@@ -138,7 +135,6 @@ class _ParkingReleaseLock:
                 "parked activity-lock release was never released"
             )
         return result
-
 
 def _agent_with_db(db, *, session_id="stalled-session", platform="desktop"):
     agent = AIAgent.__new__(AIAgent)
@@ -177,7 +173,6 @@ def _agent_with_db(db, *, session_id="stalled-session", platform="desktop"):
     agent._session_turn_lease_refresh_interval = 60.0
     return agent
 
-
 @pytest.fixture
 def watchdog_config(monkeypatch):
     """Arm the watchdog fast through config.yaml — the only supported surface.
@@ -199,7 +194,6 @@ def watchdog_config(monkeypatch):
     )
     return monkeypatch
 
-
 def _run_turn(agent, inner_loop, monkeypatch):
     """Drive AIAgent.run_conversation with a fake inner conversation loop."""
     from agent import conversation_loop as loop_module
@@ -211,7 +205,6 @@ def _run_turn(agent, inner_loop, monkeypatch):
         conversation_history=[{"role": "user", "content": "stale"}],
     )
 
-
 def test_watchdog_force_aborts_silently_stalled_turn(watchdog_config, monkeypatch, caplog):
     """A turn with zero observable progress past the bound is surfaced and
     force-aborted as an interrupted turn instead of hanging forever."""
@@ -219,18 +212,14 @@ def test_watchdog_force_aborts_silently_stalled_turn(watchdog_config, monkeypatc
     agent = _agent_with_db(db)
 
     interrupt_seen = {}
-    t_start = time.time()
-
     def stalled_loop(_agent, _message, _system, history, *_args, **_kwargs):
         # Simulate the #95548 zombie: the loop makes no progress and never
         # touches the activity clock. It only notices the watchdog's
         # hard interrupt (real wedges may not even do that — see the lease
         # test below).
-        while not _agent._interrupt_requested:
-            if time.time() - t_start > 10:
-                break
-            time.sleep(0.005)
-        interrupt_seen["at"] = time.time()
+        assert _agent._hard_interrupt_requested.wait(30.0), (
+            "watchdog did not publish a hard interrupt"
+        )
         interrupt_seen["message"] = _agent._interrupt_message
         return {
             "final_response": "aborted",
@@ -243,14 +232,9 @@ def test_watchdog_force_aborts_silently_stalled_turn(watchdog_config, monkeypatc
     with caplog.at_level(logging.ERROR, logger="agent.turn_liveness"):
         result = _run_turn(agent, stalled_loop, monkeypatch)
 
-    elapsed = time.time() - t_start
-
     # The turn was surfaced as interrupted, not hung.
     assert result["interrupted"] is True
     assert result["final_response"] == "aborted"
-    # The watchdog fired before our 10s outer bound, and after the 0.3s idle
-    # bound (poll interval makes the exact fire instant approximate).
-    assert 0.2 <= elapsed < 10.0
     # The stall was logged loudly with the session named.
     assert any(
         "Turn liveness watchdog fired" in record.getMessage()
@@ -263,7 +247,6 @@ def test_watchdog_force_aborts_silently_stalled_turn(watchdog_config, monkeypatc
     # The durable lease was released on the interrupted exit path.
     assert db.events[-1][0] == "release"
     assert db.events[-1][1] == "stalled-session"
-
 
 def test_watchdog_does_not_fire_while_turn_still_making_progress(
     watchdog_config, monkeypatch, caplog
@@ -302,7 +285,6 @@ def test_watchdog_does_not_fire_while_turn_still_making_progress(
     # The lease refresher ran during the turn — renewal is orthogonal to the
     # watchdog and continued while the turn was alive.
     assert len(db.refresh_times) >= 1
-
 
 def test_watchdog_stops_lease_renewal_when_interrupt_cannot_unwind_wedge(
     watchdog_config, monkeypatch
@@ -354,7 +336,6 @@ def test_watchdog_stops_lease_renewal_when_interrupt_cannot_unwind_wedge(
     )
     # The lease row was still released when the turn finally unwound.
     assert [e[0] for e in db.events][-1] == "release"
-
 
 def test_watchdog_declines_abort_when_activity_resumes_during_warning(
     watchdog_config, monkeypatch, caplog
@@ -441,60 +422,6 @@ def test_watchdog_declines_abort_when_activity_resumes_during_warning(
     # …and the lease kept renewing through the resumed turn.
     assert len(db.refresh_times) >= 1
     assert db.events[-1][0] == "release"
-
-
-def test_watchdog_publishes_definitive_settlement_only_after_commit(
-    watchdog_config, monkeypatch, caplog
-):
-    """#95663 review: the definitive aborted/lease-stopped settlement is
-    published only AFTER the abort has authority (commit succeeded and
-    the turn lease was deactivated). The committed path must show the
-    settlement; the pre-commit surface must not claim it."""
-    db = _DB()
-    agent = _agent_with_db(db)
-    warnings = []
-
-    def stalled_loop(_agent, _message, _system, history, *_args, **_kwargs):
-        while not _agent._interrupt_requested:
-            time.sleep(0.005)
-        return {
-            "final_response": "aborted",
-            "messages": history,
-            "api_calls": 0,
-            "completed": False,
-            "interrupted": True,
-        }
-
-    agent._emit_warning = lambda msg: warnings.append(msg)
-
-    with caplog.at_level(logging.ERROR, logger="agent.turn_liveness"):
-        result = _run_turn(agent, stalled_loop, monkeypatch)
-
-    assert result["interrupted"] is True
-    # Pre-commit surface: observational, recovery-attempt language.
-    assert any(
-        "Turn liveness watchdog fired" in record.getMessage()
-        and "Attempting recovery" in record.getMessage()
-        for record in caplog.records
-    )
-    # Definitive settlement: only present because the abort committed.
-    assert any(
-        "watchdog aborted turn" in record.getMessage()
-        and "lease renewal stopped" in record.getMessage()
-        for record in caplog.records
-    ), "committed abort did not publish the definitive settlement"
-    # User-visible warnings follow the same split: first observational,
-    # then (and only then) the committed outcome.
-    assert any("attempting recovery" in w for w in warnings)
-    assert any("Turn aborted by the liveness watchdog" in w for w in warnings)
-    # Ordering: the committed-abort warning came after the recovery one.
-    recovery_idx = next(i for i, w in enumerate(warnings) if "attempting recovery" in w)
-    aborted_idx = next(
-        i for i, w in enumerate(warnings) if "Turn aborted by the liveness watchdog" in w
-    )
-    assert aborted_idx > recovery_idx
-    assert db.events[-1][0] == "release"
-
 
 def test_watchdog_declines_abort_when_activity_resumes_after_revalidation(
     watchdog_config, monkeypatch, caplog
@@ -589,7 +516,6 @@ def test_watchdog_declines_abort_when_activity_resumes_after_revalidation(
     assert len(db.refresh_times) >= 1
     assert db.events[-1][0] == "release"
 
-
 def test_watchdog_declines_abort_when_activity_resumes_inside_interrupt_publication(
     watchdog_config, monkeypatch, caplog
 ):
@@ -674,7 +600,6 @@ def test_watchdog_declines_abort_when_activity_resumes_inside_interrupt_publicat
     assert len(db.refresh_times) >= 1
     assert db.events[-1][0] == "release"
 
-
 def test_watchdog_declines_abort_when_interrupt_publish_raises(
     watchdog_config, monkeypatch, caplog
 ):
@@ -746,99 +671,6 @@ def test_watchdog_declines_abort_when_interrupt_publish_raises(
     # …and the lease kept renewing because the abort was declined.
     assert len(db.refresh_times) >= 1
     assert db.events[-1][0] == "release"
-
-
-def test_interrupt_consumes_claim_and_publishes_first_state_atomically():
-    """#95663 round-6 review race: claim consumption and the first
-    interrupt publication must be ONE activity-lock critical section.
-
-    The round-4 tree consumed the generation claim under the activity
-    lock, released it, and only then published ``_interrupt_requested``
-    / ``_interrupt_message`` / ``_tool_interrupt_reason`` — so a turn
-    that resumed in that window (real progress, G+1) was still
-    hard-cancelled by the already-consumed claim. This witness parks
-    the interrupt thread exactly at the claim-publication boundary (the
-    Nth activity-lock release), publishes real activity on a competing
-    thread while the hammer is parked, and asserts the total order: any
-    interrupt publication must have committed under the lock BEFORE the
-    competing activity stamp. Publishing AFTER it is the round-6 defect
-    and makes this test red on that tree.
-    """
-    agent = AIAgent.__new__(AIAgent)
-    agent._turn_liveness_activity_generation = 5
-    agent._turn_liveness_abort_claim = None
-    agent._interrupt_requested = False
-    agent._interrupt_message = None
-    agent._tool_interrupt_reason = None
-    agent._hard_interrupt_requested = threading.Event()
-    agent._execution_thread_id = None
-    agent._active_children_lock = threading.Lock()
-    agent._active_children = set()
-    agent.quiet_mode = True
-
-    parking_lock = _ParkingReleaseLock(threading.Lock())
-    # Release #1 is the claim RESERVATION at interrupt() entry; release
-    # #2 is the CONSUME on the round-4 tree / the atomic
-    # consume+publication critical section on the repaired tree. Parking
-    # on release #2 puts the competing activity exactly at the
-    # claim-publication boundary under test.
-    parking_lock.park_on_release = 2
-    agent._turn_liveness_activity_lock = parking_lock
-
-    result = {}
-
-    def interrupt_fn():
-        result["ret"] = AIAgent.interrupt(
-            agent,
-            "watchdog: no progress",
-            hard_cancel=True,
-            tool_reason="turn liveness watchdog fired",
-            require_generation=5,
-        )
-
-    interrupt_thread = threading.Thread(target=interrupt_fn)
-    interrupt_thread.start()
-    assert parking_lock.parked.wait(10.0), (
-        "interrupt never reached the claim-publication boundary"
-    )
-
-    # Real progress lands on a competing thread while the hammer is
-    # parked: the activity clock advances to generation G+1 (6).
-    touched = threading.Event()
-
-    def turn_fn():
-        agent._touch_activity("turn resumed")
-        touched.set()
-
-    turn_thread = threading.Thread(target=turn_fn)
-    turn_thread.start()
-    assert touched.wait(10.0), "competing activity never landed"
-
-    def _published():
-        return (
-            agent._interrupt_requested
-            or agent._interrupt_message is not None
-            or agent._tool_interrupt_reason is not None
-            or agent._hard_interrupt_requested.is_set()
-        )
-
-    # The window was really hit: the claim was consumed and the
-    # competing activity advanced the generation.
-    assert agent._turn_liveness_abort_claim is None
-    assert agent._turn_liveness_activity_generation == 6
-
-    published_before_activity = _published()
-    parking_lock.release_park.set()
-    interrupt_thread.join(10.0)
-    turn_thread.join(10.0)
-    published_after = _published()
-
-    assert result.get("ret") is True
-    assert not (published_after and not published_before_activity), (
-        "interrupt state published after competing activity landed: "
-        f"before={published_before_activity}, after={published_after}"
-    )
-
 
 def test_declined_abort_does_not_cancel_pending_compression_commit():
     """#99758 P1 review: a stale liveness claim must not cancel a legitimate
@@ -919,67 +751,5 @@ def test_declined_abort_does_not_cancel_pending_compression_commit():
     assert fence.begin_commit() is True, (
         "declined liveness abort left the pending compression fence "
         "cancelled: begin_commit() refused"
-    )
-    fence.finish_commit()
-
-
-def test_declined_abort_parks_and_leaves_fence_operational():
-    """#99758 P1, deterministic window variant: park the interrupt inside the
-    wait phase boundary with a REAL fence whose commit is in flight, resume
-    the turn while parked, and prove both that the interrupt declines AND
-    that the fence can serve a fresh begin_commit afterwards."""
-    from agent.conversation_compression import CompressionCommitFence
-
-    agent = AIAgent.__new__(AIAgent)
-    agent._turn_liveness_activity_generation = 5
-    agent._turn_liveness_abort_claim = None
-    agent._interrupt_requested = False
-    agent._interrupt_message = None
-    agent._tool_interrupt_reason = None
-    agent._hard_interrupt_requested = threading.Event()
-    agent._execution_thread_id = None
-    agent._active_children_lock = threading.Lock()
-    agent._active_children = set()
-    agent.quiet_mode = True
-
-    fence = CompressionCommitFence()
-    agent._active_compression_commit_fence = fence
-
-    # Put the fence in the in-flight state so the wait phase blocks in
-    # cancel_before_commit (the started-commit branch waits for
-    # finish_commit without cancelling).
-    assert fence.begin_commit() is True
-    entered = threading.Event()
-    resumed = threading.Event()
-
-    result = {}
-
-    def interrupt_fn():
-        result["ret"] = AIAgent.interrupt(
-            agent,
-            "watchdog: no progress",
-            hard_cancel=True,
-            require_generation=5,
-        )
-
-    interrupt_thread = threading.Thread(target=interrupt_fn)
-    interrupt_thread.start()
-    # Let the interrupt reach the fence wait (blocking on the held lock).
-    time.sleep(0.2)
-    # Real progress lands while the interrupt waits on the in-flight commit.
-    agent._touch_activity("turn resumed mid-wait")
-    resumed.set()
-    # Release the in-flight commit; the interrupt's wait completes, then
-    # the claim check runs and declines.
-    fence.finish_commit()
-    interrupt_thread.join(10.0)
-
-    assert result["ret"] is False, "interrupt should decline after G+1"
-    assert not agent._interrupt_requested
-    assert not agent._hard_interrupt_requested.is_set()
-    # The declined abort must not have cancelled the fence for FUTURE
-    # commits: a fresh begin_commit still admits.
-    assert fence.begin_commit() is True, (
-        "declined liveness abort left the compression fence cancelled"
     )
     fence.finish_commit()

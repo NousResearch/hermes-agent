@@ -59,7 +59,7 @@ def test_prompt_snapshots_are_deduplicated_and_hydrated_for_readers(db):
     assert db.list_pending_handoffs()[0]["system_prompt"] == prompt
 
 
-def test_prompt_replacement_and_route_changes_collect_only_orphans(db):
+def test_route_changes_keep_the_prompt_and_replacement_collects_orphans(db):
     shared_prompt = "Model: x-ai/grok-4.5\nProvider: nous"
     db.create_session(
         "s1",
@@ -70,6 +70,8 @@ def test_prompt_replacement_and_route_changes_collect_only_orphans(db):
     )
     db.create_session("s2", "cli", system_prompt=shared_prompt)
 
+    # A route change keeps the stored snapshot: it is the session's cache prefix, and the next
+    # turn's runtime-identity check rebuilds only when the footer it embeds is actually stale.
     db.update_session_runtime_lock(
         "s1",
         model="anthropic/claude-opus-4.8",
@@ -77,7 +79,7 @@ def test_prompt_replacement_and_route_changes_collect_only_orphans(db):
         confirmed=True,
     )
     s1 = db.get_session("s1")
-    assert s1["system_prompt"] is None
+    assert s1["system_prompt"] == shared_prompt
     assert json.loads(s1["model_config"])["_branched_from"] == "parent"
     assert db.get_session("s2")["system_prompt"] == shared_prompt
     assert _prompt_count(db) == 1
@@ -87,13 +89,16 @@ def test_prompt_replacement_and_route_changes_collect_only_orphans(db):
         provider="openrouter",
         base_url="https://example.test/v1",
     )
-    assert db.get_session("s2")["system_prompt"] is None
-    assert _prompt_count(db) == 0
+    assert db.get_session("s2")["system_prompt"] == shared_prompt
+    assert _prompt_count(db) == 1
 
-    db.update_system_prompt("s2", "replacement")
-    assert db.get_session("s2")["system_prompt"] == "replacement"
+    # Replacing the snapshot (a rebuild) is what orphans the previous bytes.
+    db.update_system_prompt("s1", "replacement")
+    assert db.get_session("s1")["system_prompt"] == "replacement"
+    assert _prompt_count(db) == 2  # "replacement" + the still-referenced shared prompt
     db.update_system_prompt("s2", None)
-    assert _prompt_count(db) == 0
+    assert db.get_session("s2")["system_prompt"] is None
+    assert _prompt_count(db) == 1
 
 
 def test_existing_session_enrichment_does_not_leak_unused_prompt(db):
@@ -181,6 +186,43 @@ def test_compression_child_uses_content_addressed_prompt(db):
     assert raw["system_prompt_hash"] is not None
     assert db.get_session("child")["system_prompt"] == prompt
     assert _prompt_count(db) == 1
+
+
+def test_compression_child_continues_the_parents_tool_pin(db):
+    pin = {"version": "sha", "tools": [{"type": "function", "function": {"name": "read_file"}}]}
+    db.create_session("parent", "telegram")
+    db.update_session_tool_names("parent", pin)
+    db.append_message("parent", "user", "original")
+    assert db.try_acquire_compression_lock("parent", "holder", ttl_seconds=60)
+
+    db.publish_compression_child(
+        parent_session_id="parent", child_session_id="child", source="telegram", system_prompt="p",
+        messages=[{"role": "user", "content": "summary"}], compression_lock_holder="holder")
+
+    assert json.loads(db.get_session("child")["tool_names"]) == pin
+
+
+def test_recovery_cleanup_keeps_tool_pins_and_drops_dangling_pin_refs(tmp_path):
+    from hermes_cli.session_recovery import _cleanup_partial_orphans
+
+    pin = {"version": "sha", "tools": [{"type": "function", "function": {"name": "read_file"}}]}
+    with SessionDB(db_path=tmp_path / "state.db") as db:
+        db.create_session("pinned", "tui")
+        db.update_session_tool_names("pinned", pin)
+        db.create_session("dangling", "tui")
+        db._conn.execute("UPDATE sessions SET tool_names = ? WHERE id = 'dangling'", ("ab" * 32,))
+        db.create_session("legacy", "tui")
+        db._conn.execute("UPDATE sessions SET tool_names = ? WHERE id = 'legacy'", ('["read_file"]',))
+        db._conn.commit()
+    conn = sqlite3.connect(str(tmp_path / "state.db"), isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    _cleanup_partial_orphans(conn)
+    conn.close()
+
+    with SessionDB(db_path=tmp_path / "state.db") as db:
+        assert json.loads(db.get_session("pinned")["tool_names"]) == pin
+        assert db.get_session("dangling")["tool_names"] is None
+        assert db.get_session("legacy")["tool_names"] == '["read_file"]'
 
 
 def test_imported_prompts_are_deduplicated(tmp_path):

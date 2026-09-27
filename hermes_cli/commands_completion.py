@@ -25,19 +25,20 @@ _personalities_memo: Optional[
 
 
 def _personalities_from_cli_config() -> Dict[str, Any]:
-    """``available_personalities(load_cli_config())`` memoised on config path+mtime+size:
+    """``available_personalities(load_cli_config())`` memoised on config path+signature:
     load_cli_config() is a full YAML parse + deep merge and the completer runs per keystroke.
     Falls back to a fresh load when the file cannot be stat'ed."""
     global _personalities_memo
     from cli import load_cli_config
+    from utils import file_signature
     from hermes_cli.personality import available_personalities
     try:
         from hermes_cli.config import get_config_path
         cfg_path = get_config_path()
         st = cfg_path.stat()
-        sig = (str(cfg_path), st.st_mtime_ns, st.st_size)
+        sig = (str(cfg_path), *file_signature(st))
     except Exception:
-        sig = (None, None, None)
+        sig = (None, None, None, None, None)
     if _personalities_memo is None or _personalities_memo[0] != sig:
         _personalities_memo = (sig, available_personalities(load_cli_config()))
     return _personalities_memo[1]

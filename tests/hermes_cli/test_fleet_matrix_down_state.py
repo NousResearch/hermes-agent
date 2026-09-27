@@ -19,7 +19,7 @@ def _setup(monkeypatch, tmp_path, record: dict):
     home = tmp_path / ".hermes"
     home.mkdir(exist_ok=True)
     monkeypatch.setattr(
-        "hermes_cli.build_info.get_code_identity",
+        "hermes_cli.version_info.get_code_identity",
         lambda refresh=False: {"sha": "HEADSHA", "version": "1.0"},
     )
     monkeypatch.setattr("hermes_cli.profiles._get_default_hermes_home", lambda: home)
@@ -29,6 +29,13 @@ def _setup(monkeypatch, tmp_path, record: dict):
     monkeypatch.setattr("gateway.control_socket.identify_gateway", lambda h, **k: None)
     (home / "gateway_state.json").write_text(json.dumps(record), encoding="utf-8")
     return home
+
+
+def _verify_self_as_gateway(monkeypatch):
+    """Without a socket answer the state file is only a claim; the fallback classifies a LIVE
+    pid from it only when the home's identity resolver verifies that pid as the gateway
+    (#110420). The live-pid tests write the record about pytest itself, so verify it."""
+    monkeypatch.setattr("gateway.status.live_gateway_pid_for_home", lambda h: os.getpid())
 
 
 _DEAD_PID = 999999899  # never a live pid
@@ -100,6 +107,7 @@ def test_matching_start_time_is_still_live(monkeypatch, tmp_path):
     from gateway.status import _get_process_start_time
 
     pid = os.getpid()
+    _verify_self_as_gateway(monkeypatch)
     _setup(
         monkeypatch,
         tmp_path,
@@ -118,6 +126,7 @@ def test_matching_start_time_is_still_live(monkeypatch, tmp_path):
 
 def test_live_gateway_rows_unchanged(monkeypatch, tmp_path):
     """The live-pid path is untouched by the down-state addition."""
+    _verify_self_as_gateway(monkeypatch)
     _setup(
         monkeypatch,
         tmp_path,

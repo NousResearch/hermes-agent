@@ -73,3 +73,43 @@ def test_verify_budget_covers_the_watchers_own_wait_when_the_old_pid_is_still_al
     # reports "no stable gateway process appeared" before the relaunch could have happened.
     assert pending > GATEWAY_RESTART_WATCHER_TIMEOUT_S
     assert settled < pending
+
+
+# ---------------------------------------------------------------------------
+# The runpy launcher form IS this process's own subcommand (#124588)
+# ---------------------------------------------------------------------------
+
+def _runpy_launcher_cmdline(root) -> str:
+    """The real managed-runtime launcher command line (hermes_cli/_launchers.runtime_command)."""
+    from hermes_cli._launchers import runtime_command
+
+    return " ".join(runtime_command(root, ["gateway", "run", "--external-supervisor"]))
+
+
+def test_runpy_launcher_form_is_recognized_as_gateway_run(tmp_path, monkeypatch):
+    """#124588: the launchd-supervised gateway runs as the inline-source launcher itself —
+    ``python -I -c "<runpy source>" gateway run --external-supervisor``. The #107002 guard
+    read it as "not a gateway" and the Desktop app reported "Messaging gateway stopped"
+    while the gateway was running and connected. The runpy bootstrap runs hermes_cli.main
+    IN THIS PROCESS, so the trailing argv IS this process's own subcommand."""
+    cmdline = _runpy_launcher_cmdline(tmp_path)
+    assert "runpy.run_module" in cmdline
+    assert _gateway_command_subcommand(cmdline) == "run"
+    assert looks_like_gateway_command_line(cmdline) is True
+
+
+def test_runpy_launcher_form_strips_profile_flags(tmp_path):
+    cmdline = _runpy_launcher_cmdline(tmp_path).replace(
+        "--external-supervisor", "-p work --external-supervisor")
+    assert _gateway_command_subcommand(cmdline) == "run"
+
+
+def test_watcher_form_still_refused(tmp_path):
+    """The #107002 premise holds for the watcher (its ``-c`` code spawns later, no runpy)."""
+    from hermes_cli._launchers import runtime_command
+
+    cmdline = " ".join(runtime_command(
+        tmp_path, ["1234", "30.0", "python", "-m", "hermes_cli.main", "gateway", "restart"],
+        code="watcher"))
+    assert "runpy.run_module" not in cmdline
+    assert _gateway_command_subcommand(cmdline) is None

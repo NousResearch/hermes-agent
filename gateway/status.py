@@ -588,6 +588,26 @@ def command_line_runs_inline_source(tokens: list[str]) -> bool:
     return inline_source_flag_index(tokens) is not None
 
 
+def _subcommand_after_profile_flags(tokens: list[str]) -> str | None:
+    """Lifecycle subcommand from *tokens*: drop ``--profile X``/``-p X``/``--profile=X``/``-p=X``
+    (consumes a VALUE of "gateway" too), then the token after a ``gateway`` token
+    (bare ``hermes gateway`` defaults to ``run``)."""
+    filtered: list[str] = []
+    skip_next = False
+    for token in tokens:
+        if skip_next:
+            skip_next = False
+        elif token in ("--profile", "-p"):
+            skip_next = True
+        elif not token.startswith(("--profile=", "-p=")):
+            filtered.append(token)
+    for i, token in enumerate(filtered):
+        if token == "gateway":
+            # Bare `hermes gateway` defaults to `run`.
+            return filtered[i + 1] if i + 1 < len(filtered) else "run"
+    return None
+
+
 def _gateway_command_subcommand(command: str | None) -> str | None:
     """Hermes gateway lifecycle subcommand from a command line, or None. No loose substring matches
     (``"gateway" in cmdline`` also matched ``gateway status`` / ``python -m tui_gateway``): needs a
@@ -610,6 +630,22 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
     # the inline source will spawn later, not to this process (#107002). Case-preserving tokens:
     # the operand-taking ``-X``/``-W``/``-Q`` must not be conflated with ``-q``/``-b``.
     if command_line_runs_inline_source(cased_tokens):
+        # The runpy launcher form is the opposite: ``python -I -c "<runpy source>" gateway run …``
+        # runs hermes_cli.main IN THIS PROCESS (the managed-runtime relaunch,
+        # hermes_cli/_launchers + venv_sync.relaunch_command), so the trailing argv IS this
+        # process's own subcommand. The #107002 guard read it as "not a gateway" and a
+        # launchd-supervised gateway was reported stopped while running and connected (#124588).
+        # The restart watcher's ``-c`` code spawns later and carries no runpy, so it keeps the guard.
+        # The cmdline reader flattens argv with space joins (no quoting), so the ``-c`` source
+        # spans several tokens: detect the runpy form on the whole tail, then split the trailing
+        # argv off at the bootstrap's closing paren (the canonical runpy template).
+        idx = inline_source_flag_index(cased_tokens)
+        tail = " ".join(cased_tokens[idx + 1:]) if idx is not None else ""
+        if "runpy.run_module" in tail:
+            marker = "alter_sys=True)"
+            cut = tail.find(marker)
+            trailing = tail[cut + len(marker):] if cut >= 0 else ""
+            return _subcommand_after_profile_flags([t.lower() for t in trailing.split()])
         return None
     # The launchd job's osascript wrapper (gateway_launchd.launchd_program_arguments) carries the gateway argv
     # inside one JXA script string; the gateway itself is its child and is matched on its own command line.
@@ -631,21 +667,7 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
         b in ("hermes", "hermes.exe") for b in basenames
     ):
         return None
-    # Drop --profile X / -p X / --profile=X / -p=X (consumes a VALUE of "gateway" too).
-    filtered: list[str] = []
-    skip_next = False
-    for token in tokens:
-        if skip_next:
-            skip_next = False
-        elif token in ("--profile", "-p"):
-            skip_next = True
-        elif not token.startswith(("--profile=", "-p=")):
-            filtered.append(token)
-    for i, token in enumerate(filtered):
-        if token == "gateway":
-            # Bare `hermes gateway` defaults to `run`.
-            return filtered[i + 1] if i + 1 < len(filtered) else "run"
-    return None
+    return _subcommand_after_profile_flags(tokens)
 
 
 def gateway_spawn_intent_subcommand(command: str | None) -> str | None:

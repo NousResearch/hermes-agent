@@ -1795,7 +1795,8 @@ def restore_config_model_settings_if_rewritten(
         # user should see rather than have papered over (matches the cron net).
         return None
 
-    restored_keys: list[str] = []
+    # (path, value this check saw, snapshot value) for every protected key the update rewrote.
+    rewritten: list[tuple[Tuple[str, ...], Any, Any]] = []
     for dotted in _PROTECTED_CONFIG_PATHS:
         snap_val = _get_config_path_value(snap, dotted)
         if snap_val in (None, "", {}, []):
@@ -1803,16 +1804,31 @@ def restore_config_model_settings_if_rewritten(
         live_val = _get_config_path_value(live, dotted)
         if live_val == snap_val:
             continue
-        _set_config_path_value(live, dotted, snap_val)
-        restored_keys.append(".".join(dotted))
+        rewritten.append((dotted, live_val, snap_val))
 
-    if not restored_keys:
+    if not rewritten:
         return None
 
+    restored_keys: list[str] = []
     try:
         from hermes_cli.config import atomic_config_write
+        from hermes_cli.config_rmw import config_write_lock
 
-        atomic_config_write(live_path, live)
+        # ``live`` is stale by now: writing it back whole reverted any config write that landed
+        # after the read above. Re-read under the config write lock and apply only the protected
+        # paths, and only where the value is still the rewrite this check saw (a newer write wins).
+        with config_write_lock(live_path):
+            fresh = _read_raw_yaml_dict(live_path)
+            if fresh is None:
+                return None
+            for dotted, seen, snap_val in rewritten:
+                if _get_config_path_value(fresh, dotted) != seen:
+                    continue
+                _set_config_path_value(fresh, dotted, snap_val)
+                restored_keys.append(".".join(dotted))
+            if not restored_keys:
+                return None
+            atomic_config_write(live_path, fresh)
     except (OSError, PermissionError) as exc:
         logger.error(
             "config.yaml model settings were rewritten during update but "

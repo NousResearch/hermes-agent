@@ -155,3 +155,35 @@ def test_a_save_based_on_a_missing_config_keeps_a_first_write_made_after_the_rea
     after = _disk(cfg_path)
     assert after["approvals"]["destructive_slash_confirm"] is False, "the first write was deleted"
     assert after["a_writer"]["key"] == _A_SENTINEL
+
+
+def test_update_model_restore_keeps_a_config_write_that_lands_during_it(home, monkeypatch):
+    """The post-update model restore read config.yaml with its own loader and wrote that whole dict
+    back, reverting a config write that landed after its read."""
+    from hermes_cli import backup
+
+    cfg_path = home / "config.yaml"
+    cfg_path.write_text("model:\n  default: changed-model\napprovals:\n  destructive_slash_confirm: true\n",
+                        encoding="utf-8")
+    snapshot = backup._quick_snapshot_root(home) / "pre-update"
+    snapshot.mkdir(parents=True)
+    (snapshot / "config.yaml").write_text("model:\n  default: original-model\n", encoding="utf-8")
+
+    read = backup._read_raw_yaml_dict
+    interleaved = []
+
+    def read_then_interleave(path):
+        loaded = read(path)
+        if Path(path) == cfg_path and not interleaved:
+            interleaved.append(True)
+            _interleaved_write("save_config_value")
+        return loaded
+
+    monkeypatch.setattr(backup, "_read_raw_yaml_dict", read_then_interleave)
+    result = backup.restore_config_model_settings_if_rewritten("pre-update", home)
+
+    after = _disk(cfg_path)
+    assert interleaved
+    assert result and result["keys"] == ["model.default"]
+    assert after["model"]["default"] == "original-model"
+    assert after["approvals"]["destructive_slash_confirm"] is False, "the interleaved write was reverted"

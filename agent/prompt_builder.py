@@ -810,13 +810,22 @@ PLATFORM_HINTS = {
 # ``gateway.api_server.file_delivery.enabled`` (see ``system_prompt._default_platform_hint``). The
 # base hint above is the flag-off truth and stays byte-identical, so a default install's prompt is
 # unchanged; this reads as an explicit correction because that text says the opposite.
+#
+# A hint, not a skill: file delivery is a property of THIS renderer — every platform's MEDIA
+# guidance lives in PLATFORM_HINTS — and the trigger (the user asking for a file) gives no
+# skill-shaped cue, so a skill would only help if the model already knew to load it. The hint is
+# present at the moment of the ask. Not a tool either, and never a hook that auto-delivers files
+# the user did not ask for.
 API_SERVER_FILE_DELIVERY_HINT = (
     "UPDATE — file delivery is enabled on this server, so the paragraph above about non-image files no longer "
-    "applies to the chat, completions, and responses endpoints: a MEDIA:/absolute/path tag whose file is a "
-    "deliverable document (.pdf, .docx, .xlsx, .csv, .tsv, .md, .txt, .json, .zip) is rewritten into a clickable "
-    "download link, so use a MEDIA: tag for those instead of a bare path. The link expires and works once, so "
-    "mention that if the user may come back to it later. The runs endpoint still intercepts nothing, and "
-    "unsupported types (.py, .log, .weirdext) or files over the size cap still render as literal text."
+    "applies to the chat, completions, and responses endpoints. When the user asks for a file (\"give me that "
+    "as a CSV\", \"export it\") or a task naturally produces one they will want, write it to your workspace or "
+    "/tmp as a deliverable type (.pdf, .docx, .xlsx, .csv, .tsv, .md, .txt, .json, .zip — up to 10 MB) and "
+    "reference it with a MEDIA:/absolute/path tag: the server rewrites the tag into a clickable download link. "
+    "That link works once and expires within minutes, so say so when you hand it over. Credential and system "
+    "paths are refused, and anything else undeliverable (unsupported type, oversize, missing or unreadable) "
+    "leaves the tag as literal text exposing the raw path — for those, state the plain path in your text "
+    "instead and never promise a link. The runs endpoint still intercepts nothing."
 )
 
 # Telegram rich-messages extension — injected only with

@@ -813,8 +813,12 @@ distinguishable 403, so the route cannot be used to probe which artifacts exist.
 per install and per profile home, so rotating `API_SERVER_KEY` neither mints nor breaks links, and a
 leaked link grants exactly one download of one file.
 
-Because a link works once, tell the user if you expect them to come back to it later — the agent's
-platform hint says so too when this feature is enabled.
+Because a link works once, tell the user if you expect them to come back to it later. When this
+feature is enabled, the agent's platform hint carries the whole contract: when to tag a file (the
+user asked for one, or one is the task's natural deliverable), where to write it (workspace/tmp;
+credential and system paths are refused), the deliverable types and the 10 MB cap, the one-shot
+disclosure, and honest degradation — for anything undeliverable, state the plain path instead of a
+tag and never promise a link.
 
 ### What stays unresolved
 

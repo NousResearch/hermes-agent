@@ -450,6 +450,15 @@ emit_manifest() {
 stage_prerequisites() {
     command -v git >/dev/null 2>&1 || fail "git is required. Install it with your system package manager."
     command -v curl >/dev/null 2>&1 || fail "curl is required. Install it with your system package manager."
+    # PM's Node on musl is the unofficial-builds musl archive, which links the
+    # system libstdc++; without it every node/npm stage fails verification.
+    if [[ "$(uv_bootstrap_target 2>/dev/null)" == *-musl ]]; then
+        local _libdir _stdcxx=""
+        for _libdir in /lib /usr/lib /usr/local/lib; do
+            compgen -G "$_libdir/libstdc++.so.6*" >/dev/null && { _stdcxx=yes; break; }
+        done
+        [ -n "$_stdcxx" ] || fail "musl host: the Node.js runtime needs the system libstdc++. Install it (Alpine: apk add libstdc++, Void: xbps-install libstdc++) and re-run."
+    fi
     log_success "prerequisites ok (git, curl)"
 }
 

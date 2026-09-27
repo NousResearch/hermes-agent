@@ -3950,7 +3950,7 @@ export const en: Translations = {
     retryAfterRun: 'I’ve run it -- retry',
     setupChoiceTitle: 'Set up Agent Czesiek Desktop',
     setupChoiceDesc:
-      'Connect this app to a Agent Czesiek gateway you already run, or install Agent Czesiek locally on this computer.',
+      'Install Agent Czesiek on this computer with its own runtime. An internet connection is required.',
     connectExistingTitle: 'Connect to existing Agent Czesiek',
     connectExistingShort: 'Connect existing',
     connectExistingDesc: 'Use a remote backend with a session token or browser sign-in. No local install will start.',

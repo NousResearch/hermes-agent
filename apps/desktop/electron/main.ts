@@ -946,10 +946,10 @@ function readPersistedThemeSource() {
       return parsed.themeSource
     }
   } catch {
-    // Missing / malformed → follow the OS like a fresh install.
+    // Missing / malformed → use the product's light appearance.
   }
 
-  return 'system'
+  return 'light'
 }
 
 function writePersistedThemeSource(mode) {

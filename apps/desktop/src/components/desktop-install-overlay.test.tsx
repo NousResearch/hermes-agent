@@ -4,7 +4,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { DesktopBootstrapEvent, DesktopBootstrapState, DesktopConnectionProbeResult } from '@/global'
 
+import { FirstRunRemoteForm } from './first-run-remote-form'
+
 import { DesktopInstallOverlay } from './desktop-install-overlay'
+
+vi.mock('@/i18n', async () => {
+  const { en } = await import('@/i18n/en')
+  return { useI18n: () => ({ t: en, locale: 'en' }) }
+})
 
 function bootstrapState(overrides: Partial<DesktopBootstrapState> = {}): DesktopBootstrapState {
   return {
@@ -90,7 +97,7 @@ afterEach(() => {
 })
 
 describe('DesktopInstallOverlay first-run setup', () => {
-  it('shows the remote/local choice without installer progress', async () => {
+  it('shows only local installation without installer progress', async () => {
     installDesktopMock(
       bootstrapState({
         setupChoice: { platform: 'win32', activeRoot: 'C:\\Users\\me\\AppData\\Local\\hermes\\hermes-agent' }
@@ -99,14 +106,14 @@ describe('DesktopInstallOverlay first-run setup', () => {
 
     render(<DesktopInstallOverlay />)
 
-    expect(await screen.findByText('Set up Hermes Desktop')).toBeTruthy()
-    expect(screen.getByText('Connect to existing Hermes')).toBeTruthy()
-    expect(screen.getByText('Install Hermes locally')).toBeTruthy()
+    expect(await screen.findByText('Set up Agent Czesiek Desktop')).toBeTruthy()
+    expect(screen.queryByText('Connect to existing Agent Czesiek')).toBeNull()
+    expect(screen.getByText('Install Agent Czesiek locally')).toBeTruthy()
     expect(screen.queryByText(/steps complete/i)).toBeNull()
     expect(screen.queryByText(/Fetching installer manifest/i)).toBeNull()
   })
 
-  it('continues local bootstrap only when Install Hermes locally is selected', async () => {
+  it('continues local bootstrap only when Install Agent Czesiek locally is selected', async () => {
     const desktop = installDesktopMock(
       bootstrapState({
         setupChoice: { platform: 'win32', activeRoot: 'C:\\Users\\me\\AppData\\Local\\hermes\\hermes-agent' }
@@ -115,16 +122,16 @@ describe('DesktopInstallOverlay first-run setup', () => {
 
     render(<DesktopInstallOverlay />)
 
-    fireEvent.click(await screen.findByText('Install Hermes locally'))
+    fireEvent.click(await screen.findByText('Install Agent Czesiek locally'))
 
     expect(desktop.continueBootstrapLocal).toHaveBeenCalledTimes(1)
-    expect(screen.getByText('Set up Hermes Desktop')).toBeTruthy()
+    expect(screen.getByText('Set up Agent Czesiek Desktop')).toBeTruthy()
 
     act(() => {
       desktop.emitBootstrapEvent({ type: 'manifest', protocolVersion: 1, stages: [] })
     })
 
-    await waitFor(() => expect(screen.queryByText('Set up Hermes Desktop')).toBeNull())
+    await waitFor(() => expect(screen.queryByText('Set up Agent Czesiek Desktop')).toBeNull())
     expect(screen.getByText(/Fetching installer manifest/i)).toBeTruthy()
   })
 
@@ -138,11 +145,11 @@ describe('DesktopInstallOverlay first-run setup', () => {
     desktop.continueBootstrapLocal = undefined as never
     render(<DesktopInstallOverlay />)
 
-    const install = (await screen.findByText('Install Hermes locally')).closest('button') as HTMLButtonElement
+    const install = (await screen.findByText('Install Agent Czesiek locally')).closest('button') as HTMLButtonElement
     fireEvent.click(install)
 
     expect(
-      await screen.findByText('Local installation could not start. Restart Hermes Desktop and try again.')
+      await screen.findByText('Local installation could not start. Restart Agent Czesiek Desktop and try again.')
     ).toBeTruthy()
     expect(install.disabled).toBe(false)
   })
@@ -160,14 +167,14 @@ describe('DesktopInstallOverlay first-run setup', () => {
     // Click the instant the choice paints, before React drains the passive
     // effect that reacts to the first snapshot. A loaded runner hits this
     // window by accident; observing the DOM directly hits it every time.
-    const install = (await whenPresent('Install Hermes locally')).closest('button') as HTMLButtonElement
+    const install = (await whenPresent('Install Agent Czesiek locally')).closest('button') as HTMLButtonElement
     fireEvent.click(install)
 
     await act(async () => {
       await Promise.resolve()
     })
 
-    expect(screen.queryByText('Local installation could not start. Restart Hermes Desktop and try again.')).toBeTruthy()
+    expect(screen.queryByText('Local installation could not start. Restart Agent Czesiek Desktop and try again.')).toBeTruthy()
   })
 
   it('clears a stale local-start error when a repair presents a different root', async () => {
@@ -180,9 +187,9 @@ describe('DesktopInstallOverlay first-run setup', () => {
     desktop.continueBootstrapLocal = undefined as never
     render(<DesktopInstallOverlay />)
 
-    fireEvent.click((await screen.findByText('Install Hermes locally')).closest('button') as HTMLButtonElement)
+    fireEvent.click((await screen.findByText('Install Agent Czesiek locally')).closest('button') as HTMLButtonElement)
     expect(
-      await screen.findByText('Local installation could not start. Restart Hermes Desktop and try again.')
+      await screen.findByText('Local installation could not start. Restart Agent Czesiek Desktop and try again.')
     ).toBeTruthy()
 
     act(() => {
@@ -194,41 +201,7 @@ describe('DesktopInstallOverlay first-run setup', () => {
       })
     })
 
-    expect(screen.queryByText('Local installation could not start. Restart Hermes Desktop and try again.')).toBeNull()
-  })
-
-  it('opens the remote connection form from the first-run choice', async () => {
-    installDesktopMock(
-      bootstrapState({
-        setupChoice: { platform: 'linux', activeRoot: '/home/me/.hermes/hermes-agent' }
-      })
-    )
-
-    render(<DesktopInstallOverlay />)
-
-    fireEvent.click(await screen.findByText('Connect to existing Hermes'))
-
-    expect(await screen.findByText('Gateway URL')).toBeTruthy()
-    expect(screen.getByText('Test connection')).toBeTruthy()
-    expect(screen.getByText('Apply and reconnect')).toBeTruthy()
-  })
-
-  it('returns from the remote connection form to the first-run choice', async () => {
-    installDesktopMock(
-      bootstrapState({
-        setupChoice: { platform: 'linux', activeRoot: '/home/me/.hermes/hermes-agent' }
-      })
-    )
-
-    render(<DesktopInstallOverlay />)
-
-    fireEvent.click(await screen.findByText('Connect to existing Hermes'))
-    expect(await screen.findByText('Gateway URL')).toBeTruthy()
-
-    fireEvent.click(screen.getByText('Back'))
-
-    expect(await screen.findByText('Set up Hermes Desktop')).toBeTruthy()
-    expect(screen.getByText('Install Hermes locally')).toBeTruthy()
+    expect(screen.queryByText('Local installation could not start. Restart Agent Czesiek Desktop and try again.')).toBeNull()
   })
 
   it('requires a successful token connection test before applying remote config', async () => {
@@ -257,9 +230,9 @@ describe('DesktopInstallOverlay first-run setup', () => {
       return { mode: 'remote' }
     })
 
-    render(<DesktopInstallOverlay />)
+    const onBack = vi.fn()
+    render(<FirstRunRemoteForm onBack={onBack} />)
 
-    fireEvent.click(await screen.findByText('Connect to existing Hermes'))
     fireEvent.change(await screen.findByPlaceholderText('https://gateway.example.com/hermes'), {
       target: { value: 'https://gateway.example.com/hermes' }
     })
@@ -298,7 +271,7 @@ describe('DesktopInstallOverlay first-run setup', () => {
         remoteUrl: 'https://gateway.example.com/hermes'
       })
     })
-    await waitFor(() => expect(screen.queryByText('Gateway URL')).toBeNull())
+    await waitFor(() => expect(onBack).toHaveBeenCalledTimes(1))
   })
 
   it('ignores a completed probe after the gateway URL becomes invalid', async () => {
@@ -316,9 +289,8 @@ describe('DesktopInstallOverlay first-run setup', () => {
 
     desktop.probeConnectionConfig.mockReturnValue(pendingProbe)
 
-    render(<DesktopInstallOverlay />)
+    render(<FirstRunRemoteForm onBack={() => {}} />)
 
-    fireEvent.click(await screen.findByText('Connect to existing Hermes'))
     const urlInput = await screen.findByPlaceholderText('https://gateway.example.com/hermes')
     fireEvent.change(urlInput, { target: { value: 'https://gateway.example.com/hermes' } })
 
@@ -369,9 +341,8 @@ describe('DesktopInstallOverlay first-run setup', () => {
 
     desktop.testConnectionConfig.mockReturnValue(pendingTest)
 
-    render(<DesktopInstallOverlay />)
+    render(<FirstRunRemoteForm onBack={() => {}} />)
 
-    fireEvent.click(await screen.findByText('Connect to existing Hermes'))
     fireEvent.change(await screen.findByPlaceholderText('https://gateway.example.com/hermes'), {
       target: { value: 'https://gateway.example.com/hermes' }
     })
@@ -420,9 +391,8 @@ describe('DesktopInstallOverlay first-run setup', () => {
     })
     desktop.applyConnectionConfig.mockRejectedValue(new Error('remote apply failed'))
 
-    render(<DesktopInstallOverlay />)
+    render(<FirstRunRemoteForm onBack={() => {}} />)
 
-    fireEvent.click(await screen.findByText('Connect to existing Hermes'))
     fireEvent.change(await screen.findByPlaceholderText('https://gateway.example.com/hermes'), {
       target: { value: 'https://gateway.example.com/hermes' }
     })
@@ -472,9 +442,8 @@ describe('DesktopInstallOverlay first-run setup', () => {
     })
     desktop.applyConnectionConfig.mockResolvedValue({ mode: 'remote' })
 
-    render(<DesktopInstallOverlay />)
+    render(<FirstRunRemoteForm onBack={() => {}} />)
 
-    fireEvent.click(await screen.findByText('Connect to existing Hermes'))
     fireEvent.change(await screen.findByPlaceholderText('https://gateway.example.com/hermes'), {
       target: { value: 'https://gateway.example.com/hermes' }
     })
@@ -530,7 +499,7 @@ describe('DesktopInstallOverlay first-run setup', () => {
 
     render(<DesktopInstallOverlay />)
 
-    expect(await screen.findByText('Hermes needs a one-time install')).toBeTruthy()
+    expect(await screen.findByText('Agent Czesiek needs a one-time install')).toBeTruthy()
 
     fireEvent.click(screen.getByText('Connect existing'))
 
@@ -571,6 +540,6 @@ describe('DesktopInstallOverlay first-run setup', () => {
     fireEvent.click(screen.getByText('Apply and reconnect'))
 
     await waitFor(() => expect(screen.queryByText('Gateway URL')).toBeNull())
-    expect(screen.queryByText('Hermes needs a one-time install')).toBeNull()
+    expect(screen.queryByText('Agent Czesiek needs a one-time install')).toBeNull()
   })
 })

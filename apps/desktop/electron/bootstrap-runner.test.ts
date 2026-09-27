@@ -394,3 +394,23 @@ test('resolveInstallScript rethrows when the 404 fallback is unavailable', async
     fs.rmSync(home, { recursive: true, force: true })
   }
 })
+
+
+test('packaged first launch uses its bundled installer without any network request', async () => {
+  const home = mkTmpHome()
+  const resourcesPath = path.join(home, 'resources')
+  fs.mkdirSync(path.join(resourcesPath, 'bootstrap'), { recursive: true })
+  const bundled = path.join(resourcesPath, 'bootstrap', SCRIPT_NAME)
+  fs.writeFileSync(bundled, 'bundled installer fixture')
+  try {
+    const result = await resolveInstallScript({
+      installStamp: { commit: 'b'.repeat(40) }, sourceRepoRoot: null,
+      hermesHome: home, resourcesPath, emit: () => {},
+      _download: async () => { throw new Error('HTTP 429: network must not be used') }
+    })
+    assert.equal(result.path, bundled)
+    assert.equal(result.source, 'bundled')
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+})

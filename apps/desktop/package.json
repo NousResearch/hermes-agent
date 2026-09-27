@@ -228,6 +228,14 @@
       {
         "from": "assets/icon.ico",
         "to": "icon.ico"
+      },
+      {
+        "from": "../../scripts/install.ps1",
+        "to": "bootstrap/install.ps1"
+      },
+      {
+        "from": "../../scripts/install.sh",
+        "to": "bootstrap/install.sh"
       }
     ],
     "asar": true,
@@ -330,7 +338,8 @@
         "en_US"
       ],
       "displayLanguageSelector": false,
-      "deleteAppDataOnUninstall": false
+      "deleteAppDataOnUninstall": false,
+      "include": "scripts/installer.nsh"
     }
   }
 }

@@ -52,16 +52,9 @@ const resolveMode = (mode: ThemeMode, systemDark = matchesQuery('(prefers-color-
 const normalizeSkin = (name: string | null): string =>
   name && resolveTheme(name) && !RETIRED_SKINS.has(name) ? name : DEFAULT_SKIN_NAME
 
-/**
- * A stored mode, or `system` when there isn't one.
- *
- * A fresh profile follows the OS. Defaulting to `light` meant someone whose
- * desktop is dark got a white window on first launch and had to go find the
- * setting — and with per-appearance translucency it also handed them light's
- * much heavier tint, tuned for a bright desktop they don't have.
- */
+// New profiles start in light mode; explicit appearance choices remain respected.
 const normalizeMode = (value: string | null): ThemeMode =>
-  value === 'light' || value === 'dark' || value === 'system' ? value : 'system'
+  value === 'light' || value === 'dark' || value === 'system' ? value : 'light'
 
 // ─── Per-profile appearance persistence ─────────────────────────────────────
 // Skin and mode are each stored per profile. "default" isn't a real profile —
@@ -402,7 +395,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   )
 
   const [mode, setModeState] = useState<ThemeMode>(() =>
-    typeof window === 'undefined' ? 'system' : modePref.resolve(readBootProfileKey())
+    typeof window === 'undefined' ? 'light' : modePref.resolve(readBootProfileKey())
   )
 
   // Follow profile switches: paint the profile's assigned skin + mode and

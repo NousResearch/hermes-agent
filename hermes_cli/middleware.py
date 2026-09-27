@@ -144,6 +144,14 @@ def run_tool_execution_middleware(
     tool_name: str, args: Dict[str, Any], next_call: Callable[[Dict[str, Any]], Any], **context: Any,
 ) -> Any:
     """Run tool execution through registered tool execution middleware."""
+    from tools.registry import _bound_host_context
+
+    # A second authority source would make the handler and middleware disagree.
+    if "host_context" in context or "trusted_invocation" in context:
+        raise ValueError("host context keywords are reserved for host bindings")
+    host_context = _bound_host_context()
+    if host_context is not None:
+        context["host_context"] = host_context
     return _run_execution_chain(
         TOOL_EXECUTION_MIDDLEWARE, next_call,
         tool_name=tool_name, args=args, original_args=context.pop("original_args", args), **context)
@@ -198,13 +206,16 @@ def _run_execution_chain(kind: str, terminal_call: Callable[[Any], Any], **kwarg
         call_kwargs[payload_key] = payload
         call_kwargs["next_call"] = next_call
         try:
-            return callback(**call_kwargs)
+            from tools.registry import _kwargs_accepted_by
+            return callback(**_kwargs_accepted_by(callback, call_kwargs))
         except _DownstreamExecutionError as exc:
             raise exc.original
         except Exception as exc:
             # Runs once per tool/LLM call: a mis-declared callback fails identically every time,
             # so it goes through the manager's warn-once reporter (#111922).
             manager._report_hook_failure(kind, callback, call_kwargs, exc, surface="Middleware")
+            if getattr(callback, "hermes_failure_mode", "open") == "closed":
+                raise
             if next_succeeded:
                 return next_result
             if next_called:

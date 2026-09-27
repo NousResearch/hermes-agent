@@ -12,9 +12,9 @@ const P = { E200: '', E201: '', E202: '' }
 
 describe('web citation transport markers', () => {
   it('strips a single-id marker from prose', () => {
-    expect(preprocessMarkdown(`Ice floats because it is less dense than liquid water.${P.E200}citeturn0search0${P.E201}`)).toBe(
-      'Ice floats because it is less dense than liquid water.'
-    )
+    expect(
+      preprocessMarkdown(`Ice floats because it is less dense than liquid water.${P.E200}citeturn0search0${P.E201}`)
+    ).toBe('Ice floats because it is less dense than liquid water.')
   })
 
   it('strips a multi-id marker list', () => {

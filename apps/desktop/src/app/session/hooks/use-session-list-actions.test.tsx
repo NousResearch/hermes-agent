@@ -105,8 +105,19 @@ vi.mock('@/store/session-removal', async importActual => ({
   $removedSessionIds: { get: () => removed.ids }
 }))
 
+// The settle-grace keep set must be mocked at MODULE scope: the hook imports
+// getRecentlySettledSessionIds as a live ESM binding, so patching a
+// dynamically-imported copy (or a temporary object) never reaches it.
+const settled = vi.hoisted(() => ({ ids: [] as string[] }))
+
+vi.mock('@/store/session-states', async importActual => ({
+  ...(await importActual<Record<string, unknown>>()),
+  getRecentlySettledSessionIds: () => settled.ids
+}))
+
 beforeEach(() => {
   gatewayScope.epoch = 0
+  settled.ids = []
   getCronJobs.mockReset()
   getCronJobs.mockResolvedValue([])
   listSidebarSessions.mockReset()
@@ -300,6 +311,33 @@ describe('refreshSessions identity + loading hygiene', () => {
     })
 
     expect($sessions.get().map(s => s.id)).toEqual(['a'])
+  })
+
+  it('never resurrects a just-archived row the keep set still names (#118156)', async () => {
+    // The archive race: the RPC landed (so the in-flight pin released and the
+    // projects.tree prune dropped the tombstone — hence EMPTY tombstones
+    // here), but the row is still inside the 30s settle grace, so
+    // sessionsToKeep() names it. A refresh whose `previous` still holds the
+    // row must not carry it back through the survivor path. The map from
+    // tombstone→epoch keeps the exclusion alive exactly as long as the
+    // tombstone stood, so it must reproduce with the tombstone still set.
+    removed.ids = new Set(['just-archived'])
+
+    // Seed $sessions with the row still present, as a refresh racing the
+    // optimistic drop would see it.
+    setSessions([row('just-archived'), row('mine')])
+    // And make the settle grace name it: simulate a turn that just ended.
+    settled.ids = ['just-archived']
+
+    listSidebarSessions.mockResolvedValue(sidebar({ sessions: [row('mine', { message_count: 3 })] }))
+
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    await act(async () => {
+      await result.current.refreshSessions()
+    })
+
+    expect($sessions.get().map(s => s.id)).toEqual(['mine'])
   })
 
   it('keeps idle recents when the sidebar returns an empty page plus profile errors', async () => {

@@ -69,9 +69,7 @@ async function expectGuestWithUrl(rendered: ReturnType<typeof render>, url: stri
   expect(rendered.container.querySelector('[aria-label="Pop in"]')).not.toBeNull()
 
   // Address bar tracks the handed-off URL.
-  expect((rendered.container.querySelector('input') as HTMLInputElement | null)?.value).toContain(
-    '127.0.0.1'
-  )
+  expect((rendered.container.querySelector('input') as HTMLInputElement | null)?.value).toContain('127.0.0.1')
 }
 
 describe('browser pop-out content handoff', () => {
@@ -124,7 +122,10 @@ describe('a fresh renderer adopts stored tabs without clobbering them', () => {
   // init, and echoing the just-read (empty) view back over storage wiped the
   // record before any adoption could read it.
   it('seeds the default bucket into the view at boot', async () => {
-    window.localStorage.setItem(TABS_KEY, JSON.stringify({ default: [tabRow('url:boot-1', 'http://127.0.0.1:9119/kanban')] }))
+    window.localStorage.setItem(
+      TABS_KEY,
+      JSON.stringify({ default: [tabRow('url:boot-1', 'http://127.0.0.1:9119/kanban')] })
+    )
 
     const { $previewTabs } = await import('@/store/preview')
 

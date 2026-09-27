@@ -550,6 +550,13 @@ export interface SessionInfo {
    *  entry is a projected continuation tip. Intermediates matter: a persisted
    *  tile or route can hold a middle segment's id from when IT was the tip. */
   _lineage_ids?: null | string[]
+  /** Provenance of this row when it is a projected continuation tip:
+   *  `'compression'` means the conversation was rotated by automatic context
+   *  compression and this row continues a sealed earlier segment — it is NOT a
+   *  fresh conversation and NOT a user branch (#121148). Surfaced so the
+   *  sidebar can label the lineage; undefined against older backends and for
+   *  plain rows and branches. */
+  continuation_kind?: 'compression'
   input_tokens: number
   /** Spend for the session, straight off the `sessions` row. `actual` is set
    *  when the provider reported a price; `estimated` is our own pricing-table
@@ -1329,6 +1336,11 @@ export interface SessionSearchResult {
   session_started: number | null
   snippet: string
   source: string | null
+  /** Real session title from the sessions table; the backend enriches every
+   *  search hit with it (web_routers/sessions.py add_lineage_result), absent
+   *  for untitled sessions. The sidebar maps it onto the synthesized row so
+   *  search hits show the actual name, not the matched-message snippet. */
+  title?: string | null
 }
 
 export interface SessionSearchResponse {

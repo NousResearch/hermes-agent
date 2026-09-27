@@ -2006,13 +2006,47 @@ def _session_verbose(sid: str) -> bool:
     return _session_tool_progress_mode(sid) == "verbose"
 
 
+def _session_show_reasoning(sid: str) -> bool:
+    """Session display flag. Missing means the config default, not hidden."""
+    session = _sessions.get(sid) or {}
+    if "show_reasoning" in session:
+        return bool(session["show_reasoning"])
+    return _load_show_reasoning()
+
+
+def _process_tool_chrome_enabled(sid: str) -> bool:
+    """Non-essential tool rows follow display.show_reasoning, not reasoning_effort."""
+    return _session_show_reasoning(sid) and _tool_progress_enabled(sid)
+
+
 def _tool_progress_enabled(sid: str) -> bool:
     return _session_tool_progress_mode(sid) != "off"
 
 
+# Names whose lifecycle a UI renders as a card even in answer-only mode. `isCardTool` /
+# `isFileEditTool` in apps/desktop/src/lib/tool-render-class.ts must stay in sync with this
+# set (test_gateway_lifecycle_set_covers_desktop_card_tools pins the direction that matters).
+_TOOL_LIFECYCLE_UI_TOOLS = frozenset({
+    "clarify", "manage_connections", "setup_mcp",
+    "image_generate", "manage_catalog", "delegate_task",
+    # File edits are the turn's deliverable — the diff card the user reviews.
+    "edit_file", "patch", "write_file",
+})
+
+
 def _tool_lifecycle_required_for_ui(name: str) -> bool:
-    """Interactive UI, not optional chrome: Desktop renders clarify / connection cards from the tool-call part."""
-    return name in ("clarify", "manage_connections", "setup_mcp")
+    """Interactive UI / card surfaces, not optional chrome.
+
+    Desktop renders these from the tool-call part itself, so suppressing the
+    lifecycle hides the turn's deliverable entirely (`isCardTool` /
+    `isFileEditTool` in apps/desktop/src/lib/tool-render-class.ts must stay in
+    sync with `_TOOL_LIFECYCLE_UI_TOOLS`): clarify / connection cards are
+    consent surfaces, image_generate / manage_catalog / delegate_task draw the
+    thing the user asked for, and file edits are the diff the user reviews.
+    The start and complete guards both consult this set, so a card's
+    `tool.complete` can never arrive without its `tool.start`.
+    """
+    return name in _TOOL_LIFECYCLE_UI_TOOLS
 
 
 def _restart_slash_worker(sid: str, session: dict):

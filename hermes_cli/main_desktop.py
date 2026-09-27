@@ -8,6 +8,7 @@ import logging
 import contextlib
 import argparse
 import hashlib
+import json
 import os
 import platform
 import re
@@ -947,10 +948,72 @@ def _install_rebuilt_desktop_app(desktop_dir: Path) -> tuple[list[Path], list[st
     rebuilt_exe = _desktop_packaged_executable(desktop_dir)
     if rebuilt_exe is None:
         return [], []
-    from hermes_cli.gui_uninstall import packaged_gui_app_paths  # noqa: PLC0415
     # .../Hermes.app/Contents/MacOS/Hermes -> .../Hermes.app
     return _install_rebuilt_macos_bundles(
-        rebuilt_exe.parents[2], packaged_gui_app_paths(), running=_running_macos_app_bundles())
+        rebuilt_exe.parents[2], _installed_desktop_apps(), running=_running_macos_app_bundles())
+
+
+def _refresh_installed_desktop_apps(desktop_dir: Path) -> None:
+    """Install the rebuilt bundle over stale installed copies and report each outcome."""
+    installed, problems = _install_rebuilt_desktop_app(desktop_dir)
+    for app in installed:
+        print(f"  ✓ Installed the rebuilt Desktop app at {app}")
+    for problem in problems:
+        print(f"  ⚠ {problem}")
+
+
+def _update_owned_macos_bundles(candidates: list[Path]) -> list[Path]:
+    """The existing bundles in *candidates* that only ``hermes update`` keeps current (#52339).
+
+    Ownership comes from the bundle's own ``install-stamp.json``. ``updateMechanism: self`` is a
+    bootstrap build (a local pack or the bootstrap download), and stamps older than the field
+    predate every self-updating kind. Bundled/light releases update themselves and commit builds
+    are external, so a local build must never be copied over them. No readable stamp, no claim.
+    """
+    owned = []
+    for app in candidates:
+        try:
+            stamp = json.loads((app / "Contents" / "Resources" / "install-stamp.json").read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(stamp, dict) and stamp.get("updateMechanism", "self") == "self":
+            owned.append(app)
+    return owned
+
+
+def _installed_desktop_apps() -> list[Path]:
+    """Installed macOS ``Hermes.app`` bundles this checkout's update owns (none off macOS).
+
+    A packaged app runs the checkout under the default Hermes home, so only that checkout may
+    build for it: a bundle from any other tree (a dev worktree) would split shell from backend.
+    """
+    if sys.platform != "darwin":
+        return []
+    from hermes_cli.gui_uninstall import packaged_gui_app_paths  # noqa: PLC0415
+    from hermes_cli.main import PROJECT_ROOT  # noqa: PLC0415
+    from hermes_constants import get_default_hermes_root  # noqa: PLC0415
+    if Path(PROJECT_ROOT).resolve() != (get_default_hermes_root() / "hermes-agent").resolve():
+        return []
+    return _update_owned_macos_bundles(packaged_gui_app_paths())
+
+
+def _installed_desktop_launch_target(desktop_dir: Path, packaged_executable: Path) -> Path:
+    """The executable ``hermes desktop`` launches: the installed app once it IS the checkout build.
+
+    Finder, the Dock and Spotlight open the installed ``Hermes.app``; launching the ``release/``
+    bundle beside it ran the same app from a second path while the installed copy went stale
+    (#52339). Refresh the installed copies, then launch the first one that matches the checkout
+    build. The checkout bundle stays the fallback: nothing installed, or a copy that is running
+    or could not be replaced.
+    """
+    if sys.platform != "darwin":
+        return packaged_executable
+    _refresh_installed_desktop_apps(desktop_dir)
+    rebuilt_hash = _app_asar_hash(packaged_executable.parents[2])
+    for app in _installed_desktop_apps():
+        if rebuilt_hash is not None and _app_asar_hash(app) == rebuilt_hash:
+            return app / "Contents" / "MacOS" / "Hermes"
+    return packaged_executable
 
 
 def _install_rebuilt_macos_bundles(
@@ -1134,17 +1197,21 @@ def _detect_linux_password_store() -> str | None:
     return None
 
 
-def _desktop_launch_options() -> tuple[list[str], str, str, str]:
+_A11Y_OFF_WORDS = frozenset(("0", "false", "no", "off", "disabled"))
+
+
+def _desktop_launch_options() -> tuple[list[str], str, str, str, bool]:
     """``desktop.*`` launch options: ``(electron_flags, disable_gpu "auto"/"1"/"0", password_store,
-    ozone_hint "auto"/"x11"/"wayland")``; unknown values and config errors yield "auto"/[] so a
-    malformed config never blocks the launch."""
+    ozone_hint "auto"/"x11"/"wayland", renderer_accessibility bool)``; unknown values and config
+    errors yield "auto"/[]/True so a malformed config never blocks the launch."""
     flags: list[str] = []
     disable_gpu = password_store = ozone_hint = "auto"
+    renderer_accessibility = True
     try:
         from hermes_cli.config import load_config
         desktop_cfg = (load_config() or {}).get("desktop") or {}
     except Exception:
-        return flags, disable_gpu, password_store, ozone_hint
+        return flags, disable_gpu, password_store, ozone_hint, renderer_accessibility
 
     raw_flags = desktop_cfg.get("electron_flags")
     if isinstance(raw_flags, str):
@@ -1164,7 +1231,17 @@ def _desktop_launch_options() -> tuple[list[str], str, str, str]:
         disable_gpu = _GPU_FLAG_WORDS.get(raw_gpu.strip().lower(), "auto")
     password_store = _choice("password_store", _LINUX_PASSWORD_STORES)
     ozone_hint = _choice("ozone_platform_hint", ("auto", "x11", "wayland"))
-    return flags, disable_gpu, password_store, ozone_hint
+    raw_a11y = desktop_cfg.get("renderer_accessibility", True)
+    if isinstance(raw_a11y, bool):
+        renderer_accessibility = raw_a11y
+    elif isinstance(raw_a11y, (int, float)):
+        # YAML resolves a bare `0`/`0.0` to int/float, not str — the unquoted
+        # off-switch a user actually writes must not silently keep the ON
+        # default. Checked after bool: bool is an int subclass in Python.
+        renderer_accessibility = bool(raw_a11y)
+    elif isinstance(raw_a11y, str):
+        renderer_accessibility = raw_a11y.strip().lower() not in _A11Y_OFF_WORDS
+    return flags, disable_gpu, password_store, ozone_hint, renderer_accessibility
 
 
 def _register_linux_desktop_entry(defer: bool = False):
@@ -1326,12 +1403,18 @@ def _desktop_launch_env(args: argparse.Namespace) -> tuple[dict, list[str]]:
     cwd = getattr(args, "cwd", None)
     env["HERMES_DESKTOP_CWD"] = str(Path(cwd).expanduser().resolve()) if cwd else os.getcwd()
 
-    config_electron_flags, config_disable_gpu, config_password_store, config_ozone_hint = (
+    config_electron_flags, config_disable_gpu, config_password_store, config_ozone_hint, config_renderer_a11y = (
         _desktop_launch_options())
     if config_disable_gpu != "auto" and "HERMES_DESKTOP_DISABLE_GPU" not in os.environ:
         env["HERMES_DESKTOP_DISABLE_GPU"] = config_disable_gpu
     if config_ozone_hint != "auto" and "ELECTRON_OZONE_PLATFORM_HINT" not in os.environ:
         env["ELECTRON_OZONE_PLATFORM_HINT"] = config_ozone_hint
+
+    # Renderer accessibility tree (composer exposure to OS dictation/IME
+    # tools, #118271/#92607) defaults to ON inside the app; bridge only the
+    # explicit opt-out so the default never depends on the launcher path.
+    if not config_renderer_a11y and "HERMES_DESKTOP_RENDERER_ACCESSIBILITY" not in os.environ:
+        env["HERMES_DESKTOP_RENDERER_ACCESSIBILITY"] = "0"
 
     # Without --password-store safeStorage.isEncryptionAvailable() is often
     # false and the desktop app refuses to persist remote gateway tokens.
@@ -1539,7 +1622,8 @@ def cmd_gui(args: argparse.Namespace):
             print(f"✗ Desktop package build completed but no launchable app was found at: {desktop_dir / 'release'}")
             print("  Expected an unpacked Electron app for the current OS.")
             sys.exit(1)
-        launch_command = _packaged_desktop_launch_command(packaged_executable)
+        launch_command = _packaged_desktop_launch_command(
+            _installed_desktop_launch_target(desktop_dir, packaged_executable))
         launch_command.extend(config_electron_flags)
     if getattr(args, "local", False):
         launch_command.append("--local")

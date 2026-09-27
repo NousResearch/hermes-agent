@@ -711,6 +711,15 @@ export const deOverrides = {
       'view.findInPage': 'Auf Seite suchen',
       'view.findNext': 'Nächsten Treffer suchen',
       'view.findPrevious': 'Vorherigen Treffer suchen',
+      'view.tabSlot.1': 'Zu Tab 1 wechseln',
+      'view.tabSlot.2': 'Zu Tab 2 wechseln',
+      'view.tabSlot.3': 'Zu Tab 3 wechseln',
+      'view.tabSlot.4': 'Zu Tab 4 wechseln',
+      'view.tabSlot.5': 'Zu Tab 5 wechseln',
+      'view.tabSlot.6': 'Zu Tab 6 wechseln',
+      'view.tabSlot.7': 'Zu Tab 7 wechseln',
+      'view.tabSlot.8': 'Zu Tab 8 wechseln',
+      'view.tabSlot.9': 'Zu Tab 9 wechseln',
       'appearance.toggleMode': 'Hell / dunkel umschalten',
       'profile.default': 'Zu Standardprofil wechseln',
       'profile.switch.1': 'Zu Profil 1 wechseln',
@@ -1175,7 +1184,7 @@ export const deOverrides = {
         'Lassen Sie sich von Hermes durch die App führen – der Bildschirm wird abgedunkelt und jeder Schritt hervorgehoben.',
       composerPopoutTitle: 'Schwebender Composer',
       composerPopoutDesc:
-        'Erlaubt, den Composer aus seiner Ablage herauszuziehen. Schalten Sie das aus, um ihn unten fixiert zu halten.',
+        'Erlaubt, den Composer aus seiner Ablage herauszuziehen. Wenn aus, bleibt er unten angedockt.',
       fileBrowserTitle: 'Dateibrowser',
       fileBrowserDesc:
         'Zeigt den Dateibrowser neben dem Chat, wenn ein Arbeitsbereich geöffnet ist. Der Schalter in der Titelleiste ändert diese Einstellung ebenfalls.',
@@ -4070,6 +4079,7 @@ export const deOverrides = {
       backgroundRunning: 'Hintergrundaufgabe läuft',
       draftSession: 'Entwurf – noch nichts gesendet',
       handoffOrigin: platform => `Übergeben von ${platform}`,
+      continuationOrigin: 'Automatische Fortsetzung — dieser Chat wurde komprimiert und fortgesetzt',
       ownedByProfile: profile => `Profil: ${profile}`,
       renamed: 'Umbenannt',
       renameFailed: 'Umbenennen fehlgeschlagen',
@@ -5643,7 +5653,8 @@ export const deOverrides = {
       questionProgress: (answered, total) => `${answered} von ${total} beantwortet`,
       lateAnswer: (question, choice) => `Re: „${question}“ — meine Antwort: ${choice}`,
       lateAnswerTip: 'Diese Antwort als Folgenachricht entwerfen',
-      lateAnswerHint: 'Dieser Prompt wartet nicht mehr. Wählen Sie eine Option, um sie als Folgenachricht zu entwerfen.',
+      lateAnswerHint:
+        'Dieser Prompt wartet nicht mehr. Wählen Sie eine Option, um sie als Folgenachricht zu entwerfen.',
       notDelivered:
         'Diese Frage hat die App nicht erreicht und kann hier nicht beantwortet werden. Klicken Sie auf Stopp, um den Durchgang zu beenden, und antworten Sie dann im Chat.'
     },

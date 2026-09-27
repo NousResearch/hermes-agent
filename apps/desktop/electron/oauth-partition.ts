@@ -181,9 +181,7 @@ export function resolveOauthPartition(requestUrl: unknown, opts: ResolveOauthPar
       const pendingKind = typeof opts.pendingKind === 'string' ? opts.pendingKind : ''
       const pendingAuthMode = typeof opts.pendingAuthMode === 'string' ? opts.pendingAuthMode : ''
 
-      return pendingKind === 'remote' &&
-        pendingAuthMode === 'oauth' &&
-        !(v1Norm && requestNorm === v1Norm)
+      return pendingKind === 'remote' && pendingAuthMode === 'oauth' && !(v1Norm && requestNorm === v1Norm)
         ? `${CONNECTION_PARTITION_PREFIX}${sanitizePartitionComponent(wantedId)}`
         : LEGACY_OAUTH_PARTITION
     }

@@ -736,7 +736,8 @@ export const ja = defineLocale({
       toursDesc:
         '各ステップを強調しながら、Hermes がアプリを案内します。利用開始から30日後に自動でオフになりますが、再びオンにできます。',
       composerPopoutTitle: 'フローティング入力欄',
-      composerPopoutDesc: '入力欄をドックからドラッグして外せるようにします。オフにすると画面下部に固定されます。',
+      composerPopoutDesc:
+        '入力欄をドックからドラッグして外せるようにします。オフの間は画面下部にドッキングされたままです。',
       fileBrowserTitle: 'ファイルブラウザ',
       fileBrowserDesc:
         'ワークスペースを開いているとき、チャットの横にファイルブラウザを表示します。タイトルバーのボタンでも切り替わります。',
@@ -3872,7 +3873,8 @@ export const ja = defineLocale({
       questionProgress: (answered, total) => `${total}問中${answered}問回答済み`,
       lateAnswer: (question, choice) => `「${question}」について — 私の回答: ${choice}`,
       lateAnswerTip: 'この回答をフォローアップメッセージとして下書きします',
-      lateAnswerHint: 'この質問はもう回答を待っていません。選択肢を選ぶとフォローアップメッセージとして下書きされます。',
+      lateAnswerHint:
+        'この質問はもう回答を待っていません。選択肢を選ぶとフォローアップメッセージとして下書きされます。',
       notDelivered:
         'この質問はアプリに届かなかったため、ここでは回答できません。停止を押してターンを終了し、チャットで返信してください。'
     },

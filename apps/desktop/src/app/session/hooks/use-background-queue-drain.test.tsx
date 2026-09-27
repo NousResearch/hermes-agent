@@ -290,7 +290,7 @@ describe('useBackgroundQueueDrain', () => {
     await waitFor(() => expect(getQueuedPrompts('stored-session-a')).toHaveLength(0))
   })
 
-  it('drops a gone session\'s queued prompt quietly at drain exhaustion instead of erroring (#98015)', async () => {
+  it("drops a gone session's queued prompt quietly at drain exhaustion instead of erroring (#98015)", async () => {
     vi.useFakeTimers()
 
     // The session list has settled and no row answers to the queued session:

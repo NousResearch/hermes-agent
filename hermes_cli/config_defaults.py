@@ -2256,6 +2256,9 @@ DEFAULT_CONFIG = {
         "auto_archive": False,
         # Idle days before auto-archive hides a session (only when auto_archive is true).
         "auto_archive_days": 3,
+        # List delegate_task subagent runs in session lists (desktop sidebar, dashboard, session.list),
+        # nested under their parent. Off by default: they are machinery, not conversations.
+        "show_subagents": False,
         # VACUUM after a prune that deleted rows (SQLite never reclaims disk on DELETE). VACUUM
         # blocks writes (~seconds per 100MB), so it runs only at startup, only when ≥1 session was
         # deleted AND freelist/page_count > 25%.
@@ -2603,6 +2606,10 @@ DEFAULT_CONFIG = {
         # gnome-libsecret|kwallet|kwallet5|kwallet6|basic force one (basic = unencrypted). Bridged
         # to HERMES_DESKTOP_PASSWORD_STORE; ignored off-Linux.
         "password_store": "auto",
+        # Expose the renderer's accessibility tree to the OS (macOS/Windows) so dictation/IME tools
+        # that insert text via the accessibility APIs can reach the composer (#118271, #92607).
+        # False bridges to HERMES_DESKTOP_RENDERER_ACCESSIBILITY=0 and skips the tree (perf opt-out).
+        "renderer_accessibility": True,
         # Linux: False preserves an existing custom XDG launcher entry; missing entries
         # are still created. True keeps the generated entry current on each launch.
         "manage_launcher_entry": True,

@@ -75,7 +75,7 @@ export function formatRendererConsoleLine(label: string, details: ConsoleMessage
 /** Attach the error-level console hook to a renderer window. `log` is the
  *  desktop.log sink (rememberLog in main.ts). */
 export function attachRendererConsoleCapture(win: WindowLike, label: string, log: (line: string) => void): void {
-  win.webContents.on('console-message', (event) => {
+  win.webContents.on('console-message', event => {
     if (!isConsoleMessageDetails(event)) {
       if (!didReportConsoleMessageSignatureDrift) {
         didReportConsoleMessageSignatureDrift = true

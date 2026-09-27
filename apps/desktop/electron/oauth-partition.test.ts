@@ -289,9 +289,7 @@ describe('resolveOauthPartition with connectionId (pre-save sign-in identity)', 
 
       const savedReg = registry('local', [
         { id: 'local', kind: 'local' },
-        kind === 'remote'
-          ? remote('draft-1', draftUrl, { authMode })
-          : { id: 'draft-1', kind, url: draftUrl, authMode }
+        kind === 'remote' ? remote('draft-1', draftUrl, { authMode }) : { id: 'draft-1', kind, url: draftUrl, authMode }
       ])
 
       const readJar = resolveOauthPartition(draftUrl, { registry: savedReg })

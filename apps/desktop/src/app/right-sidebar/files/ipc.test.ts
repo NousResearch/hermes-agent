@@ -281,8 +281,10 @@ describe('readProjectDir', () => {
     // `nested` is the set of directories that are their own repository root;
     // everything else resolves to its parent repo. Growing the set between
     // reads simulates the user running `git init` underneath the project.
-    const gitRootOf = (nested: string[]) =>
-      async (path: string): Promise<string | null> => (nested.includes(path) ? path : path.startsWith('/repo2') ? '/repo2' : '/repo')
+    const gitRootOf =
+      (nested: string[]) =>
+      async (path: string): Promise<string | null> =>
+        nested.includes(path) ? path : path.startsWith('/repo2') ? '/repo2' : '/repo'
 
     const countCalls = (mock: typeof gitRoot | typeof readFileDataUrl, arg: string) =>
       mock.mock.calls.filter(([callArg]) => callArg === arg).length

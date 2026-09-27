@@ -35,7 +35,13 @@ const assistantTurn = (id: number, text: string): SessionMessage =>
 
 /** What an in-place model switch persists, exactly as the gateway writes it. */
 const modelSwitchNotice = (id: number): SessionMessage =>
-  row({ content: 'switched to another model', display_kind: 'model_switch', id, role: 'user', timestamp: 1_700_000_000 + id })
+  row({
+    content: 'switched to another model',
+    display_kind: 'model_switch',
+    id,
+    role: 'user',
+    timestamp: 1_700_000_000 + id
+  })
 
 describe('messagesIfTranscriptBehind', () => {
   it('does not treat a backend-authored notice as another view being ahead', () => {

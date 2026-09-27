@@ -1,10 +1,6 @@
 import { useRef, useState } from 'react'
 
-import type {
-  DesktopConnectionConfigInput,
-  DesktopConnectionProbeResult,
-  DesktopOauthLoginOptions
-} from '@/global'
+import type { DesktopConnectionConfigInput, DesktopConnectionProbeResult, DesktopOauthLoginOptions } from '@/global'
 import { useI18n } from '@/i18n'
 import { deriveRemoteAuthProviderShape } from '@/lib/desktop-remote-auth'
 import { coerceRemoteUrlScheme } from '@/lib/remote-url'
@@ -150,8 +146,7 @@ export function useRemoteSetup(options: RemoteSetupOptions): RemoteSetup {
     targetSeq,
     beforeOAuthLogin: (value: DesktopConnectionConfigInput): Promise<void> | undefined =>
       callbacks.current.beforeOAuthLogin?.(value),
-    oauthLoginIdentity: (): DesktopOauthLoginOptions | undefined =>
-      callbacks.current.oauthLoginIdentity?.(),
+    oauthLoginIdentity: (): DesktopOauthLoginOptions | undefined => callbacks.current.oauthLoginIdentity?.(),
     onOAuthLoginSettled: (connectionId: string): void => {
       callbacks.current.onOAuthLoginSettled?.(connectionId)
     },

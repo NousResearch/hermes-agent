@@ -17,7 +17,7 @@ import {
 import { setWorkspaceScope } from '@/components/pane-shell/workspace-scope'
 import { onReleaseTypingFocus } from '@/components/ui/keyboard-first'
 import { findBarClaimsCombo } from '@/lib/find-in-page'
-import { contributedKeybindHandler, PROFILE_SLOT_COUNT, SESSION_SLOT_COUNT } from '@/lib/keybinds/actions'
+import { contributedKeybindHandler, PROFILE_SLOT_COUNT, SESSION_SLOT_COUNT, TAB_SLOT_COUNT } from '@/lib/keybinds/actions'
 import { handleApprovalKey, releaseApprovalKey } from '@/lib/keybinds/approval-keys'
 import { actionAllowedInInput, comboFromEvent, isEditableTarget } from '@/lib/keybinds/combo'
 import { composerFocusKeysAllowed, isComposerFocusSoftCombo, typeToFocusChar } from '@/lib/keybinds/composer-focus-keys'
@@ -137,16 +137,13 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
   }
 
   for (let slot = 1; slot <= PROFILE_SLOT_COUNT; slot += 1) {
-    // ⌘1…⌘9 switch the FOCUSED zone's tab when it's a real tab strip; only a
-    // single-pane (or unfocused) layout falls through to the profile switch.
+    // Unconditional (#92569): ⌘1…⌘9 are PROFILE switchers, period. The old
+    // tab-first dispatch (activateTreeTabSlot before switchProfileToSlot)
+    // lived inside this handler, so session tabs silently ate the chord and
+    // rebinding could not change the semantics. Positional tab switching
+    // moved to the unbound view.tabSlot.N actions below.
     profileSwitchHandlers[`profile.switch.${slot}`] = () => {
-      const pane = activateTreeTabSlot(slot)
-
-      if (pane) {
-        leavePageForWorkspaceChat(pane)
-      } else {
-        switchProfileToSlot(slot)
-      }
+      switchProfileToSlot(slot)
     }
   }
 
@@ -166,6 +163,21 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     }
   }
 
+  // view.tabSlot.N: activate the Nth visible tab in the focused zone's tab
+  // strip. Ships unbound (#92569) — users who want positional tab switching
+  // can assign chords in Settings → Keyboard Shortcuts.
+  const tabSlotHandlers: HandlerMap = {}
+
+  for (let slot = 1; slot <= TAB_SLOT_COUNT; slot += 1) {
+    tabSlotHandlers[`view.tabSlot.${slot}`] = () => {
+      const pane = activateTreeTabSlot(slot)
+
+      if (pane) {
+        leavePageForWorkspaceChat(pane)
+      }
+    }
+  }
+
   commitSwitcherRef.current = () => goToSession(commitOnCtrlUp())
 
   const stepSession = (direction: 1 | -1) => {
@@ -175,7 +187,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
 
   // ⌃Tab cycles the focused session/main tab strip; only a non-tabbed focus
   // falls through to the recent-session switcher. Landing on the workspace
-  // under a full page routes back to the chat (same as ⌘1).
+  // under a full page routes back to the chat (same as view.tabSlot.1).
   const cycleTab = (direction: 1 | -1) => {
     const pane = cycleTreeTabInFocusedZone(direction)
 
@@ -239,6 +251,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'session.next': () => cycleTab(1),
     'session.prev': () => cycleTab(-1),
     ...sessionSlotHandlers,
+    ...tabSlotHandlers,
     'session.focusSearch': requestSessionSearchFocus,
     'session.togglePin': deps.toggleSelectedPin,
     'session.archive': deps.archiveSelectedSession,

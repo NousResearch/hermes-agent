@@ -45,7 +45,15 @@ const INLINE_CODE_SPLIT_RE = /(`[^`\n]+`)/g
 // must not end the span — the same distinction findClosingSingleDollar draws
 // via isEscapedAt. The two alternatives are disjoint on their first character,
 // so the body cannot backtrack ambiguously.
-const MATH_SPAN_SPLIT_RE = /((?<!\\)\$\$[\s\S]*?(?<!\\)\$\$|(?<!\\)\$(?:[^\n$\\]|\\[^\n])+?(?<!\\)\$)/g
+//
+// The inline branch deliberately has NO lookbehind on its CLOSING `$`: the
+// body alternation consumes escape pairs atomically, so any `$` the engine
+// reaches after the body is by construction unescaped — a trailing `\\$`
+// (escaped backslash, valid TeX) would otherwise defeat a one-character
+// lookbehind and unshield the span ($a\\$ mis-split, #92371). The display
+// branch keeps its guard: its `[\s\S]*?` body does not step over escape
+// pairs, so it genuinely needs it.
+const MATH_SPAN_SPLIT_RE = /((?<!\\)\$\$[\s\S]*?(?<!\\)\$\$|(?<!\\)\$(?:[^\n$\\]|\\[^\n])+?\$)/g
 const LATEX_DISPLAY_OPEN_LINE_RE = /^([ \t]*(?:>[ \t]*)*(?:(?:[-+*]|\d+[.)])[ \t]+)?[ \t]*)\\{1,2}\[[ \t]*\r?$/
 const LATEX_DISPLAY_CLOSE_LINE_RE = /^([ \t]*(?:>[ \t]*)*(?:(?:[-+*]|\d+[.)])[ \t]+)?[ \t]*)\\{1,2}\][ \t]*\r?$/
 const CUSTOM_DISPLAY_MATH_LINE_RE = /^([ \t]*(?:>[ \t]*)*(?:(?:[-+*]|\d+[.)])[ \t]+)?[ \t]*)\[\/math\][ \t]*\r?$/

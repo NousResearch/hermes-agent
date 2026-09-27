@@ -2648,6 +2648,30 @@ class TestListSessionsRich:
             for row in db.find_orphaned_gateway_sessions()
         )
 
+    def test_created_source_preserved_across_cross_platform_resume(self, db):
+        """``created_source`` is immutable provenance (#56439): stamped at creation and never
+        rewritten by gateway peer recording, which must keep ``source`` as live routing state."""
+        db.create_session("tui-sess", "tui")
+        db.append_message("tui-sess", "user", "created on desktop")
+
+        # /resume from Telegram: routing state moves, provenance does not.
+        db.record_gateway_session_peer(
+            "tui-sess", source="telegram", session_key="agent:main:telegram:dm:1", chat_id="1"
+        )
+        row = db.get_session("tui-sess")
+        assert row["source"] == "telegram"
+        assert row["created_source"] == "tui"
+
+        # Later upserts (any surface) never clobber the stamped provenance.
+        db.ensure_session("tui-sess", "discord")
+        assert db.get_session("tui-sess")["created_source"] == "tui"
+
+        # Self-healing insert stamps provenance from the first writer.
+        db.record_gateway_session_peer(
+            "slack-sess", source="slack", session_key="agent:main:slack:ch:2", chat_id="2"
+        )
+        assert db.get_session("slack-sess")["created_source"] == "slack"
+
 
 
 
@@ -3295,6 +3319,56 @@ class TestCompressionChainProjection:
         assert tip_row["_lineage_ids"] == ["root1", "mid1", "tip1"]
         solo_row = next(s for s in sessions if s["id"] == "solo")
         assert solo_row.get("_lineage_ids") is None
+
+    def test_list_labels_projected_continuation_kind(self, db):
+        """#121148: a projected compression tip is an automatic continuation, not a
+        fresh conversation and not a user branch — the sidebar must be able to say
+        so. Plain rows and branches carry no label."""
+        import time as _time
+        self._build_compression_chain(db, _time.time() - 3600)
+        db.create_session("solo", "cli")
+        db.append_message("solo", "user", "standalone")
+        db.create_session("branchy", "cli", parent_session_id="root1",
+                          model_config={"_branched_from": "root1"})
+        db._conn.commit()
+
+        sessions = db.list_sessions_rich(source="cli", limit=20)
+        tip_row = next(s for s in sessions if s["id"] == "tip1")
+        assert tip_row["continuation_kind"] == "compression"
+        solo_row = next(s for s in sessions if s["id"] == "solo")
+        assert solo_row.get("continuation_kind") is None
+        branch_row = next(s for s in sessions if s["id"] == "branchy")
+        assert branch_row.get("continuation_kind") is None
+
+    def test_list_keeps_live_tip_carrying_parent_link(self, db):
+        """#121148: `parent_session_id` on the live tip must not evict it from the
+        list — the lineage must be expressible AND visible at once. Sealed
+        (compression-ended) children stay hidden as before."""
+        import time as _time
+        t0 = _time.time() - 3600
+        # A three-link chain: seg-a → seg-prev → live-tip. Only the tip is live.
+        db.create_session("seg-a", "cli")
+        db.append_message("seg-a", "user", "earlier days")
+        db._conn.execute(
+            "UPDATE sessions SET ended_at=?, end_reason='compression' WHERE id=?", (t0 + 10, "seg-a"))
+        # A restored previous segment the user re-linked the live tip to.
+        db.create_session("seg-prev", "cli", parent_session_id="seg-a")
+        db.append_message("seg-prev", "user", "restored segment")
+        db._conn.execute("UPDATE sessions SET ended_at=?, end_reason='compression' WHERE id=?",
+                         (t0 + 20, "seg-prev"))
+        db.create_session("live-tip", "cli", parent_session_id="seg-prev")
+        db.append_message("live-tip", "user", "still talking here")
+        db._conn.commit()
+
+        sessions = db.list_sessions_rich(source="cli", limit=20)
+        listed_ids = {s["id"] for s in sessions}
+
+        # The live tip stays listable while naming its parent.
+        assert "live-tip" in listed_ids
+        # Sealed compression children stay hidden (the projection surfaces the
+        # lineage through its root row instead).
+        assert "seg-a" not in listed_ids
+        assert "seg-prev" not in listed_ids or "live-tip" in listed_ids
 
 
 

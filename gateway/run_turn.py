@@ -1822,7 +1822,7 @@ class GatewayTurnMixin:
                 self._sync_telegram_topic_binding(source, entry, reason=reason)
 
     async def _reset_session_after_compression_exhaustion(
-        self, session_key, session_entry, source, *, require_primary=True,
+        self, session_key, session_entry, source, *, require_primary=True, event=None,
     ):
         expected_id = session_entry.session_id
         async def commit():
@@ -1832,7 +1832,10 @@ class GatewayTurnMixin:
             if new_entry is None:
                 raise RuntimeError("Session route changed before compression recovery")
             self._evict_cached_agent(session_key)
+            queued_events = self._overflow_queue(session_key)
             self._clear_conversation_scope(session_key, reason="compression_exhausted_reset")
+            if queued_events:
+                self._session_state(session_key).conversation.queued_events = queued_events
             try:
                 await asyncio.to_thread(
                     self._sync_compression_recovery_binding, source, new_entry, new_entry.session_id,
@@ -1840,6 +1843,8 @@ class GatewayTurnMixin:
                 )
             except Exception:
                 logger.warning("Compression recovery committed but topic binding sync failed", exc_info=True)
+            if event is not None:
+                event._gateway_preserve_pending = False
             return new_entry
         return await self._await_session_policy_commit(commit())
 
@@ -1853,6 +1858,7 @@ class GatewayTurnMixin:
             return response, session_entry
         if event is not None:
             event._gateway_skip_goal_continuation = True
+            event._gateway_preserve_pending = True
         expected_id = session_entry.session_id
         action = await self._compression_exhaustion_action(source)
         if run_generation is not None and not self._is_session_run_current(session_key, run_generation):
@@ -1875,7 +1881,7 @@ class GatewayTurnMixin:
                 # New exhaustion keeps the native JSON fallback. Existing paused routes force a
                 # strict primary commit inside SessionStore even when require_primary is False.
                 session_entry = await self._reset_session_after_compression_exhaustion(
-                    session_key, session_entry, source, require_primary=False,
+                    session_key, session_entry, source, require_primary=False, event=event,
                 )
                 notice = ("🔄 Session auto-reset - the conversation exceeded the maximum context size and "
                           "could not be compressed further. Your next message will start a fresh session.")
@@ -2243,10 +2249,13 @@ class GatewayTurnMixin:
         source, session_entry, session_key = resolved
         if getattr(session_entry, "compression_paused", False) is True:
             event._gateway_skip_goal_continuation = True
+            event._gateway_preserve_pending = True
             action = await self._compression_exhaustion_action(source)
             if action == "reset" and self._is_session_run_current(_quick_key, run_generation):
                 try:
-                    await self._reset_session_after_compression_exhaustion(session_key, session_entry, source)
+                    await self._reset_session_after_compression_exhaustion(
+                        session_key, session_entry, source, event=event,
+                    )
                 except Exception:
                     logger.warning("Paused session recovery could not be persisted", exc_info=True)
                     return self._compression_pause_notice(persistence_failed=True)

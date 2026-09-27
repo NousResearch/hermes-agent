@@ -503,7 +503,7 @@ async def test_terminal_exhaustion_does_not_drain_pending_input(env, deferred):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("action", ["pause", "reset", "normal"])
+@pytest.mark.parametrize("action", ["pause", "reset", "reset_fail", "existing_reset", "normal"])
 async def test_adapter_preserves_terminal_compression_queue(native_env, monkeypatch, action):
     from gateway.config import PlatformConfig
     from gateway.platforms.base import SendResult
@@ -532,26 +532,39 @@ async def test_adapter_preserves_terminal_compression_queue(native_env, monkeypa
     )
     adapter = _StubAdapter(PlatformConfig(enabled=True, typing_indicator=False), Platform.TELEGRAM)
     delivered = []
+    queued = MessageEvent(text="retain this queued request", source=e.source, message_id="queued")
+    newer = MessageEvent(text="then this newer request", source=e.source, message_id="newer")
+    overflow = MessageEvent(text="/queue separate queued turn", source=e.source, message_id="overflow")
+
+    async def enqueue_waiting():
+        await adapter.handle_message(queued)
+        assert queued._gateway_accepted
+        await r._busy_queue_command(overflow, e.key, e.source)
+        assert r._overflow_queue(e.key)[0].text == "separate queued turn"
 
     async def send(chat_id, content, **kwargs):
         delivered.append((content, adapter._pending_messages.get(e.key)))
+        if action in {"reset", "existing_reset"} and (
+            "auto-reset" in content or "reset after compression pause" in content
+        ):
+            # Arrival after commit but before the first task releases its adapter guard.
+            await adapter.handle_message(newer)
+            assert newer._gateway_accepted
         return SendResult(success=True, message_id="reply")
 
     adapter.send = AsyncMock(side_effect=send)
     adapter._message_handler = r._primary_message_handler()
     r.adapters[Platform.TELEGRAM] = adapter
-    queued = MessageEvent(text="retain this queued request", source=e.source, message_id="queued")
     loop = asyncio.get_running_loop()
     model_inputs = []
 
     class ModelBoundary(_CompressionThenFailureAgent):
         def run_conversation(self, user_message, conversation_history=None, task_id=None, **kwargs):
             model_inputs.append(user_message)
-            if len(model_inputs) == 1:
+            if len(model_inputs) == 1 and action != "existing_reset":
                 # Arrive through real adapter admission while the model owns the turn.
-                asyncio.run_coroutine_threadsafe(adapter.handle_message(queued), loop).result(5)
-                assert queued._gateway_accepted
-            terminal = action != "normal" and len(model_inputs) == 1
+                asyncio.run_coroutine_threadsafe(enqueue_waiting(), loop).result(5)
+            terminal = action not in {"normal", "existing_reset"} and len(model_inputs) == 1
             response = "context full" if terminal else "completed request"
             return {
                 "final_response": response, "failed": terminal, "completed": not terminal,
@@ -565,7 +578,18 @@ async def test_adapter_preserves_terminal_compression_queue(native_env, monkeypa
 
     _install_compression_failure_agent(monkeypatch, ModelBoundary)
     monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "gpt-5.4")
-    policy(e, f"compression:\n  exhaustion_action: {action if action != 'normal' else 'pause'}\n")
+    policy(e, f"compression:\n  exhaustion_action: {'pause' if action in {'normal', 'pause'} else 'reset'}\n")
+    if action in {"existing_reset", "reset_fail"}:
+        mark(e)
+        if action == "reset_fail":
+            monkeypatch.setattr(e.db, "replace_gateway_routing_entries", Mock(side_effect=OSError("primary")))
+        original_reset = r._reset_session_after_compression_exhaustion
+
+        async def reset_with_queued_input(*args, **kwargs):
+            await enqueue_waiting()
+            return await original_reset(*args, **kwargs)
+
+        monkeypatch.setattr(r, "_reset_session_after_compression_exhaustion", reset_with_queued_input)
     event = MessageEvent(text="initial request", source=e.source, message_id="initial")
     assert adapter._event_session_key(event) == e.key
 
@@ -577,22 +601,41 @@ async def test_adapter_preserves_terminal_compression_queue(native_env, monkeypa
     try:
         await adapter.handle_message(event)
         await asyncio.wait_for(settle(), 10)
-        assert model_inputs and "initial request" in model_inputs[0]
-        if action == "normal":
-            assert len(model_inputs) == 2
-            assert queued.text in model_inputs[1]
+        persisted = reload_entry(e)
+        assert persisted is not None
+        if action in {"reset", "existing_reset"}:
+            assert persisted.session_id != e.entry.session_id
+            assert not persisted.compression_paused
+            assert getattr(event, "_gateway_skip_goal_continuation", False) is True
+            assert queued._gateway_accepted and newer._gateway_accepted
+            assert len(model_inputs) == 2 + int(action == "reset")
+            followup = model_inputs[-2]
+            assert followup.index(queued.text) < followup.index(newer.text)
+            assert model_inputs[-1] == "separate queued turn"
             assert e.key not in adapter._pending_messages
+            assert not r._overflow_queue(e.key)
+        elif action == "normal":
+            assert len(model_inputs) == 3
+            assert queued.text in model_inputs[1]
+            assert model_inputs[2] == "separate queued turn"
+            assert e.key not in adapter._pending_messages
+            assert not r._overflow_queue(e.key)
         else:
-            notice = "Session paused:" if action == "pause" else "auto-reset"
-            assert any(notice in text and pending is queued for text, pending in delivered)
-            persisted = reload_entry(e)
-            assert persisted is not None
-            assert persisted.compression_paused is (action == "pause")
-            assert (persisted.session_id != e.entry.session_id) is (action == "reset")
+            assert len(model_inputs) == (0 if action == "reset_fail" else 1)
+            if action == "reset_fail":
+                assert getattr(event, "_gateway_skip_goal_continuation", False) is True
+            else:
+                assert "initial request" in model_inputs[0]
+            assert persisted.session_id == e.entry.session_id
+            assert persisted.compression_paused is (action in {"pause", "reset_fail"})
             assert adapter._pending_messages.get(e.key) is queued
-            assert len(model_inputs) == 1
+            assert r._overflow_queue(e.key)[0].text == "separate queued turn"
             assert not any(queued.text in str(row.get("content"))
                            for row in e.db.get_messages(persisted.session_id))
+        if action != "normal":
+            notice = {"pause": "Session paused:", "reset": "auto-reset",
+                      "reset_fail": "persist", "existing_reset": "reset after compression pause"}[action]
+            assert any(notice in text and pending is queued for text, pending in delivered)
         assert e.key not in adapter._active_sessions
         assert e.key not in adapter._session_tasks
     finally:
@@ -639,6 +682,57 @@ async def test_manual_commit_matrix_preserves_parent_and_clears_only_on_commit(e
         assert e.db.get_messages(old_id, include_compacted=True) == archived
     else:
         assert e.db.get_messages(old_id) == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("profile,rotated", [("secondary-compress", True), (None, True),
+                                              ("secondary-compress", False)])
+async def test_manual_compression_writes_to_child_owner_before_route_publish(
+    env, monkeypatch, profile, rotated,
+):
+    e = env
+    home = e.tmp / "multiplex-home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(type(home), "home", lambda: e.tmp)
+    secondary = home / "profiles" / "secondary-compress"
+    secondary.mkdir(parents=True)
+    (secondary / "config.yaml").write_text("{}\n")
+    config = GatewayConfig()
+    config.multiplex_profiles = True
+    store = SessionStore(e.tmp / "multiplex-sessions", config)
+    e.runner.config = config
+    e.runner.session_store = store
+    source = replace(e.source, profile=profile, chat_id="manual-compression-owner")
+    try:
+        entry = store.get_or_create_session(source)
+        owner_db = store._db_for_key(entry.session_key)
+        launch_db = store._db_for_key(None)
+        assert isinstance(owner_db, SessionDB) and isinstance(launch_db, SessionDB)
+        assert launch_db.db_path == home / "state.db"
+        assert owner_db.db_path == (secondary if profile else home) / "state.db"
+        assert store.rewrite_transcript(entry.session_id, HISTORY)
+        original_history = owner_db.get_messages(entry.session_id)
+        assert store.set_session_metadata(entry.session_key, KEY, True, require_primary=True)
+        old_id = entry.session_id
+        new_id = old_id + "-compressed" if rotated else old_id
+        compressed = [{"role": "user", "content": "Compressed inspection summary"}]
+        if rotated:
+            owner_db.create_session(new_id, source="telegram")
+        else:
+            owner_db.archive_and_compact(old_id, compressed)
+        agent = SimpleNamespace(session_id=new_id, _last_compaction_in_place=not rotated)
+        assert await e.runner._persist_manual_compression(agent, entry, source, compressed)
+        current = store.lookup_by_session_key(entry.session_key)
+        assert current is not None and current.session_id == new_id
+        assert not current.compression_paused
+        assert [row["content"] for row in owner_db.get_messages(new_id)] == [compressed[0]["content"]]
+        if profile:
+            assert launch_db.get_messages(new_id) == []
+        if rotated:
+            assert owner_db.get_messages(old_id) == original_history
+    finally:
+        store.close_all_db_handles()
 
 
 @pytest.mark.asyncio

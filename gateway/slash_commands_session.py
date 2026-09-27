@@ -761,11 +761,17 @@ class GatewaySessionCommandsMixin:
 
         async def commit():
             if rotated:
-                db = await asyncio.to_thread(self.session_store._db_for_session_id, new_id)
-                if db is None:
-                    raise RuntimeError("Transcript storage is unavailable")
-                if await self.async_session_store.rewrite_transcript(new_id, compressed) is not True:
-                    raise RuntimeError("Failed to persist compressed transcript")
+                # The child exists before the route publishes it; keep its transcript in the
+                # source profile's DB during that interval.
+                self.session_store._session_owner_hints[new_id] = session_entry.session_key
+                try:
+                    db = await asyncio.to_thread(self.session_store._db_for_session_id, new_id)
+                    if db is None:
+                        raise RuntimeError("Transcript storage is unavailable")
+                    if await self.async_session_store.rewrite_transcript(new_id, compressed) is not True:
+                        raise RuntimeError("Failed to persist compressed transcript")
+                finally:
+                    self.session_store._session_owner_hints.pop(new_id, None)
             # In-place history is already committed by the compressor. Never rewrite its archive.
             if await self.async_session_store.commit_manual_compression(
                 session_entry.session_key, expected_id, new_id,

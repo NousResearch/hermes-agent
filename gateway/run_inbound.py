@@ -1246,6 +1246,9 @@ class GatewayInboundMixin:
         never promoted, e.g. a compression-demoted follow-up) silently orphaned those events. The
         oldest orphan runs as THIS turn and the incoming event is parked behind the chain. Skipped
         for control commands and internal events."""
+        if getattr(event, "_gateway_pending_drain", False) is True:
+            event._gateway_pending_drain = False
+            return event, source, is_internal
         try:
             # ── FIFO orphan rescue (#99882) ──────────────────────────────── If this session went idle with
             # a populated overflow (queued during a busy window whose post-turn drain never promoted — e.g.

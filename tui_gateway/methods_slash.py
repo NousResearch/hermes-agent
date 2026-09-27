@@ -398,6 +398,11 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
     if (mirror := _SLASH_MIRRORS.get(name)) is None:
         return ""
     try:
+        if name == "model":
+            # /model runs off-turn on the RPC pool, so bind the session's profile before
+            # resolving provider credentials or profile-scoped endpoint overrides.
+            with _session_profile_runtime_scope(session):
+                return mirror(sid, session, agent, arg) or ""
         return mirror(sid, session, agent, arg) or ""
     except Exception as e:
         if name == "compress" and agent:

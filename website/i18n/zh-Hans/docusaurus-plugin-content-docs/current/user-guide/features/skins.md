@@ -267,5 +267,5 @@ Hermes Mod 遵循 `HERMES_HOME` 环境变量，因此也适用于[配置文件](
 - 未知皮肤自动回退到 `default`。
 - `/skin` 立即更新当前会话的活动 CLI 主题。
 - `~/.hermes/skins/` 中的用户皮肤优先于同名内置皮肤。
-- `/skin <name>` 会立即将 `display.skin` 保存到 `config.yaml`（与 `/model` 不同，没有仅限当前会话的选项）——新皮肤也会成为之后会话的默认值。
+- `/skin <name>` 会立即将 `display.skin` 保存到 `config.yaml`（与 `/model` 不同，没有仅限当前会话的选项）——新皮肤也会成为之后会话的默认值。确认信息以 `(saved)` 结尾；若没有该后缀，说明写入失败（例如 `config.yaml` 为只读），该皮肤仅对当前会话有效。
 - `banner_logo` 和 `banner_hero` 字段支持 Rich 控制台标记（例如 `[bold #FF0000]text[/]`），可用于彩色 ASCII 艺术。

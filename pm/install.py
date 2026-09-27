@@ -819,10 +819,13 @@ def check(*, include_venv: bool = True) -> list[str]:
 
 
 def _store_path_dirs() -> list[str]:
-    """Composed PATH dirs of all installed (non-internal, on_path) store
-    packages, deps-first, deduped. Includes optional packages that are
-    *installed* (facts say so) — an installed git/gh must be on PATH even
-    though it's not in the root closure. Never installs."""
+    """Composed ambient PATH dirs for installed store tools, deps-first.
+
+    Optional packages still participate when installed. Python is excluded
+    below because it is an explicit launcher/build interpreter: callers that
+    need it compose env_for("python"), while ambient activation leaves bare
+    Python commands to the dependency environment. Never installs.
+    """
 
     lockfile = _lockfile()
     target = current_target()
@@ -833,6 +836,11 @@ def _store_path_dirs() -> list[str]:
         except KeyError:
             continue
         if package.internal:
+            continue
+        # Python is an explicit launcher/build interpreter, not an ambient
+        # terminal tool.  Keep its package env intact for pm.env_for("python")
+        # consumers, but never let pm.activate() shadow the dependency venv.
+        if name == "python":
             continue
         if not getattr(package, "on_path", True):
             continue

@@ -781,12 +781,10 @@ def test_install_verify_failure_reports_reason(pm_env):
 
 
 
-def test_store_path_dirs_include_node_npm_when_installed(tmp_path, monkeypatch):
-    """The settled tools-on-path claim, made true: once node/npm are
-    installed store packages (non-internal), their dirs enter the
-    provisioned PATH. Regression test for the flag flip."""
+def test_store_path_dirs_include_runtime_tools_not_pm_interpreter(tmp_path, monkeypatch):
+    """Global activation publishes runtime tools but keeps PM Python explicit-only."""
     from pm import paths
-    from pm.install import _store_path_dirs
+    from pm.install import _store_path_dirs, env_for
     from pm.lock import Facts, Lockfile
 
     runtime = tmp_path / "runtime"
@@ -797,11 +795,12 @@ def test_store_path_dirs_include_node_npm_when_installed(tmp_path, monkeypatch):
     monkeypatch.setattr(paths, "lockfile_path", lambda: lockfile_path)
 
     lock = Lockfile(lockfile_path)
-    for name in ("node", "npm"):
+    for name in ("node", "npm", "python"):
         lock.set_pin(name, "1", {"any": {"url": "x", "sha256": "0" * 64}})
     lock.save()
 
-    # Fabricate installed node/npm entries in the store the way pm would.
+    # Fabricate installed entries using each package's real environment
+    # contract.  Python remains exportable through explicit env_for().
     store = paths.store_root()
     facts_path = paths.facts_path()
     facts_path.parent.mkdir(parents=True, exist_ok=True)
@@ -811,24 +810,29 @@ def test_store_path_dirs_include_node_npm_when_installed(tmp_path, monkeypatch):
     if facts is None:
         facts_path.write_text(_json.dumps({"schema": 1, "packages": {}}), encoding="utf-8")
         facts = Facts(facts_path)
-    for name in ("node", "npm"):
+    binaries = {}
+    for name in ("node", "npm", "python"):
+        package = registry.get_package(name)
         entry = f"{name}-1"
         entry_dir = store / entry
         entry_dir.mkdir(parents=True, exist_ok=True)
-        binary = registry.get_package(name).binary(entry_dir, current_target())
+        binary = package.binary(entry_dir, current_target())
         binary.parent.mkdir(parents=True, exist_ok=True)
         binary.write_bytes(b"installed tool")
+        binaries[name] = binary
         facts.record(
-            name, "1", entry,
-            {"PATH": ["{store}/" + entry]}, store_root=store,
-            target=current_target(),
-            artifacts=["0" * 64],
+            name, "1", entry, package.env(entry_dir, current_target()), store_root=store,
+            target=current_target(), artifacts=["0" * 64],
         )
     monkeypatch.setattr(paths, "lockfile_path", lambda: lockfile_path)
 
     dirs = _store_path_dirs()
     assert any(d.endswith("node-1") for d in dirs), dirs
     assert any(d.endswith("npm-1") for d in dirs), dirs
+    assert str(binaries["python"].parent) not in dirs
+
+    explicit = env_for("python", base_env={"PATH": ""})["PATH"].split(os.pathsep)
+    assert str(binaries["python"].parent) in explicit
 
     # And the split holds: uv, still internal, contributes nothing even
     # if a (fabricated) fact exists for it.

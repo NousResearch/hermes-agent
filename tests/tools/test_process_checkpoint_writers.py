@@ -84,6 +84,24 @@ def test_gateway_recovery_takes_only_dead_writers_jobs_and_its_shutdown_spares_l
                 writer.wait(timeout=30)
 
 
+def test_a_writer_on_a_recycled_pid_keeps_the_dead_writers_unfingerprinted_entries():
+    """A crashed writer whose start time was unreadable left entries under a PID the kernel has
+    since given to this process; this process's checkpoint must not take them for its own."""
+    from tools.process_registry import _checkpoint_path
+
+    path = _checkpoint_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    orphan = {"session_id": "proc_dead_writer", "pid": 999999, "pid_scope": "host", "command": "sleep 600",
+              "owner_pid": os.getpid(), "owner_started_at": None}
+    path.write_text(json.dumps([orphan]), encoding="utf-8")
+
+    registry = ProcessRegistry()
+    assert registry._checkpoint_writer()["owner_started_at"] is not None
+    registry._write_checkpoint()
+
+    assert [e["session_id"] for e in json.loads(path.read_text(encoding="utf-8"))] == ["proc_dead_writer"]
+
+
 def test_detached_finish_never_replaces_the_producers_saved_result():
     """A detached session (here: a second registry recovering the producer's entry, as after an
     in-place exec) has no output or exit code, so its finish must leave the real receipt alone."""

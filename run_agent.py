@@ -1107,10 +1107,14 @@ class AIAgent(
 
     @classmethod
     def _assistant_has_todo_tool_call(cls, assistant_msg: Dict[str, Any], tool_call_id: str) -> bool:
-        """True when the assistant message issued a ``todo`` call with this id."""
+        """True when the paired call resolves to the registered Todo tool."""
+        from agent.tool_executor import _canonical_tool_name
+        from tools.todo_tool import TODO_SCHEMA
+
         tool_calls = assistant_msg.get("tool_calls")
         return isinstance(tool_calls, list) and any(
-            cls._get_tool_call_id_static(tc) == tool_call_id and cls._get_tool_call_name_static(tc) == "todo"
+            cls._get_tool_call_id_static(tc) == tool_call_id
+            and _canonical_tool_name(cls._get_tool_call_name_static(tc)) == TODO_SCHEMA["name"]
             for tc in tool_calls
         )
 

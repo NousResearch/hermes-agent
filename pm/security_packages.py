@@ -85,6 +85,8 @@ class _SignedBinary(BinaryPackage):
 @register
 class Tirith(_SignedBinary):
     name = "tirith"
+    # v0.4.2 publishes aarch64 musl but no x86_64 musl archive.
+    gaps = {**_SignedBinary.gaps, "linux-x64-musl": "upstream publishes no x86_64 musl binary"}
     binary_rel = {"posix": "tirith"}
 
     def fetch_url(self, version: str, target: str) -> str:
@@ -116,7 +118,10 @@ class IronProxy(_SignedBinary):
         return allowlisted_env()
 
     def fetch_url(self, version: str, target: str) -> str:
-        platform, arch = target.split("-")
+        # Linux releases are built with CGO_ENABLED=0, so the same signed
+        # archive is portable across glibc and musl userlands.
+        lookup_target = target.removesuffix("-musl") if target in _MUSL_TARGETS else target
+        platform, arch = lookup_target.split("-")
         arch = "amd64" if arch == "x64" else arch
         return f"https://github.com/paradigmxyz/iron-proxy/releases/download/v{version}/iron-proxy_{version}_{platform}_{arch}.tar.gz"
 

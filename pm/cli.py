@@ -117,10 +117,14 @@ def _pin_tool(args) -> int:
     lockfile = _lockfile()
     package = get_package(args.name)
     artifacts: dict[str, object] = {}
+    hashes: dict[str, str] = {}
 
     def pin(url: str) -> dict:
         print(f"    {url}")
-        digest = package.known_sha256(args.version, url) or hash_url(url)
+        digest = hashes.get(url)
+        if digest is None:
+            digest = package.known_sha256(args.version, url) or hash_url(url)
+            hashes[url] = digest
         print(f"      sha256 {digest}")
         return {"url": url, "sha256": digest}
 

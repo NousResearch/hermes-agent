@@ -23,7 +23,15 @@
           "sha256": "de61bfbacbcf6e3648ddc8dbd6ca8bb2245438ccf5f94d54129997528f5a752d",
           "url": "https://github.com/bitwarden/sdk-sm/releases/download/bws-v2.0.0/bws-aarch64-unknown-linux-musl-2.0.0.zip"
         },
+        "linux-arm64-musl": {
+          "sha256": "de61bfbacbcf6e3648ddc8dbd6ca8bb2245438ccf5f94d54129997528f5a752d",
+          "url": "https://github.com/bitwarden/sdk-sm/releases/download/bws-v2.0.0/bws-aarch64-unknown-linux-musl-2.0.0.zip"
+        },
         "linux-x64": {
+          "sha256": "ea6eb18f1270388f12d15a35f919ccb3488d32a777433baefe883d561f46fc73",
+          "url": "https://github.com/bitwarden/sdk-sm/releases/download/bws-v2.0.0/bws-x86_64-unknown-linux-musl-2.0.0.zip"
+        },
+        "linux-x64-musl": {
           "sha256": "ea6eb18f1270388f12d15a35f919ccb3488d32a777433baefe883d561f46fc73",
           "url": "https://github.com/bitwarden/sdk-sm/releases/download/bws-v2.0.0/bws-x86_64-unknown-linux-musl-2.0.0.zip"
         },
@@ -127,7 +135,15 @@
           "sha256": "1ec37f4f092521cb785e0ccfa2d82cc4a79ec8d2a4864f5eefc50a314f2d5dec",
           "url": "https://packages.termux.dev/apt/termux-main/pool/main/f/ffmpeg/ffmpeg_8.1.2-5_aarch64.deb"
         },
+        "linux-arm64-musl": {
+          "sha256": "2de63f615df3a46ac26921ac0314f501c3536aaf9fd5197ffe03dd17cd01a404",
+          "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-10-15-31/ffmpeg-n9.0.1-27-g9b0578816c-linuxarm64-gpl-9.0.tar.xz"
+        },
         "linux-x64": {
+          "sha256": "70b162b63517038ff18c8a50f4ea11f919a071f945c5881e87b0b2cd7173f8c7",
+          "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-10-15-31/ffmpeg-n9.0.1-27-g9b0578816c-linux64-gpl-9.0.tar.xz"
+        },
+        "linux-x64-musl": {
           "sha256": "70b162b63517038ff18c8a50f4ea11f919a071f945c5881e87b0b2cd7173f8c7",
           "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-10-15-31/ffmpeg-n9.0.1-27-g9b0578816c-linux64-gpl-9.0.tar.xz"
         },
@@ -156,7 +172,15 @@
           "sha256": "73ea440ecad9c9e284429997ee6f93577bc6f7bc6fba357ef62c53ad8fb641a5",
           "url": "https://github.com/cli/cli/releases/download/v2.97.0/gh_2.97.0_linux_arm64.tar.gz"
         },
+        "linux-arm64-musl": {
+          "sha256": "73ea440ecad9c9e284429997ee6f93577bc6f7bc6fba357ef62c53ad8fb641a5",
+          "url": "https://github.com/cli/cli/releases/download/v2.97.0/gh_2.97.0_linux_arm64.tar.gz"
+        },
         "linux-x64": {
+          "sha256": "a2c9b8497e1f85b1ad0dfcb78b5a622e098801b8e461e459e88e1ee12f018112",
+          "url": "https://github.com/cli/cli/releases/download/v2.97.0/gh_2.97.0_linux_amd64.tar.gz"
+        },
+        "linux-x64-musl": {
           "sha256": "a2c9b8497e1f85b1ad0dfcb78b5a622e098801b8e461e459e88e1ee12f018112",
           "url": "https://github.com/cli/cli/releases/download/v2.97.0/gh_2.97.0_linux_amd64.tar.gz"
         },
@@ -240,7 +264,43 @@
             "url": "https://raw.githubusercontent.com/paradigmxyz/iron-proxy/be5f255d0d9d10d8573bd65f480dd48a07772bf1/public-key.asc"
           }
         ],
+        "linux-arm64-musl": [
+          {
+            "sha256": "1316cb4f20fcfba5042b06d07cd523ffa617de9de2999cd5f1f44474777c48ad",
+            "url": "https://github.com/paradigmxyz/iron-proxy/releases/download/v0.39.0/iron-proxy_0.39.0_linux_arm64.tar.gz"
+          },
+          {
+            "sha256": "8fb3193b53ca296e2f93ff0fd69d289340cffe9a36c0de22e47ea5cfea899b37",
+            "url": "https://github.com/paradigmxyz/iron-proxy/releases/download/v0.39.0/checksums.txt"
+          },
+          {
+            "sha256": "1ff70f0bd8699b2f1c2c3545e6aa9034d24267fc01d1b9aaa93d73e893cb610b",
+            "url": "https://github.com/paradigmxyz/iron-proxy/releases/download/v0.39.0/checksums.txt.asc"
+          },
+          {
+            "sha256": "ce685e36e7e7d184ffa82b35bd5cbe83db010ac38bc504a0e225333453992c56",
+            "url": "https://raw.githubusercontent.com/paradigmxyz/iron-proxy/be5f255d0d9d10d8573bd65f480dd48a07772bf1/public-key.asc"
+          }
+        ],
         "linux-x64": [
+          {
+            "sha256": "0ab2e031074a01410caecaa2769c0b38f69cbdf4b6333bce498fe73919f6f9f6",
+            "url": "https://github.com/paradigmxyz/iron-proxy/releases/download/v0.39.0/iron-proxy_0.39.0_linux_amd64.tar.gz"
+          },
+          {
+            "sha256": "8fb3193b53ca296e2f93ff0fd69d289340cffe9a36c0de22e47ea5cfea899b37",
+            "url": "https://github.com/paradigmxyz/iron-proxy/releases/download/v0.39.0/checksums.txt"
+          },
+          {
+            "sha256": "1ff70f0bd8699b2f1c2c3545e6aa9034d24267fc01d1b9aaa93d73e893cb610b",
+            "url": "https://github.com/paradigmxyz/iron-proxy/releases/download/v0.39.0/checksums.txt.asc"
+          },
+          {
+            "sha256": "ce685e36e7e7d184ffa82b35bd5cbe83db010ac38bc504a0e225333453992c56",
+            "url": "https://raw.githubusercontent.com/paradigmxyz/iron-proxy/be5f255d0d9d10d8573bd65f480dd48a07772bf1/public-key.asc"
+          }
+        ],
+        "linux-x64-musl": [
           {
             "sha256": "0ab2e031074a01410caecaa2769c0b38f69cbdf4b6333bce498fe73919f6f9f6",
             "url": "https://github.com/paradigmxyz/iron-proxy/releases/download/v0.39.0/iron-proxy_0.39.0_linux_amd64.tar.gz"
@@ -376,9 +436,17 @@
           "sha256": "eaf3ed8a6e4b72ebaa8c2cb3bad778c577cdf9ea87ca91761213d8a3940fc090",
           "url": "https://packages.termux.dev/apt/termux-main/pool/main/n/nodejs/nodejs_26.4.0-1_aarch64.deb"
         },
+        "linux-arm64-musl": {
+          "sha256": "9cc46e7b106abf606dd9b824abfd8f32043f53ca46a41d4ed2e61ebe7c58ef7e",
+          "url": "https://unofficial-builds.nodejs.org/download/release/v26.7.0/node-v26.7.0-linux-arm64-musl.tar.xz"
+        },
         "linux-x64": {
           "sha256": "982aa24dd8be4c889c6a8ab337ddff3b0896645b20f4239356e80552c16277ee",
           "url": "https://nodejs.org/dist/v26.7.0/node-v26.7.0-linux-x64.tar.xz"
+        },
+        "linux-x64-musl": {
+          "sha256": "b6acfd9133393956ef4dd977678a4a0863314d7cf2f925457069f9541dce8d40",
+          "url": "https://unofficial-builds.nodejs.org/download/release/v26.7.0/node-v26.7.0-linux-x64-musl.tar.xz"
         },
         "win32-arm64": {
           "sha256": "be8775204cfceca5a73c30f91bf0de5e85274c01b776dc13f16b91aa251ebb01",
@@ -418,9 +486,17 @@
           "sha256": "3166e56c2b6c03fff41191fbb9d736302978e7c484702814d9f6dc99dd6006bd",
           "url": "https://packages.termux.dev/apt/termux-main/pool/main/p/python/python_3.14.6-1_aarch64.deb"
         },
+        "linux-arm64-musl": {
+          "sha256": "6fcb8708ec4cf604bd970068ce45e4b3228bb207fbce043ccb78e750243bb274",
+          "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260901/cpython-3.14.7+20260901-aarch64-unknown-linux-musl-install_only.tar.gz"
+        },
         "linux-x64": {
           "sha256": "0ab3305457051cd3e7c031857e005f1bda17c218a1990567dacaaac6dd1d14f0",
           "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260901/cpython-3.14.7+20260901-x86_64-unknown-linux-gnu-install_only.tar.gz"
+        },
+        "linux-x64-musl": {
+          "sha256": "75fe4a23502144a343c5c1f27df592ebca085b669fe665394e1812e37bcae258",
+          "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260901/cpython-3.14.7+20260901-x86_64-unknown-linux-musl-install_only.tar.gz"
         },
         "win32-arm64": {
           "sha256": "5efa2548bf1248ca07ed6f8afb0cb52b83d4869d533ea5be919a989c8ee1b17c",
@@ -451,7 +527,15 @@
           "sha256": "800b1e7206afe799dfb5a6901f23147cfaabe0e52210538100f61e86e1740915",
           "url": "https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-aarch64-unknown-linux-musl.tar.gz"
         },
+        "linux-arm64-musl": {
+          "sha256": "800b1e7206afe799dfb5a6901f23147cfaabe0e52210538100f61e86e1740915",
+          "url": "https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-aarch64-unknown-linux-musl.tar.gz"
+        },
         "linux-x64": {
+          "sha256": "33e15bcf1624b25cdd2a55813a47a2f95dbe126268203e76aa6a585d1e7b149c",
+          "url": "https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-x86_64-unknown-linux-musl.tar.gz"
+        },
+        "linux-x64-musl": {
           "sha256": "33e15bcf1624b25cdd2a55813a47a2f95dbe126268203e76aa6a585d1e7b149c",
           "url": "https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-x86_64-unknown-linux-musl.tar.gz"
         },
@@ -530,6 +614,24 @@
             "url": "https://github.com/sheeki03/tirith/releases/download/v0.4.2/checksums.txt.pem"
           }
         ],
+        "linux-arm64-musl": [
+          {
+            "sha256": "9c86e81537dc7b7fe6655ea472728b5f7a0dbe93ebb68b95ca7601fb1aba0508",
+            "url": "https://github.com/sheeki03/tirith/releases/download/v0.4.2/tirith-aarch64-unknown-linux-musl.tar.gz"
+          },
+          {
+            "sha256": "bcbb3eeda0f9971db5d60d2eb512970c14601432092f596d7059e0141e272585",
+            "url": "https://github.com/sheeki03/tirith/releases/download/v0.4.2/checksums.txt"
+          },
+          {
+            "sha256": "8d069fa95606f59919a897ff0914b06600f3cede4a8e83a0c4b339d9188c42b0",
+            "url": "https://github.com/sheeki03/tirith/releases/download/v0.4.2/checksums.txt.sig"
+          },
+          {
+            "sha256": "1f39241c7a334e465f78794533675e94e424ed38e9aa1534b5d7c893bd4fb71c",
+            "url": "https://github.com/sheeki03/tirith/releases/download/v0.4.2/checksums.txt.pem"
+          }
+        ],
         "linux-x64": [
           {
             "sha256": "efa6bf414a83dba385d4f13137e8677f850ced9102fe74ebb14c72f31df0dc77",
@@ -569,9 +671,17 @@
           "sha256": "6bacc745de035ac87cb6948f495f8d82a0fe0c6e6ff2ca65e6ecf487973b09cd",
           "url": "https://packages.termux.dev/apt/termux-main/pool/main/u/uv/uv_0.12.15_aarch64.deb"
         },
+        "linux-arm64-musl": {
+          "sha256": "fa513fca1eb2913334c944fe9adbdd410274a1cbe8dd05d03699a9eb85311d4e",
+          "url": "https://github.com/astral-sh/uv/releases/download/0.12.3/uv-aarch64-unknown-linux-musl.tar.gz"
+        },
         "linux-x64": {
           "sha256": "600cf9a742aca00d292673b16b5acffaa7b8c269a364ad0c2e79498dcb1fe101",
           "url": "https://github.com/astral-sh/uv/releases/download/0.12.3/uv-x86_64-unknown-linux-gnu.tar.gz"
+        },
+        "linux-x64-musl": {
+          "sha256": "0643b9fb8c9fb27458e709ce6ff939695013c41975ff7b02d3f3b138d8d4bdb3",
+          "url": "https://github.com/astral-sh/uv/releases/download/0.12.3/uv-x86_64-unknown-linux-musl.tar.gz"
         },
         "win32-arm64": {
           "sha256": "4343217d668727b8a8eb5cad92389a1d2eeead93c89940d1b955ba1bb15462eb",

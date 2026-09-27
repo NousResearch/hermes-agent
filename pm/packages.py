@@ -42,15 +42,21 @@ _RUST_TRIPLE = {
     "win32-arm64": "aarch64-pc-windows-msvc",
     "linux-x64": "x86_64-unknown-linux-gnu",
     "linux-arm64": "aarch64-unknown-linux-gnu",
+    "linux-x64-musl": "x86_64-unknown-linux-musl",
+    "linux-arm64-musl": "aarch64-unknown-linux-musl",
     "darwin-x64": "x86_64-apple-darwin",
     "darwin-arm64": "aarch64-apple-darwin",
 }
+
+_MUSL_TARGETS = frozenset({"linux-x64-musl", "linux-arm64-musl"})
 
 _NODE_PLAT = {
     "win32-x64": "win-x64",
     "win32-arm64": "win-arm64",
     "linux-x64": "linux-x64",
     "linux-arm64": "linux-arm64",
+    "linux-x64-musl": "linux-x64-musl",
+    "linux-arm64-musl": "linux-arm64-musl",
     "darwin-x64": "darwin-x64",
     "darwin-arm64": "darwin-arm64",
 }
@@ -184,7 +190,7 @@ class _BionicDebArm:
 
 @register
 class Uv(_BionicDebArm, BinaryPackage, DebPackage):
-    """astral's prebuilt tarballs for glibc/mac/win; the Termux main-repo
+    """astral's prebuilt tarballs for glibc/musl/mac/win; the Termux main-repo
     uv .deb for bionic (termux builds uv from source -- no astral bionic
     artifact exists). The bionic arm is a runtime tool on the phone (lazy
     plugin installs) and the wheelhouse's resolver in the build container."""
@@ -446,8 +452,8 @@ class Venv(StatePackage):
 
 @register
 class Nodejs(_BionicDebArm, BinaryPackage, DebPackage):
-    """nodejs.org tarballs for glibc/mac/win; the Termux main-repo nodejs
-    .deb for bionic (same major line, termux-built)."""
+    """nodejs.org tarballs for glibc/mac/win, unofficial-builds for musl;
+    the Termux main-repo nodejs .deb for bionic (same major line, termux-built)."""
 
     name = "node"
     binary_rel = {"win32": "node.exe", "posix": "bin/node"}
@@ -465,9 +471,17 @@ class Nodejs(_BionicDebArm, BinaryPackage, DebPackage):
             return f"https://packages.termux.dev/apt/termux-main/pool/main/n/nodejs/nodejs_{version}-1_aarch64.deb"
         plat = _NODE_PLAT[target]
         ext = "zip" if target.startswith("win32") else "tar.xz"
-        return f"https://nodejs.org/dist/v{version}/node-v{version}-{plat}.{ext}"
+        base = (
+            "https://unofficial-builds.nodejs.org/download/release"
+            if target in _MUSL_TARGETS
+            else "https://nodejs.org/dist"
+        )
+        return f"{base}/v{version}/node-v{version}-{plat}.{ext}"
 
     def latest_versions(self, target: str, locked=None) -> list[str]:
+        # Keep one Node version across targets. If unofficial musl publication
+        # lags nodejs.org, the later artifact pin/download fails before the
+        # lockfile is written rather than selecting glibc bytes on musl.
         return node_latest_versions()
 
 
@@ -615,6 +629,8 @@ class Git(BinaryPackage):
     gaps = {
         "linux-x64": "POSIX uses system git by choice",
         "linux-arm64": "POSIX uses system git by choice",
+        "linux-x64-musl": "POSIX uses system git by choice",
+        "linux-arm64-musl": "POSIX uses system git by choice",
         "darwin-x64": "POSIX uses system git by choice",
         "darwin-arm64": "POSIX uses system git by choice",
     }
@@ -652,7 +668,10 @@ class Gh(BinaryPackage):
     binary_rel = {"win32": "bin/gh.exe", "posix": "bin/gh"}
 
     def fetch_url(self, version: str, target: str) -> str:
-        osname, arch = target.split("-")
+        # GitHub CLI's Linux release matrix is built with CGO_ENABLED=0,
+        # so the generic Linux archive is libc-independent.
+        lookup_target = target.removesuffix("-musl") if target in _MUSL_TARGETS else target
+        osname, arch = lookup_target.split("-")
         plat = {"win32": "windows", "linux": "linux", "darwin": "macOS"}[osname]
         arch = {"x64": "amd64", "arm64": "arm64"}[arch]
         ext = "zip" if osname in ("win32", "darwin") else "tar.gz"
@@ -699,6 +718,8 @@ class Ffmpeg(_BionicDebArm, BinaryPackage, DebPackage):
         "win32": "bin/ffmpeg.exe",
         "linux-x64": "bin/ffmpeg",
         "linux-arm64": "bin/ffmpeg",
+        "linux-x64-musl": "bin/ffmpeg",
+        "linux-arm64-musl": "bin/ffmpeg",
         "posix": "ffmpeg",
     }
     flatten = True
@@ -710,9 +731,10 @@ class Ffmpeg(_BionicDebArm, BinaryPackage, DebPackage):
     def fetch_url(self, version: str, target: str) -> str:
         if target == "linux-arm64-bionic":
             return f"https://packages.termux.dev/apt/termux-main/pool/main/f/ffmpeg/ffmpeg_{version}_aarch64.deb"
-        osname, arch = target.split("-")
+        lookup_target = target.removesuffix("-musl") if target in _MUSL_TARGETS else target
+        osname, arch = lookup_target.split("-")
         if osname in ("win32", "linux"):
-            artifact = btbn_index().get(target, {}).get(version)
+            artifact = btbn_index().get(lookup_target, {}).get(version)
             if artifact is not None:
                 tag, asset = artifact
                 return f"https://github.com/BtbN/FFmpeg-Builds/releases/download/{tag}/{asset}"
@@ -727,9 +749,10 @@ class Ffmpeg(_BionicDebArm, BinaryPackage, DebPackage):
                            "retry when the upstream index is available, or keep the existing pin")
 
     def latest_versions(self, target: str, locked=None) -> list[str]:
-        if target in ("win32-x64", "win32-arm64", "linux-x64", "linux-arm64"):
-            return btbn_versions(target)
-        return martin_riedl_versions(target)
+        lookup_target = target.removesuffix("-musl") if target in _MUSL_TARGETS else target
+        if lookup_target in ("win32-x64", "win32-arm64", "linux-x64", "linux-arm64"):
+            return btbn_versions(lookup_target)
+        return martin_riedl_versions(lookup_target)
 
 
 @register
@@ -783,6 +806,7 @@ class Ripgrep(BinaryPackage):
 class CuaDriver(BinaryPackage):
     name = "cua-driver"
     optional = True
+    gaps = {target: "cua-driver does not publish a musl build" for target in _MUSL_TARGETS}
     binary_rel = {
         "darwin-arm64": "CuaDriver.app/Contents/MacOS/cua-driver",
         "darwin-x64": "CuaDriver.app/Contents/MacOS/cua-driver",
@@ -840,7 +864,10 @@ class AgentBrowser(BinaryPackage):
     deps = ("chromium",)
     # Termux owns its browser stack (`npm install -g agent-browser`; see
     # tools/browser_tool_install.py), and PM has no bionic Chromium to drive.
-    gaps = {"linux-arm64-bionic": "Termux installs agent-browser through npm"}
+    gaps = {
+        "linux-arm64-bionic": "Termux installs agent-browser through npm",
+        **{target: "agent-browser has no musl Chromium runtime" for target in _MUSL_TARGETS},
+    }
     flatten = True
     probe_version = False
     url = "https://registry.npmjs.org/agent-browser/-/agent-browser-{version}.tgz"
@@ -901,7 +928,10 @@ class Chromium(Package):
     optional = True
     on_path = False
     # Neither Chrome-for-Testing nor Playwright's mirror builds for Android.
-    gaps = {"linux-arm64-bionic": "no Chromium build for Android/Termux"}
+    gaps = {
+        "linux-arm64-bionic": "no Chromium build for Android/Termux",
+        **{target: "Playwright/Chrome-for-Testing publishes no musl build" for target in _MUSL_TARGETS},
+    }
     emulated_arch_targets = frozenset({"win32-arm64"})
     _CDN = "https://cdn.playwright.dev"
 

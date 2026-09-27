@@ -23,6 +23,8 @@ ALL_TARGETS = (
     "win32-arm64",
     "linux-x64",
     "linux-arm64",
+    "linux-x64-musl",
+    "linux-arm64-musl",
     "linux-arm64-bionic",
     "darwin-x64",
     "darwin-arm64",
@@ -96,6 +98,52 @@ def _is_bionic_libc() -> bool:
     return bool(sysconfig.get_config_var("ANDROID_API_LEVEL"))
 
 
+def _elf_loader_is_musl(binary: Path) -> bool | None:
+    """Read an ELF's interpreter string without executing foreign bytes."""
+    try:
+        with binary.resolve().open("rb") as handle:
+            head = handle.read(8192)
+    except OSError:
+        return None
+    if not head.startswith(b"\x7fELF"):
+        return None
+    if b"ld-musl-" in head:
+        return True
+    if b"ld-linux" in head:
+        return False
+    return None
+
+
+def _native_linux_uses_musl() -> bool | None:
+    """libc of the native userland, independent of the Python bootstrap."""
+    for candidate in (Path("/bin/sh"), Path("/bin/ls")):
+        verdict = _elf_loader_is_musl(candidate)
+        if verdict is not None:
+            return verdict
+    return None
+
+
+def _is_musl_libc() -> bool:
+    """True on native Linux musl userlands (Alpine, Void-musl, etc.).
+
+    libc is part of PM's artifact identity. Prefer Python's build metadata,
+    then inspect a native userland ELF: a bootstrap interpreter may itself be
+    a glibc build running through a compatibility shim and misreport the host
+    libc. A bare musl-loader existence check is only the last resort because
+    glibc hosts may install musl as a secondary toolchain.
+    """
+    import sysconfig
+
+    for key in ("HOST_GNU_TYPE", "MULTIARCH"):
+        value = str(sysconfig.get_config_var(key) or "").lower()
+        if "musl" in value:
+            return True
+    native = _native_linux_uses_musl()
+    if native is not None:
+        return native
+    return any(Path("/lib").glob("ld-musl-*.so.1"))
+
+
 def current_target() -> str:
     machine = _native_machine()
     if machine in ("arm64", "aarch64"):
@@ -110,6 +158,8 @@ def current_target() -> str:
         return f"darwin-{arch}"
     if _is_bionic_libc():
         return f"linux-{arch}-bionic"
+    if _is_musl_libc():
+        return f"linux-{arch}-musl"
     return f"linux-{arch}"
 
 

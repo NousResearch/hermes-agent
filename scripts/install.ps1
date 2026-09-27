@@ -22,6 +22,9 @@ param(
     [string]$Stage,
     [switch]$ProtocolVersion,
     [switch]$NonInteractive,
+    # Pre-rework spelling of -NonInteractive, still accepted so install
+    # wrappers written against the old switch keep binding (#125350).
+    [switch]$SkipSetup,
     [switch]$Json,
     [switch]$IncludeDesktop,
     # Same opt-out as install.sh --skip-browser: PM records it, so later
@@ -37,6 +40,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+# -SkipSetup is the pre-rework spelling of -NonInteractive.
+if ($SkipSetup) { $NonInteractive = $true }
 
 # --- Dot-source guard (part 1: detect) ---------------------------------------
 # Tests (and any embedding host) dot-source this file (`. install.ps1`) to get

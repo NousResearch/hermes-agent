@@ -1147,6 +1147,22 @@ def _docs_insert_text(doc_id: str, text: str, index: int, tab_id: str | None = N
 # =========================================================================
 
 
+_SHELL_ESCAPED_TEXT_FIELDS = ("body", "description", "text")
+
+
+def _unescape_shell_text_fields(args: argparse.Namespace) -> None:
+    """Turn literal ``\\n``/``\\t`` (backslash + letter) into real newlines/tabs on free-text
+    CLI args, in place.
+
+    A terminal-tool-invoked command passes a quoted arg like ``--body "line1\\nline2"`` — the
+    shell never interprets ``\\n`` inside double quotes as a newline, so without this the literal
+    two-character sequence ends up in the Gmail body / calendar description / Doc text."""
+    for field in _SHELL_ESCAPED_TEXT_FIELDS:
+        value = getattr(args, field, None)
+        if isinstance(value, str) and value:
+            setattr(args, field, value.replace("\\n", "\n").replace("\\t", "\t"))
+
+
 def main():
     parser = argparse.ArgumentParser(description="Google Workspace API for Hermes Agent")
     sub = parser.add_subparsers(dest="service", required=True)
@@ -1316,6 +1332,7 @@ def main():
     p.set_defaults(func=docs_append)
 
     args = parser.parse_args()
+    _unescape_shell_text_fields(args)
     args.func(args)
 
 

@@ -71,13 +71,8 @@ describe('native Wayland launch arguments', () => {
   })
 
   it('lets desktop.electron_flags choose the ozone platform instead of forcing wayland', () => {
-    expect(wslgLaunchArgs([], nativeWayland, 'linux', ['--ozone-platform=x11'])).toEqual([
-      '--ozone-platform=x11'
-    ])
-    expect(wslgLaunchArgs(['.'], nativeWayland, 'linux', ['--disable-gpu'])).toEqual([
-      '.',
-      '--ozone-platform=wayland'
-    ])
+    expect(wslgLaunchArgs([], nativeWayland, 'linux', ['--ozone-platform=x11'])).toEqual(['--ozone-platform=x11'])
+    expect(wslgLaunchArgs(['.'], nativeWayland, 'linux', ['--disable-gpu'])).toEqual(['.', '--ozone-platform=wayland'])
     expect(wslgLaunchArgs([], { XDG_SESSION_TYPE: 'x11', DISPLAY: ':0' }, 'linux')).toBeNull()
     expect(wslgLaunchArgs([], { ...nativeWayland, SSH_CONNECTION: 'remote' }, 'linux')).toBeNull()
   })

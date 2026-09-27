@@ -21,13 +21,9 @@ async function boot() {
   const tree = await import('@/components/pane-shell/tree/store')
   const { registry } = await import('@/contrib/registry')
 
-  const { registerLayoutPresets, DEFAULT_TREE, BASIC_TREE } = await import(
-    '@/app/contrib/layout-presets'
-  )
+  const { registerLayoutPresets, DEFAULT_TREE, BASIC_TREE } = await import('@/app/contrib/layout-presets')
 
-  const { fixedTrackSize } = await import(
-    '@/components/pane-shell/tree/renderer/track-model'
-  )
+  const { fixedTrackSize } = await import('@/components/pane-shell/tree/renderer/track-model')
 
   for (const [id, placement] of [
     ['sessions', 'left'],
@@ -49,13 +45,24 @@ async function boot() {
     id: 'bots',
     area: 'panes',
     render: () => null,
-    data: { placement: 'left', width: '260px', dock: { pane: 'sessions', pos: 'center', enforce: true }, collapsible: true, hideOnly: true }
+    data: {
+      placement: 'left',
+      width: '260px',
+      dock: { pane: 'sessions', pos: 'center', enforce: true },
+      collapsible: true,
+      hideOnly: true
+    }
   })
   registry.register({
     id: 'routines',
     area: 'panes',
     render: () => null,
-    data: { placement: 'main', width: '250px', defaultCollapsed: true, dock: { pane: 'workspace', pos: 'right', enforce: true } }
+    data: {
+      placement: 'main',
+      width: '250px',
+      defaultCollapsed: true,
+      dock: { pane: 'workspace', pos: 'right', enforce: true }
+    }
   })
   registerLayoutPresets()
   tree.declareDefaultTree(DEFAULT_TREE, BASIC_TREE)
@@ -79,7 +86,9 @@ it('keeps the user-dragged bots zone width across full chat-switch churn', { tim
     const find = (node: unknown): unknown => {
       const n = node as { type?: string; panes?: string[]; children?: unknown[] }
 
-      if (n?.type === 'group' && n.panes?.includes(id)) {return n}
+      if (n?.type === 'group' && n.panes?.includes(id)) {
+        return n
+      }
 
       return n?.children?.map(find).find(Boolean) ?? null
     }
@@ -101,7 +110,12 @@ it('keeps the user-dragged bots zone width across full chat-switch churn', { tim
     id: 'routines',
     area: 'panes',
     render: () => null,
-    data: { placement: 'main', width: '250px', defaultCollapsed: true, dock: { pane: 'workspace', pos: 'right', enforce: true } }
+    data: {
+      placement: 'main',
+      width: '250px',
+      defaultCollapsed: true,
+      dock: { pane: 'workspace', pos: 'right', enforce: true }
+    }
   })
 
   routinesDispose()
@@ -117,14 +131,25 @@ it('keeps the user-dragged bots zone width across full chat-switch churn', { tim
   })
 
   tileDispose()
-  registry.register({ id: 'workspace', area: 'panes', render: () => null, data: { placement: 'main', uncloseable: true } })
+  registry.register({
+    id: 'workspace',
+    area: 'panes',
+    render: () => null,
+    data: { placement: 'main', uncloseable: true }
+  })
 
   // ── Churn #3: the bots pane itself re-registers (enforced dock re-adoption)
   const botsDispose = registry.register({
     id: 'bots',
     area: 'panes',
     render: () => null,
-    data: { placement: 'left', width: '260px', dock: { pane: 'sessions', pos: 'center', enforce: true }, collapsible: true, hideOnly: true }
+    data: {
+      placement: 'left',
+      width: '260px',
+      dock: { pane: 'sessions', pos: 'center', enforce: true },
+      collapsible: true,
+      hideOnly: true
+    }
   })
 
   botsDispose()
@@ -132,7 +157,13 @@ it('keeps the user-dragged bots zone width across full chat-switch churn', { tim
     id: 'bots',
     area: 'panes',
     render: () => null,
-    data: { placement: 'left', width: '260px', dock: { pane: 'sessions', pos: 'center', enforce: true }, collapsible: true, hideOnly: true }
+    data: {
+      placement: 'left',
+      width: '260px',
+      dock: { pane: 'sessions', pos: 'center', enforce: true },
+      collapsible: true,
+      hideOnly: true
+    }
   })
 
   // After ALL churn: the override survived in the store, and the docked zone

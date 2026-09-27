@@ -252,6 +252,14 @@ class TestTurnTraceIsolation:
         # turn reused turn 1's lingering state and only one trace was opened.
         assert len(started) == 2
 
+        # The two turns must map to DIFFERENT Langfuse trace ids: the seed only
+        # keys on session/task id, so without turn scoping both turns would
+        # collapse to the same deterministic trace_id (sha256 hash) and merge
+        # into one trace.
+        assert started[0] != started[1], (
+            f"turns share trace id {started[0]!r}: seed must include the turn id"
+        )
+
         # Turn 2 finalized and was popped by _finish_trace; only turn 1's
         # (non-finalizing) state lingers.  Assert the surviving key is turn 1's
         # and that turn 2 never merged into it — `all(...)` over an empty set

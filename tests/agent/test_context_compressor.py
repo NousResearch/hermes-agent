@@ -3152,7 +3152,7 @@ class TestSummaryPromptBounding:
         with patch("agent.context_compressor.call_llm", return_value=resp) as mock_call:
             assert compressor._generate_summary(messages) is not None
         assert mock_call.call_count == 1
-        prompt = mock_call.call_args.kwargs["messages"][0]["content"]
+        prompt = "\n".join(m["content"] for m in mock_call.call_args.kwargs["messages"])
         assert "chars elided" in prompt
 
         transcript = prompt[prompt.index("[USER]: record-"):]
@@ -3237,7 +3237,7 @@ class TestSummaryPromptBounding:
         with patch("agent.context_compressor.call_llm", return_value=mock_response) as mock_call:
             summary = c._generate_summary(messages)
 
-        prompt = mock_call.call_args.kwargs["messages"][0]["content"]
+        prompt = "\n".join(m["content"] for m in mock_call.call_args.kwargs["messages"])
         assert summary.startswith(SUMMARY_PREFIX)
         # previous summary block + new-turns block each capped, plus the
         # fixed template: well under 3x the cap (unbounded would be ~800K).

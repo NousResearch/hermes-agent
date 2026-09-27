@@ -392,9 +392,6 @@ TASK_COMPLETION_GUIDANCE = (
     "produce. Reporting a blocker honestly is always better than inventing a result."
 )
 
-# Tool-scoped exception to the universal "keep working" guidance. Background delegation's
-# delivery contract requires the parent turn to end before a completed child can re-enter the conversation;
-# manufacturing activity to keep that turn open therefore prevents the dependency from ever arriving.
 ASYNC_HANDOFF_GUIDANCE = (
     "# Async handoff\n"
     "When delegate_task explicitly says background work will deliver its result only after you end the current turn, "

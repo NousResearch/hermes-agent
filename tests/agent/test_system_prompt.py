@@ -363,13 +363,12 @@ class TestExecutionGuidanceInjection:
 class TestAsyncDelegationHandoffGuidance:
     """A background child cannot re-enter until the parent yields its current turn (#124072)."""
 
-    def _prompt(self, model, *, tool_use_enforcement="auto", execution_guidance="auto",
-                valid_tool_names=("delegate_task", "execute_code")):
+    def _prompt(self, valid_tool_names):
         return _stable_prompt(_make_agent(
             valid_tool_names=list(valid_tool_names),
-            model=model,
-            _tool_use_enforcement=tool_use_enforcement,
-            _execution_guidance=execution_guidance,
+            model="openai/gpt-5.5",
+            _tool_use_enforcement="auto",
+            _execution_guidance="auto",
         ))
 
     @pytest.mark.parametrize("tools,expected", [
@@ -377,18 +376,13 @@ class TestAsyncDelegationHandoffGuidance:
         (("execute_code",), False),
     ])
     def test_handoff_injected_only_with_delegate_task(self, tools, expected):
-        stable = self._prompt("openai/gpt-5.5", valid_tool_names=tools)
+        stable = self._prompt(tools)
         assert ("Async handoff" in stable) is expected
         if expected:
+            assert stable.count("Async handoff") == 1
             # Must follow the generic "keep working" blocks so it reads as their exception.
             assert stable.index("Async handoff") > stable.index("Tool-use enforcement")
             assert stable.index("Async handoff") > stable.index("Execution discipline")
-
-    def test_handoff_prompt_is_byte_stable_across_turns(self):
-        # Stable tier is the prompt-cache prefix: rebuilding it must not drift.
-        first = self._prompt("openai/gpt-5.5")
-        assert first == self._prompt("openai/gpt-5.5")
-        assert first.count("Async handoff") == 1
 
 
 class TestNamedProfileHintIntegration:

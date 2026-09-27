@@ -31,6 +31,7 @@ import tools.terminal_tool as terminal_tool
 class TestExpandTilde:
     """Verify the _expand_tilde() helper resolves ~ to the profile home."""
 
+    @pytest.mark.platforms("linux")
     def test_tilde_expands_to_profile_home(self):
         """When get_subprocess_home returns a value, ~/path uses it."""
         with patch("hermes_constants.get_subprocess_home", return_value="/opt/data/profiles/coder/home"):

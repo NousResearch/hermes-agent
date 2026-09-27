@@ -5,7 +5,7 @@ import struct
 import pytest
 
 from hermes_cli import desktop_update_verify as verify
-from hermes_cli.main_desktop import _write_desktop_build_stamp
+from tests.hermes_cli.test_source_build import copy_freshness_scripts, stamp_product
 
 
 @pytest.fixture
@@ -29,7 +29,8 @@ def bundle(tmp_path, monkeypatch):
     # Host-independent artifact contract; executable lookup itself is covered natively.
     from hermes_cli import main_desktop
     monkeypatch.setattr(main_desktop, '_desktop_packaged_executable', lambda _: resources.parent / 'Hermes.exe')
-    _write_desktop_build_stamp(tmp_path, source_mode=False)
+    copy_freshness_scripts(tmp_path)
+    stamp_product(tmp_path, "desktop", dist)
     return tmp_path, archive, dist
 
 
@@ -51,3 +52,15 @@ def test_current_stamp_does_not_hide_damaged_output(bundle, damage):
         (dist / 'index.html').write_bytes({'empty-index': b'', 'unreadable-index': b'\xff', 'no-module': b'<html></html>'}[damage])
     with pytest.raises((RuntimeError, OSError, ValueError)):
         verify.verify_windows_desktop_update(root)
+
+
+def test_default_root_is_the_imported_checkout_not_cwd(tmp_path, monkeypatch):
+    # The Windows hand-off is spawned from HERMES_HOME; the receipt must describe the checkout anyway.
+    monkeypatch.chdir(tmp_path)
+    seen = {}
+    monkeypatch.setattr(verify, '_desktop_packaged_executable', lambda desktop: seen.setdefault('desktop', desktop) and None)
+    with pytest.raises(RuntimeError, match='executable is missing'):
+        verify.verify_windows_desktop_update()
+    assert seen['desktop'] == verify.checkout_root() / 'apps' / 'desktop'
+    assert (verify.checkout_root() / 'hermes_cli' / 'desktop_update_verify.py').is_file()
+    assert verify.checkout_root() != tmp_path

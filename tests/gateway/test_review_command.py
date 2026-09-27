@@ -6,7 +6,6 @@ cached agent, dispatching through the REAL delegate_task background rail
 tests/tools/test_async_delegation.py).
 """
 
-import json
 import time
 from datetime import datetime
 from unittest.mock import MagicMock, patch
@@ -15,7 +14,6 @@ import pytest
 
 from tools import async_delegation as ad
 from tools.process_registry import process_registry
-
 
 @pytest.fixture(autouse=True)
 def _clean_state():
@@ -30,9 +28,7 @@ def _clean_state():
     while not process_registry.completion_queue.empty():
         process_registry.completion_queue.get_nowait()
 
-
 SESSION_KEY = "agent:main:test:dm:1"
-
 
 def _make_agent():
     agent = MagicMock()
@@ -47,7 +43,6 @@ def _make_agent():
     ]
     return agent
 
-
 def _make_runner(agent):
     import threading
 
@@ -60,7 +55,6 @@ def _make_runner(agent):
     runner._session_key_for_source = lambda source: SESSION_KEY
     return runner
 
-
 class _Event:
     source = object()  # any non-None sentinel
 
@@ -69,7 +63,6 @@ class _Event:
 
     def get_command_args(self):
         return self._args
-
 
 @pytest.mark.asyncio
 async def test_review_command_dispatches_background_subagent(monkeypatch):
@@ -123,7 +116,6 @@ async def test_review_command_dispatches_background_subagent(monkeypatch):
     assert evt["session_key"] == SESSION_KEY
     assert evt["results"][0]["summary"] == "review done"
 
-
 @pytest.mark.asyncio
 async def test_review_command_rejects_while_agent_running():
     agent = _make_agent()
@@ -132,14 +124,12 @@ async def test_review_command_rejects_while_agent_running():
     out = await runner._handle_review_command(_Event())
     assert "Agent is running" in out
 
-
 @pytest.mark.asyncio
 async def test_review_command_requires_cached_agent():
     runner = _make_runner(None)
     runner._agent_cache = {}
     out = await runner._handle_review_command(_Event())
     assert "send a message first" in out
-
 
 @pytest.mark.asyncio
 async def test_review_command_hydrates_persisted_session_on_cache_miss(monkeypatch):
@@ -212,7 +202,6 @@ async def test_review_command_hydrates_persisted_session_on_cache_miss(monkeypat
     assert out == re_mod.format_dispatch_note({"status": "dispatched"})
     assert "PR #5 opened" in built["context"]
     runner.session_store.load_transcript.assert_called_once_with("persisted-sess")
-
 
 @pytest.mark.asyncio
 async def test_review_dispatch_branch_reaches_handler(monkeypatch):

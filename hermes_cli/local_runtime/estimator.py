@@ -131,11 +131,18 @@ class PhysicsRefusal:
     message: str
 
 
+def footprint_bytes(profile: ModelProfile, window: int, *, flash_attention: bool = True,
+                    overhead_bytes: int = 0) -> int:
+    """Complete estimated footprint; the hardware budget already excludes its reserve."""
+    return (profile.weights_bytes + ctx_bytes(profile, window, flash_attention=flash_attention)
+            + max(0, overhead_bytes))
+
+
 def physics_check(profile: ModelProfile, budget: HardwareBudget,
-                  floor: int, *, flash_attention: bool = True) -> PhysicsRefusal | None:
-    needed = (profile.weights_bytes
-              + ctx_bytes(profile, min(floor, profile.n_ctx_train or floor),
-                          flash_attention=flash_attention))
+                  floor: int, *, flash_attention: bool = True,
+                  overhead_bytes: int = 0) -> PhysicsRefusal | None:
+    needed = footprint_bytes(profile, min(floor, profile.n_ctx_train or floor),
+                             flash_attention=flash_attention, overhead_bytes=overhead_bytes)
     available = budget.usable_vram_bytes + budget.ram_available_bytes
     if needed <= available:
         return None
@@ -144,4 +151,4 @@ def physics_check(profile: ModelProfile, budget: HardwareBudget,
         needed_bytes=needed, available_bytes=available,
         message=(f"{profile.name}: needs ~{needed / gib:.1f} GiB at the "
                  f"{floor // 1024}K floor but only ~{available / gib:.1f} GiB "
-                 "of VRAM+RAM exist — try a smaller quant (UD-Q3/Q2)"))
+                 "of VRAM+RAM are available — try a smaller model or a supported smaller quant"))

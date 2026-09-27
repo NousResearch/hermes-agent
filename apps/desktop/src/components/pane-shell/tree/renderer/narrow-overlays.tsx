@@ -7,8 +7,9 @@
  */
 
 import { useStore } from '@nanostores/react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { type MouseEventHandler, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { $chatOnboardingSolo } from '@/components/onboarding-chat/assembly'
 import { PaneTab, PaneTabLabel, PaneTabStrip } from '@/components/ui/pane-tab'
 import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
@@ -17,17 +18,42 @@ import { ESCAPE_PRIORITY, isTopEscapeLayer, pushEscapeLayer } from '@/lib/escape
 import { cn } from '@/lib/utils'
 
 import { PANE_TOGGLE_REVEAL_EVENT } from '../..'
+import { useWindowControlsOverlap } from '../../geometry'
+import { NO_PANE_GROUP } from '../../pane-visibility'
 import { allPaneIds, findGroupOfPane } from '../model'
 import { $hiddenTreePanes, $layoutTree, $narrowViewport } from '../store'
 
+import { KeepAlivePaneSlot, useStablePaneHosts } from './keep-alive-panes'
 import { paneChrome } from './track-model'
 
 export function NarrowOverlays() {
   const narrow = useStore($narrowViewport)
+  const solo = useStore($chatOnboardingSolo)
   const tree = useStore($layoutTree)
   const panes = useContributions('panes')
+  const stableHosts = useStablePaneHosts()
   const hiddenPanes = useStore($hiddenTreePanes)
   const [reveal, setReveal] = useState<{ id: string; pinned: boolean } | null>(null)
+
+  // The revealed overlay spans the full viewport height (inset-y-0 below), so
+  // its tab strip starts at the top edge — under the native window controls
+  // (macOS traffic lights) when the sidebar is on the left. Reserve their rect
+  // the same way a docked zone does (TreeGroup's wcOverlap -> paddingTop plus
+  // an absolute drag-region spacer so the band stays a window-drag target).
+  const overlayRef = useRef<HTMLDivElement>(null)
+  const wcOverlap = useWindowControlsOverlap(overlayRef, reveal !== null)
+
+  const onMouseLeave = useCallback<MouseEventHandler<HTMLDivElement>>(event => {
+    // The overlay's chrome and its stable guest are DOM siblings, but one
+    // hover boundary. Crossing between them must not dismiss an unpinned pane.
+    const next = event.relatedTarget
+
+    if (next instanceof Element && next.closest('[data-narrow-overlay], [data-pane-overlay]')) {
+      return
+    }
+
+    setReveal(current => (current?.pinned ? current : null))
+  }, [])
 
   // Own an Escape layer only while something is revealed, so Escape closes the
   // overlay only when it's the top layer (never under a dialog / edit mode).
@@ -37,8 +63,10 @@ export function NarrowOverlays() {
   const inTree = useMemo(() => new Set(tree ? allPaneIds(tree) : []), [tree])
 
   const collapsibles = useMemo(
-    () => panes.filter(p => paneChrome(p).collapsible && inTree.has(p.id) && !hiddenPanes.has(p.id)),
-    [panes, inTree, hiddenPanes]
+    // Solo adopts sidebar panes without their surrounding sidebar chrome.
+    // Suppress every reveal path while those panes are intentionally hidden.
+    () => (solo ? [] : panes.filter(p => paneChrome(p).collapsible && inTree.has(p.id) && !hiddenPanes.has(p.id))),
+    [solo, panes, inTree, hiddenPanes]
   )
 
   const collapsiblesRef = useRef(collapsibles)
@@ -47,7 +75,7 @@ export function NarrowOverlays() {
   // ⌘B / ⌘G's narrow branch dispatches the app's toggle-reveal event with the
   // REAL pane id — accept those via each contribution's revealAliases.
   useEffect(() => {
-    if (!narrow) {
+    if (!narrow || solo) {
       setReveal(null)
 
       return
@@ -99,9 +127,9 @@ export function NarrowOverlays() {
       window.removeEventListener(PANE_TOGGLE_REVEAL_EVENT, onToggle)
       window.removeEventListener('keydown', onKeyDown)
     }
-  }, [narrow])
+  }, [narrow, solo])
 
-  if (!narrow || collapsibles.length === 0) {
+  if (!narrow || solo || collapsibles.length === 0) {
     return null
   }
 
@@ -154,11 +182,26 @@ export function NarrowOverlays() {
           // panes beneath it — a see-through overlay reads as text bleeding
           // through text. Contract: `[data-glass-opaque]` in styles.css.
           data-glass-opaque=""
-          onMouseLeave={() => setReveal(current => (current?.pinned ? current : null))}
+          data-narrow-overlay={revealed.id}
+          onMouseLeave={onMouseLeave}
+          ref={overlayRef}
           // Match the pane's docked width (sessions ~237px, files its rail
           // width) instead of a fat fixed 20rem — capped for tiny screens.
-          style={{ width: `min(${(revealed.data as { width?: string } | undefined)?.width ?? '18rem'}, 85vw)` }}
+          // paddingTop keeps the tab strip below the native window controls
+          // (macOS traffic lights); the spacer above keeps that band
+          // draggable, mirroring TreeGroup's reservation.
+          style={{
+            paddingTop: wcOverlap ? wcOverlap.y + wcOverlap.height : undefined,
+            width: `min(${(revealed.data as { width?: string } | undefined)?.width ?? '18rem'}, 85vw)`
+          }}
         >
+          {wcOverlap && (
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute z-10 [-webkit-app-region:drag]"
+              style={{ height: wcOverlap.height, left: wcOverlap.x, top: wcOverlap.y, width: wcOverlap.width }}
+            />
+          )}
           {/* Zone-mates share the overlay through the zone's own tab strip
               (SESSIONS | BOTS) — a lone pane keeps the stripless form. */}
           {zonePanes.length > 1 && (
@@ -181,9 +224,22 @@ export function NarrowOverlays() {
               ))}
             </PaneTabStrip>
           )}
-          <ContribBoundary id={revealed.id}>
-            {revealed.render && <ContribRender render={revealed.render} />}
-          </ContribBoundary>
+          {stableHosts && paneChrome(revealed).lifecycleKeepAlive ? (
+            <div className="relative min-h-0 min-w-0 flex-1">
+              <KeepAlivePaneSlot
+                groupId={(tree && findGroupOfPane(tree, revealed.id)?.id) || NO_PANE_GROUP}
+                headerVisible={zonePanes.length > 1}
+                onMouseLeave={onMouseLeave}
+                overlay
+                paneId={revealed.id}
+                visible
+              />
+            </div>
+          ) : (
+            <ContribBoundary id={revealed.id}>
+              {revealed.render && <ContribRender render={revealed.render} />}
+            </ContribBoundary>
+          )}
         </div>
       )}
     </>

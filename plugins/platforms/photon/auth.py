@@ -27,6 +27,7 @@ except ImportError:  # pragma: no cover - httpx is a hermes dependency
     httpx = None  # type: ignore[assignment]
 
 from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
+from hermes_constants import get_hermes_home
 import contextlib
 
 logger = logging.getLogger(__name__)
@@ -51,12 +52,8 @@ E164_RE = re.compile(r"^\+[1-9]\d{6,14}$")
 # -- auth.json helpers (shares the file with the rest of hermes-agent) ------------
 
 def _auth_json_path() -> Path:
-    """``~/.hermes/auth.json`` honouring the active Hermes profile."""
-    try:
-        from hermes_constants import get_hermes_home
-        return Path(get_hermes_home()) / "auth.json"
-    except Exception:
-        return Path(os.path.expanduser("~/.hermes")) / "auth.json"
+    """The active profile's ``auth.json`` (shared with the rest of hermes-agent)."""
+    return get_hermes_home() / "auth.json"
 
 
 def _load_auth() -> Dict[str, Any]:
@@ -64,7 +61,8 @@ def _load_auth() -> Dict[str, Any]:
     if not path.exists():
         return {}
     try:
-        return json.loads(path.read_text(encoding="utf-8")) or {}
+        with path.open("r", encoding="utf-8-sig") as fh:
+            return json.load(fh) or {}
     except (OSError, json.JSONDecodeError) as e:
         logger.warning("photon: could not read %s: %s", path, e)
         return {}

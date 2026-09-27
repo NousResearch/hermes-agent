@@ -205,9 +205,10 @@ later.
 
 ### Messages Table
 
-Abridged — the full schema also includes `effect_disposition`,
-`platform_message_id`, `observed`, `active`, `compacted`, `api_content`,
-`display_kind`, and `display_metadata`:
+Abridged — the full schema also includes two ORTHOGONAL tool-result axes
+(`effect_disposition` and `execution_status`, see below), `platform_message_id`,
+`observed`, `active`, `compacted`, `api_content`, `display_kind`, and
+`display_metadata`:
 
 ```sql
 CREATE TABLE IF NOT EXISTS messages (
@@ -234,6 +235,18 @@ CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id, id);
 ```
 
 Notes:
+- Every tool result carries TWO orthogonal facts, in two columns:
+  - `effect_disposition` — can this call have changed the world? `none` = provably
+    not (never dispatched: blocked, unknown tool name, invalid arguments, skipped on
+    interrupt); `unknown` = an interrupted effectful call may have acted and this
+    cannot be observed (timeouts, crash-recovery rows); `NULL` = the call completed and
+    its effect is simply not described. This is the contract replay recovery
+    (`replay_cleanup`) reads — it is about effect certainty, not about how the call ended.
+  - `execution_status` — how did the call end? `success`, `error`, `blocked`,
+    `timeout`, `cancelled`. Written on every live tool-result path (executor, turn-loop
+    recovery for unknown-tool/invalid-JSON/outer-loop errors, Codex provider projection).
+- The two combine: a timed-out `write_file` is `unknown` + `timeout`; a guardrail-blocked
+  call is `none` + `blocked`; a completed call is `NULL` + `success`/`error`.
 - `tool_calls` is stored as a JSON string (serialized list of tool call objects)
 - `reasoning_details`, `codex_reasoning_items`, and `codex_message_items` are stored as JSON strings
 - `reasoning_details` is always kept in history; on the chat-completions wire it is replayed only to OpenRouter and the Nous Portal (every other chat-completions route gets a copy without it, since strict schemas reject the field)

@@ -336,7 +336,8 @@ def _append_skipped_tool_results(
     for tc in tool_calls:
         name = _tc_name(tc)
         result = content.format(name=name)
-        messages.append(make_tool_result_message(name, result, _pairing_tool_call_id(tc), effect_disposition="none"))
+        messages.append(make_tool_result_message(
+            name, result, _pairing_tool_call_id(tc), effect_disposition="none", execution_status="cancelled"))
         if hook_error_type is not None:
             _ToolCallRef(name, {}, effective_task_id, (hook_id or _pairing_tool_call_id)(tc), []).emit_post(
                 agent, result,
@@ -1058,6 +1059,7 @@ def _commit_tool_result(
     is_error: bool,
     blocked: bool,
     effect_disposition,
+    execution_status,
     observed: bool = False,
     error_preview: Callable[[Any], Any] = lambda result: result,
     success_log_chars: Optional[int] = None,
@@ -1123,7 +1125,9 @@ def _commit_tool_result(
     # Multimodal dicts become an OpenAI-style content list; text-only servers get a
     # string-safe fallback so a rejected image result never poisons history.
     _tool_content = agent._tool_result_content_for_active_model(function_name, persisted_result)
-    tool_message = make_tool_result_message(function_name, _tool_content, tool_call_id, effect_disposition=effect_disposition)
+    tool_message = make_tool_result_message(
+        function_name, _tool_content, tool_call_id,
+        effect_disposition=effect_disposition, execution_status=execution_status)
     # Prepare presentation data before the append. The emitting completion callback
     # stays below the durability fence; raw tool/model content remains unchanged.
     prepare_metadata = getattr(agent, "tool_result_metadata_callback", None)
@@ -1217,6 +1221,7 @@ class _ToolOutcome:
     duration: float
     is_error: bool
     blocked: bool
+    execution_status: Optional[str] = None
 
 
 def _start_order_gate_timeout(batch_timeout: float | None) -> float:
@@ -1299,6 +1304,8 @@ class _ConcurrentBatch:
         self.gate = _StartOrderGate(_start_order_gate_timeout(timeout_s))
         self.authorization_gate = _ConcurrentToolAuthorizationGate()
         self.timed_out_indices: set[int] = set()
+        self.cancelled_indices: set[int] = set()
+        self.dispatched_indices: set[int] = set()
 
     def _dispatch_worker(self, index: int, ref: _ToolCallRef, scope_block, start_gate: _WorkerStartOnce) -> Optional[_ToolOutcome]:
         """Run one call through the middleware and synthesize its slot outcome; ``None`` when
@@ -1309,6 +1316,14 @@ class _ConcurrentBatch:
         # propagate_context_to_thread() at the submit site below (GHSA-qg5c-hvr5-hjgr, #13617).
         start = time.time()
         blocked = dispatched = False
+
+        def _begin_execution(callback=None):
+            # A callback here means the real dispatch is starting: the call may act from
+            # now on, so an interrupt can no longer prove a "none" effect (#61783).
+            if callback is not None:
+                self.dispatched_indices.add(index)
+            start_gate.advance(callback)
+
         try:
             managed = _run_agent_tool_execution_middleware(
                 agent,
@@ -1323,7 +1338,7 @@ class _ConcurrentBatch:
                 ),
                 scope_block=scope_block,
                 display_index=index + 1,
-                begin_execution=start_gate.advance,
+                begin_execution=_begin_execution,
                 authorization_gate=self.authorization_gate,
             )
             result, ref.args, ref.trace = managed.result, managed.args, managed.middleware_trace
@@ -1337,7 +1352,7 @@ class _ConcurrentBatch:
             result = ref.emit_cancelled(agent, start)
             duration = time.time() - start
             logger.info("tool %s cancelled (%.2fs)", ref.name, duration)
-            return _ToolOutcome(ref, result, duration, True, False)
+            return _ToolOutcome(ref, result, duration, True, False, "cancelled")
         except Exception as tool_error:
             result = f"Error executing tool '{ref.name}': {tool_error}"
             logger.error("_invoke_tool raised for %s: %s", ref.name, tool_error, exc_info=True)
@@ -1454,6 +1469,7 @@ class _ConcurrentBatch:
                     worker_tids = list(agent._tool_worker_threads)
                 _interrupt_worker_tids(agent, worker_tids)
             else:
+                self.cancelled_indices = {future_to_index[f] for f in not_done if f in future_to_index}
                 # Give running tools a moment to notice the per-thread interrupt and exit gracefully.
                 concurrent.futures.wait(not_done, timeout=3.0)
             return True
@@ -1480,25 +1496,31 @@ class _ConcurrentBatch:
             executor.shutdown(wait=not abandon_executor, cancel_futures=abandon_executor)
 
 
-def _unfinished_tool_result(agent, ref: _ToolCallRef, *, timed_out: bool, timeout_s: float | None) -> tuple[str, float, Optional[str]]:
+def _unfinished_tool_result(agent, ref: _ToolCallRef, *, timed_out: bool, timeout_s: float | None, may_have_dispatched: bool = False) -> tuple[str, float, Optional[str], str]:
     """Synthesize the result for a slot no worker filled (deadline, interrupt, or a thread
     that never returned), emit its terminal post_tool_call, and return
-    ``(function_result, tool_duration, effect_disposition)``."""
+    ``(function_result, tool_duration, effect_disposition, execution_status)``.
+
+    The two are orthogonal: a timed-out side-effecting call has an UNKNOWN effect (it may
+    have acted before the deadline) even though its execution status is known.
+    ``may_have_dispatched`` separates "provably never started" (``none``) from
+    "may already have acted" (``unknown``) for interrupted slots.
+    """
     if timed_out:
         suffix = f"{timeout_s:.1f}s" if timeout_s is not None else "the configured timeout"
         function_result = f"Error executing tool '{ref.name}': timed out after {suffix}"
         outcome = dict(duration_ms=int((timeout_s or 0.0) * 1000), status="timeout", error_type="tool_timeout", error_message=function_result)
-        tool_duration, effect_disposition = float(timeout_s or 0.0), "unknown"
+        tool_duration, effect_disposition, execution_status = float(timeout_s or 0.0), "unknown", "timeout"
     elif agent._interrupt_requested:
         function_result = f"[Tool execution cancelled — {ref.name} was skipped due to user interrupt]"
         outcome = dict(status="cancelled", error_type="keyboard_interrupt", error_message="Tool execution cancelled by user interrupt")
-        tool_duration, effect_disposition = 0.0, None
+        tool_duration, effect_disposition, execution_status = 0.0, ("unknown" if may_have_dispatched else "none"), "cancelled"
     else:
         function_result = f"Error executing tool '{ref.name}': thread did not return a result"
         outcome = dict(status="error", error_type="thread_missing_result", error_message=function_result)
-        tool_duration, effect_disposition = 0.0, None
+        tool_duration, effect_disposition, execution_status = 0.0, "unknown", "error"
     ref.emit_post(agent, function_result, **outcome)
-    return function_result, tool_duration, effect_disposition
+    return function_result, tool_duration, effect_disposition, execution_status
 
 
 def _append_batch_results(agent, messages: list, effective_task_id: str, batch: _ConcurrentBatch, budget: BudgetConfig) -> bool:
@@ -1510,18 +1532,40 @@ def _append_batch_results(agent, messages: list, effective_task_id: str, batch: 
         # prefer its real result over a fabricated timeout.
         if r is None:
             ref, is_error, blocked = pc.ref(effective_task_id), True, False
-            function_result, tool_duration, effect_disposition = _unfinished_tool_result(
+            function_result, tool_duration, effect_disposition, execution_status = _unfinished_tool_result(
                 agent, ref, timed_out=i in batch.timed_out_indices, timeout_s=batch.timeout_s,
+                may_have_dispatched=i in batch.dispatched_indices,
             )
         else:
             ref, function_result, tool_duration, is_error, blocked = r.ref, r.result, r.duration, r.is_error, r.blocked
-            effect_disposition = "none" if blocked else None
             if pc.parse_error is not None:
+                # Malformed arguments never reached the tool: no effect, execution error.
+                effect_disposition, execution_status = "none", "error"
                 ref.emit_invalid_arguments(agent, r.result)
+            elif not blocked and i in batch.timed_out_indices:
+                # The deadline fan-out interrupts slow workers, whose synthesized cancel
+                # artifact surfaces here with is_error=True; the batch's truth is "timeout".
+                # The effect of a call interrupted mid-flight remains unobservable.
+                effect_disposition, execution_status = "unknown", "timeout"
+            elif not blocked and r.execution_status == "cancelled":
+                # The worker's own cancellation marker (KeyboardInterrupt, per-thread
+                # interrupt). It ran, so its effect is unobservable — but "cancelled" is the
+                # true status and must not be flattened into a generic error (#61783).
+                effect_disposition, execution_status = "unknown", "cancelled"
+            elif not blocked and i in batch.cancelled_indices and agent._interrupt_requested:
+                # Abandoned by /stop after dispatch: same reasoning as the cancelled worker
+                # above, but the slot was synthesized because the worker never returned.
+                effect_disposition, execution_status = "unknown", "cancelled"
+            else:
+                # A blocked call never ran -> provably no effect. A completed call is
+                # NOT "none": its effect may well have happened and been observed, which
+                # is the NULL case of the #61783 contract.
+                effect_disposition = "none" if blocked else None
+                execution_status = "blocked" if blocked else ("error" if is_error else "success")
         committed = _commit_tool_result(
             agent, messages, ref, function_result,
             budget=budget, tool_duration=tool_duration, is_error=is_error, blocked=blocked,
-            effect_disposition=effect_disposition, observed=r is not None,
+            effect_disposition=effect_disposition, execution_status=execution_status, observed=r is not None,
             error_preview=lambda res: _multimodal_text_summary(res)[:200],
         )
         if committed is None:
@@ -1710,7 +1754,8 @@ def _skip_remaining_sequential(agent, messages: list, remaining, effective_task_
 def _append_invalid_arguments_result(agent, messages: list, ref: _ToolCallRef, parse_error: str) -> bool:
     """Emit + append the parse-error result for a call whose arguments were not a JSON object."""
     ref.emit_invalid_arguments(agent, parse_error)
-    messages.append(make_tool_result_message(ref.name, parse_error, ref.call_id))
+    messages.append(make_tool_result_message(
+        ref.name, parse_error, ref.call_id, effect_disposition="none", execution_status="error"))
     return _flush_session_db_after_tool_progress(agent, messages, stage=f"invalid tool arguments {ref.name}")
 
 
@@ -1772,6 +1817,7 @@ def _publish_sequential_result(agent, messages: list, ref: _ToolCallRef, managed
     result; False when the incremental flush failed (the caller must stop the batch)."""
     ref.args, ref.trace, function_result = managed.args, managed.middleware_trace, managed.result
     _execution_timed_out = isinstance(function_result, (_ToolTimeoutResult, _ToolCancelledResult))
+    _execution_cancelled = isinstance(function_result, _ToolCancelledResult)
     # Inline-dispatched runtime tools never reach handle_function_call, so the
     # executor owns the one terminal post_tool_call per tool_call_id (the inner
     # observer is suppressed); also stops an abandoned timeout worker reporting late.
@@ -1792,7 +1838,14 @@ def _publish_sequential_result(agent, messages: list, ref: _ToolCallRef, managed
     committed = _commit_tool_result(
         agent, messages, ref, function_result,
         budget=budget, tool_duration=tool_duration, is_error=_is_error_result, blocked=managed.blocked,
-        effect_disposition="unknown" if _execution_timed_out else None, observed=True,
+        effect_disposition="unknown" if _execution_timed_out else None,
+        execution_status=(
+            "cancelled" if _execution_cancelled
+            else "timeout" if _execution_timed_out
+            else "blocked" if managed.blocked
+            else "error" if _is_error_result
+            else "success"
+        ), observed=True,
         error_preview=lambda res: res[:200] if isinstance(res, str) and not agent.verbose_logging else res,
         success_log_chars=_result_len,
         verbose_text=_multimodal_text_summary,

@@ -450,7 +450,7 @@ _TEXT_SHAPE_RULES: dict[str, dict[str, Callable[[str], bool]]] = {
         "billing_base_url": _is_url,
     },
     "messages": {
-        **dict.fromkeys(("effect_disposition", "finish_reason", "display_kind"), _is_token),
+        **dict.fromkeys(("effect_disposition", "execution_status", "finish_reason", "display_kind"), _is_token),
         **dict.fromkeys(("tool_calls", "reasoning_details", "codex_reasoning_items", "codex_message_items",
                          "api_content", "display_metadata"), _blank_or(_is_json_start)),
     },

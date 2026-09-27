@@ -110,6 +110,9 @@ def run_tool_round(
                 "content": _invalid_tool_name_error_content(
                     tc.function.name, agent.valid_tool_names
                 ),
+                # Never dispatched -> no effect; the outcome is an execution error.
+                "effect_disposition": "none",
+                "execution_status": "error",
             })
         assistant_message.tool_calls = [
             tc for tc in assistant_message.tool_calls if tc.function.name in agent.valid_tool_names

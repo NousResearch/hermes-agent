@@ -42,13 +42,21 @@ def _preview_name(name: str) -> str:
 
 
 def _append_tool_error_results(messages, tool_calls, content_for) -> None:
-    """One tool-role result per call so every tool_call keeps a matching result."""
+    """One tool-role result per call so every tool_call keeps a matching result.
+
+    These are recovery results for calls that never dispatched (unknown tool name,
+    invalid JSON), so the call produced no effect: ``effect_disposition="none"`` plus
+    ``execution_status="error"`` — the #61783 effect contract and the outcome axis stay
+    separate.
+    """
     for tc in tool_calls:
         append_message(messages, {
             "role": "tool",
             "name": tc.function.name,
             "tool_call_id": coalesce_tool_call_id(tc),
             "content": content_for(tc),
+            "effect_disposition": "none",
+            "execution_status": "error",
         })
 
 

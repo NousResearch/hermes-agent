@@ -149,3 +149,75 @@ def test_finish_update_clears_when_installed_already_matches(rebuilt, tmp_path, 
 
     assert "already matches" in capsys.readouterr().out
     assert not _record_path().exists()
+
+
+def test_record_failure_is_contained_and_reports_honestly(rebuilt, tmp_path, monkeypatch, caplog):
+    """A read-only/full HERMES_HOME must not abort the install loop, must clean its
+    `.tmp`, and must NOT tell the user a recovery command exists when no record does."""
+    import pytest
+    stale = _bundle(tmp_path / "Applications", b"stale")
+    running = _bundle(tmp_path / "Volumes" / "Applications", b"older")
+
+    def failing_write(self, data, encoding=None):
+        raise PermissionError(13, "Read-only file system")
+
+    monkeypatch.setattr(main_desktop.Path, "write_text", failing_write)
+    with caplog.at_level("WARNING", logger="hermes_cli.main_desktop"):
+        ok = main_desktop.record_pending_desktop_install(
+            app=running, rebuilt_app=rebuilt, asar_hash="deadbeef")
+    assert ok is False
+    assert "could not be written" in caplog.text
+    # No dishonest "recorded it — run ..." advice when nothing was recorded.
+    assert not any("recorded it" in r.getMessage() for r in caplog.records)
+    assert not _record_path().exists()
+    # The install loop itself is not aborted by the record failure: the sibling
+    # bundle still refreshes (record_pending_... is called inside the candidate
+    # loop; with write failing it must propagate nothing).
+    monkeypatch.setattr(main_desktop.Path, "write_text", failing_write)
+    installed, problems = main_desktop._install_rebuilt_macos_bundles(
+        rebuilt, [stale, running], running={running.resolve()})
+    assert installed == [stale], "the next installable bundle must still refresh"
+    assert len(problems) == 1 and str(running) in problems[0]
+
+
+def test_finish_update_installs_after_recorded_app_was_removed(rebuilt, tmp_path, monkeypatch, capsys):
+    """A deleted installed bundle must not loop 'nothing to do' forever: the staged
+    build installs at the standard locations and the record clears."""
+    gone_root = tmp_path / "OldApplications"
+    stale = _bundle(gone_root, b"stale")
+    record_app = stale
+    main_desktop.record_pending_desktop_install(
+        app=record_app, rebuilt_app=rebuilt, asar_hash=main_desktop._app_asar_hash(rebuilt))
+    # The recorded location disappears (user uninstalled from there)...
+    shutil.rmtree(gone_root)
+    # ...but a standard install location exists and is stale.
+    fresh = _bundle(tmp_path / "Applications", b"older")
+    monkeypatch.setattr(main_desktop, "_running_macos_app_bundles", set)
+    import hermes_cli.gui_uninstall as gui_uninstall
+    monkeypatch.setattr(gui_uninstall, "packaged_gui_app_paths", lambda: [fresh])
+
+    main_desktop.cmd_desktop_finish_update(type("Args", (), {})())
+
+    out = capsys.readouterr().out
+    assert "Installed" in out and str(fresh) in out
+    assert _asar(fresh) == b"rebuilt"
+    assert not _record_path().exists()
+
+
+def test_finish_update_removed_app_with_nowhere_to_install_clears(rebuilt, tmp_path, monkeypatch, capsys):
+    """Gone recorded app AND no install location: say so once and clear, not an
+    endless 'nothing to do' loop."""
+    gone_root = tmp_path / "OldApplications"
+    stale = _bundle(gone_root, b"stale")
+    main_desktop.record_pending_desktop_install(
+        app=stale, rebuilt_app=rebuilt, asar_hash=main_desktop._app_asar_hash(rebuilt))
+    shutil.rmtree(gone_root)
+    monkeypatch.setattr(main_desktop, "_running_macos_app_bundles", set)
+    import hermes_cli.gui_uninstall as gui_uninstall
+    monkeypatch.setattr(gui_uninstall, "packaged_gui_app_paths", list)
+
+    main_desktop.cmd_desktop_finish_update(type("Args", (), {})())
+
+    out = capsys.readouterr().out
+    assert "no longer installed" in out
+    assert not _record_path().exists()

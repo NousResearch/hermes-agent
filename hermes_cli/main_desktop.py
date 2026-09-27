@@ -931,8 +931,8 @@ def _stage_macos_bundle_copy(src: Path, dst: Path) -> None:
 
 # --- Pending desktop install record (#123737) ------------------------------
 # A running bundle is never swapped under, but log-only is not enough: the record
-# below lets hermes desktop-finish-update complete the staged install later, and a later successful
-# pass (or an already-current installed copy) clears it.
+# below lets `hermes desktop finish-update` complete the staged install later, and a later
+# successful pass (or an already-current installed copy) clears it.
 
 PENDING_INSTALL_FILENAME = "pending_desktop_install.json"
 
@@ -943,8 +943,15 @@ def pending_desktop_install_path() -> Path:
     return get_hermes_home() / PENDING_INSTALL_FILENAME
 
 
-def record_pending_desktop_install(*, app: Path, rebuilt_app: Path, asar_hash: str) -> None:
-    """Persist the skipped install so the finish-update command can complete it later."""
+def record_pending_desktop_install(*, app: Path, rebuilt_app: Path, asar_hash: str) -> bool:
+    """Persist the skipped install so the finish-update command can complete it later.
+
+    Returns True when the record exists on disk after the call. Failure-contained
+    both ways: a read-only/full HERMES_HOME must not abort the install loop (the
+    next, installable bundle still refreshes), and when only the atomic replace
+    failed (a `.tmp` orphan is cleaned), the caller does NOT tell the user a
+    record exists that is not there.
+    """
     record = {
         "app": str(app),
         "rebuilt_app": str(rebuilt_app),
@@ -953,12 +960,22 @@ def record_pending_desktop_install(*, app: Path, rebuilt_app: Path, asar_hash: s
     }
     path = pending_desktop_install_path()
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(record, indent=2), encoding="utf-8")
-    with contextlib.suppress(OSError):
+    try:
+        tmp.write_text(json.dumps(record, indent=2), encoding="utf-8")
         tmp.replace(path)
+    except OSError as exc:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+        logger.warning(
+            "Desktop install skipped while %s was running, and the pending-install "
+            "record could not be written (%s); quit Hermes Desktop and run the "
+            "updater again to refresh it", app, exc,
+        )
+        return False
     logger.warning(
         "Desktop install skipped while %s was running; recorded it — quit Hermes Desktop "
-        "and run `%s` to complete it", app, "hermes desktop-finish-update")
+        "and run `%s` to complete it", app, "hermes desktop finish-update")
+    return True
 
 
 def read_pending_desktop_install() -> Optional[dict]:
@@ -989,6 +1006,26 @@ def cmd_desktop_finish_update(args: argparse.Namespace) -> None:
         return
     from hermes_cli.gui_uninstall import packaged_gui_app_paths
     recorded = Path(record["app"])
+    if not recorded.is_dir():
+        # The recorded installed bundle is GONE (uninstalled by hand): it can never
+        # match the staged hash and the candidate loop below skips it, which would
+        # fall through to "nothing to do" forever with the record still pinned.
+        # The staged bundle is still valid, so install it at the standard locations
+        # instead of waiting on a path that no longer exists.
+        candidates = [p for p in packaged_gui_app_paths() if p.is_dir()]
+        installed, _problems = ((
+            _install_rebuilt_macos_bundles(rebuilt_app, candidates, running=_running_macos_app_bundles())
+            if candidates else ([], [])
+        ))
+        for app in installed:
+            print(f"  Installed the rebuilt Desktop app at {app} — launch it to load the new build")
+        if not installed:
+            print(
+                f"The recorded Desktop app is no longer installed at {recorded}. "
+                "Run the updater again to reinstall it."
+            )
+        clear_pending_desktop_install()
+        return
     candidates = [recorded] + [p for p in packaged_gui_app_paths() if p != recorded]
     installed, problems = _install_rebuilt_macos_bundles(
         rebuilt_app, candidates, running=_running_macos_app_bundles())

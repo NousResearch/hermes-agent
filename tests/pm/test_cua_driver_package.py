@@ -56,3 +56,17 @@ def test_windows_cua_keeps_uiaccess_and_cursor_helpers(tmp_path):
     assert package.binary(staged, "win32-x64") == staged / "cua-driver.exe"
     for name, content in members.items():
         assert (staged / name).read_bytes() == content
+
+
+def test_bionic_cua_fetch_url_maps_to_linux_artifact():
+    """The bionic target must resolve, not crash the whole lock bump (#125463).
+
+    cua-driver publishes no bionic build; the bionic lock target reuses the
+    plain linux binary. Before the fix, the target->arch table lookup raised
+    KeyError before lockfile.set_pin() ran, leaving the pin un-bumpable.
+    """
+    package = get_package("cua-driver")
+    assert package.missing_reason("linux-arm64-bionic") is None
+    url = package.fetch_url("0.30.1", "linux-arm64-bionic")
+    assert url == package.fetch_url("0.30.1", "linux-arm64")
+    assert "linux-arm64-binary.tar.gz" in url

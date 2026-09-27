@@ -56,7 +56,8 @@ def _wire_model_identity(model: Any) -> Optional[str]:
     return str(strip_codex_context_variant_suffix(model or "")).strip() or None
 
 # Codex/Harmony tool-call serialization leaked into assistant text (no structured function_call).
-_TOOL_CALL_LEAK_PATTERN = re.compile(r"(?:^|[\s>|])to=functions\.[A-Za-z_][\w.]*", re.IGNORECASE)
+# ``}`` leads the real Harmony shape: the serialized args JSON closes immediately before ``to=``.
+_TOOL_CALL_LEAK_PATTERN = re.compile(r"(?:^|[\s>|}])to=functions\.[A-Za-z_][\w.]*", re.IGNORECASE)
 
 # Codex-CLI-style shell call leaked as assistant text (``{"cmd": "..."}`` closing the message, scalar siblings only).
 # Only classified as a leak when the previous line is an action lead-in ("Creating the script now.") — a bare or
@@ -1090,6 +1091,7 @@ class _OutputScan:
     def __init__(self, response_status: Optional[str]) -> None:
         self.content_parts, self.reasoning_parts, self.tool_calls = [], [], []
         self.reasoning_items_raw, self.message_items_raw = [], []
+        self.leaked_content_item_indexes: List[int] = []
         self.has_incomplete_items = response_status in _INCOMPLETE_STATUSES
         self.saw_streaming_or_item_incomplete = response_status in {"queued", "in_progress"}
         self.saw_commentary_phase = self.saw_final_answer_phase = self.saw_reasoning_item = False
@@ -1129,6 +1131,17 @@ class _OutputScan:
         message_text = _extract_responses_message_text(item)
         if not message_text:
             return
+        # The Harmony tool-call serialization can leak into the commentary channel next to the real
+        # structured function_call (raw args JSON + ``to=functions.*`` + junk tokens). The calls carry
+        # the turn, so the echoed text is pure garbage — drop it instead of routing it to the reasoning
+        # channel, where it is persisted and shown to messaging users as the live-turn preview (#125458).
+        # saw_commentary_phase is already set, so a commentary-only response still reads as incomplete.
+        if is_commentary_phase and _leaked_tool_call_text(message_text):
+            logger.warning(
+                "Codex commentary message carries leaked tool-call echo text (%r...); dropping it from "
+                "the reasoning channel (#125458).", message_text[:160],
+            )
+            return
         # commentary/analysis text is mid-turn narration, never the final answer: route it
         # to the reasoning channel; the exact item is still preserved for replay/cache.
         (self.reasoning_parts if is_commentary_phase else self.content_parts).append(message_text)
@@ -1137,6 +1150,8 @@ class _OutputScan:
             [{"type": "output_text", "text": message_text}], status=_normalize_responses_message_status(item_status),
             item_id=item_id if isinstance(item_id, str) else None, phase=normalized_phase,
         ))
+        if not is_commentary_phase and _leaked_tool_call_text(message_text):
+            self.leaked_content_item_indexes.append(len(self.message_items_raw) - 1)
 
 
 def _normalize_codex_response(
@@ -1184,6 +1199,20 @@ def _normalize_codex_response(
             "Leaked snippet: %r", final_text[:300],
         )
         final_text = ""
+    # The same echo can ride a final-answer message next to real structured calls (#125458): the calls
+    # execute fine, so the turn must not be re-elicited — but the echoed serialization must neither be
+    # posted as the reply nor replayed into history. Drop just the echo parts, keep the real calls.
+    if tool_calls and scan.leaked_content_item_indexes:
+        logger.warning(
+            "Codex final-answer message carries leaked tool-call echo text alongside %d structured "
+            "function_call(s); dropping the echo parts so only the real calls reply (#125458).", len(tool_calls),
+        )
+        scan.content_parts = [p for p in scan.content_parts if not _leaked_tool_call_text(p)]
+        final_text = "\n".join(scan.content_parts).strip()
+        leaked_indexes = set(scan.leaked_content_item_indexes)
+        scan.message_items_raw = [
+            raw for i, raw in enumerate(scan.message_items_raw) if i not in leaked_indexes
+        ]
     # xAI grok-4.x sometimes puts the final answer inside the reasoning item after a ``<response>`` delimiter; without
     # salvage the reasoning-only rule marks the turn incomplete and every continuation is byte-identical. Promote the tail.
     if issuer_kind == "xai_responses" and not final_text and not tool_calls and reasoning_parts:

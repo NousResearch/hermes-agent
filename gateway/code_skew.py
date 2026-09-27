@@ -26,14 +26,25 @@ _boot_fingerprint: str | None = None
 def _fingerprint() -> str | None:
     """Current checkout fingerprint, reusing the CLI's git-rev reader.
 
-    ``hermes_cli.main`` is always already imported in a gateway process (it's
-    the entry point), so this import is free and avoids duplicating the
-    worktree-aware ref resolution.
+    Look the reader up in ``sys.modules`` first. Under ``python -m
+    hermes_cli.main`` (how the systemd unit launches the gateway) the CLI
+    module is registered as ``__main__``, NOT as ``hermes_cli.main`` — so a
+    plain ``from hermes_cli.main import ...`` would re-execute the whole CLI
+    module, re-running its module-level ``_apply_profile_override()`` a second
+    time with the already-consumed ``--profile`` flag stripped. That second
+    pass falls back to the sticky ``active_profile`` and redirects
+    HERMES_HOME into a different profile, which then trips the duplicate
+    gateway PID guard for that profile and crash-loops the service.
     """
     try:
-        from hermes_cli.main import _read_git_revision_fingerprint
+        import sys
 
-        return _read_git_revision_fingerprint(_PROJECT_ROOT)
+        module = sys.modules.get("hermes_cli.main") or sys.modules.get("__main__")
+        reader = getattr(module, "_read_git_revision_fingerprint", None)
+        if reader is None:
+            from hermes_cli.main import _read_git_revision_fingerprint as reader
+
+        return reader(_PROJECT_ROOT)
     except Exception:
         return None
 

@@ -377,6 +377,8 @@ Quick Entry is a small always-available composer summoned by a **global hotkey f
 
 Talk to Hermes and hear it back, the same [voice mode](./features/voice-mode.md) available elsewhere. On macOS the OS will prompt once for microphone access.
 
+**Settings → Voice** also has **Microphone** and **Speaker** rows. **System default** follows whatever the OS is currently using; picking a device pins it for the recorder, for barge-in detection and for playback, so a headset connecting later cannot take over mid-session. If the pinned device is unplugged, the row says it is not connected and the app falls back to the system default until it is back. The selection is stored as `voice.mic_device_id` and `voice.speaker_device_id` in `~/.hermes/config.yaml` (empty means the system default) — browser device ids, distinct from `wake_word.input_device`, which is the PortAudio device the Python side uses for the wake word.
+
 ### HUD mode
 
 **⌘/Ctrl+Shift+H** (or the titlebar button) detaches the chat into a chrome-free, always-on-top floating bar that sits over whatever you are working in. The app window steps aside; the HUD keeps your live conversation and a composer. Where you park it is context — the bar's position tells Hermes which app and screen you're asking about, so "this", "here", and "that page" resolve to what's underneath it.

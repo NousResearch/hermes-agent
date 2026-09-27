@@ -3206,7 +3206,25 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         if err:
             return err
         db = await self._ensure_session_db_async()
-        deleted = await asyncio.to_thread(db.delete_session, session_id)
+        if db is None:
+            return self._session_db_unavailable()
+        # Same profile home the DB was resolved from (the profile middleware scopes
+        # get_hermes_home() for this request) — without it the transcript/dump scrub is skipped.
+        sessions_dir = None
+        try:
+            from hermes_constants import get_hermes_home
+            sessions_dir = Path(get_hermes_home()) / "sessions"
+        except Exception:
+            logger.debug("sessions dir unavailable for delete of %s", session_id, exc_info=True)
+        deleted = await asyncio.to_thread(db.delete_session, session_id, sessions_dir=sessions_dir)
+        if deleted:
+            # A hard delete must also drop the gateway's durable channel→session routing entries
+            # for the id, or the next inbound message resolves the SAME id and run_agent's
+            # INSERT OR IGNORE resurrects the deleted row (#42422).
+            runner = self.gateway_runner or request.app.get("gateway_runner")
+            store = getattr(runner, "session_store", None)
+            if store is not None:
+                await asyncio.to_thread(store.remove_by_session_id, session_id)
         return web.json_response({"object": "hermes.session.deleted", "id": session_id, "deleted": bool(deleted)})
 
     @_require_auth

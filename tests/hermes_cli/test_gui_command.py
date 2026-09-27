@@ -176,6 +176,42 @@ def test_source_launch_reads_bom_electron_path_without_provisioning(tmp_path, mo
     assert len(calls) == 1
 
 
+def _stamped_macos_bundle(app: Path, asar: bytes) -> Path:
+    (app / "Contents" / "MacOS").mkdir(parents=True)
+    (app / "Contents" / "MacOS" / "Hermes").write_bytes(b"\xcf\xfa\xed\xfe")
+    (app / "Contents" / "Resources").mkdir()
+    (app / "Contents" / "Resources" / "app.asar").write_bytes(asar)
+    (app / "Contents" / "Resources" / "install-stamp.json").write_text('{"updateMechanism": "self"}')
+    return app
+
+
+@pytest.mark.platforms("macos")
+def test_packaged_launch_opens_the_refreshed_installed_app(tmp_path, monkeypatch):
+    """#52339: Finder and the Dock open the installed Hermes.app, so ``hermes desktop`` must launch
+    that copy (brought up to the checkout build) instead of a second bundle under release/."""
+    import shutil
+
+    root = _make_desktop_tree(tmp_path)
+    _stamped_macos_bundle(root / "apps" / "desktop" / "release" / "mac-arm64" / "Hermes.app", b"checkout build")
+    installed = _stamped_macos_bundle(tmp_path / "Applications" / "Hermes.app", b"stale build")
+    monkeypatch.setattr("hermes_cli.gui_uninstall.packaged_gui_app_paths", lambda: [installed])
+    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda **kw: tmp_path)  # root is its hermes-agent
+    monkeypatch.setattr(main_desktop, "_stage_macos_bundle_copy", lambda src, dst: shutil.copytree(src, dst, symlinks=True))
+    monkeypatch.setattr(main_desktop, "_running_macos_app_bundles", lambda: set())
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    monkeypatch.setattr(main_desktop, "_desktop_launch_env", lambda args: ({}, []))
+    calls = []
+    monkeypatch.setattr(main_desktop.subprocess, "run",
+                        lambda cmd, **kw: calls.append(cmd) or subprocess.CompletedProcess(cmd, 0))
+
+    with pytest.raises(SystemExit) as exit_info:
+        main_desktop.cmd_gui(_ns(skip_build=True))
+
+    assert exit_info.value.code == 0
+    assert calls == [[str(installed / "Contents" / "MacOS" / "Hermes")]]
+    assert (installed / "Contents" / "Resources" / "app.asar").read_bytes() == b"checkout build"
+
+
 def test_packaged_renderer_bom_does_not_bypass_entry_validation(tmp_path):
     import json
     import struct
@@ -833,7 +869,7 @@ def test_gui_launches_even_when_desktop_entry_install_fails(tmp_path, monkeypatc
 def test_desktop_launch_options_normalizes_password_store(raw, expected):
     cfg = {"desktop": {"password_store": raw}}
     with patch("hermes_cli.config.load_config", return_value=cfg):
-        _, _, store, _ = main_desktop._desktop_launch_options()
+        _, _, store, _, _ = main_desktop._desktop_launch_options()
     assert store == expected
 
 
@@ -851,8 +887,70 @@ def test_desktop_launch_options_normalizes_ozone_hint(raw, expected):
     """``desktop.ozone_platform_hint`` normalizes to x11/wayland/auto."""
     cfg = {"desktop": {"ozone_platform_hint": raw}}
     with patch("hermes_cli.config.load_config", return_value=cfg):
-        _, _, _, hint = main_desktop._desktop_launch_options()
+        _, _, _, hint, _ = main_desktop._desktop_launch_options()
     assert hint == expected
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        # Absent key stays ON — the composer must be reachable by
+        # accessibility-driven dictation out of the box (#118083 family:
+        # #118271 / #92607).
+        (None, True),
+        (True, True),
+        (False, False),
+        ("on", True),
+        ("1", True),
+        ("yes", True),
+        ("0", False),
+        ("false", False),
+        ("OFF", False),
+        ("  no  ", False),
+        # `disabled` is a natural spelling of the opt-out; both word lists
+        # (launcher + packaged-launch yaml reader) accept it, so the two
+        # entry points stay in lockstep.
+        ("disabled", False),
+        ("Disabled", False),
+        ("enabled", True),
+        # YAML parses a bare `0` as int and `0.0` as float — neither is a
+        # str, so the normalization must cover numeric scalars too, not just
+        # the quoted forms above.
+        (0, False),
+        (1, True),
+        (0.0, False),
+        # Unknown strings don't disable the feature (fail-open, like the
+        # other desktop launch options fail to "auto").
+        ("wibble", True),
+    ],
+)
+def test_desktop_launch_options_normalizes_renderer_accessibility(raw, expected):
+    """``desktop.renderer_accessibility`` defaults to ON; only explicit false words opt out."""
+    cfg = {"desktop": {} if raw is None else {"renderer_accessibility": raw}}
+    with patch("hermes_cli.config.load_config", return_value=cfg):
+        _, _, _, _, renderer_a11y = main_desktop._desktop_launch_options()
+    assert renderer_a11y is expected
+
+
+def test_desktop_environment_bridges_only_the_accessibility_opt_out(monkeypatch):
+    """ON (the default) sets nothing; the opt-out bridges to
+    HERMES_DESKTOP_RENDERER_ACCESSIBILITY=0, and an explicit env var wins."""
+    monkeypatch.delenv("HERMES_DESKTOP_RENDERER_ACCESSIBILITY", raising=False)
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"desktop": {}})
+
+    env, _ = main_desktop._desktop_launch_env(_ns())
+    assert "HERMES_DESKTOP_RENDERER_ACCESSIBILITY" not in env
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"desktop": {"renderer_accessibility": False}})
+    env, _ = main_desktop._desktop_launch_env(_ns())
+    assert env["HERMES_DESKTOP_RENDERER_ACCESSIBILITY"] == "0"
+
+    monkeypatch.setenv("HERMES_DESKTOP_RENDERER_ACCESSIBILITY", "0")
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"desktop": {}})
+    env, _ = main_desktop._desktop_launch_env(_ns())
+    assert env["HERMES_DESKTOP_RENDERER_ACCESSIBILITY"] == "0"
 
 
 
@@ -1299,13 +1397,13 @@ def test_stop_desktop_processes_locking_build_posix_swap_bypasses_early_return(t
     assert main_desktop._stop_desktop_processes_locking_build(desktop_dir, also_posix=True) == [100]
 
 
-@pytest.mark.platforms("posix")  # Windows must stop the exe-locking ancestor too
-def test_posix_swap_spares_the_desktop_driving_this_update(tmp_path, monkeypatch):
-    """A historical Desktop runs `hermes update` as a piped child and relaunches
-    itself afterwards; stopping it breaks the update's stdout (EPIPE). Its
-    renderer/GPU/zygote helpers run the same exe but are not our ancestors;
-    stopping them leaves a main process that can neither draw nor quit. Only an
-    unrelated Desktop from the same release tree is stopped."""
+def _stop_spares_the_desktop_driving_this_update(tmp_path, monkeypatch, *, also_posix):
+    """A Desktop's own process tree runs this update (a historical Desktop's piped
+    `hermes update` child, or the launch-time tail its backend runs). Stopping that
+    Desktop kills the update with it. Its renderer/GPU/zygote helpers run the same
+    exe but are not our ancestors; stopping them leaves a main process that can
+    neither draw nor quit. Only an unrelated Desktop from the same release tree is
+    stopped."""
     root = _make_desktop_tree(tmp_path)
     desktop_dir = root / "apps" / "desktop"
     live_exe = desktop_dir / "release" / _packaged_exe_rel()
@@ -1351,7 +1449,45 @@ def test_posix_swap_spares_the_desktop_driving_this_update(tmp_path, monkeypatch
 
     monkeypatch.setitem(sys.modules, "psutil", _FakePsutil)
 
-    assert main_desktop._stop_desktop_processes_locking_build(desktop_dir, also_posix=True) == [300]
+    assert main_desktop._stop_desktop_processes_locking_build(desktop_dir, also_posix=also_posix) == [300]
+
+
+@pytest.mark.platforms("posix")
+def test_posix_swap_spares_the_desktop_driving_this_update(tmp_path, monkeypatch):
+    """A historical Desktop runs `hermes update` as a piped child and relaunches
+    itself afterwards; stopping it breaks the update's stdout (EPIPE)."""
+    _stop_spares_the_desktop_driving_this_update(tmp_path, monkeypatch, also_posix=True)
+
+
+@pytest.mark.platforms("windows")
+@pytest.mark.parametrize("also_posix", [False, True])
+def test_windows_stop_spares_the_desktop_driving_this_update(tmp_path, monkeypatch, also_posix):
+    """A Desktop's own backend runs the launch-time update tail; stopping that Desktop
+    killed the tail before it could clear its markers, so every launch repeated it
+    (#123499). The pack-time call and the swap alike spare it."""
+    _stop_spares_the_desktop_driving_this_update(tmp_path, monkeypatch, also_posix=also_posix)
+
+
+@pytest.mark.platforms("windows")
+def test_windows_build_under_its_own_desktop_skips_instead_of_killing_it(tmp_path, monkeypatch, capsys):
+    """#123499: a Desktop's backend runs the interrupted-update tail at launch. Packing there
+    can only end in a promotion the Desktop's exe lock refuses, and stopping that Desktop
+    kills the tail first. The build is skipped, so the tail finishes and clears its markers."""
+    desktop_dir = _make_desktop_tree(tmp_path) / "apps" / "desktop"
+    live_exe = desktop_dir / "release" / _packaged_exe_rel()
+    live_exe.parent.mkdir(parents=True)
+    live_exe.write_text("old", encoding="utf-8")
+    backend = types.SimpleNamespace(pid=40, exe=lambda: str(tmp_path / "python.exe"))
+    desktop = types.SimpleNamespace(pid=41, exe=lambda: str(live_exe))
+    monkeypatch.setitem(sys.modules, "psutil", types.SimpleNamespace(
+        Process=lambda pid: types.SimpleNamespace(parents=lambda: [backend, desktop])))
+    monkeypatch.setattr(main_desktop, "_stop_desktop_processes_locking_build",
+                        lambda *a, **k: pytest.fail("must not stop the Desktop running this build"))
+    monkeypatch.setattr("pm.progress.run_contained", lambda *a, **k: pytest.fail("must not pack"))
+
+    assert main_desktop.build_prepared_desktop(desktop_dir, source_mode=False, npm="npm", env={}) is None
+    assert "pid 41" in capsys.readouterr().out
+    assert not list(desktop_dir.glob(f"{main_desktop._DESKTOP_STAGING_PREFIX}*"))
 
 
 def test_gui_failed_pack_leaves_previous_app_untouched(tmp_path, monkeypatch, capsys):

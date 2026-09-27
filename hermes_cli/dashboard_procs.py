@@ -108,6 +108,23 @@ def _scan_dashboard_processes(*, exclude_pids: set[int] | None = None) -> list[t
     return found
 
 
+def _ledger_serve_binds() -> dict[int, tuple[str, int]]:
+    """``pid -> (host, port)`` recorded in the spawn ledger for live serve/dashboard backends.
+
+    The entry is written after the bind, so it carries the real port where argv only says
+    ``--port 0`` (Desktop SSH backends ask the OS for a port). Empty when the ledger is unavailable.
+    """
+    binds: dict[int, tuple[str, int]] = {}
+    with contextlib.suppress(Exception):
+        from hermes_cli.process_identity import ledger_entries
+        for entry in ledger_entries():
+            pid, port = entry.get("pid"), entry.get("port")
+            if (entry.get("purpose") in ("serve", "dashboard") and isinstance(pid, int)
+                    and isinstance(port, int) and port > 0):
+                binds[pid] = (str(entry.get("host") or ""), port)
+    return binds
+
+
 def _pid_environ(pid: int) -> dict[str, str] | None:
     """Exec-time environment of *pid* (psutil, then /proc); ``None`` when unreadable."""
     with contextlib.suppress(Exception):

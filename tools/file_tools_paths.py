@@ -12,6 +12,8 @@ import sys
 import time
 from pathlib import Path, PurePosixPath
 
+from agent.runtime_self_protection import split_entry
+
 # ``TERMINAL_CWD`` values that mean "not configured" ("." from a stale config;
 # "auto"/"cwd" are wizard placeholders). gateway/run.py sanitizes the same set.
 _TERMINAL_CWD_SENTINELS = frozenset({"", ".", "./", "auto", "cwd"})
@@ -270,6 +272,16 @@ def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path | Pu
     container_paths = _uses_container_paths(task_id)
     return _anchor(_host_text(filepath, container_paths),
                    lambda: _resolve_base_dir(task_id, container_paths=container_paths), container_paths)
+
+
+def _resolve_entry_for_task(filepath: str, task_id: str = "default") -> Path | PurePosixPath:
+    """``_resolve_path_for_task`` for an operation on the directory entry itself (delete,
+    rename): the parent is resolved, but a symlink in the last component is kept, since
+    resolving it aims the operation at the file the link points to."""
+    parent, name = split_entry(filepath)
+    if name in ("", ".", "..") or (not parent and name.startswith("~")):
+        return _resolve_path_for_task(filepath, task_id)
+    return _resolve_path_for_task(parent or ".", task_id) / name
 
 
 

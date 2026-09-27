@@ -184,6 +184,13 @@ const PAGES: Array<{
   /** Extra per-page stubs merged over API_STUBS (e.g. fixture rows that make
    *  locale-sensitive chips render for this surface only). */
   apiOverrides?: Record<string, { status: number; body: string }>;
+  /** ISO instant to freeze the page clock at (page.clock.setFixedTime). Needed
+   *  for surfaces whose rendering branches on Date.now() vs a pinned fixture
+   *  timestamp — cron flips its next-run cell into an "overdue since" variant
+   *  once the fixture's next_run_at drifts into the past, which would rot the
+   *  baseline on a real calendar day. Freezing keeps the capture reproducible
+   *  forever; the instant must predate every pinned next_run_at. */
+  freezeClockAt?: string;
 }> = [
   { path: "/sessions", name: "sessions" },
   // Chat + models render locale-sensitive relative-time chips (timeAgo →
@@ -206,7 +213,7 @@ const PAGES: Array<{
   // the diff catches RTL regressions in real content, not just empty states.
   // Dates inside rows are TZ-sensitive — the config pins timezoneId UTC.
   { path: "/files", name: "files" }, // entry rows: Latin file names, byte sizes, Jalali dates.
-  { path: "/cron", name: "cron" }, // job rows: humanized schedule sentences, repeat counters, last/next timestamps — the sharpest mixed-direction text on the dashboard.
+  { path: "/cron", name: "cron", freezeClockAt: "2026-09-27T08:00:00Z" }, // job rows: humanized schedule sentences, repeat counters, last/next timestamps — the sharpest mixed-direction text on the dashboard. Clock frozen an hour before the fixture's 09:00Z next_run_at so the overdue badge can never flip.
 ];
 
 const API_STUBS: Record<string, { status: number; body: string }> = {
@@ -493,11 +500,12 @@ async function rtlSnapshot(page: Page, name: string): Promise<void> {
 }
 
 test.describe("Persian RTL visual snapshots", () => {
-  for (const { path, name, apiOverrides } of PAGES) {
+  for (const { path, name, apiOverrides, freezeClockAt } of PAGES) {
     test(`locale=fa ${name} renders RTL`, async ({ page }) => {
       await stubBackend(page, apiOverrides);
       await seedPersian(page);
       await page.setViewportSize(VIEWPORT);
+      if (freezeClockAt) await page.clock.setFixedTime(new Date(freezeClockAt));
       await page.goto(path, { waitUntil: "domcontentloaded" });
       await assertRtlBoot(page);
       await rtlSnapshot(page, name);
@@ -623,10 +631,14 @@ test.describe("Persian RTL visual snapshots", () => {
     // digits inside Persian prose, plus TZ-sensitive Intl formatting
     // (pinned to UTC in the config). The daily-digest fixture row renders
     // the active state; the full-page /cron snapshot covers both rows and
-    // the paused badge.
+    // the paused badge. The page clock is frozen an hour before the fixture's
+    // next_run_at (mirroring freezeClockAt on the /cron PAGES entry) — without
+    // that, the overdue branch flips once real wall-clock time crosses the
+    // pinned timestamp and the baselines rot on the calendar.
     await stubBackend(page);
     await seedPersian(page);
     await page.setViewportSize(VIEWPORT);
+    await page.clock.setFixedTime(new Date("2026-09-27T08:00:00Z"));
     await page.goto("/cron", { waitUntil: "domcontentloaded" });
     await assertRtlBoot(page);
     await page.waitForLoadState("networkidle");

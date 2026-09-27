@@ -13,7 +13,9 @@ def test_queued_nonstreamed_final_arms_after_processing_hook(tmp_path, monkeypat
     from gateway.config import Platform
     from gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome, SendResult
     from gateway.session import SessionSource
+    from gateway.platforms.event import MessageEvent
     from plugins.platforms.matrix.adapter import MatrixAdapter
+    from plugins.platforms.matrix.adapter_feedback import ReadReceiptMode
 
     async def exercise():
         adapter = object.__new__(MatrixAdapter)
@@ -21,6 +23,7 @@ def test_queued_nonstreamed_final_arms_after_processing_hook(tmp_path, monkeypat
         adapter._reaction_followup_actions = {}
         adapter._active_sessions = {"session": asyncio.Event()}
         adapter._reactions_enabled = False
+        adapter._read_receipts_mode = ReadReceiptMode.DISABLED
         adapter._event_session_key = lambda _event: "session"
         source = SessionSource(
             platform=Platform.MATRIX,
@@ -28,7 +31,7 @@ def test_queued_nonstreamed_final_arms_after_processing_hook(tmp_path, monkeypat
             user_id="@alice:test",
             profile="work",
         )
-        event = SimpleNamespace(source=source, message_id=None)
+        event = MessageEvent(text="Queued input", source=source, message_id=None)
         assert await adapter.configure_reaction_followups(
             "session", True, ("👍",), room_id="!room:test",
             requester="@alice:test", thread_id="", profile="work", session_id="sid",

@@ -380,7 +380,7 @@ class TestDispatchDefersToGatewayAuthorization(unittest.TestCase):
     def tearDown(self):
         self._env.stop()
 
-    def _reached_gateway(self, *, extra=None, env=None, paired=False, authenticated=True):
+    def _reached_gateway(self, *, extra=None, env=None, paired=False, authenticated=True, auth_reason=None):
         """Dispatch one mail from STRANGER with the real GatewayRunner auth callback wired, as startup does;
         return the events handed to the gateway. Each call gets its own pairing store."""
         import asyncio
@@ -389,7 +389,7 @@ class TestDispatchDefersToGatewayAuthorization(unittest.TestCase):
         from gateway.config import GatewayConfig, Platform, PlatformConfig
         from gateway.pairing import PairingStore
         from gateway.run import GatewayRunner
-        from plugins.platforms.email.adapter import EmailAdapter
+        from plugins.platforms.email.adapter import _NO_AUTH_RESULTS_REASON, EmailAdapter
         with tempfile.TemporaryDirectory() as pairing_dir, \
                 patch("gateway.pairing.PAIRING_DIR", Path(pairing_dir)), \
                 patch.dict(os.environ, {"EMAIL_ADDRESS": "hermes@test.com", "EMAIL_PASSWORD": "secret",
@@ -414,8 +414,20 @@ class TestDispatchDefersToGatewayAuthorization(unittest.TestCase):
                 "uid": b"301", "sender_addr": self.STRANGER, "sender_name": "Stranger", "subject": "Hello",
                 "message_id": "<m301@example.com>", "in_reply_to": "", "body": "Hi there", "attachments": [],
                 "date": "", "sender_authenticated": authenticated,
-                "auth_reason": "dmarc=pass" if authenticated else "no Authentication-Results header"}))
+                "auth_reason": auth_reason or ("dmarc=pass" if authenticated else _NO_AUTH_RESULTS_REASON)}))
         return captured
+
+    def test_only_a_missing_auth_results_header_warns_with_the_opt_out_hint(self):
+        """A granted sender's mail with no Authentication-Results suggests a server that never stamps it, so the drop
+        warns with the opt-out hint; an explicit failing verdict is routine forgery and stays at debug."""
+        adapter_log = "plugins.platforms.email.adapter"
+        with self.assertLogs(adapter_log, level="WARNING") as logs:
+            self.assertEqual(self._reached_gateway(authenticated=False, env={"EMAIL_ALLOW_ALL_USERS": "true"}), [])
+        self.assertIn("require_authenticated_sender: false", logs.output[0])
+        for label, env in {"open access": {"EMAIL_ALLOW_ALL_USERS": "true"},
+                           "listed sender": {"EMAIL_ALLOWED_USERS": self.STRANGER}}.items():
+            with self.subTest(label), self.assertNoLogs(adapter_log, level="WARNING"):
+                self.assertEqual(self._reached_gateway(authenticated=False, auth_reason="dmarc=fail", env=env), [])
 
     def test_mail_the_gateway_admits_or_answers_reaches_it(self):
         cases = {

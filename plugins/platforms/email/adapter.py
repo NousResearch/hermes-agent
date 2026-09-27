@@ -62,6 +62,9 @@ _COMMENT_RE = re.compile(r"\([^()]*\)")
 _MAX_FROM_LEN = 2048
 # Authentication-Results clause head (``dmarc=pass``), matched only at the start of a clause.
 _AUTH_METHOD_RE = re.compile(r"\s*(dmarc|dkim|spf)\s*=\s*([a-z]+)", re.IGNORECASE)
+# Verdict reason when the message carries no Authentication-Results at all: the one failure that points at a mail
+# server which never stamps the header (the opt-out case), rather than at the message itself.
+_NO_AUTH_RESULTS_REASON = "no Authentication-Results header"
 # One token of a clause: a property we read (``header.from=x``; the value may be or contain a quoted-string), or
 # any other whitespace-delimited token consumed whole, so text inside quotes or other values is never read as a prop.
 _QUOTED = r'"(?:[^"\\]|\\.)*"'
@@ -343,7 +346,7 @@ def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str
     if not from_domain:
         return False, "missing From domain"
     if not (headers := msg.get_all("Authentication-Results")):
-        return False, "no Authentication-Results header"
+        return False, _NO_AUTH_RESULTS_REASON
     values = (" ".join(str(raw).split()) for raw in headers)  # authserv-id precedes the first ';'
     trusted = next((v for v in values if not authserv_id or (serv := v.split(";", 1)[0].strip().lower()) == authserv_id.lower()
                     or _domains_aligned(serv, authserv_id)), None)
@@ -724,17 +727,19 @@ class EmailAdapter(BasePlatformAdapter):
             return False
         # Reject spoofed senders (GHSA-rxqh-5572-8m77): every grant keys on the attacker-controlled From:, and a pairing
         # code or decline is mailed back to it; fail-closed. Open access is no exception: the session and every reply
-        # key on From:, so a forged one lands in that address's conversation and makes the agent mail it. Only a
-        # granted sender's drop warns: forged mail from strangers is routine, and the opt-out hint would be wrong advice.
+        # key on From:, so a forged one lands in that address's conversation and makes the agent mail it. Only a granted
+        # sender's mail with no Authentication-Results at all warns, since that suggests a server that never stamps it and
+        # the opt-out hint fits. An explicit failing verdict (dmarc=fail, misaligned SPF/DKIM, ...) is routine forgery,
+        # even when From: is an allowlisted address or open access grants everyone; the hint would be wrong advice.
         if self._require_authenticated_sender and not msg_data.get("sender_authenticated", False):
-            if not granted:
-                logger.debug("[Email] Not answering unknown sender with unauthenticated From: %s (%s)",
-                             sender_addr, msg_data.get("auth_reason", "no verdict"))
-                return False
-            logger.warning("[Email] Dropping sender with unauthenticated From: %s (%s). If your mail server does not "
-                           "stamp Authentication-Results, set platforms.email.require_authenticated_sender: false "
-                           "(or EMAIL_TRUST_FROM_HEADER=true) to accept the risk.",
-                           sender_addr, msg_data.get("auth_reason", "no verdict"))
+            auth_reason = msg_data.get("auth_reason", "no verdict")
+            if granted and auth_reason == _NO_AUTH_RESULTS_REASON:
+                logger.warning("[Email] Dropping sender with unauthenticated From: %s (%s). If your mail server does not "
+                               "stamp Authentication-Results, set platforms.email.require_authenticated_sender: false "
+                               "(or EMAIL_TRUST_FROM_HEADER=true) to accept the risk.", sender_addr, auth_reason)
+            else:
+                logger.debug("[Email] Dropping %s sender with unauthenticated From: %s (%s)",
+                             "authorized" if granted else "unknown", sender_addr, auth_reason)
             return False
         return True
 

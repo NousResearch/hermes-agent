@@ -423,8 +423,11 @@ def _roundtrip_load(path: Path):
     return yaml_rt, data if isinstance(data, CommentedMap) else CommentedMap(data or {})
 
 
-def _roundtrip_dump(path: Path, yaml_rt, config, *, extra_content: "str | None" = None) -> None:
+def _roundtrip_dump(path: Path, yaml_rt, config, *, extra_content: "str | None" = None,
+                    leading_content: "str | None" = None) -> None:
     def _write(f) -> None:
+        if leading_content:
+            f.write(leading_content)
         yaml_rt.dump(config, f)
         if extra_content:
             f.write(extra_content)
@@ -501,7 +504,9 @@ def _rt_value(value: Any) -> Any:
 
 
 def atomic_roundtrip_yaml_save(path: Union[str, Path], new_state: dict, *,
-                               extra_content_on_create: "str | None" = None) -> None:
+                               extra_content_on_create: "str | None" = None,
+                               leading_content_on_create: "str | None" = None,
+                               top_level_order: "list | None" = None) -> None:
     """Persist a full config-state dict while preserving comments and ordering.
 
     THE writer for ``config.yaml`` (every production caller reaches it through
@@ -512,7 +517,11 @@ def atomic_roundtrip_yaml_save(path: Union[str, Path], new_state: dict, *,
     *new_state* are deleted ("explicit absence": ``cfg.pop(k)`` + save removes ``k`` from disk).
     ``extra_content_on_create`` (commented example blocks) is appended only when the file is
     being created — re-appending it on every rewrite is how the stock boilerplate replaced
-    users' own comments (#92554).
+    users' own comments (#92554). ``leading_content_on_create`` likewise lands only on create,
+    above the document. ``top_level_order`` reorders top-level keys only while the file is being
+    created; an existing file's author-intended order is never rewritten, because ruamel keeps
+    pre-key comments positioned relative to their neighbours, and physically moving keys would
+    strand those comments (#125489).
     """
     from ruamel.yaml.comments import CommentedMap, CommentedSeq
     from hermes_cli.config import require_readable_config_before_write
@@ -558,7 +567,36 @@ def atomic_roundtrip_yaml_save(path: Union[str, Path], new_state: dict, *,
             del dst[key]
 
     _merge(existing, new_state)
-    _roundtrip_dump(path, yaml_rt, existing, extra_content=extra_content_on_create if creating else None)
+    if creating and top_level_order:
+        _reorder_top_level(existing, top_level_order)
+    _roundtrip_dump(path, yaml_rt, existing,
+                    extra_content=extra_content_on_create if creating else None,
+                    leading_content=leading_content_on_create if creating else None)
+
+
+def _reorder_top_level(existing, order: list) -> None:
+    """Rebuild a CommentedMap's top level in *order* (listed keys first, then any
+    unlisted ones in their current order). End-of-line comments travel with their
+    key; standalone pre-key comments would be stranded by a reorder, which is why
+    callers only reorder freshly created documents that carry none yet."""
+    from ruamel.yaml.comments import CommentedMap
+
+    if not isinstance(existing, CommentedMap) or len(existing) < 2:
+        return
+    eol = {
+        key: entry
+        for key, entry in existing.ca.items.items()
+        if entry is not None and getattr(entry, "comment", None)
+    }
+    reordered = CommentedMap()
+    for key in [k for k in order if k in existing]:
+        reordered[key] = existing[key]
+    for key in [k for k in existing if k not in reordered]:
+        reordered[key] = existing[key]
+    existing.clear()
+    existing.update(reordered)
+    for key, entry in eol.items():
+        existing.ca.items[key] = entry
 
 
 def safe_json_loads(text: str, default: Any = None) -> Any:

@@ -724,11 +724,12 @@ def _seed_model_config(profile_dir: Path) -> None:
         return
     with contextlib.suppress(Exception):  # creation must not fail over this; `hermes model` sets it later
         from hermes_constants import get_hermes_home
-        from hermes_cli.config import atomic_config_write, read_user_config_raw
+        from hermes_cli.config import CONFIG_FILE_HEADER, atomic_config_write, read_user_config_raw
         source = get_hermes_home() / "config.yaml"
         seed = launch_model_seed(read_user_config_raw(source)) if source.is_file() else {}
         if seed:
-            atomic_config_write(config_path, seed)
+            atomic_config_write(config_path, seed, leading_content_on_create=CONFIG_FILE_HEADER,
+                                canonical_top_level=True)
 
 
 def _check_gateway_running(profile_dir: Path) -> bool:

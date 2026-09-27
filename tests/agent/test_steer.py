@@ -72,6 +72,35 @@ def _bare_agent() -> AIAgent:
 
 
 
+class TestSteerAcceptanceObserver:
+    def test_observer_runs_after_text_is_committed(self):
+        agent = _bare_agent()
+        seen = []
+        agent._steer_accepted_callback = lambda text: seen.append((text, agent._pending_steer))
+
+        assert agent.steer("  focus on errors  ") is True
+
+        assert seen == [("focus on errors", "focus on errors")]
+
+    def test_internal_requeue_can_skip_notice(self):
+        agent = _bare_agent()
+        seen = []
+        agent._steer_accepted_callback = seen.append
+
+        assert agent.steer("recovered guidance", _notify=False) is True
+
+        assert agent._pending_steer == "recovered guidance"
+        assert seen == []
+
+    def test_observer_failure_never_loses_accepted_text(self):
+        agent = _bare_agent()
+        def fail(_text):
+            raise RuntimeError("renderer failed")
+        agent._steer_accepted_callback = fail
+
+        assert agent.steer("keep this") is True
+        assert agent._pending_steer == "keep this"
+
 class TestSteerDrain:
     def test_drain_returns_and_clears(self):
         agent = _bare_agent()

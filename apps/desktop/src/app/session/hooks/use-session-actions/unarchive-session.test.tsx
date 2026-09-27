@@ -143,6 +143,28 @@ describe('unarchiveSession', () => {
     expect(vi.mocked(setSessionArchived)).toHaveBeenCalledWith('arch-1', false, 'sage')
   })
 
+  it('keeps a registry row route binding on restore', async () => {
+    $archivedSessions.set([
+      archivedSession({
+        _desktop_route_binding: 'binding-a',
+        connection_id: 'same-id',
+        profile: 'sage'
+      })
+    ])
+    vi.mocked(setSessionArchived).mockResolvedValue({ ok: true })
+
+    const handle = await mountHarness()
+
+    await act(() => handle.unarchiveSession('arch-1'))
+
+    expect(vi.mocked(setSessionArchived)).toHaveBeenCalledWith('arch-1', false, {
+      connectionId: 'same-id',
+      profile: 'sage',
+      sessionRouteBinding: 'binding-a',
+      sessionRouteId: 'arch-1'
+    })
+  })
+
   it('keeps the archived row when the restore RPC fails', async () => {
     $archivedSessions.set([archivedSession()])
     vi.mocked(setSessionArchived).mockRejectedValue(new Error('backend down'))

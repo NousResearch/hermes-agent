@@ -1,15 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type { ProfileScope } from '@/hermes'
 import type { SessionInfo } from '@/types/hermes'
 
-const patch = vi.fn<(id: string, unread: boolean, profile?: null | string) => Promise<{ ok: boolean }>>(() =>
+const patch = vi.fn<(id: string, unread: boolean, profile?: ProfileScope) => Promise<{ ok: boolean }>>(() =>
   Promise.resolve({ ok: true })
 )
 
 vi.mock('@/hermes', () => ({
   // The store only needs the REST mutation; keep the mock minimal.
   setApiRequestProfile: () => {},
-  setSessionUnreadRemote: (id: string, unread: boolean, profile?: null | string) => patch(id, unread, profile)
+  setSessionUnreadRemote: (id: string, unread: boolean, profile?: ProfileScope) => patch(id, unread, profile)
 }))
 
 import { $sessions } from '@/store/session'
@@ -38,6 +39,26 @@ describe('markSessionUnread', () => {
 
     expect(patch).toHaveBeenCalledWith('a', true, 'work')
     expect($sessions.get().find(s => s.id === 'a')?.unread).toBe(true)
+  })
+
+  it('keeps a registry row route binding on the unread PATCH', async () => {
+    $sessions.set([
+      row('a', {
+        _desktop_route_binding: 'binding-a',
+        connection_id: 'same-id',
+        profile: 'work',
+        unread: false
+      })
+    ])
+
+    await markSessionUnread('a', true)
+
+    expect(patch).toHaveBeenCalledWith('a', true, {
+      connectionId: 'same-id',
+      profile: 'work',
+      sessionRouteBinding: 'binding-a',
+      sessionRouteId: 'a'
+    })
   })
 
   it('no-ops for a runtime-only session with no persisted row', async () => {

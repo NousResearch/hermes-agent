@@ -17,9 +17,9 @@ import { capabilityScoped, hermesApi, type ProfileScope, profileScoped, STARTUP_
 // side of that budget).
 const MODEL_INFO_REQUEST_TIMEOUT_MS = 5_000
 
-export function getGlobalModelInfo(profile?: null | string): Promise<ModelInfoResponse> {
+export function getGlobalModelInfo(profile?: ProfileScope): Promise<ModelInfoResponse> {
   return hermesApi<ModelInfoResponse>({
-    ...profileScoped(profile),
+    ...capabilityScoped(profile),
     path: '/api/model/info',
     timeoutMs: MODEL_INFO_REQUEST_TIMEOUT_MS
   })
@@ -54,7 +54,7 @@ export function getGlobalModelOptions(
     params.set('explicit_only', '1')
   }
 
-  return window.hermesDesktop.api<ModelOptionsResult>({
+  return hermesApi<ModelOptionsResult>({
     ...capabilityScoped(profile),
     path: params.size > 0 ? `/api/model/options?${params.toString()}` : '/api/model/options',
     timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
@@ -72,7 +72,7 @@ export interface RecommendedDefaultModel {
 // curation `hermes model` does — for Nous it honors the free/paid tier so a
 // free user gets a free model instead of a paid default.
 export function getRecommendedDefaultModel(provider: string, profile?: ProfileScope): Promise<RecommendedDefaultModel> {
-  return window.hermesDesktop.api<RecommendedDefaultModel>({
+  return hermesApi<RecommendedDefaultModel>({
     ...capabilityScoped(profile),
     path: `/api/model/recommended-default?provider=${encodeURIComponent(provider)}`
   })
@@ -94,26 +94,26 @@ export function setGlobalModel(
   })
 }
 
-export function getAuxiliaryModels(profile?: null | string): Promise<AuxiliaryModelsResponse> {
+export function getAuxiliaryModels(profile?: ProfileScope): Promise<AuxiliaryModelsResponse> {
   return hermesApi<AuxiliaryModelsResponse>({
-    ...profileScoped(profile),
+    ...capabilityScoped(profile),
     path: '/api/model/auxiliary'
   })
 }
 
-export function getMoaModels(profile?: null | string): Promise<MoaConfigResponse> {
+export function getMoaModels(profile?: ProfileScope): Promise<MoaConfigResponse> {
   return hermesApi<MoaConfigResponse>({
-    ...profileScoped(profile),
+    ...capabilityScoped(profile),
     path: '/api/model/moa'
   })
 }
 
 export function saveMoaModels(
   body: MoaConfigResponse,
-  profile?: null | string
+  profile?: ProfileScope
 ): Promise<MoaConfigResponse & { ok: boolean }> {
   return hermesApi<MoaConfigResponse & { ok: boolean }>({
-    ...profileScoped(profile),
+    ...capabilityScoped(profile),
     path: '/api/model/moa',
     method: 'PUT',
     body
@@ -124,7 +124,7 @@ export function setModelAssignment(
   body: ModelAssignmentRequest,
   profile?: ProfileScope
 ): Promise<ModelAssignmentResponse> {
-  return window.hermesDesktop.api<ModelAssignmentResponse>({
+  return hermesApi<ModelAssignmentResponse>({
     ...capabilityScoped(profile),
     path: '/api/model/set',
     method: 'POST',

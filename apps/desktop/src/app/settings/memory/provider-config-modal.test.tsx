@@ -1,12 +1,20 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { StrictMode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { MemoryProviderConfig, MemoryProviderField } from '@/types/hermes'
 
 const saveMemoryProviderConfig = vi.fn()
+const notify = vi.fn()
+const notifyError = vi.fn()
 
 vi.mock('@/hermes', () => ({
-  saveMemoryProviderConfig: (provider: string, values: unknown) => saveMemoryProviderConfig(provider, values)
+  profileScopeKey: (profile?: { connectionId?: string; profile?: string }) =>
+    `${profile?.connectionId || ''}::${profile?.profile || 'default'}`,
+  saveMemoryProviderConfig: (provider: string, values: unknown, profile?: unknown) =>
+    profile === undefined
+      ? saveMemoryProviderConfig(provider, values)
+      : saveMemoryProviderConfig(provider, values, profile)
 }))
 
 vi.mock('@/store/profile', async () => {
@@ -16,8 +24,8 @@ vi.mock('@/store/profile', async () => {
 })
 
 vi.mock('@/store/notifications', () => ({
-  notify: vi.fn(),
-  notifyError: vi.fn()
+  notify,
+  notifyError
 }))
 
 // Load once at module scope so no test's 15s budget pays the heavy transform
@@ -74,13 +82,15 @@ function renderModal(open = true) {
   const onSaved = vi.fn().mockResolvedValue(undefined)
 
   const result = render(
-    <ProviderConfigModal
-      config={schema()}
-      onOpenChange={onOpenChange}
-      onSaved={onSaved}
-      open={open}
-      provider="honcho"
-    />
+    <StrictMode>
+      <ProviderConfigModal
+        config={schema()}
+        onOpenChange={onOpenChange}
+        onSaved={onSaved}
+        open={open}
+        provider="honcho"
+      />
+    </StrictMode>
   )
 
   return { ...result, onOpenChange, onSaved }
@@ -106,8 +116,51 @@ describe('ProviderConfigModal', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
 
     // A save must never ratify rendered defaults the backend does not store.
-    await waitFor(() => expect(saveMemoryProviderConfig).toHaveBeenCalledWith('honcho', { saveMessages: 'false' }))
+    await waitFor(() =>
+      expect(saveMemoryProviderConfig).toHaveBeenCalledWith('honcho', { saveMessages: 'false' }, null)
+    )
     await waitFor(() => expect(onSaved).toHaveBeenCalled())
     expect(onOpenChange).toHaveBeenCalledWith(false)
+  })
+
+  it('drops stale save settlements after the modal owner changes', async () => {
+    let rejectSave!: (error: Error) => void
+    saveMemoryProviderConfig.mockReturnValueOnce(new Promise((_resolve, reject) => (rejectSave = reject)))
+    const ownerA = { connectionId: 'gateway-a', profile: 'default' }
+    const ownerB = { connectionId: 'gateway-b', profile: 'default' }
+    const onOpenChange = vi.fn()
+    const onSaved = vi.fn().mockResolvedValue(undefined)
+
+    const view = render(
+      <ProviderConfigModal
+        config={schema()}
+        onOpenChange={onOpenChange}
+        onSaved={onSaved}
+        open
+        profile={ownerA}
+        provider="honcho"
+      />
+    )
+
+    fireEvent.click(await screen.findByRole('switch'))
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+    await waitFor(() => expect(saveMemoryProviderConfig).toHaveBeenCalledWith('honcho', expect.anything(), ownerA))
+    view.rerender(
+      <ProviderConfigModal
+        config={schema()}
+        onOpenChange={onOpenChange}
+        onSaved={onSaved}
+        open
+        profile={ownerB}
+        provider="honcho"
+      />
+    )
+
+    await rejectSave(new Error('owner A failed'))
+
+    expect(notify).not.toHaveBeenCalled()
+    expect(notifyError).not.toHaveBeenCalled()
+    expect(onSaved).not.toHaveBeenCalled()
+    expect(onOpenChange).not.toHaveBeenCalledWith(false)
   })
 })

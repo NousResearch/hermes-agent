@@ -1,14 +1,22 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { StrictMode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { MemoryProviderConfig } from '@/types/hermes'
 
 const getMemoryProviderConfig = vi.fn()
 const saveMemoryProviderConfig = vi.fn()
+const notifyError = vi.fn()
 
 vi.mock('@/hermes', () => ({
-  getMemoryProviderConfig: (provider: string) => getMemoryProviderConfig(provider),
-  saveMemoryProviderConfig: (provider: string, values: unknown) => saveMemoryProviderConfig(provider, values)
+  getMemoryProviderConfig: (provider: string, profile?: unknown) =>
+    profile === undefined ? getMemoryProviderConfig(provider) : getMemoryProviderConfig(provider, profile),
+  profileScopeKey: (profile?: { connectionId?: string; profile?: string }) =>
+    `${profile?.connectionId || ''}::${profile?.profile || 'default'}`,
+  saveMemoryProviderConfig: (provider: string, values: unknown, profile?: unknown) =>
+    profile === undefined
+      ? saveMemoryProviderConfig(provider, values)
+      : saveMemoryProviderConfig(provider, values, profile)
 }))
 
 vi.mock('@/store/profile', async () => {
@@ -19,7 +27,7 @@ vi.mock('@/store/profile', async () => {
 
 vi.mock('@/store/notifications', () => ({
   notify: vi.fn(),
-  notifyError: vi.fn()
+  notifyError
 }))
 
 // Load the panel once at module scope, outside every test timeout. The first
@@ -116,7 +124,11 @@ afterEach(() => {
 })
 
 function renderPanel(provider = 'honcho') {
-  return render(<ProviderConfigPanel provider={provider} />)
+  return render(
+    <StrictMode>
+      <ProviderConfigPanel provider={provider} />
+    </StrictMode>
+  )
 }
 
 describe('ProviderConfigPanel', () => {
@@ -176,7 +188,9 @@ describe('ProviderConfigPanel', () => {
   })
 
   it('shows an inline error with retry when the load fails, then recovers', async () => {
-    getMemoryProviderConfig.mockRejectedValueOnce(new Error('Timed out connecting to Hermes backend'))
+    getMemoryProviderConfig
+      .mockRejectedValueOnce(new Error('Timed out connecting to Hermes backend'))
+      .mockRejectedValueOnce(new Error('Timed out connecting to Hermes backend'))
 
     await renderPanel()
 
@@ -194,5 +208,23 @@ describe('ProviderConfigPanel', () => {
 
     await waitFor(() => expect(getMemoryProviderConfig).toHaveBeenCalledWith('builtin'))
     expect(container.querySelector('section')).toBeNull()
+  })
+
+  it('drops stale autosave settlements after the panel owner changes', async () => {
+    let rejectSave!: (error: Error) => void
+    saveMemoryProviderConfig.mockReturnValueOnce(new Promise((_resolve, reject) => (rejectSave = reject)))
+    const ownerA = { connectionId: 'gateway-a', profile: 'default' }
+    const ownerB = { connectionId: 'gateway-b', profile: 'default' }
+    const view = render(<ProviderConfigPanel profile={ownerA} provider="honcho" />)
+
+    const baseUrl = await screen.findByPlaceholderText('https://… (self-hosted)')
+    fireEvent.change(baseUrl, { target: { value: 'http://gateway-a.invalid' } })
+    fireEvent.blur(baseUrl)
+    await waitFor(() => expect(saveMemoryProviderConfig).toHaveBeenCalledWith('honcho', expect.anything(), ownerA))
+
+    view.rerender(<ProviderConfigPanel profile={ownerB} provider="honcho" />)
+    await rejectSave(new Error('owner A failed'))
+
+    expect(notifyError).not.toHaveBeenCalled()
   })
 })

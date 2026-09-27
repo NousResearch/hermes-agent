@@ -5,7 +5,7 @@ import { Navigate, useLocation, useNavigate } from 'react-router'
 import { codiconIcon } from '@/components/ui/codicon'
 import { KbdCombo } from '@/components/ui/kbd'
 import { Tip } from '@/components/ui/tooltip'
-import { getHermesConfigDefaults, getHermesConfigRecord, saveHermesConfig } from '@/hermes'
+import { getHermesConfigDefaults, getHermesConfigRecord, profileScopeKey, saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import {
@@ -31,13 +31,13 @@ import { typeToFocusChar } from '@/lib/keybinds/composer-focus-keys'
 import { cn } from '@/lib/utils'
 import { $commandPaletteOpen, openCommandPalettePage } from '@/store/command-palette'
 import { confirm } from '@/store/confirm'
-import { $activeConnectionId } from '@/store/connections'
 import { recordFeatureUse, settingsArea } from '@/store/desktop-metrics'
 import { bindingsFor } from '@/store/keybinds'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import { notifyError } from '@/store/notifications'
-import { $settingsScopeProfile } from '@/store/settings-scope'
+import { $settingsOwner } from '@/store/settings-scope'
 
+import { invalidateHermesConfig } from '../hooks/use-config-record'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { OverlayIconButton } from '../overlays/overlay-chrome'
 import { OverlayMain, OverlayNav, type OverlayNavGroup, OverlaySplitLayout } from '../overlays/overlay-split-layout'
@@ -67,7 +67,7 @@ import { SessionsSettings } from './sessions-settings'
 import { SettingsSubpageHeader } from './subpage-navigation'
 import { resolveSettingsSubpage, settingsSubpageIcon, settingsSubpages } from './subpages'
 import type { SettingsPageProps, SettingsView as SettingsViewId } from './types'
-import { vaultOwnerKey, VaultSettings } from './vault-settings'
+import { VaultSettings } from './vault-settings'
 
 const SETTINGS_VIEWS: readonly SettingsViewId[] = [
   ...SECTIONS.map(s => `config:${s.id}` as SettingsViewId),
@@ -98,9 +98,21 @@ const SUBPAGE_VIEWS: Partial<Record<SettingsViewId, ComponentType<{ subpage?: st
   notifications: NotificationsSettings
 }
 
+export function notifySettingsOwnerError(
+  owner: NonNullable<ReturnType<typeof $settingsOwner.get>>,
+  error: unknown,
+  fallback: string
+) {
+  if ($settingsOwner.get() === owner) {
+    notifyError(error, fallback)
+  }
+}
+
 export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: SettingsPageProps) {
-  const scopeProfile = useStore($settingsScopeProfile)
-  const activeConnectionId = useStore($activeConnectionId)
+  const settingsOwner = useStore($settingsOwner)
+
+  const settingsOwnerKey = settingsOwner ? profileScopeKey(settingsOwner) : 'unavailable'
+
   const { t } = useI18n()
   const navigate = useNavigate()
   const { hash, pathname, search } = useLocation()
@@ -206,8 +218,21 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
   const importInputRef = useRef<HTMLInputElement | null>(null)
 
   const exportConfig = async () => {
+    const owner = $settingsOwner.get()
+
+    if (!owner) {
+      notifyError(new Error(t.settings.config.failedLoad), t.settings.config.failedLoad)
+
+      return
+    }
+
     try {
-      const cfg = await getHermesConfigRecord()
+      const cfg = await getHermesConfigRecord(owner)
+
+      if ($settingsOwner.get() !== owner) {
+        return
+      }
+
       const blob = new Blob([JSON.stringify(cfg, null, 2)], { type: 'application/json' })
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
@@ -217,27 +242,45 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
       URL.revokeObjectURL(url)
       triggerHaptic('success')
     } catch (err) {
-      notifyError(err, t.settings.exportFailed)
+      notifySettingsOwnerError(owner, err, t.settings.exportFailed)
     }
   }
 
   const resetConfig = async () => {
+    const owner = $settingsOwner.get()
+
+    if (!owner) {
+      notifyError(new Error(t.settings.config.failedLoad), t.settings.config.failedLoad)
+
+      return
+    }
+
     const ok = await confirm({
       confirmLabel: t.settings.resetToDefaults,
       destructive: true,
       title: t.settings.resetConfirm
     })
 
-    if (!ok) {
+    if (!ok || $settingsOwner.get() !== owner) {
       return
     }
 
     try {
-      await saveHermesConfig(await getHermesConfigDefaults())
-      triggerHaptic('success')
-      onConfigSaved?.()
+      const defaults = await getHermesConfigDefaults(owner)
+
+      if ($settingsOwner.get() !== owner) {
+        return
+      }
+
+      await saveHermesConfig(defaults, owner)
+      void invalidateHermesConfig(owner)
+
+      if ($settingsOwner.get() === owner) {
+        triggerHaptic('success')
+        onConfigSaved?.()
+      }
     } catch (err) {
-      notifyError(err, t.settings.resetFailed)
+      notifySettingsOwnerError(owner, err, t.settings.resetFailed)
     }
   }
 
@@ -507,12 +550,13 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
   const navFooter = (
     <>
       <Tip label={t.settings.exportConfig}>
-        <OverlayIconButton onClick={() => void exportConfig()}>
+        <OverlayIconButton aria-label={t.settings.exportConfig} onClick={() => void exportConfig()}>
           <Download />
         </OverlayIconButton>
       </Tip>
       <Tip label={t.settings.importConfig}>
         <OverlayIconButton
+          aria-label={t.settings.importConfig}
           onClick={() => {
             triggerHaptic('open')
             importInputRef.current?.click()
@@ -523,6 +567,7 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
       </Tip>
       <Tip label={t.settings.resetToDefaults}>
         <OverlayIconButton
+          aria-label={t.settings.resetToDefaults}
           className="hover:text-destructive"
           onClick={() => {
             triggerHaptic('warning')
@@ -549,7 +594,7 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
     />
   ) : activeView === 'providers' ? (
     <ProvidersSettings
-      key={scopeProfile}
+      key={settingsOwnerKey}
       onClose={onClose}
       onConfigSaved={onConfigSaved}
       onMainModelChanged={onMainModelChanged}
@@ -557,7 +602,7 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
       view={providerView}
     />
   ) : activeView === 'keys' ? (
-    <KeysSettings view={keysView} />
+    <KeysSettings key={settingsOwnerKey} view={keysView} />
   ) : activeView === 'billing' ? (
     <BillingSettings />
   ) : activeView === 'plugins' ? (
@@ -569,9 +614,9 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
       target={plugins.target}
     />
   ) : activeView === 'vault' ? (
-    <VaultSettings key={vaultOwnerKey(activeConnectionId, scopeProfile)} subpage={subpage} />
+    <VaultSettings key={settingsOwnerKey} settingsOwner={settingsOwner ?? undefined} subpage={subpage} />
   ) : (
-    <SessionsSettings subpage={subpage} />
+    <SessionsSettings key={settingsOwnerKey} settingsOwner={settingsOwner} subpage={subpage} />
   )
 
   return (

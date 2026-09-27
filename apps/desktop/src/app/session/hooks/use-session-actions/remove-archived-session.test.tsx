@@ -139,4 +139,26 @@ describe('removeSession × archived view store', () => {
 
     expect(vi.mocked(deleteSession)).toHaveBeenCalledWith('arch-1', 'sage')
   })
+
+  it('keeps a registry row route binding on deleteSession', async () => {
+    $archivedSessions.set([
+      archivedSession({
+        _desktop_route_binding: 'binding-a',
+        connection_id: 'same-id',
+        profile: 'sage'
+      })
+    ])
+    vi.mocked(deleteSession).mockResolvedValue({ ok: true })
+
+    const handle = await mountHarness()
+
+    await act(() => handle.removeSession('arch-1'))
+
+    expect(vi.mocked(deleteSession)).toHaveBeenCalledWith('arch-1', {
+      connectionId: 'same-id',
+      profile: 'sage',
+      sessionRouteBinding: 'binding-a',
+      sessionRouteId: 'arch-1'
+    })
+  })
 })

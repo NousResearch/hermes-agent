@@ -1724,16 +1724,25 @@ class GatewayInboundMixin:
         # Reset only this session's per-call buffer; other sessions may be concurrently preparing.
         self._consume_pending_native_image_paths(session_key)
 
+        adapter = self._intake_adapter_for(source)
+        mention_context = None
+        fetch_mention_context = getattr(type(adapter), "fetch_mention_context", None)
+        if callable(fetch_mention_context):
+            try:
+                mention_context = await fetch_mention_context(adapter, event)
+            except Exception as exc:
+                logger.debug("Matrix mention context fetch failed: %s", exc)
+
         thread_context = None
         if (
-            not history and not event.internal and source.platform == Platform.MATRIX and source.thread_id
+            not history and not event.internal and not mention_context
+            and source.platform == Platform.MATRIX and source.thread_id
             and source.thread_id != event.message_id
         ):
-            adapter = self._intake_adapter_for(source)
             if adapter is not None and hasattr(adapter, "fetch_thread_context"):
                 try:
                     thread_context = await adapter.fetch_thread_context(
-                        source.chat_id, source.thread_id, exclude_event_id=event.message_id,
+                        source.chat_id, source.thread_id, before_event_id=event.message_id,
                     )
                 except Exception as exc:
                     logger.debug("Matrix thread context fetch failed: %s", exc)
@@ -1753,6 +1762,8 @@ class GatewayInboundMixin:
         # Earlier thread messages are external text; append them after @ reference expansion.
         if thread_context:
             message_text = f"{thread_context}\n\n{message_text}"
+        if mention_context:
+            message_text = f"{mention_context}\n\n[New message]\n{message_text}"
         # After expansion: the quoted reply is someone else's text and stays literal — an
         # ``@file:`` inside it must never read a local file on the replier's behalf.
         message_text = self._prepend_inbound_reply_context(event, source, message_text)

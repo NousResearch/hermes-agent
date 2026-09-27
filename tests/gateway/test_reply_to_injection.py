@@ -210,7 +210,7 @@ async def test_matrix_thread_backfill_reaches_new_session_only():
     assert existing_session_text == "continue"
     assert internal_text == "synthetic"
     adapter.fetch_thread_context.assert_awaited_once_with(
-        "!room:example.org", "$root", exclude_event_id="$current"
+        "!room:example.org", "$root", before_event_id="$current"
     )
     runner._expand_inbound_context_references.assert_not_awaited()
 

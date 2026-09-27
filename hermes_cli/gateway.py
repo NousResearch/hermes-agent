@@ -1073,8 +1073,11 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: b
         import subprocess
         import sys
         import time
+        # Stdlib-only imports: the watcher runs on the updater's interpreter, which after the
+        # package-manager handoff is the bare store Python without the dependency environment.
         from hermes_cli._subprocess_compat import (
-            _WINDOWS_GATEWAY_BREAKAWAY_ENV, windows_detach_flags, windows_detach_flags_without_breakaway,
+            _WINDOWS_GATEWAY_BREAKAWAY_ENV, pid_exists_stdlib, windows_detach_flags,
+            windows_detach_flags_without_breakaway,
         )
 
         pid = int(sys.argv[1])
@@ -1084,8 +1087,7 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: b
         deadline = time.monotonic() + {watcher_timeout_literal}
         while time.monotonic() < deadline:
             # ``os.kill(pid, 0)`` is not a no-op on Windows — use the cross-platform existence check.
-            from gateway.status import _pid_exists
-            if not _pid_exists(pid):
+            if not pid_exists_stdlib(pid):
                 break
             time.sleep(0.2)
 
@@ -1095,7 +1097,7 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: b
         _stdio_target = subprocess.DEVNULL
         _stdio_fh = None
         try:
-            from hermes_cli.config import get_hermes_home
+            from hermes_constants import get_hermes_home
             from pathlib import Path
             _log_dir = Path(get_hermes_home()) / "logs"
             _log_dir.mkdir(parents=True, exist_ok=True)

@@ -18,6 +18,11 @@ _INERT_HEREDOC_CONSUMER_RE = re.compile(
     r"(?:python(?:3(?:\.\d+)*)?|osascript|cat)(?=\s|$)",
     re.IGNORECASE)
 
+_DATA_HEREDOC_CONSUMER_RE = re.compile(
+    r"^\s*(?:[A-Z_][A-Z0-9_]*=\S+\s+)*(?:env\s+)?(?:[A-Za-z0-9_./-]+/)?"
+    r"(?:cat|tee)(?=\s|$)",
+    re.IGNORECASE)
+
 
 def _span_end(command: str, cursor: int, closer: str) -> int:
     """Index just past the backslash-aware span opened at ``cursor``."""
@@ -177,8 +182,14 @@ def _find_heredoc_close(
         cursor = after
 
 
-def strip_inert_heredoc_bodies(command: str) -> str:
-    """Mask heredoc bodies that are provably inert data (see module docstring)."""
+def strip_inert_heredoc_bodies(command: str, *, data_only: bool = False) -> str:
+    """Mask quoted heredocs, optionally excluding all interpreter consumers.
+
+    ``data_only`` is for security scanners: Python/AppleScript input may execute
+    code even though its contents are not shell syntax. Existing shell-syntax
+    scanners retain their wider consumer set.
+    """
+    consumer_re = _DATA_HEREDOC_CONSUMER_RE if data_only else _INERT_HEREDOC_CONSUMER_RE
     # Runs on every terminal call: skip the state machine when no '<<' exists; stop past the last.
     if "<<" not in command:
         return command
@@ -219,7 +230,7 @@ def strip_inert_heredoc_bodies(command: str) -> str:
             if not any(
                 marker in masked_opener
                 for marker in ("$(", "`", "<(", ">(", "(", ")", "{", "}")
-            ) and _INERT_HEREDOC_CONSUMER_RE.search(masked_owner):
+            ) and consumer_re.search(masked_owner):
                 ranges.extend(body_ranges)
         command_start = body_cursor
     # Single-pass rebuild (ranges are sorted and non-overlapping), bodies -> their newlines only.

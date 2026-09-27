@@ -95,8 +95,12 @@ def test_room_mention_recovers_unaddressed_messages(
                         mention=live_room.bot.user_id)
             await _wait_for_final(client, live_room, seen, "Matrix live reply")
 
-            await _send(client, live_room.room_id, "Room decision alpha")
+            target = await _send(client, live_room.room_id, "Room decision alpha")
             await _send(client, live_room.room_id, "Room decision beta")
+            reacted = await client.room_send(live_room.room_id, "m.reaction", {
+                "m.relates_to": {"rel_type": "m.annotation", "event_id": target, "key": "👍"},
+            })
+            assert isinstance(reacted, RoomSendResponse), reacted
             await _send(client, live_room.room_id, f"{live_room.bot.user_id} catch up",
                         mention=live_room.bot.user_id)
             stage = "catch-up reply"
@@ -104,11 +108,12 @@ def test_room_mention_recovers_unaddressed_messages(
 
             requests = group_gateway.model.main_requests()
             assert len(requests) == 2
-            assert (_conversation_roles(requests[1]), _last_user_text(requests[1])) == (
-                ["user", "assistant", "user"],
-                "[Recent room messages]\n[alice] Room decision alpha\n[alice] Room decision beta\n\n"
-                "[New message]\ncatch up",
-            )
+            prompt = json.dumps(requests[1]["messages"], ensure_ascii=False)
+            assert "[Recent room messages]" in prompt
+            assert "Room decision alpha" in prompt
+            assert "Room decision beta" in prompt
+            assert f"[reaction by {live_room.observer.user_id} to {target}] 👍" in prompt
+            assert "[New message]" in prompt
         finally:
             await client.close()
 

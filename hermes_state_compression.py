@@ -308,7 +308,7 @@ class SessionCompressionMixin:
                 "WHERE id = ? AND ended_at IS NULL", (time.time(), parent_session_id))
             if updated.rowcount != 1:
                 raise RuntimeError(f"Compression parent changed during publication: {parent_session_id}")
-        self._execute_write(_do)
+        self._execute_transcript_write(_do, messages)
 
     def _write_sql_logged(self, op: str, session_id: str, sql: str, params) -> None:
         """``_write_sql`` that logs (never raises) on ``sqlite3.Error``."""

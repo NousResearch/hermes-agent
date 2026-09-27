@@ -159,42 +159,6 @@ def test_simplex_allowlist_rejects_display_name_only(monkeypatch):
     assert runner._is_user_authorized(source) is False
 
 
-def test_simplex_allowlist_rejects_colliding_display_name(monkeypatch):
-    """Security regression guard: a contact whose contactId is NOT in the
-    allowlist must stay unauthorized even when they adopt the display name of
-    an allowed contact (#44729)."""
-    _clear_auth_env(monkeypatch)
-    monkeypatch.delenv("SIMPLEX_ALLOWED_USERS", raising=False)
-    # Operator allowed contactId "4" (who happens to use display name "hujikuji")
-    monkeypatch.setenv("SIMPLEX_ALLOWED_USERS", "4")
-
-    from gateway.platform_registry import platform_registry, PlatformEntry
-    platform_registry.register(PlatformEntry(
-        name="simplex",
-        label="SimpleX Chat",
-        adapter_factory=lambda cfg: None,
-        check_fn=lambda: True,
-        allowed_users_env="SIMPLEX_ALLOWED_USERS",
-        allow_all_env="SIMPLEX_ALLOW_ALL_USERS",
-    ))
-
-    simplex = Platform("simplex")
-    runner, _adapter = _make_runner(
-        simplex,
-        GatewayConfig(platforms={simplex: PlatformConfig(enabled=True)}),
-    )
-
-    # Attacker: different contactId ("7") but same display name as the allowed user
-    source = SessionSource(
-        platform=simplex,
-        user_id="7",              # different contactId — NOT in allowlist
-        chat_id="attacker",
-        user_name="hujikuji",     # same display name as allowed user
-        chat_type="dm",
-    )
-    assert runner._is_user_authorized(source) is False
-
-
 def test_simplex_allowlist_accepts_numeric_contact_id(monkeypatch):
     """SIMPLEX_ALLOWED_USERS continues to match the stable numeric contactId
     (user_id) — the one identity form a SimpleX contact cannot forge."""

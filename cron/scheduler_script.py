@@ -14,6 +14,7 @@ import logging
 import os
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import threading
@@ -365,12 +366,36 @@ def _resolve_script_path(script_path: str) -> tuple[Optional[Path], Optional[str
     return path, None
 
 
-def _script_argv(path: Path) -> tuple[Optional[list[str]], dict[str, str], Optional[str]]:
+def _resolve_cron_interpreter(interpreter: str) -> tuple[Optional[str], Optional[str]]:
+    """``(python_exe, error)`` for a job's ``interpreter`` field. Checked at run time, not create
+    time: a user venv can be rebuilt or moved while the job lives. Bare names are refused — they
+    silently change meaning with PATH."""
+    raw = interpreter.strip()
+    try:
+        resolved = Path(raw).expanduser()
+        if not resolved.is_absolute():
+            return None, (f"Interpreter must be an absolute or ~-prefixed path (got {raw!r}). "
+                          "Bare names like 'python3' are not stable across PATH changes.")
+        mode = resolved.stat().st_mode
+    except FileNotFoundError:
+        return None, f"Interpreter not found: {raw}"
+    except (RuntimeError, OSError) as exc:  # unknown ~user, broken symlink, unreadable parent
+        return None, f"Unable to resolve interpreter path {raw!r}: {exc}"
+    if not stat.S_ISREG(mode):
+        return None, f"Interpreter path is not a file: {resolved}"
+    if sys.platform != "win32" and not mode & 0o111:
+        return None, f"Interpreter is not executable: {resolved}"
+    return str(resolved), None
+
+
+def _script_argv(
+    path: Path, interpreter: Optional[str] = None,
+) -> tuple[Optional[list[str]], dict[str, str], Optional[str]]:
     """``(argv, env_overlay, error)`` for a validated script. Interpreter by extension — the
     shebang is deliberately NOT honoured (small, auditable surface): ``.sh``/``.bash`` → bash,
-    else a Python chosen by ``_posix_cron_script_argv`` / ``_windows_cron_python_invocation``.
-    Interpreter selection reads PM's install records and may raise; callers run this inside
-    their ``try``."""
+    else the job's ``interpreter`` when set, else a Python chosen by ``_posix_cron_script_argv``
+    / ``_windows_cron_python_invocation``. Interpreter selection reads PM's install records and
+    may raise; callers run this inside their ``try``."""
     if path.suffix.lower() in {".sh", ".bash"}:
         # which() finds Git Bash on Windows; None there → clear error instead of a "[WinError 2]".
         _bash = shutil.which("bash") or ("/bin/bash" if os.path.isfile("/bin/bash") else None)
@@ -381,6 +406,11 @@ def _script_argv(path: Path) -> tuple[Optional[list[str]], dict[str, str], Optio
                 "or rewrite the script as Python (.py)."
             )
         return [_bash, str(path)], {}, None
+    if isinstance(interpreter, str) and interpreter.strip():
+        # A user venv gets none of the managed-store overlays: the repo bootstrap / PYTHONPATH
+        # exist to run Hermes' own dependency venv and would shadow the user's packages.
+        python_exe, err = _resolve_cron_interpreter(interpreter)
+        return ([python_exe, str(path)] if python_exe else None), {}, err
     if sys.platform != "win32":
         argv, env_overlay = _posix_cron_script_argv(path)
         return argv, env_overlay, None
@@ -392,7 +422,7 @@ def _script_argv(path: Path) -> tuple[Optional[list[str]], dict[str, str], Optio
 
 def _run_job_script(
     script_path: str, workdir: Optional[str] = None,
-    cancel_event: Optional[_CancelEventLike] = None,
+    cancel_event: Optional[_CancelEventLike] = None, interpreter: Optional[str] = None,
 ) -> tuple[bool, str]:
     """Execute a cron job's script and return ``(success, output)``; on failure *output* is the
     error message for the LLM to report. Env goes through ``build_subprocess_env`` (SECURITY.md
@@ -402,14 +432,15 @@ def _run_job_script(
     Args: script_path: Path to the script. Relative paths are resolved against HERMES_HOME/scripts/.
     Absolute and ~-prefixed paths are also validated to ensure they stay within the scripts dir. workdir:
     Optional absolute path to use as the script's cwd. When set, the subprocess runs in this directory
-    instead of the scripts-dir parent. See #69396.
+    instead of the scripts-dir parent. See #69396. interpreter: the job's optional Python for
+    ``.py`` scripts (#8714).
     """
     path, err = _resolve_script_path(script_path)
     if path is None:
         return False, err
     script_timeout = _get_script_timeout()
     try:
-        argv, env_overlay, err = _script_argv(path)
+        argv, env_overlay, err = _script_argv(path, interpreter)
         if argv is None:
             return False, err
         from tools.environments.local import build_subprocess_env
@@ -517,11 +548,15 @@ def _run_job_script_with_claim_heartbeat(
     the stale-claim TTL; without a heartbeat another scheduler would re-dispatch the one-shot.
     Recurring/unclaimed runs have no durable claim → no thread. The owner is captured from the
     dispatched job, never re-read, so a stale runner cannot extend a replacement owner's claim."""
+    def run() -> tuple[bool, str]:
+        return _run_job_script(script_path, workdir=workdir, cancel_event=cancel_event,
+                               interpreter=job.get("interpreter"))
+
     schedule = job.get("schedule")
     claim = job.get("run_claim")
     owner = str(claim.get("by") or "") if isinstance(claim, dict) else ""
     if not (isinstance(schedule, dict) and schedule.get("kind") == "once" and owner):
-        return _run_job_script(script_path, workdir=workdir, cancel_event=cancel_event)
+        return run()
 
     job_id = str(job.get("id") or "")
     stop = threading.Event()
@@ -539,10 +574,10 @@ def _run_job_script_with_claim_heartbeat(
             "Job '%s': could not start script run_claim heartbeat", job_id, exc_info=True),
     )
     if heartbeat_thread is None:
-        return _run_job_script(script_path, workdir=workdir, cancel_event=cancel_event)
+        return run()
 
     try:
-        return _run_job_script(script_path, workdir=workdir, cancel_event=cancel_event)
+        return run()
     finally:
         stop.set()
         # Bounded join: the heartbeat may be blocked on another process's jobs-file lock.

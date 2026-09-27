@@ -1724,11 +1724,13 @@ _CREATE_FIELD_NORMALIZERS: Dict[str, Callable[[Any], Any]] = {
     "no_agent": bool,
     "context_from": _normalize_context_from,
     "failure_deliver": _normalize_failure_deliver,
+    "interpreter": _normalize_job_optional_text,
 }
 _UPDATE_FIELD_NORMALIZERS: Dict[str, Callable[[Any], Any]] = {
     "workdir": lambda v: None if v in {None, "", False} else _normalize_workdir(v),
     "monitor_script": _normalize_job_optional_text,
     "monitor_url": _normalize_job_optional_text,
+    "interpreter": _normalize_job_optional_text,
     "reasoning_effort": _normalize_reasoning_effort,
 }
 
@@ -1800,6 +1802,7 @@ def create_job(
     paused: bool = False,
     paused_reason: Optional[str] = None,
     pinned: bool = False,
+    interpreter: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Create a new cron job and return the stored record.
 
@@ -1808,7 +1811,9 @@ def create_job(
     delivered verbatim, requires ``script``). context_from: job id(s) whose latest output is
     injected. workdir: absolute cwd for tools/scripts. monitor_script/monitor_url: cheap monitor
     source run FIRST each tick; unchanged output suppresses the agent run (mutually exclusive,
-    incompatible with ``no_agent``). reasoning_effort: per-job pin; capability NOT validated."""
+    incompatible with ``no_agent``). reasoning_effort: per-job pin; capability NOT validated.
+    interpreter: absolute/``~`` Python for ``.py`` script/monitor_script, validated at run time
+    (a venv can be rebuilt or moved after creation)."""
     if not isinstance(paused, bool):
         raise ValueError("paused must be a boolean.")
     if paused_reason is not None and not isinstance(paused_reason, str):
@@ -1893,7 +1898,7 @@ def create_job(
     # jobs.
     for key, value in (
         ("attach_to_session", normalized_attach), ("reasoning_effort", normalized_reasoning_effort),
-        ("failure_deliver", f["failure_deliver"]),
+        ("failure_deliver", f["failure_deliver"]), ("interpreter", f["interpreter"]),
     ):
         if value is not None:
             job[key] = value
@@ -2080,6 +2085,8 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
         _normalize_job_updates(job, updates)
         _apply_pin_update(job, updates)
         updated = _apply_skill_fields({**job, **updates})
+        if updated.get("interpreter") is None:
+            updated.pop("interpreter", None)  # cleared: absent key = Hermes' own Python
         _reject_terminal_activation(job, updated, job_id)
         # Re-check on the MERGED record; scoped to changed fields so legacy records keep loading.
         if {"monitor_script", "monitor_url", "no_agent", "script"}.intersection(updates):

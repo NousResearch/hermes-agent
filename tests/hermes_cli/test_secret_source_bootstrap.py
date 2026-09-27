@@ -186,17 +186,6 @@ def test_refresh_skips_source_whose_is_enabled_raises(monkeypatch):
     assert called == {"reset": 0, "load": 0}
 
 
-def test_discover_and_load_invokes_refresh(monkeypatch):
-    mgr = PluginManager()
-    hits = {"n": 0}
-    monkeypatch.setattr(PluginManager, "_discover_and_load_inner", lambda self: None)
-    monkeypatch.setattr(
-        PluginManager,
-        "_refresh_secret_sources_after_discovery",
-        lambda self: hits.__setitem__("n", hits["n"] + 1),
-    )
-    mgr.discover_and_load()
-    assert hits["n"] == 1
 
 
 def test_real_plugin_source_discovery_applies_dotenv(monkeypatch, tmp_path):

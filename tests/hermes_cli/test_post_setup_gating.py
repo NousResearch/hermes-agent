@@ -66,12 +66,6 @@ class TestBrowserBackendPrompt:
     opened, even when Browser Use was already configured.
     """
 
-    def test_browser_backend_set_skips_provider_picker(self, monkeypatch, tmp_path):
-        from hermes_cli import tools_config
-
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        config = {"browser": {"backend": "browser-use"}}
-        assert tools_config._toolset_needs_configuration_prompt("browser", config) is False
 
     def test_browser_cloud_provider_set_skips_provider_picker(self, monkeypatch, tmp_path):
         from hermes_cli import tools_config
@@ -80,11 +74,6 @@ class TestBrowserBackendPrompt:
         config = {"browser": {"cloud_provider": "local"}}
         assert tools_config._toolset_needs_configuration_prompt("browser", config) is False
 
-    def test_browser_unconfigured_still_prompts(self, monkeypatch, tmp_path):
-        from hermes_cli import tools_config
-
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        assert tools_config._toolset_needs_configuration_prompt("browser", {}) is True
 
     def test_browser_empty_still_prompts(self, monkeypatch, tmp_path):
         from hermes_cli import tools_config

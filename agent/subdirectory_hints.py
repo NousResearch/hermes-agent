@@ -78,7 +78,7 @@ def _first_hint_file(directory: Path):
                 continue
             # Read the resolved target (not the link path) so a symlink swapped
             # between check and read still lands on the vetted file.
-            content = target.read_text(encoding="utf-8").strip()
+            content = target.read_text(encoding="utf-8-sig").strip()
         except (OSError, UnicodeDecodeError):
             continue
         return candidate, content

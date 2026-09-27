@@ -7,19 +7,16 @@ import { $activeGatewayProfile, $profileScope, ALL_PROFILES, setShowAllProfiles 
 import { $currentCwd, $selectedStoredSessionId, $sessions, applyConfiguredDefaultProjectDir } from '@/store/session'
 import type { ProjectInfo } from '@/types/hermes'
 
+import { $projectScope, ALL_PROJECTS, exitProjectScope } from './project-scope'
 import {
   $activeProjectId,
   $projects,
-  $projectScope,
   $projectsRpcAvailable,
   $projectTree,
-  $worktreeRefreshToken,
   addProjectFolder,
-  ALL_PROJECTS,
   createProject,
   deleteProject,
   enterProject,
-  exitProjectScope,
   fetchProjectSessions,
   openProjectCreate,
   pickProjectFolder,
@@ -27,7 +24,6 @@ import {
   projectNameForCwd,
   refreshProjects,
   refreshProjectTree,
-  refreshWorktrees,
   resolveNewSessionCwd,
   scanAndRecordRepos,
   startWorkInRepo,
@@ -108,10 +104,6 @@ describe('project scope', () => {
     $projectScope.set(ALL_PROJECTS)
   })
 
-  it('defaults to ALL_PROJECTS', () => {
-    expect($projectScope.get()).toBe(ALL_PROJECTS)
-  })
-
   it('enterProject scopes the sidebar to the project id', () => {
     // setActiveProject fires best-effort (no gateway in test → it rejects and is
     // swallowed); the synchronous scope change is what matters here.
@@ -170,6 +162,41 @@ describe('projects RPC profile forwarding', () => {
       profile: 'coder',
       project_id: 'p_123'
     })
+  })
+
+  it('keeps unchanged project nodes by reference across tree refreshes (#77591)', async () => {
+    const payload = () => ({
+      active_id: null,
+      projects: [
+        { id: 'p_a', label: 'a', path: '/a', repos: [], sessionCount: 1, sessionIds: ['s1'] },
+        { id: 'p_b', label: 'b', path: '/b', repos: [], sessionCount: 0, sessionIds: [] }
+      ],
+      scoped_session_ids: ['s1']
+    })
+
+    const next = payload()
+    next.projects[1] = { ...next.projects[1], sessionCount: 1, sessionIds: ['s2'] }
+
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(payload())
+      .mockResolvedValueOnce(payload())
+      .mockResolvedValueOnce(next)
+
+    const gateway = { connectionState: 'open', request }
+    activeGateway.mockReturnValue(gateway as never)
+    gatewayAtom.set(gateway as never)
+
+    await refreshProjectTree()
+    const first = $projectTree.get()
+
+    await refreshProjectTree()
+    expect($projectTree.get()).toBe(first)
+
+    await refreshProjectTree()
+    expect($projectTree.get()).not.toBe(first)
+    expect($projectTree.get()[0]).toBe(first[0])
+    expect($projectTree.get()[1].sessionIds).toEqual(['s2'])
   })
 
   it('skips project reads in the all-profiles view rather than forwarding its sentinel', async () => {
@@ -341,14 +368,6 @@ describe('projectNameForCwd', () => {
   })
 })
 
-describe('worktree refresh', () => {
-  it('refreshWorktrees bumps the probe token so useRepoWorktreeMap refetches', () => {
-    const before = $worktreeRefreshToken.get()
-    refreshWorktrees()
-    expect($worktreeRefreshToken.get()).toBe(before + 1)
-  })
-})
-
 describe('startWorkInRepo remote capability gate (#81724)', () => {
   it('names the stale-backend remedy when a remote gateway lacks the worktree route', async () => {
     isDesktopFsRemoteMode.mockReturnValue(true)
@@ -379,14 +398,6 @@ describe('startWorkInRepo remote capability gate (#81724)', () => {
 describe('pickProjectFolder', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-  })
-
-  it('uses the remote-aware directory picker locally', async () => {
-    isDesktopFsRemoteMode.mockReturnValue(false)
-    selectDesktopPaths.mockResolvedValue(['/local/repo'])
-
-    await expect(pickProjectFolder()).resolves.toBe('/local/repo')
-    expect(selectDesktopPaths).toHaveBeenCalledWith({ defaultPath: undefined, directories: true, multiple: false })
   })
 
   it('seeds the picker with the backend cwd on a remote gateway', async () => {

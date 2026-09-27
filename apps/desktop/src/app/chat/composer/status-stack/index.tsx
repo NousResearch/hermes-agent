@@ -17,6 +17,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
+import { todoTree } from '@/lib/todos'
 import { useSessionSlice, useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { $billingBlock } from '@/store/billing-block'
@@ -30,9 +31,11 @@ import {
   stopBackgroundProcess
 } from '@/store/composer-status'
 import { $freeTierRoute, $freeTierStatus, freeTierStripPending } from '@/store/free-tier'
+import { $interfaceMode, shownInMode, type Tiered } from '@/store/interface-mode'
 import { $previewStatusBySession, dismissPreviewArtifact } from '@/store/preview-status'
 import { $sessionControlBySession, refreshSessionControl } from '@/store/session-control'
 import { $threadScrolledUpBySession } from '@/store/thread-scroll'
+import { $retainedTodosBySession } from '@/store/todos'
 import { openSessionInNewWindow } from '@/store/windows'
 
 import { PreviewStatusRow } from './preview-row'
@@ -58,6 +61,15 @@ const GROUP_ICON: Record<StatusGroup['type'], string> = {
   todo: 'checklist',
   subagent: 'agent',
   background: 'server-process'
+}
+
+// Goals and todos are the plan the user is following; subagents and background
+// processes are how Hermes is executing it. Simple mode shows the plan only.
+const GROUP_TIER: Record<StatusGroup['type'], Tiered> = {
+  goal: {},
+  todo: {},
+  subagent: { tier: 'advanced' },
+  background: { tier: 'advanced' }
 }
 
 const groupLabel = (group: StatusGroup, s: Translations['statusStack']) => {
@@ -99,7 +111,11 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
   const { t } = useI18n()
   const navigate = useNavigate()
   const storedSessionId = useStore(useSessionView().$storedId)
-  useSubagentSnapshot(sessionId)
+  const interfaceMode = useStore($interfaceMode)
+  const shown = useMemo(() => shownInMode(interfaceMode), [interfaceMode])
+  // Hydrate always (delegate cards and session dots read the same store after
+  // a reload); keep POLLING only while the subagent group is on the shelf.
+  useSubagentSnapshot(sessionId, shown(GROUP_TIER.subagent))
   // Subscribe to THIS session's slice only. Both maps churn on other
   // sessions' activity (subagent ticks, background polls, preview updates in
   // any tile); a whole-map `useStore` re-rendered every mounted stack — one
@@ -107,6 +123,8 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
   // across unrelated writes, so the slice hook bails out unless OUR session's
   // items actually changed.
   const items = useSessionSlice($statusItemsBySession, sessionId)
+  const retainedTodos = useSessionSlice($retainedTodosBySession, sessionId)
+  const busy = useStore(useSessionView().$busy)
   const previews = useSessionSlice($previewStatusBySession, sessionId)
   const controlEntry = useSessionValue($sessionControlBySession, sessionId)
 
@@ -127,15 +145,17 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
 
   const isStructuredSupported = controlEntry?.capability === 'supported'
 
-  const groups = useMemo(() => {
-    const raw = groupStatusItems(items)
+  // Every group, before the shelf decides what to SHOW: whether a dev server is
+  // running is a fact about the session (it keeps its localhost preview chip
+  // alive) even when Simple keeps the background group itself off screen.
+  const allGroups = useMemo(() => groupStatusItems(items), [items])
 
-    if (isStructuredSupported) {
-      return raw.filter(g => g.type !== 'goal')
-    }
+  const hasRunningBackground = allGroups.some(g => g.type === 'background' && g.items.some(i => i.state === 'running'))
 
-    return raw
-  }, [items, isStructuredSupported])
+  const groups = useMemo(
+    () => allGroups.filter(group => shown(GROUP_TIER[group.type]) && (group.type !== 'goal' || !isStructuredSupported)),
+    [allGroups, isStructuredSupported, shown]
+  )
 
   // Seed from the registry on session open; event-driven refreshes (terminal /
   // process tool completions) live in use-message-stream. This must NOT reset
@@ -151,8 +171,6 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
       void refreshSessionControl(sessionId)
     }
   }, [sessionId])
-
-  const hasRunningBackground = groups.some(g => g.type === 'background' && g.items.some(i => i.state === 'running'))
 
   // Drop localhost previews once no dev server is left running — that's what made
   // dead `localhost:5174` chips stick around. On-disk file previews are kept.
@@ -272,6 +290,37 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
               onDismiss={sessionId ? id => dismissBackgroundProcess(sessionId, id) : undefined}
               onOpen={() => openSubagent(item)}
               onStop={sessionId ? id => void stopBackgroundProcess(sessionId, id) : undefined}
+            />
+          ))}
+        </StatusSection>
+      )
+    })
+  }
+
+  // A settled snapshot is reviewable but never re-enters the live progress
+  // feed. Only show this disclosure once the live Todo section has retired.
+  if (!busy && retainedTodos.length > 0 && !groups.some(group => group.type === 'todo')) {
+    const done = retainedTodos.filter(todo => todo.status === 'completed').length
+    sections.push({
+      key: 'retained-todo',
+      node: (
+        <StatusSection
+          defaultCollapsed
+          icon={<Codicon className="text-muted-foreground/70" name="checklist" size="0.8rem" />}
+          label={t.statusStack.previousTodos(done, retainedTodos.length)}
+        >
+          {todoTree(retainedTodos).map(([todo, depth]) => (
+            <StatusItemRow
+              historical
+              item={{
+                depth,
+                id: `retained-todo:${todo.id}`,
+                state: 'done',
+                title: todo.content,
+                todoStatus: todo.status,
+                type: 'todo'
+              }}
+              key={todo.id}
             />
           ))}
         </StatusSection>

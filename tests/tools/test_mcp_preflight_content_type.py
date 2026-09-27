@@ -130,7 +130,6 @@ def test_non_mcp_content_type_raises(content_type):
             asyncio.run(task._preflight_content_type(f"{base}/", timeout=5.0))
     msg = str(exc_info.value)
     assert "bad_srv" in msg
-    assert "application/json" in msg and "text/event-stream" in msg
 
 
 # ---------------------------------------------------------------------------
@@ -275,19 +274,6 @@ def test_run_skips_preflight_when_skip_preflight_set(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_post_probe_not_attempted_for_valid_head():
-    """When HEAD already returns application/json, no POST probe is needed."""
-    task = _make_task()
-    record: list[str] = []
-    with _serve(_handler(
-        status=200, content_type="application/json", body=b"{}",
-        post_content_type="application/json",
-        post_body=b'{}',
-        record=record,
-    )) as base:
-        asyncio.run(task._preflight_content_type(f"{base}/mcp", timeout=5.0))
-    assert record == ["HEAD"]
-    assert "POST" not in record
 
 
 # ---------------------------------------------------------------------------

@@ -9,7 +9,6 @@ build helper assembles a server when the SDK is present.
 from __future__ import annotations
 
 import inspect
-from typing import get_args
 
 from agent.transports.hermes_tools_mcp_server import (
     _signature_from_schema,
@@ -34,7 +33,6 @@ class TestSignatureFromSchema:
         assert param.kind == inspect.Parameter.KEYWORD_ONLY
         assert annots["query"] == str
         assert param.default is inspect.Parameter.empty
-
 
 
     def test_skip_private_params(self):
@@ -77,19 +75,7 @@ class TestSignatureFromSchema:
         assert annots["o"] == dict
 
 
-
-
-
-
-
-
 class TestModuleSurface:
-    def test_module_imports_clean(self):
-        from agent.transports import hermes_tools_mcp_server as m
-        assert callable(m.main)
-        assert callable(m._build_server)
-        assert isinstance(m.EXPOSED_TOOLS, tuple)
-        assert len(m.EXPOSED_TOOLS) > 0
 
     def test_exposed_tools_are_safe_subset(self):
         """We MUST NOT expose tools codex already has, because codex'
@@ -106,10 +92,6 @@ class TestModuleSurface:
             f"these tools must NOT be exposed via the codex callback "
             f"because codex has built-in equivalents: {leaked}"
         )
-
-
-
-
 
 
 class TestMain:

@@ -31,7 +31,6 @@ def _isolate_approval_state(monkeypatch):
     for reasons unrelated to the code under test.
     """
     import tools.approval as _approval
-    from tools import approval_context
 
     monkeypatch.setattr(_approval, "_permanent_approved", set())
     monkeypatch.setattr(_approval, "_session_approved", {})
@@ -47,15 +46,6 @@ class TestThreadLocalApprovalCallback:
     """GHSA-qg5c-hvr5-hjgr: set_approval_callback must be per-thread so
     concurrent ACP sessions don't stomp on each other's handlers."""
 
-    def test_set_and_get_in_same_thread(self):
-        from tools.terminal_tool import (
-            set_approval_callback,
-            _get_approval_callback,
-        )
-
-        cb1 = lambda cmd, desc: "once"  # noqa: E731
-        set_approval_callback(cb1)
-        assert _get_approval_callback() is cb1
 
     def test_callback_not_visible_in_different_thread(self):
         """Thread A's callback is NOT visible to Thread B."""

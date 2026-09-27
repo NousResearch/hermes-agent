@@ -13,7 +13,7 @@ from time import monotonic_ns
 from typing import Any, Callable
 
 from agent import relay_runtime
-from hermes_cli import __version__
+from hermes_cli.version_info import get_version_info
 
 from .shared_metrics import SharedMetricsStore
 from . import shared_metrics_contract as contract
@@ -162,7 +162,7 @@ class _Runtime:
         self._send_thread: threading.Thread | None = None
         self._subscriber_name = f"{SUBSCRIBER_NAME}.{self.host.runtime_id}"
         self.subscriber = SharedMetricsSubscriber(
-            SharedMetricsStore(), __version__, runtime_id=self.host.runtime_id
+            SharedMetricsStore(), get_version_info().base_version, runtime_id=self.host.runtime_id
         )
         self.relay.subscribers.register(self._subscriber_name, self.subscriber)
         self.host.retain_managed_execution(self._subscriber_name)

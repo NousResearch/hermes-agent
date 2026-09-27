@@ -58,7 +58,7 @@ def _finite_limit(path: Path) -> Optional[int]:
     """A cgroup memory limit file's value when it is a real cap; None for unreadable, empty,
     ``max``, or the v1 near-2^63 sentinel (all mean unlimited)."""
     try:
-        limit = int(path.read_text(encoding="utf-8").strip())
+        limit = int(path.read_text(encoding="utf-8-sig").strip())
     except (OSError, ValueError):
         return None
     return limit if 0 < limit < (1 << 62) else None
@@ -159,7 +159,7 @@ def _cgroup_anon_bytes() -> Optional[int]:
             return None
         root = Path(f"/sys/fs/cgroup{own}")
         capped = any(_finite_limit(root / f"memory.{f}") for f in ("high", "max"))
-        text = root.joinpath("memory.stat").read_text(encoding="utf-8") if capped else ""
+        text = root.joinpath("memory.stat").read_text(encoding="utf-8-sig") if capped else ""
     except (OSError, ValueError, ImportError):
         return None
     for line in text.splitlines():

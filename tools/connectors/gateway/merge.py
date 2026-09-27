@@ -8,9 +8,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional, Sequence
 
-from tools.connectors.gateway.config import session_platform
 from tools.connectors.gateway.errors import render_connection_required
 from tools.connectors.gateway.names import parse_connector_name
+from tools.connectors.turn import connection_surface
 
 __all__ = [
     "Partition",
@@ -94,7 +94,7 @@ def render_remote_entry(planned: PlannedCall, remote: Mapping[str, Any]) -> dict
             message=message,
             connect_url=_opt_str(error.get("connect_url")),
             hint=_opt_str(error.get("hint")),
-            card=session_platform() == "desktop",
+            surface=connection_surface(),
         )
     else:
         payload = {"code": code, "message": message}

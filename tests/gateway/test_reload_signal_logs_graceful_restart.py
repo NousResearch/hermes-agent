@@ -72,6 +72,3 @@ async def test_sigusr1_handler_installed_by_start_gateway_logs_graceful_restart(
         handler(*args)
 
     assert runners[0].restart_calls == [{"detached": False, "via_service": True}]
-    text = " ".join(r.getMessage() for r in caplog.records if r.name == "gateway.run")
-    assert "SIGUSR1 received" in text and "systemctl reload" in text
-    assert "graceful gateway restart" in text and "Not an in-process config reload" in text

@@ -2,11 +2,9 @@
  * Tests for electron/update-gate.ts — the update mutual-exclusion gate that
  * parks local backend spawns while an in-app update is running.
  *
- * The regression this guards (#73822): applyUpdates kills its own backend
- * BEFORE the Windows venv-blocker scan but writes the on-disk marker AFTER
- * it. A marker-only gate therefore let the renderer's reconnect spawn a
- * fresh backend inside the update's own critical section, which the scan
- * reported as a blocker — aborting every Desktop update attempt on Windows.
+ * The regression this guards (#73822): applyUpdates stops its own backend
+ * before committing the hand-off. A marker-only gate lets the renderer's
+ * reconnect spawn a fresh backend on the runtime being replaced.
  * The gate must consult the in-process updateInFlight flag and the successful
  * detached hand-off state as well.
  */

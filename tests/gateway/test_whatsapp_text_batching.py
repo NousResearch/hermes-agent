@@ -8,7 +8,6 @@ mirrors the Telegram/WeCom/Feishu pattern.
 Batch delays are read from ``config.extra`` (config.yaml), not env vars.
 """
 
-import asyncio
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.event import MessageEvent, MessageType
@@ -47,7 +46,8 @@ def test_invalid_config_value_falls_back_to_default():
         text_batch_delay_seconds="garbage",
         text_batch_split_delay_seconds=-3,
     )
-    assert adapter._text_batch_delay_seconds == 0.3
-    assert adapter._text_batch_split_delay_seconds == 1.0
+    default = _make_adapter()
+    assert adapter._text_batch_delay_seconds == default._text_batch_delay_seconds
+    assert adapter._text_batch_split_delay_seconds == default._text_batch_split_delay_seconds
 
 

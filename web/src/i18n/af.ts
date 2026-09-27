@@ -162,9 +162,14 @@ export const af: Translations = {
     deleteSelectedConfirmMessage:
       "Dit verwyder {count} gekose sessies en al hul boodskappe permanent. Dit kan nie ongedaan gemaak word nie.",
     selectedSessionsDeleted: "{count} sessies geskrap",
+    selectedSessionsSkippedActive: "{deleted} geskrap; {count} behou omdat 'n beurt nog loop",
     failedToDeleteSelected: "Kon nie gekose sessies skrap nie",
     resumeInChat: "Hervat in Klets",
     newChat: "Nuwe klets",
+    workspace: "werkruimte",
+    workspaceDefault: "Verstek",
+    workspaceRescan: "Herskandeer bewaarplekke",
+    workspaceCustom: "Ander pad…",
     previousPage: "Vorige bladsy",
     nextPage: "Volgende bladsy",
     roles: {
@@ -324,6 +329,8 @@ export const af: Translations = {
     disableRuntime: "Deaktiveer",
     enableAfterInstall: "Aktiveer ná installasie",
     enableRuntime: "Aktiveer",
+    toggleTakesEffectAfterRestart:
+      "Gestoor — herbegin die gateway om die verandering toe te pas.",
     forceReinstall: "Forseer herinstallasie (skrap eers bestaande gids)",
     headline:
       "Ontdek, installeer, aktiveer en werk Hermes-inproppe op (`hermes plugins` ekwivalent).",

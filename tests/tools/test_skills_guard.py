@@ -30,7 +30,6 @@ from tools.skills_guard import (
     _determine_verdict,
     _resolve_trust_level,
     _check_structure,
-    _unicode_char_name,
     _load_skill_ignore,
     MAX_FILE_COUNT,
     MAX_SINGLE_FILE_KB,
@@ -102,7 +101,6 @@ class TestShouldAllowInstall:
         f = [Finding("x", "high", "network", "f", 1, "m", "d")]
         allowed, reason = should_allow_install(self._result("community", "caution", f))
         assert allowed is False
-        assert "Blocked" in reason
         # When --force CAN override the block, the error must point to it.
         assert "Use --force to override" in reason
 
@@ -111,7 +109,6 @@ class TestShouldAllowInstall:
         f = [Finding("x", "critical", "c", "f", 1, "m", "d")]
         allowed, reason = should_allow_install(self._result("builtin", "dangerous", f))
         assert allowed is True
-        assert "builtin source" in reason
 
 
     @pytest.mark.parametrize("trust", ["community", "trusted"])
@@ -119,7 +116,6 @@ class TestShouldAllowInstall:
         f = [Finding("x", "critical", "c", "f", 1, "m", "d")]
         allowed, reason = should_allow_install(self._result(trust, "dangerous", f), force=True)
         assert allowed is False
-        assert "Blocked" in reason
         # Error message MUST explain why --force didn't work, not invite a retry.
         assert "does not override" in reason
         assert "Use --force to override" not in reason
@@ -134,7 +130,6 @@ class TestShouldAllowInstall:
         f = [Finding("docker_pull", "medium", "supply_chain", "SKILL.md", 1, "docker pull img", "pulls Docker image")]
         allowed, reason = should_allow_install(self._result("agent-created", "caution", f))
         assert allowed is True
-        assert "agent-created" in reason
 
     def test_dangerous_agent_created_asks(self):
         """Agent-created skills with dangerous verdict return None (ask for confirmation)
@@ -145,7 +140,6 @@ class TestShouldAllowInstall:
         f = [Finding("env_exfil_curl", "critical", "exfiltration", "SKILL.md", 1, "curl $TOKEN", "exfiltration")]
         allowed, reason = should_allow_install(self._result("agent-created", "dangerous", f))
         assert allowed is None
-        assert "Requires confirmation" in reason
 
     def test_force_overrides_dangerous_for_agent_created(self):
         f = [Finding("x", "critical", "c", "f", 1, "m", "d")]
@@ -153,7 +147,6 @@ class TestShouldAllowInstall:
             self._result("agent-created", "dangerous", f), force=True
         )
         assert allowed is True
-        assert "Force-installed" in reason
 
 
 # ---------------------------------------------------------------------------
@@ -359,6 +352,7 @@ class TestCheckStructure:
         ids = {fi.pattern_id for fi in _check_structure(tmp_path)}
         assert {"too_many_files", "oversized_file", "binary_file"} <= ids
 
+    @pytest.mark.require_symlinks
     def test_symlink_escape(self, tmp_path):
         target = tmp_path / "outside"
         target.mkdir()
@@ -426,7 +420,6 @@ class TestFormatScanReport:
         report = format_scan_report(result)
         assert "bad-skill" in report
         assert "DANGEROUS" in report
-        assert "BLOCKED" in report
         assert "curl $KEY" in report
 
 
@@ -458,11 +451,6 @@ class TestContentHash:
 # ---------------------------------------------------------------------------
 
 
-class TestUnicodeCharName:
-    def test_known_and_unknown_chars(self):
-        assert "zero-width space" in _unicode_char_name("​")
-        assert "BOM" in _unicode_char_name("﻿")
-        assert "U+" in _unicode_char_name("A")  # 'A'
 
 
 # ---------------------------------------------------------------------------

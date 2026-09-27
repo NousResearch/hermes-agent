@@ -11,7 +11,10 @@ import contextlib
 import logging
 import threading
 import time
-from typing import Optional
+from datetime import datetime
+from typing import Any, Optional
+
+from hermes_time import safe_strftime
 
 logger = logging.getLogger(__name__)
 
@@ -78,13 +81,100 @@ def pool_cooldown_message(provider_id: str) -> Optional[str]:
               if until is not None and until > now]
     if len(resets) != len(live):
         return None
-    when = time.strftime("%Y-%m-%d %H:%M %Z", time.localtime(min(resets)))
+    when = safe_strftime(datetime.fromtimestamp(min(resets)).astimezone(), "%Y-%m-%d %H:%M %Z")
     which = ("its only credential is" if len(live) == 1
              else f"all {len(live)} credentials are")
     return (f"Provider '{provider_id}' is set in config.yaml but {which} cooling down after a "
             f"rate limit / quota error (429); the next one resets at {when}. Wait for the reset, "
             f"add another credential with `hermes auth add {provider_id}`, or switch to a "
             "different provider with `hermes model`.")
+
+
+class ProviderCredentialsExhaustedError(RuntimeError):
+    """An explicit provider's credential pool is fully exhausted (402 out of credits, quota bench).
+
+    Subclasses ``RuntimeError`` so every existing ``except RuntimeError`` keeps working; the distinct
+    type lets a caller (gateway, Desktop) route a billing/quota failure to billing guidance instead
+    of the provider-setup flow a plain "No LLM provider configured" would trigger (#94785).
+    """
+
+    def __init__(self, message: str, *, provider: Optional[str] = None):
+        super().__init__(message)
+        self.provider = provider
+
+
+def pool_billing_message(
+    provider_id: str,
+    *,
+    model: Optional[str] = None,
+    pool: Optional[Any] = None,
+) -> Optional[str]:
+    """The "Provider 'X' … is out of usable credentials (402)" error for a billing-burned pool.
+
+    ``resolve_provider_client()`` returns ``None`` both when no credential exists and when every
+    pool entry has been marked exhausted — a 402 out-of-credits account, a 429/quota bench. The
+    ``openrouter`` / ``custom`` branch of ``agent_init`` has no provider-specific missing-credentials
+    message, so a burned pool there fell through to the generic "No LLM provider configured" setup
+    message: actively misleading when a *different* provider is configured and working and only the
+    session's override is out of credits (#94785). Name the provider, the session's model, the last
+    error code and the provider's own message instead.
+
+    Only a genuine billing verdict — a 402, or the classifier's ``billing`` reason on a 403 spending
+    limit — is named here; a plain 429/quota bench keeps the existing cooldown wording (with its
+    reset time, #56810), which the caller falls back to when this returns ``None``.
+
+    *pool* is an already-loaded ``CredentialPool`` (preferred — it carries the live in-memory
+    exhaustion state); otherwise the persisted rows are read (no seeding, no writes, mirroring
+    ``pool_cooldown_message``). ``None`` when the pool is empty, a credential is usable, no entry is
+    currently benched, or none carries a billing verdict.
+    """
+    from agent.credential_pool import (
+        FAILURE_REASON_BILLING,
+        STATUS_DEAD,
+        STATUS_EXHAUSTED,
+        PooledCredential,
+        _exhausted_until,
+    )
+
+    entries: list = []
+    with contextlib.suppress(Exception):
+        if pool is not None:
+            entries = list(pool.entries())
+        else:
+            from hermes_cli.auth import read_credential_pool
+
+            entries = [PooledCredential.from_dict(provider_id, e)
+                       for e in read_credential_pool(provider_id) if isinstance(e, dict)]
+    live = [e for e in entries if getattr(e, "last_status", None) != STATUS_DEAD]
+    if not live:
+        return None
+    now = time.time()
+    benched = [
+        e for e in live
+        if getattr(e, "last_status", None) == STATUS_EXHAUSTED
+        and (_exhausted_until(e, sole_credential=len(live) == 1) or 0) > now
+    ]
+    if len(benched) != len(live):
+        # A credential is still usable (or merely cooling down on one model): not our case.
+        return None
+    billing = [
+        e for e in benched
+        if getattr(e, "last_error_code", None) == 402
+        or getattr(e, "failure_reason", None) == FAILURE_REASON_BILLING
+    ]
+    if not billing:
+        return None
+    pick = billing[0]
+    code = getattr(pick, "last_error_code", None)
+    detail = str(getattr(pick, "last_error_message", None) or "").strip()
+    which = "its only credential is" if len(live) == 1 else f"all {len(live)} credentials are"
+    scope = f" for model '{model}'" if model else ""
+    code_text = f" (last error {code}{': ' + detail if detail else ''})" if code else ""
+    return (
+        f"Provider '{provider_id}'{scope} is out of usable credentials: {which} exhausted"
+        f"{code_text}. Add credits or update billing with that provider, then retry, or switch "
+        f"to a different provider with `hermes model`."
+    )
 
 
 def missing_provider_credentials_message(provider_id: str) -> str:

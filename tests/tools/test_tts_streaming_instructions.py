@@ -11,6 +11,12 @@ import pytest
 import tools.tts_streaming as ts
 
 
+LONG_SENTENCE = (
+    "The narrator reads every word of this carefully paced sentence so listeners hear the "
+    "entire response and never lose the ending after a long clause."
+)
+
+
 @pytest.mark.parametrize(
     ("instructions_config", "expected_instructions"),
     [
@@ -193,6 +199,67 @@ def test_gemini_stream_rejects_prompt_that_exceeds_request_limit(monkeypatch):
 
     with pytest.raises(ValueError, match="Gemini TTS composed prompt exceeds"):
         list(streamer.stream("Hello there."))
+
+
+def test_cli_stream_splits_gemini_clause_without_losing_words(monkeypatch):
+    from tools import tts_tool, tts_tool_speaker
+    from tools.tts_tool_providers import _gemini_prompt_with_instructions
+
+    config = {
+        "provider": "gemini",
+        "instructions": "calm and measured",
+        "gemini": {"max_text_length": 280},
+    }
+    streamer = ts.GeminiStreamer(config, config["gemini"])
+    requests = []
+
+    class Playback:
+        def __init__(self, *_args):
+            pass
+
+        def speak(self, text):
+            requests.append(text)
+
+        def finish(self):
+            pass
+
+    monkeypatch.setattr(tts_tool, "_load_tts_config", lambda: config)
+    monkeypatch.setattr(ts, "resolve_streaming_provider", lambda *_args, **_kwargs: streamer)
+    monkeypatch.setattr(tts_tool_speaker, "_StreamerPlayback", Playback)
+    text_queue = queue.Queue()
+    text_queue.put(LONG_SENTENCE)
+    text_queue.put(None)
+    done = threading.Event()
+
+    tts_tool_speaker.stream_tts_to_speaker(text_queue, threading.Event(), done)
+
+    assert done.is_set()
+    assert len(requests) > 1
+    assert " ".join(requests) == LONG_SENTENCE
+    assert all(len(_gemini_prompt_with_instructions(piece, config["gemini"], config,
+                                                    "gemini-2.5-flash-preview-tts")) <= 280
+               for piece in requests)
+
+
+def test_gemini_streaming_budget_requires_room_for_transcript():
+    from tools.tts_tool_providers import _gemini_prompt_with_instructions
+
+    config = {
+        "provider": "gemini",
+        "instructions": "calm and measured",
+        "gemini": {},
+    }
+    streamer = ts.GeminiStreamer(config, config["gemini"])
+    minimum = len(_gemini_prompt_with_instructions(
+        "x", config["gemini"], config, "gemini-2.5-flash-preview-tts",
+    ))
+
+    config["gemini"]["max_text_length"] = minimum
+    assert ts.streaming_text_limit(streamer, "gemini", config, minimum) == 1
+
+    config["gemini"]["max_text_length"] = minimum - 1
+    with pytest.raises(ValueError, match="Gemini TTS composed prompt exceeds"):
+        ts.streaming_text_limit(streamer, "gemini", config, minimum - 1)
 
 
 @pytest.mark.parametrize(

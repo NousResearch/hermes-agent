@@ -203,7 +203,19 @@ def streaming_text_limit(streamer: StreamingTTSProvider, provider: str, tts_conf
         model_id = section.get("streaming_model_id", section.get("model_id", DEFAULT_ELEVENLABS_STREAMING_MODEL_ID))
         config = {**config, "elevenlabs": {**section, "model_id": model_id}}
     limit = min(base_limit, _resolve_max_text_length(key, config))
-    return _tts_text_chunk_limit(key, _tts_instructions_channel(config), config, limit)
+    text_limit = _tts_text_chunk_limit(key, _tts_instructions_channel(config), config, limit)
+    if key == "gemini" and text_limit == 1:
+        from tools.tts_tool_providers import DEFAULT_GEMINI_TTS_MODEL, _gemini_prompt_with_instructions
+
+        section = config.get("gemini") or {}
+        model = str(section.get("model", DEFAULT_GEMINI_TTS_MODEL)).strip() or DEFAULT_GEMINI_TTS_MODEL
+        prompt = _gemini_prompt_with_instructions("x", section, config, model)
+        if len(prompt) > limit:
+            raise ValueError(
+                "Gemini TTS composed prompt exceeds the provider request limit "
+                f"({len(prompt)} > {limit} chars). Reduce the persona/audio-tag prompt "
+                "or raise tts.gemini.max_text_length.")
+    return text_limit
 
 
 def _capped(chunks: Iterator[bytes], label: str) -> Iterator[bytes]:

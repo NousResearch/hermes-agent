@@ -23,7 +23,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Callable, Iterable, Iterator, List, Optional
 
 from tools.tts_text_normalize import _strip_markdown_for_tts
-from tools.tts_tool_delivery import _origin, _remove_quietly as _unlink_quietly
+from tools.tts_tool_delivery import _origin, _remove_quietly as _unlink_quietly, _split_text_for_tts
 
 logger = logging.getLogger("tools.tts_tool")
 
@@ -351,10 +351,9 @@ def stream_tts_to_speaker(
         if streamer is None:
             sync_pipeline = _SyncSentencePipeline(stop_event)
         else:
-            with contextlib.suppress(Exception):
-                resolved_provider = provider or origin._get_provider(tts_config)
-                base_limit = origin._resolve_max_text_length(resolved_provider, tts_config)
-                stream_max_len = streaming_text_limit(streamer, resolved_provider, tts_config, base_limit)
+            resolved_provider = provider or origin._get_provider(tts_config)
+            base_limit = origin._resolve_max_text_length(resolved_provider, tts_config)
+            stream_max_len = streaming_text_limit(streamer, resolved_provider, tts_config, base_limit)
             playback = _StreamerPlayback(streamer, stop_event)
         chunker = SentenceChunker.from_config(tts_config)
         spoken_sentences: list[str] = []  # skip duplicate/near-duplicate sentences (LLM repetition)
@@ -374,9 +373,10 @@ def stream_tts_to_speaker(
             if sync_pipeline is not None:
                 sync_pipeline.speak(cleaned)
                 return
-            if stream_max_len and len(cleaned) > stream_max_len:
-                cleaned = cleaned[:stream_max_len]
-            playback.speak(cleaned)
+            for piece in _split_text_for_tts(cleaned, stream_max_len):
+                if stop_event.is_set():
+                    return
+                playback.speak(piece)
         while not stop_event.is_set():
             try:
                 delta = text_queue.get(timeout=0.5)

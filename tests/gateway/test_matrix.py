@@ -797,12 +797,23 @@ async def test_restored_room_session_reconciles_offline_state_once(tmp_path):
         runner._session_key_for_source = session_store._generate_session_key
         return runner
 
-    async def prepare(runner, source, message_id):
+    async def prepare(runner, source, message_id, *, persist=False):
+        session_store = runner.session_store
+        session_id = session_store.get_or_create_session(source).session_id
         event = MessageEvent(text="hello", source=source, message_id=message_id)
-        return await runner._prepare_inbound_message_text(event=event, source=source, history=[])
+        message = await runner._prepare_inbound_message_text(
+            event=event, source=source, history=session_store.load_transcript(session_id),
+        )
+        if persist:
+            session_store.append_to_transcript(session_id, {
+                "role": "user", "content": message,
+                "display_metadata": {"matrix_room_state": event._matrix_room_state},
+            })
+            session_store.append_to_transcript(session_id, {"role": "assistant", "content": "ok"})
+        return message
 
-    assert await prepare(runner_for(store), initial, "$initial") == "hello"
-    assert await prepare(runner_for(store), other_thread, "$other-thread") == "hello"
+    assert await prepare(runner_for(store), initial, "$initial", persist=True) == "hello"
+    assert await prepare(runner_for(store), other_thread, "$other-thread", persist=True) == "hello"
     initial_prompt = build_session_context_prompt(build_session_context(initial, config, entry))
     other_prompt = build_session_context_prompt(build_session_context(other_thread, config, other_entry))
 
@@ -819,18 +830,137 @@ async def test_restored_room_session_reconciles_offline_state_once(tmp_path):
     assert build_session_context_prompt(build_session_context(current, config, restored)) == initial_prompt
     assert build_session_context_prompt(build_session_context(other_current, config, other_restored)) == other_prompt
 
-    corrected = await prepare(restored_runner, current, "$after-restart")
+    corrected = await prepare(restored_runner, current, "$after-restart", persist=True)
     assert "New room" in corrected
     assert "New topic" in corrected
     assert "joined room members or their display names changed" in corrected
     assert corrected.endswith("[New message]\nhello")
+    assert [row.get("display_metadata") for row in restored_store.load_transcript(restored.session_id)
+            if row.get("role") == "user"] == [
+        {"matrix_room_state": {
+            "display_name": "Old room", "topic": "Old topic", "members_digest": "old-members",
+        }},
+        {"matrix_room_state": {
+            "display_name": "New room", "topic": "New topic", "members_digest": "new-members",
+        }},
+    ]
     assert await prepare(restored_runner, current, "$again") == "hello"
-    assert await prepare(restored_runner, other_current, "$other-thread") == corrected
+    assert await prepare(restored_runner, other_current, "$other-thread", persist=True) == corrected
     assert await prepare(restored_runner, other_current, "$other-thread") == "hello"
 
     second_restart = SessionStore(tmp_path / "sessions", config)
     second_restart.get_or_create_session(current)
     assert await prepare(runner_for(second_restart), current, "$later") == "hello"
+
+
+@pytest.mark.asyncio
+async def test_room_state_correction_is_not_acknowledged_before_transcript_write(tmp_path):
+    from dataclasses import replace
+
+    from gateway.config import GatewayConfig
+    from gateway.platforms.event import MessageEvent
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionSource, SessionStore
+
+    config = GatewayConfig()
+    original = SessionSource(
+        platform=Platform.MATRIX, chat_id="!room:example.org", chat_type="group",
+        user_id="@alice:example.org", chat_name="Original", chat_topic="Topic A",
+    )
+    store = SessionStore(tmp_path / "sessions", config)
+    entry = store.get_or_create_session(original)
+    current = replace(original, chat_topic="Topic B")
+
+    async def prepare(session_store):
+        runner = object.__new__(GatewayRunner)
+        runner.config = config
+        runner.session_store = session_store
+        runner.adapters = {Platform.MATRIX: _make_adapter()}
+        runner._session_key_for_source = session_store._generate_session_key
+        event = MessageEvent(text="hello", source=current, message_id="$message")
+        message = await runner._prepare_inbound_message_text(event=event, source=current, history=[])
+        return message, event
+
+    first, _ = await prepare(store)
+    assert "Topic B" in first
+    assert store.load_transcript(entry.session_id) == []
+
+    restarted = SessionStore(tmp_path / "sessions", config)
+    restarted.get_or_create_session(current)
+    repeated, event = await prepare(restarted)
+    assert repeated == first
+
+    prepared = types.SimpleNamespace(
+        persist_user_message=None, message_text=repeated, persist_user_timestamp=None,
+        persist_user_display_kind=None, persistence_owner=None,
+    )
+    row = GatewayRunner._hmwa_user_transcript_entry(event, prepared, time.time())
+    assert row["display_metadata"] == {"matrix_room_state": event._matrix_room_state}
+    restarted.append_to_transcript(entry.session_id, row)
+    restarted.append_to_transcript(entry.session_id, {"role": "assistant", "content": "ok"})
+
+    committed = SessionStore(tmp_path / "sessions", config)
+    committed.get_or_create_session(current)
+    runner = object.__new__(GatewayRunner)
+    runner.config = config
+    runner.session_store = committed
+    runner.adapters = {Platform.MATRIX: _make_adapter()}
+    runner._session_key_for_source = committed._generate_session_key
+    next_event = MessageEvent(text="hello", source=current, message_id="$next")
+    assert await runner._prepare_inbound_message_text(
+        event=next_event, source=current, history=committed.load_transcript(entry.session_id),
+    ) == "hello"
+
+
+@pytest.mark.asyncio
+async def test_queued_room_note_uses_current_state_for_next_turn(tmp_path):
+    from dataclasses import replace
+
+    from gateway.config import GatewayConfig
+    from gateway.platforms.event import MessageEvent
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionSource, SessionStore
+    from plugins.platforms.matrix.room_context import RoomStateNote
+
+    config = GatewayConfig()
+    initial = SessionSource(
+        platform=Platform.MATRIX, chat_id="!room:example.org", chat_type="group",
+        user_id="@alice:example.org", chat_name="Room", chat_topic="Topic A",
+        room_members_digest="members",
+    )
+    store = SessionStore(tmp_path / "sessions", config)
+    entry = store.get_or_create_session(initial)
+    adapter = _make_adapter()
+    adapter._client = MagicMock()
+    adapter._resolve_room_identity = AsyncMock(return_value=types.SimpleNamespace(
+        display_name="Room", room_topic="Topic C", members_digest="members",
+    ))
+    adapter._pending_room_notes.stash(initial.chat_id, "topic", RoomStateNote("Topic B"))
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = config
+    runner.session_store = store
+    runner.adapters = {Platform.MATRIX: adapter}
+    runner._session_key_for_source = store._generate_session_key
+
+    async def prepare(source, message_id, history):
+        event = MessageEvent(text="hello", source=source, message_id=message_id)
+        message = await runner._prepare_inbound_message_text(event=event, source=source, history=history)
+        return message, event
+
+    queued = replace(initial, chat_topic="Topic B")
+    first, event = await prepare(queued, "$queued", [])
+    assert "Topic C" in first and "Topic B" not in first
+
+    state = {"display_name": "Room", "topic": "Topic C", "members_digest": "members"}
+    assert event._matrix_room_state == state
+    store.append_to_transcript(entry.session_id, {
+        "role": "user", "content": first,
+        "display_metadata": {"matrix_room_state": event._matrix_room_state},
+    })
+    assert (await prepare(
+        replace(initial, chat_topic="Topic C"), "$next", store.load_transcript(entry.session_id),
+    ))[0] == "hello"
 
 
 @pytest.mark.asyncio

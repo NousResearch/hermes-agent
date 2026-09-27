@@ -19,13 +19,20 @@ def _entry_key(entry: Dict[str, Any]) -> tuple:
     return entry.get("session_id"), entry.get("owner_pid"), entry.get("owner_started_at")
 
 
-def _written_by(entry: Dict[str, Any], writer: Dict[str, Any]) -> bool:
-    """True when ``entry`` was written by the process incarnation ``writer`` describes."""
+def _written_by(entry: Dict[str, Any], writer: Dict[str, Any], *, lenient: bool = True) -> bool:
+    """True when ``entry`` was written by the process incarnation ``writer`` describes.
+
+    An unreadable start time can't tell a writer from a later process on its recycled PID.
+    Recovery stays ``lenient`` (a live writer's job must never be adopted); deleting entries
+    does not, or that later process would erase the dead writer's recovery record."""
     from gateway.status import start_time_fingerprints_match
 
     recorded, current = entry.get("owner_started_at"), writer["owner_started_at"]
-    return entry.get("owner_pid") == writer["owner_pid"] and (
-        recorded is None or current is None or start_time_fingerprints_match(recorded, current))
+    if entry.get("owner_pid") != writer["owner_pid"]:
+        return False
+    if recorded is None or current is None:
+        return lenient or recorded is current
+    return start_time_fingerprints_match(recorded, current)
 
 
 class ProcessCheckpointMixin:
@@ -75,7 +82,8 @@ class ProcessCheckpointMixin:
                     on_disk = json.loads(path.read_text(encoding="utf-8"))
                 except (OSError, ValueError):
                     on_disk = []
-                kept = [e for e in on_disk if not _written_by(e, writer) and _entry_key(e) not in consumed]
+                kept = [e for e in on_disk
+                        if not _written_by(e, writer, lenient=False) and _entry_key(e) not in consumed]
                 atomic_json_write(path, kept + entries)
         except Exception as e:
             logger.debug("Failed to write checkpoint file: %s", e, exc_info=True)

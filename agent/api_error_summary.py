@@ -194,6 +194,12 @@ class ApiErrorSummaryMixin:
         body = getattr(error, "body", None)
         if isinstance(body, dict):
             msg = body.get("error", {}).get("message") if isinstance(body.get("error"), dict) else body.get("message")
+            if not msg and isinstance(body.get("error"), dict):
+                # Policy gateways state the refusal in ``reason``/``detail`` with no
+                # ``message``; without this the summary is an empty provider said-line (#125058).
+                msg = body["error"].get("reason") or body["error"].get("detail")
+            if not msg:
+                msg = body.get("reason") or body.get("detail")
             if msg:
                 msg = ApiErrorSummaryMixin._coerce_api_error_detail(msg)
                 return ApiErrorSummaryMixin._decorate_xai_entitlement_error(f"{prefix}{msg[:300]}")

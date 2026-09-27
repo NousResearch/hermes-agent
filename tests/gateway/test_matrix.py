@@ -4995,8 +4995,23 @@ class TestMatrixSourcePermalink:
             "https://matrix.to/#/!room:example.org/$ev1?via=example.org"
         )
 
+    @pytest.mark.parametrize(
+        ("room_id", "via"),
+        [
+            ("!room:example.org:8448", "example.org%3A8448"),
+            ("!room:[2001:db8::1]", "%5B2001%3Adb8%3A%3A1%5D"),
+        ],
+    )
+    def test_permalink_retains_full_room_server(self, room_id, via):
+        from urllib.parse import quote
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+
+        assert MatrixAdapter._build_source_permalink(room_id, "$ev1") == (
+            f"https://matrix.to/#/{quote(room_id, safe='!$:@')}/$ev1?via={via}"
+        )
+
     def test_permalink_without_via_when_no_server(self):
-        """Degenerate room ID (no ':server' suffix) and no server hint."""
+        """Domainless room ID and no server hint."""
         from plugins.platforms.matrix.adapter import MatrixAdapter
 
         url = MatrixAdapter._build_source_permalink("!room", "$ev1")
@@ -5090,6 +5105,30 @@ class TestMatrixSourcePermalink:
         assert ctx is not None
         assert ctx[5].source_permalink == (
             "https://matrix.to/#/!opaquehash/$msg?via=example.org"
+        )
+
+    @pytest.mark.asyncio
+    async def test_permalink_uses_joined_bot_server_over_room_origin(self):
+        self.adapter._is_dm_room = AsyncMock(return_value=False)
+        self.adapter._get_display_name = AsyncMock(return_value="Alice")
+        self.adapter._background_read_receipt = MagicMock()
+        self.adapter._require_mention = False
+        self.adapter._matrix_session_scope = "room"
+        self.adapter._user_id = "@hermes:joined.example.org"
+
+        ctx = await self.adapter._resolve_message_context(
+            room_id="!room:old.example.org:8448",
+            sender="@alice:old.example.org",
+            event_id="$msg",
+            body="hello",
+            source_content={"body": "hello"},
+            relates_to={},
+        )
+
+        assert ctx is not None
+        assert (ctx[5].source_permalink, ctx[5].scope_id) == (
+            "https://matrix.to/#/!room:old.example.org:8448/$msg?via=joined.example.org",
+            "old.example.org:8448",
         )
 
 

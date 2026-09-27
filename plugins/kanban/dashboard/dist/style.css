@@ -425,18 +425,80 @@
 }
 .hermes-kanban-attachment-link:hover { text-decoration: underline; }
 
+/* Two columns like the desktop modal: content on the left, a fixed-width
+   property sidebar on the right (desktop: w-64 aside with a left rule).
+   Each column scrolls on its own inside the capped modal height. */
 .hermes-kanban-drawer-body {
   flex: 1 1 auto;
   min-height: 0;
+  display: flex;
+}
+
+.hermes-kanban-drawer-main,
+.hermes-kanban-drawer-side {
+  min-height: 0;
   overflow-y: auto;
-  padding: 0.9rem;
-  /* When no comment row is rendered (loading / error states), the scrolling
-     body is the bottom-most element — extend its bottom padding past the
-     mobile browser chrome so the last content stays readable. */
-  padding-bottom: max(0.9rem, calc(0.9rem + env(safe-area-inset-bottom)));
   display: flex;
   flex-direction: column;
   gap: 0.85rem;
+  padding: 0.9rem 1rem;
+}
+
+.hermes-kanban-drawer-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.hermes-kanban-drawer-side {
+  flex: 0 0 17rem;
+  border-left: 1px solid var(--color-border);
+}
+
+/* Narrow viewports (the dashboard is used on phones): stack the sidebar
+   under the content and let the whole body scroll as one column. */
+@media (max-width: 767px) {
+  .hermes-kanban-drawer-body {
+    flex-direction: column;
+    overflow-y: auto;
+  }
+  .hermes-kanban-drawer-main,
+  .hermes-kanban-drawer-side {
+    overflow-y: visible;
+    flex: 0 0 auto;
+  }
+  .hermes-kanban-drawer-side {
+    border-left: 0;
+    border-top: 1px solid var(--color-border);
+  }
+}
+
+/* In the 17rem sidebar the dependency "add" select takes the slack and its
+   "+ parent" / "+ child" button keeps to one line. */
+.hermes-kanban-drawer-side .hermes-kanban-deps-row > [role="combobox"],
+.hermes-kanban-drawer-side .hermes-kanban-deps-row > div:has(> [role="combobox"]) {
+  /* basis 0, so the parent and child "add" rows split the width the same
+     way whatever their placeholder says. */
+  flex: 1 1 0;
+  min-width: 0;
+}
+/* Chip rows: the "Parents:" / "Children:" label sits on the first chip's
+   line rather than centred on a wrapped stack. */
+.hermes-kanban-deps-row:has(> .hermes-kanban-deps-chips) {
+  align-items: baseline;
+}
+.hermes-kanban-drawer-side .hermes-kanban-deps-row > button {
+  flex: 0 0 auto;
+  /* Same width for "+ parent" and "+ child", so both selects match. */
+  min-width: 5.5rem;
+  width: 5.5rem;
+  white-space: nowrap;
+}
+/* "Add" rows: select and button share one height. */
+.hermes-kanban-deps-row:not(:has(> .hermes-kanban-deps-chips)) {
+  align-items: stretch;
+}
+.hermes-kanban-deps-row:not(:has(> .hermes-kanban-deps-chips)) > * {
+  height: auto;
 }
 
 /* DialogTitle ships display-type caps; the task title reads as prose. */
@@ -461,18 +523,65 @@
   border-radius: var(--radius-sm, 0.25rem);
 }
 
+/* One label column for every row (static and editable alike): the label
+   never shrinks, so long values (a workspace path, a skills list) no longer
+   push it narrower and rag the value column. */
 .hermes-kanban-meta-row {
   display: flex;
+  align-items: baseline;
   gap: 0.5rem;
-  font-size: 0.8rem;
+  min-height: 1.6rem;
+  padding: 0.1rem 0;
+  font-size: 0.78rem;
+  line-height: 1.35;
 }
 .hermes-kanban-meta-label {
-  width: 92px;
+  flex: 0 0 5.5rem;
   color: var(--color-muted-foreground);
 }
 .hermes-kanban-meta-value {
+  flex: 1 1 auto;
+  min-width: 0;
   color: var(--color-foreground);
-  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+.hermes-kanban-meta-row > input,
+.hermes-kanban-meta-row > div {
+  min-width: 0;
+}
+
+.hermes-kanban-workspace {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.25rem;
+}
+.hermes-kanban-workspace-path {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4rem;
+  width: 100%;
+}
+.hermes-kanban-workspace-path code {
+  flex: 1 1 auto;
+  min-width: 0;
+  /* Break at the <wbr> after each "/"; only a single over-long segment
+     falls back to breaking anywhere. */
+  word-break: normal;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.7rem;
+  line-height: 1.4;
+  color: var(--color-muted-foreground);
+  overflow-wrap: anywhere;
+}
+.hermes-kanban-workspace-path .hermes-kanban-edit-link {
+  flex: 0 0 auto;
+}
+/* The board card's P-badge is sized for a dense card; in the property list
+   it reads at the size of the other values. */
+.hermes-kanban-meta-value .hermes-kanban-priority {
+  font-size: 0.7rem !important;
+  padding: 0.05rem 0.35rem !important;
 }
 
 .hermes-kanban-actions {

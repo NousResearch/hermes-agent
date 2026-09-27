@@ -4047,190 +4047,197 @@
     const links = props.data.links || { parents: [], children: [] };
     const childResults = props.data.child_results || [];
 
+    // Two columns, as on the desktop modal (2476c82837 / 5104cb228e): the
+    // task's content and history on the left, its properties on the right.
+    // Each column scrolls on its own; below 768px they stack (see style.css).
     return h("div", { className: "hermes-kanban-drawer-body" },
-      h("div", { className: "hermes-kanban-drawer-meta" },
-        h(MetaRow, { label: tx(i18n, "status", "Status"), value: t.status }),
-        h(AssigneeEditor, { task: t, onPatch: props.onPatch }),
-        h(PriorityEditor, { task: t, onPatch: props.onPatch }),
-        h(ModelEditor, { task: t, onPatch: props.onPatch }),
-        t.tenant ? h(MetaRow, { label: tx(i18n, "tenant", "Tenant"), value: t.tenant }) : null,
-        h(MetaRow, {
-          label: tx(i18n, "workspace", "Workspace"),
-          value: `${t.workspace_kind}${t.workspace_path ? ": " + t.workspace_path : ""}`,
+      h("div", { className: "hermes-kanban-drawer-main" },
+        h(StatusActions, {
+          task: t,
+          onPatch: props.onPatch,
+          onSpecify: props.onSpecify,
+          onDecompose: props.onDecompose,
         }),
-        (t.skills && t.skills.length > 0) ? h(MetaRow, {
-          label: tx(i18n, "skills", "Skills"),
-          value: t.skills.join(", "),
-        }) : null,
-        t.goal_mode ? h(MetaRow, {
-          label: tx(i18n, "goalMode", "Goal mode"),
-          value: t.goal_max_turns
-            ? `on (max ${t.goal_max_turns} turns)`
-            : "on",
-        }) : null,
-        t.created_by ? h(MetaRow, { label: tx(i18n, "createdBy", "Created by"), value: t.created_by }) : null,
-      ),
-      h(StatusActions, {
-        task: t,
-        onPatch: props.onPatch,
-        onSpecify: props.onSpecify,
-        onDecompose: props.onDecompose,
-      }),
-      h(DiagnosticsSection, {
-        task: t,
-        boardSlug: props.boardSlug,
-        assignees: props.assignees,
-        diagnostics: t.diagnostics || [],
-        onRefresh: props.onRefresh,
-      }),
-      h(HomeSubsSection, {
-        homeChannels: props.homeChannels || [],
-        homeBusy: props.homeBusy || {},
-        onToggle: props.onToggleHomeSub,
-      }),
-      h(BodyEditor, {
-        task: t,
-        renderMarkdown: props.renderMarkdown,
-        onPatch: props.onPatch,
-      }),
-      h(DependencyEditor, {
-        task: t,
-        links, allTasks: props.allTasks,
-        onAddParent: props.onAddParent,
-        onRemoveParent: props.onRemoveParent,
-        onAddChild: props.onAddChild,
-        onRemoveChild: props.onRemoveChild,
-      }),
-      (function () {
-        var finalResult = t.result || t.latest_summary || null;
-        var isDone = t.status === "done";
-        var isParent = links.children.length > 0;
-        if (finalResult) {
-          var label = t.result
-            ? tx(i18n, "result", "Result")
-            : tx(i18n, "finalResult", "Final Result (run summary)");
-          return h("div", { className: "hermes-kanban-section" },
-            h("div", { className: "hermes-kanban-section-head" }, label),
-            h(MarkdownBlock, { source: finalResult, enabled: props.renderMarkdown }),
-          );
-        }
-        if (isDone && isParent) {
-          return h("div", { className: "hermes-kanban-section" },
-            h("div", { className: "hermes-kanban-section-head" }, tx(i18n, "result", "Result")),
-            h("div", { className: "hermes-kanban-done-no-result hermes-kanban-done-parent-note" },
-              tx(i18n, "doneParentNote",
-                "This card is an orchestrator / parent task. Review the child results section for the substantive work."),
-            ),
-          );
-        }
-        if (isDone) {
-          return h("div", { className: "hermes-kanban-section" },
-            h("div", { className: "hermes-kanban-section-head" }, tx(i18n, "result", "Result")),
-            h("div", { className: "hermes-kanban-done-no-result" },
-              tx(i18n, "doneNoResult",
-                "No final result was recorded. Check Run History, Logs, or Child Tasks for the worker output."),
-            ),
-          );
-        }
-        return null;
-      })(),
-      childResults.length > 0 ? h("div", { className: "hermes-kanban-section" },
-        h("div", { className: "hermes-kanban-section-head" },
-          `${tx(i18n, "childResults", "Child Results")} (${childResults.length})`),
-        childResults.map(function (child) {
-          var childResult = child.result || child.latest_summary || null;
-          return h("div", { key: child.id, className: "hermes-kanban-comment" },
-            h("div", { className: "hermes-kanban-comment-head" },
-              h("span", { className: "hermes-kanban-comment-author" },
-                `${child.id} · ${child.title || tx(i18n, "untitled", "(untitled)")}`),
-              h(Badge, { variant: "outline" }, child.status),
-              h("button", {
-                type: "button",
-                className: "hermes-kanban-diag-action-btn",
-                onClick: function () { if (props.onOpenTask) props.onOpenTask(child.id); },
-              }, tx(i18n, "open", "Open")),
-            ),
-            childResult
-              ? h(MarkdownBlock, { source: childResult, enabled: props.renderMarkdown })
-              : h("div", { className: "text-xs text-muted-foreground" },
-                  tx(i18n, "noChildResult", "No result recorded yet.")),
-          );
+        h(DiagnosticsSection, {
+          task: t,
+          boardSlug: props.boardSlug,
+          assignees: props.assignees,
+          diagnostics: t.diagnostics || [],
+          onRefresh: props.onRefresh,
         }),
-      ) : null,
-      h(AttachmentsSection, {
-        attachments: attachments,
-        boardSlug: props.boardSlug,
-        onUpload: props.onUpload,
-        onDelete: props.onDeleteAttachment,
-        uploadBusy: props.uploadBusy,
-        uploadErr: props.uploadErr,
-        i18n: i18n,
-        requestDialog: props.requestDialog,
-      }),
-      h("div", { className: "hermes-kanban-section" },
-        h("div", { className: "hermes-kanban-section-head" },
-          `${tx(i18n, "comments", "Comments")} (${comments.length})`),
-        comments.length === 0
-          ? h("div", { className: "text-xs text-muted-foreground" },
-              tx(i18n, "noComments", "— no comments —"))
-          : comments.map(function (c) {
-              return h("div", { key: c.id, className: "hermes-kanban-comment" },
-                h("div", { className: "hermes-kanban-comment-head" },
-                  h("span", { className: "hermes-kanban-comment-author" }, c.author || "anon"),
-                  h("span", { className: "hermes-kanban-comment-ago" },
-                    timeAgo ? timeAgo(c.created_at) : ""),
-                ),
-                h(MarkdownBlock, { source: c.body, enabled: props.renderMarkdown }),
-              );
-            }),
+        h(BodyEditor, {
+          task: t,
+          renderMarkdown: props.renderMarkdown,
+          onPatch: props.onPatch,
+        }),
+        (function () {
+          var finalResult = t.result || t.latest_summary || null;
+          var isDone = t.status === "done";
+          var isParent = links.children.length > 0;
+          if (finalResult) {
+            var label = t.result
+              ? tx(i18n, "result", "Result")
+              : tx(i18n, "finalResult", "Final Result (run summary)");
+            return h("div", { className: "hermes-kanban-section" },
+              h("div", { className: "hermes-kanban-section-head" }, label),
+              h(MarkdownBlock, { source: finalResult, enabled: props.renderMarkdown }),
+            );
+          }
+          if (isDone && isParent) {
+            return h("div", { className: "hermes-kanban-section" },
+              h("div", { className: "hermes-kanban-section-head" }, tx(i18n, "result", "Result")),
+              h("div", { className: "hermes-kanban-done-no-result hermes-kanban-done-parent-note" },
+                tx(i18n, "doneParentNote",
+                  "This card is an orchestrator / parent task. Review the child results section for the substantive work."),
+              ),
+            );
+          }
+          if (isDone) {
+            return h("div", { className: "hermes-kanban-section" },
+              h("div", { className: "hermes-kanban-section-head" }, tx(i18n, "result", "Result")),
+              h("div", { className: "hermes-kanban-done-no-result" },
+                tx(i18n, "doneNoResult",
+                  "No final result was recorded. Check Run History, Logs, or Child Tasks for the worker output."),
+              ),
+            );
+          }
+          return null;
+        })(),
+        childResults.length > 0 ? h("div", { className: "hermes-kanban-section" },
+          h("div", { className: "hermes-kanban-section-head" },
+            `${tx(i18n, "childResults", "Child Results")} (${childResults.length})`),
+          childResults.map(function (child) {
+            var childResult = child.result || child.latest_summary || null;
+            return h("div", { key: child.id, className: "hermes-kanban-comment" },
+              h("div", { className: "hermes-kanban-comment-head" },
+                h("span", { className: "hermes-kanban-comment-author" },
+                  `${child.id} · ${child.title || tx(i18n, "untitled", "(untitled)")}`),
+                h(Badge, { variant: "outline" }, child.status),
+                h("button", {
+                  type: "button",
+                  className: "hermes-kanban-diag-action-btn",
+                  onClick: function () { if (props.onOpenTask) props.onOpenTask(child.id); },
+                }, tx(i18n, "open", "Open")),
+              ),
+              childResult
+                ? h(MarkdownBlock, { source: childResult, enabled: props.renderMarkdown })
+                : h("div", { className: "text-xs text-muted-foreground" },
+                    tx(i18n, "noChildResult", "No result recorded yet.")),
+            );
+          }),
+        ) : null,
+        h("div", { className: "hermes-kanban-section" },
+          h("div", { className: "hermes-kanban-section-head" },
+            `${tx(i18n, "comments", "Comments")} (${comments.length})`),
+          comments.length === 0
+            ? h("div", { className: "text-xs text-muted-foreground" },
+                tx(i18n, "noComments", "— no comments —"))
+            : comments.map(function (c) {
+                return h("div", { key: c.id, className: "hermes-kanban-comment" },
+                  h("div", { className: "hermes-kanban-comment-head" },
+                    h("span", { className: "hermes-kanban-comment-author" }, c.author || "anon"),
+                    h("span", { className: "hermes-kanban-comment-ago" },
+                      timeAgo ? timeAgo(c.created_at) : ""),
+                  ),
+                  h(MarkdownBlock, { source: c.body, enabled: props.renderMarkdown }),
+                );
+              }),
+        ),
+        h("div", { className: "hermes-kanban-section" },
+          h("div", { className: "hermes-kanban-section-head" },
+            `${tx(i18n, "events", "Events")} (${events.length})`),
+          events.slice().reverse().slice(0, 20).map(function (e) {
+            const isDiag = isDiagnosticEvent(e.kind);
+            const phantoms = isDiag ? phantomIdsFromEvent(e) : [];
+            return h("div", {
+              key: e.id,
+              className: cn(
+                "hermes-kanban-event",
+                isDiag ? "hermes-kanban-event--hallucination" : "",
+              ),
+            },
+              isDiag
+                ? h("div", { className: "hermes-kanban-event-header" },
+                    h("span", { className: "hermes-kanban-event-warning-icon" }, "⚠"),
+                    h("span", { className: "hermes-kanban-event-warning-label" },
+                      getDiagnosticEventLabel(i18n, e.kind) || e.kind),
+                    h("span", { className: "hermes-kanban-event-ago" },
+                      timeAgo ? timeAgo(e.created_at) : ""),
+                  )
+                : h("div", { className: "hermes-kanban-event-header-plain" },
+                    h("span", { className: "hermes-kanban-event-kind" }, e.kind),
+                    h("span", { className: "hermes-kanban-event-ago" },
+                      timeAgo ? timeAgo(e.created_at) : ""),
+                  ),
+              isDiag && phantoms.length > 0
+                ? h("div", { className: "hermes-kanban-event-phantom-row" },
+                    h("span", { className: "hermes-kanban-event-phantom-label" },
+                      tx(i18n, "phantomIds", "Phantom ids:")),
+                    phantoms.map(function (pid) {
+                      return h("code", {
+                        key: pid,
+                        className: "hermes-kanban-event-phantom-chip",
+                      }, pid);
+                    }),
+                  )
+                : null,
+              e.payload && !isDiag
+                ? h("code", { className: "hermes-kanban-event-payload" },
+                    JSON.stringify(e.payload))
+                : null,
+            );
+          }),
+        ),
+        h(WorkerLogSection, { taskId: t.id, boardSlug: props.boardSlug }),
+        h(RunHistorySection, { runs: props.data.runs || [] }),
       ),
-      h("div", { className: "hermes-kanban-section" },
-        h("div", { className: "hermes-kanban-section-head" },
-          `${tx(i18n, "events", "Events")} (${events.length})`),
-        events.slice().reverse().slice(0, 20).map(function (e) {
-          const isDiag = isDiagnosticEvent(e.kind);
-          const phantoms = isDiag ? phantomIdsFromEvent(e) : [];
-          return h("div", {
-            key: e.id,
-            className: cn(
-              "hermes-kanban-event",
-              isDiag ? "hermes-kanban-event--hallucination" : "",
-            ),
-          },
-            isDiag
-              ? h("div", { className: "hermes-kanban-event-header" },
-                  h("span", { className: "hermes-kanban-event-warning-icon" }, "⚠"),
-                  h("span", { className: "hermes-kanban-event-warning-label" },
-                    getDiagnosticEventLabel(i18n, e.kind) || e.kind),
-                  h("span", { className: "hermes-kanban-event-ago" },
-                    timeAgo ? timeAgo(e.created_at) : ""),
-                )
-              : h("div", { className: "hermes-kanban-event-header-plain" },
-                  h("span", { className: "hermes-kanban-event-kind" }, e.kind),
-                  h("span", { className: "hermes-kanban-event-ago" },
-                    timeAgo ? timeAgo(e.created_at) : ""),
-                ),
-            isDiag && phantoms.length > 0
-              ? h("div", { className: "hermes-kanban-event-phantom-row" },
-                  h("span", { className: "hermes-kanban-event-phantom-label" },
-                    tx(i18n, "phantomIds", "Phantom ids:")),
-                  phantoms.map(function (pid) {
-                    return h("code", {
-                      key: pid,
-                      className: "hermes-kanban-event-phantom-chip",
-                    }, pid);
-                  }),
-                )
-              : null,
-            e.payload && !isDiag
-              ? h("code", { className: "hermes-kanban-event-payload" },
-                  JSON.stringify(e.payload))
-              : null,
-          );
+      h("aside", { className: "hermes-kanban-drawer-side" },
+        h("div", { className: "hermes-kanban-drawer-meta" },
+          h(MetaRow, { label: tx(i18n, "status", "Status"), value: t.status }),
+          h(AssigneeEditor, { task: t, onPatch: props.onPatch }),
+          h(PriorityEditor, { task: t, onPatch: props.onPatch }),
+          h(ModelEditor, { task: t, onPatch: props.onPatch }),
+          t.tenant ? h(MetaRow, { label: tx(i18n, "tenant", "Tenant"), value: t.tenant }) : null,
+          h(MetaRow, {
+            label: tx(i18n, "workspace", "Workspace"),
+            value: h(WorkspaceValue, { kind: t.workspace_kind, path: t.workspace_path }),
+          }),
+          (t.skills && t.skills.length > 0) ? h(MetaRow, {
+            label: tx(i18n, "skills", "Skills"),
+            value: t.skills.join(", "),
+          }) : null,
+          t.goal_mode ? h(MetaRow, {
+            label: tx(i18n, "goalMode", "Goal mode"),
+            value: t.goal_max_turns
+              ? `on (max ${t.goal_max_turns} turns)`
+              : "on",
+          }) : null,
+          t.created_by ? h(MetaRow, { label: tx(i18n, "createdBy", "Created by"), value: t.created_by }) : null,
+        ),
+        h(HomeSubsSection, {
+          homeChannels: props.homeChannels || [],
+          homeBusy: props.homeBusy || {},
+          onToggle: props.onToggleHomeSub,
+        }),
+        h(AttachmentsSection, {
+          attachments: attachments,
+          boardSlug: props.boardSlug,
+          onUpload: props.onUpload,
+          onDelete: props.onDeleteAttachment,
+          uploadBusy: props.uploadBusy,
+          uploadErr: props.uploadErr,
+          i18n: i18n,
+          requestDialog: props.requestDialog,
+        }),
+        h(DependencyEditor, {
+          task: t,
+          links, allTasks: props.allTasks,
+          onAddParent: props.onAddParent,
+          onRemoveParent: props.onRemoveParent,
+          onAddChild: props.onAddChild,
+          onRemoveChild: props.onRemoveChild,
         }),
       ),
-      h(WorkerLogSection, { taskId: t.id, boardSlug: props.boardSlug }),
-      h(RunHistorySection, { runs: props.data.runs || [] }),
     );
   }
 
@@ -4357,6 +4364,54 @@
     );
   }
 
+  // The task's workspace, as on desktop: the kind as a muted badge when it
+  // says more than "a directory", the path in mono (wrapping anywhere) and a
+  // copy action.
+  function WorkspaceValue(props) {
+    const { t } = useI18n();
+    const [copied, setCopied] = useState(false);
+    const path = props.path;
+    const copy = function () {
+      const p = navigator.clipboard && navigator.clipboard.writeText(path);
+      if (p && p.then) {
+        p.then(function () {
+          setCopied(true);
+          setTimeout(function () { setCopied(false); }, 1500);
+        }).catch(function () {});
+      }
+    };
+    return h("span", { className: "hermes-kanban-workspace" },
+      props.kind && (props.kind !== "dir" || !path)
+        ? h(Badge, { variant: "outline", className: "hermes-kanban-tag" }, props.kind)
+        : null,
+      path
+        ? h("span", { className: "hermes-kanban-workspace-path" },
+            // <wbr> after each "/" so the path breaks between segments
+            // rather than mid-name.
+            h("code", null, path.split("/").map(function (seg, i, all) {
+              return i < all.length - 1
+                ? h(React.Fragment, { key: i }, seg + "/", h("wbr"))
+                : seg;
+            })),
+            h("button", {
+              type: "button",
+              className: "hermes-kanban-edit-link",
+              "aria-label": tx(t, "copyPath", "Copy path"),
+              onClick: copy,
+            }, copied ? tx(t, "copied", "Copied") : tx(t, "copy", "copy")),
+          )
+        : null,
+    );
+  }
+
+  // Same glyph as the board card: a P{n} badge when the task is prioritised,
+  // a muted 0 otherwise.
+  function PriorityGlyph(props) {
+    return props.priority > 0
+      ? h(Badge, { className: "hermes-kanban-priority" }, `P${props.priority}`)
+      : h("span", { className: "text-muted-foreground" }, String(props.priority || 0));
+  }
+
   function MetaRow(props) {
     return h("div", { className: "hermes-kanban-meta-row" },
       h("span", { className: "hermes-kanban-meta-label" }, props.label),
@@ -4445,7 +4500,7 @@
           className: "hermes-kanban-meta-value hermes-kanban-editable",
           onClick: function () { setEditing(true); },
           title: tx(t, "clickToEdit", "Click to edit"),
-        }, String(props.task.priority)),
+        }, h(PriorityGlyph, { priority: props.task.priority })),
       );
     }
     const save = function () {

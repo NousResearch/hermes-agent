@@ -17,8 +17,6 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from agent.image_eviction_policy import outbound_image_retire_count
 from agent.compression_marker import (
     ELISION_MARKER_MAX_LEN,
-    _COMPRESSION_MARKER_PREFIX,
-    _COMPRESSION_MARKER_TEMPLATE,
     _elision_marker,
     elide,
     elide_middle,

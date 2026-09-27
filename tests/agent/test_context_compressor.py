@@ -16,6 +16,7 @@ from agent.context_compressor import (
     _summarize_tool_result,
     _is_summary_access_or_quota_error,
 )
+from agent.compression_marker import _COMPRESSION_MARKER_PREFIX
 from hermes_state import SessionDB
 
 

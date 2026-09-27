@@ -4,6 +4,7 @@ import { type FC, useState } from 'react'
 import { MarkdownTextContent } from '@/components/assistant-ui/markdown-text'
 import { messageContentText } from '@/components/assistant-ui/thread/content'
 import { MessageTimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
+import { TranscriptMessageSlot } from '@/components/assistant-ui/thread/transcript-message-slot'
 import { SCAFFOLD_GLYPH_CLASS, SCAFFOLD_LABEL_CLASS, ScaffoldRow } from '@/components/chat/scaffold-row'
 import { Codicon } from '@/components/ui/codicon'
 import { LogView } from '@/components/ui/log-view'
@@ -140,25 +141,32 @@ export const SystemMessage: FC = () => {
     const multiline = output.includes('\n')
 
     return (
-      <MessagePrimitive.Root
-        className={cn(
-          'w-[60%] max-w-[44rem] self-center px-2 py-0.5 text-[0.6875rem] leading-5 text-muted-foreground/60',
-          multiline ? 'text-left' : 'text-center'
-        )}
-        data-role="system"
-        data-slot="aui_system-message-root"
-      >
-        <span className="font-mono text-muted-foreground/55">{slashStatus.groups.command}</span>
-        {multiline ? (
-          <LinkifiedText className="mt-0.5 block whitespace-pre-wrap" explicitOnly pretty={false} text={output} />
-        ) : (
-          <>
-            <span className="mx-1.5 text-muted-foreground/35">·</span>
-            <LinkifiedText className="whitespace-pre-wrap" explicitOnly pretty={false} text={output} />
-          </>
-        )}{' '}
-        <MessageTimelineTimestamp className={cn(multiline ? 'mt-0.5 block' : 'ml-1.5')} />
-      </MessagePrimitive.Root>
+      <TranscriptMessageSlot
+        command={slashStatus.groups.command}
+        fallback={
+          <MessagePrimitive.Root
+            className={cn(
+              'w-[60%] max-w-[44rem] self-center px-2 py-0.5 text-[0.6875rem] leading-5 text-muted-foreground/60',
+              multiline ? 'text-left' : 'text-center'
+            )}
+            data-role="system"
+            data-slot="aui_system-message-root"
+          >
+            <span className="font-mono text-muted-foreground/55">{slashStatus.groups.command}</span>
+            {multiline ? (
+              <LinkifiedText className="mt-0.5 block whitespace-pre-wrap" explicitOnly pretty={false} text={output} />
+            ) : (
+              <>
+                <span className="mx-1.5 text-muted-foreground/35">·</span>
+                <LinkifiedText className="whitespace-pre-wrap" explicitOnly pretty={false} text={output} />
+              </>
+            )}{' '}
+            <MessageTimelineTimestamp className={cn(multiline ? 'mt-0.5 block' : 'ml-1.5')} />
+          </MessagePrimitive.Root>
+        }
+        kind="slash-result"
+        output={output}
+      />
     )
   }
 

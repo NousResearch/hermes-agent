@@ -412,6 +412,32 @@ plugin is the worked example (it is also a complete, installable disk plugin).
 attachment source, or transform a draft before it is sent (`ComposerMiddleware`
 with a `handler(draft) => draft | null`).
 
+### Transcript message contributions
+
+`TRANSCRIPT_MESSAGE_AREA` (`'chat.transcript-message'`) enhances existing rows,
+not chat history. Register `data: { match(props), render(props) }`; both receive
+`{ kind, sessionId, messageId, isLast }`, plus `command` and `output` for
+`kind: 'slash-result'`. The other kind, `'assistant-footer'`, mounts below a
+completed assistant response's action bar. `sessionId` is the containing
+thread's runtime id, not the focused session. A slash `command` includes the
+leading `/`; `output` is the trimmed display text. Render interactive elements
+as normal React components. `match` is synchronous and must not use hooks;
+`render` is mounted as a component, so it may use hooks. No registration, a
+non-match, or an error preserves the original slash text (and the assistant's
+existing controls). Plugin actions must still validate their own owner and
+connection before dispatch; row identity is context, not authorization.
+
+```javascript
+import { TRANSCRIPT_MESSAGE_AREA } from '@hermes/plugin-sdk'
+ctx.register({
+  id: 'example-result', area: TRANSCRIPT_MESSAGE_AREA,
+  data: {
+    match: p => p.kind === 'slash-result' && p.command === '/example',
+    render: p => jsx(ExampleCard, { sessionId: p.sessionId, output: p.output })
+  }
+})
+```
+
 ### Transcript directives — inline components the model addresses
 
 `TRANSCRIPT_DIRECTIVE_AREA` makes the transcript itself a contribution area.

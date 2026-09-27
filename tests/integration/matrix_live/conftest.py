@@ -107,10 +107,15 @@ def docker_engine(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
 
 @pytest.fixture(scope="module")
 def gateway_image(docker_engine: None) -> Iterator[str]:
+    # Start Ryuk before building so it can remove the image if the worker is killed.
+    Reaper.get_instance()
     image = f"hermes-matrix-live:{uuid.uuid4().hex}"
     try:
         result = subprocess.run(
-            ["docker", "buildx", "build", "--load", "--progress=plain", "-t", image, str(REPO_ROOT)],
+            [
+                "docker", "buildx", "build", "--load", "--progress=plain",
+                "--label", f"{LABEL_SESSION_ID}={SESSION_ID}", "-t", image, str(REPO_ROOT),
+            ],
             capture_output=True,
             text=True,
             timeout=1800,

@@ -588,6 +588,40 @@ def command_line_runs_inline_source(tokens: list[str]) -> bool:
     return inline_source_flag_index(tokens) is not None
 
 
+#: Marker of the OFFICIAL published launcher (``hermes_cli._launchers.runtime_command``):
+#: the CLI run inline as ``python -I -c "<bootstrap> runpy.run_module('hermes_cli.main',
+#: run_name='__main__', alter_sys=True)" <argv…>``. ``alter_sys=True`` makes the trailing
+#: argv the program's OWN ``sys.argv`` (``runpy`` rebinds it), so the trailing argv IS this
+#: process's identity — unlike the restart watcher's inline source, whose trailing argv is
+#: a command it spawns LATER (#107002). ``import hermes_bootstrap`` and the ``runpy.run_module``
+#: entry must both be present; either alone is not the launcher (see matcher tests).
+_OFFICIAL_INLINE_LAUNCHER_RE = re.compile(
+    r"import\s+hermes_bootstrap\s*;\s*"
+    r"runpy\.run_module\(\s*['\"]hermes_cli\.main['\"]\s*,\s*"
+    r"run_name\s*=\s*['\"]__main__['\"]\s*,\s*alter_sys\s*=\s*True\s*\)"
+)
+
+
+def _peel_official_inline_launcher(command: str, cased_tokens: list[str]) -> str | None:
+    """Embedded program argv of the OFFICIAL inline launcher, or None when *command* is not it.
+
+    Only the exact ``hermes_cli._launchers.runtime_command`` shape is peeled: the ``-c`` source
+    must carry the ``hermes_bootstrap`` + ``runpy.run_module('hermes_cli.main', … alter_sys=True)``
+    signature. Every other inline source keeps the #107002 blanket refusal — most importantly
+    the detached restart watcher, whose trailing argv belongs to a child it spawns later.
+
+    The signature is located on the RAW string, not on tokens: ``psutil.Process.cmdline()``
+    joins argv with spaces WITHOUT quoting, so the ``-c`` source (full of spaces) arrives as
+    many tokens and a token-wise source comparison can never see it whole.
+    """
+    if not command or not command_line_runs_inline_source(cased_tokens):
+        return None
+    match = _OFFICIAL_INLINE_LAUNCHER_RE.search(command)
+    if match is None:
+        return None
+    return command[match.end():].strip().strip("\"'").strip() or None
+
+
 def _gateway_command_subcommand(command: str | None) -> str | None:
     """Hermes gateway lifecycle subcommand from a command line, or None. No loose substring matches
     (``"gateway" in cmdline`` also matched ``gateway status`` / ``python -m tui_gateway``): needs a
@@ -609,7 +643,22 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
     # ``python -c <src> … -m hermes_cli.main gateway run``: the trailing argv belongs to the program
     # the inline source will spawn later, not to this process (#107002). Case-preserving tokens:
     # the operand-taking ``-X``/``-W``/``-Q`` must not be conflated with ``-q``/``-b``.
-    if command_line_runs_inline_source(cased_tokens):
+    # EXCEPTION: the official published launcher (``_launchers.runtime_command``) runs the CLI
+    # itself inline with ``alter_sys=True`` — its trailing argv IS the process's own identity
+    # (``gateway restart`` hosts the runtime in-process when no service manager owns it) — so
+    # peel that exact shape and match on the embedded argv instead of refusing.
+    peeled = _peel_official_inline_launcher(command, cased_tokens)
+    if peeled is not None:
+        # The peeled argv lacks its ``argv[0]`` (the launcher runs ``hermes_cli.main`` by
+        # construction); restore a synthetic one so the entrypoint requirement below holds.
+        command = "hermes " + peeled
+        raw_tokens = command.split()
+        cased_tokens = [t for t in raw_tokens]
+        tokens = [t.lower() for t in raw_tokens]
+        basenames = [t.rsplit("/", 1)[-1] for t in tokens]
+        if not tokens:
+            return None
+    elif command_line_runs_inline_source(cased_tokens):
         return None
     # The launchd job's osascript wrapper (gateway_launchd.launchd_program_arguments) carries the gateway argv
     # inside one JXA script string; the gateway itself is its child and is matched on its own command line.

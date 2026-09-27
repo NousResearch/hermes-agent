@@ -54,6 +54,76 @@ REJECT = [
 ]
 
 
+# The OFFICIAL published launcher (``hermes_cli._launchers.runtime_command``) runs the CLI
+# inline: ``python -I -c "… import hermes_bootstrap; runpy.run_module('hermes_cli.main',
+# run_name='__main__', alter_sys=True)" <argv…>``. Its trailing argv IS the process's own
+# identity — ``gateway restart`` hosts the runtime in-process when no service manager owns
+# it (the macOS desktop backend flow) — so the matcher must peel this exact wrapper instead
+# of refusing it. #107002 only targeted the restart WATCHER's inline source; that one (and
+# every other inline source) stays refused below in INLINE_SOURCE_REJECT.
+OFFICIAL_LAUNCHER_PREFIX = (
+    "/Users/me/.hermes/tools/python3 -I -c "
+    "\"import os, sys, runpy; os.environ.pop('PYTHONHOME', None); "
+    "os.environ.pop('PYTHONPATH', None); os.environ.pop('VIRTUAL_ENV', None); "
+    "sys.path.insert(0, '/repo'); "
+    "os.environ['HERMES_HOME'] = os.environ.get('HERMES_HOME') or "
+    "str(__import__('hermes_constants').get_default_hermes_root()); "
+    "import hermes_bootstrap; "
+    "runpy.run_module('hermes_cli.main', run_name='__main__', alter_sys=True)\" "
+)
+
+
+@pytest.mark.parametrize(
+    "argv", ["gateway restart", "gateway run", "gateway --profile work run"]
+)
+def test_accepts_official_inline_launcher(argv):
+    # ``restart`` and ``run`` both host the runtime; profile selectors survive the peel.
+    assert matches_runtime(OFFICIAL_LAUNCHER_PREFIX + argv) is True
+
+
+def test_strict_accepts_official_inline_launcher_run_only():
+    assert matches(OFFICIAL_LAUNCHER_PREFIX + "gateway run") is True
+    assert matches(OFFICIAL_LAUNCHER_PREFIX + "gateway restart") is False
+
+
+def test_official_inline_launcher_unquoted_psutil_form():
+    # REAL-WORLD form: psutil joins argv with spaces WITHOUT quoting, so the -c source
+    # arrives in pieces. This is the exact macOS desktop-backend shape that went
+    # "restart needed forever while Telegram actually worked" when #107002's blanket
+    # refusal covered the official launcher too.
+    real = (
+        "/Users/me/.hermes/tools/python3.14-darwin-arm64/bin/python3 -I -c "
+        "import os, sys, runpy; os.environ.pop('PYTHONHOME', None); "
+        "os.environ.pop('PYTHONPATH', None); os.environ.pop('VIRTUAL_ENV', None); "
+        "sys.path.insert(0, '/Users/me/.hermes/hermes-agent'); "
+        "os.environ['HERMES_HOME'] = os.environ.get('HERMES_HOME') or "
+        "str(__import__('hermes_constants').get_default_hermes_root()); "
+        "import hermes_bootstrap; "
+        "runpy.run_module('hermes_cli.main', run_name='__main__', alter_sys=True) gateway restart"
+    )
+    assert matches_runtime(real) is True
+    assert matches(real.replace(" gateway restart", " gateway run")) is True
+
+
+def test_official_inline_launcher_non_gateway_argv_still_refused():
+    # ``hermes serve`` / ``hermes chat`` behind the same wrapper are NOT gateways.
+    assert matches_runtime(OFFICIAL_LAUNCHER_PREFIX + "serve --host 127.0.0.1 --port 0") is False
+    assert matches_runtime(OFFICIAL_LAUNCHER_PREFIX + "chat -q hi") is False
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        "import hermes_bootstrap; exec('pass')",
+        "runpy.run_module('hermes_cli.main', run_name='__main__', alter_sys=True)",
+        "import time; time.sleep(1)",
+    ],
+)
+def test_refuses_inline_source_that_is_not_the_official_launcher(src):
+    # Missing/incomplete launcher signature → blanket refusal stands (#107002).
+    assert matches_runtime(f'python -I -c "{src}" gateway run') is False
+
+
 @pytest.mark.parametrize("cmd", ACCEPT)
 def test_accepts_real_gateway_run(cmd):
     assert matches(cmd) is True

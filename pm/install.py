@@ -257,7 +257,15 @@ def _publish_entry(package, store, staged, entry, previous_entry, target):
             _restore_previous_entry(store, entry, previous_entry)
         raise
     if previous_entry.exists():
-        _remove_entry(store, previous_entry.name)
+        # Best-effort after a verified publish: the displaced bytes are garbage, not
+        # the live entry. On Windows a process/AV handle can hold a DLL (e.g.
+        # DLLs/libcrypto-3-x64.dll, #124807) far past _remove_entry's retry window;
+        # failing the whole update here would abort an already-installed Python.
+        # _settle_previous_entry reclaims a leftover .previous-* on the next PM run.
+        try:
+            _remove_entry(store, previous_entry.name)
+        except OSError:
+            pass
 
 
 def _settle_previous_entry(package, store, entry, previous_entry, previous, target) -> None:

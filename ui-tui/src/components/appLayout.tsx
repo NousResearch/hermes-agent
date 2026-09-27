@@ -319,13 +319,16 @@ const ComposerPane = memo(function ComposerPane({
   const [vimInputMode, setVimInputMode] = useState<'insert' | 'normal'>('insert')
   const sh = (composer.inputBuf[0] ?? composer.input).startsWith('!')
 
-  const promptText = composerPromptText(
+  const configuredPromptText = composerPromptText(
     ui.theme.brand.prompt,
     ui.info?.profile_name,
     sh,
     TERMUX_TUI_MODE,
     composer.cols
   )
+  // Preserve state-specific/shell prompts; use the compact semicolon requested
+  // for the normal OMP-band editor row.
+  const promptText = !sh && !isBlocked && ui.statusBar === 'top' ? ';' : configuredPromptText
 
   const promptWidth = composerPromptWidth(promptText)
   const vimBadgeWidth = ui.vimEnabled ? 7 : 0
@@ -557,6 +560,9 @@ const StatusRulePane = memo(function StatusRulePane({
         cols={composer.cols}
         compacting={ui.compacting}
         cwdLabel={status.cwdLabel}
+        gitStatus={status.gitStatus}
+        pathLabel={status.pathLabel}
+        personality={status.personality}
         focusView={ui.focusView}
         indicatorStyle={ui.indicatorStyle}
         lastTurnEndedAt={status.lastTurnEndedAt}

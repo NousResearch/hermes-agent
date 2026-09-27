@@ -13,8 +13,10 @@ import { DEV_CREDITS_MODE } from '../config/env.js'
 import { faces } from '../content/faces.js'
 import { VERBS } from '../content/verbs.js'
 import { fmtDuration } from '../domain/messages.js'
+import { formatGitStatus } from '../domain/paths.js'
 import { stickyPromptFromViewport } from '../domain/viewport.js'
 import { messages, t as tr } from '../i18n/runtime.js'
+import type { GitStatus } from '../hooks/useGitBranch.js'
 import { buildSubagentTree, treeTotals, widthByDepth } from '../lib/subagentTree.js'
 import { useScrollbarSnapshot, useViewportSnapshot } from '../lib/viewportStore.js'
 import type { Theme } from '../theme.js'
@@ -301,11 +303,50 @@ function noticeColor(level: Notice['level'], t: Theme): string {
   return t.color.accent
 }
 
-function ctxBar(pct: number | undefined, w = 10) {
-  const p = Math.max(0, Math.min(100, pct ?? 0))
-  const filled = Math.round((p / 100) * w)
+/** OMP-style elastic context rail. Labels replace rule cells, so the output is
+ * exactly `width` terminal cells and can safely occupy the remaining band. */
+export function contextRail(width: number, pct?: number, contextMax?: number) {
+  if (width <= 0) return ''
+  const percent = Math.max(0, Math.min(100, Math.round(pct ?? 0)))
+  const pctLabel = pct == null ? '--' : `${percent}%`
+  const maxLabel = contextMax ? compactNumber(contextMax) : '--'
+  const chars = Array.from({ length: width }, () => '─')
+  const maxStart = Math.max(0, width - maxLabel.length - 1)
+  const usable = Math.max(1, maxStart)
+  const used = Math.max(0, Math.min(usable - 1, Math.round((percent / 100) * usable)))
+  const pctStart = Math.max(
+    0,
+    Math.min(Math.max(0, maxStart - pctLabel.length - 1), used - Math.floor(pctLabel.length / 2))
+  )
 
-  return '█'.repeat(filled) + '░'.repeat(w - filled)
+  for (let i = 0; i < pctLabel.length && pctStart + i < width; i += 1) chars[pctStart + i] = pctLabel[i]!
+  if (width >= 16) {
+    // The gateway does not expose the threshold yet; Hermes's conventional
+    // automatic-compaction point is 80%, matching the visual marker in OMP.
+    const boundary = Math.min(Math.max(pctStart + pctLabel.length + 1, Math.round(usable * 0.8)), maxStart - 1)
+    if (boundary >= 0 && boundary < width) chars[boundary] = '┃'
+  }
+  for (let i = 0; i < maxLabel.length && maxStart + i < width; i += 1) chars[maxStart + i] = maxLabel[i]!
+
+  return chars.join('')
+}
+
+export function contextRailParts(width: number, pct?: number, contextMax?: number) {
+  const rail = contextRail(width, pct, contextMax)
+  const pctLabel = pct == null ? '--' : `${Math.max(0, Math.min(100, Math.round(pct)))}%`
+  const activeEnd = Math.max(0, rail.indexOf(pctLabel) + pctLabel.length)
+  const boundary = rail.indexOf('┃', activeEnd)
+  const maxLabel = contextMax ? compactNumber(contextMax) : '--'
+  const capacity = rail.lastIndexOf(maxLabel)
+
+  return {
+    active: rail.slice(0, activeEnd),
+    inactiveBeforeBoundary: rail.slice(activeEnd, boundary < 0 ? capacity : boundary),
+    boundary: boundary < 0 ? '' : rail.slice(boundary, boundary + 1),
+    inactiveAfterBoundary: rail.slice(boundary < 0 ? activeEnd : boundary + 1, capacity),
+    capacity: capacity < 0 ? '' : rail.slice(capacity, capacity + maxLabel.length),
+    tail: capacity < 0 ? '' : rail.slice(capacity + maxLabel.length)
+  }
 }
 
 // `minLeftContent` is the display width of the high-priority left segments
@@ -534,6 +575,9 @@ export function StatusRule({
   battery,
   focusView,
   cwdLabel,
+  pathLabel = '',
+  gitStatus = null,
+  personality = '',
   cols,
   busy,
   compacting = false,
@@ -559,9 +603,13 @@ export function StatusRule({
 }: StatusRuleProps) {
   // Not a hook: tests call StatusRule as a plain function, and the rule re-renders on every tick anyway.
   const T = messages()
-  const pct = usage.context_percent ?? undefined
+  // Derive the gauge percentage from the same used/max values printed in the
+  // HUD so `58k/1m` and the rail can never disagree due to stale provider pct.
+  const pct =
+    usage.context_max && usage.context_used != null
+      ? Math.max(0, Math.min(100, Math.round((usage.context_used / usage.context_max) * 100)))
+      : usage.context_percent ?? undefined
   const contextMark = usage.context_estimated ? '~' : ''
-  const barColor = ctxBarColor(pct, t)
   const segs = statusBarSegments(cols)
 
   // display.status_bar.fields visibility gate (same key + names as the
@@ -581,8 +629,16 @@ export function StatusRule({
           : ''
       : ''
 
-  const bar = !segs.compactCtx && usage.context_max && ok('context_pct') ? ctxBar(pct) : ''
   const modelText = modelLabel(model, modelReasoningEffort, modelFast, modelReasoningEffortWire)
+
+  // Workspace identity (Claude parity): contracted path + rich git state render
+  // as their own segments, so a named session no longer hides the repo.
+  const gitText = formatGitStatus(gitStatus)
+  const showPath = !!pathLabel && ok('path')
+  const showGit = !!gitText && (ok('git_status') || ok('git_branch'))
+  const personalityText = ['', 'default', 'none', 'neutral'].includes(personality.trim().toLowerCase())
+    ? ''
+    : personality.trim()
 
   // Battery read-out — the first (pinned) status-bar element when enabled.
   const showBattery = !!battery && battery.available && battery.percent != null && ok('battery')
@@ -619,10 +675,13 @@ export function StatusRule({
     slotWidth +
     stringWidth(' │ ') +
     stringWidth(modelText) +
-    (ctxLabel ? stringWidth(' │ ') + stringWidth(ctxLabel) : 0)
+    (ctxLabel ? stringWidth(' │ ') + stringWidth(ctxLabel) : 0) +
+    (showPath ? stringWidth(' │ ') + stringWidth(pathLabel) : 0) +
+    (showGit ? stringWidth(' ') + stringWidth(gitText) : 0)
 
-  const rightLabel = sessionTitle && ok('title') ? ` ${sessionTitle} ` : cwdLabel
-  const { leftWidth, rightWidth, separatorWidth } = statusRuleWidths(cols, rightLabel, essentialWidth)
+  const rightLabel =
+    sessionTitle && ok('title') ? ` ${sessionTitle} ` : showPath ? '' : ok('path') ? cwdLabel : ''
+  const { leftWidth } = statusRuleWidths(cols, rightLabel, essentialWidth)
 
   // Whole-segment progressive disclosure for the tail: a segment renders only
   // if it fits in the space left after the pinned essentials, evaluated in
@@ -654,7 +713,8 @@ export function StatusRule({
       ? `Δ ${(usage.dev_credits_spent_micros / 10000).toFixed(1)}¢`
       : ''
 
-  const showBar = !!bar && fits(SEP + stringWidth(`[${bar}] ${pct != null ? `${contextMark}${pct}%` : ''}`))
+  // The OMP rail below is the context-percent visualization; do not spend the
+  // first-row tail budget on the superseded bracket bar.
   const showDuration = segs.duration && ok('duration') && !!sessionStartedAt && fits(SEP + MAX_DURATION_WIDTH)
 
   // Idle clock — time since the last final agent response. Hidden while busy
@@ -705,6 +765,8 @@ export function StatusRule({
   // the indicator is that the user can never be in reduced-output mode without
   // seeing it, so it must not drop off a narrow terminal.
   const showFocus = !!focusView
+  // Personality is cheap and identity-bearing; budget it like a tail segment.
+  const showPersonality = !!personalityText && ok('personality') && fits(SEP + stringWidth(personalityText))
 
   const handleSessionCountClick = (event: { stopImmediatePropagation?: () => void }) => {
     event.stopImmediatePropagation?.()
@@ -720,20 +782,10 @@ export function StatusRule({
   )
 
   return (
-    <Box height={1}>
-      <Box flexDirection="row" flexShrink={1} overflow="hidden" width={leftWidth}>
-        {/* Leading pinned chrome: border + busy face / idle status. When a
-            notice occupies the slot the status text is dropped — the notice
-            renders as a separate shrinkable box below so a long notice
-            ellipsizes instead of crushing model │ ctx (R3-M7). */}
-        <Box flexDirection="row" flexShrink={0}>
-          <Text color={t.color.border}>{'─ '}</Text>
-          {showBattery ? (
-            <Text color={batteryColorVal}>
-              {batteryText}
-              <Text color={t.color.muted}>{' │ '}</Text>
-            </Text>
-          ) : null}
+    <Box flexDirection="column">
+      <Box height={1} justifyContent="space-between" overflow="hidden">
+        <Box flexShrink={1} overflow="hidden">
+          {showBattery ? <Text color={batteryColorVal}>{batteryText}  </Text> : null}
           {busy ? (
             <FaceTicker
               color={statusColor}
@@ -741,152 +793,117 @@ export function StatusRule({
               style={indicatorStyle}
               verbOverride={compacting ? T.status.compacting : undefined}
             />
-          ) : showNotice ? null : (
-            <Text color={statusColor} wrap="truncate-end">
-              {displayStatus(status)}
-            </Text>
+          ) : showNotice ? (
+            <Text color={noticeColor(notice!.level, t)}>{notice!.text}</Text>
+          ) : (
+            <Text color={statusColor}>{displayStatus(status)}</Text>
           )}
-        </Box>
-        {/* Notice slot — the only shrinkable left element (R3-M7). Sits in a
-            flexShrink={1} box with truncate-end so it yields/ellipsizes
-            before the pinned model │ ctx box ever clips. */}
-        {showNotice ? (
-          <Box flexDirection="row" flexShrink={1} overflow="hidden">
-            <Text color={noticeColor(notice!.level, t)} wrap="truncate-end">
-              {notice!.text}
-            </Text>
-          </Box>
-        ) : null}
-        {/* Pinned essentials — model + context never shrink, always visible. */}
-        <Box flexDirection="row" flexShrink={0}>
-          {DEV_CREDITS_MODE ? (
-            <Text color={t.color.warn} wrap="truncate-end">
-              {T.status.devCredits}
-            </Text>
-          ) : null}
-          <Text color={t.color.muted} wrap="truncate-end">
-            {' │ '}
-            {modelText}
-          </Text>
-          {ctxLabel ? (
-            <Text color={t.color.muted} wrap="truncate-end">
-              {' │ '}
-              {ctxLabel}
-            </Text>
-          ) : null}
-        </Box>
-        {showFocus ? (
-          <Box flexDirection="row" flexShrink={0}>
-            <Text color={t.color.muted}>{' │ '}</Text>
-            <Text color={t.color.warn}>◉ focus</Text>
-          </Box>
-        ) : null}
-        {showBar ? (
-          <Text color={t.color.muted} wrap="truncate-end">
-            {' │ '}
-            <Text color={barColor}>[{bar}]</Text>{' '}
-            <Text color={barColor}>{pct != null ? `${contextMark}${pct}%` : ''}</Text>
-          </Text>
-        ) : null}
-        {showDuration ? (
-          <Text color={t.color.muted} wrap="truncate-end">
-            {' │ '}
-            <SessionDuration startedAt={sessionStartedAt!} />
-          </Text>
-        ) : null}
-        {showIdle ? (
-          <Text color={t.color.muted} wrap="truncate-end">
-            {' │ '}
-            <IdleSince endedAt={lastTurnEndedAt!} />
-          </Text>
-        ) : null}
-        {showCompressions ? (
-          <Text color={t.color.muted} wrap="truncate-end">
-            {' │ '}
+          {DEV_CREDITS_MODE ? <Text color={t.color.warn}>{T.status.devCredits}</Text> : null}
+          {ctxLabel ? <Text color={t.color.muted}>{`  ${ctxLabel}`}</Text> : null}
+          {showFocus ? <Text color={t.color.warn}>{'  ◉ focus'}</Text> : null}
+          {showDuration ? <Text color={t.color.muted}>  <SessionDuration startedAt={sessionStartedAt!} /></Text> : null}
+          {showIdle ? <Text color={t.color.muted}>  <IdleSince endedAt={lastTurnEndedAt!} /></Text> : null}
+          {showCompressions ? (
             <Text color={compressions >= 10 ? t.color.error : compressions >= 5 ? t.color.warn : t.color.muted}>
-              {T.status.compressions(compressions)}
+              {`  ${T.status.compressions(compressions)}`}
             </Text>
-          </Text>
-        ) : null}
-        {showCacheHit ? (
-          <Text color={t.color.muted} wrap="truncate-end">
-            {' │ '}
-            <Text
-              color={
-                usage.cache_hit_pct! >= 70
-                  ? t.color.statusGood
-                  : usage.cache_hit_pct! >= 40
-                    ? t.color.statusWarn
-                    : t.color.muted
-              }
-            >
-              {cacheHitText}
+          ) : null}
+          {showCacheHit ? <Text color={t.color.statusGood}>{`  ${cacheHitText}`}</Text> : null}
+          {showLatency ? <Text color={t.color.muted}>{`  ${latencyText}`}</Text> : null}
+          {showTps && !busy ? <Text color={t.color.muted}>{`  ${tpsText}`}</Text> : null}
+          {showVoice ? (
+            <Text color={voiceLabel!.startsWith('●') ? t.color.error : voiceLabel!.startsWith('◉') ? t.color.warn : t.color.muted}>
+              {`  ${voiceLabel}`}
             </Text>
-          </Text>
-        ) : null}
-        {showLatency ? (
-          <Text color={t.color.muted} wrap="truncate-end">
-            {' │ '}
-            {latencyText}
-          </Text>
-        ) : null}
-        {showTps ? (
-          <Text color={t.color.muted} wrap="truncate-end">
-            {' │ '}
-            {tpsText}
-          </Text>
-        ) : null}
-        {showVoice ? (
-          <Text
-            color={
-              voiceLabel!.startsWith('●') ? t.color.error : voiceLabel!.startsWith('◉') ? t.color.warn : t.color.muted
-            }
-            wrap="truncate-end"
-          >
-            {' │ '}
-            {voiceLabel}
-          </Text>
-        ) : null}
-        {showSessionCount ? sessionCountNode : null}
-        {showBg ? (
-          <Text color={t.color.muted} wrap="truncate-end">
-            {' │ '}
-            {T.status.bgTasks(bgCount)}
-          </Text>
-        ) : null}
-        {showSubagents ? (
-          <Text color={t.color.muted} wrap="truncate-end">
-            {' │ '}⛓ {subagentCount}
-          </Text>
-        ) : null}
-        {showResumeHint ? (
-          <Text color={t.color.muted} dim wrap="truncate-end">
-            {' │ '}
-            {resumeHintText}
-          </Text>
-        ) : null}
-        {showDevCredits ? (
-          <Text color={t.color.accent} wrap="truncate-end">
-            {' │ '}
-            {devCreditsText}
-          </Text>
-        ) : null}
-        {/* SpawnHud isn't part of the tail budget (its width is dynamic), so it
-            renders last — any overflow truncates the HUD itself rather than the
-            budgeted segments before it. It self-hides when no delegation runs. */}
-        <SpawnHud t={t} />
+          ) : null}
+          {showSubagents ? <Text color={t.color.muted}>{`  ⛓ ${subagentCount}`}</Text> : null}
+          {showResumeHint ? <Text color={t.color.muted}>{`  ${resumeHintText}`}</Text> : null}
+          {showSessionCount ? sessionCountNode : null}
+          {showBg ? <Text color={t.color.muted}>{`  ${T.status.bgTasks(bgCount)}`}</Text> : null}
+          {showDevCredits ? <Text color={t.color.accent}>{`  ${devCreditsText}`}</Text> : null}
+          <SpawnHud t={t} />
+        </Box>
+        <Box flexShrink={0}>
+          {busy && typeof usage.avg_tps === 'number' ? (
+            <Text color={t.color.muted}>{`⚡ ${usage.avg_tps.toFixed(1)} tok/s`}</Text>
+          ) : null}
+          {sessionTitle && ok('title') ? <Text bold color={t.color.accent}>{`${busy && typeof usage.avg_tps === 'number' ? '  ' : ''}${sessionTitle}`}</Text> : null}
+        </Box>
       </Box>
+      {OmpStatusBand({
+        cols,
+        gitStatus: showGit ? gitStatus : null,
+        model: modelText,
+        path: showPath ? pathLabel : '',
+        pct: ok('context_pct') ? pct : undefined,
+        contextMax: ok('context_detail') || ok('context_pct') ? usage.context_max ?? undefined : undefined,
+        personality: showPersonality ? personalityText : '',
+        t
+      })}
+    </Box>
+  )
+}
 
-      {rightWidth > 0 ? (
-        <>
-          <Text color={t.color.border}>{separatorWidth >= 3 ? ' ─ ' : ' '}</Text>
-          <Box flexShrink={0} width={rightWidth}>
-            <Text bold={!!sessionTitle} color={sessionTitle ? t.color.accent : t.color.label} wrap="truncate-end">
-              {rightLabel}
-            </Text>
-          </Box>
-        </>
-      ) : null}
+function OmpStatusBand({
+  cols,
+  contextMax,
+  gitStatus,
+  model,
+  path,
+  pct,
+  personality,
+  t
+}: {
+  cols: number
+  contextMax?: number
+  gitStatus: GitStatus | null
+  model: string
+  path: string
+  pct?: number
+  personality: string
+  t: Theme
+}) {
+  const dirty = !!gitStatus &&
+    gitStatus.conflicted + gitStatus.staged + gitStatus.modified + gitStatus.untracked > 0
+  const counters = gitStatus
+    ? [
+        gitStatus.conflicted ? `=${gitStatus.conflicted}` : '',
+        gitStatus.staged ? `+${gitStatus.staged}` : '',
+        gitStatus.modified ? `!${gitStatus.modified}` : '',
+        gitStatus.untracked ? `?${gitStatus.untracked}` : '',
+        gitStatus.ahead ? `⇡${gitStatus.ahead}` : '',
+        gitStatus.behind ? `⇣${gitStatus.behind}` : ''
+      ].filter(Boolean)
+    : []
+  const gitLabel = gitStatus?.branch ? `${gitStatus.branch}${counters.length ? ` ${counters.join(' ')}` : ''}` : ''
+  const fullPath = path
+  const shortPath = path.split('/').filter(Boolean).slice(-2).join('/') || path
+  const modelSegment = ` ◉ ${model}${personality ? ` ${personality}` : ''} `
+  const gitSegment = gitLabel ? ` ⑂ ${gitLabel} ` : ''
+  const brand = ' ☤ '
+  const availableForPath = Math.max(0, cols - stringWidth(brand + modelSegment + gitSegment) - 18)
+  const selectedPath = availableForPath >= stringWidth(` ${fullPath} `) ? fullPath : shortPath
+  const pathSegment = availableForPath >= 8 && selectedPath ? ` ${selectedPath} ` : ''
+  const fixedWidth = stringWidth(brand + modelSegment + pathSegment + gitSegment)
+  const gaugeWidth = Math.max(1, cols - fixedWidth)
+  const rail = contextRailParts(gaugeWidth, pct, contextMax)
+
+  return (
+    <Box height={1} width={cols}>
+      <Box backgroundColor={t.color.statusBg} flexShrink={0}>
+        <Text color={t.color.muted}>{brand}</Text>
+        <Text bold color={t.color.accent}>{modelSegment}</Text>
+        {pathSegment ? <Text color={t.color.primary}>{pathSegment}</Text> : null}
+        {gitSegment ? <Text color={dirty ? t.color.statusWarn : t.color.statusGood}>{gitSegment}</Text> : null}
+      </Box>
+      <Text color={t.color.border} wrap="truncate-end">
+        <Text color={ctxBarColor(pct, t)}>{rail.active}</Text>
+        {rail.inactiveBeforeBoundary}
+        <Text color={t.color.accent} dim>{rail.boundary}</Text>
+        {rail.inactiveAfterBoundary}
+        <Text color={t.color.accent} dim>{rail.capacity}</Text>
+        {rail.tail}
+      </Text>
     </Box>
   )
 }
@@ -997,6 +1014,12 @@ interface StatusRuleProps {
   compacting?: boolean
   cols: number
   cwdLabel: string
+  // Claude-style workspace segments: contracted path + rich git state, kept
+  // separate from `cwdLabel` so each can be coloured and budgeted on its own.
+  pathLabel?: string
+  gitStatus?: GitStatus | null
+  // Active personality — Hermes's equivalent of Claude's output_style.
+  personality?: string
   model: string
   modelFast?: boolean
   modelReasoningEffort?: string

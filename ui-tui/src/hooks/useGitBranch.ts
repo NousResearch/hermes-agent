@@ -3,39 +3,101 @@ import { promisify } from 'node:util'
 
 import { useEffect, useState } from 'react'
 
-const TTL_MS = 15_000
-const TIMEOUT_MS = 500
+const TTL_MS = 5_000
+const TIMEOUT_MS = 750
 
 const pexec = promisify(execFile)
-const cache = new Map<string, { at: number; branch: null | string }>()
-const inflight = new Map<string, Promise<null | string>>()
 
-const resolveBranch = async (cwd: string): Promise<null | string> => {
+export interface GitStatus {
+  ahead: number
+  behind: number
+  branch: null | string
+  conflicted: number
+  modified: number
+  staged: number
+  untracked: number
+}
+
+export const EMPTY_GIT_STATUS: GitStatus = {
+  ahead: 0,
+  behind: 0,
+  branch: null,
+  conflicted: 0,
+  modified: 0,
+  staged: 0,
+  untracked: 0
+}
+
+const cache = new Map<string, { at: number; status: GitStatus }>()
+const inflight = new Map<string, Promise<GitStatus>>()
+
+// One `--porcelain=v2 --branch` read supplies branch plus every dirty/divergence
+// counter. `--no-optional-locks` keeps a status-bar repaint from contending with
+// a concurrent git process (same reason the Claude status line uses it).
+export const parseGitStatus = (text: string): GitStatus => {
+  const result = { ...EMPTY_GIT_STATUS }
+
+  for (const line of text.split('\n')) {
+    if (line.startsWith('# branch.head ')) {
+      const branch = line.slice('# branch.head '.length).trim()
+
+      result.branch = branch === '(detached)' ? 'detached' : branch || null
+    } else if (line.startsWith('# branch.ab ')) {
+      const match = line.match(/\+(\d+)\s+-(\d+)/)
+
+      if (match) {
+        result.ahead = Number(match[1])
+        result.behind = Number(match[2])
+      }
+    } else if (line.startsWith('1 ') || line.startsWith('2 ')) {
+      const xy = line.split(/\s+/)[1] ?? '..'
+
+      if ((xy[0] ?? '.') !== '.') {
+        result.staged += 1
+      }
+
+      if ((xy[1] ?? '.') !== '.') {
+        result.modified += 1
+      }
+    } else if (line.startsWith('u ')) {
+      result.conflicted += 1
+    } else if (line.startsWith('? ')) {
+      result.untracked += 1
+    }
+  }
+
+  return result
+}
+
+const resolveStatus = async (cwd: string): Promise<GitStatus> => {
   try {
-    const { stdout } = await pexec('git', ['-C', cwd, 'rev-parse', '--abbrev-ref', 'HEAD'], { timeout: TIMEOUT_MS })
-    const b = stdout.trim()
+    const { stdout } = await pexec(
+      'git',
+      ['-C', cwd, '--no-optional-locks', 'status', '--porcelain=v2', '--branch'],
+      { timeout: TIMEOUT_MS }
+    )
 
-    return !b || b === 'HEAD' ? null : b
+    return parseGitStatus(stdout)
   } catch {
-    return null
+    return { ...EMPTY_GIT_STATUS }
   }
 }
 
-const fetchBranch = (cwd: string): Promise<null | string> => {
+const fetchStatus = (cwd: string): Promise<GitStatus> => {
   const pending = inflight.get(cwd)
 
   if (pending) {
     return pending
   }
 
-  const p = resolveBranch(cwd).finally(() => inflight.delete(cwd))
-  inflight.set(cwd, p)
+  const request = resolveStatus(cwd).finally(() => inflight.delete(cwd))
+  inflight.set(cwd, request)
 
-  return p
+  return request
 }
 
-export function useGitBranch(cwd: string): null | string {
-  const [branch, setBranch] = useState<null | string>(() => cache.get(cwd)?.branch ?? null)
+export function useGitStatus(cwd: string): GitStatus {
+  const [status, setStatus] = useState<GitStatus>(() => cache.get(cwd)?.status ?? { ...EMPTY_GIT_STATUS })
 
   useEffect(() => {
     let cancelled = false
@@ -45,17 +107,17 @@ export function useGitBranch(cwd: string): null | string {
 
       if (hit && Date.now() - hit.at < TTL_MS) {
         if (!cancelled) {
-          setBranch(hit.branch)
+          setStatus(hit.status)
         }
 
         return
       }
 
-      const b = await fetchBranch(cwd)
-      cache.set(cwd, { at: Date.now(), branch: b })
+      const next = await fetchStatus(cwd)
+      cache.set(cwd, { at: Date.now(), status: next })
 
       if (!cancelled) {
-        setBranch(b)
+        setStatus(next)
       }
     }
 
@@ -68,5 +130,9 @@ export function useGitBranch(cwd: string): null | string {
     }
   }, [cwd])
 
-  return branch
+  return status
+}
+
+export function useGitBranch(cwd: string): null | string {
+  return useGitStatus(cwd).branch
 }

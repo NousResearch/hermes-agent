@@ -161,6 +161,56 @@ describe('StatusRule session title', () => {
     expect(title?.props.backgroundColor).toBeUndefined()
     expect(title?.props.color).toBe(DEFAULT_THEME.color.accent)
   })
+
+  it('keeps Claude-style workspace state visible alongside a named session', () => {
+    const rendered = textContent(
+      StatusRule({
+        ...baseProps,
+        cols: 180,
+        gitStatus: {
+          ahead: 2,
+          behind: 1,
+          branch: 'feature/status',
+          conflicted: 1,
+          modified: 3,
+          staged: 2,
+          untracked: 4
+        },
+        pathLabel: '~/projects/hermes',
+        personality: 'proactive',
+        sessionTitle: 'weekly-digest'
+      })
+    )
+
+    expect(rendered).toContain('~/projects/hermes')
+    expect(rendered).toContain('feature/status =1 +2 !3 ?4 ⇡2 ⇣1')
+    expect(rendered).toContain('proactive')
+    expect(rendered).toContain('weekly-digest')
+  })
+
+  it('suppresses baseline personalities and honors workspace field gates', () => {
+    const hidden = textContent(
+      StatusRule({
+        ...baseProps,
+        gitStatus: {
+          ahead: 0,
+          behind: 0,
+          branch: 'main',
+          conflicted: 0,
+          modified: 1,
+          staged: 0,
+          untracked: 0
+        },
+        pathLabel: '~/repo',
+        personality: 'default',
+        statusBarFields: new Set(['model'])
+      })
+    )
+
+    expect(hidden).not.toContain('~/repo')
+    expect(hidden).not.toContain('main !1')
+    expect(hidden).not.toContain('default')
+  })
 })
 
 describe('StatusRule background-subagent indicator', () => {

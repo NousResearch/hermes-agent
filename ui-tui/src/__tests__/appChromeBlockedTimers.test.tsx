@@ -162,6 +162,9 @@ const layoutProps: AppLayoutProps = {
   progress: { showProgressArea: false },
   status: {
     cwdLabel: '~/repo',
+    gitStatus: null,
+    pathLabel: '~/repo',
+    personality: '',
     goodVibesTick: 0,
     lastTurnEndedAt: T0 - 5_000,
     sessionStartedAt: T0 - 60_000,

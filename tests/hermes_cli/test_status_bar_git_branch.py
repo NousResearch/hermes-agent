@@ -41,9 +41,9 @@ def test_current_git_branch_reads_head_and_worktree_pointer(tmp_path):
     assert current_git_branch(str(plain)) == ""
 
 
-def test_git_branch_segment_is_opt_in(monkeypatch, tmp_path):
-    """The ⎇ segment renders only when 'git_branch' is in the configured field list —
-    default field set (None) never probes or shows it."""
+def test_git_branch_segment_renders_by_default_and_when_named(monkeypatch, tmp_path):
+    """Branch state is Claude-parity chrome: it shows with the default field set and
+    still resolves when a config names only ``git_branch``."""
     repo = tmp_path / "repo"
     (repo / ".git").mkdir(parents=True)
     (repo / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
@@ -53,18 +53,19 @@ def test_git_branch_segment_is_opt_in(monkeypatch, tmp_path):
     cli_obj = _make_cli()
     cli_obj._status_bar_field_set_cache = None  # default set
     snapshot = cli_obj._get_status_bar_snapshot()
-    assert snapshot["git_branch"] == ""
+    assert snapshot["git_branch"] == "main"
     text = "".join(
         t for seg in cli_obj._status_bar_segments(
             snapshot, 120, None, False, styled=False) for _, t in seg)
-    assert "⎇" not in text
+    assert " main" in text
 
     cli_obj2 = _make_cli()
     fields = frozenset({"model", "git_branch"})
     cli_obj2._status_bar_field_set_cache = fields
+    status_bar_git._cache.clear()
     snapshot2 = cli_obj2._get_status_bar_snapshot()
     assert snapshot2["git_branch"] == "main"
     text2 = "".join(
         t for seg in cli_obj2._status_bar_segments(
             snapshot2, 120, fields, False, styled=False) for _, t in seg)
-    assert "⎇ main" in text2
+    assert " main" in text2

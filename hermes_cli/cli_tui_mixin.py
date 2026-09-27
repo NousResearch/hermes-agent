@@ -97,6 +97,9 @@ class CLITuiMixin:
             raise ValueError(f"Unknown input rule position: {position}")
         if getattr(self, "_status_bar_suppressed_after_resize", False):
             return 0
+        if getattr(self, "_status_bar_visible", False):
+            # In band mode the status row itself is the composer's top border.
+            return 0
         if position == "top":
             return 1
         return 0 if self._use_minimal_tui_chrome(width=width) else 1
@@ -302,6 +305,8 @@ class CLITuiMixin:
             return _state_fragment("class:prompt-working", "☤")
         if self._voice_mode:
             return _state_fragment("class:voice-prompt", "🎤")
+        if not compact and getattr(self, "_status_bar_visible", False):
+            return [("class:prompt", "; ")]
         return [("class:prompt", symbol)]
 
     def _get_tui_prompt_text(self) -> str:

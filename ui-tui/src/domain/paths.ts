@@ -1,3 +1,5 @@
+import type { GitStatus } from '../hooks/useGitBranch.js'
+
 export const shortCwd = (cwd: string, max = 28) => {
   const h = process.env.HOME
   const p = h && cwd.startsWith(h) ? `~${cwd.slice(h.length)}` : cwd
@@ -65,4 +67,52 @@ export const composeTabTitle = (
   const segments = [shortName, model, cwd].filter(Boolean)
 
   return segments.length ? `${marker} ${segments.join(' · ')}` : marker
+}
+
+// Fish-style contraction: keep only the final component in full and contract
+// every parent to its first character (dot-dirs keep the dot), e.g.
+// `/private/tmp/hermes-tui-vim` → `/p/t/hermes-tui-vim`.
+export const formatStatusPath = (cwd: string, keep = 1, fishLen = 1): string => {
+  const home = process.env.HOME ?? ''
+  const path = home && cwd === home ? '~' : home && cwd.startsWith(`${home}/`) ? `~/${cwd.slice(home.length + 1)}` : cwd
+
+  if (path === '~' || path === '/') {
+    return path
+  }
+
+  const prefix = path.startsWith('~/') ? '~' : ''
+  const parts = path.replace(/^~\//, '').replace(/^\//, '').split('/').filter(Boolean)
+
+  if (parts.length <= keep) {
+    return prefix ? `~/${parts.join('/')}` : `/${parts.join('/')}`
+  }
+
+  const front = parts.slice(0, parts.length - keep).map(part => {
+    const width = part.startsWith('.') ? fishLen + 1 : fishLen
+
+    return part.length > width ? part.slice(0, width) : part
+  })
+
+  const body = [...front, ...parts.slice(-keep)].join('/')
+
+  return prefix ? `~/${body}` : `/${body}`
+}
+
+// Deterministic glyph order, matching the classic CLI renderer:
+// `= conflicted`, `+ staged`, `! modified`, `? untracked`, `⇡ ahead`, `⇣ behind`.
+export const formatGitStatus = (status: GitStatus | null): string => {
+  if (!status?.branch) {
+    return ''
+  }
+
+  const counters: [number, string][] = [
+    [status.conflicted, '='],
+    [status.staged, '+'],
+    [status.modified, '!'],
+    [status.untracked, '?'],
+    [status.ahead, '⇡'],
+    [status.behind, '⇣']
+  ]
+
+  return [` ${status.branch}`, ...counters.filter(([n]) => n > 0).map(([n, glyph]) => `${glyph}${n}`)].join(' ')
 }

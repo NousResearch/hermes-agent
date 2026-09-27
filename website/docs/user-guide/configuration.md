@@ -2249,7 +2249,7 @@ display:
   show_reasoning: true    # Show model reasoning/thinking above each response (default: true; toggle with /reasoning show|hide)
   streaming: false        # Stream tokens to terminal as they arrive (real-time output)
   show_cost: false        # Show estimated $ cost in the CLI status bar
-  vim_mode: false         # CLI only: vi/vim keybindings in the input composer (Esc → NORMAL, i → INSERT). The live NORMAL/INSERT/REPLACE mode shows at the right of the status bar. Config-only, read at startup.
+  vim_mode: false         # CLI/TUI: vi/vim keybindings in the input composer (Esc → NORMAL, i → INSERT). The live mode shows in terminal chrome. Config-only, read at startup.
   timestamps: false       # When true, prefixes user and assistant labels with timestamps in the CLI / TUI transcript
   timestamp_format: "%H:%M"  # strftime format for those timestamps (e.g. "%b-%d %H:%M" for month-day)
   tool_preview_length: 0  # Max chars for tool call previews (0 = no limit, show full paths/commands)
@@ -2366,7 +2366,7 @@ Focus view is **display-only**. It never edits conversation history, the system 
 
 ### Status-bar field selection (CLI/TUI)
 
-The interactive status bar at the bottom of the CLI/TUI shows the model, context usage, compression count, background-activity counters, timers, and mode badges. `display.status_bar.fields` chooses which of those are visible — useful for a minimal bar (just model + duration) or for surfacing the opt-in session token total:
+The interactive status bar at the bottom of the CLI/TUI shows the contracted working path, live Git state, model, context usage, compression count, background-activity counters, timers, and mode badges. `display.status_bar.fields` chooses which of those are visible — useful for a minimal bar (just model + duration) or for surfacing the opt-in session token total:
 
 ```yaml
 display:
@@ -2374,16 +2374,16 @@ display:
     fields: ["model", "duration", "total_tokens"]   # visibility only; built-in order is preserved
 ```
 
-Supported fields: `model`, `context_detail` (used/total tokens), `context_pct` (percent + meter), `cache_hit` (prompt cache hit ratio — resets on model switch and compression), `latency` (rolling mean API latency, last 10 calls), `tps` (rolling output tokens/sec, last 10 calls), `compressions`, `bg_tasks`, `bg_processes`, `bg_subagents`, `goal`, `git_branch` (⎇ current git branch of the working directory — opt-in only, never shown by default; detached HEAD shows the abbreviated commit), `duration`, `prompt_elapsed`, `idle_since`, `focus`, `yolo`, `stash`, `battery`, `title` (right-aligned session badge), and `total_tokens` (session Σ — opt-in only, never shown by default).
+Supported fields: `path` (home-relative path with leading components contracted and the last eight preserved), `git_status` (branch plus `=N` conflicted, `+N` staged, `!N` modified, `?N` untracked, `⇡N` ahead, and `⇣N` behind), `personality` (the active non-default personality; Hermes's equivalent of Claude's output style), `model`, `context_detail` (used/total tokens), `context_pct` (percent + meter), `cache_hit` (prompt cache hit ratio — resets on model switch and compression), `latency` (rolling mean API latency, last 10 calls), `tps` (rolling output tokens/sec, last 10 calls), `compressions`, `bg_tasks`, `bg_processes`, `bg_subagents`, `goal`, `git_branch` (compatibility alias for `git_status`), `duration`, `prompt_elapsed`, `idle_since`, `focus`, `yolo`, `stash`, `battery`, `title` (right-aligned session badge), and `total_tokens` (session Σ — opt-in only, never shown by default).
 
 Notes:
 
-- An empty list (the default) keeps the standard set — everything except `total_tokens` and `git_branch`.
+- An empty list (the default) keeps the standard set, including `path` and `git_status`; `personality` occupies no space when the active personality is empty, `default`, `none`, or `neutral`. `total_tokens` remains opt-in.
 - The config controls **visibility, not order**; fields render in their built-in positions.
 - Narrow terminals still drop wide-mode-only fields (`context_detail`, `cache_hit`, `latency`, `tps`, `prompt_elapsed`, `idle_since`) regardless of config (`cache_hit` also shows in the medium ≥52-col tier).
 - `latency`/`tps` stay hidden until API calls have been recorded (e.g. the Codex app-server backend reports no latency).
 - `battery` and `title` visibility here compose with their own toggles (`/battery`, `/title`) — both must be on for the segment to show.
-- The same key also filters the **Ink TUI** status rule (`hermes tui`), where `cache_hit`, `latency`, and `tps` render as width-budgeted tail segments (◎ / ◷ / ↑) on terminals ≥96/104/110 columns respectively.
+- The same key also filters the **Ink TUI** status rule (`hermes --tui`), where workspace/Git appear independently of the session title and `cache_hit`, `latency`, and `tps` render as width-budgeted tail segments (◎ / ◷ / ↑) on terminals ≥96/104/110 columns respectively.
 - Display-only: no effect on prompt caching or request payloads. Changes take effect on the next session start.
 
 ### Runtime-metadata footer (gateway only)

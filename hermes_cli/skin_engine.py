@@ -521,6 +521,11 @@ _STYLE_TEMPLATES = {
     "status-bar-dim": "bg:{status_bg} {status_dim}", "status-bar-good": "bg:{status_bg} {status_good} bold",
     "status-bar-warn": "bg:{status_bg} {status_warn} bold", "status-bar-bad": "bg:{status_bg} {status_bad} bold",
     "status-bar-critical": "bg:{status_bg} {status_critical} bold",
+    # OMP-style context rail sits on the terminal background; only the intrinsic
+    # model/path/git group uses the subtle status-bar fill.
+    "status-gauge-dim": "{status_dim}", "status-gauge-strong": "{status_strong} bold",
+    "status-gauge-good": "{status_good} bold", "status-gauge-warn": "{status_warn} bold",
+    "status-gauge-bad": "{status_bad} bold", "status-gauge-critical": "{status_critical} bold",
     "subagent-dock": "bg:{status_bg} {status_text}",
     "subagent-dock.heading": "bg:{status_bg} {status_strong} bold",
     "subagent-dock.selected": "bg:{menu_current_bg} {text} bold",

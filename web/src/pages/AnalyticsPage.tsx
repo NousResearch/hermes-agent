@@ -17,6 +17,7 @@ import type {
   AnalyticsSkillEntry,
 } from "@/lib/api";
 import { timeAgo } from "@/lib/utils";
+import { intlTag } from "@hermes/shared/i18n";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { Stats } from "@nous-research/ui/ui/components/stats";
@@ -43,7 +44,7 @@ function formatTokens(n: number): string {
 function formatDate(day: string): string {
   try {
     const d = new Date(day + "T00:00:00");
-    return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    return d.toLocaleDateString(intlTag(), { month: "short", day: "numeric" });
   } catch {
     return day;
   }

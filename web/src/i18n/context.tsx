@@ -1,4 +1,4 @@
-import { applyDocumentLocale } from "@hermes/shared/i18n";
+import { applyDocumentLocale, setRuntimeFormatLocale } from "@hermes/shared/i18n";
 import { createContext, useContext, useState, useCallback, useEffect, type ReactNode } from "react";
 import type { Locale, Translations } from "./types";
 import { en } from "./en";
@@ -84,6 +84,10 @@ export function I18nProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     applyDocumentLocale(locale);
+    // Every Intl.* formatter that should follow the UI language (dates,
+    // numbers, relative time) resolves its tag through this registration —
+    // without it they key off the ambient browser locale instead.
+    setRuntimeFormatLocale(locale);
   }, [locale]);
 
   const value: I18nContextValue = {

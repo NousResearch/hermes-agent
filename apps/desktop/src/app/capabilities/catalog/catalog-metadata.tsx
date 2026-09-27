@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { getRuntimeI18nLocale } from '@/i18n/runtime'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -45,7 +46,7 @@ export function CatalogHeaderMeta({ entry }: { entry: CatalogEntry }) {
       {entry.stars !== null && entry.stars > 0 && (
         <span className="flex shrink-0 items-center gap-0.5 text-[0.65rem] text-(--ui-text-tertiary)">
           <span aria-hidden>★</span>
-          {entry.stars.toLocaleString()}
+          {entry.stars.toLocaleString(getRuntimeI18nLocale())}
         </span>
       )}
     </span>

@@ -1,4 +1,5 @@
 import { createCronTriggerController, type CronTriggerController } from '@hermes/shared'
+import { getRuntimeI18nLocale } from '@/i18n/runtime'
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import type * as React from 'react'
@@ -170,7 +171,7 @@ function formatCronTime(minute: string, hour: string): string {
     return `${hour}:${minute}`
   }
 
-  return new Date(2000, 0, 1, numericHour, numericMinute).toLocaleTimeString(undefined, {
+  return new Date(2000, 0, 1, numericHour, numericMinute).toLocaleTimeString(getRuntimeI18nLocale(), {
     hour: 'numeric',
     minute: '2-digit'
   })
@@ -278,7 +279,7 @@ function formatTime(iso?: null | string): string {
     return iso
   }
 
-  return date.toLocaleString()
+  return date.toLocaleString(getRuntimeI18nLocale())
 }
 
 function matchesQuery(job: CronJob, q: string): boolean {
@@ -879,7 +880,7 @@ function formatRunTime(seconds?: null | number): string {
 
   const date = new Date(seconds * 1000)
 
-  return Number.isNaN(date.valueOf()) ? '—' : date.toLocaleString()
+  return Number.isNaN(date.valueOf()) ? '—' : date.toLocaleString(getRuntimeI18nLocale())
 }
 
 // Script-only (no_agent) jobs have no agent sessions; the runs endpoint

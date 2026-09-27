@@ -1,6 +1,7 @@
 import { stripAnsi } from '@hermes/shared/ansi'
 
 import { type ToolTitleKey, translateNow } from '@/i18n'
+import { getRuntimeI18nLocale } from '@/i18n/runtime'
 import { normalizeExternalUrl } from '@/lib/external-link'
 import { isFileMediaPath, mediaKind } from '@/lib/media'
 import { summarizeShellCommand } from '@/lib/summarize-command'
@@ -898,7 +899,7 @@ function formatCronTime(iso: string): string {
     return iso
   }
 
-  return new Date(ts).toLocaleString(undefined, {
+  return new Date(ts).toLocaleString(getRuntimeI18nLocale(), {
     month: 'short',
     day: 'numeric',
     hour: '2-digit',

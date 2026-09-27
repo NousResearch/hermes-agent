@@ -38,6 +38,7 @@ import {
   useValue
 } from '@hermes/plugin-sdk'
 import { useState } from 'react'
+import { getRuntimeI18nLocale } from '@/i18n/runtime'
 
 import { avatarColor, botAppearance, BotFace } from './avatar'
 import { $focusedBotOwner, $selectedBot, focusedRosterOwner } from './bot-state'
@@ -330,7 +331,7 @@ function scheduleLabel(schedule: string | undefined): string {
 function routineTimestamp(value: string | undefined): null | string {
   const ms = value ? new Date(value).getTime() : Number.NaN
 
-  return Number.isFinite(ms) ? `${relativeTime(ms)} · ${new Date(ms).toLocaleString()}` : null
+  return Number.isFinite(ms) ? `${relativeTime(ms)} · ${new Date(ms).toLocaleString(getRuntimeI18nLocale())}` : null
 }
 
 /** The scheduler's `last_status` literals, spelled out for the inspector. The

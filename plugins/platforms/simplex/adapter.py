@@ -118,6 +118,7 @@ class SimplexAdapter(BasePlatformAdapter):
         self._pending_file_transfers: Dict[int, dict] = {}  # awaiting rcvFileComplete, by fileId
         self._pending_responses: Dict[str, asyncio.Future] = {}  # awaited command replies
         self._corr_counter = 0
+        self._allowlist_warned = False  # name-entry allowlist warning fires once per adapter
         # SimpleX has no client-side split, so the split delay equals the plain one.
         self._text_batch_delay_seconds = float(os.getenv("HERMES_SIMPLEX_TEXT_BATCH_DELAY", "0.8"))
         self._text_batch_split_delay_seconds = self._text_batch_delay_seconds
@@ -134,6 +135,15 @@ class SimplexAdapter(BasePlatformAdapter):
         if not self.ws_url:
             logger.error("SimpleX: SIMPLEX_WS_URL is required")
             return False
+        # Once per adapter, before the probe so a daemon-down cold boot still warns (later connects
+        # arrive as is_reconnect=True). Scoped read matches what authz enforces for this profile.
+        if not self._allowlist_warned:
+            self._allowlist_warned = True
+            names = [u for u in _parse_comma_list(_get_scoped_secret("SIMPLEX_ALLOWED_USERS", "") or "")
+                     if u != "*" and not u.isdigit()]
+            if names:
+                logger.warning("SimpleX: SIMPLEX_ALLOWED_USERS entries %s are not numeric contactIds and are ignored "
+                               "(display names are not trusted; see /contacts for IDs)", names)
         try:  # quick connectivity check — open and immediately close
             async with _wsclient.connect(self.ws_url, open_timeout=10):
                 pass
@@ -146,10 +156,6 @@ class SimplexAdapter(BasePlatformAdapter):
         self._health_task = asyncio.create_task(self._health_monitor())
         self._mark_connected()
         logger.info("SimpleX: connected to %s", self.ws_url)
-        names = [u for u in os.getenv("SIMPLEX_ALLOWED_USERS", "").split(",") if u.strip() not in ("", "*") and not u.strip().isdigit()]
-        if names and not is_reconnect:
-            logger.warning("SimpleX: SIMPLEX_ALLOWED_USERS entries %s are not numeric contactIds and are ignored "
-                           "(display names are not trusted; see /contacts for IDs)", names)
         self._wire_plugin_handlers(None)
         return True
 

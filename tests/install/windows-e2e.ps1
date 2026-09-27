@@ -1678,18 +1678,27 @@ function Invoke-PhaseVerifyStamp {
     } finally { $ErrorActionPreference = $prevEap }
     $verdict | ForEach-Object { Write-Host $_ }
     if ($verifyExit -eq 0) { return }
-    # Gated on #124949: Hermes-Setup.exe replaces install.ps1's receipt with its
-    # own ("completedAtUnix", and a null pinnedCommit when git is not on PATH).
-    # Only that writer's exact two failures are gated; any other FAIL line, or
-    # the same lines on a receipt the Rust installer did not write, stays red.
+    # Permanent legacy shape, not a pending fix: the released Hermes-Setup.exe
+    # replaces install.ps1's receipt with its own (#124949): "completedAtUnix"
+    # (epoch seconds) instead of "completedAt", and a null pinnedCommit when git
+    # is not on PATH. #125053 fixed the writer, but the installer .exe is not
+    # rebuilt, so every Desktop-installer machine carries this receipt until the
+    # next `hermes update` rewrites it (hermes_cli/source_stamp.py). No reader
+    # depends on those two fields: Desktop's launch gate is runtime usability,
+    # and the receipt's other readers check only that it exists. So the contract
+    # for that shape is: exactly those two FAIL lines, an integer
+    # completedAtUnix, and the checkout itself at the expected commit. Any other
+    # FAIL line, or the same lines on a receipt without completedAtUnix, stays red.
     $receipt = Get-Content -LiteralPath $stampPath -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json -ErrorAction SilentlyContinue
     $fails = @($verdict | Where-Object { $_ -match '^FAIL: ' })
-    $gated = '^FAIL: (pinnedCommit None is not a full 40-char lowercase hex sha|completedAt None is missing)$'
-    $rustReceipt = $receipt -and ($receipt.PSObject.Properties.Name -contains 'completedAtUnix')
-    if ($rustReceipt -and $fails.Count -and -not @($fails | Where-Object { $_ -notmatch $gated }).Count) {
+    $legacyOnly = '^FAIL: (pinnedCommit None is not a full 40-char lowercase hex sha|completedAt None is missing)$'
+    $setupExeReceipt = $receipt -and ($receipt.PSObject.Properties.Name -contains 'completedAtUnix')
+    if ($setupExeReceipt -and $fails.Count -and -not @($fails | Where-Object { $_ -notmatch $legacyOnly }).Count) {
+        $unix = $receipt.completedAtUnix
+        Assert-True ((($unix -is [int]) -or ($unix -is [long])) -and $unix -gt 0) "Hermes-Setup.exe receipt completedAtUnix is epoch seconds: '$unix'"
         # The receipt cannot vouch for the commit, so the checkout must.
         Assert-True ($head -eq $state.current) "installed checkout is at the expected commit ($($state.current.Substring(0, 12)))"
-        $note = "GATED on #124949: the Hermes-Setup.exe receipt failed only its known checks ($($fails -join '; '))."
+        $note = "Hermes-Setup.exe legacy receipt accepted (#124949; the released exe is not rebuilt): $($fails -join '; ')"
         Write-Host "  $note"
         if ($env:GITHUB_STEP_SUMMARY) { Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value $note -Encoding UTF8 }
         return

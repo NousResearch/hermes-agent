@@ -252,6 +252,36 @@ class TestWorkspaceSnapshotPinnedAcrossCompaction(unittest.TestCase):
             os.chdir(old_cwd)
             shutil.rmtree(tmp, ignore_errors=True)
 
+    def test_symlink_spelling_of_the_launch_dir_replays_the_pin(self):
+        """The macOS shape on any POSIX host: os.getcwd() reports the physical dir while the bound
+        cwd arrives through a symlink (/var -> /private/var). Same workspace, so the pin must hit."""
+        import os, sys, tempfile, shutil
+        from pathlib import Path
+        from agent.system_prompt import build_system_prompt, invalidate_system_prompt
+
+        if sys.platform == "win32":
+            self.skipTest("directory symlinks need privileges on Windows")
+        tmp = Path(tempfile.mkdtemp(prefix="test-pinned-symlink-"))
+        old_cwd = os.getcwd()
+        try:
+            repo = _init_repo(tmp / "proj", "init commit")
+            link = tmp / "link"
+            link.symlink_to(repo, target_is_directory=True)
+            os.chdir(repo)  # os.getcwd() is the physical spelling
+            agent = self._pin_agent()
+            with patch("agent.prompt_builder.load_soul_md", return_value=""), \
+                 patch("agent.prompt_builder.build_environment_hints", return_value="ENV HINTS"):
+                with patch("agent.system_prompt.resolve_context_cwd", return_value=None):
+                    p1 = build_system_prompt(agent)
+                self.assertIn("Status: clean", p1)
+                (repo / "untracked.txt").write_text("wip\n")
+                invalidate_system_prompt(agent)
+                with patch("agent.system_prompt.resolve_context_cwd", return_value=link):
+                    self.assertEqual(build_system_prompt(agent), p1)
+        finally:
+            os.chdir(old_cwd)
+            shutil.rmtree(tmp, ignore_errors=True)
+
     def test_agent_that_did_not_build_the_prompt_replays_the_persisted_snapshot(self):
         """Resume / gateway / TUI shape: a fresh agent rebuilds (compaction, a first /compress) after
         the repo moved and replays the snapshot its session row already holds — unless that prompt

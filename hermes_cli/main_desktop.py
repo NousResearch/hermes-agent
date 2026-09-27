@@ -1422,16 +1422,23 @@ def _prefer_wsl_d3d12(env: dict) -> None:
         env["GALLIUM_DRIVER"] = "d3d12"
 
 
+# Chromium's ProcessSingleton binds $TMPDIR/scoped_dirXXXXXX/SingletonSocket (33 bytes after
+# TMPDIR, measured on Electron 40); sun_path holds 107 bytes plus the NUL.
+_ELECTRON_TMPDIR_MAX_BYTES = 107 - len("/scoped_dirXXXXXX/SingletonSocket")
+_DESKTOP_TMPDIR_ENV = "HERMES_DESKTOP_TMPDIR"
+
+
 def _desktop_launch_env(args: argparse.Namespace) -> tuple[dict, list[str]]:
     """Electron child env + config-supplied extra flags. ``desktop.*`` config is bridged to env vars
     Electron already reads; an explicit env var wins over config (and over keychain detection)."""
     from hermes_constants import socket_safe_tmpdir, with_hermes_node_path
     # with_hermes_node_path() copies os.environ when called with no arg.
     env = with_hermes_node_path()
-    if sys.platform == "linux":
-        # Chromium appends scoped_dir*/SingletonSocket to TMPDIR. A deep
-        # profile scratch root can exceed AF_UNIX's path budget and hang
-        # requestSingleInstanceLock(). Keep the exception child-local.
+    tmpdir = env.get("TMPDIR", "")
+    if sys.platform == "linux" and len(os.fsencode(tmpdir)) > _ELECTRON_TMPDIR_MAX_BYTES:
+        # A longer TMPDIR hangs requestSingleInstanceLock(). Only Chromium's socket dir moves:
+        # Electron main hands the real TMPDIR back to the backend and its other children.
+        env[_DESKTOP_TMPDIR_ENV] = tmpdir
         env["TMPDIR"] = socket_safe_tmpdir()
     _prefer_wsl_d3d12(env)
     for attr, key in (

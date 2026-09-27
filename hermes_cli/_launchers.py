@@ -73,8 +73,35 @@ def installation_command(repo_root: Path, args=(), *, module: str = "hermes_cli.
     root = Path(repo_root)
     if resolve_store_python(root) is None:
         return runtime_command(root, args, module=module, python=python, home=home)
+    launcher = _published_launcher(root)
+    if launcher is None:
+        # A store tool alone does not make this root a published source
+        # install: PM environment workspace copies resolve the same store
+        # through their sibling manifest, but never run the publication
+        # step, so ``.hermes/bin`` does not exist there. Embedding the
+        # missing path would brick every persisted definition that quotes
+        # it (launchd plist, systemd unit) with a deferred, silent exec
+        # failure (#125043). Fall back to the interpreter form — the same
+        # shape the launcher itself wraps — which is valid everywhere.
+        return runtime_command(root, args, module=module, python=python, home=home)
     prefix = [] if module == "hermes_cli.main" else ["--run-module", module]
-    return [str(root / ".hermes" / "bin" / "hermes"), *prefix, *args]
+    return [str(launcher), *prefix, *args]
+
+
+def _published_launcher(root: Path) -> Path | None:
+    """The exact-install launcher path iff it exists and is executable.
+
+    POSIX publication writes the extensionless shim; Windows distlib
+    executables land as ``hermes.exe`` next to it. Callers embed this path
+    in service definitions, so a path that cannot exec is never a valid
+    answer.
+    """
+    path = root / ".hermes" / "bin" / "hermes"
+    candidates = (path, path.with_suffix(".exe")) if _is_windows() else (path,)
+    for candidate in candidates:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    return None
 
 #: Launcher command names — keep in lockstep with scripts/install.ps1
 #: Publish-UserCommand and hermes_cli/_install_repair.py.

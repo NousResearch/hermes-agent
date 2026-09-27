@@ -833,6 +833,16 @@ def _pause_windows_gateway_services(service_gateways, token: dict, profiles: dic
         raise RuntimeError(detail) from exc
 
 
+def _gateway_process_home(pid: int) -> Path:
+    """Read the gateway worker's own home; argv alone cannot establish ownership."""
+    import psutil
+
+    value = psutil.Process(int(pid)).environ().get("HERMES_HOME")
+    if not value or not Path(value).is_absolute():
+        raise RuntimeError(f"Gateway home is missing or malformed: PID {pid}")
+    return Path(value).resolve()
+
+
 def _discover_windows_gateways():
     """``(profile_processes, service_gateways, service_gateway_pids, running_pids)`` for the pause; any indeterminate probe aborts."""
     from hermes_cli.gateway import find_gateway_pids, find_profile_gateway_processes, find_windows_gateway_services
@@ -846,7 +856,37 @@ def _discover_windows_gateways():
         running_pids = list(dict.fromkeys(
             [*find_gateway_pids(all_profiles=True), *sorted(profile_processes), *sorted(service_gateway_pids)]
         ))
-    return profile_processes, service_gateways, service_gateway_pids, running_pids
+    # find_gateway_pids scans the entire host. Before any planned-stop marker or
+    # socket pause, match workers to the effective data home via their own
+    # environment. Unknown ownership fails closed; foreign homes are excluded.
+    from hermes_constants import get_default_hermes_root
+    from hermes_cli.profiles import get_profile_dir
+
+    home = get_default_hermes_root().resolve()
+    owned: set[int] = set()
+    for pid in running_pids:
+        with _abort_on_error(f"Could not establish Windows gateway home for PID {pid}"):
+            actual = _gateway_process_home(int(pid))
+        profile = profile_processes.get(int(pid))
+        if profile is not None and actual != Path(profile.path).resolve():
+            raise RuntimeError(f"Gateway PID {pid} disagrees with its profile PID file")
+        service = next((s for s in service_gateways if int(s.gateway_pid) == int(pid)), None)
+        if service is not None and actual != Path(get_profile_dir(str(service.profile))).resolve():
+            raise RuntimeError(f"Gateway PID {pid} disagrees with its Windows service profile")
+        if actual == home or actual.is_relative_to(home):
+            owned.add(int(pid))
+    unmapped = owned - set(profile_processes) - service_gateway_pids
+    if unmapped:
+        raise RuntimeError(
+            "Refusing Windows update gateway pause: process(es) without a verified "
+            f"profile or service owner: {', '.join(map(str, sorted(unmapped)))}"
+        )
+    return (
+        {pid: proc for pid, proc in profile_processes.items() if int(pid) in owned},
+        [service for service in service_gateways if int(service.gateway_pid) in owned],
+        service_gateway_pids & owned,
+        [pid for pid in running_pids if int(pid) in owned],
+    )
 
 
 def _request_socket_pauses(running_pids, profile_processes, service_gateway_pids):

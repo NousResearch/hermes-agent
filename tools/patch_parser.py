@@ -54,6 +54,8 @@ _OP_MARKERS: List[Tuple[OperationType, re.Pattern]] = [
     (OperationType.DELETE, re.compile(r'\*\*\*\s*Delete\s+File:\s*(.+)')),
     (OperationType.MOVE, re.compile(r'\*\*\*\s*Move\s+File:\s*(.+?)\s*->\s*(.+)'))]
 _HINT_RE = re.compile(r'@@\s*(.+?)\s*@@')
+# Validation-overlay content of a binary file: present, but with no text to edit.
+_BINARY = object()
 
 
 def parse_v4a_patch(patch_content: str) -> Tuple[List[PatchOperation], Optional[str]]:
@@ -157,12 +159,29 @@ def _validate_operations(operations: List[PatchOperation], file_ops: Any) -> Lis
     removed_paths: set = set()
 
     def _read(path: str) -> Tuple[Optional[str], Optional[str]]:
+        if pending_content.get(path) is _BINARY:
+            return None, "binary file, cannot be edited as text"
         if path in pending_content:
             return pending_content[path], None
         if path in removed_paths:
             return None, "file not found"
         r = file_ops.read_file_raw(path)
         return (None, r.error) if r.error else (r.content, None)
+
+    def _source(path: str, missing: str) -> Tuple[Any, Optional[str]]:
+        """``(content, error)`` of a Delete/Move source. The text reader refuses a binary file,
+        but it is still a file to remove or rename. Any other failed read is reported as itself:
+        only ``not_found`` says the path is absent."""
+        if path in pending_content:
+            return pending_content[path], None
+        if path in removed_paths:
+            return None, missing
+        r = file_ops.read_file_raw(path)
+        if not r.error:
+            return r.content, None
+        if getattr(r, "is_binary", False):
+            return _BINARY, None
+        return None, missing if getattr(r, "not_found", False) else r.error
 
     def _occupied(path: str) -> Optional[str]:
         """Why an Add target or Move destination is not free, or None. Only a read that reports
@@ -225,17 +244,17 @@ def _validate_operations(operations: List[PatchOperation], file_ops: Any) -> Lis
             continue
         real_change_count += 1
         if op.operation == OperationType.DELETE:
-            if _read(op.file_path)[1]:
-                errors.append(f"{op.file_path}: file not found for deletion")
+            if err := _source(op.file_path, "file not found for deletion")[1]:
+                errors.append(f"{op.file_path}: {err}")
             else:
                 _remove(op.file_path)
         elif op.operation == OperationType.MOVE:
             if not op.new_path:
                 errors.append(f"{op.file_path}: MOVE operation missing destination path")
                 continue
-            src_content, src_err = _read(op.file_path)
+            src_content, src_err = _source(op.file_path, "source file not found for move")
             if src_err:
-                errors.append(f"{op.file_path}: source file not found for move")
+                errors.append(f"{op.file_path}: {src_err}")
             dst_taken = _occupied(op.new_path)
             if dst_taken == "exists":
                 errors.append(f"{op.new_path}: destination already exists — move would overwrite")
@@ -364,10 +383,11 @@ def _apply_add(op: PatchOperation, file_ops: Any) -> ApplyResult:
 def _apply_delete(op: PatchOperation, file_ops: Any) -> ApplyResult:
     """Delete a file, producing a real unified diff of the removed content."""
     read_result = file_ops.read_file_raw(op.file_path)  # re-read guards validate/apply races
-    if read_result.error:
+    binary = bool(read_result.error) and getattr(read_result, "is_binary", False)
+    if read_result.error and not binary:
         return _fail(f"Cannot delete {op.file_path}: file not found")
     result = file_ops.delete_file(op.file_path)
-    diff = _unified_diff(op.file_path, read_result.content, None) or f"# Deleted: {op.file_path}"
+    diff = (not binary and _unified_diff(op.file_path, read_result.content, None)) or f"# Deleted: {op.file_path}"
     return _fail(result.error) if result.error else (True, diff, None, None)
 
 

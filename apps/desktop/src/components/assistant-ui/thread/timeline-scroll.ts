@@ -30,6 +30,7 @@ export function scrollTimelineTarget(viewport: HTMLElement, id: string, signal: 
       if (expanded) {
         expanded.style.contentVisibility = originalVisibility
       }
+
       resolve(success)
     }
 
@@ -39,17 +40,20 @@ export function scrollTimelineTarget(viewport: HTMLElement, id: string, signal: 
       if (signal.aborted) {
         return finish(false)
       }
-      const node = viewport.querySelector<HTMLElement>(`[data-message-id="${cssEscape(id)}"]`)
+
+      const node = viewport.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(id)}"]`)
 
       if (!node) {
         return finish(false)
       }
+
       const target = timelineTarget(node)
 
       if (expanded !== target) {
         if (expanded) {
           expanded.style.contentVisibility = originalVisibility
         }
+
         expanded = target
         originalVisibility = target.style.contentVisibility
         target.style.contentVisibility = 'visible'
@@ -68,12 +72,14 @@ export function scrollTimelineTarget(viewport: HTMLElement, id: string, signal: 
       if (stable >= 2 || now - began >= 750) {
         return finish(stable >= 2)
       }
+
       frame = requestAnimationFrame(step)
     }
 
     if (signal.aborted) {
       return finish(false)
     }
+
     signal.addEventListener('abort', abort, { once: true })
     frame = requestAnimationFrame(step)
   })

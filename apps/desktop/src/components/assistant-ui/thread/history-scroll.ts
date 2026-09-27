@@ -25,6 +25,7 @@ export function captureHistoryScroll(viewport: HTMLElement): HistoryScrollAnchor
     if (box.bottom <= bounds.top || box.top >= bounds.bottom) {
       continue
     }
+
     const occurrences = new Map<string, number>()
 
     for (const node of [group, ...group.querySelectorAll<HTMLElement>('[data-history-anchor]')]) {
@@ -33,6 +34,7 @@ export function captureHistoryScroll(viewport: HTMLElement): HistoryScrollAnchor
       if (!key) {
         continue
       }
+
       const occurrence = occurrences.get(key) ?? 0
       occurrences.set(key, occurrence + 1)
       const rect = node.getBoundingClientRect()
@@ -40,6 +42,7 @@ export function captureHistoryScroll(viewport: HTMLElement): HistoryScrollAnchor
       if (!rect.height || rect.bottom <= bounds.top || rect.top >= bounds.bottom) {
         continue
       }
+
       candidates.push({ key, occurrence, offset: rect.top - bounds.top, leaf: node !== group })
     }
   }
@@ -51,13 +54,14 @@ export function captureHistoryScroll(viewport: HTMLElement): HistoryScrollAnchor
 
 export function restoreHistoryScroll(viewport: HTMLElement, anchors: readonly HistoryScrollAnchor[]): boolean {
   for (const anchor of anchors) {
-    const node = viewport.querySelectorAll<HTMLElement>(`[data-history-anchor="${cssEscape(anchor.key)}"]`)[
+    const node = viewport.querySelectorAll<HTMLElement>(`[data-history-anchor="${CSS.escape(anchor.key)}"]`)[
       anchor.occurrence
     ]
 
     if (!node || !node.getBoundingClientRect().height) {
       continue
     }
+
     viewport.scrollTop += node.getBoundingClientRect().top - viewport.getBoundingClientRect().top - anchor.offset
 
     return true

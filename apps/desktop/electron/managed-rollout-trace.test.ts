@@ -20,7 +20,6 @@ import {
   assertManagedUpdatePreflightClear,
   executeManagedRemoteUpdate,
   ManagedConnectionUpdateGate,
-  observeManagedRemoteUpdate,
   waitForManagedRemoteClearance
 } from './managed-ssh-update'
 import {
@@ -29,17 +28,9 @@ import {
   type ManagedSshUpdateSource
 } from './managed-ssh-update-service'
 
-vi.mock('./managed-ssh-update', async importOriginal => {
-  const actual = await importOriginal<typeof import('./managed-ssh-update')>()
-
-  return { ...actual, observeManagedRemoteUpdate: vi.fn() }
-})
-
 const unionDirectories: string[] = []
 
 afterEach(() => {
-  vi.mocked(observeManagedRemoteUpdate).mockReset()
-
   for (const directory of unionDirectories.splice(0)) {fs.rmSync(directory, { recursive: true, force: true })}
 })
 
@@ -531,10 +522,6 @@ async function makeUnionHarness(options: { beforeLaunch?: () => Promise<void> } 
     completeRecovery: async () => undefined,
     restoreRecoveryScope: async () => undefined
   })
-
-  vi.mocked(observeManagedRemoteUpdate).mockImplementation(
-    async (_target: any, correlationId: string): Promise<any> => observationFor(correlationId)
-  )
 
   const provider = createManagedRolloutProvider({
     ...integration.adapters,

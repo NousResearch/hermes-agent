@@ -179,7 +179,7 @@ class TestSlackNativeSlashes:
 
         This catches the old behavior where Slack users couldn't invoke
         commands like /btw natively. If a future command surfaces on
-        Telegram but not Slack (because of Slack's 50-slash cap), this
+        Telegram but not Slack (because of Slack's 25-slash cap), this
         test fails loudly so we can curate the list rather than silently
         dropping parity.
 
@@ -197,7 +197,7 @@ class TestSlackNativeSlashes:
         tg_norm = {_norm(n) for n in tg_names}
         reserved_norm = {_norm(n) for n in _SLACK_RESERVED_COMMANDS}
         # Commands deliberately routed through /hermes <command> on Slack only
-        # (Slack's 50-slash cap) are expected to be absent from native slashes.
+        # (Slack's 25-slash cap) are expected to be absent from native slashes.
         via_hermes_norm = {_norm(n) for n in _SLACK_VIA_HERMES_ONLY}
         missing = (tg_norm - slack_norm) - reserved_norm - via_hermes_norm
         assert not missing, (

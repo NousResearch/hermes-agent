@@ -407,7 +407,7 @@ def _delivery_lock(argv: list[str], *, stdin_file: bool):
     # (service contexts lack PATH) and carries .exe on Windows; split on both separators.
     # Split on both separators so the shape matches regardless of which platform built the argv. See #93590.
     cli = (argv[0] if argv else "").rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
-    if stdin_file or len(argv) < 3 or cli not in ("hermes", "hermes.exe") or argv[1] != "-p":
+    if stdin_file or len(argv) < 3 or cli not in ("hermes", "hermes.exe", "hermes.cmd") or argv[1] != "-p":
         return contextlib.nullcontext()
     from tools.bot_mode_probe import _hermes_root
     from tools.bot_relay import acquire_turn_lock
@@ -531,7 +531,7 @@ def _wait_live_dm(home: str, delivery_id: str, *, dm_file: "str | os.PathLike | 
 
 def _local_delivery_home(argv: list[str]) -> Path | None:
     cli = (argv[0] if argv else "").rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
-    if len(argv) < 3 or cli not in ("hermes", "hermes.exe") or argv[1] != "-p":
+    if len(argv) < 3 or cli not in ("hermes", "hermes.exe", "hermes.cmd") or argv[1] != "-p":
         return None
     from tools.bot_mode_probe import _hermes_root, _roster
 

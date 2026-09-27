@@ -3559,6 +3559,10 @@
     // us whether this task is currently subscribed via that platform's home.
     const [homeChannels, setHomeChannels] = useState([]);
     const [homeBusy, setHomeBusy] = useState({});
+    // Configured default assignee: the dispatcher assigns an unassigned Ready
+    // card to it, so the "will never run" warning only applies without one.
+    // null until /orchestration answers, so the warning doesn't flash first.
+    const [defaultAssignee, setDefaultAssignee] = useState(null);
     const boardSlug = props.boardSlug;
 
     const load = useCallback(function () {
@@ -3581,6 +3585,11 @@
     // show stale data if we only loaded on mount).
     useEffect(function () { load(); }, [load, props.eventTick]);
     useEffect(function () { loadHomeChannels(); }, [loadHomeChannels]);
+    useEffect(function () {
+      SDK.fetchJSON(`${API}/orchestration`)
+        .then(function (o) { setDefaultAssignee(((o && o.default_assignee) || "").trim()); })
+        .catch(function () { setDefaultAssignee(""); /* warning falls back to showing */ });
+    }, []);
 
     const postComment = function (body) {
       return SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}/comments`, boardSlug), {
@@ -3947,6 +3956,7 @@
             if (props.onOpenTask) props.onOpenTask(taskId);
           },
                     requestDialog: props.requestDialog,
+          defaultAssignee: defaultAssignee,
         }) : null,
         data ? h("div", { className: "hermes-kanban-drawer-comment-foot" },
           h("div", {
@@ -4164,6 +4174,19 @@
           onSpecify: props.onSpecify,
           onDecompose: props.onDecompose,
         }),
+        t.status === "ready" && !t.assignee && props.defaultAssignee === ""
+          ? h(DiagnosticCard, {
+              task: t,
+              boardSlug: props.boardSlug,
+              diag: {
+                severity: "warning",
+                title: tx(i18n, "readyUnassignedTitle", "Ready, but unassigned — this card will never run."),
+                detail: tx(i18n, "readyUnassignedBody",
+                  "The dispatcher only claims Ready cards that have an assignee. Pick a profile in the Assignee field (or set a default assignee in the orchestration settings) and it runs within a minute."),
+                actions: [],
+              },
+            })
+          : null,
         h(DiagnosticsSection, {
           task: t,
           boardSlug: props.boardSlug,
@@ -4265,6 +4288,14 @@
               : "on",
           }) : null,
           t.created_by ? h(MetaRow, { label: tx(i18n, "createdBy", "Created by"), value: t.created_by }) : null,
+          t.created_at && timeAgo ? h(MetaRow, {
+            label: tx(i18n, "metaCreated", "Created"),
+            value: h("span", { title: new Date(t.created_at * 1000).toLocaleString() }, timeAgo(t.created_at)),
+          }) : null,
+          t.status === "running" && t.worker_pid ? h(MetaRow, {
+            label: tx(i18n, "metaWorkerPid", "Worker PID"),
+            value: h("span", { className: "font-mono" }, String(t.worker_pid)),
+          }) : null,
         ),
         h(HomeSubsSection, {
           homeChannels: props.homeChannels || [],

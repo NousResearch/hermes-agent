@@ -1632,7 +1632,7 @@
 }
 .hermes-kanban-diag-detail {
   font-size: 0.8125rem;
-  color: var(--color-foreground, #ccc);
+  color: var(--color-foreground);
   line-height: 1.4;
 }
 .hermes-kanban-diag-data {

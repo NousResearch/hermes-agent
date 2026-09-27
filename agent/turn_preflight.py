@@ -82,6 +82,21 @@ def run_preflight_compression(
             max_compression_attempts,
         )
 
+    _prefill_cap = getattr(compressor, "prefill_cost_cap", None)
+    _prefill_warn = int(getattr(_prefill_cap, "warn_tokens", 0) or 0)
+    if _prefill_warn and request_pressure_tokens < _prefill_warn:
+        agent._prefill_cost_warning_key = None
+    if _prefill_warn and request_pressure_tokens >= _prefill_warn:
+        _warn_key = (
+            getattr(agent, "provider", ""), getattr(agent, "model", ""), _prefill_warn,
+        )
+        if getattr(agent, "_prefill_cost_warning_key", None) != _warn_key:
+            agent._prefill_cost_warning_key = _warn_key
+            agent._emit_status(
+                f"⚠️ Local prefill cost is high (~{request_pressure_tokens:,} prompt tokens; "
+                f"warning threshold {_prefill_warn:,}). Hermes will compress before the configured cap."
+            )
+
     _compression_cooldown = getattr(
         compressor, "get_active_compression_failure_cooldown", lambda: None
     )()
@@ -166,6 +181,18 @@ def run_preflight_compression(
             v._last_preflight_pressure = None
             if v.pending_moa_prepared_request is moa_prepared_request:
                 v.pending_moa_prepared_request = None
+            _prefill_cap = getattr(compressor, "prefill_cost_cap", None)
+            _fail_closed = int(getattr(_prefill_cap, "fail_closed_tokens", 0) or 0)
+            if _fail_closed and request_pressure_tokens >= _fail_closed:
+                v.api_call_count = _refund_api_call(agent, v.api_call_count)
+                agent._persist_session(v.messages, v.conversation_history)
+                _reason = (
+                    "lock" if compression_skipped_due_to_lock(agent)
+                    else "transient_block"
+                )
+                return _done("return", _compression_deferred_result(
+                    agent, v.messages, v.api_call_count, reason=_reason
+                ))
         else:
             _reset_retry_state_after_compaction(agent)
             # Re-baseline the flush cursor: rotation returns None (child flushes

@@ -96,7 +96,8 @@ def _apply_live_compression_config(agent: Any, cfg: dict | None) -> None:
     the deferred ``get_model_context_length`` resolution).
     """
     cfg = cfg if isinstance(cfg, dict) else {}
-    compression = cfg.get("compression") if isinstance(cfg.get("compression"), dict) else {}
+    raw_compression = cfg.get("compression")
+    compression = raw_compression if isinstance(raw_compression, dict) else {}
     model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
     from agent.agent_init import config_context_length_for_runtime, set_config_context_length
     enabled_raw = compression.get("enabled", True)
@@ -135,7 +136,13 @@ def _apply_live_compression_config(agent: Any, cfg: dict | None) -> None:
     } if isinstance(raw_thresholds, dict) else {}
     # threshold: present value wins; absence derives via the agent_init resolution (default + autoraise).
     # resolve_model_threshold returns ``pct`` unchanged when model_thresholds is empty.
-    from agent.context_compressor import resolve_model_threshold
+    from agent.context_compressor import resolve_model_threshold, resolve_prefill_cost_cap
+    raw_prefill_caps = compression.get("prefill_cost_caps")
+    cc.prefill_cost_caps = raw_prefill_caps if isinstance(raw_prefill_caps, dict) else {}
+    cc.prefill_cost_cap = resolve_prefill_cost_cap(
+        getattr(agent, "model", "") or "", cc.prefill_cost_caps,
+        getattr(agent, "provider", "") or "",
+    )
     pct: float | None = None
     if "threshold" in compression:
         with contextlib.suppress(TypeError, ValueError):

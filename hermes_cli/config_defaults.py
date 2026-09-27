@@ -563,6 +563,9 @@ DEFAULT_CONFIG = {
         # are floored at 0.75 (raise-only) so compaction doesn't fire with half the window free; set
         # above 0.75 to override the floor.
         "threshold": 0.50,
+        # Optional per-route prompt-cost limits. Empty by default so cloud/cache-capable routes
+        # retain existing behavior. Keys follow model_thresholds matching (provider:model-substring).
+        "prefill_cost_caps": {},
         # threshold_tokens: absolute token cap — compression triggers at the lower of the ratio
         # threshold and this count. Clamped to the model's context length. 256K bounds 1M-window
         # models (their 50% trigger sat at 500K, so compaction never fired) while every lower

@@ -1189,7 +1189,7 @@ DEFAULT_CONFIG = {
         },
         "minimax": {
             "model": "asr-1.0",
-            "region": "cn",  # "cn" | "global" (empty = auto-detect based on configured key)
+            "region": "",  # "cn" | "global" (empty = auto-detect based on configured key)
             "timeout": 60,
         },
     },

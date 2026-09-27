@@ -194,6 +194,13 @@ _has_mistral_key = _has_key("MISTRAL_API_KEY", "mistral", needs_mistral=True)
 _has_elevenlabs_key = _has_key("ELEVENLABS_API_KEY", "elevenlabs")
 _has_deepinfra_key = _has_key("DEEPINFRA_API_KEY", "deepinfra", needs_openai=True)
 
+
+def _has_minimax_key() -> bool:
+    return bool(
+        _resolve_provider_key("MINIMAX_API_KEY", "minimax")
+        or _resolve_provider_key("MINIMAX_CN_API_KEY", "minimax")
+    )
+
 # Cloud providers in AUTO-DETECT priority order:
 #   name -> (explicit-selection probe, auto-detect probe, explicit warning, auto-detect log)
 # The probes differ only for openai (explicit has its own resolver in _EXPLICIT_RESOLVERS;
@@ -217,6 +224,9 @@ _CLOUD_PROVIDER_SPECS = {
     "elevenlabs": (_has_elevenlabs_key, _has_elevenlabs_key,
                    "STT provider 'elevenlabs' configured but ELEVENLABS_API_KEY not set",
                    "No local STT available, using ElevenLabs Scribe STT API"),
+    "minimax": (_has_minimax_key, _has_minimax_key,
+                "STT provider 'minimax' configured but MINIMAX_API_KEY / MINIMAX_CN_API_KEY not set",
+                "No local STT available, using MiniMax STT API"),
     "deepinfra": (_has_deepinfra_key, _has_deepinfra_key,
                   "STT provider 'deepinfra' configured but DEEPINFRA_API_KEY not set (or openai package missing)",
                   "No local STT available, using DeepInfra Whisper API")}

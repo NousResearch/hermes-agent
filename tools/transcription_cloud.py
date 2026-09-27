@@ -484,6 +484,16 @@ def _transcribe_minimax(
 
     default_base = DEFAULT_MINIMAX_STT_CN_BASE_URL if region == "cn" else DEFAULT_MINIMAX_STT_BASE_URL
     base_url = str(mm_config.get("base_url") or default_base).strip().rstrip("/")
+    if base_url.startswith("http://"):
+        from urllib.parse import urlparse
+        host = (urlparse(base_url).hostname or "").lower()
+        if host not in ("localhost", "127.0.0.1", "::1"):
+            return _error_result(
+                f"Insecure base_url '{base_url}' rejected: MiniMax API keys must not be sent over cleartext HTTP. Use https:// or localhost."
+            )
+    elif not base_url.startswith("https://"):
+        return _error_result(f"Invalid base_url '{base_url}': URL must begin with https://")
+
     if not base_url.endswith("/speech_to_text"):
         url = f"{base_url}/speech_to_text" if "/v1" in base_url else f"{base_url}/v1/speech_to_text"
     else:
@@ -540,6 +550,8 @@ def _transcribe_minimax(
             return _error_result(f"MiniMax STT error: {base_resp.get('status_msg', 'unknown error')}")
 
         transcript = str(body.get("text") or "").strip()
+        if not transcript:
+            return _error_result("MiniMax STT returned empty transcript", no_speech=True)
         logger.info(
             "Transcribed %s via MiniMax STT API (%s, region=%s, %d chars)",
             Path(file_path).name, model, region, len(transcript),

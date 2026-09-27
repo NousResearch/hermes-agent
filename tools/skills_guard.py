@@ -159,7 +159,11 @@ THREAT_PATTERNS = [
     (r'\$HOME/\.hermes/\.env|\~/\.hermes/\.env',
      "hermes_env_access", "critical", "exfiltration", "directly references Hermes secrets file"),
     # `cat <secrets-file>` reads credentials; `cat >`/`cat >>` WRITES one (setup heredocs) — not exfil.
-    (r'cat\s+(?!>)[^\n]*(\.env|credentials|\.netrc|\.pgpass|\.npmrc|\.pypirc)',
+    # Negative lookahead excludes ``.env.example`` / ``.env.sample`` / ``.env.template`` / ``.env.tmpl`` /
+    # ``.env.dist``: those are template files with no real secrets, and they show up constantly in
+    # instructional prose explaining env handling.  ``.env.local`` / ``.env.production`` are still
+    # matched (#37036).
+    (r'cat\s+(?!>)[^\n]*(\.env|credentials|\.netrc|\.pgpass|\.npmrc|\.pypirc)(?!\.(?:example|sample|tmpl|template|dist)\b)',
      "read_secrets_file", "critical", "exfiltration", "reads known secrets file"),
     (r'\b(?:readFile(?:Sync)?|readTextFile)\s*\(\s*' + _CRED_FILE_LITERAL,
      "js_read_secrets_file", "critical", "exfiltration", "JavaScript reads a known credential file"),
@@ -332,10 +336,12 @@ THREAT_PATTERNS = [
      "pep723_inline_deps", "medium", "supply_chain", "PEP 723 inline script metadata with dependencies (verify pinning)"),
     (r'pip\s+install\s+(?!-r\s)(?!.*==)',
      "unpinned_pip_install", "medium", "supply_chain", "pip install without version pinning"),
-    (r'npm\s+install\s+(?!.*@\d)', "unpinned_npm_install", "medium", "supply_chain", "npm install without version pinning"),
+    (r'npm\s+install\s+(?!.*@\d)(?![^\n]*\|\s*\d)', "unpinned_npm_install", "medium", "supply_chain", "npm install without version pinning"),
     (r'uv\s+run\s+', "uv_run", "medium", "supply_chain", "uv run (may auto-install unpinned dependencies)"),
     # ── Supply chain: remote resource fetching ──
-    (r'(curl|wget|httpx?\.get|requests\.get|fetch)\s*[\(]?\s*["\']https?://',
+    # Exclude example domains (RFC 2606) and loopback addresses — these are by definition non-routable
+    # and show up constantly in instructional prose and API tutorials (#37036).
+    (r'(curl|wget|httpx?\.get|requests\.get|fetch)\s*[\(]?\s*["\']https?://(?!localhost|127\.0\.0\.1|\[::1\]|(?:[a-z0-9-]+\.)*example\.(?:com|org|net)|(?:[a-z0-9-]+\.)*test\b)',
      "remote_fetch", "medium", "supply_chain", "fetches remote resource at runtime"),
     (r'git\s+clone\s+', "git_clone", "medium", "supply_chain", "clones a git repository at runtime"),
     (r'docker\s+pull\s+', "docker_pull", "medium", "supply_chain", "pulls a Docker image at runtime"),

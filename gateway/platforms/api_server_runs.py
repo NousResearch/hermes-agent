@@ -916,6 +916,7 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
     """Drive one admitted run, publish its terminal event/status, release live state."""
     _redact_api_error_text = _api_server._redact_api_error_text
     run_id, loop = run.run_id, asyncio.get_running_loop()
+    _run_started_at = time.perf_counter()
 
     def _text_cb(delta: Optional[str]) -> None:
         if delta is None or run_id not in self._run_streams:
@@ -964,6 +965,8 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
         approval_notify = _make_approval_notify(self, run, _api_server=_api_server)
         result, usage, served_runtime = await _submit_api_worker(
             loop, lambda: _run_agent_sync(self, run, agent, approval_notify, _api_server=_api_server))
+        # Publish request metrics (daily counters + latency) with each completed run (#52323).
+        self._record_api_metrics(usage, time.perf_counter() - _run_started_at)
         if not isinstance(result, dict):
             result = {}
         status, fields = terminal_run_status(result)
@@ -1084,8 +1087,7 @@ async def _handle_run_events(self, request: "web.Request", *, _api_server) -> "w
     except (TypeError, ValueError):
         last_seq = -1
     q, replay = stream.attach(last_seq)
-    response = web.StreamResponse(status=200, headers={
-        "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+    response = web.StreamResponse(status=200, headers=self._sse_headers(request))
 
     async def _write(data: bytes) -> None:
         try:
@@ -1105,6 +1107,11 @@ async def _handle_run_events(self, request: "web.Request", *, _api_server) -> "w
     try:
         await response.prepare(request)
         prepared = True
+        # Flush the response head before waiting on the queue: aiohttp holds the headers
+        # until the first body write, so a subscriber that connects before the run's first
+        # event (e.g. before `approval.request`) sees no bytes and fetch()/EventSource never
+        # resolve. A comment frame is ignored by every conforming SSE consumer.
+        await _write(b": open\n\n")
         if replay and replay[0][0] > last_seq + 1:
             truncation = _run_event(
                 run_id,

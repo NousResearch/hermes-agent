@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import type { ChatMessage, ChatMessagePart } from '@/lib/chat-messages'
 import type { ComposerAttachment } from '@/store/composer'
@@ -8,6 +8,7 @@ import {
   attachmentId,
   coalesceToolOnlyAssistants,
   coerceThinkingText,
+  createClientSessionState,
   createToolMergeCache,
   messageCreatedAt,
   optimisticAttachmentRef,
@@ -16,6 +17,19 @@ import {
 
 const DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANS'
 const THUMB_URL = 'data:image/png;base64,dGh1bWI='
+
+describe('createClientSessionState', () => {
+  it('anchors a fresh runtime to its creation time', () => {
+    const createdAt = 1_700_000_000_000
+    const now = vi.spyOn(Date, 'now').mockReturnValue(createdAt)
+
+    try {
+      expect(createClientSessionState('stored-1').runtimeStartedAt).toBe(createdAt)
+    } finally {
+      now.mockRestore()
+    }
+  })
+})
 
 function attachment(overrides: Partial<ComposerAttachment> & Pick<ComposerAttachment, 'kind'>): ComposerAttachment {
   return { id: 'a', label: 'file.png', ...overrides }
@@ -72,6 +86,16 @@ describe('optimisticAttachmentRef', () => {
 
   it('returns null for a path-less image with no renderable inline source', () => {
     expect(optimisticAttachmentRef(attachment({ kind: 'image', previewUrl: 'https://example.com/x.png' }))).toBeNull()
+  })
+
+  it('renders an OS-drop blob: preview as a markdown image (no IPC data URL)', () => {
+    const blobUrl = 'blob:https://desktop/preview-1'
+
+    const ref = optimisticAttachmentRef(
+      attachment({ kind: 'image', label: 'Lattice.png', detail: 'C:\\shot.png', previewUrl: blobUrl })
+    )
+
+    expect(ref).toBe(`![Lattice.png](${blobUrl})`)
   })
 
   it('passes non-image attachments straight through to attachmentDisplayText', () => {

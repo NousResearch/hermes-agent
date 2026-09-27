@@ -6,14 +6,14 @@ import './lib/forceTruecolor.js'
 import type { FrameEvent } from '@hermes/ink'
 
 import { setRpcErrorLogSink } from './app/userMessages.js'
-import { DASHBOARD_TUI_MODE, TERMUX_TUI_MODE } from './config/env.js'
+import { DASHBOARD_TUI_MODE, NATIVE_MODE, TERMUX_TUI_MODE } from './config/env.js'
 import { GatewayClient } from './gatewayClient.js'
 import { setupGracefulExit } from './lib/gracefulExit.js'
 import { formatBytes, type HeapDumpResult, performHeapDump } from './lib/memory.js'
 import { type MemorySnapshot, startMemoryMonitor } from './lib/memoryMonitor.js'
 import { openExternalUrl } from './lib/openExternalUrl.js'
 import { recordParentLifecycle } from './lib/parentLog.js'
-import { resetTerminalModes } from './lib/terminalModes.js'
+import { clearNativeTuiFrame, resetTerminalModes } from './lib/terminalModes.js'
 
 if (!process.stdin.isTTY) {
   console.log('hermes-tui: no TTY')
@@ -38,12 +38,16 @@ resetTerminalModes()
 // graceful-exit cleanups is safe.
 process.on('exit', () => {
   resetTerminalModes()
+
+  if (NATIVE_MODE) {
+    clearNativeTuiFrame()
+  }
 })
 
 // Desktop terminals benefit from a clean startup slate because the TUI usually
 // runs in AlternateScreen. On Termux we keep prior output intact so users can
 // review/copy earlier assistant replies after reopening the app.
-if (TERMUX_TUI_MODE) {
+if (TERMUX_TUI_MODE || NATIVE_MODE) {
   process.stdout.write('\n')
 } else {
   process.stdout.write('\x1b[2J\x1b[H\x1b[3J')

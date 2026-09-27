@@ -330,7 +330,14 @@ async def test_loop_wakeup_watcher_gates_profile_scope_on_active_loops(loop_env,
     goals._DB_CACHE[str(work_home)] = work_db
 
     scopes = [(None, None), ("work", work_home)]
-    monkeypatch.setattr("gateway.run._handoff_watch_scopes", lambda _r: scopes)
+    on_main_thread = []
+
+    def _scopes(_runner):
+        # profiles_to_serve() walks the filesystem: it must resolve off the loop thread.
+        on_main_thread.append(threading.current_thread() is threading.main_thread())
+        return scopes
+
+    monkeypatch.setattr("gateway.run._handoff_watch_scopes", _scopes)
 
     entered = []
 
@@ -348,6 +355,7 @@ async def test_loop_wakeup_watcher_gates_profile_scope_on_active_loops(loop_env,
     monkeypatch.setattr("gateway.run._async_profile_runtime_scope", _SpyScope)
 
     runner = _make_runner()
+    runner.config.multiplex_profiles = True
     runner._running_agents = {}
     runner.adapters = {}
 
@@ -372,6 +380,7 @@ async def test_loop_wakeup_watcher_gates_profile_scope_on_active_loops(loop_env,
         # Idle: no loop rows in the work profile's store → its scope is never entered.
         await _run_one_tick()
         assert entered == [], f"idle profile scope must not be entered; got {entered}"
+        assert on_main_thread == [False], f"scopes must resolve off the loop; got {on_main_thread}"
 
         # An ACTIVE loop row in the work profile's store opens the gate.
         await GatewayRunner._handle_loop_command(runner, _make_event("/loop 5m poll CI"))

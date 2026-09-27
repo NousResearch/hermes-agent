@@ -74,6 +74,14 @@ function setSessionSubagents(sid: string, previous: SubagentProgress[], next: Su
   $subagentsBySession.set({ ...$subagentsBySession.get(), [sid]: next })
 }
 
+const hasSubagentsForSession = (map: Record<string, SubagentProgress[]>, sid: string): boolean =>
+  Object.hasOwn(map, sid)
+
+const getSubagentsForSession = (
+  map: Record<string, SubagentProgress[]>,
+  sid: string
+): SubagentProgress[] | undefined => (hasSubagentsForSession(map, sid) ? map[sid] : undefined)
+
 const isStr = (v: unknown): v is string => typeof v === 'string'
 const str = (v: unknown) => (isStr(v) ? v : '')
 const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : undefined)
@@ -233,10 +241,19 @@ function toProgress(payload: SubagentPayload, prev: SubagentProgress | undefined
   }
 }
 
-/** Reconcile a scoped, race-checked snapshot without replacing stream history. */
-export function reconcileSubagentSnapshot(sid: string, children: SubagentPayload[]) {
+const failedDelegationId = (p: SubagentPayload) => `delegation:${str(p.delegation_id)}:${num(p.task_index) ?? 0}`
+
+/** Reconcile a scoped, race-checked snapshot without replacing stream history.
+ *  `failedDelegations` are durable failed tasks the live roster no longer holds
+ *  (ended, or a renderer reload dropped them): they land as terminal failed rows
+ *  unless a live row already covers that task or a turn already retired it. */
+export function reconcileSubagentSnapshot(
+  sid: string,
+  children: SubagentPayload[],
+  failedDelegations: SubagentPayload[] = []
+) {
   const map = $subagentsBySession.get()
-  const previous = map[sid] ?? []
+  const previous = getSubagentsForSession(map, sid) ?? []
   const ids = new Set(children.map(p => str(p.subagent_id)).filter(Boolean))
   const next = previous.filter(item => TERMINAL.has(item.status) || ids.has(item.id))
 
@@ -271,6 +288,31 @@ export function reconcileSubagentSnapshot(sid: string, children: SubagentPayload
     }
   }
 
+  for (const payload of failedDelegations) {
+    const id = failedDelegationId(payload)
+    const delegationId = str(payload.delegation_id)
+    const taskIndex = num(payload.task_index) ?? 0
+
+    if (
+      !delegationId ||
+      retiredSubagents.get(previous)?.has(id) ||
+      next.some(item => item.id === id || (item.delegationId === delegationId && item.taskIndex === taskIndex))
+    ) {
+      continue
+    }
+
+    const at = (num(payload.completed_at) ?? 0) * 1000 || Date.now()
+    const startedAt = (num(payload.dispatched_at) ?? 0) * 1000 || at
+
+    next.push({
+      ...toProgress({ ...payload, subagent_id: id, summary: str(payload.error) }, undefined, 'subagent.complete'),
+      durationSeconds: Math.max(0, Math.round((at - startedAt) / 1000)),
+      id,
+      startedAt,
+      updatedAt: at
+    })
+  }
+
   if (next.length !== previous.length || next.some((item, index) => item !== previous[index])) {
     setSessionSubagents(sid, previous, next)
   }
@@ -279,7 +321,7 @@ export function reconcileSubagentSnapshot(sid: string, children: SubagentPayload
 export function clearSessionSubagents(sid: string) {
   const map = $subagentsBySession.get()
 
-  if (!(sid in map)) {
+  if (!hasSubagentsForSession(map, sid)) {
     return
   }
 
@@ -301,7 +343,7 @@ export function clearSessionSubagents(sid: string) {
  */
 export function pruneFinishedSessionSubagents(sid: string) {
   const map = $subagentsBySession.get()
-  const list = map[sid]
+  const list = getSubagentsForSession(map, sid)
 
   if (!list?.length) {
     return
@@ -318,7 +360,7 @@ export function pruneFinishedSessionSubagents(sid: string) {
 
 export function pruneDelegateFallbackSubagents(sid: string) {
   const map = $subagentsBySession.get()
-  const list = map[sid]
+  const list = getSubagentsForSession(map, sid)
 
   if (!list?.length) {
     return
@@ -335,7 +377,7 @@ export function pruneDelegateFallbackSubagents(sid: string) {
 
 export function upsertSubagent(sid: string, payload: SubagentPayload, createIfMissing = true, eventType?: string) {
   const map = $subagentsBySession.get()
-  const list = map[sid] ?? []
+  const list = getSubagentsForSession(map, sid) ?? []
   const id = idOf(payload)
   const idx = list.findIndex(item => item.id === id)
 

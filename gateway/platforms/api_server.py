@@ -2986,8 +2986,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         ``keepalive`` (async) is called every SSE keepalive interval so a streaming caller's proxy
         keeps the socket."""
         from gateway.platforms.api_server_bot_chat import await_live_delivery
-        from tools.bot_mode_dm import _LIVE_WAIT_SECONDS
-        deadline = time.monotonic() + _LIVE_WAIT_SECONDS
+        from tools.bot_mode_dm import live_wait_seconds
+        deadline = time.monotonic() + live_wait_seconds()
         while record["status"] in ("queued", "claimed"):
             remaining = deadline - time.monotonic()
             if remaining <= 0:

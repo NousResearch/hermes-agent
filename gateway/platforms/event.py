@@ -5,10 +5,10 @@ gateway.platforms.*.
 """
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from gateway.session import SessionSource
 
@@ -19,6 +19,9 @@ from gateway.session import SessionSource
 # The pattern matches to end-of-line (not just whitespace-bounded) to handle
 # Windows paths that may contain spaces (e.g. "C:\Users\John Doe\image.png").
 _ATTACHMENT_REF_RE = re.compile(r"^(?:@(?:image|file|url):[^\n]+\n?)+", re.IGNORECASE)
+
+if TYPE_CHECKING:
+    from gateway.inbound_context import InboundContextSnapshot, PreparedInboundMessage
 
 
 class MessageType(Enum):
@@ -39,6 +42,15 @@ class ProcessingOutcome(Enum):
     SUCCESS = "success"
     FAILURE = "failure"
     CANCELLED = "cancelled"
+
+
+@dataclass(frozen=True)
+class QuotedMediaDependency:
+    """A media attachment whose content depends on another platform event."""
+    room_id: str
+    event_id: str
+    media_index: int
+    content_id: str
 
 
 @dataclass(frozen=True)
@@ -126,6 +138,14 @@ class MessageEvent:
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)
     # Run-owned final presentation snapshot; never deserialized from ingress metadata.
     _notification_reply_muted: Optional[bool] = field(default=None, init=False, repr=False, compare=False)
+    _prepared_inbound: Optional["PreparedInboundMessage"] = field(default=None, init=False, repr=False, compare=False)
+    _quoted_media_dependencies: tuple[QuotedMediaDependency, ...] = field(
+        default=(), kw_only=True, repr=False, compare=False,
+    )
+
+    _inbound_context_dependencies: tuple["InboundContextSnapshot", ...] = field(
+        default=(), kw_only=True, repr=False, compare=False,
+    )
 
     def absorb_reply_expected(self, other: "MessageEvent") -> None:
         """One turn now answers *other* too: an addressed message wins, then an unknown one."""
@@ -167,6 +187,52 @@ class MessageEvent:
         (self.reply_to_message_id, self.reply_to_text, self.reply_to_author_id,
          self.reply_to_author_name, self.reply_to_is_own_message,
          self.reply_to_author_authorized) = other._reply_context()
+        self._inbound_context_dependencies += other._inbound_context_dependencies
+
+    def absorb_media(self, other: "MessageEvent") -> None:
+        """Append attachments with their inline flags and quoted-event dependencies."""
+        self._inbound_context_dependencies += tuple(
+            dependency for dependency in other._inbound_context_dependencies
+            if all(dependency is not existing for existing in self._inbound_context_dependencies)
+        )
+        offset = len(self.media_urls)
+        self.media_text_inlined = [
+            *self.media_text_inlined,
+            *([None] * (offset - len(self.media_text_inlined))),
+            *other.media_text_inlined,
+            *([None] * (len(other.media_urls) - len(other.media_text_inlined))),
+        ]
+        self.media_urls.extend(other.media_urls)
+        self.media_types.extend(other.media_types)
+        self._quoted_media_dependencies += tuple(
+            replace(dependency, media_index=dependency.media_index + offset)
+            for dependency in other._quoted_media_dependencies
+        )
+
+    def authored_media(self) -> "MessageEvent":
+        """Return attachments that do not depend on a quoted event."""
+        quoted = {
+            dependency.media_index for dependency in self._quoted_media_dependencies
+        }
+        indices = [
+            index for index in range(len(self.media_urls)) if index not in quoted
+        ]
+        return replace(
+            self,
+            media_urls=[self.media_urls[index] for index in indices],
+            media_types=[
+                self.media_types[index]
+                for index in indices
+                if index < len(self.media_types)
+            ],
+            media_text_inlined=[
+                self.media_text_inlined[index]
+                if index < len(self.media_text_inlined)
+                else None
+                for index in indices
+            ],
+            _quoted_media_dependencies=(),
+        )
 
     def is_command(self) -> bool:
         """Check if this is a command message (e.g., /new, /reset)."""

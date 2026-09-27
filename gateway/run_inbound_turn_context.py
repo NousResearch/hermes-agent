@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 
 from agent.message_metadata import CHANNEL_STATE_METADATA_KEY, newest_channel_state
 from gateway.platforms.base import BasePlatformAdapter
+from gateway.platforms.event import TurnContextUpdate
 
 
 def channel_state_metadata(event: Any) -> Dict[str, Any]:
@@ -30,24 +31,32 @@ def reports_turn_context(adapter: Any) -> bool:
     return hook not in (None, BasePlatformAdapter.prepare_turn_context)
 
 
-async def prepend_turn_context_note(
+async def turn_context_update(
     runner: Any, *, event: Any, source: Any, session_key: str, history: List[Dict[str, Any]],
-    message_text: str,
-) -> str:
-    """Ask the adapter that received *event* what changed in the chat, record its snapshot on the
-    event and prepend its note to *message_text*."""
+) -> Optional[TurnContextUpdate]:
+    """Ask the adapter that received *event* what changed in the chat and record its snapshot on
+    the event."""
     adapter = runner._intake_adapter_for(source)
     if not reports_turn_context(adapter):
-        return message_text
+        return None
     entry = await runner.async_session_store.lookup_by_session_key(session_key)
     update = await adapter.prepare_turn_context(
         event, origin=entry.origin if entry else None,
         acknowledged_state=newest_channel_state(history), first_turn=not history,
     )
-    if update is None:
-        return message_text
-    if update.channel_state is not None:
+    if update is not None and update.channel_state is not None:
         event.channel_state = update.channel_state
-    if not update.note:
+    return update
+
+
+async def prepend_turn_context_note(
+    runner: Any, *, event: Any, source: Any, session_key: str, history: List[Dict[str, Any]],
+    message_text: str,
+) -> str:
+    """Record the adapter's turn context on *event* and prepend its note to *message_text*."""
+    update = await turn_context_update(
+        runner, event=event, source=source, session_key=session_key, history=history,
+    )
+    if update is None or not update.note:
         return message_text
     return f"{update.note}\n\n[New message]\n{message_text}"

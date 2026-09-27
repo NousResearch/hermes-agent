@@ -559,6 +559,47 @@ describe("ChatPage chrome follows the live session", () => {
       expect(apiMocks.getSessionDetail).toHaveBeenCalledWith("sess-A", expect.anything()),
     );
   });
+
+  it("keeps following the live session across a transport reconnect to the same PTY", async () => {
+    vi.useFakeTimers();
+    try {
+      const { default: ChatPage } = await import("./ChatPage");
+      await render(
+        <MemoryRouter initialEntries={["/chat?resume=sess-B"]}>
+          <ChatPage isActive />
+        </MemoryRouter>,
+      );
+      await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+      await act(async () => chromeProps.sidebar?.onLiveSessionChange?.("sess-A"));
+      expect(chromeProps.sessionList?.activeSessionId).toBe("sess-A");
+
+      // A network drop: the reconnect reattaches the still-running PTY, whose TUI never re-sends
+      // session.info, so the chrome must keep naming sess-A.
+      await act(async () => {
+        FakeWebSocket.instances[0].onclose?.({ code: 1006, reason: "", wasClean: false });
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(PTY_RECONNECT_MAX_MS + 100);
+      });
+      await vi.waitFor(() => expect(FakeWebSocket.instances.length).toBeGreaterThan(1));
+      expect(chromeProps.sessionList?.activeSessionId).toBe("sess-A");
+
+      // The agent process exits and the user starts a fresh PTY: until its TUI reports, the chrome
+      // falls back to the URL instead of naming the old process's session.
+      await act(async () => {
+        FakeWebSocket.instances.at(-1)?.onclose?.({ code: 4410, reason: "", wasClean: true });
+      });
+      const restart = [...container.querySelectorAll("button")].find(
+        (b) => b.textContent?.trim() === "Start new session",
+      );
+      await act(async () => {
+        restart?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      });
+      expect(chromeProps.sessionList?.activeSessionId).toBe("sess-B");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("ChatPage side panel collapse", () => {

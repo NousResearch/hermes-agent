@@ -260,6 +260,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // affordance; clicking it bumps `reconnectNonce`, which is a dependency of
   // the connect effect, so a fresh PTY spawns in place.
   const [reconnectNonce, setReconnectNonce] = useState(0);
+  const [liveSessionState, setLiveSessionState] = useState<{ scope: string; id: string } | null>(null);
   useEffect(() => {
     ptyStateRef.current = ptyState;
   }, [ptyState]);
@@ -284,6 +285,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   }, [clearReconnectTimer]);
   const startFreshPty = useCallback(() => {
     forceFreshPtyRef.current = true;
+    setLiveSessionState(null);
     reconnectAttemptRef.current = 0;
     clearReconnectTimer();
     blockedInputNoticeRef.current = false;
@@ -300,6 +302,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
     next.delete("resume");
     forceFreshPtyRef.current = true;
+    setLiveSessionState(null);
     reconnectAttemptRef.current = 0;
     clearReconnectTimer();
     blockedInputNoticeRef.current = false;
@@ -419,15 +422,16 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // The session the embedded TUI is actually running, from its session.info. It can differ from
   // `?resume=` after /resume, /new or /branch inside the PTY, or the server's active-session
   // fallback; the header title and the SESSIONS highlight follow it, not the URL (#94716).
-  const [liveSessionState, setLiveSessionState] = useState<{ scope: string; id: string } | null>(null);
-  const liveSessionId = liveSessionState?.scope === titleScope ? liveSessionState.id : null;
+  // Scoped to the PTY process, not the socket: a transport reconnect reattaches the same PTY,
+  // whose TUI does not re-send session.info. A fresh PTY (startFresh*) or a new channel drops it.
+  const liveSessionId = liveSessionState?.scope === channel ? liveSessionState.id : null;
   const activeSessionId = liveSessionId ?? resumeParam;
   const handleLiveSessionChange = useCallback(
     (id: string) =>
       setLiveSessionState((prev) =>
-        prev?.scope === titleScope && prev.id === id ? prev : { scope: titleScope, id },
+        prev?.scope === channel && prev.id === id ? prev : { scope: channel, id },
       ),
-    [titleScope],
+    [channel],
   );
 
   useEffect(() => {

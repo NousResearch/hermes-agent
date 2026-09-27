@@ -32,7 +32,7 @@ import { cn, timeAgo } from "@/lib/utils";
 
 const SESSION_LIMIT = 30;
 interface ChatSessionListProps {
-  /** Active resume target (the session currently shown in the terminal). */
+  /** The session the terminal is running (highlighted); it can differ from `?resume=`. */
   activeSessionId: string | null;
   /** Management profile from the dashboard switcher — scopes the listing. */
   profile?: string;
@@ -74,7 +74,8 @@ export function ChatSessionList({
   onWorkspaceChange,
 }: ChatSessionListProps) {
   const { t } = useI18n();
-  const [, setSearchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const resumeParam = searchParams.get("resume");
   const [sessions, setSessions] = useState<SessionInfo[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -121,12 +122,14 @@ export function ChatSessionList({
 
   const reload = useCallback(() => setReloadNonce((n) => n + 1), []);
 
-  // Picking a row sets `/chat?resume=<id>`. Re-picking the row already in
-  // the terminal is a no-op (avoids a needless PTY teardown).
+  // Picking a row sets `/chat?resume=<id>`. Re-picking the row the URL
+  // already names is a no-op (avoids a needless PTY teardown). The guard keys
+  // on the URL it writes, not on the highlighted session: once the TUI has
+  // moved to another session, picking a row must still re-point the URL.
   const pick = useCallback(
     (id: string) => {
       onPicked?.();
-      if (id === activeSessionId) return;
+      if (id === resumeParam) return;
       setSearchParams(
         (prev) => {
           const next = new URLSearchParams(prev);
@@ -136,7 +139,7 @@ export function ChatSessionList({
         { replace: false },
       );
     },
-    [activeSessionId, onPicked, setSearchParams],
+    [onPicked, resumeParam, setSearchParams],
   );
 
   // "New chat" prefers ChatPage's robust handler (clears resume + forces a

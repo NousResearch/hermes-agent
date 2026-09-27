@@ -716,6 +716,23 @@ model:
 
 Both approaches persist to `config.yaml`, which is the source of truth for model, provider, and base URL.
 
+For a service such as OneProvider, use this custom-endpoint path only after
+verifying that its API implements OpenAI-compatible `/v1/chat/completions` and
+obtaining the exact model ID and API base URL from the service:
+
+```yaml
+model:
+  default: <verified-model-id>
+  provider: custom
+  base_url: <verified-api-base-url>
+  key_env: ONEPROVIDER_API_KEY
+```
+
+Provision the key via an authorized secret channel in the Hermes process
+environment; do not put its value in the document or `config.yaml`. This
+example covers chat completions, not other transports. The service name alone
+does not establish endpoint or model availability.
+
 ### Switching Models with `/model`
 
 :::warning hermes model vs /model
@@ -1329,6 +1346,25 @@ providers:
 ---
 
 ### Named Custom Providers
+
+If you need a named entry for an OpenAI-compatible chat-completions endpoint
+such as OneProvider, use `providers.<name>` and select it with
+`model.provider: custom:<name>`:
+
+```yaml
+providers:
+  oneprovider:
+    api: <verified-api-base-url>
+    key_env: ONEPROVIDER_API_KEY
+    transport: chat_completions
+model:
+  default: <verified-model-id>
+  provider: custom:oneprovider
+```
+
+Keep the key value in the authorized Hermes environment. Verify the URL and
+model ID with the service before enabling the provider; this example does not
+assert which models OneProvider serves.
 
 If you work with multiple custom endpoints (e.g., a local dev server and a remote GPU server), you can define them as named custom providers under the `providers:` dict in `config.yaml`, keyed by provider name:
 

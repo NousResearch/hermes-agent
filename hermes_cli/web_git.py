@@ -17,6 +17,7 @@ import subprocess
 from pathlib import Path
 
 from hermes_cli._subprocess_compat import harden_git_argv, noninteractive_git_env
+from hermes_cli.update_cmd_check import tracking_refspec
 
 _GIT_TIMEOUT = 30
 _GH_TIMEOUT = 30
@@ -611,8 +612,13 @@ def _worktree_for_existing(root: str, raw_name: str) -> dict:
     if remote:
         # Best-effort freshness; on failure (offline, branch gone) the last known ref is still
         # there to branch from.
-        _git(root, ["fetch", remote, existing])
-        _git_ok(root, ["worktree", "add", "--track", "-b", existing, target, requested])
+        _git(root, ["fetch", remote, tracking_refspec(remote, existing)])
+        code, _, err = _git(root, ["worktree", "add", "--track", "-b", existing, target, requested])
+        # A narrow clone's fetch refspec doesn't map the branch, so git refuses to record an
+        # upstream; check it out untracked rather than not at all (#125686). Other failures
+        # normally fail the retry too, and the first error is the one worth showing.
+        if code != 0 and _git(root, ["worktree", "add", "--no-track", "-b", existing, target, requested])[0] != 0:
+            raise RuntimeError(err.strip() or "git worktree add failed")
     else:
         _git_ok(root, ["worktree", "add", target, existing])
     return {"path": target, "branch": existing, "repoRoot": root}
@@ -635,7 +641,11 @@ def worktree_add(cwd: str, options: dict) -> dict:
         # (offline / no remote) are ignored — git uses the local ref or raises a clear error
         # below if it is entirely missing.
         if base.startswith("origin/"):
-            _git(root, ["fetch", "origin", base[len("origin/"):]])
+            branch_name = base[len("origin/"):]
+            # Only fetch names the sanitizer leaves unchanged: inside a refspec a glob would
+            # fetch every matching branch. A skipped fetch only costs freshness.
+            if branch_name == _sanitize_branch(branch_name):
+                _git(root, ["fetch", "origin", tracking_refspec("origin", branch_name)])
             # Branching off a remote-tracking ref auto-wires upstream tracking; the user wants
             # a standalone local branch (Electron-op parity).
             args.append("--no-track")

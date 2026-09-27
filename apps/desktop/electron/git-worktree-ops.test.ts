@@ -326,8 +326,17 @@ test('addWorktree: base origin/main does not set up upstream tracking', async ()
 // `branches`, plus a clone of it. Returns both paths. The caller must remove
 // them.
 function seedRemoteAndClone(label, branches) {
-  const remoteDir = fs.mkdtempSync(path.join(os.tmpdir(), `hermes-${label}-remote-`))
+  const { remoteDir } = seedRemote(label, branches)
   const cloneDir = fs.mkdtempSync(path.join(os.tmpdir(), `hermes-${label}-clone-`))
+
+  execFileSync('git', ['clone', remoteDir, cloneDir])
+
+  return { cloneDir, remoteDir }
+}
+
+// The "remote" half of seedRemoteAndClone, for tests that clone it their own way.
+function seedRemote(label, branches) {
+  const remoteDir = fs.mkdtempSync(path.join(os.tmpdir(), `hermes-${label}-remote-`))
 
   const remoteGit = (...args) =>
     execFileSync('git', ['-C', remoteDir, ...args])
@@ -341,9 +350,7 @@ function seedRemoteAndClone(label, branches) {
     remoteGit('branch', branch)
   }
 
-  execFileSync('git', ['clone', remoteDir, cloneDir])
-
-  return { cloneDir, remoteDir }
+  return { remoteDir, remoteGit }
 }
 
 test('listBranches: offers remote branches that have no local counterpart', async () => {
@@ -468,5 +475,37 @@ test('switchBranch: repo dir still validates the branch name and switches', asyn
     assert.deepEqual(result, { branch: 'main' })
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('addWorktree: a tag-pinned narrow clone still reaches the remote tip (#125686)', async () => {
+  // Older installers cloned `--depth 1 --single-branch --branch <tag>`, so the
+  // fetch refspec maps only the tag and a fetch by branch name never writes
+  // origin/<branch>.
+  const { remoteDir, remoteGit } = seedRemote('narrow', ['feature'])
+  const cloneDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-narrow-clone-'))
+
+  const commit = (...args) => remoteGit('-c', 'user.email=hermes@localhost', '-c', 'user.name=Hermes', ...args)
+
+  try {
+    remoteGit('tag', 'v1')
+    execFileSync('git', ['clone', '--depth', '1', '--single-branch', '--branch', 'v1', `file://${remoteDir}`, cloneDir])
+    // origin/feature exists but is stale, as after an earlier explicit fetch.
+    execFileSync('git', ['-C', cloneDir, 'fetch', 'origin', '+refs/heads/feature:refs/remotes/origin/feature'])
+    commit('commit', '--allow-empty', '-m', 'main moved')
+    remoteGit('checkout', 'feature')
+    commit('commit', '--allow-empty', '-m', 'feature moved')
+    remoteGit('checkout', 'main')
+
+    const created = await addWorktree(cloneDir, { base: 'origin/main', name: 'from-main' }, 'git')
+    const converted = await addWorktree(cloneDir, { existingBranch: 'origin/feature' }, 'git')
+    const headOf = dir => execFileSync('git', ['-C', dir, 'rev-parse', 'HEAD']).toString().trim()
+
+    assert.equal(headOf(created.path), remoteGit('rev-parse', 'main'))
+    assert.equal(converted.branch, 'feature')
+    assert.equal(headOf(converted.path), remoteGit('rev-parse', 'feature'))
+  } finally {
+    fs.rmSync(remoteDir, { recursive: true, force: true })
+    fs.rmSync(cloneDir, { recursive: true, force: true })
   }
 })

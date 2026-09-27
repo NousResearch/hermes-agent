@@ -21,6 +21,14 @@ function runGit(gitBin, args, cwd): Promise<string> {
   })
 }
 
+// Fetching a branch by name only updates `<remote>/<branch>` when the remote's
+// configured refspec maps it. Tag-pinned narrow clones map only the tag, so
+// name the destination explicitly (#125686). The `+` matters on a depth-1
+// clone, where the new tip is not a descendant of the old one.
+function trackingRefspec(remote: string, branch: string): string {
+  return `+refs/heads/${branch}:refs/remotes/${remote}/${branch}`
+}
+
 // Parse `git worktree list --porcelain`. The first record is the main worktree.
 function parseWorktrees(out) {
   const trees = []
@@ -262,13 +270,23 @@ async function addExistingBranchWorktree(gitBin, root, name) {
     // fetch is best effort: after a failure, the last known ref is still there
     // to branch from.
     try {
-      await runGit(gitBin, ['fetch', remote, branch], root)
+      await runGit(gitBin, ['fetch', remote, trackingRefspec(remote, branch)], root)
     } catch {
       // The user is offline, or the branch is gone from the remote. Use the ref
       // that the repo already has.
     }
 
-    await runGit(gitBin, ['worktree', 'add', '--track', '-b', branch, dir, requested], root)
+    try {
+      await runGit(gitBin, ['worktree', 'add', '--track', '-b', branch, dir, requested], root)
+    } catch (err) {
+      // A narrow clone's fetch refspec doesn't map the branch, so git refuses
+      // to record an upstream; check it out untracked rather than not at all.
+      // Other failures normally fail the retry too, and the first error is the
+      // one worth showing.
+      await runGit(gitBin, ['worktree', 'add', '--no-track', '-b', branch, dir, requested], root).catch(() => {
+        throw err
+      })
+    }
 
     return { path: dir, branch, repoRoot: root }
   }
@@ -306,12 +324,16 @@ async function addWorktree(repoPath, options, gitBin) {
     if (base.startsWith('origin/')) {
       const remoteBranch = base.slice('origin/'.length)
 
-      try {
-        await runGit(gitBin, ['fetch', 'origin', remoteBranch], root)
-      } catch {
-        // The fetch isn't mandatory, but it would be nice to do if possible.
-        // If it's not possible, just use the local ref of the remote branch.
-        // If it doesn't exist locally, we'll get an error
+      // Only fetch names the sanitizer leaves unchanged: inside a refspec a glob
+      // would fetch every matching branch. A skipped fetch only costs freshness.
+      if (remoteBranch === sanitizeBranch(remoteBranch)) {
+        try {
+          await runGit(gitBin, ['fetch', 'origin', trackingRefspec('origin', remoteBranch)], root)
+        } catch {
+          // The fetch isn't mandatory, but it would be nice to do if possible.
+          // If it's not possible, just use the local ref of the remote branch.
+          // If it doesn't exist locally, we'll get an error
+        }
       }
 
       // When branching off a remote-tracking ref, git auto-sets up tracking
